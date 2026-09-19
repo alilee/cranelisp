@@ -668,28 +668,43 @@ impl CompilerSession {
     }
 
     /// Apply a Document-mode docstring edit (`design/int/agent.md §17.2`, FIXME
-    /// 0430): set the live `ModuleEntry::Def.docstring` for the named symbol +
-    /// regenerate. The live field is the AUTHORITATIVE docstring (§11.3a); the
-    /// docstring-aware `save::render_decl_sexp` re-emits it into the §5.12 slot on
-    /// regen so the edit survives a session restart (read back by `/doc <symbol>`).
+    /// 0430): set the named plain callable's live docstring
+    /// (`set_plain_callable_docstring`) + regenerate. The live field is the
+    /// AUTHORITATIVE docstring (§11.3a); the docstring-aware
+    /// `save::render_decl_sexp` re-emits it into the §5.12 slot on regen so the
+    /// edit survives a session restart (read back by `/doc <symbol>`).
     ///
-    /// HONESTY GUARDS (`/review` S94): only a LOCAL `UserFn` `Def` in the current
-    /// module persists across restart, so this refuses anything else rather than
-    /// printing a false "recorded" — returning `Err(message)`:
-    ///   - a symbol absent from the current module's table (covers a re-exported
-    ///     `Import`, a non-`Def` entry, AND a qualified `mod/sym` whose key never
-    ///     matches a local symbol) ⇒ `no such definition`;
-    ///   - a `Def` that is not a `UserFn` (a `PrimitiveExtern`/`Constructor`/…) ⇒
-    ///     refused, because `save::generate_fns_and_macros` only threads docstrings
-    ///     for `UserFn` (other kinds hit `_ => continue`), so the field would show
-    ///     via `/doc` in-session yet VANISH on restart — an ephemeral, dishonest
-    ///     "recorded". On any refusal the backing file is NOT regenerated.
+    /// HONESTY GUARDS (`/review` S94; `repl/spec` §17.15.4): only a plain
+    /// function body defined in the current module persists its docstring across
+    /// restart, so this refuses anything else rather than printing a false
+    /// "recorded" — returning `Err(message)`:
+    ///   - face 1, a spelling with no current-module definition (undefined, an
+    ///     import-only candidate, or a qualified `mod/sym` that matches no local
+    ///     spelling) ⇒ `no such definition`;
+    ///   - face 2, a spelling that resolves to a current-module definition that is
+    ///     not a plain function body (an extern, or a constructor — a sum ctor is
+    ///     keyed `Type.Ctor` and reached through its bare-spelling candidate) ⇒
+    ///     refused, because regeneration threads docstrings only for plain
+    ///     function bodies, so the field would show via `/doc` in-session yet
+    ///     VANISH on restart. On any refusal the backing file is NOT regenerated.
     fn apply_docstring_edit(&mut self, symbol: &str, text: &str) -> Result<(), String> {
         let module = self.current_module_path();
-        let sym = cranelisp_types::Symbol::from(symbol);
+        let spelling = cranelisp_types::Symbol::from(symbol);
         {
             let Some(mut table) = self.shared.symbol_tables.get_mut(&module) else {
                 return Err(format!("no such definition: {symbol}"));
+            };
+            // The spelling's own binding, else the current-module terminal
+            // candidate it exposes. Candidates homed elsewhere are imports.
+            let sym = if table.get(spelling.as_ref()).is_some() {
+                spelling
+            } else {
+                table
+                    .name_candidates(&spelling)
+                    .into_iter()
+                    .find(|candidate| candidate.source.module == module)
+                    .map(|candidate| candidate.source.symbol)
+                    .ok_or_else(|| format!("no such definition: {symbol}"))?
             };
             let Some(binding) = table.get(sym.as_ref()) else {
                 return Err(format!("no such definition: {symbol}"));
@@ -1098,22 +1113,7 @@ mod tests {
         use crate::agent::test_support::repl_session;
         let s = repl_session();
         let module = s.current_module_path();
-        {
-            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
-            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-                let entry = ModuleEntry::def(
-                    cranelisp_types::Scheme {
-                        type_vars: Vec::new(),
-                        constraints: std::collections::HashMap::new(),
-                        ty: cranelisp_types::Type::Int,
-                    },
-                    DefKind::PrimitiveExtern,
-                )
-                .visibility(Visibility::Public)
-                .build();
-                table.insert(Symbol::from("f"), entry);
-            }
-        }
+        crate::agent::test_support::install_int_extern(&s, "f");
         if let Some(intr) = s.shared.introspection.as_ref() {
             intr.insert(
                 cranelisp_types::FQSymbol {
@@ -1688,29 +1688,35 @@ mod tests {
     // §17.2 — a `set-doc` tool-call routes to the Document arm and asks the
     // docstring-flavoured consultative question (NOT the preamble wording), and
     // on confirm sets the symbol's live docstring field.
-    /// Insert a `UserFn` `Def` named `name` (the docstring-persisting kind) into
-    /// the current module — the shape `set-doc` may durably document (§11.3a).
+    /// Install an undocumented plain `defn` named `name` (the docstring-persisting
+    /// kind) into the current module — the shape `set-doc` may durably document
+    /// (§11.3a).
     fn insert_userfn(s: &CompilerSession, name: &str) {
-        use cranelisp_types::{DefKind, ModuleEntry, Symbol, UserFnState, Visibility};
         let module = s.current_module_path();
-        if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-            let entry = ModuleEntry::def(
-                cranelisp_types::Scheme {
-                    type_vars: Vec::new(),
-                    constraints: std::collections::HashMap::new(),
-                    ty: cranelisp_types::Type::Int,
-                },
-                DefKind::UserFn {
-                    fn_state: UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-            )
-            .visibility(Visibility::Public)
-            .build();
-            table.insert(Symbol::from(name), entry);
-        }
+        let mut table = s
+            .shared
+            .symbol_tables
+            .get_mut(&module)
+            .expect("current module table exists");
+        crate::repl::test_support::install_userfn(
+            &mut table,
+            name,
+            None,
+            cranelisp_types::Visibility::Public,
+        );
+    }
+
+    /// The live docstring on callable `name` in `module`, if any.
+    fn live_docstring(
+        s: &CompilerSession,
+        module: &cranelisp_types::ModuleFullPath,
+        name: &str,
+    ) -> Option<String> {
+        let table = s.shared.symbol_tables.get(module).expect("table");
+        table
+            .get(name)
+            .and_then(cranelisp_types::Binding::callable)
+            .and_then(|callable| callable.docstring.clone())
     }
 
     #[test]
@@ -1739,11 +1745,7 @@ mod tests {
             rendered.contains("recorded"),
             "a UserFn set-doc reports success: {rendered}"
         );
-        let table = s.shared.symbol_tables.get(&module).expect("table");
-        let doc = match table.symbols.get(&cranelisp_types::Symbol::from("solve")) {
-            Some(cranelisp_types::ModuleEntry::Def { docstring, .. }) => docstring.clone(),
-            _ => None,
-        };
+        let doc = live_docstring(&s, &module, "solve");
         assert_eq!(
             doc.as_deref(),
             Some("Solve the grid."),
@@ -1794,37 +1796,104 @@ mod tests {
     // "recorded" would be dishonest. The live field is left unset.
     #[test]
     fn set_doc_non_userfn_refused_not_recorded() {
-        use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
         let mut s = repl_session();
         session_with_agent(&mut s, vec![], false);
         let module = s.current_module_path();
-        if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-            let entry = ModuleEntry::def(
-                cranelisp_types::Scheme {
-                    type_vars: Vec::new(),
-                    constraints: std::collections::HashMap::new(),
-                    ty: cranelisp_types::Type::Int,
-                },
-                DefKind::PrimitiveExtern,
-            )
-            .visibility(Visibility::Public)
-            .build();
-            table.insert(Symbol::from("prim"), entry);
-        }
+        crate::agent::test_support::install_int_extern(&s, "prim");
         let err = s.apply_docstring_edit("prim", "doc").unwrap_err();
         assert!(
             err.contains("cannot record a docstring") && err.contains("function"),
             "a non-UserFn target must be refused with a clear message: {err:?}"
         );
         // The live field stays unset — nothing ephemeral was written.
-        let table = s.shared.symbol_tables.get(&module).expect("table");
-        let doc = match table.symbols.get(&Symbol::from("prim")) {
-            Some(ModuleEntry::Def { docstring, .. }) => docstring.clone(),
-            _ => None,
-        };
+        let doc = live_docstring(&s, &module, "prim");
         assert_eq!(
             doc, None,
             "a refused set-doc must NOT set the docstring field"
+        );
+    }
+
+    // spec: repl/spec/17-embedded-agent.md §17.15.4 face 2 — an ADT
+    // constructor resolves locally but is not a function: set-doc refuses it
+    // with the function-only reason, not `no such definition`, and records
+    // nothing. The ctor comes from the real `deftype` path, where a sum ctor's
+    // binding is keyed `Color.Red` and the bare `Red` is a name candidate only.
+    #[test]
+    fn set_doc_sum_constructor_refused_as_non_function_not_recorded() {
+        let mut s = repl_session();
+        s.set_lib_dirs(Vec::new());
+        session_with_agent(&mut s, vec![], false);
+        let module = s.current_module_path();
+        s.eval("(deftype Color Red)")
+            .expect("setup: the deftype is accepted");
+        let sources: Vec<cranelisp_types::FQSymbol> = {
+            let table = s.shared.symbol_tables.get(&module).expect("table");
+            assert!(
+                table.get("Red").is_none(),
+                "setup: the bare constructor spelling has no binding of its own"
+            );
+            table
+                .name_candidates(&cranelisp_types::Symbol::from("Red"))
+                .into_iter()
+                .map(|candidate| candidate.source)
+                .collect()
+        };
+        assert!(
+            !sources.is_empty() && sources.iter().all(|source| source.module == module),
+            "setup: `Red` names a current-module constructor: {sources:?}"
+        );
+
+        let err = s.apply_docstring_edit("Red", "doc").unwrap_err();
+        assert!(
+            err.contains("cannot record a docstring") && err.contains("function"),
+            "a constructor is refused with the function-only reason: {err:?}"
+        );
+        assert!(
+            !err.contains("no such definition"),
+            "a locally defined constructor is not reported missing: {err:?}"
+        );
+        for source in &sources {
+            assert_eq!(
+                live_docstring(&s, &module, source.symbol.as_ref()),
+                None,
+                "a refused set-doc leaves {source:?} undocumented"
+            );
+        }
+    }
+
+    // spec: repl/spec/17-embedded-agent.md §17.15.4 face 1 — a name that is
+    // only imported into the current module is not a local definition: set-doc
+    // reports `no such definition` and leaves the imported function untouched.
+    #[test]
+    fn set_doc_import_only_name_reports_not_found_neg() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let module = s.current_module_path();
+        crate::repl::test_support::install_m(&s, None);
+        let m = cranelisp_types::ModuleFullPath::from("m");
+        s.shared
+            .symbol_tables
+            .get_mut(&module)
+            .expect("current module table exists")
+            .expose_candidate(
+                cranelisp_types::Symbol::from("mf"),
+                cranelisp_types::FQSymbol {
+                    module: m.clone(),
+                    symbol: cranelisp_types::Symbol::from("mf"),
+                },
+                cranelisp_types::Visibility::Private,
+            )
+            .expect("import candidate");
+
+        let err = s.apply_docstring_edit("mf", "doc").unwrap_err();
+        assert!(
+            err.contains("no such definition"),
+            "an import-only name keeps the not-found refusal: {err:?}"
+        );
+        assert_eq!(
+            live_docstring(&s, &m, "mf"),
+            None,
+            "the imported function's docstring is untouched"
         );
     }
 
@@ -1840,11 +1909,7 @@ mod tests {
             s.apply_docstring_edit("double", "doubles its argument")
                 .is_ok()
         );
-        let table = s.shared.symbol_tables.get(&module).expect("table");
-        let doc = match table.symbols.get(&cranelisp_types::Symbol::from("double")) {
-            Some(cranelisp_types::ModuleEntry::Def { docstring, .. }) => docstring.clone(),
-            _ => None,
-        };
+        let doc = live_docstring(&s, &module, "double");
         assert_eq!(
             doc.as_deref(),
             Some("doubles its argument"),

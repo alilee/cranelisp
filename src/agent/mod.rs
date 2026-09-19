@@ -458,12 +458,40 @@ pub(crate) mod test_support {
         let root = tmp.keep();
         CompilerSession::new(settings, root, "user").expect("test session bootstrap")
     }
+
+    /// Install a public, `Int`-typed primitive extern named `name` in the
+    /// current module: a resolvable, non-`Plain` callable.
+    pub(crate) fn install_int_extern(s: &CompilerSession, name: &str) {
+        let module = s.current_module_path();
+        let mut table = s
+            .shared
+            .symbol_tables
+            .get_mut(&module)
+            .expect("current module table exists");
+        let scheme = cranelisp_types::Scheme {
+            type_vars: Vec::new(),
+            constraints: std::collections::HashMap::new(),
+            ty: cranelisp_types::Type::Int,
+        };
+        table
+            .install_extern(
+                cranelisp_types::Symbol::from(name),
+                scheme,
+                Vec::new(),
+                None,
+                0,
+                None,
+                None,
+                cranelisp_types::Visibility::Public,
+            )
+            .expect("extern fixture installs");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::test_support::repl_session;
+    use crate::agent::test_support::{install_int_extern, repl_session};
 
     // spec: repl/spec.md §17.1 — a complete form routes to the deterministic REPL.
     #[test]
@@ -727,27 +755,19 @@ mod tests {
     }
 
     // spec: repl/spec.md §17 — a fn NAMED in the turn is harvested (its source);
-    // a defined-but-UNMENTIONED fn is ABSENT (+neg, the ranker is selective, not
-    // a dump — agent.md §5.1). The harvester's mentioned-fn arm reads the live
+    // a defined-but-UNMENTIONED fn is absent from the mention arm (+neg,
+    // agent.md §5.1); the current-module pin is independent. The harvester's mentioned-fn arm reads the live
     // introspection source for a name that (a) appears in the turn AND (b) is
-    // mentionable (resolves in some table). We inject both: a slot-less table
-    // entry (so `symbol_is_mentionable` is true) + an introspection record (the
-    // source). `target` is mentioned; `unrelated` is not — so the +neg holds.
+    // mentionable (resolves in some table). We inject both: a table entry (so
+    // `symbol_is_mentionable` is true) + an introspection record (the source).
+    // `target` is mentioned; `unrelated` is not — so the +neg holds.
     #[test]
     fn harvest_includes_mentioned_excludes_unmentioned() {
         let s = repl_session();
         let module = s.current_module_path();
-        // Slot-less table entries so both names are "mentionable" (resolve).
-        {
-            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
-            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-                for name in ["target", "unrelated"] {
-                    let entry = ModuleEntry::def(empty_scheme(), DefKind::PrimitiveExtern)
-                        .visibility(Visibility::Public)
-                        .build();
-                    table.insert(Symbol::from(name), entry);
-                }
-            }
+        // Table entries so both names are "mentionable" (resolve).
+        for name in ["target", "unrelated"] {
+            install_int_extern(&s, name);
         }
         // Introspection sources (the bodies the mentioned-fn arm harvests).
         if let Some(intr) = s.shared.introspection.as_ref() {
@@ -781,25 +801,17 @@ mod tests {
             harvest.contains("Current module"),
             "pin header present: {harvest}"
         );
+        // The current-module pin carries every own callable's source, so the
+        // mention arm is observed through its own `== fn <name> ==` blocks.
         assert!(
-            harvest.contains("mul-by-two"),
-            "the mentioned fn `target` must be harvested: {harvest}"
+            harvest.contains("== fn target ==\n(defn target [x] (mul-by-two x))"),
+            "the mentioned fn `target` must be harvested by the mention arm: {harvest}"
         );
         // +neg: the unmentioned fn must NOT be pulled in by the mention arm.
         assert!(
-            !harvest.contains("negate-it"),
-            "an unmentioned fn must be absent from the harvest: {harvest}"
+            !harvest.contains("== fn unrelated =="),
+            "an unmentioned fn must be absent from the mention arm: {harvest}"
         );
-    }
-
-    /// A minimal empty scheme for slot-less test table entries (mirrors the
-    /// `expander.rs` test helper of the same name).
-    fn empty_scheme() -> cranelisp_types::Scheme {
-        cranelisp_types::Scheme {
-            type_vars: Vec::new(),
-            constraints: std::collections::HashMap::new(),
-            ty: cranelisp_types::Type::Int,
-        }
     }
 
     // spec: repl/spec.md §17 — under a TIGHT budget the harvest degrades per the
@@ -854,15 +866,7 @@ mod tests {
         // Define `f` with introspection source so `/source f` yields real output.
         let mut s = repl_session();
         let module = s.current_module_path();
-        {
-            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
-            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-                let entry = ModuleEntry::def(empty_scheme(), DefKind::PrimitiveExtern)
-                    .visibility(Visibility::Public)
-                    .build();
-                table.insert(Symbol::from("f"), entry);
-            }
-        }
+        install_int_extern(&s, "f");
         if let Some(intr) = s.shared.introspection.as_ref() {
             intr.insert(
                 cranelisp_types::FQSymbol {
@@ -973,15 +977,7 @@ mod tests {
         // in a prior transcript turn — so the harvest pulls f's source in.
         let mut s = repl_session();
         let module = s.current_module_path();
-        {
-            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
-            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-                let entry = ModuleEntry::def(empty_scheme(), DefKind::PrimitiveExtern)
-                    .visibility(Visibility::Public)
-                    .build();
-                table.insert(Symbol::from("f"), entry);
-            }
-        }
+        install_int_extern(&s, "f");
         if let Some(intr) = s.shared.introspection.as_ref() {
             intr.insert(
                 cranelisp_types::FQSymbol {

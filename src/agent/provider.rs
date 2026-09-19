@@ -46,9 +46,10 @@ const MODEL_VAR: &str = "CRANELISP_AGENT_MODEL";
 /// single shared assembly for `complete` and `complete_streaming` (Principle 7), so
 /// setting it here repairs both transports at once. Sized for the STREAMING case — the
 /// agent loop drives `stream` (S107): a low cap truncates a tool-call turn mid-thought,
-/// so 64K is the sane streaming default (a per-model/configurable budget would thread a
-/// field through `AgentRequest`; the constant is the minimal correct fix).
-const AGENT_MAX_TOKENS: u64 = 65536;
+/// so the cap stays large. Anthropic also rejects a cap above the model's output
+/// ceiling (HTTP 400); 64,000 is `claude-haiku-4-5`'s ceiling, the eval model. A
+/// per-model/configurable budget would thread a field through `AgentRequest`.
+const AGENT_MAX_TOKENS: u64 = 64_000;
 
 /// Build the agent state for this session (§3.4). `enabled` is the resolved
 /// `--agent` runtime toggle (§6.4 opt-in-twice — the FIRST opt-in is the `agent`
@@ -575,22 +576,7 @@ mod tests {
         // its id pairing.
         let mut s = crate::agent::test_support::repl_session();
         let module = s.current_module_path();
-        {
-            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
-            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-                let entry = ModuleEntry::def(
-                    cranelisp_types::Scheme {
-                        type_vars: Vec::new(),
-                        constraints: std::collections::HashMap::new(),
-                        ty: cranelisp_types::Type::Int,
-                    },
-                    DefKind::PrimitiveExtern,
-                )
-                .visibility(Visibility::Public)
-                .build();
-                table.insert(Symbol::from("f"), entry);
-            }
-        }
+        crate::agent::test_support::install_int_extern(&s, "f");
         if let Some(intr) = s.shared.introspection.as_ref() {
             intr.insert(
                 cranelisp_types::FQSymbol {
@@ -1078,22 +1064,7 @@ mod tests {
         let rig = RigModel::new(mock).expect("tokio current-thread runtime builds");
         let mut s = crate::agent::test_support::repl_session();
         let module = s.current_module_path();
-        {
-            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
-            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-                let entry = ModuleEntry::def(
-                    cranelisp_types::Scheme {
-                        type_vars: Vec::new(),
-                        constraints: std::collections::HashMap::new(),
-                        ty: cranelisp_types::Type::Int,
-                    },
-                    DefKind::PrimitiveExtern,
-                )
-                .visibility(Visibility::Public)
-                .build();
-                table.insert(Symbol::from("f"), entry);
-            }
-        }
+        crate::agent::test_support::install_int_extern(&s, "f");
         if let Some(intr) = s.shared.introspection.as_ref() {
             intr.insert(
                 cranelisp_types::FQSymbol {
@@ -1522,6 +1493,24 @@ mod tests {
             rig_req.max_tokens,
             Some(AGENT_MAX_TOKENS),
             "build_request must set max_tokens to the AGENT_MAX_TOKENS budget"
+        );
+    }
+
+    // spec: design/int/agent.md §6 — the assembled request must be accepted by the
+    // live eval model. Anthropic rejects `max_tokens` above the model's output
+    // ceiling (HTTP 400 `max_tokens: 65536 > 64000 ... claude-haiku-4-5-20251001`).
+    #[test]
+    fn build_request_max_tokens_within_haiku_4_5_output_ceiling() {
+        const HAIKU_4_5_MAX_OUTPUT_TOKENS: u64 = 64_000;
+        let rig =
+            RigModel::new(MockModel::new(Vec::new())).expect("tokio current-thread runtime builds");
+        let rig_req = rig.build_request(&AgentRequest::default());
+
+        let cap = rig_req.max_tokens.expect("max_tokens is set");
+        assert!(
+            cap > 0 && cap <= HAIKU_4_5_MAX_OUTPUT_TOKENS,
+            "max_tokens {cap} must be bounded and within claude-haiku-4-5's \
+             {HAIKU_4_5_MAX_OUTPUT_TOKENS}-token output ceiling"
         );
     }
 }

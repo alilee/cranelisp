@@ -2872,6 +2872,82 @@ fn harvest_in_scope_shows_name_sig_docstring() {
     );
 }
 
+// spec: repl/spec.md §17.18.1 — explicit-import feeder: the provenance twin of
+// `harvest_in_scope_shows_name_sig_docstring`. With no prelude, `add-i64` is in
+// scope ONLY through the module's own `(import [primitives [add-i64]])`, so the
+// implicit-prelude feeder cannot supply its line; the assertions are the
+// original's. `(inc-doc 41)` ⇒ 42 proves the import resolved before the dump,
+// so a RED here is the harvest's, not a failed import.
+// defect: class=enumeration-miss locus=src/agent/harvest.rs::push_in_scope_block found=S122 owner=/dev
+#[cfg(feature = "agent")]
+#[test]
+fn harvest_in_scope_shows_explicit_import_name_sig_docstring() {
+    let cr = Cranelisp::new()
+        .repl()
+        .cli_flag("--agent")
+        .with_prelude(PreludeVariant::None)
+        .without_agent_provider()
+        .stdin(
+            "(import [primitives [add-i64]])\n\
+             (defn inc-doc \"adds one to its argument\" [x] (add-i64 x 1))\n\
+             (inc-doc 41)\n\
+             /context p2-import.txt\n",
+        );
+    let out = cr.output();
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "setup: the explicit import must resolve (`(inc-doc 41)` ⇒ 42), stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("wrote agent context to p2-import.txt"),
+        "the /context dump must succeed, stdout={}",
+        out.stdout
+    );
+    let dumped = std::fs::read_to_string(out.tmpdir.join("p2-import.txt"))
+        .expect("the /context file must exist");
+    let in_scope = dumped
+        .split("== in scope ==")
+        .nth(1)
+        .unwrap_or("")
+        .split("=== TOOLS")
+        .next()
+        .unwrap_or("");
+
+    // --- own defn: name + FQ `:Type` signature + docstring ---
+    assert!(
+        in_scope.contains("inc-doc"),
+        "the `== in scope ==` block must name the own defn `inc-doc`, in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("(Fn [primitives/Int] primitives/Int)"),
+        "the `== in scope ==` block must carry `inc-doc`'s FQ `:Type` signature, \
+         in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("adds one to its argument"),
+        "the `== in scope ==` block must carry `inc-doc`'s docstring, in_scope={in_scope}"
+    );
+
+    // --- explicitly imported symbol: name + FQ signature + §A.5 docstring ---
+    assert!(
+        in_scope.contains("add-i64"),
+        "the `== in scope ==` block must name the explicitly imported symbol \
+         `add-i64` (§17.18.1), in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("(Fn [primitives/Int primitives/Int] primitives/Int)"),
+        "the `== in scope ==` block must carry the explicitly imported `add-i64`'s \
+         FQ `:Type` signature (§17.18.1), in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("primitives/add-i64 ; primitive - Add"),
+        "the `== in scope ==` block must carry the explicitly imported `add-i64`'s \
+         §A.5 docstring at full grain — the `; primitive - Add` comment tail \
+         (§17.18.1), in_scope={in_scope}"
+    );
+}
+
 // spec: repl/spec.md §17.18 — P2.2 (+neg, fully-qualified): the harvested
 // signatures render with the qualified `:Type` form (the `/sig`-grain formatter,
 // `display::format_type_qualified`), NOT bare/unqualified. Assert the qualified
@@ -4242,6 +4318,7 @@ fn set_doc_missing_target_e2e_refused_no_false_recorded_neg() {
 // FUNCTION definition's docstring persists; no success line; the live
 // docstring field stays unset (`/doc Red` after the refusal shows no
 // recorded text).
+// defect: class=resolver-mirror locus=src/agent/pull.rs::apply_docstring_edit found=S122 owner=/dev
 #[cfg(feature = "agent")]
 #[test]
 fn set_doc_non_function_target_e2e_refused_not_recorded_neg() {
@@ -4250,7 +4327,7 @@ fn set_doc_non_function_target_e2e_refused_not_recorded_neg() {
     let out = stub_repl(
         &script,
         PreludeVariant::PrimitivesOnly,
-        "(deftype Color (Red))\n\
+        "(deftype Color Red)\n\
          /ask add a docstring to Red\n\
          y\n\
          /doc Red\n",

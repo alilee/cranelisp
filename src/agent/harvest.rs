@@ -10,7 +10,7 @@
 // Push priority (§5.2), the graceful-degradation ladder (§5.4):
 //   1. Current module — full source, PINNED (never dropped; the floor).
 //   2. Last ~6 mentioned modules — preamble (`SymbolTable.module_preamble`,
-//      FIXME 0428) + export surface (public `defined_symbols`).
+//      FIXME 0428) + export surface (the table's public bindings).
 //   3. Last ~10 mentioned fns — full source (`get_introspection(fq).source`).
 // "Mentioned" = named in the turn text or surfaced this session. Under budget
 // pressure the cheapest-value tail drops first; the current module survives at
@@ -185,12 +185,13 @@ impl CompilerSession {
     /// current module, at name + `:Type` signature + docstring grain.
     ///
     /// The three feeders (§23.1 / `repl/spec.md §17.18.1`):
-    ///   1. current-module own defns — `defined_symbols()`;
-    ///   2. explicit imports — the current module's `ModuleEntry::Import` entries,
-    ///      resolved through the import chain to the canonical entry (mirroring
-    ///      `resolve_entry_for_display`, the path `/sig` / bare-symbol display use);
+    ///   1. current-module own defns — the current table's bindings
+    ///      (`all_symbols()`), homed in the current module;
+    ///   2. explicit imports — the current table's name candidates whose source
+    ///      is another module, each resolved to its terminal definition and
+    ///      homed in that defining module;
     ///   3. implicit prelude — `prelude_implicit_names()` (gated on the
-    ///      `prelude_fallback` bit), each resolved to its canonical prelude entry.
+    ///      `prelude_fallback` bit), each resolved to its defining module's entry.
     ///
     /// The signature rendering REUSES the existing FQ formatter (Principle 7 —
     /// single source of truth): `format_def_entry` → `format_scheme_display` →
@@ -213,16 +214,15 @@ impl CompilerSession {
         let mut seen = std::collections::HashSet::new();
         let mut entries: Vec<InScopeEntry> = Vec::new();
 
-        // 1. Current-module own defns + 2. explicit imports — both live in the
-        //    current module's own table. COLLECT owned `(name, entry)` pairs while
-        //    holding the table guard, then DROP the guard BEFORE resolve/render
-        //    (0666): `render_in_scope_entry` → `format_def_entry_doc` re-acquires
-        //    `symbol_tables.get(module)` (the D1 overloaded read-follow), a
-        //    same-shard recursive read that can deadlock a queued writer under
-        //    `--features agent` if the `cur` guard is still held. Collect-then-
-        //    render closes the window. Skip mangled overload/multi-sig variants,
-        //    the synthetic `__expr` wrapper, and special forms (mirrors the
-        //    `/list` filter, shared `is_internal_listing_name`).
+        // 1. Current-module own defns — the current table's bindings. COLLECT
+        //    owned `(name, entry)` pairs while holding the table guard, then DROP
+        //    the guard BEFORE render (0666): `render_in_scope_entry` →
+        //    `format_def_entry_doc` re-acquires `symbol_tables.get(module)` (the
+        //    D1 overloaded read-follow), a same-shard recursive read that can
+        //    deadlock a queued writer under `--features agent` if the `cur` guard
+        //    is still held. Collect-then-render closes the window. Skip internal
+        //    generated entries, the synthetic `__expr` wrapper, and special forms
+        //    (the `/list` filter, shared `is_internal_listing_entry`).
         let own: Vec<(String, cranelisp_types::Binding<crate::code::Code>)> =
             if let Some(table) = self.shared.symbol_tables.get(cur) {
                 table
@@ -240,40 +240,60 @@ impl CompilerSession {
             if !seen.insert(name.clone()) {
                 continue;
             }
-            // Resolve an import to the canonical entry + its defining module so the
-            // rendered signature is the real one (FQ), mirroring `/sig` for a
-            // re-exported name. ALL feeders render at full grain by default (§23.1 /
+            // ALL feeders render at full grain by default (§23.1 /
             // `repl/spec.md §17.18.1`); the §23.2 budget ladder drops the docstring
             // under pressure, not the symbol's SOURCE. No table guard is held here.
-            let (resolved, home) = self.resolve_entry_for_display(&entry, cur);
-            entries.push(self.render_in_scope_entry(&resolved, &name, &home));
+            entries.push(self.render_in_scope_entry(&entry, &name, cur));
         }
 
-        // 3. Implicit prelude — gated on the `prelude_fallback` bit by
-        //    `prelude_implicit_names`. Same collect-then-render discipline (0666):
-        //    gather owned entries under the prelude guard, drop it, then render.
-        //    `prelude_implicit_names()` is read BEFORE the guard (it consults
-        //    session state).
-        let prelude_path = cranelisp_types::ModuleFullPath::from("prelude");
-        let prelude_names = self.prelude_implicit_names();
-        let prelude_entries: Vec<(String, cranelisp_types::Binding<crate::code::Code>)> =
-            if let Some(ptable) = self.shared.symbol_tables.get(&prelude_path) {
-                prelude_names
-                    .into_iter()
-                    .filter_map(|name| ptable.get(&name).map(|e| (name, e.clone())))
+        // 2. Explicit imports — an `(import …)` installs a private name
+        //    candidate homed in the source module, with NO binding under that
+        //    spelling here, so the binding walk above never sees it. Collect
+        //    `(name, source)` under the `cur` guard, drop it, then resolve and
+        //    render (0666, as above).
+        let mut import_sources: Vec<(String, cranelisp_types::FQSymbol)> =
+            if let Some(table) = self.shared.symbol_tables.get(cur) {
+                table
+                    .all_name_candidates()
+                    .filter(|(_, candidate)| candidate.source.module != *cur)
+                    .map(|(sym, candidate)| (sym.as_ref().to_string(), candidate.source))
                     .collect()
             } else {
                 Vec::new()
             };
-        for (name, entry) in prelude_entries {
-            if !seen.insert(name.clone()) {
-                continue; // an own defn / explicit import already shadows it
-            }
-            // Implicit-prelude symbols render at full grain too (§23.1); the guard
-            // is already dropped, so the D1 read-follow cannot deadlock.
-            let (resolved, home) = self.resolve_entry_for_display(&entry, &prelude_path);
-            entries.push(self.render_in_scope_entry(&resolved, &name, &home));
-        }
+        import_sources.sort();
+        self.push_candidate_entries(import_sources, &mut seen, &mut entries);
+
+        // 3. Implicit prelude — gated on the `prelude_fallback` bit by
+        //    `prelude_implicit_names`, which is read BEFORE any guard here (it
+        //    consults session state). A prelude name is either a prelude-owned
+        //    binding or a public candidate reference (an `(export …)` re-export
+        //    such as `add-i64`), which has NO binding under that spelling in
+        //    prelude's table — so a local `ptable.get(name)` drops every
+        //    re-export. Look each name up through its `Public` candidate
+        //    instead: the candidate's `source` is the canonical definition for
+        //    both shapes (an owned binding's candidate points at `prelude`).
+        //    Collect-then-render (0666): gather `(name, source)` under the
+        //    prelude guard, drop it, then resolve (`resolve_to_definition`
+        //    takes its own table guard) and render.
+        let prelude_path = cranelisp_types::ModuleFullPath::from("prelude");
+        let prelude_names = self.prelude_implicit_names();
+        let prelude_sources: Vec<(String, cranelisp_types::FQSymbol)> =
+            if let Some(ptable) = self.shared.symbol_tables.get(&prelude_path) {
+                prelude_names
+                    .into_iter()
+                    .filter_map(|name| {
+                        ptable
+                            .name_candidates(&cranelisp_types::Symbol::from(name.as_str()))
+                            .into_iter()
+                            .find(|c| c.visibility == cranelisp_types::Visibility::Public)
+                            .map(|c| (name, c.source))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        self.push_candidate_entries(prelude_sources, &mut seen, &mut entries);
 
         if entries.is_empty() {
             return;
@@ -300,6 +320,34 @@ impl CompilerSession {
             };
             out.push_str(line);
             out.push('\n');
+        }
+    }
+
+    /// Resolve each candidate-sourced name (explicit import or implicit prelude)
+    /// to its canonical definition and render it homed in the DEFINING module,
+    /// so the formatter's FQ read uses that module. A name already in `seen`
+    /// is shadowed by an earlier feeder. Must be called with no table guard
+    /// held: `resolve_to_definition` and the formatter take their own (0666).
+    fn push_candidate_entries(
+        &self,
+        sources: Vec<(String, cranelisp_types::FQSymbol)>,
+        seen: &mut std::collections::HashSet<String>,
+        entries: &mut Vec<InScopeEntry>,
+    ) {
+        for (name, source) in sources {
+            if seen.contains(&name) {
+                continue;
+            }
+            let Some(entry) = self.resolve_to_definition(&source) else {
+                continue;
+            };
+            if crate::worker::is_internal_listing_entry(source.symbol.as_ref(), &entry)
+                || matches!(entry.declaration, cranelisp_types::Decl::SpecialForm(_))
+            {
+                continue;
+            }
+            seen.insert(name.clone());
+            entries.push(self.render_in_scope_entry(&entry, &name, &source.module));
         }
     }
 
@@ -498,32 +546,19 @@ pub fn mentions_from_text(text: &str) -> Vec<String> {
 mod in_scope_tests {
     use super::*;
     use crate::agent::test_support::repl_session;
-    use cranelisp_types::{DefKind, ModuleEntry, Scheme, Symbol, Type, UserFnState, Visibility};
+    use crate::repl::test_support::install_userfn;
+    use cranelisp_types::Visibility;
 
-    /// Insert an own-module `defn`-shaped `Def` named `name` with an
-    /// `(Fn [Int] Int)` scheme and `docstring` into the current module's table.
+    /// Install an own-module `defn` named `name` with an `(Fn [Int] Int)`
+    /// scheme and `docstring` into the current module's table.
     fn insert_own_defn(s: &CompilerSession, name: &str, docstring: &str) {
         let module = s.current_module_path();
-        let scheme = Scheme {
-            type_vars: Vec::new(),
-            constraints: std::collections::HashMap::new(),
-            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
-        };
-        let entry = ModuleEntry::def(
-            scheme,
-            DefKind::UserFn {
-                fn_state: UserFnState::Concrete {
-                    got_slot: 0,
-                    mode_summary: None,
-                },
-            },
-        )
-        .visibility(Visibility::Public)
-        .docstring(docstring.to_string())
-        .build();
-        if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
-            table.insert(Symbol::from(name), entry);
-        }
+        let mut table = s
+            .shared
+            .symbol_tables
+            .get_mut(&module)
+            .expect("current module table exists");
+        install_userfn(&mut table, name, Some(docstring), Visibility::Public);
     }
 
     /// Slice the `== in scope ==` block out of a harvest dump — what the e2e
@@ -588,6 +623,94 @@ mod in_scope_tests {
             !tight.contains("a long descriptive docstring"),
             "the docstring DETAIL is dropped under the tight budget (grain degrades \
              sig→name; docstrings go first): {tight}"
+        );
+    }
+
+    // spec: repl/spec.md §17.18.1 — an implicit-prelude name that prelude
+    // re-exports (a candidate reference, no binding in prelude's own table)
+    // is in scope and renders from its canonical definition, alongside a
+    // prelude-owned def.
+    #[test]
+    fn in_scope_block_renders_prelude_reexport_and_prelude_def() {
+        use crate::code::SessionSymbolTable;
+        use crate::repl::test_support::install_m;
+        use cranelisp_types::{FQSymbol, ModuleFullPath, Symbol};
+        let s = repl_session();
+        install_m(&s, Some("m's own doc"));
+        let prelude = ModuleFullPath::from("prelude");
+        let mut ptbl = SessionSymbolTable::new_with_params(prelude.clone());
+        install_userfn(&mut ptbl, "own-p", None, Visibility::Public);
+        ptbl.expose_candidate(
+            Symbol::from("mf"),
+            FQSymbol {
+                module: ModuleFullPath::from("m"),
+                symbol: Symbol::from("mf"),
+            },
+            Visibility::Public,
+        )
+        .expect("re-export candidate");
+        s.shared.symbol_tables.insert(prelude, ptbl);
+        s.shared
+            .prelude_fallback
+            .insert(s.current_module_path(), true);
+
+        let names = s.prelude_implicit_names();
+        assert!(
+            names.iter().any(|n| n == "mf") && names.iter().any(|n| n == "own-p"),
+            "both prelude names are implicit candidates: {names:?}"
+        );
+        let block = in_scope_block(&s.harvest_context(&[], DEFAULT_TOKEN_BUDGET));
+        assert!(
+            block.contains("own-p"),
+            "prelude-owned def present: {block}"
+        );
+        assert!(
+            block.contains("mf") && block.contains("m's own doc"),
+            "re-exported name renders from its canonical definition: {block}"
+        );
+    }
+
+    // spec: repl/spec.md §17.18.1 — an explicitly imported name (a private
+    // candidate reference in the current module, no binding under that
+    // spelling) is in scope and renders from its canonical definition, homed
+    // in the defining module. `mf` is in no prelude, so only the explicit
+    // import can supply it.
+    #[test]
+    fn in_scope_block_renders_explicit_import_from_definition() {
+        use crate::repl::test_support::install_m;
+        use cranelisp_types::{FQSymbol, ModuleFullPath, Symbol};
+        let s = repl_session();
+        install_m(&s, Some("m's own doc"));
+        {
+            let mut table = s
+                .shared
+                .symbol_tables
+                .get_mut(&s.current_module_path())
+                .expect("current module table exists");
+            table
+                .expose_candidate(
+                    Symbol::from("mf"),
+                    FQSymbol {
+                        module: ModuleFullPath::from("m"),
+                        symbol: Symbol::from("mf"),
+                    },
+                    Visibility::Private,
+                )
+                .expect("import candidate");
+            assert!(
+                table.get("mf").is_none(),
+                "setup: the imported spelling has no local binding"
+            );
+        }
+
+        let block = in_scope_block(&s.harvest_context(&[], DEFAULT_TOKEN_BUDGET));
+        assert!(
+            block.contains("m/mf"),
+            "explicit import present, homed in its defining module: {block}"
+        );
+        assert!(
+            block.contains("m's own doc"),
+            "explicit import carries its canonical docstring: {block}"
         );
     }
 

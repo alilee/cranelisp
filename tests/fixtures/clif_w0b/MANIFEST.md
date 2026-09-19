@@ -28,9 +28,9 @@ The backend lenient arm is taken when a codegen-reached entry has
 |---|---|---|---|---|
 | 01 | `corpus/01_ctor_def.cl` | ctor `Def` synthetic body (`DefKind::Constructor`) | `user::Box.MkBox` | yes |
 | 02 | `corpus/02_synth_accessor.cl` | synthesised field accessor (`Concrete{slot}`, `codegen_view: None`) | `user::Point.x`, `user::Point.y` | yes |
-| 03 | `corpus/03_multisig_variant.cl` | `f$Var` multi-sig variant body | `user::pick$Int`, `user::pick$Int+Int` | yes |
+| 03 | `corpus/03_multisig_variant.cl` | `f$Var` multi-sig variant body | `user::pick$overload-arm$0`, `user::pick$overload-arm$1` | yes |
 | 04 | `corpus/04_expr_disposition3.cl` | `__expr` §3.11.2-disposition-3 body | `user::__expr` | yes |
-| 05 | `corpus/05_macro_clause.cl` | non-concretized macro-clause body | `user::__macro_twice_clause_0` | yes |
+| 05 | `corpus/05_macro_clause.cl` | non-concretized macro-clause body | `user::twice$macro-clause$0` | yes |
 | 06 | — | generic template reached by direct compile | — | **NO — backend-unit-only** |
 
 ### Class 06 — generic template (not an e2e golden; the KC-W0-6 boundary)
@@ -65,9 +65,15 @@ those unit tests are the class-06 golden.
   eliminates the nice-worker `.o` cache-write pass, so each symbol dumps exactly
   ONCE (the JIT pass). A **duplicate frame is a hard error** (config drift),
   never deduped.
-- **Frames** are extracted per `; === CLIF <module>::<symbol> ===` block, sorted
-  by `module::symbol`, content **byte-verbatim, NO canonicalization**. **Zero
-  frames is a hard error** (empty-vs-empty false green). Dump channel is STDERR.
+- **Frames** are extracted per `; === CLIF <name> ===` … `; === end CLIF <name> ===`
+  block, where `<name>` is the rest of the header line: canonical
+  constructor-instance names contain spaces, for example
+  `user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))`.
+  Frames are sorted by name, content **byte-verbatim, NO canonicalization**.
+  **Zero frames, a duplicate frame, disagreeing start/end names and a header no
+  complete frame accounts for are hard errors.** Dump channel is STDERR. The
+  extraction is kept in lockstep with `tests/ownership_fences.rs`
+  (`extract_clif_frames`) and `tests/scripts/clif_golden.sh`.
 - **Normalization decision (byte-verbatim, /testing's call):** SSA value numbers,
   block labels, GOT-slot operands, and wrapper identity are LOAD-BEARING for this
   gate — masking them would blind it to exactly the carrier-vs-code drift W0.b
@@ -92,17 +98,19 @@ those unit tests are the class-06 golden.
   behaviour-invariant, so the expected W0.b delta is EMPTY. Wholesale re-capture
   without attribution is forbidden.
 
-## Green witness (capture, 2026-07-15, HEAD `144828d1` producer state)
+## Current goldens (S122 re-baseline, below)
 
 | Entry | Frames | Lines |
 |---|---|---|
-| 01_ctor_def | 2 | 54 |
-| 02_synth_accessor | 4 | 170 → **148** (S118 W3 re-baseline, below) |
-| 03_multisig_variant | 3 | 52 |
-| 04_expr_disposition3 | 1 | 20 |
-| 05_macro_clause | 2 | 121 |
+| 01_ctor_def | 3 | 72 |
+| 02_synth_accessor | 5 | 166 |
+| 03_multisig_variant | 4 | 70 |
+| 04_expr_disposition3 | 2 | 38 |
+| 05_macro_clause | 4 | 178 |
 
-Determinism self-test passes 5/5 (double-capture byte-identical).
+Each entry includes the `IO.Pure` Int constructor-instance frame; 05 also
+includes the `SList.SCons` Sexp instance frame. Determinism self-test passes
+5/5 (double-capture byte-identical).
 
 ## Re-baselines (scoped, attributed — §"Extension ≠ re-baseline")
 
@@ -124,3 +132,20 @@ Determinism self-test passes 5/5 (double-capture byte-identical).
   call taking it over, no retain count changes, and no arithmetic, allocation,
   dispatch or control-flow hunk appears outside the release family. Determinism
   self-test 5/5; both golden binaries green post-capture.
+
+- **All five entries** — re-captured S122 for **canonical constructor-instance
+  names** plus one attributed release addition in 05. The extractor's former
+  `\S+` name pattern silently dropped whitespace-bearing frame names; it now
+  takes the whole header line. Every frame is byte-identical to its prior golden
+  after renaming `primitives/IO.Pure$Int` to
+  `(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))` and
+  `macros/SList.SCons$macros/Sexp` to
+  `(macros/SList.SCons [macros/Sexp (macros/SList macros/Sexp)] (macros/SList macros/Sexp))`
+  (header, end marker, `function %` line and sort position); frame counts are
+  unchanged. **Sole emission delta:** `user::twice$macro-clause$0` in 05 gains
+  `sig8 = (i64) system_v`, `fn5 = colocated u0:40 sig8`, aliases
+  `v46 -> v1` and `v47 -> v1`, and `call fn5(v1)` immediately before
+  `return v2` — the clause-parameter release of the Q4 all-Owned clause
+  convention (`design/int/macro-turn-ownership.md`, clause preparation seam).
+  `u0:40` is the same void `(i64)` glue the `SCons` frame calls on its `Sexp`
+  field. `user::main` and every other frame are unchanged.

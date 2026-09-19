@@ -303,8 +303,8 @@ agent_turn(text):
 Key properties:
 - **Reads call the existing surface directly OR re-enter via `process_commands`.** Two
   read styles, both in-process: (a) the *harvest* (§5) reads symbol tables / introspection
-  directly via the existing accessors (`describe_symbol`, `defined_symbols()`,
-  `get_introspection`) — assembled into the request before the first `send`; (b) a *pull*
+  directly via the existing accessors (symbol-table bindings and name candidates,
+  `get_introspection`, the bare-symbol display formatter) — assembled into the request before the first `send`; (b) a *pull*
   (§4) re-enters through `process_commands`, so it is a visible REPL line. (a) is the
   ambient push (cheap, every turn); (b) is the enacted depth-on-demand.
 - **No private tools (the §4.4 principle).** The agent's entire capability surface is the
@@ -417,16 +417,29 @@ governing constraint (§4.2): omniscient ≠ dump everything.
 ### 5.2 The push heuristics (tuning knobs, not architecture)
 
 Default push, in priority order (the graceful-degradation ladder, §5.4):
-1. **Current module — full source, pinned.** `current_module_path()` → iterate
-   `symbol_table.defined_symbols()` → for each, `get_introspection(sym).source`
-   (REPL evals) or the file-sliced source. Always included (the pin).
+1. **Current module — full source, pinned.** Intent: the full source of the module at
+   `current_module_path()` (`repl-embedded-agent.md` §4 push list), always included and
+   never dropped (the §5.4 floor), preceded by that module's `module_preamble`.
+   Current representation (`harvest.rs` `push_module_full_source`):
+   - **Admitted:** every binding in the current module's table (`all_symbols()`) whose
+     declaration is `Decl::Callable`, `Decl::Overloaded` or `Decl::Macro` and which is not
+     an internal listing entry (`is_internal_listing_entry` — the `/list` predicate).
+     Admission depends on declaration kind only, not on realization or on whether an AST
+     is held.
+   - **Content:** each admitted binding contributes its recorded authored source,
+     `get_introspection(name).source`. That is the only source carrier; a binding with
+     no recorded source contributes nothing.
+   - **Open against intent:** type, trait and impl definitions are not admitted, and
+     definitions with no recorded source are absent, so the pin is currently narrower
+     than "full source". This is an unresolved design question, not a ruling.
 2. **Last ~6 modules mentioned — preamble + export surface.** For each mentioned module:
-   - **preamble**: `symbol_table.module_preamble` (the field landed by FIXME 0428 —
-     `crates/cranelisp-types/src/module.rs:130`, populated by the frontend reader from
-     the leading `;;` comment block per spec §8.16). The harvester READS it (no edit —
-     editing is S89 Document mode).
-   - **exports**: the module's public `defined_symbols()` filtered to `is_public()`, name
-     + scheme (the `/exports` surface, harvested directly).
+   - **preamble**: `symbol_table.module_preamble` (populated by the frontend reader from
+     the leading `;;` comment block per spec §8.16). The harvester only reads it;
+     editing it is Document mode (§17).
+   - **exports**: intent is the module's `/exports` surface. Current representation:
+     the names of the module's public bindings (`public_symbols()`), names only, with no
+     signature and no internal-name filter. `/exports` resolves public name candidates
+     and applies the internal-listing filter, so the two are not yet the same surface.
 3. **Last ~10 fns mentioned — full source.** For each mentioned fn FQ:
    `get_introspection(fq).source` (the `/source` surface, harvested directly).
 
@@ -439,7 +452,8 @@ mentions, so recently-defined / recently-touched entries win the window.
 
 All free, all in-process (`repl-embedded-agent.md §4.2`):
 - **Cursor module** — `current_module_path()` (pins #1).
-- **Names in the message** — tokenize `text`, match against `defined_symbols()` keys.
+- **Names in the message** — tokenize `text`; a mention that names a module's symbol table is
+  a module mention, otherwise it is admitted as a symbol mention by `symbol_is_mentionable`.
 - **Last error + implicated symbols** — int already formats errors with `ErrorLocation`
   (int.md §9); the implicated FQ symbols are a harvest signal. **This signal ranks
   *committed* symbols only** — it names which in-scope defns to prioritise. It does NOT
@@ -447,12 +461,13 @@ All free, all in-process (`repl-embedded-agent.md §4.2`):
   table), nor the diagnostic text the user read. That missing signal — the errored turn's
   own source + diagnostic — is a distinct harvest block, §5.5.
 - **`seq`-ordered recency** — per-entry `seq` (above).
-- **Import-graph neighborhood** — `module_aliases` + the per-symbol `Import` edges
-  (`install_imports`, `src/imports.rs`) give callee/caller neighbors of in-window fns.
+- **Import-graph neighborhood** *(designed, not built)* — `module_aliases` + the
+  per-module import name candidates could give callee/caller neighbors of in-window fns.
 - **Transcript** — what's already been discussed this session.
 
-The ranker is a scoring pass over `defined_symbols()` combining these signals; the
-top-budget slice is pushed. **No maintained index** — recomputed each turn from live
+The intended ranker is a scoring pass over the live tables combining these signals. As
+built, `harvest_context` has no scoring pass: it keeps mention order, capped by count (§5.2),
+under the §5.4 budget ladder. The top-budget slice is pushed. **No maintained index** — recomputed each turn from live
 state (no invalidation problem; §3.3 of the arch doc — the harvest is a pure cache).
 
 ### 5.4 Graceful-degradation ladder under token budget
@@ -856,17 +871,17 @@ ASTs / sources are already in memory, so the cheap MVP is an **on-demand scan** 
 in-memory bodies — **no maintained reverse index, no invalidation in a mutating session**.
 Promote to an index only if scan latency bites (it won't at REPL scale).
 
-The scan (new `handle_refs` / `handle_tests_for` in `src/repl.rs`, dispatched from
-`dispatch_command`):
+As built, `handle_refs` / `handle_tests_for` (`src/repl/commands.rs`, dispatched from
+`dispatch_command`) share one referer collector. It takes the union of two feeds, deduplicated:
 ```text
-handle_refs(target):
-  for (module, st) in shared.symbol_tables:
-    for (sym, entry) in st.defined_symbols():
-      body = get_introspection(FQSymbol{module, sym}).source   // or entry.ast for batch modules
-      if body references `target` (token/AST-node match):
-        results.push(FQSymbol{module, sym})
-  render results in the universal :Type-style list (or "no references found")
+collect_referers(target):
+  callers  = ReverseIndex::build(symbol_tables).callers_of(target)   // serialized callee edges; skipped for /tests-for
+  scanned  = scan_referers(target)   // src/repl/search.rs: each table's callable bindings,
+                                     // token-scan of each recorded introspection source
+  render union in the universal :Type-style list (or "no references")
 ```
+The callee-edge feed covers cache-restored modules, which carry no introspection. The
+token-scan also catches non-callable referents such as type names in annotations.
 
 Reference detection: prefer an **AST walk** over `Introspection.ast` / the
 `Def.ast`-stored expr (`src/session_v4/types.rs:230` `ast: Option<Defn>`) for precision
@@ -2092,44 +2107,55 @@ turn on `/imports`/`/list`/`/exports` (`repl/spec.md §17.18`). This is the user
 primer** (`agent-prelude-awareness-via-harvest-not-primer`). It is **ambient** — no command,
 nothing extra in the human REPL (auditable offline via `/context`, §17.11).
 
-### 23.1 The seam — enrich the existing export-surface arm, reuse the existing formatter
+### 23.1 The seam — a new in-scope block, reusing the existing formatter
 
-The change is confined to `harvest_context` (`harvest.rs:44`). Today its arms emit **names only**:
+The change is confined to `harvest_context` (`src/agent/harvest.rs`). As built:
 
-- the current-module arm (`harvest.rs:48–65`) pushes full source (already rich — unchanged);
-- the mentioned-module arm (`harvest.rs:104–133`) pushes exports as **bare names** via
-  `table.public_symbols().map(|(s,_)| s)` (`harvest.rs:112–116`) — **this is the arm to enrich**;
-- a **new in-scope block** surfaces the current module's imports + implicit prelude at sig grain.
+- the current-module arm pushes the pinned current-module source (§5.2 item 1 — unchanged);
+- the mentioned-module arm still pushes exports as **bare names** from `public_symbols()`
+  (§5.2 item 2). S90 did **not** enrich it; whether it should match `/exports` is the open
+  §5.2 item-2 question, unsettled here;
+- a **new `== in scope ==` block** (`push_in_scope_block`) surfaces the in-scope symbols at
+  signature grain. It is emitted after the pin and the §5.5 recent-turns feed.
 
 **Reuse the existing `:Type` formatter (Principle 7 — single source of truth).** The signature
-rendering is **not re-implemented**: it is the **exact** path `/sig` and bare-symbol lookup use —
-`crate::repl::format_entry_sig(entry, name)` (`src/repl.rs:220`), which dispatches per
-`ModuleEntry`/`DefKind` (overloaded → one line per variant; constrained → inline constraints;
-constructor; etc.) and itself delegates the type rendering to `crate::display::format_type_qualified`
-(`src/display.rs:112`) — FQ primitive names, lettered vars, byte-identical to `/sig`. The
-docstring is read from the same `entry`'s `docstring` field that `/doc`/`format_entry_sig` read
+rendering is **not re-implemented**: each entry renders through the bare-symbol display
+formatter, `format_def_entry` (`src/repl/format.rs`), which dispatches per declaration kind and
+delegates type rendering to `crate::display::format_type_qualified`. It uses FQ primitive names
+and lettered vars, byte-identical to a bare lookup / `/sig`. Each entry is homed in its
+**defining** module so the FQ read uses that module. The docstring grain comes from the same
+entry, and the signature-only grain re-renders the same entry with its docstring cleared
 (`repl/spec.md §17.18.1` facet 3 — absent when none, no placeholder). So the harvested grain is
-**exactly what a human gets by typing the name** — the design's stated equivalence.
+**exactly what a human gets by typing the name**.
 
 **Per-symbol grain emission** (conceptual, the exact bytes `/dev`-owned per `§17.18.2`):
 
 ```text
 == in scope ==
-<name> :: <format_entry_sig(entry,name) signature>  ; <docstring if any>
+<the bare-symbol display for name, with its docstring when present>
 ...
 ```
 
-The three feeders for the in-scope block (`repl/spec.md §17.18.1`):
+The three feeders for the in-scope block (`repl/spec.md §17.18.1`), in shadowing order (a
+name already emitted by an earlier feeder is skipped):
 
-1. **current-module own defns** — `current_symbol_table().defined_symbols()` (already iterated by
-   the pinned-source arm; here read each entry's scheme+doc, not its source);
-2. **explicit imports** — the current module's `ModuleEntry::Import` entries (the `/imports`
-   surface), resolved through the import chain to the canonical entry for the signature (mirror
-   `resolve_entry_for_display`, the path `/sig` uses for a re-exported name);
-3. **implicit prelude** — `self.prelude_implicit_names()` (`src/repl.rs:1205`, the
-   "Prelude (implicit)" surface, gated on the `prelude_fallback` bit) → for each name, the
-   canonical prelude entry's `format_entry_sig`. This is the **harvest-sourced prelude awareness**
-   the memory ruling demands — read live, never primer-baked.
+1. **current-module own defns** — the current table's bindings (`all_symbols()`), excluding
+   internal listing entries (`is_internal_listing_entry`, the `/list` filter) and special forms.
+   This feeder is independent of the §5.2 pin's admission rule.
+2. **explicit imports** — the current table's **name candidates** whose source module is not
+   the current module (`all_name_candidates()`, the same enumeration `/imports` walks in
+   `handle_imports`). Each candidate's source names the definition. `resolve_to_definition`
+   reads that binding, then the same internal and special-form exclusions apply. An import
+   installs a candidate, **not** a binding under that spelling, so feeder 1 never sees it.
+3. **implicit prelude** — `prelude_implicit_names()` (`src/repl/commands.rs`, the
+   "Prelude (implicit)" surface, gated on the `prelude_fallback` bit). Each name is looked
+   up through prelude's **public** name candidate, which covers both prelude-owned bindings
+   and `(export …)` re-exports such as `add-i64`, then resolved and rendered as in feeder 2.
+   This is the **harvest-sourced prelude awareness** the memory ruling demands — read live,
+   never primer-baked.
+
+Table guards are released before rendering. The formatter and `resolve_to_definition` take
+their own guards (FIXME 0666 collect-then-render).
 
 ### 23.2 Budget degrades GRAIN, not silently truncates (`repl/spec.md §17.18.2`)
 
@@ -2153,7 +2179,7 @@ references an in-scope symbol's actual signature without first having to `/list`
 
 - the in-scope block carries `name + signature + docstring` for a defined symbol (positive);
 - the rendered signature is **byte-identical** to `/sig <name>` for the same symbol (the
-  reuse-not-reimplement guard — assert `harvest contains format_entry_sig(entry,name)`);
+  reuse-not-reimplement guard — assert the harvest contains the `format_def_entry` rendering);
 - implicit-prelude symbols appear when the `prelude_fallback` bit is ON, absent when OFF (+neg,
   mirroring `prelude_implicit_names`'s own gate);
 - under a tight budget the block degrades grain (docstring dropped) but the **symbol name is
@@ -2570,7 +2596,7 @@ read-cache (§25.3), so an incomplete burn-down is a cheap next-session warm-up,
   tools-as-visible-REPL-commands mechanism (§4.4), exactly like `/syntax`/`/list`/`/exports` — it
   is NOT a bespoke agent tool. (The allowlist row is added at implementation time.)
 - **Result row** (`repl/spec.md §17.19.2`, four facets): name, `:Type` signature (via the same
-  `format_entry_sig`/`format_type_qualified` Pillar 2 uses — identical grain), originating module,
+  `format_type_qualified`, the type renderer Pillar 2's formatter delegates to), originating module,
   and the **exact `(import …)` form** to bring it into scope (e.g. `(import [solver.grid
   [grid-get]])` — synthesized from `module` + `name`). The import-form facet is the actionable
   payoff: the human copy-pastes it; the agent proposes-and-submits it through the Build gate (§15).

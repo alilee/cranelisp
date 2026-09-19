@@ -25,9 +25,9 @@
 // pinned here:
 //   01 ctor `Def` synthetic body            (user::Box.MkBox)
 //   02 synthesised field accessor           (user::Point.x / user::Point.y)
-//   03 `f$Var` multi-sig variant body       (user::pick$Int / user::pick$Int+Int)
+//   03 `f$Var` multi-sig variant body       (user::pick$overload-arm$0 / $1)
 //   04 `__expr` §3.11.2-disposition-3 body  (user::__expr)
-//   05 non-concretized macro-clause body    (user::__macro_twice_clause_0)
+//   05 non-concretized macro-clause body    (user::twice$macro-clause$0)
 // The SIXTH — "generic template reached by direct compile" — is structurally
 // NOT live-reachable: pure `Polymorphic`/`Constrained` templates are excluded
 // from the codegen name-set (`src/worker.rs:896-902`) and produce no `.o`
@@ -107,13 +107,24 @@ fn capture_frames(corpus_rel: &str) -> String {
 }
 
 /// Extract `; === CLIF <name> === ... ; === end CLIF <name> ===` frames from a
-/// dump stream, sorted by `module::symbol`, byte-verbatim. A duplicate frame
-/// (cache-pass leak) and zero frames (empty-vs-empty false green) are both hard
-/// errors — the S102 review F3/F4 classes.
+/// dump stream, sorted by canonical executable name, byte-verbatim. Names may
+/// contain spaces (constructor-instance keys carry full type syntax), so the
+/// name is the rest of the header line. A duplicate frame (cache-pass leak),
+/// zero frames (empty-vs-empty false green) and a header that no complete frame
+/// accounts for are all hard errors — the S102 review F3/F4 classes.
 fn extract_sorted_frames(stderr: &str) -> String {
-    let re = regex::Regex::new(r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n").unwrap();
+    let re = regex::Regex::new(
+        r"(?s); === CLIF ([^\r\n]+?) ===\r?\n.*?; === end CLIF ([^\r\n]+?) ===\r?\n",
+    )
+    .unwrap();
+    let start_re = regex::Regex::new(r"(?m)^; === CLIF ([^\r\n]+?) ===\r?$").unwrap();
+    let end_re = regex::Regex::new(r"(?m)^; === end CLIF ([^\r\n]+?) ===\r?$").unwrap();
+    let start_count = start_re.captures_iter(stderr).count();
+    let end_count = end_re.captures_iter(stderr).count();
+    let mut matched_count = 0;
     let mut frames: std::collections::BTreeMap<String, String> = Default::default();
     for cap in re.captures_iter(stderr) {
+        matched_count += 1;
         assert_eq!(
             &cap[1], &cap[2],
             "malformed CLIF frame: start/end symbol names disagree (interleaved \
@@ -129,6 +140,12 @@ fn extract_sorted_frames(stderr: &str) -> String {
             &cap[1]
         );
     }
+    assert!(
+        matched_count == start_count && matched_count == end_count,
+        "malformed CLIF frame set: starts={start_count}, ends={end_count}, \
+         matched={matched_count} — a header is mismatched or truncated; \
+         stderr:\n{stderr}"
+    );
     let dumped: String = frames.into_values().collect();
     assert!(
         !dumped.is_empty(),

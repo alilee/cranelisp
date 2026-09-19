@@ -696,20 +696,26 @@ impl CompilerSession {
         if !on {
             return Vec::new();
         }
+        // Public candidates only — both prelude's own defs and its `(export …)`
+        // re-exports (e.g. `add-i64`) are user-visible. Collect them under the
+        // prelude guard and drop it before resolving: `resolve_to_definition`
+        // takes its own table guard, which may be this same entry (0666).
         let Some(table) = self.shared.symbol_tables.get(&prelude_path) else {
             return Vec::new();
         };
+        let candidates: Vec<(String, FQSymbol)> = table
+            .public_name_candidates()
+            .map(|(sym, candidate)| (sym.to_string(), candidate.source))
+            .collect();
+        drop(table);
         let mut names: Vec<String> = Vec::new();
-        for (sym, candidate) in table.public_name_candidates() {
-            // Public symbols only — both prelude's own defs and its re-export
-            // `(export …)` Import edges (e.g. `add-i64`) are user-visible.
-            let name = sym.to_string();
+        for (name, source) in candidates {
             // Generated instances remain internal even though their canonical
             // storage keys no longer use the legacy `$` spelling.
-            let Some(entry) = self.resolve_to_definition(&candidate.source) else {
+            let Some(entry) = self.resolve_to_definition(&source) else {
                 continue;
             };
-            if crate::worker::is_internal_listing_entry(candidate.source.symbol.as_ref(), &entry)
+            if crate::worker::is_internal_listing_entry(source.symbol.as_ref(), &entry)
                 || matches!(entry.declaration, Decl::SpecialForm(_))
             {
                 continue;

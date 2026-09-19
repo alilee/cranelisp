@@ -1,6 +1,6 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5 — Runtime implementation, evidence, reviews and generated API confirmation are complete. Shared document-checker adoption is implemented; the latest completed consolidation check reports 2,522 existing findings across 722 documents, with no new finding identities. The eleven S84–S97 QA plans are retired after source-backed retention assessment and reference integration. The local REPL-agent eval runner/corpus is delivered with 18/18 self-check outcomes; live evaluation and final integrated acceptance remain pending. No phase transition or publication is authorized.
+**Status:** PHASE 5 — Runtime implementation, evidence, reviews and generated API confirmation are complete. Shared document-checker adoption is implemented; the latest completed consolidation check reports 2,519 existing findings across 723 documents, with no new finding identities. The eleven S84–S97 QA plans are retired after source-backed retention assessment and reference integration. The local REPL-agent eval runner/corpus is delivered with 18/18 self-check outcomes; the bounded Haiku smoke baseline passed both tasks; agent verification passes all 81 end-to-end cases and 175 selected module/import cases. Default verification passes 5,968 tests with only document conformance RED. QA accepts the bounded agent corrections and the design reconciliation is complete; integrated acceptance remains pending. No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
 issue records truthful, and deliver a repeatable REPL-agent evaluation baseline.
@@ -89,10 +89,9 @@ repair iterations; the timeout is not a hard monetary cap. Preserve all attempt
 artifacts and record actual available metrics. The user's direction to get to
 the Haiku run authorizes this bounded task execution, not a wider campaign.
 
-Credential preflight found neither `ANTHROPIC_API_KEY` nor `CRANELISP_AGENT_KEY`
-in this session. Sprint requested the existing credential-loading location
-without requesting a secret in chat. No live request has been sent; the
-credential is the current execution dependency.
+The user supplied a private credential file after the initial environment
+preflight. The first live attempt below reached Anthropic but was refused for
+missing workspace scope; no model response was produced.
 
 ### Explicit exclusions and proposed carries
 
@@ -1433,3 +1432,98 @@ ignores, and repair-provider errors can be logged as model decline. The local
 runner reports these paths conservatively; it neither fixes nor attributes a
 compiler defect from them. Live readiness still requires D6 and the committed
 runner/fixtures specified by QA. These observations do not reopen local E1.
+
+
+### First live Haiku attempt
+
+Checkpoint `42b7af81` commits the verified harness and future-extension records.
+The user supplied the requested private credential file. Sprint executed the
+bounded two-task run against `claude-haiku-4-5-20251001`, one attempt each,
+120-second process limit, no retries. Both processes completed in about 1.2s;
+both Anthropic requests returned HTTP 400 before any model response: the key
+is not workspace-scoped and requires a workspace-ID header or a workspace-scoped
+replacement. The current client does not supply that header. No Haiku quality
+score can be inferred.
+
+Raw outcomes remain `not_completed/unknown` as emitted by the conservative
+runner; the observed provider rejection establishes provider-configuration
+attribution for this attempt. Raw report and separate assessment are retained
+under `.local/s122-agent-evals/haiku-baseline-20260919/`. No retries or provider
+changes were attempted. The next execution dependency is a workspace-scoped
+credential in the same private file, or an explicitly selected header-support
+change. Future comparison/configuration extensions remain deferred in ACT-0960.
+
+
+### Haiku baseline after provider-request correction
+
+The replacement workspace-scoped key was accepted. Both next requests were
+rejected before inference because our request cap was 65,536 versus Haiku's
+64,000 limit. Those attempts remain in
+`.local/s122-agent-evals/haiku-baseline-20260919-workspace-key/`.
+Dev narrowed the private cap to 64,000 and added a request-bound unit
+(session `25d475ae-78ae-4e84-9899-094b24381154`, Claude Opus/high).
+The isolated binary rebuilt successfully. The new unit could not execute:
+agent-feature module tests have 23 compilation errors involving obsolete or
+private types across four agent files, before and after this change. This is
+current sprint evidence debt, not a passed unit test or an accepted carry.
+Dev report: `.local/s122-haiku-token-limit-dev-result.md`.
+
+The next bounded live invocation completed both tasks with executable passes:
+generic replacement 4.327 seconds, one submit, zero repairs; ordered IO 15.282
+seconds, one submit, one repair. Raw report and artifacts:
+`.local/s122-agent-evals/haiku-baseline-20260919-token-fix/`.
+The two earlier invocations contribute four preserved pre-inference rejections;
+they are not model-quality failures. This is one completed attempt per task,
+not a reliability estimate. Token usage and cost remain unavailable.
+QA source-based API compliance and final evidence assessment completed in
+session `45b73a9a-980d-4fc5-8c54-b7c27127f9f8` (Claude Fable/high).
+No further live repetitions are scheduled. The provider correction is included
+in the user-authorized agent verification checkpoint.
+
+
+QA accepts the bounded Haiku smoke baseline: 2/2 complete task successes.
+The retained IO body applies the imported sequence-io function to exactly the
+three requested Pure values, so source-based API compliance passes. Its first
+candidate was rejected and logged a give-up event before the model continued
+to a successful submit; that event is not a final refusal. Raw reports remain
+unchanged; the separate reviewed disposition is
+`.local/s122-agent-evals/haiku-baseline-20260919-token-fix/assessment.json`.
+QA report: `.local/s122-haiku-live-qa-result.md`. All reservations are released.
+
+The fixture compilation and request-cap unit obligations are completed in the
+agent integration verification below. The live baseline does not confer
+whole-sprint acceptance. No further model calls or deferred extensions are
+needed to report it.
+
+
+### Agent integration verification
+
+- Agent fixture migration and request-cap proof are complete: the cap unit
+  fails at 65,536 and passes at 64,000; the mention-arm negative assertion
+  detected a planted extra mention.
+- Prelude context, explicit-import context and constructor docstring-refusal
+  corrections are complete. The two latest defects each failed at their
+  intended assertions in both module and end-to-end tests before correction.
+  All controls remained green. The table guard is released before resolving
+  implicit-prelude candidates.
+- Final affected module/import tier: **175/175 passed**. Full agent end-to-end
+  lane: **81/81 passed**. Logs:
+  `.local/s122-agent-lookup-modules-green.log` and
+  `.local/s122-agent-lookup-e2e-green.log`.
+- Final default suite: **5,968 passed, 1 failed, 1 skipped**, 111.3 seconds.
+  Sole failure: unsuppressed document conformance (2,519 findings). All finding
+  identities match the preceding baseline. Log:
+  `.local/s122-default-lookup-final.log`. The scoped golden repairs pass.
+- Independent review found no blocking issue; its required defect annotation
+  and mechanical wording repairs are applied. QA accepts the bounded agent
+  corrections. Design reconciled the changed harvesting description.
+  [QA's canonical allocation and adequacy](../tests/plan/s122-evidence-delta.md#final-integration-failures--classification-and-allocation)
+  owns residual classification: the pre-existing slash-command guard lifetime
+  goes to the next correction basket; pin/export decisions remain open.
+- Changed Rust files pass formatting and diff checks. Repository-wide formatting
+  still reports untouched `src/repl/format_type.rs`, `src/repl/mod.rs` and
+  `tests/spec_04_expressions.rs`.
+- All role reservations are released. NOTES.md is unchanged and untracked;
+  the unpublished shared-package checkout is excluded from the checkpoint.
+  The user authorized committing this verified checkpoint. No push, phase
+  transition or further live call is authorized.

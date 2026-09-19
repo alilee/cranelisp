@@ -86,7 +86,7 @@ The test author copies the exact primitive/import syntax from the source witness
 - Send setup forms, explicit `/ask` prompt, post-turn probes and EOF through ordinary REPL stdin. The prompt turn is synchronous. `--yes` may be used only when selected in the live-run consent policy; uncontrolled consent reads must not consume grader input. Otherwise the runner needs an explicitly scripted consent policy, not a guessed number of `y` lines.
 - Frame each grader region with harness-issued fresh scalar sentinels and parse only exact ordinary typed result lines in that region, excluding agent-gutter prose. Require the expected number/order of result lines, successful process completion and completed grading region. Duplicate, malformed, absent or ambiguous regions are inconclusive/harness failure, never a pass. A stub that claims success without defining the function must fail grading.
 - Record stdout/stderr and agent JSONL/trace at unique per-run paths; verify existence and parsing when those artifacts are used. Production logging can silently fail by design, so missing logs invalidate related metrics, not a separately observed language result. Do not add a production logging guarantee just for evals.
-- Kill and reap the whole owned process group on timeout; preserve partial artifacts and mark the result incomplete. No automatic retries overwrite attempts. A provider request timeout is not a precise spending cap; current provider max-output request is 65,536 tokens and the approved live budget must account for it.
+- Kill and reap the whole owned process group on timeout; preserve partial artifacts and mark the result incomplete. No automatic retries overwrite attempts. A provider request timeout is not a precise spending cap; the provider request cap is `AGENT_MAX_TOKENS` in `src/agent/provider.rs` and the approved live budget must account for it.
 
 ### Graders, classifications and reports
 
@@ -361,7 +361,7 @@ This assessment reuses the existing stocktake and source observations; it create
 
 | Stream | Current readiness boundary |
 |---|---|
-| Eval runner/corpus/grader | Local stub harness (E1, maintenance check) delivered and adequate once test's attribution/empty-log correction lands; run `self-check` when the runner or fixtures change and before a live baseline, outside the default suite. E2 (diagnostic observer) has no live observation; live runs stop at D6 and additionally need the committed runner, the live-configuration refusal, effective endpoint record and per-run report write. No production seam change selected. |
+| Eval runner/corpus/grader | Local stub harness (E1, maintenance check) delivered and adequate once test's attribution/empty-log correction lands; run `self-check` when the runner or fixtures change and before a live baseline, outside the default suite. E2 (diagnostic observer) has one live observation: `claude-haiku-4-5-20251001`, one attempt per task, both tasks complete success including reviewed sequence-io API compliance; four earlier attempts were pre-inference provider rejections. This is a smoke observation, not a reliability estimate; tokens and cost are unknown. The enabling request-cap correction in `src/agent/provider.rs` is established only by that live acceptance: its module unit is unexecuted because the agent-feature lib tests do not compile, which is open sprint intake for dev. Raw reports and QA assessments are retained locally under `.local/s122-agent-evals/haiku-baseline-20260919*/`. |
 | Generic/IO and language/collision intake | Ready for bounded existing-witness reduction and attribution; stop before a correction without its owning design and intended RED. |
 | Failed-turn replacement evidence | GO at the design-readiness boundary: D1 substitution approved on 2026-09-10. Implementation and executing evidence remain pending under Phase-5 reservations and subsequent closure gates; retain public success controls and the explicit absence of public codegen-failure reachability proof. |
 | Macro/runtime transfer | Binary/int and intrinsics designs reviewed: normal success discharge, explicit trap forfeiture, nine consuming APIs and typed callbacks align. Intrinsics Q11 now specifies admission to Pending, successful-send publication, loser cancellation before ready-receiver repoll, exact once disposal, winner control and unwind-safe scoped barrier cleanup. The dependent launch fixture belongs to retained backend dev. Primitives design is reviewed against its complete declaration projection and exact construction/traversal/transfer mapping. GO at the design-readiness boundary: D8 was approved on 2026-09-10. Shared guard/contract design propagation is complete; source implementation and executing evidence remain pending under Phase-5 reservations and subsequent closure gates. D0 clause-convention observations precede host transfer; integrated evidence remains the completion gate. |
@@ -1247,3 +1247,87 @@ reconciliation carrier and are never passed to the shared checker.
 project document conformance is explicitly RED. Continue owner repairs and
 specific exception decisions in the user's requested order. No new parser
 matrix, review cycle or whole-Phase5 acceptance follows. QA ran no builds/tests.
+
+
+## Final integration failures — classification and allocation
+
+QA read, and did not re-execute, the default-suite logs (5,963 pass / 6 fail
+at classification; 5,968 pass / 1 fail / 1 skip after the corrections below,
+the sole failure being document conformance), the agent feature-lane logs
+(81/81; agent module tier with its imports and prelude consumers 175/175), the
+agent fixture review, the harvest correction review and the agent lookup
+correction review. Uncommitted product changes are confined to `src/agent/`
+and `src/repl/commands.rs` and cannot reach CLIF emission.
+
+| Failure | Class and attribution | Owner and bounded delta |
+|---|---|---|
+| `golden_clif_w0b_{ctor_def,synth_accessor,multisig_variant,expr_disposition3}` | Maintenance check: stale instrument and stale golden; no compiler defect. Actual output differs from each golden only by whole missing constructor-instance frames. `tests/golden_clif_w0b.rs` extracts frame names with `\S+`, which cannot match the canonical whitespace-bearing instance names; this third extraction site was not among the two corrected earlier in S122. Control: `tests/fixtures/clif_baseline/golden/f1_machinery.clif`, captured by a corrected extractor, holds the `IO.Pure` Int instance under its canonical name with an instruction body identical to the w0b golden's `primitives/IO.Pure$Int` frame. | `test`: adopt the line-anchored extraction already used by `tests/ownership_fences.rs` and `tests/scripts/clif_golden.sh`, retaining the duplicate-frame and zero-frame errors; then re-baseline 01–04 scoped to the canonical rename (frame header, end marker, `function %` line and sort position). Any instruction, signature or frame-count delta in 01–04 refutes this attribution: stop and return to `qa`. Bring MANIFEST focus-frame names, line counts and the attributed re-baseline entry current. |
+| `golden_clif_w0b_macro_clause` | As above, plus one attributed emission change. The dropped frames are the `IO.Pure` and `SList.SCons` instances. `twice$macro-clause$0` additionally gains one `call fn5(v1)` (`colocated u0:40`, void `(i64)`) before `return`, with its `sig8`, `fn5` and two alias lines: the clause parameter release of the delivered Q4 all-Owned clause convention ([macro-turn ownership](../../design/int/macro-turn-ownership.md)). `u0:40` is the glue the golden's `SCons` frame already calls on its `Sexp` field. | `test`, same change: re-baseline 05 with the delta attributed to the Q4 clause-preparation seam. Admissible delta is the canonical renames plus exactly that release-family addition in the clause frame, with `user::main` unchanged. Anything else returns to `qa`. |
+| `citation_drift::project_documents_conform_to_the_checked_in_declaration` | Maintenance check: known unsuppressed debt; no new finding. The log's 2,519 finding identities equal the last recorded stable-tree report exactly (none added, none removed; 3,088 locations; 182 historical). One document was added and carries no finding. | Remains RED. Acceptance depends on the user's specific disposition of the remaining debt at the S122 acceptance gate: owner repair or a named exception. No baseline or blanket exception is implied. |
+| `agent::set_doc_non_function_target_e2e_refused_not_recorded_neg` (feature lane) | Corrected; evidence adequate (see the lookup-correction adequacy below). Product defect, `src/agent/pull.rs::apply_docstring_edit`; the fixture conforms. `repl/spec` §17.15.4 face 2 names an ADT constructor as a locally resolving non-function whose refusal must make clear that only a function's docstring is recorded; face 1 (`no such definition`) is reserved for a name with no local definition. With the bare-constructor fixture the run reaches the refusal and prints `no such definition: Red`. No success line appears and `/doc Red` shows no docstring, so the honesty half holds and only the stated reason is wrong. Mechanism, read at its seam and not executed: a sum constructor is stored under `member_key` (`Color.Red`, `adt_build.rs`), its bare spelling is a name candidate only, and the edit looks the target up with the binding-only `SymbolTable::get`. Executed control: the module unit `set_doc_non_userfn_refused_not_recorded` installs a bare-keyed extern and receives the face-2 message (134/134). Refuter: a current-module product constructor or type name, both bare-keyed, also answering `no such definition`. Coverage attribution: the unit's only non-function variant was bare-keyed, and the e2e could not execute from S115 until this fixture repair in a lane outside the default suite. | `dev` (`src/`): a target whose spelling has a current-module terminal candidate that is not a plain function body takes the face-2 refusal; an import-only or undefined name keeps face 1 (`set_doc_missing_target_e2e_refused_no_false_recorded_neg` is the standing negative control). The existing e2e is the observed-RED reproduction. The correction carries one module unit installing a sum constructor through the ADT funnel, observed RED before the fix, asserting the face-2 message and an unset docstring. No further e2e and no public-API change is expected; `name_candidates` is already public. `test`: add the `// defect:` line (`class=resolver-mirror locus=src/agent/pull.rs::apply_docstring_edit found=S122 owner=/dev`). |
+| `agent::harvest_in_scope_shows_name_sig_docstring`, `agent::harvest_budget_degrades_grain_not_truncates_neg` (feature lane) | Corrected; evidence adequate. The seam observation separated the rivals (names and prelude-owned control passed, the re-export leg failed), the feeder-3 correction resolves each name through its public candidate to the defining module, and the discriminating unit went RED to GREEN for that reason. Both e2e pass and observe the primitive classification and docstring, which require the resolved home. Independent review: no blocking finding. | `dev`: formatting and the one-line rustdoc repair (review F2); mechanical, no re-review. Review A1–A3 are not required: the home-module half of the fix is observed by the e2e, and no detector is warranted for an unknown ambiguous prelude name. |
+
+Residual intake, classified. None gates the corrected harvest seam.
+
+| Intake | Class | Allocation |
+|---|---|---|
+| Explicit-import in-scope feeder reads `all_symbols()` (bindings only) | Observed and corrected; evidence adequate (see the lookup-correction adequacy below). At intake: suspected defect, unobserved. §17.18.1 requires explicitly imported symbols in the block; the mechanism matches the one observed in feeder 3; the harvest e2e covers own definitions and the implicit prelude only, so the provenance twin is missing. | `test`: one explicit-import twin of `harvest_in_scope_shows_name_sig_docstring` with the same assertions. RED is the reproduction and goes to `dev` (`src/`) with a module unit on the same candidate path; GREEN refutes the intake and the twin stays as coverage. |
+| Context exports arm uses `public_symbols()` while `/exports` resolves candidates and filters internals | Same consumer family; advisory model context; no requirement fixes the grain and no wrong outcome is reproduced. | No observation now. `design` (int) decides convergence on the `/exports` producer; if adopted, one twin cell (context export names equal `/exports`) accompanies it. |
+| Pin narrower than "full current-module source" (types, traits, impls, file-loaded definitions absent) | Authority and realization disagree; not a defect until the owner chooses which moves. | `design` (int) decision, raised through `sprint`; `qa` allocates after it. |
+| `prelude_implicit_names` holds the prelude table guard across a second `symbol_tables` read | Latent safety residual in a shape FIXME 0666 already retired in harvest; present before this change and not widened; reached by `/imports` and every context dump. | `dev` (`src/`): collect-then-resolve, the constructive repair. No detector or stress cell. Delivered for this function; review found it correct. |
+| `src/CLAUDE.md` and `format.rs` say `/doc` follows the import chain through `resolve_entry_for_display`, now the identity; stale `defined_symbols()` mentions in `design/int/agent.md` and `harvest.rs` comments | Stale records. `/doc` on a re-exported primitive and on a constructor is observed working. | `dev` and `design` (int) record repair with their next edit of each file; no evidence. |
+
+- Review A1 and A2 are mechanical comment repairs with root. A3 is accepted:
+  the cap unit guards the Haiku ceiling only and is not a general budget guard;
+  ACT-0960 stays deferred.
+- Review R1: pin admission of `Overloaded` and `Macro` moves toward
+  `design/int/agent.md` §5.2 #1 ("pinned in full"), affects advisory context
+  only and has no reproduced wrong outcome. No observation is allocated.
+  `design` (int) restates the §5.2 admission rule against the live symbol-table
+  API; `qa` reconsiders an observation only if that restatement excludes a
+  class the pin now admits.
+- The agent feature lane is outside the default suite, so default-suite green
+  does not cover it. S122 agent acceptance needs the lane green, or each RED
+  traced to an owned filing. The set-doc and harvest defects both entered as
+  unmigrated binding-only reads in `src/agent/` and stayed unseen because
+  nothing executed the lane; running it at each Phase-5 checkpoint is the
+  control, not a per-site detector.
+
+### Agent lookup corrections — adequacy
+
+The bounded agent corrections are adequate against the allocation above.
+
+- **Set-doc refusal.** The sum-constructor unit, installed through the ADT
+  funnel, failed before the fix with `no such definition: Red` in place of the
+  function-only reason; the e2e failed at the same assertion. Both pass after.
+  The bare-keyed, import-only and undefined-name controls passed on both sides.
+- **Explicit-import feeder.** The twin passed its import-resolution setup
+  assertion and failed at the first `add-i64` assertion with an empty block
+  line; the module unit failed on the absent defining-module entry. Both pass
+  after. The implicit-prelude original passed on both sides, which separates
+  this feeder from feeder 3.
+- **Review.** Fresh `review` (`src/`), static: no blocking finding; the three
+  corrections match their rows. QA did not see an independent re-run; the logs
+  are root's.
+- **Limit.** The import-only set-doc control detects a cross-table resolve and
+  any write to the imported function. It does not detect a candidate pick that
+  ignores the source module, which still answers face 1. No requirement rests
+  on that distinction, so no cell is added.
+
+Review findings, classified. None gates the agent lane.
+
+| Finding | Class | Allocation |
+|---|---|---|
+| R1: the explicit-import twin is a reproduction without a `// defect:` line | Maintenance check (defect-corpus notation). Class token `enumeration-miss`: the in-scope enumeration omitted the explicit-import candidate source. It is not `resolver-mirror`; no name was resolved on a divergent path. | Root, mechanical, no test run or re-review: `// defect: class=enumeration-miss locus=src/agent/harvest.rs::push_in_scope_block found=S122 owner=/dev`, directly above the twin's `#[cfg(feature = "agent")]`. |
+| A1: a plain function under a second same-module spelling | No producer found; recording on the canonical function satisfies the honesty contract. | None. Refusing on a spelling mismatch would have a lower carrier strengthen §17.15.4. |
+| A2: `handle_imports` holds the current-module table guard across `resolve_to_definition` and `prelude_implicit_names()` | Latent safety residual, same family as the `prelude_implicit_names` row; pre-existing, not widened, no failure reproduced; slash-command path only. | Next correction basket, `dev` (`src/`): collect-then-resolve, folding the repeated resolve-and-filter sequence (A5) into one site if taken. No detector, stress cell or action now. |
+| A3: the units report overstates the import-only control | Report wording; the test is unchanged. | Root integrates the wording QA supplied with this judgment; the limit is stated above. |
+| A4: one spelling with two foreign sources renders once | Advisory model context; no requirement fixes the grain. | None. |
+| A5: the resolve, internal-listing and special-form filter sequence repeats at four sites | Single-source pressure; the predicate is already shared. | With A2 only. |
+| A6: `design/int/agent.md` §23.1 feeder list contradicts the delivered feeder 2 | Stale record under the stale-records row. | `design` (int), in progress. |
+| A7: typographic apostrophe in the `push_in_scope_block` rustdoc | Nit. | Root, mechanical. |
+
+The Haiku 2/2 observation stands and ACT-0960 stays deferred. Document
+conformance remains RED at 2,519 findings over 3,088 locations with 182
+historical exclusions, the counts recorded above; QA compared counts, not
+identities, for this run. Whole Phase-5 acceptance remains open.
