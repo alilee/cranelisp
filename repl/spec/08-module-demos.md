@@ -61,12 +61,12 @@ From math:
 ```
 The source module filter groups names by source. Type `foo` for its type signature.
 
-**Scenario 6: `/mod` with no argument resets to `user`**
+**Scenario 6: `/mod` with no argument returns to the entry module**
 ```
 math> /mod
 user>
 ```
-Bare `/mod` with no argument switches back to the `user` module. The current module is always visible in the prompt, so a "show current" command is redundant. `/mod` is the quickest way home.
+Bare `/mod` with no argument switches back to the entry module (§0.5). The transcript shows a session started without a target, whose entry module is `user`. The current module is always visible in the prompt, so a "show current" command is redundant. `/mod` is the quickest way home.
 
 **Scenario 7: Unknown module gives clear error**
 ```

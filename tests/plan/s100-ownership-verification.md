@@ -1,10 +1,22 @@
 # S100 ownership-inference verification & acceptance plan (parts 17–18)
 
-**Author:** `/qa` · **Date:** 2026-07-02 · **Status:** DESIGN (S100 Phase 3, stage 2 —
-the sprint's parts-17–18 deliverable). This is a **plan**: S100 ships design, not
-implementation. The failing tests named here are drafted QA-first at the start of each
-implementing increment sprint (METHOD Phase 5 stage 1); this document must be concrete
-enough that a future `/qa` invocation drafts them directly from it.
+**Author:** `/qa` · **Date:** 2026-07-02 · **Status:** retained condition baseline for the
+ownership-inference lanes, authored as the S100 parts-17–18 design deliverable and
+executed across S101–S103.
+
+**What is standing and what is dated.** §0 (the analysis-off oracle and the two-sided
+bar), the §3 lane definitions, the §3.7 hooks and the §5 coverage limits are the
+authority that test sources, `tests/scripts/`, the `tests/fixtures/clif_baseline/`
+manifests and `tests/perf/ig_gates.py` cite by section, so section numbers and lane
+names (L-B1 … L-R5, I-G / II-G / III-G) must not be renumbered. §2.2.1 and §2.3.1
+are dated measured-acceptance records; they hold the user's accepted B4 trade that
+`ig_gates.py` encodes and the II-G3 re-scope that `design/arch/backlog/performance.md`
+(0534) and [S104 utilization](s104-utilization-measurement.md) continue from. This
+plan's sections 4, 6 and 7 are drafting-time instructions and a triage record for work
+that has landed: their ledger, memory-file and "RED on HEAD" statements describe
+S100–S101, not the present suite. Stage III (section 2.4 here) is ungraded: no
+acceptance record exists, and its F4 target is carried by the parked entries of that
+performance backlog.
 
 **Revised 2026-07-03 (S101 Phase 3):** stage-M portions made sprint-ready — L-B2(i) +
 L-B3(1)–(3) staging reconciled to the `/arch` S101 Phase-2 ruling (toggle + manifest
@@ -15,10 +27,11 @@ unit-tier handoff additions; §5 limit 6 extended to all R3 wording surfaces.
 **Governing authority:** `design/arch/ownership-inference.md` (the spine — §9 is this
 plan's inheritance; §3.4/§6.2 the oracle obligation; §7 the increment staging). Inputs
 consumed: `design/typecheck/ownership-inference.md` §12 items 5–8;
-`design/backend/ownership-codegen.md` §2.2(4) + §12 items 1–7;
+`design/backend/ownership-codegen.md` §2.2(4) + items 1–7 of its
+[open questions](../../design/backend/ownership-codegen.md#12-open-questions-routed-onward);
 `tests/plan/s99-measurement.md` (the F1–F4 shapes, baselines, and metrics discipline);
-`sprints/SPRINT.md` (scope + walkthrough amendments). Where this plan and the spine
-disagree, the spine governs.
+the [S100 record](../../sprints/archive/sprint-100.md) (scope + walkthrough amendments).
+Where this plan and the spine disagree, the spine governs.
 
 **Sequencing frame (spine §5.7 / §7):** the implementation order is
 **R3 machinery → increment I (read path) → increment II (write path)**. Each stage has
@@ -39,8 +52,10 @@ are graded against their own bar, never the composed end-state's (R8).
    dividends AND unnoticeable small-case overhead. Every performance gate in §2 is
    paired with a serial / 1-worker non-regression lane on the same fixtures. A mechanism
    that wins the parallel lane by regressing the serial lane fails acceptance.
-3. **Metrics discipline carries from S99 verbatim** (`s99-measurement.md` §1, §10
-   discipline note): release-tier binaries; wall/user/sys collected separately
+3. **Metrics discipline carries from S99 verbatim** (the S99 measurement's
+   [method](s99-measurement.md#1-method) and the discipline note in its
+   [Wave-1d section](s99-measurement.md#10-wave-1d--mimalloc-a-cure-benchmark--combined-shippable-stack-the-deliverable)):
+   release-tier binaries; wall/user/sys collected separately
    (`/usr/bin/time`); RC-op + alloc counts via `CRANELISP_RC_STATS`,
    program-attributable = raw − no-op-`--run` baseline; median-of-7 with per-rep
    min/med/max for the fixed-work probes (F1–F3); **F4 is always read as a
@@ -103,7 +118,7 @@ The machinery sprint is graded by §3.6's R3 lanes (trap stubs, cascade, slot ve
 summary-diff fast path) plus one latency pin: the **body-only redefinition turn** is
 observably at today's cost (§3.5 L-D1 gate applies from this stage on, since the
 summary-diff gate is machinery, not increment-I analysis). Per the `/arch` S101 Phase-2
-ruling (`sprints/SPRINT.md` §Architecture review) the `CRANELISP_NO_OWNERSHIP` toggle
+ruling (the [S101 record](../../sprints/archive/sprint-101.md#architecture-review-phase-2)) the `CRANELISP_NO_OWNERSHIP` toggle
 **and its cache-manifest key** ship at stage M, so the L-B2(i) suite-polarity leg and
 the L-B3(1)–(3) manifest-key lanes also grade this stage (§3.1). Sprint-ready drafting
 specification: §6.1.
@@ -312,7 +327,7 @@ are the gains this reframe keeps.
 |---|---|---|
 | **II-G1 (R5 witness)** | F2v rc_inc + wall | rc_inc collapses to **near-zero** (< 1% of B2): an 81-slot Vec of one-word value-`Cell`s copies by memcpy with null elem fns (backend §7.3). Wall: **F2v N-worker < F2v serial** — the first configuration where parallelism must actually pay on the copy shape. |
 | **II-G2 (reuse hit-rate)** | reuse hit/miss counters on F4 (copy-per-guess) | in-place reuse hit-rate on the guess-grid write chain ≥ 50% (provisional; the copy-once-then-in-place property of backend §6.2 predicts ≫ this for chained writes). Counter movement is the attribution prerequisite for any F4 wall claim (§0.3). |
-| **II-G3 (F4 floor progress)** | F4-hard 11-rep distribution | median wall ≤ **2× serial** (from B7's 6–15×), and the whole wall distribution's median-to-max below toggle-off's. **RE-SCOPED at S103 close (2026-07-06) — this bar is NOT increment-II-gradeable.** The S103 profiling investigation (FIXME 0534) PROVED F4-hard's parallel wall is **rayon scheduler churn** (9.45M ultra-fine score-0 sparks × ~13µs spawn/park each), not a write-path / RC / contention cost — so it is unreachable by ANY increment-II mechanism (R5 flattening, reuse tokens, borrow-elision leave it identical; it reproduces at increment-I HEAD). Its cure is a **spark-overhead cost axis** (decline sub-spawn-cost sparks), a concurrency-track /design deliverable (0534, re-pointed /design, carried to S104). II-G3 is therefore **regraded against the composed III-G / Phase-H+concurrency end-state** (III-G2, per spine §7 staging), gated on 0534's spark-overhead axis — NOT a Stage-II bar. See §2.3.1 for the measured S103 FAIL (kept VISIBLE — scope correction with proof, not a relaxation) + the interim ON-vs-OFF tripwire. **S104 RE-HOME (2026-07-06): the utilization thesis (SPRINT S104) re-homes this target onto the utilization axis — II-G3's F4-parallel bar is now `tests/plan/s104-utilization-measurement.md` §6 gate U-G1 (M-static × M-dynamic scheduler-admission cure), with the §2.3.1 "ON must not be worse than OFF" tripwire as U-G1's interim floor. The III-G2 composed-end-state gate retains only the Phase-H *contention* term (0534's (b) axis); U-G1 owns the *utilization* term — two axes, two homes.** |
+| **II-G3 (F4 floor progress)** | F4-hard 11-rep distribution | median wall ≤ **2× serial** (from B7's 6–15×), and the whole wall distribution's median-to-max below toggle-off's. **RE-SCOPED at S103 close (2026-07-06) — this bar is NOT increment-II-gradeable.** The S103 profiling investigation (FIXME 0534) PROVED F4-hard's parallel wall is **rayon scheduler churn** (9.45M ultra-fine score-0 sparks × ~13µs spawn/park each), not a write-path / RC / contention cost — so it is unreachable by ANY increment-II mechanism (R5 flattening, reuse tokens, borrow-elision leave it identical; it reproduces at increment-I HEAD). Its cure is a **spark-overhead cost axis** (decline sub-spawn-cost sparks), a concurrency-track /design deliverable (0534, re-pointed /design, carried to S104). II-G3 is therefore **regraded against the composed III-G / Phase-H+concurrency end-state** (III-G2, per spine §7 staging), gated on 0534's spark-overhead axis — NOT a Stage-II bar. See §2.3.1 for the measured S103 FAIL (kept VISIBLE — scope correction with proof, not a relaxation) + the interim ON-vs-OFF tripwire. **S104 RE-HOME (2026-07-06): the utilization thesis (SPRINT S104) re-homes this target onto the utilization axis — II-G3's F4-parallel bar is now `tests/plan/s104-utilization-measurement.md` §6 gate U-G1 (M-static × M-dynamic scheduler-admission cure), with this plan's [increment-II record](#231-increment-ii-acceptance-record-s103--measured-release-binary) "ON must not be worse than OFF" tripwire as U-G1's interim floor. The III-G2 composed-end-state gate retains only the Phase-H *contention* term (0534's (b) axis); U-G1 owns the *utilization* term — two axes, two homes.** |
 | **II-G4 (F2 two-ctor honesty)** | F2 rc_inc + wall | partial: report rc_inc drop from reuse on chained copies; wall ≤ 1.5× serial (from B7's 2.3×). F2's shared-grid copies-of-a-shared-root are *genuine shared materializations* — fully cured only by multi-ctor flattening or persistent DS (§5 limit 1); II-G4 must not be silently graded as if R5-first-landing covered it. |
 | **II-G5/G6** | = I-G4/I-G5/I-G6 re-run | same non-regression + overhead bars, including F2v serial. |
 
@@ -464,7 +479,9 @@ The only configuration honestly comparable to the north-star. Operationalisation
 
 Each lane: **purpose → mechanics → gate → stage → tier**. "Hook:" marks owed
 observability that compiler skills must implement (per `tests/CLAUDE.md` §Diagnostic
-Requirements — `/qa` specifies, the owning skill builds); §3.7 collects them.
+env vars & assertions — `/qa` specifies, the owning skill builds); this plan's
+[hooks list](#37-owed-observability-hooks-specified-here-implemented-by-the-owning-skill)
+collects them.
 
 ### 3.1 The analysis-off differential oracle (backend §2.2(4); spine §6.2)
 
@@ -510,7 +527,7 @@ Requirements — `/qa` specifies, the owning skill builds); §3.7 collects them.
   stdout/stderr/exit status.
   *Gate:* identical pass-set (i); byte-identical observables (ii). *Stage:* (i)
   **M onward** — the toggle + manifest key ship at stage M per the `/arch` S101 Phase-2
-  ruling (`sprints/SPRINT.md` §Architecture review); at M both polarities are
+  ruling (the [S101 record](../../sprints/archive/sprint-101.md#architecture-review-phase-2)); at M both polarities are
   behaviourally identical by construction (no analysis exists yet), so the leg's
   M-stage value is installing the protocol and guarding the toggle plumbing. (ii) I
   onward — the byte-differential only becomes discriminating once mechanisms land.
@@ -544,7 +561,7 @@ enumeration (from backend §3/§9 + typecheck §4) and the fence design:
 
 **Fence design (all sites):** (i) **behavioral leg** — the guarded value is *used after
 the elided-inc window*, repeatedly (sustained-load convention, 200–2000 crossings,
-`tests/CLAUDE.md` §Sustained-load), asserting values, not crash-absence; (ii)
+`tests/CLAUDE.md` §Diagnostic env vars & assertions), asserting values, not crash-absence; (ii)
 **balance leg** — `CRANELISP_RC_STATS` allocs==deallocs (± documented baseline) at
 exit; (iii) **two-condition rule** — each fence runs under plain AND under the ASan
 lane; a fence green only under one tool is not green
@@ -589,7 +606,8 @@ Wrong things must NOT happen:
   green with the 0486 fix — the S100-close suite state carries only the §7 guards as
   intentional failures, per root `CLAUDE.md` §Testing; they remain the standing
   launched-strand fence, independent of this design).
-- **L-C2 — stack-slot lanes** (backend §12.3):
+- **L-C2 — stack-slot lanes** (item 3 of the backend design's
+  [open questions](../../design/backend/ownership-codegen.md#12-open-questions-routed-onward)):
   (a) **TCO back-edge negative:** allocation in a TCO loop body flowing into recur args
   must NOT stack-allocate — stack-slot-hit counter attribution + ASan under ≥10k
   iterations; (b) **spark-reads-parent-stack-slot:** joined spark borrows a parent
@@ -692,7 +710,7 @@ All e2e-able as scripted REPL sessions (canonical nextest):
 | H4 | Transferred-eligible atomic-op attribution ("all fork edges are joins") | `/typecheck` (classification) + `/backend` (counter) | L-D2 |
 | H5 | `CRANELISP_OWNERSHIP_TRACE` — per-cluster summary + per-site verdict dump (typecheck §11 designs it) | `/typecheck` | L-D3f, I-G3 |
 
-Per `tests/CLAUDE.md` §Diagnostic Requirements these are implementation obligations of
+Per `tests/CLAUDE.md` §Diagnostic env vars & assertions, these are implementation obligations of
 the increment sprints, drafted into the QA-first failing set where testable (H5's dump
 format gets a golden smoke; counters get "moves when the mechanism fires" unit-adjacent
 e2e probes).
@@ -758,8 +776,9 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
    cascade report (L-R3's needles are symbol names, not report prose) and the
    `/info`/`/sig` broken-status display (L-R1(d)). At the machinery sprint the `/repl`
    half lands in-sprint (S101 scope item 7), so drafted tests cite the spine/backend
-   design anchors and are **re-anchored to `repl/spec.md`** (needles tightened where
-   the ratified wording allows) before sprint close — see §6.1 anchor policy. No L-R
+   design anchors and are **re-anchored to the REPL specification** (needles tightened where
+   the ratified wording allows) before sprint close — see the anchor policy in this
+   plan's [stage-M drafting specification](#61-stage-m-drafting-specification-s101-phase-3--sprint-ready). No L-R
    lane is blocked on the wording: L-R2/L-R4/L-R5 assertions are behavioural
    (values, exit status, `.meta.json` contents) and wording-independent.
 7. **F4 is never a single-number gate** (distribution discipline, §0.3).
@@ -1014,7 +1033,8 @@ spec as written, discovered at drafting:
 1. **The pre-break VALUE carrier does not exist at stage M — L-R1(b)/(c) and
    L-R2(a) use closest-reachable shapes.** `(def gv g)` as written above is not
    REPL-reachable in a free-standing test: `def` is a **stdlib macro** (stdlib is
-   out of bounds for `tests/`, root `CLAUDE.md` §Stdlib separation) and expands to
+   out of bounds for `tests/` under the stdlib-separation
+   [design principle](../../CLAUDE.md#design-principles)) and expands to
    a zero-arg `defn` + bare-symbol macro — i.e. it re-evaluates through a
    recompiled static caller, exactly the `/repl` Phase-3 finding. No cross-turn
    value carrier exists in the core REPL (bare-expression results are dropped;
@@ -1030,16 +1050,19 @@ spec as written, discovered at drafting:
    cross-turn value carrier ships (session value bindings, or REPL-drivable strand
    state), add the direct test. Full reasoning: `tests/repl_redefinition.rs`
    module header.
-2. **Anchor policy executed at draft, not as a later re-anchor pass**: `repl/spec.md`
-   §18 landed in Phase 3 BEFORE this drafting, so the L-R1/L-R2/L-R3/L-R4 tests cite
-   §18.x directly and use its normative needles (`is broken by the redefinition of
+2. **Anchor policy executed at draft, not as a later re-anchor pass**: the REPL
+   specification's redefinition chapter (`repl/spec/18-redefinition.md`, since
+   renumbered) landed in Phase 3 BEFORE this drafting, so the L-R1/L-R2/L-R3/L-R4
+   tests cite its sections directly and use its normative needles (`is broken by the redefinition of
    {cause}` with FQ names; `recompiled`/`broken` report sections). The §5-limit-6
    re-anchor obligation for these tests is therefore already discharged;
    `spec_link_check.py` runs clean on the drafting commit.
-3. **§7.1 flip count superseded 4 → 7**: the Wave-1 cat-3 sweep
-   (`tests/plan/s101-coverage-postmortem.md` §3) widened the vec-query NULL-slot
+3. **Flip count superseded 4 → 7**: the Wave-1 cat-3 sweep (the post-mortem's
+   [use-position matrix](s101-coverage-postmortem.md#3-category-3-sweep--use-position--builtin-family-matrix))
+   widened the vec-query NULL-slot
    class to curried / returned / stored-in-ADT positions — 3 more failing-not-
-   ignored guards in `tests/vec_query_value_use.rs`. The §7.1 protocol applies
+   ignored guards in `tests/vec_query_value_use.rs`. This plan's
+   [flip protocol](#71-flip-protocol-s101--executed-when-the-devbackend-fix-lands) applies
    unchanged with "4 guards" read as "7 guards" (ledger §"Sprint 101 Wave-1 cat-3
    sweep"); the curried guard's DISTINCT signature (JIT `can't resolve symbol`
    panic, exit 101 — the curry path's `primitives_inline` fallback gap) is new
@@ -1132,8 +1155,8 @@ The fix is S101 scope item 1; when it lands, in order:
    `tests/vec_query_value_use.rs` module comment and per-test "RED on HEAD" notes to
    record the resolution (the triage narrative stays as history).
 5. **Root `CLAUDE.md` §Testing count**: the intentional-failing count drops 4 → 0
-   (plus any stage-M RED-first guards still carried at that moment — the §6.1 ledger
-   entry tracks those; at close the expected canonical state is **0 intentional
+   (plus any stage-M RED-first guards still carried at that moment — the ledger
+   entry of the stage-M drafting specification tracked those; at close the expected canonical state is **0 intentional
    failures** since the machinery lands in-sprint). The root-CLAUDE.md edit is
    outside `/qa` and `/sprint` edit boundaries — `/sprint` **flags it for the user at
    close** (S101 acceptance line 1), with `/qa` supplying the exact close-state

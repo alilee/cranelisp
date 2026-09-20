@@ -20,44 +20,10 @@ Cranelisp programs can be run interactively (REPL) or in batch mode (JIT compile
 - ~~Linux/Windows support (macOS aarch64 only for Ring 4; abstractable later).~~ **Linux aarch64 is now in scope (S80) — see §11.** Windows remains out of scope.
 - Stripping or code signing.
 
-## 2. Sketch Comparison
-
-### How the sketch does it
-
-The sketch implements executable generation across two files:
-
-- **`sketch/src/exe.rs`** (458 lines): startup stub generation (`generate_startup_object`), system linker invocation (`link_executable`), bundle library locator (`find_bundle_lib`), platform rlib locator (`find_platform_rlibs`), platform manifest name collector (`collect_platform_manifest_names`).
-- **`sketch/src/batch.rs`** `build_executable()` (88 lines): orchestrates the pipeline — builds the module graph, runs the compilation pipeline (which writes `.o` cache files), collects `.o` paths from cache directories, generates the startup stub, finds the bundle library and platform rlibs, invokes the linker.
-
-The sketch uses the `--exe [output] [file.cl]` CLI flag. The entry point is `batch::build_executable(entry_path, output_path)`.
-
-### What worked
-
-1. **Clean layering**: the existing compilation pipeline writes `.o` files as a side effect of batch compilation. `build_executable` just adds a post-compilation linking step — no pipeline changes needed.
-2. **Cranelift-generated startup stub**: the startup `.o` is a small Cranelift `ObjectModule` that imports `main` and `exit`, avoiding any assembly or C dependency.
-3. **Platform initialisation in the stub**: platform manifests are initialised before `main()` runs, so platform functions are available from the first line of user code.
-4. **IO trampoline conditional**: the startup stub checks at compile time whether `main` returns `IO` and conditionally routes through `cranelisp_run_io`.
-
-### What the sketch does poorly
-
-1. **Hardcoded macOS aarch64**: `arm64`, `xcrun`, macOS `ld` flags are not abstracted.
-2. **No `main` type validation before linking**: the sketch checks `.o` existence but does not validate `main`'s type signature until runtime link errors appear.
-3. **Relative path gymnastics**: `rel()` helper with CWD-relative paths is fragile.
-
-### Where the reimplementation diverges
-
-| Aspect | Sketch | Reimplementation | Rationale |
-|---|---|---|---|
-| **CLI flag** | `--exe [output]` | `--link` (or per `/int` decision) | More descriptive of the action. `/int` decides final name. |
-| **Startup stub location** | `src/exe.rs` in monolithic crate | `src/exe/` in `cranelisp` binary crate, calls backend APIs | Startup stub is pipeline orchestration (it needs `CompiledModule` data). Backend provides `build_isa(is_pic: true)` and object compilation utilities. |
-| **Platform abstraction** | Hardcoded macOS | `LinkerConfig` struct abstractable to Linux later | Architecture concern: abstractable from day one, even if only macOS is implemented. |
-| **`main` validation** | Post-compilation `.o` existence check | Pre-link type signature check against `SymbolTable` | Clear error before invoking the linker. |
-| **Paths** | CWD-relative with `rel()` | Absolute paths throughout | Avoid CWD sensitivity. |
-
 ## 3. End-to-End Flow
 
 ```
-cranelisp --link examples/hello.cl
+cranelisp --link hello.cl
          │
          ▼
   ┌─────────────────┐
@@ -284,8 +250,8 @@ If `--no-cache` is passed alongside `--link`, modules are compiled fresh but sti
 ### Output path default
 
 If no output path is specified, derive it from the entry file:
-- `cranelisp --link examples/hello.cl` produces `hello` (entry stem, no extension).
-- `cranelisp --link examples/hello.cl -o myapp` produces `myapp`.
+- `cranelisp --link hello.cl` produces `hello` (entry stem, no extension).
+- `cranelisp --link hello.cl -o myapp` produces `myapp`.
 
 `/int` decides the exact CLI syntax.
 
@@ -404,7 +370,7 @@ Resolution options (decided during Phase-2 implementation):
 2. **Build a `staticlib` (`.a`) per platform for `--link`** (mirroring `exe-bundle`). No rmeta member, self-contained, links with plain `--whole-archive`. Cleaner long-term but a `/platform` crate-type/build change and a second artifact to locate.
 3. **Probe mold's leniency** — mold *may* skip non-object archive members. Cheapest to try; do not rely on it as the design.
 
-**IMPLEMENTED (S80, option 1).** `src/exe.rs::extract_rlib_objects(rlib, cache_dir)` shells out to the system `ar` (already on the Linux toolchain — no `ar`/`object` crate added):
+**IMPLEMENTED (S80, option 1).** `src/exe.rs::the rlib object-extraction step(rlib, cache_dir)` shells out to the system `ar` (already on the Linux toolchain — no `ar`/`object` crate added):
 
 - **List:** `ar t <rlib>` prints one member per line.
 - **Member-filter rule:** keep only members whose name **ends in `.o`** (the `*.rcgu.o` codegen units). This drops the rmeta family — `lib.rmeta` and its `lib.rmeta-link` sidecar — which do not end in `.o`. Empty object set ⇒ hard error.
@@ -454,13 +420,7 @@ A handful outside the `--link` family (`repl_persist` 1, `regression` 1, `public
 
 ### 11.8 Validation
 
-Per the Release Gate, after implementation: `cargo nextest run -E 'test(/^link_/) + binary(link) + binary(build_confidence)'` should go green (Phase 1); the full suite should return to ≤ the macOS baseline of ~7 failures once Phase 2 lands (modulo the ~4 unrelated residue). A minimal smoke check during bring-up: `cranelisp --link examples/hello.cl && ./hello; echo $?` must produce the documented exit code. (`cc -fuse-ld=mold` was confirmed working on the VM: a 42-returning C `main` exits 42.)
-
-### 11.9 Sketch comparison
-
-Not consulted — the sketch is macOS-only here (the existing §2 comparison already covers its `generate_startup_object`/`link_executable`). The Linux entry-via-crt strategy and the `.rlib` whole-archive hazard are Linux-platform facts (glibc init model, Rust archive layout), not language-design questions, so the sketch offers no oracle. First-principles per CLAUDE.md.
-
----
+Per the Release Gate, after implementation: `cargo nextest run -E 'test(/^link_/) + binary(link) + binary(build_confidence)'` should go green (Phase 1); the full suite should return to ≤ the macOS baseline of ~7 failures once Phase 2 lands (modulo the ~4 unrelated residue). A minimal smoke check during bring-up: `cranelisp --link hello.cl && ./hello; echo $?` must produce the documented exit code. (`cc -fuse-ld=mold` was confirmed working on the VM: a 42-returning C `main` exits 42.)
 
 ## 12. The `Linker` abstraction (S80 Wave 2E) — intent in, platform tokens out
 
@@ -572,7 +532,7 @@ Every cell in the Apple/GNU columns appears in **exactly one** impl. The caller 
 
 Both are **internal to `GnuCcLinker`** — they are GNU-specific renderings of intents the request states platform-neutrally, so they have no home in the request and no analogue in the Apple impl:
 
-- **`.o` extraction (`extract_rlib_objects`, `src/exe.rs:878`) is GNU's rendering of `force_include`.** A Rust `.rlib` is an `ar` archive carrying `lib.rmeta` (+ `lib.rmeta-link`) metadata members that GNU `ld`/mold reject under `--whole-archive` ("file format not recognized"); Apple `ld64` tolerates the raw rlib. So `AppleLdLinker` force-loads the raw `req.force_include[i].rlib` directly, while `GnuCcLinker` first extracts the object members (`ar t` → keep `*.o` → `ar x --output=<dir>`) and whole-archives only those. The extraction function moves *into* `GnuCcLinker` (a private method or a free fn in the GNU driver module) — it is dead code in any Apple build and meaningless to the caller. Its deterministic per-rlib cache dir (`<cache>/__plat_<stem>/`) derives from `req.startup_obj.parent()` exactly as today.
+- **`.o` extraction (`the rlib object-extraction step`, `src/exe.rs:878`) is GNU's rendering of `force_include`.** A Rust `.rlib` is an `ar` archive carrying `lib.rmeta` (+ `lib.rmeta-link`) metadata members that GNU `ld`/mold reject under `--whole-archive` ("file format not recognized"); Apple `ld64` tolerates the raw rlib. So `AppleLdLinker` force-loads the raw `req.force_include[i].rlib` directly, while `GnuCcLinker` first extracts the object members (`ar t` → keep `*.o` → `ar x --output=<dir>`) and whole-archives only those. The extraction function moves *into* `GnuCcLinker` (a private method or a free fn in the GNU driver module) — it is dead code in any Apple build and meaningless to the caller. Its deterministic per-rlib cache dir (`<cache>/__plat_<stem>/`) derives from `req.startup_obj.parent()` exactly as today.
 
 - **The link-order constraint is GNU's, and the GNU impl owns it.** GNU `ld` resolves a static archive only against symbols left undefined by inputs seen *so far*, so the whole-archived platform objects (which reference bundle symbols like `cranelisp_platform::adt::set_global_schema`) MUST be emitted **before** the bundle `-l`. `AppleLdLinker` (ld64) is order-insensitive here, so it has no such rule. Because each impl builds its own arg vector, the GNU impl simply places the `--whole-archive` group before the bundle `-l` in *its* `build_args`; the Apple impl orders to its own taste. The ordering is no longer a comment a maintainer must remember across two parallel functions — it is local to the one impl that needs it.
 
@@ -593,7 +553,7 @@ fn for_host() -> Result<Box<dyn Linker>, CranelispError> {
 }
 ```
 
-**`Box<dyn Linker>` over an enum-dispatch — justified.** There are exactly two live impls and dispatch happens once per `--link` (not in a hot loop), so the virtual-call cost is irrelevant; the `Box<dyn>` form keeps each impl's surface (its private `build_args`, its Apple-only `get_sdk_sysroot`, its GNU-only `extract_rlib_objects`) fully encapsulated in its own type with no shared enum forced to carry both platforms' fields — which is precisely the leak §11.6's flat `LinkerConfig` (macOS fields `Option`-nulled on Linux) embodied. The trait-object form makes "a token lives in exactly one impl" the default; an enum with a `match self` in every method re-opens the door to a shared body touching both platforms' tokens. (If a future need for `const`/no-alloc selection arises, an enum wrapper delegating to the same impls is a mechanical change — but it is not warranted now.)
+**`Box<dyn Linker>` over an enum-dispatch — justified.** There are exactly two live impls and dispatch happens once per `--link` (not in a hot loop), so the virtual-call cost is irrelevant; the `Box<dyn>` form keeps each impl's surface (its private `build_args`, its Apple-only `get_sdk_sysroot`, its GNU-only `the rlib object-extraction step`) fully encapsulated in its own type with no shared enum forced to carry both platforms' fields — which is precisely the leak §11.6's flat `LinkerConfig` (macOS fields `Option`-nulled on Linux) embodied. The trait-object form makes "a token lives in exactly one impl" the default; an enum with a `match self` in every method re-opens the door to a shared body touching both platforms' tokens. (If a future need for `const`/no-alloc selection arises, an enum wrapper delegating to the same impls is a mechanical change — but it is not warranted now.)
 
 **Where it lives: int-internal, `src/exe.rs` (or a new `src/link/` submodule — recommended).** Per §8, `link_executable` and its driver functions are in the **binary crate (`src/`), `/int`-owned**; `/backend` owns this *design* + the Cranelift startup-stub, not the linker-invocation source. The abstraction stays entirely within the binary crate:
 
@@ -618,8 +578,8 @@ The refactor is a structure-preserving relocation; no link behaviour changes on 
 | `host_entry_symbols()` (`:660`) | **unchanged** | Still computes `(stub_entry_symbol, user_main_symbol)` for `session_v4.rs`'s stub/alias emission; the caller now also passes `stub_entry_symbol` into `req.entry_symbol`. |
 | `link_executable(...)` dispatch (`:671`) | thin entry: build `LinkRequest`, `for_host()?.link(&req)` | The caller in `session_v4.rs:4121` either keeps calling `link_executable` (which now composes the request) OR `session_v4.rs` composes `LinkRequest` and calls `for_host()?.link()` directly — `/dev`'s call. The bundle dir/name derivation (`:680`–`:688`) becomes `BundleLib { dir, name }` construction. |
 | `link_executable_apple_ld(...)` (`:723`) | `AppleLdLinker::link` (+ private `build_args`) | Body relocated verbatim; reads `arch`/triplet from impl constants instead of `config`; `get_sdk_sysroot()` becomes an Apple-impl-internal call. The `-force_load <rlib>` loop renders `req.force_include`. |
-| `link_executable_cc(...)` (`:793`) | `GnuCcLinker::link` (+ private `build_args`) | Body relocated; the `--whole-archive` group renders `req.force_include`, calling the now-internal `extract_rlib_objects`; preserves the before-bundle ordering. |
-| `extract_rlib_objects(...)` (`:878`) | `GnuCcLinker` private (method or module-private fn) | GNU-only; extraction root from `req.startup_obj.parent()`. |
+| `link_executable_cc(...)` (`:793`) | `GnuCcLinker::link` (+ private `build_args`) | Body relocated; the `--whole-archive` group renders `req.force_include`, calling the now-internal `the rlib object-extraction step`; preserves the before-bundle ordering. |
+| `the rlib object-extraction step(...)` (`:878`) | `GnuCcLinker` private (method or module-private fn) | GNU-only; extraction root from `req.startup_obj.parent()`. |
 | `run_linker(...)` (`:977`) | shared helper (stays in `src/exe.rs` or `src/link/`) | Both impls call it; no change. |
 | `get_sdk_sysroot()` (`:999`) | `AppleLdLinker` private | Apple-only; only `AppleLdLinker::link` calls it (the `_ => Err` host arm of the old `for_host` never reached it anyway). |
 | **`log_link_summary(...)` (`:1025`)** | **DELETED → `Linker::describe`** | **The D4 fix.** The hardcoded `-force_load` (`:1054`) is gone. `link_executable` (or the call site) prints `linker.describe(&req)` — each impl renders the real command it will run, from its own `build_args`. The `; Linking: …` line now shows GNU tokens on Linux and Apple tokens on macOS, always matching the executed command. |

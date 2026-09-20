@@ -7,10 +7,10 @@
 //! - `print`: `String -> IO Int` -- print a string followed by a newline. Stays
 //!   a **blocking** `SchedulingClass::Sequential` effect: output must appear in
 //!   program order, and it never blocks long enough for the poll model to buy it
-//!   anything (`poll-support.md §3.1`). It is the byte-identical-off witness — the
+//!   anything (`design/platform/poll-leaf-authoring.md §3`). It is the byte-identical-off witness — the
 //!   v6-shape effect coexisting with a poll leaf in ONE manifest.
 //! - `read-line`: `() -> IO String` -- read a line from stdin. The **poll-shape**
-//!   candidate (`design/platform/poll-support.md §3.1`): it blocks on stdin
+//!   candidate (`design/platform/poll-leaf-authoring.md §3`): it blocks on stdin
 //!   readiness, the textbook poll leaf. Rewritten as a [`PollFn`]: the first poll
 //!   does a non-blocking read of stdin (fd 0); if data is available it returns the
 //!   line `Ready`, otherwise it registers fd-readiness with the host reactor and
@@ -18,7 +18,7 @@
 //!   so the backend injects the `(0, 1)` leading pair — no token/capacity args.
 //!
 //! This is the "simple platform ports cleanly" ergonomics check
-//! (`poll-support.md §3.1`): the poll leaf is written against the extracted
+//! (`design/platform/poll-leaf-authoring.md §3`): the poll leaf is written against the extracted
 //! `poll_support` suite — [`PollEnv`] for the env, [`Reactor`] for fd-readiness,
 //! [`PollState`] for the first-poll/re-poll phase — so the only hand-written part
 //! is the syscall + the line-buffering + the `CLString` result construction.
@@ -272,7 +272,7 @@ pub unsafe extern "C" fn read_line_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // v9 ctx-vtable (`poll-support.md §3.1`, resolves FIXME 0471 STRUCTURALLY):
+    // v9 ctx-vtable (`design/platform/poll-leaf-authoring.md §3`, resolves FIXME 0471 STRUCTURALLY):
     // stdin is a process SINGLETON with no handle to project a token from, so it
     // declares a MANIFEST-STATIC serial token. The poll-fn acquires that CONSTANT
     // (capacity 1) — admission then permits at most ONE in-flight `read-line` by
@@ -289,7 +289,7 @@ pub unsafe extern "C" fn read_line_pollfn(
     )
 }
 
-/// v9: the manifest-static SINGLETON serial token for stdin (`poll-support.md §3.1`).
+/// v9: the manifest-static SINGLETON serial token for stdin (`design/platform/poll-leaf-authoring.md §3`).
 /// A fixed non-zero token; the `read-line` poll-fn acquires it at capacity 1, so
 /// admission enforces single-in-flight stdin by construction (resolves FIXME 0471).
 const STDIN_TOKEN: u64 = 0x5354_4449_4E5F_544B; // "STDIN_TK" — any fixed non-zero value

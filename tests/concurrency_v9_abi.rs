@@ -6,7 +6,7 @@
 //!
 //! Plan: retired S97 QA plan §"Item 1" + §"Item 2"
 //! (`git show 7e56a81c:tests/plan/sprint-97.md`). Contracts of record:
-//!   - `design/platform/poll-support.md §3.5` — **opaque `Connection` with a GENUINE
+//!   - `design/platform/poll-leaf-authoring.md §4` — **opaque `Connection` with a GENUINE
 //!     `fd` field** (`(deftype Connection [:primitives/Int fd])`; `r == fd`, the
 //!     platform reads it back, user code threads but cannot destructure it open) +
 //!     slim leaf sigs (`accept-conn:(Fn [Listener] (IO Connection))` Produce /
@@ -82,7 +82,7 @@ fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
 }
 
 /// The v9-shaped web connection-handle ADT module — `Connection` is **opaque but
-/// carries a GENUINE `fd` field** (`poll-support.md §3.5.1`: a normal 1-field ADT
+/// carries a GENUINE `fd` field** (`poll-leaf-authoring.md §4`: a normal 1-field ADT
 /// = HeapHeader(16) + tag(8) + fd(8); the platform reads `r == fd` back out of the
 /// field, the trampoline never introspects it; user code threads the handle but the
 /// field is **not user-destructurable**). Scheduling state (`token`/`capacity`)
@@ -158,7 +158,7 @@ fn assert_v9_typechecks(out: CrOutput, ctx: &str) {
 // Item 1 — the v9 user-visible signature change (the HEADLINE behavioral change).
 // =============================================================================
 
-// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `read-conn:(Fn [Connection]
+// spec: design/platform/poll-leaf-authoring.md §7 — v9 `read-conn:(Fn [Connection]
 // (IO Request))`. The v8 3-arg shape `(read-conn token capacity fd)` over three
 // `Int`s MUST be a typecheck error post-cutover (the descriptor stops being a
 // cranelisp value; the leaf takes ONLY the connection handle). RED-until v9 cutover.
@@ -171,7 +171,7 @@ fn read_conn_three_arg_shape_rejected_neg() {
     assert_v9_rejected(out, "read_conn_three_arg_shape_rejected_neg");
 }
 
-// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `read-conn:(Fn [Connection]
+// spec: design/platform/poll-leaf-authoring.md §7 — v9 `read-conn:(Fn [Connection]
 // (IO Request))`: `(read-conn conn)` (1-arg, over a `Connection`) MUST typecheck +
 // compile. Compile-only (the leaf need not run). RED-until v9 cutover.
 #[test]
@@ -183,7 +183,7 @@ fn read_conn_handle_only_shape_typechecks() {
     assert_v9_typechecks(out, "read_conn_handle_only_shape_typechecks");
 }
 
-// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `send-conn:(Fn [Connection
+// spec: design/platform/poll-leaf-authoring.md §7 — v9 `send-conn:(Fn [Connection
 // Response] (IO Int))`: the 2-arg handle+response shape `(send-conn conn resp)` MUST
 // typecheck, AND the v8 4-arg `(send-conn token capacity fd resp)` MUST be rejected
 // (the `_neg` companion, same row). RED-until v9 cutover.
@@ -211,7 +211,7 @@ fn send_conn_handle_plus_response_typechecks() {
     );
 }
 
-// spec: design/platform/archive/poll-support-s96.md §3.5.2 — v9 `accept-conn:(Fn [Listener]
+// spec: design/platform/poll-leaf-authoring.md §7 — v9 `accept-conn:(Fn [Listener]
 // (IO Connection))`: `(accept-conn listener)` typechecks and PRODUCES a `Connection`
 // value (the lambda binder annotated `:web/Connection` unifies against the leaf's
 // `(IO Connection)` result). RED-until v9 cutover.
@@ -231,7 +231,7 @@ fn accept_conn_listener_only_typechecks() {
 // layout rework — the dead header-slot/`desc_out` model is gone).
 // =============================================================================
 
-// spec: design/platform/archive/poll-support-s96.md §3.5.1 — `(deftype Connection
+// spec: design/platform/poll-leaf-authoring.md §4 — `(deftype Connection
 // [:primitives/Int fd])` is **tramp-opaque but USER-READABLE** (`/arch`'s ruling,
 // FIXME 0484 / `effect-concurrency.md §4.1.1`): the load-bearing invariant is opacity
 // toward the *trampoline* — the trampoline threads the handle accept→read/send/close
@@ -258,7 +258,7 @@ fn connection_field_user_readable() {
     assert_v9_typechecks(out, "connection_field_user_readable");
 }
 
-// spec: design/platform/archive/poll-support-s96.md §3.5.1 — negative-coverage: NO scheduling
+// spec: design/platform/poll-leaf-authoring.md §4 — negative-coverage: NO scheduling
 // state rides on the value. A clean load + probe of the opaque `Connection` MUST NOT
 // surface `token` / `capacity` (nor any descriptor/role) anywhere in its display or
 // value-shape — under the ctx-vtable model those live entirely in the trampoline's
@@ -292,7 +292,7 @@ fn connection_display_shows_no_descriptor_neg() {
         !combined.contains("token") && !combined.contains("capacity"),
         "connection_display_shows_no_descriptor_neg: the opaque v9 Connection MUST NOT \
          surface `token` / `capacity` (scheduling state is trampoline-`ctx`-owned, never a \
-         field on the handle — effect-concurrency.md §4.1.1 / poll-support.md §3.5.1); \
+         field on the handle — effect-concurrency.md §4.1.1 / poll-leaf-authoring.md §4); \
          got:\n{combined}"
     );
 }

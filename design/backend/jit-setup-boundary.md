@@ -1,17 +1,17 @@
-# Minimal JIT-setup boundary — `Jit::new(symbol_tables)`, `INTRINSICS_TABLE`, `.meta.json` platform schema, 0122 re-test
+# Minimal JIT-setup boundary — `Jit::new(symbol_tables)`, `intrinsics_table()`, `.meta.json` platform schema, 0122 re-test
 
 **Status.** Phase 3 design (S76). Design-only; no source edits accompany this doc. Implementation lands in S76 W-Enablement / W-Integrate per `sprints/SPRINT.md`.
 
 **Owner.** `/design` (backend).
 
-**Reads.** `design/arch/bounded-contexts.md` §3 ("Minimal JIT-setup boundary" + invariants 1–7); `design/backend/compile-to-module.md` (S75 banner + §6 + §2.6.5); `design/backend/backend.md` (master, §2.1/§3.3); `crates/cranelisp-backend/src/lib.rs` `//!` + `src/jit.rs` rustdoc; [primitives ownership decision](../arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md) (primitives precedent), [per-symbol JIT cardinality and direct-write decision](../arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) (per-symbol JIT direct-writes); `sprints/SPRINT.md` §"Architecture review (Phase 2)" Q1/Q2 (the seam dispositions, /arch sign-off); FIXMEs `0232-backend-meta-json-platform-schema.md`, `0122-backend-link-mode-got-alignment-divergence.md`, `0233-int-platform-as-module-*`.
+**Reads.** `design/arch/bounded-contexts.md` §3 ("Minimal JIT-setup boundary" + invariants 1–7); `design/backend/compile-to-module.md` (S75 banner + §6 + §2.6.5); `design/backend/backend.md` (the context master); `crates/cranelisp-backend/src/lib.rs` `//!` + `crates/cranelisp-backend/src/jit.rs` rustdoc; [primitives ownership decision](../arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md) (primitives precedent), [per-symbol JIT cardinality and direct-write decision](../arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md) (per-symbol JIT direct-writes); `sprints/SPRINT.md` §"Architecture review (Phase 2)" Q1/Q2 (the seam dispositions, /arch sign-off); FIXMEs `0232-backend-meta-json-platform-schema.md`, `0122-backend-link-mode-got-alignment-divergence.md`, `0233-int-platform-as-module-*`.
 
 **Scope from BC §3.** Four S76 backend obligations, all W-Enablement / W-Integrate (NOT macro-driven):
 
 | # | Obligation | Wave | §below |
 |--:|---|---|---|
 | 1 | `Jit::new(symbol_tables)` constructor — the minimal-JIT-setup boundary | W-Enablement | §1 |
-| 2 | Consume `intrinsics::INTRINSICS_TABLE` at construct + cache-hit | W-Enablement | §2 |
+| 2 | Consume `intrinsics::intrinsics_table()` at construct + cache-hit | W-Enablement | §2 |
 | 3 | `.meta.json` platform schema (`schema_literal` field) — FIXME 0232 | W-Integrate (platform host-wiring wave) | §3 |
 | 4 | 0122 `--link` GOT-alignment defect — re-test + (cheap) fix | W-Integrate | §4 |
 
@@ -35,7 +35,7 @@ impl Jit {
     ///
     /// Registers, before `JITModule::new`:
     ///   - the runtime + backend-emitted-call intrinsic Import targets from
-    ///     `cranelisp_intrinsics::INTRINSICS_TABLE` (replacing the in-crate
+    ///     `cranelisp_intrinsics::intrinsics_table()` (replacing the in-crate
     ///     `intrinsic_symbols()` enumeration — §2);
     ///   - one `__cranelisp_got_{M}` → `symbol_tables[M].got().base_ptr()`
     ///     symbol per module in `symbol_tables` (incl. the synthetic
@@ -62,7 +62,7 @@ impl Jit {
 
 Pre-`JITModule::new`, on a `JITBuilder`:
 
-1. **Intrinsic Import targets** — `for rec in cranelisp_intrinsics::INTRINSICS_TABLE { builder.symbol(rec.name, rec.ptr) }`. Replaces `register_intrinsics()` (`jit.rs:180`) which iterates the in-crate `intrinsic_symbols()`. See §2.
+1. **Intrinsic Import targets** — `for rec in cranelisp_intrinsics::intrinsics_table() { builder.symbol(rec.name, rec.ptr) }`. Replaces `register_intrinsics()` (`jit.rs:180`) which iterates the in-crate `intrinsic_symbols()`. See §2.
 2. **Per-module GOT data symbols** — `for entry in symbol_tables.iter() { builder.symbol(got_data_symbol_name(entry.key()), entry.value().got().base_ptr()) }`. This is exactly the `got_data_defs` loop currently at `worker.rs:3003-3006`, moved inside the constructor. Uses the **types-crate** `got_data_symbol_name` (already authored — `crates/cranelisp-types/src/module.rs:1722`), not the backend `pub(crate)` one (`compiler/mod.rs:100`), per the Phase-2 review's single-source ruling.
 3. **Platform-effect JIT names** — the def + import-chain walk: for each top-level `DefKind::PlatformEffect { scheduling_class }` (the current `cranelisp-types` shape — `crates/cranelisp-types/src/module.rs`; **not** nested under `DefKind::Primitive { primitive_kind: .. }`, which no longer exists) with `got_slot: Some(slot)`, register `(name, got.load_slot(slot))` where `name` is the **symbol-table key** (the `Symbol`) — there is no retired `jit_name` payload. Follow `ModuleEntry::Import` to the source table for imported platform effects; the canonical JIT name is the **defining** module's symbol key (`source.symbol`), not the importing module's local alias. The implemented walk is `crates/cranelisp-backend/src/jit.rs::register_platform_effect_symbols` (unit-tested by `jit_new_registers_platform_effect_and_got_symbols` + `jit_new_follows_import_edge_for_platform_effect`).
 
@@ -77,14 +77,14 @@ Then `JITModule::new(builder)`, `make_context()`, `FunctionBuilderContext::new()
 | `Jit::new_with_symbols(&[(&str, *const u8)])` | **`pub(crate)` or delete** once int's hand-assembly is gone. int is its only production caller (the two `pipeline.rs` sites collapse with W-Collapse; the `worker.rs:3296` site becomes `Jit::new(symbol_tables)`). Backend tests that use it migrate to `Jit::new(&tables)` or keep a `pub(crate)` test-only path. | BC §3 lists `new_with_symbols`-style construct as int-parallel-path-only; the boundary is `new(symbol_tables)`. `feedback_callee_api_for_caller_only`: a callee API kept only because int calls it is not justified by int. |
 | `Jit::new_with_isa` | **`pub(crate)`** — used internally by per-symbol batches if §1.3's shared-ISA optimisation ever lands; no external caller. | Same. |
 | `Jit::new()` (no args) | **Retired — `new` is the boundary constructor (as-built S76 W1).** The boundary ctor took the `new` identifier as the generic `Jit::new<C, L>(symbol_tables)`; Rust cannot host both a zero-arg `new()` and a generic `new<C,L>(..)` under one identifier, so the zero-arg form was displaced. It had no live consumer — the backend tests that the original row cited as "the genuine zero-arg path" in fact call `Jit::new_with_symbols(&[])` (kept `pub(crate)`, in-crate/test-reachable). The zero-arg path is re-expressed as `Jit::new(&empty_tables)` where genuinely needed. The backend `public-api.txt` removes `Jit::new() -> Result<Self, …>` alongside `new_with_symbols`/`new_with_isa`; the `lib.rs` crate-root `//!` documents the disposition. The original row's "revisit if baseline review objects" escape hatch anticipated this. *(FIXME 0253 reconciliation.)* |
-| `register_intrinsics(&mut JITBuilder)` (`jit.rs:180`) | **Re-point** to iterate `INTRINSICS_TABLE` (§2), OR fold into `Jit::new`'s body. | §2. |
+| `register_intrinsics(&mut JITBuilder)` (`jit.rs:180`) | **Re-point** to iterate `intrinsics_table()` (§2), OR fold into `Jit::new`'s body. | §2. |
 | `collect_jit_setup` / `collect_jit_setup_public` (int, `worker.rs:2954`/`3017`) | **Deleted on the int side** (W-Collapse) — body absorbed into `Jit::new`. Backend gains the walk. | The reach-around int does today moves behind the boundary. |
 
 **Dead-code signal expected.** Narrowing `new_with_symbols`/`new_with_isa` to `pub(crate)` will fire `dead_code` on any field/method reachable only through them until W-Collapse deletes int's parallel path. That is the **expected** signal per `feedback_facade_walk_no_interior` / the `jit.rs:236` `#[allow(dead_code)]` FIXME(W4/S77) — do NOT revert to `pub` to silence it. The S76 collapse removes the allow when the in-crate readers materialise.
 
 ### 1.5 Sequencing (per Phase-2 review Q2)
 
-`Jit::new(symbol_tables)` lands **with** the int JIT-setup collapse (W-Collapse), not before — it is the *destination shape* of the collapse. The hand-assembly loop (`collect_jit_setup` + `int_intrinsics` + `got_data_defs` fold) is *replaced by* one `Jit::new(symbol_tables)` call in the same co-edit (backend authors the constructor; int switches the call site + deletes `collect_jit_setup`). `INTRINSICS_TABLE` (intrinsics crate) lands with-or-just-before, since `Jit::new` reads it (§2.3).
+`Jit::new(symbol_tables)` lands **with** the int JIT-setup collapse (W-Collapse), not before — it is the *destination shape* of the collapse. The hand-assembly loop (`collect_jit_setup` + `int_intrinsics` + `got_data_defs` fold) is *replaced by* one `Jit::new(symbol_tables)` call in the same co-edit (backend authors the constructor; int switches the call site + deletes `collect_jit_setup`). `intrinsics_table()` (intrinsics crate) lands with-or-just-before, since `Jit::new` reads it (§2.3).
 
 ### 1.6 Baseline-regen note
 
@@ -92,7 +92,7 @@ Then `JITModule::new(builder)`, `make_context()`, `FunctionBuilderContext::new()
 
 ---
 
-## §2 Consume `cranelisp_intrinsics::INTRINSICS_TABLE`
+## §2 Consume `cranelisp_intrinsics::intrinsics_table()`
 
 ### 2.1 What it is
 
@@ -104,22 +104,22 @@ The catalog's home moving to intrinsics means **`backend::IntrinsicSymbol` retir
 
 | Site | Today | Target |
 |---|---|---|
-| **JIT construct** | `Jit::new`'s `register_intrinsics` / `declare_intrinsics_generic` iterate the in-crate `intrinsic_symbols()` (`jit.rs:148`) | iterate `cranelisp_intrinsics::INTRINSICS_TABLE`. Both the `JITBuilder::symbol(name, ptr)` registration (`register_intrinsics`, `jit.rs:180`) and the `declare_function(name, Linkage::Import, sig)` declaration (`declare_intrinsics_generic`, `jit.rs:733`) read the catalog. `param_count`/`has_return` drive the synthesized `Signature`. |
-| **Cache-hit `Linker`** | `worker.rs:3545`: `for sym in cranelisp_backend::jit::intrinsic_symbols() { linker.register_symbol(sym.name, sym.ptr) }` — int reaches into backend's `pub(crate)` enumeration | int iterates `cranelisp_intrinsics::INTRINSICS_TABLE` directly and calls `linker.register_symbol(rec.name, rec.ptr)`. Backend's `intrinsic_symbols()` is no longer reached cross-crate. |
+| **JIT construct** | `Jit::new`'s `register_intrinsics` / `declare_intrinsics_generic` iterate the in-crate `intrinsic_symbols()` (`jit.rs:148`) | iterate `cranelisp_intrinsics::intrinsics_table()`. Both the `JITBuilder::symbol(name, ptr)` registration (`register_intrinsics`, `jit.rs:180`) and the `declare_function(name, Linkage::Import, sig)` declaration (`declare_intrinsics_generic`, `jit.rs:733`) read the catalog. `param_count`/`has_return` drive the synthesized `Signature`. |
+| **Cache-hit `Linker`** | `worker.rs:3545`: `for sym in cranelisp_backend::jit::intrinsic_symbols() { linker.register_symbol(sym.name, sym.ptr) }` — int reaches into backend's `pub(crate)` enumeration | int iterates `cranelisp_intrinsics::intrinsics_table()` directly and calls `linker.register_symbol(rec.name, rec.ptr)`. Backend's `intrinsic_symbols()` is no longer reached cross-crate. |
 
 ### 2.3 Backend-side disposition of `intrinsic_symbols()` / `IntrinsicSymbol`
 
-- `intrinsic_symbols()` (`jit.rs:148`) — **deleted** once both consumption sites read `INTRINSICS_TABLE`. Its body (the 15-record `vec![...]`) is the data that migrates into the intrinsics-published catalog; `/dev (intrinsics)` authors `INTRINSICS_TABLE` from it (the `cranelisp_intrinsics::*` fn-ptr references the records already use are in-crate for intrinsics, so the catalog is naturally homed there).
-- `IntrinsicSymbol` struct (`jit.rs:87`) — **deleted** (its public-concept role moves to whatever record type `INTRINSICS_TABLE` exposes). The convenience-accessor DTOs `IntrinsicFuncIds`/`IntrinsicIds` (the *declared-FuncId* bundles, `jit.rs:704`) **stay** `pub(crate)` — they are the per-call `declare_intrinsics_generic` return, populated from the catalog, consumed by `build_compile_context`. They are not the catalog.
-- `declare_intrinsics_generic<M>` (`jit.rs:733`) — **stays** `pub(crate)`, body re-pointed from `intrinsic_symbols()` to `INTRINSICS_TABLE`. It is `compile_to_module`'s internal intrinsic-declaration step (`lib.rs:526`), not a boundary.
+- `intrinsic_symbols()` (`jit.rs:148`) — **deleted** once both consumption sites read `intrinsics_table()`. Its body (the 15-record `vec![...]`) is the data that migrates into the intrinsics-published catalog; `/dev (intrinsics)` authors `intrinsics_table()` from it (the `cranelisp_intrinsics::*` fn-ptr references the records already use are in-crate for intrinsics, so the catalog is naturally homed there).
+- `IntrinsicSymbol` struct (`jit.rs:87`) — **deleted** (its public-concept role moves to whatever record type `intrinsics_table()` exposes). The convenience-accessor DTOs `IntrinsicFuncIds`/`IntrinsicIds` (the *declared-FuncId* bundles, `jit.rs:704`) **stay** `pub(crate)` — they are the per-call `declare_intrinsics_generic` return, populated from the catalog, consumed by `build_compile_context`. They are not the catalog.
+- `declare_intrinsics_generic<M>` (`jit.rs:733`) — **stays** `pub(crate)`, body re-pointed from `intrinsic_symbols()` to `intrinsics_table()`. It is `compile_to_module`'s internal intrinsic-declaration step (`lib.rs:526`), not a boundary.
 
 ### 2.4 Dependency check
 
-`cranelisp-backend` already depends on `cranelisp-intrinsics` (it references `cranelisp_intrinsics::alloc::heap_alloc` etc. in the current `intrinsic_symbols()` body — `jit.rs:151`). Consuming `INTRINSICS_TABLE` adds no new dep edge; the DAG is unchanged. Backend still has **no** dep on `cranelisp-primitives` (Decision 0048 dep-ban) — `INTRINSICS_TABLE` is intrinsics-only; user-callable primitives reach codegen through the GOT, never through this catalog (`jit.rs:108` invariant preserved).
+`cranelisp-backend` already depends on `cranelisp-intrinsics` (it references `cranelisp_intrinsics::alloc::heap_alloc` etc. in the current `intrinsic_symbols()` body — `jit.rs:151`). Consuming `intrinsics_table()` adds no new dep edge; the DAG is unchanged. Backend still has **no** dep on `cranelisp-primitives` (Decision 0048 dep-ban) — `intrinsics_table()` is intrinsics-only; user-callable primitives reach codegen through the GOT, never through this catalog (`jit.rs:108` invariant preserved).
 
 ### 2.5 Baseline-regen note
 
-Deleting `intrinsic_symbols()` + `IntrinsicSymbol` (already `pub(crate)`, so NOT in the public baseline) does not move `crates/cranelisp-backend/public-api.txt`. The change is internal. `cranelisp-intrinsics/public-api.txt` gains `INTRINSICS_TABLE` — that baseline regen is `/dev (intrinsics)`'s, not backend's. Backend's only baseline movement this wave is §1.6's `Jit::new`.
+Deleting `intrinsic_symbols()` + `IntrinsicSymbol` (already `pub(crate)`, so NOT in the public baseline) does not move `crates/cranelisp-backend/public-api.txt`. The change is internal. `cranelisp-intrinsics/public-api.txt` gains `intrinsics_table()` — that baseline regen is `/dev (intrinsics)`'s, not backend's. Backend's only baseline movement this wave is §1.6's `Jit::new`.
 
 ---
 
@@ -136,7 +136,7 @@ The `.meta.json` is the serialised `SymbolTable` (`cache/serialize.rs` — `seri
 **Backend's part is the sidecar emission + round-trip plumbing; the field itself is a `cranelisp-types` addition (filed to /arch).** Concretely:
 
 1. **Field (filed to /arch).** The platform module's `SymbolTable` needs a `schema_literal: Option<String>` (or, more precisely-typed, alongside the existing `platforms: Vec<PlatformSpec>` structural-decl list — the schema is a platform-module property). Backend does not author `cranelisp-types`; **FIXME `target: /arch`** proposing the field, citing 0232's proposed JSON shape and that it rides the existing serde round-trip (no new serializer). Optional/defaulted (`schema_literal: None` / `""`) so pre-S71 DLLs (stdio, test-capture) cache without it — 0232 §"Operational implication".
-2. **Write side.** When the nice worker emits the platform module's cache pair (`compile_to_module::<ObjectModule>` + caller `finish().emit()` + sidecar `SymbolTable<(), ()>`), the `schema_literal` is already on the sidecar table (it was set at platform-module registration). No backend code change beyond the field existing — serde carries it. **The `schema_literal` is NOT ABI-version-bumping** (0232 §"Operational implication" — it is cache-layer, not DLL-boundary); `CACHE_SCHEMA_VERSION` (`cache/mod.rs`) bumps only because the serialized `SymbolTable` shape changed (adding a field is a schema change → bump to invalidate stale caches gracefully, not a cryptic deserialise error — Decision 34 / `backend.md` §6.3).
+2. **Write side.** When the nice worker emits the platform module's cache pair (`compile_to_module::<ObjectModule>` + caller `finish().emit()` + sidecar `SymbolTable<(), ()>`), the `schema_literal` is already on the sidecar table (it was set at platform-module registration). No backend code change beyond the field existing — serde carries it. **The `schema_literal` is NOT ABI-version-bumping** (0232 §"Operational implication" — it is cache-layer, not DLL-boundary); `CACHE_SCHEMA_VERSION` (`cache/mod.rs`) bumps only because the serialized `SymbolTable` shape changed (adding a field is a schema change → bump to invalidate stale caches gracefully, not a cryptic deserialise error — Decision 34 / `design/backend/backend.md` §6).
 3. **Read side.** On cache-hit, `deserialise_meta` (`serialize.rs:235`) reconstructs the `SymbolTable` including `schema_literal`. Backend's `load_object` path hands the reconstructed sidecar table back to int; int's platform loader (0233) reads `schema_literal` and re-parses it host-side (cheap, sub-ms — 0232 §"Proposed resolution") to re-populate the DLL's `LazyLock<Schema>`, re-validating against the current typecheck symbol-table (FIXME 0231).
 
 ### 3.3 Disposition / sequencing
@@ -195,7 +195,7 @@ Both halves of the likely-correct fix are present: (a) `set_align(8)` (the align
 |---|---|---|
 | §1 `Jit::new(symbol_tables)` | `jit.rs` `#[cfg(test)]` | Build a `SymbolTables` with two modules (one carrying a `PlatformEffect` def with a populated GOT slot, one plain) + a populated `got().base_ptr()`. `Jit::new(&tables)` → assert it constructs Ok; assert the GOT-data symbol + platform jit-name are registered (observable via compiling a tiny GOT-indirect fn and finalizing — reuses the existing `compile_to_module_writes_got_slot_after_finalize` harness shape). Mirror the existing `from_isa`/`new_with_symbols` tests at `jit.rs:794+`. |
 | §1 narrowing | `jit.rs` / baseline | The `pub(crate)` narrowing of `new_with_symbols`/`new_with_isa` is verified by the `public-api.txt` diff (they leave the baseline). No bespoke test. |
-| §2 `INTRINSICS_TABLE` consumption | `jit.rs` `#[cfg(test)]` | Assert `declare_intrinsics_generic` over a stub `Module` declares one `FuncId` per `INTRINSICS_TABLE` record with the right param count (replaces any `intrinsic_symbols()`-keyed assertion). Confirms the re-point preserves the 15-symbol set. |
+| §2 `intrinsics_table()` consumption | `jit.rs` `#[cfg(test)]` | Assert `declare_intrinsics_generic` over a stub `Module` declares one `FuncId` per `intrinsics_table()` record with the right param count (replaces any `intrinsic_symbols()`-keyed assertion). Confirms the re-point preserves the 15-symbol set. |
 | §3 `.meta.json` schema | `cache/serialize.rs` `#[cfg(test)]` | Extend the existing round-trip test (`serialize.rs:439`): set `schema_literal: Some("((Rectangle ((CLInt w) (CLInt h))))")` on a `SymbolTable`, `serialise_meta` → `deserialise_meta`, assert the field round-trips and `schema_version` matches post-bump. |
 | §4 0122 | (no new unit test) | The fix is exercised by the four e2e `build_confidence.rs` repros (the right level — `--link` is an e2e concern, not unit). Contingency-narrowed repro (if §4.3 step 4 fires) is a /qa e2e in `tests/`, not a backend unit test. |
 
@@ -204,7 +204,7 @@ Both halves of the likely-correct fix are present: (a) `set_align(8)` (the align
 ## §6 Flags for /arch
 
 1. **FIXME `target: /arch` — `schema_literal` field on the platform module `SymbolTable`** (§3.2 item 1). Backend cannot author `cranelisp-types`; the field is the one cross-crate type the 0232 round-trip needs. Cite 0232 + this §3. *(Filed alongside this Phase-3 doc.)*
-2. **No other cross-crate type needed.** `Jit::new(symbol_tables)` consumes `SymbolTables<C, L>` (exists), `got_data_symbol_name` (types, exists — `module.rs:1722`), `INTRINSICS_TABLE` (intrinsics pub, approved target-stated by Phase-2 review, authored by /dev intrinsics). No backend public surface grows beyond `Jit::new` (Phase-2 review Q1/Q2 confirmed).
+2. **No other cross-crate type needed.** `Jit::new(symbol_tables)` consumes `SymbolTables<C, L>` (exists), `got_data_symbol_name` (types, exists — `module.rs:1722`), `intrinsics_table()` (intrinsics pub, approved target-stated by Phase-2 review, authored by /dev intrinsics). No backend public surface grows beyond `Jit::new` (Phase-2 review Q1/Q2 confirmed).
 3. **W-Macro NO-OP for backend** (stated up top) — flagged here only so /arch's W-Macro cascade does not expect a backend /dev wave. None is owed.
 
 The full retired failure ledger is available in Git: `git show a25ce2c8:tests/plan/` (file `ledger.md`).

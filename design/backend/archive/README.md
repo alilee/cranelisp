@@ -1,29 +1,32 @@
 # design/backend/archive/
 
-Frozen historical backend design docs — incident-debug residue and pivot
-artefacts that no longer reflect live design intent. Kept for reproduction
-context only; **do not cite as authoritative design**. Live design docs stay at
-the `design/backend/` top level (see `backend.md` §8).
+One document remains here, and it is **not** historical.
 
-Archived S75 W5 — the five firmly-stale "stale as live design" docs flagged in
-`backend.md` §8. Mirrors the `design/arch/archive/` precedent.
+| Doc | Why it is retained |
+|---|---|
+| `io-trampoline-trace.md` | The IO event taxonomy, its emission disciplines and its off-path performance bound are cited from `benches/io_trace_off_path.rs`, `tests/spec_10_io.rs`, `src/observability.rs` and `src/io_trace.rs`. It is a live contract that happens to live at this path. |
 
-| Doc | Origin | What it captured | Why archived |
-|---|---|---|---|
-| `cache-repl-loads-triage.md` | pre-S58 | REPL cache-load triage before Decision 37's "no swallowed failures" landed | Superseded — live design lands in `module-caching.md` (Decision 37 outcome) |
-| `defect-8-repro-notes.md` | incident | Defect-8 reproduction notes | Incident-debug residue; kept as cross-skill repro example |
-| `defects-456-reduction.md` | Sprint 59 W1 | Reduction of defects 4/5/6 (RC last-use) | Sprint-59 incident-debug residue |
-| `slice-4-21-hello-io-investigation.md` | Sprint 61 | Closure double-free reduction for the 4.21 hello-IO slice | Sprint-61 era reduction; kept for repro |
-| `io-trampoline-trace.md` | Wave 1 IO | IO-scheduling trampoline debug trace | Wave-1 IO-scheduling debug residue; live design is `io-trampoline.md` + `io-scheduling.md` |
+Its placement is a known wart: the consumer side relocated to the integration
+layer, so the natural home is `design/int/observability.md`. Moving it would
+break live source citations, and the destination belongs to another owner — so
+it stays until that relocation is done deliberately, with the citations repaired
+in the same change.
 
-**Not archived (residual live content, stay at top level):** `hkt-codegen.md`
-and `ast-sourced-codegen.md` — the latter partially superseded by Decision 25's
-`Def.ast` field. Both are cite-with-care references, not pure history.
+**Do not add documents here.** The directory is not a holding pen. A record
+whose content has landed is deleted, not moved; Git preserves it. A record that
+is still the canonical source of something belongs with the current designs at
+`design/backend/`, where readers look.
 
-**Retired instead of archived (S122):** the S51 FQTypeName/cache migration
-design, listed here until now as partially live, carried nothing current
-against source and was deleted under the extract-then-delete rule
-(`sprints/METHOD.md` §3.1). Its one surviving rule is in `backend.md` §4.5, and
-the disposition is recorded at `backend.md` §8. **This directory takes frozen
-records that remain the canonical context for something. Executed work whose
-content has landed is deleted, not moved here.**
+**Retired at S122**, after verifying that every reduction they described is a
+committed test and that their durable rules had a current home:
+
+- the Sprint-59 cache-load triage — its `.L`-local GOT-symbol rule is now
+  `module-caching.md` §13.3.1;
+- the Sprint-59 defects 4/5/6 reduction — its repros are the `d45_*`/`d6_*`/
+  `s60_*` families in `tests/regression.rs`, and its convergence invariant is
+  `jit-object-convergence.md` §1;
+- the Sprint-61 closure double-free investigation — its rule and the boundary
+  ruling behind it are `ring2-rc.md` §5.6, and its raw logs are retained in
+  `tests/sprint61/race-evidence/`;
+- the defect-8 repro notes — the code they describe was deleted, and the rule
+  that replaced it is in `src/CLAUDE.md`.

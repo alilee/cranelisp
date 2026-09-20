@@ -44,7 +44,7 @@ refusal, and reads the optional `/strand` dev sink. It never reaches into reacto
 - **Pipeline / session / REPL / cache / macro / observability**: `int.md`, `io-integration.md`
   (the host-side IO forcing + platform-DLL load wiring), `cache-hit-loading.md`,
   `session-persistence.md`, `symbol-table-cache.md`, `repl-lifecycle.md`, `observability.md`,
-  `macro-resolver-impl.md`, `cranelisp-toml.md`, the `s7*`/`step*`/`wave-*` slice docs, etc.
+  `macro-resolver-impl.md`, `cranelisp-toml.md`, the `step*` slice docs, etc.
 - **`session-transaction.md`** (S101; amended S102 — §9.1.1 downgrade `stale:` contract,
   §10 T1 full-cure mechanics) — the R3 dev-session redefinition machinery:
   summary-diff gate, reverse dependency index, dependent-recompilation transaction,
@@ -112,7 +112,6 @@ upstream — 0869's producer is C3's (`design/arch/trait-impl-cache-carrier.md`
 (`design/arch/module-alias-scoped-lookup.md`) — so N3's entry gates are
 ordinary wash landings and nothing is owed to C6),
 `index-worker-isolation.md` (S110, FIXME 0604 — the index-feed isolation contract),
-`repl-decomposition.md` (S110, FIXME 0606 — the `repl.rs` module-cut sign-off),
 `quote-shield.md` (S111, FIXME 0613 — `expand_scoped` holds quoted data out of Pass-1
 macro expansion; the int leg of the quasiquote-legal-everywhere wave),
 `macro-diagnostic-reanchoring.md` (S113, FIXME 0650 — the int-side re-anchoring seam:
@@ -157,8 +156,7 @@ macro checkpoint at §1.1.2/§2.1: complete macro-local typecheck+codegen,
 immediate one-module publication, source-continuation retry and deletion of the
 former temporary world; §6 carries presentation),
 `multi-sig-introspection.md` (S113 — extended with the D1 constraint-display
-read-follow, §2.4), `private-submodule-import.md`, `symbol-table-generics.md`,
-`bare-primitive-value-path.md`.
+read-follow, §2.4), `private-submodule-import.md`, `symbol-table-generics.md`.
 
 **Reference lineage** (heavy race/audit records — load-bearing as precedent, not day-to-day
 design intent): `heisenbug-race-closure.md` (S61 per-interleaving-treadmill record — the
@@ -168,18 +166,21 @@ lineage `index-worker-isolation.md` and `signature-body-prepass.md` cite), `conc
 
 **Historical working / slice docs** (`HISTORICAL`-bannered S110; completed or superseded,
 audit trail only): `step4-macro-blocking.md`, `step5-lazy-discovery.md`, `step7-repl-eval.md`,
-`step8-platform-registry.md`, `step9-error-cascade.md`, `s76-implementation-plan.md`,
-`s77-int-restructure.md`, `s78-implementation.md`, `s78-entry-module.md` (its §2
-prelude-fallback mechanism is now canonical in `design/arch/prelude-import-convergence.md` +
-`src/CLAUDE.md`), `s87-decomposition.md`, `s102-defect-wave.md`, `wave-3a-process-form.md`,
+`step8-platform-registry.md`, `step9-error-cascade.md`, `s102-defect-wave.md`,
 `cache-prelude-restoration-repro.md`, `platform-registry-removal.md`.
 
-**Redirections.** Three landed-migration records were deleted at S122 (Git retains them);
-a citation to one of them reads instead: `phase2-codegen-convergence.md` → `int.md`
+**Redirections.** Landed-migration records deleted at S122 (Git retains them); a citation to
+one of them reads instead: `phase2-codegen-convergence.md` → `int.md`
 §4.1/§4.2/§5/§7 (`Code` home, single writer, cache-hit regeneration);
 `dual-path-persistence-collapse.md` → `int.md` §6.1 (single `register_module` recursion,
 the `delays_other` rule) and §7.1; `pipeline-convergence.md` → root `CLAUDE.md` §Pipeline
-and [project-root resolution](repl-lifecycle.md#6-project-root-resolution) (project root = cwd).
+and [project-root resolution](repl-lifecycle.md#6-project-root-resolution) (project root = cwd);
+`s77-int-restructure.md`, `s78-implementation.md`, `wave-3a-process-form.md`,
+`s76-implementation-plan.md` → `int.md` §6.2 (cluster core, wrappers, concurrency
+invariant, codegen batch); `s78-entry-module.md` → `int.md` §6.5 and
+`design/arch/prelude-import-convergence.md`; `repl-decomposition.md`,
+`s87-decomposition.md` → `int.md` §3.2/§3.3; `bare-primitive-value-path.md` → `int.md` §3.3
+(display provenance).
 
 ## Cross-references
 

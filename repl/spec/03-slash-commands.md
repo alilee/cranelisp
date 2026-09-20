@@ -302,6 +302,8 @@ lookup of the same name prints (§1.1 universal format, §4.1 per-class rules) �
 fully-qualified type per §1.4, fully-qualified symbol name, and the same
 `; {classification} - {docstring}` drawer. For overloaded functions and macros, `/sig`
 prints the same per-variant / per-clause signature lines as bare lookup (§4.1.1, §11.2.3).
+For a spelling with several candidates, `/sig` prints the same per-candidate lines as bare
+lookup — every candidate, never an ambiguity error (§4.1.11).
 ```
 user> /sig double
 :(Fn [primitives/Int] primitives/Int) user/double ; defn - Multiply by 2
@@ -324,7 +326,8 @@ Unqualified type names or an unqualified symbol name in `/sig` output are non-co
 ### 3.9 `/mod` — Namespace Switch and Turn-Environment Parity [S102]
 
 `/mod [name]` switches the active module namespace. Its interactive behaviour — the prompt
-changes to the new module, no confirmation is printed, bare `/mod` returns to `user`, an
+changes to the new module, no confirmation is printed, bare `/mod` returns to the entry
+module (§0.5) [Tested tests/repl_lifecycle.rs::mod_no_arg_returns_to_entry_module_not_user, tests/repl_lifecycle.rs::mod_no_arg_default_entry_is_user], an
 unknown module gives an actionable error — is specified by the §8 module scenarios; this
 section pins the **compilation-environment** contract, which is the load-bearing invariant for
 the file-backed dev loop (`/mod M` + a defining form, editing a module in place).

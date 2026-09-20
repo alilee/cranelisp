@@ -9,7 +9,7 @@
 > signature/body pre-pass barrier: **`design/int/signature-body-prepass.md`**
 > (arch-blessed, `design/arch/bounded-contexts.md` §6 +
 > `design/arch/sequences/concurrency-dependency-service.mmd`), and
-> the in-call-stack cluster model in `design/int/s77-int-restructure.md` that
+> the in-call-stack cluster model in `design/int/int.md` §6.2 that
 > removed the shared re-read surface entirely.
 
 **Owner**: `design` (int). **Status**: reference lineage — evidence and
@@ -271,7 +271,7 @@ documented pattern for any future typecheck-side trace emission
 
 - `design/int/signature-body-prepass.md` — the S93 structural cure that
   supersedes this whole approach.
-- `design/int/s77-int-restructure.md` — the in-call-stack cluster model that
+- `design/int/int.md` §6.2 — the in-call-stack cluster model that
   removed the shared re-read surface these races lived on.
 - `design/int/index-worker-isolation.md`, `design/int/prelude-table-write-isolation.md`
   — the isolation-by-construction successors in the same lineage.

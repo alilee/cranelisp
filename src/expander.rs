@@ -312,7 +312,37 @@ pub(crate) fn committed_view<'a>(
 
 /// The prelude module name — the implicit OUTER SCOPE consulted on a bare-name
 /// inner-table miss when a module's `PreludeFallback` bit is ON (S78 §2).
-const PRELUDE_MODULE: &str = "prelude";
+pub(crate) const PRELUDE_MODULE: &str = "prelude";
+
+/// The committed-first-hop resolution scope, with the implicit-prelude fallback
+/// decided ONCE from the module's session-side bit (absence-is-OFF, §2.7.1;
+/// `ResolutionScope::new` collapses a self-fallback defensively).
+///
+/// The single construction shared by macro-head recognition below and the REPL
+/// candidate query (`CompilerSession::resolve_candidates`, `design/int/int.md`
+/// §3.3) — one scope, so recognition and display can never disagree about what
+/// is in scope (Principle 7).
+pub(crate) fn committed_scope<'a>(
+    symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &'a ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    current_module: &'a ModuleFullPath,
+    first_hop: &'a View<'a, Code, ()>,
+    prelude_module: &'a ModuleFullPath,
+) -> ResolutionScope<'a, Code, ()> {
+    let fallback_on = current_module != prelude_module
+        && prelude_fallback
+            .get(current_module)
+            .map(|on| *on)
+            .unwrap_or(false);
+    ResolutionScope::new(
+        symbol_tables,
+        module_aliases,
+        first_hop,
+        current_module,
+        fallback_on.then_some(prelude_module),
+    )
+}
 
 /// Recognize a macro head from the committed tables, per the LOCKED decision
 /// (`macro-availability-model.md` §0.7): a `cranelisp_types::resolve_macro_head`
@@ -377,36 +407,21 @@ pub(crate) fn recognize_macro_head(
         return Ok(None);
     };
     let view: View<'_, Code, ()> = View::single(&table_ref);
-
-    // Fallback ON iff the module's bit is set and it is not prelude itself
-    // (absence-is-OFF, §2.7.1; never self-fallback — `ResolutionScope::new` also
-    // collapses a self-fallback defensively). When OFF, the scope reduces to a
-    // bare first-hop resolve.
     let prelude_module = ModuleFullPath::from(PRELUDE_MODULE);
-    let prelude = if current_module.as_ref() != PRELUDE_MODULE
-        && prelude_fallback
-            .get(current_module)
-            .map(|b| *b)
-            .unwrap_or(false)
-    {
-        Some(&prelude_module)
-    } else {
-        None
-    };
 
     // The I-1 public-only filter on the prelude terminal and the not-found-class
     // → `Ok(None)` collapse are both intrinsic to `resolve_macro_head`; only a
     // hard failure (private, unknown qualified module) surfaces as `Err`.
-    let scope = ResolutionScope::new(
+    committed_scope(
         symbol_tables,
         module_aliases,
-        &view,
+        prelude_fallback,
         current_module,
-        prelude,
-    );
-    scope
-        .resolve_macro_head(name, span)
-        .map_err(CranelispError::from)
+        &view,
+        &prelude_module,
+    )
+    .resolve_macro_head(name, span)
+    .map_err(CranelispError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -2030,7 +2045,7 @@ mod tests {
         tables
     }
 
-    // spec: design/int/s78-entry-module.md §2 — a PUBLIC prelude-provided macro
+    // spec: design/int/int.md §6.5 — a PUBLIC prelude-provided macro
     // is recognized from a user module via the implicit outer scope when the
     // module's prelude_fallback bit is ON (the §2 regression fix).
     #[test]
@@ -2052,7 +2067,7 @@ mod tests {
         assert_eq!(fq.module, ModuleFullPath::from("prelude"));
     }
 
-    // spec: design/int/s78-entry-module.md §2 / /review I-1 — a PRIVATE prelude
+    // spec: design/int/int.md §6.5 / /review I-1 — a PRIVATE prelude
     // macro must NOT be recognized from a user module through the implicit outer
     // scope (public-only). It is treated as not-a-macro-head and does not leak.
     #[test]
@@ -2075,7 +2090,7 @@ mod tests {
         );
     }
 
-    // spec: design/int/s78-entry-module.md §2.7.1 — absence-is-OFF: with the bit
+    // spec: design/int/int.md §6.5 — absence-is-OFF: with the bit
     // OFF for the module, NO prelude fallback fires (the name stays unbound).
     #[test]
     fn recognize_macro_head_no_fallback_when_bit_off() {

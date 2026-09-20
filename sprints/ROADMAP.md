@@ -47,6 +47,13 @@ The approved limited private allocation ownership change proceeds within S122.
 is a future scoping item; it does not block the limited change. Other unresolved
 obligations remain in the current sprint and action/filing registers.
 
+### Next increment — coverage assurance and shared standard
+
+[ACT-0962](actions/ACT-0962-coverage-assurance-and-shared-standard.md) carries
+trustworthy requirement-gap reporting and convergence through se-agentic across
+Cranelisp, feedback-dev and magic. S122 continues document cleanup; the action
+owns the next increment's coverage scope and completion evidence.
+
 ### Future agent configuration and eval comparisons
 
 [ACT-0960](actions/ACT-0960-agent-configuration-and-model-comparison.md) carries
@@ -196,7 +203,7 @@ Delivered scope, evidence, accepted limitations and carries are retained in
 
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 
-Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See `design/arch/archive/pipeline-v3-roadmap.md` §Post-Migration for full assessment.
+Steps 1-10 + 14 delivered. Single-pipeline invariant established. ~2,100 lines of v1 code deleted. Steps 11-13 (concurrency) deferred indefinitely. Step 15 (new main.rs) retired — substantially delivered by Step 6. See the [post-migration assessment](../design/arch/archive/pipeline-v3-roadmap.md#post-migration-assessment-sprint-38-complete).
 
 ### Methodology migration — historical S63 schedule
 

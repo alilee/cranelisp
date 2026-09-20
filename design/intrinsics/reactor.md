@@ -37,7 +37,7 @@
 > launch-arm E2 hardening (co-located, **decoupled** — sound under v8+v9) is
 > `bind-chain-analysis.md §3.7`. The cut lands as ONE atomic cross-surface change-set; this doc
 > is the **int/host** half (backend half: `design/backend/io-trampoline.md §17`, pure
-> subtraction; platform half: `design/platform/poll-support.md §3.1/§3.5/§3.6`). Canonical
+> subtraction; platform half: `design/platform/poll-leaf-authoring.md §2/§3/§4`). Canonical
 > model: `effect-concurrency.md §4.1.1`; ABI cascade: `platform-interface.md §6.8.0b`.
 
 **Owner**: `/design` (int). **Status**: S96 DESIGN REFRESH (Chunk C — slice 7) —
@@ -1929,8 +1929,8 @@ same host values by calling the same code, not by hand-mirroring.
 > canonical model `effect-concurrency.md §4.1.1`, the ABI cascade `platform-interface.md
 > §6.8.0b`, `bounded-contexts.md §6`, the backend half `design/backend/io-trampoline.md §17`
 > (pure subtraction — delete `inject_poll_leading_pair`, no header slot, no `role`/`desc_out`
-> node fields), and the platform leaf-authoring half `design/platform/poll-support.md
-> §3.1/§3.5/§3.6`. **What the old §7 said and is now GONE:** the trampoline split on a baked
+> node fields), and the platform leaf-authoring half `design/platform/poll-leaf-authoring.md
+> §2/§3/§4`. **What the old §7 said and is now GONE:** the trampoline split on a baked
 > `role @ node+32`, forwarded a `desc_out @ node+40`, **stamped** a produced handle's header at
 > `value+24`, and **read** a consumed handle's header before polling. **None of that exists.**
 > There is **NO** trampoline stamp, **NO** value-header read, **NO** runtime `role` branch,
@@ -2105,7 +2105,7 @@ acquire/retire) + §7.3 (own release).
 
 `read-line : (Fn [] (IO String))` produces no handle and consumes no per-value handle — stdin is a
 process singleton. v9 gives it a manifest-static serial token `{token: STDIN_TOKEN != 0, capacity
-1, role Consume}` (`poll-support.md §3.1`); its poll-fn calls `ctx.acquire(STDIN_TOKEN, 1, waker)`
+1, role Consume}` (`design/platform/poll-leaf-authoring.md §3`); its poll-fn calls `ctx.acquire(STDIN_TOKEN, 1, waker)`
 on that constant. The §8.1 permit map then admits **at most one in-flight `read_line`** — single-
 in-flight stdin is enforced **by construction**, replacing the v8 host `STDIN_BUF` `Mutex` +
 serial-use convention (the 0471 latent gap: a token-0 `Commutative` descriptor acquired no permit,
@@ -2419,8 +2419,8 @@ value or a hang — with `// spec: spec/10-io.md §10.12.8 (Empty select)`.
   **§8.2** (within-token ordering's home moves to the inference; the dissolved `SerialGroup` —
   AUTHORITY for §7.7), `design/backend/io-trampoline.md §17` (the backend half — pure subtraction:
   delete `inject_poll_leading_pair`; no header slot, no role/desc_out node fields; the §17.5
-  baked-offset contract RETIRED), `design/platform/poll-support.md` §3.1 (singleton stdin token) /
-  §3.5 (opaque `Connection` carrying `fd` in an ordinary field) / §3.6 (the ctx-vtable poll-fn
+  baked-offset contract RETIRED), `design/platform/poll-leaf-authoring.md` §3 (singleton stdin token) /
+  §4 (opaque `Connection` carrying `fd` in an ordinary field) / §2 (the ctx-vtable poll-fn
   skeleton). FIXME **0479** (idle-server watchdog — §8) + **0475** (empty-`select` — §9) are the
   /int §C drains; **0478** (single-step launch-arm E2 hardening, co-located but **decoupled** from
   the model cut — sound under v8+v9) is `design/int/bind-chain-analysis.md §3.7`.

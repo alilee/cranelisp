@@ -2266,7 +2266,7 @@ fn conj_wrapper_multivariant_cell_vec_built_correctly_run() {
 // Sprint 92 Slice 1 — APPLY-ARGUMENT SPARKING + SPARK BUDGET (e2e tier)
 //
 // QA-first (Phase 5 Stage 1). These are the 13 apply-arg + 4 budget e2e rows
-// from `tests/plan/sprint-92.md`. Apply-arg sparking and the in-flight-spark
+// from the retired S92 QA plan. Apply-arg sparking and the in-flight-spark
 // budget do NOT exist on HEAD; the cost heuristic + ferry + budget are added in
 // Stage 2 by /dev (`cranelisp-backend` sparkability sibling `find_sparkable_args`
 // + apply-site barrier; `cranelisp-intrinsics` `ivar_spark` budget). Trace:

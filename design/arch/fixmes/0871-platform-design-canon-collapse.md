@@ -21,7 +21,7 @@ Quoting the assessment:
 > `design/platform/` has a concise current `platform.md`, a right-sized
 > DLL-authoring/interior design, and a right-sized poll-support design.
 > Superseded per-sprint implementation plans move under
-> `design/platform/archive/` with a short index. The current docs contain no
+> [`design/platform/archive/`](https://github.com/alilee/cranelisp/tree/cdd1f9ea/design/platform/archive) with a short index. The current docs contain no
 > retired Decision-0031 callback commitment and no volatile LOC/public-item
 > census. Historical rationale remains discoverable in archive or the decision
 > record without being interleaved with current instructions.

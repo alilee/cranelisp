@@ -26,25 +26,24 @@ This is distinct from:
 - Record rejected alternatives briefly — "considered X, chose Y because Z"
 - Update docs when the implementation changes; stale design docs are worse than none
 
-## Document index (durable vs historical) — the triage of record
+## Document index
 
 This memory establishes two typecheck-owned collections:
 
 | Collection | Purpose |
 |---|---|
 | `typecheck-current-designs` | Current typecheck master, subsystem and active feature designs for inference, constraints, traits, ADTs, monomorphisation, ownership and typed publication. |
-| `typecheck-historical-records` | Superseded typecheck working, migration and slice records retained solely for the audit trail described by the S109 triage. |
+| `typecheck-historical-records` | The one superseded working record still held for a live citation — `s87-fq-walk-consolidation.md` §2.4. It retires when `arch` rehomes that contract. |
 
-Both are established collections. References remain live in the current
-declaration. The historical collection is the bounded candidate if the user
-later approves historical-record reference policy; this memory grants no such
-waiver.
+Both are established collections, and every reference in either is live: a
+historical grade does not excuse a stale citation. Git carries ordinary
+delivery history, so a completed working plan is deleted rather than retained
+once its durable content has a current home (S122; §"Redirections" below).
 
-Maintained by `/design` (triaged S109, FIXME 0578). An agent designing against
-this crate reads the **durable** docs; the **historical** docs are retained for
-the audit trail only and each carries a top-of-file `HISTORICAL` banner — do not
-treat them as current design intent. When a durable doc and a historical doc
-disagree, the durable doc (and current source) wins.
+Maintained by `design`. An agent designing against this crate reads the current
+designs; the retained record carries a top-of-file `HISTORICAL` banner and is
+not current design intent. Where it and a current doc disagree, the current doc
+and the source win.
 
 **Master.** `typecheck.md` — the single source of design intent; every other doc
 is subordinate. **`typecheck.md` §9.8 is the Sprint-121 C3 visit's order,
@@ -77,9 +76,9 @@ ambiguity diagnostics → subordinate to `inference.md` + `traits.md` + `adt.md`
 `checked-body-publication.md` (**USER-APPROVED 2026-09-03** for the private body
 ledger and the complete §11 state-cleanup basket), S121
 C3 — a body-occurrence ledger delaying strict publication to the settled
-window; §9 consumes the same-canonical-name rule established by
-`spec/05-definitions.md` §5.13 and `spec/08-modules.md` §8.6.4; §11 limits the
-cohesive state cleanup to ledger-owned registration/callee facts, one body
+window; its §9 consumes the same-canonical-name rule established by
+`spec/05-definitions.md` §5.13 and `spec/08-modules.md` §8.6.4. Its §11 limits
+the cohesive state cleanup to ledger-owned registration/callee facts, one body
 frame, whole `MethodResolutions` transport, one-way `expr_types` handoff and
 the obsolete `redef_slots` deletion → subordinate to `typecheck.md` +
 `use-site-candidate-selection.md`),
@@ -120,9 +119,24 @@ plumbing, the `from_expr` `ViewBuildError` gate, F-D2-10 riding the flip →
 subordinate to `monomorphisation.md`, governed by
 `design/arch/typed-resolution-carrier.md`).
 
-**Historical working docs** (`HISTORICAL`-bannered; completed/superseded, audit
-trail only): `sprint50-fixes.md`, `phase-b-plan.md`, `wave-3a-check-form.md`,
-`s76-resolution-and-enablement.md`, `step4-macro-deps.md`,
-`s87-fq-walk-consolidation.md`, `dashmap-migration.md`, `stateless-tc-impl.md`.
-(The last two describe now-as-built structure under the retired `TypeChecker`
-name — the as-built types are `TypeCheckEnv` + `CheckState`, `traits.md §1.1`.)
+**Retained working record.** `s87-fq-walk-consolidation.md` (`HISTORICAL`-bannered)
+is held for **§2.4 only** — the byte-for-byte `Type`-rendering table that three
+`crates/cranelisp-types/src/types/tests.rs` cases name in their `// spec:`
+anchors. The rendered surface (`render_type` + its two config enums) is
+`arch`-owned; `design/arch/bounded-contexts.md` §"Type rendering" is its current
+account. Rehoming the contract there, and re-pointing those anchors, is `arch`'s
+to do — until it lands, deleting this doc silently breaks three traceability
+anchors.
+
+**Redirections.** Seven working records were deleted at S122 (Git retains them);
+a citation to one of them reads instead:
+
+| Deleted record | Read instead |
+|---|---|
+| `sprint50-fixes.md` | `spec/08-modules.md` §8.9.1 + §8.9.4 (a new module is seeded with special forms only; builtin type names are reachable by import or qualification, never by inheritance) and `design/arch/bounded-contexts.md` §2 for the source-ordered `defmacro` checkpoint that replaced eager clause compilation |
+| `phase-b-plan.md` | `crates/cranelisp-typecheck/src/builtins.rs` + `resolve.rs` rustdoc for the intrinsic-vs-ADT kind split (the four scalars are intrinsic records returning their bare `Type` variant; ADT-shaped bundled types stay type definitions, and the fix for a mismatch belongs at the mint site, never as a bridge in `unify`); `ast-annotation.md` for the AST-co-located annotation model that retired the per-mono side maps |
+| `wave-3a-check-form.md` | `typecheck.md` §6.4 (staging-vs-live write dispatch) and §5 (the two-pass discipline inside `check_forms`); `crates/cranelisp-typecheck/src/cluster.rs` module rustdoc for the accessor's as-built shape |
+| `s76-resolution-and-enablement.md` | `crates/cranelisp-typecheck/CLAUDE.md` §"Bare-name resolution & the prelude fallback" and `design/arch/bounded-contexts.md` §7 (the resolution primitive owns the walk; this crate owns view selection and the kind-specific projection) + §2 for `check_type_expr` |
+| `step4-macro-deps.md` | `crates/cranelisp-typecheck/CLAUDE.md` §"`Def.callees` completeness contract" and `typecheck.md` §5 (callee harvest, late-edge union, atomic publication) |
+| `dashmap-migration.md` | `typecheck.md` §7.5 (hold one table guard at a time) and §6.1 (the mutation contract the migration was a step toward) |
+| `stateless-tc-impl.md` | `traits.md` §1.1 (`TypeCheckEnv` + `CheckState`; no registries) and `typecheck.md` §7.1 |

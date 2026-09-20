@@ -42,7 +42,7 @@ Both signatures must appear in the display output.
 The `format_def_entry` function is called from two paths:
 
 - `eval` returning a definition (the REPL prints `format_def_entry(&entry, name, &module)`).
-- Bare-symbol lookup via `describe_symbol`-equivalent path (line 3122).
+- Bare-symbol lookup through the REPL introspection display path.
 
 Both paths share the function — one fix lights up both.
 

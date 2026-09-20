@@ -379,7 +379,7 @@ fn imports_neg_no_primitives_leak_on_fresh_session() {
 // /imports — Prelude-as-outer-scope presentation (S78 Wave 4 §2.6)
 //
 // Under the SETTLED prelude-as-outer-scope model
-// (`design/int/s78-entry-module.md §2.6`), `/imports` lists prelude-provided
+// (`design/int/int.md §6.5`), `/imports` lists prelude-provided
 // names under a DISTINCT "Prelude (implicit)" group — present only when the
 // per-module prelude fallback is ON. The explicit-import categories
 // (Fns/Types/Traits/Macros) narrow to what the module actually imported.
@@ -407,7 +407,7 @@ fn repl_with_gulp_prelude(lines: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
-// spec: design/int/s78-entry-module.md §2.6 — when the prelude fallback is ON,
+// spec: design/int/int.md §6.5 — when the prelude fallback is ON,
 //   `/imports` renders prelude-provided names under a distinct
 //   "Prelude (implicit)" group (a header containing "Prelude" and "implicit").
 //
@@ -431,7 +431,7 @@ fn imports_shows_prelude_implicit_group() {
     );
 }
 
-// spec: design/int/s78-entry-module.md §2.6 — the prelude-provided names MUST
+// spec: design/int/int.md §6.5 — the prelude-provided names MUST
 //   NOT be mixed into the explicit-import categories; they belong to the
 //   distinct "Prelude (implicit)" group. Here, with NO explicit imports, the
 //   explicit `Fns:` category MUST NOT list the prelude-provided `gulp`.
@@ -459,7 +459,7 @@ fn imports_neg_prelude_names_not_in_explicit_categories() {
     );
 }
 
-// spec: design/int/s78-entry-module.md §2.6 — when a module REFUSES the prelude
+// spec: design/int/int.md §6.5 — when a module REFUSES the prelude
 //   (`(import [prelude []])`), the fallback bit is OFF and the
 //   "Prelude (implicit)" group is ABSENT (no implicit fallback is active).
 //
@@ -3000,17 +3000,12 @@ fn hkt_echo_head_impl_registration_echo_names_resolved_constructor_not_pairing_h
 }
 
 // =============================================================================
-// Sprint 64 Wave 6 batch 5 — bare-primitive value-path Slice 1 carry-forwards
+// Bare primitive display provenance
 // =============================================================================
 //
-// Carry-forward from `tests/legacy/sprint61_bare_primitive.rs` per Wave 6
-// batch 5 audit. Five tests guard the Sprint 61 Slice 1 fix in
-// `src/session_v4.rs::resolve_entry_for_display` +
-// `check_bare_symbol_introspection`: the fix aligns the bare-value path
-// (typing `add-i64` at the prompt) with the introspection path (`/sig
-// add-i64`) and the call path (`(add-i64 2 3)`) so that a re-exported
-// primitive resolves through `user → prelude → primitives` to its
-// terminal `Def` and produces a spec-conforming introspection card.
+// Bare-value, /sig and call paths agree on the defining module of a primitive.
+// A re-exported name displays at its defining home (repl/spec/01-display-format.md
+// §1.1 and spec/08-modules.md §8.4.6).
 //
 // Sibling cluster: the existing `bare_primitive_type_int_displays_type_info`
 // test above covers bare primitive **type** lookup; these five cover bare
@@ -3079,12 +3074,8 @@ fn bare_primitive_lookup_not_empty_neg() {
     );
 }
 
-// spec: design/int/bare-primitive-value-path.md §2 (three paths) + §5
-//       (expected output) — anti-divergence guard between bare-value /
-//       introspection / call paths. Cross-ref Principle 7 (single source
-//       of truth) — the divergent-duplication class — and its
-//       orchestration-surface instance, closed by the S59 persistence
-//       collapse and recorded at `design/int/int.md` §6/§7.
+// spec: repl/spec/01-display-format.md §1.1 + repl/spec/03-slash-commands.md §3.8
+// Bare-value, /sig and call paths agree on the primitive's defining home.
 // (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_parallel_paths_converge_on_same_attribution)
 #[test]
 fn bare_primitive_parallel_paths_converge_on_same_attribution() {
@@ -3142,7 +3133,7 @@ fn bare_primitive_surface_resolves_identically_across_five_plus_symbols() {
     assert!(
         !combined.contains("undefined variable"),
         "no bare primitive reference MAY surface an `undefined variable` \
-         error (bare-primitive-value-path.md §1 regression); got:\n{combined}"
+         error (repl/spec/01-display-format.md §1.1); got:\n{combined}"
     );
     // Classification must be `; primitive` somewhere in the output.
     assert!(
@@ -3243,10 +3234,7 @@ fn bare_primitive_unknown_name_stays_in_repl_not_routed_to_agent() {
     );
 }
 
-// spec: design/int/bare-primitive-value-path.md §"Post-implementation note"
-//       + spec/08-modules.md §8.9 — re-export chain transitivity (the
-//       resolver MUST walk user → prelude → primitives and land on the
-//       terminal Def)
+// spec: spec/08-modules.md §8.4.6 — a bare re-exported name displays at its defining home.
 // (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_two_hop_reexport_chain_lands_on_terminal_def)
 #[test]
 fn bare_primitive_two_hop_reexport_chain_lands_on_terminal_def() {
@@ -3267,13 +3255,11 @@ fn bare_primitive_two_hop_reexport_chain_lands_on_terminal_def() {
     let out = repl_prims("add-i64\n");
     let display = &out.stdout;
 
-    // The resolver MUST walk user → prelude → primitives and produce the
-    // terminal Def's qualified name.
+    // A bare re-exported name displays at its defining home.
     assert!(
         display.contains("primitives/add-i64"),
-        "two-hop re-export chain (user → prelude → primitives) MUST resolve \
-         to `primitives/add-i64` per spec/08-modules.md §8.9 + \
-         bare-primitive-value-path.md post-impl note; got:\n{display}"
+        "a bare re-exported name displays at its defining home, \
+         `primitives/add-i64`, per spec/08-modules.md §8.4.6; got:\n{display}"
     );
     // Full signature must be present; threading through `resolved_module`
     // means the chain lands on the terminal Def.
@@ -4531,6 +4517,116 @@ fn fq_bare_display_parity_with_imported_introspection() {
     );
 }
 
+/// The §1.1 primary lines (`:Type value …`) of a piped REPL capture.
+///
+/// In a non-TTY session the prompt prefixes the FIRST line of a turn
+/// (`0+0ms; user> :(Fn …) user/f ; defn`) and continuation lines carry no
+/// prompt, so each line contributes its tail from the first `:`. A `:` followed
+/// by whitespace is not a type slot — it introduces an `Error: …` or
+/// `error: …` message or a `;`-drawer label — and drops out, as does a line
+/// with no `:` at all. The candidate-display section at the end of this file
+/// reuses this helper.
+fn primary_lines(capture: &str) -> Vec<String> {
+    capture
+        .lines()
+        .filter_map(|line| {
+            let tail = line[line.find(':')?..].trim_end();
+            match tail.chars().nth(1) {
+                Some(c) if !c.is_whitespace() => Some(tail.to_string()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+// spec: repl/spec/03-slash-commands.md §3.8; spec/08-modules.md §8.4.6; repl/spec/17-embedded-agent.md §17.1
+//
+// A module-qualified spelling of a RE-EXPORTED name displays at the prompt the
+// same primary line `/sig` prints for it (§3.8, §17.1), attributed to the
+// defining module (§8.4.6). `<closure>` is the anonymous-value envelope and is
+// never the answer for a name the REPL can resolve.
+//
+// The control (leg B) is the terminal qualifier `primitives/add-i64` in the
+// SAME fixture, and runs FIRST so its result is observed whatever leg A does:
+// it discriminates a qualified-introspection path broken generally (both legs
+// diverge) from a re-exporting qualifier that misses it (only leg A diverges).
+// The bare-name control is the existing
+// `bare_primitive_parallel_paths_converge_on_same_attribution`.
+//
+// Observed RED, S122 (`.local/s122-display-red-followup.log`): leg B's control
+// passed — the terminal qualifier `primitives/add-i64` displayed identically at
+// the prompt and under `/sig` — while leg A's prompt printed
+// `:(Fn [primitives/Int primitives/Int] primitives/Int) <closure>`. Qualified
+// introspection is therefore not broken generally: the re-exporting qualifier
+// alone misses it.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn qualified_reexport_bare_display_parity_with_sig_neg_not_closure() {
+    // Leg B (control) — the terminal qualifier, asserted before the target.
+    let b = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("primitives/add-i64\n/sig primitives/add-i64\n")
+        .output();
+    let b_lines = primary_lines(&b.stdout);
+    assert_eq!(
+        b_lines.len(),
+        2,
+        "leg B control: the two turns MUST each print one primary line; \
+         got:\n{:#?}\nfull stdout:\n{}\nstderr:\n{}",
+        b_lines,
+        b.stdout,
+        b.stderr
+    );
+    assert_eq!(
+        b_lines[0], b_lines[1],
+        "leg B control: the terminal qualifier displays identically at the \
+         prompt and under `/sig` (§3.8); got:\n{}",
+        b.stdout
+    );
+    assert!(
+        b_lines[0].contains("primitives/add-i64") && !b_lines[0].contains("<closure>"),
+        "leg B control: the terminal qualifier names `primitives/add-i64`, \
+         never `<closure>`; got:\n{}",
+        b.stdout
+    );
+
+    // Leg A — the re-exporting qualifier, the target.
+    let a = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("prelude/add-i64\n/sig prelude/add-i64\n")
+        .output();
+    let a_lines = primary_lines(&a.stdout);
+    assert_eq!(
+        a_lines.len(),
+        2,
+        "leg A: the two turns (`prelude/add-i64`, `/sig prelude/add-i64`) MUST \
+         each print one primary line; got:\n{:#?}\nfull stdout:\n{}\nstderr:\n{}",
+        a_lines,
+        a.stdout,
+        a.stderr
+    );
+    assert!(
+        !a_lines[0].contains("<closure>"),
+        "leg A: a re-exported name the REPL can resolve MUST NOT display the \
+         anonymous `<closure>` envelope (§1.5, §8.4.6); got:\n{}",
+        a.stdout
+    );
+    assert_eq!(
+        a_lines[0], a_lines[1],
+        "leg A: `/sig` prints the same primary line as the bare qualified \
+         lookup (§3.8); got:\n{}",
+        a.stdout
+    );
+    assert!(
+        a_lines[0].contains("primitives/add-i64"),
+        "leg A: both surfaces attribute the re-exported name to its DEFINING \
+         module `primitives/add-i64` (§8.4.6); got:\n{}",
+        a.stdout
+    );
+}
+
 // spec: repl/spec.md §17.19.2b / spec §8.5.2 — /list lists a constructor ONCE
 // under its canonical form; the bare alias is never a second row. Fail-on-revert
 // guard for the two-entry (canonical `Type.Ctor` + bare alias) dotted-ctor change
@@ -4661,5 +4757,546 @@ fn private_fq_member_errors_not_displays_mode_uniform_neg() {
         pubrepl.stdout.contains("mathx/pub"),
         "control: a PUBLIC FQ member MUST display in the REPL; got:\n{}",
         pubrepl.stdout
+    );
+}
+
+// =============================================================================
+// Spellings with several candidates — the §4.1.11 listing rule
+// =============================================================================
+//
+// The listing rule is `repl/spec/04-self-documentation.md` §4.1.11 with §3.8
+// parity; selection and its ambiguity rejection stay at a USE of the spelling
+// (`spec/08-modules.md` §8.6.5), unrelaxed. QA's allocation is
+// `tests/plan/s122-evidence-delta.md` §"In-scope candidate display — listing
+// rule" (CD-1, CD-2, CD-3, CD-5, CD-6, CD-8). Registration and use-site selection
+// are guarded unchanged in `tests/spec_08_name_shadowing.rs`.
+//
+// Fixtures are free-standing (no stdlib), monomorphic over primitive types, and
+// carry a distinct docstring per declaration so `/doc` has something candidate-
+// specific to name. No cell asserts a candidate ORDER: §4.1.11 fixes none.
+
+/// Prelude candidate: `prelude/foo : (Fn [Int] Int)`. The primitives re-export
+/// puts `Int`/`Bool` in the prelude's own scope and makes the REPL turn's bare
+/// `:Bool` annotation resolve, exactly as in root's corrected S122 probe
+/// (`.local/s122-b2-collision-observation.json`), which this shape reproduces
+/// unchanged but for the docstrings `/doc` needs.
+const PRELUDE_FOO_INT: &str = r#"(export [primitives [*]])
+(defn foo "prelude candidate over Int" [:Int x] x)
+"#;
+
+/// The local candidate contesting the same spelling: `user/foo : (Fn [Bool] Bool)`.
+const LOCAL_FOO_BOOL: &str = "(defn foo \"local candidate over Bool\" [:Bool x] x)\n";
+
+/// `a/f : (Fn [Int] Int)`, answering 10 above its argument. Each module imports
+/// the primitives its annotations name, as the established module fixtures do
+/// (`tests/spec_08_prelude_outer_scope.rs`), so no cell depends on a type alias
+/// reaching a module body through the implicit prelude.
+const MODULE_A_F_INT: &str = "(import [primitives [Int add-i64]])\n\
+                              (defn f \"candidate a over Int\" [:Int x] (add-i64 x 10))\n";
+/// `b/f : (Fn [Bool] Bool)` — the different-type twin of `a/f`.
+const MODULE_B_F_BOOL: &str = "(import [primitives [Bool]])\n\
+                               (defn f \"candidate b over Bool\" [:Bool x] x)\n";
+/// `b/f : (Fn [Int] Int)` — the IDENTICALLY typed twin of `a/f`, answering 20
+/// above its argument so a silently selected candidate is identifiable.
+const MODULE_B_F_INT: &str = "(import [primitives [Int add-i64]])\n\
+                              (defn f \"candidate b over Int\" [:Int x] (add-i64 x 20))\n";
+
+/// `a/Empty`, the nullary constructor of the parameterised `a/Box`: a
+/// result-only-polymorphic value (`∀a. (Box a)`), whose display §1.5.1 serves
+/// by introspection over the symbol table rather than by evaluation.
+const MODULE_A_BOX_EMPTY: &str = "(import [primitives [Int]])\n\
+                                  (deftype (Box a) Empty (Full [:a v]))\n";
+/// `b/Empty : (Fn [Int] Int)` — the function-typed candidate contesting the
+/// `Empty` spelling, answering 30 above its argument.
+const MODULE_B_EMPTY_FN: &str = "(import [primitives [Int add-i64]])\n\
+                                 (defn Empty \"function candidate for Empty\" [:Int x] (add-i64 x 30))\n";
+
+/// The sentinel turn that separates a cell's fixture turns from the ONE turn it
+/// observes: `424242` at the prompt prints `:primitives/Int 424242`, so every
+/// primary line after it belongs to the observed turn. Without it a `defn` echo
+/// or an import turn would be read as a candidate line.
+const TURN_MARKER: &str = "424242";
+
+/// Everything the child printed after the sentinel turn — the observed turn's
+/// own output, with every fixture turn's echo excluded.
+fn observed_turn<'a>(label: &str, out: &'a helpers::e2e::CrOutput) -> &'a str {
+    let Some((_, tail)) = out.stdout.rsplit_once(TURN_MARKER) else {
+        panic!(
+            "{label}: the sentinel turn `{TURN_MARKER}` never reached the \
+             prompt, so the session never got as far as the observed turn; \
+             stdout:\n{}\nstderr:\n{}",
+            out.stdout, out.stderr
+        );
+    };
+    tail
+}
+
+/// The observed turn's primary lines.
+fn observed_primary_lines(label: &str, out: &helpers::e2e::CrOutput) -> Vec<String> {
+    primary_lines(observed_turn(label, out))
+}
+
+/// One lookup surface listed exactly `expected`, as a SET.
+///
+/// Each entry pairs a candidate's canonical qualified name with a substring
+/// that must appear on that candidate's OWN line — its type slot — so dropping
+/// a candidate, merging two onto one line, printing a third, or attaching the
+/// wrong type to a name each fail.
+fn assert_candidates_listed(
+    label: &str,
+    lines: &[String],
+    expected: &[(&str, &str)],
+    out: &helpers::e2e::CrOutput,
+) {
+    assert_eq!(
+        lines.len(),
+        expected.len(),
+        "{label}: §4.1.11 — one primary line per in-scope candidate, {} \
+         expected, {} printed; printed:\n{:#?}\nstdout:\n{}\nstderr:\n{}",
+        expected.len(),
+        lines.len(),
+        lines,
+        out.stdout,
+        out.stderr
+    );
+    for (name, type_slot) in expected {
+        let matching: Vec<&String> = lines.iter().filter(|l| l.contains(name)).collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "{label}: §4.1.11 — exactly one primary line names the candidate \
+             `{name}`, fully qualified; printed:\n{:#?}\nstdout:\n{}",
+            lines,
+            out.stdout
+        );
+        assert!(
+            matching[0].contains(type_slot),
+            "{label}: §4.1.11 — candidate `{name}` carries its OWN type slot \
+             `{type_slot}`; line:\n{}\nstdout:\n{}",
+            matching[0],
+            out.stdout
+        );
+    }
+}
+
+/// `text` reported a candidate set as a set — not as an ambiguity, an unknown
+/// name or an unbound one (§4.1.11: lookup is introspection, not use).
+fn assert_text_lists_rather_than_rejects(label: &str, text: &str, out: &helpers::e2e::CrOutput) {
+    let lowered = text.to_lowercase();
+    for banned in [
+        "ambiguous",
+        "unknown symbol",
+        "unbound symbol",
+        "undefined variable",
+    ] {
+        assert!(
+            !lowered.contains(banned),
+            "{label}: §4.1.11 — lookup is introspection, not use: it MUST NOT \
+             report `{banned}` for a candidate set; stdout:\n{}\nstderr:\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
+/// The observed turn named every candidate, in the terms the command's own
+/// format already carries (§4.1.11 adds no per-command format): a qualified
+/// name for `/info` (§3.6), a docstring for `/doc` (§3.1, §11.2.4). One needle
+/// per candidate, so a one-candidate answer fails naming what it dropped.
+fn assert_turn_names_each(label: &str, turn: &str, needles: &[&str], out: &helpers::e2e::CrOutput) {
+    for needle in needles {
+        assert!(
+            turn.contains(needle),
+            "{label}: §4.1.11 — the command reports every candidate, so \
+             `{needle}` is not dropped; the turn printed:\n{turn}\nfull \
+             stdout:\n{}\nstderr:\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
+/// The observed turn alone listed rather than rejected. Scoped to one turn, so
+/// a cell whose fixture also *uses* the spelling keeps the §8.6.5 use-site
+/// diagnostic out of the assertion.
+fn assert_turn_lists_rather_than_rejects(label: &str, out: &helpers::e2e::CrOutput) {
+    assert_text_lists_rather_than_rejects(label, observed_turn(label, out), out);
+}
+
+/// No turn of the session rejected — the import turns included. Only for a
+/// session that never uses the spelling.
+fn assert_session_lists_rather_than_rejects(label: &str, out: &helpers::e2e::CrOutput) {
+    let whole = format!("{}\n{}", out.stdout, out.stderr);
+    assert_text_lists_rather_than_rejects(label, &whole, out);
+}
+
+/// A REPL session over the prelude-vs-local fixture (CD-1, CD-6).
+fn foo_collision_session(turns: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .prelude(PRELUDE_FOO_INT)
+        .stdin(&format!("{LOCAL_FOO_BOOL}{turns}"))
+        .output()
+}
+
+/// A REPL session importing `f` from both `a` and `b` (CD-2, CD-3, CD-6).
+fn two_import_session(b_module: &str, turns: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("a.cl", MODULE_A_F_INT)
+        .file("b.cl", b_module)
+        .stdin(&format!("(import [a [f]])\n(import [b [f]])\n{turns}"))
+        .output()
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-1. A prelude-provided
+// and a module-local candidate for one spelling BOTH list, at bare lookup and
+// at `/sig` (§3.8 parity), each fully qualified with its own type. The in-cell
+// control is a call whose argument type selects the prelude candidate (§8.6.5)
+// and still evaluates, so a RED listing is a display omission, not a broken
+// fixture or a changed resolution.
+//
+// Observed RED, S122 (`.local/s122-display-red.log`): the control passed
+// (`(foo 1)` → `:primitives/Int 1`) and both surfaces printed only `user/foo` —
+// 1 line where 2 candidates are in scope, so the omission is in the display,
+// not in a broken fixture. Parity held, so one candidate query served both.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn prelude_and_local_candidates_both_list_at_bare_lookup_and_sig() {
+    let expected = [
+        ("prelude/foo", "primitives/Int"),
+        ("user/foo", "primitives/Bool"),
+    ];
+
+    let bare = foo_collision_session(&format!("(foo 1)\n{TURN_MARKER}\nfoo\n"));
+    let sig = foo_collision_session(&format!("{TURN_MARKER}\n/sig foo\n"));
+
+    // In-cell control first: the typed use still selects the prelude candidate.
+    assert!(
+        bare.stdout.contains(":primitives/Int 1"),
+        "control: `(foo 1)` selects the prelude's `(Fn [Int] Int)` candidate \
+         under §8.6.5 and still evaluates; stdout:\n{}\nstderr:\n{}",
+        bare.stdout,
+        bare.stderr
+    );
+
+    let bare_lines = observed_primary_lines("bare lookup", &bare);
+    let sig_lines = observed_primary_lines("/sig", &sig);
+
+    // Parity first (§3.8): it discriminates ONE candidate query shared by both
+    // surfaces from per-surface resolution, whichever way the listing goes.
+    let (mut bare_set, mut sig_set) = (bare_lines.clone(), sig_lines.clone());
+    bare_set.sort();
+    sig_set.sort();
+    assert_eq!(
+        bare_set, sig_set,
+        "§3.8 — `/sig` prints the same primary line set as bare lookup; \
+         bare stdout:\n{}\n/sig stdout:\n{}",
+        bare.stdout, sig.stdout
+    );
+
+    // The negative face next: neither surface may reject the candidate set.
+    assert_turn_lists_rather_than_rejects("bare lookup", &bare);
+    assert_session_lists_rather_than_rejects("/sig session", &sig);
+
+    assert_candidates_listed("bare lookup", &bare_lines, &expected, &bare);
+    assert_candidates_listed("/sig", &sig_lines, &expected, &sig);
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-2, the provenance twin
+// of CD-1: two EXPLICIT imports of one spelling, on different primitive types.
+// Both list at bare lookup and `/sig`; neither falls through to another tier
+// nor to `unbound`. In-cell control: `(f 1)` is decidable by argument type and
+// still evaluates to `a/f`'s answer.
+//
+// Observed RED, S122 (`.local/s122-display-red.log`), and NOT CD-1's shape:
+// the control passed (`:primitives/Int 11`), but the bare lookup turn answered
+// with the §8.6.5 USE-site rejection — `type error … ambiguous bare name 'f';
+// surviving declarations: a/f, b/f` — so this provenance reaches no
+// introspection answer at all rather than a short one.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn two_imported_candidates_both_list_at_bare_lookup_and_sig() {
+    let expected = [("a/f", "primitives/Int"), ("b/f", "primitives/Bool")];
+
+    let bare = two_import_session(MODULE_B_F_BOOL, &format!("(f 1)\n{TURN_MARKER}\nf\n"));
+    let sig = two_import_session(MODULE_B_F_BOOL, &format!("{TURN_MARKER}\n/sig f\n"));
+
+    assert!(
+        bare.stdout.contains(":primitives/Int 11"),
+        "control: `(f 1)` is decided by argument type under §8.6.5 and \
+         evaluates to `a/f`'s 11; stdout:\n{}\nstderr:\n{}",
+        bare.stdout,
+        bare.stderr
+    );
+
+    let bare_lines = observed_primary_lines("bare lookup", &bare);
+    let sig_lines = observed_primary_lines("/sig", &sig);
+
+    let (mut bare_set, mut sig_set) = (bare_lines.clone(), sig_lines.clone());
+    bare_set.sort();
+    sig_set.sort();
+    assert_eq!(
+        bare_set, sig_set,
+        "§3.8 — `/sig` prints the same primary line set as bare lookup; \
+         bare stdout:\n{}\n/sig stdout:\n{}",
+        bare.stdout, sig.stdout
+    );
+
+    // The negative face next: neither surface may reject the candidate set.
+    assert_turn_lists_rather_than_rejects("bare lookup", &bare);
+    assert_session_lists_rather_than_rejects("/sig session", &sig);
+
+    assert_candidates_listed("bare lookup", &bare_lines, &expected, &bare);
+    assert_candidates_listed("/sig", &sig_lines, &expected, &sig);
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-3 listing leg.
+// Candidates whose types COINCIDE are distinct declarations and each is listed:
+// `a/f` and `b/f` are both `(Fn [Int] Int)`, and the two primary lines differ
+// only in the canonical name. Nothing warns or errors — not at the import
+// turn, not at lookup, not at `/sig` — even though the spelling really is
+// undecidable at a use, which is the sibling cell
+// `identically_typed_candidates_ambiguous_use_still_rejected_neg_no_silent_selection`.
+//
+// Observed RED, S122 (`.local/s122-display-red.log`): the import turns were
+// silent (the negative face holds there) and the bare lookup turn answered
+// with the use-site `ambiguous bare name 'f'` rejection.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn identically_typed_candidates_both_list_neg_no_ambiguity_at_lookup() {
+    let expected = [("a/f", "primitives/Int"), ("b/f", "primitives/Int")];
+
+    let bare = two_import_session(MODULE_B_F_INT, &format!("{TURN_MARKER}\nf\n"));
+    let sig = two_import_session(MODULE_B_F_INT, &format!("{TURN_MARKER}\n/sig f\n"));
+
+    // No use of the spelling occurs in either session, so nothing in them may
+    // mention ambiguity — the import turns included.
+    assert_session_lists_rather_than_rejects("bare lookup session", &bare);
+    assert_session_lists_rather_than_rejects("/sig session", &sig);
+
+    let bare_lines = observed_primary_lines("bare lookup", &bare);
+    let sig_lines = observed_primary_lines("/sig", &sig);
+
+    let (mut bare_set, mut sig_set) = (bare_lines.clone(), sig_lines.clone());
+    bare_set.sort();
+    sig_set.sort();
+    assert_eq!(
+        bare_set, sig_set,
+        "§3.8 — `/sig` prints the same primary line set as bare lookup; \
+         bare stdout:\n{}\n/sig stdout:\n{}",
+        bare.stdout, sig.stdout
+    );
+
+    assert_candidates_listed("bare lookup", &bare_lines, &expected, &bare);
+    assert_candidates_listed("/sig", &sig_lines, &expected, &sig);
+}
+
+// spec: spec/08-modules.md §8.6.5 — CD-3 use leg, the control for the listing
+// cell above over the SAME fixture. Listing every candidate relaxes nothing at
+// a use: with `a/f` and `b/f` identically typed, `(f 1)` cannot be decided by
+// ordinary constraints, so it is the existing located ambiguity naming both
+// canonical alternatives, and neither candidate's answer is printed. GREEN
+// observed S122 before any display fix and must stay green after — a change
+// here is a regression in language resolution, which the ruling does not touch.
+#[test]
+fn identically_typed_candidates_ambiguous_use_still_rejected_neg_no_silent_selection() {
+    let out = two_import_session(MODULE_B_F_INT, "(f 1)\n");
+    let combined = format!("stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+
+    assert!(
+        combined.to_lowercase().contains("ambiguous"),
+        "an undecidable use of the spelling is still the §8.6.5 use-site \
+         ambiguity; {combined}"
+    );
+    assert!(
+        combined.contains("a/f") && combined.contains("b/f"),
+        "§8.6.5 — the diagnostic lists the surviving canonical alternatives; \
+         {combined}"
+    );
+    assert!(
+        !out.stdout.contains(":primitives/Int 11") && !out.stdout.contains(":primitives/Int 21"),
+        "no candidate may be silently selected: neither `a/f`'s 11 nor `b/f`'s \
+         21 may be printed; {combined}"
+    );
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-5, the negative control
+// for CD-2. One TERMINAL declaration reached by two import paths is ONE
+// candidate (§8.6.2/§8.6.4 terminal identity), so bare lookup prints exactly
+// one line and attributes it to the defining module, not the re-exporter. If
+// the listing rule were implemented over exposures instead of terminals, this
+// cell prints `a/f` twice while CD-2 stays red.
+//
+// GREEN observed S122 before any display fix and must stay green after. Leg B
+// is the discriminator: if the re-export path alone cannot be looked up, a
+// two-line leg A is a fixture failure rather than a duplicate-exposure listing.
+#[test]
+fn one_terminal_reached_two_ways_lists_once() {
+    let reexporter = "(import [a [f]])\n(export [a [f]])\n";
+
+    // Leg A — imported BOTH directly and through the re-exporter.
+    let a = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("a.cl", MODULE_A_F_INT)
+        .file("r.cl", reexporter)
+        .stdin(&format!(
+            "(import [a [f]])\n(import [r [f]])\n{TURN_MARKER}\nf\n"
+        ))
+        .output();
+    assert_session_lists_rather_than_rejects("two paths to one terminal", &a);
+    let a_lines = observed_primary_lines("two paths to one terminal", &a);
+    assert_candidates_listed(
+        "two paths to one terminal",
+        &a_lines,
+        &[("a/f", "primitives/Int")],
+        &a,
+    );
+    assert!(
+        !a_lines[0].contains("r/f"),
+        "§8.4.6 — the one candidate is attributed to its defining module `a`, \
+         not to the re-exporter `r`; got:\n{}",
+        a.stdout
+    );
+
+    // Leg B (control) — the re-export path ALONE resolves and displays.
+    let b = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("a.cl", MODULE_A_F_INT)
+        .file("r.cl", reexporter)
+        .stdin(&format!("(import [r [f]])\n{TURN_MARKER}\nf\n"))
+        .output();
+    assert_session_lists_rather_than_rejects("re-export path alone", &b);
+    let b_lines = observed_primary_lines("re-export path alone", &b);
+    assert_candidates_listed(
+        "re-export path alone",
+        &b_lines,
+        &[("a/f", "primitives/Int")],
+        &b,
+    );
+}
+
+// CD-6 — `/info` and `/doc` on a bare name report the candidate SET too; a
+// command does not keep its own single-answer lookup. §4.1.11 adds no
+// per-command format, so each command is asserted in the terms its own format
+// already carries: `/info` names both canonical declarations (§3.6
+// `:Type name`), `/doc` surfaces both docstrings (§3.1/§11.2.4).
+//
+// One cell per command, not one per fixture: a joint cell stops at the first
+// command's RED and the other's output is never observed — exactly what the
+// S122 run showed for the `/doc` legs.
+//
+// Both commands are read at the OBSERVED TURN, not over the whole capture: the
+// local `defn`'s own echo already carries `user/foo` and its docstring, so a
+// whole-capture assertion would pass without the command answering at all.
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-6 `/info` over the CD-1
+// fixture. Observed RED, S122 (`.local/s122-display-red.log`): the turn printed
+// `user/foo` alone and dropped `prelude/foo` — the same short answer CD-1's
+// bare lookup gives.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn info_lists_prelude_and_local_candidates() {
+    let info = foo_collision_session(&format!("{TURN_MARKER}\n/info foo\n"));
+    assert_session_lists_rather_than_rejects("/info session", &info);
+    assert_turn_names_each(
+        "/info",
+        observed_turn("/info", &info),
+        &["prelude/foo", "user/foo"],
+        &info,
+    );
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-6 `/doc` over the CD-1
+// fixture. Observed RED, S122 (`.local/s122-display-red-followup.log`): the
+// turn printed `foo: "local candidate over Bool"` alone and dropped the prelude
+// candidate's docstring — `/info`'s omission face over the same fixture.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn doc_lists_prelude_and_local_candidates() {
+    let doc = foo_collision_session(&format!("{TURN_MARKER}\n/doc foo\n"));
+    assert_session_lists_rather_than_rejects("/doc session", &doc);
+    assert_turn_names_each(
+        "/doc",
+        observed_turn("/doc", &doc),
+        &["prelude candidate over Int", "local candidate over Bool"],
+        &doc,
+    );
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-6 `/info` over the CD-3
+// fixture, the same obligation where the two candidates' types coincide, so
+// nothing in the output can be reached by comparing types. Observed RED, S122
+// (`.local/s122-display-red.log`): the turn answered `error: unknown symbol
+// 'f'`, where the bare lookup over the same fixture answered with the use-site
+// ambiguity — two surfaces, two different answers for one spelling.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn info_lists_identically_typed_candidates() {
+    let info = two_import_session(MODULE_B_F_INT, &format!("{TURN_MARKER}\n/info f\n"));
+    assert_session_lists_rather_than_rejects("/info session", &info);
+    assert_turn_names_each(
+        "/info",
+        observed_turn("/info", &info),
+        &["a/f", "b/f"],
+        &info,
+    );
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-6 `/doc` over the CD-3
+// fixture. Observed RED, S122 (`.local/s122-display-red-followup.log`): the
+// turn answered `error: unknown symbol 'f'` — `/info`'s unknown-symbol face
+// over the same fixture, where bare lookup answered with the use-site ambiguity.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn doc_lists_identically_typed_candidates() {
+    let doc = two_import_session(MODULE_B_F_INT, &format!("{TURN_MARKER}\n/doc f\n"));
+    assert_session_lists_rather_than_rejects("/doc session", &doc);
+    assert_turn_names_each(
+        "/doc",
+        observed_turn("/doc", &doc),
+        &["candidate a over Int", "candidate b over Int"],
+        &doc,
+    );
+}
+
+// spec: repl/spec/04-self-documentation.md §4.1.11 — CD-8. A candidate set is
+// listed whatever its members' classes: `a/Empty` is a nullary constructor of
+// the parameterised `a/Box`, so its display is served by introspection over the
+// symbol table (§1.5.1) and needs no selection, while `b/Empty` is an ordinary
+// function. Each member has a class rule of its own, so one member reaching the
+// value path may not send the whole turn to evaluation — neither the §8.6.5
+// use-site `ambiguous` rejection nor an `unbound` answer is the listing.
+//
+// The constructor line's FORM is deliberately unasserted (§1.5.1's value render
+// and §4.1.2's introspection render both satisfy the rule, and choosing between
+// them is `design`/`dev`'s); this cell asserts only that both canonical
+// declarations are named and the set is not rejected. The single-candidate form
+// stays pinned by `prelude_option_none_value_display_neg_definition_metadata`.
+//
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+#[test]
+fn nullary_ctor_and_function_candidates_both_list_at_bare_lookup() {
+    let bare = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("a.cl", MODULE_A_BOX_EMPTY)
+        .file("b.cl", MODULE_B_EMPTY_FN)
+        .stdin(&format!(
+            "(import [a [Empty]])\n(import [b [Empty]])\n{TURN_MARKER}\nEmpty\n"
+        ))
+        .output();
+
+    // The session never USES the spelling, so no turn of it may reject —
+    // the import turns included.
+    assert_session_lists_rather_than_rejects("mixed candidate set", &bare);
+    assert_turn_names_each(
+        "bare lookup",
+        observed_turn("bare lookup", &bare),
+        &["a/Box", "b/Empty"],
+        &bare,
     );
 }

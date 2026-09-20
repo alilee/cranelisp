@@ -4,7 +4,7 @@
 //! `; defn:`/`; impl:`/`; match:` related-section builders they share. The
 //! type-level sibling of the value-echo renderers in `repl/format.rs`; consumes
 //! the shared resolution toolbox in `repl/mod.rs`. A-split of `repl/format.rs`
-//! per `design/int/repl-decomposition.md` §1.6.1 (FIXME 0627); pure relocation,
+//! per `design/int/int.md` §3.3 (FIXME 0627); pure relocation,
 //! behaviour-invariant.
 
 use super::format::{
@@ -324,9 +324,9 @@ impl CompilerSession {
     /// Format a trait for display (spec §4.1.4).
     ///
     /// Shows `:home/TraitName ; deftrait` with `; defn:` and `; impl:` sections,
-    /// ALL rooted at `home` — the trait's RESOLVED home module produced by the
-    /// canonical gate (`lookup_with_prelude_fallback` → `resolve_entry_for_display`,
-    /// held by the sole caller `format_def_entry`).
+    /// ALL rooted at `home` — the trait's RESOLVED home module, which is the
+    /// module half of the canonical identity `format_definition_symbol_doc`
+    /// probes and hands down through `format_def_entry_doc`.
     ///
     /// 0558 (S108, resolve-home-enumeration.md §5, class `wrong-scope-lookup`):
     /// the prior body re-resolved the home from the asking scope

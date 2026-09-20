@@ -2604,7 +2604,7 @@ pub(crate) fn is_internal_listing_entry<C: cranelisp_types::CodeStore>(
 /// The single user-facing category of a symbol-table entry — the ONE
 /// `ModuleEntry`/`DefKind` → category mapping shared by every int
 /// listing/introspection surface (`/list`, `/exports`,
-/// `list_user_definitions`, `describe_symbol`). Returns `None` for entries
+/// `list_user_definitions`). Returns `None` for entries
 /// that are never surfaced as a user definition (`Import`, `Ambiguous`,
 /// `TraitImpl`).
 ///

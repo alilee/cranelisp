@@ -3,7 +3,7 @@
 > **Point-in-time assessment (2026-06-20).** `/review` Stage-B pass per
 > `sprints/SPRINT.md` → Stage B (7-lens depth model, R5a same-instrument
 > requirement). This is a **delta + currency check** on the deep baseline
-> `audits/primitives-2026-06-14.md`, *not* a from-zero look. The baseline had
+> the 2026-06-14 primitives audit (Git history), *not* a from-zero look. The baseline had
 > no standalone `.mmd`; the fresh `audits/cranelisp-primitives-s87-current-state.mmd`
 > is the first committed diagram for this crate.
 >

@@ -1603,8 +1603,7 @@ impl CompileScheduler {
     /// Sprint 60 Wave 2 Round 4 fix (publish-vs-flag race, import fast path).
     /// Used by `handle_import` to distinguish "symbol_tables entry exists AND
     /// is fully populated" from "symbol_tables entry exists BUT module
-    /// typecheck is still in flight". See `design/backend/defects-456-reduction.md
-    /// §"Sprint 60 Wave 2 Round 4"`.
+    /// typecheck is still in flight". See `design/backend/jit-object-convergence.md §1`.
     pub fn is_typechecked(&self, module: &ModuleFullPath) -> bool {
         let state = self.lock();
         let result = match state.modules.get(module) {

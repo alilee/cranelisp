@@ -277,7 +277,7 @@ fn emit_not(
 /// 1. Zero divisor -- panic "division by zero"
 /// 2. `i64::MIN / -1` -- panic "division by zero" (overflow)
 ///
-/// Otherwise emit `sdiv`. See spec 12.7.3 and `design/backend/hkt-codegen.md` SS2.
+/// Otherwise emit `sdiv`. See spec 12.7.3 and `design/backend/ring1-codegen.md`, "The runtime-panic boundary".
 fn emit_checked_div<M: Module>(
     builder: &mut FunctionBuilder,
     name: &str,

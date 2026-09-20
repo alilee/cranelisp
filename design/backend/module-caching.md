@@ -21,73 +21,6 @@ Compiling a multi-module Cranelisp project requires processing every module thro
 - Incremental compilation within a module (the module is the caching unit).
 - Release mode object files (LLVM backend is a separate future crate).
 
-## 2. Sketch Comparison
-
-### How the sketch does it
-
-The sketch's cache system spans three files (1,704 lines):
-
-- **`cache.rs`** (1,069 lines): manifest management, SHA-256 source hashing, `compile_module_to_object()` to re-emit each module's functions into a Cranelift `ObjectModule`, `CacheWritePacket` for background/parallel writes, atomic file writes.
-- **`cache_writer.rs`** (139 lines): background mpsc thread for REPL cache writes. Accumulates manifest updates and flushes on shutdown.
-- **`linker.rs`** (496 lines): loads cached `.o` files, resolves Mach-O and ELF aarch64 relocations against the live JIT symbol table, maps code pages executable via `mmap`/`mprotect`.
-
-The cache stores three file types per module:
-- `manifest.json` -- global index mapping module paths to source hashes, plus version/triple/fingerprint metadata.
-- `<module>.meta.json` -- serialized `CompiledModule` (symbol table, import specs, GOT slot assignments, etc.).
-- `<module>.o` -- relocatable object file produced by `ObjectModule`.
-
-The cache key is a SHA-256 of the module's source text, checked against the manifest. A binary fingerprint (mtime of the compiler executable) invalidates all caches when the compiler is rebuilt.
-
-On cache hit, `try_load_cached_module()` deserializes the `.meta.json`, loads the `.o` through the linker, reinstalls import scopes, macros, overloads, and trait methods into the live session.
-
-### What worked
-
-1. **Module-granular caching**: the module as caching unit matches the compilation unit (spec 8.10.3), making invalidation straightforward.
-2. **Background write thread**: the REPL returns immediately after JIT compilation; cache writes happen asynchronously on a dedicated thread.
-3. **Atomic file writes**: temp-file-then-rename prevents readers from seeing partial writes.
-4. **Manifest-based invalidation**: a single manifest file provides O(1) cache-hit checks without reading every module's metadata.
-5. **ObjectModule for `.o` generation**: Cranelift's `ObjectModule` produces standard relocatable objects that a system linker could also consume.
-
-### What the audit found (15 findings)
-
-The cache audit (`sketch/audits/cache.md`) identified 3 HIGH, 7 MEDIUM, and 5 LOW findings:
-
-| ID | Severity | Issue |
-|---|---|---|
-| HIGH-1 | Resolved | RC/trace intrinsics not declared in ObjectModule (was a divergence risk) |
-| HIGH-2 | High | Duplicate ISA construction diverges from JIT path |
-| HIGH-3 | High | `compile_module_to_object()` has 21 positional parameters |
-| MED-1 | Medium | `write_module_cache()` is dead code |
-| MED-2 | Medium | `try_load_cached_module()` 238 lines, duplicated import resolution |
-| MED-3 | Medium | Silent failure of cache writes |
-| MED-4 | Medium | Linker GOT is a fixed 512-entry table with panic on overflow |
-| MED-5 | Medium | Binary fingerprint uses mtime, not content hash |
-| MED-6 | Medium | Triple compatibility check uses string containment |
-| MED-7 | Medium | `extract_cache_inputs` is O(n) per module |
-| LOW-1 | Low | `fn_slots_snapshot` uses unnamed tuples |
-| LOW-2 | Low | `declare_imported_func` has unused `return_count` parameter |
-| LOW-3 | Low | `try_load_cached_module` returns `Option<bool>` |
-| LOW-4 | Low | Module filename `.` to `_` replacement has collision risk |
-| LOW-5 | Low | Zero unit tests for cache, cache_writer, or linker |
-
-### Where the reimplementation diverges
-
-| Aspect | Sketch | Reimplementation | Rationale |
-|---|---|---|---|
-| **Crate ownership** | All in one crate | Cache logic in `cranelisp-backend`, pipeline wiring in `cranelisp` binary | Architecture principle 1 (decoupling). Keeps backend testable without pipeline. |
-| **Persisted shape** (Phase 5 / Step 5b) | Serializes the monolithic `CompiledModule` (all symbol info, GOT slots, runtime pointers, codegen state intermingled) | `.meta.json` IS a serialised `SymbolTable<(), ()>` carrying structural decls, symbols (with `ast` bodies + `got_slot`), and `schema_version: u32`. `code` (per-function) is `#[serde(skip)]`; the per-module `got` field (`Arc<GotTable>`) is `#[serde(skip)]`; both are re-populated on cache-hit load. **There is no per-entry pointer field** — the GOT slot index (`got_slot: Option<usize>`) IS the entry's address handle, persisted with the entry, and the GOT itself is recreated and re-populated on load. Post-rollback (S66 commits `b09ec76` → `1dc57ae`) the GOT is the single source of truth for callable addresses; the briefly-considered sibling `fn_ptr: Option<*const u8>` field was rolled back as redundant with the per-module GotTable. The `.o` file remains the per-module Cranelift `ObjectModule` output. Per Decision 25 + Decision 33 + Decision 34 + Decision 26 + Decision 35 (S66-amended) + Decision 41 (post-rollback). | Architecture Principle 7 (single source of truth — one symbol-table shape persisted; no parallel `CacheCodegenState` or `CacheMetadata` decomposed types; one address handle per entry — the GOT slot, not a sibling ptr field) + Principle 8 (no interim shape — `SymbolTable` IS the §9 target so persisting it directly avoids a translator/adapter pair) + Decision 33 (structural decls live as `SymbolTable` fields; `ModuleStructure` dissolves) + Decision 34 (explicit `schema_version` makes shape mismatch a discoverable cache-stale, not a cryptic deserialise error). |
-| **Schema versioning** | Implicit via `cache_format_version: u32` on `CacheMetadata` | Explicit `schema_version: u32` on the serialised `SymbolTable`; constant `CACHE_SCHEMA_VERSION` lives in `crates/cranelisp-backend/src/cache/mod.rs`. Mismatch invalidates the entry as if dependencies changed (same code path as source-mtime change). Per Decision 34. | Principle 5 (testability — version mismatches surface as a typed `CacheStale::SchemaMismatch` discriminator, not as a `serde_json::Error::Message`). |
-| **`code` / GOT placement** | Bespoke `CacheCodegenState` carrying GOT slot assignments, function param counts, and reconstruction hints; runtime pointers regenerated from a separate path | `code: Option<C>` (per-function) lives directly on `ModuleEntry::Def` and is `#[serde(skip)]`. The runtime call pointer for any callable entry (JIT user fn, linker-loaded user fn, primitive, platform DLL fn) lives in the per-module `GotTable` (`SymbolTable.got: Arc<GotTable>`, `#[serde(skip)]`), indexed by `ModuleEntry::Def.got_slot: Option<usize>` (which IS persisted). Cache-hit re-derive: deserialise the symbol table; the codegen-phase worker loads the cached `.o` via `Linker::load_object` and writes the resolved address to each defined symbol's GOT slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)`; the platform-reload pass re-opens each persisted `PlatformDecl`'s DLL and writes each platform-fn pointer to its entry's GOT slot via the same `store_slot` call. The S66 unification (`b09ec76`) briefly relocated the per-entry ptr to a sibling `ModuleEntry::Def.fn_ptr` field; the same-day rollback `1dc57ae` removed that field as redundant with the GOT (which was already authoritative — every callable entry already had a `got_slot`). **Post-rollback canonical statement: GOT is the single source of truth for callable addresses; no per-entry pointer field.** Per Decisions 25 / 26 / 31 (S66-amended) / 35 (S66-amended; post-rollback canonical) / 41 (post-rollback canonical statement reaffirmed). | Principle 7 (one `code` location per symbol + one address location per callable — both unified rather than scattered across a parallel store) + Decisions 25/26/31/35/41 unified — the cache deserialises into the same data shape that the priority worker writes during fresh build; the GOT slot is the address handle on both sides. |
-| **ISA construction** | 3 separate ISA builds with divergent flags | Single `build_isa(is_pic: bool)` in backend | Addresses HIGH-2. Architecture principle 7 (single source of truth). |
-| **Object compilation API** | 21 positional parameters | `compile_to_module<M: Module>(module_path, names, symbol_tables, module)` — single entry point per Decision 23 (parameterised over Cranelift module). After Step 5c the `symbol_tables` is `&DashMap<ModuleFullPath, SymbolTable<C, L>>`, but the backend still operates on the typecheck-product shape (`SymbolTable<(), ()>`) — see `compile-to-module.md` §17. | Addresses HIGH-3 + Decisions 23 + 32 (single compilation entry point; generic boundary erased by default `()`). |
-| **Binary fingerprint** | mtime-based | mtime-based (retain sketch approach) | MED-5 considered but mtime is the pragmatic choice: a single `stat()` call vs reading and hashing a multi-MB binary on every startup. The failure mode (mtime preserved across different binaries via `cp -p` or CI caching) is rare and limited to deliberate file copying. Source files use content hashing (marginal cost since we read them anyway), but the compiler binary check must be O(1). |
-| **Triple check** | String containment | Exact `target_lexicon::Triple` comparison | Addresses MED-6. |
-| **Module filenames** | `.` replaced with `_` (collision risk) | URL-encode dots as `%2e` or use nested directories | Addresses LOW-4. |
-| **Cache load path** | Duplicates import resolution from normal path | Shared `install_module_scope()` helper; cache-restore reads structural decls (`imports`/`exports`/`platforms`/`submodules`) from the deserialised `SymbolTable` fields (Step 5a / Decision 33), eliminating the historical "duplicate the import-resolution loop in `try_load_cached_module`" finding (MED-2). | Decision 33 + MED-2 — one resolver, two callers (fresh-build worker and cache-restore loader). |
-| **Error handling** | `eprintln!` warnings, silent fallback | `Result<T, CranelispError>` throughout, with warning accumulation | Architecture principle 8 on warnings-as-data. |
-| **Linker GOT** | Fixed 512-entry mmap, panic on overflow | Growable `Vec<u64>` with mprotect before use | Addresses MED-4. |
-| **Test coverage** | 14 integration tests, 0 unit tests | Unit tests for pure functions (round-trip serialise/deserialise on hand-built `SymbolTable` instances; `CACHE_SCHEMA_VERSION` mismatch emits the right invalidation discriminator) + `/qa`-owned integration tests on multi-module cache scenarios. Addresses LOW-5. |
-
 ## 3. Cache Key Design
 
 A module's cache is valid when all inputs that affect its compiled output are unchanged.
@@ -745,6 +678,40 @@ for (fn_name, slot_info) in &cached_module.codegen_state().got_slots {
 
 For the REPL (single `ModuleCodegenState`), this means the existing GOT table is reused. For batch (per-module GOT), each cached module gets its own `ModuleCodegenState` restored from `CacheCodegenState`.
 
+#### 13.3.1 Object-local `.L` data symbols are GOT-resolvable targets
+
+Cranelift emits `.L`-prefixed **object-local** data labels (`.Ldata0`, `.Ldata1`
+on Mach-O; the assembler `.L` convention generally) for string-literal
+constants — notably the runtime-panic message bodies raised from prelude
+trait-method dispatchers. It references them through a GOT_LOAD relocation pair
+(`ARM64_RELOC_GOT_LOAD_PAGE21` + `PAGEOFF12`), the same ADRP+LDR mechanism used
+for cross-module imports. So a `.L` local is not merely a private datum the
+linker may ignore: it is a **relocation target that needs an in-process GOT
+slot**.
+
+Two rules follow, and both are load-bearing:
+
+- **Every symbol-resolution path in `Linker` must see the same three maps in the
+  same priority order** — per-object `local_symbols`, then `defined_symbols`,
+  then `symbols`. A slot allocator that consults only the last two rejects a
+  target the relocation loop has already resolved. That asymmetry was the
+  Sprint-59 cache-load failure: the outer loop resolved `.Ldata0` from
+  `local_symbols`, then slot allocation failed with "unresolved symbol". The
+  cure is to **pass the already-resolved address down** rather than re-resolve
+  it, keeping slot allocation a pure allocator with no symbol-table coupling.
+- **A GOT-relocation regression test must use a `.L`-prefixed object-local
+  target, not only a `Linkage::Import` global.** An import lives in `symbols`
+  and succeeds on every path, so it cannot witness this class. This is why the
+  Sprint-58 Decision-23 guard passed while the defect shipped.
+
+Only the **cache-load** path is exposed. A fresh JIT session resolves
+string-literal `global_value` references in-memory through Cranelift's own
+symbol table and performs no `.o` relocation fixup at all, so the asymmetry is
+invisible until a second session reads the persisted object. Pinned by
+`crates/cranelisp-backend/src/cache/linker/tests.rs::ensure_got_slot_accepts_preresolved_local_symbol_address`
+(unit) and `tests/cache.rs::cache_repl_second_session_loads_prelude_from_cache`
+(e2e).
+
 ### 13.4 GOT Data Symbol Naming Convention
 
 Each module's GOT is identified by a well-known data symbol name:
@@ -940,23 +907,6 @@ The changes above have dependencies. Recommended implementation order:
 4. **Phase 4 — Loading path** (`/int` + `/backend`): Add `Linker` to `CompilationSession`. On cache hit with `has_object: true`, load the `.o`, wire into GOT, skip JIT compilation. Integration tests: compile a module, verify cache produces `.o`, clear JIT, load from cache, verify functions execute correctly.
 
 5. **Phase 5 — End-to-end tests** (`/qa`): Multi-module projects with cache, reload after source change, constrained polymorphism across cache boundaries.
-
-### 13.9 Sketch Comparison for This Section
-
-The sketch's `compile_module_to_object()` (cache.rs lines 362-647) follows the same dual-compilation pattern described here. Key differences in the reimplementation:
-
-| Aspect | Sketch | Reimplementation |
-|--------|--------|------------------|
-| Function entry point | 21 positional parameters | `ObjectCompileInput` struct |
-| ISA construction | Inline `settings::builder()` | `build_isa(true)` shared helper |
-| Intrinsic declaration | Per-intrinsic params (alloc_jit_name, etc.) | `IntrinsicTable` loop |
-| `FnCompiler` | `compile_function_indirect` takes `&mut impl Module` | `FnCompiler<M: Module>` generic struct |
-| GOT reference | `GotReference` enum on `FnSlot` | Same pattern, cleaner placement |
-| Global names for liveness | `build_minimal_modules_for_codegen` hack | `IntrinsicTable.global_names` (no fake module) |
-
-The linker (`linker.rs`) is already ported nearly verbatim. The reimplementation's linker adds `Result` returns instead of panics, and a capacity field for future growable GOT.
-
-The sketch's approach to macro re-compilation on cache hit, cross-module GOT references via data symbols, and the `__data` vs `__bss` workaround are all adopted without divergence — they are correct solutions to real problems.
 
 ### 13.10 Risks and Mitigations
 
@@ -1328,46 +1278,14 @@ pub enum CacheStale {
 
 Every variant maps to the same caller-visible behaviour: invalidate, recompile from source, write a fresh cache entry. The discriminator exists for diagnostics and tests, not for branching control flow.
 
-### 14.8 Sketch comparison refresh (Phase 5)
-
-This subsection refreshes §2 ("Sketch Comparison") for the Phase-5 persisted shape, satisfying `/arch` Sprint 58 review condition 1.
-
-**Sketch's cache shape**: the sketch persisted the monolithic `CompiledModule` struct as JSON. `CompiledModule` was the in-memory god-object holding symbols, GOT slots, runtime function pointers, codegen state, import scopes, macro tables, and trait registries — all in one struct. Cache writes serialised it via `serde` with `#[serde(skip)]` on the runtime-pointer fields; cache reads deserialised it and ran a 238-line "rehydrator" (`try_load_cached_module()`) that re-installed scopes/macros/traits from the deserialised state. The sketch did not separate "structural specification" (the original `(import …)` / `(export …)` / `(platform …)` / `(mod …)` forms in source order) from "resolved effects" (per-symbol entries created during typecheck). The CompiledModule held the resolved effects and the `(import …)` form list as one bag; regenerating source (for `(read-source <module>)` introspection) meant walking the entries and reconstructing the originals heuristically.
-
-**v4-target cache shape (this section)**: the `.meta.json` IS a serialised `SymbolTable<(), ()>`. The persisted struct carries:
-1. `schema_version: u32` envelope (Decision 34) — explicit version handshake.
-2. Structural declarations (`imports`/`exports`/`platforms`/`submodules`) preserved as the **original specification** in source order (Decision 33 / Step 5a) — `src/save.rs::generate_module_source` reads them directly without reconstruction.
-3. Per-symbol resolved entries (`ModuleEntry::Def { ast, scheme, got_slot, callees, … }`, `ModuleEntry::Import { source }`, etc.) — the resolved effects of typecheck.
-4. Runtime fields (`code`, `got`, `linker`) all `#[serde(skip)]` — cache-restore re-derives `code` by loading the cached `.o` via `Linker::load_object`, looking up function symbols by their bare names per Decision 36, and constructing `Code::Linker(Arc<Linker>)`; for each defined symbol the linker's resolved address is written to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)` (per §14.3 step [5b] and Decisions 25 / 35 / 41 post-rollback). `got` is recreated fresh on `SymbolTable::default()`-style construction at deserialise time (or via a custom Deserialize impl that calls `GotTable::new()` for the field's `#[serde(skip)]` default); platform-fn addresses re-populate via the same `got().store_slot(slot, ptr)` call during the platform-reload pass (per §14.3 step [5a]), keyed by the persisted `PlatformDecl` (Decision 26). There is no `platform_fn_ptr` field post-S66 rollback `1dc57ae` — the GOT is the single source of truth for callable addresses per the post-rollback canonical statement in Decisions 35 / 41. The `Arc<Jit>` lives directly on `code` for fresh-build entries per Decision 31 Scenario 2; cache-hit entries hold `Arc<Linker>` instead. **`Code` carries lifecycle ownership only — variants no longer embed a `ptr`.** Both variants share the same GOT-slot read pattern via `symbol_table.got().load_slot(entry.got_slot.unwrap())`.
-
-**Divergence rationale — load-bearing structural separation**: the sketch's lack of separation between "structural specification" and "resolved effects" produced two specific problems that Decision 33 + the Step 5b shape both fix:
-1. **`.cl` regeneration was lossy.** Spec §6.4 requires `(read-source <module>)` to round-trip the original imports/exports/platforms/mods in source order. The sketch reconstructed them by walking `ModuleEntry::Import` chains, which lost grouping (a single `(import [foo [a b c]])` form might have produced three separate `Import` entries depending on the resolution path), source order (the ordering came from HashMap iteration), and the distinction between explicit name lists and `(import [foo [*]])` glob form. Decision 33's structural-decl fields preserve the originals; the resolved entries continue to live as `ModuleEntry::Import`.
-2. **Cache reads needed parallel rebuild logic.** The sketch's `try_load_cached_module()` had to re-run import resolution (rebuilding the `Import` entries from the persisted `import_specs`), trait registration (rebuilding `TraitRegistry` entries from persisted impls), and macro registration. Each rebuild was a 30–80 line loop that could (and did) drift from the fresh-build path. Step 5b's design eliminates the rebuild loops: deserialise gives both the structural decls AND the resolved entries directly; the import resolver, trait registrar, and macro registrar all read from the SymbolTable they already operate on during fresh build (`install_module_scope()` is the shared call site). One code path, two callers. (This is the structural fix for sketch finding MED-2.)
-
-The Decision-25 / Decision-31 placement of `code` / `Arc<Jit>` directly on `ModuleEntry::Def.code` (vs the sketch's pattern of holding code pointers in a session-side `def_codegen: HashMap<Symbol, DefCodegen>` parallel store) is the third structural divergence. The sketch's parallel store contained MED-2 + LOW-1 + LOW-3 audit findings stemming from the same root cause: when "compiled code" lives in a parallel store, cache-restore has to write into that parallel store from the deserialised metadata, and the write path is inevitably different from the fresh-build write path. With code on the entry, both paths use the same write site.
-
-The sketch's `CacheCodegenState` (a serializable subset of `ModuleCodegenState` invented at Sprint 22 to give cache something to persist) dissolves entirely in the v4 shape because there is no `ModuleCodegenState` — `SymbolTable` IS the storage, and its `#[serde(skip)]` fields cover the runtime state. This is the cleanest Principle 7 (single source of truth) outcome for the cache subsystem.
-
-**What the v4 cache keeps from the sketch (unchanged, validated)**:
-- Module-granular caching (sketch goal 1 / spec §8.10.3).
-- Background-thread cache writes (sketch goal 5 — REPL responsiveness).
-- Atomic file writes via temp-file-then-rename (sketch goal 3).
-- Manifest-based O(1) cache-hit checks (sketch §3.3).
-- Source-content-hash invalidation (sketch §3.1).
-- Transitive dependency hash check (sketch §3.2).
-- The dual JIT/ObjectModule generation strategy (§5) — though now via single `compile_to_module<M: Module>` per Decision 23.
-- Linker for `.o` loading in `--link` mode (sketch's `linker.rs`).
-
-The v4 shape is a structural cleanup of the sketch's cache, not a re-design of the cache concept. The sketch's invariants are preserved; the encoding is changed to remove the parallel stores and gain explicit version handshaking.
-
 ### 14.9 Cross-references
 
 - `design/int/symbol-table-cache.md` — `/int`-owned producer-side companion. Documents the worker cache-write trigger, background-thread coordination, and call into `/backend`'s cache-write helper. MUST agree with this section on the `CACHE_SCHEMA_VERSION` constant name + location.
 - `design/arch/CLAUDE.md` Decisions 25, 26, 31, 32, 33, 34 — the architectural foundation for §14's design choices.
 - `design/arch/interfaces.md` §"Symbol Table" + §"Module Entries" — the parameterised `SymbolTable<C, L>` and `ModuleEntry<C>` shapes; the schema-version field.
-- `design/arch/pipeline-v4.md` §9.5 — the §9 target normative form ("the `.meta.json` file is a serialized `SymbolTable`").
+- `design/arch/interfaces.md` — the cache persistence contract ("the `.meta.json` file is a serialized `SymbolTable`").
 - `design/backend/compile-to-module.md` §17 (Step 5c) — the parameterised signature shape `compile_to_module` consumes. §17.1.1 documents the raw-shape return type per CP1 arbitration (Decision 35 / Layer 2 Option B). §17.5 cross-references back to this §14: cache-restore does NOT call `compile_to_module` (Decision 25 update — codegen ran once at fresh-build time and the `.o` was persisted; cache-hit loads the `.o` via `Linker::load_object`). Fresh-build is the sole caller of `compile_to_module<JITModule>` (or `<ObjectModule>` for the cache `.o` write).
-- `design/backend/per-module-got.md` §9.2/§9.3 — the unified one-load GOT shape (Sprint 58 Wave 2 close): `__cranelisp_got_{M}` symbol address IS the slab base directly in both JIT and Object modes; no pointer-cell indirection.
+- `design/backend/per-module-got.md` §2 — the unified one-load GOT shape (Sprint 58 Wave 2 close): `__cranelisp_got_{M}` symbol address IS the slab base directly in both JIT and Object modes; no pointer-cell indirection.
 - `design/arch/CLAUDE.md` Decisions 23 (UPDATED), 25 (UPDATED), 36 (NEW), 37 (NEW) — the Sprint 58 Wave 2 architectural reconciliation that this §14 implements on the cache side.
 - `design/arch/interfaces.md` §"Two-GOT model" subsection — visual reference for the SymbolTable GOT vs `.o` data section GOT distinction that `--run`/REPL vs `--link` mode exercise differently.
 - `design/typecheck/ast-annotation.md` — the per-category contract for which `ModuleEntry` entries carry `ast: Some(_)`; cache-restore relies on the same contract.

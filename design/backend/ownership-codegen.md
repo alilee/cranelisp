@@ -78,7 +78,7 @@ section below is tagged where the distinction bites.
 Before mechanism: the actors this design changes, and the functions between them — all real
 seams in today's source (`crates/cranelisp-backend/` unless noted):
 
-- **The RC emission SSOT** (`src/heap.rs`) — `emit_rc_inc` (`:177`), `emit_rc_inc_guarded`
+- **The RC emission SSOT** (`crates/cranelisp-backend/src/heap.rs`) — `emit_rc_inc` (`:177`), `emit_rc_inc_guarded`
   (`:205`), `emit_rc_dec` (`:312`), `emit_rc_dec_guarded` (`:327`); all `atomic_rmw`
   (Add/Sub, `MemFlags::trusted()`, Release; dec carries the fence + `old==1` free path). The
   representation-containment rule (only `heap.rs` imports layout constants) means §5's
@@ -86,7 +86,7 @@ seams in today's source (`crates/cranelisp-backend/` unless noted):
   already exist**: `nonatomic_rc_codegen_enabled()` (`heap.rs:284`, the S99
   `CRANELISP_NONATOMIC_RC` probe) branches to plain load/`iadd`/store at `:185–198`,
   `:230–243`, `:375–390`. §5 re-gates these arms; it does not write new ones.
-- **The call lowering** (`src/compiler/apply.rs`) — `compile_consuming_arg_list` (`:682`;
+- **The call lowering** (`crates/cranelisp-backend/src/compiler/apply.rs`) — `compile_consuming_arg_list` (`:682`;
   the caller-side Var inc at `:700–713` keyed on `signature_heap_category`),
   `compile_direct_call` (`:725`) dispatching GOT-indirect via `resolve_got_target` (`:760`) →
   `emit_got_slot_load` (`:920`: `slab_base + slot*8`, load) →
@@ -109,11 +109,11 @@ seams in today's source (`crates/cranelisp-backend/` unless noted):
   loop `:337–347`), `vec-push-copy` (`:364–396`), `vec-push-grow` (`:405–437`); element fns
   passed as nullable i64 fn ptrs (`call_elem_fn` `:262`; `vec_drop` skips null `:459`) —
   §7's Vec-of-values rides exactly this null short-circuit.
-- **The value-wrapper precedent** (`src/compiler/literals.rs`) — `operator_primitive_name`
+- **The value-wrapper precedent** (`crates/cranelisp-backend/src/compiler/literals.rs`) — `operator_primitive_name`
   (`:238`), `compile_operator_as_value` (`:263`): a zero-capture closure over a synthesized
   `Linkage::Local` wrapper (`__wrap_op_{prim}_{disc}{span}__`, `:309–327`) whose body is a
   GOT-indirect call (`:354–378`). §3.5's R2 wrapper is this pattern applied to user functions.
-- **Auto-curry** (`src/compiler/control_flow/fn_as_value.rs`) — `compile_auto_curry` (`:514`),
+- **Auto-curry** (`crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs`) — `compile_auto_curry` (`:514`),
   `compile_auto_curry_wrapper` (`:613`), `emit_curry_target_call` (`:443`). §3.5's
   composition ruling lands at `emit_curry_target_call`.
 - **The GOT** — per-module slab (`__cranelisp_got_{M}`; JIT base-ptr registration
@@ -127,7 +127,7 @@ seams in today's source (`crates/cranelisp-backend/` unless noted):
   message, returns sentinel 0), `take_runtime_error` (`:96`), `set_runtime_error` (`:108`);
   the host checks the slot after every JIT invocation (`cranelisp_run_program` `:261`). §8's
   trap stub is a ~5-instruction client of this machinery.
-- **The cache** (`src/cache/`) — `CACHE_SCHEMA_VERSION = 10` (`cache/mod.rs:201`); manifest
+- **The cache** (`crates/cranelisp-backend/src/cache/`) — `CACHE_SCHEMA_VERSION = 10` (`cache/mod.rs:201`); manifest
   validity = own `source_hash` + `dependency_hashes` + the global dims (compiler fingerprint,
   target triple, cranelift version, format version — `cache/mod.rs:25`). §2.3 adds the toggle
   to the global dims; §7.4's parity rests on the `.meta.json`-is-the-SymbolTable fact
@@ -1106,7 +1106,7 @@ would be pointer-copied without an inc — a missing-inc UAF) and the backend's 
 (`classify`). Both are deterministic pure functions over the type defs, but two
 independently-maintained implementations of a soundness-**coupled** predicate is exactly the
 Principle-7 mirror-defect class. The spine ruled it into `cranelisp-types` beside `HeapHeader`
-(`src/heap.rs`) as a **single `/arch`-authored carrier both crates delegate to** — no backend
+(`crates/cranelisp-backend/src/heap.rs`) as a **single `/arch`-authored carrier both crates delegate to** — no backend
 or typecheck copy:
 
 ```rust
@@ -1286,7 +1286,7 @@ symbol was hit). So:
 - **RC-mid-panic caveat, carried:** the caller has already emitted consuming incs for its
   heap args when the trap fires; the raise path releases none of them — one leaked reference
   per trap invocation. This is the same caveat class as every runtime panic
-  (`sprint19-panic-boundary.md`; the test-discovery design carries it identically) —
+  (`ring1-codegen.md` §"The runtime-panic boundary"; the test-discovery design carries it identically) —
   dev-session-bounded, documented, acceptable. Not a new hazard: `runtime/panic` callers
   today leak identically.
 - **Cost:** one tiny per-symbol JIT compile per cascade-broken symbol (per-symbol JIT
@@ -1533,18 +1533,14 @@ fact-absent path (§2.2 discipline); GOT slot-hole reclamation (FIXME 0466 stand
 
 ## §12. Open questions routed onward
 
-**Filed now:**
-
-- **FIXME 0468 (`target: /arch`)** — single-source home for the Copy/value-layout predicate
-  when R5 lands (§7.1): typecheck's mode classifier and the backend's `HeapCategory::Value`
-  arm must consume one definition (soundness-coupled — a `Copy` mode over an unflattened
-  representation is a missing inc). Proposed: a `cranelisp-types`-hosted pure classifier in
-  the R5-increment `/arch` change-set. Not S100-blocking; nothing is emitted from the `Copy`
-  row until R5. `design/arch/fixmes/0468-copy-value-layout-predicate-single-source.md`.
-- **FIXME 0469 (`target: /arch`)** — spine §3.1(b)/§10-item-14 illustrative-example
-  correction: `vec-len` is inline-lowered at statically-resolved sites (no consuming pair to
-  elide — §9.2); cite `str-len` instead.
-  `design/arch/fixmes/0469-spine-sibling-example-vec-len-is-inline.md`.
+**Owed to `arch`, gated on R5 (no filing currently carries it):** the
+Copy/value-layout predicate needs a single-source home when R5 lands (§7.1).
+Typecheck's mode classifier and the backend's value-category arm must consume
+**one** definition, because the two are soundness-coupled — a `Copy` mode over
+an unflattened representation is a missing increment. The proposed home is a
+pure classifier in `cranelisp-types`, authored in the R5 `arch` change-set.
+Nothing is emitted from the `Copy` row until R5, so the trigger for raising it
+is the R5 increment starting, not this document.
 
 **To `/qa` (parts 17–18):**
 

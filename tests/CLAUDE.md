@@ -44,6 +44,7 @@ helper. The earlier four-layer pyramid is retired (Git history).
 | `PLAN.md` | Current assurance policy, evidence navigation and active allocation. Fine-grained traceability remains in specs and test sources. |
 | `risks.md` | Qualitative risk register. |
 | `helpers.md` | E2E helper API design (contract for `tests/helpers/`). |
+| `qa-retained-evidence-records` | Dated QA measurement, lane-baseline and coverage-analysis records retained because current designs, test sources and harnesses cite them by section. |
 
 Per-sprint plans accumulate as `plan/s{NN}-*.md` (and `spec_*.py` traceability
 tooling); those are `/qa`'s working documents, not durable references.

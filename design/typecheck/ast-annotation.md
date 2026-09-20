@@ -14,7 +14,7 @@ These are structurally disconnected. The AST bodies live in a transient `Codegen
 
 The pipeline-v4 target (`pipeline-v4.md` Section 9.1) eliminates this separation: typecheck writes AST bodies, resolved calls, and expression types directly onto `ModuleEntry::Def` entries in the symbol table. Codegen reads them from the symbol table by name. `CheckResult` stops being a boundary type.
 
-This document describes Steps 1a and 1b -- the write side of the migration. Steps 1c and 1d (read side, elimination) are in `design/backend/ast-sourced-codegen.md`.
+This document describes Steps 1a and 1b -- the write side of the migration. The read-side migration is historical; the current concrete typed-view contract is in `design/arch/concrete-boundary-type.md`.
 
 ## 2. Step 1a: `ast: Option<Defn>` on `ModuleEntry::Def`
 
@@ -1086,7 +1086,7 @@ Per Decision 22 (`SymbolTable::defined_symbols()`), the set of constrained fn te
 - `src/` — **zero** matches.
 - `crates/cranelisp-typecheck/` — reads/writes inside inference. Typecheck-internal.
 
-Per Phase 1 (G3) and `design/backend/ast-sourced-codegen.md`, every `Expr` node now carries `inferred_type: Option<Box<Type>>`. The backend's heap classification and type-dependent codegen read from AST nodes directly; the `expr_types` side map is not consulted.
+Per Phase 1 (G3) and the historical AST-sourced-codegen design (Git history), every `Expr` node now carries `inferred_type: Option<Box<Type>>`. The backend's heap classification and type-dependent codegen read from AST nodes directly; the `expr_types` side map is not consulted.
 
 **Classification: cfg(test)-only (backend) + typecheck-internal.** No LIVE BACKEND READER. Safe to remove from `CheckResult`.
 
@@ -1416,7 +1416,7 @@ Step 5b serialises `SymbolTable` (with the Step 5a structural-decl fields popula
 
 2. **Code is re-derived by re-codegen, not deserialised**. After cache-restore, the priority worker walks `defined_symbols()` (§9.5) over each module's `SymbolTable` and runs `compile_to_module` over the entries that codegen needs to materialise. The new code populates `code: Option<C>` at the integration-layer's parameterised view (`C = Code` / `Arc<Jit>` per §12.4). This is the same code-write path used on a fresh build — no cache-specific code path.
 
-3. **Platform fn ptrs are re-resolved from the manifest**. Per Decision 26's serialisation discipline, platform fn ptrs are re-derived on cache-hit load by re-opening the DLL referenced by the corresponding `PlatformDecl` entry and reading its manifest. This is `/platform`'s territory (the addendum to `design/platform/platform-registry-removal.md` per the SPRINT.md /platform task). Typecheck has no role in the re-resolution.
+3. **Platform fn ptrs are re-resolved from the manifest**. Per Decision 26's serialisation discipline, platform fn ptrs are re-derived on cache-hit load by re-opening the DLL referenced by the corresponding `PlatformDecl` entry and reading its manifest. This is `/platform`'s territory. Typecheck has no role in the re-resolution.
 
 4. **`schema_version` discipline (Decision 34)**. The `schema_version: u32` field on the serialised `SymbolTable` (via `#[serde(default)]`, `interfaces.md` line 891) gates cache-restore: if the deserialised version does not match the current `CACHE_SCHEMA_VERSION` constant (owned by `/backend` in `crates/cranelisp-backend/src/cache/mod.rs`), the cache entry is treated as stale and the source is re-typechecked. /typecheck's commitment: every shape-changing field addition to `SymbolTable` or `ModuleEntry` (deletion, type change, or non-default field addition) MUST coordinate with `/backend` to bump `CACHE_SCHEMA_VERSION`. /typecheck is the field-shape owner for `cranelisp-types/src/module.rs`, so /typecheck triggers the bump request via FIXME(/backend) on `cache/mod.rs` when a shape-changing edit lands.
 

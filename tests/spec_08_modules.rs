@@ -224,7 +224,7 @@ fn module_cycle_detection_neg() {
 // OQ-2 (Sprint 78): the tightest 2-node mutual import (m ↔ n) under the
 // in-call-stack dep-drive. The existing `module_cycle_detection_neg` above
 // covers a 3-node chain; this covers the 2-node mutual case that
-// `design/int/s77-int-restructure.md §3.4` reasons about directly — "W blocks
+// `design/int/int.md §6.2` reasons about directly — "W blocks
 // M on N; a worker blocks N on M; the second block_for_typecheck detects the
 // M→N→M cycle". It additionally asserts the LIVENESS property OQ-2 names:
 // rejection fires BEFORE any wait (the cycle path runs detect_cycle_locked
@@ -253,7 +253,7 @@ fn mutual_import_cycle_rejected_before_wait_neg() {
     assert!(
         !out.status.success(),
         "2-node mutual import cycle (m ↔ n) MUST be rejected before any wait \
-         (spec §8.10; design/int/s77-int-restructure.md §3.4); \
+         (spec §8.10; design/int/int.md §6.2); \
          stdout={} stderr={}",
         out.stdout,
         out.stderr
@@ -1197,13 +1197,8 @@ fn multiple_import_forms_in_one_module() {
 // REGRESSION-GUARD: Step 5 lazy-discovery resumption invariant
 // (design/int/step5-lazy-discovery.md §5).
 //
-// Defect-discovery note (Wave 6 batch 6): the legacy test asserted only
-// that stderr was empty; it did NOT check exit code. The carry-forward
-// preserves the legacy spec invariant (clean stderr = §8.10.1
-// resumption succeeded) and additionally records that the run-mode
-// child SEGVs (exit 139) on this shape — an open downstream codegen/
-// scheduler defect tracked under FIXME 0149. The compile invariant
-// (the §8.10.1 spec property) PASSES; the SEGV is a separate concern.
+// Clean stderr shows the resumption compiled; exit 42 (10 + 32) shows the
+// defn declared before the import is the one called after the dep loads.
 #[test]
 fn defn_before_import_resumes_correctly_after_dep_load() {
     let out = Cranelisp::new()
@@ -1224,21 +1219,17 @@ fn defn_before_import_resumes_correctly_after_dep_load() {
         .filter(|line| !line.starts_with("nice-worker:"))
         .collect::<Vec<_>>()
         .join("\n");
-    // §8.10.1 invariant: defn-before-import suspends/resumes cleanly,
-    // i.e. compilation produces no error text. Legacy assertion shape.
     assert!(
         err.is_empty(),
         "compilation should succeed cleanly; stderr: {}",
         err
     );
-    // XXX(/backend) FIXME 0149: exit-code witness `assert_exit(42)` is
-    // currently NOT asserted — the run-mode child SEGVs (exit 139) on
-    // this shape. Re-enable when the downstream defect is resolved.
+    out.assert_exit(42);
 }
 
 // =============================================================================
 // S78 §1 — Entry module is ordinary; `"user"` is only the default CLI name.
-// design/int/s78-entry-module.md §1 (entry-module concept, name-agnostic).
+// design/int/int.md §6.5 (entry-module concept, name-agnostic).
 //
 // The entry module is the `main`-bearing module the session is asked to
 // compile + run. Under `--run <file>` it is named after the file (`main.rs`
@@ -1248,7 +1239,7 @@ fn defn_before_import_resumes_correctly_after_dep_load() {
 // registration is already name-agnostic — `main.rs:172`).
 // =============================================================================
 
-// spec: design/int/s78-entry-module.md §1 — a `--run` program whose entry
+// spec: design/int/int.md §6.5 — a `--run` program whose entry
 //   file is named non-`user` compiles and runs. The entry module is `sudoku`
 //   (the file stem), an ordinary module; there is no `user` module anywhere.
 #[test]
@@ -1263,7 +1254,7 @@ fn entry_module_named_non_user_runs() {
         .assert_exit(7);
 }
 
-// spec: design/int/s78-entry-module.md §1 — a program with NO `user` module
+// spec: design/int/int.md §6.5 — a program with NO `user` module
 //   anywhere works end-to-end: the entry (named `myapp`) imports a sibling
 //   (`board`), and neither file is `user.cl`. Exercises cross-module call +
 //   import-gap drive against a non-`user` entry.
@@ -1280,7 +1271,7 @@ fn program_with_no_user_module_runs_end_to_end() {
         .assert_exit(42);
 }
 
-// spec: design/int/s78-entry-module.md §1 — regression: the CLI default
+// spec: design/int/int.md §6.5 — regression: the CLI default
 //   entry name (`user`, when no target is given) still works. `--run user.cl`
 //   names the entry `user` and runs it.
 #[test]

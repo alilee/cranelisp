@@ -1,8 +1,24 @@
 # The S121 C4 backend visit — one interior change
 
+> **Delivery state (re-verified 2026-09-20 against source).** Bundles **B5**
+> (IO teardown, the `Pure` payload-glue stamp and the tag-dispatched
+> platform-return stamp, with its one-offset pin), **B6**'s result-root and
+> nullary-guard convergences (§8.1/§8.2) and **B8** (the dormant Vec-length arm,
+> now live) are **landed**. **B1** and **B7** are **partial** — the lifecycle is
+> consumed at scattered sites rather than as one exhaustive disposition, and no
+> cache-load legality arm exists. **B2, B3, B4 and B9 are entirely open**, and
+> B4 is the structural close the visit's "one sentence" rests on, so §7.4's
+> grade improvement is **unclaimed**.
+>
+> §9's per-record column is a snapshot of its authoring window and is stale in
+> both directions; prefer this banner and source. §8.3's one-finder consolidation
+> is retired by `design/backend/s122-closure.md` §5.1 — but the *widening* it separates out, and
+> that widening's hazard, remain in this visit's **One binding-root finder**
+> subsection, reject 8.
+
 **Status:** DESIGN — authored S121 Phase 3, `/design`(`cranelisp-backend`).
-Every claim below was verified against live source in this window; where a
-filing's central claim is already discharged, that is recorded as a
+Every claim below was verified against live source in its authoring window;
+where a filing's central claim was already discharged, that is recorded as a
 disposition rather than re-designed (§9). Reconciled 2026-09-01 onto arch's
 completed `Pure` ownership-witness contract (`design/arch/total-concreteness.md`
 §3.4): the payload is field 0 and the witness field 1; C4 construction and
@@ -42,7 +58,7 @@ compile-time pin, while C7 owns its independent platform composition pin
 platform-return tag dispatch and its window residual — register row R19,
 and the once-only-force allocation — register row R20,
 `design/arch/safety-invariants.md` §4);
-`design/platform/s121-c7-platform-visit.md` §4.1, §4.4, §4.5 (the DLL-side
+`design/platform/platform.md` §4.1, §4.4, §4.5 (the DLL-side
 sentinel, the platform half of the offset pin, the `Pure`-returning fixture);
 `design/arch/total-concreteness.md` §3.2 + `design/primitives/s121-c5-primitives-visit.md`
 §§3.3–3.4 (the `vec-len` de-slot, the arm's shape and its Decision-24 grounds);
@@ -973,7 +989,7 @@ bundle membership.
 rule that `ConcreteType::result_root()` already owns (landed at S119 with its
 unit battery). The map re-expresses over the method and the literal encoding
 deletes. Byte-identical semantics — one hop, `primitives/IO` with non-empty
-args. The int twin (`src/result_owner.rs::strip_io_head`) is C6's; the filing
+args. The int twin (`src/result_owner.rs::result_root`) is C6's; the filing
 deletes when both are collapsed.
 
 ### 8.2 One nullary-skip prologue (0906, re-scoped)
@@ -1198,7 +1214,7 @@ filing, carried here because it allocates implementation to a C4 bundle.
 
 | # | Target | Live state at HEAD | Disposition | Bundle |
 |---|---|---|---|---|
-| **0747** | `/design` | all three finders live and separate (`fn_compiler.rs:1751`, `:2148`, `:3294`) | **retired manufactured consolidation; no source change** — S122 supersession at §8.3 and `s122-closure.md` §5.1 | B6 |
+| **0747** | `/design` | all three finders live and separate (`fn_compiler.rs:1751`, `:2148`, `:3294`) | **retired manufactured consolidation; no source change** — S122 supersession at §8.3 and `design/backend/s122-closure.md` §5.1 | B6 |
 | **0761** | `/qa` | the exact-balance lane landed: `tests/gen_ownership_flows.rs` asserts absolute balance across the owning-type × position matrix, `balance_exclusion` retired | **filing retirement, evidence-only.** C4 contributes nothing; `qa` verifies and deletes | — |
 | **0781** | `/qa` | backend half landed S115 W4c — `value_provenance` is the one derived answer; `emit_vec_drop_if_temporary` reads it | **evidence-only + QA handoff** (§10 H4). No backend implementation | — |
 | **0782** | `/dev` | resolution (a) landed: the var-pattern binder is marked borrowed and the arm's lifetime plan is the sole release owner; unit pins present at `match_codegen/{arm_lifetime_plan,scrutinee_ownership}_tests.rs` | **filing retirement.** Re-confirm one release in the repro's CLIF once inside C4's evidence, then delete | B7 |
@@ -1244,7 +1260,7 @@ was allocated last (§8.5) and lands before the wash.
 | H1 | `/design`(intrinsics) → C5 | `free_io_node`: the tail half of `consume_io_tree`, split at the dec. C5 I0b owns the one aligned-`AtomicI64` claim helper over field 1: force and teardown both `swap(Claimed, AcqRel)` before payload access; teardown calls an observed `Owned(glue)` with field 0, while `Scalar`/`Claimed` calls nothing; duplicate force refuses through the existing runtime-error/ferry path before touching field 0. Construction/adoption are C4's ordinary unpublished `0`/glue stores and do not change. The existing three publication/lifetime edges remain as §6.2 states; the atomic modification order closes the former duplicate-transfer race, while R2's severed join remains separately owned. Site, cleanup, observer and evidence are C5's; the contract is §6 |
 | H2 | `/design`(platform) → C7 | `ABI_VERSION` 9→10 and platform test-fixture rebuilds for the two-field `Pure` (§6.1); the DLL-side sentinel `0` and the `Pure`-returning fixture pair the adoption stamp is measured on (C7 §4.1, §4.5). **Plus the answer to C7's H2′**: C7 P0 owns its local `HEAP_HEADER_SIZE + IO_PURE_GLUE_OFFSET == 32` compile-time pin (§6.7.3). C4 B5 independently owns `PURE_GLUE_ABS_OFFSET == 32`; C7 makes no backend edit, and no root-test fallback is reserved |
 | H2″ | `/design`(platform) → C7 | **C7's H8 is discharged in this change-set.** §6.3's "closed set of three" now reads four sanctioned stamp sites, §13 reject 10 reads accordingly, and the adoption site has its own subsection (§6.7). No contradiction remains between this contract and its reject list for `dev`(backend) to hit |
-| H3 | `/design`(int) → C6 | the int twin `strip_io_head` deletes with 0898; the §9.1 subject projection lands with B2 so R-4 is discharged end-to-end; `Bind`'s bootstrap seed leaves the constructor introspectable (§6.6) |
+| H3 | `/design`(int) → C6 | the int twin `result_root` deletes with 0898; the §9.1 subject projection lands with B2 so R-4 is discharged end-to-end; `Bind`'s bootstrap seed leaves the constructor introspectable (§6.6) |
 | H4 | `/qa` + `/test` | 0781's three residual items: re-point the two `let`-mediated cells' `// defect:` notation as resolution records; land Q3/Q1 with their Q2/Q4 negative controls as GREEN regression guards; place the three `match_codegen` faces, currently unit-pinned only |
 | H5 | `/qa` | 0811's rule, and its application here: 0917's exemplar residue cell is a **downstream observer**, not an acceptance witness for any C4 bundle. A surprising reading is new intake |
 | H6 | `/test` | 0900: whether to tighten cell #15's `locus=` token to a no-space seam form. `test`'s call; crate-grain is established practice either way |

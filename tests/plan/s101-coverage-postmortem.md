@@ -1,15 +1,25 @@
 # S101 coverage post-mortem — why existing coverage missed the three Phase-3 finds
 
-**Author:** `/qa` · **Date:** 2026-07-03 · **Status:** Wave-1 deliverable (user scope
-amendment, `sprints/SPRINT.md` §Notes 2026-07-03). Peer of
+**Author:** `/qa` · **Date:** 2026-07-03 · **Status:** dated record — the S101
+Wave-1 deliverable (user scope amendment, 2026-07-03 note in the
+[S101 record](../../sprints/archive/sprint-101.md#notes)). Peer of
 `tests/plan/s100-ownership-verification.md` (whose §6.1 set was drafted in the same
-wave); registered in `tests/CLAUDE.md` §Plan documents.
+wave).
+
+**Why this record is retained.** The `callees` completeness contract in
+[§2.1](#21-the-callees-completeness-contract-tests-specified-here-land-with-wave-2)
+is the cited `// spec:` authority of the typecheck `callees` and ambiguity unit
+tiers and of the `dependency_sort` unit in `src/save.rs`; the §3 matrix is the
+provenance of the `tests/vec_query_value_use.rs` cells. The
+[S101 coverage audit](coverage-audit-s101.md) widens this analysis and supersedes
+the §3.3 rule. Everything else here is history.
 
 > **Citation freeze (S109, /qa).** File/line citations in this document
 > (`program.rs:NNN`, `infer.rs:NNN`, `save.rs:NNN`, …) are evidence frozen at
-> S101 HEAD. The S109 FIXME-0580 decomposition splits
-> `crates/cranelisp-typecheck/src/program.rs` into submodules (tests →
-> `program/tests.rs`, per `design/typecheck/program-decomposition.md`). Do not
+> S101 HEAD. The S109 FIXME-0580 decomposition split the typecheck `program`
+> module, then a single file, into the submodules under
+> `crates/cranelisp-typecheck/src/program/` (per
+> `design/typecheck/program-decomposition.md`). Do not
 > chase the relocation here — this is a historical post-mortem; current seams
 > are named in the live design docs and source.
 
@@ -81,10 +91,10 @@ machine-code pages that in-flight frames or heap closures can still execute.
 
 **Routing (per the Wave-1 brief).** `/qa` does NOT sweep this category. The ruling —
 structural guard / standing principle vs per-instance fixes — is assigned to `/arch`
-in Wave 5 (`sprints/SPRINT.md` §Waves), per the
+in Wave 5 (the [S101 record's waves](../../sprints/archive/sprint-101.md#waves-phase-4)), per the
 `memory/feedback_review_root_cause_and_duplication` escalation rule (second-plus
 recurrence ⇒ arch-level ruling). The S101-instance cure is in-sprint: the retention
-pool (fire §6) moves superseded `Code` to `SharedState.retained_code` instead of
+pool (`design/int/session-transaction.md` §6) moves superseded `Code` to `SharedState.retained_code` instead of
 `None`-ing it; L-R1/L-R2's sustained legs and the existing
 `launch_*_corrupt.rs` fences are the behavioural guards this class currently has.
 What `/arch` should weigh for the standing guard: every `Arc`-drop of an
@@ -144,7 +154,7 @@ states (as `fn_state` did) or attach a completeness-contract test.
 
 Owner: `/dev`(cranelisp-typecheck) unit tier (per `tests/CLAUDE.md` §Two tiers —
 the field is crate-internal state; e2e observability arrives only with the L-R3
-cascade report, which the §6.1 lanes already pin). To land in the same change-set
+cascade report, which the `s100-ownership-verification.md` §6.1 lanes already pin). To land in the same change-set
 as the 0470 resolution:
 
 1. **Positive — every statically-resolved user-fn reference is recorded.** One
@@ -167,8 +177,8 @@ as the 0470 resolution:
    call-position and value-position edges are indistinguishable to consumers
    (the 0470 resolution shape; `sprints/SPRINT.md` FIXME table).
 4. **Consumer-audit guards** (gate note 2): `save.rs::dependency_sort` emission
-   order unchanged under the denser edge set (existing `repl_persist.rs` §15.4
-   round-trips are the e2e cover; `/dev` adds the unit assertion on
+   order unchanged under the denser edge set (existing `repl_persist.rs` round-trips for
+   `repl/spec/15-session-persistence.md` §15.4 are the e2e cover; `/dev` adds the unit assertion on
    `dependency_sort` directly); `macro_resolution.rs:491` walk terminates and
    does not mid-cluster-compile a not-yet-codegen'd same-module defn.
 
@@ -184,7 +194,7 @@ than re-anchor it to different behavior.
 
 **Method.** Cheap probes (one REPL subprocess per cell, primitives-only prelude,
 scripts in the session scratchpad; ~25 cells) across the builtin families of
-`spec/appendix-a-builtins.md` §A.3 × use positions: HOF-arg, curried partial,
+`spec/appendix-a-builtins.md` §A.3, crossed with use positions: HOF-arg, curried partial,
 returned-from-fn, stored-in-container (Vec literal + ADT field). Direct-call
 position is already densely covered by `spec_appendix_a_builtins.rs` and was not
 re-probed. Probe date 2026-07-03, HEAD 0b0e234.

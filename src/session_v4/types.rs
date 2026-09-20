@@ -98,9 +98,9 @@ pub enum CommandResult {
 
 /// Result of evaluating one input via `CompilerSession::eval()`.
 ///
-/// Either an ordered batch of published definitions, a display-only symbol
-/// description, or a computed/trapped value. Every variant carries zero or
-/// more warnings.
+/// Either an ordered batch of published definitions, a display-only candidate
+/// listing, or a computed/trapped value. Every variant carries zero or more
+/// warnings.
 pub enum EvalResult {
     /// A genuine definition turn. Every symbol introduced by the entered
     /// statement is retained in emitted order; the producer invariant is that
@@ -110,22 +110,19 @@ pub enum EvalResult {
         symbols: Vec<FQSymbol>,
         warnings: Vec<Warning>,
     },
-    /// The retained compatibility shape for a single definition result, and
-    /// the display-only carrier used by bare-symbol introspection. New genuine
-    /// definition turns use [`Self::Definitions`]; display-only results set
-    /// `defined: false`.
-    Def {
-        symbol: FQSymbol,
-        ty: Type,
+    /// A display-only lookup: every in-scope canonical candidate the entered
+    /// spelling denotes (`repl/spec/04-self-documentation.md` §4.1.11), each
+    /// rendered by its own §4.1 class rule.
+    ///
+    /// Introspection is not definition, and this variant carries identities
+    /// only — no `defined` flag to get wrong, and no single type to invent for
+    /// a set. That makes the Matrix E recording rule (FIXME 0486,
+    /// `design/int/s102-defect-wave.md` §7.3) hold by construction: a lookup
+    /// cannot write the turn's text over the authored `(defn …)` form that
+    /// `/info` and `/source` serve, and cannot trigger §15.1 regeneration.
+    Candidates {
+        symbols: Vec<FQSymbol>,
         warnings: Vec<Warning>,
-        /// `true` iff this turn genuinely (re)defined the symbol. `false`
-        /// for display-only results (bare-symbol lookup / introspection —
-        /// `check_bare_symbol_introspection`). Matrix E recording rule
-        /// (FIXME 0486, design/int/s102-defect-wave.md §7.3): only a genuine
-        /// definition turn may write the turn's text to the symbol's
-        /// introspection `source` — a bare lookup MUST NOT touch the record
-        /// (`/info`/`/source` render what introspection hands them).
-        defined: bool,
     },
     /// An expression was evaluated to a value.
     ///
@@ -253,7 +250,7 @@ impl EvalResult {
     pub fn warnings(&self) -> &[Warning] {
         match self {
             EvalResult::Definitions { warnings, .. } => warnings,
-            EvalResult::Def { warnings, .. } => warnings,
+            EvalResult::Candidates { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
             EvalResult::DisplayValue { warnings, .. } => warnings,
             EvalResult::RuntimeError { warnings, .. } => warnings,
@@ -263,7 +260,7 @@ impl EvalResult {
     pub fn warnings_mut(&mut self) -> &mut Vec<Warning> {
         match self {
             EvalResult::Definitions { warnings, .. } => warnings,
-            EvalResult::Def { warnings, .. } => warnings,
+            EvalResult::Candidates { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
             EvalResult::DisplayValue { warnings, .. } => warnings,
             EvalResult::RuntimeError { warnings, .. } => warnings,
@@ -278,7 +275,7 @@ impl EvalResult {
         match self {
             EvalResult::Val { result, .. } => result.observed_value(),
             EvalResult::Definitions { .. }
-            | EvalResult::Def { .. }
+            | EvalResult::Candidates { .. }
             | EvalResult::DisplayValue { .. }
             | EvalResult::RuntimeError { .. } => 0,
         }
@@ -296,30 +293,28 @@ impl EvalResult {
     }
 
     /// The inferred type of a result that has exactly one value/display
-    /// subject. A definition batch has no single truthful type, and a runtime
-    /// trap produced no value, so both return `None`.
+    /// subject. A definition batch and a candidate listing have no single
+    /// truthful type, and a runtime trap produced no value, so all three
+    /// return `None`.
     pub fn ty(&self) -> Option<&Type> {
         match self {
             EvalResult::Val { result, .. } => Some(result.ty()),
-            EvalResult::Def { ty, .. } => Some(ty),
             EvalResult::DisplayValue { ty, .. } => Some(ty),
-            EvalResult::Definitions { .. } | EvalResult::RuntimeError { .. } => None,
+            EvalResult::Definitions { .. }
+            | EvalResult::Candidates { .. }
+            | EvalResult::RuntimeError { .. } => None,
         }
     }
 
     /// Whether this turn GENUINELY (re)defined a symbol — the regeneration
     /// trigger (repl/spec.md §15.1: regeneration fires on successful
-    /// DEFINITIONS only). A display-only `Def` (bare-symbol lookup,
-    /// `defined: false`) is NOT a defining turn: regenerating on it rewrote
-    /// the backing file on pure lookups (S102 W5 review F6 — with a
+    /// DEFINITIONS only). A bare lookup is [`Self::Candidates`] and is
+    /// therefore not a defining turn by construction: regenerating on a pure
+    /// lookup rewrote the backing file (S102 W5 review F6 — with a
     /// hand-authored adopted `user.cl` that was a data-loss surface, not a
-    /// harmless no-op). Replaces the shape-only `is_def()` so no caller can
-    /// key regen on the variant alone.
+    /// harmless no-op).
     pub fn is_defining(&self) -> bool {
-        matches!(
-            self,
-            EvalResult::Definitions { .. } | EvalResult::Def { defined: true, .. }
-        )
+        matches!(self, EvalResult::Definitions { .. })
     }
 }
 
@@ -329,7 +324,7 @@ mod eval_result_tests {
     use cranelisp_types::ModuleFullPath;
 
     // spec: repl/spec.md §15.1 — regen triggers on successful definitions
-    // only; a display-only bare-lookup Def MUST NOT trigger regen (F6 cell:
+    // only; a bare-lookup candidate listing MUST NOT trigger regen (F6 cell:
     // regen-silence on bare lookup, pinned at the predicate seam both regen
     // sites — main.rs and agent/pull.rs — gate on).
     #[test]
@@ -338,21 +333,13 @@ mod eval_result_tests {
             module: ModuleFullPath::from("user"),
             symbol: cranelisp_types::Symbol::from("f"),
         };
-        let genuine = EvalResult::Def {
-            symbol: fq.clone(),
-            ty: Type::Int,
-            warnings: Vec::new(),
-            defined: true,
-        };
         let batch = EvalResult::Definitions {
             symbols: vec![fq.clone()],
             warnings: Vec::new(),
         };
-        let display_only = EvalResult::Def {
-            symbol: fq,
-            ty: Type::Int,
+        let lookup = EvalResult::Candidates {
+            symbols: vec![fq],
             warnings: Vec::new(),
-            defined: false,
         };
         let val = EvalResult::Val {
             result: crate::result_owner::OwnedProgramResult::inert(1, Type::Int),
@@ -363,14 +350,15 @@ mod eval_result_tests {
             form: Sexp::Bracket(Vec::new(), cranelisp_types::Span::SYNTHETIC),
             warnings: Vec::new(),
         };
-        assert!(genuine.is_defining());
         assert!(batch.is_defining());
-        assert!(
-            !display_only.is_defining(),
-            "bare lookup must not trigger regen"
-        );
+        assert!(!lookup.is_defining(), "bare lookup must not trigger regen");
         assert!(!val.is_defining());
         assert!(!display_value.is_defining());
+        assert_eq!(
+            lookup.ty(),
+            None,
+            "a candidate listing has no single truthful type"
+        );
     }
 
     // design: design/int/s117-conformance-recovery.md §6.2 — retrying the
@@ -502,20 +490,18 @@ mod eval_result_tests {
         assert_eq!(take_events(), vec!["glue(5)".to_string()]);
     }
 
-    // spec: design/int/result-owner.md §6 (REPL row negatives) — a
-    // display-only `Def` (bare-symbol lookup), display-only polymorphic value,
-    // and runtime trap fabricate no ownership and release nothing.
+    // spec: design/int/result-owner.md §6 (REPL row negatives) — a bare-symbol
+    // candidate listing, a display-only polymorphic value, and a runtime trap
+    // fabricate no ownership and release nothing.
     #[test]
     fn non_runtime_turns_release_nothing() {
         let _ = take_events();
-        let mut display_only = EvalResult::Def {
-            symbol: FQSymbol {
+        let mut display_only = EvalResult::Candidates {
+            symbols: vec![FQSymbol {
                 module: ModuleFullPath::from("user"),
                 symbol: cranelisp_types::Symbol::from("f"),
-            },
-            ty: Type::Int,
+            }],
             warnings: Vec::new(),
-            defined: false,
         };
         display_only.release_program_result();
         let mut trap = EvalResult::RuntimeError {
@@ -529,7 +515,7 @@ mod eval_result_tests {
         };
         trap.release_program_result();
         display_value.release_program_result();
-        assert_eq!(display_only.value(), 0, "a Def turn carries no value");
+        assert_eq!(display_only.value(), 0, "a lookup turn carries no value");
         assert_eq!(trap.value(), 0, "a trapped turn produced no value");
         assert_eq!(
             display_value.value(),
@@ -686,8 +672,8 @@ pub(crate) struct FailedForm {
 // ---------------------------------------------------------------------------
 
 /// Symbol category for facade-level introspection. A coarser classification
-/// than `ModuleEntry` itself — used by `describe_symbol` /
-/// `list_user_definitions` to bucket symbols for REPL display.
+/// than `ModuleEntry` itself — used by `list_user_definitions` and the
+/// `/list` / `/exports` commands to bucket symbols for REPL display.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolCategory {
@@ -709,24 +695,6 @@ pub struct SymbolInfo {
     pub category: SymbolCategory,
     pub scheme: Option<cranelisp_types::Scheme>,
     pub docstring: Option<String>,
-}
-
-/// Full symbol description — `SymbolInfo` plus source text + FQ symbol.
-/// Returned by `CompilerSession::describe_symbol(name)`.
-///
-/// The `related` field carries cross-reference FQSymbols (defn, impl, match
-/// arms, etc.) per `facades/int.md` L403 + `repl/spec.md` §3.6's
-/// related-symbol comment lines. Populated as an empty Vec at first wiring
-/// (Sprint 67 Wave 4) — full population is tracked by FIXME 0194.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct SymbolDescription {
-    pub fq: FQSymbol,
-    pub category: SymbolCategory,
-    pub scheme: Option<cranelisp_types::Scheme>,
-    pub docstring: Option<String>,
-    pub source: Option<String>,
-    pub related: Vec<FQSymbol>,
 }
 
 /// Resolve the effective priority-worker count from a `SessionSettings`

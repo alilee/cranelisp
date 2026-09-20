@@ -2172,17 +2172,11 @@ impl CompilerSession {
     /// Remove a genuinely (re)defined symbol from its module's failed-form
     /// set (§18.8: a successful definition turn IS the repair). When the set
     /// empties, the module leaves `error_modules` — the §14.4 gate reopens
-    /// and the next regen writes a green backing file. Display-only `Def`s
-    /// (`defined: false`) and expression turns never clear anything.
+    /// and the next regen writes a green backing file. Bare-symbol lookups
+    /// and expression turns never clear anything.
     pub(crate) fn clear_repaired_failed_form(&mut self, result: &super::EvalResult) {
-        let symbols = match result {
-            super::EvalResult::Definitions { symbols, .. } => symbols.as_slice(),
-            super::EvalResult::Def {
-                symbol,
-                defined: true,
-                ..
-            } => std::slice::from_ref(symbol),
-            _ => return,
+        let super::EvalResult::Definitions { symbols, .. } = result else {
+            return;
         };
         for symbol in symbols {
             let Some(list) = self.failed_forms.get_mut(&symbol.module) else {

@@ -66,6 +66,15 @@ separates delivered wiring from unresolved document conformance.
   Widen the separation between regimes before loosening a margin; assert
   value equality on every attempt. [Failing-test discipline](../CLAUDE.md#failing-test-discipline-migrated-from-the-retired-ledger)
   bans the "timing-sensitive" disposition these rules exist to avoid.
+- Four drafting rules come from the S101 escape analysis and are stated once,
+  in the [S101 coverage audit](coverage-audit-s101.md#25-standing-rules-fed-back-into-qa-practice-supersede-post-mortem-33):
+  value-use rows key on per-consumer artifact minting and include a second
+  instantiation; a MUST that pins display shape gets an exact assertion while
+  error matching stays substring; each new session-visible state kind gets a
+  restart row and a session-history preamble row; and a designed floor that QA
+  pins is flagged to the user-facing roles in the same phase. Its
+  [named lanes](coverage-audit-s101.md#24-proposed-lanes-named-durable--s102-qa-work-unless-noted)
+  are the vocabulary test sources use for those observations.
 - In-scope failures remain visible. Unknown attribution stays provisional;
   neither an old issue label nor a terminal error identifies the corrective
   owner. Use the [test-side notation and harness rules](../CLAUDE.md).
@@ -133,6 +142,39 @@ the tests they named are in the suite; a plan row is not evidence that its test
 landed, so rows that never did are carried below as unclassified leads. The
 lane, feature-gate and descriptor models those plans describe were retired by
 the S96 single-lane cutover and the S97 handle model.
+
+The Sprint-69, Sprint-75, Sprint-92 and Sprint-94 working plans were deleted in
+S122 (`git show cdd1f9ea:tests/plan/`); their closed
+[sprint records](../../sprints/archive/) hold each disposition. The S69 and S75
+plans scheduled facade-conformance re-anchoring whose subject is retired:
+[public-API enforcement](../CLAUDE.md#public-api-enforcement) names the
+executing guard, and the constructor-as-value cell S75 carried forward is
+observed by [constructor values](../ctor_as_value.rs). Every solution test the
+S92 apply-argument and spark-budget plan and the S94 effect-await,
+dependent-binding and docstring-regeneration plan named is in
+[runtime behavior](../spec_12_runtime.rs), [reactor await](../concurrency_reactor.rs),
+[spark substrate](../concurrency_spark.rs) and [agent behavior](../agent.rs)
+under its planned name. Their module rows are owned beside the implementation
+and landed under successor names (the spark-budget reservation units, the
+`render_decl` docstring units) or were superseded with the v7 ABI and the
+feature-gated lanes that the S96 single-lane cutover retired.
+
+The Sprint-78 int-restructure plan was deleted in S122
+(`sprint78-restructure` under `git show cdd1f9ea:tests/plan/`). Every test it owed
+is in the suite: the H5 replay gate and the regrounded observable-outcome
+guards in [persistence races](../repl_persist_race.rs), the two-node
+cycle-before-wait refusal in [module conformance](../spec_08_modules.rs) and
+the parking-map guard in [regression](../regression.rs). The two
+guard-mechanism probes it scheduled for retirement are gone. The invariants
+those tests evidence are stated in [int orchestration](../../design/int/int.md)
+§6.2, and the replay gate's own comment carries its limit: fifty zero-tolerance
+iterations are a reopening tripwire, not statistical proof. The plan's
+prelude rows asserted that an explicit import silently shadows the prelude;
+the [convergence contract](../../design/arch/prelude-import-convergence.md)
+reversed that, and [prelude scope](../spec_08_prelude_outer_scope.rs) now
+observes the poisoning outcome. Its one
+withheld observation, the §8.10.1 run-mode exit, is now asserted by
+`defn_before_import_resumes_correctly_after_dep_load` in module conformance.
 
 ### Mode canonicalisation — REPL is the canonical surface for language conformance
 
@@ -249,7 +291,18 @@ active allocation cites them; they are not fresh source censuses.
     the command is implemented in the REPL command handler, the requirement
     headings in [modules](../../spec/08-modules.md) §8.16.4 and the
     [embedded agent experience](../../repl/spec/17-embedded-agent.md) §17.5.1
-    still carry `[S88]`, and no solution test traces to either section.
+    still carry `[S88]`, and no solution test traces to either section;
+  - the S92 lenient-evaluation annotation band. The S92 plan scheduled
+    band updates against its landed apply-argument tests. The §12.4.3 heading
+    now names two landed cells, but the
+    observable-order paragraph of [runtime](../../spec/12-runtime.md) §12.4.1,
+    the two permission paragraphs of §12.4.3 and the closing note of
+    [expressions](../../spec/04-expressions.md) §4.11 still carry `[S92]`,
+    while `apply_arg_pair_equiv_run`, `apply_arg_dc_map_reduce_equiv_run` and
+    the ferry cells in [runtime behavior](../spec_12_runtime.rs) trace to those
+    sections. This is a band reconciliation, not a missing test: the next
+    observation is whether each cell still validates its paragraph as now
+    written, including the negative direction, before any tag changes.
 
   They are not newly allocated defects. Before relying on any, compare current
   specification and evidence; no new test, API or optimization is authorized
@@ -269,6 +322,22 @@ specific unresolved risk. [METHOD retention](../../sprints/METHOD.md#31-where-th
 keeps completed planning detail in Git by default. Irreplaceable evidence gets
 an explicit retained carrier; [the exact legacy checker reconciliation](s122-document-checker-reconciliation/README.md)
 is such a carrier and is never a suppression baseline.
+
+Four S99–S101 records are retained because current design, test sources and
+harnesses cite them by section, so those section numbers stay stable. Each
+opens with what in it is standing and what is dated:
+
+- [S99 contention measurement](s99-measurement.md) — the measured basis of the
+  contention rulings in the effect-concurrency and reference-counting designs,
+  and the F1–F4 baselines.
+- [Ownership verification](s100-ownership-verification.md) — the analysis-off
+  oracle, lane definitions, hooks and coverage limits that ownership tests,
+  scripts and gate harnesses cite, with the S102 and S103 measured acceptance
+  records and the user's accepted trade.
+- [S101 coverage post-mortem](s101-coverage-postmortem.md) — the `callees`
+  completeness contract cited by the typecheck and save unit tiers.
+- [S101 coverage audit](coverage-audit-s101.md) — the named lanes and the
+  drafting rules in §Traceability above.
 
 The following compact closure records remain because other current records
 point to their specific evidence, which must not be lost during consolidation.

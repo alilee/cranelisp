@@ -1,6 +1,7 @@
 # user/
 
-User-facing documentation for Cranelisp. Owned by the `/docs` skill.
+User-facing documentation for Cranelisp. Owned by `docs`
+(`.agents/skills/docs/SKILL.md`).
 
 ## Authority
 
@@ -8,11 +9,12 @@ This directory holds the **approachable, practical, example-driven** documentati
 a newcomer reads to learn and use Cranelisp. It is distinct from the normative
 sources it re-presents:
 
-- `spec/` — normative language specification (owned by `/spec`), precise and written
+- `spec/` — normative language specification (owned by `spec`), precise and written
   for implementors.
-- `repl/spec.md` — normative REPL experience specification (owned by `/repl`),
-  including the CLI invocation contract (§0).
-- `design/` — implementation design (owned by `/arch` and the developer skills).
+- `repl/spec.md` — normative REPL experience specification (owned by `spec`),
+  including the CLI invocation contract (`repl/spec/00-cli-invocation.md`).
+- `design/` — implementation design (`design/arch/` owned by `arch`,
+  `design/{crate}/` by `design`).
 
 User docs do **not** re-derive normative behaviour. They re-present it for a reader
 who wants to get something working, and they **cross-link** the normative source so
@@ -21,15 +23,19 @@ spec wins and the user doc is the bug.
 
 ## Doc set
 
-| File | Purpose | Status |
-|---|---|---|
-| `CLAUDE.md` | This file — ownership and writing conventions | live |
-| `cli-reference.md` | The `cranelisp` command-line reference: modes, feature-specific agent flags, target resolution, lib search path / `Cranelisp.toml`, `/syntax`, and non-macro `/search` | live |
-| `getting-started.md` | Install, REPL basics, first pure and IO programs, platforms/IO model, learning-sequence pointer, showcase pointer | live |
-| `syntax-cheatsheet-plan.md` | Delivered `/syntax` command guide, curated cheat-sheet pointer, and explicit-import reader-annotation macro helpers | live |
-| `tutorial/` | Progressive introduction paralleling `examples/`; target surface for the forthcoming `/learn` tutorial | not yet authored (forward input for `/learn`, FIXME 0052) |
-| `guide/` | Feature-by-feature user-facing reference paralleling `spec/` | started — `bitwise.md`, `field-accessors.md`, `constructors.md`, `functions.md`, `parallel-collections.md`, `concurrency.md`, `using-platforms.md`, `writing-platforms.md`, `live-development.md` (late binding, guarded language-type changes, and atomic re-`impl`), and `traits.md` | live |
-| `errors/` | Error-message catalogue, written as each error is confirmed | started — `trait-impl-diagnostics.md` (binder-position rejects incl. value-level binders and the **dotted** twin with the binder-vs-reference table [S115]; dangling-qualifier empty-module/local-half rejects; `:`-must-bind-a-type; type-parameter-must-be-lowercase; `deftrait`/`impl` declaration diagnostics; **no-occurrence-of-the-implementing-type** (both arities) and **zero-method trait** rejects; **impl-conformance mismatch** — quoted with a standing warning that the message reports its roles inverted and names no trait/method context (FIXME 0806) — and the **missing-required-method re-`impl`** reject [S115]; no-impl + return-poly `:Type` dispatch diagnostics) |
+This file establishes the `user-documentation` collection:
+
+> Current user instructions, feature guides and diagnostic explanations.
+
+Its exact file patterns are declared in `standing-documents.toml`.
+
+- `cli-reference.md` — the `cranelisp` command-line reference.
+- `getting-started.md` — installation, REPL basics, first programs and pointers
+  onward.
+- `syntax-cheatsheet-plan.md` — the delivered `/syntax` command guide and
+  reader-annotation macro helpers.
+- `guide/` — feature-by-feature reference paralleling `spec/`.
+- `errors/` — error-message explanations, written as each error is confirmed.
 
 ## Writing conventions
 
@@ -44,15 +50,17 @@ spec wins and the user doc is the bug.
   type-variable names (`a0`, `t42`) to users.
 - **As-built, not aspirational.** Document what the binary does today. When a feature
   is specified-but-future (e.g. `--help`/`--version`, marked Future in
-  `repl/spec.md §0.4`), say so plainly rather than implying it works.
+  `repl/spec/00-cli-invocation.md` §0.4), say so plainly rather than implying it works.
 - **Verify CLI/behavioural claims against the source or the binary** before writing —
   read `src/main.rs` for the CLI contract, run the prebuilt binary to confirm error
   text. Do not write CLI claims from memory.
 
-## Cross-skill changes
+## Cross-role changes
 
-If a user doc surfaces a defect (a documented example that does not compile, output
-that contradicts the doc), `/docs` work on that item is not closed until `/qa` has a
-narrow failing test reproducing it — see root `CLAUDE.md` §"Usability Findings and
-Defects". For changes needed in another skill's owned document, file a FIXME under
-`design/arch/fixmes/NNNN-name.md`; do not edit the other skill's files directly.
+- A user doc that surfaces a defect — a documented example that does not compile,
+  output that contradicts the doc — follows root `CLAUDE.md` §"Usability Findings
+  and Defects": hand off with a minimal repro; the item is not closed until `test`
+  has committed a narrow failing test reproducing it.
+- A change needed in another role's document follows root `CLAUDE.md`
+  §"Cross-Role Changes": resolve it through `sprint` within the increment, or file
+  an action under `sprints/actions/`. Do not edit the other role's files directly.

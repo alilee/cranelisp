@@ -283,7 +283,7 @@ its normal file tools can access them within the repository scope.
 
 Lifecycle and routing are in root `CLAUDE.md` §Cross-Role Changes. The forms:
 
-**Action** — `sprints/actions/ACT-NNNN-short-name.md`, frontmatter then body:
+**Action** — an `ACT-NNNN-short-name.md` file under `sprints/actions/`, frontmatter then body:
 
 ```markdown
 ---
@@ -306,7 +306,7 @@ refers_to:
 …
 ```
 
-**FIXME** — the pre-existing form at `design/arch/fixmes/NNNN-short-name.md`, with `number`, `target`, `filed_by`, `filed_at`, `sprint_filed`, `refers_to`, `status`. No new ones are authored; the open set is run down in place.
+**FIXME** — the pre-existing `NNNN-short-name.md` form under `design/arch/fixmes/`, with `number`, `target`, `filed_by`, `filed_at`, `sprint_filed`, `refers_to`, `status`. No new ones are authored; the open set is run down in place.
 
 Numbers are allocated above the highest used, never reused or backfilled. Only the owning role resolves and deletes; `sprint` gates but does not delete — the narrow exception is a Phase-1 audit disposal where an assessment has verified resolution against source and the user has approved it.
 

@@ -339,7 +339,7 @@ When the callee itself is a temporary expression (e.g., `((make-adder 5) 3)`), t
 
 ### 3.5 IO Trampoline Intermediate-Node Leak (Sprint 57 Wave 3 — LANDED)
 
-The IO trampoline in `crates/cranelisp-runtime/src/io.rs` is the Ring 4 counterpart to the user-function consuming convention: it executes an IO ADT tree built by the frontend/prelude (Pure / Effect / Bind / Par) and returns the final value. Under Decision 24, the extern entry `cranelisp_run_io(io_ptr)` consumes the **top-level** IO argument via `crate::drop::consume_io_tree(io_ptr)` after the trampoline returns. Before Sprint 57 Wave 3, intermediate Pure/Effect nodes produced by continuations during the walk were leaked: each continuation's returned node became the new `current` and the prior `current` was dropped from the local without a matching dec/dealloc.
+The IO trampoline in `crates/cranelisp-intrinsics/src/io.rs` is the Ring 4 counterpart to the user-function consuming convention: it executes an IO ADT tree built by the frontend/prelude (Pure / Effect / Bind / Par) and returns the final value. Under Decision 24, the extern entry `cranelisp_run_io(io_ptr)` consumes the **top-level** IO argument via `crate::drop::consume_io_tree(io_ptr)` after the trampoline returns. Before Sprint 57 Wave 3, intermediate Pure/Effect nodes produced by continuations during the walk were leaked: each continuation's returned node became the new `current` and the prior `current` was dropped from the local without a matching dec/dealloc.
 
 Before the Wave 3 fix, this was a real leak, not cosmetic (per `/arch` review condition 6). Every Bind-chain step through a continuation produces a fresh IO node (typically a Pure or Effect) that replaces the previous `current`; the previous `current` — an earlier intermediate produced by an earlier continuation — had no further reference and no matching dec. Under a Ring-4 program doing many binds, the leak was O(binds).
 
@@ -398,14 +398,14 @@ The two sets are disjoint: caller-tree nodes are reachable only via `io_ptr`; fr
 
 **Primitives introduced in Wave 3**:
 
-- `rc::dec_shallow_io(ptr)` — landed in `crates/cranelisp-runtime/src/drop.rs` (Decision 29). Atomically dec's the RC with Release ordering; on last-ref, emits an Acquire fence and deallocs the outer allocation only — no field walk. Safe on bare nullary tags.
+- `rc::dec_shallow_io(ptr)` — landed in `crates/cranelisp-intrinsics/src/drop.rs` (Decision 29). Atomically dec's the RC with Release ordering; on last-ref, emits an Acquire fence and deallocs the outer allocation only — no field walk. Safe on bare nullary tags.
 - `call_continuation(cont_ptr, val, cont_is_fresh: bool)` — existing helper gains the freshness flag; when true, invokes `consume_closure(cont_ptr)` post-call.
 
 **Rejected alternatives**:
 
 - **Unconditional shallow-dec at every replace site** (the earlier §3.5.4 recommendation): double-dec's caller-tree closures because `consume_io_tree(io_ptr)` still walks them. The pre-landing analysis missed this because the two dec paths (inline + post-return) were not modelled together.
 - **Track-and-drop** (keep a `Vec<i64>` of owned nodes and dec them at returns): allocates a Vec per trampoline invocation; the `current_is_fresh` bool is a simpler invariant.
-- **Consume io_ptr at the trampoline level** (make `run_io_trampoline` consuming): cleanest in theory but changes the contract of a public Rust function, breaking all direct Rust-level callers (tests in `tests/io.rs` that call `run_io_trampoline` then `heap_dealloc(value)`). Keeping the post-return `consume_io_tree(io_ptr)` at the extern wrapper preserves backward compat.
+- **Consume io_ptr at the trampoline level** (make `run_io_trampoline` consuming): cleanest in theory but changes the contract of a public Rust function, breaking all direct Rust-level callers (tests in `tests/spec_10_io.rs` that call `run_io_trampoline` then `heap_dealloc(value)`). Keeping the post-return `consume_io_tree(io_ptr)` at the extern wrapper preserves backward compat.
 
 **Freshness flag is viral within a subtree**. Once set to true (by a continuation returning a fresh node), freshness is inherited by Bind's inner (same continuation allocated both), Par's branches (same), and popped continuations (stored with their enclosing Bind's freshness). Freshness never flips back to false — a fresh subtree cannot contain a caller-tree node.
 
@@ -433,16 +433,10 @@ The existing `decision24_run_io_pure_rc_balanced` test (at `io.rs:554`) already 
 
 Pre-existing `test_run_io_deep_bind_chain` (1000 binds) is a natural stress test — under the fix, it must run with `(alloc_count - baseline) == (dealloc_count - baseline)` at the end. Today it leaks 1000+ intermediate nodes; post-fix, zero.
 
-#### 3.5.8 Sketch comparison
-
-The sketch (`sketch/src/intrinsics.rs` line ~157, `IoTask::run()`) has the same trampoline shape and **the same leak**. The sketch operates under a different overall convention (per-call borrowing in the sketch's codegen, per `sketch/docs/codegen.md`) which masked the leak in early Ring 4 prototyping — the sketch did not universally claim that extern entry points consume their heap arguments, so a leak of intermediate IO nodes was not obviously a convention violation. In the reimplementation under Decision 24, the leak IS a convention violation: the trampoline's extern entry commits to consuming, and the internal loop must honour that commitment. The divergence from sketch is: we fix the leak; the sketch did not.
-
-Rationale for divergence: Decision 24's uniform consuming convention makes every extern's RC balance auditable (§3.3 is the audit table). An unaudited leak inside `cranelisp_run_io` breaks the audit's credibility. The sketch's per-call borrowing convention did not have the same audit story, so the sketch could tolerate the leak in practice. The reimplementation cannot.
-
 #### 3.5.9 Cross-references
 
-- `crates/cranelisp-runtime/src/io.rs` — the landed fix (non-consuming trampoline + `current_is_fresh` flag).
-- `crates/cranelisp-runtime/src/drop.rs` — `consume_io_tree` (transitive) for caller-tree release; `consume_closure` for fresh-closure release; `dec_shallow_io` (Decision 29, Wave 3) for fresh IO-node release.
+- `crates/cranelisp-intrinsics/src/io.rs` — the landed fix (non-consuming trampoline + `current_is_fresh` flag).
+- `crates/cranelisp-intrinsics/src/drop.rs` — `consume_io_tree` (transitive) for caller-tree release; `consume_closure` for fresh-closure release; `dec_shallow_io` (Decision 29, Wave 3) for fresh IO-node release.
 - `§3.3 Extern Consumption Audit` — the row for `cranelisp_run_io` that describes the top-level `consume_io_tree(io_ptr)` behaviour; remains accurate after the fix.
 - `design/arch/CLAUDE.md` Decision 24 — the uniform consuming convention.
 - `design/arch/CLAUDE.md` Decision 29 — `rc::dec_shallow_io` primitive introduced by the Wave 3 fix.
@@ -638,7 +632,7 @@ Three rules modify scope cleanup behavior:
 
 - **Borrowed variables** (`borrowed_vars`): Variables introduced by match-arm constructor-pattern field bindings (e.g. `v` in `(match b [(Box v) ...])`). These extract a field from the scrutinee and skip both inc (at extraction) and dec (at scope exit) — the scrutinee still owns the value. Consequently, borrowed variables are NEVER eligible for last-use transfer, structurally symmetric with `captured_vars`: neither owns the value, so neither may transfer ownership. Violating this rule causes Vec COW mutate-in-place on an aliased Vec, followed by use-after-free when the scrutinee's drop glue independently dec's the field.
 
-  **Regression history**: Sprint 61 Slice 2 Layer 3 (`exemplar/repro-slice2.cl`). `(consume (Box [0]))` where `consume` does `(match b [(Box v) (Box (vec-set v 0 1))])` read the inner Vec length as `0` instead of `1`. Root cause: `is_last_use` did not gate on `borrowed_vars`, so the textually-last reference to `v` in `(vec-set v 0 1)` was treated as an ownership transfer. Vec COW saw `is_last_use + rc==1` and mutated in place, aliasing the original Box's field. When inline `(Box [0])` reached rc=0 and its drop glue fired, the mutated Vec was double-dec'd. The Layer 2 Sudoku backtracking regression (`try-digits`/`solve` on valid puzzles under the Layer 1 eliminate fix) was the same root cause — the `(match g [(Grid v) ...])` pattern bound `v` and passed it to `vec-set`, triggering the same aliasing. Fix landed 2026-04-22; the current guard is `crates/cranelisp-backend/src/compiler/fn_compiler.rs::is_last_use`.
+  **Regression history**: Sprint 61 Slice 2 Layer 3 (the Sprint-61 slice-2 exemplar reduction (Git)). `(consume (Box [0]))` where `consume` does `(match b [(Box v) (Box (vec-set v 0 1))])` read the inner Vec length as `0` instead of `1`. Root cause: `is_last_use` did not gate on `borrowed_vars`, so the textually-last reference to `v` in `(vec-set v 0 1)` was treated as an ownership transfer. Vec COW saw `is_last_use + rc==1` and mutated in place, aliasing the original Box's field. When inline `(Box [0])` reached rc=0 and its drop glue fired, the mutated Vec was double-dec'd. The Layer 2 Sudoku backtracking regression (`try-digits`/`solve` on valid puzzles under the Layer 1 eliminate fix) was the same root cause — the `(match g [(Grid v) ...])` pattern bound `v` and passed it to `vec-set`, triggering the same aliasing. Fix landed 2026-04-22; the current guard is `crates/cranelisp-backend/src/compiler/fn_compiler.rs::is_last_use`.
 
 - **Last-use analysis** (`compute_last_uses`): Walks the expression tree in pre-order to determine the final use of each variable. The last use of a variable reference is a candidate for ownership transfer (skip the inc at the call site because the callee gets the caller's last reference). Currently used by Vec COW to determine mutate-in-place eligibility, but the general mechanism is available for future optimization. Must be gated on both `captured_vars` and `borrowed_vars` — neither owns the value, so neither may transfer ownership.
 
@@ -647,10 +641,6 @@ Three rules modify scope cleanup behavior:
 > borrow-through-projection, spine §4.4). The structural rules here remain correct and remain
 > the as-built behaviour until the analysis lands; the backend consumption design is
 > `design/backend/ownership-codegen.md` §3.
-
-#### 5.5.1 Sketch comparison
-
-The sketch was aware of match-arm borrowed bindings: `mark_borrowed_var` in `sketch/src/codegen.rs:247` records the same concept, set from `sketch/src/codegen/match_compile.rs:231–235` when the scrutinee is a known-unique local. But the sketch's gating strategy diverges — rather than gating `is_last_use` on the borrowed set, the sketch took an orthogonal route: `emit_consuming_caller_rc` at `sketch/src/codegen.rs:295–303` short-circuits borrowed vars by emitting an unconditional inc ("auto-upgrade") and skipping `mark_consumed` entirely, which prevents last-use transfer as a side effect. Both designs reach the same invariant (borrowed binding never transfers ownership); the reimplementation's explicit `is_last_use` gate (§7 table row) is arguably clearer for future readers since the rule is named where the decision is made, rather than implied by the absence of a `mark_consumed` call. The sketch additionally predicated the borrow on a scrutinee-uniqueness check (`scrutinee_is_unique` at `match_compile.rs:37–42`, eliding both inc at extraction and dec at scope exit when safe) — an optimisation the reimplementation has not adopted; this sketch feature is tracked as a possible future refinement rather than a bug.
 
 ### 5.5.2 Spark-capture borrow — the structured-fork-join generalisation (Sprint 99, FIXME 0461)
 
@@ -919,13 +909,11 @@ This is structurally sibling to §5.5's rules — all three arise from the same 
 
 **Why captures are consumed after return.** One-shot closure call sites (the IO trampoline's `consume_closure`; analogous fresh-closure paths) dec the closure after invocation. The closure's drop-glue iterates its heap captures and dec's each. That dec is structurally correct (the closure env owns its captures), and this rule does not change it. Instead, we ensure that when the returned value IS one of those captures, the ownership transfer to the caller is balanced by an inc inside the body.
 
-**Implementation.** Helper `emit_capture_return_inc` in `crates/cranelisp-backend/src/compiler/control_flow.rs`, called from `compile_lambda_body` between `protect_return_value` and `pop_scope_with_cleanup`. The helper is a no-op unless (a) the body is `Expr::Var`, (b) the name is in `captured_vars`, and (c) the capture's type (from `variable_types`, seeded from the enclosing scope) is heap-categorised. This preserves `protect_return_value`'s existing semantics for all other return shapes.
+**Why the fix is backend-side, not trampoline-side (the boundary rule).** The alternative — have the trampoline detach captures before `consume_closure` — is rejected, and the rejection is the durable part. The trampoline's `current_is_fresh` + `consume_closure` protocol is internally consistent: a fresh closure owns its captures, so dec'ing it releases them, and that invariant is what closed the O(N) bind-chain leaks in §3.5. Detaching would weaken it for the narrow case where a capture happens to be the returned value, **and would require the trampoline to introspect the closure's capture layout — layout is backend-owned. That is the wrong boundary to cross.** The closure body, by contrast, knows at codegen time that its return expression is a bare `Var(b)` with `b` captured; that is exactly where the balancing inc belongs. Do not re-open this as a runtime-side change.
 
-**Regression history.** Sprint 61 Slice 4 (`tests/sprint61/race-evidence/21-hello-io-failing-min-776a6cf.log`). A 7-line repro exercising `(defn then [a b] (bind a (fn [_] b)))` + a second user-defined `bind` layer consuming `then`'s output via the IO trampoline reproduced at 100% as `cranelisp_run_io: unknown IO tag ...` (a pointer read from freed memory that happened to dereference mid-object, yielding a garbage tag byte). H(4-1'') ruling by /arch at `design/backend/archive/slice-4-21-hello-io-investigation.md §4d`: backend-only fix, trampoline (`consume_closure` + `current_is_fresh`) protocol unchanged. Unit test: `cranelisp-backend::tests::lambda_return_captured_heap_var_emits_inc`. Integration test: authored by `/qa` at step 4f against the 7-line minimum repro.
+**Implementation.** Helper `emit_capture_return_inc` (`crates/cranelisp-backend/src/compiler/control_flow/lambda.rs`), called from `compile_lambda_body` between `protect_return_value` and `pop_scope_with_cleanup`. It is a no-op unless (a) the body is `Expr::Var`, (b) the name is captured, and (c) the capture's type is heap-categorised. This preserves `protect_return_value`'s existing semantics for all other return shapes — a separate helper rather than widening that gate, so the invariant "`scope_stack` tracks owning references only" stays undisturbed.
 
-#### 5.6.1 Sketch comparison
-
-The sketch does NOT have an explicit capture-return inc rule, and its closure-body cleanup path has the same latent bug as the pre-fix reimplementation. Lambda-body entry at `sketch/src/codegen/closures.rs:184–199` loads captures from the env pointer but deliberately does not `track_binding` them into `scope_stack` (see the inline comment "don't track in scope_stack — captures are owned by the closure env, not by this invocation"). The body then exits through `pop_scope_for_value` (`sketch/src/codegen.rs:576–626`), whose borrowed-return-upgrade loop iterates only `frame` — the popped scope-stack frame — so captures are never examined. For a lambda shape `(fn [_] b)` where `_` is non-heap and `b` is a heap capture, no inc is emitted before return; the caller-side closure drop-glue subsequently dec's `b`, freeing it while the return value still references it. The sketch likely did not encounter this in practice because its test suite's IO-trampoline compositions differ from S61's `then` shape, but the defect is latent rather than absent. Divergence is justified: the reimplementation's explicit `emit_capture_return_inc` helper (`crates/cranelisp-backend/src/compiler/control_flow.rs`, called between `protect_return_value` and `pop_scope_with_cleanup`) closes the gap that the sketch leaves open, at the cost of one extra helper rather than extending `scope_stack` tracking — the narrower fix is preferable because it leaves the invariant "`scope_stack` tracks owning references only" undisturbed.
+**Regression history.** Sprint 61 Slice 4. A 7-line repro exercising `(defn then [a b] (bind a (fn [_] b)))` plus a second user-defined `bind` layer consuming `then`'s output through the IO trampoline reproduced at 100% as `cranelisp_run_io: unknown IO tag ...` — a pointer read from freed memory dereferencing mid-object and yielding a garbage tag byte. Pinned by `control_flow/lambda.rs::lambda_return_captured_heap_var_emits_inc` (unit) and the then-combinator RC block in `tests/spec_10_io.rs` (e2e); the accepted-exit tightening for `examples/21-hello-io.cl` landed with it. Raw reduction logs are retained at `tests/sprint61/race-evidence/`.
 
 ## 6. Invariants
 
@@ -1027,7 +1015,7 @@ Considered deferring RC operations to epoch boundaries (like Nim). Rejected beca
 
 ## 10. Addendum — String-literal RC residual through `print` (Sprint 58 Wave 3)
 
-**Status**: PRESCRIPTIVE for Sprint 58 Wave 3. This addendum specifies the fix for the FIXME(/backend) at `crates/cranelisp-runtime/src/io.rs:28` carried from Sprint 57 Wave 3. Per `/arch` Sprint 58 review condition 6, this MUST land in Wave 3 alongside other RC work, OR be deferred with explicit rationale and a named regression-test symptom for `/qa`. Disposition selected: **fix in Wave 3** (one-deferral-permitted policy is held in reserve only if implementation surfaces unexpected scope).
+**Status**: PRESCRIPTIVE for Sprint 58 Wave 3. This addendum specifies the fix for the FIXME(/backend) at `crates/cranelisp-intrinsics/src/io.rs:28` carried from Sprint 57 Wave 3. Per `/arch` Sprint 58 review condition 6, this MUST land in Wave 3 alongside other RC work, OR be deferred with explicit rationale and a named regression-test symptom for `/qa`. Disposition selected: **fix in Wave 3** (one-deferral-permitted policy is held in reserve only if implementation surfaces unexpected scope).
 
 ### 10.1 The leak
 
@@ -1167,11 +1155,11 @@ Per `/arch` Sprint 58 review condition 6, the deferral-or-fix policy requires na
 
 `/qa` writes both tests. The negative test is the "headline" diagnostic — catches any future regression where the fix is correct on a single call but breaks on N calls (e.g. if Form B's `into_owned_consuming` accidentally inc's twice, the symptom would invert and dealloc would exceed alloc; the assertion catches that direction too).
 
-The unit-test variant (in `crates/cranelisp-runtime/src/io.rs::tests`) must use a synthetic heap-string-capturing extern to exercise the same code path without depending on the platform DLL — see `decision24_run_io_pure_rc_balanced` for the existing pattern. Naming convention: `decision24_print_string_input_rc_balanced` (positive) + `decision24_print_string_repeated_rc_no_growth` (negative).
+The unit-test variant (in `crates/cranelisp-intrinsics/src/io.rs::tests`) must use a synthetic heap-string-capturing extern to exercise the same code path without depending on the platform DLL — see `decision24_run_io_pure_rc_balanced` for the existing pattern. Naming convention: `decision24_print_string_input_rc_balanced` (positive) + `decision24_print_string_repeated_rc_no_growth` (negative).
 
 ### 10.7 Why this is small and Wave-3-scoped
 
-The fix is one line per affected extern (Form A) or one helper-method addition + one-line edit per affected extern (Form B). The audit is an enumeration over a small number of files (`platforms/*/src/lib.rs` plus any platform helpers in `crates/cranelisp-platform/src/lib.rs`). The IO-trampoline code in `crates/cranelisp-runtime/src/io.rs` is unchanged — the trampoline correctly dec's IO ADT nodes per §3.5.4; only the platform-extern boundary needs adjustment. Total estimated work: <1 day for the fix + audit + two regression tests.
+The fix is one line per affected extern (Form A) or one helper-method addition + one-line edit per affected extern (Form B). The audit is an enumeration over a small number of files (`platforms/*/src/lib.rs` plus any platform helpers in `crates/cranelisp-platform/src/lib.rs`). The IO-trampoline code in `crates/cranelisp-intrinsics/src/io.rs` is unchanged — the trampoline correctly dec's IO ADT nodes per §3.5.4; only the platform-extern boundary needs adjustment. Total estimated work: <1 day for the fix + audit + two regression tests.
 
 ### 10.8 Deferral fallback (one-deferral-permitted policy)
 
@@ -1185,7 +1173,7 @@ Default disposition: ship the fix in Wave 3. Deferral is held in reserve only if
 
 ### 10.9 Cross-references
 
-- `crates/cranelisp-runtime/src/io.rs:28` — the FIXME being closed.
+- `crates/cranelisp-intrinsics/src/io.rs:28` — the FIXME being closed.
 - `platforms/stdio/src/lib.rs:18-25` — the `print_string` extern.
 - `crates/cranelisp-platform/src/lib.rs:478-482` — `CLHeap::own()` (Form B's `into_owned_consuming` would land here).
 - `design/arch/CLAUDE.md` Decision 24 — the consuming convention contract being enforced.

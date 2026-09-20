@@ -1143,7 +1143,7 @@ non-macro form (non-`begin` REPL input), the non-macro contents of
 `(begin form₁ … formN)` (REPL explicit cluster), or a file's fully expanded
 non-structural, non-macro forms (batch). Macro checkpoints encountered while
 forming that set are outside its rollback domain. See
-`bounded-contexts.md` §6 (int) + `design/int/s78-entry-module.md` +
+`bounded-contexts.md` §6 (int) + `design/int/int.md` §6.2 and §6.5 +
 `src/cluster.rs` rustdoc for the orchestrator side (the `facades/int.md`
 facade retired S81 W-Retire → BC §6 + `design/int/` + source rustdoc),
 `crates/cranelisp-types/src/view.rs` rustdoc for the read-surface newtype,
@@ -1845,11 +1845,8 @@ pub fn reject_def_over_binding<C: CodeStore, L: LinkerStore>(
   `TypeCheckEnv::scope_resolve` / `scope_resolve_in`, checker.rs — one bit
   consult + view selection, subsuming `prelude_fallback_target` as their
   private helper) and int's committed-view seams (macro recognition, the
-  defmacro definition gate). The int DISPLAY gate
-  (`repl.rs::lookup_with_prelude_fallback{,_opt}`) is deliberately NOT a
-  scope consumer — a raw-head + resolving-module display operation with a
-  root special-form tier; settled deviation + the I-1 display-divergence
-  ruling: `prelude-import-convergence.md` §3.5.
+  defmacro definition gate). REPL introspection reads the candidate set
+  over the committed view; its obligations are `prelude-import-convergence.md` §3.5.
 - The typecheck `_or_prelude` variant family and the fallback-less
   `lookup_{trait_decl,type_def}_with_state` lookalikes delete per the
   collapse map in `prelude-import-convergence.md` §3.3; the only surviving

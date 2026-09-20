@@ -14,27 +14,27 @@ it commits to. They are distinct from:
   traps, layout invariants, the submodule seam map;
 - `spec/10-io.md`, `spec/12-runtime.md` — what runtime behaviour is correct.
 
-## Document collections
+## Document collection
 
 | Collection | Purpose | Boundary |
 |---|---|---|
-| `platform-current-designs` | Current platform interior designs and retained live design evidence for the host/DLL ABI, authoring and loading, poll leaves and ADT marker binding. | The five named live Markdown products directly under `design/platform/`. |
-| `platform-historical-records` | Superseded platform host-wiring, registry-removal and poll-support records whose distinct rationale is not duplicated by current documents. | Markdown products under `design/platform/archive/`. |
+| `platform-current-designs` | Current platform interior designs for the host/DLL ABI, DLL authoring and loading, poll leaves and ADT marker binding. | The four live Markdown products directly under `design/platform/`. |
 
-Both are established collections and retain live reference checking. The
-archive index remains the authority for each historical record's retention;
-collection membership does not make it current design.
+This is a maintained design collection with live reference checking. It holds
+current design only; superseded records are deleted rather than archived, and
+git history carries them.
 
 ## Live documents
 
 | File | Carries |
 |---|---|
 | `platform.md` | The master: bounded context, public surface shape, internal shape, the ABI and node layouts, the context invariants, quality attributes, triggered extensions. |
-| `platform-dlls.md` | Authoring and loading mechanics — the manifest, the wrappers, the capture-RC protocol, the search path, the reference platforms. |
+| `platform-dlls.md` | Authoring and loading mechanics — the C-ABI types, the wrappers, the capture-RC protocol, loading, the search path, the reference platforms. |
 | `poll-leaf-authoring.md` | The ctx-vtable poll-leaf contract and the `poll_support` scaffolds. |
 | `adt-marker-binding.md` | The marker-binding mechanism decision, `arch`-approved. |
-| `s121-c7-platform-visit.md` | The Sprint 121 C7 stream design. A visit record: it retires at sprint close, and what it settles lands in `platform.md`. |
-| `archive/` | Superseded records, indexed in `archive/README.md`. |
+
+A sprint visit record is scratch, not a product here: what it settles lands in
+the document that owns the fact, and the visit record goes.
 
 ## Conventions
 
@@ -42,19 +42,23 @@ collection membership does not make it current design.
   why. Per-sprint pass logs, "what changed this sprint" sections and stacked
   dated banners are the named decay smell; sprint history lives in
   `sprints/archive/` and in git.
-- **No censuses.** File counts, line counts and public-item inventories are not
-  design invariants, decay silently, and duplicate what `public-api.txt` and the
-  source already carry. A design document names shapes and responsibilities.
+- **No censuses.** File counts, line counts, public-item inventories and dated
+  call-site surveys are not design invariants, decay silently, and duplicate what
+  `public-api.txt` and the source already carry. A design document names shapes
+  and responsibilities.
 - **One home per fact.** Boundary narrative goes to `design/arch/`; mechanical
   conventions and API gotchas go to the crate's `CLAUDE.md`; per-item truth goes
   to rustdoc. What is left here is direction, structure and trade-offs.
 - **Record rejected alternatives briefly** — considered X, chose Y because Z —
   and record deferred extensions with the **trigger** that would require them. A
   deferral without a trigger is a decision nobody can revisit.
-- **Retain one canonical home.** A superseded record stays in `archive/` only when
-  it remains the canonical home for distinct rationale. If current documents or git
-  already carry its useful content, delete the duplicate. If useful detail is missing,
-  first fold that detail into the current owning document in its current form, then
-  delete the old record. The archive index explains every retained exception.
+- **Delete superseded records; keep no archive.** When a record is superseded,
+  fold any detail the current documents still need into the document that owns
+  that fact, then delete the record. Git is the provenance store, and a retained
+  copy competes with the live document for a reader's trust.
+- **Grade a claim that is neither structural nor measured.** Where this surface
+  asserts a property it does not enforce or observe — the crate has no capability
+  vocabulary, the DLL writes no glue word — the claim carries its falsifier and
+  says what grade it holds (root `CLAUDE.md` §Assurance).
 - **Cite, do not restate.** When a fact belongs to `arch`, `spec` or a
   neighbouring crate, cite it in that owner's language.

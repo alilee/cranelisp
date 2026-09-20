@@ -213,7 +213,7 @@ gap-retry via `ClusterOnce::Gap { dep }` + `drive_module_dep` (worker) /
   into the Phase-A queue (the existing register-edge), **frees its thread back to the
   pool**, and requeues its body work to be re-claimed when the barrier opens — it
   **never blocks a pool thread** on a signature dependency (preserving S78's
-  free-back-to-pool deadlock-freedom; `s78-implementation.md` §0/§1.3). The scheduler
+  free-back-to-pool deadlock-freedom; `int.md` §6.2). The scheduler
   **opens the barrier** — sweeping the requeue via the existing
   `priority_work_available` / `completion` condvar — when the **last** closure module
   reaches `signatures_ready`. The one genuine waiter is the **eval thread** (the REPL

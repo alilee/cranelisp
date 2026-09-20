@@ -155,7 +155,7 @@ fn linker_resolves_arm64_got_load_relocations() {
     drop(stable);
 }
 
-// spec: design/backend/cache-repl-loads-triage.md — Sprint 59 Wave 1 C-ii
+// spec: design/backend/module-caching.md §13.3.1 — object-local .L data symbols are GOT-resolvable
 // regression guard. Cranelift emits `ARM64_RELOC_GOT_LOAD_*` relocations
 // not only against `Linkage::Import` data symbols but also against local
 // `.L*` data labels it synthesises for string-literal constants

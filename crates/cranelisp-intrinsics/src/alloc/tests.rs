@@ -91,7 +91,7 @@ fn test_extern_c_interface() {
     assert!(dealloc_count() - deallocs_before >= 1);
 }
 
-// spec: 12-runtime §12.3.1 / design/platform/host-wiring-s76.md §2 —
+// spec: 12-runtime §12.3.1 / design/platform/platform.md §4.5 —
 // cranelisp_alloc_with_tag produces the backend ConstrADT heap layout for a
 // zero-field data constructor: [total_size | rc=1 | tag@16].
 //
@@ -117,7 +117,7 @@ fn test_alloc_with_tag_zero_fields() {
     unsafe { dealloc(base as *mut u8) };
 }
 
-// spec: 12-runtime §12.3.1 / design/platform/host-wiring-s76.md §2 —
+// spec: 12-runtime §12.3.1 / design/platform/platform.md §4.5 —
 // cranelisp_alloc_with_tag produces the backend ConstrADT layout for a
 // 2-field data constructor: [total_size | rc=1 | tag@16 | f0@24 | f1@32].
 //

@@ -1,10 +1,23 @@
 # S101 Special Risk Review + Coverage Audit
 
-**Author:** `/qa` · **Date:** 2026-07-03 · **Status:** user-mandated pre-close deliverable
-(`sprints/SPRINT.md` §Phase 6b, Notes 2026-07-03). Successor and widener of
+**Author:** `/qa` · **Date:** 2026-07-03 · **Status:** dated record — the user-mandated
+S101 pre-close deliverable (Phase 6b and the 2026-07-03 note in the
+[S101 record](../../sprints/archive/sprint-101.md#notes)). Successor and widener of
 `tests/plan/s101-coverage-postmortem.md` (Wave 1 — which covered only the three
 Phase-3 finds; this audit covers the full 6a/6b defect set and audits the Wave-1
-post-mortem's own narrowness). **This document is the S102 Phase-1 scoping input.**
+post-mortem's own narrowness). It was the S102 Phase-1 scoping input.
+
+**Why this record is retained.** [§2.4](#24-proposed-lanes-named-durable--s102-qa-work-unless-noted)
+defines the seven named lanes (L-N1, L-N2, L-S1, L-S2, L-S3, L-M1, L-U1) that
+test sources, the e2e harness and later plans cite by name, and
+[§2.5](#25-standing-rules-fed-back-into-qa-practice-supersede-post-mortem-33)
+states the four drafting rules the [assurance plan](PLAN.md#traceability-and-authoring)
+points to. Both are the `refers_to` source of the parked L-M1 growth entry in
+`design/arch/backlog/performance.md`. This audit's defect classification, counts,
+unit-tier map (section 3) and S102 risk ranking (section 4) are measurements and
+proposals of 2026-07-03,
+not current findings; the [S102 record](../../sprints/archive/sprint-102.md) holds
+their disposition.
 
 **The question the user asked:** despite QA-first (20 sprint-wide guards drafted
 failing-first), 5 D/D/R cycles each with review, and a ~3,480-test suite, the Phase
@@ -128,10 +141,12 @@ fns; the remaining ~2,000 of the 3,480-run suite are crate unit tiers, §3).
 | Regex: `assert_stdout_matches` | 0 | (helper exists, unused) |
 | Golden: `assert_golden{,_masked}` | 0 | (helper exists, unused) |
 
-The spec pins exact display formats in many places (`repl/spec.md` §1.4 FQ types,
-§1.5 value rendering incl. the recursive ADT form, §5.1 error format, §18.3 cascade
-report layout, §18.5 trap format) — and the suite has effectively **no exact-output
-lane**. Four S101 defects (0492, 0493, trap-format, 0491-secondary) passed through
+The spec pins exact display formats in many places (FQ types and value rendering,
+including the recursive ADT form, in `repl/spec/01-display-format.md` §1.4, §1.5;
+the error format in `repl/spec/05-error-presentation.md` §5.1; and the cascade-report
+layout and trap-line format that the S101 redefinition chapter numbered 18.3 and
+18.5 — that chapter has since been renumbered) — and the suite has effectively
+**no exact-output lane**. Four S101 defects (0492, 0493, trap-format, 0491-secondary) passed through
 existing assertions. The `assert_golden` and `assert_stdout_matches` helpers were
 built and never adopted.
 

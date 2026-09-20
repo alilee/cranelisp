@@ -2,8 +2,7 @@
 //!
 //! QA-first (Phase 5 Stage 1) e2e guards for the ratified backend↔intrinsics
 //! poll-shape Effect-node seam (`design/arch/effect-concurrency.md` Appendix B
-//! §"the ratified … seam" (a)–(d); `design/int/reactor.md` §2.5/§2.7/§4). Plan:
-//! `tests/plan/sprint-94.md` §1A/§1B/§1C/§1D.
+//! §"the ratified … seam" (a)–(d); `design/int/reactor.md` §2.5/§2.7/§4).
 //!
 //! Two lanes share this file:
 //!   - DEFAULT `nt` (feature OFF): the ungated structural replays (a)/(d) — the

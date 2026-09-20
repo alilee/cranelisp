@@ -2283,7 +2283,7 @@ const S60_PROGRAM_NO_LET: &str = r#"(import [grid [make-grid]])
 // dispatched through a NULL/stale GOT slot. Root-cause was in
 // `src/worker.rs::load_cached_module_via_linker` vicinity vs the
 // convergence invariant breach at design/backend/jit-object-convergence.md
-// §4 (`restore_cached_module`'s wholesale-swap of `symbol_tables[M].got`).
+// §1.2 (`restore_cached_module`'s wholesale-swap of `symbol_tables[M].got`).
 //
 // (carry: legacy/sprint60_reduction.rs::s60_cache_reuse_minimal_5_loc_no_crash)
 #[test]
@@ -3257,7 +3257,7 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
 // total public-field surface remains bounded.
 // =============================================================================
 //
-// RELOCATED in Sprint 78 Wave 1 (plan §3) FROM `tests/facade_pif_rows.rs`
+// RELOCATED FROM `tests/facade_pif_rows.rs`
 // (`shared_state_field_count_matches_facade_after_pif`). Per FIXME 0298 this
 // test introspects an int-INTERNAL struct (`SharedState`), not a boundary /
 // public-API surface, so `facade_pif_rows.rs` (boundary-conformance only) was
@@ -3268,7 +3268,7 @@ fn regression_0279_cross_module_polymorphic_import_monomorphisation() {
 // statement: the deleted cross-thread parking maps must never return. Legitimate
 // additions remain documented in the count assertion below.
 
-// spec: design/int/s77-int-restructure.md §2.3 — SharedState drops 16 → 14
+// spec: design/int/int.md §6.2 — SharedState drops 16 → 14
 //       after module_sexps/suspend_states deletion; S78 Wave 4 §2.7 then adds
 //       prelude_fallback → 15; S80 Wave 2D D1 then adds run_mode → 16.
 #[test]
@@ -3317,7 +3317,7 @@ fn shared_state_pub_field_count_guard() {
         field_count, 17,
         "SharedState has {field_count} pub fields; target is exactly 17 \
          (16 − module_sexps − suspend_states + prelude_fallback + run_mode + \
-         declared_exports; design/int/s77-int-restructure.md §2.3 + S78 Wave 4 \
+         declared_exports; design/int/int.md §6.2 + S78 Wave 4 \
          §2.7 + S80 Wave 2D D1 design/arch/d1-introspection-repl-only.md §4 + \
          S115 W2 design/int/prelude-table-write-isolation.md §2.2). This is the \
          standing guard that the two cross-thread parking maps \

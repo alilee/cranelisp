@@ -415,7 +415,7 @@ fn row_31_cranelisp_op_extern_fns_deleted_from_intrinsics() {
 }
 
 // =============================================================================
-// Row 42 — describe_symbol family lands on CompilerSession (REV-3 read-side-only)
+// Row 42 — read-side accessors land on CompilerSession (REV-3 read-side-only)
 // =============================================================================
 
 // spec: design/int/int.md §8.2
@@ -440,14 +440,17 @@ fn row_31_cranelisp_op_extern_fns_deleted_from_intrinsics() {
 // `Introspection.disasm` field + `CompilerSession::symbol_disasm()` accessor are
 // dead and being removed. /arch dropped `symbol_disasm` from the canonical
 // accessor-family enumeration in `design/arch/d1-introspection-repl-only.md`.
-// The PIF guard now enforces 7 read-side accessors, not 8.
+//
+// S122 (/test): `describe_symbol` dropped likewise. /arch removed it from that
+// same enumeration this sprint, so the name was no longer asserted by any
+// authority; /design (int) then retired the zero-consumer function itself as a
+// second display provenance. The guard now enforces 6 read-side accessors.
 #[test]
-fn row_42_describe_symbol_family_methods_exist_on_compiler_session() {
-    // Scan src/ tree for `fn describe_symbol`, etc. Pre-row-42 the methods
+fn row_42_read_side_accessor_methods_exist_on_compiler_session() {
+    // Scan src/ tree for `fn list_user_definitions`, etc. Pre-row-42 the methods
     // do not exist; post-row-42 they should be defined on a CompilerSession
     // impl in src/session_v4.rs (or a sibling module imported into it).
     let names: &[&str] = &[
-        "describe_symbol",
         "list_user_definitions",
         "module_imports",
         "module_exports",
@@ -477,12 +480,13 @@ fn row_42_describe_symbol_family_methods_exist_on_compiler_session() {
     }
     assert!(
         missing.is_empty(),
-        "FIXME 0176 partial close: describe_symbol family missing from src/. \
+        "FIXME 0176 partial close: read-side accessors missing from src/. \
          Missing methods: {missing:?}. Found: {found:?}. Facade prescribes \
-         these 7 read-side accessors as CompilerSession methods reading \
+         these 6 read-side accessors as CompilerSession methods reading \
          shared.symbol_tables + shared.introspection (symbol_disasm dropped \
          S87 W0 — disasm is on-demand re-derivation per Decision 41, not a \
-         persisted accessor). /dev (int) Wave 3 row 42."
+         persisted accessor; describe_symbol dropped S122 — retired as a \
+         zero-consumer second display provenance). /dev (int) Wave 3 row 42."
     );
 }
 
@@ -560,15 +564,15 @@ fn fqtypename_binding_resolved_stage_apis_use_fqtypename_not_bare_typename() {
 // as `shared_state_field_count_at_target_14`. Per FIXME 0298 it introspects an
 // int-INTERNAL struct (`SharedState`), not a boundary/public-API surface, so it
 // does not belong here. Its spec anchor regrounds from the (retiring) int facade
-// to `design/int/s77-int-restructure.md §2.3` (16 → 14 fields). See regression.rs.
+// to `design/int/int.md §6.2` (16 → 14 fields). See regression.rs.
 
 // =============================================================================
-// REV-3 read-side hook — describe_symbol uses shared.symbol_tables +
+// REV-3 read-side hook — resolve_candidates uses shared.symbol_tables +
 // shared.introspection (not a SharedState restructure)
 // =============================================================================
 
 // spec: design/int/int.md §8.5
-// FIXME(/dev int Wave 3): describe_symbol family reads from shared maps; the
+// FIXME(/dev int Wave 3): resolve_candidates family reads from shared maps; the
 // facade prescribes accessor methods rather than direct field access at
 // call-sites. A small e2e signal: /info on a primitive should resolve through
 // the family and report the primitives/<name> classification universally.
@@ -582,7 +586,7 @@ fn rev3_describe_symbol_resolves_primitive_via_facade_method() {
         .output();
     let stdout = &cap.stdout;
     // The facade prescribes `:Type value ; classification` format for ALL
-    // describe_symbol results. A primitive should classify as `primitive` or
+    // resolve_candidates results. A primitive should classify as `primitive` or
     // a related token. Pre-fix, /info on a primitive may yield "unknown
     // symbol" or skip the universal format entirely.
     let touches_primitive = stdout.contains("primitive")
@@ -592,7 +596,7 @@ fn rev3_describe_symbol_resolves_primitive_via_facade_method() {
         touches_primitive,
         "REV-3 read-side wiring: /info add-i64 did not produce a primitive- \
          classified universal-display line. Facade §\"Composed introspection \
-         flows\" routes through describe_symbol → shared.symbol_tables.\n\
+         flows\" routes through resolve_candidates → shared.symbol_tables.\n\
          === stdout ===\n{stdout}\n=== stderr ===\n{}",
         cap.stderr
     );

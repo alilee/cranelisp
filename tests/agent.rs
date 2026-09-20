@@ -4110,7 +4110,7 @@ fn agent_validator_malformed_form_does_not_crash_repl() {
 
 // ===========================================================================
 // Sprint 94 — FIXME 0430: docstring-into-source regen (the S89-W3-descoped
-// `set-doc`). Plan: tests/plan/sprint-94.md §3. Candidate-1 ratified by /design:
+// `set-doc`). Candidate-1 ratified by /design:
 // docstring-aware `render_decl_sexp` + the reconciliation rule (live
 // `Def.docstring` authoritative when `Some`; the sexp's own docstring emitted
 // only when the live field is `None`; never double-emit). /dev (src/) re-lands

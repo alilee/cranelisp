@@ -19,9 +19,8 @@
 //!   `SymbolTableRead` / `SymbolTableMut` types that the interior
 //!   `TypeCheckEnv` accessor pair returns — single-pair invariant).
 //!
-//! See `design/typecheck/wave-3a-check-form.md` §3 for the design context and
-//! `design/arch/facades/typecheck.md` §"Single-pair invariant" for the
-//! authoritative configuration that constrains this module's shape.
+//! See `design/typecheck/typecheck.md` §6.4 for staging-vs-live dispatch and
+//! `design/arch/bounded-contexts.md` §2 for the typecheck boundary contract.
 
 use std::cell::RefCell;
 

@@ -242,3 +242,47 @@ An unbound name MUST produce a clear error message, not an opaque internal error
 user> xyz
 error: unbound symbol 'xyz'
 ```
+
+#### 4.1.11 Spellings With Several Candidates [Tested+Neg]
+
+A bare spelling can denote several distinct canonical declarations in the
+current module scope: the terminal-deduplicated candidate set of spec
+`08-modules.md` §8.6.1 layer 2, §8.6.2 and §8.6.4. Bare lookup reports that
+set in full.
+
+Bare lookup MUST print the primary line or lines of every candidate, each
+rendered by its own §4.1.x class rule with its fully-qualified name. It MUST
+NOT omit a candidate, MUST NOT show one candidate chosen by local, import,
+prelude or tier origin or by arrival order, and MUST NOT report the spelling
+as unbound (§4.1.10). Candidates whose types coincide are still distinct
+declarations and each MUST appear; lookup does not compare candidate types.
+
+Lookup is introspection, not use: it MUST NOT report an ambiguity error or
+warning for the candidate set. Selection — and the ambiguity rejection that
+goes with it — belongs to an input that *uses* the spelling, which resolves
+under spec `08-modules.md` §8.6.5 without relaxation.
+
+Given imported functions `a/f` and `b/f`, both `(Fn [Int] Int)`, and
+`c/f : (Fn [String] String)`:
+
+```
+user> f
+:(Fn [primitives/Int] primitives/Int) a/f ; defn
+:(Fn [primitives/Int] primitives/Int) b/f ; defn
+:(Fn [primitives/String] primitives/String) c/f ; defn
+```
+
+`(f "x")` still selects `c/f`; `(f 1)` is still ambiguous between `a/f` and
+`b/f` and the source must qualify one (§8.6.5).
+
+`/sig`, `/info` and `/doc` on a bare name report every candidate, each in that
+command's own format (§3.8, §3.6, §11.2.4). None of them substitutes an
+ambiguity error for the listing.
+
+| Requirement | Test |
+|---|---|
+| every candidate's primary line printed, fully qualified, by its own class rule | [Tested+Neg tests/repl_introspection::prelude_and_local_candidates_both_list_at_bare_lookup_and_sig, tests/repl_introspection::two_imported_candidates_both_list_at_bare_lookup_and_sig, tests/repl_introspection::nullary_ctor_and_function_candidates_both_list_at_bare_lookup, tests/repl_introspection::one_terminal_reached_two_ways_lists_once] |
+| candidates whose types coincide are each listed; no type comparison at lookup | [Tested+Neg tests/repl_introspection::identically_typed_candidates_both_list_neg_no_ambiguity_at_lookup] |
+| no candidate omitted or chosen by origin, tier or order; never reported unbound | [Tested+Neg tests/repl_introspection::prelude_and_local_candidates_both_list_at_bare_lookup_and_sig, tests/repl_introspection::two_imported_candidates_both_list_at_bare_lookup_and_sig] |
+| no ambiguity error or warning at lookup; a use of the spelling still resolves under §8.6.5 | [Tested+Neg tests/repl_introspection::identically_typed_candidates_both_list_neg_no_ambiguity_at_lookup, tests/repl_introspection::identically_typed_candidates_ambiguous_use_still_rejected_neg_no_silent_selection] |
+| `/sig`, `/info` and `/doc` list every candidate in their own format | [Tested+Neg tests/repl_introspection::prelude_and_local_candidates_both_list_at_bare_lookup_and_sig, tests/repl_introspection::info_lists_prelude_and_local_candidates, tests/repl_introspection::doc_lists_prelude_and_local_candidates, tests/repl_introspection::info_lists_identically_typed_candidates, tests/repl_introspection::doc_lists_identically_typed_candidates] |

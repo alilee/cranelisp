@@ -280,4 +280,4 @@ Steps 1 and 2 can proceed in parallel — `/frontend` defines the trait, `/int` 
 
 - `/frontend` — implement `MacroResolver` trait and `expand_sexp_recursive` signature change per `design/frontend/macro-resolver-trait.md`
 - `/int` — implement resolvers, wire into pipeline, delete caches per `design/int/macro-resolver-impl.md`
-- `/typecheck` — fix `ensure_module_exists` builtin type leaking per `design/typecheck/sprint50-fixes.md`
+- `/typecheck` — fix `ensure_module_exists` builtin type leaking per [the module initialization contract](../../../spec/08-modules.md#891-the-primitives-module)

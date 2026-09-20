@@ -9,12 +9,14 @@
 // worker path does. Pure relocation — no behavioural change.
 
 use cranelisp_types::{
-    CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, ModuleFullPath, ModuleStrategy,
-    Sexp, Span, Symbol, TopLevel, Type, Warning,
+    Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, ModuleFullPath,
+    ModuleStrategy, Sexp, Span, Symbol, TopLevel, Type, Warning,
 };
 
 use cranelisp_typecheck::{CheckResult, CheckState};
 
+use crate::code::Code;
+use crate::repl::SpecialFormTail;
 use crate::session_v4::{
     CompilerSession, EvalResult, Introspection, intrinsic_type_from_name, is_comment_only,
     set_test_runner_state,
@@ -25,13 +27,13 @@ use crate::worker::ModuleCompiler;
 /// introspection record — for GENUINE definition turns only (Matrix E
 /// recording rule; FIXME 0486, `design/int/s102-defect-wave.md` §7.3).
 ///
-/// A display-only `EvalResult::Def` (`defined: false` — bare-symbol lookup)
-/// MUST NOT touch the record: the lookup text (`"solo"`) would clobber the
-/// authored `(defn …)` form that `/info`/`/source` serve (introspection-first
-/// precedence in `info_definition_source`). For real definition turns the
-/// write is load-bearing: it records the authored text that §4.2's
-/// source-first regeneration emits — coordinate any change with that seam
-/// (same authorship invariant).
+/// A bare-symbol lookup (`EvalResult::Candidates`) MUST NOT touch the record:
+/// the lookup text (`"solo"`) would clobber the authored `(defn …)` form that
+/// `/info`/`/source` serve (introspection-first precedence in
+/// `info_definition_source`). For real definition turns the write is
+/// load-bearing: it records the authored text that §4.2's source-first
+/// regeneration emits — coordinate any change with that seam (same authorship
+/// invariant).
 ///
 /// `introspection` is `Some` only under `RunMode::Repl` (D1b ctor gate) —
 /// `None` in batch, no second discriminator to drift.
@@ -40,14 +42,8 @@ pub(crate) fn record_defining_turn_source(
     result: &EvalResult,
     src: &str,
 ) {
-    let symbols = match result {
-        EvalResult::Definitions { symbols, .. } => symbols.as_slice(),
-        EvalResult::Def {
-            symbol,
-            defined: true,
-            ..
-        } => std::slice::from_ref(symbol),
-        _ => return,
+    let EvalResult::Definitions { symbols, .. } = result else {
+        return;
     };
     if let Some(m) = introspection {
         for symbol in symbols {
@@ -632,14 +628,32 @@ impl CompilerSession {
     // `register_dep_for_eval`) and §7.1 (Decision 37 — cache-hit-or-fresh is a
     // branch inside that recursion, not a parallel orchestrator).
 
-    /// Check if a bare symbol should produce introspection display instead of eval.
+    /// The candidate listing an entered spelling displays instead of
+    /// evaluating — `None` when the turn is not an introspection turn and must
+    /// fall through to the value/eval path.
     ///
-    /// Handles special forms, macros, builtin types, user types, traits,
-    /// and non-nullary constructors (spec §4.1). Returns None for symbols
-    /// that should be evaluated normally (variables, functions, and
-    /// non-concrete nullary ctors — after S108 D2, concrete nullary ctors
-    /// introspect; only result-only-polymorphic nullary ctors fall through
-    /// to the value path).
+    /// The set is the shared candidate query, so the prompt and `/sig` answer
+    /// from ONE resolution (§3.8) and a spelling denoting several declarations
+    /// lists them all (§4.1.11) instead of showing a tier winner or falling
+    /// through to the §8.6.5 use-site rejection. Every result is display-only:
+    /// a bare lookup is never recorded as a symbol's source (FIXME 0486).
+    ///
+    /// A turn lists only when EVERY candidate is listable, and SET SIZE decides
+    /// a value-path member (`design/int/int.md` §3.3). Alone, a
+    /// result-only-polymorphic nullary constructor takes the turn to the §1.5.1
+    /// value display; among several it is listed by its own §4.1.2 constructor
+    /// line, since that display is the sole-candidate disposition and routing a
+    /// listed member through it would re-resolve the spelling tier-first inside
+    /// the listing. A zero-argument macro takes the turn to expansion (§4.1.6)
+    /// at any set size (`describes_at_lookup` / `lists_at_lookup`).
+    ///
+    /// 0571 D2: a QUALIFIED spelling (`mathx/gcount`) takes this same path —
+    /// mode+name-uniform, NO codegen, since a value-position FQ ref would
+    /// otherwise reach the backend slot-less as the `undefined variable`
+    /// codegen leak. Its module is present on the FQ-autoload RETRY (the first
+    /// pass gaps → `drive_module_dep` loads it → re-runs this gate), and the
+    /// §8.7.3 visibility gate a `--run` reference hits is the resolver's, so an
+    /// inaccessible member falls through to the same mode-uniform error.
     pub(crate) fn check_bare_symbol_introspection(&self, sexp: &Sexp) -> Option<EvalResult> {
         let name = match sexp {
             Sexp::Symbol(name, _) => name.as_str(),
@@ -653,193 +667,86 @@ impl CompilerSession {
             return None;
         }
 
-        // Check primitive type names: Int, Bool, Float, String (spec §4.1.3).
-        // ALL results below are display-only (`defined: false`) — a bare
-        // lookup MUST NOT be recorded as the symbol's source (FIXME 0486).
+        // Primitive type names — Int, Bool, Float, String (spec §4.1.3) —
+        // have no symbol-table declaration to describe.
         if intrinsic_type_from_name(name).is_some() {
-            return Some(EvalResult::Def {
-                symbol: FQSymbol {
+            return Some(EvalResult::Candidates {
+                symbols: vec![FQSymbol {
                     module: ModuleFullPath::from("primitives"),
                     symbol: Symbol::from(name),
-                },
-                ty: Type::Int,
+                }],
                 warnings: Vec::new(),
-                defined: false,
             });
         }
 
-        // S78 §2.7.6 — prelude is an OUTER SCOPE, not flattened into the current
-        // table. A bare prelude-provided name (e.g. `add-i64`) is no longer an
-        // `Import` entry here, so the current-table lookup misses; when the
-        // per-module fallback bit is ON, the shared two-tier walk hops to
-        // prelude's own table (where `add-i64` is the `(export …)` re-export
-        // Import edge) so the bare-value display still chains to
-        // `primitives/add-i64`. `resolve_entry_for_display` (below) chains it
-        // the rest of the way (prelude → primitives).
-        //
-        // This IS `lookup_with_prelude_fallback_opt(name, false)` — the display
-        // hop's SINGLE copy (Principle 7; the hand-rolled current→prelude walk
-        // was a byte-equivalent mirror). `root: false` keeps the two-tier walk
-        // (a bare special-form name must NOT resolve in the value display), and
-        // the seam's `is_public()` gate applies here automatically — a PRIVATE
-        // prelude binding is not shown "in scope" (spec §8.8.1).
-        // 0571 D2: a QUALIFIED bare reference `module/symbol` (`mathx/gcount`)
-        // takes the SAME introspection display path an imported bare name does —
-        // mode+name-uniform, NO codegen (a value-position FQ ref would otherwise
-        // reach the backend slot-less ⇒ the `undefined variable` codegen leak).
-        // The named module is present here on the FQ-autoload RETRY (the first
-        // pass gaps → `drive_module_dep` loads it → re-runs this gate). `display_sym`
-        // is the BARE terminal so the `FQSymbol` renders `module/symbol`, not a
-        // doubled `module/module/symbol`.
-        let (entry, lookup_module, display_sym) = if let Some(slash) = name.find('/') {
-            let module_part = ModuleFullPath::from(&name[..slash]);
-            let sym = &name[slash + 1..];
-            if module_part.as_ref().is_empty() || sym.is_empty() {
-                return None; // a bare `/` operator, not a qualified reference
-            }
-            let e = self
-                .shared
-                .symbol_tables
-                .get(&module_part)?
-                .get(sym)
-                .cloned()?;
-            // §8.7.3 visibility gate (0571.2 B1): a PRIVATE member is accessible
-            // ONLY from within its module's subtree. A REPL FQ display must NOT
-            // bypass the gate a `--run` reference hits — this is the visibility
-            // FILTER (mirroring `resolve_qualified`'s `visibility_check`) applied
-            // to the probe, NOT a second resolver. An inaccessible member returns
-            // `None` so the reference falls to the ordinary resolution path, which
-            // errors identically across modes (mode-uniform §8.7.3).
-            let cur = self.current_module_path();
-            let accessible = e.is_public()
-                || cur == module_part
-                || cur.as_ref().starts_with(&format!("{module_part}."));
-            if !accessible {
-                return None;
-            }
-            (e, module_part, Symbol::from(sym))
-        } else {
-            let (e, canonical) = self.lookup_with_prelude_fallback_resolved_opt(name, false)?;
-            (e, canonical.module, canonical.symbol)
-        };
-
-        // Resolve import/reexport chains fully. Sprint 61 Slice 1: the
-        // resolver now chases the full chain (user → prelude → primitives)
-        // so re-exported primitives land on a terminal `Def` here instead
-        // of an intermediate `Reexport` that the match below would drop
-        // through `_ => None`. See
-        // `design/int/bare-primitive-value-path.md` candidate 2.
-        let (resolved_entry, resolved_module) =
-            self.resolve_entry_for_display(&entry, &lookup_module);
-
-        // Use the resolved module for re-export provenance (spec §8.9:
-        // introspection MUST display the original defining module). The
-        // downstream `format_eval_result` re-resolves and relies on
-        // `format_def_entry`'s `module` parameter, so this is primarily
-        // for FQSymbol consumers that read the symbol metadata directly.
-        let fq_module = resolved_module;
-
-        match &resolved_entry.declaration {
-            Decl::Macro(declaration) => {
-                // Zero-arg macros should be expanded, not introspected.
-                let has_zero_arg = declaration
-                    .clauses
-                    .iter()
-                    .any(|c| c.params.is_empty() && c.rest_param.is_none());
-                if has_zero_arg {
-                    return None;
-                }
-                Some(EvalResult::Def {
-                    symbol: FQSymbol {
-                        module: fq_module,
-                        symbol: display_sym.clone(),
-                    },
-                    ty: Type::Int,
-                    warnings: Vec::new(),
-                    defined: false,
-                })
-            }
-            Decl::Overloaded(declaration) => Some(EvalResult::Def {
-                symbol: FQSymbol {
-                    module: fq_module,
-                    symbol: display_sym.clone(),
-                },
-                ty: declaration.arms.first()?.callable.scheme.ty.clone(),
-                warnings: Vec::new(),
-                defined: false,
-            }),
-            Decl::Callable(callable) => match &callable.origin {
-                CallableOrigin::Ctor { field_count, .. } => {
-                    // D2 (S108): a nullary ctor's disposition splits by
-                    // CONCRETENESS (`Type::is_concrete()`, the single-source
-                    // predicate, types.rs:92):
-                    // - non-concrete nullary (result-only-polymorphic, e.g. bare
-                    //   `None`: `∀a. (Option a)`) → `None`, falling through to the
-                    //   §1.5.1 value display `:(prelude/Option a) Option.None`
-                    //   with NO `; deftype`.
-                    // - concrete nullary (e.g. user `Red`: `user/Color`) →
-                    //   introspection, routed via `format_def_entry`'s Constructor
-                    //   arm to the §4.1.2 definition line
-                    //   `:user/Color user/Color.Red ; deftype`.
-                    // Non-nullary ctors always introspect. This collapses the
-                    // former duplicate value-vs-introspection path for concrete
-                    // nullary ctors while preserving §1.5.1 for polymorphic ones.
-                    if *field_count == 0 && !callable.arm.scheme.ty.is_concrete() {
-                        None
-                    } else {
-                        Some(EvalResult::Def {
-                            symbol: FQSymbol {
-                                module: fq_module,
-                                symbol: display_sym.clone(),
-                            },
-                            ty: Type::Int,
-                            warnings: Vec::new(),
-                            defined: false,
-                        })
-                    }
-                }
-                // Primitives + user functions get introspection display per
-                // spec §4.1.1, §4.1.2.
-                _ => Some(EvalResult::Def {
-                    symbol: FQSymbol {
-                        module: fq_module,
-                        symbol: display_sym.clone(),
-                    },
-                    ty: callable.arm.scheme.ty.clone(),
-                    warnings: Vec::new(),
-                    defined: false,
-                }),
-            },
-            Decl::TraitMethod(method) => Some(EvalResult::Def {
-                symbol: FQSymbol {
-                    module: fq_module,
-                    symbol: display_sym.clone(),
-                },
-                ty: method.scheme.ty.clone(),
-                warnings: Vec::new(),
-                defined: false,
-            }),
-            Decl::SpecialForm(record) => Some(EvalResult::Def {
-                symbol: FQSymbol {
-                    module: fq_module,
-                    symbol: display_sym.clone(),
-                },
-                ty: record.scheme.ty.clone(),
-                warnings: Vec::new(),
-                defined: false,
-            }),
-            Decl::Type(_) | Decl::Trait(_) => Some(EvalResult::Def {
-                symbol: FQSymbol {
-                    module: fq_module,
-                    symbol: display_sym.clone(),
-                },
-                ty: Type::Int,
-                warnings: Vec::new(),
-                defined: false,
-            }),
-            _ => None,
+        // `SpecialFormTail::Skipped` keeps the two-tier reach: a bare
+        // special-form name is not a value, so it falls through here and
+        // reaches the §4.1.9 feedback path — only the introspection COMMANDS
+        // consult the root table.
+        let symbols = self.resolve_candidates(name, SpecialFormTail::Skipped);
+        if symbols.is_empty()
+            || !symbols.iter().all(|symbol| {
+                self.entry_at(symbol)
+                    .is_some_and(|entry| lists_at_lookup(&entry, symbols.len()))
+            })
+        {
+            return None;
         }
+        Some(EvalResult::Candidates {
+            symbols,
+            warnings: Vec::new(),
+        })
     }
+}
+
+/// Whether a declaration answers a lookup with an introspection line
+/// (spec §4.1) rather than belonging to the value/eval path.
+fn describes_at_lookup(entry: &Binding<Code>) -> bool {
+    match &entry.declaration {
+        // A zero-arg macro is expanded, not described.
+        Decl::Macro(declaration) => !declaration
+            .clauses
+            .iter()
+            .any(|clause| clause.params.is_empty() && clause.rest_param.is_none()),
+        // An overload with no arm has no signature to show.
+        Decl::Overloaded(declaration) => !declaration.arms.is_empty(),
+        // D2 (S108): a concrete nullary constructor (user `Red : user/Color`)
+        // describes through `format_def_entry`'s Constructor arm as the §4.1.2
+        // line `:user/Color user/Color.Red ; deftype`; a result-only-polymorphic
+        // one alone takes the §1.5.1 value display instead. Non-nullary ctors,
+        // primitives and user functions display per §4.1.1, §4.1.2.
+        Decl::Callable(_) => !is_polymorphic_nullary_ctor(entry),
+        Decl::TraitMethod(_) | Decl::SpecialForm(_) | Decl::Type(_) | Decl::Trait(_) => true,
+        Decl::ImplShell(_) => false,
+    }
+}
+
+/// A nullary constructor whose result type is not concrete — bare
+/// `None : ∀a. (Option a)`, as against the concrete `Red : user/Color`.
+///
+/// `Type::is_concrete` is the single-source concreteness predicate (D2, S108);
+/// false for every other declaration, including non-nullary constructors.
+fn is_polymorphic_nullary_ctor(entry: &Binding<Code>) -> bool {
+    entry.callable().is_some_and(|callable| {
+        matches!(
+            &callable.origin,
+            CallableOrigin::Ctor { field_count: 0, .. }
+        ) && !callable.arm.scheme.ty.is_concrete()
+    })
+}
+
+/// Whether a declaration can be LISTED at a bare lookup denoting `candidates`
+/// declarations.
+///
+/// One candidate is `describes_at_lookup`'s disposition unchanged. Several make
+/// the turn a §4.1.11 listing, where a result-only-polymorphic nullary
+/// constructor is rendered by its own §4.1.2 constructor line — the §1.5.1
+/// value display it takes alone is keyed on nothing canonical, so listing
+/// through it would reintroduce a tier-first read inside the listing
+/// (`design/int/int.md` §3.3). A zero-argument macro remains unlistable: the
+/// turn is an expansion (§4.1.6), not a display.
+fn lists_at_lookup(entry: &Binding<Code>, candidates: usize) -> bool {
+    describes_at_lookup(entry) || (candidates > 1 && is_polymorphic_nullary_ctor(entry))
 }
 
 // ---------------------------------------------------------------------------
@@ -858,12 +765,17 @@ mod tests {
         }
     }
 
-    fn def_result(module: &str, name: &str, defined: bool) -> EvalResult {
-        EvalResult::Def {
-            symbol: fq(module, name),
-            ty: Type::Int,
+    fn defining_turn(module: &str, name: &str) -> EvalResult {
+        EvalResult::Definitions {
+            symbols: vec![fq(module, name)],
             warnings: Vec::new(),
-            defined,
+        }
+    }
+
+    fn lookup_turn(module: &str, name: &str) -> EvalResult {
+        EvalResult::Candidates {
+            symbols: vec![fq(module, name)],
+            warnings: Vec::new(),
         }
     }
 
@@ -884,7 +796,7 @@ mod tests {
         let m: dashmap::DashMap<FQSymbol, Introspection> = dashmap::DashMap::new();
         record_defining_turn_source(
             Some(&m),
-            &def_result("user", "solo", true),
+            &defining_turn("user", "solo"),
             "(defn solo [x] (mul-i64 x 3))",
         );
         assert_eq!(
@@ -894,7 +806,7 @@ mod tests {
         );
         record_defining_turn_source(
             Some(&m),
-            &def_result("user", "solo", true),
+            &defining_turn("user", "solo"),
             "(defn solo [x] (mul-i64 x 4))",
         );
         assert_eq!(
@@ -905,7 +817,7 @@ mod tests {
     }
 
     // spec: repl/spec.md §3.6 + §18.4 (FIXME 0486) — Matrix E negative cells:
-    // a bare lookup (display-only Def, healthy or broken alike) MUST NOT
+    // a bare lookup (a candidate listing, healthy or broken alike) MUST NOT
     // touch an existing record and MUST NOT create one; an expression turn
     // (`Val`) never writes.
     #[test]
@@ -913,22 +825,18 @@ mod tests {
         let solo = fq("user", "solo");
         let m = store_with(&solo, "(defn solo [x] (mul-i64 x 3))");
         // The corrupting shape: the bare-lookup turn's text is the bare name.
-        record_defining_turn_source(Some(&m), &def_result("user", "solo", false), "solo");
+        record_defining_turn_source(Some(&m), &lookup_turn("user", "solo"), "solo");
         assert_eq!(
             m.get(&solo).unwrap().source.as_deref(),
             Some("(defn solo [x] (mul-i64 x 3))"),
-            "display-only Def must NOT overwrite the authored source"
+            "a lookup turn must NOT overwrite the authored source"
         );
         // No record → no creation either (e.g. bare lookup of a prelude name
         // must not seed a bogus record under the resolved primitive's FQ).
-        record_defining_turn_source(
-            Some(&m),
-            &def_result("primitives", "add-i64", false),
-            "add-i64",
-        );
+        record_defining_turn_source(Some(&m), &lookup_turn("primitives", "add-i64"), "add-i64");
         assert!(
             !m.contains_key(&fq("primitives", "add-i64")),
-            "display-only Def must NOT create a record"
+            "a lookup turn must NOT create a record"
         );
         // Expression turns never write.
         record_defining_turn_source(
@@ -941,7 +849,7 @@ mod tests {
         );
         assert_eq!(m.len(), 1, "Val results never write");
         // Batch mode (store absent): a defining result is a silent no-op.
-        record_defining_turn_source(None, &def_result("user", "solo", true), "(defn solo [x] x)");
+        record_defining_turn_source(None, &defining_turn("user", "solo"), "(defn solo [x] x)");
     }
 
     // -----------------------------------------------------------------------
@@ -1137,7 +1045,7 @@ mod tests {
     }
 
     // A CONCRETE nullary ctor (`Red : user/Color`, no type args) routes to the
-    // introspection path — a display-only `EvalResult::Def` — so the caller
+    // introspection path — one candidate, never a defining turn — so the caller
     // formats the §4.1.2 definition line `:user/Color user/Color.Red ; deftype`.
     #[test]
     fn concrete_nullary_ctor_routes_to_introspection() {
@@ -1145,17 +1053,17 @@ mod tests {
         install_in_user(&s, "Red", "Color", Vec::new());
         let out = s.check_bare_symbol_introspection(&Sexp::Symbol("Red".into(), Span::SYNTHETIC));
         match out {
-            Some(EvalResult::Def {
-                defined, symbol, ..
-            }) => {
-                assert!(!defined, "bare lookup must be display-only (defined:false)");
-                assert_eq!(symbol.symbol.as_ref(), "Red");
+            Some(EvalResult::Candidates { symbols, .. }) => {
+                assert_eq!(
+                    symbols.iter().map(FQSymbol::to_string).collect::<Vec<_>>(),
+                    vec!["user/Red".to_string()],
+                    "the concrete nullary ctor lists under its canonical identity"
+                );
             }
-            Some(_) => panic!("concrete nullary ctor `Red` must introspect as a Def, not a Val"),
-            None => panic!(
-                "concrete nullary ctor `Red` MUST introspect (Some(Def)), not fall to \
-                 the value path"
-            ),
+            Some(_) => panic!("concrete nullary ctor `Red` must introspect, not evaluate"),
+            None => {
+                panic!("concrete nullary ctor `Red` MUST introspect, not fall to the value path")
+            }
         }
     }
 
@@ -1172,6 +1080,47 @@ mod tests {
             "non-concrete nullary ctor `Nada` MUST NOT introspect (falls to §1.5.1 \
              value display)"
         );
+    }
+
+    // spec: repl/spec/04-self-documentation.md §4.1.11 — SET SIZE decides a
+    // value-path member. The same non-concrete nullary ctor that takes the
+    // value path alone is LISTED once the spelling denotes several
+    // declarations, so a mixed set never reaches the §8.6.5 use-site ambiguity
+    // (`design/int/int.md` §3.3). Both legs run over one fixture, so the cell
+    // discriminates the set-size condition itself, not two unrelated setups.
+    #[test]
+    fn polymorphic_nullary_ctor_lists_among_several_candidates() {
+        let s = d2_session();
+        install_in_user(&s, "Nada", "Opt", vec![Type::Var(0)]);
+        assert!(
+            s.check_bare_symbol_introspection(&Sexp::Symbol("Nada".into(), Span::SYNTHETIC))
+                .is_none(),
+            "sole candidate: the non-concrete nullary ctor still takes the value path"
+        );
+
+        // A second declaration under the same spelling, imported from `n`.
+        let n = ModuleFullPath::from("n");
+        let mut table = SessionSymbolTable::new_with_params(n.clone());
+        let _ = crate::repl::test_support::install_userfn(
+            &mut table,
+            "Nada",
+            Some("function candidate for Nada"),
+            Visibility::Public,
+        );
+        s.shared.symbol_tables.insert(n, table);
+        crate::repl::test_support::expose_import(&s, "Nada", "n", "Nada");
+
+        match s.check_bare_symbol_introspection(&Sexp::Symbol("Nada".into(), Span::SYNTHETIC)) {
+            Some(EvalResult::Candidates { symbols, .. }) => assert_eq!(
+                symbols.iter().map(FQSymbol::to_string).collect::<Vec<_>>(),
+                vec!["n/Nada".to_string(), "user/Nada".to_string()],
+                "every candidate lists, the ctor under its own canonical identity"
+            ),
+            _ => panic!(
+                "a several-candidate set including a non-concrete nullary ctor MUST list \
+                 (§4.1.11), not fall through to the §8.6.5 use-site ambiguity"
+            ),
+        }
     }
 
     // -----------------------------------------------------------------------

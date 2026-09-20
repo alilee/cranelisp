@@ -642,7 +642,7 @@ fn mod_switch_round_trip_math_to_user() {
 
 // =============================================================================
 // S78 §1 — Entry module is first-class; the REPL targets the ENTRY module,
-// not a hardcoded `"user"`. design/int/s78-entry-module.md §1.3/§1.4.
+// not a hardcoded `"user"`. design/int/int.md §6.5.
 //
 // A REPL launched with a positional target (`cranelisp myapp`) registers
 // `myapp` as the entry module (`main.rs` resolve_target → register_module).
@@ -658,7 +658,7 @@ fn mod_switch_round_trip_math_to_user() {
 // name through, making these GREEN.
 // =============================================================================
 
-// spec: design/int/s78-entry-module.md §1.3 — the REPL prompt reflects the
+// spec: design/int/int.md §6.5 — the REPL prompt reflects the
 //   ENTRY module. Launched as `cranelisp myapp`, the prompt MUST be `myapp>`,
 //   not the hardcoded `user>`. RED until `current_repl_module` is seeded with
 //   the entry name.
@@ -674,12 +674,12 @@ fn repl_prompt_targets_entry_module_not_hardcoded_user() {
     assert!(
         out.stdout.contains("myapp>"),
         "REPL with entry 'myapp' MUST show prompt 'myapp>' (the entry module), \
-         not a hardcoded 'user>' (s78-entry-module.md §1.3); got:\n{}",
+         not a hardcoded 'user>' (design/int/int.md §6.5); got:\n{}",
         out.stdout
     );
 }
 
-// spec: design/int/s78-entry-module.md §1.3 (negative) — when the entry
+// spec: design/int/int.md §6.5 (negative) — when the entry
 //   module is `myapp`, the REPL MUST NOT operate in a `user` module. A bare
 //   `(defn ...)` lands in the entry module, so its display is `myapp/...`,
 //   NOT `user/...`. Verifies the wrong module does not leak in.
@@ -701,12 +701,12 @@ fn repl_defn_lands_in_entry_module_neg_not_user() {
     assert!(
         !out.stdout.contains("user/foo"),
         "a defn in a REPL with entry 'myapp' MUST NOT land in a 'user' module \
-         (s78-entry-module.md §1.3 — `\"user\"` is not privileged); got:\n{}",
+         (design/int/int.md §6.5 — `\"user\"` is not privileged); got:\n{}",
         out.stdout
     );
 }
 
-// spec: design/int/s78-entry-module.md §1.4 — `/mod` with NO argument returns
+// spec: repl/spec/03-slash-commands.md §3.9 — `/mod` with NO argument returns
 //   to the ENTRY module ("home"), not a literal `"user"`. With entry `myapp`,
 //   after `/mod scratch` a bare `/mod` MUST return the prompt to `myapp>`.
 //   RED until `handle_mod("")` resolves to the entry module.
@@ -730,12 +730,12 @@ fn mod_no_arg_returns_to_entry_module_not_user() {
     assert!(
         returned_to_entry,
         "`/mod` no-arg MUST return to the entry module 'myapp', not a hardcoded \
-         'user' (s78-entry-module.md §1.4); got:\n{}",
+         'user' (design/int/int.md §6.5); got:\n{}",
         out.stdout
     );
 }
 
-// spec: design/int/s78-entry-module.md §1.4 — regression (GREEN): when NO
+// spec: repl/spec/03-slash-commands.md §3.9 — regression (GREEN): when NO
 //   target is given, the entry module defaults to `"user"`, so `/mod` no-arg
 //   "home" IS `user>`. This pins that `"user"` survives as the legitimate
 //   default name (not as a privileged identity).
@@ -751,7 +751,7 @@ fn mod_no_arg_default_entry_is_user() {
     assert!(
         returned_to_user,
         "with no CLI target, `/mod` no-arg MUST return to the default entry \
-         'user' (s78-entry-module.md §1.4); got:\n{}",
+         'user' (design/int/int.md §6.5); got:\n{}",
         out.stdout
     );
 }

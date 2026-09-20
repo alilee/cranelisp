@@ -106,7 +106,7 @@ Design for replacing all compilation paths — JIT batch, REPL expression, and o
 
 **Revision history**:
 - Original: five-parameter signature `(module_path, program, typecheck, symbol_tables, module)`.
-- Sprint 55 (Phase 1): dropped `typecheck: &CheckResult`; annotations moved onto AST nodes, mangled bodies moved onto symbol-table entries (see `ast-sourced-codegen.md`).
+- Sprint 55 (Phase 1): dropped `typecheck: &CheckResult`; annotations moved onto AST nodes and mangled bodies onto symbol-table entries. That direction was later completed by the concrete typed body view; see `design/arch/concrete-boundary-type.md`.
 - Sprint 56 (Phase 2, this revision): dropped `program: &Program`; backend reads defn bodies from `symbol_tables[module_path]` via `names: &[Symbol]`. Current normative signature is four parameters — see §2.1 and §16. §13 describes the Sprint-55 migration path; §16 describes the Sprint-56 migration path.
 
 ## 1. Problem Statement
@@ -154,7 +154,7 @@ pub fn compile_to_module<M: Module>(
 
 `names` carries only symbol identifiers — no AST, no types, no resolutions. The backend retrieves everything from `symbol_tables[module_path]` by name:
 
-- **Body + annotations**: `ModuleEntry::Def.ast: Some(Defn)` — a single-variant `Defn` whose `Expr` nodes carry `inferred_type` and `resolved_call` (Sprint 55 Phase 1 groundwork — see `ast-sourced-codegen.md`).
+- **Body + annotations**: the entry's **concrete typed view**, whose nodes each carry a concrete type and their resolution carriers. It is the single body source for every codegen-reached definition; the older untyped AST field is not the codegen read path. Canonical: `design/arch/concrete-boundary-type.md`.
 - **Type signature**: `ModuleEntry::Def.scheme`.
 - **GOT slot**: `ModuleEntry::Def.got_slot`.
 - **Kind** (regular / `Overloaded` base / `UserFn { constrained_fn }` template / etc.): `ModuleEntry::Def.kind`.
@@ -166,7 +166,7 @@ pub fn compile_to_module<M: Module>(
 ### 2.2 Hard Constraints
 
 1. **No caller-provided intrinsic IDs.** `compile_to_module` declares intrinsics internally on the module.
-2. **No caller-provided GOT resolution.** GOT *slot assignments* are read from `symbol_tables[module_path]` entries (`ModuleEntry::Def { got_slot }`). GOT *base addresses* are resolved at module finalize time by the `Module` implementation — never internally by `compile_to_module`. The backend emits the same CLIF regardless of mode: a `global_value` against a `Linkage::Import` data symbol named `__cranelisp_got_{module}`. For `ObjectModule`, the linker patches the relocations at load. For `JITModule`, the caller pre-registers `JITBuilder::symbol_lookup_fn` that resolves `__cranelisp_got_{name}` → `symbol_tables[name].got.base_ptr()` before the module is built (see `design/arch/pipeline-v4.md` §9.3 and Decision 22 / Principle 11 in `design/arch/CLAUDE.md`).
+2. **No caller-provided GOT resolution.** GOT *slot assignments* are read from `symbol_tables[module_path]` entries (`ModuleEntry::Def { got_slot }`). GOT *base addresses* are resolved at module finalize time by the `Module` implementation — never internally by `compile_to_module`. The backend emits the same CLIF regardless of mode: a `global_value` against a `Linkage::Import` data symbol named `__cranelisp_got_{module}`. For `ObjectModule`, the linker patches the relocations at load. For `JITModule`, the caller pre-registers `JITBuilder::symbol_lookup_fn` that resolves `__cranelisp_got_{name}` → `symbol_tables[name].got.base_ptr()` before the module is built (see `design/backend/per-module-got.md` §2 and Decision 22 / Principle 11 in `design/arch/CLAUDE.md`).
 3. **No caller-provided function arities.** Derived from the defns being compiled.
 4. **No JIT prefix parameter.** Module-qualified JIT names derived from `module_path` internally.
 5. **No traced_fns parameter.** Tracing is a runtime/GOT concern, not a compilation concern.
@@ -638,7 +638,7 @@ pub struct CompilationResult {
 
 ### 8.1 Artifacts by symbol (Phase 3a — condition 1)
 
-`compile_to_module` captures per-symbol codegen byproducts needed for introspection slash commands (`/clif`, `/disasm`, `/time`) and returns them keyed by `Symbol`. This keeps `Introspection` (defined in `pipeline-v4.md` §9.6) strictly **separate** from compilation: the backend does not know, and does not care, whether the caller intends to display these artifacts, persist them, or drop them.
+`compile_to_module` captures per-symbol codegen byproducts needed for introspection slash commands (`/clif`, `/disasm`, `/time`) and returns them keyed by `Symbol`. This keeps `Introspection` (an integration-layer type; `design/arch/d1-introspection-repl-only.md`) strictly **separate** from compilation: the backend does not know, and does not care, whether the caller intends to display these artifacts, persist them, or drop them.
 
 ```rust
 pub struct FunctionArtifacts {
@@ -665,7 +665,7 @@ pub struct FunctionArtifacts {
 
 3. **Empty is valid**. `artifacts` is a `HashMap`, not an `Option<HashMap>`. Callers that do not want introspection overhead (e.g., release builds, batch `--run`) may configure `compile_to_module` to skip capture so the map is returned empty. The *type* of the field is not optional per entry; the entry's *presence* signals whether capture ran. A follow-up revision may gate capture behind a feature flag or a no-op arena strategy — the shape does not change. Object-path callers typically request an empty map since `.o` emission has no display surface; JIT callers under a REPL request a populated one.
 
-4. **Caller routes artifacts wherever**. The priority worker's loop (per `pipeline-v4.md` §9.4) is:
+4. **Caller routes artifacts wherever**. The priority worker's loop (`design/int/int.md`) is:
 
    ```rust
    let result = compile_to_module(module_path.clone(), &names, &symbol_tables, &mut jit_module)?;
@@ -677,7 +677,7 @@ pub struct FunctionArtifacts {
 
    The backend never touches `shared.introspection`. An in-process caller writes to a `DashMap`; a serializing caller writes to a file; a discarding caller drops the map. All three paths use the same `CompilationResult` shape.
 
-**Rationale** (referencing `pipeline-v4.md` §9.6): `Introspection` is display-only, caller-owned, and keyed by `FQSymbol` on `SharedState` — it must not be an input to or output of `compile_to_module`, because that would couple the backend to the integration layer's concurrent storage model. Returning artifacts on `CompilationResult` preserves the separation: codegen produces the artifacts (only codegen *can* — the CLIF and disasm don't exist before compilation runs), and the caller owns placement. A symbol-table-sourced alternative (write artifacts onto `ModuleEntry` during codegen) was rejected because artifacts are not part of the compilable contract — they are an output, not durable state; writing them onto the symbol table would entangle the per-module symbol tables with display-only data that the cache has no interest in.
+**Rationale** (`design/arch/d1-introspection-repl-only.md`): `Introspection` is display-only, caller-owned, and keyed by `FQSymbol` on `SharedState` — it must not be an input to or output of `compile_to_module`, because that would couple the backend to the integration layer's concurrent storage model. Returning artifacts on `CompilationResult` preserves the separation: codegen produces the artifacts (only codegen *can* — the CLIF and disasm don't exist before compilation runs), and the caller owns placement. A symbol-table-sourced alternative (write artifacts onto `ModuleEntry` during codegen) was rejected because artifacts are not part of the compilable contract — they are an output, not durable state; writing them onto the symbol table would entangle the per-module symbol tables with display-only data that the cache has no interest in.
 
 **What this replaces**: the pre-Phase-2 shape returned one flattened `(Option<String>, Option<String>, Option<u32>)` triple tied to "the last compiled function" or "the batch entry". That shape assumed `compile_to_module` compiled exactly one driving symbol. Once `names: &[Symbol]` is the input, per-symbol keying is the only coherent shape.
 
@@ -784,7 +784,7 @@ does NOT change. The four-parameter shape from Sprint 56 is the target and remai
 
 #### 9.1.2 `Code` shape — Shape 1 (pointer-only)
 
-Per Decision 25 + Decision 28, `Code` is a thin pointer-only handle living in `crates/cranelisp-types/src/code.rs`:
+Per Decision 25 + Decision 28, `Code` is a thin pointer-only handle living in `crates/cranelisp-backend/src/code.rs`:
 
 ```rust
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -876,10 +876,10 @@ The completed G6 consumer-side migration is retained in the S56/S57 record (`pha
 
 - `/arch` Decision 25 — `design/arch/CLAUDE.md` — the architectural statement of `code: Option<Code>` as `#[serde(skip)]` on `ModuleEntry::Def`. PRESCRIPTIVE source.
 - `/arch` `design/arch/interfaces.md` §"Module Entries" — the `ModuleEntry::Def` shape with the `code` field already landed (Sprint 57 interfaces update).
-- `/arch` `design/arch/pipeline-v4-roadmap.md` §"Phase 3 Step 3b (G6)" — the migration step summary, deferring `SymbolTable<C, L>` generics.
+- `/arch` `design/arch/overview.md` §"Phase 3 Step 3b (G6)" — the migration step summary, deferring `SymbolTable<C, L>` generics.
 - `/typecheck` `design/typecheck/ast-annotation.md` §9 — source of `ast` that `compile_to_module` reads. Invariant: for every name in `names`, the entry carries `ast: Some(_)` (§2.1 Wave 0 contract).
 - `/int` S56/S57 codegen migration record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`) G6 extension — consumer-side read-site migration table (priority worker, REPL eval, introspection, `/clif`, `/disasm`, `/source`).
-- `crates/cranelisp-types/src/code.rs` — landed Shape-1 `Code` definition (pointer-only). The earlier `src/session_v4.rs:447` location held the pre-Shape-1 `{ jit, ptr }` form; that form is retired and the canonical `Code` is now in `cranelisp-types`.
+- `crates/cranelisp-backend/src/code.rs` — landed Shape-1 `Code` definition (pointer-only). The earlier `src/session_v4.rs:447` location held the pre-Shape-1 `{ jit, ptr }` form; that form is retired and the canonical `Code` is now in `cranelisp-types`.
 - `src/session_v4.rs` `SharedState.kept_jits` field — session-side `Arc<Jit>` retention pool (Decision 28) that anchors the lifetime of every `Code::ptr` produced.
 
 #### 9.1.9 Serialization story
@@ -1079,7 +1079,7 @@ Works identically to the nice worker: creates `ObjectModule`, calls `compile_to_
 
 ## 12. GOT Reference Emission
 
-> **Historical note**: Earlier drafts proposed a `CompilationEnv` trait with two implementations (`ObjectCompilationEnv`, `JitCompilationEnv`), two public wrapper entry points (`compile_to_module_object`, `compile_to_module_jit`), and a crate-private `compile_to_module_core`. That design was retracted during Sprint 56 Phase 3a review in favour of the uniform strategy below. See `design/arch/pipeline-v4.md` §9.1 / §9.3 and Principle 11 + Decision 22 in `design/arch/CLAUDE.md`.
+> **Historical note**: Earlier drafts proposed a `CompilationEnv` trait with two implementations (`ObjectCompilationEnv`, `JitCompilationEnv`), two public wrapper entry points (`compile_to_module_object`, `compile_to_module_jit`), and a crate-private `compile_to_module_core`. That design was retracted during Sprint 56 Phase 3a review in favour of the uniform strategy below. See `design/arch/overview.md` §9.1 / §9.3 and Principle 11 + Decision 22 in `design/arch/CLAUDE.md`.
 
 > **Two-GOT framing (Sprint 58 Wave 2 — Decision 23 updated)**: there are two distinct GOT artefacts that share the same data-symbol name but serve different masters. (a) The **SymbolTable GOT** is in-process, mutable, owned by the runtime — it lives at `symbol_tables[M].got.base_ptr()` and is the redefinition swap target (Decision 31). (b) The **`.o` data section GOT** is on-disk, immutable, defined as `Linkage::Export` in the module's own `.o` per Decision 36 — it carries function-address relocation initializers and is patched by the system linker (`--link`) or our cache `Linker` (`--run` after cache-hit). Both are referenced from CLIF as a single `Linkage::Import` data symbol named `__cranelisp_got_{M}`; the *resolver* differs by `Module` impl at finalize time. See `design/arch/interfaces.md` §"Symbol Table" → "Two-GOT model" subsection for the canonical comparison table.
 
@@ -1106,7 +1106,7 @@ The backend does not know, and does not care, whether the data symbol will be re
 Callers are responsible for ensuring the `Module` they pass can resolve `__cranelisp_got_{module}` symbols:
 
 - **Object callers** (nice worker, `--link`): no extra wiring — the default `ObjectModule` relocation machinery handles it.
-- **JIT callers** (priority worker, REPL): **MUST** register a `symbol_lookup_fn` on the `JITBuilder` before constructing the `JITModule`. After G7 lands in Wave 0, `got` lives on `SymbolTable` — the lookup closure walks `symbol_tables[name].got.base_ptr()`. See `design/typecheck/ast-annotation.md` §9.8 for the symbol-table shape post-G7 and `design/arch/pipeline-v4.md` §9.3 for the caller's end-to-end responsibility.
+- **JIT callers** (priority worker, REPL): **MUST** register a `symbol_lookup_fn` on the `JITBuilder` before constructing the `JITModule`. After G7 lands in Wave 0, `got` lives on `SymbolTable` — the lookup closure walks `symbol_tables[name].got.base_ptr()`. See `design/typecheck/ast-annotation.md` §9.8 for the symbol-table shape post-G7 and `design/backend/per-module-got.md` §2 for the caller's end-to-end responsibility.
 
 ### Why uniform
 
@@ -1164,32 +1164,6 @@ Delete all items listed in section 9 (including `CompiledExpr`, `compile_expr_wi
 Replace `CodegenInput` with `CodegenInput { check: CheckResult, program: Program }`. Ensure `constrained_fn_names` is preserved in the stashed `CheckResult`.
 
 **Verification**: All tests pass. Nice worker correctly handles constrained polymorphic functions.
-
-## 14. Sketch Comparison
-
-### How the sketch handles this
-
-The sketch has the same dual-path problem but at a lower layer. Its `compile_function_indirect<M: Module>` (codegen.rs line 1787) is already generic over `Module`. However, the module-level orchestration (`compile_module_to_object` in cache.rs) is a separate 285-line function with 21 positional parameters that re-derives defn lists, declares functions, sets up GOT data symbols, and compiles — all duplicating the JIT batch path.
-
-The sketch's `FnCompiler` equivalent is not a struct but a set of free functions that take `&mut impl Module`. The GOT reference encoding uses `GotReference::Immediate(usize)` vs `GotReference::DataSymbol(DataId)` on the `FnSlot` struct, checked at each GOT load site.
-
-### Where the reimplementation diverges
-
-| Aspect | Sketch | Reimplementation | Rationale |
-|--------|--------|------------------|-----------|
-| Module-level unification | Separate JIT batch, REPL expr, and object orchestration | Single `compile_to_module<M>` for all three | Eliminates the root cause of the multi-sig crash, slot mismatch bugs, and REPL/batch divergence |
-| GOT reference dispatch | `match got_ref` inside `FnSlot` at each GOT load | Uniform emission: `global_value` against `Linkage::Import` data symbol; mode handled by the `Module` impl at finalize (§12) | Removes the fork entirely; FnCompiler emits identical CLIF in both modes |
-| Intrinsic declaration | Separate per-path | `declare_intrinsics<M>` | Single source of truth for intrinsic set |
-| Defn collection | Separate per-path (object path broken) | One path, reused | Fixes multi-sig handling for object path |
-| Parameter passing | 21 positional params | `(ModuleFullPath, names, SymbolTable, Module)` — 4 params, everything else (AST bodies, resolutions, types, arities, GOT) derived from the symbol table | Addresses HIGH-3 without inventing a new input struct; Phase 2 replaced `(Program, CheckResult)` with a name list into the symbol table |
-
-### What we adopt from the sketch
-
-- `FnCompiler<M: Module>` generic pattern (already adopted).
-- GOT data symbol naming convention (`__cranelisp_got_<module>`).
-- `__data` vs `__bss` workaround (explicit zero bytes, not `define_zeroinit`).
-- ObjectModule-specific GOT setup as a pre-step before compilation.
-- Background cache writing pattern (unchanged by this design).
 
 ## 15. Acceptance Criteria — PRESCRIPTIVE
 
@@ -1251,7 +1225,7 @@ No `CompilationEnv` in the public API (the trait does not exist — see §12). N
 
 ## 16. Phase 2 Migration (Sprint 56)
 
-Phase 2 of `design/arch/pipeline-v4-roadmap.md` — Step 2a (signature flip from `program` to `names`) and Step 2b (delete `codegen_module_symbols`). This section is the `/backend` Wave-1 deliverable: it documents the target shape, preconditions owned by `/typecheck` (Wave 0), and the deletion list. It supersedes the migration-step narrative in §13 (which described the Sprint-55 path through the old five-parameter signature).
+Phase 2 of `design/arch/overview.md` — Step 2a (signature flip from `program` to `names`) and Step 2b (delete `codegen_module_symbols`). This section is the `/backend` Wave-1 deliverable: it documents the target shape, preconditions owned by `/typecheck` (Wave 0), and the deletion list. It supersedes the migration-step narrative in §13 (which described the Sprint-55 path through the old five-parameter signature).
 
 ### 16.1 Precondition — Wave 0 (owned by `/typecheck`)
 
@@ -1286,7 +1260,7 @@ let names: Vec<Symbol> = symbol_tables
 
 **Nice worker** (`.o` emission) and **`--link` mode** use the typical case.
 
-**Priority worker** (per-function JIT isolation per `pipeline-v4.md` §9.4) passes a one-element slice per symbol it compiles:
+**Priority worker** (per-function JIT isolation; `design/int/int.md`) passes a one-element slice per symbol it compiles:
 
 ```rust
 let names = vec![symbol_name.clone()];

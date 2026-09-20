@@ -674,7 +674,7 @@ where
     ///
     /// The wrapper holds a per-shard read lock (Live mode) or a `RefCell`
     /// runtime borrow (Cluster mode) — drop it before acquiring another guard
-    /// to avoid deadlocks (see design/typecheck/dashmap-migration.md §4.10) or
+    /// to avoid deadlocks (see design/typecheck/typecheck.md §7.5) or
     /// `RefCell` borrow-check panics.
     pub fn current_symbol_table<'b>(&'b self, state: &CheckState) -> SymbolTableRead<'b, 'a, C, L> {
         let live = self.modules.get(&state.current_module).unwrap_or_else(|| {

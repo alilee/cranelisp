@@ -1,6 +1,6 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5 — Runtime implementation, evidence, reviews and generated API confirmation are complete. Shared document-checker adoption is implemented; the latest completed consolidation check reports 2,519 existing findings across 723 documents, with no new finding identities. The eleven S84–S97 QA plans are retired after source-backed retention assessment and reference integration. The local REPL-agent eval runner/corpus is delivered with 18/18 self-check outcomes; the bounded Haiku smoke baseline passed both tasks; agent verification passes all 81 end-to-end cases and 175 selected module/import cases. Default verification passes 5,968 tests with only document conformance RED. QA accepts the bounded agent corrections and the design reconciliation is complete; integrated acceptance remains pending. No phase transition or publication is authorized.
+**Status:** PHASE 5 — Compiler corrections and the two-task Haiku baseline are verified. The integration cleanup retires eight documents and extracts current guarantees into canonical homes. The stable-tree checker reports 2,444 unsuppressed findings across 715 documents: 75 identities removed and none introduced in this cohort. Agent verification passes 81 end-to-end and 176 selected module/import cases; the final default suite passes 5,969 tests with only document conformance failing. QA accepts the bounded REPL corrections, exit-result witness and restored /mod documentation. The display-identity source/contract pass and broader document consolidation remain open. No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
 issue records truthful, and deliver a repeatable REPL-agent evaluation baseline.
@@ -343,9 +343,8 @@ attribution step before the Phase-5 correction design.
 ### Delivery-record decisions prepared for the checkpoint
 
 - **ACT-0947:** all six named files were opened and current code, test, script
-  and user-document references searched. The matches for `default/test.cl` and
-  `testing/runner/test.cl` describe their actual stdlib counterparts, not the
-  root copies. Recommend retaining `NOTES.md` untouched as the user's personal
+  and user-document references searched. The matching `test.cl` names describe their actual stdlib counterparts,
+  not the root probe copies. Recommend retaining `NOTES.md` untouched as the user's personal
   idea list, and removing the five probe/diff artifacts during delivery once
   their owning source streams confirm any useful evidence is preserved. The
   scratch patch covers intrinsics drop/lib/panic/rc/strand, so that stream
@@ -353,7 +352,8 @@ attribution step before the Phase-5 correction design.
   by the design phase.
 - **ACT-0957 ownership choice:** approved 2026-09-10. Sprint owns host-entry
   guidance (`AGENTS.md`, `.codex/`, Copilot instructions) alongside existing
-  adapter/hook ownership. METHOD §3.1 records the assignment; referenced
+  adapter/hook ownership. The [information map](METHOD.md#31-where-things-live)
+  records the assignment; referenced
   technical content and shared-package contracts retain their owners.
 - **ACT-0957 adapter choice:** approved 2026-09-10: “yes, no generator.”
   Retain the eleven checked-in Copilot role adapters and existing entry points;
@@ -730,7 +730,7 @@ child completion and ordered 42 → update notification → 99.
   can proceed. The exact path from the public sequence abort to this shared
   parent remains an inference until the retained public cases pass after the fix.
 - Q12: static candidate `platform.hx` / ordinary `platform-x` maps to the same
-  GOT name. QA allocated a minimal `platforms/hx/` fixture to a separate dev
+  GOT name. QA allocated a minimal fixture named `hx` under `platforms/` to a separate dev
   invocation and public coexistence/load/link/control cases to test. No fixture
   source or executing collision evidence exists yet; no naming rewrite is assumed.
 - ACT-0955: arch completed the required direct positive/negative concurrency
@@ -812,8 +812,9 @@ test must record the actual first failure stage before attribution.
 - ACT-0947 is resolved under the user's approved five-file deletion, retaining
   `NOTES.md`. Sprint opened all five files and checked source/test/script
   references; test independently found no live fixture or manual dependency.
-  Removed root-level `default/test.cl`, `foo/test.cl`, `test1/Cranelisp.toml`,
-  `testing/runner/test.cl` and `scratch_other.diff`. The distinct live stdlib
+  Removed the `test.cl` probes under the former root-level directories
+  named `default`, `foo` and `testing/runner`, the project TOML under `test1`,
+  and `scratch_other.diff`. The distinct live stdlib
   self-tests remain. No tracked root `testing/` content remains, removing that
   directory's naming collision. The resolved action is deleted; its original
   inventory row remains linked here for accounting.
@@ -1527,3 +1528,411 @@ needed to report it.
   the unpublished shared-package checkout is excluded from the checkpoint.
   The user authorized committing this verified checkpoint. No push, phase
   transition or further live call is authorized.
+
+### Post-checkpoint Phase-5 continuation
+
+The user approved proceeding after checkpoint `cdd1f9ea`. Dev owns the
+remaining `/imports` guard-lifetime correction, with QA's existing A2/A5
+allocation: Claude Opus/high session
+`df7d38d4-c842-42c6-a4a0-3c53bf674ef8`. Design independently owns retention
+assessment and consolidation of seven integration decomposition/migration
+records, Claude Opus/high session `f2ad4ec3-aaf5-4ac3-95db-a3ce87798ccd`.
+The retention rule in METHOD remains binding: extract useful missing content
+into canonical homes, preserve unresolved obligations, and retire originals
+when Git suffices. Cross-owner reference integration follows their exact
+dispositions. Root owns the serial verification reservation after source
+release. No phase transition, publication or additional eval is included.
+
+The integration cohort retires seven delivered migration/decomposition records;
+missing current guarantees are extracted into the integration master. QA also
+retires the related S78 evidence plan while preserving its exit-result lead.
+Root observed the exact fixture return 42 with empty stdout/stderr; test owns
+the permanent assertion, Claude Opus/high session
+`00bdfc47-5d11-498b-8d72-8608dfc34db3`. The `/imports` correction is QA-accepted:
+176 module/import, 81 agent end-to-end and 12 public `/imports` cases pass.
+The final related `/exports` guard is queued after test releases source.
+Removing the display-identity helper requires a separate cohesive pass over
+its retained architecture/design contracts and callers; it remains pending. Spec confirmed the existing S78 user ruling
+for bare `/mod` and repaired its stale prose; both existing `/mod` cases pass.
+
+### Integration cohort completion
+
+- Eight obsolete documents are retired: seven delivered integration migration/
+  decomposition records and the related S78 evidence plan. Missing current
+  guarantees are extracted into `design/int/int.md`; unresolved display-lookup
+  reach remains explicit there. Current source, test and architecture citations
+  are integrated; the declaration no longer names the seven deleted designs.
+  Dated sprint history and immutable reconciliation evidence remain historical.
+- `/imports` and `/exports` release table guards before resolving candidates.
+  QA accepts both corrections; exports preserves its spelling-based filter.
+  The redundant display-identity helper remains for a cohesive source/contract
+  pass, not an automatic future-sprint carry.
+- The recovered S78 exit-result obligation now has its permanent exit-42
+  assertion and passes. Bare `/mod` prose is corrected to the recorded S78
+  user ruling, with the two existing passing cases traced by QA.
+- Verification: 176/176 selected module/import cases; 81/81 isolated agent
+  cases; 12/12 public imports cases; both `/mod` cases; restored exit witness.
+  Final default suite: **5,969 passed, 1 failed, 1 skipped** in 113.2 seconds,
+  including all five allocated exports cases. Sole failure is document
+  conformance. Log: `.local/s122-cohort-default-final.log`.
+- Feature-enabled Clippy lib/bin check exits 0 with warnings outside the
+  changed executable lines. Formatting differences are the same pre-existing
+  locations. Diff and role-wiring checks pass. NOTES remains unchanged.
+- Final ownership: spec Opus/high `d6c7e8d3-6e68-4b8c-a251-becb261e26fd`
+  reconciled the existing ruling; dev Opus/high
+  `8b2d3011-701a-4091-abd9-10174b534cef` completed exports; QA Fable/high
+  `4c7575c1-4df6-4aa8-9844-85052c9cc259` accepted the final bounded outcomes.
+  All reservations are released. No commit, push or phase transition is
+  included in this continuation.
+
+Stable-tree document result: **715 documents, 2,444 findings**; exactly 75
+identities removed and none added against the checkpoint snapshot. No baseline,
+exception or historical-reference policy changed. Report:
+`.local/s122-cohort-stable-final.json`. This observation precedes only this
+ledger status update, which receives a scoped check. All eight retirements and
+remaining obligations are accounted for in the canonical master and QA homes.
+
+### Continuous cleanup batches
+
+The user authorized continuing batches until a decision needs review. Batch 2
+reserves lookup/display architecture contracts to arch Fable/high
+`e93e6873-fa0f-4b53-aefb-feb9ebc9abbb`, the related integration design to
+design Opus/high `3e3d6ec4-0e0d-4518-8ac0-13144e7ad051`, and eight older
+QA-plan candidates to QA Fable/high `71f799af-b0b9-4fab-a4cd-4f7b12689d09`.
+Establishment now follows the nearest owner memory for current language/REPL
+specifications and user documentation, excluding historical candidates. Spec
+Opus/high `fabfb0fa-aefb-45bc-8eb4-cfa1d32fea39` and docs Opus/high
+`bd565e94-c652-4811-9826-336bdedf1d8e` repaired those entry points.
+
+Arch retains three shortened current contracts; design retires the obsolete
+bare-primitive chain-walk record, preserving display provenance in the
+integration master. Dev Opus/high `852a82ab-9f44-43f5-9102-90adc163ae2f`
+holds the sole source reservation for the behavior-preserving identity-helper
+removal. Root owns tests after release.
+
+Spec Opus/high `c18c49cf-0941-4ea2-b9b4-0215eb7e60aa` confirms one user
+question remains: multi-candidate introspection. Root's isolated observation
+shows local Bool `foo` alone in bare lookup and `/sig`, although `(foo 1)`
+selects the prelude Int candidate. Listing all candidates versus reporting
+ambiguity is presented to the user; no display rule changes before approval.
+The separate qualified re-export observation shows a closure at bare lookup
+and the defining primitive at `/sig`; existing authority settles agreement,
+so it goes to QA for permanent reproduction, not a new semantics ruling.
+Observation logs: `.local/s122-b2-collision-observation.json` and
+`.local/s122-b2-display-observation.json`. Scratch directories were removed.
+
+Batch-2 retention: QA deletes the completed S69/S75/S92/S94 working plans and
+retains four cited S99–S101 evidence records with repaired references and explicit
+standing-versus-dated scope. Their class is established in test guidance. The
+S92 annotation-band lead remains in PLAN; retirement does not close it. Root
+integrates owner-specified citation repairs. Remaining cross-owner currentness
+items are enumerated in `.local/s122-b2-arch-result.md` and
+`.local/s122-b2-docs-establishment-result.md`, including the stale integration
+candidate/conflict prose and architecture interface inventories. They remain
+queued for their owning batches, not accepted exceptions. QA Fable/high
+`6d72a1ad-c8f2-4ee1-b81a-01e0d14a64e2` allocates helper-removal evidence and
+records the qualified-display observation separately from the user decision.
+
+Batch-2 verification is complete: 267/267 focused cases; default suite
+5,969 passed, one document-conformance failure, one skipped (119.283 seconds).
+Clippy all-targets exits 0 with existing warnings; formatting reports the same
+known locations, shifted only by deleted lines. Wiring and diff checks pass.
+The stable document report `.local/s122-b2-stable.json` has **710 documents,
+2,284 findings: 160 removed, none introduced** versus the preceding cohort.
+QA Fable/high `239636ff-ba86-4eb3-bab8-b2ab1ec7d407` accepts the helper
+removal as adequate; all reservations are released. The qualified-display lead
+remains pending a permanent reproduction within S122. No commit or phase transition occurred; NOTES and the published
+shared-package gitlink remain unchanged.
+
+The user challenged whether hiding is already defined and distinguished
+`/search` discovery from imported scope. Root clarified the observed example:
+local and implicit-prelude declarations are both already in module scope under
+`spec/08-modules.md` §8.6.1; only lexical bindings shadow that whole set. The
+proposal concerns only in-scope candidates. This exchange is a clarification,
+not approval of any display change.
+
+### In-scope introspection — current ruling
+
+- The user supersedes the earlier display-only ambiguity policy: list all
+  in-scope canonical candidates, including candidates with the same type,
+  without ambiguity warnings. Ambiguous applications retain the existing
+  language use-site error. No display-specific type-equality test is needed.
+- The user considers conflicting imports a language-specification mistake but
+  explicitly defers that correction. Current import registration and language
+  resolution remain unchanged; a future spec action preserves the issue.
+- Spec Opus/high `800937cb-dde0-48b4-b508-35d0ad857b79` updates the canonical
+  REPL rule and records the deferred import question in ACT-0961. Both are
+  complete. QA Fable/high `0979462b-7a3b-448a-b9b6-c503da467175` replaced the
+  obsolete same-type-error allocation in the existing evidence delta; its
+  `/sig`, `/info` and `/doc` conditions match the final spec. All reservations
+  are released. Scoped reference checks introduce no findings; diff checks
+  pass. The architecture note now identifies an implementation gap against
+  the settled rule instead of an open semantics question. No implementation,
+  test execution, commit or phase transition is part of this correction.
+- The prior integration assessment found existing candidate-query interfaces
+  adequate. Its display-verdict/type-comparison proposal is superseded; any
+  subsequent implementation design must use the current listing rule.
+- The separately settled qualified-re-export display lead remains pending
+  permanent reproduction within S122. It is not deferred with import policy.
+
+### Candidate-display implementation
+
+User authorized continuation. Integration design and architecture alignment are
+complete: display consumes the existing language candidate set, renders each
+canonical declaration and remains non-defining. No public-API change is needed.
+The source-before snapshot is `.local/s122-display-source-before.json` for a
+focused review against the prior uncommitted cleanup.
+
+The discriminating before-state is established: ten cases, eight display
+failures and two passing controls (ambiguous application and terminal
+deduplication). The canonical qualified-name control passes; its re-exported
+spelling fails. Both `/doc` cases now run independently and show the allocated
+omission/unknown-name defects. Existing language/import controls pass 142/142.
+Evidence: `.local/s122-display-red-followup.log` and
+`.local/s122-display-controls-before.log`. QA attributes the display failures
+to the binary introspection seam; the test reservation is released.
+
+Dev Opus/high `5c85dab5-ea0f-4d83-b5b5-a48c9194023a` released the Binary/int
+implementation. Focused evidence passes 1,111/1,111; the default suite has
+5,983 passing tests, one known document-conformance failure and one skipped
+(117.444 seconds). Logs: `.local/s122-display-green.log` and
+`.local/s122-display-default.log`. Root corrected only newly introduced
+formatting and is running the isolated agent lane.
+
+The isolated agent lane passes 81/81. Clippy exits 0 with no diagnostic on
+this correction's lines. Independent review identified inaccurate residual
+wording, the retained unused helper, and the mixed-candidate case. QA confirms
+private-qualified command refusal conforms and allocates one additional
+constructor/function listing cell. That reproduction fails for the predicted
+ambiguity while the singleton constructor control passes
+(`.local/s122-display-edge-red.log`).
+
+The final correction is complete. Design records the constructor listing rule
+and the truthful remaining legacy readers; the unused description helper,
+collector chain and record are deleted, with only their obsolete facade-test
+item retired. The constructor regression and its singleton control pass.
+
+Final verification: **1,131/1,131 focused; 5,983 passing default tests, one known
+document-conformance failure, one skipped (117.799 seconds); 81/81 isolated
+agent tests**. Clippy exits 0 with no diagnostic on this correction's lines;
+formatting reports only the known out-of-change locations. Wiring, diff and
+public-API-baseline checks pass. Logs are the
+`.local/s122-display-final-{green,default,agent,clippy,fmt,wiring}.log` files.
+
+Fresh review Fable/high `725dbecd-e765-49f1-9f6a-f2df55e6ec47` closes R1–R3
+and A1–A4 with no required finding. QA Fable/high
+`e176f353-2f9f-44b4-a028-b5d04b8b1cae` accepts the evidence with no pending
+condition and sets the REPL §4.1.11 traceability bands. All role reservations
+are released. Root applied the owner-specified mechanical annotation, citation
+and completed-implementation status repairs. The final typecheck design aside
+and the obsolete integration toolbox member are also repaired.
+
+The legacy helper's three membership readers and two display readers remain
+scoped residual work in the integration design; this correction does not claim
+they have converged. Nine defect tags await the eventual fixing commit SHA;
+the post-commit notation pass also owns the noted past-tense comment cleanup.
+One older unit-test history comment remains advisory. NOTES and the published
+shared-package index pin are unchanged. No commit or phase transition occurred.
+
+Import-policy work remains deferred in ACT-0961; no phase transition or commit
+is authorized by this continuation.
+
+Stable document measurement after this correction:
+`.local/s122-display-final-documents.json` reports **711 documents and 2,280
+findings — four identities removed, none introduced** versus the prior
+710-document, 2,284-finding checkpoint. The additional document is the deferred
+import-policy action. No suppression or discovery policy changed.
+
+### Document retirement resumed; coverage work reserved for next increment
+
+On 2026-09-20 the user approved recording coverage assurance and se-agentic
+convergence for the next increment, then instructed continued documentation
+cleanup. [ACT-0962](actions/ACT-0962-coverage-assurance-and-shared-standard.md)
+owns that future work; S122 remains in Phase 5. No commit or phase transition
+is included.
+
+Current reservations: design owns the eight historical typecheck working
+documents and their owned canonical destinations; audit owns the three older
+backend, intrinsics and primitives audit reports selected for disposition.
+Each batch verifies current homes and preserves unresolved obligations before
+retirement. Root integrates mechanical cross-owner links and checker evidence.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| design, typecheck historical documents | Claude / Opus / high | `5422c515-637e-401f-b00c-0d516289468a` | complete; seven retired, one retained for live test contract |
+| audit, three historical reports | Claude / Fable / high | `3ec11cc1-23ba-49a5-954f-641083c96562` | complete; three reports retired, successor obligations retained |
+
+Audit retirement preserves the unresolved findings in the successor assessments:
+[backend S110](../audits/cranelisp-backend-s110.md),
+[intrinsics S115](../audits/cranelisp-intrinsics-s115.md) and
+[primitives S116](../audits/cranelisp-primitives-s116.md). Follow-up disposition
+work remains: S115 accepted recommendations name absent filings; S110 and S116
+have incomplete disposition records. QA must also reconcile the named Vec
+null-slot test (not found in the current test/source tree) and the historical
+ferry-regression claim. No implementation defect or closure is inferred from
+these record gaps. The bounded retirement evidence is
+`.local/s122-audit-retirement-result.md`; Git retains the original reports and
+the backend diagram companions.
+
+Typecheck disposition removed seven historical plans (3,497 lines); the three
+audit retirements removed 868 lines and their four backend diagram companions.
+The guard-lifetime rule extracted from the old migration plan now lives in
+[typecheck design](../design/typecheck/typecheck.md).
+The rendering working record remains because three current types tests cite its
+contract: arch must relocate that contract and its citations together before
+retirement. Design records canonical destinations in the typecheck guidance;
+`.local/s122-typecheck-document-retirement-result.md` carries the source checks.
+Root applied the owner-provided mechanical inbound-reference repairs and removed
+only the deleted files from the declared inventory. No checking exemption or
+suppression was added.
+
+Integrated verification: `.local/s122-doc-retirement-complete.json` reports
+702 documents and **2,147 findings**, down from 712 documents / 2,280 findings
+after ACT-0962 was added: **133 identities removed, none introduced**. The
+checker remains nonzero for the existing backlog. `git diff --check` passes;
+NOTES retains its prior SHA-256 and the shared-package index pin is unchanged.
+The role's staged deletions were unstaged without restoring the files; all
+changes remain uncommitted. No behavioral tests were rerun for these prose and
+comment-only changes. Both reservations are released.
+
+### Whole-context document consolidation
+
+The user approved larger, cohesive batches on 2026-09-20. Backend and platform
+design owners assess each complete document surface, with audit consolidating
+the corresponding report succession. The target is fewer dependable standing
+documents, with unique current content extracted before retirement and live
+obligations preserved. No behavior changes, commit or phase advance. Coverage
+assurance remains next-increment work in ACT-0962.
+
+| Reservation | Provider / model / effort | Session | Status |
+|---|---|---|---|
+| Backend design documents and companions | Claude / Opus / high | `2765afdb-777d-4163-8dae-a6e2c4bd7a41` | complete; 35 documents reduced to 24 |
+| Platform design documents and companions | Claude / Opus / high | `4a83f427-d52c-43e0-a29d-d0addb82d94a` | complete; 10 documents reduced to 5 |
+| Backend/platform audit succession and companions | Claude / Fable / high | `a45dcb1d-95a0-4342-bb3d-d2d69329741e` | complete; six reports consolidated to two |
+
+Root integrates inventory and mechanical incoming-reference repairs, then runs
+one whole-repository checker followed only by any required correction checks.
+Before-state: `.local/s122-wide-docs-before.json`; checker baseline:
+`.local/s122-doc-retirement-complete.json` (702 documents / 2,147 findings).
+
+Audit succession: four reports and four diagram companions retired; backend S110
+and platform S117 retain the unresolved findings and provenance. The owner
+verified current sources and added dated succession notes; no recommendation
+was silently accepted or declined. `.local/s122-wide-audits-result.md` owns the
+batch detail. Backend S110 R3 prompted the bounded assessment below; its two lookup leads
+are not reproduced defects. The complete historical recommendation is not
+disposed by document retirement. Platform filings 0870 and 0874 appear delivered
+but require their owners' completion checks; audit did not close them.
+
+Whole-context outcomes (relative to the before-state, excluding earlier batches):
+
+| Surface | Markdown documents | Markdown lines |
+|---|---|---|
+| Backend design | 35 → 24 | 24,034 → 17,998 |
+| Platform design | 10 → 5 | 4,808 → 1,283 |
+| Audit corpus after the backend/platform succession fold | 30 → 26 | 9,912 → 8,541 |
+
+Net: 20 Markdown documents and 10,932 lines removed, plus four audit diagram
+companions. Current homes retain the extracted layout, handle-opacity, cache
+symbol, panic-boundary and closure-lifetime contracts. Root applied the precise
+owner-provided citation moves in neighboring prose, source comments and test
+annotations; no behavior changed. The declaration follows the surviving
+collections without new exclusions or suppressions.
+
+The backend owner initially retained a drop-glue/GOT-routing claim in
+[jit-object-convergence](../design/backend/jit-object-convergence.md) and
+release-mode keying observations in the master design. The bounded assessment
+below supersedes their classification: the glue claim contradicted current
+authority, and the lookup leads do not establish reachable defects. Platform
+filings 0870/0871/0873/0874 have owner-verified completion leads but still require
+their filing owners' disposition. The remaining backend ownership staging
+material requires deeper source verification before further retirement.
+
+Batch records: `.local/s122-wide-backend-result.md`,
+`.local/s122-wide-platform-result.md`, `.local/s122-wide-audits-result.md`. All
+reservations are released.
+
+Final integrated document check: `.local/s122-wide-final.json` reports
+**682 documents / 1,878 findings**, versus 702 / 2,147 before this batch:
+**269 finding identities removed, none introduced**. The checker remains red
+for the existing backlog. Integration repaired the newly exposed section links
+and restored the submodule declaration accidentally removed with an obsolete
+collection; no checking policy changed. `git diff --check` passes. NOTES and
+the published shared-package index pin are unchanged. All changes remain
+uncommitted and unstaged; Phase 5 remains active.
+
+### Backend obligations — bounded assessment
+
+The user's continuation authorizes assessment of the two backend leads exposed
+by consolidation. QA investigates current source, reachability and evidence;
+arch independently checks governing contracts and executable-owner lifetime.
+Neither raw function-address syntax nor a silent fallback alone establishes a
+reproduced behavior defect. The outcome determines whether the next work is
+document correction, a minimal reproduction, or a decision requiring review.
+
+| Role | Provider / model / effort | Session | Status |
+|---|---|---|---|
+| QA, backend obligation classification | Claude / Fable / high | `9fc45d47-b6e7-498b-a145-1e536e705990` | complete; no independent reproduction allocated |
+| Arch, contract and lifetime authority | Claude / Fable / high | `e1dc1c0f-8f0c-4569-8ff4-77f9ab94dd46` | complete; glue claim withdrawn, existing contracts govern |
+
+No implementation, public-API change, commit or phase transition is implied.
+
+QA and arch independently classify the glue-through-GOT obligation as an
+unsupported, superseded claim: compilation-local glue and executable owner
+retention govern its lifetime. Cross-load numerical address equality is not a
+parity condition. The lookup misses are producer-invalid-state cases, with a
+prior hard check on the pattern path and a debug detector for constructor
+enumeration; no independent reproduction is allocated. No test was executed in
+this assessment. Sprint selects the least-cost document correction, with no new
+implementation work or filing for these leads. This is not a blanket proof of
+all executable-lifetime paths; cache-hit displacement and future cross-turn
+value carriers remain the stated limits of the source assessment.
+
+The recent consolidation had dropped the old convergence text's owner-rooted
+alternative and promoted a stale hypothesis to a current obligation. Backend
+design repairs the two affected documents against current arch authority. Root
+applies arch's explicit BC invariant wording correction. Integration design
+repairs the stale AbiPreserving reclaim and retention-growth claims against
+current publication paths.
+
+| Repair | Provider / model / effort | Session | Status |
+|---|---|---|---|
+| Backend obligation documents | Claude / Opus / high | `132b2c0e-baeb-422e-a420-9859265ca439` | complete; valid parity contract retained, unsupported claims removed |
+| Integration retention account | Claude / Opus / high | `6108f94b-8cf4-4d95-9f16-8e908483aaf8` | complete; pooling scope and growth bound corrected |
+
+The document corrections are complete. Source and test edits in this correction
+are limited to a historical citation comment; no executable behavior changed.
+Root narrowed the backend risk sentence to QA's actual finding (legitimate
+inputs do not construct the missing-entry state, rather than claiming arbitrary
+corrupted metadata harmless), scoped the retention sentence to staged/compiled
+publication, and repaired the test's old convergence-section citation.
+
+The integration account now distinguishes retaining publication from cache-hit
+replacement and pool-less contexts, and measures growth by pooled displacements.
+Older pre-cure watcher/reload narration and the stale retention rustdoc census
+remain next-touch document work, not evidence of a new runtime defect. The
+current lifecycle contract and the assessment's named falsifier remain the
+authority for any future reachable-lifetime investigation.
+
+Evidence: `.local/s122-backend-obligations-{arch,qa}-result.md`,
+`.local/s122-backend-obligation-doc-repair-result.md` and
+`.local/s122-retention-record-repair-result.md`. All reservations released.
+
+Final correction check: `.local/s122-obligation-repair-final-documents.json`
+reports **1,878 findings, unchanged identities and no new findings**. The
+correction changes the substance of misleading claims rather than the finding
+count. `git diff --check` passes. No tests were run or new runtime claims made;
+NOTES and the published shared-package index pin remain unchanged. Uncommitted,
+unstaged, Phase 5.
+
+### Checkpoint and continued document consolidation
+
+The user authorized a checkpoint commit and continued cleanup until a decision
+needs review. The checkpoint includes the accepted REPL candidate-display
+correction, accumulated documentation consolidation and ACT-0961/ACT-0962.
+NOTES and the unpublished shared-package HEAD are excluded; the index keeps the
+published package pin. Diff checks and role wiring pass. Behavioral evidence
+remains the previously recorded 5,983 default passes (known document gate red),
+1,131 focused passes and 81 isolated agent passes; subsequent edits are prose
+and citation corrections. Latest document check: 1,878 findings, no new
+identities from the obligation correction. Phase 5 remains active.

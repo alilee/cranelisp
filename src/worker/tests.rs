@@ -2030,7 +2030,7 @@ fn repl_expr_finalize_module_no_longer_uses_special_case() {
     }
 }
 
-// spec: design/int/s76-implementation-plan.md §4.1 — 0249-b ctor batch
+// spec: design/int/int.md §6.2 — 0249-b ctor batch
 #[test]
 fn derive_codegen_batch_includes_synthesised_constructors() {
     use cranelisp_types::FQTypeName;
@@ -3945,9 +3945,9 @@ fn suppress_panic_banner_is_thread_local_and_raii_scoped() {
 
 // spec: repl/spec.md §3.3 — listing-surface category bucketing (FIXME 0440).
 // `classify_listing_entry` is the SINGLE `ModuleEntry`/`DefKind` → category
-// classifier shared by `/list`, `/exports`, `list_user_definitions`, and
-// `describe_symbol`. This pins the bucket for one representative entry of
-// every category the four formerly-independent sites covered, so a new
+// classifier shared by `/list`, `/exports` and `list_user_definitions`. This
+// pins the bucket for one representative entry of every category the
+// formerly-independent sites covered, so a new
 // `DefKind` variant or a re-bucketing change is a one-site edit (Principle
 // 7) rather than the N-site drift that produced the S91 `__expr` bug.
 #[test]
@@ -4042,7 +4042,8 @@ fn classify_listing_entry_buckets_every_category() {
         Some(SymbolCategory::Trait)
     );
 
-    // SpecialForm → SpecialForm (surfaced by describe_symbol; listings drop it)
+    // SpecialForm → SpecialForm (classified here; `list_user_definitions` and
+    // the listing commands then filter the category out)
     let special = Binding::new(
         Decl::SpecialForm(SpecialFormRecord::new(
             synthetic_scheme(),

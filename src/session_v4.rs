@@ -43,7 +43,7 @@ mod types;
 pub(crate) use self::types::impl_echo_type_name;
 pub use self::types::{
     CommandResult, EvalResult, Introspection, ModuleIntroductionOutcome, RunMode, SessionSettings,
-    SymbolCategory, SymbolDescription, SymbolInfo, TypecheckProduct, parens_balanced_pub,
+    SymbolCategory, SymbolInfo, TypecheckProduct, parens_balanced_pub,
 };
 pub(crate) use self::types::{
     FailedForm, TurnDefinitions, dedup_platform_names_preserving_order, definition_result_symbol,
@@ -552,12 +552,8 @@ mod persistent_worker_tests;
 // ---------------------------------------------------------------------------
 //
 // Unit tests for the bare-value resolution path in
-// `check_bare_symbol_introspection` and `resolve_entry_for_display`.
-// The fix under test: the one-hop display resolver was replaced by a
-// bounded-depth recursive walk so user → prelude → primitives chains
-// terminate on the defining `ModuleEntry::Def` — matching the typechecker's
-// existing recursive `resolve_to_terminal_entry_owned`. See
-// `design/int/bare-primitive-value-path.md` (candidate 2).
+// `check_bare_symbol_introspection`: a bare re-exported name displays at its
+// defining home (`design/int/int.md` §3.3, display provenance).
 #[cfg(test)]
 mod bare_primitive_value_path_tests;
 

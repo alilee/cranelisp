@@ -547,17 +547,6 @@ Adding a `drop_effect_thunk` extern that the Effect node's drop glue calls (to p
 | `/int` | Calls trampoline at batch entry and REPL eval. Detects `IO` return type. Platform DLL loading. |
 | `/stdlib` | Provides `pure` (wraps in Pure), `do`/`bind!` macros (expand to `bind` calls). |
 
-## 11. Sketch Reference
-
-| Sketch file | What it demonstrates |
-|---|---|
-| `sketch/src/intrinsics.rs` | `IoTask`, `Continuation`, `cranelisp_run_io`, trampoline loop with `cont_stack` |
-| `sketch/src/codegen/primitives.rs:163-179` | `bind` codegen: allocate 24 bytes, store tag/inner/cont, inc both args |
-| `sketch/cranelisp-platform/src/lib.rs:233-296` | `CLIO::pure()`, `CLIO::effect()`, `call_effect_thunk()`, double-boxing |
-| `sketch/platforms/stdio/src/lib.rs` | `print_string` using `s.own()` for capture RC, `CLIO::effect(move \|\| ...)` |
-| `sketch/src/repl/input.rs:796-810` | REPL IO detection and trampoline invocation |
-| `sketch/src/jit.rs:1227-1236` | Batch IO detection and trampoline invocation |
-
 ## 12. Poll-shape Effect node construction — the backend poll-construction arm (S94, effect-concurrency slice 2)
 
 Sprint 94 completes effect-concurrency slice 2: real poll-shape platform effect
@@ -2181,8 +2170,8 @@ and are **not** backend-unit-tier.
 > descriptor cut).** §17.1–§17.6 below are the **live** backend delta. Conforms to
 > `design/arch/effect-concurrency.md` §4.1.1 (the ctx-vtable model), `platform-interface.md`
 > §6.8.0b, `bounded-contexts.md` §3, and the platform-side leaf-authoring contract
-> `design/platform/poll-support.md` §3.1/§3.5/§3.6 (the uniform poll-fn skeleton). The earlier
-> §17 descriptor-cut design — a fixed-offset `ResourceDesc` **header slot @24** on
+> [Platform leaf authoring](../platform/poll-leaf-authoring.md) describes the uniform
+> poll-fn skeleton. The earlier descriptor-cut design in this document — a fixed-offset `ResourceDesc` **header slot @24** on
 > resource-handle ADTs, a baked poll-node **`role`@32** + **`desc_out` `ResourceDesc` region
 > @40**, the **§17.5 offset contract**, and the **§17.7/§17.8** wiring/QA notes written to it —
 > is **RETIRED**; it is preserved under the **[SUPERSEDED]** banner at §17.7 (provenance only,
@@ -2206,7 +2195,7 @@ and are **not** backend-unit-tier.
 ctx-vtable model the descriptor `(token, capacity)` is neither a cranelisp value, nor a leaf
 argument, nor anything stored on the node or on a handle: the platform's poll-fn **computes the
 token from the handle it holds** (web: `token == fd`, off `Connection`'s genuine `fd` field —
-`poll-support.md` §3.5.1) and **calls `ctx.acquire(token, capacity, waker)` itself**
+`design/arch/platform-interface.md`) and **calls `ctx.acquire(token, capacity, waker)` itself**
 (`effect-concurrency.md` §4.1.1 skeleton). The v8 backend baked `(token, capacity)` into the
 poll node from the **two leading positional leaf args** (§14, the `inject_poll_leading_pair`
 convention). **v9 deletes that pass and its positional peel** — there is nothing to bake in its
@@ -2227,7 +2216,7 @@ shift, no zero-init of any slot, no "resource-handle type set" the backend must 
 manifests at layout time.** Every ADT — resource handle or not — keeps `FIELDS_START = 24`.
 This is the dissolution of the Wave-2 blocker: a 1-field `Connection` is a normal N-field
 object, so the 24-vs-40-byte DLL-mint overrun **cannot arise** (`effect-concurrency.md` §4.1.1;
-`poll-support.md` MODEL-PIVOT banner).
+`design/arch/platform-interface.md`).
 
 The poll node (`IO_TAG_EFFECT_POLL = 4`) keeps the v8 shape exactly (§12.2 / §13.3 / §14):
 `state_closure` heap field (RC'd, drop-glue'd) + the two admission slots that v8 baked
@@ -2393,7 +2382,7 @@ logical fields shift to `FIELDS_START + 16 = 40`; field-access codegen for these
 (`deftype Connection []`)**, so it has **zero** logical fields → a 40-byte object
 (`header 16 + tag 8 + ResourceDesc 16`); nothing shifts this sprint. The escape-hatch
 (`token != fd`, a future `Connection [fd]`) puts its genuine datum at the shifted `40` —
-the descriptor region and logical fields **never share a slot** (`poll-support.md` §3.5.1).
+the descriptor region and logical fields **never share a slot** (`design/arch/platform-interface.md`).
 
 **Construction zero-inits the slot.** When the backend emits a resource-handle ADT
 constructor (e.g. `accept-conn`'s ready-phase `CLAdt::<Connection>::construct`), it

@@ -2,7 +2,7 @@
 // shared resolution/referer toolbox (the bottom layer all siblings depend on).
 // The introspection-display formatter (`format.rs`), the `/search` UI
 // (`search.rs`), and the `handle_*` command battery (`commands.rs`) are sibling
-// submodules. Cut per `design/int/repl-decomposition.md` (S110, FIXME 0606);
+// submodules. Cut per `design/int/int.md` §3.3 (S110, FIXME 0606);
 // pure relocation, behaviour-invariant.
 
 pub(crate) mod commands;
@@ -15,15 +15,15 @@ pub(crate) use std::io::Write;
 pub(crate) use cranelisp_types::{
     Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, FQTraitName,
     FQTypeName, MacroClause, MacroParam, ModuleFullPath, OverloadArm, Scheme, Sexp, Span, Symbol,
-    TopLevel, TraitName, Type, TypeName, TypeRecord,
+    TopLevel, TraitName, Type, TypeName, TypeRecord, View,
 };
 
 pub(crate) use crate::code::{Code, SessionSymbolTable};
 pub(crate) use crate::display::format_type_qualified;
 pub(crate) use crate::session_v4::{
     CommandResult, CompilerSession, EvalResult, Introspection, ReadOnlyMacroResolver,
-    SymbolCategory, SymbolDescription, TestOutcome, discover_test_names, intrinsic_type_from_name,
-    is_comment_only, parens_balanced, run_test_by_name,
+    SymbolCategory, TestOutcome, discover_test_names, intrinsic_type_from_name, is_comment_only,
+    parens_balanced, run_test_by_name,
 };
 pub(crate) use crate::styled::{Role, StyledDoc, render};
 use format_type::*;
@@ -42,11 +42,10 @@ fn resolve_unique_public_terminal(
         .map(|(binding, canonical)| (binding, canonical.module))
 }
 
-/// Resolve one terminal candidate while retaining its canonical storage key.
-/// Display-only `EvalResult::Def` uses this keyed form: after candidate-based
-/// lookup, a local spelling such as `+` may resolve to `Num.+`, and reducing
-/// that result back to only `(binding, module)` loses the key needed by the
-/// later formatter.
+/// Resolve one terminal candidate while retaining its canonical storage key —
+/// the single-answer walk behind `lookup_with_prelude_fallback`. A local
+/// spelling such as `+` may resolve to `Num.+`, so reducing the result back to
+/// `(binding, module)` would lose the key a keyed reader needs.
 fn resolve_unique_terminal_with_key(
     tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -72,6 +71,20 @@ fn resolve_unique_terminal_with_key(
         .get(source.symbol.as_ref())?
         .clone();
     Some((binding, source))
+}
+
+/// Whether a candidate query consults the root `""` table when module scope
+/// yields nothing.
+///
+/// Special-form metadata lives at root (Principle 17 amendment, FIXME 0193) and
+/// a special form is not a module-scope candidate, so the tier is a miss-only
+/// tail: the introspection commands need it to describe `if`/`match`
+/// (FIXME 0338), while the value display must not resolve there — a bare
+/// special-form name is not a value and falls through to its caller's miss arm.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpecialFormTail {
+    Consulted,
+    Skipped,
 }
 
 // ---------------------------------------------------------------------------
@@ -614,14 +627,93 @@ impl CompilerSession {
 
     // -- Slash command handlers (subset for initial implementation) --
 
-    /// /sig handler: show type signature of a symbol.
-    /// S78 §2.7.6 — look up a bare name for introspection, honouring the
-    /// prelude outer scope. Returns `(entry, lookup_module)` where
-    /// `lookup_module` is the table the entry was found in (the current module,
-    /// or `prelude` when the current table missed and the per-module fallback
-    /// bit is ON). Used by `/sig`, `/doc` so prelude-provided bare names (e.g.
-    /// `add-i64`) resolve even though prelude is no longer flattened into the
-    /// current table.
+    /// Every in-scope canonical candidate for `name`, ordered by canonical
+    /// `FQSymbol` — THE lookup behind bare-symbol display, `/sig`, `/info` and
+    /// `/doc` (`repl/spec/04-self-documentation.md` §4.1.11,
+    /// `repl/spec/03-slash-commands.md` §3.8; `design/int/int.md` §3.3).
+    ///
+    /// Bare and module-qualified spellings alike go to
+    /// `ResolutionScope::resolve_candidates` over the committed first hop,
+    /// built by the same `expander::committed_scope` macro recognition uses.
+    /// Asking for the whole SET is what makes silence at introspection
+    /// structural rather than a rule to obey: only `resolve`/`resolve_macro_head`
+    /// mint `ResolveError::Ambiguous`, and terminal deduplication — one
+    /// declaration reached two ways is one candidate — is the primitive's.
+    ///
+    /// A resolution refusal is the empty set: not found, `PrivateInaccessible`
+    /// and `QualifiedModuleUnknown` all leave each surface falling through
+    /// exactly where the single-answer walk returned `None`, so the mode-uniform
+    /// §8.7.3 error and the FQ-autoload load-and-retry keep today's behaviour.
+    ///
+    /// The order is a function of the set, not of arrival: §3.8 binds `/sig` to
+    /// bare lookup byte-for-byte, and the resolver returns current-module
+    /// candidates before prelude ones.
+    pub(crate) fn resolve_candidates(&self, name: &str, tail: SpecialFormTail) -> Vec<FQSymbol> {
+        let module = self.current_module_path();
+        let mut canonical =
+            match crate::expander::committed_view(&self.shared.symbol_tables, &module) {
+                Some(table) => {
+                    let view: View<'_, Code, ()> = View::single(&table);
+                    let prelude = ModuleFullPath::from(crate::expander::PRELUDE_MODULE);
+                    crate::expander::committed_scope(
+                        &self.shared.symbol_tables,
+                        &self.shared.module_aliases,
+                        &self.shared.prelude_fallback,
+                        &module,
+                        &view,
+                        &prelude,
+                    )
+                    .resolve_candidates(name, Span::SYNTHETIC)
+                    .map(|candidates| {
+                        candidates
+                            .into_iter()
+                            .map(|resolved| resolved.canonical)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+                }
+                None => Vec::new(),
+            };
+        if canonical.is_empty()
+            && tail == SpecialFormTail::Consulted
+            && self.lookup_special_form(name).is_some()
+        {
+            canonical.push(FQSymbol {
+                module: ModuleFullPath::from(""),
+                symbol: Symbol::from(name),
+            });
+        }
+        canonical.sort();
+        canonical
+    }
+
+    /// The terminal declaration stored at a canonical identity.
+    ///
+    /// Display reads a candidate THROUGH this direct probe instead of
+    /// re-resolving the written spelling; a second resolver at a display seam
+    /// answers with a tier winner (Principles 7, 24;
+    /// `crates/cranelisp-types/CLAUDE.md` §"Resolution primitive traps").
+    pub(crate) fn entry_at(&self, symbol: &FQSymbol) -> Option<Binding<Code>> {
+        self.shared
+            .symbol_tables
+            .get(&symbol.module)?
+            .get(symbol.symbol.as_ref())
+            .cloned()
+    }
+
+    /// S78 §2.7.6 — the single-answer tier-first lookup: current module →
+    /// prelude (bit-gated) → root `""`, returning the terminal entry and the
+    /// home its unique candidate names.
+    ///
+    /// It returns the current module's unique candidate BEFORE the prelude hop
+    /// and refuses only on a collision within one table, so for a spelling whose
+    /// candidates span tiers it answers the tier winner. That makes it unfit for
+    /// the §4.1.11 display rule — `resolve_candidates` is the display path.
+    /// Three remaining callers ask MEMBERSHIP (is this spelling in scope?):
+    /// `/search`'s `is_already_in_scope`, `symbol_is_bound` behind `/refs` and
+    /// `/tests-for`, and the agent's harvest. Two render from its answer:
+    /// `/search`'s `exact_in_scope_hit` and the §1.5.1 nullary-constructor value
+    /// display. `design/int/int.md` §3.3 records that as the accepted residual.
     pub(crate) fn lookup_with_prelude_fallback(
         &self,
         name: &str,
@@ -636,13 +728,13 @@ impl CompilerSession {
     /// flag controls the final tier:
     ///
     /// - `root: true` — also consult the root `""` table (special-form metadata
-    ///   lives there). This is the canonical behaviour used by `/sig`, `/doc`,
-    ///   `/info`, and `describe_symbol` (current → prelude → root).
+    ///   lives there), so the membership predicates see special forms too
+    ///   (current → prelude → root).
     /// - `root: false` — stop after the prelude hop (current → prelude only, NO
-    ///   root tier). This preserves `format_eval_result_body`'s two-tier walk:
-    ///   a bare special-form name (`if`/`match`) must NOT resolve in the
-    ///   eval-result value display — it falls through to the caller's `None`
-    ///   arm. (The "let root resolve too" cleanup is deferred — see S87 §4.1.)
+    ///   root tier), the two-tier reach the §1.5.1 value display needs: a bare
+    ///   special-form name (`if`/`match`) must NOT resolve there — it falls
+    ///   through to the caller's `None` arm. `SpecialFormTail` is the same
+    ///   choice on the candidate query.
     pub(crate) fn lookup_with_prelude_fallback_opt(
         &self,
         name: &str,
@@ -684,8 +776,7 @@ impl CompilerSession {
             // enumeration classifiers that inherit this seam must not classify
             // it "in scope" either (worst at `/search`'s "already in scope — no
             // import needed"). A private head falls through: to the root `""`
-            // tier when `root`, else `None`. (The resolution-side terminal-vs-
-            // head filter is the separate FIXME 0567, cranelisp-types.)
+            // tier when `root`, else `None`.
             if on
                 && let Some(resolved) = resolve_unique_terminal_with_key(
                     &self.shared.symbol_tables,
@@ -749,44 +840,32 @@ impl CompilerSession {
         }
     }
 
-    /// FQ-aware entry lookup for the introspection commands. For a
-    /// module-qualified `module/name`, resolves the home module (alias-aware)
-    /// and looks the bare symbol up in that module's own table. For a bare
-    /// name, delegates to `lookup_with_prelude_fallback` (current → prelude →
-    /// root) so bare resolution is unchanged. Returns `(entry, home_module,
-    /// bare)`.
-    pub(crate) fn resolve_entry_arg(
-        &self,
-        name: &str,
-    ) -> Option<(Binding<Code>, ModuleFullPath, String)> {
-        if name.contains('/') {
-            let (home, bare) = self.resolve_symbol_arg(name);
-            let (entry, resolved_home) = cranelisp_types::resolve_terminal_entry_and_home(
-                &self.shared.symbol_tables,
-                &home,
-                &bare,
-            )?;
-            Some((entry, resolved_home, bare))
-        } else {
-            let (entry, module) = self.lookup_with_prelude_fallback(name)?;
-            Some((entry, module, name.to_string()))
-        }
-    }
-
     /// Look up introspection data for a symbol name — bare (current module) or
-    /// module-qualified (§17.6.1 / FIXME 0487: `/source`, `/sexp`, `/clif`, and
-    /// `/info`'s code-size read accept the FQ names the reports print). A bare
-    /// name keeps the current-module home, so bare-name behaviour is unchanged.
+    /// module-qualified (§17.6.1 / FIXME 0487: `/source`, `/sexp`, `/clif`
+    /// accept the FQ names the reports print). A bare name keeps the
+    /// current-module home, so bare-name behaviour is unchanged.
     pub(crate) fn get_introspection(
         &self,
         name: &str,
     ) -> Option<dashmap::mapref::one::Ref<'_, FQSymbol, Introspection>> {
         let (module, bare) = self.resolve_symbol_arg(name);
-        let fq = FQSymbol {
+        self.introspection_at(&FQSymbol {
             module,
             symbol: Symbol::from(bare),
-        };
-        self.shared.introspection.as_ref().and_then(|m| m.get(&fq))
+        })
+    }
+
+    /// The introspection record at a canonical identity — the keyed read
+    /// `/info` uses per candidate, and the one `get_introspection` resolves a
+    /// written spelling into.
+    pub(crate) fn introspection_at(
+        &self,
+        symbol: &FQSymbol,
+    ) -> Option<dashmap::mapref::one::Ref<'_, FQSymbol, Introspection>> {
+        self.shared
+            .introspection
+            .as_ref()
+            .and_then(|records| records.get(symbol))
     }
 
     /// Check if input is a bare special form name (for feedback display).
@@ -1029,6 +1108,26 @@ pub(crate) mod test_support {
             .cloned()
             .expect("installed macro fixture is readable")
     }
+    /// Record `name` in the current module as an import of `module/symbol` —
+    /// the §8.6.4 candidate exposure an `(import …)` turn installs.
+    pub(crate) fn expose_import(s: &CompilerSession, name: &str, module: &str, symbol: &str) {
+        let mut table = s
+            .shared
+            .symbol_tables
+            .get_mut(&s.current_module_path())
+            .expect("current module table exists");
+        table
+            .expose_candidate(
+                Symbol::from(name),
+                FQSymbol {
+                    module: ModuleFullPath::from(module),
+                    symbol: Symbol::from(symbol),
+                },
+                Visibility::Private,
+            )
+            .expect("import candidate fixture installs");
+    }
+
     /// Install module `m` with a single Def `mf`.
     pub(crate) fn install_m(s: &CompilerSession, doc: Option<&str>) {
         let m = ModuleFullPath::from("m");

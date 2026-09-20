@@ -164,7 +164,7 @@ All writes flow through `SymbolTableAccess` (`current_symbol_table_mut`), stagin
 
 ## 6. Mutation discipline (Decision 38 — landed)
 
-The load-bearing simplification of S63, now as-built. The HISTORICAL subordinate docs (`check-form-api.md`, `dashmap-migration.md`, `stateless-tc-impl.md`) assume `&mut SymbolTable` and are superseded by this contract (Decision 38).
+The load-bearing simplification of S63, now as-built. `check-form-api.md` assumes `&mut SymbolTable` and is superseded on signature by this contract (Decision 38); it is retained because `program/finalize/tests.rs` traces its result-identity cases to it.
 
 ### 6.1 The contract
 
@@ -196,11 +196,8 @@ Two correctness payoffs (FIXME 0008 §"Operational implication"):
 
 ### 6.5 What this supersedes
 
-- `check-form-api.md` — describes `check_form(ast, &mut SymbolTable, &SymbolTables)`. **Stale on signature.** The algorithm shape it describes (per-form Pass-1/Pass-2, accumulator) survives.
-- `dashmap-migration.md` — built around `TypeChecker.modules: DashMap<…, SymbolTable>` with `&mut SymbolTable` access. **Largely stale.** The migration succeeded; the lessons are folded.
-- `stateless-tc-impl.md` — Sprint-51 stateless extraction. Its goals landed (the `TypeChecker` struct dissolved, state moved to `CheckState` + the caller-supplied symbol table). The `&mut SymbolTable` patterns it documents are superseded.
-
-§10 lists these in the pointer table.
+- `check-form-api.md` — describes `check_form(ast, &mut SymbolTable, &SymbolTables)`. **Stale on signature**; the algorithm shape it describes (per-form Pass-1/Pass-2, accumulator) survives, and the doc is retained as the `// spec:` anchor for the `program/finalize` result-identity tests.
+- The S47 DashMap-migration and S51 stateless-extraction records were **deleted at S122**. §7.5 carries the guard discipline the DashMap migration established, this section carries the mutation contract it was a step toward, and the `TypeCheckEnv` + `CheckState` split (no registries) is `design/typecheck/traits.md` §1.1. Git retains the records, and `design/typecheck/CLAUDE.md` §"Redirections" maps a citation to its destination.
 
 ---
 
@@ -240,6 +237,12 @@ The `MacroInMem` variant in the unified `ResolutionGap` enum is raised by fronte
 ### 7.4 Snapshot / restore
 
 `check_form` may write intermediate state (type-var allocations, deferred resolutions in `CheckState`). On `Err`, the caller restores via `ReplSnapshot` per `pipeline-v4.md §6.2`. The crate provides the snapshot/restore primitive (`TypeCheckEnv::snapshot`, `TypeCheckEnv::restore`) but does not invoke it itself. (REPL eval rollback semantics depend on this — temporary closures from `(let [f add] f)` shapes do not commit until expression eval succeeds.)
+
+### 7.5 Guard discipline — hold one table guard at a time
+
+Every module table is reached through a lock. `SymbolTables::get` hands out a per-shard `DashMap` guard; cluster-mode staging hands out a `RefCell` runtime borrow (`SymbolTableRead::Cluster`). A lookup that must follow a chain — an `Import`/`Reexport` hop to another module, a trait reference to its defining module, an import collection feeding a write into the current module — **clones the entry out of the first guard, drops the guard, and only then takes the next one.**
+
+Two distinct failures this avoids: two guards on the same `DashMap` shard where one is a write **deadlock the process**; a second borrow of the same staging table **panics** the `RefCell`. Both need a specific module pair or cluster shape to appear, so a passing suite is weak evidence — this is a **discipline asserted with a named falsifier**, not a structural guarantee: nothing in the types prevents holding two guards, and the falsifier is a hang or a borrow panic on a crossing that has not been exercised. `checker.rs::current_symbol_table`'s rustdoc carries the same rule at the seam where the guards are minted.
 
 ---
 
@@ -752,15 +755,10 @@ HEAD, each inside a file the visit already opens):
 | **Auto-currying — detection, settlement, and the drain seams** | **`auto-curry.md`** | **Current.** Records the as-built exits of `infer.rs::try_auto_curry`, the enumerated six-seam drain table and the current §4.6.3 rule that residual monotype variables stay in the same inference context. S122's supplied-free then-apply/residual-function pair passes 2/2, retiring 0799 without a production change. The direct seeded-carrier polarity unit closes 0779; the four recheck seams remain `Final` by construction rather than by six independent behavioral proofs. |
 | AST annotation (Steps 1a/1b) — types and resolved calls co-located on AST | `ast-annotation.md` | Current |
 | IO ADT typing | `io-types.md` | Current |
-| Sprint-50 fixes (RC4 builtin leak, RC5 macro body type) | `sprint50-fixes.md` | Historical (lessons folded) |
-| Step-4 macro deps assessment (Decision 21 alignment) | `step4-macro-deps.md` | Historical (per the `design/typecheck/CLAUDE.md` 0578 index of record) |
-| **`check_form` per-form API** | **`check-form-api.md`** | **Stale on `&mut SymbolTable` signature — superseded by §6 / FIXME 0008. Algorithm shape (Pass-1/Pass-2, accumulator) survives.** |
-| **Wave 3a-β cluster-atomic two-pass entry surface** | **`wave-3a-check-form.md`** | **Historical** (per the `design/typecheck/CLAUDE.md` 0578 index). Records the Sprint-66 post-Decision-44/FIXME-0167 shape; the third amendment (2026-05-13) collapsed the `check_form_signatures`+`check_form_body` split into the single `check_forms` free function (§2/§5), so this doc's two-function entry surface is superseded — the `SymbolTableAccess` staging accessor + cluster atomicity it describes survive. |
-| **DashMap migration of TypeChecker.modules** | **`dashmap-migration.md`** | **Largely stale — built around `&mut SymbolTable` access; the migration succeeded; superseded by §6.** |
-| **Stateless TypeChecker (Sprint-51 extraction)** | **`stateless-tc-impl.md`** | **Stale on `&mut SymbolTable` patterns — the goal landed (`TypeChecker` struct dissolved; state in `CheckState` + caller-supplied table); §6 supersedes.** |
-| **S76 — resolve_* re-pointing, macro-entanglement cleanup, ctor got-slot, platform-sig entry** | **`s76-resolution-and-enablement.md`** | **Current** (Sprint 76 Phase 3). Plans: (1) `resolve_*` family re-pointed at `cranelisp_types::resolve`/`resolve_macro_head` (chain-walk consolidates onto the types primitive — Principles 7+15; the `From<ResolveError> for CheckError` projection + view-selection stay typecheck-side); (2) `check_forms` confirmed post-expansion (no `MacroExpander` param) + the locked three-pass model's removal of the Wave-3a-β macro-clause double-typecheck entanglement; (3) 0249-a constructor GOT-slotting; (4) 0231 `check_type_expr` platform-sig entry. Resolves FIXME 0245 (recognition left typecheck's surface — no interior algorithm to author). Grounded in `design/arch/macro-availability-model.md` §0/§0.9 + BC §2 invariants 10+11. |
+| **`check_form` per-form API** | **`check-form-api.md`** | **Stale on the `&mut SymbolTable` signature — superseded by §6.** The algorithm shape (Pass-1/Pass-2, accumulator) survives, and `program/finalize/tests.rs` traces its result-identity cases here, so the doc is retained as that anchor. |
+| **`render_type` rendering contract (S87 FQ-walk consolidation)** | **`s87-fq-walk-consolidation.md`** | **Retained for §2.4** — the byte-for-byte variant × convention table three `cranelisp-types` unit tests trace to. The rendered surface itself is `arch`-owned (`design/arch/bounded-contexts.md` §"Type rendering"); rehoming the contract there is `arch`'s, and the doc stays until it lands. |
 
-The three flagged docs are not edited by this design pass (per the constraint). When the next triad cycle re-touches them after audit remediation #1 lands, fold their surviving algorithmic content into `inference.md` / `traits.md` / `auto-curry.md` and archive.
+Seven S50–S76 working records were **deleted at S122**; `design/typecheck/CLAUDE.md` §"Redirections" maps a citation to its canonical destination.
 
 ---
 
@@ -770,7 +768,7 @@ The S63-era migration questions this section once tracked (FIXME 0008 free-funct
 
 Standing design items (not FIXMEs — this doc's own forward pointers):
 
-- **Fold the three HISTORICAL entry-surface docs** (`check-form-api.md`, `dashmap-migration.md`, `stateless-tc-impl.md`) — their surviving algorithmic content (Pass-1/Pass-2 shape) into `inference.md`/`traits.md`, then archive. The consolidation they were gated behind has landed; the fold is a hygiene item for a future `/design` cycle.
+- **`check-form-api.md`'s surviving Pass-1/Pass-2 account belongs in `inference.md`.** The doc is held only by the `program/finalize/tests.rs` `// spec:` anchors; once those re-point, the fold completes and the doc retires. (Its two S122 siblings — the DashMap and stateless records — are already deleted, §6.5.)
 - **`finalize.rs` re-budget + `program/tests.rs` split** — FIXME 0722 (this sprint's `/dev` item), `program-decomposition.md` §3.
 
 ---
@@ -823,7 +821,7 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
 - `audits/cranelisp-typecheck-s114.md` — the live rolling audit (`/audit`); its recommendations drive §3.2/§4.2 (R-2 is the origin of this doc's S115 rewrite; R-3 = FIXME 0722)
 - `audits/typecheck-20260423.md` (+ `-{current,target}-state.{mmd,svg}`) — HISTORICAL prior audit; its six remediations are retired (their duplicate-pipeline/walker/tail findings resolved, §3.2/§4.1)
 - `crates/cranelisp-typecheck/src/lib.rs` — the as-built public exports (§2)
-- `design/typecheck/{inference,traits,adt,hkt,auto-curry,ast-annotation,io-types}.md` — current subordinate docs; `step4-macro-deps.md`, `wave-3a-check-form.md` — HISTORICAL (per the `design/typecheck/CLAUDE.md` index of record)
+- `design/typecheck/{inference,traits,adt,hkt,auto-curry,ast-annotation,io-types}.md` — current subordinate docs
 - `design/typecheck/monomorphisation.md` — full monomorphisation-from-roots + the ambiguity check + the multi-sig back-flow / harvest-window contract (§11.8)
 - `design/typecheck/ownership-inference.md` — the interprocedural ownership-inference pass (S100+; governed by `design/arch/ownership-inference.md`); §17 the S115 MS-P7 chained-face design
 - `design/typecheck/typed-resolution-carrier.md` — the `VarRef`/`ApplyRef` producer carrier (S114; governed by `design/arch/typed-resolution-carrier.md`)
@@ -831,4 +829,4 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
   impl-head references resolve once to canonical trait identity; minting and
   enrollment consume the settled carrier
 - `design/typecheck/program-decomposition.md` — the `program/` module cut + the FIXME-0722 test-split design (§3)
-- `design/typecheck/{check-form-api,dashmap-migration,stateless-tc-impl,sprint50-fixes}.md` — HISTORICAL / superseded subordinate docs (see §10; the entry-surface shape they describe is superseded by `check_forms`)
+- `design/typecheck/check-form-api.md` — superseded on entry shape by `check_forms` and held only as the `program/finalize` test anchor, per the mutation-discipline section above. `design/typecheck/CLAUDE.md` §"Redirections" covers the records deleted at S122

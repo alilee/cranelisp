@@ -1,5 +1,5 @@
 // REPL slash-command handler battery (`handle_*`). Extracted from `repl.rs`
-// per `design/int/repl-decomposition.md` §1.3 (S110, FIXME 0606). Pure
+// per `design/int/int.md` §3.3 (S110, FIXME 0606). Pure
 // relocation, behaviour-invariant.
 
 use super::format::*;
@@ -12,6 +12,37 @@ pub(crate) enum ImportClass {
     Type,
     Constructor,
     Fn,
+}
+
+/// The `/imports` category of an imported name's definition.
+pub(crate) fn classify_definition(entry: &Binding<Code>) -> ImportClass {
+    match &entry.declaration {
+        Decl::Macro(_) => ImportClass::Macro,
+        Decl::Callable(callable) if matches!(callable.origin, CallableOrigin::Ctor { .. }) => {
+            ImportClass::Constructor
+        }
+        Decl::Trait(_) => ImportClass::Trait,
+        Decl::Type(_) => ImportClass::Type,
+        _ => ImportClass::Fn,
+    }
+}
+
+/// The docstring a declaration carries, whatever its kind — the one reader
+/// `/doc` uses. Builtin docstrings live on the `primitives` entry itself
+/// (`PrimitiveDef.docstring`), never in a parallel int-side table (FIXME 0308).
+fn declaration_docstring(entry: &Binding<Code>) -> Option<&str> {
+    match &entry.declaration {
+        Decl::Callable(callable) => callable.docstring.as_deref(),
+        Decl::Overloaded(declaration) => declaration.docstring.as_deref(),
+        Decl::Macro(declaration) => declaration.docstring.as_deref(),
+        Decl::Trait(record) => record.docstring.as_deref(),
+        Decl::Type(
+            TypeRecord::Defined { docstring, .. } | TypeRecord::Intrinsic { docstring, .. },
+        ) => docstring.as_deref(),
+        Decl::SpecialForm(record) => record.docstring.as_deref(),
+        Decl::TraitMethod(record) => record.docstring.as_deref(),
+        Decl::ImplShell(_) => None,
+    }
 }
 
 /// Whether a definition is a test function (the `test-` prefix + a nullary
@@ -28,6 +59,12 @@ pub(crate) fn is_test_function(name: &str, entry: &Binding<Code>) -> bool {
 }
 
 impl CompilerSession {
+    /// /sig handler: the §1.1 primary line of every candidate the spelling
+    /// denotes (§3.8, §4.1.11).
+    ///
+    /// The lines ARE bare lookup's lines — the same candidate query and the
+    /// same builder — so §3.8's byte-identity is structural rather than a rule
+    /// two formatters have to keep.
     pub(crate) fn handle_sig(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /sig <name>".to_string();
@@ -35,45 +72,23 @@ impl CompilerSession {
         if intrinsic_type_from_name(name).is_some() {
             return format!("{name} ; type - builtin type");
         }
-        match self.resolve_entry_arg(name) {
-            Some((entry, lookup_module, bare)) => {
-                // §3.8 (FIXME 0492): `/sig`'s primary line MUST be byte-identical
-                // to bare lookup's — fully-qualified type names (§1.4) AND a
-                // fully-qualified symbol name (§1.1). EVERY resolved argument —
-                // module-qualified, bare-imported, AND bare-LOCAL — routes
-                // through the same `resolve_entry_for_display` +
-                // `format_def_entry` composition the bare-value display path uses
-                // (`format_eval_result_body`'s Def arm), so the two surfaces
-                // cannot diverge. The former bare-local arm rendered the short,
-                // UNqualified `format_entry_sig` form (`:(Fn [Int] Int) k`) — the
-                // §3.8 non-conformance this flips.
-                let (resolved_entry, resolved_module) =
-                    self.resolve_entry_for_display(&entry, &lookup_module);
-                // §3.8: `/sig` is byte-identical to a bare lookup — a pure
-                // introspection surface (FIXME 0647: an empty trait `; impl:`
-                // section is omitted uniformly, no bare-lookup-vs-echo flag).
-                let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
-                // S101 (repl/spec.md §18.4): a broken symbol's /sig shows the
-                // same primary line plus the provenance comment line.
-                match self.broken_status_line(name, &resolved_module) {
-                    Some(line) => format!("{sig}\n{line}"),
-                    None => sig,
-                }
-            }
-            None => format!("error: unknown symbol '{name}'"),
+        let symbols = self.resolve_candidates(name, SpecialFormTail::Consulted);
+        if symbols.is_empty() {
+            return format!("error: unknown symbol '{name}'");
         }
+        render(&self.format_symbol_lines_doc(&symbols))
     }
 
-    /// /doc handler: show docstring of a symbol.
+    /// /doc handler: the docstring of every candidate the spelling denotes
+    /// (§3.1, §11.2.4, §4.1.11). A candidate's docstring lives on its own
+    /// defining entry — a bare re-exported primitive (`add-i64`) resolves to
+    /// the `primitives` definition that carries it.
     pub(crate) fn handle_doc(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /doc <name>".to_string();
         }
-        // §3.6 (FIXME 0487): accept a module-qualified argument, like the other
-        // introspection commands. A bare name still routes through the
-        // prelude-fallback lookup (unchanged); the module-preamble fallback
-        // below is preserved for the `/doc <module>` form.
-        let Some((local, lookup_module, _bare)) = self.resolve_entry_arg(name) else {
+        let candidates = self.resolve_candidates(name, SpecialFormTail::Consulted);
+        if candidates.is_empty() {
             // §17.5.1 / spec §8.16.4 — `/doc <module>` reads a module's preamble
             // (the leading `;;` block) when the name resolves to a module rather
             // than a symbol. The module's `module_preamble` is the durable record
@@ -86,29 +101,27 @@ impl CompilerSession {
                 return format!("{name} (module): \"{preamble}\"");
             }
             return format!("error: unknown symbol '{name}'");
-        };
-        // Follow import/re-export chains to the defining entry — a bare
-        // primitive (`add-i64`) is reached through the prelude re-export, so
-        // the local entry is an Import, not the Def. The chain-follow starts
-        // from `lookup_module` (current module, or prelude when the fallback
-        // hop fired) so the prelude→primitives edge is walked.
-        let (entry, _resolved_module) = self.resolve_entry_for_display(&local, &lookup_module);
-        let docstring = match &entry.declaration {
-            Decl::Callable(callable) => callable.docstring.as_ref(),
-            Decl::Overloaded(declaration) => declaration.docstring.as_ref(),
-            Decl::Macro(declaration) => declaration.docstring.as_ref(),
-            Decl::Trait(record) => record.docstring.as_ref(),
-            Decl::Type(
-                TypeRecord::Defined { docstring, .. } | TypeRecord::Intrinsic { docstring, .. },
-            ) => docstring.as_ref(),
-            Decl::SpecialForm(record) => record.docstring.as_ref(),
-            Decl::TraitMethod(record) => record.docstring.as_ref(),
-            Decl::ImplShell(_) => None,
-        };
-        match docstring {
-            Some(doc) => format!("{name}: \"{doc}\""),
-            None => format!("{name}: no docstring"),
         }
+        // One declaration answers under the name the user wrote; several are
+        // told apart by their canonical identity, the only thing that
+        // distinguishes them (§4.1.11 compares no types).
+        let qualify = candidates.len() > 1;
+        candidates
+            .iter()
+            .map(|symbol| {
+                let label = if qualify {
+                    symbol.to_string()
+                } else {
+                    name.to_string()
+                };
+                let entry = self.entry_at(symbol);
+                match entry.as_ref().and_then(declaration_docstring) {
+                    Some(doc) => format!("{label}: \"{doc}\""),
+                    None => format!("{label}: no docstring"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// /list handler: list symbols in current module.
@@ -457,7 +470,10 @@ impl CompilerSession {
         }
     }
 
-    /// /info handler: show full details (sig + definition source + code size).
+    /// /info handler: the full card of every candidate the spelling denotes —
+    /// signature, definition source and code size (§3.6, §4.1.11). A
+    /// module-qualified argument resolves like any other, so the FQ names the
+    /// cascade reports print stay pasteable (FIXME 0487).
     pub(crate) fn handle_info(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /info <name>".to_string();
@@ -465,49 +481,49 @@ impl CompilerSession {
         if intrinsic_type_from_name(name).is_some() {
             return self.format_builtin_type_display(name);
         }
-        // §3.6 (FIXME 0487): accept a module-qualified argument — the FQ names
-        // the cascade reports print MUST be pasteable into `/info`. `bare` is
-        // the name without the qualifier so `format_def_entry` renders one
-        // clean `module/name`, not `module/mod/name`.
-        let (entry, lookup_module, bare) = match self.resolve_entry_arg(name) {
-            Some(triple) => triple,
-            None => return format!("error: unknown symbol '{name}'"),
-        };
-        let (resolved_entry, resolved_module) =
-            self.resolve_entry_for_display(&entry, &lookup_module);
-        // §3.6: `/info` is a pure-introspection surface (FIXME 0647: an empty
-        // trait `; impl:` section is omitted uniformly).
-        let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
+        let cards: Vec<String> = self
+            .resolve_candidates(name, SpecialFormTail::Consulted)
+            .iter()
+            .map(|symbol| self.info_card(symbol))
+            .collect();
+        if cards.is_empty() {
+            return format!("error: unknown symbol '{name}'");
+        }
+        cards.join("\n")
+    }
+
+    /// One candidate's `/info` card, every component keyed by that candidate's
+    /// own canonical identity.
+    ///
+    /// §3.6 is a pure-introspection surface (FIXME 0647: an empty trait
+    /// `; impl:` section is omitted uniformly). S101 (repl/spec.md §18.4): a
+    /// BROKEN symbol shows the primary line (last-good signature), the
+    /// provenance comment line and the definition source, and MUST NOT show
+    /// code-size stats — its compiled code is gone, and the trap stub is an
+    /// implementation detail, not the symbol's code.
+    fn info_card(&self, symbol: &FQSymbol) -> String {
+        let bare = symbol.symbol.as_ref();
+        let module = &symbol.module;
+        let mut out = render(&self.format_definition_symbol_doc(symbol));
         // §3.6 third MUST component (FIXME 0480): the definition source,
         // rendered for BOTH the broken and healthy arms.
-        let source = self.info_definition_source(&bare, &resolved_module);
-        // S101 (repl/spec.md §18.4): a broken symbol's /info shows the primary
-        // line (last-good signature) + the provenance comment line + the
-        // definition source, and MUST NOT display code-size stats — its
-        // compiled code is gone, and the trap stub is an implementation
-        // detail, not the symbol's code.
-        if let Some(line) = self.broken_status_line(&bare, &resolved_module) {
-            return match source {
-                Some(src) => format!("{sig}\n{line}\n{src}"),
-                None => format!("{sig}\n{line}"),
-            };
-        }
-        let mut out = sig;
-        if let Some(src) = source {
+        if let Some(source) = self.info_definition_source(bare, module) {
             out.push('\n');
-            out.push_str(&src);
+            out.push_str(&source);
         }
-        // Append code info if available.
-        let is_macro = matches!(&resolved_entry.declaration, Decl::Macro(_));
-        if !is_macro
-            && !matches!(resolved_entry.declaration, Decl::Type(_) | Decl::Trait(_))
-            && let Some(intr) = self.get_introspection(name)
-        {
-            let size_str = intr
+        let shows_code_size = self.broken_status_line(bare, module).is_none()
+            && self.entry_at(symbol).is_some_and(|entry| {
+                !matches!(
+                    entry.declaration,
+                    Decl::Macro(_) | Decl::Type(_) | Decl::Trait(_)
+                )
+            });
+        if shows_code_size && let Some(record) = self.introspection_at(symbol) {
+            let size = record
                 .code_size
-                .map(|s| format!("{s} bytes"))
+                .map(|bytes| format!("{bytes} bytes"))
                 .unwrap_or_else(|| "? bytes".to_string());
-            out.push_str(&format!("\n  {size_str}"));
+            out.push_str(&format!("\n  {size}"));
         }
         out
     }
@@ -698,7 +714,7 @@ impl CompilerSession {
         }
         // Public candidates only — both prelude's own defs and its `(export …)`
         // re-exports (e.g. `add-i64`) are user-visible. Collect them under the
-        // prelude guard and drop it before resolving: `resolve_to_definition`
+        // prelude guard and drop it before resolving: `listable_definition`
         // takes its own table guard, which may be this same entry (0666).
         let Some(table) = self.shared.symbol_tables.get(&prelude_path) else {
             return Vec::new();
@@ -710,14 +726,10 @@ impl CompilerSession {
         drop(table);
         let mut names: Vec<String> = Vec::new();
         for (name, source) in candidates {
-            // Generated instances remain internal even though their canonical
-            // storage keys no longer use the legacy `$` spelling.
-            let Some(entry) = self.resolve_to_definition(&source) else {
+            let Some(entry) = self.listable_definition(&source) else {
                 continue;
             };
-            if crate::worker::is_internal_listing_entry(source.symbol.as_ref(), &entry)
-                || matches!(entry.declaration, Decl::SpecialForm(_))
-            {
+            if matches!(entry.declaration, Decl::SpecialForm(_)) {
                 continue;
             }
             names.push(name);
@@ -727,10 +739,42 @@ impl CompilerSession {
         names
     }
 
+    /// `module`'s explicit imports: each name candidate whose source is another
+    /// module, as `(spelling, source)`. The table guard is released before
+    /// returning, so callers may resolve the sources (0666).
+    pub(crate) fn explicit_import_sources(
+        &self,
+        module: &ModuleFullPath,
+    ) -> Vec<(String, FQSymbol)> {
+        let Some(table) = self.shared.symbol_tables.get(module) else {
+            return Vec::new();
+        };
+        table
+            .all_name_candidates()
+            .filter(|(_, candidate)| candidate.source.module != *module)
+            .map(|(sym, candidate)| (sym.to_string(), candidate.source))
+            .collect()
+    }
+
+    /// The definition `source` names, unless it is an internal entry that no
+    /// name listing shows (generated instances, `__expr`). Takes its own table
+    /// guard: call it with none held.
+    pub(crate) fn listable_definition(&self, source: &FQSymbol) -> Option<Binding<Code>> {
+        let entry = self.resolve_to_definition(source)?;
+        (!crate::worker::is_internal_listing_entry(source.symbol.as_ref(), &entry)).then_some(entry)
+    }
+
     /// /imports handler: list imports in current module by category.
     pub(crate) fn handle_imports(&self, filter: &str) -> String {
         let current = self.current_module_path();
-        let table = self.current_symbol_table();
+        let imports: Vec<(String, FQSymbol, Binding<Code>)> = self
+            .explicit_import_sources(&current)
+            .into_iter()
+            .filter_map(|(name, source)| {
+                let entry = self.listable_definition(&source)?;
+                Some((name, source, entry))
+            })
+            .collect();
         let mut output = String::new();
 
         if filter.is_empty() {
@@ -741,12 +785,8 @@ impl CompilerSession {
             let mut types: Vec<String> = Vec::new();
             let mut fns: Vec<String> = Vec::new();
 
-            // Special forms always come from the root `""` module per
-            // Principle 17 amendment (FIXME 0193). Sprint 67 hack-back
-            // FIXME 0192 Residual Task 3 — `/imports` previously enumerated
-            // special forms by iterating the current module; once special-form
-            // registration shifted to root, that iteration stopped seeing
-            // them. Probe the root explicitly.
+            // Special forms are registered only in the root `""` module
+            // (Principle 17), never in the current module's table.
             let root = ModuleFullPath::from("");
             if let Some(root_table) = self.shared.symbol_tables.get(&root) {
                 for (sym, entry) in root_table.all_symbols() {
@@ -756,22 +796,8 @@ impl CompilerSession {
                 }
             }
 
-            for (sym, candidate) in table.all_name_candidates() {
-                let name = sym.to_string();
-                if candidate.source.module == current {
-                    continue;
-                }
-                let Some(entry) = self.resolve_to_definition(&candidate.source) else {
-                    continue;
-                };
-                if crate::worker::is_internal_listing_entry(
-                    candidate.source.symbol.as_ref(),
-                    &entry,
-                ) {
-                    continue;
-                }
-                let classification = self.classify_import(&candidate.source);
-                match classification {
+            for (name, _, entry) in imports {
+                match classify_definition(&entry) {
                     ImportClass::Macro => macros.push(name),
                     ImportClass::Trait => traits.push(name),
                     ImportClass::Type | ImportClass::Constructor => types.push(name),
@@ -791,19 +817,11 @@ impl CompilerSession {
             append_name_category(&mut output, "Types", &types);
             append_name_category(&mut output, "Fns", &fns);
 
-            // S78 §2.6 — prelude is an OUTER SCOPE, not flattened into this
-            // module's table, so prelude-provided names no longer appear in the
-            // explicit categories above. When the per-module fallback bit is ON
-            // (the module did not refuse/reference prelude), append a distinct
-            // "Prelude (implicit)" group enumerating prelude's OWN public
-            // symbols — preserving discoverability while making the inner/outer
-            // scope layering visible. Absent when the bit is OFF (refusal).
+            // The implicit prelude is a resolution fallback, not entries in
+            // this module's table, so its names form their own group, present
+            // only while the module's prelude-fallback bit is ON.
             let prelude_names = self.prelude_implicit_names();
             if !prelude_names.is_empty() {
-                // FIXME 0546: route the prelude group's names through the SAME
-                // shared §3.3 L0–L4 layout as every other category (was a
-                // one-name-per-line loop that bypassed `format_symbol_layout`).
-                // The header suffix comment is preserved by the helper.
                 output.push_str(&format_prelude_implicit_group(&prelude_names));
             }
 
@@ -818,23 +836,11 @@ impl CompilerSession {
             }
         } else {
             // Filtered mode: show imports from named module only
-            let mut names: Vec<String> = Vec::new();
-            for (sym, candidate) in table.all_name_candidates() {
-                let source = &candidate.source;
-                if source.module == current {
-                    continue;
-                }
-                let name = sym.to_string();
-                let Some(entry) = self.resolve_to_definition(source) else {
-                    continue;
-                };
-                if crate::worker::is_internal_listing_entry(source.symbol.as_ref(), &entry) {
-                    continue;
-                }
-                if *source.module == *filter {
-                    names.push(name);
-                }
-            }
+            let mut names: Vec<String> = imports
+                .into_iter()
+                .filter(|(_, source, _)| *source.module == *filter)
+                .map(|(name, _, _)| name)
+                .collect();
             if names.is_empty() {
                 // Silent for no matches
                 return String::new();
@@ -850,25 +856,7 @@ impl CompilerSession {
         output
     }
 
-    /// Classify an imported symbol by following import chains to the definition.
-    pub(crate) fn classify_import(&self, source: &FQSymbol) -> ImportClass {
-        match self.resolve_to_definition(source) {
-            Some(entry) => match &entry.declaration {
-                Decl::Macro(_) => ImportClass::Macro,
-                Decl::Callable(callable)
-                    if matches!(callable.origin, CallableOrigin::Ctor { .. }) =>
-                {
-                    ImportClass::Constructor
-                }
-                Decl::Trait(_) => ImportClass::Trait,
-                Decl::Type(_) => ImportClass::Type,
-                _ => ImportClass::Fn,
-            },
-            None => ImportClass::Fn,
-        }
-    }
-
-    /// Follow Import/Reexport chains to find the ultimate definition entry.
+    /// The binding `source` names in its home module's table.
     pub(crate) fn resolve_to_definition(&self, source: &FQSymbol) -> Option<Binding<Code>> {
         let table = self.module_table(&source.module)?;
         table.get(source.symbol.as_ref()).cloned()
@@ -888,8 +876,13 @@ impl CompilerSession {
             None => return format!("Module '{mod_name}' not found"),
         };
 
-        let table = match self.module_table(&module_path) {
-            Some(t) => t,
+        // Owned, so the table guard is released before `resolve_to_definition`
+        // takes its own.
+        let candidates: Vec<(Symbol, FQSymbol)> = match self.module_table(&module_path) {
+            Some(table) => table
+                .public_name_candidates()
+                .map(|(sym, candidate)| (sym.clone(), candidate.source))
+                .collect(),
             None => return format!("Module '{mod_name}' not found"),
         };
 
@@ -898,12 +891,8 @@ impl CompilerSession {
         let mut types: Vec<String> = Vec::new();
         let mut fns: Vec<String> = Vec::new();
 
-        for (sym, candidate) in table.public_name_candidates() {
+        for (sym, source) in candidates {
             let name = sym.to_string();
-            // §3.3: exclude `$`-mangled internal names and the synthetic
-            // `__expr` top-level-expression wrapper (the wrapper is
-            // `Visibility::Public`, so the `is_public()` gate above does not
-            // catch it) — shared predicate, single source with the synthesis.
             if !prefix_filter.is_empty()
                 && !name
                     .to_lowercase()
@@ -915,9 +904,11 @@ impl CompilerSession {
             // 0440); /exports's only presentation concern is folding the
             // Constructor category into Types (a public ctor is listed under its
             // type) and dropping special forms.
-            let Some(entry) = self.resolve_to_definition(&candidate.source) else {
+            let Some(entry) = self.resolve_to_definition(&source) else {
                 continue;
             };
+            // §3.3: `$`-mangled internal names and the public synthetic
+            // `__expr` wrapper are not listed. Keyed on the exposed spelling.
             if crate::worker::is_internal_listing_entry(&name, &entry) {
                 continue;
             }
@@ -927,8 +918,8 @@ impl CompilerSession {
             // spelling, so retain only the canonical local binding. External
             // re-export aliases remain visible because their source module is
             // different from the module being described.
-            if candidate.source.module == module_path
-                && candidate.source.symbol != *sym
+            if source.module == module_path
+                && source.symbol != sym
                 && matches!(
                     &entry.declaration,
                     Decl::Callable(callable)
@@ -1449,16 +1440,138 @@ mod fq_arg_commands_tests {
         assert_eq!(home.as_ref(), "real.mod");
         assert_eq!(bare, "helper");
     }
-    // resolve_entry_arg finds a module-qualified symbol in its home table.
+    // The candidate query resolves a module-qualified symbol to the terminal
+    // identity in its home table. spec: repl/spec/04-self-documentation.md §4.1.11
     #[test]
-    fn resolve_entry_arg_qualified_finds_entry_in_home_table() {
+    fn qualified_argument_resolves_to_its_home_terminal() {
         let s = session();
         install_m(&s, None);
-        let got = s.resolve_entry_arg("m/mf");
-        assert!(got.is_some(), "m/mf must resolve to the Def in module m");
-        let (_, home, bare) = got.unwrap();
-        assert_eq!(home.as_ref(), "m");
-        assert_eq!(bare, "mf");
+        assert_eq!(
+            s.resolve_candidates("m/mf", SpecialFormTail::Consulted)
+                .iter()
+                .map(FQSymbol::to_string)
+                .collect::<Vec<_>>(),
+            vec!["m/mf".to_string()],
+        );
+    }
+
+    // spec: repl/spec/04-self-documentation.md §4.1.11 — the candidate query is
+    // the one lookup behind every introspection surface, so its cases are unit
+    // cells at that seam: none, one, several, and identically typed candidates
+    // (which are distinct declarations, never compared by type).
+    #[test]
+    fn candidate_query_answers_none_one_and_several() {
+        let s = session();
+        assert!(
+            s.resolve_candidates("ghost", SpecialFormTail::Consulted)
+                .is_empty(),
+            "an unreachable spelling has no candidates"
+        );
+
+        install_m(&s, None);
+        expose_import(&s, "mf", "m", "mf");
+        assert_eq!(
+            s.resolve_candidates("mf", SpecialFormTail::Consulted)
+                .iter()
+                .map(FQSymbol::to_string)
+                .collect::<Vec<_>>(),
+            vec!["m/mf".to_string()],
+            "one import is one candidate"
+        );
+
+        // A second module exposing the SAME spelling with an identically typed
+        // declaration: both are listed, in canonical order.
+        let n = ModuleFullPath::from("n");
+        let mut table = SessionSymbolTable::new_with_params(n.clone());
+        let _ = install_userfn(&mut table, "mf", None, Visibility::Public);
+        s.shared.symbol_tables.insert(n, table);
+        expose_import(&s, "mf", "n", "mf");
+        assert_eq!(
+            s.resolve_candidates("mf", SpecialFormTail::Consulted)
+                .iter()
+                .map(FQSymbol::to_string)
+                .collect::<Vec<_>>(),
+            vec!["m/mf".to_string(), "n/mf".to_string()],
+            "identically typed candidates are distinct declarations and both list"
+        );
+    }
+
+    // spec: repl/spec/04-self-documentation.md §4.1.11 — the query lists
+    // DECLARATIONS, never exposures: two exposures recording the same terminal
+    // are ONE candidate. int adds no dedup of its own, so this pins its reliance
+    // on the table keying exposures by canonical source, at the exposure shape
+    // the unit layer can build. The genuinely distinct pair — a direct import
+    // beside a re-export — is e2e evidence
+    // (`repl_introspection::one_terminal_reached_two_ways_lists_once`).
+    #[test]
+    fn candidate_query_dedups_one_terminal_reached_two_ways() {
+        let s = session();
+        install_m(&s, None);
+        expose_import(&s, "mf", "m", "mf");
+        expose_import(&s, "mf", "m", "mf");
+        assert_eq!(
+            s.resolve_candidates("mf", SpecialFormTail::Consulted)
+                .iter()
+                .map(FQSymbol::to_string)
+                .collect::<Vec<_>>(),
+            vec!["m/mf".to_string()],
+            "the terminal is one candidate however many exposures reach it"
+        );
+    }
+
+    // spec: repl/spec.md §15.1 — a lookup is not a defining turn, whatever the
+    // candidate count, so regeneration never fires on one.
+    #[test]
+    fn lookup_result_is_never_a_defining_turn() {
+        let s = session();
+        install_m(&s, None);
+        expose_import(&s, "mf", "m", "mf");
+        let result = s
+            .check_bare_symbol_introspection(&Sexp::Symbol("mf".into(), Span::SYNTHETIC))
+            .expect("an imported fn describes at lookup");
+        assert!(!result.is_defining());
+        assert_eq!(result.ty(), None);
+    }
+
+    // spec: repl/spec/03-slash-commands.md §3.8; spec/08-modules.md §8.4.6 — a
+    // QUALIFIED spelling of a re-exported name resolves to its DEFINING
+    // terminal, and the prompt and `/sig` answer from the same query. The raw
+    // table probe the prompt used before missed here: a re-exporter holds a
+    // candidate, not an entry, so the name fell through to the value path.
+    #[test]
+    fn qualified_reexport_resolves_to_its_terminal_on_both_surfaces() {
+        let s = session();
+        install_m(&s, Some("doc mf"));
+        let r = ModuleFullPath::from("r");
+        let mut table = SessionSymbolTable::new_with_params(r.clone());
+        table
+            .expose_candidate(
+                Symbol::from("mf"),
+                FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("mf"),
+                },
+                Visibility::Public,
+            )
+            .expect("re-export candidate fixture installs");
+        s.shared.symbol_tables.insert(r, table);
+
+        assert_eq!(
+            s.resolve_candidates("r/mf", SpecialFormTail::Consulted)
+                .iter()
+                .map(FQSymbol::to_string)
+                .collect::<Vec<_>>(),
+            vec!["m/mf".to_string()],
+            "§8.4.6 — a re-exported name is attributed to its defining module"
+        );
+        let lookup = s
+            .check_bare_symbol_introspection(&Sexp::Symbol("r/mf".into(), Span::SYNTHETIC))
+            .expect("a qualified re-exported name describes at the prompt");
+        assert_eq!(
+            s.handle_sig("r/mf"),
+            s.format_eval_result(&lookup),
+            "§3.8 — `/sig` is byte-identical to the prompt's line"
+        );
     }
     // /sig on a module-qualified name shows the full FQ signature line (not
     // `unknown symbol`). spec: §3.8
@@ -1475,10 +1588,9 @@ mod fq_arg_commands_tests {
         );
     }
     // §3.8 (FIXME 0492): /sig on a bare LOCAL name renders the SAME
-    // fully-qualified primary line as bare-value display — the
-    // `format_def_entry` composition — not the short unqualified
-    // `:(Fn [Int] Int) dbl` form the pre-fix bare-local arm used. Asserted as
-    // byte-equality with `format_def_entry` at the display seam so the two
+    // fully-qualified primary line the per-class display builder produces — not
+    // the short unqualified `:(Fn [Int] Int) dbl` form the pre-fix bare-local
+    // arm used. Asserted as byte-equality at the display seam so the two
     // surfaces cannot drift.
     #[test]
     fn handle_sig_bare_local_matches_format_def_entry_fully_qualified() {
@@ -1537,6 +1649,45 @@ mod fq_arg_commands_tests {
         assert!(
             !out.contains("m/m/mf") && !out.contains("m/mf/mf"),
             "no double-qualification; got: {out}"
+        );
+    }
+    // /imports lists a name imported from another module, in both the category
+    // and the per-module view, and never the current module's own definition.
+    // spec: repl/spec.md §3.4
+    #[test]
+    fn imports_lists_foreign_candidates_not_own_definitions() {
+        let s = session();
+        install_m(&s, None);
+        {
+            let mut table = s
+                .shared
+                .symbol_tables
+                .get_mut(&s.current_module_path())
+                .expect("current module table exists");
+            let _ = install_userfn(&mut table, "localfn", None, Visibility::Public);
+            table
+                .expose_candidate(
+                    Symbol::from("mf"),
+                    FQSymbol {
+                        module: ModuleFullPath::from("m"),
+                        symbol: Symbol::from("mf"),
+                    },
+                    Visibility::Private,
+                )
+                .expect("import candidate");
+        }
+        let all = s.handle_imports("");
+        assert!(all.contains("Fns") && all.contains("mf"), "got:\n{all}");
+        assert!(!all.contains("localfn"), "own definition listed:\n{all}");
+        let from_m = s.handle_imports("m");
+        assert!(
+            from_m.contains("From m") && from_m.contains("mf"),
+            "got:\n{from_m}"
+        );
+        assert_eq!(
+            s.handle_imports("user"),
+            "",
+            "own module is not an import source"
         );
     }
     // /doc on a module-qualified name resolves the symbol (not `unknown

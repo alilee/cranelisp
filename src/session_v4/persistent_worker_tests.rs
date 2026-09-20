@@ -425,7 +425,7 @@ fn handle_disasm_rederives_native_code_for_compiled_fn() {
 // FQ-autoload / dep-chain suite and the H5-replay gate
 // (`tests/repl_persist_race.rs`).
 
-// spec: design/int/s77-int-restructure.md §3.3 — a dep-registration site
+// spec: design/int/int.md §6.2 — a dep-registration site
 // (caller blocked on the dep) uses `delays_other=true`, landing the dep in
 // `ModulePool::TypecheckFirst`. After S78 this is the `register_module`
 // call inside `drive_module_dep` / the structural form handlers (the

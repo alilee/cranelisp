@@ -8,8 +8,7 @@
 //! ("the `--link` `_main`/`start` alias is int's job, not backend's"; the
 //! relocation to int landed at S76 §4.4). The orphaned backend copy
 //! (`generate_startup_object`/`_checked`/`define_cstr_data` + `exe/tests.rs`)
-//! was DELETED at S113 (FIXME 0635 I3 / `audit-drain-s111.md` §1.2 disposition
-//! ruling) — a superseded interim (Principle 8) that had already drifted from
+//! was DELETED at S113 (FIXME 0635 I3) — a superseded interim (Principle 8) that had already drifted from
 //! int's live copy (Principle 7).
 //!
 //! What remains in this module is the [`PlatformLayoutCheck`] type: int's

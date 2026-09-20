@@ -72,11 +72,15 @@ reference documentation for the reference implementation's stdlib.
 
 ## Files
 
-Naming convention: `NN-topic.md` for the twelve numbered sections (01 lexical →
-12 runtime), `appendix-{a,b,c}-*.md` for the three appendices (a builtins,
-b examples, c NFRs). Two meta files sit alongside: `index.md` (front matter,
-version, design philosophy) and `ring0-readiness.md` (a dated Sprint-0
-acceptance record; historical, kept for provenance).
+| Collection | Purpose |
+|---|---|
+| `language-specification` | Current language specification: front matter, numbered sections and appendices. |
+
+The collection is `index.md` (front matter, version, design philosophy), the
+twelve `NN-topic.md` sections (01 lexical → 12 runtime) and
+`appendix-{a,b,c}-*.md` (a builtins, b examples, c NFRs).
+`ring0-readiness.md` is a dated Sprint-0 acceptance record kept for
+provenance, not current specification.
 
 ## Cross-role changes
 

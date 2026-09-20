@@ -163,7 +163,7 @@ Syntax has a clean answer — **always silent-repair, never break flow.** Type e
 ## §7. Architecture, backend, safety
 
 ### 7.1 Where it plugs in
-A feature-gated **`src/agent/`** module, `pub(crate)`, sibling to `repl.rs`/`eval.rs`. The §5.3 classifier gains an `Agent(text)` arm calling `session.agent_turn(...)`. `agent_turn` runs the model↔tool loop; reads call the existing `handle_*` directly; writes + pulls go back through `self.process_commands`/`self.eval` — the *same* path `main.rs` uses, inheriting cluster-atomic staging, error recovery (`repl/spec.md` §5.2), and backing-file regeneration. The agent holds the REPL-cadence `&mut CompilerSession` handle, not a new state window; it reads live state through the existing introspection surface (`describe_symbol` `repl.rs:300`, the `handle_*`, the symbol-table accessors).
+A feature-gated **`src/agent/`** module, `pub(crate)`, sibling to `repl.rs`/`eval.rs`. The §5.3 classifier gains an `Agent(text)` arm calling `session.agent_turn(...)`. `agent_turn` runs the model↔tool loop; reads call the existing `handle_*` directly; writes + pulls go back through `self.process_commands`/`self.eval` — the *same* path `main.rs` uses, inheriting cluster-atomic staging, error recovery (`repl/spec.md` §5.2), and backing-file regeneration. The agent holds the REPL-cadence `&mut CompilerSession` handle, not a new state window; it reads live state through the existing introspection surface (the `handle_*` battery in `src/repl/commands.rs`, `get_introspection`, the symbol-table accessors).
 
 ### 7.2 Feature gating (mirror the release-backend precedent)
 ```toml
@@ -890,7 +890,7 @@ carry with edits.**
   the new `_partial` sibling — both export from `cranelisp-typecheck`).
 - **Harvest sig-grain (Pillar 2, now index-free):** `src/agent/harvest.rs` (`harvest_context`).
 - **Pillar-4 sibling-sink reference:** `src/agent/trace.rs` (ephemeral, env-gated — the contrast).
-- Tools-as-strings (pull surface): `src/repl.rs` `handle_*` (all return `String`); `describe_symbol` `:300`.
+- Tools-as-strings (pull surface): `src/repl/commands.rs` `handle_*` (all return `String`).
 - Eval/validate re-entry: `src/eval.rs:72/78`; `:447` (the bare-atom self-documentation gate §5.3 must preserve); cluster-atomic staging (commit-on-Ok/discard-on-Err) — the validator substrate (§6.2).
 - Self-documentation contract not to regress: `repl/spec.md` §4.
 - Feature-gating precedent: `design/arch/release-llvm-backend.md` §5.

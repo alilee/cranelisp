@@ -21,7 +21,7 @@ The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retire
 | `backend/` | `/design` (backend) | Cranelift codegen, RC, JIT lifecycle, caching, linking design |
 | `primitives/` | `/design` (primitives) | Static primitive `SymbolTable` + GOT design (D43 split) |
 | `intrinsics/` | `/design` (intrinsics) | Drop glue, RC/alloc, IO reactor, intrinsic helpers design (D43 split) |
-| `platform/` | `/design` (platform) | DLL loading, IO trampoline, scheduling-class registry design |
+| `platform/` | `/design` (platform) | Host/DLL C-ABI contract, DLL authoring and loading, poll-leaf and ADT-marshalling design |
 | `int/` | `/design` (int) | Binary/integration layer — pipeline orchestration, REPL session, CLI, `--link` |
 | `review/` | `/review` | Review checklists, ring-completion reports, code-quality standards |
 | `runtime/` | `/design` (runtime-pair contract; one nominated crate pass owns each edit) | Shared `cranelisp-primitives` ↔ `cranelisp-intrinsics` ownership/ABI contracts. A sprint reserves each shared file to one crate pass so both sides do not rewrite it. |

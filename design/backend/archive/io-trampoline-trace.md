@@ -1,23 +1,40 @@
-# IO Trampoline Event Log (Slice 0)
+# IO trampoline event log
 
-**Owner**: `/backend`
-**Sprint**: 61, Slice 0 (Foundational observability)
-**Status**: IMPLEMENTED (Wave 1, 2026-04-22) — see `crates/cranelisp-runtime/src/io_trace.rs` + instrumentation in `crates/cranelisp-runtime/src/io.rs`. Wave 1 follow-on (2026-04-22): `FlushGuard` + `install_panic_hook` wiring primitives added to `io_trace.rs`; `/int`'s binary-crate hookup in `src/main.rs` lands separately. See §6.1 for the mode-A wiring mechanism.
+> **Owner**: `design` (backend). **Status**: implemented, and **still a live
+> contract** — the event taxonomy, the emission disciplines below and the §9
+> off-path performance bound are cited from `benches/`, `tests/spec_10_io.rs`,
+> `src/observability.rs` and `src/io_trace.rs`.
+>
+> **It sits under `archive/` for historical reasons, not because it is
+> historical.** Its long-term home is arguably `design/int/observability.md`,
+> since the consumer side relocated to the integration layer; that is an
+> `arch`/`int` placement question, not a backend one, and moving it would break
+> live citations. Do not treat its location as licence to ignore it.
+>
+> The `scheduling_class` payload field is emitted as `0` deliberately. The class
+> lives on the platform symbol's manifest, not on the Effect node, and the
+> question of threading it into the node payload was **resolved as "no IR-payload
+> extension"** against Slice-4 evidence (`io-scheduling.md`). Correlate through
+> the scheduler trace instead. The earlier note proposing the node widen is
+> superseded.
+>
+> **Companion**: `design/int/observability.md` carries the overall trace-var
+> inventory and methodology and cross-references this document; this is the
+> IO-specific half and is not duplicated there.
 
-**Post-implementation note (Wave 1)**: the `PlatformEffect.scheduling_class` payload field is emitted as `0` at call sites in `io.rs` because the `SchedulingClass` is registered on the platform symbol's `PlatformFn` manifest (see `cranelisp-platform::PlatformFn.scheduling_class`) and is not carried on the Effect IO node itself at runtime. FIXME(/backend) filed in `io.rs` at the `PlatformEffect` emit site: consider threading `SchedulingClass` into the Effect node payload (extra field) so trampoline events carry the real class without needing cross-trace correlation. Deferred pending Slice 4 evidence — if Slice 4 needs the class, correlate via `/int`'s scheduler trace (which does carry it on the scheduler side) or land the node-payload change then.
-**Companion doc**: `design/int/observability.md` (owned by `/int`, authored in parallel). That doc is the overall trace-var inventory and methodology. **This doc is the `/backend`-owned IO-specific sibling** and is NOT duplicated there; `/int`'s doc cross-references this one.
+## 1. Why the log exists
 
-## 1. Problem Statement
+The IO trampoline's state machine — `Pure` → `Bind` → `Par` → `PlatformEffect`
+transitions, continuation-stack moves, trampoline entry and exit — is otherwise
+entirely opaque at runtime. Hypothesis-driven investigation of an intermittent
+IO failure could not converge without it, because the candidate mechanisms sat
+in three different surfaces (a continuation-state leak in the trampoline, stdio
+buffer ordering in a platform DLL, and test-harness subprocess crosstalk) and
+nothing observable distinguished them.
 
-Sprint 60 closed with Defect #2 still open: `examples_run::every_example_file_runs_under_examples_prelude` fails intermittently when `examples/21-hello-io.cl` exits with code 201. The failure rate is sensitive to concurrent-subprocess load and nextest scheduling. Hypothesis-driven investigation has not converged because the IO trampoline's state machine — `Pure` → `Bind` → `Par` → `PlatformEffect` transitions, continuation stack moves, trampoline entry/exit — is entirely opaque at runtime.
-
-Without per-event observability we cannot distinguish among Slice 4's three candidate hypotheses:
-
-1. Continuation-state leak inside `run_io_trampoline` (runtime-owned).
-2. Stdio platform DLL buffer ordering under concurrent subprocess load (`/platform`).
-3. nextest subprocess-environment crosstalk (`/qa` + `/int`).
-
-This doc specifies the observability that lets Slice 4 pin the correct hypothesis before any fix lands.
+That is the standing justification: the log exists so an IO defect can be
+*attributed* before a fix is designed. The disciplines in §5 and the bound in §9
+are what keep it cheap enough to leave in place permanently.
 
 ## 2. Env Var and Gating
 
@@ -37,7 +54,7 @@ fn io_trace() -> Option<&'static TraceFilter> {
 
 ## 3. Event Taxonomy
 
-Grounded in `crates/cranelisp-runtime/src/io.rs` (`run_io_trampoline`, `call_continuation`, `dispatch_par_branches`) and `spec/10-effects.md §10.12 bind!`, §10.10 platforms.
+Grounded in `crates/cranelisp-intrinsics/src/io.rs` (`run_io_trampoline`, `call_continuation`, `dispatch_par_branches`) and `spec/10-io.md §10.12 bind!`, §10.10 platforms.
 
 | Tag | Emitted at | Payload |
 |---|---|---|
@@ -74,8 +91,8 @@ pub struct IoTraceEvent {
 
 ## 5. Crate Placement (pinned by `/arch` Phase 2 review)
 
-- **Module**: new file `crates/cranelisp-runtime/src/io_trace.rs` (name chosen to avoid conflict with the existing `crates/cranelisp-runtime/src/trace.rs`, which implements the `(trace ...)` special-form call-stack recorder and is unrelated).
-- **Crate**: `cranelisp-runtime` only. The IO trampoline is runtime-owned; the event taxonomy mirrors the runtime's state machine and has no reason to exist in any other crate.
+- **Module**: `src/io_trace.rs` — named to avoid conflict with the `(trace ...)` special-form call-stack recorder in `crates/cranelisp-intrinsics/src/trace.rs`, which is unrelated.
+- **Crate**: the buffer, activation and formatting live in the **integration layer** (`src/`); the intrinsics crate owns only the observer callback it emits through. The event taxonomy mirrors the IO trampoline's state machine and has no reason to exist anywhere else. *(As first written this section placed the whole module in the then-undivided runtime crate; the observer split moved the consumer half to int.)*
 - **State**: thread-local ring buffer (`thread_local! { static IO_TRACE_BUF: RefCell<VecDeque<IoTraceEvent>> }`).
 - **Forbidden**: events MUST NOT appear in `cranelisp-shared`, `cranelisp-types`, or any serialised format (`.meta.json`, cache entry, any on-disk artefact).
 - **Allocator**: events allocate via the host allocator (std's `VecDeque`). They **must not** go through `cranelisp_alloc` — observing RC-traced heap allocations from a log whose own storage is RC-traced would create unbounded recursion inside `rc::inc`/`rc::dec` trace paths.
@@ -102,7 +119,7 @@ pub struct IoTraceEvent {
 
 **Chosen mechanism: combine (2) + (3) — `FlushGuard` RAII + `install_panic_hook` chained flush.** This matches the mode A spec (mode A = "flush at subprocess exit"), uses no `unsafe` beyond what Rust's own panic hook already provides, adds no dependency, and is mirrored by `/int`'s scheduler-trace wiring so the two logs drain in a consistent pattern.
 
-Exported primitives live in `crates/cranelisp-runtime/src/io_trace.rs`:
+Exported primitives live in `src/io_trace.rs`:
 
 ```rust
 pub struct FlushGuard(());               // Drop impl calls flush_to_stderr()
@@ -139,14 +156,6 @@ Both are re-exported at the `cranelisp-runtime` crate root as `IoTraceFlushGuard
 - **Gate cost**: each event site compiles to `if IO_TRACE.get().and_then(...).is_some() { … }`. After `OnceLock` init, the hot path is a single relaxed-load + null check. No formatting, no allocation when disabled.
 - **On-path cost**: when enabled, each event is a `VecDeque::push_back` of a ≤32-byte struct into a thread-local buffer. No locks on the hot path; the merge-sort lock is acquired only at flush.
 
-## 8. Sketch Comparison
-
-Per `CLAUDE.md §"Sketch Oracle"`.
-
-- **What the sketch does**: the sketch's `cranelisp-runtime/src/intrinsics.rs` contains the ancestor trampoline. IO tracing in the sketch is **ad hoc**: a single `eprintln!("cranelisp_run_io: unknown IO tag {}", tag);` on the panic-shape error path (line 301) and nothing else. There is no structured event log, no env-var gate, no per-transition observation.
-- **Follow or diverge**: **diverge.** The reimplementation runs the IO trampoline under `rayon` inside `dispatch_par_branches` and under persistent-worker subprocess concurrency via nextest. Ad-hoc `eprintln!` at a single error site is useless for the intermittent races Sprint 61 is closing — events from concurrent subprocesses would interleave unreadably and the happy path would produce no evidence at all. Structured events with explicit `(timestamp_ns, thread_id)` and merge-sortable dump are required.
-- **Rationale for divergence**: the sketch predates (a) `rayon`-backed `Par` dispatch (Decision 26), (b) the persistent-worker topology (Decision 27), and (c) the exit-201 race that motivates this instrumentation. The sketch's observability surface is not a design choice; it is an absence. Adopting it would recreate the opacity this slice is installing observability to eliminate.
-
 ## 9. Acceptance Criteria
 
 1. `CRANELISP_IO_TRACE=1 cargo run -- --run examples/21-hello-io.cl` produces a full trampoline event sequence from `TrampolineEnter` through at least one `PlatformEffect` to `TrampolineExit`, ending at process exit code. Output is merge-sorted by `(timestamp_ns, thread_id)`.
@@ -156,7 +165,7 @@ Per `CLAUDE.md §"Sketch Oracle"`.
 
 ## 10. Slice 4 Outlook
 
-This event log is the instrument. No investigation doc (`design/backend/example-21-hello-io.md` or similar) is authored until the log produces evidence.
+This event log is the instrument. No investigation document is authored until the log produces evidence.
 
 The three hypotheses from `sprints/SPRINT.md §Slice 4` that this infrastructure discriminates:
 
@@ -170,7 +179,7 @@ Slice 4 readout names the hypothesis by citing specific event-log dumps. Until t
 
 - `design/int/observability.md` — `/int`-owned companion; overall trace-var inventory, scheduler/worker event log, merge-sort methodology. Consult for the non-IO half.
 - `tests/CLAUDE.md §"Diagnostic Logging"` — env-var parse-once pattern; existing `CRANELISP_*_TRACE` conventions.
-- `crates/cranelisp-runtime/src/io.rs` — state machine whose transitions this doc instruments. Line references: `run_io_trampoline` (l.91), `call_continuation` (l.240), `dispatch_par_branches` (l.283).
-- `spec/10-effects.md §10.12 bind!`, `§10.10 platforms` — spec-level definition of Pure/Bind/Par/PlatformEffect.
+- `crates/cranelisp-intrinsics/src/io.rs` — state machine whose transitions this doc instruments. Line references: `run_io_trampoline` (l.91), `call_continuation` (l.240), `dispatch_par_branches` (l.283).
+- `spec/10-io.md §10.12 bind!`, `§10.10 platforms` — spec-level definition of Pure/Bind/Par/PlatformEffect.
 - `design/backend/io-trampoline.md` — existing trampoline design (instrumented by this doc, not replaced).
 - `design/backend/io-scheduling.md §5.2` — Par branch dispatch algorithm; `ParSpark` / `ParSerialGroupEnter` / `ParJoin` events shadow its phases.

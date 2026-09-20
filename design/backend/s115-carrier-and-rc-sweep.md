@@ -11,7 +11,7 @@ records the former W-B5 patch-collapse; its S122 supersession is now the current
 
 **Governing authority:** `design/arch/safety-invariants.md` §4 register rows R4
 (keyed-identity injectivity) + R6 (persisted-index trust boundary) — re-audited
-this Phase 2, SCHEDULED S115; `design/backend/backend-keyed-consumer.md`
+this Phase 2, SCHEDULED S115; `design/arch/backend-keyed-consumer.md`
 §1.2/§10 (the wrapper-emission keyed-read seam) + `typed-resolution-carrier.md`
 §4 (the closed `VarRef`/`ApplyRef` sums); `design/backend/ownership-codegen.md`
 §13.7 + `binding-indirection-consume.md` (the consume family this sweep sits
@@ -34,7 +34,7 @@ probe at the two seams (`compile_resolved_call`'s `AutoCurry` arm in
 
 Both repros are partial applications (auto-curry: 1 arg applied of a 2-arg
 target) and both die at the SAME terminal —
-`control_flow/fn_as_value.rs::emit_wrapper_call:600-609`:
+`control_flow/fn_as_value.rs::emit_wrapper_call-609`:
 
 ```
 fn-as-value wrapper for '<name>' reached codegen with no GOT-slot carrier
@@ -157,7 +157,7 @@ Faces and seams:
 
 ### 2.1 Face 1+2 — entry-`main` IO-result heap PAYLOAD leak (both toggles)
 
-**Seam:** `compiler/rc_emission.rs::protect_return_value:275-344` — the F-R1
+**Seam:** `compiler/rc_emission.rs::protect_return_value-344` — the F-R1
 entry-frame suppression (`:303-309`) + the entry-`main` IO teardown it hands to
 (`cranelisp_intrinsics::drop::consume_io_tree`, the single trampoline consumer).
 
@@ -196,7 +196,7 @@ deallocs` EXACTLY (never leak → under-count).
 **Seam:** `compiler/fn_compiler.rs::flush_superseded_heap_params_before_tail_jump
 :1210-1233` + its `collect_frame_heap_decs:1069` / `is_heap_type:1327`
 classification (`signature_heap_category ∈ {AlwaysHeap, Mixed}`). Called from
-`apply.rs::compile_tail_self_call:1948`.
+`apply.rs::compile_tail_self_call`.
 
 **Discriminators (measured at HEAD, `RC_STATS`, exact `adt_wrapped_supersede_leak_0720`
 shape `(deftype G2 (Gr [cells]))`):**
@@ -318,11 +318,11 @@ platform/typecheck-boundary mints. Per family: witness exists / disambiguator-ke
 
 | Family | Mint site | Key | Verdict |
 |---|---|---|---|
-| ADT drop glue / vec elem-dec | `resolution.rs::adt_instantiation_mangle:156` → `adt_drop_glue_name:219`; `build_elem_dec_fn` | `escape_symbol(render_type(…,Qualified,Numbered))` | **witnessed** — `escape_symbol:182` is injective + prefix-free with a total decoder (CS-1.2 model); round-trip battery in `resolution/tests.rs`. Debug-asserts concreteness (S-2). |
-| inner-fn discriminators | `resolution.rs::inner_fn_discriminator_for:66` | sanitize (non-injective `[^A-Za-z0-9_]→_`) **+ span** | **disambiguator-keyed** — the sanitize map alone collapses `-`/`.`/`/`/space, but every consumer additionally folds `span.start_span.end` (the mono-instance + create-gate arm); the span breaks sanitize ties. VERIFY: confirm no consumer uses the disc WITHOUT a span fold. |
-| closure/curry capture drop glue | `resolution.rs::closure_drop_glue_name:99` / `curry_drop_glue_name:110` | `disc + span` | **disambiguator-keyed** — disc+span, paired identically to the lambda/wrapper body name (FIXME 0350 class closed). Safe. |
-| trait-method-value wrapper | `fn_as_value.rs::compile_trait_method_as_value:268` (`__wrap_tmv_{target}_{disc}{span.start}_{span.end}__`) | `target + disc + span` | **disambiguator-keyed** — disc+span. Safe (same discipline). |
-| GOT data symbols | `resolution.rs::got_data_symbol_name:50` (`__cranelisp_got_{module.replace('.','_')}`) | flattened module path | **OWED-witness** — the `.`→`_` flatten is NON-injective: module names admit `_` AND `-` (reader.rs:226), so a two-component path `a.b` and a one-component module `a_b` BOTH flatten to `__cranelisp_got_a_b` → two modules share ONE GOT slab data symbol (cross-module wrong-slab dispatch — the R4 class, one level up from drop-glue). Constructible in a multi-module program. **/dev builds:** an injective flatten (escape `.`/`_`/`-` via the `escape_symbol` scheme, or a per-module disambiguator) + a round-trip witness. |
+| ADT drop glue / vec elem-dec | `resolution.rs::adt_instantiation_mangle` → `adt_drop_glue_name:219`; `build_elem_dec_fn` | `escape_symbol(render_type(…,Qualified,Numbered))` | **witnessed** — `escape_symbol:182` is injective + prefix-free with a total decoder (CS-1.2 model); round-trip battery in `resolution/tests.rs`. Debug-asserts concreteness (S-2). |
+| inner-fn discriminators | `resolution.rs::inner_fn_discriminator_for` | sanitize (non-injective `[^A-Za-z0-9_]→_`) **+ span** | **disambiguator-keyed** — the sanitize map alone collapses `-`/`.`/`/`/space, but every consumer additionally folds `span.start_span.end` (the mono-instance + create-gate arm); the span breaks sanitize ties. VERIFY: confirm no consumer uses the disc WITHOUT a span fold. |
+| closure/curry capture drop glue | `resolution.rs::closure_drop_glue_name` / `curry_drop_glue_name:110` | `disc + span` | **disambiguator-keyed** — disc+span, paired identically to the lambda/wrapper body name (FIXME 0350 class closed). Safe. |
+| trait-method-value wrapper | `fn_as_value.rs::compile_trait_method_as_value` (`__wrap_tmv_{target}_{disc}{span.start}_{span.end}__`) | `target + disc + span` | **disambiguator-keyed** — disc+span. Safe (same discipline). |
+| GOT data symbols | `resolution.rs::got_data_symbol_name` (`__cranelisp_got_{module.replace('.','_')}`) | flattened module path | **OWED-witness** — the `.`→`_` flatten is NON-injective: module names admit `_` AND `-` (reader.rs:226), so a two-component path `a.b` and a one-component module `a_b` BOTH flatten to `__cranelisp_got_a_b` → two modules share ONE GOT slab data symbol (cross-module wrong-slab dispatch — the R4 class, one level up from drop-glue). Constructible in a multi-module program. **/dev builds:** an injective flatten (escape `.`/`_`/`-` via the `escape_symbol` scheme, or a per-module disambiguator) + a round-trip witness. |
 | platform GOT / layout-hash exports | `cranelisp-platform/src/declare.rs:343/223` (`__cranelisp_got_platform_<name>`, `__cranelisp_layout_hash_<name>`) | platform `<name>` verbatim (macro `concat!`) | **disambiguator-keyed by uniqueness** — one platform ⇒ one name, `concat!`'d literal, no flatten; injective iff platform names are unique (a load-time invariant — two loaded platforms sharing a name is a diagnosed load condition, out of R4's mangle scope). **Cross-crate:** the mint lives in `cranelisp-platform`; record the census row there via FIXME if a witness is wanted; no backend action. |
 | LinkerSymbol / mangled method keys | **typecheck-side** (`impl$FQType$FQTrait`, `add$Int+Int`; `checker.rs:2630`, the `$`/`+`-joined FQ mangle) — backend consumes verbatim as a Cranelift symbol | `$`/`+`-delimited FQ component join | **OWED-witness, CROSS-CRATE** — injectivity depends on the FQ-component join being unambiguous; `$`/`+` are delimiters and FQ names should not contain them, but a `render_type` containing `+` (arg separators) could alias. The mint is typecheck's; the backend cannot witness it. **Route:** FIXME `target: /arch` (or the R4 typecheck sibling) — the census records the family as owed at its true mint site, not backend `resolution.rs`. |
 
@@ -352,7 +352,7 @@ their own homes."*
 trusted into emission. Trust-boundary taxonomy (§2 tier 3): cache bytes are
 external data — **diagnose and recompile, never `assert!`.**
 
-**The ONE seam.** `cache/serialize.rs::deserialise_meta_with_build_id:248-304`
+**The ONE seam.** `cache/serialize.rs::deserialise_meta_with_build_id-304`
 already carries the single existing per-entry validation loop (`:294-303`,
 `callable_got_slot() < GOT_TABLE_SIZE` → `CacheStale::GotSlotOutOfRange`). The
 R6 census extends THIS loop (never a parallel walk) with one arm + one

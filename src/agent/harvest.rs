@@ -248,19 +248,9 @@ impl CompilerSession {
 
         // 2. Explicit imports — an `(import …)` installs a private name
         //    candidate homed in the source module, with NO binding under that
-        //    spelling here, so the binding walk above never sees it. Collect
-        //    `(name, source)` under the `cur` guard, drop it, then resolve and
-        //    render (0666, as above).
-        let mut import_sources: Vec<(String, cranelisp_types::FQSymbol)> =
-            if let Some(table) = self.shared.symbol_tables.get(cur) {
-                table
-                    .all_name_candidates()
-                    .filter(|(_, candidate)| candidate.source.module != *cur)
-                    .map(|(sym, candidate)| (sym.as_ref().to_string(), candidate.source))
-                    .collect()
-            } else {
-                Vec::new()
-            };
+        //    spelling here, so the binding walk above never sees it. This is
+        //    the same enumeration `/imports` lists.
+        let mut import_sources = self.explicit_import_sources(cur);
         import_sources.sort();
         self.push_candidate_entries(import_sources, &mut seen, &mut entries);
 
@@ -274,7 +264,7 @@ impl CompilerSession {
         //    instead: the candidate's `source` is the canonical definition for
         //    both shapes (an owned binding's candidate points at `prelude`).
         //    Collect-then-render (0666): gather `(name, source)` under the
-        //    prelude guard, drop it, then resolve (`resolve_to_definition`
+        //    prelude guard, drop it, then resolve (`listable_definition`
         //    takes its own table guard) and render.
         let prelude_path = cranelisp_types::ModuleFullPath::from("prelude");
         let prelude_names = self.prelude_implicit_names();
@@ -327,7 +317,7 @@ impl CompilerSession {
     /// to its canonical definition and render it homed in the DEFINING module,
     /// so the formatter's FQ read uses that module. A name already in `seen`
     /// is shadowed by an earlier feeder. Must be called with no table guard
-    /// held: `resolve_to_definition` and the formatter take their own (0666).
+    /// held: `listable_definition` and the formatter take their own (0666).
     fn push_candidate_entries(
         &self,
         sources: Vec<(String, cranelisp_types::FQSymbol)>,
@@ -338,12 +328,10 @@ impl CompilerSession {
             if seen.contains(&name) {
                 continue;
             }
-            let Some(entry) = self.resolve_to_definition(&source) else {
+            let Some(entry) = self.listable_definition(&source) else {
                 continue;
             };
-            if crate::worker::is_internal_listing_entry(source.symbol.as_ref(), &entry)
-                || matches!(entry.declaration, cranelisp_types::Decl::SpecialForm(_))
-            {
+            if matches!(entry.declaration, cranelisp_types::Decl::SpecialForm(_)) {
                 continue;
             }
             seen.insert(name.clone());

@@ -166,7 +166,7 @@ fn wired_host_callbacks() -> HostCallbacks {
     cranelisp_intrinsics::host_callbacks()
 }
 
-// spec: design/platform/host-wiring-s76.md §2 — the host wires the real
+// spec: design/platform/platform.md §4.5 — the host wires the real
 // alloc_with_tag intrinsic; the R1 gate (null_alloc_with_tag panic) is
 // gone. A two-field ADT constructed through the callback round-trips:
 // tag + both fields read back at the documented offsets, RC = 1.
@@ -202,7 +202,7 @@ fn alloc_with_tag_callback_round_trips_two_field_adt() {
     cranelisp_intrinsics::alloc::heap_dealloc(base);
 }
 
-// spec: design/platform/host-wiring-s76.md §2 — a nullary-shaped data
+// spec: design/platform/platform.md §4.5 — a nullary-shaped data
 // constructor (zero fields) round-trips through the wired callback:
 // tag-only payload, RC = 1, alloc base returned (not the R1 panic).
 #[test]

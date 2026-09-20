@@ -92,7 +92,7 @@ decides whether a value FORWARDED THROUGH a binding carries one (structure).
 **The whole-match approximation (recorded S115, FIXME 0697).** The §2 table's
 `match scrut` row keys forwarding on the **selected** arm — a runtime notion. The
 as-built implementation is a STATIC whole-match predicate:
-`fn_compiler.rs::match_forwards_scrutinee:298` returns true if ANY var-pattern arm
+`fn_compiler.rs::match_forwards_scrutinee` returns true if ANY var-pattern arm
 forwards its binder, and R3 emits the scrutinee-dec suppression ONCE in the merge
 block (`match_codegen.rs:180-183`). The same any-arm approximation feeds
 `operand_live_binding_root`'s Match row (R1/R2 consumers). For a **mixed
@@ -182,19 +182,28 @@ generalise the same "provenance not syntax" discriminator to the whole family.
 
 ## 4. The family matrix + the F4 ownership boundary
 
-From 0668's evidence table (verified 2026-07-19, both toggles unless noted) and the
-`/qa` 0669 disposition (`s114-test-plan.md` §1–§2). "Consume position" is the seam
-this contract fixes; "root" is the single producer/binding the observation traces to.
+"Consume position" is the seam this contract fixes; "root" is the single
+producer/binding the observation traces to.
 
-| Cell | Shape | Consume position | Rule | Status |
-|---|---|---|---|---|
-| A | `(let [q (vec-set v 1 99)] [q])` | vec-lit element store | R2 | **LANDED** S113 W5b |
-| E | `(let [q [7 8 9]] [q])` | vec-lit element store | R2 | **LANDED** S113 W5b |
-| G | `(let [q v] [q])` (no COW) | let-bind alias → vec-lit store | R1+R2 | RED (`let_bind_alias_into_container_neg`) |
-| F | `(match (match v [r r]) [q q])` (no COW) | nested-match forward | R3 | RED (`nested_match_forward_alias_neg`) |
-| B | `(match (match (vec-set v 0 5) [r r]) [q q])` (COW) | nested-match forward | R3 | NEW ×2 (BI-B-cow), RED |
-| C-off | B-2 shape under `CRANELISP_NO_OWNERSHIP=1` | match scrutinee-dec of forwarded alias | R3 | RED (`b2_match_cow_var_pattern_toggle_off_neg`) |
-| I-1 | `(let [r v] (fn [] (vec-get r 1)))` capture | closure capture of let-alias | R1+R2 | RED ×2 (re-attributed 0669) |
+**Every row is now green** (re-measured 2026-09-20: `binding_indirection_consume`
+and `false_fresh_provenance_residual`, 23 tests, 0 failures). The table is kept
+as the shape inventory the contract must keep covering — each row names a
+distinct consume position, and a regression at any of them is a contract breach
+rather than a new defect.
+
+| Cell | Shape | Consume position | Rule |
+|---|---|---|---|
+| A | `(let [q (vec-set v 1 99)] [q])` | vec-lit element store | R2 |
+| E | `(let [q [7 8 9]] [q])` | vec-lit element store | R2 |
+| G | `(let [q v] [q])` (no COW) | let-bind alias → vec-lit store | R1+R2 |
+| F | `(match (match v [r r]) [q q])` (no COW) | nested-match forward | R3 |
+| B | `(match (match (vec-set v 0 5) [r r]) [q q])` (COW) | nested-match forward | R3 |
+| C-off | the B-2 shape with ownership analysis off | match scrutinee-dec of a forwarded alias | R3 |
+| I-1 | `(let [r v] (fn [] (vec-get r 1)))` | closure capture of a let-alias | R1+R2 |
+
+> The committed tests for these rows still carry `// defect:` headers, and the
+> governing evidence plan still describes them as RED. Both are stale against
+> the suite. Correcting them is `test`/`qa` work, not this document's.
 
 **The F4 boundary (binding — the contract must NOT cross it):**
 
@@ -246,15 +255,22 @@ dependency (§7).
 
 ---
 
-## 6. Sibling Track-B leak-direction REDs — F-R1 and MS-P8 (SEPARATE mechanisms)
+## 6. Sibling leak-direction families — F-R1 and MS-P8 (SEPARATE mechanisms)
 
-These are Track-B backend REDs but are **NOT** the binding-indirection UAF family — they
-are the leak (over-retain) direction, distinct mechanisms. Recorded here so `/dev`(backend)
-has ONE Track-B map, but each names the root-cause discriminator FIRST because the seam
-attribution is genuinely unsettled (and, per the evidence below, may fall OUTSIDE the
-backend surface). Both are BOTH-POLARITY fenced (`s114-test-plan.md` §2): the fix must make
-`allocs==deallocs` EXACTLY — it must not over-correct into an under-count (the S110-8/S111-2
-inversion lesson).
+These are **NOT** the binding-indirection UAF family — they are the leak
+(over-retain) direction, and distinct mechanisms. They are recorded here so a
+reader has one map, and each names its root-cause discriminator first because
+the seam attribution was genuinely unsettled and may fall outside the backend.
+
+Both are BOTH-POLARITY fenced: a fix must make allocations and deallocations
+balance **exactly**, never over-correct into an under-count — the inversion
+lesson from two prior RC fixes that traded a leak for a use-after-free.
+
+> **Both repros now pass**, so the discriminator experiments below were either
+> run or overtaken by another change. **No verdict was ever recorded**, which
+> means the attribution question these sections pose is answered only by the
+> tests going green — not by a mechanism anyone confirmed. Treat the analysis as
+> hypothesis, not finding, if either regresses.
 
 ### 6.1 F-R1 — entry-`main` IO-teardown fixed-residual leak (×2)
 
@@ -344,7 +360,7 @@ Runtime surface and leaves this contract's scope.
 **Independent of the Track-A carrier flip.** This contract is RC-emission; the carrier
 (`VarRef`/`ApplyRef`) is resolution. No semantic dependency either way. The ONLY coupling is
 FILE-level: W-B4 (R3 in `match_codegen.rs`) and the carrier consumer-flip (exhaustive
-`VarRef`/`ApplyRef` matches, also in `match_codegen.rs`, `backend.md` §2.7.2) touch the same
+`VarRef`/`ApplyRef` matches, also in `match_codegen.rs`, `design/backend/backend.md` §2) touch the same
 file — serialize the two `/dev` change-sets (shared-tree race), no wave-gate ordering.
 
 **The B-2 split (F4/F7 — binding on Phase 4):**

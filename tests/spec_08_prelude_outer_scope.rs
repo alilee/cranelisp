@@ -1,7 +1,7 @@
 // spec_08_prelude_outer_scope.rs — Prelude-as-outer-scope import model (S78 Wave 4 §2).
 //
 // Covers the SETTLED prelude-as-outer-scope model (user, 2026-06-11):
-//   `design/int/s78-entry-module.md §2`.
+//   `design/int/int.md §6.5`.
 //
 // The implicit prelude is an OUTER SCOPE resolved by symbol-lookup fallback,
 // NOT materialised (flattened) into each module's symbol table. The module's
@@ -325,7 +325,7 @@ fn explicit_import_no_collision_resolves() {
 //    → only named names, no fallback for the rest.
 // =============================================================================
 
-// spec: spec/08-modules.md §8.8.1 / design/int/s78-entry-module.md §2.3 — a
+// spec: spec/08-modules.md §8.8.1 / design/int/int.md §6.5 — a
 //   module that refuses the prelude with `(import [prelude []])` gets NO
 //   implicit prelude fallback: a prelude-provided name (`gulp`) is NOT
 //   available bare.
@@ -375,7 +375,7 @@ fn prelude_refusal_qualified_primitive_still_resolves() {
         .assert_exit(5);
 }
 
-// spec: design/int/s78-entry-module.md §2.3 — a SELECTIVE prelude import
+// spec: design/int/int.md §6.5 — a SELECTIVE prelude import
 //   `(import [prelude [gulp]])` brings only the named binding into the inner
 //   table; the named name IS available bare.
 //
@@ -394,7 +394,7 @@ fn selective_prelude_import_brings_named_name() {
         .assert_exit(11);
 }
 
-// spec: design/int/s78-entry-module.md §2.3 — a SELECTIVE prelude import
+// spec: design/int/int.md §6.5 — a SELECTIVE prelude import
 //   suppresses the implicit fallback for OTHER prelude names: a prelude name
 //   not in the selective list (here the re-exported primitive `add-i64`) is
 //   NOT available bare.
@@ -430,7 +430,7 @@ fn selective_prelude_import_neg_other_name_not_bare() {
 //    re-export; qualified `primitives/...` always works.
 // =============================================================================
 
-// spec: spec/08-modules.md §8.9.1 / design/int/s78-entry-module.md §2.2 (4) —
+// spec: spec/08-modules.md §8.9.1 / design/int/int.md §6.5 —
 //   in a NORMAL module (implicit prelude active), a bare primitive name
 //   (`add-i64`) resolves through the prelude's `(export [primitives [*]])`
 //   re-export, chain-followed via the fallback.
@@ -465,7 +465,7 @@ fn qualified_primitive_resolves_in_normal_module() {
         .assert_exit(42);
 }
 
-// spec: design/int/s78-entry-module.md §2.2 (4) — both a bare primitive AND a
+// spec: design/int/int.md §6.5 — both a bare primitive AND a
 //   bare prelude-defined function resolve together in a normal module: the
 //   fallback covers re-exported primitives and prelude-local defs uniformly.
 //

@@ -726,8 +726,8 @@ was neither a `resolve_*` call nor a scan, so S1–S24 and the grep gate never
 counted it. The S113 W2 fix DELETED the bare-name match (not demoted to a
 fallback — §1.2 REJECTs the hybrid); a carrier-absent callee falls through to
 `compile_var_apply`, whose local `variables` check finds a §4.6 shadow and
-emits an indirect call. Full fix design + case list: `design/backend/backend.md`
-§2.7.1.
+emits an indirect call. Current consumer discipline: `design/backend/backend.md` §2; the detailed
+S113 fix record remains in Git history.
 
 **Fast-path 2 note (SigDispatch mangled-name arm of `is_self_call`).** No
 backend change — but its soundness is **truthfulness-conditional**, not merely

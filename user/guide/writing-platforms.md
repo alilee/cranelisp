@@ -23,7 +23,7 @@ elaboration rather than first contact.
 > for the in-tree `web` platform (see `exemplar/platforms/web/` and `exemplar/web.cl`).
 > The canonical, normative sources are
 > [`design/arch/effect-concurrency.md`](../../design/arch/effect-concurrency.md) §4.1.1
-> and §12, [`design/platform/poll-support.md`](../../design/platform/poll-support.md),
+> and §12, [`design/platform/poll-leaf-authoring.md`](../../design/platform/poll-leaf-authoring.md),
 > and [`design/intrinsics/reactor.md`](../../design/intrinsics/reactor.md). Where this
 > guide and those disagree, the design docs win.
 
@@ -75,7 +75,7 @@ poll(state, ctx, waker) -> Ready | Pending
 
 - `state` is the effect's marshalled arguments plus a result slot and private
   scratch, laid out by the host (`poll_support`'s typed `PollEnv` accessor locates
-  the fields for you — see [`poll-support.md §2.1`](../../design/platform/poll-support.md)).
+  the fields for you — see [`poll-leaf-authoring.md §5`](../../design/platform/poll-leaf-authoring.md)).
 - `ctx` is the host reactor's vtable (below).
 - `waker` is the token you hand back to the reactor so it can re-poll you.
 
@@ -113,7 +113,7 @@ activates concurrency sees only the blocking shape.
 The host owns a single reactor. Your poll function talks to it through the `ctx`
 vtable ([`effect-concurrency.md §4.1.1`](../../design/arch/effect-concurrency.md),
 [`reactor.md §2.3`](../../design/intrinsics/reactor.md)). `poll_support`'s `Reactor`
-wrapper ([`poll-support.md §2.2`](../../design/platform/poll-support.md)) turns each
+wrapper ([`poll-leaf-authoring.md §5`](../../design/platform/poll-leaf-authoring.md)) turns each
 vtable call into a one-liner:
 
 | Verb | You call it to… | Returns |
@@ -186,7 +186,7 @@ Each effect declares a **role** in its manifest — a compile-time fact that gro
 inferred-launch analysis and documents the leaf. The trampoline does **not** branch on
 role at runtime; every leaf does its own scheduling through the `ctx` vtable
 ([`effect-concurrency.md §4.1.1`](../../design/arch/effect-concurrency.md),
-[`poll-support.md §3.6.1`](../../design/platform/poll-support.md)):
+[`poll-leaf-authoring.md §3`](../../design/platform/poll-leaf-authoring.md)):
 
 | Role | Examples | What the poll function does |
 |---|---|---|
@@ -257,7 +257,7 @@ from them.
 module `M`, the loader typechecks `M` *before* registering the platform. Therefore `M`
 **must not import that platform**. Any convenience wrapper that *calls* the platform's
 own effects must live in a **different** module
-([`poll-support.md §3.6.3`](../../design/platform/poll-support.md)). The `web` pattern:
+([`poll-leaf-authoring.md §6`](../../design/platform/poll-leaf-authoring.md)). The `web` pattern:
 
 1. the **type module** (`web.cl`) — declares the handle/request/response ADTs; imports
    no platform; loaded by the pre-resolve.
@@ -283,9 +283,9 @@ own effects must live in a **different** module
   ratified architecture: §4.1.1 (the `ctx`-vtable handle model, roles, the poll-fn
   skeleton), §5 (the concurrency descriptor), §12 / §12.1 (the C-ABI-async boundary and
   the poll-in / wake-out ruling).
-- [`design/platform/poll-support.md`](../../design/platform/poll-support.md) — the
+- [`design/platform/poll-leaf-authoring.md`](../../design/platform/poll-leaf-authoring.md) — the
   `poll_support` scaffolds (`PollEnv`, `Reactor`, `PollState`), the four-role
-  leaf-authoring contract (§3.6), and the `web` / `stdio` worked adoptions.
+  leaf-authoring contract (§2), and the `web` / `stdio` worked adoptions.
 - [`design/intrinsics/reactor.md`](../../design/intrinsics/reactor.md) — the host
   reactor interior: the mio loop, the C-ABI waker projection, the `HostCtx` vtable, the
   token-capacity permit pool.

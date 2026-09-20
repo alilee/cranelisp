@@ -1,442 +1,192 @@
 # ADT marker binding — mechanism selection
 
-**Status:** **APPROVED.** Option 3 (§5) was selected at S118 Phase 3 and
-approved by `arch` at the S118 Phase-3 exit, unchanged as designed. It is
-scheduled for implementation in the **Sprint 121 C7 platform visit**
-(`s121-c7-platform-visit.md` §5, bundle P1), riding the `ABI_VERSION` 9→10
-change-set because it migrates the same five call sites that bump rebuilds.
+**Status:** adopted and implemented. `arch` approved the selected mechanism
+(§4) because it touches the crate's public surface; `CLAdtType` itself is
+unchanged, `cranelisp-types` is untouched, and the host load path and artifact
+grammar are unchanged.
 
-Answers FIXME 0873 / `audits/cranelisp-platform-s117.md` §R4 ("decide marker
-binding ergonomics now that the deferred trigger has fired"). Scope is exactly
-that question: how a platform DLL binds a Rust marker type to a cranelisp FQ
-type name. It reopens no settled platform architecture.
-
-### The `arch` gate's three conditions on the implementing change-set
-
-Approval was granted with conditions; they bind `dev`, not this design.
-
-1. **The grammar coupling is named at both sites.** `schema_declares_type` is a
-   second reader of the schema-artifact text, beside the runtime parser. That is
-   acceptable on the `extract_layout_hash` precedent — a const context cannot
-   reach the runtime parser — but the rustdoc of `schema_declares_type` **and**
-   of the runtime parser's grammar home must each cite the other, so an
-   artifact-grammar change is a named two-site change rather than silent drift.
-2. **Baseline regeneration, the source-rustdoc surface record and the
-   bounded-context note ride the same change-set.** No pre-implementation
-   architecture edit: this design is the record until then.
-3. **The adjacent `resolve_field` type-key-miss diagnostic fix rides the
-   implementation** as designed in §6 (crate-internal, no gate).
-
-To these the S121 visit adds one obligation the audit's bar implies and the
-repository's assurance doctrine requires: the const assertion is an instrument,
-so it lands with **both legs of its detection proof** — a deliberately
-misspelled key fails the build with the intended message, and the correct
-spelling builds (§8 row 2).
+Scope is exactly one question: how a platform DLL binds a Rust marker type to a
+cranelisp fully-qualified type name. It reopens no settled platform
+architecture.
 
 ---
 
-## 1. The current contract
+## 1. The problem
 
-A platform DLL marshals a heap ADT as `CLAdt<T>`, a `#[repr(transparent)]`
-wrapper over the allocation base pointer. `T` is a zero-sized marker whose only
-content is one string:
+A DLL marshals a heap ADT as `CLAdt<T>`, where `T` is a zero-sized marker whose
+only content is one string — `CLAdtType::TYPE_NAME`, the key into the embedded
+schema artifact. Entries in that artifact are keyed by the same fully-qualified
+type-expression string.
 
-```rust
-pub struct Rectangle;
-impl CLAdtType for Rectangle {
-    const TYPE_NAME: &'static str = "shapes/Rectangle";
-}
-```
-
-`TYPE_NAME` is the **key into the embedded schema artifact** — the
-`/platform-schema`-generated text the DLL embeds via
-`declare_platform! { schema: include_str!("<name>.platform-schema"), … }`, parsed
-once at load into the process-global `Schema` (`adt.rs:90`,
-`declare.rs:362-368`). Entries in that artifact are keyed by the same FQ
-type-expression string:
-
-```text
-;; layout-hash: 3582bc7f3ed7f6f4
-(schema
-  (web/Connection
-    (Connection 0 ((fd primitives/Int))))
-  …)
-```
-
-So one FQ name is written **twice, independently**: once by the compiler into
-the artifact, once by hand into the marker. Nothing compares them before
-runtime. That is the whole of the defect surface this document addresses.
+So one name is written **twice, independently**: once by the compiler into the
+generated artifact, once by hand into the marker. Before this mechanism, nothing
+compared them until runtime. That is the whole of the defect surface.
 
 ### 1.1 Where `TYPE_NAME` is consulted — and where it is not
 
 | Path | Consults `TYPE_NAME`? | Effect of a wrong name |
 |---|---|---|
-| `CLAdt::read_field` / `own_field` (`adt.rs:185,202`) | yes — `resolve_field::<T>` keys the schema by it | panic on lookup miss |
-| nested-ADT field witness (`ExpectedFieldType::Adt`, `adt.rs:321-328`) | yes — compared against the declared field type | panic on witness mismatch |
-| `CLAdt::read_tag` (`adt.rs:172`) | **no** — fixed offset, no schema | none; silently fine |
-| `CLAdt::construct` (`adt.rs:216`) | **no** — tag + fields come from the author | **none, ever** |
-| `CLAdt::from_raw`, `Debug` | no / display only | none |
+| `read_field` / `own_field` | yes — the field lookup keys the schema by it | panic on lookup miss |
+| nested-ADT field witness | yes — compared against the declared field type | panic on witness mismatch |
+| `read_tag` | **no** — fixed offset, no schema | none |
+| `construct` | **no** — tag and fields come from the author | **none, ever** |
+| `from_raw`, `Debug` | no / display only | none |
 
-Two consequences the audit's framing did not separate:
+Two consequences follow, and neither is obvious:
 
-1. A marker used **only** for construction is never validated at all. A wrong
+1. **A marker used only for construction is never validated at all.** A wrong
    name on such a marker is undetectable at runtime by construction — "accept
    runtime failure" is not even an available position for it.
-2. The layout-hash gate does **not** cover this. It proves the artifact matches
-   the host's live tables (staleness); it says nothing about whether the DLL's
-   hand-written marker string names an entry that exists.
+2. **The layout-hash gate does not cover this.** That gate proves the artifact
+   matches the host's live tables; it says nothing about whether a hand-written
+   marker string names an entry the artifact declares. The two gates compose and
+   neither subsumes the other.
 
 ---
 
-## 2. The risk, characterized by call path
+## 2. Why runtime detection is not the cheap option
 
-The mismatch's *observable* failure mode depends on which call shape
-dereferences the marker, and the two shapes differ sharply.
+The observable failure mode depends on which call shape dereferences the marker,
+and the two shapes differ sharply.
 
 | Call shape | Fault containment | Observed failure on a name mismatch |
 |---|---|---|
-| Blocking effect (`CLIO::effect*` thunk) | DLL-local `catch_unwind` inside the thunk (`lib.rs:975-1000`) — monomorphised into the DLL, so it is caught by the DLL's own panic runtime and returned as an `EffectOutcome` fault | diagnosed `DispatchFault` carrying the panic message + the effect's fn name |
-| Poll-shape leaf (`PollFn` = `unsafe extern "C" fn(state, *HostCtx, *Waker) -> Poll`) | **none** — there is no `catch_unwind` anywhere in `cranelisp-platform`'s poll path, and the host does not wrap the call | unwind out of an `extern "C"` frame ⇒ **process abort**, no attribution |
+| Blocking effect thunk | DLL-local panic catch, monomorphised into the DLL, returned as an `EffectOutcome` fault | a diagnosed dispatch fault carrying the message and the effect's name |
+| **Poll-shape leaf** | **none** — there is no panic catch anywhere on this crate's poll path, and the host does not wrap the call | an unwind out of an `extern "C"` frame ⇒ **process abort, no attribution** |
 | Construct-only marker | n/a | never detected |
 
-This is the load-bearing finding of the comparison. On the one production
-multi-ADT platform, three of the four markers are dereferenced **on the poll
-path**:
-
-- `exemplar/platforms/web/src/lib.rs:376-377` — `CLAdt::<Listener>::from_raw(env.arg(0)).read_field("fd")` in `accept_conn_pollfn`
-- `:439-440` — the same shape for `Connection` in `read_conn_pollfn`
-- `:611-614` — `Response`'s three field reads in `ensure_write_buffered`, called from the send leaf
-
-A marker/schema name disagreement on any of those aborts the process. "Accept
-runtime failure with clear diagnostics" therefore is **not currently on the
-table as a cheap option**: on the production path that the trigger fired for, it
-would first require adding fault containment to the poll boundary (or a
-non-panicking read API), which is strictly more work and more surface than
-making the name agreement structural.
+This asymmetry is the load-bearing finding. On the one production multi-ADT
+platform, most markers are dereferenced *on the poll path*, where a disagreement
+aborts the process. "Accept runtime failure with clear diagnostics" would
+therefore first require adding fault containment to the poll boundary, or a
+non-panicking read API — strictly more work and more surface than making the name
+agreement structural.
 
 ---
 
-## 3. Binding census (2026-07-25)
+## 3. Alternatives rejected
 
-| Site | Markers | Read path | Notes |
-|---|---|---|---|
-| `exemplar/platforms/web/src/lib.rs:85-115` | 4 (`Listener`, `Connection`, `Request`, `Response`) | poll leaves (3) + construct-only (`Request`) | the S87 deferral trigger; each marker carries substantial rustdoc |
-| `platforms/shapes/src/lib.rs:39-45` | 1 (`Rectangle`) | blocking effect thunk | the reference ADT platform |
-| `platforms/shapes-badabi/src/lib.rs:64-67` | 1 (`Rectangle`) | never dispatched | hand-rolled manifest, **no `schema:` arm**; a deliberately-broken ABI-gate fixture |
-| the crate's own integration tests plus `crates/cranelisp-platform/src/adt/tests.rs` | 8 across 5 files | test fixtures | synthetic schemas, per-binary `GLOBAL_SCHEMA` isolation (FIXME 0874's subject) |
+**Keep explicit marker impls and compensate with tests and diagnostics.** The
+compensation package, not the status quo, is the cost: a production-path negative
+witness is only meaningful once the poll path can be observed at all (§2), so the
+containment work comes first. Retained as the documented fallback only if the
+const-scanner premise is ever falsified — not as a live alternative.
 
-Five production markers, four of them added in one platform. The S87
-deferral condition ("wait for a real multi-ADT platform") is satisfied.
+**A derive macro.** Reduces boilerplate but leaves agreement at runtime unless a
+second source of the artifact path is introduced, which is a second,
+non-compiler-tracked authority for the same fact. It also adds a proc-macro
+dependency and a second public crate on the external-author facade.
 
----
-
-## 4. Option comparison
-
-### Option 1 — keep explicit marker impls
-
-Change nothing; compensate with a production-path negative witness plus
-diagnostics quality (the audit's stated bar).
-
-- **Cost to build:** the compensations, not the status quo — a negative witness
-  that a wrong `TYPE_NAME` fails the way we claim it does, on a production call
-  shape. Per §2 that witness would have to be written against the poll path,
-  where today the honest expected outcome is *process abort*. Making it a
-  legible diagnosed failure means adding poll-boundary fault containment.
-- **What it cures:** nothing structurally. The two independent copies of the FQ
-  name remain, and the construct-only marker stays permanently unverifiable.
-- **Verdict:** the compensation package is larger than the cure in Option 3,
-  and it still leaves the mismatch class live. The audit explicitly rules out
-  the cheap version ("merely adding another positive test does not cure the
-  mismatch risk"). Not recommended — retained as the fallback if `/arch`
-  rejects Option 3 (§11).
-
-### Option 2 — a derive macro
-
-`#[derive(CLAdtType)] #[cladt(name = "shapes/Rectangle")] pub struct Rectangle;`
-
-- **Cost:** a new proc-macro crate (`cranelisp-platform-derive`) with
-  `syn`/`quote`/`proc-macro2` in its tree. Every out-of-tree DLL author gains
-  that build dependency and its compile time. `cranelisp-platform` is the
-  **external-audience facade** (Principle 15) and today its dependency story is
-  "one crate, no `libloading`, no frontend" — a proc-macro crate is a visible
-  regression of that story. It is also a second permanent public surface with
-  its own versioning obligations.
-- **What it cures:** the boilerplate (`struct` + `impl` + `const` → one
-  attribute). It does **not** cure the mismatch: a derive expands with no
-  access to the `include_str!`'d artifact. To check the name it would have to do
-  its own file IO at expansion time, re-deriving the artifact path from
-  `CARGO_MANIFEST_DIR` — a second, non-compiler-tracked source of truth for
-  where the schema lives (violates Principle 7, and loses `include_str!`'s
-  rebuild-on-change dependency tracking).
-- **Verdict:** highest cost, strictly weaker guarantee than Option 3. Rejected.
-
-### Option 3 — macro-emitted binding, checked against the embedded schema
-
-Extend `declare_platform!` with an optional `adts:` key that emits each marker
-**and** a compile-time assertion that its name is an entry in the artifact the
-same macro invocation embeds.
-
-- **Cost:** one `const fn` predicate in `declare.rs` beside the existing
-  `extract_layout_hash` (the same idiom — a const byte-scanner over the artifact
-  text), one optional macro arm, and migration of the five production markers.
-  No new crate, no new dependency, no `CLAdtType` contract change.
-- **What it cures:** name agreement becomes a **build error**, not a runtime
-  event — including for construct-only markers that runtime never checks
-  (Principle 18, enforce invariants structurally). The two copies of the FQ name
-  remain textually, but they are now compared by the compiler at the point
-  where both are in scope (Principle 7's spirit: one authority, mechanically
-  enforced agreement).
-- **Verdict:** smallest shape that makes agreement structural. **Recommended.**
-
-### Decision table
-
-| | Boilerplate | Name agreement | New dependency | New public surface | Covers construct-only |
-|---|---|---|---|---|---|
-| 1 — explicit impls | unchanged | runtime, path-dependent (abort on poll path) | none | none | no |
-| 2 — derive | reduced | still runtime (unless a second schema-path source is introduced) | proc-macro crate for every DLL author | derive crate | no |
-| 3 — macro + const check | reduced | **compile time** | none | one `const fn` + one macro key | **yes** |
+**A standalone marker macro** taking the schema text as an argument, instead of a
+key on `declare_platform!`. Smaller diff, but it re-asks "which schema text?" at
+a second site and can be forgotten entirely — an author who writes the marker by
+hand gets no check.
 
 ---
 
-## 5. The selected shape (pinned)
+## 4. The selected mechanism
 
-### 5.1 Macro surface
+An optional `adts:` key on `declare_platform!`, accepted **only on the arm that
+embeds a schema**. Supplying markers without a schema is a macro match failure:
+a platform that marshals no ADTs structurally cannot declare markers.
 
-A new optional `adts:` key, accepted **only on the `schema:` arm** of
-`declare_platform!` (arm 1). Omitting `schema:` and supplying `adts:` is a macro
-match failure — a platform that marshals no ADTs structurally cannot declare
-markers.
+Each entry names a marker and its fully-qualified key, and carries the author's
+own documentation through to the emitted type — the attribute passthrough is
+required rather than cosmetic, because production markers carry load-bearing
+rustdoc and a mechanism that discarded it would not be adopted. Per entry the
+macro emits the marker type, its `CLAdtType` impl, and a **const assertion** that
+the key names an entry the embedded artifact declares, with a message naming the
+marker, the key and both repair actions.
 
-```rust
-declare_platform! {
-    name: "web",
-    version: "0.1.0",
-    host: HOST,
-    schema: include_str!("web.platform-schema"),
-    adts: [
-        /// Marker for the `web/Listener` ADT (the value `bind-listener` constructs).
-        Listener   => "web/Listener",
-        /// Marker for the `web/Connection` ADT — an OPAQUE handle carrying `fd`.
-        Connection => "web/Connection",
-        Request    => "web/Request",
-        Response   => "web/Response",
-    ],
-    functions: [ … ]
-}
-```
+The predicate is a `const fn` living beside the existing const layout-hash
+scanner — the two const byte-scanners the macro depends on belong together, and
+neither is a method on the parsed `Schema`, which does not exist yet when they
+run. It sees exactly the bytes the runtime parser will see, so there is no second
+path to the artifact.
 
-Per entry the fragment is `$(#[$attr:meta])* $marker:ident => $key:literal` —
-the attribute repetition is required, not cosmetic: the four web markers carry
-load-bearing rustdoc today (`lib.rs:85-115`) and a mechanism that silently
-discards it would not be adopted. Expansion per entry:
+**Paren-depth tracking is what makes it exact.** A bare textual search would also
+match a *field type* occurrence, which is a reference rather than a declaration.
+The scan skips comments and compares the atom opening each top-level entry.
 
-```rust
-$(#[$attr])*
-pub struct $marker;
+**Scope limit, stated deliberately: bare `module/Type` keys only.** An applied
+instantiation key is a parenthesized form whose spelling depends on the
+generator's whitespace, so a byte compare is the wrong instrument for it. No
+production marker uses one. The arm rejects such a key with a message saying so,
+and an author who needs one writes an explicit `impl CLAdtType`, which stays
+legal.
 
-impl $crate::CLAdtType for $marker {
-    const TYPE_NAME: &'static str = $key;
-}
-
-const _: () = assert!(
-    $crate::schema_declares_type(__CRANELISP_PLATFORM_SCHEMA_TEXT, $key),
-    concat!(
-        "declare_platform!: ADT marker `", stringify!($marker), "` names \"", $key,
-        "\", which is no entry in this platform's embedded schema. Check the ",
-        "fully-qualified spelling (module/Type), or regenerate the artifact with ",
-        "`/platform-schema <name>` if the type was added or renamed."
-    ),
-);
-```
-
-`__CRANELISP_PLATFORM_SCHEMA_TEXT` is already emitted by arm 1
-(`declare.rs:219`), so the check sees exactly the bytes the runtime parser will
-see — no second path to the artifact. `assert!` with a `concat!`-built literal
-message is const-evaluable; the message names the marker, the key, and both
-repair actions.
-
-### 5.2 The predicate
-
-```rust
-pub const fn schema_declares_type(artifact: &str, type_key: &str) -> bool
-```
-
-Home: `declare.rs`, beside `extract_layout_hash` — the two const byte-scanners
-the macro depends on belong together, and neither is a `Schema` method (`Schema`
-is the runtime parsed form; these run before it exists).
-
-Algorithm: scan bytes tracking paren depth, skipping `;;` comments to end of
-line. Entries live at depth 1 inside `(schema …)`; at each `(` that opens depth
-2, compare the following atom against `type_key` byte-for-byte, terminated by
-whitespace or `(` or `)`. Return `true` on the first match. Depth tracking is
-what makes it exact — a bare textual `strstr` would also match a *field type*
-occurrence such as `(inner (primitives/IO _))`, which is a reference, not a
-declaration.
-
-Scope limit, stated deliberately: **bare FQ keys only** (`module/Type`). An
-applied instantiation key (`(primitives/IO primitives/Int)`) is a parenthesized
-form whose textual spelling depends on the generator's spacing, so a raw byte
-compare is not the right instrument for it. No production marker uses an applied
-key today. If one ever does, the author writes an explicit `impl CLAdtType`
-(which stays legal — §5.4) and the `adts:` arm rejects a key containing `(` or
-whitespace with a `concat!` message saying so.
-
-### 5.3 What the check proves, and what it does not
+### What the check proves, and what it does not
 
 - **Proves:** every marker emitted through `adts:` names a type the embedded
-  artifact declares, at build time, for every consuming path including
-  `construct`.
-- **Does not prove:** that the artifact is current. That remains the layout-hash
-  gate's job (host regenerates from live tables, compares against
-  `__cranelisp_layout_hash_<name>`; `--run`/`--link` refuse, REPL warns). The two
-  gates compose cleanly and neither subsumes the other: **`adts:` = name
-  agreement at build time; layout hash = layout agreement at load time.**
-- **Does not prove:** that a `read_field("…")` field-name string exists. Field
-  names remain runtime strings (§6).
+  artifact declares, at build time, for every consuming path — *including
+  construct-only markers, which runtime never checks*.
+- **Does not prove** that the artifact is current. That is the layout-hash gate's
+  job: `adts:` is name agreement at build time, the layout hash is layout
+  agreement at load time.
+- **Does not prove** that a field-name string passed to `read_field` exists.
 
-### 5.4 Compatibility and exceptions
+### Compatibility
 
-`CLAdtType` stays a public, hand-implementable trait with an unchanged contract;
-`adts:` is purely additive sugar over what an author can still write by hand.
-Two current sites keep the hand-written form and that is correct:
-
-- `platforms/shapes-badabi` — hand-rolls its manifest to bake a stale
-  `abi_version`, so it never invokes `declare_platform!` and embeds no schema.
-  Its marker is never dispatched (the host refuses the DLL at load).
-- The crate's own test fixtures — they install synthetic schemas per test binary
-  rather than embedding an artifact.
-
-Migration is therefore three in-tree markers-with-schema call sites (web ×4,
-shapes ×1), each a mechanical move of the existing `struct` + `impl` + rustdoc
-into the new arm.
-
-### 5.5 Rejected sub-variant
-
-A standalone `platform_adts!(SCHEMA_TEXT, [ … ])` macro instead of a
-`declare_platform!` key: smaller diff, but it re-asks "which schema text?" at a
-second site and can be forgotten entirely — an author who writes the marker by
-hand gets no check. Folding the emission and the check into the one macro every
-DLL already invokes exactly once makes the check unforgettable (Principle 18).
+`CLAdtType` remains a public, hand-implementable trait with an unchanged
+contract; `adts:` is additive sugar over what an author can still write by hand,
+so no out-of-tree DLL breaks. Two in-tree sites keep the hand-written form and
+that is correct: the ABI-refusal fixture hand-rolls its manifest and embeds no
+schema, and the crate's own test fixtures install synthetic schemas per test
+binary rather than embedding an artifact.
 
 ---
 
-## 6. Residual runtime-failure surface (accepted)
+## 5. Residual: the field-name axis
 
-The selected mechanism does not close the field-name axis: `read_field("fd")`
-takes a runtime `&str` and panics on a schema miss. That residual is accepted
-for now, and it carries one obligation that lands **with** the implementation,
-not after it:
+The mechanism does not close it. `read_field` takes a runtime string and panics
+on a schema miss, and that is accepted.
 
-**`resolve_field`'s miss diagnostic misattributes a type-key miss as a field
-miss.** When `T::TYPE_NAME` is absent from the schema entirely, `field_offset`
-and `ctor_names` both return `None`, so the panic at `adt.rs:359-370` prints
-`constructors:[]` and blames the *field name* — the one message an author would
-read while debugging exactly the mismatch this document is about. The fix is
-crate-internal and small: probe `schema.lookup_type(type_key)` first and emit a
-distinct "type key not in this platform's embedded schema; known keys: […]"
-message. This is worth doing regardless of which option `/arch` selects, and it
-is the diagnostics half of Option 1's compensation package if Option 3 is
-rejected.
+One adjacent repair landed with the mechanism rather than after it, because it is
+the message an author reads while debugging exactly this class of mistake: when
+the *type key* is absent from the schema entirely, the field lookup and the
+constructor lookup both come back empty, and the diagnostic used to blame the
+**field name**. It now probes the type key first and reports a type-key miss with
+the known keys, distinctly from a field miss.
 
-Future extensions deliberately **not** designed here (Principle 6 — complexity
-has a budget): compile-time field-name checking, per-marker generated field
-accessors, applied-key marker support. Each is a separate trigger away.
+**Reconsideration triggers:**
 
----
+- **The field-name axis** — a reported mismatch on a field string, or a platform
+  exceeding roughly a dozen distinct field names.
+- **Applied instantiation keys** — the first production marker that needs one.
+- **The Option-1 fallback** — only if a paren-depth byte scan over the embedded
+  artifact proves not to be const-evaluable and exact. Its full compensation
+  package would then be owed, poll-boundary fault containment included.
 
-## 7. Quality attributes
-
-- **Simplicity** — one `const fn` and one macro arm; no crate, no dependency,
-  no trait change. The mechanism is the same idiom the crate already uses for
-  the layout hash.
-- **Maintainability** — blast radius is the five production markers plus the
-  macro. `CLAdtType` remains hand-implementable, so no out-of-tree DLL breaks.
-- **Observability** — a build error naming the marker and the key replaces a
-  runtime panic (or, on the poll path, an unattributed abort). The §6
-  diagnostic repair covers the residual runtime path.
-- **Testability** (Principle 5) — the predicate is a pure total function over a
-  `&str`, unit-testable to the boundary/negative cells directly, in the idiom of
-  `declare.rs`'s existing `extract_layout_hash` scanner tests.
-- **Concurrency-safety** — untouched. This sprint's platform slice makes no
-  change to the poll ABI, `HostCtx`, or the reactor boundary.
-- **Performance** — untouched; the check is const-evaluated, zero runtime cost.
+Per-marker generated field accessors are deliberately not designed here;
+complexity has a budget (Principle 6), and each of these is a separate trigger
+away.
 
 ---
 
-## 8. Verification ideas (future rows, not S118 obligations)
+## 6. Quality attributes
 
-Per `tests/plan/s118-test-plan.md` §7, 0873 is design-only and carries no test
-cells this sprint. When the mechanism is implemented, the cells the design
-implies are:
+| Attribute | Assessment |
+|---|---|
+| **Simplicity** | One `const fn` and one macro key; no crate, no dependency, no trait change — the same idiom the crate already uses for the layout hash. |
+| **Maintainability** | Blast radius is the production markers plus the macro. `CLAdtType` stays hand-implementable, so nothing out of tree breaks. |
+| **Observability** | A build error naming the marker and the key replaces a runtime panic — or, on the poll path, an unattributed abort. |
+| **Testability** (Principle 5) | The predicate is a pure total function over `&str`, unit-testable to its boundary and negative cells with no host, no DLL and no schema install. |
+| **Concurrency-safety** | Untouched: no change to the poll ABI, `HostCtx` or the reactor boundary. |
+| **Performance** | Untouched; the check is const-evaluated at zero runtime cost. |
 
-1. `schema_declares_type` unit cells in `declare.rs`'s existing test module:
-   present-entry, absent-entry, present-only-as-a-field-type (the depth-tracking
-   negative), comment-embedded near-miss, empty artifact, applied-form key
-   rejection.
-2. A compile-fail cell (`trybuild`-style or a documented manual check) that a
-   misspelled `adts:` key fails the build with the intended message — the
-   negative witness the audit asked for, relocated from runtime to build time,
-   where it is deterministic.
-3. The §6 diagnostic: a unit cell pinning that a read against an unknown type
-   key reports the *type* miss, not a field miss.
-
-`/qa` owns whether these become plan rows; they are recorded here as the
-design's implications, not as obligations levied on this sprint.
+The check is an instrument, so it is held to the arming discipline the repository
+requires: a deliberately misspelled key must fail the build with the intended
+message, and the correct spelling must build. Both legs live with the predicate's
+own tests.
 
 ---
 
-## 9. The `arch` gate — APPROVED as designed (S118 Phase-3 exit)
+## 7. Cross-references
 
-The recommendation touches `cranelisp-platform`'s public surface, so the
-selection returned to `arch`, which **approved Option 3 unchanged**. Grounds, as
-ruled: it is Principle 18's structural form — schema-name agreement becomes a
-build error across every marker, including construct-only markers runtime never
-checks — at Principle 6's minimum cost. Both rejections were found sound: the
-derive adds a build dependency and a second public surface on the external
-facade and still needs a second, non-compiler-tracked source of truth for the
-artifact path (a Principle 7 violation by construction); keeping explicit impls
-founders on the call-path asymmetry §2 isolates.
-
-The three conditions the approval carries are at the head of this document.
-Option 1 stands as the documented fallback (§4, §10) **only if implementation
-falsifies the const-scanner premise** — not as a live alternative.
-
-The approved public-surface delta:
-
-| Item | Kind | `public-api.txt` impact |
-|---|---|---|
-| `pub const fn schema_declares_type(&str, &str) -> bool` | new public fn | one added line (additive) |
-| `adts:` key on `declare_platform!` arm 1 | new external-author macro contract | none (macros are not in the baseline) — but it is external-audience surface under Principle 15 |
-| `CLAdtType` trait | **unchanged** | none |
-| `CLAdt` / `CLTypeWitness` / `Schema` | **unchanged** | none |
-
-No cross-crate interface is involved: `cranelisp-types` is untouched, no cache
-schema version moves, the backend generator and the artifact grammar are
-unchanged, and the host load path is unchanged.
-
-## 10. Reconsideration triggers
-
-- **Implementation** lands the predicate, the arm, the five call-site
-  migrations and the §6 diagnostic in one change-set, in the S121 C7 visit
-  (`s121-c7-platform-visit.md` bundle P1).
-- **The Option-1 fallback revives only if implementation falsifies the
-  const-scanner premise** — that a paren-depth byte scan over the embedded
-  artifact is const-evaluable and exact. Its full compensation package would then
-  be owed: the §6 diagnostic repair, **plus** poll-boundary fault containment so
-  the production-path failure is diagnosable rather than an abort, **plus** the
-  negative witness against that contained path.
-- **The field-name axis** is revisited on a reported mismatch on a field string,
-  or a platform exceeding roughly a dozen distinct `read_field` names.
-- **Applied instantiation keys** (`(primitives/IO primitives/Int)`) are out of
-  scope by §5.2 and stay so until a production marker needs one; such an author
-  writes an explicit `impl CLAdtType`, which remains legal.
-
-## 11. Cross-references
-
-- `crates/cranelisp-platform/src/adt.rs` — `CLAdtType`, `CLAdt`, `resolve_field`
-- `crates/cranelisp-platform/src/declare.rs` — `declare_platform!`,
-  `extract_layout_hash` (the const-scanner idiom this design extends)
-- `crates/cranelisp-platform/src/schema.rs` — artifact grammar + parser
+- `crates/cranelisp-platform/src/adt.rs` — `CLAdtType`, `CLAdt`, field resolution
+- `crates/cranelisp-platform/src/declare.rs` — `declare_platform!` and the const
+  scanners; per-item truth is their rustdoc
+- `crates/cranelisp-platform/src/schema.rs` — artifact grammar and parser
+- `design/platform/platform.md` §6 — the two gates and how they compose
 - `design/arch/platform-interface.md` §5.5 — the generated-schema design
-- `design/arch/bounded-contexts.md` §5 — platform bounded context
-- `audits/cranelisp-platform-s117.md` §2.2, §R4 — the finding this answers
+- `design/arch/bounded-contexts.md` §5 — the platform bounded context

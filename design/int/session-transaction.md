@@ -78,7 +78,7 @@ The function flow between them, one turn:
 user submits (defn f …)             [redefinition of f]
   → cluster staging typecheck       [new scheme; edges; redef_slot pin]
   → COMMIT GATE: AbiSurface diff    [§2]
-      = AbiPreserving → reuse slot, carry code, codegen patches in place — DONE (today's path; L-D1)
+      = AbiPreserving → reuse slot, prior code → pool (§6.1), codegen patches in place — DONE (L-D1)
       = AbiChanging   → fresh slot for f; freeze old slot (retention pool); codegen f
   → TRANSACTION (eval thread, synchronous)                                 [§4]
       reverse index (on demand) → affected closure → SCCs, reverse-topo
@@ -467,11 +467,33 @@ struct RetainedCode {
 }
 ```
 
-One pool serves both retention classes: **frozen-slot supersession** (ABI-changing
-redefinition: the prior entry's `Code` clone is pushed with `trap_msg: None` *before* the
-commit replaces the entry) and **trap stubs** (`trap_msg: Some(buffer)` paired with the stub
-`Code`). The `kept_dlls` precedent exactly (`session_v4.rs:290`): a `Mutex<Vec<…>>`, never
-drained, documented leak-by-design, reclaimed wholesale at session end.
+One pool serves both retention classes: **displaced owners** (`trap_msg: None`) and **trap
+stubs** (`trap_msg: Some(buffer)` paired with the stub `Code`). The `kept_dlls` precedent
+exactly (`session_v4.rs:290`): a `Mutex<Vec<…>>`, never drained, documented
+leak-by-design, reclaimed wholesale at session end.
+
+**As built the displaced-owner class is wider than ABI-changing supersession.** The
+publication funnel takes the prior compiled `Code` off *every* replaced body arm — the
+`cranelisp_types` publication record carries it as `displaced_owner` whatever the arm's
+`RedefKind` — and the retaining paths push all of them, under the same live-table write
+guard that performed the replacement, so no canonical cell can name a displaced owner that
+is not yet pooled. Those paths are the staged commit gate
+(`worker::commit_staging_to_live`), the prepared compiled publication and its rejection
+restore (`worker::compile_and_publish_prepared_with`,
+`worker::retain_and_restore_rejected_compilation`), and `redefine::mark_broken`.
+
+Two displacement paths do **not** pool, and the pool's guarantees do not extend to them:
+
+- **cache-hit owner publication** (`worker::load_cached_module_via_linker`) drops its
+  displaced owners outright;
+- **pool-less contexts** — `commit_staging_to_live` with no session `SharedState` (unit
+  tests, dry-run shapes) — keep the old drop (§7.3).
+
+Neither exception is specific to a `RedefKind`: a displaced owner dropped there frees pages
+that an already-minted heap closure's embedded code pointer may still name. The retention
+claim in this section is therefore **asserted with that named falsifier** — a closure minted
+from a body one of those two paths displaces, still reachable after the drop. Whether either
+is reachable is `/qa`'s lane; this design asserts no such unreachability.
 
 ### 6.2 The lifetime pairing (fire item (i))
 
@@ -491,12 +513,17 @@ session end** — entries are never freed on recovery, because:
 2. even a same-ABI recovery cannot prove no detached strand is mid-call in the stub at
    re-point time — freeing on re-point is a use-after-free hazard traded for a few hundred
    bytes;
-3. the leak is bounded by the count of ABI-changing redefinitions + breaks in one session,
-   measurable (got_trace §9.3), and restart reclaims everything (spine §5.6 pin (iv)).
+3. the leak is bounded by the count of **pooled displacements** in one session — as built
+   that is every replaced compiled body on a retaining publication path (§6.1), not only
+   ABI-changing redefinitions and breaks — measurable (got_trace §9.3), and restart
+   reclaims everything (spine §5.6 pin (iv)).
 
-This extends Decision 31 Scenario 2 (per-redefinition reclaim) with an explicit carve-out:
-**reclaim-on-replacement applies only to `AbiPreserving` redefinitions**; `AbiChanging`
-supersessions retain.
+Against Decision 31 Scenario 2 (per-redefinition reclaim) this is not the narrow carve-out
+the design originally proposed. **No retaining publication path reclaims on replacement**:
+an `AbiPreserving` reuse-and-patch pools its prior owner exactly as an `AbiChanging`
+supersession does, so Scenario 2's reclaim survives only on §6.1's two non-pooling paths.
+Retention is the safer superset; the narrower rule this section used to state was a record
+defect, not a source one.
 
 ### 6.3 A latent as-built hazard this pool also cures (flag for `/dev`, in-sprint)
 
@@ -524,8 +551,12 @@ Slot policy per `RedefKind` (§2.1), applied where slots are already re-pointed 
 | Kind | Slot | Prior `Code` | Callers |
 |---|---|---|---|
 | `New` | `allocate_got_slot()` (as today) | — | — |
-| `AbiPreserving` | **reuse** prior slot (as today); codegen patches in place | carried, then replaced at codegen (Decision 31 Scenario 2 reclaim — as today) | untouched; late binding |
+| `AbiPreserving` | **reuse** prior slot (as today); codegen patches in place | displaced into `retained_code` at publication; no reclaim (§6.1, §6.2) | untouched; late binding |
 | `AbiChanging` | **fresh** `allocate_got_slot()`; the old slot is never written again | pushed to `retained_code` **before** `live.insert` | transaction (§4) |
+
+**Retention does not discriminate the kinds** — the publication funnel displaces the prior
+compiled `Code` off every replaced body arm and the retaining paths pool all of it (§6.1).
+What `AbiChanging` adds is the fresh slot, the freeze and the transaction, not the pooling.
 
 The existing invariant comment ("we must NOT introduce a second allocation policy that
 could disagree with typecheck's", `worker.rs:439–449`) is **superseded in the redefinition
@@ -558,9 +589,9 @@ a stale closure calling mid-window SIGSEGVs today). Changes:
 
 - **Stop zeroing slots.** Old pointers stay live until each symbol's new pointer lands
   (per-slot atomic swap) — the ABI-preserving members get gap-free late binding; nothing is
-  ever NULL. *Landed S101:* `redefine.rs::clear_module_codegen` no longer
-  zeroes; displaced `Code` goes to the retention pool (§6.3), pool-less contexts keep the
-  old drop.
+  ever NULL. *Landed S101:* the reload path no longer zeroes; displaced `Code` reaches the
+  retention pool through the shared commit gate named in the next bullet (§6.1, §6.3), and
+  pool-less contexts — that gate with no session `SharedState` — keep the old drop.
 - **Per-symbol gate at Replace commit**: each recommitted symbol classifies against its
   prior entry — `AbiPreserving` reuses + patches; `AbiChanging` takes a fresh slot and
   freezes the old one (prior `Code` → pool). *Landed S101:* the Replace path commits
@@ -760,10 +791,10 @@ Broken status renders **directly at the three display sites** — `handle_sig`
 `redefine.rs::broken_status_line` (`redefine.rs:1044`), which consults `shared.broken` and
 composes the `repl/spec.md` §18.4 provenance comment line (L-R1(d)). Composition is
 centralised in the helper, so there is no P7 duplication across the sites.
-`SymbolDescription` was **not** extended with a broken-status field. **Recorded residual
-(a nicety, not a lane obligation):** the agent-harvest consumer of `SymbolDescription`
-does not see broken status; carrying it onto `SymbolDescription` is the follow-up if
-harvest context ever needs it. The entry itself still answers with its retained
+`SymbolDescription` was **not** extended with a broken-status field. **That residual is
+closed, not carried (S122):** the record type is retired with the unreachable describe
+path (`int.md` §3.3), and the agent harvest it named never consumed it — harvest reads
+`get_introspection` and the `handle_*` battery. The entry itself still answers with its retained
 scheme/docstring — a broken symbol is introspectable, not erased (self-documenting REPL).
 
 ### 9.3 Observability

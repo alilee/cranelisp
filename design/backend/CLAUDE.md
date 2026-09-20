@@ -1,54 +1,61 @@
 # design/backend/
 
-Solution design documents for the Cranelisp backend (Cranelift codegen, JIT, RC, heap management). Owned by `/design`, narrow-deployed to this crate.
+Interior design for the Cranelisp backend — Cranelift code generation, RC and
+heap management, JIT lifecycle, caching and linking. Owned by `design`,
+narrow-deployed to this crate.
 
-Current selected delivery delta: `s122-closure.md`. Its result-root and Vec-guard
-convergence, typed closure-fixture adaptation, Q4 macro returned-alias correction
-and module evidence are delivered and independently reviewed. The Q5 matched
-comparison and generated runtime API baseline are confirmed; final integrated
-Phase-5 acceptance remains open.
-`s121-c4-visit.md` remains the broader preceding design record.
+**Start at [backend.md](backend.md).** It is the context master: what the crate
+is, its reading discipline, its internal shape, and the index to every
+subordinate design. This memory is navigation only and does not restate design
+content.
 
-## Purpose
+## What lives where
 
-These documents describe *how* the backend solves problems — IR generation patterns, heap management strategy, RC implementation, and trade-offs. They evolve alongside the implementation: sketched before coding, refined during, and updated when designs change.
+Three carriers, and keeping them distinct is what stops this directory decaying:
 
-This is distinct from:
-- `design/arch/interfaces.md` — the *boundary contract* (what goes in and out)
-- `spec/12-runtime.md` — the *language definition* (what runtime behaviour is correct)
+| Question | Carrier |
+|---|---|
+| What crosses the boundary, and what the crate promises the workspace | `design/arch/bounded-contexts.md` §3 |
+| What the Rust surface exactly is | Per-item `///` rustdoc in `crates/cranelisp-backend/src/`, with `public-api.txt` as its evidence |
+| What runtime behaviour is *correct* | `spec/12-runtime.md` |
+| How the crate solves its problems | Here |
+| How to work in the code — seam map, debug hooks, conventions | `crates/cranelisp-backend/CLAUDE.md` (`dev`-owned) |
 
-## Document collections
+Cite these rather than restating them. The recurring failure in this directory
+has been a design doc carrying its own copy of a boundary fact, a signature or a
+line-count inventory, and then decaying against it silently.
 
-This memory establishes two backend-owned collections:
+## Document collection
 
 | Collection | Purpose | Boundary |
 |---|---|---|
-| `backend-current-designs` | Current backend interior designs and retained live design evidence for Cranelift code generation, RC, heap management, JIT lifecycle, caching and linking. | The named Markdown products directly under `design/backend/`, excluding this memory. |
-| `backend-archive-records` | Frozen backend incident-debug records retained where they remain the canonical reproduction context and are not duplicated by current documents. | Markdown products under `design/backend/archive/`. |
+| `backend-current-designs` | Current backend interior designs and the retained design evidence that cannot be re-derived from source. | The Markdown products directly under `design/backend/`, excluding this memory. |
+| `backend-archive-records` | A live IO trace contract retained at its legacy path until the contract and its citations move together. | Markdown products under `design/backend/archive/`. |
 
-Both are established collections and retain live reference checking. Individual
-document status still determines whether a record is authoritative, partially
-superseded or historical; collection membership does not promote old content to
-current design.
+Membership is discoverability, not approval: each document's own status decides
+whether it is an adopted contract, an open proposal or retained evidence.
 
-## What to Document
+## Maintaining these documents
 
-- **Cranelift IR patterns**: how each Expr variant compiles to CLIF, builder idioms, block layout
-- **Heap management**: allocation strategy, RC inc/dec emission, drop glue generation, last-use analysis
-- **String codegen**: extern call patterns, string primitive dispatch
-- **ADT codegen**: constructor allocation, field access, match compilation, tag discrimination
-- **Closure codegen**: environment capture, calling convention implementation, side-table drop
-- **Binding scope**: binder identity, the scope chain and its slots, the capture environment, per-binding-vector lenient state (`binding-scope.md`)
-- **GOT and JIT**: function registration, GOT layout, relocation, caching
-- **Design evolution**: what changed and why across sprints, and what was considered but rejected (per-sprint history lives in the docs themselves and `sprints/archive/`)
-
-## Conventions
-
-- One file per major subsystem (e.g., `heap-rc.md`, `closure-codegen.md`, `match-compilation.md`)
-- Include CLIF IR examples for non-obvious compilation patterns
-- Record rejected alternatives briefly — "considered X, chose Y because Z"
-- Update docs when the implementation changes; stale design docs are worse than none
-- Retain one canonical home for each design fact. Keep an archive record only
-  when it remains the canonical source of distinct reproduction context or
-  rationale; otherwise fold any still-useful content into a current document
-  in current form and delete the duplicate. Git preserves deleted history.
+- **Every fact has one home.** Before adding a claim, find its canonical carrier
+  and cite it. A second account of a boundary fact is a future contradiction.
+- **Retain for a reader, not for a link.** A document earns its place by being
+  the canonical source of a current rule, an unresolved obligation, or evidence
+  that cannot be re-measured. Executed plans, landed migration steps and
+  comparisons against superseded alternatives are Git's job.
+- **Extract before deleting.** A still-useful rule or rationale moves into its
+  destination in that destination's form first; only then does the original go.
+  Deleting a record never resolves an obligation it carried — re-home the
+  obligation explicitly.
+- **Keep status honest.** Say what is landed, what is open and what is merely
+  asserted. A "Live" banner over an executed work-order misroutes the next
+  reader, which has cost real sprint time here.
+- **Grade claims, don't assert them.** Prefer a property that cannot be
+  constructed wrongly; failing that, one an executing check observes; failing
+  that, say plainly that it is asserted and name what would falsify it.
+- **Verify against source before citing it.** Line numbers decay fastest, then
+  file paths, then symbol names. Prefer naming the symbol and its module over
+  pinning a line.
+- **Cited sections are anchors.** Source and tests cite these documents by
+  section number. Check before renumbering or removing one, and repair the
+  citation in the same change when it must move.

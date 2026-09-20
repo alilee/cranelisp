@@ -1,4 +1,4 @@
-> **HISTORICAL — sprint-scoped working doc (Sprint 87), completed.** A completed consolidation design, retained for the audit trail; NOT a durable subsystem reference. The consolidated `Type` walk lives in `cranelisp-types` (`/arch`-owned). Verify any detail here against current source before relying on it. (Triaged S109, FIXME 0578.)
+> **HISTORICAL — Sprint 87 working doc, completed.** §2.4 is the live part, and the reason this doc is retained: three unit tests in `crates/cranelisp-types/src/types/tests.rs` cite it in their `// spec:` anchors, so that variant × convention table is a rendering contract rather than audit trail. Rehoming the table beside `render_type` — and re-pointing those anchors — is `arch`'s work; the current account of the consolidated walk is `design/arch/bounded-contexts.md` §"Type rendering". Everything else here (landing order, the `public-api.txt` delta, the next-skill handoffs) is spent; verify any detail against current source before relying on it.
 
 # S87 — FQ Type-rendering walk consolidation (one parameterized `Type` walk in `cranelisp-types`)
 

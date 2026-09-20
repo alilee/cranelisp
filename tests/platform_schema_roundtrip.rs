@@ -1,6 +1,6 @@
 //! platform_schema_roundtrip.rs — pin the `/platform-schema` artifact grammar
 //! agreement between the two crates that replicate it but cannot depend on each
-//! other (FIXME 0371 / `audits/platform-2026-06-14.md` MED-3).
+//! other (FIXME 0371 / the 2026-06-14 platform audit's MED-3, Git history).
 //!
 //! `cranelisp-backend::schema::generate_schema` EMITS the artifact;
 //! `cranelisp-platform::Schema::parse` CONSUMES it. The grammar is replicated in

@@ -331,7 +331,7 @@ where
     /// Emit `rc_inc` on the lambda body's return value when that value is a
     /// bare reference to a captured heap variable.
     ///
-    /// See `design/backend/slice-4-21-hello-io-investigation.md §4d/§4e` for
+    /// See `design/backend/ring2-rc.md §5.6` for
     /// the investigation history, and `design/backend/ring2-rc.md` (new
     /// **capture-return inc** rule, sibling of §5.5) for the normative
     /// description.
@@ -657,7 +657,7 @@ mod tests {
     }
 
     // spec: design/backend/ring2-rc.md "capture-return inc" (sibling of §5.5)
-    // spec: design/backend/slice-4-21-hello-io-investigation.md §4d/§4e
+    // spec: design/backend/ring2-rc.md §5.6
     //
     // Regression guard for Slice 4 defect. A lambda body whose return
     // expression is a bare reference to a captured heap variable MUST

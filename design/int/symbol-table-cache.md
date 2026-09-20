@@ -187,7 +187,7 @@ The detailed shape of `Code` (and whether to split `C` vs accept the enum) is th
 
 ## 8. Sketch Comparison
 
-The sketch's cache shape is documented in `design/backend/module-caching.md` §2 ("Sketch comparison"). In short, the sketch persisted a monolithic `CompiledModule` plus a separate `manifest.json` for invalidation, with no equivalent of structural-decl preservation (it reconstructed import scope from the per-symbol entries on cache-hit, losing the original groupings). The sketch had no schema versioning — version mismatches surfaced as cryptic deserialisation errors after compiler upgrades.
+The retired prototype comparison is recoverable from Git history. In short, the sketch persisted a monolithic `CompiledModule` plus a separate `manifest.json` for invalidation, with no equivalent of structural-decl preservation (it reconstructed import scope from the per-symbol entries on cache-hit, losing the original groupings). The sketch had no schema versioning — version mismatches surfaced as cryptic deserialisation errors after compiler upgrades.
 
 This design diverges from the sketch in three load-bearing ways:
 

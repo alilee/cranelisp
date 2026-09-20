@@ -23,10 +23,10 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | [Concrete codegen boundary](concrete-boundary-type.md) | Concrete-only typed body contract. |
 | [Backend keyed consumption](backend-keyed-consumer.md) | Resolved identities at the typecheck/backend boundary. |
 | [Typed resolution carriers](typed-resolution-carrier.md) | VarRef and ApplyRef transport contract. |
-| [Constructor keys](dotted-ctor-canonical-keys.md) | Canonical dotted constructor identities. |
+| [Constructor keys](dotted-ctor-canonical-keys.md) | Constructor storage-key grammar and its writer, reader and codegen-transport obligations. |
 | [Scoped module aliases](module-alias-scoped-lookup.md) | Referring-module lookup and shared key derivation. |
-| [Resolve home before enumeration](resolve-home-enumeration.md) | Resolved-home ownership of symbol enumeration. |
-| [Prelude and explicit imports](prelude-import-convergence.md) | Shared resolution and visibility boundaries. |
+| [Resolve home before enumeration](resolve-home-enumeration.md) | Display and index enumeration rooted at the resolved home; complete source coverage. |
+| [Prelude and explicit imports](prelude-import-convergence.md) | One candidate resolution for every name origin; REPL introspection's obligations to it. |
 | [Annotated S-expressions](annotated-sexp-node.md) | Read-time annotation representation and transport. |
 | [Macro availability](macro-availability-model.md) | Source-order availability and publication. |
 | [Macro expansion ownership](macro-expansion-ownership.md) | Frontend, typecheck and integration responsibilities. |

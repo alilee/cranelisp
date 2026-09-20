@@ -1,6 +1,5 @@
 //! Sprint 94 — FIXME 0424 dependent-binding spark substrate (par-map / par-reduce
-//! floor). QA-first (Phase 5 Stage 1) e2e guards. Plan: `tests/plan/sprint-94.md`
-//! §2; arch R5 (`design/arch/effect-concurrency.md` App-B step 3 + §14 trailing
+//! floor). E2e guards for arch R5 (`design/arch/effect-concurrency.md` App-B step 3 + §14 trailing
 //! note "pure-value spark widening").
 //!
 //! The stdlib `par-map`/`par-reduce`/`par-map-reduce` are ordinary `.cl` defs
@@ -17,7 +16,7 @@
 //!
 //! Posture: the correctness rows are floors that must HOLD as sparking matures
 //! (apply-arg sparking already ships; the let-path dependent-binding spark is the
-//! new substrate — `tests/plan/sprint-94.md` §2). The timing row is the floor
+//! new substrate in the retired S94 QA plan). The timing row is the floor
 //! sentinel (generous margin; timing flakiness is banned as a disposition).
 
 #[path = "helpers/mod.rs"]

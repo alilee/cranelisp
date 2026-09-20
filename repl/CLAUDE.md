@@ -16,12 +16,16 @@ It encompasses the entire user experience from invoking the repl as well as its 
 
 ## Files
 
+| Collection | Purpose |
+|---|---|
+| `repl-specification` | Current REPL and CLI specification, including its compatibility entry point and section index. |
+
+The collection is `spec.md` (compatibility entry point), `spec/index.md`
+(front matter, design principle and section map) and the numbered
+`spec/*.md` sections.
+
 | File | Contents |
 |---|---|
-| `CLAUDE.md` | This file — ownership and conventions |
-| `spec.md` | Compatibility entry point for the sectioned specification |
-| `spec/index.md` | Normative front matter, design principle, and section map |
-| `spec/*.md` | Normative REPL experience specification, split by numbered section |
 | `showcase` | Top-level showcase script — builds binary, plays demos |
 | `demos/` | `.demo` scripts, demo player (`demo-player.py`), and [local ownership and guidance](demos/CLAUDE.md) |
 

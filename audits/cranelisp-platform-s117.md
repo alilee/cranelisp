@@ -119,11 +119,11 @@ The live design volume is not proportionate:
 
 - `design/platform/platform.md` is 691 lines and still carries per-sprint pass
   logs at `:558-679`.
-- `design/platform/poll-support.md` is 1,414 lines, including a detailed
+- the former poll-support design (Git history) is 1,414 lines, including a detailed
   implementation order at `:1351-1414`.
 - `sprint71-redesign.md` (893 lines), `host-wiring-s76.md` (200), and
   `implementation-slice-s66.md` (164) remain beside current design rather than
-  under `design/platform/archive/`, even where their mechanisms are explicitly
+  under a separate historical-record directory, even where their mechanisms are explicitly
   superseded.
 - `platform.md:97-107` maintains a manual file-metrics and public-item census.
   It already understates current source (`lib.rs` recorded ~1,779 but now
@@ -202,7 +202,7 @@ do not add another manually maintained surface inventory.
 **Done:** `design/platform/` has a concise current `platform.md`, a
 right-sized DLL-authoring/interior design, and a right-sized poll-support
 design. Superseded per-sprint implementation plans move under
-`design/platform/archive/` with a short index. The current docs contain no
+a separate historical-record directory with a short index. The current docs contain no
 retired Decision-0031 callback commitment and no volatile LOC/public-item
 census. Historical rationale remains discoverable in archive or the decision
 record without being interleaved with current instructions.
@@ -274,3 +274,21 @@ accepted.**
 - `/dev` (platform) — if accepted, R1 and R5.
 - `/design` (platform) — if accepted, R2 and R4.
 - `/arch` — if accepted, R3 and any public-API consequence of R4.
+
+## Succession note — S122 document consolidation (2026-09-20)
+
+Not a disposition and not a reassessment. This report is now the sole platform
+audit carrier: the 2026-06-14 and S87 platform assessments and the S87 diagram
+are retired to Git history (last present at `cdd1f9ea`). §2.1 above reconciles
+S87 F1/F2/F4/F5; S87 had reconciled all seven 06-14 findings. S87 F3 (BC §5
+silent on the `--link` construction site) is met by
+`design/arch/bounded-contexts.md:710` (one builder, both host modes). S87 F6
+(fork-join ferry, downstream of this crate) is carried by
+`audits/cranelisp-intrinsics-s115.md` (safety-register row R13).
+
+Source observations at `cdd1f9ea` plus working tree, by grep only:
+`ABI_VERSION` is now 10 (`crates/cranelisp-platform/src/lib.rs:301`), so every "v9" above is dated. No "ABI
+v8", "now 8", "`concurrency`-gated" or `invoke_closure` text remains in the
+four crate sources (R1); `crates/cranelisp-platform/tests/common/mod.rs` exists (R5); FIXME 0872 (R3) was
+deleted at `4ed43430`. FIXMEs 0870, 0871, 0873 and 0874 remain `status: open`;
+whether 0870 and 0874 are complete is their owners' to verify, not inferred here.

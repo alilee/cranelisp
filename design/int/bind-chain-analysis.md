@@ -293,8 +293,7 @@ This matches the sketch's `classify_expr` approach. The function strips module q
 > anywhere in S85 — the reconciliation is entirely int-side. The prior batch-mode
 > / simple-batch / REPL three-flow design (`compile_single_module`,
 > `compile_and_run`, the `ReplInput::Defn` hook) is **stale** — those entry
-> points were retired by the S78 restructure (`design/int/s77-int-restructure.md`,
-> `s78-entry-module.md`). The pass is `#[allow(dead_code)]`
+> points were retired by the S78 cluster restructure (`int.md` §6.2). The pass is `#[allow(dead_code)]`
 > (`apply_bind_chain_analysis`, `src/session_setup.rs:328`, zero live callers;
 > `auto_schedule_defn`, `src/bind_chain_analysis.rs:41`). §5.3 below is the binding
 > design; §5.4–§5.5 (older prose) are retained as historical context only.
@@ -356,7 +355,7 @@ defaults are appended and BEFORE `check_program_compat`. Rationale for "over
 **Idempotency under retry-from-top.** `finalize_cluster` can run MULTIPLE times for
 one cluster: an FQ-auto-load gap (`check_program_compat` returns `Some(gap)` at `:1067`,
 `finalize_cluster` returns `ClusterOnce::Gap { dep }` at `:1074`) and the cluster
-**retries from the top** against larger live state (`s78-entry-module.md` §3). Each
+**retries from the top** against larger live state (`int.md` §6.2). Each
 retry rebuilds `expanded_program` fresh from `sexps` (Pass 2 re-runs) and calls
 `finalize_cluster` again. The pass MUST therefore be **idempotent** — running it on
 an already-`ParBind`-transformed tree must produce the same tree. This holds: the

@@ -14,7 +14,7 @@ invariants and predictably decay.
 
 **Subordinate documents:** `platform-dlls.md` (authoring and loading mechanics),
 `poll-leaf-authoring.md` (the poll-shape contract), `adt-marker-binding.md` (the
-marker mechanism decision). Superseded records are under `archive/`.
+marker mechanism decision).
 
 ---
 
@@ -148,15 +148,15 @@ Every node is `[header (16 bytes) | tag | fields…]`. The constructors return t
 **base** pointer, not the payload pointer, because the trampoline reads the tag
 at `base + HEAP_HEADER_SIZE`.
 
-| Tag | Constant | Payload | Fields | Constructed by |
-|---:|---|---:|---|---|
-| 0 | `IO_TAG_PURE` | **24** | `[tag, payload, payload_glue]` — glue at `IO_PURE_GLUE_OFFSET` (payload+16, base+32) | backend, and `CLIO::pure` in a DLL |
-| 1 | `IO_TAG_EFFECT` | 40 | `[tag, thunk_ptr, resource_token, fn_name, capacity]` at payload offsets 0/8/16/24/32 | `CLIO::effect*` in a DLL |
-| 2 | `IO_TAG_BIND` | — | `[tag, inner, cont]` | host |
-| 3 | `IO_TAG_PAR` | — | `[tag, count, branch_0…]` | host |
-| 4 | `IO_TAG_EFFECT_POLL` | — | `[tag, state_closure]` | backend |
-| 5 | `IO_TAG_LAUNCH` | — | `[tag, sub-tree \| 0 sentinel]` | host |
-| 6 | `IO_TAG_SELECT` | — | `[tag, branch carrier]` | host |
+| Constant | Tag | Payload | Fields | Constructed by |
+|---|---:|---:|---|---|
+| `IO_TAG_PURE` | 0 | **24** | `[tag, payload, payload_glue]` — glue at `IO_PURE_GLUE_OFFSET` (payload+16, base+32) | backend, and `CLIO::pure` in a DLL |
+| `IO_TAG_EFFECT` | 1 | 40 | `[tag, thunk_ptr, resource_token, fn_name, capacity]` at payload offsets 0/8/16/24/32 | `CLIO::effect*` in a DLL |
+| `IO_TAG_BIND` | 2 | — | `[tag, inner, cont]` | host |
+| `IO_TAG_PAR` | 3 | — | `[tag, count, branch_0…]` | host |
+| `IO_TAG_EFFECT_POLL` | 4 | — | `[tag, state_closure]` | backend |
+| `IO_TAG_LAUNCH` | 5 | — | `[tag, sub-tree \| 0 sentinel]` | host |
+| `IO_TAG_SELECT` | 6 | — | `[tag, branch carrier]` | host |
 
 **The `Pure` payload-glue word** is the one three-state force/ownership witness
 after publication: `0 = Scalar`, `1 = Claimed`, and every other value is
@@ -262,6 +262,36 @@ IO_PURE_GLUE_OFFSET` at absolute byte 32, and the version gate that makes the
 Pure arm's offset true — and owns no part of the emission. The backend owns its
 independent absolute-offset pin and the tag-dispatched emission.
 
+### 4.5 Tagged ADT heap layout
+
+The one heap shape a DLL *asks the host to build* rather than building itself.
+`CLAdt::<T>::construct` calls the `alloc_with_tag` host callback, which allocates
+`HEAP_HEADER_SIZE + 8 + 8 × field_count` bytes, writes the header, writes the
+variant tag as a `u32` at payload+0 (four bytes of pad follow, so fields stay
+8-byte aligned), writes the `i64` fields from payload+8 upward, and returns the
+**alloc base** pointer:
+
+```
+base + 0   [alloc_size: i64][rc: i64 = 1]   ; HeapHeader
+base + 16  [tag: u32][pad: u32]             ; payload + 0
+base + 24  [field_0: i64][field_1: i64] …   ; payload + 8, +16, …
+```
+
+Two properties are load-bearing, and both are asymmetries an author trips over:
+
+- **`alloc_with_tag` returns the base; `alloc` returns the payload.** Every
+  scalar, string and IO constructor subtracts the header size from what `alloc`
+  hands back; `CLAdt::construct` passes `alloc_with_tag`'s result straight
+  through. All heap `CL*` wrappers store base pointers, and `read_tag` /
+  `read_field` add `HEAP_HEADER_SIZE` to reach the payload.
+- **The tag is four bytes, the fields eight.** A field index is not a payload
+  offset; the pad word is what keeps field 0 at payload+8.
+
+The callback is wired to the `cranelisp-intrinsics` allocator by the host at DLL
+load. Per-item truth — including the uninitialized-host fallback that panics
+when a unit test constructs without a wired host — is the `HostCallbacks::
+alloc_with_tag` rustdoc, which is this layout's canonical statement.
+
 ---
 
 ## 5. Bounded-context invariants
@@ -318,6 +348,36 @@ a reader of this crate:
     catch is DLL-local (§4.2); intrinsics captures the fault and int composes the
     diagnostic, keeping the runtime crate diagnostics-free.
 
+### 5.1 No capability vocabulary
+
+**The crate does not enumerate, match on, allow-list or otherwise know any
+effect name, syscall or resource kind.** Effect names are data the DLL's manifest
+supplies and `manifest_to_descriptors` copies; nothing in the crate branches on
+one. `PollFn` carries an opaque state pointer and two host handles; `HostCtx`'s
+readiness registration is fd-generic, so a socket, a pipe, an inotify fd and a
+timerfd register identically; `ResourceRole` expresses a resource lifecycle
+abstractly (`accept` is a `Produce`, `read`/`send` are `Consume`, a close is a
+`Retire`) with no domain naming in the vocabulary.
+
+The consequence is what makes the extension seam cheap: **there is no list a new
+capability could be missing from**, so a platform capability nobody has written
+yet costs the interface nothing. A future socket platform declares its handle
+types as ordinary `.cl` modules and needs no platform-crate change — which
+`exemplar/platforms/web` already demonstrates for a real `TcpListener`, `accept`,
+`read` and `send`, entirely through the published facade.
+
+Grade: **asserted with a named falsifier.** The falsifier is any `match`,
+comparison or table lookup on an effect name, syscall name or resource kind
+appearing inside this crate. It is stated rather than instrumented deliberately:
+instrumenting it would require the manually maintained surface inventory this
+document's conventions exclude.
+
+The companion claim on the other side of the boundary — that the DLL never
+writes a non-zero glue word (§4.1) — carries the same grade, with its falsifier
+being any write to `IO_PURE_GLUE_OFFSET` in this crate or a `platforms/*` fixture
+other than `CLIO::pure`'s `0` sentinel, or a third `HostCallbacks` field that
+could supply one.
+
 ---
 
 ## 6. Schema and marker binding
@@ -338,7 +398,7 @@ Two independent gates, which compose and neither of which subsumes the other:
 
 Neither proves that a `read_field("…")` field-name string exists; field names
 remain runtime strings. That residual is accepted, with its trigger recorded in
-`adt-marker-binding.md` §10.
+`adt-marker-binding.md` §"Residual: the field-name axis".
 
 The marker mechanism, its two rejected alternatives, and why keeping explicit
 impls is the more expensive option — a mismatch on the poll path is an
@@ -394,4 +454,3 @@ scheduled.
 - `design/platform/poll-leaf-authoring.md` — the poll-shape leaf contract
 - `design/platform/adt-marker-binding.md` — the marker mechanism decision
 - `src/platform.rs` — the integration-side enactment of this contract
-- `design/platform/archive/` — superseded records, with an index

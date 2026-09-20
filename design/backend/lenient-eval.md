@@ -1282,38 +1282,6 @@ The full RC lifecycle of an IVar and its thunk:
 
 **Note**: The forced value's RC is not affected by the IVar mechanism. The thunk produces a result with `rc = 1`, and that value is returned through the IVar cell. It is then bound to the `let` variable and managed by the normal scope cleanup.
 
-## 7. Sketch Comparison
-
-### 7.1 What the Sketch Does
-
-The sketch implements lenient evaluation with the same barrier-force model:
-
-- `find_sparkable_bindings()` (`sketch/src/codegen/expr.rs:42-65`): same algorithm — free variable check, same `CHEAP_BUILTINS` list, same minimum-2 threshold.
-- `compile_let_lenient()` (`sketch/src/codegen/expr.rs:735+`): three-phase compilation — create/spark IVars, force in order, compile body.
-- `cranelisp_ivar_create/spark/force` (`sketch/cranelisp-runtime/src/intrinsics.rs:369-460`): same IVar state machine (PENDING/EVALUATING/RESOLVED), same CAS-based claiming, same spin-wait.
-- `CRANELISP_NO_LENIENT` env var (`sketch/src/codegen/expr.rs:17-18`): identical mechanism.
-
-### 7.2 Where the Reimplementation Follows
-
-- **Sparkability algorithm**: identical. Same independence check, same cost heuristic, same cheap-builtins list, same minimum-2 requirement.
-- **Barrier model**: identical. All IVars forced before body executes. No per-use-site forcing.
-- **IVar state machine**: identical states and transitions (PENDING=0, EVALUATING=1, RESOLVED=2).
-- **No IVar drop glue**: same decision, for the same reason (barrier model guarantees all IVars are forced).
-- **Rayon global pool**: same thread pool choice.
-
-### 7.3 Where the Reimplementation Diverges
-
-| Aspect | Sketch | Reimplementation | Rationale |
-|---|---|---|---|
-| **Base pointer convention** | Interior pointer (payload pointer returned by `alloc_with_rc`) — IVar fields at offsets 0, 8, 16 from payload ptr; RC at payload-8 | Base pointer (offset 0 = alloc_size, offset 8 = rc, offset 16+ = payload) — IVar fields at offsets 16, 24, 32 from base ptr | Arch Decision 10. Positive offsets throughout; consistent with all other heap types. |
-| **RC atomics ordering** | `Relaxed` for inc, `Release` for dec, `AcqRel`/`Acquire` for CAS | `SeqCst` for all atomic operations | Arch Decision 13. Consistency with the atomic RC convention used for all heap objects. Slightly more conservative but eliminates a class of ordering bugs. |
-| **Closure layout** | `[code_ptr(8) \| captures...]` at payload pointer; no drop_glue_ptr | `[header(16) \| code_ptr(8) \| drop_glue_ptr(8) \| captures...]` at base pointer; `CAPTURES_START = 32` | Arch Decision 11. Embedded drop_glue_ptr enables self-contained closure dec without side tables. code_ptr is at offset 16 (not 0). |
-| **Thunk code_ptr offset** | Offset 0 from payload pointer | Offset 16 from base pointer | Follows from the two divergences above. `ivar_force` reads code_ptr from `thunk + 16`. |
-| **IVar alloc size** | `alloc_with_rc(24)` — 24 bytes payload, header size implicit | `alloc_with_rc(24)` — 24 bytes payload (allocator adds 16-byte header = 40 total) | `alloc_with_rc` takes payload size, not total size. Both sketch and reimplementation pass 24. |
-| **`ivar_spark` RC access** | `(ivar as *mut i64).sub(1)` — negative offset to reach RC | `ivar + 8` — positive offset | Base-pointer convention: RC at fixed offset +8. |
-
-> Note: the §7.3 "IVar alloc size" row describes the original Sprint-25 5-field cell (40 bytes). The as-built cell carries a sixth `error` field for the fork-join ferry → `alloc_with_rc(32)` = 48 bytes total (§5; `ivar.rs`). The sketch comparison is left as the historical Sprint-25 record.
-
 ## 8. Observational Equivalence, Evaluation Order, and the Spec Note (Sprint 92)
 
 Apply-arg sparking is **observationally equivalent to sequential evaluation**, for the same reason the lenient `let` is (§2.5.2):

@@ -263,14 +263,13 @@ trait decl), and each caller decides the not-found default. **Do not collapse th
 not-found case into the read's own `None`** — that would conflate "no such method" with
 "method exists but field is None," which the HKT path relies on distinguishing.
 
-> **Note on the `src`-side / `checker`-side prelude-fallback.** The Wave-2 finding's
-> canonical `resolve_terminal_entry_or_prelude` is the NAME-resolution helper, and its
-> root-tier subtlety (the `src`-side REPL `describe_symbol` walk adds a `root`-module hop
-> the typecheck side does not) is a **`/int`-side** concern (`src/repl.rs`), out of scope
-> for this typecheck-internal decomposition. This doc's §3 dedup is purely the two
-> typecheck **bulk-scan** sites; it does not touch `resolve_terminal_entry_or_prelude` or
-> any name-resolution chokepoint. Flag for `/dev`: do NOT try to fold these bulk scans
-> into the name-resolution helper — they answer a different question.
+> **Note on the `checker`-side prelude-fallback.** The Wave-2 finding's canonical
+> `resolve_terminal_entry_or_prelude` is the NAME-resolution helper, out of scope for this
+> typecheck-internal decomposition. This doc's §3 dedup is purely the two typecheck
+> **bulk-scan** sites; it does not touch `resolve_terminal_entry_or_prelude` or any
+> name-resolution chokepoint. Flag for `/dev`: do NOT try to fold these bulk scans into
+> the name-resolution helper — they answer a different question. No `src`-side description
+> walk remains to contrast against; `design/int/int.md` §3.3 owns REPL display provenance.
 
 ### 3.4 Staging this dedup
 

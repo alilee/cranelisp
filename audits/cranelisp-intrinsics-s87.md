@@ -2,7 +2,7 @@
 
 > **Point-in-time, delta + currency assessment (2026-06-20).** Per `sprints/SPRINT.md`
 > Stage B depth model: this is a **delta + currency check** against the named baseline
-> `audits/intrinsics-2026-06-14.md`, not a from-zero look. It reconciles every prior
+> the 2026-06-14 intrinsics audit (Git history), not a from-zero look. It reconciles every prior
 > finding (still-open / regressed / resolved) on the same instrument, then walks the
 > fixed 7-lens checklist with emphasis on the unsafe audit (this is the highest
 > test-density / most `unsafe`-bearing crate) and RC-symmetry (the crate holds the

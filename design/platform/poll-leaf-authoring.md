@@ -8,13 +8,6 @@ This is the *platform side* of the boundary; the reactor, the permit pool and
 the trampoline cadence are owned elsewhere (`design/intrinsics/reactor.md`,
 `design/backend/io-trampoline.md`) and are referenced here, never redescribed.
 
-**Provenance.** This document replaces `poll-support.md` (S96, 1,414 lines),
-archived at `archive/poll-support-s96.md`. That record designed the v8
-leading-pair carrier — a mechanism the v9 ctx-vtable cutover deleted — and
-interleaved a landed implementation order with the contract. It also cites a
-FIXME number that was later reallocated to an unrelated filing; read it for
-provenance only.
-
 ---
 
 ## 1. What a poll leaf is
@@ -129,8 +122,24 @@ descriptor in a genuine field — for example
   (`token == fd` for a simple case; per-direction tokens for full duplex). The
   token is never stored on the value.
 
+**The opacity is toward the trampoline, not the user.** The trampoline threads
+the handle from the producing leaf to the consuming ones without ever reading a
+field; only the platform, which built it, reads the descriptor back out. That is
+what lets all scheduling live in the ctx vtable with no value-carried scheduling
+state. User code may still destructure the handle — it is the program's own
+resource, and no language mechanism makes an ADT non-destructurable. The analogy
+is a `TcpStream` that exposes `as_raw_fd()`, not a descriptor the program cannot
+reach.
+
 Fabrication of a handle is a platform-IO concern: the OS syscall is the
-capability checkpoint, not the ADT.
+capability checkpoint, not the ADT. A forged or unowned descriptor fails as an
+ordinary recoverable IO error, never as host undefined behaviour.
+
+**More handle data composes normally.** A platform whose admission token is not
+the syscall descriptor — a multiplexed or pooled resource — adds further genuine
+fields and projects the token from whichever it chooses. There is no header slot
+to coordinate with, because the token is always a projection the platform
+computes rather than a stored datum.
 
 ---
 
@@ -186,6 +195,24 @@ wants convenience wrappers over its own ADTs follows the same split.
 | `platforms/stdio` | one blocking effect and one poll leaf in one manifest, with the singleton-resource manifest-static token |
 | `exemplar/platforms/web` | the full shape: typed handles across poll leaves, `Produce` establishment and `Consume` operation, an embedded schema — built entirely on this contract with no platform-crate extension |
 
+**The web reference in full**, because it is the one in-tree platform that
+exercises every part of §3 and §4 at once. Four effects in one manifest, mixing
+blocking and poll:
+
+| Effect | Shape and role | Signature | How scheduling is driven |
+|---|---|---|---|
+| `bind-listener` | blocking, `Sequential`, role `None` | `(Fn [Int Int] (IO web/Listener))` | none — a bind is fast, and a `Listener` is not a per-poll resource |
+| `accept-conn` | poll, `Produce` | `(Fn [web/Listener] (IO web/Connection))` | registers on the **listener** descriptor it is establishing on; at `Ready` mints a `Connection` carrying the fresh descriptor |
+| `read-conn` | poll, `Consume` | `(Fn [web/Connection] (IO web/Request))` | reads the descriptor off the handle, acquires the **read** token, parks on readable |
+| `send-conn` | poll, `Consume` | `(Fn [web/Connection web/Response] (IO Int))` | same, on the **write** token — distinct from the read token, so the two directions do not serialize against each other |
+
+The handle types are ordinary `.cl` ADTs in `exemplar/web.cl`
+(`(deftype Connection [:primitives/Int fd])`), not platform declarations. The
+manifest signatures are fully qualified, as every manifest signature must be
+(`platform.md` §5, invariant 8). Per-effect truth — the descriptors, the
+parameter names and the leaf bodies — is the platform crate's own source and its
+crate-root rustdoc.
+
 ---
 
 ## 8. Cross-references
@@ -197,4 +224,3 @@ wants convenience wrappers over its own ADTs follows the same split.
 - `design/arch/platform-interface.md` §6.8.0b — the v9 handle model
 - `design/intrinsics/reactor.md` — the reactor, the permit pool, acquire-around-poll
 - `design/backend/io-trampoline.md` §12 — the poll-node bake and the env layout
-- `archive/poll-support-s96.md` — the superseded S96 record

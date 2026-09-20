@@ -1,6 +1,5 @@
 // REPL introspection-display `_doc` producer family — the coherent sibling of
-// `src/display.rs`. Extracted from `repl.rs` per `design/int/repl-decomposition.md`
-// §1.2 (S110, FIXME 0606). Pure relocation, behaviour-invariant.
+// `src/display.rs`. Module responsibilities: `design/int/int.md` §3.3.
 
 use super::*;
 
@@ -101,85 +100,6 @@ pub(crate) fn code_block_doc(header: &str, code: StyledDoc) -> StyledDoc {
 /// Build the `; classification[ - docstring]` metadata string (the R6 comment).
 pub(crate) fn classification_metadata(classification: &str, docstring: Option<&str>) -> String {
     append_docstring_comment(format!("; {classification}"), docstring)
-}
-
-/// Free-function core of [`CompilerSession::collect_related`] (FIXME 0194),
-/// taking the symbol tables + resolution scope explicitly so the cross-ref
-/// projection is unit-testable without constructing a full `CompilerSession`
-/// (`src/CLAUDE.md` testability discipline; mirrors the `worker::layout_hash_gate`
-/// / `splice_inline_mod_to_bare` extractions). See the method docstring for the
-/// per-category cross-ref rules.
-pub(crate) fn collect_related_for(
-    tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-    scope: &ModuleFullPath,
-    entry: &Binding<crate::code::Code>,
-    fq: &FQSymbol,
-    resolved_module: &ModuleFullPath,
-) -> Vec<FQSymbol> {
-    let mut related: Vec<FQSymbol> = Vec::new();
-    // Helper: resolve a bare name to its home module (chain-follow); skip if
-    // unreachable.
-    let fq_at_home = |name: &str| -> Option<FQSymbol> {
-        cranelisp_types::resolve_terminal_entry_and_home(tables, scope, name).map(|(_, home)| {
-            FQSymbol {
-                module: home,
-                symbol: Symbol::from(name),
-            }
-        })
-    };
-    match &entry.declaration {
-        // A `TypeDef` is a type → its constructors are the match arms.
-        Decl::Type(TypeRecord::Defined { info, .. }) => {
-            for ctor in &info.constructors {
-                related.push(FQSymbol {
-                    module: resolved_module.clone(),
-                    symbol: ctor.clone(),
-                });
-            }
-        }
-        // A `Constructor` Def → its parent type (defn-related). A product
-        // ctor additionally carries the type facet's constructors.
-        Decl::Callable(callable) => {
-            if let CallableOrigin::Ctor {
-                type_name,
-                type_def,
-                ..
-            } = &callable.origin
-            {
-                related.push(FQSymbol {
-                    module: type_name.module.clone(),
-                    symbol: Symbol::from(type_name.name.as_ref()),
-                });
-                if let Some(td) = type_def {
-                    for ctor in &td.constructors {
-                        related.push(FQSymbol {
-                            module: resolved_module.clone(),
-                            symbol: ctor.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        // A `TraitDecl` → its method defns + its implementing types.
-        Decl::Trait(_) => {
-            let tn = TraitName::from(fq.symbol.as_ref());
-            if let Some(decl) = cranelisp_types::lookup_trait_decl_chain(tables, scope, &tn) {
-                for m in &decl.methods {
-                    related.push(FQSymbol {
-                        module: resolved_module.clone(),
-                        symbol: m.name.clone(),
-                    });
-                }
-            }
-            for ty in cranelisp_types::get_implementing_types_chain(tables, scope, &tn) {
-                if let Some(fq) = fq_at_home(ty.as_ref()) {
-                    related.push(fq);
-                }
-            }
-        }
-        _ => {}
-    }
-    related
 }
 
 /// Indent every line of a rendered definition source by two spaces — the
@@ -396,97 +316,6 @@ impl CompilerSession {
         )
     }
 
-    /// REPL `/info NAME` — one-shot description of a symbol resolved from
-    /// `name` against the current REPL module. Returns the symbol's
-    /// classification (Fn / Type / Trait / Macro / Constructor / SpecialForm),
-    /// scheme (if applicable), docstring, and the captured source text.
-    ///
-    /// Pure read against `shared.symbol_tables` + `shared.introspection`.
-    /// Returns `None` if the bare `name` does not resolve in the current
-    /// module (no chain-follow performed at this layer — the caller may
-    /// chain-follow if it wants imports + reexports resolved).
-    pub fn describe_symbol(&self, name: &str) -> Option<SymbolDescription> {
-        // Probe current module first, then the prelude outer-scope hop, then
-        // root `""` (FIXME 0192 Residual Task 3 + FIXME 0193 — special-form
-        // metadata lives at root, not in user-mode tables; S78 §2.7.6 — prelude
-        // hop). Routes through the canonical `lookup_with_prelude_fallback`
-        // (root tier ON) so the three-tier walk has a single definition
-        // (S87 §4 dedup, Principle 7). The resolved module reflects where the
-        // entry actually lives so the returned `FQSymbol` is correct.
-        let (entry, resolved_module) = self.lookup_with_prelude_fallback(name)?;
-        let fq = FQSymbol {
-            module: resolved_module.clone(),
-            symbol: Symbol::from(name),
-        };
-        // Bucketing is the shared `classify_listing_entry` classifier (FIXME
-        // 0440) — single-symbol describe surfaces every category incl.
-        // SpecialForm. The scheme/docstring facets are pulled per-entry below.
-        let category = crate::worker::classify_listing_entry(&entry)?;
-        let (scheme, docstring) = match &entry.declaration {
-            Decl::Callable(callable) => (
-                Some(callable.arm.scheme.clone()),
-                callable.docstring.clone(),
-            ),
-            Decl::Overloaded(declaration) => (
-                declaration
-                    .arms
-                    .first()
-                    .map(|arm| arm.callable.scheme.clone()),
-                declaration.docstring.clone(),
-            ),
-            Decl::Macro(declaration) => (None, declaration.docstring.clone()),
-            Decl::SpecialForm(record) => (Some(record.scheme.clone()), record.docstring.clone()),
-            Decl::Trait(record) => (None, record.docstring.clone()),
-            Decl::TraitMethod(record) => (Some(record.scheme.clone()), record.docstring.clone()),
-            _ => (None, None),
-        };
-        let source = self
-            .shared
-            .introspection
-            .as_ref()
-            .and_then(|m| m.get(&fq))
-            .and_then(|intr| intr.source.clone());
-        // FIXME 0194: populate `related` from the same cross-ref collectors the
-        // universal-display paths (`format_type_display`/`format_trait_display`)
-        // use, projected to `FQSymbol`s anchored at each referent's home module.
-        let related = self.collect_related(&entry, &fq, &resolved_module);
-        Some(SymbolDescription {
-            fq,
-            category,
-            scheme,
-            docstring,
-            source,
-            related,
-        })
-    }
-
-    /// Collect the cross-reference `FQSymbol`s for `entry` (FIXME 0194).
-    ///
-    /// - **Type** (`TypeDef`, or a product ctor's type facet) → its constructor
-    ///   FQs (the `; match:` arms), homed at the type's defining module.
-    /// - **Trait** (`TraitDecl`) → its method-defn FQs (`; defn:`) homed at the
-    ///   trait module, plus the implementing-type FQs (`; impl:`) each homed at
-    ///   that type's defining module.
-    /// - **Constructor** → its parent type's FQ (`; defn:`).
-    ///
-    /// Other kinds (plain fns, macros, special forms) have no structural
-    /// cross-ref under §3.6 and return empty. Names that cannot be re-homed are
-    /// skipped rather than emitted with a wrong module.
-    pub(crate) fn collect_related(
-        &self,
-        entry: &Binding<crate::code::Code>,
-        fq: &FQSymbol,
-        resolved_module: &ModuleFullPath,
-    ) -> Vec<FQSymbol> {
-        collect_related_for(
-            &self.shared.symbol_tables,
-            &self.current_module_path(),
-            entry,
-            fq,
-            resolved_module,
-        )
-    }
-
     /// §9: Format an eval result for display.
     ///
     /// Produces the universal output format (spec §1.1):
@@ -525,17 +354,9 @@ impl CompilerSession {
     /// lines (FIXME 0363).
     fn format_eval_result_body_doc(&self, result: &EvalResult) -> StyledDoc {
         match result {
-            EvalResult::Definitions { symbols, .. } => {
-                let mut out = StyledDoc::new();
-                for (index, symbol) in symbols.iter().enumerate() {
-                    if index > 0 {
-                        out.plain("\n");
-                    }
-                    out.extend(self.format_definition_symbol_doc(symbol));
-                }
-                out
+            EvalResult::Definitions { symbols, .. } | EvalResult::Candidates { symbols, .. } => {
+                self.format_symbol_lines_doc(symbols)
             }
-            EvalResult::Def { symbol, .. } => self.format_definition_symbol_doc(symbol),
             // The value is READ here, while the turn's result owner is still
             // armed; the release happens after this whole `StyledDoc` is built
             // (`design/int/result-owner.md` §4.2). This formatter must never
@@ -574,67 +395,60 @@ impl CompilerSession {
         }
     }
 
-    /// Render one canonical definition identity through the same lookup and
-    /// classification path used by bare-symbol introspection.
-    fn format_definition_symbol_doc(&self, symbol: &FQSymbol) -> StyledDoc {
+    /// Render one canonical identity per line — the §1.1 primary line each
+    /// declaration's own §4.1 class rule produces.
+    ///
+    /// Shared by the definition echo and the §4.1.11 candidate listing, so a
+    /// candidate set and a definition batch cannot drift into two display
+    /// shapes.
+    pub(crate) fn format_symbol_lines_doc(&self, symbols: &[FQSymbol]) -> StyledDoc {
+        let mut out = StyledDoc::new();
+        for (index, symbol) in symbols.iter().enumerate() {
+            if index > 0 {
+                out.plain("\n");
+            }
+            out.extend(self.format_definition_symbol_doc(symbol));
+        }
+        out
+    }
+
+    /// Render one canonical identity's primary line: the declaration stored at
+    /// that identity, described by its own §4.1 class rule, plus the §18.4
+    /// provenance line when its code is gone.
+    ///
+    /// The declaration is read by DIRECT PROBE of the canonical key. Never
+    /// re-resolve the written spelling here: that is a second resolver at a
+    /// display seam, and it answers with a tier winner (Principles 7, 24;
+    /// `design/int/int.md` §3.3).
+    pub(crate) fn format_definition_symbol_doc(&self, symbol: &FQSymbol) -> StyledDoc {
         let name = symbol.symbol.as_ref();
         let module = &symbol.module;
 
-        // Builtin type names (Int, Bool, etc.) from primitives module.
+        // Builtin type names (Int, Bool, etc.) have no symbol-table declaration.
         if module.as_ref() == "primitives" && intrinsic_type_from_name(name).is_some() {
             return self.format_builtin_type_display_doc(name);
         }
 
-        let cur_module = self.current_module_path();
-        // S78 §2.7.6 — prelude outer-scope hop. A bare prelude-provided
-        // name (e.g. `add-i64`) is no longer flattened into the current
-        // table; when the per-module fallback bit is ON, look it up in
-        // prelude's own table (the `(export …)` re-export edge) so the
-        // chain-follow below still reaches `primitives/add-i64`. Routes
-        // through the canonical helper with `root: false` (S87 §4 dedup,
-        // Principle 7) — the NO-root-tier walk is deliberate: a bare
-        // special-form name must NOT resolve here (it falls through to
-        // the `None` arm below); the root cleanup is deferred (§4.1).
-        let (entry, lookup_module) = match self.lookup_with_prelude_fallback_opt(name, false) {
-            Some((e, m)) => (Some(e), m),
-            // 0571 D2: an UNIMPORTED qualified reference (`mathx/gcount`)
-            // is not in the current scope — resolve it in its OWN module so
-            // the bare FQ display renders the `; defn` introspection envelope,
-            // IDENTICAL to the imported-bare control, instead of the generic
-            // `; defined` fallback.
-            None => match self
-                .shared
-                .symbol_tables
-                .get(module)
-                .and_then(|t| t.get(name).cloned())
-            {
-                Some(e) => (Some(e), module.clone()),
-                None => (None, cur_module.clone()),
-            },
-        };
-        // Follow import chains to the definition.
-        let (entry, resolved_module) = match entry {
-            Some(ref e) => self.resolve_entry_for_display(e, &lookup_module),
-            None => {
-                // TraitImpl entries have `Trait.Type` names; not in symbol table.
-                let mut doc = StyledDoc::new();
-                if let Some((trait_name, target_type)) = name.split_once('.') {
-                    // FIXME 0671: qualify the trait and the type each by its
-                    // CANONICAL HOME, not the asking module.
-                    let trait_home = self.impl_line_home(trait_name, module);
-                    let type_home = self.impl_line_home(target_type, module);
-                    doc.plain("impl ");
-                    push_fq_name(&mut doc, &trait_home, trait_name);
-                    doc.plain(" for ");
-                    push_fq_name(&mut doc, &type_home, target_type);
-                } else {
-                    push_fq_name(&mut doc, &symbol.module, symbol.symbol.as_ref());
-                    doc.plain(" ");
-                    push_metadata(&mut doc, "; defined");
-                }
-                return doc;
+        let Some(entry) = self.entry_at(symbol) else {
+            // A trait impl's `Trait.Type` identity is not a symbol-table entry.
+            let mut doc = StyledDoc::new();
+            if let Some((trait_name, target_type)) = name.split_once('.') {
+                // FIXME 0671: qualify the trait and the type each by its
+                // CANONICAL HOME, not the asking module.
+                let trait_home = self.impl_line_home(trait_name, module);
+                let type_home = self.impl_line_home(target_type, module);
+                doc.plain("impl ");
+                push_fq_name(&mut doc, &trait_home, trait_name);
+                doc.plain(" for ");
+                push_fq_name(&mut doc, &type_home, target_type);
+            } else {
+                push_fq_name(&mut doc, module, name);
+                doc.plain(" ");
+                push_metadata(&mut doc, "; defined");
             }
+            return doc;
         };
+
         let display_name = match &entry.declaration {
             Decl::Overloaded(_) => cranelisp_types::bare_member_name(name),
             _ => name,
@@ -642,11 +456,11 @@ impl CompilerSession {
         // FIXME 0647: a trait's empty `; impl:` section is omitted for BOTH
         // the definition echo and the bare lookup (matching the deftype
         // `; match:` precedent); no bare-lookup-vs-echo flag.
-        let mut body = self.format_def_entry_doc(&entry, display_name, &resolved_module);
-        // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
-        // self-documenting — the ordinary per-class display (last-good
-        // signature) plus the provenance comment line (R6 metadata).
-        if let Some(line) = self.broken_status_line(name, &resolved_module) {
+        let mut body = self.format_def_entry_doc(&entry, display_name, module);
+        // S101 (repl/spec.md §18.4): a broken symbol is self-documenting — the
+        // ordinary per-class display (last-good signature) plus the provenance
+        // comment line (R6 metadata).
+        if let Some(line) = self.broken_status_line(name, module) {
             body.plain("\n");
             push_metadata(&mut body, line);
         }
@@ -657,13 +471,18 @@ impl CompilerSession {
     /// already canonical. A bare nullary constructor is resolved to its type
     /// home so `None` becomes `Option.None` without acquiring definition
     /// metadata or a runtime tag.
+    ///
+    /// This is the SOLE-CANDIDATE disposition (`design/int/int.md` §3.3): a
+    /// spelling denoting several declarations is listed at §4.1.11 by each
+    /// member's own class rule and never arrives here. Its `resolved_module`
+    /// read is one of the two display readers of the tier-first helper named in
+    /// that section's residual.
     fn format_display_only_value_doc(&self, ty: &Type, form: &Sexp) -> StyledDoc {
         let value = match form {
             Sexp::Bracket(items, _) if items.is_empty() => "[]".to_string(),
             Sexp::Symbol(name, _) => self
                 .lookup_with_prelude_fallback_opt(name, false)
-                .and_then(|(entry, module)| {
-                    let (entry, resolved_module) = self.resolve_entry_for_display(&entry, &module);
+                .and_then(|(entry, resolved_module)| {
                     let callable = entry.callable()?;
                     let CallableOrigin::Ctor {
                         type_name,
@@ -704,6 +523,12 @@ impl CompilerSession {
 
     /// Format a definition entry with its classification (spec §1.1, §4.1).
     /// Renders the role-tagged `StyledDoc` from `format_def_entry_doc`.
+    ///
+    /// The REPL display surfaces reach the same builder through
+    /// `format_definition_symbol_doc`, which resolves the entry from a
+    /// canonical identity; the remaining direct callers hold an entry already —
+    /// the agent's harvest ladder and the display unit tests.
+    #[cfg(any(test, feature = "agent"))]
     pub(crate) fn format_def_entry(
         &self,
         entry: &Binding<Code>,
@@ -872,170 +697,6 @@ impl CompilerSession {
                 doc
             }
         }
-    }
-
-    /// Resolve Import/Reexport chains to the underlying definition entry.
-    ///
-    /// Walks the full chain (user → prelude → primitives → …) so that
-    /// bare-value, introspection, and call paths converge on the same
-    /// terminal `ModuleEntry::Def` regardless of how many re-exports sit
-    /// between the current module and the defining module. Depth-limited
-    /// to match the typechecker's `resolve_to_terminal_entry_owned`
-    /// (spec §8.6.2 IMPORT_CHAIN_DEPTH_LIMIT). On cycle / depth exhaustion
-    /// or a broken link, falls back to the last successfully resolved
-    /// entry + module.
-    ///
-    /// Fix site for Sprint 61 Slice 1 Defect 4 (bare-primitive-name
-    /// invisibility). See `design/int/bare-primitive-value-path.md`
-    /// candidate 2 — the match arms in `check_bare_symbol_introspection`
-    /// do not cover `Import`/`Reexport`, and the prior one-hop resolver
-    /// could terminate on a `Reexport` intermediate (user → prelude →
-    /// primitives), causing the bare-value path to fall through while
-    /// the call and introspection paths resolved via their own recursive
-    /// walks. Aligning on a single recursive resolver closes the
-    /// divergence.
-    pub(crate) fn resolve_entry_for_display(
-        &self,
-        entry: &Binding<Code>,
-        current_module: &ModuleFullPath,
-    ) -> (Binding<Code>, ModuleFullPath) {
-        (entry.clone(), current_module.clone())
-    }
-}
-
-#[cfg(test)]
-mod collect_related_tests {
-    use super::*;
-
-    use cranelisp_types::{
-        Binding, CallableOrigin, Decl, DefnVariant, FQTypeName, ModuleFullPath, Realization,
-        Scheme, TypeDefInfo, TypeName, TypeRecord, Visibility,
-    };
-    use std::collections::HashMap;
-
-    fn tables() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
-        dashmap::DashMap::new()
-    }
-
-    fn ensure(tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>, path: &str) {
-        let p = ModuleFullPath::from(path);
-        tables
-            .entry(p.clone())
-            .or_insert_with(|| SessionSymbolTable::new_with_params(p));
-    }
-
-    fn fq(module: &str, symbol: &str) -> FQSymbol {
-        FQSymbol {
-            module: ModuleFullPath::from(module),
-            symbol: Symbol::from(symbol),
-        }
-    }
-
-    // spec: repl/spec.md §3.6 — `SymbolDescription.related` (FIXME 0194). A TYPE
-    // symbol's related set is its constructors, homed at the type's defining
-    // module. Before SW-C `related` was stubbed empty; this pins the population.
-    #[test]
-    fn related_populated_for_type_lists_its_constructors() {
-        let tables = tables();
-        ensure(&tables, "user");
-        let user = ModuleFullPath::from("user");
-
-        // (deftype Color Red Green) — a sum type with two nullary ctors.
-        let type_entry = Binding::new(
-            Decl::Type(TypeRecord::Defined {
-                info: TypeDefInfo {
-                    name: FQTypeName::new(user.clone(), TypeName::from("Color")),
-                    type_params: vec![],
-                    constructors: vec![Symbol::from("Red"), Symbol::from("Green")],
-                },
-                docstring: None,
-            }),
-            Visibility::Public,
-        );
-
-        let related = collect_related_for(&tables, &user, &type_entry, &fq("user", "Color"), &user);
-
-        assert!(
-            related.contains(&fq("user", "Red")) && related.contains(&fq("user", "Green")),
-            "a type's `related` MUST list its constructors homed at the type's \
-             module (spec §3.6); got {related:?}",
-        );
-        assert!(
-            !related.is_empty(),
-            "`related` MUST NOT be the empty stub it was before FIXME 0194",
-        );
-    }
-
-    // spec: repl/spec.md §3.6 — a CONSTRUCTOR's related set names its parent
-    // type, homed at the type's defining module.
-    #[test]
-    fn related_populated_for_constructor_names_its_type() {
-        let tables = tables();
-        ensure(&tables, "user");
-        let user = ModuleFullPath::from("user");
-
-        let scheme = Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: Type::ADT(
-                FQTypeName::new(user.clone(), TypeName::from("Color")),
-                vec![],
-            ),
-        };
-        let variant = DefnVariant {
-            params: Vec::new(),
-            body: cranelisp_types::Expr::IntLit {
-                value: 0,
-                span: Span::SYNTHETIC,
-                inferred_type: None,
-            },
-            span: Span::SYNTHETIC,
-        };
-        let view = cranelisp_types::MonoDefnVariant {
-            name: Symbol::from("Red"),
-            params: Vec::new(),
-            body: cranelisp_types::MonoExpr::lenient_from_expr(
-                &variant.body,
-                &Default::default(),
-                &Default::default(),
-                &Default::default(),
-            ),
-            span: Span::SYNTHETIC,
-            mode_summary: None,
-        };
-        let mut ctor_table = SessionSymbolTable::new_with_params(user.clone());
-        ctor_table
-            .install_concrete(
-                Symbol::from("Red"),
-                scheme,
-                Vec::new(),
-                None,
-                0,
-                CallableOrigin::Ctor {
-                    type_name: FQTypeName::new(user.clone(), TypeName::from("Color")),
-                    type_def: None,
-                    tag: 0,
-                    field_count: 0,
-                    internal: false,
-                },
-                Realization::Body { view, code: None },
-                Some(variant),
-                Vec::new(),
-                Visibility::Public,
-            )
-            .expect("constructor fixture installs");
-        let ctor_entry = ctor_table
-            .get("Red")
-            .cloned()
-            .expect("constructor fixture is readable");
-
-        let related = collect_related_for(&tables, &user, &ctor_entry, &fq("user", "Red"), &user);
-
-        assert!(
-            related.contains(&fq("user", "Color")),
-            "a constructor's `related` MUST name its parent type (spec §3.6); \
-             got {related:?}",
-        );
     }
 }
 

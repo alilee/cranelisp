@@ -1275,7 +1275,7 @@ Residual intake, classified. None gates the corrected harvest seam.
 | Context exports arm uses `public_symbols()` while `/exports` resolves candidates and filters internals | Same consumer family; advisory model context; no requirement fixes the grain and no wrong outcome is reproduced. | No observation now. `design` (int) decides convergence on the `/exports` producer; if adopted, one twin cell (context export names equal `/exports`) accompanies it. |
 | Pin narrower than "full current-module source" (types, traits, impls, file-loaded definitions absent) | Authority and realization disagree; not a defect until the owner chooses which moves. | `design` (int) decision, raised through `sprint`; `qa` allocates after it. |
 | `prelude_implicit_names` holds the prelude table guard across a second `symbol_tables` read | Latent safety residual in a shape FIXME 0666 already retired in harvest; present before this change and not widened; reached by `/imports` and every context dump. | `dev` (`src/`): collect-then-resolve, the constructive repair. No detector or stress cell. Delivered for this function; review found it correct. |
-| `src/CLAUDE.md` and `format.rs` say `/doc` follows the import chain through `resolve_entry_for_display`, now the identity; stale `defined_symbols()` mentions in `design/int/agent.md` and `harvest.rs` comments | Stale records. `/doc` on a re-exported primitive and on a constructor is observed working. | `dev` and `design` (int) record repair with their next edit of each file; no evidence. |
+| `src/CLAUDE.md` and `format.rs` said `/doc` follows the import chain through the identity helper `resolve_entry_for_display`, since removed (final section); stale `defined_symbols()` mentions in `design/int/agent.md` and `harvest.rs` comments | Stale records. `/doc` on a re-exported primitive and on a constructor is observed working. | The `src/CLAUDE.md` and `format.rs` `/doc` claims are repaired with the `/imports` guard correction, and review confirmed the new text against source. The `design/int/agent.md` and `harvest.rs` mentions stay with their owners' next edit; no evidence. |
 
 - Review A1 and A2 are mechanical comment repairs with root. A3 is accepted:
   the cap unit guards the Haiku ceiling only and is not a general budget guard;
@@ -1320,14 +1320,288 @@ Review findings, classified. None gates the agent lane.
 |---|---|---|
 | R1: the explicit-import twin is a reproduction without a `// defect:` line | Maintenance check (defect-corpus notation). Class token `enumeration-miss`: the in-scope enumeration omitted the explicit-import candidate source. It is not `resolver-mirror`; no name was resolved on a divergent path. | Root, mechanical, no test run or re-review: `// defect: class=enumeration-miss locus=src/agent/harvest.rs::push_in_scope_block found=S122 owner=/dev`, directly above the twin's `#[cfg(feature = "agent")]`. |
 | A1: a plain function under a second same-module spelling | No producer found; recording on the canonical function satisfies the honesty contract. | None. Refusing on a spelling mismatch would have a lower carrier strengthen §17.15.4. |
-| A2: `handle_imports` holds the current-module table guard across `resolve_to_definition` and `prelude_implicit_names()` | Latent safety residual, same family as the `prelude_implicit_names` row; pre-existing, not widened, no failure reproduced; slash-command path only. | Next correction basket, `dev` (`src/`): collect-then-resolve, folding the repeated resolve-and-filter sequence (A5) into one site if taken. No detector, stress cell or action now. |
+| A2: `handle_imports` holds the current-module table guard across `resolve_to_definition` and `prelude_implicit_names()` | Corrected; evidence adequate (see the `/imports` guard adequacy below). At intake: latent safety residual, same family as the `prelude_implicit_names` row; no failure reproduced; slash-command path only. | Delivered by `dev` (`src/`): collect-then-resolve. No detector, stress cell or action. |
 | A3: the units report overstates the import-only control | Report wording; the test is unchanged. | Root integrates the wording QA supplied with this judgment; the limit is stated above. |
 | A4: one spelling with two foreign sources renders once | Advisory model context; no requirement fixes the grain. | None. |
-| A5: the resolve, internal-listing and special-form filter sequence repeats at four sites | Single-source pressure; the predicate is already shared. | With A2 only. |
+| A5: the resolve, internal-listing and special-form filter sequence repeats at four sites | Corrected with A2. The resolve and internal-listing pair has one site, `listable_definition`, with three consumers; special-form exclusion stays with the two callers that apply it, because `/imports` categories never did. | Delivered with A2. |
 | A6: `design/int/agent.md` §23.1 feeder list contradicts the delivered feeder 2 | Stale record under the stale-records row. | `design` (int), in progress. |
 | A7: typographic apostrophe in the `push_in_scope_block` rustdoc | Nit. | Root, mechanical. |
+
+### `/imports` guard correction — adequacy
+
+The A2 and A5 correction is adequate against its allocation.
+
+- **Guard lifetime.** Read at its seam: `explicit_import_sources` returns owned
+  pairs and releases its table guard; `handle_imports` holds no guard at any
+  `listable_definition` call; the root-table guard closes before
+  `prelude_implicit_names()`. The property is constructive at these sites.
+  Nothing executes the lock-order hazard and none was reproduced, so no
+  red-to-green exists or is owed.
+- **Behaviour preservation.** Root's logs: the twelve `/imports` e2e pass
+  (12/12), the agent lane passes with both `harvest_in_scope_*` cells (81/81),
+  and the module tier passes with the new own-definition exclusion unit
+  (176/176, one more than the prior 175). QA read the logs and did not re-run
+  them; no format or lint log was supplied.
+- **Review.** Fresh `review` (`src/`), static: no blocking or required finding.
+  ADV-1 (`resolve_entry_for_display` was an identity step with live call sites
+  and stale "chain" narration in `src/eval.rs`, `src/repl/format_type.rs` and
+  `src/session_v4.rs`) is delivered and judged in the final section.
+  ADV-2 (the unit's positive leg is loose) needs no change: the filtered-view
+  and negative assertions discriminate the rule the helper single-sources.
+- **Limit.** The family is not closed by construction: a new caller can still
+  hold a table guard across `listable_definition`. The rustdoc states the
+  obligation.
+- **`/exports` (ADV-3) — delivered, adequate.** `handle_exports` collects the
+  public candidates as owned `(spelling, source)` pairs in one statement, so
+  the table guard drops before the loop calls `resolve_to_definition`. The
+  loop order and the internal filter, keyed on the exposed spelling, are
+  unchanged. The property is constructive at this site, read and not executed.
+  The five allocated preservation cells pass in root's default-suite run:
+  `exports_lists_public_symbols_after_defn`,
+  `exports_neg_nonexistent_module_not_found`, `exports_no_arg_shows_usage`,
+  `exports_show_ctor_once_canonical` and
+  `layout_cross_command_list_exports_byte_identical`. No separate review was
+  requested: the hunk is the allocated shape and carries no new material risk.
+  Folding into `listable_definition` still waits on `design` (int) choosing
+  the filter key. ADV-1 is delivered; the final section judges it, and it gates
+  nothing here.
+- **Format and lint.** Root's clippy run exits 0, and its warnings and the
+  `cargo fmt --check` differences all sit on lines this basket did not touch.
 
 The Haiku 2/2 observation stands and ACT-0960 stays deferred. Document
 conformance remains RED at 2,519 findings over 3,088 locations with 182
 historical exclusions, the counts recorded above; QA compared counts, not
 identities, for this run. Whole Phase-5 acceptance remains open.
+
+## Identity-helper removal and the qualified-display lead
+
+### `resolve_entry_for_display` removal (ADV-1) — delivered, adequate
+
+Class: maintenance of a private surface; no condition is added, changed or
+retired. At `HEAD` the helper returned `(entry.clone(), current_module.clone())`,
+so each caller already held the tuple it now uses. `arch` and `design` (int)
+confirm that no guarantee rests on it.
+
+- **Plausible wrong outcome.** A caller substitutes the wrong variable for the
+  forwarded tuple, so a declaration prints under the wrong home or with the
+  wrong entry. A type mismatch cannot compile; a same-typed swap can.
+- **Diff, read by QA.** The helper and its seven call sites are gone; a search
+  under `src/`, `crates/`, `tests/` and `design/arch/` is empty. Each site
+  binds the pair its unchanged producer returns: `eval.rs` renames the tuple
+  slot to `fq_module`; `handle_sig`, `handle_doc` and `handle_info` destructure
+  `resolve_entry_arg`; the two `format.rs` sites and `search.rs` take
+  `lookup_with_prelude_fallback*` directly. No hunk changes which lookup a
+  caller uses, its arguments or its precedence. The remaining removal hunks
+  are comments, plus two assertion-message strings in
+  `tests/repl_introspection.rs` that assert nothing new.
+- **Executed evidence, root's logs.** Every source and test edit predates the
+  rebuilt binary and the logs. All nine allocated e2e cells
+  (`repl_introspection` ×5, `repl_mod_devloop` ×2, `search` ×2) and the four
+  `bare_primitive_value_path_tests` units pass in the full run: 5,970 run,
+  5,969 pass, 1 skip, and the single RED is the document-conformance gate
+  already recorded above. The targeted lane passes 267/267. No test was added:
+  an output-preserving deletion has no red to observe.
+- **Format and lint.** Clippy exits 0 and none of its warnings sits on a line
+  the removal touched. `cargo fmt --check` reports the locations known before
+  the change; `src/repl/mod.rs` moves from 1015 to 1010 by line shift only.
+- **Documents.** Root's checker comparison: 710 documents, 2,284 findings,
+  160 removed and none introduced against the cohort baseline. QA took the
+  counts from root and did not re-derive identities.
+- **Independent review: not triggered.** The three waiver conditions hold:
+  the search is empty, every non-comment source hunk is a tuple pass-through,
+  and the cells pass.
+- **Limits.** The rewritten comments and `src/CLAUDE.md` sentences are read,
+  not executed; the checker validates their references only. The stale
+  `Import`-edge narration `dev` listed elsewhere in `src/` and other crates is
+  outside this change and stays with those surfaces' next `dev` pass. This
+  judgment covers the helper removal only; whole Phase-5 acceptance remains
+  open.
+
+### Qualified re-export spelling at the prompt — defect, corrected
+
+Class: acceptance evidence for `repl/spec/03-slash-commands.md` §3.8,
+`spec/08-modules.md` §8.4.6 and `repl/spec/17-embedded-agent.md` §17.1, which
+`spec` reads as settling the case without a ruling. It is independent of the
+helper removal above.
+
+- **Defect.** With the project prelude `(export [primitives [*]])`, the prompt
+  line `prelude/add-i64` printed
+  `:(Fn [primitives/Int primitives/Int] primitives/Int) <closure>` while
+  `/sig prelude/add-i64` printed the `primitives/add-i64 ; primitive - Add`
+  line. Binary surface, `owner=/dev`, class `resolver-mirror`.
+- **Cell.**
+  `repl_introspection::qualified_reexport_bare_display_parity_with_sig_neg_not_closure`:
+  the two primary lines are equal, name `primitives/add-i64`, and the first is
+  not `<closure>`. In-cell control: `primitives/add-i64` against its `/sig`
+  form. The bare control is
+  `bare_primitive_parallel_paths_converge_on_same_attribution`.
+- **Observed.** RED at the `<closure>` assertion with the control leg passing
+  (`.local/s122-display-red-followup.log`), so qualified introspection was not
+  broken generally; GREEN after the correction
+  (`.local/s122-display-final-green.log`).
+- **Mechanism.** Not observed at its seam. The control localises the fault to
+  the re-exporting qualifier; `design` (int) reads it as the same cause as the
+  listing defects below — several resolvers for one displayed identity — and
+  one correction closed both. The cell carries the shared seam tag.
+- **Unallocated.** A re-exporting qualifier that still exposes several
+  terminals; see the listing rule's "Not allocated".
+
+### In-scope candidate display — listing rule
+
+Class: acceptance evidence for the user ruling recorded in
+[SPRINT](../../sprints/SPRINT.md) §"In-scope introspection — current ruling",
+as `spec` records it in `repl/spec/04-self-documentation.md` §4.1.11 and
+`repl/spec/03-slash-commands.md` §3.8. Delivered and observed; the listing
+rule's requirement rows carry the cells below as their bands.
+
+**Rule as evidence reads it.** A bare spelling lists every in-scope canonical
+candidate, whatever the candidates' types, with no warning or error at import
+or at lookup. A use of the spelling resolves under `spec/08-modules.md`
+§8.6.5 exactly as before, so a use the candidate set cannot decide is still
+the existing use-site ambiguity error. Display compares no types; no equality
+policy and no generic-equality cell exists for it. Conflicting imports stay
+legal; the user defers that language question.
+
+**Defect intake.** Root's corrected probe
+(`.local/s122-b2-collision-observation.json`): with a prelude `foo` on `Int`
+and a local `foo` on `Bool`, bare `foo` and `/sig foo` print only the local
+declaration, while `(foo 1)` selects the prelude's. Under the ruling that omission is a
+defect of the binary surface (`owner=/dev`, class `resolver-mirror`). Observed
+once outside the suite and again in it; CD-1 is its permanent record. `design`
+reads the cause as a tier-first single-answer lookup; not observed at its seam.
+
+**Conditions.** Each cell is one isolated REPL session over monomorphic
+primitive types, asserts by substring, and compares bare and `/sig` output as
+unordered line sets. CD-4 and CD-7 are retired with the type-equality policy.
+
+| Id | Condition | Plausible wrong outcome | Fixture and observation | Observed before the fix; all GREEN after |
+|---|---|---|---|---|
+| CD-1 | Local and implicit-prelude candidates both list, at bare lookup and `/sig` | One candidate shown by tier; the other omitted | Prelude `foo` on one primitive type, local `foo` on another; bare `foo` and `/sig foo` each carry a primary line for the prelude's `foo` and one for the local `foo`, each fully qualified and with its own type, and neither `unbound` nor `ambiguous`. In-cell control: a call whose argument selects the prelude candidate still evaluates | RED observed: listing, 1 of 2 lines, `prelude/foo` dropped. Control, parity and no-rejection legs passed |
+| CD-2 | The same for two explicit imports — provenance twin of CD-1 | Two imports fall through to another tier or to `unbound` | `a/f` and `b/f` on different primitive types, both imported; same assertion over `a/f` and `b/f` | RED observed at the no-rejection leg: bare `f` answers the use-site `ambiguous bare name` error. Control passed; the `/sig` face was never reached |
+| CD-3 | Identically typed candidates list the same way; only a use is ambiguous | The import line or the lookup warns or errors early; one candidate hidden; or listing relaxes the use and a call silently picks one | `a/f` and `b/f` both `(Fn [Int] Int)`. Lookup session: the import line, bare `f` and `/sig f` produce both primary lines and no `ambiguous`. Use session, same fixture plus `(f 1)`: the existing use-site ambiguity diagnostic, which also shows the fixture collides | RED observed at the no-rejection leg, bare session: the import turns are silent and bare `f` answers the use-site ambiguity error. The `/sig` session was never reached. Use session GREEN observed |
+| CD-5 | One terminal reached by two import paths is one candidate: one line | Exposures listed instead of terminals, so a declaration prints twice | Import `a/f` directly and through a re-exporting module; bare `f` prints exactly one `a/f` line | GREEN observed, both legs; negative control for CD-2 |
+| CD-6 | `/info` and `/doc` list every candidate too | A command keeps its own single-answer lookup | Over the CD-1 and CD-3 fixtures, `/info` and `/doc` of the bare name each name both canonical declarations and print no `ambiguous`. §4.1.11 adds no per-command format, so nothing else is asserted | RED observed, one cell per command and fixture. CD-1 fixture: `/info` names only the local declaration and `/doc` prints only the local docstring. CD-3 fixture: `/info` and `/doc` each answer `unknown symbol 'f'` |
+| CD-8 | A candidate set holding a result-only-polymorphic nullary constructor still lists in full at bare lookup | The prompt gate describes only when every member describes, so one value-path member sends the whole turn to evaluation: the §8.6.5 use-site `ambiguous` error, or one candidate picked | `a/Empty`, a nullary constructor of a parameterised `a/Box`, and `b/Empty : (Fn [Int] Int)`, both imported; bare `Empty` names `a/Box` and `b/Empty` and prints neither `ambiguous` nor `unbound`. The constructor line's form (§1.5.1 or §4.1.2) is not asserted. Control, reused: `prelude_option_none_value_display_neg_definition_metadata` keeps the single-candidate §1.5.1 form | RED observed at the no-rejection leg: bare `Empty` answers the use-site `ambiguous bare name` error naming `a/Box.Empty` and `b/Empty`; the import turns registered, so the fixture is sound. The reused control passed in the same run |
+
+**Observed.** Red-to-green per cell; no planted fault is added.
+
+| Run | Log | Result |
+|---|---|---|
+| First eight cells | `.local/s122-display-red.log` | 2 pass, 6 fail; reused guards 142 pass (`.local/s122-display-controls-before.log`) |
+| Ten cells, lead control first, one cell per command | `.local/s122-display-red-followup.log` | 2 pass (CD-5, CD-3 use), 8 fail, each for its allocated reason |
+| CD-8 and its control | `.local/s122-display-edge-red.log` | 1 fail for the allocated reason, control pass |
+| After the correction: module tier, [introspection](../repl_introspection.rs), facade rows, `spec_08_*` | `.local/s122-display-final-green.log` | 1131 of 1131; all eleven cells, the reused control and the `dev` seam units pass |
+| Full suite | `.local/s122-display-final-default.log` | 5983 of 5984; the one RED is the document gate below |
+| Agent lane, isolated target | `.local/s122-display-final-agent.log` | 81 of 81 |
+
+- Every RED was a §4.1.11 or §3.8 violation on a fixture its control proves
+  sound; none was a fixture or harness failure. All faces fell inside the one
+  binary-surface pass `design` (int) records; no import-policy change
+  followed.
+- Faces, by provenance and surface: prelude-plus-local **omitted** a candidate
+  (CD-1, CD-6 over that fixture); two distinct imported terminals made bare
+  lookup **fall through to evaluation**, which correctly raised the §8.6.5
+  use-site error, and made `/info` and `/doc` answer `unknown symbol` (CD-2,
+  CD-3, CD-6, CD-8).
+- Controls that discriminate: CD-5 leg A differs from CD-2 only in reaching
+  one terminal instead of two, and listed; each red fixture's use still
+  resolved the full candidate set. The introspection surfaces and use-site
+  resolution answered one spelling differently — the `resolver-mirror` class,
+  observed as behaviour. Which reader answered was `design`'s code reading;
+  no cell names a function as the mechanism.
+- The nine red cells, the lead included, carry
+  `// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev`.
+  The locus is the seam name and stays. `test` appends `fixed=S122/<sha>` and
+  puts CD-8's comment in the past tense in one pass once the commit exists.
+- Limits. The pre-fix `/sig` faces of CD-2 and CD-3 were never reached; the
+  post-fix listing assertions force both line sets non-empty, so their parity
+  now discriminates. Cells compare canonical names and unordered line sets,
+  not order, wording or the constructor line's form.
+- The full suite's one RED is
+  `citation_drift::project_documents_conform_to_the_checked_in_declaration`:
+  2,282 corpus findings under the D7 no-baseline adoption, none on a line this
+  change touches. It is a maintenance check; its debt is D7's and it does not
+  gate this acceptance.
+
+**Reused, unchanged guards — no new cell.**
+
+- Import registration and use-site selection: the §8.6.4–§8.6.5 matrix in
+  [name shadowing](../spec_08_name_shadowing.rs), including
+  `def_over_import_repl_rejected`, the `def_over_prelude_*` trio,
+  `mode_parity_def_over_import_same_rejection_all_modes` and
+  `reuse_by_reexport_same_terminal_dedups`. These must stay green; a change in
+  any of them is a regression, because the ruling changes no language
+  resolution.
+- In [introspection](../repl_introspection.rs): single-candidate display
+  (`sig_shows_type_signature`,
+  `bare_primitive_parallel_paths_converge_on_same_attribution`), one
+  declaration's overload arms (`display_overloaded_fn_shows_all_variants`),
+  private qualified members (`private_fq_member_errors_not_displays_mode_uniform_neg`)
+  and lookup leaving definition display intact
+  (`bare_lookup_does_not_corrupt_info_and_source_definition_display`).
+
+**Not allocated.**
+
+- The lookup-shape × surface product is not enumerated e2e. The delivered
+  interior is one candidate query that the prompt, `/sig`, `/info` and `/doc`
+  consume (`design/int/int.md` §3.3), so the bare/`/sig` twins and CD-6
+  pressure that single path. Per-surface resolution returning there reopens
+  this allocation.
+- Candidate classes other than functions get no cell of their own: each
+  candidate prints by its existing class rule, which the reused guards cover
+  one candidate at a time.
+- Display order and exact wording: cells compare unordered line sets and
+  canonical names only.
+- A candidate set holding a zero-argument macro: a bare zero-argument macro
+  reference is an expansion, a use that precedes lookup (REPL §4.1.6 and
+  bare-symbol expansion, `spec/09-macros.md` §9.5). Use-site selection governs
+  that turn; the listing rule does not. The
+  prompt gate yielding that turn conforms. Which declaration the use then
+  selects is `cranelisp_types::resolve_macro_head`'s language behaviour in
+  every mode, outside the display surface; unobserved.
+- Private qualified members at `/sig`, `/info` and `/doc`: refusal is required
+  by `spec/08-modules.md` §8.7.3, and `/sig` prints what bare lookup prints
+  (`repl/spec/03-slash-commands.md` §3.8). The commands
+  and the prompt share one candidate query, so
+  `private_fq_member_errors_not_displays_mode_uniform_neg` pressures that
+  path; no command twin.
+- `describe_symbol` had no requirement, design condition or production
+  caller. `dev` deleted the chain with its two `collect_related` unit cells,
+  and `test` dropped the name from
+  `facade_pif_rows::row_42_read_side_accessor_methods_exist_on_compiler_session`,
+  a source-presence maintenance check. No replacement cell.
+  `rev3_describe_symbol_resolves_primitive_via_facade_method` observes `/info`
+  behaviour and stays.
+- A qualified spelling whose re-exporter exposes several terminals, the other
+  name-taking commands, `/search` and the agent's in-scope checks are outside
+  the bare-name rule as ruled; no cell until `spec` text or sprint scope
+  covers them.
+- Accepted residual, as `design/int/int.md` §3.3 records it: the legacy
+  tier-first helper still answers three membership readers and two display
+  readers — `/search`'s exact in-scope hit and the sole-candidate
+  nullary-constructor value display — so single provenance holds of the
+  listing, `/sig`, `/info` and `/doc` only. Asserted with a named falsifier
+  (`/search foo` over the CD-1 fixture), not executed; no cell.
+- Import conflict policy is deferred to ACT-0961; nothing here observes it.
+
+**Module evidence (`dev`, binary surface).** Unit cases at the candidate-query
+seam: none, one and several candidates; identically typed candidates both
+returned; a lookup result is not a defining turn; the qualified re-export
+spelling resolves through the same query as its `/sig` form; and
+`eval::tests::polymorphic_nullary_ctor_lists_among_several_candidates`, which
+runs the sole-candidate and several-candidate dispositions over one fixture.
+The terminal-deduplication unit pins int's reliance on the table's canonical
+keying only; CD-5 carries the distinct-path evidence.
+
+**Adequacy.** The class stands: nine acceptance cells red-to-green for the
+stated reason, two controls green on both sides, reused guards green, and an
+independent finding-scoped review with no surviving blocking or required
+finding (R1–R3, A1–A4 closed). Format shows no drift in changed hunks.
+The remaining lanes are observed, not assumed: the agent lane through its
+launcher, because `src/agent/harvest.rs` reads the same lookup, 81 of 81
+(`.local/s122-display-final-agent.log`); clippy on the binary surface with no
+error, no dead-code or unused lint after the deletion and no lint inside a
+changed hunk (`.local/s122-display-final-clippy.log`; no pre-change count was
+recorded, so the comparison is by location); and the `public-api.txt` set
+unchanged, its drift guard green in the full run. Evidence is adequate for the
+listing rule and the qualified lead.

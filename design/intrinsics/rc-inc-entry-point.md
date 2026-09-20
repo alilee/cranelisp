@@ -112,7 +112,7 @@ This is **not** a SeqCst choice: the inc has no cross-variable ordering obligati
 
 ## 3. The two `cranelisp-primitives` re-route sites (the /dev follow-on)
 
-Once `rc_inc` exists, `/dev` (narrow on `cranelisp-primitives`) routes both open-coded inc sites through it and deletes the open-coded arithmetic (FIXME 0397 §"Proposed resolution" item 3; closes audit MED-1, `audits/primitives-2026-06-14.md`). This is the *primitives* half — a separate /dev deployment from the intrinsics-crate `rc_inc` addition, sequenced after it (the entry point must exist before the consumers can route through it).
+Once `rc_inc` exists, `/dev` (narrow on `cranelisp-primitives`) routes both open-coded inc sites through it and deletes the open-coded arithmetic (FIXME 0397 §"Proposed resolution" item 3; closes the 2026-06-14 primitives audit's MED-1 (Git history)). This is the *primitives* half — a separate /dev deployment from the intrinsics-crate `rc_inc` addition, sequenced after it (the entry point must exist before the consumers can route through it).
 
 ### 3.1 `marshal.rs::shallow_rc_inc` — the bug fix
 

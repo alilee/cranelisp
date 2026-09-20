@@ -7,8 +7,8 @@
 > keyed-lookup consumer (`design/arch/backend-keyed-consumer.md`, LANDED;
 > Principle 24; BC §3 invariant 10). Disposed at S111 Phase 1.
 >
-> **Predecessor.** `audits/cranelisp-backend-s107.md` (2026-07-11, 7
-> recommendations + acid-test addendum). Its §4 disposition trail was **never
+> **Predecessor.** The S107 backend assessment (Git history; 2026-07-11, 7
+> recommendations + acid-test addendum). Its disposition trail was **never
 > written** — see §2.3, the single most consequential process finding here.
 >
 > **Method.** Read-only. Independent grep-gate verification (§2.1, exact
@@ -93,10 +93,10 @@ loud:
 
 ### 2.3 The S107 disposition lapse — the process finding
 
-`audits/cranelisp-backend-s107.md` §4 ("Disposition trail — appended at S108
+The S107 backend assessment's §4 ("Disposition trail — appended at S108
 Phase 1") contains **only the placeholder**; the file ends with the A.4
-addendum. `sprints/artefacts.md:7` explicitly names "S108 Phase 1 disposes
-`audits/cranelisp-backend-s107.md`" as an open obligation. No sprint record
+addendum. `sprints/artefacts.md:7` explicitly names S108 Phase 1's disposal of
+that assessment as an open obligation. No sprint record
 disposes it: `sprints/archive/sprint-108.md` Phase 1 processed the /search
 increment batch and dispatched the *typecheck* rotation; S109 Phase 1 disposed
 `cranelisp-typecheck-s108.md` (its §4 trail is written, R-1/R-2 accepted → FIXMEs
@@ -194,7 +194,7 @@ verified miss-path is a hard compile-time error; the two release-silent soft
 spots (#3) have no failing observable behaviour today.
 
 ### R1 — Dispose BOTH backend assessments at S111 Phase 1; append the missing S107 trail [small, /sprint]
-**Evidence**: §2.3 — `audits/cranelisp-backend-s107.md` §4 empty; `artefacts.md:7` named the obligation; four of its seven recommendations hit their 4th audit as a direct result. **Done**: S111 Phase 1 processes this assessment AND retroactively appends the S107 §4 trail (each of R1–R7: accepted → FIXME, or declined + rationale — declining is legitimate; lapsing is not); `/sprint` adds the missed-disposition case to the Phase-7 close checklist item that verifies the audit cycle (the checklist verifies dispatch happened; it must also verify the *previous* assessment was disposed).
+**Evidence**: §2.3 — the S107 backend assessment's §4 empty; `artefacts.md:7` named the obligation; four of its seven recommendations hit their 4th audit as a direct result. **Done**: S111 Phase 1 processes this assessment AND retroactively appends the S107 §4 trail (each of R1–R7: accepted → FIXME, or declined + rationale — declining is legitimate; lapsing is not); `/sprint` adds the missed-disposition case to the Phase-7 close checklist item that verifies the audit cycle (the checklist verifies dispatch happened; it must also verify the *previous* assessment was disposed).
 
 ### R2 — Pin the three hard-miss `CodegenError` families (the §9 negatives) [small, /qa plan + /testing or /dev(backend) unit tier]
 **Evidence**: §2.6 risk 1 — the design's own acceptance surface (`backend-keyed-consumer.md` §9) specifies carrier-miss / entry-miss / slot-less-template as "distinct pinned CodegenError message families"; zero tests assert them. The unit tier already has everything needed: the KC-W0-6 harness hand-builds tables and carriers, so an absent-carrier / dangling-FQ / `Polymorphic`-entry fixture is a few lines each. **Done**: one unit test per family per seam class (call seam `apply.rs:1171/:1178`; pattern seam `match_codegen.rs:251/:258`; value seam `fn_as_value.rs:608` + the 0585 backstop `literals.rs:214`), each asserting the message family — so a reintroduced silent fallback fails a named test, not nothing. This cures the risk (the discipline becomes regression-guarded), not the symptom.
@@ -214,7 +214,7 @@ spots (#3) have no failing observable behaviour today.
 ### R7 — Surface GOT slot exhaustion as a diagnosed error (S107 R7, unchanged; 3rd consecutive naming of the F-family) [small, /arch — the seam is `cranelisp-types`]
 **Evidence**: §2.6 risk 3. The only UB-class risk in the register, unpinned, in the release-compiler phase, with the in-source note (`crates/cranelisp-backend/src/got.rs:26-33`) explicitly waiting for exactly this ruling. **Done**: fallible `allocate_got_slot` (or hard-checked `store_slot`) with a session-surfaced error; a 1023→1024 boundary unit test; the residual-risk notes updated to point at the cure.
 
-### R8 — `design/backend/backend.md` truth pass, now including the keyed-consumer end-state [medium, /design(backend); design feedback]
+### R8 — Backend master truth pass, now including the keyed-consumer end-state [medium, /design(backend); design feedback]
 **Evidence**: §2.3 row R6 + §1 realisation. The S107 R6 inventory stands (repoint the ×7 retired-facade citations to BC §3 + source rustdoc; fix the module inventory; reconcile `FunctionArtifacts`; archive the executed one-shots and sketch-voiced trio) **plus one new obligation**: when the next `/arch` archive triage moves `backend-keyed-consumer.md` to `design/arch/archive/` (its trigger is met, parked on the bootstrap R-2 tail), the per-crate master doc must carry the consumer-side narrative — today `backend.md` does not contain the words "keyed" or "resolved_target" at all, so archiving the arch doc would leave the crate's defining design invisible in `design/backend/`. **Done**: every live `design/backend/` doc has resolvable authority pointers and no source-falsified claims; `backend.md` (or a successor lean doc) states the keyed-consumer model with pointers to BC §3 inv 10 + `context.rs` rustdoc; historical docs in `archive/`.
 
 ---
@@ -224,3 +224,31 @@ spots (#3) have no failing observable behaviour today.
 *(Appended at S111 Phase 1 by `/sprint` + the user — accepted → FIXME number,
 or declined + rationale. Not written by `/audit`. Per R1, the S107
 assessment's missing trail is appended in the same pass.)*
+
+---
+
+## 5. Succession note — S122 document consolidation (2026-09-20)
+
+Not a disposition and not a reassessment; §1–§3 stand as the S110 point-in-time
+record. This report is now the sole backend audit carrier: the 2026-04-23, S87
+and S107 backend assessments and their diagrams are retired to Git history
+(last present at `cdd1f9ea`). §2.3 above carries the S107 R1–R7 reconciliation;
+S107 §1 had reconciled all twelve S87 findings.
+
+The recorded decision for the 4th-audit items is in
+`sprints/archive/sprint-111.md` (user ruling 2026-07-17, "SHIP ALL"); this
+assessment's disposition section was never filled. Source observations at `cdd1f9ea` plus working tree, by grep
+and brace-count only (no build, no test run):
+
+| Rec | Observed in source | Reading |
+|---|---|---|
+| R2 | `crates/cranelisp-backend/src/compiler/apply/keyed_miss_tests.rs`, `crates/cranelisp-backend/src/compiler/control_flow/fn_as_value/keyed_miss_tests.rs` exist | negatives authored; per-family completeness not checked |
+| R3 | `constructor_metas` still `filter_map` + `debug_assert!` (`crates/cranelisp-backend/src/compiler/context.rs:353-380`); `concrete_field_types` still `return Vec::new()` ×2 (`crates/cranelisp-backend/src/compiler/match_codegen.rs:738`, `:744`); value-seam miss still "undefined variable" (`crates/cranelisp-backend/src/compiler/literals.rs:261`) | **unchanged**; no action or FIXME names it; `design/backend/backend.md` records the two soft spots (its line 113 at this date) |
+| R4 | one `fn build_isa` (`crates/cranelisp-backend/src/cache/object.rs:76`); `got.rs`, `codegen_types.rs`, `compile_defn*`, `build_compile_context`, `CompileArtifacts`, `set_disasm(true)`, `module_aliases` field, `exe.rs` stale allow/comment all absent. `crates/cranelisp-backend/src/jit.rs` lines 131, 182, 564 and 587 still cite the retired `facades/backend.md` | landed except the four stale `jit.rs` citations |
+| R5 | `compile_resolved_call` 81 lines (`crates/cranelisp-backend/src/compiler/apply.rs:618`); `compile_to_module_impl` 134 (`crates/cranelisp-backend/src/lib.rs:663`); `compile_apply` 240 (same file, `:288`); `apply.rs` 2,969 and `fn_compiler.rs` 5,179 lines | named funnels split; `compile_apply` and module sizes grew |
+| R6 | `closure_drop_glue_name`/`curry_drop_glue_name` single-homed in `crates/cranelisp-backend/src/compiler/resolution.rs:138`, `:152`; `crates/cranelisp-backend/src/compiler/resolution/tests.rs:56-98` calls the production naming functions; ADT glue moved to `crates/cranelisp-backend/src/drop_glue.rs` | naming identity single-homed; builder-skeleton convergence not assessed |
+| R7 | `allocate_got_slot_with_claims -> Result<usize, GotExhausted>` (`crates/cranelisp-types/src/module.rs:1433`); `crates/cranelisp-types/src/got.rs:142` and `:155` are `assert!` | landed; boundary test not located by name |
+| R8 | `design/backend/backend.md` mentions "keyed" 27×, still cites `facades/backend.md` 3× | in progress under the S122 design consolidation |
+
+`FunctionArtifacts` (S87 F9) survives at `crates/cranelisp-backend/src/lib.rs:312`; `design/backend/compile-to-module.md:47`
+still states it deleted (its `:600-606` banner marks the shapes historical).

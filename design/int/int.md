@@ -83,8 +83,6 @@ generated API checks are the concrete facade evidence. Where this document
 drifts from the bounded-context statement or an approved public contract, route
 the boundary conflict to `/arch` and update this doc accordingly.
 
-> **S76 implementation plan — see `design/int/s76-implementation-plan.md`.** This master is S64-era and substantially stale w.r.t. the as-built (`cluster.rs`, `cache.rs`, `got_trace.rs`, `trace.rs`, `io_trace.rs`, `display.rs` have since landed in `src/`; many §14/§16 FIXMEs are resolved). The S76 plan is the authoritative sequencing for the facade-arc wash-through (W-Absorb), the parallel-JIT-pipeline collapse (W-Collapse), the LOCKED three-pass macro orchestration (W-Macro), W-Enablement, and host-wiring. Two master claims are **superseded by the S76 LOCKED W-Macro decision** (`macro-availability-model.md` §0): (1) §2 note 4 / §6.3's "macro-vs-fn discrimination is orchestrator-owned via a `MacroInMem` gap peek" — recognition is now a `cranelisp_types::resolve_macro_head` query in int's Pass-1 `process_cluster` expand loop over the committed view, and the `block_for_macro_codegen` path is DELETED not wired (no same-module non-macro clause-callee case exists under the lock); (2) §3/§6's "macro expansion is frontend's job / `int::process_form` is the gap-orchestrator not the expander" — int now OWNS macro execution via `cranelisp_types::MacroExpander` over `src/expander.rs`'s invocation core + `src/marshal.rs`, and the free-standing `expand_sexp_recursive` walk / `SymbolTableMacroResolver` DELETE (BC §6 int bullet).
-
 > **Why int is the largest surface.** int integrates everything. It owns three internal cadences (compilation, REPL, watcher), four observability sinks (scheduler trace, IO trace, GOT trace, introspection store), the only `Code` carrier instantiation site, the gap-orchestration crossing point, the slash-command surface, the cache writer, the file watcher, the line editor, the CLI, the `--link` driver, the prelude loader, and the error formatter. By design, int has the most subordinate docs and the largest LOC count.
 
 > **Audit reconciliation.** `audits/src-20260423.md` (262 lines, 2026-04-23) is the most recent crate audit. It pre-dates Decisions 38 + 39 by 5 days and pre-dates Decisions 40 + 41 + 42 by ten days; its current-state findings (the seven F1–F7 structural issues) remain ground truth, but its target-state direction is partially superseded by the S64 Decisions. Where audit recommendations and 38/39/40/41/42 agree, both are cited; where the Decisions sharpen or supersede, the new model wins and is flagged inline.
@@ -115,7 +113,7 @@ Per `design/arch/bounded-contexts.md` §6 — `int` is the *integration layer* s
 
 **Does not own**:
 - Source parsing (frontend)
-- Macro expansion logic (frontend; `int::process_form` is the gap-orchestrator, not the expander)
+- Macro-head recognition (`cranelisp_types::resolve_macro_head`) and reader-quote folding (frontend). int owns the Pass-1 expand walk and macro execution (`src/expander.rs`, `src/marshal.rs`; `src/CLAUDE.md` §"Macro expansion")
 - Type inference (typecheck)
 - Code emission (backend) — backend writes its own `Code::Jit` directly via Decision 41
 - Runtime helpers — RC, allocator, string ops, IO trampoline (runtime)
@@ -174,12 +172,8 @@ The two structural facts that dominate the tree today:
    `index_worker.rs` — the `/search` background indexer, `index-worker-isolation.md`;
    `nice_worker.rs`; `test_runner.rs`; `types.rs`; plus per-concern `*_tests.rs` submodules).
    REPL eval split to `src/eval.rs`; the REPL command/display surface split to `src/repl/`.
-2. **The former `repl.rs` god-file is decomposed** (S110, FIXMEs 0606 + 0627). The 5,237-LOC
-   `repl.rs` — six mixed responsibilities, absorbing S108's `/search` UI and S109's display
-   unification without being re-cut — is now the five-file `src/repl/` directory
-   (`mod`/`search`/`format`/`format_type`/`commands`), every file under the ~1,700 guideline.
-   The cut and the format.rs A-split are recorded in `design/int/repl-decomposition.md`; the
-   as-built allocation is §3.3.
+2. **The REPL command/display surface is the five-file `src/repl/` directory**
+   (`mod`/`search`/`format`/`format_type`/`commands`); §3.3 states its structure.
 
 ### 3.1 Subsystem map (module homes)
 
@@ -192,7 +186,7 @@ The two structural facts that dominate the tree today:
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
 | Cluster processing | `cluster.rs` (`PreparedCommit`; crate-private `ProcessAttempt` + move-only `PublicationReceipt`; `process_cluster` compatibility entry). `ProcessedCluster` carries no committed outcomes. |
 | REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
-| REPL command/display surface | `repl/` — the five-file decomposition (S110): `repl/mod.rs` (slash dispatch + prompt/banner/editor + input classification + the shared resolution/referer toolbox), `repl/search.rs` (`/search` UI), `repl/format.rs` (value/echo formatter family), `repl/format_type.rs` (per-kind definition-display leaves), `repl/commands.rs` (`handle_*` battery). See §3.3 + `src/CLAUDE.md` §"Session/REPL module map" |
+| REPL command/display surface | `src/repl/` — five files; §3.3 states the structure and `src/CLAUDE.md` §"Session/REPL module map" lists the members |
 | Dev-session transaction | `redefine.rs` — the S101 dependent-recompilation machinery (`session-transaction.md`): `AbiSurface` summary-diff, `RedefKind`, on-demand `ReverseIndex`, reverse-topo recompile, `mark_broken`/trap-stubs, `TransactionReport` |
 | Import/export + prelude fallback | `imports.rs` (+ `imports/tests.rs`) — the int-side installer; the `prelude_fallback` mechanism (`src/CLAUDE.md` §"Prelude as a resolution FALLBACK") |
 | Bootstrap seeds | `bootstrap.rs` — `mount_synthetic_modules` (special forms, intrinsic types, `macros`/`Option`/`IO`/`Trace` seeds) |
@@ -245,36 +239,116 @@ tombstoned; later growth mints fresh slots. Cache restore enforces a bijection
 between parent metadata and active clause rows. See
 `s117-conformance-recovery.md` §1.1.2/§2.1.
 
-### 3.3 REPL decomposition (FIXME 0606, S110) — LANDED
+### 3.2 Gap-orchestration module cohesion
 
-FIXME 0109 (the S81 `session_v4.rs`/`worker.rs` decomposition) is **fully landed** — Waves
-A/B/C plus the once-carried Wave D (`eval.rs` + `repl.rs` split out of `session_v4.rs`, and
-the further `session_v4/` submodule split). The `src/CLAUDE.md` §"Session/REPL module map" is
-the as-built allocation. The **god-file `repl.rs`** (5,237 LOC) was **decomposed S110** per the
-signed-off cut into `src/repl/` — five files (FIXME 0606 the initial cut + FIXME 0627 the
-`format.rs` A-split into `format.rs` + `format_type.rs`, which brought every split file under
-the ~1,700 guideline):
+`process_form.rs` is the cluster spine (§6.2); its submodules divide by concern. Keep
+`process_form/dependency.rs` whole even though it is the largest: the structural handlers
+(`import`/`export`/`mod`), the single dependency seam (`drive_module_dep`, `block_dep`) and
+the per-dependency prologue (`register_dep`) are one protocol. Splitting register, block
+and drive across files makes the gap protocol harder to verify.
 
-| Module | Responsibility | LOC (as-built) |
-|---|---|---|
-| `repl/mod.rs` (residual) | Slash dispatch (`dispatch_command`) + prompt/banner/line-editor + input classification + the shared resolution/referer toolbox (the bottom layer); re-exports the shared externals as `pub(crate) use`; hosts the shared `#[cfg(test)] mod test_support` | ~1,050 |
-| `repl/search.rs` | The `/search` UI subsystem — `handle_search`, `render_search_row*`, settle/scheme/referer helpers (the UI half of `session_v4/index_worker.rs`) | ~730 |
-| `repl/format.rs` | The **value/echo** half of the formatter family — `describe_symbol`, `format_eval_result*`, the `format_def_entry*` per-kind dispatcher, `format_sexp`/span primitives, the name-layout subfamily; `format_def_entry_doc` routes to the `format_type.rs` leaves (a one-way `format.rs` → `format_type.rs` edge) | ~1,090 |
-| `repl/format_type.rs` | The **per-kind definition-display leaves** — `format_type_display`/`format_trait_display`/`format_builtin_type_display`/`format_special_form_display`/`format_macro_display`/`format_overloaded_variants` + the `; defn:`/`; impl:`/`; match:` related-section builders they share | ~830 |
-| `repl/commands.rs` | The `handle_*` slash-command battery (folds in `handle_imports`/`handle_exports`) | ~1,650 |
+### 3.3 REPL command/display surface (`src/repl/`)
 
-The move was **behaviour-invariant** (golden REPL e2e byte-identical; baseline unchanged;
-zero movement on any library crate's `public-api.txt`). The precise function→file
-boundaries, shared-toolbox placement, and test split (including the mandatory three-way
-`fq_arg_tests` split) are in **`design/int/repl-decomposition.md`** (the 0580 `program.rs`
-template: cut first, mechanical move by `/dev` last; §1.6.1 records the A-split).
+`src/CLAUDE.md` §"Session/REPL module map" lists each file's members. The design rules:
 
-> **Budget resolved (FIXME 0627, LANDED).** The initial four-file cut left `format.rs`
-> (~1,900) and `commands.rs` (~1,650) over the ~1,500 target, and the pre-authorised layout
-> valve merely relocated ~250 lines between the two heavy files. The resolving cut — filed as
-> FIXME 0627 and landed — splits `format.rs` along the value/echo (`format.rs`) vs per-kind
-> definition-display (`format_type.rs`) seam; `commands.rs` is ratified ≤ ~1,700. All five
-> files are now under the guideline (`repl-decomposition.md` §1.6.1).
+- **`src/repl/mod.rs` is the bottom layer.** It holds slash dispatch, prompt/banner/editor,
+  input classification and the shared toolbox: the resolution glue
+  (`lookup_with_prelude_fallback*`, `resolve_symbol_arg`,
+  `get_introspection`) and the referer-scan family (`body_references`, `sexp_references`,
+  `source_tokens_reference`). Each family has exactly one home; a sibling copy is a
+  divergent mirror (Principle 7).
+- **Values and definitions render separately.** `src/repl/format.rs` renders values, eval
+  echoes, symbol descriptions, source/s-expressions, name layout and the shared span
+  primitives. `src/repl/format_type.rs` renders a named definition (type, trait, builtin type,
+  special form, macro, overloaded function) and its related sections.
+  `format_def_entry_doc` dispatches from the first to the second.
+- **`src/repl/commands.rs` is the whole `handle_*` battery.** It stays one file: argument
+  resolution and the eval helpers straddle any query-versus-action split, and readers find a
+  command by its handler name.
+- **`src/repl/search.rs` is the `/search` UI**, the interactive half of
+  `src/session_v4/index_worker.rs` (`index-worker-isolation.md`).
+- **Cohesion, not a line count, decides a split.** `mod repl` is private to the binary, so
+  it has no public-API baseline; cross-file free functions are at most `pub(crate)`.
+
+**Introspection lists every in-scope candidate, through one query.** A spelling in the
+current scope may name several distinct canonical declarations (`spec/08-modules.md`
+§8.6.4). `repl/spec/04-self-documentation.md` §4.1.11 requires bare lookup to print every
+one — each by its own per-class rule (§4.1), under its canonical fully-qualified name, with
+no ambiguity error or warning and no comparison of candidate types — and
+`repl/spec/03-slash-commands.md` §3.8 requires `/sig` to print the same lines. Selection,
+and the ambiguity rejection that goes with it, belongs to an input that *uses* the
+spelling and stays on `spec/08-modules.md` §8.6.5 unchanged. The listing is a complete-set
+enumeration, Principle 24's named carve-out, not a scan.
+
+- **One candidate query, in the `src/repl/mod.rs` toolbox.** It builds the committed
+  `ResolutionScope` the way `src/expander.rs::recognize_macro_head` does — shared
+  construction, never a copy (Principle 7) — and returns
+  `cranelisp_types::ResolutionScope::resolve_candidates` for bare and qualified names
+  alike. It displaces the tier-first walk in `lookup_with_prelude_fallback_resolved_opt`,
+  the qualified leg of `resolve_entry_arg`, and the raw table probe in
+  `src/eval.rs::check_bare_symbol_introspection`. The root `""` special-form tier survives
+  only as a **miss-only tail** — special forms are not module-scope candidates.
+  `QualifiedModuleUnknown` and `PrivateInaccessible` keep today's behaviour, leaving the
+  FQ-autoload retry and the mode-uniform §8.7.3 error untouched.
+- **Silence at introspection is structural.** `resolve_candidates` is the whole-set
+  primitive; only `resolve`/`resolve_macro_head` mint `ResolveError::Ambiguous`, so a
+  surface that asks for the set cannot raise it. Terminal deduplication — one declaration
+  reached by two paths prints one line — is the primitive's too, not int's.
+- **Render from the canonical key; never re-resolve.** Each candidate displays from its
+  `Resolved::canonical` by direct probe (`crates/cranelisp-types/CLAUDE.md` §"Resolution
+  primitive traps"). `src/repl/format.rs::format_definition_symbol_doc` re-deriving a
+  displayed name from its bare spelling is the divergent mirror that made display show a
+  tier winner (Principles 7, *Single source of truth*, and 24, *Resolve once*); removing
+  that second resolver is also what lets a qualified re-exported spelling
+  (`prelude/add-i64`) reach its defining terminal at the prompt as `/sig` already does —
+  same path, no separate mechanism.
+- **A lookup is not a defining turn.** The multi-candidate result carries several
+  canonical `FQSymbol`s and answers `ty() = None` / `is_defining() = false` by
+  construction. `EvalResult::Definitions` is a defining turn and is not reusable here.
+- **Order is a function of the set, not of return order.** §3.8 binds `/sig` to bare lookup
+  byte-for-byte, and the resolver returns current-module candidates before prelude ones,
+  which is arrival-like. Sort by canonical `FQSymbol`.
+- **`/info` and `/doc` report per candidate**, each keyed by its own canonical FQ —
+  including `/info`'s definition-source and code-size reads, which are keyed by spelling
+  today. `/doc`'s module-preamble fallback runs only on an empty set.
+- **Set size decides a value-path member.** When a spelling has several candidates, a
+  result-only-polymorphic nullary constructor among them is listed by its canonical
+  §4.1.2 constructor line exactly as its concrete sibling is — the §1.5.1 value display
+  is the sole-candidate disposition only — while a zero-argument macro among them still
+  hands the turn to expansion (`repl/spec/04-self-documentation.md` §4.1.6).
+
+Every crossing item is already published (`crates/cranelisp-types/public-api.txt`
+`ResolutionScope::new`, `resolve_candidates`, `Resolved`); the change is binary-local and
+carries no public-API delta.
+
+**The dormant second describe path goes with it.** `CompilerSession::describe_symbol`
+builds a symbol-description record off the tier-first helper and has no production caller.
+It is a second description provenance, dormant only because nothing reaches it — and a
+function whose name states the responsibility is what the next reader picks up, so it is
+deleted together with the cross-reference collector chain and the description record that
+exist only to feed it. What it reads over is retained and keeps its live callers: the
+`; defn:`/`; impl:`/`; match:` sections are built independently in
+`src/repl/format_type.rs`, and the symbol-category classifier and the brief listing record
+serve `/list`, `/exports` and `list_user_definitions`.
+
+**Residual: five readers keep the tier-first helper, and two of them display.**
+`lookup_with_prelude_fallback` returns the current module's unique candidate *before* the
+prelude hop and refuses only on a collision **within one table**, so for a spelling whose
+candidates span tiers it answers the tier winner, and it answers `None` only for a
+same-tier collision. Three readers ask membership and carry no identity: `/search`'s
+`is_already_in_scope`, `symbol_is_bound` behind `/refs` and `/tests-for`, and the agent's
+`symbol_is_mentionable`. Two render from its answer: `/search`'s `exact_in_scope_hit`
+synthesizes the exact-in-scope row, naming one home, and `format_display_only_value_doc`
+— the §1.5.1 nullary-constructor value display — reads the two-tier variant to choose the
+type home it prints. The single-provenance rule above therefore holds of the §4.1.11
+listing, `/sig`, `/info` and `/doc`, which render only from canonical keys; it does not
+hold of those two. The residual's observable consequence is confined to a spelling whose
+candidates span tiers: `/search` marks it already in scope and names the tier winner's
+home rather than offering an import, and `/refs`, `/tests-for` and harvest read it as
+bound rather than a typo. The triggered extension retires the three membership readers
+onto a non-empty candidate set and the two display readers onto that set's canonical keys.
+Discovery is unaffected either way; the importable index, its scan and the row set never
+consult this query. The trigger is a wave that owns `/search` behaviour.
 
 ---
 
@@ -448,62 +522,69 @@ The Phase 0 block is microsecond-scale. The RefMut drop *must* happen before `sc
 
 **Queue-priority rule (`delays_other`)** — `scheduler.register_module(module, delays_other)` routes the module into the prioritised `TypecheckFirst` queue when `true` and `TypecheckNext` when `false`. The flag answers one question: *is some other module's progress waiting on this one?*
 
-- **Every dep-registration site passes `true`** — worker-side form handlers, the cache-restore transitive-import registration, and the session-side `register_dep_for_eval`. A dep is registered precisely because something is blocked on it, and even where the immediate registrant has already finished (cache-restore's fire-and-forget recursion), any other module importing that dep will block on it.
+- **Every dep-registration site passes `true`** — the `process_form/dependency.rs` handlers and drive seam (both cluster wrappers, §6.2) and the cache-restore transitive-import registration. A dep is registered precisely because something is blocked on it, and even where the immediate registrant has already finished (cache-restore's fire-and-forget recursion), any other module importing that dep will block on it.
 - **`false` is for entry-module registration by the thread that is itself the whole-world waiter** — `register_module_with_source`, `reload_module`'s watcher-seed fallback, and `recover_startup_failure`'s re-drive. Nothing else is queued behind them.
 
 A `false` at a dep site is a silent divergence: the dep lands in the unprioritised queue behind unrelated work while a blocked caller waits. (S59/S60 lineage; the rule is the one durable residue of the dual-path persistence collapse.)
 
-### 6.2 Worker dispatch + `process_form`
+### 6.2 Cluster orchestration
 
-Per `facades/int.md` §"`process_form` — the gap-orchestration retry loop":
+A **cluster** is the unit of typecheck atomicity: one non-`(begin)` REPL input, one
+`(begin …)`, or one module file. `process_form::process_cluster_once` is the single core for
+every cluster: Pass-0 structural peel, Pass-1 expansion, build, and staged `check_forms`.
+`s117-conformance-recovery.md` governs its prepared-turn publication and source-ordered macro
+checkpoints. The core returns done, a dependency gap, or an error. Two thin wrappers own the
+wait; neither duplicates the core (Principle 11):
 
-```text
-worker_loop(shared: Arc<SharedState>):
-  loop {
-    match shared.scheduler.take_priority_work_blocking() {
-      Some(Typecheck(module))    => process_module_forms(&shared, module),
-      Some(Jit(fq))              => compile_jit(&shared, fq),
-      Some(LoadObject(module))   => load_cache_o(&shared, module),
-      None                       => break    // shutdown
-    }
-  }
+- **Pool worker** (`cluster::process_cluster`). On a gap the module moves to
+  `TypecheckBlocked` and the worker returns to the pool. When the dependency completes, the
+  scheduler requeues the module's work packet. No worker thread waits on a dependency.
+- **REPL eval thread** (`eval.rs`). On a gap it records only a cycle-check edge, waits for
+  that dependency (`register_dep_for_eval`), then retries. The entry module never enters
+  `TypecheckBlocked`, so no pool worker can claim it (Invariant SW,
+  `signature-body-prepass.md`).
 
-process_form(shared: &SharedState, form: Sexp, scope: &ModuleFullPath) -> Result<ProcessedForm> {
-  loop {
-    let expanded = match expand(form, &shared.symbol_tables) {
-      Ok(s) => s,
-      Err(ExpansionError::Gap(gap)) => { handle_gap(shared, gap)?; continue; }
-      Err(other) => return Err(other.into()),
-    };
-    let ast = build_ast(expanded)?;
-    let scope_table = shared.symbol_tables.get(scope).expect("Phase 0 ran");
-    let result = match check_form(ast, &scope_table, &shared.symbol_tables) {
-      Ok(r) => r,
-      Err(CheckError::Gap(gap)) => { handle_gap(shared, gap)?; continue; }
-      Err(other) => return Err(other.into()),
-    };
-    return Ok(result.into());
-  }
-}
-```
+`process_form/dependency.rs::drive_module_dep` is the one dependency seam for both wrappers.
+It resolves the module file with the `import` rules, registers the dependency with
+`delays_other = true` (§6.1) and records the edge; it never blocks. `block_for_typecheck`
+and the eval cycle edge check acyclicity before recording a wait, so a mutual import is a
+cycle error at the import site, not a deadlock.
 
-**Macro-turn heap ownership** — the marshal/invoke boundary inside that `expand` step (`src/expander.rs::invoke_clause` + `src/marshal.rs`) has its own ownership protocol, ruled S119: `design/int/macro-turn-ownership.md`. In one line: the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, nothing is retained, nothing is released by int), and the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. No marshal handle outlives its invocation frame, which keeps the protocol orthogonal to both the immediate macro publication checkpoint and its source-continuation retry.
+**Concurrency invariant — share only monotonic terminal facts.** In-progress cluster state
+never leaves the frame that orchestrates it:
 
-**Frontend and typecheck stay pure.** They surface dependencies as `Err(ExpansionError::Gap)` / `Err(CheckError::Gap)`. `int::process_form` is the *sole* crate-crossing where gap values become scheduler calls. Workers park inside `wait_for_*` calls — never inside frontend or typecheck library code (per Principle 3 — typecheck/frontend depend on `cranelisp-types` only). Per Principle 7 (single source of truth), `handle_gap` is the sole site that translates a `ResolutionGap` into a scheduler/dependency-service action.
+- staging is stack-local; a gap or failure drops it and live is unchanged;
+- the cluster's forms ride the work packet (`PriorityWork::Typecheck`), kept on the
+  scheduler's own `ModuleState` for requeue; no shared map parks forms or suspended state;
+- a retry re-derives from the packet's uncommitted continuation against committed live
+  state; nothing half-checked is saved.
 
-### 6.3 Gap-handling protocol
+The only cross-thread signal is a module reaching a terminal readiness state: publish-once,
+carrying no in-progress data. Keeping in-progress state off shared maps removed the cause
+of the S60–S62 import/resume races (`heisenbug-race-closure.md`). Do not reintroduce a
+cross-thread map of in-progress state, or a role flag that suppresses a second
+orchestrator; make the second orchestrator unconstructable instead. The cost is
+re-expanding the uncommitted continuation on retry, which is deterministic over committed
+tables.
 
-`handle_gap(shared, gap)` translates a `ResolutionGap` value into scheduler operations:
+**Codegen batch.** `worker::derive_codegen_batch` enrols the authored definitions of the
+turn and every body-bearing concrete target still lacking code — synthesised constructors,
+accessors and monomorphic instances — so a constructor used as a value has a populated GOT
+slot.
 
-| Gap | Action |
-|---|---|
-| `SymbolTypechecked(fq)` | `ensure_registered(fq.module)` → `wait_for_typecheck_symbol(fq)` |
-| `MacroInMem(fq)` | `ensure_registered(fq.module)` → `wait_for_typecheck_symbol(fq)` → orchestrator-side macro discrimination: peek at the entry; if `DefKind::Macro` and `code.is_none()`, additionally `priority_boost_jit(fq)` + `wait_for_inmem(fq)` |
-| `Type(fqt)` | `ensure_registered(fqt.module)` → `wait_for_typecheck_type(fqt)` |
+**Macro-turn heap ownership** — the marshal/invoke boundary inside Pass-1 expansion (`src/expander.rs::invoke_clause` + `src/marshal.rs`) has its own ownership protocol, ruled S119: `design/int/macro-turn-ownership.md`. In one line: the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, nothing is retained, nothing is released by int), and the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. No marshal handle outlives its invocation frame, which keeps the protocol orthogonal to both the immediate macro publication checkpoint and its source-continuation retry.
 
-**Termination** — each `handle_gap` call advances dependency state monotonically; subsequent retries see strictly more state. Loop terminates on success, non-gap error, or `SchedulerError::Cycle` (Decision 30 mutual import).
+### 6.3 Gap production
 
-**Macro-vs-fn discrimination** is orchestrator-owned, not `expand`-owned. `expand` returns `MacroInMem(fq)` uniformly for any FQ ref it can't yet resolve; the orchestrator peeks at the entry post-typecheck and only forces a JIT if the entry actually IS a macro with missing code. Functions are NOT speculatively JIT-pushed. (Cited principle: P11 — single pipeline; the discrimination is one place.)
+Frontend and typecheck stay pure (Principle 3): they return `ResolutionGap` values and never
+call the scheduler. `process_cluster_once` is the sole place a gap becomes a scheduler
+action (Principle 7). An FQ reference to an unloaded module — function, type or macro head —
+auto-loads through the same `drive_module_dep` seam (`src/CLAUDE.md` §"FQ auto-loading").
+The gap does not distinguish a macro from a function: the retry forces only the
+dependency's typecheck and codegen, and nothing is speculatively JIT-compiled.
+
+**Termination** — each gap advances dependency state monotonically, so each retry sees
+strictly more committed state. The loop ends on success, a non-gap error, or a cycle error.
 
 ### 6.4 `notify_*` cadence
 
@@ -516,7 +597,30 @@ Per Decision 30 reframed by Decision 38 — scheduler notifications are *orderin
 - `notify_inmem_codegen_batch_complete(module)` after `LoadObject` populates all GOT slots from cache.
 - `notify_object_codegen_complete(module)` after nice-worker `.o` write completes.
 
-The scheduler maps these to readiness states; `wait_for_*` callers unblock when the corresponding state is reached. The audit's F3 (dep-registration split across worker/session/scheduler) is closed by routing all worker-side flows through `process_form`'s gap loop and all session-side flows through `Sess::eval`'s same gap loop — one canonical orchestrator, two callers.
+The scheduler maps these to readiness states; waiters unblock when the corresponding state is reached. Dependency registration has one home, `drive_module_dep`, reached from the one cluster core by both wrappers (§6.2).
+
+### 6.5 Entry module and the implicit prelude
+
+- **The entry module is ordinary** (Principle 19). `"user"` is only the default CLI name; no
+  orchestration path keys on a module name.
+- **Its role is session data.** `CompilerSession.entry_module` names it. The REPL cursor
+  starts there and a bare `/mod` returns there (`repl/spec/03-slash-commands.md` §3.9).
+- **One orchestrator per module**: the REPL eval thread for the entry module, the pool for
+  every other module ([cluster orchestration](#62-cluster-orchestration); Invariant SW).
+- **The implicit prelude is resolved, never copied.**
+  [The prelude convergence ruling](../arch/prelude-import-convergence.md) owns the
+  [model](../arch/prelude-import-convergence.md#1-the-settled-model-spec-grounded-not-open)
+  and the
+  [per-module bit](../arch/prelude-import-convergence.md#34-fate-of-the-prelude_fallback-bit).
+  int's obligations:
+  - `SharedState.prelude_fallback` holds the bit session-side and never caches it. Absence
+    means OFF; the prelude module and any module that names the prelude in an import stay OFF.
+  - The prelude is loaded like any dependency. Its names are never installed into a module's
+    table, and they carry the same §8.6.4 conflict and §8.6.5 ambiguity rules as an explicit
+    import (spec §8.8.1).
+  - Only public prelude bindings are reachable as bare names.
+  - `/imports` lists prelude-provided names in a separate `Prelude (implicit)` group when
+    the bit is ON.
 
 ---
 
@@ -683,9 +787,8 @@ Design points:
 - **Rendering home is `format_macro_display`.** The clause count is computed
   from the same `clauses: &[MacroClauseInfo]` slice the renderer already
   iterates — `clauses.len()`. No new data is needed; `clauses_meta` is already
-  carried on the `DefKind::Macro` entry (`describe_symbol`'s bare-lookup arm
-  already prints `({N} clause(s), …)` from it, so the count datum is proven
-  available — this is a rendering gap, not a data gap).
+  carried on the `DefKind::Macro` entry, so the count datum is available — this
+  is a rendering gap, not a data gap.
 - **Format: `  N clauses`** — two leading spaces, no `;` prefix (it is a summary
   line, not a comment line), matching the spec worked example exactly. Append it
   as the final line of the returned string.
@@ -860,16 +963,16 @@ This section is an overview; the structural diagrams live in `design/int/concurr
   clone (refcount bump). They live for the session — never per-call
   `thread::scope`. Joined on `Drop` via `WorkerPool`.
 - `take_priority_work_blocking` parks workers on a condvar inside `CompileScheduler`; wakeups come from `enqueue_jit` / `register_module` / `notify_*`.
-- `wait_for_*` parks workers (for orchestrator-driven dep waits) inside the scheduler's wait-table.
+- A worker that hits a dependency gap returns to the pool and its module is requeued; only the REPL eval thread and the whole-session initiator wait on readiness (§6.2).
 - The IO trampoline forks Par nodes onto rayon (rayon pool size from `SessionSettings`).
 
 **Invariants**:
 1. Workers never see `&mut SharedState` — only `&shared.*`. All mutation through interior mutability of contained types.
 2. Per-symbol mutability discipline (§4.1) — no whole-module `&mut SymbolTable` after Phase 0.
 3. Scheduler is *the* coordination authority — there is no separate `DependencyService`. The runtime/platform diagrams' merge of work-dispatch + wait/release into one structure is binding.
-4. Module-level dispatch ordering — at most one `PriorityWork::Typecheck(module)` at a time (Decision 30 reframed as ordering). Avoids per-module dispatch races; the lock layer no longer requires it.
+4. One orchestrator per module: a module is claimable or owned, never both, and in-progress cluster state stays on the owner's frame (§6.2 and Invariant SW in `signature-body-prepass.md`).
 5. GOT slot writes are atomic-Release; reads are atomic-Acquire (Decisions 31 + 23). REPL redefinition retargets atomically before the old `Arc<Jit>` can drop.
-6. Mutual-import deadlock — known, documented (Decision 30); workaround via `discover-tests` for test scaffolding.
+6. A mutual import is a deterministic cycle error at the import site, not a deadlock (§1 constraints; §6.2).
 
 The audit's F4 (worker orchestration split across files) collapses under the target shape: priority + nice loops both live in `worker.rs` (or `workers/` subtree); scheduler state in `scheduler.rs`; `SharedState` in `session_v4.rs`.
 
@@ -984,7 +1087,6 @@ heap-header, cache-schema, or private release mechanism is required.
 **S81 Wave 9a — light int items:**
 
 - **FIXME 0013** (`/int`) — `observability.rs::reset_panic_hook_installed_for_tests` mutates process-global panic-hook state without a serialisation lock. Add a `static TEST_GUARD: Mutex<()>` and take it at the top of every test that touches the install path. ~10 LOC; test-only; no baseline impact.
-- **FIXME 0194** (`/dev (int)`) — populate `SymbolDescription.related` (currently stubbed `Vec::new()` at `session_v4.rs:1648`). The collector logic already exists for the slash-command display paths (`format_related_section` + the `match`/`impl`/`defn` walks at `session_v4.rs:4503/4510/4541/…`); factor it into private helpers and call them at the `describe_symbol` construction site so callers stop duplicating the lookup. defn/impl/match-arm cross-refs per `repl/spec.md` §3.6. Optionally also threads the original parse-time `ImportSpec` (alias/span/multi-name) through `module_imports` (a separate sidecar-store concern — split out if it grows).
 - **FIXME 0217** (`/int`) — inline-module spec §8.2.2 step-2 parent-file rewrite. `handle_mod` (`worker.rs:2650`) calls `write_inline_mod_to_disk` (step 1) but never rewrites the parent file's `(mod name forms…)` → `(mod name)` (step 2). Real behavioural gap (the "one-time creation" + "indistinguishable from manually created" semantics are violated; `inline_body` persists in the symbol table forever). Needs the rewrite + a reload of the parent's structural decls + a new integration test (target /qa for the test). Files: `worker.rs`, possibly `repl/spec.md` §15.4.
 - **FIXME 0266** (`/dev (int)`) — move the `trace` SpecialForm metadata entry from the `primitives` module to root `""`. As-built: `bootstrap.rs::register_trace_type` (~L894) inserts it into the `primitives` table; the 2026-06-04 root-special-form ruling + corrected FIXME 0241 Trace row require it at root `""` alongside the structural special forms. ~1-line mount-move (the `Trace`/`TraceCall` ADT + accessors STAY in `primitives` — form/ADT asymmetry). Regression check: `/imports`/`/exports primitives`/`/info trace` reflect the new placement; recognition is parser-side (`Expr::Trace`) and does not consult this entry, so dispatch is unaffected.
 

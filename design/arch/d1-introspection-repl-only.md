@@ -418,7 +418,7 @@ conditional on the same predicate, so the conditional-write sites become trivial
 
 ### Reader handling (`None` ⇒ no-op, by construction)
 
-The four REPL-command read accessors and the two ad-hoc readers switch from
+Every reader of the store switches from
 `self.shared.introspection.get(fq)` to `self.shared.introspection.as_ref().and_then(|m|
 m.get(fq))` — yielding `None` when the store is absent. They are **REPL-only by call
 path** (slash-command handlers only fire in the interactive loop), so in practice the
@@ -440,8 +440,7 @@ behaviour change. Sites:
 > dropped. Unlike `source`/`sexp`/`clif_ir`, disasm is not a persisted-introspection
 > accessor — it is a derive-on-demand product, so it leaves the accessor family entirely
 > rather than being rehydrated lazily like the others.
-| `describe_symbol` source read | `session_v4.rs:1627` | `source: None` in the returned `SymbolDescription` — correct. |
-| `get_introspection` (`/source`,`/info`) | `session_v4.rs:2912` | returns `None` ⇒ handlers print "no source captured" — correct REPL fallback. |
+| `get_introspection` (`/source`,`/info`, agent harvest) | `src/repl/mod.rs` | returns `None` ⇒ handlers print "no source captured" — correct REPL fallback. |
 
 `save::generate_module_source` (`save.rs:49`) currently takes `&DashMap`. Its single caller
 is the REPL persist path (`session_v4.rs:1914`), where the store is always `Some`. Two
@@ -571,8 +570,7 @@ All `src/` (int). No `cranelisp-types` change.
 | `src/eval.rs::codegen_and_execute` (REPL codegen-and-finalize producer) | `Some(&self.shared.introspection)` → `self.shared.introspection.as_ref()`. |
 | `src/worker.rs::handle_typecheck_work_shared` (pool-worker batch producer) | `Some(&shared.introspection)` → `shared.introspection.as_ref()`. **The core leak fix** — yields `None` in batch, so `inline_jit_codegen_for_names` short-circuits: no record, no CLIF retained. |
 | `src/cluster.rs:283` (`insert_cluster` drain) | Wrap the drain loop in `if let Some(m) = shared.introspection.as_ref() { … m.insert(fq, intro) … }`. (Doubly a no-op in batch — records empty AND store absent.) |
-| `src/repl/format.rs::describe_symbol` and sibling readers | `self.shared.introspection.get(fq)` → `self.shared.introspection.as_ref().and_then(\|m\| m.get(fq))`. |
-| `src/repl/format.rs::describe_symbol` source read | same `.as_ref().and_then(...)` adaptor. |
+| Direct store reads under `src/repl/` (`commands.rs`, `search.rs`) | `self.shared.introspection.get(fq)` → `self.shared.introspection.as_ref().and_then(\|m\| m.get(fq))`, or an early return on `None`. |
 | `src/eval.rs::codegen_and_execute` (REPL eval source capture) | `self.shared.introspection.entry(fq)…` → `if let Some(m) = self.shared.introspection.as_ref() { m.entry(fq).or_default().source = … }`. REPL-only by path; compile-correctness under `Option`. |
 | `src/repl/mod.rs::get_introspection` | `.get(&fq)` → `.as_ref().and_then(\|m\| m.get(&fq))`. |
 | `src/save.rs::generate_module_source` and its caller | Pass `self.shared.introspection.as_ref()`; make `generate_module_source` / `introspection_sexp` take `Option<&DashMap>`, falling through to the D1 §6 `DefKind::Macro.macro_sexp` symbol-table fallback when absent. (Or keep `&DashMap` + empty-borrow at the caller — `/dev`'s call; the `Option` form composes with the D1 §6 fallback and is preferred.) |

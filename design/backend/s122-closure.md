@@ -30,7 +30,7 @@ integrated acceptance remain open:
 | 0906 shared nullary-tag guard | `crates/cranelisp-backend/src/compiler/vec_codegen.rs` | delivered through `heap::emit_rc_inc_guarded`, which already owns the lower guard |
 | Typed closure fixture | test module in `crates/cranelisp-backend/src/compiler/control_flow/launch.rs` | delivered using intrinsics `handle::Owned` and `drop::consume_closure(Owned)` |
 | Source guidance affected by the helper census | `crates/cranelisp-backend/CLAUDE.md` | delivered beside implementation |
-| Q4 macro returned-alias ownership | selected-arm projection in `crates/cranelisp-backend/src/lib.rs`; match/return ownership in `src/compiler/` | delivered with focused and public evidence; independently reviewed with no material finding |
+| Q4 macro returned-alias ownership | selected-arm projection in `crates/cranelisp-backend/src/lib.rs`; match/return ownership in `crates/cranelisp-backend/src/compiler/` | delivered with focused and public evidence; independently reviewed with no material finding |
 
 No `tests/` path is part of the backend reservation. Any actual affected CLIF
 golden is test-owned and is selected from the produced diff, not predicted from

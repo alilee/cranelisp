@@ -1,7 +1,19 @@
 # Sprint 99 Wave 0.3 — parallel-contention measurement report
 
-**Author:** `/qa` · **Date:** 2026-07-02 · **Status:** Wave-0 payload deliverable
-(the funding decision the mechanism waves depend on).
+**Author:** `/qa` · **Date:** 2026-07-02 · **Status:** dated measurement record — the
+S99 Wave-0 payload deliverable (the funding decision the mechanism waves depended
+on), extended by the Wave-1b, 1c and 1d ablations in §8–§10.
+
+**Why this record is retained.** It is the measured basis that current design
+rests standing rulings on, cited by section: the contention decomposition and the
+Phase-H (b) residual in `design/arch/effect-concurrency.md` and
+`design/backend/ring2-rc.md`, the never-slower floor scoping in
+`design/backend/lenient-eval.md`, and the opening argument of
+`design/arch/ownership-inference.md`. Its F1–F4 counts are the B1–B7 baselines of
+the [ownership verification plan](s100-ownership-verification.md#12-the-s99-baselines-this-plan-grades-against-system-alloc-release),
+and its harnesses remain in `tests/perf/`. The numbers are single-machine
+measurements of 2026-07-02, not acceptance constants; the section numbers are
+cited externally and must not be renumbered.
 
 Decomposes the observed "lenient/speculative-parallel Sudoku ~10× slower than
 serial" into its real terms, on the **release** backend, using the Wave-0.1/0.2
@@ -386,7 +398,8 @@ change *where* the ops run (thread-local vs bouncing).
 - Tests: unit — `ivar/tests.rs::{saturation_gate_effective_cap_policy,
   saturation_gate_budget_grants_iff_spare_capacity,
   saturation_gate_env_caps_spark_budget_at_worker_count}` (pure cap/grant policy +
-  env wiring); e2e — `s99_fixtures.rs::s99_f{1..4}_saturation_gate_parallel_equals_serial`
+  env wiring); e2e — the four F1–F4 cells of `tests/s99_fixtures.rs` from
+  `s99_f1_saturation_gate_parallel_equals_serial` to its F4 sibling
   (result-equivalence + no-signal heap guard, toggle ON).
 - **Do NOT flip default-on for a performance reason** on this evidence (F2 ~9% is
   small; F4 inconclusive). It is sound and cheap, so it may land opt-in; a

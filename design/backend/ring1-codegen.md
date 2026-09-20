@@ -4,23 +4,12 @@
 
 Ring 1 extends the backend from Ring 0 (pure stack-based values: Int, Bool, Float) to heap-allocated values: Strings, ADTs with fields, and closures. This document describes the codegen patterns, heap layout decisions, and architectural trade-offs.
 
-## Module Structure
+## Where this lives
 
-```
-cranelisp-backend/src/
-  lib.rs             -- public API: compile_program, compile_and_run_expr_with_got
-  jit.rs             -- Cranelift ISA setup, JIT module lifecycle, intrinsic registration
-  got.rs             -- GOT (Global Offset Table) for Interactive mode
-  codegen_types.rs   -- re-exports (NULLARY_TAG_THRESHOLD)
-  operators.rs       -- inline arithmetic/comparison/boolean IR emission
-  heap.rs            -- heap layout structs, load/store helpers, RC emission, last-use analysis
-  compiler/
-    mod.rs           -- FnCompiler struct, CompileContext, compile_body, compile_expr dispatch
-    literals.rs      -- int, float, bool, string literal codegen + variable reference
-    apply.rs         -- function application: direct, GOT-indirect, data constructor, extern, closure
-    control_flow.rs  -- let, if, lambda (with captures), named-function-as-value wrappers
-    match_codegen.rs -- pattern matching: nullary, data, wildcard, variable patterns
-```
+The current module and seam map is `crates/cranelisp-backend/CLAUDE.md`. This
+document does not carry a second inventory — the one it used to carry named
+three files (`got.rs`, `codegen_types.rs`, `operators.rs`) that were deleted as
+re-export shims or folded into `primitives_inline.rs`, and went stale silently.
 
 ## Heap Layout
 
@@ -55,14 +44,15 @@ Nullary constructors (e.g., `None`, `Red`, `Green`) are NOT heap-allocated. They
 Closures (`HeapClosure` in `heap.rs`):
 
 ```
-[header(16 bytes) | code_ptr(8 bytes) | cap_0(8 bytes) | ... | cap_n(8 bytes)]
+[header(16) | code_ptr(8) | drop_glue_ptr(8) | cap_0(8) | ... | cap_n(8)]
  ^-- base pointer
 ```
 
-- `CODE_PTR_OFFSET = 16`
-- `CAPTURES_START = 24`
-- `capture_offset(i) = 24 + i * 8`
-- `payload_size(n) = 8 + n * 8` (code_ptr + n captures)
+`CODE_PTR_OFFSET`, `DROP_GLUE_PTR_OFFSET` and `CAPTURES_START` are the
+authority; read them from `heap.rs`, which pins each with a `const _: () =
+assert!(…)` against the `#[repr(C)]` layout. The embedded drop-glue word is
+Decision 0011 — a closure carries its own release entry point rather than a
+side table.
 
 ### Compile-Time Assertions
 
@@ -118,11 +108,51 @@ The §A.3 "shift count mod 64" requirement is satisfied **by Cranelift, not by e
 
 Unlike `div-i64` (which threads `panic_func_id` and emits divide-by-zero / `MIN/-1` guard blocks), none of the bitwise ops can trap: `band`/`bor`/`bxor`/`bnot`/`ishl`/`sshr`/`popcnt` are total over all i64 inputs (shift-by-≥64 is defined-by-masking, not UB). They take the `emit_binary_int` / `emit_unary_int` fast path and ignore the `module`/`panic_func_id` parameters entirely.
 
+## The runtime-panic boundary — no codegen path may emit a bare hardware trap
+
+Spec `spec/12-runtime.md` §12.7.2/§12.7.8 require a runtime error to stay
+catchable so the REPL survives it. A hardware trap does not: SIGILL from a bare
+Cranelift `trap`, and SIGFPE from an unguarded `sdiv`, are both invisible to the
+`catch_unwind` at the eval boundary and kill the process. **Every codegen site
+that can fail at runtime routes through `runtime/panic` instead**, so the path
+is always `runtime_panic` → `panic!()` → `catch_unwind`.
+
+The emission shape is fixed (`vec_codegen::emit_vec_bounds_panic` is the
+reference instance):
+
+1. Take the `runtime/panic` `FuncId` from the compile context; a `None` there is
+   a located `CodegenError`, never a fallthrough to a trap.
+2. Declare an anonymous data section holding the message bytes and derive
+   `(msg_ptr, msg_len)`.
+3. Call `runtime_panic(msg_ptr, msg_len)`.
+4. **Follow the call with a `trap` terminator.** Cranelift requires every block
+   to terminate; the trap is unreachable because `runtime_panic` is
+   `extern "C-unwind"` and unwinds out. Deleting it as "dead" makes the function
+   unterminated — this is a structural requirement, not defensive code.
+
+The guarded sites today are match non-exhaustion (`"match failed"`), division
+by zero and the `i64::MIN / -1` overflow trap (both `"division by zero"`), and
+Vec bounds. Message strings are the spec §12.7.2.1 table's; they are part of the
+observable contract. A future trapping primitive — `mod-i64`/`rem-i64` would
+`srem` and carry the same zero-divisor trap — adopts this same shape.
+
+**`MIN / -1` deliberately reports `"division by zero"`.** It is a distinct
+hardware condition, but the spec's panic-sources table gives one message for the
+division family and codegen follows the table rather than minting a second
+string. Changing that is a `spec` question, not a codegen judgment. The
+host-side primitive mirrors the same two guards so inline and out-of-line
+division agree.
+
+**Arithmetic `+`/`-`/`*` stay wrapping and unguarded**, per spec §12.7.3 —
+integer overflow wraps silently. Only operations that would *trap in hardware*
+earn a guard; adding checked arithmetic would be stricter than the language
+requires and is not a backend decision to take.
+
 ### Registration mirrors `add-i64` exactly — zero cross-crate / public-API movement
 
 Each bitwise primitive registers **identically to `add-i64`**, entirely inside `cranelisp-primitives`:
 
-1. **Type/name row** — a `PrimitiveDef { name, ty, param_names, docstring }` appended to `ring0_primitives()` in `crates/cranelisp-primitives/src/operator.rs` (the same Vec that holds `add-i64`). `ty` is the `(Fn [Int Int] Int)` / `(Fn [Int] Int)` monomorphic scheme; `PrimitiveDef` is `pub(crate)` to `cranelisp-primitives`, so this is an internal edit.
+1. **Type/name row** — a `PrimitiveDef { name, ty, param_names, docstring }` appended to `ring0_primitives()` in `crates/cranelisp-primitives/src/declarations.rs` (the same Vec that holds `add-i64`). `ty` is the `(Fn [Int Int] Int)` / `(Fn [Int] Int)` monomorphic scheme; `PrimitiveDef` is `pub(crate)` to `cranelisp-primitives`, so this is an internal edit.
 2. **Symbol-table entry** — produced automatically by the existing `insert_primitive_entry` loop in `lib.rs::build_primitives_table()`: allocates a GOT slot, inserts a `ModuleEntry::def(scheme, DefKind::Primitive { got_slot })` with `code: None`. Identical kind/shape to `add-i64`. No new insertion code.
 3. **Extern fallback shim** (optional but recommended for parity) — a `#[unsafe(export_name = "bit-and")] pub(crate) extern "C" fn` in `crates/cranelisp-primitives/src/ring0.rs`, harvested by `extern_shims()`, so the GOT slot is populated and the mappable/by-value path (`(let [f bit-and] (f 1 2))`) and `--link` mode resolve — exactly as `add-i64`'s `ring0::add_i64` does. Without a shim the inline path still works, but call-by-value and `--link` would fail to resolve the symbol; matching `add-i64` means providing the shim.
 
@@ -271,48 +301,14 @@ Key invariant: `in_tail_position` is set to `false` before compiling arguments, 
 - Let body
 - Match arm bodies
 
-## RC Scaffolding (Ring 2 preparation)
-
-Ring 1 includes scaffolding for RC emission that will be activated in Ring 2:
-
-- `emit_rc_inc`: inline atomic `atomic_rmw(Add, rc_addr, 1)`.
-- `emit_rc_dec`: inline atomic `atomic_rmw(Sub, rc_addr, 1)`, then conditional dealloc when rc reaches 0 (with optional drop glue call).
-- `compute_last_uses`: walks the expression tree to determine the final use of each variable.
-- `FnCompiler` fields: `variable_types`, `last_uses`, `consumed_vars`, `captured_vars` -- all `#[allow(dead_code)]` scaffolding.
-
-These are tested at the unit level but not yet wired into the expression compilation pipeline. Ring 2 will activate them for the consuming calling convention and scope cleanup.
-
-## REPL Value Display
-
-`format_result_value` in `src/repl.rs` formats JIT results for REPL display:
-
-| Type | Display format | Example |
-|------|---------------|---------|
-| Int | `:Int value` | `:Int 42` |
-| Bool | `:Bool true/false` | `:Bool true` |
-| Float | `:Float value` | `:Float 3.14` |
-| String | `:String "contents"` | `:String "hello"` |
-| Fn | `:(Fn [params] ret) <closure>` | `:(Fn [Int] Bool) <closure>` |
-| ADT (nullary) | `:Type CtorName` | `:Color Red` |
-| ADT (data) | `:(Type args) (Ctor fields)` | `:(Option Int) (Some 42)` |
-
-String display reads heap memory via `cranelisp_runtime::read_string_as_str`. ADT display reads tag and fields from heap memory using the `HeapAdt` layout offsets. Recursive ADT fields (e.g., `(Some (Some 1))`) are formatted recursively.
-
 ## Rejected Alternatives
 
-### Interior Pointer Convention (Sketch)
+### Interior pointer convention
 
-The sketch returned payload pointers (past the header) and used negative offsets for RC access. This was rejected because:
-- Negative offsets are error-prone and confuse debugging.
-- Base-pointer convention makes all offsets positive and uniform.
-- No performance difference (both are constant-offset loads).
-
-### Drop Function Pointer in Closure Struct (Sketch)
-
-The sketch stored a `drop_ptr` field in the closure layout. Rejected because:
-- Most closures have no heap captures, so `drop_ptr` was null and wasted 8 bytes.
-- A side-table (`HashMap<code_ptr, drop_fn>`) keeps the layout uniform.
-- The side-table approach is deferred to Ring 2 when drop glue is activated.
+Returning payload pointers (past the header) with negative offsets for RC
+access was rejected: negative offsets are error-prone and confuse debugging,
+the base-pointer convention makes every offset positive and uniform, and there
+is no performance difference — both are constant-offset loads.
 
 ### Separate Closure Module
 

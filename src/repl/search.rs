@@ -1,6 +1,6 @@
 // REPL `/search` UI subsystem — the interactive-search half of
 // `session_v4/index_worker.rs` (index-worker-isolation.md). Extracted from
-// `repl.rs` per `design/int/repl-decomposition.md` §1.1 (S110, FIXME 0606).
+// `repl.rs` per `design/int/int.md` §3.3 (S110, FIXME 0606).
 // Pure relocation, behaviour-invariant.
 
 use super::commands::*;
@@ -327,8 +327,7 @@ impl CompilerSession {
         query: &str,
     ) -> Option<crate::session_v4::index_worker::SearchHit> {
         use crate::session_v4::index_worker::{MatchTier, SearchHit};
-        let (entry, module) = self.lookup_with_prelude_fallback(query)?;
-        let (resolved, origin) = self.resolve_entry_for_display(&entry, &module);
+        let (resolved, origin) = self.lookup_with_prelude_fallback(query)?;
         let (scheme, docstring) = match &resolved.declaration {
             Decl::Callable(callable) => (&callable.arm.scheme, callable.docstring.clone()),
             Decl::Overloaded(declaration) => (

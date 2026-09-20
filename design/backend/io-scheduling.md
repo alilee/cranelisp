@@ -393,31 +393,3 @@ Running all branches via `par_iter` without token grouping (the sketch's approac
 ### 7.3 Par Node as Results Combiner
 
 An alternative where the Par node itself combines results was considered. The current design delegates result combination to the continuation closure, which is more flexible — the continuation can bind results to named variables and compute arbitrary expressions over them. This matches the `bind!` chain semantics naturally.
-
-## 8. Sketch Comparison
-
-### 8.1 What the Sketch Does
-
-The sketch implements Par nodes and auto-scheduling:
-
-- **`schedule.rs`** (`sketch/src/schedule.rs`, 367 lines): a post-expansion, pre-typecheck pass that flattens `bind` chains, classifies each step by `SchedulingClass`, checks data independence via `free_vars`, groups data-independent non-Sequential bindings into `Segment::Parallel`, and rebuilds the chain with `Expr::ParBind` nodes. Single-entry parallel groups are demoted back to sequential.
-- **`compile_par_bind`** (`sketch/src/codegen/expr.rs:397-458`): compiles IO expressions, allocates a Par node with inline branch pointers (tag=3, count, io_0, io_1, ...), builds a continuation closure, wraps in a Bind node.
-- **Trampoline Par handler** (`sketch/cranelisp-runtime/src/intrinsics.rs:272-299`): reads count and branch pointers, calls `par_iter` on all branches (each gets a recursive `run_io` call), allocates results array, calls continuation.
-
-### 8.2 Where the Reimplementation Follows
-
-- **Par node layout**: same inline structure — tag, count, branch pointers in a contiguous allocation. No separate array indirection.
-- **ParBind codegen strategy**: same approach — compile IO expressions, allocate Par node, build continuation closure, wrap in Bind node.
-- **Independence analysis location**: same placement — after macro expansion, before typechecking. The reimplementation places this in the binary crate (`/int`) rather than the backend, since it needs platform scheduling data from DLL loading.
-- **Continuation closure pattern**: same — takes `(env_ptr, results_ptr)`, loads results by offset, binds to names, compiles body.
-
-### 8.3 Where the Reimplementation Diverges
-
-| Aspect | Sketch | Reimplementation | Rationale |
-|---|---|---|---|
-| **Resource token serialization** | Ignored. `par_iter` dispatches all branches indiscriminately. | Groups branches by resource token. Token=0 branches run independently; same non-zero token groups run sequentially as single work items. | Spec §10.12.4 requires it. The sketch acknowledges this as unfinished. |
-| **Base-pointer convention** | Interior pointer. Par fields at offsets 0, 8, 16+ from payload pointer. | Base pointer. Par fields at offsets 16, 24, 32+ from base pointer. | Arch Decision 10. |
-| **RC atomics** | Non-atomic RC acknowledged as a known issue. | Atomic RC from Ring 1 (Decision 13). Par branches run on rayon threads that may inc/dec shared values concurrently. | Atomic RC was designed from Ring 1 to support exactly this use case. |
-| **Closure layout** | No drop_glue_ptr. `[code_ptr \| captures...]`. | drop_glue_ptr at offset 24. `[header(16) \| code_ptr(8) \| drop_glue_ptr(8) \| captures...]`. | Arch Decision 11. |
-| **Analysis pass location** | `src/schedule.rs` — part of the compiler binary, accesses `tc.platform_scheduling` directly. | Binary crate (`/int`) — owns the pass since it has platform scheduling data from DLL loading. | Ownership follows the data: platform scheduling info is loaded by `/int`, so the pass that consumes it lives there too. |
-| **`Expr::ParBind` definition** | In `ast.rs` alongside other Expr variants. | In `cranelisp-types` crate (shared boundary types). | Arch Decision: boundary types in `cranelisp-types`. Cross-crate interface change. |

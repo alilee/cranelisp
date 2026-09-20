@@ -75,8 +75,8 @@ The agent is a **new consumer at three existing seams + one new sibling module**
   drives, on the *same* eval thread. It does NOT open a fourth cadence, spawn a window,
   or take a second mutable claim on session state. Its model↔tool sub-loop is
   synchronous to the user's Enter (like a normal `eval`), and every state read goes
-  through the **existing introspection surface** (`describe_symbol`, the `handle_*`,
-  the symbol-table accessors) — never a bespoke state view. Cadence slot per §5.4.
+  through the **existing introspection surface** (`get_introspection`, the `handle_*`
+  battery, the symbol-table accessors) — never a bespoke state view. Cadence slot per §5.4.
 - **`#[cfg(feature="agent")]` cuts AT the seams (4 of them), bolted on not woven through.**
   Feature-off ⇒ the binary is byte-identical to today (§4.4). The cuts:
   1. **Dispatch** (`src/main.rs` read loop): one classifier arm (§2).
@@ -117,7 +117,7 @@ On a complete buffer, `main.rs:260` calls `s.process_commands(&input, &mut stdou
 (`:390`); bare special-form → `Final` (`:395`); else → `Compile(src)` (`:412`), which
 `main.rs:266` feeds to `eval`. Bare atoms/literals reach `eval`'s introspection gate
 `check_bare_symbol_introspection` (`src/eval.rs:447` — verified; the §4 self-documenting
-behaviour). `describe_symbol` is `src/repl.rs:300` (verified).
+behaviour).
 
 ### 2.2 The classifier shape — the FORM-COUNT rule (user ruling 2026-07-12, AS-BUILT)
 

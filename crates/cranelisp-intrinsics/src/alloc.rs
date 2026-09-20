@@ -381,7 +381,7 @@ pub extern "C" fn heap_alloc_payload(payload_size: i64) -> i64 {
 /// **alloc base pointer** as i64.
 ///
 /// This is the wired implementation of `cranelisp_platform::HostCallbacks::
-/// alloc_with_tag` (FIXME 0229 step 1 / `design/platform/host-wiring-s76.md` §2).
+/// alloc_with_tag` (`design/platform/platform.md` §4.5).
 /// `int`'s host wiring writes this fn pointer into both `HostCallbacks`
 /// construction sites (the JIT path and the `--link` path), replacing
 /// `cranelisp_platform::null_alloc_with_tag` and removing the R1 gate. It is a

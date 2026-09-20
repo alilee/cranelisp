@@ -10,7 +10,6 @@ This **replaces** the second convergence's embed-the-`.cl` (`include_str!`) desi
 schema is a *build artifact* now, never hand-authored, and layout truth is read from the
 **resolved module graph**, not from lexical file content (the `include_str!` form breaks
 when the type module imports/re-exports its ADTs — brittle; §8). Companion to
-`design/platform/host-wiring-s76.md` (the seam map this supersedes for the schema seam),
 `crates/cranelisp-platform/src/lib.rs` (the landed S71 boundary), and
 `cranelisp-primitives::PRIMITIVES_GOT_SLAB` (the FIXME-0280 precedent this design
 generalises). Owner `/arch`.
@@ -1514,7 +1513,7 @@ single async trampoline unchanged.
 > `AsRawFd`-style trait, and the backend's resource-handle layout marking. **Added:**
 > `acquire` + `retire` fn-pointer entries on the `ctx` vtable (`HostCtx`) + an `Acquire`
 > result enum. Cascade: /arch (this section + `effect-concurrency.md` §4.1.1/§8.1/§8.2 +
-> BC §3/§5/§6 + `interfaces.md`) → /design re-cascade of `poll-support.md` /
+> BC §3/§5/§6 + `interfaces.md`) → /design re-cascade (platform leaf-authoring now in `design/platform/poll-leaf-authoring.md`) /
 > `io-trampoline.md` / `reactor.md` (they were written to the dead descriptor model;
 > §6.8.0b cascade list below) → /platform (web + stdio leaves to the poll-fn skeleton) →
 > /backend (uniform poll node, delete the positional bake) → /int (the ctx-vtable host
@@ -1633,11 +1632,6 @@ same change-set.
 
 **/design re-cascade (the design docs written to the dead descriptor model — flag for
 /design, do NOT edit from /arch):**
-- `design/platform/poll-support.md` §3.1/§3.5/§3.6 — rewrite the leaf-authoring contract
-  to the poll-fn skeleton (acquire/register/retire via `ctx`); delete the `desc_out`
-  env contract and the resource-handle-header depiction; `Connection` opaque field holds
-  `r` (not a slot); the two-module `web.cl`/`serve.cl` split + the load-order rule
-  (§3.6.3) carry forward unchanged.
 - `design/backend/io-trampoline.md` §17 — the poll node is **uniform** (no role bake, no
   `ResourceDesc` header slot, no `desc_out` slot, no resource-handle type set); the
   backend's only v9 delta is **deleting** `inject_poll_leading_pair` + the positional

@@ -31,17 +31,16 @@
 //!     `git show 7f834bf6:design/int/`).
 //!   - `design/int/heisenbug-race-closure.md §3b` — reduced repro
 //!     calibration (N=6, K=2, 10 trials).
-//!   - `design/int/s77-int-restructure.md §3.5` — the S60–S62 heisenbugs
+//!   - `design/int/int.md §6.2` — the S60–S62 heisenbugs
 //!     (incl. H5) cannot recur once in-progress cluster state is stack-local.
 //!     The H5-replay gate + the regrounded liveness/positive-outcome tests
 //!     EVIDENCE this observable parity property (they no longer probe the
 //!     `eval_in_flight`/`EvalInFlightGuard`/`module_sexps` internals that the
 //!     Sprint 78 OQ-3 restructure deletes — see the per-test reground notes).
 //!
-//! Sprint 78 Wave 1 regrounding (plan §1/§4): the three previously
-//! mechanism-pinned tests were regrounded to observable outcomes BEFORE /dev
-//! touches the source, so the suite stops referencing the soon-deleted
-//! internals up front:
+//! Three formerly mechanism-pinned tests were regrounded to observable
+//! outcomes (`design/int/int.md §6.2`), so the suite references none of the
+//! deleted internals:
 //!   - `h5_gate_typechecking_user_fires_only_on_repl_thread` (parsed `[SCH]`
 //!     for the `eval_in_flight`-suppressed push) → RETIRED, subsumed by
 //!     `h5_replay_gate_deterministic_under_scheduler_stress` (observable
@@ -382,14 +381,14 @@ fn heisenbug_race_reduced_concurrent_import_pairs() {
 // 3. H5-replay gate (load-bearing — gates OQ-3 `eval_in_flight` guard deletion)
 // =============================================================================
 
-// spec: design/int/s77-int-restructure.md §3.5 — the S60–S62 heisenbugs
+// spec: design/int/int.md §6.2 — the S60–S62 heisenbugs
 //   (incl. H5) cannot recur once in-progress cluster state is stack-local.
 //   This test EVIDENCES that soundness claim (it does not assert the
 //   mechanism): it replays the H5 two-input shape under CRANELISP_SCHEDULER_
 //   TRACE stress and proves the OBSERVABLE outcome (import + call → 99) is
 //   deterministic across the iteration budget.
 //
-// Gating relationship (Sprint 78 plan §1 / gate-map §5):
+// Gating relationship:
 //   * BEFORE the OQ-3 guard deletion (Step 3): MUST be green with the
 //     `eval_in_flight` guard still present — this establishes the baseline
 //     the deletion must preserve.
@@ -409,7 +408,7 @@ fn heisenbug_race_reduced_concurrent_import_pairs() {
 // signature may legitimately change shape). The observable-outcome assertion
 // here is the durable H5 guard; the mechanism probe regrounds into it.
 //
-// Iteration count (50) calibration (Sprint 78 plan §1): one subprocess per
+// Iteration count (50) calibration: one subprocess per
 // iteration (lighter than the 2-session cache-delete shape of
 // `cache_repl_loads_heisenbug_parallel_stress` at 20 iter). 50 is a
 // structural-reopening tripwire, not statistical proof — the historical H5
@@ -420,7 +419,7 @@ fn heisenbug_race_reduced_concurrent_import_pairs() {
 fn h5_replay_gate_deterministic_under_scheduler_stress() {
     // 50 fresh-tmpdir subprocesses, each under CRANELISP_SCHEDULER_TRACE=1.
     // The trace plumbing changes timing — running UNDER the trace IS the
-    // stress condition the soundness obligation names (plan §1). On any
+    // stress condition the soundness obligation names. On any
     // failure the captured `[SCH]` stderr stream is dumped for diagnosis.
     const ITERATIONS: usize = 50;
 
@@ -431,7 +430,7 @@ fn h5_replay_gate_deterministic_under_scheduler_stress() {
         //
         // PreludeVariant::None: the import + bare-call shape needs only the
         // helper module; no operators are load-bearing (reduction discipline
-        // — plan §1 prefers None if it reproduces, and it does).
+        // prefers None when it reproduces, and it does).
         let out = Cranelisp::new()
             .repl()
             .with_prelude(PreludeVariant::None)
@@ -449,8 +448,7 @@ fn h5_replay_gate_deterministic_under_scheduler_stress() {
             "H5-replay gate FAILED at iteration {iteration}/{ITERATIONS}: the \
              two-input import sequence did not produce 99. This is the H5 race \
              re-surfacing — if it fires AFTER the OQ-3 guard deletion (Step 3), \
-             OQ-3 is wrong and Step 3 must revert (design/int/\
-             s77-int-restructure.md §3.5).\n\
+             OQ-3 is wrong and Step 3 must revert (design/int/int.md §6.2).\n\
              === stdout ===\n{}\n=== [SCH] stderr stream ===\n{}",
             out.stdout,
             out.stderr
@@ -463,7 +461,7 @@ fn h5_replay_gate_deterministic_under_scheduler_stress() {
 //    value (REGROUNDED from RAII-guard mechanism to observable liveness)
 // =============================================================================
 
-// spec: design/int/s77-int-restructure.md §3.5 — in-call-stack cluster state
+// spec: design/int/int.md §6.2 — in-call-stack cluster state
 //   is stack-local, so the normal import→call→complete path neither races nor
 //   stalls. This test EVIDENCES the observable property that matters to the
 //   user: the import + call subprocess TERMINATES (does not hang) and yields
@@ -472,7 +470,7 @@ fn h5_replay_gate_deterministic_under_scheduler_stress() {
 //   would break the build the moment /dev lands the deletion. The liveness +
 //   value outcome holds today AND after the deletion.
 //
-// Regrounded in Sprint 78 Wave 1 (plan §4 item 2): the prior version asserted
+// Regrounded (design/int/int.md §6.2): the prior version asserted
 // the same observable outcome but justified the timeout via `EvalInFlightGuard`
 // Drop correctness + `eval_in_flight` flag leakage. Those internals are gone in
 // Step 3; the observable property (terminates + 42) is the durable guard.
@@ -508,7 +506,7 @@ fn h5_normal_completion_liveness_yields_dep_value() {
         out.stdout.contains("42"),
         "H5 normal-completion liveness: import + call did not yield \
          helper-val=42. The normal completion path must terminate AND produce \
-         the dependency's value (design/int/s77-int-restructure.md §3.5).\n\
+         the dependency's value (design/int/int.md §6.2).\n\
          === stdout ===\n{}\n=== stderr ===\n{}",
         out.stdout,
         out.stderr
@@ -542,7 +540,7 @@ fn h5_normal_completion_liveness_yields_dep_value() {
 //       `--run` invocation (root CLAUDE.md "Defects" §1 — REPL/--run
 //       divergence is a defect)
 //
-// REGROUNDED in Sprint 78 Wave 1 (plan §4 item 3): the prior version asserted
+// REGROUNDED (design/int/int.md §6.2): the prior version asserted
 // the ABSENCE of the error string "no parsed sexps for module" — a symptom
 // produced by the `module_sexps` shared map when a worker dequeued a Typecheck
 // task before the dep's sexps were published. Step 2 deletes `module_sexps`,
@@ -628,7 +626,7 @@ fn repl_dep_load_no_race_with_persistent_workers() {
 // 5. B1 — entry-module single-orchestration (Sprint 78 §3 / /review Blocker B1)
 // =============================================================================
 //
-// spec: design/int/s78-entry-module.md §3 — the entry module must be
+// spec: design/int/int.md §6.5 — the entry module must be
 //   single-orchestrated. Today (pre-§3) the entry/REPL module is BOTH
 //   eval-thread-driven (`process_single_form`) AND pool-claimable
 //   (registered with `sexps: Some(...)`; `try_unblock_locked` requeues it on
@@ -690,7 +688,7 @@ fn run_repl_with_entry(dir: &std::path::Path, entry: &str, input: &str) -> Outpu
     child.wait_with_output().expect("failed to read output")
 }
 
-// spec: design/int/s78-entry-module.md §3 — entry-module single-orchestration.
+// spec: design/int/int.md §6.5 — entry-module single-orchestration.
 //   B1 scenario: non-empty entry module (`app`) + import gap (`helper`) under
 //   a REPL. The entry's eval of `(run)` MUST deterministically yield 99 with
 //   no concurrent-re-typecheck corruption, across repetition.
@@ -725,7 +723,7 @@ fn b1_entry_module_non_empty_with_import_gap_single_orchestrated() {
              gap to 'helper') MUST evaluate (run) to 99 deterministically. A \
              wrong/absent value here would indicate the entry module was \
              re-typechecked on a pool worker concurrently with the eval thread \
-             (s78-entry-module.md §3 / B1).\n\
+             (design/int/int.md §6.5 / B1).\n\
              === stdout ===\n{stdout}\n=== stderr ===\n{stderr}"
         );
         // Negative: no crash / panic from a concurrent second orchestrator.
