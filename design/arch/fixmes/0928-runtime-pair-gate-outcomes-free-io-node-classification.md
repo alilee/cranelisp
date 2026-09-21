@@ -6,7 +6,7 @@ filed_at: 2026-07-26
 sprint_filed: 119
 refers_to: design/runtime/s119-typed-consume-funnel.md §6.3 (the deliberately-NOT-flipped
   residue), §8 (the approved public-API delta), §13 (the three requested rulings);
-  design/backend/non-concrete-release-contract.md §5.3 (free_io_node);
+  design/backend/non-concrete-release-contract.md §5.4 (free_io_node);
   design/arch/bounded-contexts.md §4b (the canonical statements added at the gate)
 status: open
 ---

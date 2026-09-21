@@ -243,7 +243,7 @@ imbalance's seam against `CRANELISP_RC_TRACE`/`RC_STATS`/`CODEGEN_DUMP` (+
 | **W-B2** | **R1** alias-binding recognition — a `Var`-aliasing `let`/match-var binding registers non-owning (no scope-dec obligation) | G (with W-B3's consume inc) | BI-G; unit: alias binding emits no scope-dec; RC balanced |
 | **W-B3** | **R2** extend the LANDED consume-inc to {closure capture, ctor field store} via the W-B1 classifier | I-1 ×2 (capture) | BI-I1 ×2; unit: capture of a live-binding alias incs once; locus line updated to `class=uaf locus=…backend let-bind-alias / closure-capture consume seam (FIXME 0668)` |
 | **W-B4** | **R3** forwarding-suppresses-dec at the match scrutinee-dec seam (`compile_var_pattern_arm`) | F, B ×2, C-off | BI-F, BI-B-cow ×2, BI-C-off; unit: forwarded-alias scrutinee ⇒ no dec; a genuine-temp scrutinee ⇒ dec (cell H twin stays GREEN) |
-| **W-B5 (tail)** | collapse the three fn-return patches (`skip_var`/`protect_return_value`/`return_cow_source`) onto the same provenance contract — the "three ad-hoc patches for one flow" 0668 named. **RULED S121 (FIXME 0747): `s115-carrier-and-rc-sweep.md` §6** — one binding-root finder returning a *reach class*, three thresholds; the `protect_return_value` third was already discharged at S115 W3 by `is_fresh_construction` | — (hygiene; regression-fenced) | golden byte-identical-off; `l_c3` ×2, `vec_lifecycle`, A/E ×2 HOLD; no new RED — **the ruling makes byte-identity hold by construction**, so the acceptance is unchanged |
+| **W-B5 (retired)** | the planned collapse of the three fn-return patches onto one provenance contract. **Retired:** the three finders answer different questions and stay separate ([s122-closure.md](s122-closure.md) §5.1; [s115-carrier-and-rc-sweep.md](s115-carrier-and-rc-sweep.md) §6) | — | no source change |
 
 **Must-hold fences through every item** (`s114-test-plan.md` §2): A/E ×2, cell-H
 bare-match, `ownership_reuse::l_c3_*` ×2 (escape-gated reuse — untouched by this
@@ -370,8 +370,8 @@ file — serialize the two `/dev` change-sets (shared-tree race), no wave-gate o
   (21→22, ONE bump, F7) — NOT a second invalidation event here. This contract adds no schema
   bump (§4).
 
-**Within the family:** W-B1 (classifier) precedes W-B2/B3/B4 (its consumers); W-B5 (fn-return
-patch collapse) is the hygiene tail after the family flips green. W-B0 is landed.
+**Within the family:** W-B1 (classifier) precedes W-B2/B3/B4 (its consumers). W-B0 is landed;
+W-B5 is retired.
 
 **F-R1 / MS-P8:** wave-UNASSIGNED until their §6 discriminators run — the evidence decides
 backend-vs-intrinsics before Phase-4 places them. `/qa` adjudicates from the FIXME.

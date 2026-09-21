@@ -46,10 +46,10 @@ contracts that bind them living in a third:
    declaration-table rows; the consuming convention is rustdoc; the embed rule
    was (until W2b) a rustdoc paragraph — one that **documented the defect as
    intent** ("It gets a deep RC inc (every SCons node and every element)").
-   Both recent audits converge on this: `audits/cranelisp-primitives-s116.md`
+   Both recent audits converge on this: [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-primitives-s116.md)
    grades code Strong-to-adequate but finds the highest-risk declared ownership
    facts "tested as declarations, not checked against production emission";
-   `audits/cranelisp-platform-s117.md` grades code Strong and realisation
+   [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md) grades code Strong and realisation
    **Weak** — the prose describes retired and current architectures
    simultaneously.
 
@@ -639,7 +639,7 @@ documented-residual to zero; the marginal instrument stays valid unchanged.
   option 3's landed first instance and its e2e-tier rule.
 - FIXMEs 0889 (leak recovery — §6.3), 0890 (threshold re-derivation),
   0867 (historical variant-coverage hypothesis; retired by the S121 ruling).
-- `audits/cranelisp-primitives-s116.md`, `audits/cranelisp-platform-s117.md`
+- [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-primitives-s116.md), [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md)
   — the prose-contract evidence.
 
 ## Next skills

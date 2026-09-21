@@ -6,18 +6,18 @@ filed_at: 2026-07-26
 sprint_filed: 118
 refers_to: crates/cranelisp-backend/src/error.rs:121-132 (CompilationError::CodegenFailed
   Display — the `{module}/{symbol}` composition and the nested category prefix);
-  repl/spec.md §5.1 (location MUST) and §5.5 (new — compiler-stage subject naming);
+  repl/spec.md §5.1 (location MUST) and §7.2 (new — compiler-stage subject naming);
   design/arch/fixmes/0907-*.md (the live specimen, a different defect)
 status: open
 retargeted_by: /design (backend)
 retargeted_at: 2026-07-26
-ruled_at: design/backend/non-concrete-release-contract.md §3.4 (R-4), §5.5
+ruled_at: design/backend/non-concrete-release-contract.md §3.4 (R-4), §7.2
 ---
 
 # A codegen-stage failure is presented with a `0..0` span, a doubled category prefix, and a doubled/mangled internal subject
 
 > **RULED S119 Phase 3, `/design`(backend) —
-> `design/backend/non-concrete-release-contract.md` §3.4 / §5.5.** Promoted from
+> `design/backend/non-concrete-release-contract.md` §3.4 / §7.2.** Promoted from
 > an adjacent experience rider into **rule R-4 of the release contract itself**.
 >
 > The reason is structural, not courtesy: "a **located refusal the user can act
@@ -28,14 +28,14 @@ ruled_at: design/backend/non-concrete-release-contract.md §3.4 (R-4), §5.5
 > refusal; it is a leak of the compiler's call structure, and it does **not
 > discharge the contract**.
 >
-> Backend-side obligations named at ruling §5.5 (`error.rs:121-132`): one
+> Backend-side obligations named at ruling §7.2 (`error.rs:121-132`): one
 > category prefix per diagnostic; a real span — `drop_glue.rs:539-544`'s
 > `ErrorLocation::from_span(Span::SYNTHETIC)` is the direct cause of `0..0` and
 > every registry error should carry the requesting frame's span; and a subject
 > the user can look up, with the instantiation rendered as types rather than a
-> `$`-mangle. `repl/spec.md` §5.5 remains `/repl`'s normative surface.
+> `$`-mangle. `repl/spec/05-error-presentation.md` §5.5 remains `/repl`'s normative surface.
 >
-> Added to the contract's `/review` reject list (§8 item 7): once §5.5 lands, a
+> Added to the contract's `/review` reject list (item 7): once the refusal-frame correction lands, a
 > refusal at span `0..0` against a mangled subject is a reject.
 
 ## Severity
@@ -116,7 +116,7 @@ recorded there as REPL-experience evidence rather than duplicated here. Items
 
 ## Requirement
 
-`repl/spec.md` §5.5 (new this sprint) states the contract: located at the user's
+`repl/spec/05-error-presentation.md` §5.5 (new this sprint) states the contract: located at the user's
 form; subject named as the user would write it (no `__expr`, no `$` instance
 mangle, no doubled module prefix); every noun discoverable or else rephrased;
 one located category prefix per diagnostic.
@@ -164,10 +164,10 @@ Full record: `tests/plan/s118-test-plan.md` §11.8.4. Source read:
   the same S119 window:** `user/__expr` and the `$`-mangled instance spelling
   are display-boundary subject-presentation defects (D39: coordinates as
   data, formatting downstream in int); the subject must render as the user
-  would write it per `repl/spec.md` §5.5. The data (instance symbol) is
+  would write it per `repl/spec/05-error-presentation.md` §5.5. The data (instance symbol) is
   correct — int rewrites the presentation, never the carrier.
 - **Guard sequencing:** every currently-reachable e2e trigger for this frame
-  is 0907's refusal, so a guard authored now dies with 0907's fix. The §5.5
+  is 0907's refusal, so a guard authored now dies with 0907's fix. The §7.2
   frame guard is DEFERRED to S119, authored in the 0907/0903 fix window
   against whatever codegen-refusal trigger remains (or one `/testing`
   constructs). `[S119]` PLAN row landed.
@@ -204,7 +204,7 @@ the instance"; it is one presentation projection.
    noun be actionable at the prompt: `then` is, `user/then$…` is not.
 
 **Guard sequencing accepted as `/qa` set it**: int's rider rides the deferred
-§5.5 frame guard authored in the 0907/0903 fix window against whatever
+§7.2 frame guard authored in the 0907/0903 fix window against whatever
 codegen-refusal trigger remains. Int does **not** get a private guard keyed on
 0907's message text. The `Bind`/`IO` undiscoverability half stays 0907's.
 

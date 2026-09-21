@@ -311,8 +311,8 @@ it sits beside, minus the bounds check and the element load:
 ```
 
 C4's `dev` owns the spelling. Three properties make this the right shape rather
-than a patch, and C4 consumed them unchanged (`design/backend/s121-c4-visit.md`
-§8.5):
+than a patch, and C4 consumed them unchanged (`design/backend/non-concrete-release-contract.md`
+§7.4):
 
 - **It is Decision-24 conformant by construction.** The inline arm returns
   before `emit_d24_adaptation` is reached (`:595` vs `:645`), so an inline
@@ -418,7 +418,7 @@ gate offered was taken; the arm moved to C4 instead.
    `vec_codegen.rs::emit_vec_query_into` **dormant**, inside C4's own reserved
    backend surface as its bundle B8, after C4's B4 so the arm is written once
    against the settled absent-element-type refusal
-   (`design/backend/s121-c4-visit.md` §8.5).
+   (`design/backend/non-concrete-release-contract.md` §7.4).
 2. **C5's wave** flips the declaration (`user_extern` → `user_inline`, P0),
    which makes the arm live.
 3. **P1** then runs the typed-funnel slice with `vec_len` already gone from it
@@ -749,8 +749,8 @@ them. H5 leaves one residual, carried below.
 |---|---|---|
 | **H2** | `dev`(primitives) | Crate `CLAUDE.md` current-state, in the implementing visit: the phantom `insert_vec_query_entries` / `lib.rs:291` citation; §"The inline vec trio has NO GOT slot" becomes the family of four; §"Declared ownership facts" keeps `vec-len` in the only-read list but drops the extern framing; §"Submodule seam map" loses the `vec.rs` row. Also the same phantom symbol in `tests.rs:518` and `:546` |
 | **H3** | `qa` + the by-name registration stream | The **roster pin must be a projection** over the lifecycle's uniform-body templates, not a hand-maintained allow-list inherited from the retired I-ABI framing (§3.6). `vec-len` does not join it once P0 lands; a hand-kept list is a second authority that can disagree with the table |
-| **H4** | `qa` | **The §2.3 finding, for attribution**, with the falsifier, the two controls and the source path already read. Primitives supplies the shape; `qa` attributes and directs the minimal repro, and decides whether the six string rows' value-position double dec is a current-sprint safety prerequisite. Also: 0859's revival trigger into the plan, and **the de-slot's e2e acceptance** — `tests/vec_query_value_use.rs:326` and `:341` are the acceptance cells, and the observation is their *path*: green through the GOT/extern path before P0 (which is also C4's dormancy control for B8, `design/backend/s121-c4-visit.md` §8.5) and green through C4's now-live inline arm after it. Their pre-P0 greenness is additionally the control leg of §2.3's falsifier. Both readings share one pair of cells; `qa` owns them |
-| **H5r** | `sprint` → `arch`, C4 | **The residual of closed H5.** `arch` corrected its own records, but two non-arch records still describe value-position inline dispatch as riding a minted `__inlwrap` instance: `design/arch/fixmes/0932` (the filing's own text) and `design/backend/s121-c4-visit.md` §4.1's `Inline` row, whose "ordinary `Concrete × Body` entry" clause is the reading `symbol-table-lifecycle.md` §5.5 now rejects ([lifecycle realization](#35-lifecycle-realization)). Both are their owners' to repair; neither blocks P0. `design/backend/ownership-codegen.md` §13.3 is **not** in this set — it names `__inlwrap_{bare}_{sig}__` as a *planned* wrapper-identity scheme, which `interfaces.md` already dispositions as binding-when-introduced |
+| **H4** | `qa` | **The §2.3 finding, for attribution**, with the falsifier, the two controls and the source path already read. Primitives supplies the shape; `qa` attributes and directs the minimal repro, and decides whether the six string rows' value-position double dec is a current-sprint safety prerequisite. Also: 0859's revival trigger into the plan, and **the de-slot's e2e acceptance** — `tests/vec_query_value_use.rs:326` and `:341` are the acceptance cells, and the observation is their *path*: green through the GOT/extern path before P0 (which is also C4's dormancy control for B8, `design/backend/non-concrete-release-contract.md` §7.4) and green through C4's now-live inline arm after it. Their pre-P0 greenness is additionally the control leg of §2.3's falsifier. Both readings share one pair of cells; `qa` owns them |
+| **H5r** | `sprint` → `arch`, C4 | **The residual of closed H5.** `arch` corrected its own records, but two non-arch records still describe value-position inline dispatch as riding a minted `__inlwrap` instance: `design/arch/fixmes/0932` (the filing's own text) and `design/backend/non-concrete-release-contract.md` §7.1's `Inline` row, whose "ordinary `Concrete × Body` entry" clause is the reading `symbol-table-lifecycle.md` §5.5 now rejects ([lifecycle realization](#35-lifecycle-realization)). Both are their owners' to repair; neither blocks P0. `design/backend/ownership-codegen.md` §13.3 is **not** in this set — it names `__inlwrap_{bare}_{sig}__` as a *planned* wrapper-identity scheme, which `interfaces.md` already dispositions as binding-when-introduced |
 | **H6** | `sprint` → C1, C3 | Two second homes for the `vec-len` fact that move with P0: `cranelisp-types/src/module.rs:2638`'s rustdoc calling it "the one polymorphic `Primitive{Extern}`" (C1), and the independent scheme seed at `cranelisp-typecheck/src/builtins.rs:1157-1167` (C3). Neither is a primitives edit |
 | **H7** | C5-intrinsics `dev` | Once P0 lands, `catalog.rs`'s note that `vec-len` "rides the GOT via `PRIMITIVES_TABLE`" becomes false. The catalog exclusion itself is unchanged |
 

@@ -877,7 +877,7 @@ The completed G6 consumer-side migration is retained in the S56/S57 record (`pha
 - `/arch` Decision 25 — `design/arch/CLAUDE.md` — the architectural statement of `code: Option<Code>` as `#[serde(skip)]` on `ModuleEntry::Def`. PRESCRIPTIVE source.
 - `/arch` `design/arch/interfaces.md` §"Module Entries" — the `ModuleEntry::Def` shape with the `code` field already landed (Sprint 57 interfaces update).
 - `/arch` `design/arch/overview.md` §"Phase 3 Step 3b (G6)" — the migration step summary, deferring `SymbolTable<C, L>` generics.
-- `/typecheck` `design/typecheck/ast-annotation.md` §9 — source of `ast` that `compile_to_module` reads. Invariant: for every name in `names`, the entry carries `ast: Some(_)` (§2.1 Wave 0 contract).
+- `/typecheck` `design/typecheck/ast-annotation.md` §9 — source of `ast` that `compile_to_module` reads. Invariant: for every name in `names`, the entry carries `ast: Some(_)` (the historical Wave 0 contract; current lifecycle contract in §9.5).
 - `/int` S56/S57 codegen migration record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`) G6 extension — consumer-side read-site migration table (priority worker, REPL eval, introspection, `/clif`, `/disasm`, `/source`).
 - `crates/cranelisp-backend/src/code.rs` — landed Shape-1 `Code` definition (pointer-only). The earlier `src/session_v4.rs:447` location held the pre-Shape-1 `{ jit, ptr }` form; that form is retired and the canonical `Code` is now in `cranelisp-types`.
 - `src/session_v4.rs` `SharedState.kept_jits` field — session-side `Arc<Jit>` retention pool (Decision 28) that anchors the lifetime of every `Code::ptr` produced.
@@ -1106,7 +1106,7 @@ The backend does not know, and does not care, whether the data symbol will be re
 Callers are responsible for ensuring the `Module` they pass can resolve `__cranelisp_got_{module}` symbols:
 
 - **Object callers** (nice worker, `--link`): no extra wiring — the default `ObjectModule` relocation machinery handles it.
-- **JIT callers** (priority worker, REPL): **MUST** register a `symbol_lookup_fn` on the `JITBuilder` before constructing the `JITModule`. After G7 lands in Wave 0, `got` lives on `SymbolTable` — the lookup closure walks `symbol_tables[name].got.base_ptr()`. See `design/typecheck/ast-annotation.md` §9.8 for the symbol-table shape post-G7 and `design/backend/per-module-got.md` §2 for the caller's end-to-end responsibility.
+- **JIT callers** (priority worker, REPL): **MUST** register a `symbol_lookup_fn` on the `JITBuilder` before constructing the `JITModule`. After G7 lands in Wave 0, `got` lives on `SymbolTable` — the lookup closure walks `symbol_tables[name].got.base_ptr()`. See `design/backend/per-module-got.md` §2 for the caller's end-to-end responsibility.
 
 ### Why uniform
 

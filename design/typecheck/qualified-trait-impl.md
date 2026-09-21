@@ -250,13 +250,9 @@ belonging to this crate's source:
    the conventional and HKT coverage bands §6 invalidated; that is the "documentary
    or evidence tail" the sprint's source-verification pass recorded against this
    record, and it is `qa`'s, not C3's.
-2. **A correction owed to a neighbouring design.** `non-concrete-producer-obligations.md`
-   §1.2 (S119) cited `impl_check.rs:1029`'s as-written mint as part of F2's
-   evidence. That citation was already stale when it was written down; it is
-   corrected in that document's §1.3, and F2's live defect — `scheme::mono` over a
-   `fn_type` carrying `Type::Var` at `:1039-1043`, and the hand-allocated slot at
-   `:1078-1089` — is unaffected by 0794's resolution. The two are different defects
-   in the same function, and only one of them is still there.
+2. **Producer contract.** The stale line-level census was retired; current
+   implementation-method scheme obligations live in
+   `design/typecheck/non-concrete-producer-obligations.md`.
 
 **One design item this confirmation does not close.** §3's table requires the
 explicit-method mint and the default-method mint to share one canonical operation.

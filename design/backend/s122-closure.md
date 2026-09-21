@@ -77,7 +77,7 @@ high-level emitter:
 `NULLARY_THRESHOLD_I64` has left `vec_codegen.rs`'s imports. The lower
 `emit_nullary_skip_guard` remains private to `heap.rs`; no new backend helper
 visibility is needed. This is the S122 source-backed narrowing of
-`s121-c4-visit.md` §8.2.
+the S121 one-prologue ruling ([non-concrete-release-contract.md](non-concrete-release-contract.md) §3.6).
 
 The four callers of `emit_guarded_rc_inc` continue to derive `Mixed` from the
 element's heap category. `build_elem_inc_fn` keeps its existing category-derived

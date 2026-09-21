@@ -199,7 +199,7 @@ ungraded). All routed into NC-2 family B + FIXME 0929's extension.
   `Type::Int` (`context.rs:280`). Routing under the `f5d30808` split: the
   **derivation seam is RULED** — ctor field-type materialisation for
   category/glue purposes delegates to the types-owned refusing projection
-  (`heap.rs::ctor_field_concrete_types`) or an instantiation-substituting
+  (`crates/cranelisp-types/src/heap.rs::ctor_field_concrete_types`) or an instantiation-substituting
   sibling landed beside it in `heap.rs`, never `context.rs`'s hand-rolled
   `scheme.ty` walk — so NC-5's flip criterion gains a structural leg: the
   fixing change-set retires the hand-rolled walk (grep-shaped pin: zero

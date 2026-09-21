@@ -520,7 +520,7 @@ compliant dispositions are available; I rule the order:
    the fence fail-on-revert of **the MODE** rather than of an unrelated fix
    — the only shape with a non-expiring half-life. Requires a small
    `/dev`(intrinsics) hook + a `/testing` re-plant, and the hook MUST join
-   `diagnostics/tests.rs::all_gates_default_off` (the byte-identical-off
+   `crates/cranelisp-intrinsics/src/diagnostics/tests.rs::all_gates_default_off` (the byte-identical-off
    fence) in the same change-set.
 2. **FALLBACK (compliant, no user sign-off needed) — retire
    `m3_parity_catches_planted_leak` with a §4.1 tombstone.** Prong 1 is

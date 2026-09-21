@@ -1001,7 +1001,7 @@ mod tests {
         ));
     }
 
-    // spec: design/backend/s121-c4-visit.md §6.4 — IO is runtime-owned and is
+    // spec: design/backend/non-concrete-release-contract.md §5.4 — IO is runtime-owned and is
     // classified before general ADT shape discovery. Empty tables are the
     // discriminating setup: reaching `ctor_shapes` would fail on a missing
     // primitives module instead of producing the IO shape.
@@ -1020,7 +1020,7 @@ mod tests {
         ));
     }
 
-    // spec: design/backend/s121-c4-visit.md §6.4/§6.5 — every concrete IO
+    // spec: design/backend/non-concrete-release-contract.md §5.4 — every concrete IO
     // instantiation keeps its canonical public glue identity, but its body
     // delegates final-node teardown to the single runtime/free_io_node import.
     // No payload-specific glue is minted by the IO body itself.

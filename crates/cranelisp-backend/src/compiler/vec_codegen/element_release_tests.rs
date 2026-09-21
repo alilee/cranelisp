@@ -5,7 +5,7 @@ use cranelift_module::Module;
 use cranelisp_types::{CranelispError, ModuleFullPath, Span, Type};
 use std::collections::HashMap;
 
-// spec: design/backend/s121-c4-visit.md §7.3, §8.5 — absence is not a scalar type.
+// spec: design/backend/non-concrete-release-contract.md §7.4 — absence is not a scalar type.
 #[test]
 fn element_release_requires_type_but_accepts_scalar_without_adapter() {
     let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();

@@ -94,7 +94,7 @@ The former monolithic `traits.rs` is five cohesive production submodules under a
 | `traits/monomorphise.rs` | 1,326 | the monomorphisation engine + mangling primitives (`monomorphise_call`, `recheck_body_for_mono`, `build_mangled_name`, `concrete_type_name`) |
 | `traits/type_resolve.rs` | 292 | `TypeExpr → Type` resolution free functions |
 
-`traits/test_helpers.rs` (381, test-only) + a sibling `{mod}/tests.rs` per production submodule carry the test surface. (Counts measured 2026-09-01. `impl_check.rs` has grown ~50% since the S87 cut and is the file both S121 CS-1 and CS-6 open; the growth watch-item is `typecheck.md` §3.2's, not a second one here.)
+`traits/test_helpers.rs` (381, test-only) + a sibling `{mod}/tests.rs` per production submodule carry the test surface. (Counts measured 2026-09-01; `impl_check.rs` has grown ~50% since the S87 cut. Maintainability watch-items live in `typecheck.md` §3.2, not here.)
 
 ## 2. Trait Declaration (`deftrait`)
 
@@ -292,9 +292,9 @@ transaction the append sits**, and the answer is: exactly where the shell alread
   The two hand-rolled `format!("impl$…")` spellings retire, discharging the R4
   keyed-identity census obligation for this family.
 
-C1's funnel conversion (`typecheck.md` §9.8.2 CS-1) reaches the same rollback arms, which
-is why CS-6 follows it: the record's staging and restoration are written once, in the
-funnel vocabulary, never as raw `symbols` writes that then need re-arming.
+The record's staging and restoration share the impl's rollback arms and use the
+lifecycle funnel vocabulary (`design/arch/symbol-table-lifecycle.md`), never raw
+`symbols` writes that then need re-arming.
 
 ### Post-inference
 

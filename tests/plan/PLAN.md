@@ -302,7 +302,7 @@ active allocation cites them; they are not fresh source censuses.
     the REPL case on all modes sharing one `process_cluster_once` seam;
   - the S87 wall-clock witness sweep. S87 allocated a QA pass over every timing
     assertion whose contention-falsifiable leg is single-shot; its findings
-    file holds no result (`git show 66a4d41e:audits/s87-findings.md`). Later
+    file holds no result (S87 findings at Git revision `66a4d41e`). Later
     witnesses follow the timing rule in §Traceability; earlier ones were not
     re-inspected against it;
   - the S88 module-preamble read. The `/doc <module>` read and its no-preamble
@@ -373,15 +373,26 @@ reuse. Retirement needs the citing owners to move their citations first.
   the [S111 drop-glue under-key reachability record](s111-0633-adt-drop-glue-underkey.md)
   and the [S111 Principle-24 register](s111-principle24-register.md).
 - Cut in S122 to their cited sections, original numbering kept and the removed
-  remainder named in each header: [S112](s112-0628-ic-wave.md),
+  remainder named in each header: [S102](s102-test-plan.md),
+  [S103](s103-test-plan.md), [S112](s112-0628-ic-wave.md),
   [S114](s114-test-plan.md), [S115](s115-test-plan.md), [S117](s117-test-plan.md),
-  [S119](s119-test-plan.md), [S120](s120-evidence-delta.md) and
-  [S121](s121-test-plan.md).
-- Kept whole, because citations reach most sections:
-  [S102](s102-test-plan.md), [S103](s103-test-plan.md), the S113
+  [S119](s119-test-plan.md) and [S121](s121-test-plan.md).
+- Kept whole, because citations reach most sections: the S113
   [plan](s113-test-plan.md) and [risk assessment](s113-risk-assessment.md), the
   [S115 instrumentation matrix](s115-instrumentation-matrix.md),
   [S116](s116-test-plan.md) and [S118](s118-test-plan.md).
+- The S120 shared-role evidence delta and the S80 link-prerequisite e2e
+  architecture plan are retired to Git (the
+  [last S120 revision](https://github.com/alilee/cranelisp/blob/57253cf2/tests/plan/s120-evidence-delta.md)
+  and the
+  [last architecture-plan revision](https://github.com/alilee/cranelisp/blob/57253cf2/tests/plan/e2e-architecture.md)).
+  The architecture plan's standing rules are the link-prerequisite and
+  fresh-tmpdir rules in the [tests memory](../CLAUDE.md). The S120 delta measured the
+  citation instrument that the shared document checker replaced, its last
+  standing consumer was the retired S120 audit report, and its two package
+  advisories are delivered in the shared package; the
+  [repository gates](#repository-gates--maintenance-checks-never-compiler-authority)
+  state the current conditions.
 
 The following compact closure records remain because other current records
 point to their specific evidence, which must not be lost during consolidation.

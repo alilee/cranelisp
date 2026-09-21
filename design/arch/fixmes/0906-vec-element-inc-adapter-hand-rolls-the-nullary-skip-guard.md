@@ -6,13 +6,13 @@ filed_at: 2026-07-26
 sprint_filed: 118
 refers_to: crates/cranelisp-backend/src/compiler/vec_codegen.rs — the `guarded` arm of the Vec element inc-adapter body (≈:986)
 status: open
-ruled_at: design/backend/non-concrete-release-contract.md §7.2
+ruled_at: design/backend/non-concrete-release-contract.md §3.6
 ---
 
 # A third hand-rolled nullary-skip guard survives in the Vec element inc adapter
 
 > **CARRIED S119 Phase 3, `/design`(backend) —
-> `design/backend/non-concrete-release-contract.md` §7.2.** The proposed
+> `design/backend/non-concrete-release-contract.md` §3.6.** The proposed
 > resolution is accepted verbatim and gains a reason beyond Principle 7: rule
 > **R-1** of the release contract is precisely that the tag-vs-pointer decision
 > has ONE home, because the whole class's memory-unsafety is that decision being

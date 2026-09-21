@@ -45,6 +45,14 @@ helper. The earlier four-layer pyramid is retired (Git history).
 | `risks.md` | Qualitative risk register. |
 | `helpers.md` | E2E helper API design (contract for `tests/helpers/`). |
 | `qa-retained-evidence-records` | Dated QA measurement, lane-baseline and coverage-analysis records retained because current designs, test sources and harnesses cite them by section. |
+| `qa-support-documents` | Current QA support contracts, active evidence and retained checker reconciliation. |
+
+The support collection comprises [isolation evidence](plan/0488-isolation.md),
+[agent context tuning](plan/agent-context-tuning.md),
+[agent strategy](plan/agent-testing-strategy.md), [helper design](plan/helpers.md),
+[helper reference](plan/helpers-api.md), [memory-safety coverage](plan/memory-safety-coverage.md),
+[risks](plan/risks.md), [S122 evidence](plan/s122-evidence-delta.md), and
+[checker reconciliation](plan/s122-document-checker-reconciliation/README.md).
 
 Retained `plan/s{NN}-*.md` files are dated records listed in
 [PLAN retention](plan/PLAN.md#evidence-currency-and-retention); new working

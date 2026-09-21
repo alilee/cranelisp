@@ -85,7 +85,7 @@ the boundary conflict to `/arch` and update this doc accordingly.
 
 > **Why int is the largest surface.** int integrates everything. It owns three internal cadences (compilation, REPL, watcher), four observability sinks (scheduler trace, IO trace, GOT trace, introspection store), the only `Code` carrier instantiation site, the gap-orchestration crossing point, the slash-command surface, the cache writer, the file watcher, the line editor, the CLI, the `--link` driver, the prelude loader, and the error formatter. By design, int has the most subordinate docs and the largest LOC count.
 
-> **Audit reconciliation.** `audits/src-20260423.md` (262 lines, 2026-04-23) is the most recent crate audit. It pre-dates Decisions 38 + 39 by 5 days and pre-dates Decisions 40 + 41 + 42 by ten days; its current-state findings (the seven F1–F7 structural issues) remain ground truth, but its target-state direction is partially superseded by the S64 Decisions. Where audit recommendations and 38/39/40/41/42 agree, both are cited; where the Decisions sharpen or supersede, the new model wins and is flagged inline.
+> **Audit reconciliation.** Open integration audit points are carried by [ACT-0965](../../sprints/actions/ACT-0965-src-audit-residuals.md). References below to older assessments are historical rationale recoverable from Git; they do not establish current implementation status.
 
 ---
 
@@ -1006,7 +1006,7 @@ The fourth sink (introspection) is a per-key store, not a ring; it serves slash 
 
 | Attribute | This crate's stewardship |
 |---|---|
-| Simplicity (P6) | Audit F1+F2+F5 are the operative complexity gaps. The 38/39/41 simplification removes three dimensions (per-form RefMut, `module_sources`, the int-side post-loop unpacking after `compile_to_module`). The S64 module decomposition (§3.3) closes the rest. Decision 35/41's `Code` enum is single-cleavage Cranelift exposure — one site, not scattered. |
+| Simplicity (P6) | 2026-04-23 src audit (Git history), F1+F2+F5 are the operative complexity gaps. The 38/39/41 simplification removes three dimensions (per-form RefMut, `module_sources`, the int-side post-loop unpacking after `compile_to_module`). The S64 module decomposition (§3.3) closes the rest. Decision 35/41's `Code` enum is single-cleavage Cranelift exposure — one site, not scattered. |
 | Maintainability (P1, P2) | Audit's "split `session_v4.rs` by responsibility" is the centrepiece. Per-symbol mutability + `process_form`-as-sole-crossing closes F3. The three-instance observability pattern (alongside introspection) closes F7's "long historical narratives in hot paths" by routing rationale into `design/int/observability.md`. |
 | Observability | §11. Four sinks; one pattern; all production-batch zero-cost. The four-pattern uniformity is a deliberate design choice — once a developer learns the IO-trace shape, the GOT-trace and scheduler-trace shapes are mechanically the same. |
 | Concurrency-safety (P4) | §10 invariants. Decision 31 reclaim safety invariant ("Arc-refcount-zero means no fn pointer reachable") is upheld by the GOT swap discipline + the language-level "function values are heap closures, not raw code pointers" rule. Per-symbol mutability discipline removes the per-form whole-module write lock. Decision 41's per-symbol JIT cardinality eliminates batch-level Arc-clone aliasing. |
@@ -1055,8 +1055,8 @@ The S64 Decisions (40, 41, 42) and the FIXMEs that close them (0098, 0099, 0100,
 | `code.rs` location | Lives in `src/code.rs` (397 LOC) | Lives in `cranelisp-backend/src/code.rs`; int re-exports | Decision 41 (no specific FIXME; bundled with 0098) |
 | Backend per-symbol JIT cardinality | `compile_to_module` returns a tuple; int unpacks at `worker.rs:2860–3018` | `compile_to_module` returns `Result<(), CompilationError>`; backend writes `Code::Jit` directly via `SymbolTable::write_code` | Decision 41 (bundled with 0098) |
 | god-file decomposition | **LANDED (S110).** `session_v4.rs` is a thin facade over `session_v4/`; `worker.rs`/`process_form.rs` carry `*/tests.rs` + helper submodules; `repl.rs` → the five-file `src/repl/` (§3.3) | Decomposed per the §3.1/§3.3 module map | FIXME 0109 (session_v4/worker) + 0606/0627 (repl) — all resolved |
-| Legacy `session.rs` | 543 LOC of v3 session code lingers | Deleted; v4 is the only pipeline | Audit F6 — open `/dev` work |
-| `lib.rs` narrowing | 18 public modules exported | Narrows to facade-shape exports (`CompilerSession`, worker loops, scheduler types, etc.) | Audit F5 — open `/dev` work |
+| Legacy `session.rs` | 543 LOC of v3 session code lingers | Deleted; v4 is the only pipeline | 2026-04-23 src audit (Git history), F6 — open `/dev` work |
+| `lib.rs` narrowing | 18 public modules exported | Narrows to facade-shape exports (`CompilerSession`, worker loops, scheduler types, etc.) | 2026-04-23 src audit (Git history), F5 — open `/dev` work |
 
 The destination shape is the working reference for design. The as-built reality is the working reference for source navigation. Every drift row above has a closure mechanism — either a numbered FIXME or an audit recommendation.
 

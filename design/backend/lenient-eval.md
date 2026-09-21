@@ -215,7 +215,7 @@ brief names; §4.5 is the codegen.
 ### 2.7 The static allocation/RC-density admission axis (FIXME 0459 gate half — designed S102; implementation rides increment I)
 
 > **DEMOTED + default-flipped OFF at S104 (arch ruling, `effect-concurrency.md` §3.1.1;
-> FIXME 0534).** This axis (call it **B4**, its ownership-codegen ladder name) is a
+> FIXME 0534).** This axis (called **B4**) is a
 > *contention* proxy built against the S94/S99 (a)/(b) alloc/RC model. 0534 profiled F4-hard
 > and proved that for the **recursion / speculative-search workload class** the dominant cost
 > is **rayon scheduler churn, not contention**, and that B4 is there **net-harmful, not merely
@@ -294,9 +294,9 @@ tier: the §2.2 sparkability fixtures extended with the {facts present/absent} �
 {alloc-dense/compute-dense/mixed} × {threshold boundary} matrix
 (ownership-codegen §13.5).
 
-**Sequencing.** Implementation = ladder entry **B4** in ownership-codegen §13.2 — after
-the borrow-elision / non-atomic / stack-slot mechanisms, because the score measures the
-*surviving* population those mechanisms define. The Phase-H structural cure (the
+**Sequencing.** The axis is built (`spark_density` in `sparkability.rs`; its fact supply is
+ownership-codegen §13.4) and scores the *surviving* population the borrow-elision,
+non-atomic and stack-slot mechanisms define. The Phase-H structural cure (the
 mechanisms themselves) remains the primary attack on the S99 term; this axis is the
 scheduler-side complement that stops sparking the branches the mechanisms cannot yet
 serve.
@@ -595,7 +595,7 @@ Each mechanism lands at a named §4 seam; **none touches a public edge** (confir
 - **IVar-force backoff** (§2.8.4) — `ivar_force`'s PENDING/EVALUATING wait loop (§3.5) is a bounded
   `spin → yield_now → sleep`; `CRANELISP_IVAR_SPIN=1` restores pure spin. Module-private, no export.
 - **B4 default-flip** — the `SPARK_DENSITY_MAX_DEFAULT` constant `1 → 0` in the density-axis site
-  (§2.7 / ownership-codegen B4).
+  (§2.7).
 
 **No-new-symbol / no-types-edit — confirmed.** M-static reads the existing Decision-21
 `callees` field via backend-internal SCC analysis (no new type, no schema/baseline cascade).
@@ -972,7 +972,7 @@ join_block(result: i64):             // both arms produce the call's result valu
 > *volume*). Kept opt-in as honest scheduling hygiene / Phase-H-durable complement; **default-on is
 > deferred to Phase-H** (rests on the floor-restoration/honesty argument, not a (b)-cure magnitude).
 > **The STATIC axis is now designed — §2.7** (S102; consumes the ownership-inference per-site
-> facts; implementation rides increment I as ownership-codegen §13.2 ladder entry B4).
+> facts; built as `spark_density`, disabled by default since S104).
 
 For a naive over-sparking recursion (`fib`): the first ≈`cap` sites reached at runtime (near the root, as rayon work-steals breadth-first) reserve and spark; once `IN_FLIGHT_SPARKS` saturates, every deeper site's try-reserve returns 0 on a **single load** and takes the direct arm. The direct arm is the existing sequential codegen — it recurses into `fib` whose body again hits the gate at runtime, gets 0 again while the budget stays full, and continues serially with **zero allocation**. As top-level sparks complete they release permits, re-admitting a bounded frontier of new sparks; in-flight sparks stay `O(cap)`, so total IVar/thunk allocation footprint is `O(cap)`, not `O(nodes)`. The whole exponential tail therefore runs at ≈ serial cost.
 

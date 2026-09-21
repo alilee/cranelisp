@@ -90,7 +90,7 @@ actors map — one producer, one boundary, five queries, five consumers.
   `cranelisp-typecheck` with **no `cranelisp-types` edit** (an alpha-rename invariant on the
   boundary type was considered and rejected — larger surface, a schema-relevant commitment on
   a serialised type, for a bug local to one walk; Principle 8). See
-  `design/typecheck/ownership-inference.md` §13.6(i) + FIXME 0518.
+  `design/typecheck/ownership-inference.md` §3.4(i) + FIXME 0518.
 - **The backend lowering** (shared Cranelift path — see §3.4): five mechanisms, each consuming
   one query's output; all intra-function analyses (`compute_last_uses`,
   `HeapCategory::classify`) and all mechanism internals stay here.
@@ -417,7 +417,7 @@ per-site permissions; the ABI-bearing vector is what makes the *interprocedural*
 >
 > **LANDED 2026-07-03 (S102 Phase 3, CS-A)** — one `cranelisp-types` change-set, one
 > `CACHE_SCHEMA_VERSION` bump (11 → 12), covering this section's shape plus the typecheck
-> needs-list enrichments (`design/typecheck/ownership-inference.md` §13.1 items 1–12) and the
+> needs-list enrichments (`design/typecheck/ownership-inference.md` §2.2 items 1–12) and the
 > FIXME-0476 `PrimitiveBody::{Extern, Inline}` reshape riding the same bump. Carrier home:
 > `crates/cranelisp-types/src/ownership.rs` (+ `module.rs`/`mono_expr.rs` fields). Item-12
 > ruling: the read-once `CRANELISP_NO_OWNERSHIP` gate relocated to
@@ -1072,9 +1072,9 @@ analysis may not know. A non-converging cluster therefore recovered by publishin
 the one direction this section forbids, and a builder returning its accumulator compiled to a
 freed-pointer return. Two corrections land together, and the row above is only the first:
 `MayAliasAny` supplies the missing per-dimension value
-(`design/typecheck/ownership-inference.md` §19.2), and **the conservative spelling of a WHOLE
+(`design/typecheck/ownership-inference.md` §2.2), and **the conservative spelling of a WHOLE
 summary is its absence** — a cluster whose analysis does not converge publishes nothing
-(§19.5). Absence is what every consumer but the return protect already read as ⊤, so it needs
+(§10.2). Absence is what every consumer but the return protect already read as ⊤, so it needs
 no new vocabulary. A present summary is therefore a converged claim in every field; no
 producer may mint one as a fallback literal.
 

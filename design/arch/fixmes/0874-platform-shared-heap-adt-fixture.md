@@ -4,7 +4,7 @@ target: /dev
 filed_by: /sprint
 filed_at: 2026-07-25
 sprint_filed: 118
-refers_to: audits/cranelisp-platform-s117.md §R5;
+refers_to: https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md §R5;
   crates/cranelisp-platform/tests/cl_adt_products.rs;
   crates/cranelisp-platform/tests/cl_adt_sums.rs;
   crates/cranelisp-platform/tests/worked_examples.rs

@@ -8,7 +8,7 @@ disagree, the master wins; this doc is a scoped decomposition elaboration.
 This document plans the decomposition of `crates/cranelisp-typecheck/src/traits.rs`
 (2824 raw lines / ~1718 corrected prod LOC — the densest production module in the
 workspace) into a `traits/` submodule set. It is the **highest-risk item** in the S87
-maintainability backlog (`audits/s87-maintainability.md` Part 2 §2.3 + Part 3 item 21,
+maintainability backlog (S87 maintainability assessment (Git history) Part 2 §2.3 + Part 3 item 21,
 risk **high**), explicitly routed `target: /design` **first** before any `/dev` work.
 
 The driving goal (user): *coherent and cohesive modules of manageable size.* The binding
@@ -114,7 +114,7 @@ scrutiny.
 ## 2. `monomorphise_call` decomposition (the riskiest single item)
 
 `monomorphise_call` (L1381–1684, ~307L) is the standout over-budget function
-(`audits/cranelisp-typecheck-s87.md` Finding S87-2). The audit already names the shape:
+(S87 typecheck assessment (Git history) Finding S87-2). The audit already names the shape:
 *"a 7-phase sequential driver"* and recommends extracting *"`resolve_mono_trait_home` /
 `recheck_and_resolve_body` / `register_and_verify`."* This section makes the phase
 boundaries precise and pins the **invariant each phase relies on**, because the phases
@@ -187,7 +187,7 @@ one change-set.
 
 ## 3. Prelude-fallback dedup (audit Finding S87-5) — scope and a subtlety
 
-The audit (`audits/cranelisp-typecheck-s87.md` §2 + Finding S87-5) found the
+The audit (S87 typecheck assessment (Git history) §2 + Finding S87-5) found the
 prelude-fallback gate has **2 direct callers + 1 inline** beside the shared
 `cranelisp_types::resolve_with_fallback` primitive. The canonical single-name helper is
 `checker.rs::resolve_terminal_entry_or_prelude` (L1451) — it bundles gate + the shared

@@ -13,7 +13,7 @@ Owner: QA. Purpose: give design and test/dev the conditions needed to deliver th
 | D5 — platform collision reachability | Distinguish a string-mint collision from an accepted two-module loaded/linkable program; establish current accepted names and coexistence before choosing refusal or reminting. | QA/test, arch |
 | D6 — live eval execution | Select provider/model/endpoint, allowed fixture disclosure, autonomy/consent, repeat count and request/time/spend budget. This gates live calls, not harness implementation. | user through sprint |
 | D8 — primitives construction/traversal/transfer | Approved by the user on 2026-09-10: the exact limited private trusted-base amendment in [the allocation packet](../../sprints/s122-primitives-allocation-proposal.md). Source implementation and executing evidence remain pending. The one bundle covers `adopt_produced_value` including the existing error sentinel, parent-lifetime `borrowed_field`, and exact ADT/Vec storage exits. Final primitives mapping is reviewed: 19 functions/20 adoption sites, six borrow projections, four storage exits. It expands private trusted sites with no new public API. | arch/design propagate the approved contract; dev/test realize under Phase-5 reservations and subsequent closure gates |
-| D7 — shared document-checking pilot | Approved on 2026-09-10 under [SPRINT scope](../../sprints/SPRINT.md): replace the narrow four-root proposal with the shared mechanism pilot below. Implementation and evidence remain pending; Phase 4 was authorized on 2026-09-10; Phase 5 was authorized on 2026-09-10. | sprint coordinates shared-tool/project owners under Phase-5 reservations and subsequent closure gates |
+| D7 — shared document-checking pilot | Approved on 2026-09-10 under [SPRINT scope](../../sprints/SPRINT.md): replace the narrow four-root proposal with the shared mechanism pilot below. The shared checker is integrated as the project gate ([adequacy](#d7-integrated-project-gate--adequacy-and-remaining-conformance)); project document conformance remains RED pending owner repairs and any specifically approved exceptions. Magic cutover and upstream publication are not approved here. | sprint coordinates shared-tool/project owners under Phase-5 reservations and subsequent closure gates |
 
 The existing `safe-dial` record supplies a task shape, not exact prompts, input data or expected answers. Bounded repository search found no full transcript. It is unavailable for replay and is not a prerequisite: the initial corpus below uses actual compiler-use cases, explicitly adapted into assistance prompts.
 
@@ -61,7 +61,7 @@ This list supplies closure criteria, not deletion authority. The sprint's source
 | 0916,0917,0924,0929,0931,0933,0934,0935 | Reconcile current threshold/concreteness/corpus/manifest/disposal witnesses with delivered source and exact design tails. TCO-loss and several template claims are superseded. Only demonstrated remaining conditions allocate new work. |
 | 0936 | Replace historical I-ABI roster label/set with current realization contract and its actual witness, coordinated with primitives design. |
 | 0944 | Resolved: existing explicit variant tables refute universal absence; PLAN standing-category section now makes the rolling procedure and current family statuses discoverable. No new tests/policy or shared-skill edit. |
-| ACT-0950 | Approved shared mechanism pilot below supersedes the narrow four-root proposal; no blanket residual baseline migration or enrollment on historical counts. |
+| ACT-0950 | Retired 2026-09-21: its request — a ruling on document-to-document citation roots — is discharged by the delivered shared checker, whose `standing-documents.toml` roots include `design`, `spec`, `audits` and `user` and which resolves document targets, anchors and sections. Open conformance debt is carried by [D7](#d7-integrated-project-gate--adequacy-and-remaining-conformance) and the RED project gate, not by the action; no baseline migration or exception is accepted. |
 | ACT-0955 | Q13; classify baseline as maintenance evidence and preserve actual required trait contracts. |
 | ACT-0956 | Q11; module-level lifecycle observation is sufficient, and owner correction is explicit. |
 | ACT-0957 R6 | Current package source/test search found no actual SIGTERM or missing-contract-named detection cases in the role wrapper test files. This is inspection, not executed proof of absence/coverage. Allocate to the package/test owner in Phase 5: remove a required role contract in an isolated fixture and prove refusal before fake-provider launch, paired with the valid-contract launch control; terminate a launched fake-provider subprocess with real SIGTERM and verify the existing wrapper interruption/exit and accounting semantics (no fabricated transcript signal). Extend existing wrapper tests, not a new framework. No package edits are authorized during Phase 3; bounded local evidence repairs remain included in S122, with upstream contribution separately approved at Phase 7. Retain the adopted package pin rather than fetching new contracts mid-increment. |
@@ -106,9 +106,7 @@ Reuse the existing stub DSL/provider. Test the runner's shared launch/grader pat
 
 The user approved the replacement D7 scope on 2026-09-10; [SPRINT.md](../../sprints/SPRINT.md) is the scope authority. One offline shared `.agents` tool consumes project declarations, independently discovers all project-owned nonignored Markdown, checks establishment to root `CLAUDE.md` or justified exemptions, and checks document references, anchors and sections while preserving Cranelisp source-citation checks. Validate the candidate against both repositories read-only, then adopt it in Cranelisp and repair findings. Magic edits and upstream publication need subsequent approval. There is no blanket residual baseline migration.
 
-This supersedes the narrow four-target-root proposal and its old realization sequence. Phase 4 was authorized on 2026-09-10; Phase 5 was authorized on 2026-09-10; implementation and executing evidence remain pending within sprint reservations. Host-guidance ownership and retention of checked-in adapters without a generator were separately approved on 2026-09-10.
-
-Historical measurement of the superseded four-root proposal only; it does not measure the approved pilot's corpus or findings: Read-only measurement used the existing checker module with only SOURCE_ROOTS extended in memory, on the final-design 493-document live corpus: current roots **744 raw findings**, proposed roots **944**, difference **200 PATH observations / 141 unique fingerprints**. Citing roots: design 166, tests 24, sprints 7, spec 2, crates 1. These are neither 200 implementation defects nor 141 authorized baseline entries. This refresh supersedes the earlier Phase-3 202-observation/142-fingerprint snapshot and the historical 214 count. Measurement JSON: `/tmp/cranelisp-s122-triage/citation-doc-roots.json`; checker SHA-256 `056d89675b23542bb67d5fa7f931d2351dfb04f33d791a602621665a484751a4`.
+This supersedes the narrow four-target-root proposal; measurements taken with the retired citation script do not describe the delivered checker's corpus or findings. Delivery state is recorded under [D7 integrated project gate](#d7-integrated-project-gate--adequacy-and-remaining-conformance).
 
 ### D7 evidence allocation
 
@@ -984,7 +982,7 @@ closure, not package publication or whole Phase5 acceptance.
 | R3 | User-approved ownership is recorded in METHOD: sprint owns AGENTS/Codex/Copilot host guidance; technical content retains its existing owners. |
 | R4 | User-approved alternative retains eleven checked-in Copilot adapters and the consistency check, without a generator. This satisfies the advisory decision, not the original proposed implementation. |
 | R6 | Package transport103/103 PASS in `/tmp/s122-act0957-r6-transport-result-98436c9.log`. Both transports exercise missing-contract refusal before launch plus restored launch, and actual SIGTERM producing abandoned/exit143. Established accounting repairs remain; independent review closes R6. This is fake-provider transport execution, not live model quality or provider production testing. |
-| R7 | Recoverable records preserve327 parseable telemetry rows and the two audit-listed review identities; no exact historical session-to-phase join is available. That unknown is explicitly retained rather than invented. Current native S122 dispatch attribution is separate. |
+| R7 | Recoverable records preserve327 parseable telemetry rows and review sessions `375fe048-959d-4da1-ad76-4d7344cecb3d` and `db287613-bf3d-42a2-91e5-a97e002b03e6` (Claude / `claude-fable-5` / high, both exit 0); no exact historical session-to-phase join is available. That unknown is explicitly retained rather than invented. Current native S122 dispatch attribution is separate. |
 | R8 | Current design guidance assigns stdlib source to dev and uses METHOD §1.2; the remaining test-guidance `/testing` mention is dated S118 authorship, not a live assignment. Owning-role review accepts the repair/disposition. |
 
 No residual requires another test matrix, source change or historical-attribution
@@ -2004,10 +2002,11 @@ cells, `MarginalPair` over `platform_pure_program`, each observed once:
   closure; that breakdown was not traced.
 - Both cells and IOR-2 carry
   `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev`;
-  C0 confirmed the locus. They cite `spec/10-io.md` §10.12.9, which governs
-  cancellation and which they do not observe; the requirement they fence is
-  `spec/12-runtime.md` §12.3.1. `test` re-traces them in the pass that closes
-  the tags; the cancellation coverage band claims nothing from them.
+  C0 confirmed the locus; all three are closed with `fixed=S122/57253cf2`. The
+  requirement they fence is `spec/12-runtime.md` §12.3.1, which the IOR-5 cells
+  now cite; IOR-2 cites `spec/10-io.md` §10.8.1 for its value legs and the runtime release requirement
+  for its balance leg. The cancellation coverage band claims nothing from
+  them.
 - Do not re-axis IOR-2 or any sibling to avoid the shape.
 
 #### IOR-5 correction — evidence delta
@@ -2093,12 +2092,16 @@ more.
 - **User gate, closed (2026-09-21).** The generated
   `crates/cranelisp-platform/public-api.txt` diff matches the approved delta
   under independent review. The user confirmed that exact generated diff.
-- **Integration, pending.** The corrections and their tests are uncommitted, so
-  no `fixed=S122/<sha>` stamp can be minted. After the commit, `test` closes
-  the `// defect:` tags on the IOR-1, IOR-2, IOR-4 and IOR-5 cells, removes
-  their "Attribution provisional" lines and re-traces the IOR-5 cells. Until
-  then those tags read as open guards: a RED on any of those cells is a
-  regression and returns to `qa`; it is not a known defect.
+- **Integration, complete.** The corrections are in checkpoint `57253cf2`.
+  The `// defect:` tags on IOR-1, IOR-2, IOR-4 and both IOR-5 cells carry
+  `fixed=S122/57253cf2`, and no "Attribution provisional" line remains. A RED
+  on any of those cells is a regression and returns to `qa`. The ABI guard is
+  `tests/concurrency_poll_edge_guards.rs::poll_capacity_rides_node_convention_and_abi_is_v11`.
+  The stamp and rename pass changed no assertion and is itself uncommitted.
+- **IOR-6 trace, confirmed.** The cell cites `spec/12-runtime.md` §12.3.1 for
+  the release and `spec/10-io.md` §10.8 for the unforced effect performing
+  nothing, which it observes as empty stdout. Both match what the cell
+  observes; no owner correction is needed.
 - **Residuals carried to close:** the ledger's blindness to DLL-side frees
   ([limit](#ior-6--capture-release-sentinel)); asserted discharge-panic
   containment ([grade](#discharge-panic-containment-platform-review-r1)); and
@@ -2107,3 +2110,60 @@ more.
   [abort-path leak](#abort-path-leak--source-only-intake-unconfirmed), the
   joined fresh arm and the unmeasured neighbours above. Each stays an
   unconfirmed or uncorrected defect hypothesis, not accepted semantics.
+
+## Retired-audit evidence reads — frontend S113 R1/R7, backend S110 R2
+
+Source read only; nothing executed. Green state rests on the integrated run
+recorded [above](#io-correction--adequacy-and-integration-state). The
+assessments are in Git at `57253cf2`: the frontend S113 and backend S110
+reports.
+
+- **Frontend R1 — discharged.** The class is closed by construction and by
+  cells, not only at the originally pinned sites.
+  - *Ascribed axis, structural:* the reader folds `:Type form` into one
+    `Sexp::Annotated` node and `build_expr` builds it, so no expression
+    position can drop an ascription by calling `build_expr` directly.
+  - *Trailing axis:* `build_let`, `build_impl_method` and `build_trace` route
+    through `build_body_to_end`; `build_method_sig` rejects anything after its
+    one trailing form. Cells in
+    `crates/cranelisp-frontend/src/ast_builder/tests.rs::track_d_wd1`:
+    `let_body_ascription_builds`, `let_body_trailing_form_rejected`,
+    `trace_operand_ascription_builds`, `trace_trailing_form_rejected`,
+    `impl_method_body_ascription_and_trailing`,
+    `trait_default_body_ascription_and_trailing`,
+    `deftype_ctor_trailing_form_after_field_bracket_rejected`. Each carries its
+    bare or accepting twin.
+  - *Head parser × {case, arm}:* both `build_type_head` arms enforce the
+    uppercase rule and parameters enforce lowercase. Limit: the bare arm's
+    lowercase reject (`(deftype point …)`) is a match guard whose only
+    fallthrough is an error arm, and no cell names it; the audit's hole was the
+    list arm. One negative assertion closes it and rides ACT-0968 as an
+    advisory rider, not a dispatch of its own. Cells:
+    `deftype_parenthesized_head_lowercase_rejected_uppercase_twin_accepts`,
+    `deftype_uppercase_type_param_rejected` (unit);
+    `tests/w3_enforcement_fences.rs::deftype_lowercase_parenthesized_head_rejected_neg`
+    and the four cells of `tests/type_param_case_m2_0676.rs` (e2e, `deftype`
+    and `deftrait`, each with an accepting twin).
+- **Frontend R7 — discharged.** The user ruled 2026-07-20 that `: Int` ≡ `:Int`
+  is tolerated and dangling qualifiers error; `tests/ra_annotation_qualifier_0682.rs`
+  pins both space-tolerance positives, the `:foo/`, `:a.b/`, `foo/`, `/bar` and
+  non-type-bound-form rejects, and the bare-`/` division fence.
+  `consume_dotted_module_path` exists once in `reader.rs` with the symbol and
+  annotation paths as its two callers.
+- **Backend R2 — two of three seam classes discharged; the pattern seam is
+  not.** KC-N1/N2 (call) and KC-N3–N5 with the KC-N6 fence (value) assert their
+  message families. No test in the backend unit tier or `tests/` asserts either
+  `compile_constructor_pattern` miss arm (`match_codegen.rs`: carrier-`None`
+  "no resolved_ctor carrier"; entry-miss "has no Def"). The KC-N family never
+  enumerated this seam, so the arms have not been observed to fire.
+  - *Surviving wrong outcome:* with the resolver family deleted a fallback
+    cannot re-resolve, but a lenient arm (skip the pattern, default the tag)
+    would still compile and mis-match silently; positive pattern suites stay
+    green under it.
+  - *Allocation (safety fence, `dev` backend module tier):* two cells beside
+    the existing `match_codegen.rs` fixture that populates `pattern_ctors` —
+    one omitting the carrier, one keying it to an FQ absent from the tables —
+    each asserting a `CodegenError` naming the constructor and its family. No
+    e2e: a well-formed program cannot reach either arm. Fixture reachability is
+    unexecuted; if the harness refuses earlier, `dev` reports the seam that
+    fired. Carried by ACT-0968.

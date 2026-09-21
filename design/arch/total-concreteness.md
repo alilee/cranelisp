@@ -13,7 +13,7 @@ re-routes per FIXME 0930).
 1–5 or `design/typecheck/non-concrete-producer-obligations.md` P-1/A-MINT/L-1..3
 — every S119 obligation is a strict step toward this target and ships as
 planned (§5).
-**Archive trigger:** the S120 tranche (§5.2) and the S121 Bind tranche (§5.3)
+**Archive trigger:** the S120 tranche and the S121 Bind tranche (this document’s sections 5.2 and 5.3)
 land; the invariant statements fold into BC §7 + `module.rs` rustdoc + R11; this
 file moves to `design/arch/archive/`.
 
@@ -435,7 +435,7 @@ ends.
   nothing; its decode and report are intrinsics interior
   ([ownership and disposal §6.1](../intrinsics/ownership-and-disposal.md#61-the-pure-payload-witness--retain-on-force)).
 - Stamp authority is the backend's alone, over the closed set its design
-  enumerates ([C4 visit](../backend/s121-c4-visit.md)); the runtime allocates no
+  enumerates ([backend release contract](../backend/non-concrete-release-contract.md)); the runtime allocates no
   `Pure`. The platform writes only `0`, and the platform-return seam below
   replaces it.
 

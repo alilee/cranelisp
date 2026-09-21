@@ -201,7 +201,7 @@ One bounded context is audited per sprint, in rotation, so every context gets a 
 
 **The acid test** (user-ratified 2026-07-11), against which the assessment opens with a graded per-attribute verdict: *if we lost this context's code and docs but retained the insight from experience, and produced a lean, high-quality solution second time around — would it look like this?* Evidence follows: design quality, design realisation (drift in both directions — unrealised design, and design the implementation has silently falsified), simplicity and volume optimality, duplication, risk-weighted coverage on the production path, maintainability, memory freshness. Hygiene findings are evidence within that frame, never a substitute for the verdict. The dispatch runs read-only in the Phase 6/7 window; the assessment lands in `audits/{context}-sNNN.md` with recommendations carrying evidence, cost class and proposed owner. **Next sprint's Phase 1 disposes each recommendation with the user**: accepted → `sprint` files against the proposed owner; declined → recorded in the assessment with rationale. `audit` never files for its own recommendations and never blocks the current sprint. At Phase 7, `sprint` checks the audit's calibration — recommendations that consistently die at acceptance are a finding about `audit` — and verifies both halves of the cycle: that this sprint's audit was dispatched, **and that the previous assessment was disposed**. A lapsed disposition is how four recommendations reached their fourth audit untouched (S110).
 
-Assessments are point-in-time records: appended to with acceptance and decline outcomes, never rewritten. Rotation order is coordination state; reordering is a scope-class decision (trigger 6, or user direction).
+Assessments are temporary point-in-time records used to reach disposition. Preserve every unaddressed point in its canonical action, existing filing or owning standing document before retiring the report. Undecided recommendations remain pending disposition; moving them does not approve implementation or close them. Historical audit reports and their diagrams live in Git history, not the standing tree. Record provenance with the original checkpoint so the evidence remains recoverable. Rotation order is coordination state; reordering is a scope-class decision (trigger 6, or user direction).
 
 ---
 
@@ -219,7 +219,7 @@ Assessments are point-in-time records: appended to with acceptance and decline o
 | Exact Rust API obligations and guarantees | Rustdoc beside public items; `public-api.txt` is surface evidence | `arch` owns public contracts |
 | Current assurance and evidence navigation | `tests/plan/PLAN.md`; bounded active evidence plans under `tests/plan/` | `qa` |
 | Executable evidence | Solution tests in `tests/`; module tests beside source | `test` / source owner |
-| Audit assessments | `audits/`; unresolved obligations use the action/filing homes below | `audit` |
+| Audit assessments | `audits/` while awaiting disposition; historical reports in Git; unaddressed points in the action/filing or owning standing homes | `audit`; `sprint` coordinates disposition |
 | Current increment / future direction | `sprints/SPRINT.md` / `sprints/ROADMAP.md` | `sprint` |
 | Unresolved obligations | `sprints/actions/`; existing `design/arch/fixmes/` drained in place | Target role resolves |
 | Closed delivery outcomes | Compact `sprints/archive/` records; ordinary working history in Git | `sprint` |

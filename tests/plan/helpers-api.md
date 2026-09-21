@@ -2,10 +2,11 @@
 
 Owner: `/qa`. Companion to `helpers.md`.
 
-This document is the contract Phase 1 implements. `helpers.md` is the
-intent; this is the API. Every signature has a one-line `///` docstring
-stating intent. No implementation bodies — those land in
-`tests/helpers/e2e.rs` and `tests/helpers/regex.rs` during Phase 1 §3.
+This document is the signature-level design that `tests/helpers/e2e.rs` and
+`tests/helpers/regex.rs` implement. `helpers.md` is the intent. Every
+signature has a one-line `///` docstring stating intent. The source files are
+the authority for exact current signatures; where they differ from this
+design, the source governs.
 
 ## Module layout
 
@@ -13,8 +14,7 @@ stating intent. No implementation bodies — those land in
 tests/helpers/
   e2e.rs       — Cranelisp builder, CrInvocation, CrOutput, PreludeVariant
   regex.rs     — named regex library (compiler::*) + masking helpers
-  mod.rs       — pub use re-exports + (during Phases 1-2) the legacy ReplSession
-                 shim, deleted in Phase 3.
+  mod.rs       — module declarations only
 ```
 
 ## `tests/helpers/e2e.rs`
@@ -475,8 +475,8 @@ pub fn mask_timing(s: &str) -> String;
 ```
 
 The library accretes one helper per stable-shape compiler-output
-format the test suite depends on. New entries are added by Phase 2
-ports as needed; first occurrence can be one-off; second occurrence
+format the test suite depends on. New entries are added as needed; first
+occurrence can be one-off; second occurrence
 generalises.
 
 ## Gating mechanism for `use_workspace_stdlib_for_stdlib_conformance_only`
@@ -488,7 +488,7 @@ verbose rename), the rename is preferred because: (a) it is enforced by
 the type system — every call site reads `Cranelisp::new().use_workspace_stdlib_for_stdlib_conformance_only()`,
 making misuse self-evident in code review and `git grep` audits;
 (b) marker args clutter every callsite even in the legitimate
-`tests/stdlib.rs`; (c) `// SAFETY:` annotations are not enforced and
+stdlib conformance file; (c) `// SAFETY:` annotations are not enforced and
 drift over time as people forget the convention.
 
 ## `output_then_run_again` cache-hit pattern — design note

@@ -142,19 +142,19 @@ fn platform_pure_int_unforced_discard_balances_without_disposer() {
 }
 
 // spec: spec/10-io.md §10.8.1 — one heap-payload `Pure`, bound once and forced
-// twice, hands its live String to each force and leaks nothing its fresh-node
-// twin does not (IOR-2; allocation:
+// twice, hands its live String to each force; spec/12-runtime.md §12.3.1 — and
+// leaks nothing its fresh-node twin does not (IOR-2; allocation:
 // `tests/plan/s122-evidence-delta.md` §"Reuse of an IO value — defect allocation").
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev
-// Attribution provisional (IOR-5); the cured reuse refusal lived at
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev fixed=S122/57253cf2
+// The cured reuse refusal lived at
 // `crates/cranelisp-intrinsics/src/io.rs::force_pure_node`.
 //
 // Exit 17 demands BOTH forced values carry the DLL string: a stale, empty or
 // released second payload scores 91, a bad first payload 92. The pair's one
 // axis is the inner `bind` operand — `p` (reuse) versus a second
 // `(pure-string)`. Both children end a `let` owning a heap binding in a `bind`,
-// the IOR-5 shape, so both strand their tree; the control strands two blocks
-// more, and the balance leg reads RED at −2 until IOR-5 is corrected.
+// the IOR-5 shape; before the IOR-5 correction both stranded their tree, the
+// control two blocks more, and the balance leg read RED at −2.
 // `CRANELISP_RC_DEC_CHECK=1` arms the A1 seam checks on both children.
 #[test]
 fn platform_pure_string_reused_node_yields_payload_to_each_force_and_balances() {
@@ -179,11 +179,10 @@ fn platform_pure_string_reused_node_yields_payload_to_each_force_and_balances() 
     pair.assert_balanced("reused DLL Pure String");
 }
 
-// spec: spec/10-io.md §10.12.9 — a `bind` returned from a scope that owns the
+// spec: spec/12-runtime.md §12.3.1 — a `bind` returned from a scope that owns the
 // `let`-bound forced platform `Pure` releases its whole tree: the bound operand
 // balances against its inline twin (IOR-5 trigger).
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev
-// Attribution provisional (tests/plan/s122-evidence-delta.md, IOR-5 intake).
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev fixed=S122/57253cf2
 #[test]
 fn platform_pure_let_bound_bind_operand_balances() {
     let continuation = "(fn [s] (Pure (if (str-eq s \"s121-platform-pure\") 17 99)))";
@@ -198,11 +197,10 @@ fn platform_pure_let_bound_bind_operand_balances() {
     pair.assert_balanced("let-bound bind operand");
 }
 
-// spec: spec/10-io.md §10.12.9 — an unused heap binding beside a `bind` result
-// does not strand that `bind` (IOR-5 mechanism control). RED supports the
-// protective-retain hypothesis; green refutes it and returns to `qa`.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev
-// Attribution provisional (tests/plan/s122-evidence-delta.md, IOR-5 intake).
+// spec: spec/12-runtime.md §12.3.1 — an unused heap binding beside a `bind` result
+// does not strand that `bind` (IOR-5 mechanism control). Its pre-fix RED
+// confirmed the protective retain as the mechanism.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev fixed=S122/57253cf2
 #[test]
 fn platform_pure_unused_heap_binding_beside_bind_balances() {
     let result = "(bind (pure-int) (fn [_] (Pure 17)))";
@@ -217,8 +215,9 @@ fn platform_pure_unused_heap_binding_beside_bind_balances() {
     pair.assert_balanced("unused heap binding beside bind");
 }
 
-// spec: spec/10-io.md §10.12.9 — discarding an unforced `Effect` releases its
-// node, thunk and the thunk's captures, and performs nothing (IOR-6).
+// spec: spec/12-runtime.md §12.3.1 — discarding an unforced `Effect` releases its
+// node, thunk and the thunk's captures; spec/10-io.md §10.8 — and performs
+// nothing (IOR-6).
 //
 // The capture MUST have a second, host-held owner that outlives the discard, so
 // the last (counted) release is the host's. `RcStats` reads the allocator
@@ -491,11 +490,11 @@ fn run_mode_main_returns_bind_exit_code() {
 
 // spec: spec/10-io.md §10.8.1 — a description is reusable: one `Pure` bound once
 // and forced twice in sequence yields its value each time.
-// defect: class=wrong-reject locus=crates/cranelisp-intrinsics/src/io.rs::force_pure_node found=S122 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-intrinsics/src/io.rs::force_pure_node found=S122 owner=/dev fixed=S122/57253cf2
 //
-// Pre-fix this exits 1 with `runtime panic: Pure node forced more than once`.
-// The refusal aborts the program, so exit 7 is unreachable while it stands and
-// discriminates it without matching on the message; 7 rather than 0 also
+// Pre-fix this exited 1 with `runtime panic: Pure node forced more than once`.
+// The refusal aborted the program, so exit 7 was unreachable while it stood and
+// discriminated it without matching on the message; 7 rather than 0 also
 // discriminates a correction that yields a stale or zero second value.
 #[test]
 fn run_mode_reused_pure_yields_its_value_on_each_force() {
@@ -548,8 +547,7 @@ fn assert_effect_performed_twice(source: &str) {
 }
 
 // spec: spec/10-io.md §10.8.1 — a reused `Effect` performs its effect on each force.
-// defect: class=uaf locus=crates/cranelisp-platform/src/lib.rs::call_effect_thunk found=S122 owner=/dev
-// Attribution provisional (tests/plan/s122-evidence-delta.md); retag if refuted.
+// defect: class=uaf locus=crates/cranelisp-platform/src/lib.rs::call_effect_thunk found=S122 owner=/dev fixed=S122/57253cf2
 #[test]
 fn run_mode_reused_effect_performs_its_effect_on_each_force() {
     assert_effect_performed_twice(&effect_reuse_program("e"));

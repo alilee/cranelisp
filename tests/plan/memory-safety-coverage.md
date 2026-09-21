@@ -134,7 +134,7 @@ sprints because it was shell-only; folding it into nextest
 > (`tests/helpers/e2e.rs::SafetyMatrix`/`assert_safety_matrix`;
 > `tests/safety_oracle_lane.rs`). Three deviations from this section's letter
 > are ACCEPTED as the settled shape: (1) there is no
-> `tests/fixtures/safety_corpus/` directory sweep — lane programs are named
+> `safety_corpus` fixture-directory sweep — lane programs are named
 > per-cell tests calling the combinator, which names failures better and
 > enforces identically; growth = add a cell, not a file-drop. (2) The
 > `CRANELISP_SAFETY_FULL` split is unbuilt — moot until the lane approaches
@@ -402,7 +402,7 @@ Standing rule, binding on every new or re-planted capability fence:
   mode instruments (e.g. an env-gated imbalance hook at the intrinsics
   allocator), so the fence is fail-on-revert of **the MODE**, not of some
   unrelated fix. Any such hook lands in the same change-set as its
-  byte-identical-off fence (`diagnostics/tests.rs::all_gates_default_off`).
+  byte-identical-off fence (`crates/cranelisp-intrinsics/src/diagnostics/tests.rs::all_gates_default_off`).
 - **Draw from a live defect only when a synthetic plant is not
   constructible**, and then say so on the test: name the defect, its owner,
   and the expectation that the fence expires when it drains.

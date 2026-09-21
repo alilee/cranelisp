@@ -220,7 +220,7 @@ unconstrained case.
   §3.11.4
 - `monomorphisation.md` §11.8.10 — the sibling multi-seam operation and its standing
   fourth-window rule
-- `ownership-inference.md` §16.2 — the enumerated rule-table discipline this taxonomy is an
+- `design/typecheck/ownership-inference.md` §3.3 — the enumerated rule-table discipline this taxonomy is an
   instance of; `ownership/transfer/tests.rs::join_lattice_*` — the property-cell template
   0779's cell copies
 - `crates/cranelisp-typecheck/CLAUDE.md` §"The two order/settlement seams" — the as-built

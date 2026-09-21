@@ -1,154 +1,81 @@
 # The non-concrete release contract
 
-**Status:** NORMATIVE RULING — authored S119 Phase 3, `/design`(backend), Spine 1.
-Measured before binding (§2); the measurement record is part of the ruling.
-**Subordinate to:** `backend.md`.
-**Supersedes in scope:** `transitive-drop-glue.md` §4.1, which ruled one face of
-this class ("the ONE sanctioned non-concrete release site") on a premise this
-document's measurement falsifies. §4.1 survives as the *record* of face 1's
-history and defers here for its disposition.
-**Architecture inputs:** `design/arch/concrete-boundary-type.md` §3.1.1 (the
-signature-driven codegen target; template-path `Err` classifies `Mixed`);
-`design/arch/safety-invariants.md` §4 R-register + Principle 25;
-`design/arch/ownership-inference.md` §2.1 (monotone soundness), §3.1 (mode
-vectors on statically-resolved calls).
-**Carries:** FIXMEs 0903, 0907, 0916, 0917, 0891, 0913 (producer face), 0915
-(the refusal's quality bar), 0906 (rider).
+**Owner:** `design`, narrow-deployed to `cranelisp-backend`. **Subordinate to:**
+[backend.md](backend.md).
 
-> **S121 RECONCILIATION (`/design`(backend), Phase 3).** The rules (§3), the
-> five-face table (§4), the measurement record (§2) and the reject list (§8)
-> **stand unchanged**. Three of the dispositions' *mechanisms* moved, because
-> upstream work landed that makes the state unconstructible rather than merely
-> refused, and one piece is already done:
->
-> - **§6 (0917) is LANDED** — S120, `cbb3be9e`. `NoReference`, the identity-seeded
->   fold and the three-state constructor probe are in source, and both repro
->   cells are green. §6 is now the *record* of that ruling; §7's piece 1 is a
->   filing retirement.
-> - **Face 1 is producer-discharged, not backend-edited.** Under C1's unified
->   lifecycle a `Life::Template` has no slot and no view, and FIXME 0931 retires
->   the generic-ctor template slot, so **a ctor-template frame with a residual
->   parameter is no longer a codegen target**. §5.1 step 2's deletion has no site
->   left to delete; I-CT′ is discharged structurally. Backend *observes* the
->   `Ctor` partition reading zero.
-> - **Face 4's named residual (§4.4) does not ship.** The user included FIXME
->   0934 in S121: `Pure` carries a payload-glue word stamped at construction
->   (`design/arch/total-concreteness.md` §3.4). §5.3's two-part `drop<IO T>` is
->   superseded by a fixed body that hands the whole node to the runtime walker,
->   and the residual leak guard §7.1 owed becomes a GREEN acceptance cell.
-> - **§5.1's flip criterion is unreachable as written** until the *ctor
->   declaration channel* closes (FIXME 0929 row 3): `CtorMeta` materialises field
->   types from the declaration scheme, so a polymorphic product's field type is
->   permanent census traffic no frame monomorphisation removes.
->
-> The live C4 plan — bundles, reservations, the census's arming legs, the closed
-> channel, and the per-FIXME dispositions — is **`s121-c4-visit.md`**, which
-> supersedes §5.1, §5.2, §5.3 and §7 in scope. §5.4 (typecheck's lenient view)
-> is unchanged and is `design/typecheck/non-concrete-producer-obligations.md`'s.
+**Status:** the adopted contract for how the backend licenses every RC
+operation it emits, the disposition of each non-concrete face, and the open
+backend work that completes it. It absorbed the S121 C4 visit design; that
+visit's delivered bundles are recorded here as current mechanism and its open
+bundles as §7. Source was re-verified on 2026-09-21.
+
+**Architecture inputs, cited rather than restated:**
+[concrete-boundary-type.md](../arch/concrete-boundary-type.md) §3.1 (the
+signature-driven codegen target);
+[total-concreteness.md](../arch/total-concreteness.md) §3.2 (the `vec-len`
+de-slot), §3.4 (the `Pure` ownership witness, the reusable-IO ownership rule on
+force, and the platform-return seam), §3.5 (platform-effect signatures stay concrete);
+[symbol-table-lifecycle.md](../arch/symbol-table-lifecycle.md) §4 (the callable
+state machine) and §5.5 (inline primitives mint no table entry);
+[safety-invariants.md](../arch/safety-invariants.md) §4, rows R17 (R-1), R18
+(R-2) and R19 (the platform-return stamp).
+
+**Producer obligations** for faces 2, 3 and 5 are typecheck's, in
+[non-concrete-producer-obligations.md](../typecheck/non-concrete-producer-obligations.md).
 
 ---
 
-## 1. The question, and why it has never been answered
+## 1. The fact the contract rests on
 
-Backend releases a heap value by calling the canonical per-concrete-type drop
-glue (`transitive-drop-glue.md` §1). That contract has one precondition:
-**codegen can name the value's concrete type.** The stratum has never stated
-what happens when it cannot, and five places hit the gap, each behaving
-differently. Two of them are memory-unsafe; one is a hard refusal with no legal
-re-spelling; two leak silently.
+The backend releases a heap value by calling the canonical glue for its concrete
+type ([transitive-drop-glue.md](transitive-drop-glue.md) §1). That requires
+codegen to name the concrete type. This document states what happens when it
+cannot.
 
-This document states the contract, assigns every face exactly one disposition,
-and binds the *producers* that hand backend a non-concrete frame.
-
-The ruling rests on one fact that this window measured and that no prior
-document states:
-
-> **A word whose static type is a residual type variable has no heap category.
+> **A word whose static type is a residual type variable has no heap category.**
 > It may hold a heap pointer, a bare nullary tag, or a raw scalar. The
-> `NULLARY_TAG_THRESHOLD` guard discriminates tags from pointers; it cannot
-> discriminate scalars from pointers. Therefore no RC operation — inc or dec,
-> guarded or not — is legal on such a word, and no shallow release of it is
-> "merely a leak".**
-
-Everything below follows from that sentence.
+> `NULLARY_TAG_THRESHOLD` guard separates tags from pointers; it cannot separate
+> scalars from pointers. Therefore no RC operation — inc or dec, guarded or
+> not — is legal on such a word, and no shallow release of it is "merely a leak".
 
 ---
 
-## 2. The measurement record (S119 Phase 3, `/design`(backend))
+## 2. The measurement record (S119)
 
-A ruling that has not survived the corpus does not bind (`sprints/SPRINT.md`
-§Sequencing item 1; the S118 §4.1 falsification is the precedent). The
-measurement ran **inside** this design window, on the Phase-3 tree at
-`5520186d` + concurrent design-only edits, with a throwaway instrumentation
-scaffold that was reverted before authoring (backend tree byte-identical to
-`HEAD`, verified).
+This evidence cannot be re-derived: the census scaffold was reverted and the
+corpus has since moved. The ruling was measured before it bound.
 
-### 2.1 Baseline
+### 2.1 Method
 
-`cargo nextest run --no-fail-fast`: **5,660 run / 5,640 passed / 20 failed /
-1 skipped.** Reconciled name-for-name against `SPRINT.md` §Baseline: 0907×7,
-0917×3, 0867×3, 0863×2, 0868/0869×2, 0916×1, 0913×1, 0694×1. The 21st cell —
-the `nullary_return_dispatch_method_only_import` 0694 flap member — was **green
-on this run**, consistent with its flap classification. **No untraced RED.**
+A throwaway instrument recorded every admission at the two seams below across
+`cargo nextest run --no-fail-fast` on the S119 Phase-3 tree (`5520186d`), with
+the baseline RED set reconciled name-for-name and no untraced RED.
 
 ### 2.2 Census A — the release seam (`emit_heap_binding_decs`)
 
-Every admission of the type-keyed non-concrete arm, recorded with its seam,
-frame and type. **2,497 admissions across the whole suite.**
+2,497 admissions of the type-keyed non-concrete arm, **all** from
+`pop_scope_with_cleanup` in a parameter frame; the two tail-jump flushes
+admitted **none**. 2,216 were constructor-template frames. The other **281**
+were exactly two families, both compiled once per declaration:
 
-| Partition | Count |
-|---|---:|
-| `pop_scope_with_cleanup`, parameter frame (`scope_stack.len() == 1`) | **2,497 (100%)** |
-| `flush_let_scopes_before_tail_jump` | **0** |
-| `flush_superseded_heap_params_before_tail_jump` | **0** |
-| …of which the frame IS a ctor template (`MonoExpr::ConstrADT` body) | 2,216 |
-| …of which it is NOT | **281** |
-
-Two findings, both load-bearing:
-
-1. **Neither tail-jump flush ever admits.** §4.1's "the exception must stay
-   unreachable from the two flushes" is not merely a rule to enforce — it is
-   already a measured fact, and the negative cell 0903 held back
-   (`the_admission_is_unreachable_from_the_tail_jump_flush_neg`) pins a
-   property that holds at HEAD.
-2. **The 281 escapees are exactly two families, and nothing else.** Every one
-   is a *signature-driven, compiled-once-per-declaration* frame:
-
-| Family | Frame shape | Parameter type shape | Examples measured |
+| Family | Frame | Parameter shape | Examples |
 |---|---|---|---|
-| **F1 — synthetic field accessor** of a generic / undeclared-field product | `Type.field` | `ADT(<concrete FQ>, [Var…])` | `Grid.cells` (×164 across `program`/`grid`/`f4`/`user`), `Box.v`, `Box.val`, `Pair.first`, `Pair.second`, `Pair2.x`, `Pair2.y`, `Pz.v`, `Bx.val`, `Box.cells`, `Pair.fst`, `Pair.snd` |
-| **F2 — generic trait-method instance** | `Trait.method$Type` | `Fn([Var…], Var)` or `ADT(<concrete FQ>, [Var…])` | `Functor.fmap$primitives/Option`, `Functor.fmap$user/Box`, `Functor.fmap$m/Option`, `Functor.fmap$30-parallel-map-reduce/Pair`, `Functor.fmap$26-functor/Option` |
+| **F1** synthetic field accessor of a generic or undeclared-field product | `Type.field` | `ADT(<concrete>, [Var…])` | `Grid.cells`, `Box.v`, `Pair.first` |
+| **F2** generic trait-method instance | `Trait.method$Type` | `Fn([Var…], Var)` or `ADT(<concrete>, [Var…])` | `Functor.fmap$primitives/Option` |
 
-**No escapee has a bare `Type::Var` as the released binding's own type at this
-seam.** The outer type constructor is always known (a named ADT, or `Fn`); only
-its *arguments* are residual. That is why the shallow dec is category-correct on
-the outer word and wrong only in the field-discharge depth — i.e. at this seam
-the escapees leak, they do not crash.
+No escapee's own type was a bare `Type::Var` at this seam: the outer constructor
+was known, so the shallow dec was category-correct on the outer word and wrong
+only in field-discharge depth.
 
 ### 2.3 Census B — the retain seam (`signature_heap_category`'s `Err ⇒ Mixed`)
 
-This is the seam no prior document names, and it is where the memory-unsafety
-lives. `signature_heap_category` is consulted at **~25 emission sites**; its
-`Err(_) => HeapCategory::Mixed` arm is the **single** point at which a residual
-type acquires an RC licence. **5,499 licences across the suite:**
+That arm is the single point at which a residual type acquires an RC licence:
+5,499 licences, of which **3,646 were a bare `Type::Var`** (3,108 in
+constructor-template frames, 538 in F1/F2 frames), 1,776 `ADT(<concrete>,
+[Var…])` and 75 residual `Fn`. The bare-`Var` licences are the class's
+memory-unsafety surface.
 
-| Type shape at the licence | ctor-template frame | other frame | total |
-|---|---:|---:|---:|
-| **bare `Type::Var`** (no category exists) | 3,108 | **538** | 3,646 |
-| `ADT(<concrete>, [Var…])` (outer category known) | 1,296 | 480 | 1,776 |
-| `Fn(…)` residual (always heap) | 20 | 55 | 75 |
-
-The 3,646 bare-`Var` licences are the class's memory-unsafety surface. The 538
-in non-ctor-template frames are the F1/F2 frames again (`Box.v` ×116,
-`Grid.cells` ×198, `Functor.fmap$…` ×40+, `Pair2.x/y`, `Box.val`); the 3,108 in
-ctor-template frames are I-CT's *inc* half (`List.Cons` ×1,272,
-`Maybe.Some` ×222, `Option.Some` ×172, `Box` ×140, …).
-
-### 2.4 New finding — family F1 is memory-unsafe, not merely leaky
-
-0903 and 0916 record F1 as a *silent leak* and F2 as leak-plus-wild-write. That
-asymmetry is false. Four-line free-standing repro, `PrimitivesOnly`,
-`--run --no-cache`:
+### 2.4 F1 is memory-unsafe, not merely leaky
 
 ```lisp
 (import [primitives [IO Pure]])
@@ -157,83 +84,27 @@ asymmetry is false. Four-line free-standing repro, `PrimitivesOnly`,
 (defn main [] (Pure (get (Bx 1024))))
 ```
 
-| payload | result |
-|---:|---|
-| 100 | exit 100 (correct) |
-| **1023** | exit 255 (correct — `1023 mod 256`) |
-| **1024** | **SIGSEGV (139)** |
-| 5000 | **SIGSEGV (139)** |
+`--run --no-cache` exits correctly for payloads 100 and 1023 and **SIGSEGVs at
+1024 and above** — the `NULLARY_TAG_THRESHOLD` boundary, on the first call. The
+accessor's CLIF carries a guarded `atomic_rmw add` at `field+8` on the extracted
+`Var` field (a wild write on a scalar) and a shallow, field-discharge-free
+dealloc of `self`. F1 and F2 are one severity.
 
-The `NULLARY_TAG_THRESHOLD` boundary exactly, on the *first* call — the same
-1023/1024 boundary `/qa` measured for F2 (0916), on a different family, with no
-trait and no HKT in sight. CLIF of the accessor makes the mechanism unarguable:
+### 2.5 The constructor template's own licence
 
-```clif
-function %Bx.v(i64) -> i64 system_v {
-block6:
-    v6 = load.i64 notrap aligned v1+24      ; the field — static type Var(0)
-    v7 = iconst.i64 1024
-    v8 = icmp ult v6, v7
-    brif v8, block7, block8
-block8:
-    v9  = iadd_imm.i64 v6, 8
-    v11 = atomic_rmw.i64 add v9, v10        ; WILD ATOMIC WRITE at scalar+8
-    jump block7
-...
-block2(v2: i64):                            ; the release half, on `self`
-    v18 = icmp.i64 ult v1, 1024
-    brif v18, block9, block10
-block10:
-    v21 = atomic_rmw.i64 sub v19, v20
-    v22 = icmp eq v21, v20
-    brif v22, block11, block9
-block11:
-    fence
-    v23 = call fn1(v1)                      ; SHALLOW dealloc — no field discharge
-```
+Constructor-template frames carried the identical guarded inc/dec pair on a
+residual parameter. The guard makes both halves wild together on a scalar
+payload ≥ 1024. No corpus execution of a template *body* was observed — the
+constructor-as-value path lowers construction at the concrete type — which is a
+reachability observation, not a soundness argument.
 
-One frame, both faces: a wild atomic write on the extracted field (census B,
-bare `Var`) and a shallow field-discharge-free dealloc of `self` (census A,
-`ADT(_, [Var])`).
+### 2.6 Frame-key falsification
 
-**Consequence for the ruling:** F1 and F2 are one severity, not two. `/dev`
-owes 0916's title correction *and* a severity correction on 0903's family 1.
-
-### 2.5 The ctor template's own licence carries the same shape
-
-Census B shows 3,108 bare-`Var` licences inside ctor-template frames, and
-`%Bx.MkBx`'s CLIF carries the identical `icmp ult v1, 1024` → `atomic_rmw add
-v1+8` prologue plus a matching guarded sub whose last-ref branch calls
-`dealloc(v1)`. **I-CT does not license those instructions.** I-CT
-(`transitive-drop-glue.md` §4.1) proves that the *reference count* balances; it
-says nothing about whether the word is a reference at all, and its "ONE runtime
-predicate" exactness argument is precisely the argument that both halves are
-wild together.
-
-Measured mitigation, recorded honestly: no corpus execution of a ctor-template
-*body* was observed. `(defn ap [f x] (f x))` + `(ap MkBx 5000)` returns the
-correct value with no fault, because the ctor-as-value path mints a wrapper that
-lowers the construction at the concrete type; the template `Def`'s own body is a
-compiled-but-uncalled artifact on every path probed. **That is a reachability
-observation, not a soundness argument**, and §5.1 turns it into a named
-obligation rather than a licence.
-
-### 2.6 Frame-key falsification, re-run at S119 HEAD
-
-The 0903 paste (frame-keyed admission, verdict threaded to the shared body, both
-flushes rejecting) was applied and measured, as the dispatch required:
-
-| Run | Command | Result |
-|---|---|---|
-| baseline | `cargo nextest run --no-fail-fast -E 'binary(/^spec_/)'` | 893 run, **8** failed |
-| ruled frame key | same | 893 run, **24** failed |
-
-**+16 hard `CodegenError` refusals — reproducing the S118 falsification exactly,
-one sprint later, on a tree that has moved.** The refusals are the F1 and F2
-frames of §2.2. The narrowing is confirmed unlandable on its own, and the census
-explains why in one line: the frame key admits 2,216 of 2,497 and refuses the
-other 281, but the 281 are legal programs whose *producer* handed backend a
-frame it cannot compile.
+Re-keying the admission to the frame (admit constructor templates, refuse the
+rest) was measured twice, one sprint apart: the `spec_*` corpus went from
+8 to 24 failures. The 16 new hard refusals are the F1/F2 frames — legal
+programs whose producer handed the backend a frame it cannot compile. The
+narrowing is not landable alone (§8 reject 4).
 
 ---
 
@@ -243,900 +114,650 @@ frame it cannot compile.
 
 > No RC operation (inc or dec, guarded or unguarded, at any seam) may be emitted
 > on a word whose **heap category** codegen cannot name from the word's own
-> static type.
->
-> `HeapCategory::Mixed` is a *nameable* category: "bare nullary tag or heap
-> pointer", derivable only from a **concrete** sum type's own constructor set.
-> A residual type variable is not `Mixed`; it is the **absence** of a category.
+> static type. `HeapCategory::Mixed` is a nameable category, derivable only from
+> a **concrete** sum type's constructor set; a residual type variable is not
+> `Mixed`, it is the absence of a category.
 
-The one seam that violates R-1 today is `signature_heap_category`'s
-`Err(_) => HeapCategory::Mixed` arm (`rc_emission.rs:486-495`). It is the sole
-producer of every wild write in §2.4 and §2.5, and every one of the 3,646
-bare-`Var` licences in census B flows through it.
+`signature_heap_category`'s `Err(_) => HeapCategory::Mixed` arm
+(`compiler/rc_emission.rs`) still violates R-1; retiring it is §7.4.
 
-### 3.2 Rule R-2 — no fabricated concreteness (binds producers, including backend)
+### 3.2 Rule R-2 — no fabricated concreteness
 
 > No component may present a downstream gate with a type, category, shape or
-> mode **more concrete than what it actually knows**, in order to pass a gate
-> that would otherwise refuse. A gate that cannot be satisfied is a **producer
-> obligation**, never a licence to invent the missing fact.
+> mode more concrete than what it actually knows in order to pass a gate that
+> would otherwise refuse. An unsatisfiable gate is a **producer obligation**,
+> never a licence to invent the missing fact.
 
-Three measured instances, in two crates:
-
-| Fabrication | Home | Invents | Consequence |
-|---|---|---|---|
-| `Err(_) => HeapCategory::Mixed` | backend `rc_emission.rs:493` | a heap category | memory-unsafe (§2.4/§2.5) |
-| the type-keyed shallow-dec arm | backend `fn_compiler.rs:1287` | a release licence | leak (§2.2) |
-| `ConcreteType::Int` for a residual result root | typecheck `MonoExpr::lenient_from_expr` | a concrete type | leak (0913) |
-
-R-2 is the generalisation of Principle 25 ("Narrowing carries its check") to the
-*type* channel: a component that narrows an unknown to a workable value must
-carry the check that the narrowing is legal, and none of the three do.
+This is Principle 25 (Narrowing carries its check) applied to the type channel.
+The backend fabrications still in source are listed with their dispositions in
+§7.4.
 
 ### 3.3 Rule R-3 — a non-concrete frame is not a legal codegen target
 
 > A frame whose parameter or result types are not fully concrete cannot emit
-> correct release code, by **any** disposition available to it. The pipeline
-> must present backend with concrete frames; where it does not, the defect is
-> the frame's existence, not backend's handling of it.
+> correct release code by any disposition available to it. Where the pipeline
+> presents one, the defect is the frame's existence, not the backend's handling
+> of it.
 
-R-3 is not a preference. §4.3 proves it: for a generic trait-method instance,
-counting the residual word crashes on scalars and not counting it double-frees
-on duplication, and no third behaviour is expressible from inside the frame.
+The proof is §4.3.
 
 ### 3.4 Rule R-4 — the refusal must be actionable
 
-> Where the contract's disposition is a located refusal, the diagnostic MUST
-> name a real source span, a subject the user can look up, and one category
-> prefix. A refusal reported at span `0..0` against a `$`-mangled internal
-> instance name (`user/user/then$primitives/IO$Int+primitives/IO$Int`) is not a
-> located refusal; it is a leak of the compiler's call structure and does not
-> discharge this contract.
+> Where the disposition is a located refusal, the diagnostic must name a real
+> source span, a subject the user can look up, and one category prefix. A
+> refusal at span `0..0` against a `$`-mangled internal name does not discharge
+> this contract.
 
-This is FIXME 0915, folded in as this contract's quality bar rather than left as
-an adjacent cosmetic rider: "located refusal the user can act on" is one of the
-four dispositions, and 0915 is the measurement that today's refusals do not meet
-it. `repl/spec.md` §5.5 is the normative surface; the backend-side obligation is
-in §5.5 below.
+The normative surface is
+[repl/spec/05-error-presentation.md](../../repl/spec/05-error-presentation.md)
+§5.5. The backend obligation is §7.2.
+
+### 3.5 The gate order
+
+> **Category, then provenance, then emitter.** A seam asks the value's own
+> concrete type for its `HeapCategory`; `NeverHeap` and `Value` emit nothing and
+> the seam stops. Only then does it ask `value_provenance` *whose* reference it
+> is. Provenance never answers *whether* a reference exists.
+
+This is the as-built shape at every seam: the match seam ANDs its plan with
+`scrut_is_heap`, the Vec seams take a Vec-typed operand, and the `BorrowRoot`
+consumer matches on `signature_heap_category` with empty `NeverHeap | Value`
+arms. The gates are asserted seam by seam rather than converged. **Named
+falsifier:** a provenance-licensed RC emission not preceded by a category gate
+on the value's own type. Converging the gates is a larger reshape, not scheduled
+(§10).
+
+### 3.6 Three emitters, and no fourth
+
+| Emitter | Home | Purpose |
+|---|---|---|
+| The nullary-skip prologue | `heap::emit_nullary_skip_guard`, reached through the guarded RC helpers | the one tag-vs-pointer decision for every guarded inc and dec, in any Cranelift context |
+| The canonical typed release | `rc_emission::emit_typed_rc_dec` → `drop<T>` from `DropGlueRegistry` | releasing a heap value as a function of its type, never its site |
+| The two sanctioned runtime dispatches | the closure's embedded `DROP_GLUE_PTR`; the intrinsics IO tag-walker (§5.4) | releasing a value whose structure only the runtime can see |
+
+The `Pure` payload-glue word (§5) is not a fourth mechanism: every site that
+writes it materialises the address of the same `drop<T>` from the same registry.
+A new release mechanism is a reject regardless of what it fixes (§8 reject 1).
 
 ---
 
-## 4. The five-face disposition table
+## 4. The five faces
 
-Every face gets **exactly one** disposition. The table is total over the
-measured class (§2.2 + §2.3): faces 1–3 are the whole of censuses A and B, face
-4 is the `ctor_shapes` identity refusal, face 5 is the producer face.
+Every measured face has exactly one disposition.
 
-| # | Face | Today | **Disposition** | Mechanism | Closes |
-|---|---|---|---|---|---|
-| **1** | Ctor template's own parameter (`ConstrADT` body, residual field param) | I-CT-licensed guarded inc + shallow guarded dec; **the inc is a wild write on a scalar payload** (§2.5) | **Canonical glue, at the frame that can name the type** — the template frame emits *nothing* on a residual parameter; the Decision-24 consuming transfer is already correct without the pair | delete the inc/dec pair under R-1; §4.1 + I-CT + its standing obligation **retire** | 0891, §4.1's `/review` reject criterion |
-| **2** | Synthetic accessor of a generic / undeclared-field product (F1) | shallow field-discharge-free dealloc of `self` **plus** a wild atomic write on the extracted field (§2.4) | **Canonical glue, after the frame is monomorphised** — the accessor `Def` joins ordinary monomorphisation, keyed on the full concrete instantiation | remove the compile-once-per-declaration exemption (producer obligation, §5.2) | 0903 family 1; the `f4_sudoku.clif::user::Grid.cells` static re-baseline |
-| **3** | Generic trait-method instance (F2) | shallow dealloc of both params **plus** a wild atomic write on the residual payload | **Canonical glue, after the frame is monomorphised** — the instance mangle widens from the type *constructor* to the full concrete instantiation | same mechanism as face 2 (producer obligation, §5.2) | 0903 family 2, **0916** ×1 |
-| **4** | IO's existential `Bind` | hard refusal at `drop_glue.rs::ctor_shapes` (:497-505); no legal re-spelling exists | **Runtime-directed teardown** — the registry classifies `primitives/IO` as runtime-owned and emits a call to the intrinsics tag-walker; backend contributes only the one field the existential does not hide (`Pure`'s payload at the concrete arg) | `consume_io_tree`'s existing tag-directed walk, split at the dec (§5.3) | **0907** ×7 |
-| **5** | Typecheck's lenient-view result root | a fabricated `ConcreteType::Int` unhooks glue entirely | **Canonical glue, after the producer stops fabricating** — the view carries the node's real type; unconstrained residual parameters are *defaulted*, explicitly and checkably, never replaced | producer obligation on typecheck (§5.4) | **0913** ×1 |
+| # | Face | Disposition | State |
+|---|---|---|---|
+| **1** | Constructor template's own residual parameter | The template frame emits nothing on it (I-CT′, §4.1) | **Structural:** `Life::Template` carries no slot and no view, so a residual-parameter constructor frame is not a codegen target. Evidence reconciliation of the constructor census partition stays open under FIXME 0931 |
+| **2** | Synthetic accessor of a generic product (F1) | Canonical glue after the frame is monomorphised per concrete instantiation | Producer obligation (typecheck). The backend fallback arms it relies on retire in §7.4 |
+| **3** | Generic trait-method instance (F2) | Same as face 2: the instance key widens to the full concrete instantiation | Producer obligation (typecheck); 0916's backend arm closes with §7.4 |
+| **4** | IO's existential `Bind` | Runtime-directed teardown, with the `Pure` payload stamped at construction | **Delivered** (§5) |
+| **5** | Typecheck's lenient-view result root | Canonical glue once the view carries the node's real type, with unconstrained parameters explicitly defaulted | Producer obligation (typecheck) |
 
-**Face 0917 is not in this table, deliberately.** 0917 is a distinct axis —
-concrete types throughout, no residual anything — and folding it into the class
-would be the framing error this ruling exists to fix. It is ruled separately in
-§6.
+FIXME 0917 is not a face: its types are concrete throughout. It is §6.
 
-### 4.1 Why face 1's pair deletes rather than survives
+### 4.1 Face 1 — why the pair deletes (I-CT′)
 
-`transitive-drop-glue.md` §4.1 rejected "delete the pair" (its option (b)) on
-two grounds, both of which the measurement removes:
+The S118 ruling kept the template's guarded inc/dec pair under invariant I-CT
+("the count balances"); [transitive-drop-glue.md](transitive-drop-glue.md) §4.1
+retains that record. I-CT is silent on whether the word is a reference at all,
+and §2.5 shows it is not always one. The replacement:
 
-- *"it needs a template-shaped special case at TWO independent seams."* It needs
-  **no** template-shaped special case at all. R-1 is category-shaped, not
-  frame-shaped: both seams already consult `signature_heap_category`, and both
-  stop emitting for the same reason, in the same one-line change to that
-  function's `Err` arm. The mechanism count goes **down** by one exception, not
-  up by two special cases.
-- *"it converts a branch that is behaviour-identical to pre-migration HEAD into
-  an emission change buying two guarded branches per constructor."* The branch
-  is **not** behaviour-identical: on a scalar payload ≥ 1024 it is two wild
-  atomic writes and a wild `dealloc` (§2.5). Deleting it is the memory-safety
-  fix, and **Complexity has a budget** now cuts the other way.
+> **I-CT′.** A constructor template's body is straight-line and only moves each
+> parameter word into the box it returns. Under the Decision-24 consuming
+> convention the caller has already transferred one reference per argument, and
+> storing the word transfers it to the box. The frame owes neither a retain nor a
+> release for any parameter type.
 
-Soundness of the deletion, stated as the invariant that replaces I-CT:
+I-CT′ is now discharged by representation rather than by a deletion in the
+frame: no residual-parameter constructor frame reaches codegen. The
+`Borrowed`-mode standing obligation that I-CT carried retires with it.
 
-> **I-CT′.** A ctor template's body is straight-line and its only effect is to
-> move each parameter word into the box it returns. Under the Decision-24
-> consuming convention the caller has already transferred one reference per
-> argument; storing that word into the returned box transfers it to the box.
-> The frame therefore owes neither a retain nor a release, for *any* parameter
-> type — concrete or residual. The inc/dec pair was always redundant; it was
-> only ever safe because the pair cancelled, and it is only ever unsafe because
-> the pair's two halves are wild together.
+### 4.2 Faces 2 and 3 are one face
 
-I-CT′ is strictly simpler than I-CT: it needs no runtime-predicate-sharing
-argument, no publication argument, and no standing obligation about `Borrowed`
-modes reaching ctor templates — because there is no pair left to unbalance.
+Both censuses place F1 and F2 in the same rows, with the same type shapes, at
+the same seams, and §2.4's threshold boundary appears in both. They differ only
+in which producer exempted the frame from monomorphisation. The compiler already
+monomorphises ordinary generic functions; the disposition is to stop exempting
+these two frame kinds.
 
-### 4.2 Why faces 2 and 3 are one face wearing two names
-
-Census A and census B put F1 and F2 in the same two rows with the same two type
-shapes and the same two seams. §2.4 shows the same 1023/1024 boundary on both.
-`concrete-boundary-type.md` §3.1.1 already pairs the ctor and accessor signature
-paths in one sentence. The only structural difference is *which* producer
-exempted the frame from monomorphisation — `adt.rs`'s accessor synthesis for F1,
-the trait-instance mangle for F2 — and the disposition is identical.
-
-Their disposition is therefore stated once: **stop exempting them.** The
-compiler already monomorphises ordinary generic functions; the census's own
-frame list carries `ct/ap$Fn(Int;ct/Bx$Int)+Int` next to `Bx.v`. F1 and F2 are
-not a capability the compiler lacks — they are two frames it declines to apply
-an existing capability to.
-
-### 4.3 The proof that no in-frame disposition exists (R-3)
-
-This is the load-bearing negative result, and it is why "sanction a wider frame
-set" (0903's cheapest candidate) is rejected rather than costed.
+### 4.3 No in-frame disposition exists (R-3)
 
 Take `(impl (Functor Option) (defn fmap [g o] (match o [None None (Some x) (Some (g x))])))`
-compiled once for `primitives/Option`, with `x : Var`.
+compiled once with `x : Var`:
 
-| In-frame policy | Scalar payload (`(Some 1024)`) | Heap payload (`(Some "s")`) | Duplicating arm (`(Pair x x)`) |
+| In-frame policy | Scalar payload `(Some 1024)` | Heap payload `(Some "s")` | Duplicating arm `(Pair x x)` |
 |---|---|---|---|
-| **Count it** (today) | wild atomic write → SIGSEGV | correct | correct |
-| **Do not count it** | correct | leak (outer shallow-freed, payload stranded) | **two boxes, one count → UAF** |
-| **Runtime-discover it** | impossible — a raw scalar carries no header; R15 (header type-word) is rejected architecture | | |
+| Count it | wild atomic write → SIGSEGV | correct | correct |
+| Do not count it | correct | leak | two boxes, one count → UAF |
+| Discover it at runtime | impossible: a raw scalar has no header (a header type-word is rejected architecture) | | |
 
-Every column has a failing row, and the failures are on *different* axes, so no
-combination of in-frame tests separates them. The missing fact — the payload's
-category — exists only at the call site. **Monomorphisation is not one option
-among several; it is the only sound one.** That is R-3.
+Every policy fails on a different axis. The payload's category exists only at the
+call site, so monomorphisation is the only sound disposition. "Sanction a wider
+frame set" and "withdraw the retain licence for F2 only" are rejected on this
+proof.
 
-### 4.4 Why face 4 is genuinely different, and genuinely runtime-directed
+### 4.4 Why face 4 alone is runtime-directed
 
-The IO face is not a residual-type face. `IO Int` **is** concrete; the failure is
-in glue *derivation*: `ctor_shapes` builds one substitution over all of a type's
-constructors and hard-errors when two disagree (`drop_glue.rs:497-505`), and
-`Bind`'s manual seed (`src/bootstrap.rs:767-783`) uses fresh `bind_a`/`bind_b`
-precisely because HM cannot express the existential. Per-ctor substitution does
-not rescue it: `Bind`'s `inner: IO b` and `cont: Fn [b] (IO a)` keep `Var(bind_b)`
-free by construction.
+`IO T` is concrete; the failure was glue *derivation*. `ctor_shapes` builds one
+substitution across a type's constructors and correctly refuses when they
+disagree, and `Bind`'s existential keeps its inner type free by construction.
+The runtime can nevertheless see the structure without a header type-word: IO
+nodes carry a tag, and `Bind`'s continuation is a closure carrying its own
+`DROP_GLUE_PTR`. The one field only the type knows — `Pure`'s payload — is
+known with certainty at every *construction* site post-mono, so the backend
+supplies it there (§5.3) instead of at teardown, where it is certain only for
+the root. For faces 1–3 no such runtime self-description exists.
 
-But the existential *is* discoverable dynamically, and — uniquely in this class —
-**without a header type-word**, because the two things that would need one are
-already self-describing:
+### 4.5 Rejected: refusing to own IO
 
-- an IO node carries a **tag**, and `cranelisp-intrinsics::consume_io_tree`
-  already walks every tag (`Pure`/`Effect`/`Bind`/`Par`/`EffectPoll`/`Select`),
-  recursing into `Bind`'s inner tree and releasing `Par`/`Select` branch sets
-  through `free_io_branches`;
-- `Bind`'s continuation is a **closure**, and a closure carries its own
-  `DROP_GLUE_PTR` at offset 24 — the `transitive-drop-glue.md` §1.1 M5
-  runtime dispatch this design already sanctions as a standing exception.
-
-So face 4's disposition consumes two mechanisms that already exist and adds
-none. This is why "runtime-directed teardown" is available here and nowhere else
-in the table: for faces 1–3 the unknown word may be a raw scalar with no runtime
-self-description at all.
-
-**The one field the runtime must not own.** `Pure`'s payload has type `a`, which
-*is* determined by the concrete `IO T` the release is keyed on — and
-`consume_io_tree`'s `IO_TAG_PURE` arm deliberately leaves it alone ("the
-trampoline returns the payload's ownership to the caller",
-`crates/cranelisp-intrinsics/src/drop.rs:340-344,395-399`). So the split is:
-
-> **Backend owns what only the type knows; the runtime owns what only the value
-> knows.** `drop<IO T>` decrements; on last reference it discharges a
-> `Pure`-tagged payload by calling `drop<T>` — the ordinary canonical glue for
-> `T`, no new identity — and then hands the node to the intrinsics tag-walker
-> for the structural teardown and the deallocation.
-
-§5.3 states the exact shape and the one intrinsics entry point it needs.
-
-**The named residual — DISSOLVED at S121, not shipped.** As ruled here, a `Pure`
-node *nested inside an unrun `Bind` sub-tree* has payload type `b` — the
-existential — which neither side can name at *teardown*, so its payload would not
-be discharged: a bounded leak on unrun IO trees, strictly better than the hard
-refusal but still a leak.
-
-The S121 disposition removes the premise rather than guarding the consequence.
-Under I-FRAME every IO-node *construction* site is concrete post-mono, so
-backend's type knowledge is certain at construction even where it is unknowable
-at teardown. The `Pure` node therefore carries a **payload-glue word stamped at
-construction** (FIXME 0934, ruled by `/arch` at
-`design/arch/total-concreteness.md` §3.4; the C4 half at `s121-c4-visit.md` §6):
-the canonical `drop<T>` address, or the sentinel `0` for a non-heap payload or a
-payload whose ownership has already moved out on the run lane. The runtime
-walker calls through it. No new release identity is minted — the word carries the
-same canonical glue every other site calls. The word is an **ownership witness**,
-so the run lane maintains it: it never calls the glue, but it clears the word
-before transferring a payload onward. That clear is required by Decision-24
-sequencing — `cranelisp_run_io` forces the caller's tree and then structurally
-consumes the same tree — not by any cross-reference sharing, so the run lane is
-not byte-identical (`s121-c4-visit.md` §6.2).
-
-Consequences for this section: the split below still holds in principle —
-backend owns what only the type knows — but backend now discharges it at
-**construction** rather than at teardown, which is why §5.3's two-part
-`drop<IO T>` is superseded. The `/qa` guard §7.1 owed for this residual becomes a
-GREEN acceptance cell (a nested `Pure` in an unrun `Bind` **is** discharged),
-with the double-discharge negative as its discriminating control. R-2's
-prohibition on papering over the gap with a fabricated `b` stands and was never
-approached.
-
-### 4.5 Why 0907's "admission exclusion" option is rejected
-
-0907 offers three directions; the third — `HeapCategory`/registry refuses to own
-IO, restoring the S116-era behaviour — restores compilation and **restores the
-silent leak**. Weighed as the FIXME's own text and `/stdlib`'s appendix demand:
-
-- it is the option that makes `core.io`'s six combinators reachable again, which
-  is real value (`/stdlib` §1: `core.io` + its parent `core`, two named modules
-  in the conformance report, both flipping together);
-- but `/examples`' appendix §3 already measured what "compiles and leaks" costs
-  on this exact type: the `(impl (Functor IO))` spelling compiles today, returns
-  the right answer, and retains ~68 bytes per call, linear to 82.7 MB at 800k
-  iterations. It is **not a workaround — it is the leak**, and it removes the
-  diagnostic while keeping the defect;
-- and R-2 forbids it directly: refusing to own a type in order to pass the
-  release gate is fabricating a fact ("this type owns nothing") that is false.
-
-Rejected. The runtime-directed disposition costs one intrinsics entry point and
-one glue arm, and it is the only one that leaves the class smaller than it found
-it.
+Restoring the pre-S116 behaviour (the registry declines IO) compiles again and
+restores the silent leak measured at ~68 bytes per call through
+`(impl (Functor IO))`. It also fabricates the fact "this type owns nothing"
+(R-2). Rejected.
 
 ---
 
-## 5. Producer obligations
+## 5. The IO node and its release (face 4, delivered)
 
-The contract binds producers. Each obligation below is stated so it can be
-implemented from, and each names the crate that owns it. Cross-crate obligations
-are filed as FIXMEs (§8); this section is the specification they point at.
+The node layout and the trampoline's reads are
+[io-trampoline.md](io-trampoline.md) §1.1. IO values are reusable: a force
+of a `Pure` or `Effect` node moves no field out of it, and teardown discharges
+each owned field once ([total-concreteness.md](../arch/total-concreteness.md) §3.4;
+`spec/10-io.md` §10.8.1). How intrinsics forces and tears down a `Pure` is
+[Pure ownership contract](../intrinsics/ownership-and-disposal.md#61-the-pure-payload-witness-retain-on-force). This
+section owns the backend's side: construction, the stamp and the release call.
 
-### 5.1 Backend — retire the fabricated category (R-1, R-2)
+### 5.1 The `Pure` node
 
-`signature_heap_category`'s `Err(_) => HeapCategory::Mixed` arm is the single
-seam. Its end state is a **located error**, restoring D2's no-fallback rule to
-the retain side as well as the release side. It cannot flip while faces 1–3 have
-traffic (§2.6: +16 refusals), so it flips **per family, gated on measured zero
-traffic**:
+`Pure` is the two-field allocation `[header | tag@16 | payload@24 |
+payload_glue@32]`. Every other IO node is unchanged. The payload stays at field
+0, so existing field-0 reads and pattern binds are untouched. The hidden word is
+never a language-visible field; it follows the closure `DROP_GLUE_PTR`
+precedent, not a header type-word.
 
-1. **Instrument the arm** (permanently, not as scaffold): a debug-profile census
-   of every `Err` licence, keyed by frame and type shape. The scaffold this
-   window used is the prototype; `/dev` lands the production form. This is the
-   `0768` rule applied to a classifier — an instrument is unverified until it
-   has detected, and this one has (§2.3).
-2. **Face 1 first** (backend-only, no producer needed): a ctor-template frame
-   emits no RC op on a residual parameter (I-CT′, §4.1). Expected census delta:
-   −3,108 bare-`Var` licences and −2,216 release admissions, ≈89% of the class,
-   with **zero** emission change for any concrete parameter.
-3. **Faces 2 and 3 next**, as their producer obligations land (§5.2). Expected
-   census delta: −538 and −480 and −55, to zero.
-4. **Flip the arm to a located error** only when the instrument reads zero
-   across the corpus. Same for `emit_heap_binding_decs`'s type-keyed arm, which
-   at that point has no traffic at all and deletes rather than re-keys.
+### 5.2 What the backend may write, and when
 
-**The census reading zero is the acceptance criterion, not a code review.** This
-is measure-before-binding institutionalised: the arm is the gate on its own
-removal.
+The word is a witness written once, before publication, and immutable
+afterwards: `0` (`Scalar` — the payload owes nothing) or the payload's canonical
+`drop<T>` address (`Owned(glue)`). `1` is reserved and emitted by nothing.
 
-> **S121 corrections to this section — three, all recorded at
-> `s121-c4-visit.md` §5 and §7.**
->
-> - **Step 2 has no site.** C1's lifecycle plus FIXME 0931 make a ctor template
->   slot-less and view-less, so a residual-parameter ctor frame is not a codegen
->   target. The ≈89% delta arrives from the *producer*; backend observes it.
-> - **Step 1's arming leg cannot be inherited.** C3 lands before C4, so the
->   corpus traffic that demonstrated this instrument's positive leg is gone
->   before the production instrument is authored. Both legs are therefore
->   **planted in the instrument's own change-set** against a unit fixture (a
->   frame whose entry `Scheme.ty` carries a residual parameter fires it; the
->   concrete twin leaves it silent). The corpus reading zero stays the *flip
->   criterion*; it is no longer also the proof of life.
-> - **Step 4 is blocked by a channel this section does not name.** `CtorMeta`
->   materialises constructor field types from the *declaration's* scheme, so a
->   polymorphic product's field type is a permanent `Type::Var` feeding this
->   arm (FIXME 0929 row 3). The census cannot read zero while that stands.
->   Ruled at `s121-c4-visit.md` §7.1: field types become an instantiation fact
->   carried as `ConcreteType`, materialised through the already-published,
->   currently unconsumed `cranelisp_types::ctor_field_types_at`, with its
->   `NotConcrete` refusal located at the reference's span. Zero types delta.
+- **The backend only initialises.** Each stamp site writes `0` or a canonical
+  `drop<T>` address with an ordinary aligned store while the fresh node is
+  exclusively owned and unpublished. It never writes `1`, never performs an
+  atomic operation on the word, and never reads or calls through it.
+- **Publication ends backend authority.** After publication the word is only
+  read, by the intrinsics force and teardown lanes: each force of an
+  `Owned(glue)` payload mints the consumer's own reference, and teardown calls
+  the glue once. A backend read, maintenance store or post-publication write
+  would add a second ownership channel to a word the reuse rule keeps immutable
+  (§8 reject 10).
 
-### 5.2 Typecheck — remove the monomorphisation exemption (R-3)
+### 5.3 The stamp — a closed set of four sites
 
-Owner: `/design`(typecheck) → `/dev`(typecheck). Filed as FIXME (§8).
+Three sites construct the node — the inline concrete `ConstrADT` lowering, the
+resolved-constructor `Apply` path, and the value-position constructor wrapper
+body — and one adopts a node the platform constructed (§5.5). Two rules bind all
+four:
 
-> Synthetic field accessors and generic trait-method instances are compiled once
-> per *declaration*. They must instead be monomorphised per concrete
-> instantiation, exactly as ordinary generic `defn`s already are, so that every
-> parameter and result type reaching backend is concrete.
+- **One derivation, never a per-site name test.** Whether a constructor carries
+  a hidden self-description field, and its value, is answered once beside the
+  keyed `ctor_meta_at` read; it answers non-`None` only for `primitives/IO.Pure`,
+  so every other constructor emits byte-identically. The adoption site keys on
+  the returned node's tag, the same rule applied to a value that already exists.
+- **The value comes from the registry.** The site asks
+  `DropGlueRegistry::request_if_owning` for the payload's concrete type — the
+  same call every release site makes — and materialises `func_addr` of the
+  returned `FuncId`, or `iconst 0` when the request declines. The tag-and-fields
+  emitter is unchanged and never given a type; the stamp is one more field value.
 
-Precise form:
+**Stack placement.** A stack-placed `Pure` (`NoEscape` with a scalar payload,
+[ownership-codegen.md](ownership-codegen.md) §4) always carries `0` and, with an
+immortal header, is never freed. **Falsifier:** a stack-placement verdict that
+admits a heap-typed payload; stack placement for `Pure` must then be refused,
+not stamped.
 
-- **F1 (accessors).** `adt.rs`'s accessor synthesis mints a `Def` whose `self`
-  parameter is `ADT(T, [Var…])` and whose result is the declared field type,
-  possibly a bare `Var`. The mint must be instantiation-keyed: one `Def` per
-  concrete `T <args>` actually demanded, under the existing monomorphic mangle,
-  with `self` and the result substituted. The former rider 0867 widening is
-  retired by the S121 product-only ruling: this family contains product
-  accessors only; sum payload labels mint no frame.
-- **F2 (trait-method instances).** The instance name is keyed on the type
-  *constructor* (`Functor.fmap$primitives/Option`). It must be keyed on the
-  full concrete instantiation (`…$primitives/Option$Int`), which is a **key
-  widening on an existing mangle**, structurally the same change as S110's
-  alias-class close (`backend-keyed-consumer.md` §1.1.2) — not a new naming
-  scheme, not a second identity home.
-- **Neither is a `cranelisp-types` delta**, and neither changes any extern name
-  or ABI. Both change how many bodies are emitted and under what names.
+### 5.4 The discharge — `drop<IO T>`
 
-**Note for the typecheck round.** This obligation and 0913's (§5.4) are the same
-rule at two altitudes: *do not hand codegen a type you have not got*. The
-lenient view fabricates at the value level; the declaration-once exemption
-fabricates at the frame level.
-
-### 5.3 Intrinsics — split `consume_io_tree` at the dec (face 4)
-
-Owner: `/design`(intrinsics) + `/arch` (public surface). Filed as FIXME (§8).
-
-`consume_io_tree(ptr)` today does dec → tag-walk → dealloc in one body. Backend
-needs the tail half alone, because it must interpose the `Pure`-payload
-discharge between "we know this is the last reference" and "the node's fields go
-away". The requested shape — a **split of one existing function, not a second
-mechanism**:
-
-```
-// existing, unchanged in behaviour:
-consume_io_tree(ptr)  ==  { if !last_ref(dec(ptr)) { return } ; fence ; free_io_node(ptr) }
-
-// new public entry point, the tail half:
-free_io_node(ptr)     // tag-walk + branch release + dealloc; NO dec, NO fence
-                      // precondition: caller has dec'd to zero and fenced
-```
-
-Backend's registry then classifies `ADT(primitives/IO, [T])` as **runtime-owned**
-and emits, in place of a derived `ctor_shapes` body:
-
-> **SUPERSEDED S121 (`s121-c4-visit.md` §6.4).** With the 0934 payload-glue word
-> the node self-describes, so backend's body needs no tag test and no `drop<T>`
-> call: it is `guard; dec; fence; call runtime/free_io_node(p)` — **identical for
-> every `T`** — and the runtime walker discharges *every* `Pure` in the tree,
-> including nested ones, through the stamped word. The shape below is retained
-> as the record of the S119 split. The three properties after it are unchanged
-> and still binding.
+The registry classifies `ADT(primitives/IO, [_])` as runtime-owned before shape
+derivation, and `drop<IO T>` is the same body for every `T`:
 
 ```
 drop<IO T>(p):
     if p < NULLARY_TAG_THRESHOLD: return
-    old = atomic_rmw sub [p+8], 1
+    old = atomic_rmw sub [p+RC_OFFSET], 1
     if old != 1: return
     fence
-    if load(p, TAG_OFFSET) == IO_TAG_PURE:
-        drop<T>(load(p, FIELDS_START))        // canonical glue for T — no new identity
     call runtime/free_io_node(p)
 ```
 
-Three properties `/review` should check against this shape:
+`free_io_node` is the intrinsics tail of `consume_io_tree` split at the dec
+(tag-walk, branch release, dealloc; precondition: the caller has decremented to
+zero and fenced). It discharges every `Pure` in the tree, nested ones included,
+through the stamped word. Three properties hold:
 
-- `ctor_shapes` is **not reached** for `primitives/IO`, so the identity check at
-  `drop_glue.rs:497-505` stays exactly as it is — it is a correct check on a
-  precondition IO structurally cannot meet, and weakening it would weaken it for
-  every other type;
-- the `Pure` arm calls `drop<T>` — the *same* canonical glue every other site
-  calls. Face 4 adds **no new release identity**, satisfying G2;
-- `guard_nullary` for `IO` follows the ordinary rule (IO has no nullary ctor, so
-  the guard is present only for uniformity with the runtime's own contract).
+- `ctor_shapes` is not reached for `primitives/IO`, so its cross-constructor
+  identity check stays exactly as strict for every other type;
+- no IO-specific payload releaser is minted; every discharge is a `drop<T>` the
+  registry already owns;
+- the per-concrete-type glue *name* is kept although the bodies coincide:
+  `drop_glue_symbol_name` stays the sole identity authority.
 
-**The `Bind` introspection rider.** `/repl`'s appendix item 5 shows one cause
-behind two symptoms: `Bind` is seeded manually and is not enrolled the way
-`Pure`/`Effect` are, so the diagnostic names a constructor the REPL then denies
-exists. Whatever `/dev` does to `Bind`'s seed in this window must leave it
-introspectable (`/info Bind`), because R-4 requires a refusal's nouns to be
-lookup-able and the same seed is the reason they are not.
+### 5.5 The platform-return adoption stamp
 
-### 5.4 Typecheck — the lenient view stops fabricating (face 5, 0913)
+A platform DLL cannot name a glue address, so `CLIO::pure` writes `0` and the
+backend replaces it at the one crossing where a blocking platform call's result
+is in hand — the GOT-indirect platform-call arm of `compile_direct_call`. The
+stamp dispatches on the **returned node's tag**, never on the callee's kind:
 
-Owner: `/design`(typecheck), Round 2 of this Phase, against this landed contract.
-Stated here as the obligation, precise enough to implement from.
+```
+tag == IO_TAG_EFFECT ⇒ store fn_name_ptr → [node + EFFECT_FN_NAME_ABS_OFFSET]
+tag == IO_TAG_PURE   ⇒ store glue        → [node + PURE_GLUE_ABS_OFFSET]
+otherwise            ⇒ no write
+```
 
-> **`MonoExpr::lenient_from_expr` must carry each node's real type.** Where the
-> real type contains a residual type parameter, the view must apply an explicit,
-> recorded **defaulting** step — never a wholesale substitution of the node's
-> type.
+`T` comes from the callee's concrete `(Fn […] (IO T))` scheme and the glue from
+the same registry call as §5.3; a residual `T` is a located refusal, never a
+default. The poll arm returns before this block and is untouched.
 
-The distinction is the whole obligation, so it is stated as three parts:
+**Offset authority.** The crossing datum is absolute offset 32.
+`PURE_GLUE_ABS_OFFSET` in `compiler/apply.rs` is the backend's only explicit
+offset expression for the word, composed from `HeapAdt::field_offset(1)`, with
+the owner-local pin `const _: () = assert!(PURE_GLUE_ABS_OFFSET == 32);`. The
+platform crate pins its own composition independently; neither crate imports
+the other's vocabulary for this check.
 
-1. **What is forbidden.** Replacing `(Result a String)` with `ConcreteType::Int`
-   is a fabrication under R-2: it does not default a *parameter*, it discards
-   the type. Backend then sees a scalar, emits no glue, and the result root
-   leaks — measured by `/repl` at 2–6 blocks per turn on the single most common
-   result shape in the language (`(Ok x)`/`(Err x)`), with `deallocs +0` and
-   `live` growing linearly in session length.
-2. **What is permitted, and why it is sound.** An **unconstrained** residual
-   parameter may be defaulted to a declared `NeverHeap` type, per parameter
-   position, leaving the type constructor and every constrained argument intact:
-   `(Result a String)` → `(Result <default> String)`. The soundness argument is
-   exact and checkable: a parameter that is still free after inference is a
-   parameter no value in the released graph inhabits — if a value of that type
-   were present, unification would have pinned it. The canonical glue for
-   `(Result <default> String)` branches on the runtime tag; the arm carrying the
-   defaulted parameter is unreachable for this value, and the `Err` arm's
-   `String` is discharged correctly. The defaulted position is *typed out of the
-   walk*, not walked with a wrong type.
-3. **The check the narrowing carries** (Principle 25). The defaulting step must
-   assert its own precondition — the parameter is genuinely unconstrained at the
-   point of defaulting — and must be visible as a distinct operation with its
-   own name, not an inline `unwrap_or(Int)`. A defaulting applied to a
-   *constrained* parameter is a fabrication and must be a located error.
+**Grade.** Structural for the licence (no store is emittable outside its tag arm
+at the one chokepoint); measured for the arm's identity and branch dominance by
+`compiler/apply/platform_fn_name_stamp_tests.rs`. The S121 window in which the
+`Pure` arm existed against the one-field layout closed when the platform ABI
+passed version 10.
 
-Two acceptance constraints carried from the FIXME, both binding:
+### 5.6 `Bind` introspection
 
-- **0913 must not be closed by pinning annotations** in tests or docs. "Annotate
-  your `Result` and it stops leaking" is not a user-facing contract, and the
-  residual-parameter *displays* are spec-required (`repl/spec.md` §1.5/§4.1) and
-  correct — the displays are right; the release behind them is not.
-- `design/int/result-owner.md` §1.1.1's scope sentence is wrong in the same
-  window (`/design`(int)'s side): the axis is the `Result` family and parameter
-  position-independence, not the `[]`/`None` corner, and its `None` example is
-  impossible (nullary, bare tag, cannot leak).
-
-### 5.5 Backend — the refusal's frame (R-4, 0915)
-
-Owner: `/dev`(backend), `crates/cranelisp-backend/src/error.rs:121-132`
-(`CompilationError::CodegenFailed`'s `Display`). Not cosmetic: R-4 makes it part
-of the contract, because "located refusal" is a disposition this table assigns.
-
-- **One category prefix per diagnostic.** The nested `codegen error at 0..0:`
-  doubling surfaces the compiler's own call structure; the inner wrapper's
-  category/span must not re-render when it is nested.
-- **A real span.** A refusal raised at a release site knows the binding's span
-  and the frame's span. `ErrorLocation::from_span(Span::SYNTHETIC)` at
-  `drop_glue.rs:539-544` is the current default and is the direct cause of
-  `0..0`; every error raised in the glue registry should carry the requesting
-  frame's span.
-- **A subject the user can look up.** `user/user/then$primitives/IO$Int+…`
-  doubles the module and exposes the mono mangle. The rendered subject should be
-  the user-visible symbol, with the instantiation shown as types rather than as
-  a `$`-mangle.
-
-`repl/spec.md` §5.5 is the normative surface and is `/repl`'s; this section is
-the backend-side obligation only.
+R-4 requires a refusal's nouns to be lookup-able. `Bind` is seeded outside the
+ordinary synthetic-ADT registration, so whoever changes that seed must keep
+`/info Bind` and `/info IO` working. This is int's bootstrap, recorded here so
+the requirement is not lost.
 
 ---
 
-## 6. FIXME 0917 — the distinct axis (provenance classification) — **LANDED S120**
+## 6. FIXME 0917 — the provenance classification (delivered)
 
-> **Implemented at S120 (`cbb3be9e`), exactly as ruled.** `ValueProvenance` has
-> its `NoReference` bottom, the `Match` fold seeds at the identity, the arm-less
-> guard survives as the distinct ⊤, both thresholds moved (`<= Fresh`;
-> `Fresh | OwnedTemporary`), and the constructor probe is the three-state
-> `CtorValueShape` produced by the one keyed `ctor_meta_at` read. Both reduced
-> repro cells are green. This section is now the **record** of the ruling and
-> the reference for its invariants; the filing's `status: open` is stale and
-> retires in the S121 C4 visit (`s121-c4-visit.md` §9).
+All types are concrete here; the seam is the protect licence in
+`rc_emission::protect_return_value`, which fires when
+`value_provenance(body) <= Fresh`. A bare nullary constructor reference is a
+`MonoExpr::Var`, not a `ConstrADT`, and used to classify at the lattice top, so
+one nullary arm poisoned a whole match's provenance and left a fresh boxed arm's
+protect unbalanced.
 
-Ruled here because it shares the window, kept out of the table because it shares
-nothing else: all types are concrete, no residual anything, and the seam is the
-protect licence rather than the release contract. Folding it in was the framing
-error `/arch`'s restructuring corrected.
+### 6.1 The lattice
 
-### 6.1 The mechanism, read at source
+`ValueProvenance` has a bottom below `Fresh`: `NoReference ⊏ Fresh ⊏
+OwnedTemporary ⊏ NotOwnedHere`, with `join = max`. **"Carries no reference" is
+the join's identity, not its absorbing element.** Consequences:
 
-`/qa`'s attribution names `protect_return_value` — actually at
-`crates/cranelisp-backend/src/compiler/rc_emission.rs:156`, in `impl FnCompiler`
-(**0917's FIXME cites `fn_compiler.rs`; `git log -S` shows it was never there**;
-the type-qualified reading `FnCompiler::protect_return_value` is the correct
-one). Call sites: `match_codegen.rs:322,574`, `control_flow/lambda.rs:554`,
-`control_flow/launch.rs:261`.
+- `is_fresh_construction` is `<= Fresh`; `yields_owned_temporary` is
+  `matches!(p, Fresh | OwnedTemporary)`;
+- the `Match` fold seeds at `NoReference`, so an all-nullary match reads
+  `NoReference`, not a false `Fresh`;
+- the explicit arm-less guard stays: ⊤ for a match yielding no value on any path
+  is distinct from the empty fold's identity, and deleting the guard would swap
+  one for the other.
 
-The licence is `is_fresh_construction` = `value_provenance(body, is_ctor) ==
-ValueProvenance::Fresh` (`fn_compiler.rs:2366,2438`). A **bare nullary
-constructor reference is not a `MonoExpr::ConstrADT`** — `Expr::ConstrADT` is
-synthesised only for constructor `Def` bodies, so user-written `None` in an arm
-is a `MonoExpr::Var { resolution: VarRef::Global(None) }`, and the `Var` arm
-returns `NotOwnedHere` unconditionally (`:2508-2511`). `NotOwnedHere` is the
-lattice's ⊤ and `join` is `max`, so **one nullary arm poisons the whole match's
-provenance**, the protect fires on a fresh boxed arm, and nothing balances it.
+No emission site gains a branch; this is a classification correction, not a new
+licence arm.
 
-### 6.2 The ruling — one lattice point, no new licence arm
+### 6.2 Verdicts
 
-The conflation is in ⊤ itself. `ValueProvenance::NotOwnedHere`'s own rustdoc
-describes two different things: "a scope binding (whose own scope cleanup decs
-it), **a non-heap scalar (no reference at all)**". Those are not the same fact,
-and the second one is not a top element — **"carries no reference" is the join's
-identity, not its absorbing element.**
+| Node | Verdict |
+|---|---|
+| `Var`, global, zero-field constructor | `NoReference` |
+| `Var`, global, constructor with fields | `NotOwnedHere` (a constructor value mints a wrapper; ⊤ stays conservative) |
+| `Var`, any other | `NotOwnedHere` |
+| `Apply` of a zero-field constructor | `NoReference` |
+| `Apply` of a constructor with fields | `Fresh` |
+| `ConstrADT`, no fields / with fields | `NoReference` / `Fresh` (probe-free: the field list is in the node) |
+| Scalar literal | `NoReference` |
 
-> **Ruling.** `ValueProvenance` gains a **bottom** point below `Fresh`:
-> `NoReference` — the value carries no heap reference at all. A bare nullary
-> constructor reference (a `Var` resolving to a zero-field constructor, lowered
-> to a bare `iconst` tag below `NULLARY_TAG_THRESHOLD`) classifies `NoReference`,
-> as do scalar literals. Ordering: `NoReference ⊏ Fresh ⊏ OwnedTemporary ⊏
-> NotOwnedHere`; `join` stays `max`, so a nullary arm is now absorbed by its
-> sibling arms instead of poisoning them.
->
-> Thresholds: `is_fresh_construction` becomes `<= Fresh`; `yields_owned_temporary`
-> becomes `matches!(p, Fresh | OwnedTemporary)`.
->
-> **The join's seed moves with its identity.** The `Match` fold currently seeds
-> at `Fresh`, which was the identity of the three-point lattice and is not the
-> identity of the four-point one. It seeds at `NoReference`, so an all-nullary
-> match reads `NoReference` rather than a false `Fresh`. The explicit arm-less
-> guard stays and becomes load-bearing in a second way: ⊤ for a match that
-> yields no value on any path is now distinct from the empty fold's identity,
-> and deleting the guard would silently swap one for the other.
+`NoReference` is a claim about the value that only the zero-field constructor
+and scalars earn. A value-flattened one-field constructor is a different fact
+with a different owner (`HeapCategory::Value`).
 
-This is a **classification correction, not a new emission licence arm** (G2): no
-emission site gains a branch, the exhaustive `value_provenance` match gains one
-arm's answer, and `protect_return_value` is untouched.
+#### 6.2.1 The constructor probe — one determinant, one read
 
-§6.2.1 and §6.2.2 settle the two interior questions the ruling left open: how a
-zero-field constructor is recognised from backend-owned facts, and what the
-scalar bottom does at the consumers that classify without the probe.
+`value_provenance`'s context input is a **three-state closed classification of
+a global reference** (`CtorValueShape`): not a constructor; a constructor whose
+value is the tag itself (zero fields); a constructor whose use mints or moves a
+payload. "Not a constructor" is the probe declining, not a constructor answer.
 
-#### 6.2.1 The constructor probe carries the distinction — one determinant, one read
+The producer is `CompileContext::ctor_meta_at`, the one keyed constructor read —
+the same fact `literals::nullary_constructor_tag` uses to choose the bare-tag
+lowering. A second read, or a second `is_nullary_ctor` probe beside the first,
+could disagree with what was emitted, recreating 0917 one level down.
+Pre-classifying at call sites is rejected for the same reason: it pushes the
+rule back out to the sites `value_provenance` consolidates.
 
-`value_provenance`'s context-dependent input is a **boolean** — `is_ctor:
-Fn(&FQSymbol) -> bool` — and its one real producer is
-`FnCompiler::body_is_fresh_construction`'s `|fq| ctx.ctor_meta_at(fq).is_some()`.
-A boolean separates *constructor* from *not a constructor*; it cannot separate
-*zero-field constructor* from *constructor with fields*, so the `Var` arm cannot
-reach the ruled verdict as the probe is shaped. That is the ruling's missing
-interior decision, and it is settled here.
+#### 6.2.2 Scalar bottom at probeless consumers
 
-The determinant is already backend-owned and already single-sourced.
-`CompileContext::ctor_meta_at` is the ONE keyed constructor read (Principle 24),
-and the metadata it produces carries the field list; `literals.rs`'s
-`nullary_constructor_tag` asks exactly this question — *does this global
-reference name a zero-field constructor?* — to decide the bare-`iconst`
-lowering. Nothing new has to be learned; the answer has to stop being discarded
-on the way to the lattice.
+Scalar-literal bottom is probe-independent, so it reaches every consumer:
+`protect_return_value` (with the real probe) and four probeless ones — the
+match-arm lifetime plan, `cow_source_has_separate_owner`, `is_vec_last_use` and
+`emit_vec_drop_if_temporary`. A scalar leaf is verdict-identical; at a join a
+scalar arm is now absorbed rather than poisoning to ⊤.
 
-> **Ruling.** The probe's answer widens from a boolean to a **three-state closed
-> classification of a global reference**: *not a constructor*; *a constructor
-> whose value is the tag itself* (zero fields); *a constructor whose use mints
-> or moves a payload* (one or more fields). Absence is cardinality — "not a
-> constructor" is the probe declining to answer, not a variant of a constructor
-> answer. One probe, one determinant, one keyed read; the probeless consumers
-> pass the constant "not a constructor" exactly as they pass `|_| false` today.
->
-> **The probe's producer is the same keyed read the bare-tag lowering uses.** A
-> second read of the same fact could disagree with the lowering, and a
-> provenance verdict that disagrees with what was emitted *is* the 0917 shape
-> re-created one level down.
+This is inert at every release seam by the gate order (§3.5): no RC operation is
+licensed by provenance alone. A scalar literal is only ever absorbed into a
+scalar-typed join. The nullary constructor reference is the one bottom value
+that can sit in a heap-typed join, and it is probe-dependent, so the probeless
+seams keep their conservative reading — the leak-safe direction.
 
-Where the four provenance-carrying arms read it:
+**Named residual.** `Trace`, `ParBind` and `LaunchContinue` cap their forwarded
+value at `OwnedTemporary`, lifting a `NoReference` inner value to a false
+ownership claim. The cap is uniform, only weakens, and is inert under the
+category gate. **Revisit trigger:** a seam that consumes provenance without a
+preceding category gate, or a `NoReference` value reaching a release through one
+of these wrappers.
 
-| Node | Verdict | Change |
+### 6.3 The monotonicity pin
+
+The probe may only move a node's provenance **down** the lattice:
+`value_provenance(n, real_probe) ⊑ value_provenance(n, no_probe)` for every
+node, so probeless gates never over-claim ownership. The pin's corpus must
+include nodes the probe actually moves — a bare nullary-constructor `Var` and a
+mixed nullary/boxed match — and assert the strict move there; otherwise the pin
+is vacuous.
+
+### 6.4 Byte identity and acceptance
+
+Only the constructor half can move emission, and only at `protect_return_value`.
+The scalar half is claimed emission-neutral; a scalar-body or scalar-typed-join
+golden difference is a **finding** (a seam consuming provenance without its
+category gate), not a re-baseline. Acceptance was the two reduced
+`nullary_arm_beside_boxed_arm_0917` cells at exact marginal zero; exemplar
+residue cells observe and cannot reopen it.
+
+---
+
+## 7. Open backend work
+
+Each item below is designed and not yet implemented, verified against source on
+2026-09-21. None is accepted as residual. Order and dependencies are §7.7.
+
+### 7.1 Consume the lifecycle exhaustively (partial)
+
+The backend consumes `Life`/`Realization` at scattered sites; the target is one
+disposition, exhaustive with no `_ =>` arm, so a state combination the backend
+cannot lower is a compile error in this crate.
+
+| State | Backend lowers | Refusal |
 |---|---|---|
-| `Var`, global, zero-field ctor | `NoReference` | **the correction** — was ⊤ |
-| `Var`, global, ctor with fields | `NotOwnedHere` | unchanged (a ctor-as-value mints a wrapper; ⊤ is conservative and narrowing it is not this ruling's — P25) |
-| `Var`, any other | `NotOwnedHere` | unchanged |
-| `Apply`, callee is a zero-field ctor | `NoReference` | same determinant, same answer — no second rule about which arm asks which question |
-| `Apply`, callee is a ctor with fields | `Fresh` | unchanged |
-| `ConstrADT`, no fields | `NoReference` | **probe-free** — the field list is in the node |
-| `ConstrADT`, one or more fields | `Fresh` | unchanged |
+| `Concrete { Body { view } }` | the view, into the claimed slot. This projection **is** `defined_symbols()` | — |
+| `Concrete { ExternShim { borrowed_sibling } }` | nothing; call sites import the shim | — |
+| `Concrete { Dll }` | nothing; call sites are GOT-indirect against the manifest-order slot | — |
+| `Concrete { FacadeOf { abi_name } }` | nothing per instance; the slot is the one hand-written body named by `abi_name`; no per-instance body or glue identity | — |
+| `Inline` | inline lowering at concrete call sites; value position emits a span-keyed unit-local wrapper selected by `is_inline_primitive_at`, below the table | located error when the wrapper body has no arm for the name |
+| `HostPromised` | nothing; by-name import | — |
+| `Template` | nothing — not a codegen target | located refusal naming the symbol: no instantiation was demanded |
+| `Declared` | nothing | located refusal: settlement did not run (a compiler-invariant breach) |
+| `Broken { slot, error }` | nothing; the retained slot carries its trap stub | — |
 
-The `ConstrADT` split is not optional trimming. A synthesised nullary
-constructor body carries no reference, and leaving it at `Fresh` would make
-`NoReference` mean "a nullary constructor *reference*" rather than what it is
-named for. It costs one in-node test and no probe.
+`defn_param_types` then reads a witness-checked concrete scheme, so the
+parameter channel cannot deliver a residual type — the structural half of §7.4.
 
-**`NoReference` is a claim about the value, and only the zero-field
-constructor earns it.** A one-field constructor that is *value-flattened* to a
-bare word is not this point: when its field is heap-typed, that word IS the
-reference. The bare-tag representation below `NULLARY_TAG_THRESHOLD` is why the
-zero-field case carries nothing; representation-flattening is a different fact
-with a different owner (`HeapCategory::Value`), and extending the bottom point
-to it would be a new ruling with its own check.
+**Cache-load validation.** The load boundary additionally validates, per entry,
+claim uniqueness, `slot ⇒ scheme.is_concrete()`, origin × state legality and
+tombstone conservation. Every arm diagnoses and recompiles as a `CacheStale`
+class inside the existing single per-entry loop in `cache/serialize.rs`; a
+parallel walk is a reject. None of these legality arms exists yet.
 
-Rejected, both for the same reason — two homes for one decision:
+### 7.2 The refusal frame (0915, open)
 
-- **A second `is_nullary_ctor` probe beside `is_ctor`.** Two predicates over one
-  determinant can disagree and nothing reconciles them. This is the polarity gap
-  S118 closed by folding both guarded RC halves onto `heap::emit_nullary_skip_guard`,
-  and the resolver-mirror class S110 closed at `resolution.rs`.
-- **Pre-classifying at the call sites and handing the lattice a richer node.**
-  That pushes the rule back out to the sites `value_provenance` exists to
-  consolidate — the node-kind-standing-in-for-the-derived-answer class (0781).
+R-4 must hold before §7.4 converts more sites to located refusals.
 
-#### 6.2.2 Scalar bottom at the probeless consumers — admitted, inert by the category gate
+- **One category prefix.** `CompilationError::CodegenFailed` carries a
+  pre-rendered cause that already embeds the inner located prefix, so the prefix
+  renders twice. Fix the structure at the wrapping construction, never by
+  re-parsing a rendered message.
+- **A real span.** The glue registry's error helper uses
+  `ErrorLocation::from_span(Span::SYNTHETIC)` (`drop_glue.rs`), the direct cause
+  of `0..0`. Every registry error carries the requesting frame's or reference's
+  span; the spans are on the `MonoExpr` nodes.
+- **A lookup-able subject.** `"codegen failed for {module}/{symbol}"`
+  (`cranelisp-backend/src/error.rs`) doubles an already-qualified monomorphised symbol. The backend
+  supplies correct data; the presentation projection (`__expr` → the entered
+  form, `f$T1+T2` → `f`) is int's, at [int.md](../int/int.md) §9.1.
 
-Scalar-literal bottom is **probe-independent**, so unlike the constructor half it
-reaches every consumer. The exact census at HEAD is one probe-reading consumer
-and four probeless ones:
+The audience is the program author, so the permitted nouns are source-level.
+Mangles, `__expr`, doubled modules and `0..0` are the wrong nouns for that
+reader, not redaction candidates; nothing is suppressed for confidentiality.
 
-| Consumer | Threshold | Probe |
+### 7.3 The category census, armed (open)
+
+A permanent debug-profile census of every `Err` licence at
+`signature_heap_category`, keyed by the requesting frame's `CallableOrigin`
+partition (`Ctor` / `Accessor` / `TraitMethod` / `Plain`) and the type shape
+(bare `Var`; `ADT(<concrete>, [Var…])`; residual `Fn`). It is a developer
+instrument whose nouns R-4 forbids in user output, so it never reaches a release
+build.
+
+**Both detection legs are planted in the instrument's own change-set**, because
+the corpus traffic that proved S119's scaffold is gone:
+
+- positive — a unit fixture plants a frame whose entry scheme carries a residual
+  parameter; the census records exactly one licence in the expected partition
+  and shape;
+- negative — the concrete twin leaves the census silent.
+
+**Flip criterion (for §7.4):** across the full default suite and the `spec_*`
+corpus, zero licences and zero release admissions in the `Ctor`, `Accessor` and
+`TraitMethod` partitions, with the corpus failure count not above the S119
+baseline of 8. The census reading zero is the criterion; a code reading is not.
+
+### 7.4 The R-1 structural close (open)
+
+Gated on §7.2 and on §7.3 reading zero.
+
+**The constructor declaration channel.** `CtorMeta`'s field types are
+materialised from the constructor *declaration's* scheme, so a polymorphic
+product's field type is permanently a `Type::Var` that licenses a guarded RC
+path at every use site. No frame monomorphisation closes this, and the census
+cannot read zero while it stands.
+
+> **Ruling.** A constructor's field types are an instantiation fact. `CtorField`
+> carries a `ConcreteType`, making a residual field type unrepresentable.
+> Materialisation substitutes the reference's concrete arguments into the
+> declaration scheme through the published
+> `cranelisp_types::ctor_field_types_at(table, ctor_key, args)`, which today has
+> no consumer. Its `NotConcrete` refusal becomes a located refusal at the
+> reference's span; `NotACtor` and `ParamArity` remain keying bugs.
+
+`drop_glue::ctor_shapes` materialises per-constructor field types through the
+same projection, keeping its cross-constructor agreement check as an explicit
+precondition with its existing diagnostic (falsifier: a user type whose
+constructors' result parameters disagree must still refuse with that message).
+No `cranelisp-types` change is needed.
+
+**The two fabrications that are the class.**
+
+- `signature_heap_category`'s `Err(_) => HeapCategory::Mixed` becomes a located
+  error, restoring the no-fallback rule to the retain side.
+- `emit_heap_binding_decs`'s type-keyed shallow-dec arm (`fn_compiler.rs`) is
+  **deleted**, not re-keyed to the frame (§2.6). `emit_typed_rc_dec` is then the
+  sole release path with no fallback.
+
+**The remaining narrowings, by site:**
+
+| Site | Current source | Disposition |
 |---|---|---|
-| `rc_emission::protect_return_value` (via `body_is_fresh_construction`) | `<= Fresh` | real |
-| `match_codegen::compile_match` — the once-recorded arm lifetime plan | owned | constant |
-| `vec_codegen::cow_source_has_separate_owner` | owned | constant |
-| `vec_codegen::is_vec_last_use` | owned | constant |
-| `vec_codegen::emit_vec_drop_if_temporary` | owned | constant |
+| `drop_glue.rs`, Vec arm of `shape()`: `unwrap_or(ConcreteType::Int)` | live | located refusal |
+| `vec_codegen::resolve_elem_inc_fn_ptr` and its `_into` twin: missing element type "assume `NeverHeap`" | live | located refusal |
+| `vec_codegen::request_elem_dec_adapter`: missing element type | **delivered** — located refusal (`element_release_tests.rs`) | — |
+| `compiler/context.rs`: `unwrap_or(Type::Int)` on the constructor field read | live | deleted by the channel ruling above |
+| `fn_compiler.rs`: the dead `variable_types` `unwrap_or(Type::Int)` arm | **delivered** — absent from source | — |
 
-A scalar **leaf** is verdict-identical: `NotOwnedHere` and `NoReference` are both
-below the owned threshold. The only behavioural difference is at a **join** — a
-scalar arm stops poisoning to ⊤ and is absorbed, so `(if b 0 (f x))` reads
-`OwnedTemporary` where it read `NotOwnedHere`.
+The `("vec-len", 1)` value-position arm of `emit_vec_query_into` is live and
+must share its siblings' refusal for an absent element type, never a local
+default (§8 reject 6).
 
-> **Ruling.** The scalar bottom is admitted as ruled, and it is inert at every
-> release seam by the standing gate order: **category before ownership.** No RC
-> operation is licensed by a provenance verdict alone. Each seam first asks the
-> value's own type whether a reference exists at all — `HeapCategory::classify` /
-> `signature_heap_category` — and `NeverHeap`/`Value` emit nothing. Provenance
-> answers *whose* reference; it never answers *whether*.
+**Grade after the close:** structural (a `Concrete` entry requires a
+witness-checked concrete scheme; `CtorField` cannot hold a residual; no fallback
+arm exists), with the census as a permanently measured detector. §3.5's
+falsifier remains the one asserted property.
 
-This is R-1 (§3.1, category before operation) one level down, and it is the
-as-built shape at every consumer, not a new obligation: the match seam ANDs its
-plan with `scrut_is_heap`; the three Vec seams take a Vec-typed operand; the
-`BorrowRoot` consumer that the plan also feeds
-(`protect_escaping_borrows_before_tail_jump`) matches on `signature_heap_category`
-with empty `NeverHeap | Value` arms.
+### 7.5 Typecheck producer obligations
 
-The join change therefore cannot reach a value that carries a reference. Every
-arm of a join has the join's type; a scalar literal's type is `Int`/`Float`/
-`Bool`, all `NeverHeap`, so a scalar literal can only ever be absorbed into a
-scalar-typed join. **The nullary constructor reference is the one bottom value
-that can sit in a heap-typed join** — and it is probe-*dependent*, so the four
-probeless seams do not see it and keep their conservative ⊤ reading there. That
-is the leak-safe direction, and §6.3's monotonicity pin is what makes it a
-stated property rather than a coincidence.
+Faces 2, 3 and 5 close when typecheck stops handing codegen a type it has not
+got: accessors and trait-method instances are monomorphised per concrete
+instantiation, and the lenient view carries each node's real type with an
+explicit, checked defaulting step for unconstrained parameters. The obligations
+and their checks are
+[non-concrete-producer-obligations.md](../typecheck/non-concrete-producer-obligations.md).
+FIXME 0913 must not be closed by pinning annotations in tests or docs.
 
-**Grade, stated honestly.** Inertness is structural *given* the category gate,
-and the gate's presence is currently asserted seam-by-seam rather than enforced
-by construction. Named falsifier: **a provenance-licensed RC emission not
-preceded by a category gate on the value's own type.** The §9 negative cell is
-where that is observed; converging the gates is a larger reshape than 0917 and
-is not attempted here.
+### 7.6 Decision-24 wrapper discharge follows realization (open)
 
-**Named residual, with its trigger.** `Trace`/`ParBind`/`LaunchContinue` cap
-their forwarded value at `OwnedTemporary`, so a `NoReference` inner value is
-lifted to a false ownership claim. It stays: the cap is uniform, monotone-safe
-(it only weakens), and inert under the category gate, and splitting it would add
-a special case for no observable. Revisit when either condition appears — a seam
-that consumes a provenance verdict *without* a preceding category gate, or a
-`NoReference`-carrying value that reaches a release through one of these three
-wrappers.
+The closure wrapper's `emit_d24_adaptation` (`control_flow/fn_as_value.rs`) emits
+a guarded post-call dec for every `Mode::Borrowed` parameter. That is correct
+only when the target body genuinely uses the borrowing ABI. A consuming Rust
+extern shim discharges its argument itself under Decision 24, so the wrapper
+discharges it a second time. Ordinary applied calls are unaffected; value
+position and auto-curry take this path. The only-read string externs
+(`str-len`, `str-eq`, `neq-string`, `starts-with?`, `ends-with?`, `contains?`)
+are the affected population.
 
-### 6.3 The pin that must be amended, and how
+The repair is one target-effect classification derived from the same keyed
+`Life`/`Realization` read used for dispatch, exhaustive with no wildcard:
 
-`provenance_owned_threshold_is_probe_independent` asserts the owned threshold is
-identical under `|_| true` and `|_| false`, so the probeless release gates need
-no symbol-table access. (**Census correction:** there are **four**, not five —
-§6.2.2's table is the count at HEAD. The fifth, `compile_var_pattern_arm`'s
-alias registration, was deleted by `transitive-drop-glue.md` §5.1's single-owner
-ruling at S118; "five ownership gates" survives in the crate `CLAUDE.md` and is
-stale there.) A nullary-ctor `Var` is only distinguishable from an ordinary
-`Var` *with* the probe, so equality cannot survive. Replace it with the
-strictly stronger **monotonicity** pin:
+| Target realization, declared parameter fact | Wrapper post-call action |
+|---|---|
+| `Body`, heap `Mode::Borrowed` | canonical typed `drop<T>` post-dec (the body borrowed and emitted no dec) |
+| `Body`, `Mode::Owned` | none |
+| any, `Mode::Copy` or non-heap | none |
+| `ExternShim`, `ParamFlow::Consumed` | none, regardless of `Mode` |
+| `ExternShim`, `ParamFlow::IntoResult` | none; result handling unchanged |
+| `ExternShim`, `ParamFlow::Retained` | none (the safe direction) |
+| `Dll`, `FacadeOf` | none; a future non-trivial convention needs its own explicit case |
 
-> The constructor probe may only move a node's provenance **down** the lattice
-> (toward stronger ownership): `value_provenance(n, real_probe) ⊑
-> value_provenance(n, |_| false)` for every node. The probeless gates therefore
-> never over-claim ownership; where they differ they take the leak-safe verdict,
-> never the UAF one.
+- `ParamFlow` is read through `ModeSummary::param_flow`, never by indexing.
+- The `Body + Borrowed` dec uses the parameter's concrete type and the canonical
+  `drop<T>`; it does not preserve `heap::emit_rc_dec_guarded` as a wrapper-only
+  release. A missing or non-concrete parameter type is the located refusal.
+- Value-position wrappers and auto-curry consume one positional plan exactly
+  once; a table-backed builtin reaching `emit_curry_target_call` goes through the
+  keyed realization dispatch, not a name roster. The auto-curry wrapper remains
+  its chain's Decision-24 adapter and never stacks a value wrapper.
+- A closure wrapper always calls the shim's primary Decision-24 entry; a
+  `borrowed_sibling` is a static Borrowed-call optimisation only.
+- `string-identity` (`IntoResult`, `ResultMode::AliasOf(0)`) is the control: no
+  post-dec and no result compensation. No `Mode`, `ParamFlow` or result
+  declaration changes to accommodate this.
 
-Equality was a proxy for "the probeless gates are safe"; monotonicity states it
-directly and keeps the instrument's real content.
+Surface effect: no public item, carrier, serialized field, slot, symbol,
+signature, cache schema or ABI changes. The only emitted delta is removal of the
+redundant post-call dec from affected extern wrapper bodies, under one scoped
+attributed golden re-baseline; `Body` and `IntoResult` wrapper frames are
+byte-identical controls.
 
-**The corpus must contain a node the probe actually moves.** The existing pin
-walks eight nodes, none of which is a zero-field-constructor reference, so
-monotonicity over that corpus alone is vacuously true and the instrument would
-be indistinguishable from one that cannot fire. The pin's corpus gains at least
-a bare nullary-ctor `Var` and a mixed nullary/boxed match, and the strictness is
-asserted where it is expected — the probe *does* move those two, and moves them
-down — so the pin proves detection as well as the property.
+### 7.7 Order
 
-### 6.4 Byte-identity obligation
-
-The correction has two halves and only one of them can move emission.
-
-The **constructor half** is probe-dependent, so it reaches exactly one consumer,
-`protect_return_value` — which is where 0917's unbalanced inc lives. Golden CLIF
-changes there for the covered bodies are the fix, not a regression.
-
-The **scalar half** is probe-independent and reaches all five, and it is claimed
-emission-neutral: the protect is type-gated (`HeapCategory::classify` yields
-`NeverHeap`/`Value` for a scalar body and emits nothing), and §6.2.2's typing
-argument bounds the four probeless seams. That claim is checked, not assumed —
-`/dev` verifies against `tests/fixtures/clif_baseline/golden/` and reports. A
-scalar-body or scalar-typed-join difference is a **finding**, not a re-baseline;
-it would mean a seam consumes a provenance verdict without its category gate,
-which is precisely §6.2.2's named falsifier.
-
-### 6.5 Acceptance
-
-FIXME 0917's compiler correction is accepted solely by the two reduced direct
-compiler cells in `nullary_arm_beside_boxed_arm_0917` (`--run` and `--link`),
-both at exact marginal zero, and the backend invariants in §6.2–§6.4 and §9.
-It has no producer dependency and no cross-crate delta.
-
-Exemplar cell #21
-(`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`)
-is a downstream observer only. A surprising result there creates separate
-defect intake for `/qa`; it cannot shape, block, or reopen acceptance of the
-compiler correction.
+| Item | Depends on | Emission acceptance class |
+|---|---|---|
+| lifecycle disposition + cache-load arms | — | byte-identical |
+| refusal frame | §7.1 | byte-identical (diagnostics only) |
+| census | §7.1 | byte-identical, debug-profile only |
+| structural close | §7.2; §7.3 reading zero; typecheck's face 2/3 obligations | census-gated; zero new refusals; scoped attributed re-baseline of the monomorphised accessor frames (e.g. `f4_sudoku` `Grid.cells`) |
+| wrapper discharge | §7.1 | scoped attributed re-baseline of affected extern wrapper bodies only |
 
 ---
 
-## 7. Staging, and the honest scope statement
+## 8. `/review` reject criteria
 
-**The contract converges as a unified statement** — the table in §4 is total over
-the measured class and every face carries one disposition. **Its implementation
-severs**, and it severs in exactly the order `/arch` named as the fallback, for
-reasons the measurement supplies rather than for capacity reasons:
+In addition to [transitive-drop-glue.md](transitive-drop-glue.md) §11:
 
-> **S121: this staging table is SUPERSEDED by `s121-c4-visit.md` §10.** Piece 1
-> landed at S120; piece 3 is producer-discharged and has no backend site; pieces
-> 2 and 4 keep their content but re-order behind the diagnostic frame (0915) and
-> the armed census, because this visit converts *more* sites to located refusals
-> and R-4 must hold before it does. The table is retained as the record of the
-> S119 severance and of which faces carry which REDs.
-
-| Order | Piece | Crates | REDs | Depends on | Corpus gate |
-|---:|---|---|---:|---|---|
-| 1 | **0917** — provenance classification (§6) | backend only | **3** | nothing | full suite byte-identity for the scalar half |
-| 2 | **Face 4** — IO runtime-directed teardown (§5.3) | backend + intrinsics entry point | **7** | one intrinsics split (FIXME) | full suite; `core.io` + `core` flip together; `21-hello-io` exit 243, `23-io-sequence` exit 178 in all four cold/warm × run/link cells |
-| 3 | **Face 1** — retire the ctor-template pair (§4.1) | backend only | 0 directly | nothing | census A −2,216 / census B −3,108; **zero** emission change on any concrete parameter |
-| 4 | **Faces 2+3** — monomorphise the exempted frames (§5.2) | typecheck (producer) + backend | **1** (0916) | §5.2 | census to zero; **zero new refusals**; `f4_sudoku.clif::user::Grid.cells` re-baseline |
-| 5 | **Face 5** — the lenient view (§5.4) | typecheck | **1** (0913) | §5.4 ruling | `residual_type_param_result_leak_0913` marginal 0 |
-
-Pieces 1–3 are backend-only and land inside this sprint's backend waves;
-**10 of the 11 spine REDs (0917×3 + 0907×7) close without any producer change.**
-Piece 4 carries 0916's single RED and **does not close without §5.2**, which is
-a typecheck change. `/sprint` should treat 0916 as producer-gated rather than
-assume it rides the backend wave — that is this window's principal scheduling
-finding and it is stated plainly rather than optimistically.
-
-Rejected explicitly: closing 0916 inside the frame by withdrawing the retain
-licence for F2 only. §4.3 proves it converts a SIGSEGV into a UAF on a
-duplicating arm, and §2.6 shows refusing instead costs the same 16 programs.
-
-### 7.1 Acceptance witnesses named
-
-- **`f4_sudoku.clif::user::Grid.cells` static re-baseline** (0903's binding
-  addendum). Under face 2 the frame is monomorphised, so the golden's shallow
-  release is replaced by a canonical `drop<Grid Cell>` call. `/dev` plans the
-  scoped, attributed re-capture **in the fixing change-set**, per
-  `ownership-inference.md` §6.2 (extension ≠ re-baseline). It is a **static**
-  witness — `/port` proved the exemplar never calls that accessor — and it stands
-  as written.
-- **The 0907 trait-instance leak cell** (`/examples` rider §5). The
-  `(impl (Functor IO) (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))`
-  instance must **balance**. Note this cell sits at the intersection of faces 3
-  and 4: it is an F2 frame *over* `IO`, so it needs piece 4 (monomorphisation)
-  as well as piece 2 (IO glue). It is therefore an acceptance cell for the
-  *class*, not for either piece alone, and `/qa` should place it accordingly.
-- **The face-4 residual guard** (§4.4) — **RE-SPECIFIED at S121.** With the 0934
-  payload-glue word the residual does not arise, so the cell `/qa` owes is not a
-  failing-not-ignored leak guard but a **GREEN acceptance cell**: a nested `Pure`
-  payload inside an unrun `Bind` sub-tree **is** discharged. Its discriminating
-  control is the negative — no double discharge when the same node's payload was
-  transferred on the run lane (`s121-c4-visit.md` §6.2, §10 H8).
-- **`repl/demos/archive/ring4s.demo`** — the archive's only red, at its
-  `(defn then [a b] (bind a (fn [_] b)))` segment, flips with piece 2. Its shape
-  is the S61 double-free idiom, so it is load-bearing history and its flip is
-  evidence, not incidental.
-
-### 7.2 Rider 0906 — the third hand-rolled nullary guard
-
-> **S121 re-scope: there are TWO copies, not one.** Re-measured this window —
-> `vec_codegen.rs` also spells the prologue in `emit_guarded_rc_inc`, which has
-> four call sites of its own. Both fold; the `guarded` selector must keep coming
-> from the element type's `HeapCategory` and must not become a caller-carried
-> boolean. `s121-c4-visit.md` §8.2.
-
-Owner `/dev`(backend). Fold the `guarded` arm of the Vec element inc-adapter
-(`vec_codegen.rs` ≈:986) onto `heap::emit_nullary_skip_guard`. It is
-polarity-correct today and lives in a separate Cranelift context, but it is the
-same decision spelled a third time, and R-1's whole content is that this decision
-has one home. **Not byte-identical** — the adapter creates `inc_block` before
-`ret_block` while the shared helper requires the continuation block first, so the
-two block labels swap. Lands with a **scoped** golden re-baseline for the covered
-bodies only, and reuses `ctor_template_admission_tests::assert_threshold_guarded_rmws`
-(it walks arbitrary CLIF text) for the absolute-polarity pin.
+1. **A new emission licence arm or release mechanism.** Every disposition reuses
+   the canonical glue call, an existing runtime dispatch, or emits nothing.
+2. **Fabricated concreteness** (R-2): a new `Err ⇒` default category, an
+   `unwrap_or(ConcreteType::Int)`, a "refuse to own this type" exclusion, or
+   defaulting a *constrained* type parameter.
+3. **An RC operation on an uncategorised word**, however guarded. Citing the
+   nullary threshold as a pointer test is the defect, not the mitigation.
+4. **A frame-keyed release narrowing landed alone** (§2.6: +16 refusals, twice).
+5. **A second glue identity home**, including an IO-specific payload releaser.
+6. **A new `unwrap_or`/`unwrap_or_default` narrowing a `Type` or `ConcreteType`
+   at any RC, glue or category seam**, including a per-arm default on the
+   `vec-len` value-position arm.
+7. **A refusal at span `0..0` or against a `$`-mangled subject** once §7.2 lands.
+8. **`#[ignore]` on a leak this contract knowingly leaves.**
+9. **A `_ =>` arm in the lifecycle disposition** (§7.1).
+10. **A backend write to, read of, or call through the `Pure` glue word outside
+    the four stamp sites**, a stamp that writes `1`, or a fifth stamp site (§5).
+11. **A per-site constructor-name test for the `Pure` stamp**, or a stamp store
+    not dominated by its tag compare, or a platform-return stamp selected by the
+    callee's `DefKind` (§5.3, §5.5).
+12. **A second backend offset expression for the glue word** — a bare `32` other
+    than the pin, a per-site recomposition, or importing the platform constant
+    (§5.5).
+13. **A backend-side IO teardown walk** (§5.4).
+14. **A census reachable in a release build** (§7.3).
+15. **A name list, `DefKind::Primitive` proxy, module-name test or per-row branch
+    for wrapper discharge**, deleting every `Borrowed` wrapper post-dec, an
+    auto-curry-only path, a builtin bypass of the realization plan, a stacked
+    adapter, or changing a declaration to accommodate it (§7.6).
+16. **A golden re-baseline outside the items that declare one** (§7.7), or one
+    taken without scoped attribution.
 
 ---
 
-## 8. What this contract forbids (`/review` reject criteria)
+## 9. Unit-test design (open items)
 
-Binding, in addition to `transitive-drop-glue.md` §11's list, which stands:
+Rows sit beside their production owner per the crate's sibling convention. The
+delivered rows (0917, the IO arm, the `Pure` stamp and the platform-return tag
+dispatch, the shared nullary guard) are in source and are not repeated.
 
-1. **No new emission licence arm.** Every disposition in §4 either reuses the
-   canonical glue call, reuses an existing runtime dispatch (`consume_io_tree`,
-   the closure `DROP_GLUE_PTR`), or emits nothing. A change-set that adds a
-   release mechanism is a reject regardless of what it fixes (G2).
-2. **No fabricated concreteness anywhere** (R-2). Specifically: no new `Err ⇒`
-   default-category arm, no `unwrap_or(ConcreteType::Int)`, no "refuse to own
-   this type" admission exclusion, and no defaulting of a *constrained* type
-   parameter.
-3. **No RC operation on an uncategorised word** (R-1), at any seam, however
-   guarded. The `NULLARY_TAG_THRESHOLD` guard is not a pointer test and citing it
-   as one is the defect, not the mitigation.
-4. **No frame-keyed narrowing landed alone.** §2.6 measured it twice, one sprint
-   apart, at +16 refusals. A change-set that re-keys the admission without the
-   producer obligation having landed is a reject; the census (§5.1) is the
-   evidence, not a code reading.
-5. **No second glue identity home**, and specifically: face 4 must call
-   `drop<T>` for the `Pure` payload, never mint an IO-specific payload releaser.
-6. **No `#[ignore]` on the face-4 residual** (§4.4) or on any leak this ruling
-   knowingly leaves. Hiding a known leak behind `#[ignore]` is itself a defect
-   (root `CLAUDE.md` §Testing).
-7. **No refusal at span `0..0`** against a `$`-mangled subject once §5.5 lands
-   (R-4).
-
----
-
-## 9. Unit-test design (backend tier)
-
-Extends `transitive-drop-glue.md` §10. Rows are placed beside their production
-owner per the crate `CLAUDE.md` sibling convention.
-
-| Submodule | Complexity / positive | Edge | Negative |
+| Submodule | Positive | Edge | Negative |
 |---|---|---|---|
-| `rc_emission::signature_heap_category` | each concrete shape maps to its category; the census instrument records a licence with frame + shape | a concrete sum with a nullary ctor is `Mixed`; a concrete product is `AlwaysHeap` | **a residual `Type::Var` yields NO category and NO RC op** — not `Mixed`; the census instrument fires (detection proof, per the 0768 rule); after the flip, a located error naming the frame |
-| `fn_compiler` ctor template (replaces §10 row 4) | a generic-ctor template and an undeclared-field template each emit **zero** RC ops on their residual parameters; a concrete-field template still takes the ordinary `drop<T>` path | multi-field template: zero ops on every residual field, ordinary path on every concrete one | no guarded inc and no guarded dec survive on a residual parameter at any seam; `ctor_template_admission_tests::assert_threshold_guarded_rmws` finds no rmw traceable to a residual slot |
-| `drop_glue` IO arm | `ADT(primitives/IO, [T])` classifies runtime-owned and emits dec + tag test + `drop<T>` + `free_io_node`; `IO Int` emits the same shape with `drop<Int>` elided as non-owning | nested `Bind` over `IO (IO Int)` requests one body, not two | `ctor_shapes` is **not** called for `primitives/IO`; no IO-specific payload releaser symbol is minted; the identity check at `:497-505` is unchanged and still fires for a genuinely divergent user type |
-| `fn_compiler::value_provenance` | `NoReference` for a bare nullary-ctor `Var`, an `Apply` of one, a fieldless `ConstrADT` and every scalar literal; `Fresh` for every minting kind | `join(NoReference, Fresh) == Fresh`; `join(NoReference, NotOwnedHere) == NotOwnedHere`; a match with N nullary arms and one boxed arm is `Fresh`; an all-nullary match is `NoReference` (the fold seeds at the identity), while an **arm-less** match stays `NotOwnedHere` | **probe monotonicity** (§6.3) over a corpus that includes a node the probe moves — vacuous otherwise; a ctor **with fields** referenced as a value stays `NotOwnedHere` under both probes; a borrowing kind never reaches an owned point under any probe; the match stays exhaustive (no `_ =>`) |
-| `fn_compiler` ctor probe (§6.2.1) | the three-state answer is produced by the one keyed `ctor_meta_at` read and agrees with `literals::nullary_constructor_tag` on every global reference | a constructor with fields answers "mints or moves", never "bare tag" | a non-constructor global declines; no second probe and no second read of the field list exists (the disagreement channel is unconstructable, not merely untested) |
-| `error` / diagnostic frame | a codegen refusal renders one category prefix, a real span, and an unmangled subject | a refusal from inside a monomorphised instance renders the instantiation as types | no `0..0` span from the glue registry; no `module/module/` doubling |
+| lifecycle disposition (§7.1) | each `Concrete × Realization` arm lowers as tabled; `defined_symbols` equals the `Concrete × Body` projection | `FacadeOf` is a name-alias with no per-instance body | exhaustive, no `_ =>`; `Template` in value position and `Declared` at codegen are located refusals |
+| `cache/serialize` (§7.1) | a legal restored entry loads | tombstones conserve | each legality violation is a `CacheStale` recompile, never an `assert!` |
+| `error` frame (§7.2) | one prefix, real span, unmangled subject | a refusal inside a monomorphised instance renders the instantiation as types | no `0..0` from the glue registry; no `module/module/` doubling |
+| `rc_emission::signature_heap_category` (§7.3, §7.4) | each concrete shape maps to its category; the census records frame partition and shape | a concrete sum with a nullary constructor is `Mixed` | both census legs; after the flip, a residual `Var` is a located error naming the frame and emits no RC op |
+| `compiler/context` constructor materialisation (§7.4) | field types at a concrete instantiation come from the one types projection | a nullary constructor has zero fields; arity mismatch is a keying error | `CtorField` cannot hold a residual; a residual instantiation is a located refusal at the reference's span; no second field-type read |
+| `vec_codegen` element inc pointer (§7.4) | a concrete element resolves its adapter | a scalar element needs none | a missing element type is a located refusal |
+| `fn_as_value` wrapper discharge (§7.6) | `Body + Borrowed` emits one typed dec; `ExternShim + Consumed` emits none | `IntoResult` preserves `string-identity`; value position and auto-curry consume the same plan once | the synthetic consuming-extern and borrowing-`Body` CLIF pair discriminates a kind-blind deletion; no name classifier; no stacked adapter |
+| category before provenance (§3.5) | — | — | no provenance-licensed RC emission is reachable without a preceding category gate |
 
-E2e acceptance is `/qa`'s (`tests/plan/s119-test-plan.md`); §7.1 names the
-witnesses this design owes it.
-
----
-
-## 10. Quality attributes
-
-- **Simplicity.** The class shrinks rather than grows. Retired: §4.1's sanctioned
-  exception, invariant I-CT, I-CT's standing `Borrowed`-mode obligation, the
-  `Err ⇒ Mixed` fabrication, the type-keyed release arm, and (via §5.2) two
-  monomorphisation exemptions. **Added: one intrinsics entry point that is a
-  split of an existing body, one lattice point, and one widened probe answer
-  (§6.2.1) that replaces a boolean rather than joining it.** Mechanism count for
-  release stays at one plus the two sanctioned runtime dispatches
-  (`transitive-drop-glue.md` §1.1 M5 and, now explicitly, the IO tag-walker).
-- **Observability.** The census instrument (§5.1) is the first thing in this
-  class that can *prove* the fabrication has no traffic left, which is what
-  turned this window's ruling from an argument into a measurement. It is
-  permanent, debug-profile, and its own removal criterion.
-- **Concurrency-safety.** Unchanged. The wild atomic writes this ruling removes
-  were the class's only interaction with the atomicity policy; the RC atomicity
-  decision itself is untouched.
-- **Performance.** Face 1 removes 3,108 guarded inc/dec pairs and 2,216 guarded
-  decs from the measured corpus at zero behavioural cost. Faces 2/3 trade one
-  body per declaration for one body per instantiation — a code-size increase
-  proportional to distinct instantiations, which is the price the language
-  already pays for every other generic function. No new runtime cost.
-- **Testability.** Every disposition has a negative cell that fails if the
-  fabrication returns (§9), and the census is a standing detector rather than a
-  one-shot experiment.
-- **Maintainability.** The blast radius of the next non-concrete frame is
-  bounded by construction: R-1 makes it emit nothing, R-3 makes it a producer
-  defect, and the census names it on the first run.
+E2e acceptance is `qa`'s.
 
 ---
+
+## 10. Open and owned elsewhere
+
+- **Converging the seam-by-seam category gates into one** (§3.5) — not
+  scheduled; the falsifier cell is the standing detector.
+- **A `Select` loser's severed fork-join.** A cancelled loser with an in-flight
+  blocking `Par` bridge detaches its worker, so the join that publishes its
+  branch reads never happens and the detached walk can race the root's teardown.
+  Pre-existing and independent of the witness; `qa` intake, to be cured by
+  restoring the join rather than adding an ownership channel (arch,
+  [total-concreteness.md](../arch/total-concreteness.md) §3.4).
+- **Widening the fn-return skip to the binding-indirection class** — a
+  potential extension, not scheduled. It would remove a redundant inc/dec pair on
+  `(defn f [v] (let [x 1] v))`. **Hazard:** the return path asserts the skipped
+  variable is not a `Borrowed` parameter, and the wider class can reach one
+  through a `let`. **Trigger:** a measured frame where the pair is worth a scoped
+  re-baseline, with that assertion re-proved first. The three binding-root
+  finders stay separate ([s122-closure.md](s122-closure.md) §5.1).
+- **The §6.2.2 wrapper cap residual**, with its revisit trigger.
 
 ## 11. Cross-references
 
-- `transitive-drop-glue.md` §4.1 (face 1's history; defers here), §10 row 4
-  (superseded by §9 row 2), §11 (its no-interim list stands; §8 extends it)
-- `design/arch/concrete-boundary-type.md` §3.1.1 — the signature-driven codegen
-  target; the ctor/accessor pairing this ruling completes
-- `design/arch/safety-invariants.md` §4 — R-1 and R-2 are new rows for the
-  register (`/arch`'s to add; filed)
-- `design/arch/ownership-inference.md` §2.1, §3.1 — monotone soundness; §6.3's
-  monotonicity pin is the same shape one level down
-- `design/int/result-owner.md` §1.1.1 — the scope sentence 0913 corrects
-- `repl/spec.md` §5.5 — the normative surface for R-4
-
-## Next skills
-
-- **`/design`(typecheck)** — Round 2 of this Phase, against this landed contract:
-  §5.4 (0913, the lenient view) and §5.2 (the monomorphisation exemption, which
-  is the producer half of faces 2 and 3 and gates 0916; rider 0867 was retired
-  by the S121 product-only accessor ruling).
-- **`/arch`** — Round 3 exit gate: the IO tri-context seam (§5.3 needs one new
-  `cranelisp-intrinsics` public entry point and its `public-api.txt` delta), and
-  two new rows for `safety-invariants.md` §4 (R-1 category-before-operation, R-2
-  no-fabricated-concreteness).
-- **`/dev`(backend)** — pieces 1, 2, 3 and rider 0906 of §7, in that order, each
-  with its §9 unit row; the census instrument (§5.1) lands with piece 1 and its
-  detection proof is part of that change-set.
-- **`/qa`** — the §7.1 witnesses, the face-4 residual guard, and the corpus-gate
-  assertion form for §5.1's zero-traffic criterion.
-- **`/testing`** — the §2.4 four-line accessor repro (`1023` GREEN / `1024`
-  SIGSEGV) as a failing-not-ignored A/B pair; it is currently unguarded and is
-  the cheapest memory-safety cell in this class.
+- [transitive-drop-glue.md](transitive-drop-glue.md) §1 (canonical glue), §4.1
+  (the superseded I-CT record), §11 (the no-interim list this extends)
+- [io-trampoline.md](io-trampoline.md) §1.1 — IO node layout
+- [ownership-codegen.md](ownership-codegen.md) §4 — stack placement
+- [s122-closure.md](s122-closure.md) — the current delivered selected slice
+- [total-concreteness.md](../arch/total-concreteness.md) §3.2, §3.4, §3.5
+- [symbol-table-lifecycle.md](../arch/symbol-table-lifecycle.md) §4, §5.5
+- [safety-invariants.md](../arch/safety-invariants.md) §4 — R17, R18, R19
+- [non-concrete-producer-obligations.md](../typecheck/non-concrete-producer-obligations.md)
+- [int.md](../int/int.md) §9.1 — subject presentation
+- [repl/spec/05-error-presentation.md](../../repl/spec/05-error-presentation.md) §5.5

@@ -24,7 +24,7 @@ Before doing work in any directory, read all `CLAUDE.md` files in that directory
 | [exemplar/](exemplar/CLAUDE.md) | Showcase project (Sudoku Solver) — a `dev` surface |
 | [repl/](repl/CLAUDE.md) | REPL experience spec (`spec`), demos and harness (`test`) |
 | [tests/](tests/CLAUDE.md) | E2e suite — plan owned by `qa`, test sources by `test` |
-| `audits/` | Whole-context audit assessments — owned by `audit` |
+| [audits/](audits/CLAUDE.md) | Whole-context audit assessments — owned by `audit` |
 | `sprints/` | Delivery coordination — method, roadmap, current sprint, actions, archive — owned by `sprint` |
 | `.agents/` | The shared role package, pinned as a submodule (`.agents/CONSUMING.md`) |
 

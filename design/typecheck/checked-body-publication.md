@@ -9,7 +9,7 @@
 Owner: `/design`, narrow-deployed to `cranelisp-typecheck`. Audience: the user,
 then `/dev` and `/review` maintaining and inspecting the approved carrier.
 
-This design elaborates `typecheck.md` §9.8 and
+This design elaborates `typecheck.md` §5 and
 `use-site-candidate-selection.md` §§6, 8 and 10. The callable lifecycle and its
 public settlement funnels remain exactly those approved in
 `design/arch/symbol-table-lifecycle.md` §4. No public item, serialized field,

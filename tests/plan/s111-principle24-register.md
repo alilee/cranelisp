@@ -80,7 +80,7 @@ only map-over-modules/tables sites enter the register.
 
 ### 2.1 CLOSED legs
 
-**Backend — CLOSED (cited: `audits/cranelisp-backend-s110.md` §2.1, verified
+**Backend — CLOSED (cited: [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-backend-s110.md) §2.1, verified
 grep-zero).** Four live `symbol_tables.iter()` sites, all enumerations, none
 resolution:
 

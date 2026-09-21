@@ -64,7 +64,7 @@ fn stamp_clif(
     Ok(format!("{}", ctx.func.display()))
 }
 
-// spec: design/backend/s121-c4-visit.md §6.1/§6.3 — field 0 remains the
+// spec: design/backend/non-concrete-release-contract.md §5.1/§5.3 — field 0 remains the
 // language payload and the hidden witness is field 1 at absolute offset 32.
 #[test]
 fn pure_hidden_field_extends_the_payload_without_moving_field_zero() {
@@ -74,7 +74,7 @@ fn pure_hidden_field_extends_the_payload_without_moving_field_zero() {
     assert_eq!(HeapAdt::payload_size(2), 24);
 }
 
-// spec: design/backend/s121-c4-visit.md §6.3 — the self-description question
+// spec: design/backend/non-concrete-release-contract.md §5.3 — the self-description question
 // has one derivation and answers only for canonical primitives/IO.Pure.
 #[test]
 fn only_canonical_io_pure_requests_a_hidden_payload_witness() {
@@ -112,7 +112,7 @@ fn only_canonical_io_pure_requests_a_hidden_payload_witness() {
     );
 }
 
-// spec: design/backend/s121-c4-visit.md §6.3 — owning payloads carry the
+// spec: design/backend/non-concrete-release-contract.md §5.3 — owning payloads carry the
 // canonical registry function address; scalars and stack-placed Pure carry 0.
 #[test]
 fn pure_witness_is_canonical_glue_for_heap_and_zero_for_scalar() {
@@ -142,7 +142,7 @@ fn pure_witness_is_canonical_glue_for_heap_and_zero_for_scalar() {
     assert!(err.to_string().contains("stack-placed Pure"), "{err}");
 }
 
-// spec: design/backend/s121-c4-visit.md §6.3 — exactly three compiled-code
+// spec: design/backend/non-concrete-release-contract.md §5.3 — exactly three compiled-code
 // construction paths call the one derivation seam. The fourth producer is the
 // distinct post-platform-call adoption store in `stamp_platform_return`.
 #[test]

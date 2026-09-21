@@ -4,7 +4,7 @@ Owner: `/design` (typecheck). Status: **design SIGN-OFF — `/dev` executes the 
 
 This is the `/design` sign-off on the **module cut** for the former 3,962-line
 `program` monolith, accepted from the S108 audit R-4
-(`audits/cranelisp-typecheck-s108.md` §2.3) as FIXME 0580. Per the sprint's
+(S108 typecheck assessment (Git history) §2.3) as FIXME 0580. Per the sprint's
 Phase-4 wave hints, `/arch` wanted this sign-off early even though the mechanical
 move landed last in Phase 5.
 

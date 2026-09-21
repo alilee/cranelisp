@@ -4,7 +4,7 @@ target: /design
 filed_by: /sprint
 filed_at: 2026-07-25
 sprint_filed: 118
-refers_to: audits/cranelisp-platform-s117.md §R2;
+refers_to: https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md §R2;
   design/platform/platform.md;
   design/platform/poll-support.md
 status: open

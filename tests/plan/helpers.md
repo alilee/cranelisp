@@ -8,9 +8,9 @@ cranelisp execution with controlled imports and preludes, in a few
 lines of Rust**. Helpers are process-spawn + I/O capture + tmpdir
 fixture machinery — never session builders.
 
-Companion: `helpers-api.md` — concrete Rust signatures the Phase 1
-implementation codes against. This document is the design intent;
-`helpers-api.md` is the contract.
+Companion: `helpers-api.md` — the signature-level design. This document is
+the design intent; `tests/helpers/e2e.rs` is the source of truth for exact
+signatures.
 
 ## Design constraints
 
@@ -53,8 +53,8 @@ implementation codes against. This document is the design intent;
 4. **One small surface.** The whole API fits in two files:
    `tests/helpers/e2e.rs` (`Cranelisp`, `CrInvocation`, `CrOutput`,
    `PreludeVariant`) and `tests/helpers/regex.rs` (the named regex
-   library). The legacy `tests/helpers/mod.rs::ReplSession` is
-   retired in Phase 3.
+   library). The earlier `ReplSession` integration-tier helper is
+   retired.
 
 5. **Non-deterministic content is excluded by named regex helper, not
    suppressed by binary mode.** The harness does NOT force a global
@@ -171,7 +171,7 @@ drop a `prelude.cl` into the tmpdir and let prelude resolution pick it up.
 
 **Workspace stdlib is a separate, gated entry point.** Not a
 `PreludeVariant` value — it's `use_workspace_stdlib_for_stdlib_conformance_only()`,
-the only legitimate caller of which is `tests/stdlib.rs`. See
+whose intended caller is [stdlib conformance](../stdlib_conformance.rs). See
 `helpers-api.md` for the gating rationale.
 
 ## Usage examples
@@ -351,11 +351,8 @@ These were considered and explicitly rejected:
   `target/debug/`; the harness loads it via
   `use_workspace_platforms()`. If a test needs a different mock,
   it goes in as a real DLL crate.
-- **Inline trait preludes pasted as `const &str`.** The current
-  `e2e.rs::NUM_TRAIT_PRELUDE` / `EQ_TRAIT_PRELUDE` /
-  `ORD_TRAIT_PRELUDE` are migration debt. Replace with
-  `with_prelude(PreludeVariant::TestStandard)` (which already
-  defines Num/Eq/Ord) during this sprint's port.
+- **Inline trait preludes pasted as `const &str`.** Use
+  `with_prelude(PreludeVariant::TestStandard)`, which defines Num/Eq/Ord.
 - **Trace-channel parsing on stderr.** No `stderr_traces` field, no
   `assert_stderr_traces_only`, no `TraceKind` enum on the harness.
   Trace channels are debugging aids without spec basis — `/dev`'s
@@ -363,43 +360,6 @@ These were considered and explicitly rejected:
   `cranelisp-runtime`'s unit tests for RC alloc/free balance). The
   e2e harness only asserts `assert_stderr_empty` (the spec rule
   when no trace flag is set).
-
-## Implementation phasing
-
-1. **Phase 1 — build** (this sprint).
-   1. Trim this document per the Phase 0 collapse — done as the first
-      Phase 1 deliverable so the harness is implemented against a
-      clean spec, not stale prose.
-   2. Author the cache-isolation regression test (`tests/cache_isolation.rs`
-      or extend `tests/cache.rs`) asserting the spec property
-      "`.cranelisp-cache/` lives under project_root" — first concrete
-      e2e test against the new harness contract; gates Phase 2.
-   3. Implement `tests/helpers/e2e.rs` and `tests/helpers/regex.rs`
-      per `helpers-api.md`. The new harness lives **alongside**
-      `tests/helpers/mod.rs::ReplSession` until Phase 3. `ReplSession`
-      remains frozen (no new methods) but green.
-2. **Phase 2 — port** (this sprint). Port every test in `tests/` from
-   the integration-tier helpers (`compile_and_run*`, `repl_session*`,
-   inline `const &str` trait preludes) into the e2e tier using
-   `Cranelisp`. As each test ports, add or update its row in
-   `tests/plan/PLAN.md` so coverage documentation builds in lockstep.
-   Defects surfaced during port land as failing tests with FIXMEs;
-   no defect-fixing in-sprint (parity rule).
-3. **Phase 3 — remove legacy** (this sprint). Delete
-   `tests/helpers/mod.rs::ReplSession` and the integration-tier
-   helpers; delete or rewrite any tests that resisted the port
-   (with explicit rationale per holdout).
-4. **Phase 4 — crate refactors begin** (next sprint). FIXME 0109
-   (`/int` decomposition) and other crate refactors that reshape
-   `session_v4`/`worker` proceed against an e2e-only test surface
-   that does not break under internal restructuring.
-
-This is a **dedicated migration sprint**, NOT opportunistic
-rewrite-on-touch. Decision: maintaining two test patterns side-by-side
-across multiple sprints accumulates more drift than a single port-pass
-costs. Sprint sequencing lock-in: test-port sprint precedes any crate-
-refactor sprint that touches `session_v4`/`worker`. Tracked by
-FIXME 0115 (`/sprint` planning).
 
 ## Trade-offs the design accepts
 

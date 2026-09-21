@@ -376,145 +376,35 @@ mechanism):
 | capture slot release | `capture_rc::emit_capture_dec_into` (`Plain` arm) | one `drop<T>` call per owning slot |
 | closure box release | `emit_closure_dec_into` | retained (§1.1 M5) |
 
-### 4.1 The ONE sanctioned non-concrete release site — the ctor template's own parameter
+### 4.1 The constructor-template admission — S118 record, superseded
 
-> **SUPERSEDED S119 Phase 3 — `/design`(backend), `non-concrete-release-contract.md`.**
-> This section is retained as the **record** of face 1's history and of the
-> rejected alternatives; it is no longer the authority and no longer states the
-> live ruling. Two of its premises were falsified by measurement:
->
-> 1. *"The migration measured exactly one class."* Measured twice, one sprint
->    apart: the frame-keyed gate this section rules costs **+16 hard codegen
->    refusals** over the `spec_*` corpus (S118 FIXME 0903; re-run at S119 HEAD,
->    893 run / 8 → 24 failed). The class is three families, not one.
-> 2. *"the retained pair … is behaviour-identical to pre-migration HEAD."* It is
->    not. On a residual-typed parameter whose runtime word is a **raw scalar**
->    ≥ `NULLARY_TAG_THRESHOLD`, both halves of the pair are **wild atomic
->    writes** and the last-ref branch is a wild `dealloc`. The
->    `NULLARY_TAG_THRESHOLD` guard discriminates tags from pointers; it cannot
->    discriminate scalars from pointers. I-CT proves the *count* balances and is
->    silent on whether the word is a reference at all.
->
-> **S121: I-CT′ is discharged STRUCTURALLY, and this face's deletion site
-> vanishes.** Under C1's unified symbol lifecycle a `Life::Template` carries no
-> slot and no view, and FIXME 0931 retires the generic-ADT constructor's template
-> slot — so **a ctor-template frame with a residual parameter is no longer a
-> codegen target at all**. There is no frame left in which to emit, or to delete,
-> the pair. Backend's obligation reduces to observing that the census's `Ctor`
-> partition reads zero (`s121-c4-visit.md` §5, §7). 0931's own acceptance names
-> this subsumption; it is recorded here as it asked. I-CT and its standing
-> `Borrowed`-mode obligation retire with it.
->
-> The live disposition for this face — **the pair deletes; a ctor template frame
-> emits no RC operation on a residual parameter**, under invariant I-CT′ — is
-> `non-concrete-release-contract.md` §4 face 1 and §4.1. I-CT, its standing
-> `Borrowed`-mode obligation, and this section's `/review` reject criterion all
-> retire with it. §11's no-interim list is amended accordingly.
+**Superseded** by [non-concrete-release-contract.md](non-concrete-release-contract.md)
+§4 face 1 and §4.1, which own the live disposition. This record remains because
+source rustdoc on `emit_heap_binding_decs` and `ctor_template_admission_tests`
+still describes the S118 ruling.
 
-**Ruling (S118, post-W3; resolves FIXME 0891 — option (a) of its three).** D2's
-entry check predicted no release site could fail to supply a `ConcreteType`. The
-migration measured exactly one class, and it is legitimate. This section is the
-authority for it; D2 defers here, and §11's no-interim list names it as the sole
-admitted exception so `/review` can tell it from the shallow fallback the
-migration exists to delete.
-
-**The class — generic constructor templates.** A
-constructor `Def` is compiled **once per declaration**, never once per
-instantiation. `design/arch/concrete-boundary-type.md` §3.1.1 partitions it as a
-*signature-driven* codegen target: its parameter types come from the entry's
-`scheme`, not from body nodes. A generic product or sum such as `(deftype
-(Option a) (Some [:a v]))` therefore hands the template a non-concrete field
-parameter. This class is intrinsic to compile-once-per-declaration. It cannot be
-closed upstream without monomorphising constructor `Def`s
-per instantiation — a pipeline change with no sponsor, outside this migration,
-and unnecessary for soundness (below). FIXME 0394, which older comments cited,
-was closed at S84 on the different `codegen_view` population axis.
-
-**Why the release is sound — stated as an invariant, not as a site anecdote.**
-In a ctor template frame the parameter's scope-exit release is not a teardown at
-all. It is the second half of a matched counted-borrow pair emitted inside that
-one frame:
-
-1. `compile_constr_adt` compiles the template's fields through
-   `compile_consuming_arg_list`, which emits a **guarded `rc_inc`** on each
-   heap-classified parameter (`signature_heap_category`'s `Err` arm classifies
-   the residual type `Mixed`, the uniform-i64 category);
-2. `emit_adt_construct` stores those same words into the box the template
-   returns;
-3. `pop_scope_with_cleanup` emits the **guarded `rc_dec`** that balances the inc.
+**What S118 ruled.** A constructor `Def` was compiled once per declaration, so a
+generic constructor template received a residual-typed field parameter. The
+guarded consuming inc on that parameter and the guarded scope-exit dec were kept
+as a matched pair under:
 
 > **I-CT.** Every value released by this branch was, earlier in the same frame,
-> (i) incremented by the paired guarded inc and (ii) published into a heap cell
-> that the frame returns to its caller. The dec therefore can never observe the
-> last reference, so no field is ever stranded by the absence of type-directed
-> glue.
+> incremented by the paired guarded inc and published into the box the frame
+> returns, so the dec never observes the last reference.
 
-Two facts make I-CT exact rather than approximately true, and both are
-`/review`-checkable at the seam:
+The admission was to be keyed on the **frame** (the body is the synthetic
+`MonoExpr::ConstrADT`), never on the type, and the two tail-jump flushes were
+never to admit it.
 
-- the halves share **ONE runtime predicate** — `emit_rc_inc_guarded_atomicity`
-  and `emit_rc_dec_guarded(…, guard_nullary = true)` both skip a word below
-  `NULLARY_TAG_THRESHOLD` — so exactly the values that took the inc take the dec;
-  there is no polarity gap between what the inc treated as a pointer and what
-  the dec does;
-- the template body is a single straight-line construction with **no branch
-  between** the inc and the dec, so no path reaches the dec without the store.
-
-This is the retention-owner reading of **Published pointers have retention
-owners**: the box is the retention owner of the reference the inc minted, and it
-outlives the discharge.
-
-**The check the exception carries (Narrowing carries its check).** The admission
-is a property of the **frame**, never of the type. A gate that reads only "this
-binding's type is not concrete" admits *every* future non-concrete binding at
-*every* scope exit — a silent shallow release wherever a producer ever leaks a
-residual var — which is exactly the shallow fallback §11 forbids and D2 exists to
-delete. The gate is therefore:
-
-> Admit the guarded shallow dec **iff** the enclosing frame is a constructor
-> template — its compiled body is the synthetic `MonoExpr::ConstrADT` node — and
-> the binding is one of that frame's own parameters. In every other frame, and at
-> every other seam, `ConcreteType::from_type` failure at a release site stays a
-> located `CodegenError`.
-
-The frame fact needs no probe and no new carrier: `compile_body` holds the body
-node before the `FnCompiler` is constructed (the `fn_has_self_call` precedent),
-so it is one frame-level boolean computed once, disjoint from the type question.
-A ctor template has no `let` scopes and no tail self-call, so the exception is
-reachable only via `pop_scope_with_cleanup`; the two tail-jump flushes that share
-`emit_heap_binding_decs` must never admit it.
-
-**Standing obligation.** The pair balances because the template's fields are
-compiled by the **unmoded** consuming path and its parameters are never marked
-`Borrowed`. If a constructor `Def` ever acquires a `ModeSummary` with a
-`Borrowed` parameter, `collect_frame_heap_decs` drops the dec while
-`compile_consuming_arg_list` still emits the inc, and I-CT breaks in the leak
-direction. A mode summary reaching a ctor template is a change that must revisit
-this section; `/review` treats it as a blocker.
-
-**Why not (b) — delete the pair.** Considered in both readings, rejected in both:
-
-- *delete unconditionally* — the inc comes from the general consuming-arg
-  mechanism and the dec from general scope cleanup, so suppressing them for ctor
-  templates means a template-shaped special case at **two** independent seams.
-  That is the site-disagrees-with-type shape §4 exists to eliminate (the same
-  argument that takes `needs_guard` off the release seams), and it trades one
-  named exception for two.
-- *delete under §4.1's frame check* (use the check to elide rather than to
-  admit) — sound only while every caller transfers an owned reference, which the
-  backend cannot verify from inside the template frame: it depends on the ctor's
-  own param modes and on every call site. The retained pair's licence is local
-  and checkable (both halves in one frame, publication in between); the
-  elision's licence is not. It would also convert a branch that is
-  behaviour-identical to pre-migration HEAD into an emission change buying two
-  guarded branches in one synthetic body per constructor — **Complexity has a
-  budget** cuts against it.
-
-**What is NOT sanctioned here.** The exception admits a *shallow* dec only
-because I-CT proves the value has another live owner. It is not a licence to
-release a non-concrete value anywhere else, not a licence for a `drop_glue_id:
-None` dec at any other seam, and not a second release mechanism: `emit_typed_rc_dec`
-remains the only release emitter with no fallback arm (§4).
+**Why it fell.** Keying on the frame cost +16 hard refusals, because accessor
+and trait-instance frames reach the same arm; the arm in source is still
+type-keyed pending the contract's structural close
+([non-concrete-release-contract.md](non-concrete-release-contract.md) §7.4). And
+I-CT proves only that the count balances: on a raw scalar at or above
+`NULLARY_TAG_THRESHOLD` both halves of the pair are wild atomic writes. The
+replacement invariant I-CT′ is discharged by representation — a template carries
+no slot or view and is not a codegen target — and I-CT's standing
+`Borrowed`-mode obligation retires with it.
 
 ---
 
@@ -976,7 +866,7 @@ S116 Wave 3 (`drop_glue.rs::tests`); rows 3–6 are the migration's new tier.
 | `drop_glue` identity | primitive-owning types; FQ ADT; two generic instantiations | repeated request is idempotent; same bare type name in two modules differs | non-concrete key rejected; collision witness; span/caller cannot alter identity |
 | `drop_glue` registry/body builder | scalar leaf; ADT→String; ADT→Vec→ADT; depths 1/2/4/5/>5 | self-recursive list nullary/data arms; mutually recursive declarations; repeated field type emits one body; **request order permuted ⇒ same bodies, same keys (D5)** | no depth constant; no shallow fallback; duplicate definition and missing typedef fail loudly; **`finish()` rejects a `Defining` entry** |
 | `rc_emission` glue-call emitter | owned heap pointer ⇒ exactly one `call` to the canonical symbol; final-ref body calls fields then dealloc; non-final ref touches no fields | Mixed ADT bare nullary tag guarded **inside** the body, not at the site; closure field; empty Vec | no field call on `old_rc > 1`; **no `needs_guard` parameter survives**; non-concrete type at a release site is a located error, never a plain dec; no deep owner routed to a bare dec |
-| ~~`fn_compiler` §4.1 ctor-template admission~~ **SUPERSEDED S119** → `non-concrete-release-contract.md` §9 row 2 | a generic-ctor template and an undeclared-field template each emit **zero** RC ops on their residual parameters (I-CT′); a concrete-field template still takes the ordinary `drop<T>` path | the multi-field template: zero ops on every residual field, ordinary path on every concrete one | no guarded inc and no guarded dec survives on a residual parameter at any seam. *(The landed S118 positive/edge cells in `ctor_template_admission_tests.rs` pin the OLD balance and must be re-pointed, not deleted — `assert_threshold_guarded_rmws` is reused for the new negative.)* |
+| ~~`fn_compiler` §4.1 ctor-template admission~~ **SUPERSEDED S119** → `non-concrete-release-contract.md` §4.1 (I-CT′, discharged by representation) | a generic-ctor template and an undeclared-field template each emit **zero** RC ops on their residual parameters (I-CT′); a concrete-field template still takes the ordinary `drop<T>` path | the multi-field template: zero ops on every residual field, ordinary path on every concrete one | no guarded inc and no guarded dec survives on a residual parameter at any seam. *(The landed S118 positive/edge cells in `ctor_template_admission_tests.rs` pin the OLD balance and must be re-pointed, not deleted — `assert_threshold_guarded_rmws` is reused for the new negative.)* |
 | capture / environment glue | explicit closure over Vec/ADT; auto-curry equivalent; nested closure; poll-state capture | zero captures; repeated same-typed captures; a capture whose type is the enclosing closure's own | borrowed/non-owning capture not dropped; **every owning capture descriptor has a glue call** (the assertion 0760 says no instrument ever made); no second glue skeleton per mirror |
 | `match_codegen` | inline and let-bound owned temporary; constructor and var patterns; the plan recorded once before arms | heap field forwarded into a tail call; whole-wrapper forward (`[r r]`); borrowed callee scrutinee; **mixed ctor+var match, ctor path selected** | no whole-match `any` suppression; no release-before-protect; no borrowed-scrutinee release; **exactly one release per consuming arm** (count, not existence — the 0782 face); var arm binder never registered for scope cleanup |
 | `fn_compiler` / TCO predicate | unrelated fresh replacement releases; bare-Vec and ADT replacement use the same path | same-slot and cross-slot move; control-flow forward; analysis-on in-place COW (positional-blind); toggle-off copied COW | borrowed alias cannot license transfer (`BorrowedInvalid` is loud); fresh/unknown cannot suppress release; no TCO-private glue; **row 2 does not become a blanket skip** (the F1 regression fence) |

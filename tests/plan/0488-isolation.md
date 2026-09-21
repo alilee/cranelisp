@@ -57,7 +57,7 @@ without a prior import) → `undefined function: gen/iden2`.
   parity places the defect below the session-side derivation.
 
 **Call-chain attribution (typecheck, pass-4 collection —
-`crates/cranelisp-typecheck/src/program.rs`):** every pass-4 collector
+then the single typecheck `program` source file, since decomposed under `crates/cranelisp-typecheck/src/program/`):** every pass-4 collector
 matches `Expr::Apply { callee: Expr::Var { name } }` where `name` is the raw
 source text — for an FQ reference that is the qualified string
 (`"user/iden"`). Two sub-causes:
@@ -193,7 +193,7 @@ the causal chain (links 1–3 each independently verified); medium on the
 
 All via `cranelisp_frontend::parse` + build + `check_forms` per
 `tests/CLAUDE.md` §"Isolating Cross-Crate Failures" step 3, in
-`crates/cranelisp-typecheck/src/program/tests.rs` beside the existing
+`crates/cranelisp-typecheck/src/program/callees/tests.rs` (where the shapes landed) beside the existing
 `callees_*` / pass-4 tests (TestFixture harness):
 
 | # | Signature | Shape | Assert |

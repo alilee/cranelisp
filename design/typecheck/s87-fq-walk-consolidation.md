@@ -3,7 +3,7 @@
 # S87 — FQ Type-rendering walk consolidation (one parameterized `Type` walk in `cranelisp-types`)
 
 > **Status.** Design (S87 Stage-B → Wave-5+ hygiene). Resolves the FQ-rendering
-> proliferation finding from `audits/cranelisp-types-s87.md` Finding 1+2 and
+> proliferation finding from S87 types assessment (Git history) Finding 1+2 and
 > `design/arch/fixmes/0420-arch-fq-type-rendering-consolidation.md`.
 >
 > **Manifestation site (why here).** The shared walk *lives in* `cranelisp-types`,
@@ -351,7 +351,7 @@ Untouched: concurrency (no shared state), performance (rendering is not hot; all
 - `design/arch/fixmes/0420-arch-fq-type-rendering-consolidation.md` — the `/arch`
   authoring vehicle (the walk + config enums in `cranelisp-types` are `/arch`'s to
   author; this doc is the consumer-side design + the byte-for-byte contract).
-- `audits/cranelisp-types-s87.md` Finding 1 (the five-walk headline), Finding 2
+- S87 types assessment (Git history) Finding 1 (the five-walk headline), Finding 2
   (the dead `format_type_*` exports), Finding 4 (`concrete_type_name` strip — the
   out-of-scope sixth site).
 - `repl/spec.md` §5.3 (FQ primitive naming in user-facing display), §3.5.1

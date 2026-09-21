@@ -505,14 +505,14 @@ Until the brief exists MS-P7 stays an attributed-RED carry in no wave's flip set
    + 0653 helper-classification sweep AFTER** (the reshape changes the inventory
    they classify; the helper sweep IS the carrier's acceptance check — sweeps are
    migration aids, never the enforcement mechanism, per P24 §Corollary prong 3).
-   The P26 sweep appends to the P24 register (`typecheck.md` §9.7 seed).
+   The P26 sweep appends to the P24 register (`typecheck.md` §9.7).
 3. The orthogonal drains (MC-X4/X4b, MC-X5, PS-SH1) land before/interleaved — not
    serialized behind the carrier (F2).
 4. Both bump-worthy changes (carrier reshape + B-2 escape-fact correction) in the
    ONE 21→22 window (F7).
 5. **0590** (the four `TypeExpr` resolver mirrors, `type-expr-resolver-convergence.md`)
    **ALREADY LANDED in S110** — this item's original S114 framing was a zombie
-   record (audit `cranelisp-typecheck-s114.md` §2.2a, R-1), corrected at S115
+   record (S114 typecheck assessment, R-1, Git history at `57253cf2`), corrected at S115
    Phase 3. The four mirrors
    (`resolve_trait_type_expr`/`resolve_type_expr_hkt`/`resolve_type_expr_hkt_impl`
    + `form.rs::check_type_expr`'s `collect_type_var_ids` pre-walk) **converged

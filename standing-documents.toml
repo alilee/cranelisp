@@ -374,7 +374,7 @@ disposition = "established"
 
 [[document_class]]
 name = "backend-current-designs"
-patterns = ["design/backend/backend.md", "design/backend/binding-indirection-consume.md", "design/backend/binding-scope.md", "design/backend/compile-to-module.md", "design/backend/executable-generation.md", "design/backend/io-scheduling.md", "design/backend/io-trampoline.md", "design/backend/jit-object-convergence.md", "design/backend/jit-setup-boundary.md", "design/backend/lenient-eval.md", "design/backend/module-caching.md", "design/backend/non-concrete-release-contract.md", "design/backend/ownership-codegen.md", "design/backend/per-module-got.md", "design/backend/ring1-codegen.md", "design/backend/ring2-rc.md", "design/backend/s115-carrier-and-rc-sweep.md", "design/backend/s117-failed-member-attribution.md", "design/backend/s121-c4-visit.md", "design/backend/s122-closure.md", "design/backend/transitive-drop-glue.md"]
+patterns = ["design/backend/backend.md", "design/backend/binding-indirection-consume.md", "design/backend/binding-scope.md", "design/backend/compile-to-module.md", "design/backend/executable-generation.md", "design/backend/io-scheduling.md", "design/backend/io-trampoline.md", "design/backend/jit-object-convergence.md", "design/backend/jit-setup-boundary.md", "design/backend/lenient-eval.md", "design/backend/module-caching.md", "design/backend/non-concrete-release-contract.md", "design/backend/ownership-codegen.md", "design/backend/per-module-got.md", "design/backend/ring1-codegen.md", "design/backend/ring2-rc.md", "design/backend/s115-carrier-and-rc-sweep.md", "design/backend/s117-failed-member-attribution.md", "design/backend/s122-closure.md", "design/backend/transitive-drop-glue.md"]
 owner = "design"
 purpose = "Current backend interior designs and the retained design evidence that cannot be re-derived from source."
 established_by = "design/backend/CLAUDE.md"
@@ -424,7 +424,7 @@ disposition = "established"
 name = "typecheck-current-designs"
 patterns = ["design/typecheck/adt.md", "design/typecheck/ast-annotation.md", "design/typecheck/auto-curry.md", "design/typecheck/check-form-api.md", "design/typecheck/checked-body-publication.md", "design/typecheck/dotted-ctor-registration.md", "design/typecheck/fixme-0365-field-accessor-dotted.md", "design/typecheck/hkt.md", "design/typecheck/inference.md", "design/typecheck/io-types.md", "design/typecheck/monomorphisation.md", "design/typecheck/non-concrete-producer-obligations.md", "design/typecheck/ownership-inference.md", "design/typecheck/program-decomposition.md", "design/typecheck/qualified-trait-impl.md", "design/typecheck/result-context-specialization.md", "design/typecheck/return-poly-dispatch-signal.md", "design/typecheck/s116-method-signature-resolution.md", "design/typecheck/s87-traits-decomposition.md", "design/typecheck/signature-match.md", "design/typecheck/traits.md", "design/typecheck/type-expr-resolver-convergence.md", "design/typecheck/typecheck.md", "design/typecheck/typed-resolution-carrier.md", "design/typecheck/use-site-candidate-selection.md"]
 owner = "design"
-purpose = "Current typecheck master, subsystem and active feature designs for inference, constraints, traits, ADTs, monomorphisation, ownership and typed publication."
+purpose = "The master and every current subordinate design listed in its §10."
 established_by = "design/typecheck/CLAUDE.md"
 disposition = "established"
 
@@ -432,7 +432,7 @@ disposition = "established"
 name = "typecheck-historical-records"
 patterns = ["design/typecheck/s87-fq-walk-consolidation.md"]
 owner = "design"
-purpose = "The one superseded working record still held for a live citation — `s87-fq-walk-consolidation.md` §2.4. It retires when `arch` rehomes that contract."
+purpose = "`s87-fq-walk-consolidation.md`, held only for its §2.4 `Type`-rendering table, which three `crates/cranelisp-types/src/types/tests.rs` cases cite. It carries a `HISTORICAL` banner and is not design intent. It retires when `arch` restates the table under `design/arch/bounded-contexts.md` §\"Type rendering\" and the anchors re-point."
 established_by = "design/typecheck/CLAUDE.md"
 disposition = "established"
 
@@ -480,5 +480,28 @@ name = "qa-retained-evidence-records"
 patterns = ["tests/plan/s99-measurement.md", "tests/plan/s100-ownership-verification.md", "tests/plan/s101-coverage-postmortem.md", "tests/plan/coverage-audit-s101.md", "tests/plan/s10[2-5]-*.md", "tests/plan/s109-*.md", "tests/plan/s11[1-9]-*.md", "tests/plan/s12[01]-*.md"]
 owner = "qa"
 purpose = "Dated QA measurement, lane-baseline and coverage-analysis records retained because current designs, test sources and harnesses cite them by section."
+established_by = "tests/CLAUDE.md"
+disposition = "established"
+
+[[document]]
+path = "audits/CLAUDE.md"
+kind = "memory"
+owner = "audit"
+purpose = "Navigate retained audit assessments and their disposition authority."
+established_by = "CLAUDE.md"
+
+[[document_class]]
+name = "audit-assessments"
+patterns = ["audits/*-s[0-9]*.md"]
+owner = "audit"
+purpose = "Temporary audit assessments awaiting extraction and disposition."
+established_by = "audits/CLAUDE.md"
+disposition = "established"
+
+[[document_class]]
+name = "qa-support-documents"
+patterns = ["tests/plan/0488-isolation.md", "tests/plan/agent-context-tuning.md", "tests/plan/agent-testing-strategy.md", "tests/plan/helpers.md", "tests/plan/helpers-api.md", "tests/plan/memory-safety-coverage.md", "tests/plan/risks.md", "tests/plan/s122-evidence-delta.md", "tests/plan/s122-document-checker-reconciliation/README.md"]
+owner = "qa"
+purpose = "Current QA support contracts, active evidence and retained checker reconciliation."
 established_by = "tests/CLAUDE.md"
 disposition = "established"

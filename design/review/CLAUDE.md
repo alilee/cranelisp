@@ -32,8 +32,9 @@ reviewed against is assembled per invocation from:
 - The crate's committed **`public-api.txt`** baseline + `design/arch/bounded-contexts.md`
   — the as-designed public surface for library crates with a tracked baseline
   (facade specs retired S69–S81).
-- The most recent **`audits/{crate}-*.md`** rolling assessment (`/audit`'s
-  whole-context record) as point-in-time context.
+- Open audit points in `sprints/actions/`, existing `design/arch/fixmes/`
+  filings and the owning standing documents. Historical assessments are
+  recoverable from the Git checkpoint cited by those records.
 - §"Standing change-set cues" below — live cues that extend the skill def's
   quality checks.
 

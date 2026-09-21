@@ -1622,9 +1622,8 @@ pre-classifies each entry as **pure stdlib gap** or **compiler/language gap**.
 > **DECISION RULE.** For each gap entry:
 > 1. **Compiler/language gap** (the feature needs typecheck / codegen / spec /
 >    new-primitive support) → **ROUTE OUT, not in-sprint.** Feed it to the
->    Stage B audit backlog (`audits/s87-findings.md`) and/or file a numbered
->    FIXME (`design/arch/fixmes/NNNN-name.md`, `target:` the owning skill) per
->    CLAUDE.md §Cross-Skill Changes. Record the entry in §26.4 of this plan
+>    current action register (`sprints/actions/`), targeting the owning role per
+>    root guidance on cross-role changes. Record the entry in §26.4 of this plan
 >    with its routing destination. **Do NOT author a stdlib workaround for a
 >    compiler gap** — that bakes a workaround into the model code.
 > 2. **Pure stdlib gap** (a missing function/macro **composable from existing

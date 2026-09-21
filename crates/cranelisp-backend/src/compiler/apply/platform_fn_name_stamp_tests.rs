@@ -227,7 +227,7 @@ fn assert_tag_dominated_store(clif: &str, offset: i64, expected_tag: i64) -> Str
     not_taken.to_string()
 }
 
-// spec: design/backend/s121-c4-visit.md §6.7 — the returned tag, not the
+// spec: design/backend/non-concrete-release-contract.md §5.5 — the returned tag, not the
 // platform-callable kind alone, licenses both stores. The String and Int
 // instantiations discriminate canonical glue-address versus scalar sentinel.
 #[test]

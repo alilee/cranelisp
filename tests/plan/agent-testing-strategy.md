@@ -42,7 +42,7 @@ membrane (`src/agent/types.rs`), which is a project-owned TRAIT one layer ABOVE 
 (0429 correction, 2026-06-22: as-built the stub implements `AgentModel`, NOT rig's
 `rig::completion::CompletionModel` directly — the membrane was introduced FIXME 0427;
 see `design/int/agent.md §6` + `src/CLAUDE.md`.) The agent loop holds the model behind
-this membrane (`AgentState.model`, `agent.md §3.4`) and calls its `complete` method
+this membrane (`AgentState.model`, `design/int/agent.md` §3.4) and calls its `complete` method
 directly. The real Anthropic / Ollama providers reach rig **below** the membrane
 (`RigModel<M: CompletionModel>`, `provider.rs`); a test stub implements the membrane
 directly. So a test constructs an `AgentState` whose `model` is a deterministic stub
@@ -342,7 +342,7 @@ stub-driven, in the `--features agent` lane) but called out separately because i
 
 - **The script fixture** (the stub's input): an ordered list of scripted model responses
   (`Done` / `ToolCalls`, §1.1) — the model's half of a session. Stored as a fixture under
-  `tests/fixtures/agent/` (a new agent fixtures dir; gitignored `.runs/` for outputs per
+  an agent fixtures directory (as proposed; the delivered corpus is `tests/fixtures/agent-evals/`; gitignored `.runs/` for outputs per
   `tests/CLAUDE.md`).
 - **The golden transcript** (the expected output): the full rendered REPL transcript of a
   session — user turns + the agent's framed prose + the agent-issued commands echoed

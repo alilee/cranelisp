@@ -4,7 +4,7 @@ target: /design
 filed_by: /sprint
 filed_at: 2026-07-25
 sprint_filed: 118
-refers_to: audits/cranelisp-platform-s117.md §R4;
+refers_to: https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md §R4;
   crates/cranelisp-platform/src/adt.rs;
   platforms/shapes/src/lib.rs;
   platforms/shapes-badabi/src/lib.rs;

@@ -211,7 +211,6 @@ interior facts worth stating once here:
 | Subject | Document | Standing |
 |---|---|---|
 | Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture and macro alias correction. Solution-golden selection and integrated acceptance remain open. |
-| The broader C4 allocation | `s121-c4-visit.md` | The preceding design of record. Three bundles landed, two partial; **four remain entirely open**, including the structural close that the rest depends on. Also the sole home of several rulings and of the reject list. |
 | Compilation entry shape | `compile-to-module.md` | How the one entry is organised, and generics activation. |
 | Minimal JIT-setup boundary | `jit-setup-boundary.md` | The JIT newtype's construct/hand-off/reclaim surface and where its symbol set is derived from. |
 | JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
@@ -220,9 +219,9 @@ interior facts worth stating once here:
 | Executable generation | `executable-generation.md` | `--link` mode. |
 | Ring 0/1 primitives backbone | `ring1-codegen.md` | Heap layout entry, inline primitives incl. the bitwise lowering, and the runtime-panic boundary. |
 | RC discipline | `ring2-rc.md` | The uniform consuming convention, now framed as the conservative point of the ownership lattice, plus the capture-return rule. |
-| Ownership codegen | `ownership-codegen.md` | Borrow elision, stack/region placement, confinement, reuse tokens, value flattening, and the increment staging. |
+| Ownership codegen | `ownership-codegen.md` | The mechanisms that consume the ownership analysis — borrow elision, stack placement, confined non-atomic RC, uniqueness and reuse, value flattening, redefinition machinery — with their built/open state. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
-| Non-concrete release | `non-concrete-release-contract.md` | Category-before-operation, no fabricated concreteness, and why monomorphisation is the only sound disposition. |
+| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the open structural close (lifecycle disposition, refusal frame, census, wrapper discharge). |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
 | Binding-indirection consume | `binding-indirection-consume.md` | The consume-position × operand-provenance contract. |
 | Carrier + RC sweep evidence | `s115-carrier-and-rc-sweep.md` | Measured carrier-state and RC evidence that cannot be re-derived from source, plus the mangle-injectivity census. |

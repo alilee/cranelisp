@@ -51,8 +51,8 @@ int. Cross-module and whole-source macro atomicity are not requirements.
 - `design/arch/module-alias-scoped-lookup.md` — the scoped segment walk of
   keyed probes, its visibility rule, the one `module_alias_key` mint, and the
   C1 → C3 → C6 allocation. C6 owns the int writers and consumers only.
-- `design/backend/s121-c4-visit.md` §8.1 — the backend twin of the result-root
-  rule; C4 removes it, C6 removes int's (§9.2).
+- `design/backend/s122-closure.md` §2 — the backend twin of the result-root
+  rule; C4 removes it, C6 removes int's (the local result-root section below).
 - `design/runtime/s119-typed-consume-funnel.md` §3 — the `Owned`/`Borrowed`
   vocabulary, `from_abi`/`into_raw`, `is_nullary_tag`, and the `pub`
   `consume_sexp`/`consume_slist` signatures C6 discharges through.
@@ -334,7 +334,7 @@ the discriminator. `arch` ruled the allocation rather than the feature
 (`crates/cranelisp-typecheck/src/traits/impl_check.rs:94`, invoked from
 `program/register.rs:66`), the two `impl$` mint re-points, and the phantom
 `check_trait_impl` rustdoc correction all ride C3's wash change-set, and C3's
-own design carries them as CS-6 (`design/typecheck/typecheck.md`). N3's entry
+own design carries them as CS-6 (`design/typecheck/traits.md` §3.0.1). N3's entry
 gate is therefore "C3's producer landed", an ordinary edge in the already-
 ordered wash — nothing is owed to C6 and nothing is owed by it here.
 
@@ -1338,7 +1338,7 @@ Each of the visit's load-bearing claims, and what would refute it:
   pool, the commit gate, the T1 cure.
 - `design/int/impl-redefinition-hot-reload.md` §3, §5 — the enrolment
   derivation.
-- `design/backend/s121-c4-visit.md` §8.1, §6.6 — the backend twin, the `Bind`
+- `design/backend/s122-closure.md` §2 and `design/backend/non-concrete-release-contract.md` §5.6 — the backend twin, the `Bind`
   seed rider.
 - `design/runtime/s119-typed-consume-funnel.md` §3 — the typed handle
   vocabulary.

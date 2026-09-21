@@ -466,7 +466,7 @@ Setting aside **all** memory/ownership work (0528 uniqueness, 0526 projection el
 not RC/allocator-bound — it reproduces identically at increment-I HEAD, `rc_inc` is identical serial-vs-ON,
 and the allocator is at 0.1% of syscall time. Phase-H mechanisms (thread-local RC, escape→stack/region,
 Perceus reuse) leave F4 **identical**; **Phase-H does NOT restore the F4 utilization floor.** The
-utilization thesis and the memory-model spine (`ownership-inference.md`) are genuinely orthogonal tracks.
+utilization thesis and the memory-model spine (`design/arch/ownership-inference.md`) are genuinely orthogonal tracks.
 This is a **roadmap course-correction** for `/sprint` to record in `sprints/ROADMAP.md`: the earlier
 reading (the pre-S103 [floor scope](#31-floor-scope--contention-is-the-boundary-not-compute-s94-port-finding),
 and the "F4-at-north-star = III-G2" [two-increment staging](ownership-inference.md#7-two-increment-staging-principle-8))
@@ -520,7 +520,7 @@ scalar depth `D` is the wrong knob for both classes at once: the compute-paralle
 **deep** (more coarse strands = more core fill), while the alloc-heavy class wants to stay
 **shallow** (fewer concurrent contenders on the shared substrate). The distinguishing signal is
 exactly **allocation/RC density** — the contention axis this section (§3.1) and the memory-model
-spine (`ownership-inference.md`) already characterise. So the S104 boundary **re-motivates that
+spine (`design/arch/ownership-inference.md`) already characterise. So the S104 boundary **re-motivates that
 work, now precisely scoped**:
 
 > **S105 focus = a *density-aware depth allowance*.** Make `D` a function of a strand's
@@ -533,7 +533,7 @@ work, now precisely scoped**:
 > *depth-modulating* use of the same density signal, composing with — not replacing — M-static
 > selection and the structural depth bound. The density input is the same analysis-derived
 > allocation/RC-density signal the demoted B4 scored and the memory-model spine makes derivable
-> (`ownership-inference.md` §8.3); its correct role is discovered here to be *depth modulation*,
+> (`design/arch/ownership-inference.md` §8.3); its correct role is discovered here to be *depth modulation*,
 > not admission.
 
 **Floor-scope ruling still holds — with the F4-at-D3 trade noted.** §3.1's floor-scope ruling is
@@ -663,7 +663,7 @@ allocation = the spine's Q2∧Q4; density-aware depth 0535 = the S104-utilizatio
 synthesis, composing with M-static + the structural depth bound; 0526/0528 = increment-II precision;
 accept-done = no build) — all **shaped-to-be-subsumed, none a throwaway interim** (Principle 8 clean).
 The one build-branch interface impact — the `MutBorrowed` ABI mode, *if* the stack branch needs
-callee-mutation-through-reference — is ruled conditionally in `ownership-inference.md` §3.6.
+callee-mutation-through-reference — is ruled conditionally in `design/arch/ownership-inference.md` §3.6.
 
 ## 4. The inferred half — how concurrency is extracted
 

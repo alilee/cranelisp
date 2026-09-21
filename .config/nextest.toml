@@ -2,7 +2,7 @@
 #
 # Setup script: build the `--link` / platform e2e prerequisites before any
 # test runs. See `tests/scripts/build-link-prereqs.sh` for the full
-# rationale and `tests/plan/e2e-architecture.md` for the design.
+# rationale and `tests/CLAUDE.md` for the platform prerequisite contract.
 #
 # Root cause this addresses: the `cranelisp` binary's `--link` path links
 # `libcranelisp_exe_bundle.a` and the platform rlibs (`stdio`,

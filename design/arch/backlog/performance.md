@@ -88,7 +88,7 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
 #### 0521 — `ResultMode` needs a ⊤ element ("may alias MULTIPLE distinct params")
 - **Origin** — FIXME 0521 · filed_by `/dev` · target `/arch` · sprint 102.
 - **`refers_to`** — `crates/cranelisp-types/src/ownership.rs` (`ResultMode`);
-  `design/typecheck/ownership-inference.md` §13.6(c); `design/arch/ownership-inference.md` §3.3.
+  `design/typecheck/ownership-inference.md` §3.4(c); `design/arch/ownership-inference.md` §3.3.
 - **Pinned analysis** — the 3-element lattice `{Fresh, ProjectionOf(usize), AliasOf(usize)}` (FIXME
   0520, landed S102 in `cranelisp-typecheck`, fixed the pass5 join so a partial-control-flow param
   return no longer collapses to `Fresh`) is **complete for the single-param case** but cannot
@@ -118,7 +118,7 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
 #### 0528 — `result_unique` does not model uniqueness-PRESERVATION (unique-in ⇒ unique-out)
 - **Origin** — FIXME 0528 · filed_by `/dev` · target `/design` · sprint 103.
 - **`refers_to`** — `design/typecheck/ownership-inference.md` §7.2 (`result_unique` chaining);
-  `design/backend/ownership-codegen.md` §6.4/§14.3 (II-G2 chaining metric).
+  `design/backend/ownership-codegen.md` §6.4/§6.5 (II-G2 chaining metric).
 - **Pinned analysis** — the increment-II backend half (II-B2 reuse tokens, `cranelisp-backend`) is
   landed and consumes write-path facts correctly (`reuse_hit`/`reuse_miss` runtime tallies at the COW
   arms `vec_codegen.rs`; `unique_static` check-elision off the fresh-producing Vec node
@@ -137,7 +137,7 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
   `fresh_bindings`; a **param** returned unchanged (`map-go` base `(if (eq-i64 i n) v …)`) is never
   fresh ⇒ `result_unique = false`. But `map-go` is uniqueness-**PRESERVING** (given unique `v` it
   returns `v` unchanged or the in-place-mutated `v` — always the same unique root), the exact property
-  the `(map f (map g v))` fusion (the design's own II-G2 witness §6.4/§14.3) rests on. Cure: extend
+  the `(map f (map g v))` fusion (the design's own II-G2 witness §6.4/§6.5) rests on. Cure: extend
   the CS-3 uniqueness stratum so `result_unique` proves via **param-uniqueness preservation** (a
   "unique-in ⇒ unique-out" summary bit / a param-index the result aliases + the caller minting
   `unique_static` when it passes a proven-unique arg), landing `unique_static` on the `vec-set`
@@ -153,7 +153,7 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
 #### 0510 — `neq-string` has no `DefKind::Primitive` entry to carry declared facts
 - **Origin** — FIXME 0510 · filed_by `/dev` (cranelisp-primitives) · target `/design`
   (cranelisp-backend) · sprint 102.
-- **`refers_to`** — `design/typecheck/ownership-inference.md` §13.4 (the `neq-string` bullet + the
+- **`refers_to`** — `design/typecheck/ownership-inference.md` §9 (the `neq-string` bullet + the
   coverage verdict); `design/backend/ring2-rc.md` §3.3 (the `neq-string` audit row, FIXME 0504).
 - **Pinned analysis** — §13.4 lists `neq-string` as a covered leaf, but as-built `neq-string` has
   **no `ModuleEntry` in `cranelisp-primitives`**: it is shim-only (`extern_shims()` harvests its fn
@@ -189,7 +189,7 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
   `/arch` ruling; the `ownership-codegen.md` content edits remain `/backend`'s on `/arch`'s ruling) ·
   sprint 102. §3.3 re-frame authored S103 Phase 3 by `/design`(backend).
 - **`refers_to`** — `design/backend/ownership-codegen.md` §3.3 (Result modes and provenance — the
-  `compute_last_uses` extension; the §3.3 AS-BUILT box + the S103 RE-FRAME box + the §14.2 II-B3
+  `compute_last_uses` extension; the §3.3 AS-BUILT box + the S103 RE-FRAME box + the §6.4
   ladder).
 - **Pinned analysis** — §3.3 specified **producer-side** in-frame projection elision (elide the
   `vec-get` element inc unconditionally at the read when the ownership pass set a `provenance` fact,
@@ -522,7 +522,7 @@ Recorded here so it re-enters with the perf track.
   **The 0499 *file* closes under S106 WS-G once L-S1 lands — it is NOT deleted from this doc; only the
   L-M1 note migrates here.**
 - **`refers_to`** — `tests/plan/coverage-audit-s101.md` §2.4 (lanes) + §2.5 (drafting rules);
-  `tests/CLAUDE.md` §Plan documents; `tests/plan/s103-test-plan.md` §1.7 (L-M1 growth); backend §13.3
+  `tests/CLAUDE.md` §Plan documents; `tests/plan/s103-test-plan.md` §1.6 (L-M1 growth); backend §13.3
   (the `fn_as_value` seam).
 - **Pinned analysis** — L-M1 is the **reference-shape × referent × instantiation-count** e2e matrix,
   one of the 7 named lanes from the S101 coverage audit. It **grows with the `fn_as_value` seam

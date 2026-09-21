@@ -11,7 +11,7 @@ refers_to: tests/trait_method_tail_s116.rs (adjacent, different subject — tail
 status: open
 retargeted_by: /design (backend)
 retargeted_at: 2026-07-26
-ruled_at: design/backend/non-concrete-release-contract.md §4 face 3, §5.2
+ruled_at: design/backend/non-concrete-release-contract.md §4 face 3, §7.5
 blocked_on: 0924
 ---
 

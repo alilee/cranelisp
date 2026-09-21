@@ -1,13 +1,186 @@
 # IO Trampoline Design
 
-Sprint 16 I2 — codegen and runtime for deferred IO execution.
+The backend's side of the reified IO model: the node layouts it constructs, the
+`bind` codegen, the stamps it writes on platform-returned nodes, and the release
+call it emits. The runtime that forces and tears down the tree is
+`cranelisp-intrinsics`; its interior is
+[ownership-and-disposal.md](../intrinsics/ownership-and-disposal.md) §6–§7 and
+[reactor.md](../intrinsics/reactor.md). The effect thunk's representation is the
+platform's (`design/platform/platform.md` §4.2). This document cites those homes
+rather than restating them.
 
-## Current result-handoff layout (Sprint 121)
+## Overview
 
-The runtime must be able to dispose a produced `a` when cancellation prevents
-its handoff. The backend therefore emits the canonical `drop<a>` address on the
-ownership edge that receives the result; zero denotes a non-owning
-representation. These are private backend↔intrinsics layouts:
+The IO model is deferred execution. `(print "hello")` performs no side effect:
+it returns an `Effect` node. `(bind io cont)` returns a `Bind` node linking an
+inner IO value with a continuation closure. The runtime trampoline forces the
+tree iteratively with an explicit continuation stack (`spec/10-io.md` §10.8.2).
+
+**IO values are reusable** (`spec/10-io.md` §10.8.1). Forcing a `Pure` or
+`Effect` node moves no field out of it: the node keeps every reference it owns
+until its count reaches zero, and a force hands its consumer a new reference or
+a borrow. `Bind`, `Par` and `Select` are not mutated by a force. `Launch` still
+moves its sub-tree out on force (§15.5); no correction is approved for it. The
+architectural rule and its per-node status are
+[total-concreteness.md](../arch/total-concreteness.md) §3.4 "Ownership on force".
+Nothing the backend emits may assume a `Pure` or `Effect` node is forced at most
+once.
+
+## 1. IO Node Layout
+
+IO nodes are heap-allocated ADTs under the standard `HeapHeader`
+(`[alloc_size @0 | rc @8]`, `ring2-rc.md` §1) with the tag at offset 16. The
+node family is a layout contract governed by `cranelisp_platform::ABI_VERSION`
+(currently 11). Offsets below are absolute.
+
+### 1.1 Pure Node (tag = 0)
+
+A completed value, created by the ordinary `Pure` data constructor. The layout
+is ruled at [total-concreteness.md](../arch/total-concreteness.md) §3.4 and
+`design/arch/interfaces.md` §"IO Tag Constants".
+
+```
+[header(16) | tag=0 (8) | payload (8) | payload_glue (8)]
+ offset 0     offset 16   offset 24     offset 32
+```
+
+- `payload` (offset 24): the value, any Cranelisp type as `i64`. Field-0 reads
+  and pattern binds see only this field.
+- `payload_glue` (offset 32): a **hidden** ownership witness, never a
+  language-visible field (IO mints no accessor). It follows the closure
+  `DROP_GLUE_PTR` precedent (Decision 0011), not a header type-word (R15). It
+  is written once before publication and never changes: `0` (`Scalar`) or the
+  payload's canonical `drop<T>` address (`Owned(glue)`); `1` is reserved and
+  emitted by nothing. Each force of an `Owned(glue)` payload mints the
+  consumer's reference and the node keeps its own; teardown discharges the
+  payload once ([ownership-and-disposal.md](../intrinsics/ownership-and-disposal.md)
+  §6.1).
+
+The backend initialises the word with an ordinary store while the node is
+unpublished, at exactly four sites: three that construct a `Pure` and the
+platform-return adoption stamp (§7.1), which replaces the `0` a platform DLL
+writes through `CLIO::pure`. The rules for those sites are
+[non-concrete-release-contract.md](non-concrete-release-contract.md) §5.2, §5.3
+and §5.5. Allocation otherwise follows the data-constructor convention
+(`ring2-rc.md` §3.3).
+
+### 1.2 Effect Node (tag = 1)
+
+A deferred side effect, constructed by a platform DLL through `CLIO::effect*`
+with the host allocator. Its payload offsets are the platform's `IO_EFFECT_*`
+constants; in absolute terms:
+
+| Offset | Field | Backend role |
+|---|---|---|
+| 24 | `thunk_ptr` — a platform-owned boxed `Fn` thunk, not a Cranelisp heap value | none; never read or written |
+| 32 | `resource_token` (`0` = unrestricted) | none (read by the runtime scheduler) |
+| 40 | fn-name handle, initialised null by the DLL | stamped after the platform call returns (§7.1) |
+| 48 | resource capacity | none |
+
+The node owns its thunk for its whole life. A force borrows the thunk through
+`call_effect_thunk` — any number of times, from any thread — and the node's
+teardown discharges it once through `drop_effect_thunk`. The thunk's
+representation, the `Fn + Send + Sync` bound and the DLL-side panic
+containment are the platform's (`design/platform/platform.md` §4.2); when the
+runtime calls and discharges it is
+[Effect lifetime contract](../intrinsics/ownership-and-disposal.md#62-the-effect-thunk-borrowed-on-force-discharged-at-teardown). The
+approved ABI-11 surface is
+[total-concreteness.md](../arch/total-concreteness.md) §3.4 "`Effect` public API".
+
+### 1.3 Bind Node (tag = 2)
+
+A chain linking an inner IO value with a continuation closure, created only by
+the `bind` inline primitive (§2).
+
+```
+[header(16) | tag=2 (8) | inner_io (8) | cont (8) | input_disposer (8)]
+ offset 0     offset 16   offset 24      offset 32  offset 40
+```
+
+- `inner_io`: an owned reference to another IO node.
+- `cont`: an owned reference to a `(Fn [a] (IO b))` closure.
+- `input_disposer`: the canonical `drop<a>` address, or `0` when `a` owns no
+  heap value — scalar metadata, never traversed by teardown (§5.1).
+
+`Bind` is internal: its `ConstructorInfo` is marked `internal`, so user code can
+neither construct nor match it.
+
+### 1.4 Tag Constants
+
+The `IO_TAG_*` constants are defined in `cranelisp-platform`, shared by platform
+DLLs, the backend and the runtime, and match the constructor order of the
+compiler-seeded IO type: `Pure` 0, `Effect` 1, `Bind` 2, `Par` 3,
+`EffectPoll` 4, `Launch` 5, `Select` 6. The later tags are §12–§17.
+
+## 2. `bind` Codegen
+
+`bind :: (Fn [(IO a) (Fn [a] (IO b))] (IO b))` is an inline primitive
+(`compile_bind_inline`); it emits no call.
+
+```
+ptr = emit_alloc(32)            // tag, inner, cont, disposer
+store 2       at ptr + 16
+store l       at ptr + 24       // inner IO
+store r       at ptr + 32       // continuation
+store drop<a> at ptr + 40       // or 0
+return ptr
+```
+
+`bind` uses the uniform consuming convention (Decision 24):
+`compile_consuming_arg_list` increments a variable argument so its scope keeps
+its own reference, and a temporary transfers its existing reference. The node
+therefore owns exactly one reference to each of `l` and `r` with no increment
+inside the `bind` IR, and its teardown discharges both.
+
+## 3. Teardown of IO Nodes
+
+IO nodes are released by the runtime, not by glue derived per constructor. The
+drop-glue registry classifies `ADT(primitives/IO, [_])` as runtime-owned, and
+`drop<IO T>` decrements and, on the last reference, calls
+`runtime/free_io_node`; the body and its properties are
+[non-concrete-release-contract.md](non-concrete-release-contract.md) §5.4.
+
+`free_io_node` is the single intrinsics teardown tail. It discharges the fields
+selected by the tag and teardown disposition, then deallocates. An
+`Owned(glue)` `Pure` payload (through its witness) and an `Effect` thunk
+(through `drop_effect_thunk`) are discharged identically under both dispositions,
+because a force never transfers them. The
+[per-tag ownership table](../intrinsics/ownership-and-disposal.md#6-the-io-family)
+owns the other cases, including `Bind`'s transferred fields. An unforced
+`Effect` thunk is discharged without running. A forced `Launch` carries the
+`0` sentinel its move left (§15.5).
+
+## 4. Effect Thunk Mechanics
+
+The backend neither calls, reads nor frees an effect thunk. Its only contact
+with an `Effect` node is the fn-name stamp (§7.1). Everything else is
+platform-owned: how a thunk is boxed, borrowed on each force and discharged
+once at teardown, and how a panic is contained DLL-side
+(`design/platform/platform.md` §4.2; caller obligations in the rustdoc of
+`call_effect_thunk` and `drop_effect_thunk`).
+
+A captured Cranelisp heap value is held through `CLOwned<T>` for the life of the
+node, not of one force: it is released when the node is torn down, and each
+force runs the closure again. Author semantics are
+[total-concreteness.md](../arch/total-concreteness.md) §3.4 "`Effect` public API".
+
+## 5. Trampoline Architecture
+
+The trampoline is `cranelisp-intrinsics`' `cranelisp_run_io` and its async twin
+driven by the host reactor ([reactor.md](../intrinsics/reactor.md)). It forces
+the tree with an explicit continuation stack, so Rust stack depth stays `O(1)` in
+bind depth (`spec/10-io.md` §10.8.2), then releases the caller's tree through
+`consume_io_tree`. Its reference transitions — fresh-`Bind` descent, the `Pure`
+mint, the `Effect` borrow, and cancellation — are
+[ownership-and-disposal.md](../intrinsics/ownership-and-disposal.md) §7.
+
+### 5.1 The result-handoff layout
+
+The runtime must be able to dispose a produced value when cancellation or a
+fault prevents its handoff. The backend therefore emits the canonical `drop<a>`
+address on the edge that receives the result; `0` denotes a non-owning
+representation. These are private backend↔intrinsics layouts, not platform
+ABI:
 
 | Node | Payload after the 16-byte header |
 |---|---|
@@ -16,536 +189,90 @@ representation. These are private backend↔intrinsics layouts:
 | Select | `tag, branch_vec, common_result_disposer` |
 | Launch | `tag, launched_subtree, detached_result_disposer` |
 
-The disposer words are scalar function addresses and are never traversed by IO
-tree teardown. A produced value owns its disposer until the runtime explicitly
-transfers the value to a continuation, Par buffer, supervisor, or top-level
-caller. Cancellation and fault exits produce no value. This amendment changes
-no platform node constructor, `CLIO`/`Effect` layout, public Rust API,
-`ABI_VERSION = 10`, or `cranelisp_run_io(i64) -> i64`.
-
-Older sections retain their historical rationale, but any statement that these
-four nodes carry only their authored heap fields is superseded by this layout.
-
-## Overview
-
-The IO model is a deferred-execution system. When user code calls `(print "hello")`, no side effect occurs. Instead, an `Effect` node is allocated on the heap. When user code calls `(bind io cont)`, a `Bind` node links the IO computation with a continuation closure. The resulting IO tree is forced by the runtime trampoline, which walks the tree iteratively with an explicit continuation stack.
-
-This document covers:
-1. IO node heap layout and allocation (backend codegen responsibility)
-2. `bind` inline primitive codegen (backend responsibility)
-3. Drop glue for IO nodes (backend responsibility)
-4. Trampoline interpreter (runtime responsibility, `cranelisp-intrinsics`)
-5. Effect thunk mechanics (platform/runtime boundary)
-6. Integration points (batch entry and REPL eval, `/int` responsibility)
-
-## 1. IO Node Layout
-
-IO nodes are heap-allocated ADTs participating in the standard RC system. They use the same `HeapHeader` as all other heap objects (see `ring2-rc.md` §1):
-
-```
-HeapHeader: [alloc_size: i64 (offset 0) | rc: i64 (offset 8)]
-```
-
-Three node types, discriminated by tag at offset 16:
-
-### 1.1 Pure Node (tag = 0)
-
-A completed value. Created by `(Pure x)` — the `Pure` constructor, which is an ordinary ADT data constructor.
-
-**S121 (FIXME 0934): `Pure` is a TWO-field allocation.** Layout ruled by `/arch` at `design/arch/total-concreteness.md` §3.4 and `design/arch/interfaces.md` §"IO Tag Constants"; the C4 half is `s121-c4-visit.md` §6. `ABI_VERSION` 9→10 gates it (C7's visit). The separate private result-handoff amendment above also widens Bind, Par, Select, and Launch; it does not change a platform-authored node or the ABI.
-
-```
-[header(16) | tag=0 (8) | payload (8) | payload_glue (8)]
- offset 0     offset 16   offset 24     offset 32
- alloc_size = 40
-```
-
-- `payload` (offset 24): the completed value, any Cranelisp type as i64. **Unmoved** — every existing *read* (`FIELD_0_OFFSET` in the trampoline, `consume_io_tree`, `io_observer`) and every pattern match binding field 0 is untouched. Unchanged reads do not make the run lane byte-identical: it gains one word store per transferring seam (§3.1).
-- `payload_glue` (offset 32): a **hidden** self-description word, never a language-visible field (IO mints no accessors). It is the closure `DROP_GLUE_PTR` precedent (Decision 0011), not a header type-word — R15 stands.
-
-**What the word means, exactly.** *This node still owns its payload, and this is how to discharge it.* Zero means there is nothing here to discharge, and zero has exactly two sources with the same meaning: a non-heap payload (known at the stamp site, which also closes the wild-write-on-scalar hazard by construction), or a payload whose ownership has already left the node on the run lane. It is an **ownership witness**, not a type description: reading it as "the payload's type" would force a run-lane/teardown-lane coordination rule, whereas a witness answers per node. The witness must be *maintained*, so the run lane clears it on transfer (§3.1) — required by Decision-24 sequencing, not by reference sharing.
-
-**Stamp (produce side) — four sanctioned sites, three construction plus one adoption.** Every `Pure` *construction* site is concrete post-mono (I-FRAME) and every one is compiled code — the in-tree runtime only reads `Pure` nodes, never allocates them. The three construction sites are the inline concrete `ConstrADT` lowering, the resolved-constructor `Apply` path, and the value-position constructor wrapper body. Each holds the constructed value's concrete type, asks the drop-glue registry for the payload's glue exactly as a release site would, and appends `func_addr` of that same `FuncId` — or `iconst 0` when the registry declines — as one additional field value. The tag-and-fields emitter is unchanged and is never given a type; `payload_size(2)` follows. No new release identity is minted. A stack-placed `Pure` (`NoEscape` ∧ scalar payload) always carries the sentinel `0`.
-
-The **fourth** site is the platform-return adoption stamp (`/arch`, `design/arch/total-concreteness.md` §3.4 "the platform-return seam", 2026-09-01; C4 half at `s121-c4-visit.md` §6.7). A platform DLL constructs `Pure` through `CLIO::pure` and structurally cannot name a glue address, so it writes the sentinel `0`; the backend overwrites it at the ABI crossing with the same canonical `drop<T>` for the `T` of the callee's `(Fn […] (IO T))` scheme. It is a *store* rather than a field value because the node already exists, and it is licensed by the returned node's **tag**, not by the callee's kind — see §7.
-
-
-
-Allocation otherwise unchanged: standard ADT data constructor path, data constructor calling convention (see `ring2-rc.md` §3.3) — no RC adjustments at the call site.
-
-### 1.2 Effect Node (tag = 1)
-
-A deferred side effect containing an opaque thunk pointer. Created by platform functions via `CLIO::effect()`.
-
-```
-[header(16) | tag=1 (8) | thunk_ptr (8) | resource_token (8)]
- offset 0     offset 16   offset 24       offset 32
- total: 40 bytes
- alloc_size = 40
-```
-
-- `thunk_ptr` (offset 24): double-boxed Rust closure pointer (`Box<Box<dyn FnOnce() -> i64>>`).
-- `resource_token` (offset 32): i64 for parallel scheduling (0 = unrestricted). Not used in Sprint 16 (no `Par` node), but included in the layout from the start to avoid a layout-breaking change when auto-scheduling lands.
-
-Allocation: Effect nodes are allocated by platform DLL code using the host allocator callback, not by JIT-compiled Cranelisp code. The platform crate's `CLIO::effect()` method calls `get_global_alloc()(24)` to allocate 24 bytes of payload (3 fields x 8 bytes), stores the tag, thunk pointer, and resource token. The host allocator adds the 16-byte header, so total allocation is 40 bytes.
-
-**Critical**: The thunk pointer is NOT a Cranelisp heap value. It is a raw Rust `Box` pointer. The RC system does not manage it. Ownership semantics are different from normal fields (see §3.2 and §4).
-
-### 1.3 Bind Node (tag = 2)
-
-A chain linking an inner IO computation with a continuation closure. Created by the `bind` inline primitive.
-
-```
-[header(16) | tag=2 (8) | inner_io (8) | cont (8) | input_disposer (8)]
- offset 0     offset 16   offset 24      offset 32  offset 40
- total: 48 bytes
- alloc_size = 48
-```
-
-- `inner_io` (offset 24): pointer to another IO node (Pure, Effect, or Bind).
-- `cont` (offset 32): pointer to a Cranelisp closure `(Fn [a] (IO b))`.
-- `input_disposer` (offset 40): canonical `drop<a>` address, or zero when `a`
-  owns no heap value. The runtime arms it only after the inner IO produces.
-
-Allocation: inline by the `bind` primitive codegen (see §2).
-
-**Bind is internal**: the typechecker marks Bind's `ConstructorInfo` with `internal: true`. User code cannot construct or pattern-match on Bind. Only the `bind` inline primitive creates Bind nodes, and only the trampoline reads them.
-
-### 1.4 Tag Constants
-
-Defined in `cranelisp-platform` (shared between platform DLLs and runtime):
-
-```rust
-pub const IO_TAG_PURE: i64 = 0;
-pub const IO_TAG_EFFECT: i64 = 1;
-pub const IO_TAG_BIND: i64 = 2;
-// IO_TAG_PAR (tag=3) deferred to auto-scheduling sprint
-```
-
-These match the ADT constructor definition order in the compiler-seeded IO type. The backend uses these constants when emitting `bind` codegen; the runtime uses them in the trampoline dispatch.
-
-## 2. `bind` Codegen
-
-`bind` is an inline primitive: `bind :: (Fn [(IO a) (Fn [a] (IO b))] (IO b))`. It produces no function call. The backend emits IR directly into the caller's function body.
-
-### 2.1 IR Sequence
-
-Given compiled argument values `l` (inner IO) and `r` (continuation closure):
-
-```
-// 1. Allocate Bind node: 32 bytes payload
-ptr = call emit_alloc(32)
-
-// 2. Store fields
-store tag=2    at ptr + 16    // TAG_OFFSET
-store l        at ptr + 24    // inner_io field
-store r        at ptr + 32    // cont field
-store drop<a>  at ptr + 40    // input disposer, or 0
-
-// 3. RC: consuming arguments transfer into the Bind node. Variable arguments
-// were already incremented by argument compilation; temporaries move at rc=1.
-
-// 4. Return ptr
-```
-
-### 2.2 Consuming ownership transfer
-
-The Bind node takes ownership of both `l` (inner IO) and `r` (continuation).
-Consuming argument compilation increments a variable before the store and lets a
-fresh temporary transfer its existing reference. The node therefore owns one
-reference to each field without an unconditional second increment. Its drop
-path discharges both owning fields; `input_disposer` is scalar metadata.
-
-### 2.3 Calling Convention
-
-Under Decision 24 (Sprint 56 Step 2c), `bind` uses the **uniform consuming convention**. The caller compiles arguments via `compile_consuming_arg_list`, which incs heap-typed Var args so the Var's scope retains its reference; temporary args transfer directly (no caller action). The Bind node owns its two field references.
-
-**Historical note**: prior to Decision 24, `bind` was classified as a borrowing inline primitive — the caller used `compile_arg_list` (no per-arg inc) and emitted a caller-side `dec_temporary_args` after the IR. The `bind` IR inc'd both args explicitly because it was nominally borrowing. The consuming convention subsumes that behaviour: the caller's inc for Var args is performed once by `compile_consuming_arg_list`, and the explicit inc inside the `bind` IR is NO LONGER needed — the Bind node's field-store now inherits ownership from the consuming arg list directly. See `compile_bind_inline` in `crates/cranelisp-backend/src/compiler/apply.rs` — the "no explicit inc needed" comment reflects the Decision 24 state.
-
-- **Variable argument `l`** (e.g., `(bind some-io cont)`): `compile_consuming_arg_list` incs `l`. The Bind node stores the inc'd reference; the Var's scope retains its original reference. Correct.
-- **Temporary argument `l`** (e.g., `(bind (print "hello") cont)`): no inc from the caller (it is not a Var). The temporary's rc=1 transfers directly into the Bind node's field. Correct.
-
-The same reasoning applies symmetrically to `r`.
-
-## 3. Drop Glue for IO Nodes
-
-IO nodes are ADTs, so their drop glue follows the standard ADT drop glue mechanism (see `ring2-rc.md` §4.2). However, each constructor has different field cleanup requirements.
-
-### 3.1 Pure Drop Glue
-
-> **S121: IO teardown is RUNTIME-DIRECTED and this section is superseded.**
-> The paragraph below describes deriving `Pure`'s field discharge from the IO
-> type parameter at the dec site — which is exactly what could not be done
-> (`non-concrete-release-contract.md` §4 face 4: `Bind`'s existential defeats
-> per-concrete glue derivation, and every release of a concrete `IO T` hard-
-> refused). Retained as the record of the pre-S121 model.
->
-> **The live shape** (`s121-c4-visit.md` §6.4): the registry classifies
-> `ADT(primitives/IO, [T])` as runtime-owned, and `drop<IO T>` is a fixed body,
-> the same for every `T` —
->
-> ```
-> if p < NULLARY_TAG_THRESHOLD: return
-> old = atomic_rmw sub [p+RC_OFFSET], 1
-> if old != 1: return
-> fence
-> call runtime/free_io_node(p)
-> ```
->
-> — no tag test, no `drop<T>` call, no per-`T` specialisation. `free_io_node`
-> (the intrinsics tail half of `consume_io_tree`, split at the dec) walks the
-> tags and discharges **every** `Pure` in the tree, nested ones included: it
-> reads the stamped `payload_glue` word at field 1 / offset 32 (§1.1) and, when
-> that is non-zero, calls through it with the field-0 payload value (offset 24).
-> `ctor_shapes` is not reached for `primitives/IO`, so its identity check stays
-> exactly as it is. The per-concrete-type glue *name* is retained even though
-> the bodies coincide across `T`: `drop_glue_symbol_name` stays the sole
-> identity authority.
->
-> **Run lane — reads unchanged, but NOT byte-identical.** The trampoline
-> extracts the payload (ownership transfers onward) and releases the node
-> shallowly; it never calls the glue. Its field-0 reads are untouched, and what
-> it gains is one plain aligned word store: it **clears the glue word before
-> transferring**, at that seam and no other. The teardown reader observes the
-> clear over whichever of three happens-before edges the path supplies —
-> same-strand program order; the clear sequenced before the clearing strand's
-> own Release dec, with teardown behind the zero-observing dec's Acquire fence;
-> or, for a `Par` worker that clears a caller-owned node it never decs, the
-> `oneshot`/rayon join the branch result already rides. The Release-dec edge
-> alone is the fresh path's argument and does not reach the branch clear.
->
-> **The clear is required, not defensive, and the reason is Decision 24 rather
-> than sharing.** `cranelisp_run_io` forces the caller's tree non-consumingly and
-> then hands the *same* tree to `consume_io_tree`
-> (`crates/cranelisp-intrinsics/src/io.rs:84-94`), so one teardown walk covers
-> both the `Pure` nodes the run lane extracted and the ones it never reached —
-> one tree, one reference, no sharing needed. Per-node lane exclusivity is false
-> here; discharge-exactly-once holds per witnessed *obligation*. That is the
-> Launch §15.5 field-0 sentinel mechanism applied to field 1, and its site is
-> `/design`(intrinsics)'s. Full statement: `s121-c4-visit.md` §6.2.
-
-When a Pure node reaches rc=0:
-1. Load `value` from offset 24.
-2. If `value`'s type is heap-typed, emit `rc_dec` on it (guarded for Mixed types).
-3. Free the Pure node.
-
-In practice, Pure nodes carry the inner value's type information via `expr_types`. The type of the `value` field is the type parameter `a` in `IO a`. At codegen time, the exact inner type may not be statically known at the dec site (the dec may come from generic scope cleanup). The drop glue must handle this:
-
-- If the IO type is `IO Int` or `IO Bool`: the value field is `NeverHeap`, no dec needed.
-- If the IO type is `IO String` or `IO (Fn ...)`: the value field is `AlwaysHeap`, unconditional dec.
-- If the IO type is `IO (Option T)`: the value field is `Mixed`, guarded dec.
-- If the IO type parameter is unresolved (polymorphic `IO a`): treat as `Mixed` (conservative).
-
-### 3.2 Effect Drop Glue
-
-When an Effect node reaches rc=0:
-1. The `thunk_ptr` field is **NOT dec'd**. It is not a Cranelisp heap value — it is a raw `Box<Box<dyn FnOnce() -> i64>>` pointer owned by Rust.
-2. The `resource_token` field is a plain i64 — no cleanup needed.
-3. Free the Effect node.
-
-**The thunk's lifetime is managed by the trampoline, not by RC.** When the trampoline processes an Effect node, it calls `call_effect_thunk(thunk_ptr)`, which does `Box::from_raw(thunk_ptr)` to reclaim ownership and invoke the closure. This consumes the thunk. If an Effect node is dropped without being forced (e.g., `(if cond (print "a") (print "b"))` — the unchosen branch's Effect is dropped), the thunk is leaked. This is a known, acceptable trade-off: thunk leaks are bounded by the program's IO tree structure, and adding a Rust-side destructor would require the drop glue to call into a Rust function with knowledge of the double-box layout, which crosses the backend/platform boundary inappropriately.
-
-**Sprint 16 note**: For the initial implementation, this leak is acceptable. If measurement shows it matters, a future sprint can add a `drop_effect_thunk` extern that the Effect drop glue calls. This is an additive change (new extern + new drop glue branch) that does not affect the existing architecture.
-
-### 3.3 Bind Drop Glue
-
-When a Bind node reaches rc=0:
-1. Load `inner_io` from offset 24. Emit `rc_dec` (guarded for Mixed — the inner IO could be a bare nullary tag in theory, though IO nodes are always heap-allocated in practice; the guard is for safety).
-2. Load `cont` from offset 32. Emit `emit_closure_dec_inline` — the continuation is a closure, so its drop path follows the standard closure drop glue protocol (load `drop_glue_ptr` from closure offset 24, call if non-zero, then dealloc).
-3. Free the Bind node.
-
-### 3.4 Drop Glue Generation Strategy
-
-IO is a standard ADT with three data constructors. The existing ADT inline drop glue mechanism (`emit_inline_drop_glue`) handles it: load the tag, branch to the correct constructor's cleanup block.
-
-However, the Effect constructor's thunk field requires special handling (skip dec). This is implemented by classifying the `thunk_ptr` field as `NeverHeap` in the type system — the field type is opaque (i64 from the compiler's perspective), not a Cranelisp heap type. The `resource_token` field is also `NeverHeap` (plain i64). This means the existing drop glue generation produces correct code for Effect nodes without any special-casing: it simply finds no heap-typed fields and emits no dec operations.
-
-For Pure: the `value` field's heap category depends on the IO type parameter.
-For Bind: `inner_io` is `AlwaysHeap` (it is always a pointer to an IO node), `cont` is `AlwaysHeap` (it is always a closure pointer).
-
-## 4. Effect Thunk Mechanics
-
-### 4.1 Double-Boxing
-
-Platform functions create effect thunks by double-boxing a Rust closure:
-
-```rust
-let thunk: Box<Box<dyn FnOnce() -> i64>> =
-    Box::new(Box::new(move || { /* side effect */ result }));
-let thunk_ptr = Box::into_raw(thunk) as i64;
-```
-
-The inner `Box<dyn FnOnce() -> i64>` is a fat pointer (16 bytes on 64-bit). The outer `Box` wraps it to produce a thin pointer (8 bytes) that fits in a single i64 field.
-
-### 4.2 Thunk Consumption
-
-The trampoline calls `call_effect_thunk` to execute and reclaim the thunk:
-
-```rust
-pub unsafe fn call_effect_thunk(thunk_ptr: i64) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> i64>> =
-        Box::from_raw(thunk_ptr as *mut Box<dyn FnOnce() -> i64>);
-    (*thunk)()
-}
-```
-
-`Box::from_raw` reclaims ownership of the outer box. Dereferencing and calling the inner `FnOnce` consumes it. After `call_effect_thunk` returns, both boxes are dropped. The thunk is consumed exactly once.
-
-### 4.3 Captured Value RC
-
-Platform functions that capture Cranelisp heap values (e.g., the string argument to `print`) must ensure those values stay alive until the thunk executes. The `cranelisp-platform` crate provides `CLOwned<T>` for this:
-
-```rust
-pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-    let owned = s.own();  // CLOwned::new(s) — calls inc_rc
-    CLIO::effect(move || {
-        println!("{}", owned.as_str());
-        // owned dropped here — calls dec_rc
-        CLInt::from(0i64)
-    })
-}
-```
-
-`CLOwned::new(val)` calls `val.inc_rc()` on creation. When the closure executes, `owned` is moved into the closure body. When the closure's Rust `Drop` runs (after the thunk is consumed), `CLOwned::drop` calls `val.dec_rc()`. This ensures the captured string is live for the entire thunk lifetime.
-
-### 4.4 Single-Execution Invariant
-
-Each Effect node's thunk MUST be executed at most once. The `FnOnce` trait enforces this at the Rust level. The backend must not emit code that could force the same Effect node twice. This is naturally satisfied because:
-
-1. The trampoline processes each node once and advances to the next.
-2. IO trees are structurally trees (not DAGs with shared nodes) — each `bind` creates a fresh Bind node pointing to its arguments.
-3. Bind nodes cannot be user-constructed, so users cannot create sharing in the IO tree.
-
-If an Effect node is dropped without being forced (unchosen branch), its thunk is not executed and is leaked (see §3.2).
-
-## 5. Trampoline Architecture
-
-The trampoline lives in `cranelisp-intrinsics` (the backend-emitted runtime library; former `cranelisp-runtime`, split at D43). It is the `cranelisp_run_io` extern function, called from JIT-compiled code (batch entry) or from the Rust REPL loop (direct call). See `design/intrinsics/reactor.md`.
-
-### 5.1 Algorithm
-
-```rust
-pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
-    let mut cont_stack: Vec<i64> = Vec::new();  // stack of continuation closure pointers
-    let mut current: i64 = io_ptr;
-
-    loop {
-        let tag = unsafe { *(current as *const i64) };  // offset 16 from base... see note below
-        match tag {
-            IO_TAG_PURE => {
-                let val = unsafe { *((current as *const i64).add(1)) };
-                match cont_stack.pop() {
-                    Some(cont_ptr) => {
-                        // Call continuation: code_ptr(env_ptr, val) -> IO ptr
-                        let code_ptr = unsafe { *(cont_ptr as *const i64) };
-                        let call: extern "C" fn(i64, i64) -> i64 =
-                            unsafe { transmute(code_ptr as *const ()) };
-                        current = call(cont_ptr, val);
-                    }
-                    None => return val,
-                }
-            }
-            IO_TAG_EFFECT => {
-                let thunk_ptr = unsafe { *((current as *const i64).add(1)) };
-                let result = unsafe { call_effect_thunk(thunk_ptr) };
-                match cont_stack.pop() {
-                    Some(cont_ptr) => {
-                        let code_ptr = unsafe { *(cont_ptr as *const i64) };
-                        let call: extern "C" fn(i64, i64) -> i64 =
-                            unsafe { transmute(code_ptr as *const ()) };
-                        current = call(cont_ptr, result);
-                    }
-                    None => return result,
-                }
-            }
-            IO_TAG_BIND => {
-                let inner = unsafe { *((current as *const i64).add(1)) };
-                let cont = unsafe { *((current as *const i64).add(2)) };
-                cont_stack.push(cont);
-                current = inner;
-            }
-            _ => panic!("cranelisp_run_io: unknown IO tag {}", tag),
-        }
-    }
-}
-```
-
-**Pointer convention note**: The pseudocode above reads from the payload directly (tag at `ptr.add(0)`, fields at `ptr.add(1)`, etc.). This assumes the pointer passed to the trampoline is a **payload pointer** (pointing past the header). In the reimplementation's base-pointer ABI (arch decision 10), the base pointer points to offset 0 (where `alloc_size` lives). The trampoline must add the header size (16 bytes) to get to the payload:
-
-```rust
-let payload = io_ptr + 16;  // skip HeapHeader
-let tag = unsafe { *(payload as *const i64) };
-let field_0 = unsafe { *((payload as *const i64).add(1)) };
-let field_1 = unsafe { *((payload as *const i64).add(2)) };
-```
-
-Alternatively, the trampoline can use the ADT field offset constants (`TAG_OFFSET = 16`, `FIELDS_START = 24`):
-
-```rust
-let tag = unsafe { *((io_ptr + TAG_OFFSET) as *const i64) };
-let field_0 = unsafe { *((io_ptr + FIELDS_START) as *const i64) };
-let field_1 = unsafe { *((io_ptr + FIELDS_START + 8) as *const i64) };
-```
-
-The second form is preferred — it uses the same constants as the backend codegen, ensuring consistency.
-
-### 5.2 Properties
-
-- **Iterative**: no recursive calls. Stack depth is O(1) in the Rust call stack.
-- **Continuation stack**: `Vec<i64>` grows proportionally to the depth of left-nested `bind` chains, which corresponds to the number of `bind!`/`do` steps in the program. This is typically small (tens to hundreds).
-- **No RC operations**: The trampoline reads IO node fields by raw pointer. It does not inc or dec IO nodes. The IO tree must stay live during the trampoline run (see §6).
-- **Effect dispatch**: Effects execute inline in the trampoline loop. The `call_effect_thunk` function reclaims and calls the thunk, performing the side effect.
-- **Continuation calling**: When a continuation is called, it produces a new IO tree (the continuation closure is a `(Fn [a] (IO b))`). The trampoline replaces `current` with this new tree and continues the loop.
-
-### 5.3 Continuation Representation
-
-Continuations on the stack are Cranelisp closure pointers. A continuation closure has the standard `HeapClosure` layout:
-
-```
-[header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
-```
-
-When calling a continuation, the trampoline:
-1. Loads `code_ptr` from the closure's offset 16 (CODE_PTR_OFFSET).
-2. Calls `code_ptr(closure_ptr, val)` — passing the closure itself as the first argument (the environment pointer) and the Pure/Effect result as the second argument.
-3. The return value is a new IO tree pointer, which becomes `current`.
-
-The trampoline does not dec the continuation closure after calling it. The continuation was inc'd when stored in the Bind node (§2.1). The Bind node's drop glue will dec it when the Bind node is freed. Since the trampoline does not touch RC at all, the continuation stays alive as long as the Bind node (and therefore the IO tree) stays alive.
-
-## 6. IO Tree Liveness Invariant
-
-**The IO tree must remain live (RC > 0) for the duration of the trampoline run.** The trampoline reads fields by raw pointer without participating in RC. If the tree were freed mid-trampoline, the trampoline would read freed memory.
-
-### 6.1 Batch Mode
-
-In batch mode, `main()` returns an IO tree pointer. The integration layer (`/int`) calls `cranelisp_run_io(result)`. The `result` is the return value of the JIT-compiled `main` function. It is live on the Rust stack (or in a register) for the duration of the `cranelisp_run_io` call. No scope cleanup runs between `main()` returning and the trampoline completing, so the tree remains live.
-
-After the trampoline returns, the batch program exits. The IO tree is not explicitly freed — process exit reclaims all memory.
-
-### 6.2 REPL Mode
-
-In REPL mode, the eval function returns an IO tree pointer. The REPL loop detects the `IO` type, calls `IoTask::from_raw(result).run()` (the Rust-side entry to the trampoline), then formats the inner result for display. The `result` value is live in the REPL loop's local variable for the duration of the trampoline call.
-
-After the trampoline returns, the REPL displays the result. The IO tree is then subject to normal cleanup when the REPL loop iteration ends. The IO tree's RC reaches 0 and drop glue runs, freeing the tree nodes. This is safe because the trampoline has already completed.
-
-### 6.3 Intermediate IO Trees
-
-When the trampoline calls a continuation, the continuation produces a *new* IO tree. This new tree is a return value from a JIT-compiled function and has rc=1 (freshly allocated). It becomes `current` in the trampoline loop.
-
-The *old* Bind node (whose continuation just ran) is still alive — it is part of the original IO tree, which is still referenced by the top-level `result` variable. The old Bind node references the continuation and the inner IO, both of which may still be needed (the continuation just ran, but the inner IO was already processed). None of these are freed during the trampoline run because the top-level reference to the tree root keeps the entire tree alive.
-
-After the trampoline finishes and the top-level reference is dropped, the entire tree is freed via cascading drop glue: root Bind dec's its inner and cont, which may cascade to nested Bind nodes, which dec their inners and conts, eventually reaching Pure and Effect leaf nodes.
+Disposer words are scalar function addresses and are never traversed by
+teardown. A produced value owns its disposer until the runtime explicitly
+transfers the value to a continuation, `Par` buffer, supervisor or top-level
+caller; cancellation and fault exits produce no value. The runtime's side is
+[ownership-and-disposal.md](../intrinsics/ownership-and-disposal.md) §7
+"Result-handoff disposal authority".
+
+### 5.2 Continuation Representation
+
+A continuation is a standard `HeapClosure` (`[header | code_ptr | drop_glue_ptr
+| captures…]`). The trampoline calls `code_ptr(closure, value)` and the
+returned IO tree becomes the current node. The continuation reference is owned
+by its `Bind` node (§2) or, after fresh descent, by the trampoline frame; the
+backend emits nothing at the call.
+
+## 6. IO Tree Liveness
+
+The backend's obligation is to hand the runtime an owned tree reference and not
+release it concurrently. `cranelisp_run_io` consumes the caller's reference: it
+forces the tree while holding it and then releases it through
+`consume_io_tree`. A forcing lane only reads a node while it holds a counted
+reference to it ([ownership-and-disposal.md](../intrinsics/ownership-and-disposal.md)
+§6.1–§6.2). The batch entry and the REPL invoke the same runtime entry
+(`design/int/io-integration.md`).
 
 ## 7. Platform Dispatch
 
-The trampoline does not know which platform function an Effect represents. Effect thunks are opaque: they capture the platform function pointer and its arguments inside the closure.
+The trampoline does not know which platform function an `Effect` represents;
+the thunk captures the function and its arguments.
 
 ### 7.1 How Effects Are Created
 
-When user code calls `(print "hello")`:
+For `(print "hello")`:
 
-1. The compiler resolves `print` as a platform function with `PrimitiveKind::PlatformEffect`.
-2. Codegen emits a call to the platform function's native symbol (e.g., `cranelisp_print`), passing the arguments per the C ABI.
-3. The platform function (`print_string` in `cranelisp-stdio`) receives the arguments, creates a `CLOwned` handle for any heap captures, and returns `CLIO::effect(closure)`.
-4. `CLIO::effect()` double-boxes the closure, allocates an Effect node via the host allocator, stores tag=1, thunk_ptr, and resource_token=0.
-5. The Effect node pointer (as i64) is returned to the JIT-compiled code.
-6. The backend stamps the returned node — **dispatched on the node's tag, not on the callee's kind** (`/arch`, `design/arch/total-concreteness.md` §3.4, S121; C4 half at `s121-c4-visit.md` §6.7). `IO_TAG_EFFECT` ⇒ the fn-name handle at payload offset 24 (abs 40), value-identical to the pre-S121 unconditional store; `IO_TAG_PURE` ⇒ the payload-glue adoption stamp at abs 32 (§1.1), in-bounds at `ABI_VERSION` ≥ 10; any other tag ⇒ no write. Before S121 the store fired on `DefKind::PlatformEffect` alone and was out of bounds for a `Pure` return at every ABI version — latent, since no in-tree platform fn returns `Pure`, but `CLIO::pure` is published author surface. Register row R19, `design/arch/safety-invariants.md` §4.
+1. The compiler resolves `print` as a platform function
+   (`PrimitiveKind::PlatformEffect`).
+2. Codegen emits a GOT-indirect call to its native symbol per the C ABI.
+3. The platform function captures any heap arguments through `CLOwned` and
+   returns `CLIO::effect(closure)`, which allocates the `Effect` node through
+   the host allocator.
+4. The backend stamps the returned node, dispatched on the node's **tag**, not
+   on the callee's kind
+   ([non-concrete-release-contract.md](non-concrete-release-contract.md) §5.5):
+   `IO_TAG_EFFECT` ⇒ the fn-name handle at absolute offset 40; `IO_TAG_PURE` ⇒
+   the payload-glue adoption stamp at absolute offset 32 (§1.1); any other tag ⇒
+   no write. Register row R19, `design/arch/safety-invariants.md` §4.
 
 ### 7.2 How Effects Are Executed
 
-When the trampoline encounters an Effect node:
-
-1. Loads `thunk_ptr` from offset 24.
-2. Calls `call_effect_thunk(thunk_ptr)`.
-3. Inside `call_effect_thunk`: `Box::from_raw` reclaims the outer box, dereferences to get the `FnOnce`, calls it.
-4. The closure body executes the actual side effect (e.g., `println!`).
-5. The closure returns the result value as i64.
-6. `call_effect_thunk` returns the result to the trampoline.
-7. The trampoline proceeds as with Pure (pop continuation or return).
+The runtime reads `thunk_ptr` and calls `call_effect_thunk`, which borrows the
+thunk and returns its `EffectOutcome`; the node keeps the thunk, so the same
+node may be forced again. The result then proceeds as a `Pure` value would. The
+backend emits nothing on this path.
 
 ### 7.3 Platform Function Registration
 
-Platform functions are registered in the JIT module as extern symbols. The `PlatformManifest` provides the mapping from Cranelisp names (e.g., `"print"`) to native symbol names (e.g., `"cranelisp_print"`) with type signatures and scheduling class. The integration layer (`/int`) loads the platform DLL, reads the manifest, and registers each function in the typechecker (as `PrimitiveKind::PlatformEffect`) and the JIT (as an extern symbol).
+The integration layer loads the platform DLL, reads its `PlatformManifest`
+(Cranelisp name, native symbol, type signature, scheduling class) and registers
+each function in the typechecker as `PrimitiveKind::PlatformEffect` and in the
+JIT as an extern symbol.
 
-## 8. `cranelisp_run_io` Extern
+## 8. Rejected Alternatives
 
-### 8.1 Signature
+### 8.1 Recursive Interpreter
 
-```rust
-/// Force an IO task tree to completion.
-///
-/// Takes a base pointer to a heap-allocated IO node (Pure/Effect/Bind).
-/// Returns the final result value (i64).
-///
-/// # Safety
-/// `io_ptr` must be a valid base pointer to an IO node with rc > 0.
-/// The IO tree must remain live for the duration of this call.
-#[unsafe(no_mangle)]
-pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64
-```
+A recursive `run_io` would overflow the Rust stack for deep IO chains, against
+`spec/10-io.md` §10.8.2.
 
-### 8.2 Crate Location
+### 8.2 Effect Thunk as Cranelisp Closure
 
-Lives in `cranelisp-intrinsics` (the backend-emitted runtime library; former `cranelisp-runtime`, split at D43). Registered as a JIT builder symbol so it can be called from JIT-compiled code (batch entry stub) or called directly from Rust (REPL loop).
+Platform DLLs would have to construct Cranelisp closures against the
+`HeapClosure` layout, coupling platform authors to it. The platform-owned
+boxed thunk keeps platform code in safe Rust behind `CLIO::effect*`.
 
-### 8.3 Dependencies
-
-- `cranelisp-platform::call_effect_thunk` — to execute effect thunks.
-- `cranelisp-platform::{IO_TAG_PURE, IO_TAG_EFFECT, IO_TAG_BIND}` — tag constants.
-- ADT layout constants from `cranelisp-types` or `cranelisp-backend` — `TAG_OFFSET`, `FIELDS_START`.
-
-The runtime crate already depends on `cranelisp-platform` (for `call_effect_thunk`). The layout constants should be in `cranelisp-types` (data-only, stable) since they are shared between the backend (codegen) and the runtime (trampoline).
-
-### 8.4 Batch Invocation
-
-The integration layer compiles `main()`, checks its return type. If it is `IO _`:
-
-```rust
-let result = main_fn();
-let inner_val = cranelisp_run_io(result);
-// Use inner_val as exit code (if Int) or default 0
-```
-
-### 8.5 REPL Invocation
-
-The REPL loop compiles and executes an expression. If the result type is `IO _`:
-
-```rust
-let result = eval_fn();
-if matches!(&resolved_type, Type::ADT(name, _) if name.as_ref() == "IO") {
-    let inner_val = unsafe { cranelisp_run_io(result) };
-    // Display inner_val with inner type
-}
-```
-
-## 9. Rejected Alternatives
-
-### 9.1 Recursive Interpreter
-
-A recursive `run_io` that directly recurses on Bind nodes would overflow the Rust call stack for deep IO chains (e.g., an IO loop reading 100K lines). The spec (10.8.2) explicitly requires O(1) call stack depth. The iterative trampoline with explicit continuation stack satisfies this.
-
-### 9.2 Trampoline Owns RC
-
-An alternative where the trampoline inc's nodes before processing and dec's after would add RC overhead on every trampoline iteration. Since the IO tree is already held alive by the caller's reference, trampoline-level RC is unnecessary. The current design (trampoline does not touch RC) is simpler and faster.
-
-### 9.3 Effect Thunk as Cranelisp Closure
-
-Instead of a Rust `Box<Box<dyn FnOnce()>>`, effect thunks could be Cranelisp closures. This would integrate with RC naturally but would require platform DLLs to construct Cranelisp closures from C code, which is fragile and couples platform authors to the HeapClosure layout. The double-boxed Rust closure approach keeps platform code in safe Rust (via `CLIO::effect()`) and is well-isolated.
-
-### 9.4 Separate Drop Path for Effect Thunks
-
-Adding a `drop_effect_thunk` extern that the Effect node's drop glue calls (to properly free leaked thunks from unchosen branches) was considered but deferred. The leak is bounded (one thunk per unchosen branch, freed at process exit), and adding the extern adds a cross-crate dependency from the drop glue (emitted by backend) to a runtime function. This can be added later as an additive change if measurement shows the leak matters.
-
-## 10. Summary of Responsibilities
+## 9. Summary of Responsibilities
 
 | Component | Responsibility |
 |---|---|
-| `/typecheck` | Seeds IO ADT (Pure/Effect/Bind) in `primitives` module. Marks Bind as internal. Types `bind` as inline primitive. |
-| `/backend` | Emits `bind` codegen (allocate Bind node, store fields, inc both args). Generates ADT drop glue for IO nodes. Registers `cranelisp_run_io` as a JIT symbol. |
-| `/platform` | Provides `CLIO::effect()`, `call_effect_thunk()`, IO tag constants, `CLOwned<T>` for capture RC. |
-| `cranelisp-intrinsics` | Implements `cranelisp_run_io` — the iterative trampoline (backend-emitted runtime library). |
-| `/int` | Calls trampoline at batch entry and REPL eval. Detects `IO` return type. Platform DLL loading. |
-| `/stdlib` | Provides `pure` (wraps in Pure), `do`/`bind!` macros (expand to `bind` calls). |
+| typecheck | Seeds the IO ADT in `primitives`; marks `Bind` internal; types `bind` as an inline primitive |
+| backend | IO node construction and `bind` codegen; the four `Pure` stamp sites and the `Effect` fn-name stamp; result-handoff disposers; `drop<IO T>` calling `runtime/free_io_node` |
+| platform | `CLIO::effect*`/`CLIO::pure`, the thunk's representation, `call_effect_thunk`, `drop_effect_thunk`, tag and offset constants, `CLOwned<T>` |
+| intrinsics | The trampoline, its reference transitions, and `free_io_node` teardown |
+| int | Invokes the runtime at batch entry and REPL eval; loads platform DLLs |
+| stdlib | `pure`, and the `do`/`bind!` macros over `bind` |
 
 ## 12. Poll-shape Effect node construction — the backend poll-construction arm (S94, effect-concurrency slice 2)
 
@@ -576,7 +303,7 @@ The poll-shape arm is structurally different — it **does not call the platform
 |---|---|---|
 | Effect fn role | **called** at the site; returns the node | **loaded** from the GOT; baked as the node's `code_ptr`; called later by the trampoline's `EffectPoll::poll` |
 | Who builds the node | the platform DLL (host-opaque thunk) | the **backend**, in-process, as a host-built state-closure |
-| Node field-0 | thunk_ptr (a `Box<Box<dyn FnOnce>>`) | a **state-closure** pointer in the standard `HeapClosure` layout |
+| Node field-0 | thunk_ptr (a platform-owned boxed `Fn` thunk, §1.2) | a **state-closure** pointer in the standard `HeapClosure` layout |
 | Args | passed in the C-ABI call | **marshaled as closure captures** (poll takes only `(state, host, waker)`) |
 | Result | returned by the call | written by the poll-fn into a **reserved result slot** in the closure env; read generically by `EffectPoll` on `Poll::Ready` |
 | `HostCtx`/`Waker` | n/a | supplied by the **trampoline** at poll time, never at the backend site |
@@ -778,7 +505,7 @@ The state-closure's `drop_glue_ptr` is the **primary** teardown path: generated 
 backend exactly as `build_closure_drop_glue` (`lambda.rs`) — it dec's each heap-typed
 arg capture. The result slot is a plain i64 written by the poll-fn; whether it needs a
 dec depends on the effect's result type (`AlwaysHeap`/`Mixed`/`NeverHeap` — same
-classification as Pure's value field, §3.1). For the S94 in-tree demo (`async-read`
+classification as Pure's value field, §1.1). For the S94 in-tree demo (`async-read`
 returns an `Int` byte count) the result slot is `NeverHeap` — no dec.
 
 The platform's optional `ConcurrentPlatformFn.drop_state` hook (the one reserved-inert
@@ -1618,22 +1345,19 @@ the move the intrinsics design names: *"the launch node releases its hold; the s
 an owned-field move, not a double-free or a leak."* The strand `consume_io_tree`s the sub-tree on
 completion/drop — the single reference is consumed exactly once, by the strand.
 
-**The one backend-side adaptation — `Launch` field-0 drop glue is a NULL-GUARDED dec, not an
-unconditional `AlwaysHeap` dec.** Because the trampoline moves the reference out (nulling
-`field_offset(0)`), "the field holds a live sub-tree" is a *runtime* fact, not a static one. The
-`Launch` node's drop glue must therefore load `field_offset(0)` and **dec only if non-null**
-(`if ptr != 0 { rc_dec; }`), exactly the guarded-dec shape used for `Mixed` fields (§3.1) and the
-closure `drop_glue_ptr != 0` guard (`rc_emission.rs`). This single guard makes "released exactly
-once" *representable* (Principle 20 — model invariants by representation; the null sentinel is the
-"already moved out" witness, the IO-tree analogue of the §2.9 `Option<Permit>::take()`), and it is
-correct on both paths:
+**Teardown is the runtime's.** Because the trampoline moves the reference out
+and writes `0` back, "the field holds a live sub-tree" is a runtime fact.
+`free_io_node`'s `Launch` row discharges field 0 only when it is non-zero;
+the backend emits no `Launch`-specific glue — `drop<IO T>` is the one body
+of §3. The `0` sentinel makes the move representable (Principle 20), and
+teardown is correct on both paths:
 
-| Path | `field_offset(0)` at node-drop | Drop glue action | Who frees the sub-tree |
+| Path | `field_offset(0)` at node-drop | Teardown action | Who frees the sub-tree |
 |---|---|---|---|
 | **Launch interpreted (detached)** | `0` (trampoline moved it out) | guarded dec → **no-op** | the supervised strand (`consume_io_tree` on completion/drop) |
-| **Launch never interpreted** (unchosen `if`/`match` arm — the node is dropped without the trampoline reaching it) | the live sub-tree ptr | guarded dec → **frees the sub-tree** | the `Launch` node's own drop glue (no leak) |
+| **Launch never interpreted** (unchosen `if`/`match` arm — the node is dropped without the trampoline reaching it) | the live sub-tree ptr | guarded dec → **frees the sub-tree** | the runtime's `Launch` teardown row (no leak) |
 
-The un-interpreted case is **strictly better than the `IO_TAG_EFFECT` thunk leak** (§3.2/§4.4): an
+The un-interpreted case needed no runtime thunk discharge, unlike the Effect node's thunk (§3): an
 unchosen `Launch` arm fully reclaims its sub-tree via standard cascading drop glue, because the
 sub-tree is a normal RC heap tree (unlike the Effect node's non-RC `Box` thunk). And there is **no
 double-free**: the move-out nulls the field, so the strand and the node-drop never both dec the
@@ -1648,23 +1372,21 @@ single-consuming move the intrinsics design specified. The move-out (one referen
 exactly-once) is the chosen model; inc-on-detach is the documented fallback if a future shape needs
 the node to retain an independent reference past detach (none does).
 
-> **Cross-crate seam (backend ↔ intrinsics).** The backend guarantees: (1) the `Launch` node holds
-> the sub-tree's single reference at field-0 after construction; (2) the field-0 drop glue is
-> null-guarded. The intrinsics trampoline guarantees: (3) the `IO_TAG_LAUNCH` arm moves the
-> reference into the strand and writes the `0` sentinel back to field-0 before yielding `Pure Unit`;
-> (4) the strand `consume_io_tree`s the sub-tree exactly once. (1)+(3) are the move; (2)+(4) make it
-> exactly-once on both paths. Pin the `0`-sentinel write as the contract — if the intrinsics arm
-> ever stops nulling field-0, the node-drop would double-free the (now strand-owned) sub-tree.
+> **Cross-crate seam (backend ↔ intrinsics).** The backend constructs `Launch`
+> with the sub-tree's reference at field 0 and emits no teardown of its own:
+> release goes through `drop<IO T>` → `runtime/free_io_node` (§3). Intrinsics
+> moves the reference into the strand, writes `0` back before yielding, and
+> discharges field 0 only if non-zero during node teardown. The strand releases
+> its reference once. The sentinel prevents node teardown from releasing the
+> reference already transferred to the strand.
 
 ### 15.6 Drop glue summary + RC of the launch node itself
 
-The `Launch` node is a standard **one-heap-field ADT** (field 0, the sub-tree). Its drop glue is
-generated by the existing `emit_inline_drop_glue` path (§3.4), with field-0 emitted under the
-**guarded-dec** discipline of §15.5 (the only deviation from a plain `AlwaysHeap` field). The node
-itself participates in RC normally: it is the `inner_io` of a `Bind`, inc'd/transferred into that
-`Bind` like any inner IO (§2.1), and freed when the launching tree is freed (REPL cleanup / process
-exit, §6). No `drop_state`-style hook and no state-closure are involved — the launch node carries no
-captures, only the sub-tree pointer.
+The `Launch` node is an IO allocation with one owning sub-tree field. It is
+released like every IO node by `runtime/free_io_node` (§3); the non-zero guard
+on field 0 is the runtime's (§15.5). The node participates in RC normally,
+including when held as the inner IO of a `Bind` (§2). No `drop_state` hook or
+state closure is involved: the node carries the sub-tree pointer.
 
 ### 15.7 Byte-identical / no-regression — built only at launch sites
 
@@ -1884,7 +1606,7 @@ The trampoline walks this exactly as it walks `Bind(Par,cont)` / `Bind(Launch,co
 `IO_TAG_BIND` pushes the continuation and descends to the Select node; the `IO_TAG_SELECT`
 arm runs the branches, **yields the winner's value** as the inner result, and the popped
 continuation `(fn [x] body)` runs with that value. The "inner yields a value, pop the
-continuation" contract (§5.1) is **reused verbatim** — `Select`'s value is the winner's `a`.
+continuation" contract (§5) is **reused verbatim** — `Select`'s value is the winner's `a`.
 Crucially, **`compile_select` does NOT build a continuation** (unlike `compile_par_bind`/
 `compile_launch_continue`, which bundle the body): `(select …)` is an ordinary expression
 returning `IO a`, so the surrounding `Bind` is built by the **existing bind codegen**

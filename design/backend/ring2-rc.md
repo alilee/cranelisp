@@ -411,7 +411,7 @@ The two sets are disjoint: caller-tree nodes are reachable only via `io_ptr`; fr
 
 #### 3.5.5 Why `call_effect_thunk` is NOT affected
 
-`call_effect_thunk` consumes its thunk pointer by design (the `Box<Box<dyn FnOnce>>` is taken out and dropped by the invocation). The Effect node's field0 (thunk ptr) is a raw Rust heap pointer, not a Cranelisp heap allocation with an RC header; it is outside the RC regime and does not interact with this fix. The Effect node's field1 (resource token) is a scalar Int; likewise no RC. Only the Effect node's OWN allocation (the wrapping heap slot with header + tag + thunk_ptr + token) is a Cranelisp heap object requiring an RC-dec — and that dec is the shallow one from §3.5.4.
+`call_effect_thunk` borrows its thunk: the node keeps it across any number of forces, and the node's teardown discharges it once through `drop_effect_thunk`, identically under the structural and the shallow release (`design/intrinsics/ownership-and-disposal.md` §6.2). The thunk is a platform-owned Rust allocation, not a Cranelisp heap value with an RC header, so it does not interact with this fix; the resource token is a scalar. Only the Effect node's own allocation is RC-managed, and a fresh node's release is the shallow one from §3.5.4.
 
 #### 3.5.6 Par-specific note
 

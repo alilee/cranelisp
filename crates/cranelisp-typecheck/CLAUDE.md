@@ -417,7 +417,7 @@ orders.
 > carries the narrative, measurements and alternatives; this note carries only
 > what a narrow-deployed `dev` must not break.
 >
-> **The param-reach axis is a SET of parameter INDICES** (§19.3, §20.3).
+> **The param-reach axis is a SET of parameter INDICES** (§3.3, §3.4).
 > `Origin::Conditional` holds every parameter the value may reach, sorted;
 > `Origin::Unconditional` holds the one parameter it IS. The join is set UNION
 > and nothing else, so commutativity, associativity and idempotence are

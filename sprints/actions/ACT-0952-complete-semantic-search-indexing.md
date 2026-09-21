@@ -32,8 +32,8 @@ clauses is not a legal approximation of compiler state.
 This interim behaviour is intentionally incomplete. A legitimately compiled
 loaded or cached table can still contribute an ordinary public declaration
 created by macro expansion, while the same not-yet-compiled source cannot.
-That history-dependent edge is not a promise. The current `repl/spec.md`
-now expressly excludes macro declarations from every feed (§17.19.2a) and
+That history-dependent edge is not a promise. The current `repl/spec/17a-agent-language-awareness.md`
+expressly excludes macro declarations from every feed (§17.19.2a) and
 describes source indexing as typechecking only the remaining non-macro forms.
 That wording supersedes the pre-S121 requirement for seeded macros to be
 discoverable and to render a canonical `; defmacro` result row. Restoring that

@@ -114,7 +114,7 @@ When a top-level function is used as a value (passed as an argument, stored in a
 
 A conforming implementation MUST satisfy the following:
 
-1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/nullary_arm_beside_boxed_arm_0917::nullary_arm_beside_boxed_arm_frees_its_loop_under_run]
+1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/nullary_arm_beside_boxed_arm_0917::nullary_arm_beside_boxed_arm_frees_its_loop_under_run, tests/spec_10_io::platform_pure_let_bound_bind_operand_balances, tests/spec_10_io::platform_pure_unused_heap_binding_beside_bind_balances, tests/spec_10_io::platform_pure_string_reused_node_yields_payload_to_each_force_and_balances, tests/spec_10_io::platform_effect_unforced_discard_balances]
 2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/shadowed_param_reach_stale_rc_dec::shadowed_param_binder_safety_matrix_run_and_link_agree, tests/shadowed_param_reach_stale_rc_dec::shadowed_fresh_rhs_binder_rc_balance_matches_ownership_off, tests/shadowed_param_reach_stale_rc_dec::renamed_fresh_rhs_binder_control_safety_matrix_green]
 3. The user MUST NOT need to manage memory manually — allocation and deallocation are entirely the implementation's responsibility. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 

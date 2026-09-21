@@ -388,7 +388,7 @@ selects **accept-done** over a plausible-but-unrepresentative memory lever.
   There is no ambiguity about "did the loop lower to tail-recursion" — Cranelisp has
   no other loop form.
 - **F6 correctness** (parallel≡serial exit checksum) is already the committed guard
-  `tests/s105_residual_attribution.rs::f8_.../f7_...` family; the (iii) re-probe adds
+  `f8_…`/`f7_…` family in `tests/s105_residual_attribution.rs`; the (iii) re-probe adds
   no new RED — it reuses the existing positive witness.
 - No new suite guards are added by the acid test (it is a measurement, not a defect
   repro); the committed artefacts are the fixtures + `s105_acid.py` + this append.

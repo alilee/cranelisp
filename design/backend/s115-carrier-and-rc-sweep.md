@@ -6,8 +6,7 @@
 wave, and the design shapes for the four backend-owned S115 scope inputs: the ONE
 RC-release sweep (§2), the 0705 consumer-totality arm (§3), the R4 mangle-family
 injectivity census (§4), and the R6 persisted-index validation seam (§5). §6
-records the former W-B5 patch-collapse; its S122 supersession is now the current
-0747 disposition. §7 dispositions FIXMEs 0696/0697.
+records that the W-B5 patch-collapse is retired (the 0747 disposition).
 
 **Governing authority:** `design/arch/safety-invariants.md` §4 register rows R4
 (keyed-identity injectivity) + R6 (persisted-index trust boundary) — re-audited
@@ -395,128 +394,23 @@ load defensively (cheap, uniform with the loop); it does not build the consumer.
 
 ---
 
-## 6. W-B5 patch-collapse — RULED S121 (FIXME 0747)
+## 6. W-B5 patch-collapse — retired
 
-> **S122 supersession.** The one-finder/reach-class ruling below is retired by
-> `design/backend/s122-closure.md` §5.1. Current source requires an exact
-> `SlotRef` for same-frame cleanup, a carrier-keyed current-frame COW source,
-> and a wider name-valued provenance traversal. These are three different
-> questions, not thresholds on one answer. Their existing separation is the
-> current design; W-B5 has no source change or golden re-baseline.
+The planned collapse of the three fn-return finders (`return_var_in_scope`,
+`return_cow_source_in_scope`, `operand_live_binding_root`) onto one contract is
+retired: they answer three different questions — exact same-frame cleanup slot,
+carrier-keyed current-frame COW source, and name-valued provenance through
+binding indirection — and their separation is the current design
+([s122-closure.md](s122-closure.md) §5.1). Widening the fn-return skip to the
+binding-indirection class remains a potential extension with a stated hazard and
+trigger ([non-concrete-release-contract.md](non-concrete-release-contract.md)
+§10).
 
-> **RULING (`/design`(backend), S121 Phase 3).** FIXME 0747 is right that the
-> mechanism and the acceptance below cannot both hold **as the collapse was
-> framed** — but the fork it offers (narrow the mechanism, or re-write the
-> acceptance) is manufactured. Read at source, the three finders differ on **two
-> independent axes**, and separating them satisfies both clauses.
->
-> | Finder | Reach | Liveness |
-> |---|---|---|
-> | `fn_compiler::return_var_in_scope` | the node **is** a `Var` | in the current scope frame |
-> | `fn_compiler::return_cow_source_in_scope` | the node is a tail COW site whose source is a `Var` | in the current scope frame |
-> | `fn_compiler::operand_live_binding_root` | `Var`, or forwarded through a `Let` body / a forwarding `Match` scrutinee | any live binding |
->
-> **Ruled: ONE binding-root finder over `MonoExpr`, with ONE node-kind list,
-> returning the root binding together with the *reach class* by which it was
-> found** — the node itself; through binding indirection; or as the source of a
-> tail COW site. The three consumers become three **thresholds** on that one
-> answer, exactly as `is_fresh_construction` and `yields_owned_temporary` are two
-> thresholds on `value_provenance` (the 0781 precedent this crate already runs).
-> Liveness stays a caller-supplied predicate, as it already is at the third
-> finder.
->
-> This is the collapse 0668 asked for — one traversal, one place the
-> `Let`/`Match` forwarding rule lives — **and** it is byte-identical-off *by
-> construction*, because each threshold reproduces its current predicate exactly.
-> So the acceptance below stands verbatim: no flips, goldens byte-identical-off,
-> the S114 must-hold cells hold, no new RED. No golden re-baseline, and no
-> "RC-neutral per frame" acceptance class is needed.
->
-> **The widening is explicitly NOT part of this.** Admitting the
-> binding-indirection class at the *fn-return* seam removes a redundant inc/dec
-> pair and its teardown branch on shapes like `(defn f [v] (let [x 1] v))`, and
-> that is a real improvement — but it is an emission change with a live hazard:
-> the return path asserts the skipped variable is not a `Borrowed` parameter, and
-> the wider class can reach one through a `let`. Trigger for revisiting: a
-> measured frame where the pair is worth a scoped attributed re-baseline, taken
-> with that assertion re-proved first. Landing the widening inside the collapse
-> is a `/review` reject (`s121-c4-visit.md` §13 item 8).
->
-> Implementation rides `s121-c4-visit.md` bundle B6. FIXME 0696's re-keying,
-> which was scheduled to ride W-B5, was independently resolved at S115 W3.
+## 7. FIXME dispositions
 
-The W-B5 change-set (`binding-indirection-consume.md` §5 item 4 / §W-B5 table
-row / §7 wave map) is unchanged and current: **collapse the three fn-return
-patches (`skip_var` / `protect_return_value` / `return_cow_source`) onto the ONE
-provenance contract** — the "three ad-hoc patches for one flow" 0668 named. It is
-the hygiene tail AFTER the consume family flips green; `/review` ENDORSED the
-S114 deferral to its own S115 change-set (golden/RC regression risk).
-
-**Acceptance (restated, binding):** NO flips — this is a byte-identical-off
-refactor; goldens byte-identical-off and CERTIFIED (the `/qa`/`/testing`
-golden-frame re-baseline discipline: extension ≠ re-baseline); the S114
-must-hold cells HOLD (`l_c3` ×2, `vec_lifecycle`, A/E ×2); no new RED. It is its
-OWN reviewed change-set (not folded into the RC sweep §2, though it touches the
-same `fn_compiler.rs` fn-return seam — serialize the change-sets).
-
-**Interaction with §2 and 0696.** The RC-sweep §2.1 entry-payload fix touches
-`protect_return_value`, which W-B5 collapses. Land the RC sweep FIRST (a
-behavioral fix with its own pins), then W-B5 folds the corrected
-`protect_return_value` into the provenance contract (a no-flip refactor over the
-already-correct behavior). 0696's re-keying (§7) rides W-B5.
-
----
-
-## 7. FIXME dispositions (deliverable 7)
-
-### 0697 — R3 whole-match approximation (target: /design) — RESOLVED, recorded, delete
-
-FIXME 0697 (filed by `/review` W4): the `binding-indirection-consume.md` §2
-table keys forwarding on "the SELECTED arm" (a runtime notion), but the
-implementation `match_forwards_scrutinee` (`fn_compiler.rs:298`) is a STATIC
-whole-match predicate (ANY var-pattern arm that forwards its binder), and the R3
-suppression is emitted once in the merge block (`match_codegen.rs:180-183`). For
-a MIXED constructor+var match whose var-default arm forwards the scrutinee
-(`(match (norm o) [(None) (mk-default)] [x x])`), the suppression applies on ALL
-paths, so a run selecting the ctor arm never decs the genuinely-consumed temp
-scrutinee → leak. Leak-safe polarity (never a dec added); a strict improvement
-over the pre-W4 var-arm UAF.
-
-**Resolution:** the approximation, its polarity argument, and the
-mechanism-complete alternative are now RECORDED in
-`binding-indirection-consume.md` §2 (the whole-match approximation box added this
-sprint). The follow-on (per-arm dec placement — move the temp-dec into the
-non-forwarding arms before the merge jump) is NAMED and PARKED ("document movable
-boundaries decisively, then park" — the boundary is movable when a real
-mixed-arm-leak shape forces it). A `/qa` tripwire row for the mixed-arm ×
-{ctor-path, var-path} × toggle cells is requested via FIXME (target: /qa) so the
-parked boundary is fenced. **0697 DELETED** with this design touch.
-
-### 0696 — F-R1 suppression keys on the bare name "main" (target: /dev) — DESIGN ruled, /dev implements with W-B5
-
-FIXME 0696 (filed by `/review` W4, Suggestion, `target: /dev`): the F-R1
-suppression fires on `current_fn_name == "main"` + nullary + tail + fresh
-construction (`rc_emission.rs:303-309`) — name-as-identity (the 0632 /
-Principle-19 class), safe today ONLY because `body_is_fresh_construction`
-independently guarantees the box is fresh, not because of the trampoline
-contract the comment claims as sole license.
-
-**Design ruling (this doc; the /dev fix consumes it).** The real license is
-**freshness**, not the bare name `main`. Two principled directions, ordered:
-(a) key the suppression on the **entry contract** (the module+symbol the
-trampoline actually invokes, available from the compile context) rather than the
-bare name — removes the Principle-19 over-match; or (b) if freshness is the true
-license, generalize to the **item-26 fresh-construction return** (superseding the
-`main`-special-case entirely) — a `body_is_fresh_construction` return needs no
-protect regardless of the fn name, because scope cleanup cannot touch a fresh
-box. Direction (b) is the deeper cure and aligns with §2.1's entry-payload work
-(the entry-frame accounting is being re-examined there anyway). **This is a
-DESIGN ruling into a `/dev`-targeted FIXME**; 0696 stays in place (only `/dev`
-deletes a `/dev`-targeted FIXME) and rides the W-B5 change-set (§6) — its
-re-keying is the same three-patch flow W-B5 collapses. No behavioral urgency
-(current over-match is leak-fixing, never unsafe). Recommend `/sprint` let
-`/dev` action + delete 0696 when W-B5 lands, against direction (a)/(b) as
-`/dev`+`/review` weigh the churn.
+Both dispositions this section carried are complete: 0697's whole-match
+approximation is recorded in [binding-indirection-consume.md](binding-indirection-consume.md)
+§2, and 0696's re-keying was resolved at S115 W3.
 
 ---
 

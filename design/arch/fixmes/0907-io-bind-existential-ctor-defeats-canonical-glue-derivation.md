@@ -12,7 +12,7 @@ refers_to: crates/cranelisp-backend/src/drop_glue.rs:497-505 (ctor_shapes identi
 status: open
 retargeted_by: /design (backend)
 retargeted_at: 2026-07-26
-ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §4.4, §4.5, §5.3
+ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §4.4, §4.5, §5.4
 blocked_on: 0923
 ---
 
