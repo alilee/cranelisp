@@ -24,8 +24,8 @@ deployable artefact and a working REPL. It owns:
 run time — the reactor, async trampoline, `consume_io_tree`, permit pools, RC/drop discipline,
 lifetime-across-suspension — is a runtime-library implementation detail encapsulated in
 **`cranelisp-intrinsics`** (`design/intrinsics/reactor.md`), which `cranelisp-backend` emits
-calls into (BC §4b). `/int`'s only contact with that runtime is the **thin host-client seam**
-(`reactor.md §0`): it constructs the reactor once through the single C-ABI entry
+calls into (`design/arch/bounded-contexts.md` §4b). `/int`'s only contact with that runtime is the **thin host-client seam**
+(`design/intrinsics/reactor.md` §0): it constructs the reactor once through the single C-ABI entry
 `cranelisp_run_io`, drives `block_on_reactor` for `--run`/REPL, propagates the loader ABI
 refusal, and reads the optional `/strand` dev sink. It never reaches into reactor internals.
 `bind-chain-analysis.md` — the *compile-time* IO-scheduling pass — stays here; its finer
@@ -48,8 +48,9 @@ When a subordinate doc, a lineage record and the current source disagree, the
 surface; every other doc is subordinate.
 
 **Current entry point.** `s122-closure.md` — the selected S122 Binary/int
-closure and the continuous Phase-5 source reservation. `s121-c6-visit.md` is the
-preceding complete-surface visit it narrows.
+closure and the continuous Phase-5 source reservation. Open Binary/int
+obligations are listed in `int.md` §16.0 and the standing review rejects in
+`int.md` §12.1.
 
 ### Subsystem designs
 
@@ -58,10 +59,10 @@ preceding complete-surface visit it narrows.
 | `concurrency-architecture.md` | The compiler-internal scheduling axis: where int is concurrent, why, and which doc carries each invariant. |
 | `persistent-workers.md` | The delivered worker-lifecycle contract — spawn, park/wake, enqueue-not-spawn, per-batch JIT, shutdown. Section numbers are pinned by live source. |
 | `signature-body-prepass.md` | The S93 two-phase barrier — the durable race cure. |
-| `session-transaction.md` | Dev-session redefinition: summary-diff gate, reverse dependency index, dependent-recompilation transaction, BROKEN/trap-stub cascade, ABI-epoch slot versioning, retention pool, persistence pins. Consumes `design/backend/ownership-codegen.md` §8.3; scope authority `design/arch/ownership-inference.md` §5. |
-| `session-persistence.md`, `symbol-table-cache.md`, `cache-hit-loading.md` | Save/regenerate, the cached symbol table, and cache-hit module loading. |
+| `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification, slot versioning, the retention pool and persistence. Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
+| `session-persistence.md`, `symbol-table-cache.md`, `cache-hit-loading.md` | Save/regenerate, the cached symbol table, and cache-hit module loading; `cache-hit-loading.md` §0 is the restoration-parity rule. |
 | `io-integration.md` | Host-side IO forcing and platform-DLL load wiring. |
-| `bind-chain-analysis.md` | The compile-time automatic-IO-scheduling pass (§10.12). |
+| `bind-chain-analysis.md` | The compile-time automatic-IO-scheduling pass (`spec/10-io.md` §10.12), including how it reads a platform function's scheduling class (`design/int/bind-chain-analysis.md` §4). |
 | `observability.md` | The trace and event sinks. |
 | `macro-resolver-impl.md`, `cranelisp-toml.md`, `repl-lifecycle.md` | Macro resolution, project configuration, REPL lifecycle and project-root resolution. |
 | `agent.md` | The embedded-agent and `/search` index design — large and active. |
@@ -91,7 +92,6 @@ preceding complete-surface visit it narrows.
 |---|---|
 | `heisenbug-race-closure.md` | The S61 per-interleaving treadmill. Precedent for race-class investigation and the rationale for live instruments; `index-worker-isolation.md` and `signature-body-prepass.md` cite it. Section numbers are pinned by live source. |
 | `s102-defect-wave.md` | The S102 Block-A defect-wave cluster designs. Cited section-precisely by live source and tests. |
-| `step8-platform-registry.md`, `platform-registry-removal.md` | The platform-registry step and its G8 removal; `platform-registry-removal.md` is refreshed against the post-S66 GOT storage rule and carries the §9.1 anchor two tests cite. |
 | `step9-error-cascade.md` | The failure/cascade design; §4.1 and §4.2 are cited by spec-traced tests. |
 | `cache-prelude-restoration-repro.md` | The diagnosis anchor `tests/cache.rs` names. |
 

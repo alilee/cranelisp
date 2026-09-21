@@ -653,7 +653,7 @@ Three rules modify scope cleanup behavior:
 >
 > **S100 note:** the general ownership analysis subsumes spark-capture borrow as an inferred case
 > (`design/arch/ownership-inference.md` §8.2 — the escape query classifies suspension crossings as
-> escape edges, discharging the §5.5.2 ParBind caveat by classification, never by widening the
+> escape edges, discharging this document’s §5.5.2 ParBind caveat by classification, never by widening the
 > borrow). This section remains the as-built contract until the analysis lands.
 
 > **S99 ablation outcome (Wave 1b, `s99-measurement.md` §8; FIXME 0461 resolved, FIXME 0462 filed → this doc).**

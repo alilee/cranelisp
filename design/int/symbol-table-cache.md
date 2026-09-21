@@ -176,7 +176,7 @@ The detailed shape of `Code` (and whether to split `C` vs accept the enum) is th
 |---|---|---|
 | `/backend` | `CACHE_SCHEMA_VERSION` constant; `CacheWritePacket` shape; `process_cache_packet` API; `Linker` API for cache-hit `.o` mapping. `/backend`'s `module-caching.md` is the authoritative envelope spec. | The worker's calling pattern: serialise the symbol table, hand the bytes + schema_version + `.o` request to the cache crate. |
 | `/typecheck` | The `SymbolTable<C, L>` shape with `schema_version`, structural-decl fields, and `code: Option<C>` / `platform_fn_ptr` `#[serde(skip)]` fields. `/typecheck` owns `cranelisp-types/src/module.rs` per Decision 33. | Confirmation that round-trip serialise→deserialise reproduces the typecheck invariants the importing workers expect. |
-| `/platform` | The `PlatformDecl → DLL re-resolve` mechanism. `/platform`'s `platform-registry-removal.md` already documents the live-build resolve path; cache-hit re-uses it verbatim. | A reference to the addendum confirming cache-hit resolution still works after the symbol table carries `linker: Option<L>`. |
+| `/platform` | The `PlatformDecl → DLL re-resolve` mechanism. The live-build load sequence is `design/arch/platform-interface.md` §6.4; cache-hit re-runs it for each persisted declaration (`cache-hit-loading.md` §0). | Confirmation that cache-hit resolution still works after the symbol table carries `linker: Option<L>`. |
 
 ## 8. Sketch Comparison
 

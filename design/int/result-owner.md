@@ -10,7 +10,7 @@ polarities is in §6/§8 (FIXME 0901); the two as-built notes W4 flagged are
 now unconstructable). **Subordinate to:** `int.md`.
 **Scope:** the Binary/int surface (`src/` + `crates/cranelisp-exe-bundle/`) only.
 **Architecture inputs:** `design/arch/safety-invariants.md` R15,
-`design/arch/bounded-contexts.md` §4b invariant 16 and §6,
+`design/arch/bounded-contexts.md` §4b, invariant 16 and §6,
 `design/arch/interfaces.md` §“Type-drop glue identity and address boundary”,
 Sprint 116 architecture ruling 9, and S118 arch rulings 10 (the Principle-8
 bridge closes this sprint) and 11 (0863 serializes AFTER this work).

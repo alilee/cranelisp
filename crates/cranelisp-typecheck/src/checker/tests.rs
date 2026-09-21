@@ -333,7 +333,7 @@ fn seed_expansion_only_binding(tf: &mut TestFixture, module: &str, parent: &str)
         .unwrap();
 }
 
-// design/int/s121-c6-visit.md N5; QA MC-9 — every spelling route reaches the
+// design/int/s117-conformance-recovery.md §2.1; QA MC-9 — every spelling route reaches the
 // same value projection. These deliberately-public synthetic rows prove the
 // rejection is semantic, not an incidental privacy failure. Names are
 // arbitrary and carry no generated-name convention.

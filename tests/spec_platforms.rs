@@ -469,7 +469,7 @@ fn platform_dirs_neg_config_only_garbage_fails_to_load() {
 }
 
 // =============================================================================
-// §8.9 + design/int/step8-platform-registry.md — stdio platform integration
+// §8.9 + design/arch/platform-interface.md §6.4 — stdio platform integration
 // (carry-forward: legacy/v4_pipeline.rs §F — Wave 6 batch 6)
 //
 // Distinct from the test-capture mock above: these exercise the real
@@ -509,7 +509,7 @@ fn platform_form_with_stdio_compiles_in_run_mode() {
     );
 }
 
-// spec: repl/spec.md §0.2 + design/int/step8-platform-registry.md — main
+// spec: repl/spec.md §0.2 + design/arch/platform-interface.md §6.4 — main
 // returns IO Action; the trampoline executes the effect, producing the
 // printed text on STDOUT.
 // (carry: legacy/v4_pipeline.rs::v4_platform_io_trampoline)
@@ -528,7 +528,7 @@ fn io_trampoline_executes_print_to_stdout() {
         .assert_stdout_contains("trampoline works");
 }
 
-// spec: design/int/step8-platform-registry.md — programs WITHOUT
+// spec: design/arch/platform-interface.md §6.4 — programs WITHOUT
 // `(platform ...)` MUST continue to compile and run after the
 // PlatformRegistry refactor. Negative complement of the platform-form
 // tests above.

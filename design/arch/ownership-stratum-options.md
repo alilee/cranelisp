@@ -313,7 +313,7 @@ all-Owned lowering** that `ownership-inference.md` §2.1/R7 keeps permanently
 reachable as the differential oracle, and that Principle 25 defines as **the
 reference semantics** ("the conservative all-Owned lowering IS the definition
 of correct behavior for the memory model; an elision is correct iff
-equivalent to it" — `safety-invariants.md` §3d). Option 2 promotes the
+equivalent to it" — `safety-invariants.md` §3 (d)). Option 2 promotes the
 reference semantics from oracle to **default dev-tier emission**: the thing
 you run is the thing that defines correctness; the optimizer tier must prove
 equivalence to it (R9's standing lane is exactly that gate, already landed

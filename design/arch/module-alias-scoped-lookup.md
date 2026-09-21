@@ -3,7 +3,7 @@
 **Status: RULING (S121 Phase 3, `/arch`, 2026-09-01) — pre-implementation.**
 This is the binding cross-crate contract for FIXME 0798 (a module alias is
 never usable as a qualifier; spec §8.3.4/§8.3.6 violation), discharging the C6
-blocker H2 (`design/int/s121-c6-visit.md` §5.3, §15). It rules the lookup
+blocker H2. It rules the lookup
 contract, its `cranelisp-types` signature, the writers' keying, and the exact
 C1→C3→C6 allocation inside the S121 one-visit reservations.
 

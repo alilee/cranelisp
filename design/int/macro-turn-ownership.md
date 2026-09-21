@@ -13,9 +13,7 @@
 > **S121:** both open dependencies returned settled — §12 records the answers,
 > §3 Rule 0 absorbs the `/arch` enforcement ruling (FIXME 0927), and §8 D2's
 > intrinsics gap is now a scheduled precondition rather than a discovery. The
-> §3 protocol is unchanged. The implementation is bundle **N4** of
-> `design/int/s121-c6-visit.md` §6, which also records the as-built
-> preconditions re-verified in that window.
+> §3 protocol is unchanged.
 >
 > **S121 macro-checkpoint reconciliation (user-approved 2026-09-03).** The
 > invocation ownership protocol remains unchanged, but the adjacent 0863

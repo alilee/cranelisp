@@ -376,7 +376,7 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
 /// typechecking, and compilation. The resulting `Def { kind: UserFn, … }`
 /// lives under the mangled name `{macro-name}$clause-{N}` and is
 /// reachable through the parent `Def { kind: Macro { clauses_meta }, … }`
-/// entry's GOT-dispatch path (per BC §7 "Macros are Defs").
+/// entry's GOT-dispatch path (see `design/arch/symbol-table-lifecycle.md`).
 pub fn synthesize_macro_clause_defn(
     name: &str,
     clause_idx: usize,

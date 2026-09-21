@@ -1,15 +1,31 @@
 # Cache-Hit Loading + File Watcher Migration — Steps 13+14 Design
 
-> **Restoration parity is NOT specified here (S121).** This document designs how
-> a cache hit *enters* the pipeline. What a restored module must additionally
-> re-establish so that the warm world equals the fresh one — its declared
-> children (FIXME 0868), the trait impls it wrote (FIXME 0869), its module
-> aliases (FIXME 0798), and its monomorphic instances — is
-> `design/int/s121-c6-visit.md` §5. The organising rule stated there is
-> Principle 11: a restored world is not a second kind of world, so each cure is
-> the *same* call the fresh path makes, at the equivalent lifecycle point, never
-> a cache-specific parallel. Read that section before adding anything to the
-> cache-hit branch.
+## 0. Restoration parity — a restored world is not a second kind of world
+
+A cache-restored module must hold every relationship the freshly built module
+holds. Each restore step is the **same call** the fresh path makes, at the
+equivalent lifecycle point (Principle 11); a cache-only parallel path must not be
+added. `src/process_form/cache_restore.rs::try_cache_hit_load` is the one
+composition, returning `Result<bool, CranelispError>` so an ordinary miss
+(`false`, fall through to a fresh build) stays distinct from malformed metadata
+or conflicting live state (`Err`).
+
+| Relationship | Fresh path | Restore rule |
+|---|---|---|
+| Declared children | `dependency.rs::enrol_declared_submodule` after the parent's cluster commits | The same registrar, over the persisted `submodules`, after the parent table installs. Private and public children take one path; an existing child is an idempotent no-op; parent metadata installs first so a child's `super` import sees it. |
+| Trait impls the module wrote | The typecheck producer appends `WrittenTraitImpl` records (`design/arch/trait-impl-cache-carrier.md`) | Preload each foreign trait home, then after the writer table installs re-enrol every record into its home through the types-owned `enrol_written_trait_impl`. `Enrolled` and `AlreadyEnrolled` both succeed; a divergence is an error, never a silent pick. An empty record vector is trusted as written: no `serde(default)` read, rescan of the trait home, or reconstruction from mangled method names. |
+| Module aliases | Session `ModuleAliases`, keyed by `cranelisp_types::module_alias_key(owner, name)` (`design/arch/module-alias-scoped-lookup.md`) | Rebuilt from the persisted `imports`/`submodules` by the same writers with the same key mint. The map is unserialized session state, so aliases add no cache field. Two import-alias writers still spell the key through an int-private copy of the mint (`int.md` §16.0). |
+| Monomorphic instances | Ordinary `Concrete` entries in the demanding module's table, each carrying its `minted_from` link | Restored with that table; no separate step. |
+| Platform functions | Platform load wraps the DLL's GOT (`design/arch/platform-interface.md` §6.4) | The persisted platform declarations re-run the same load; a load failure is a cache miss. |
+
+Lifecycle legality of a decoded table is the types crate's to define. At
+present the backend decoder (`crates/cranelisp-backend/src/cache/serialize.rs`)
+maps only `LifecycleError::InstanceKeyMismatch` from `validate_lifecycle` to
+`CacheStale`, and the int restore seams add no further call. Whether every other
+lifecycle refusal is also treated as a stale cache is therefore **asserted, not
+measured** (`int.md` §16.0); the falsifier is a decoded table with any other
+invalid lifecycle state that restores instead of regenerating. The restore path
+must not grow an int-private copy of a lifecycle rule to close that gap.
 
 ## 1. Overview
 

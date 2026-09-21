@@ -454,8 +454,7 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
   reverse edges — but the S103 module-grain cure should note the T1 route cannot fire for macro targets
   today). **Wave-5 addenda:** (4) startup-load exception pin — `recover_startup_failure` (CS-0489)
   drains `pending_cascade_reports`; a load is not a user redefinition turn so `stale:`/cascade sections
-  are suppressed (record in `session-transaction.md` §9.1.1). (5) §5.2 correction in
-  `s102-defect-wave.md` — "today `error_modules` gates nothing" is wrong; the §14.4 gate WAS wired in
+  are suppressed (record in `session-transaction.md` §9.1.1). (5) `design/int/s102-defect-wave.md` §5.2 correction — "today `error_modules` gates nothing" is wrong; the §14.4 gate WAS wired in
   `process_commands`, the actual Wave-5 change was the §18.8 definition carve-out
   (`is_repair_definition_turn`, watcher-path included). **Wave-5 review addenda:** (6) I-1 repair
   carve-out taxonomy — `is_repair_definition_turn` allowlists only special-form heads so macro-mediated

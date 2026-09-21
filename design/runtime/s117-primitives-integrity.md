@@ -386,7 +386,7 @@ R-3 adds two `pub` Rust-path functions to
 rustdoc. It does not alter the C ABI, heap layout, intrinsic catalog, language
 specification, or `cranelisp-types`. FIXME 0860 carried this exact narrow
 surface through architecture approval and implementation closure; the settled
-cross-crate contract is `design/arch/bounded-contexts.md` §4b invariant 17.
+cross-crate contract is `design/arch/bounded-contexts.md` §4b, invariant 17.
 
 ## 5. R-4/R-5 master and rustdoc intent
 

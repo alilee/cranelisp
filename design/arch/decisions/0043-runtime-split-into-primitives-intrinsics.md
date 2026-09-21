@@ -47,7 +47,7 @@ Rejected alternatives:
 
 ## Bounded-context shift
 
-`bounded-contexts.md` §4 retires; replaced by §4a + §4b:
+The former runtime context is now `bounded-contexts.md` §4a + §4b:
 
 ```
 §4a Primitives — `cranelisp-primitives`

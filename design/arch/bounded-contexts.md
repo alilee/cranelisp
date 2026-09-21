@@ -1,1111 +1,825 @@
 # Bounded Contexts — per-surface target shape
 
-`/arch` commits to six crate-shaped surfaces plus the cross-crate types crate. Each is a **bounded context**: the stable demarcation of what the crate is responsible for. The triad (`/design`, `/dev`, `/review`) narrow-deploys to one surface per invocation; the surface's bounded context is what the triad reads to do its work.
+Owned by `arch`. This is the canonical statement of what each crate-shaped
+surface is responsible for, why its boundary lies where it does, and what
+crosses it. `sprints/METHOD.md` §1.1 lists the surfaces the triad is deployed to.
 
-This file is the canonical home for the per-surface full statements. `sprints/METHOD.md` §1.1 lists the surfaces and points here. Each crate's as-designed public surface is its source rustdoc (facade spec files retired S69–S81 — `CLAUDE.md` §Public-API discipline), which cites this file rather than restating the bounded context.
+- **Exact Rust API** lives in each crate's rustdoc (crate-root `//!` plus
+  per-item `///`); the generated `crates/{crate}/public-api.txt` is the as-built
+  enumeration, governed by [the baseline discipline](CLAUDE.md#public-api-discipline).
+  This document does not enumerate items.
+- **Interior mechanism** lives in the context's own `design/{context}/` documents.
+- **Focused shared contracts** are linked from each section; they own their detail.
+- **Invariant numbers are stable citation targets.** Source comments, tests and
+  the [decision-label index](decisions/README.md) cite them as "§N invariant M".
+  A retired number is never reused.
+- Rulings cited as "Decision N" resolve through the decision-label index.
 
-This document is conceptual. Each section answers: *what is this crate's responsibility, why does the boundary lie here, what crosses it.* It does not specify *how* responsibilities are implemented (per-crate design carries that) or *which decisions bind* the implementation (the boundary itself is the decision; cross-cutting principles live in `principles.md`).
+## Dependency direction
 
-Each section: bounded context (essence + why); in-scope (responsibilities, conceptually); out-of-scope (what belongs elsewhere by responsibility); what crosses the boundary (value-passing surfaces and, where applicable, window types). The int section additionally enumerates internal cadences and inter-cadence handoffs.
+Cargo enforces this graph; an edge not listed here is a boundary change that
+returns to `arch` and the user.
+
+| Context | Workspace dependencies |
+|---|---|
+| `cranelisp-types` | none |
+| `cranelisp-frontend` | types |
+| `cranelisp-typecheck` | types, frontend (expression and type-expression builders) |
+| `cranelisp-platform` | types |
+| `cranelisp-intrinsics` | types, platform |
+| `cranelisp-primitives` | types, intrinsics |
+| `cranelisp-backend` | types, intrinsics, platform |
+| `cranelisp-exe-bundle` | intrinsics, primitives, platform |
+| binary (`src/`) | every crate above |
+
+Two absences are load-bearing: backend and primitives do not depend on each
+other in either direction (§4a invariant 3), and nothing depends on the binary.
 
 ---
 
 ## 1. Frontend — `crates/cranelisp-frontend/`
 
-**Bounded context.** Source text becomes structured data. The frontend reads source bytes into S-expressions, expands macros, and builds the AST. It is purely structural: it does not know types, code, or semantics — only shape. This narrows the contract the rest of the pipeline depends on: every downstream stage consumes the same well-formed tree shape, regardless of whether the input came from a file, the REPL, or another macro.
+**Bounded context.** Source text becomes structured data. The frontend reads
+source into S-expressions and builds the AST. It is purely structural: it knows
+shape, never types, code or semantics. Every downstream stage consumes the same
+well-formed tree whether the input came from a file, the REPL or a macro
+expansion.
 
-**In-scope.**
-- Lexing and parsing source into S-expression trees
-- Quasiquote desugaring (`expand_quasiquotes` / `expand_quote_template`) — pure syntactic rewrite, no execution
-- AST construction from expanded S-expressions
-- Module-identity normalisation (super resolution, structural-declaration extraction)
-- Synthetic-span allocation for macro-generated forms
+**In scope.**
+- Lexing and parsing source into `Sexp` trees, including the comment-preserving
+  reader and module-preamble capture.
+- Quote and quasiquote desugaring — a pure syntactic rewrite.
+- AST construction form by form, including `:Type` annotation pairing.
+- Module-identity normalisation and structural-declaration extraction.
+- `defmacro` parsing and macro-clause definition synthesis for the two
+  consumers that prepare macro clauses (typecheck and the binary).
+- Synthetic-span allocation for compiler-generated forms.
 
-**Macro recognition + execution moved out (S76 W-Macro, FIXME 0175 resolution).** The frontend no longer owns macro expansion. Per `design/arch/macro-expansion-ownership.md`: recognition (walk + macro-vs-fn discrimination + clause matching) moves to **typecheck** (§2 — it already resolves every head symbol against the symbol-table view), and execution (marshal + signal-protected JIT call) stays in **int** behind the `cranelisp_types::MacroExpander` callback (§6). The `expand` free function and its `ExpansionError` type are **retired from the frontend boundary**; the structural-walk skeleton in `crates/cranelisp-frontend/src/expand.rs` is deleted (it duplicated the walk typecheck now owns — Principle 7). Only the quasiquote desugaring remains in frontend as the standing public syntactic API.
+**Out of scope.** Type inference (typecheck); macro recognition (typecheck, via
+the types resolution primitive); macro execution and module loading (binary);
+code generation (backend); language definition (`spec`).
 
-**Out of scope.**
-- Type inference (typecheck)
-- Code generation (backend)
-- Module loading orchestration (int)
-- Spec definition (`/spec`)
+**What crosses the boundary.** Source text in; `Sexp`, AST values, `ParsedEntry`
+transients and extracted declarations — all types-owned — out. The frontend
+consults no symbol table and exposes no window types.
+[Macro expansion ownership](macro-expansion-ownership.md) records why
+recognition and execution live elsewhere.
 
-**What crosses the boundary.**
-- **Inputs**: source text. (Frontend no longer consults `SymbolTables` — macro lookup moved to typecheck per the S76 W-Macro split.)
-- **Outputs**: AST values (expression trees, top-level forms, structural declarations) defined in `cranelisp-types`; per-form `ParsedEntry` transients; `ExtractedDeclarations` bundles; quasiquote-desugared `Sexp` values.
-- **Window types**: none.
+**Invariants.**
 
-**Public surface (canonical enumeration).** The crate-root rustdoc (`crates/cranelisp-frontend/src/lib.rs` //! preamble) is the single source of truth for the frontend's as-designed public boundary; `crates/cranelisp-frontend/public-api.txt` is the authoritative as-built enumeration, gated at PR time per the baseline-diff discipline (see `design/arch/CLAUDE.md` §"Baseline-diff discipline"). Per-item rustdoc on each public item (`pub fn parse`, `pub fn build_form`, `pub fn build_expr`, `pub fn parse_type_expr`, `pub struct ExtractedDeclarations`, etc.) carries the per-item contract — visit them with `cargo doc -p cranelisp-frontend --no-deps`.
-
-The four free-function form-by-form boundary — `parse`, `extract_module_declarations`, `build_form`, `build_expr` — plus the public quasiquote desugaring API (`expand_quasiquotes`, `expand_quote_template`, `next_synthetic_span`) and the standalone type-expression parser `parse_type_expr` is the operative public-API summary; see the lib.rs preamble §"Public surface — the form-by-form boundary" for signatures and the rationale for the shape (per-form, no AST union enum). The former `expand` macro-expansion entry was retired at S76 W-Macro (FIXME 0175 resolution — see the box above + `design/arch/macro-expansion-ownership.md`).
-
-**S81 — top-level `:Type` annotation-pairing builder (FIXME 0329, invariant 9).** The frontend gains a **form-sequence builder** as a new boundary entry so that the `:Type`-binds-following-form pairing is frontend-owned at top level too (not re-implemented in int's per-sexp loop). The expected shape mirrors the per-form entries (`&[Sexp]` in, the per-form parsed result out) while pairing a leading `:Type` sexp with the form it precedes — an exact signature is `/dev`-on-frontend's to land in the lib.rs `///` rustdoc + `public-api.txt` baseline (two-update discipline). The natural shape, consistent with the existing `build_form`/`build_expr` per-form split: a `build_forms(sexps: &[Sexp]) -> Result<Vec<ParsedEntry>, CranelispError>` (or a sibling that yields the bare-expression `TopLevel::Expr` shape int's `build_program_compat` needs) that internally lifts `build_one_expr_at` to the top-level sequence — pairing `:Type`+next-form, otherwise delegating per-sexp to `build_form`/`build_expr`. The baseline change is a **single additive frontend entry** (no removal, no `cranelisp-types` impact); a new public free function is the only `public-api.txt` line added.
-
-**S76 seam-4 reductions blessed (two sanctioned baseline simplifications).** Two frontend public-surface reductions land in S76, both sanctioned here so the baseline-diff at PR time reads as legitimate edge evolution:
-
-- **`pub fn parse_type_expr(source: &str) -> Result<TypeExpr, CranelispError>` (FIXME 0230) drops the FIXME-0230 sketch's `source_id` parameter** to match `parse`'s `(&str)` shape. No other frontend entry threads a source-id; a type-sig string from a DLL descriptor has no meaningful source file, and the resulting `TypeExpr` spans are byte-offsets into the sig string, consistent with every other frontend parse. The `(&str)` shape is blessed (Principle 2 — narrow interface; consistent with `parse`). It returns `TypeExpr` (syntactic), never `Type` (resolved) — BC §1 invariant 1; resolution is typecheck's `check_type_expr` (seam 1). int's loader chains `parse_type_expr` → `check_type_expr`.
-- **The `pub use cranelisp_types::ResolutionGap` re-export is removed** (collateral of the `ExpansionError` retirement). Its sole justification was `ExpansionError::Gap(ResolutionGap)` consumers needing `ResolutionGap` in scope; with `ExpansionError` deleted (W-Macro), the re-export is a Principle-15 violation (a `cranelisp-types` item re-exported with no surviving frontend-signature consumer). `ResolutionGap` still lives in `cranelisp-types` (it now travels with `CheckError::Gap`, a typecheck/types concern) — only frontend's *re-export* drops; consumers import `cranelisp_types::ResolutionGap` directly. Blessed as a sanctioned reduction.
-
-**Bounded-context invariants.** These hold across sprints — the contract `cranelisp-frontend` makes with the rest of the workspace:
-
-1. **No type inference.** Types in the frontend are `TypeExpr` (syntactic), not `Type` (resolved). Type resolution is `cranelisp-typecheck`'s job. The frontend never names `Type`, `Scheme`, or `TypeId`.
-2. **No code generation, no macro execution.** Macro bodies are AST nodes that `int` compiles via the backend; the frontend never invokes Cranelift and never names `cranelisp-backend`, `cranelisp-primitives`, or `cranelisp-intrinsics`. Post-S76 W-Macro the frontend also performs no macro *recognition* or *execution* — it neither looks up macro entries nor calls JIT'd clause code. That responsibility split (recognition → typecheck, execution → int via `MacroExpander`) is exactly what removed the FIXME 0175 inconsistency: the frontend dep rule and the (former) `expand` contract no longer conflict because frontend no longer owns the conflicting capability.
-3. **`super` resolved at frontend.** Per `design/arch/super-import-arbitration.md`: `ImportSpec.module_path` NEVER contains the literal `"super"` past `parse` (specifically past `parse_import_sexp`). All `super`-resolution happens at parse time against the parsing module's own path.
-4. **Synthetic spans are unique.** `next_synthetic_span` issues monotonically increasing spans for compiler-generated forms. No two synthetic spans collide within a session.
-5. *(Retired S76 W-Macro — the re-entrant-`expand` invariant moved to typecheck; the macro-expansion fixpoint + its depth bound are now typecheck's loop invariant. See §2.)*
-6. *(Retired S76 W-Macro — the "`expand` surfaces `Gap` instead of blocking" invariant moved to typecheck, which surfaces the in-mem-macro need via `CheckError::Gap(ResolutionGap::MacroInMem)` and stays equally `Sess`/scheduler-free per Principle 3. See §2.)*
-7. **`#[non_exhaustive]` DTOs.** Frontend's public error/DTO types remain `#[non_exhaustive]` so adding variants/fields is non-breaking. (`ExpansionError` retired with `expand`; the macro-execution error shape is now `cranelisp_types::MacroInvokeError`, also `#[non_exhaustive]`.)
-8. **Form-by-form, not pre-pass; defmacro-before-use (S76 W-Macro decision, checkpoint amendment 2026-09-03).** There is NO defmacro pre-pass extraction. **A macro must be defined before it is used, in source order** (defmacro-before-use is normative — `design/arch/macro-availability-model.md` §0.2). A use textually before its `defmacro` is a plain unresolved reference, not a macro call. Pass 1 recursively expands macro calls; each encountered or expansion-produced `defmacro` closes typecheck and codegen over its complete parent, clauses, and expansion-time dependency/generated-realization closure, then publishes its parent, clauses, and defining-module generated realizations as one module-local checkpoint before source-order processing continues. A successful checkpoint survives later failures, including refusal of the later §18 dependent cure. Dependency modules publish independently. Pass 2 registers the fully expanded non-macro signatures and Pass 3 typechecks their bodies as one atomic HM cluster. Because Pass 1 runs before Passes 2–3, a macro's expansion **cannot reference a same-module non-macro definition** — they don't exist yet (the round-trip-safety constraint, §0.3; makes REPL ≡ batch by construction). The frontend itself does no macro recognition, execution, or publication; this invariant records the availability model its form-by-form output must support. No unpublished macro candidate or temporary GOT invocation path exists.
-9. **`:Type` annotation-pairing lives ENTIRELY in the frontend, in EVERY position (S81 ruling, user-ratified 2026-06-13; FIXME 0329).** A `:Type` token (`:Int`, `:a`, `:(Fn [a] a)`, and the `:`-then-compound form) is a **reader-macro-like type-unifying annotation that binds the immediately-following form** — it is *never* a standalone atom, in *any* position. Because the annotation→`Expr::Annotate` pairing is a **reading / AST-construction** act (the leading `:Type` and the bound form lower together into one node), it is frontend-owned wherever it occurs — no part of it lives in another crate. Two position classes, one owner:
-   - **List-head / sub-form positions** (apply args, vec elements, `let`-binding values, `if`/`match`/`fn` bodies, etc.): a leading `:Type` binds the next *element*. Already realised by `try_consume_annotation` + `build_one_expr_at`, driven from `build_args_with_annotations` / `build_let_bindings` / `build_annotated_params`. The single-sexp `build_expr` and the list-head dispatch (`build_list_expr`) currently DO NOT pair (a `:Type` symbol → `Expr::Var`; a list-head `:Type` → `build_apply` callee) — the **same** annotation-pairing helper must apply at every sub-form site that builds an expression, not only the comma-style argument sequences. A bare leading-`:Type` reaching a *value* position with nothing to bind is a frontend parse error (`annotation missing expression`), not a `Var`.
-   - **Top-level form sequence** (`:Float 42` as two consecutive top-level sexps, or a leading `:Type` sexp in any sexp sequence the orchestrator feeds): the leading `:Type` pairs with the **following top-level form**. The actual `Expr::Annotate` *construction* is frontend-owned. The frontend exposes a **form-sequence builder** (`cranelisp_frontend::build_forms`) that performs the pairing across the sexp list (the `build_one_expr_at` shape lifted to the top-level sequence); where int can hand it the whole slice (`build_program_compat`) it does, and no int-side grouping is needed. Where int *must* split per-sexp for its own internal orchestration (the Pass-2 macro-expansion loop, the REPL eval sequence loop), it GROUPS the leading-`:Type` cluster with its bound form via the `pub(crate)` recognition helper `worker::leading_annotation_len` (S81 refinement, FIXME 0333) before delegating the grouped span to the frontend — int decides *which span is one form*, the frontend still decides *what it lowers to*. This closes the half-implemented state the defect exposed: the construction logic now has exactly one home (frontend); the top-level driving that previously never paired (int's `build_program_compat`, per-sexp) is fixed — the split-across-two-crates hazard Principle 7 (single source of truth) and Principle 1 (decoupling over convenience) forbid is closed because the *authoritative* pairing+validation lives in one crate and int's helper is recognition-for-grouping only (it mirrors `try_consume_annotation` and defers all validation to `build_forms`). **One owning seam for construction: the frontend.** int orchestrates the *sequence of forms* and selects span boundaries; the frontend decides *what a form is*, and a `:Type`-prefixed pair is one form. The recognition-helper placement ruling + the three split sites are pinned in §6 (int "Annotation construction is frontend-driven; int GROUPS the cluster"). This invariant is the structural prerequisite for the §3.1/§8.9.1 reachability discipline biting at top level: only when `:Int 42` lowers to `Expr::Annotate{Int, 42}` does typecheck's already-correct type-name resolution (bare `Int` unreachable without prelude/import → `unknown type Int`) fire — see FIXME 0329's investigation finding (typecheck was never the defect).
-
-10. **Quasiquote/quote desugaring runs INSIDE `build_forms`/`build_form` — every form, every position (S111, FIXME 0613; user-ruled A: quote/quasiquote are legal wherever an expression is legal).** The reader lowers `'x`/`` `x `` to `(quote x)`/`(quasiquote x)`; `expand_quasiquotes` — a pure, position-independent `Sexp→Sexp` rewrite into `macros/`-qualified constructor applications — is applied by the form builders before AST dispatch, so no downstream stage ever sees a quasiquote form (after desugaring it is ordinary constructor application yielding `Sexp`). The transform is a fixpoint (idempotent — no quasiquote symbol survives one pass), so `macro_clause.rs:67`'s pre-existing direct call stays harmless; the `ast_builder` rejection of a surviving `quote`/`quasiquote` symbol stays as the backstop invariant (a surviving symbol = a wiring bug). This makes the `lib.rs:48` claim ("quasiquote desugaring runs before `build_form`") TRUE — previously aspirational; the implementing change-set cites the currency fix. Zero public-API diff (`build_form`/`build_forms` signatures unchanged; `expand_quasiquotes` stays `pub`). Int's Pass-1 macro expander requires the paired quote shield (§6) in the same logical wave, shield lands ≤ the fold.
-
-**S121 — the reader-quote structural predicate single-sources in `cranelisp-types` (resolves FIXME 0789's home question).** The fold's crate-private `is_quote`/`is_quasiquote`/`is_unquote`/`is_unquote_splicing` (`quasiquote.rs:51-64`) and int's `src/expander.rs::quote_head` are byte-identical structural tests held in lockstep only by comment discipline — the durable hazard being a quoted subtree double-desugared or mis-qualified if they ever diverge (`design/int/quote-shield.md` §5). The one classifier now publishes from `cranelisp-types` beside `Sexp` (`quote_head(&[Sexp]) -> Option<QuoteHead>`; contract in `interfaces.md` §"Reader Output"); the frontend fold delegates to it (private wrappers may remain as local spellings, but the shape test itself is the imported classifier — no second `len()==2`+head match), and int's `quote_head` becomes a thin projection onto it. No parser redesign, no frontend `public-api.txt` delta (the predicates were never frontend surface), no behaviour change — the tests are byte-identical today.
-
-**FIXME 0175 resolved (S76 W-Macro) — recognition→typecheck, execution→int.** The original inconsistency was that the (former) `expand` contract required calling the JIT'd macro body, which needs the allocator + runtime panic slot + `libc` signal machinery — capabilities BC §1's dep rule forbids the frontend. The `cranelisp-marshal` bridge-crate option was REJECTED (user-arbitrated). The resolution splits the two jobs along their natural deps: macro **recognition** (walk + macro-vs-fn discrimination + clause matching) moves to typecheck (§2); macro **execution** stays in int behind the `cranelisp_types::MacroExpander` callback (§6). Frontend retains only quasiquote desugaring. The full design is `design/arch/macro-expansion-ownership.md`; the boundary type is `cranelisp_types::MacroExpander`.
-
-**Relationship to consumer crates.** Frontend's outputs are consumed by `cranelisp-typecheck` (`ParsedEntry` vectors fed into `check_forms` — see §2 + Decision 44) and by the integration layer (`src/cluster.rs::process_cluster` consumes per-clause `Defn`s built via `synthesize_macro_clause_defn` per Decision 21). Macro-resolver helpers (`parse_defmacro`, `synthesize_macro_clause_defn`, et al.) are pub-at-root for these two consumers and narrow back at FIXME 0098 Phase 2 close; the quasiquote helpers (`expand_quasiquotes`, `expand_quote_template`, `next_synthetic_span`) remain pub at root as the standing public quasiquote API used by user-authored macros and REPL `/expand`. See the lib.rs preamble §"Macro-resolver helpers — internal-but-exposed" for the disposition history.
-
-**Per-surface documentation.** Like `cranelisp-types` (§7), this surface has no separate `facades/frontend.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-frontend/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S70 Phase B group B3-C following the S69 Sub 42 precedent per Principle 7 (single source of truth) and lived-experience cost of dual-maintenance. The `public-api.txt` baseline gates the surface at PR time; rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
+1. **No type inference.** Frontend types are `TypeExpr` (syntactic), never
+   `Type`, `Scheme` or `TypeId`. `parse_type_expr` returns `TypeExpr`;
+   typecheck's `check_type_expr` resolves it.
+2. **No code generation, no macro recognition or execution.** The frontend never
+   names backend, primitives or intrinsics, looks up no macro entry and calls no
+   compiled clause.
+3. **`super` is resolved at parse.** `ImportSpec.module_path` never contains a
+   literal `super` after parsing; resolution uses the parsing module's own path.
+4. **Synthetic spans are unique** within a session (`next_synthetic_span` is
+   monotonic).
+5. Retired — the expansion fixpoint bound is typecheck and binary territory
+   (§2 invariant 11).
+6. Retired — gap surfacing moved with recognition (§2 invariant 8).
+7. **Public error and DTO types stay `#[non_exhaustive]`.**
+8. **Form by form; a macro is defined before it is used.** There is no
+   `defmacro` pre-pass. A use textually before its `defmacro` is an ordinary
+   unresolved reference. The frontend's per-form output supports the
+   source-order availability model in
+   [macro availability](macro-availability-model.md); the frontend itself
+   publishes nothing.
+9. **`:Type` annotation pairing is wholly frontend-owned, in every position.** A
+   `:Type` token binds the immediately following form and lowers with it into
+   one `Expr::Annotate`; it is never a standalone atom. Sub-form positions pair
+   inside the expression builders; top-level sequences pair in `build_forms`. A
+   leading annotation with nothing to bind is a frontend parse error. Where the
+   binary must split a form stream for its own orchestration it only selects
+   which span is one form (§6); construction and validation stay here.
+10. **Quote desugaring runs inside the form builders, in every position.** The
+    reader lowers reader-quote syntax to `quote`/`quasiquote` forms and the
+    builders rewrite them before AST dispatch, so no downstream stage sees a
+    quasiquote form. The rewrite is idempotent. The structural reader-quote
+    classifier is the single types-owned `quote_head`; the frontend fold and the
+    binary's expansion shield both consume it.
 
 ---
 
 ## 2. Typecheck — `crates/cranelisp-typecheck/`
 
-**Bounded context.** Untyped AST becomes typed AST plus populated symbol tables. Typecheck infers types, resolves traits, classifies polymorphism, and analyses match exhaustiveness. Its results land in two places: directly on AST nodes (each node carries its inferred type and resolution choices), and in the per-module symbol-table view supplied by the caller. The crate carries no shared session state and no cadence; it is invoked synchronously, one form at a time, by the integration layer.
+**Bounded context.** Untyped AST becomes typed AST plus settled symbol-table
+state. Typecheck infers types, resolves traits and dispatch, monomorphises,
+infers ownership summaries and checks match exhaustiveness. It carries no
+session state and no cadence: the binary invokes it synchronously, one cluster
+at a time.
 
-**In-scope.**
-- Type inference (Hindley-Milner) over every AST variant
-- Trait declaration, impl recording, method resolution
-- Constrained-polymorphism detection and monomorphisation analysis
-- ADT exhaustiveness checking
-- Per-symbol callee extraction (writes into the symbol table for downstream scheduling)
-- **Macro recognition** (S76 W-Macro, DECISION LOCKED 2026-06-03; resolution-primitive fold-in) — the recognition predicate: within-form descent to find macro heads, macro-vs-fn discrimination, clause-arity matching. **The underlying name-resolution is the `cranelisp-types` primitive** (`cranelisp_types::resolve_macro_head`), not a typecheck-resident walk: typecheck's contribution to recognition is the within-form descent + calling the types primitive with its staging-aware view. int's Pass-1 expand loop calls the same types primitive directly (committed view) with **zero int→typecheck dependency**. Macro *execution* is delegated to int via the injected `cranelisp_types::MacroExpander` callback; the expand-fixpoint + structural-result re-classification run in int's `process_cluster` *before* `check_forms` (the three-pass model — Pass 1 expand, Pass 2+3 = `check_forms`). See invariant 10 (resolution via the types primitive), invariant 11, `design/arch/macro-availability-model.md` §0, and `bounded-contexts.md` §7 "Resolution primitive".
+**In scope.**
+- Hindley–Milner inference over every AST variant; ADT exhaustiveness.
+- Trait declaration, implementation checking and method resolution.
+- Monomorphisation from the program's roots, including demand replay.
+- Per-callable callee extraction and ownership summaries
+  ([ownership inference](ownership-inference.md)).
+- Macro-head recognition within a form, through the types resolution primitive.
+- Production of every codegen view and resolved identity backend consumes.
 
-**Out of scope.**
-- AST construction (frontend)
-- Code generation (backend)
-- Macro *execution* — marshalling `Sexp`↔heap, the signal-protected JIT call (int, via the `MacroExpander` impl); typecheck recognises + drives but does not itself touch JIT/runtime/libc
-- Pipeline scheduling, module loading, REPL session (int)
-- Runtime helpers (intrinsics — §4b)
+**Out of scope.** AST construction (frontend); code generation (backend); macro
+execution, publication cadence, scheduling, module loading and REPL state
+(binary); runtime helpers (intrinsics).
 
 **What crosses the boundary.**
-- **Inputs**: the full cluster's `ParsedEntry` list (produced by repeated `cranelisp_frontend::build_form` calls, accumulated by the orchestrator); a symbol-table-access window (`SymbolTableAccess`) supplied by the caller, abstracting staging-vs-live; read-only `SymbolTables` (all other modules' tables) and the session-level `ModuleAliases` table; an injected `&dyn cranelisp_types::MacroExpander` macro-execution capability (S76 W-Macro — typecheck recognises macro heads and calls back through this to execute; it never touches JIT/runtime/libc itself).
-- **Outputs**: in-place AST annotations and per-symbol Pass-2 side products written onto staging `ModuleEntry::Def` fields; a `CheckResult` (last-form display info + cluster-scope warnings) on success; a `CheckError` (recoverable `Gap`, or non-recoverable `TypeError`) on failure.
-- **Window types**: typecheck consumes a symbol-table-access window passed by the caller (`SymbolTableAccess`, with `SymbolTableRead` / `SymbolTableMut` borrow guards and the unioned `View` read surface). It exposes no windows of its own.
+- **In:** a cluster's `ParsedEntry` list; a caller-supplied `SymbolTableAccess`
+  window abstracting staging versus live tables; read-only `SymbolTables`, the
+  session `ModuleAliases` and the prelude-fallback decision.
+- **Out:** settled state written through the window; `CheckResult` (display
+  information, warnings, unresolved return-polymorphic dispatch sites) or
+  `CheckError` (a recoverable `Gap` or a located type error).
+- **Entries:** `check_forms` (the cluster), `check_type_expr` (one type
+  expression against a view; the platform loader pairs it with frontend's
+  `parse_type_expr`) and `instantiate_demands` (replay of recorded
+  monomorphisation demands, consumed by the binary's reload driver). The
+  demand carrier and instance identity are types-owned
+  ([symbol-table lifecycle](symbol-table-lifecycle.md)); the replay rules are in
+  [monomorphisation](../typecheck/monomorphisation.md) and the reload handoff in
+  [session transaction](../int/session-transaction.md).
+- A **cluster** is the unit of non-macro typecheck atomicity: one REPL form, the
+  contents of one `begin`, or a file's fully expanded non-macro forms. Signature
+  registration then body checking is an ordering inside `check_forms`; no pass
+  discriminator or accumulator crosses the boundary.
 
-**Cluster-atomic entry surface.** The approved typecheck entry surface is the cluster entry — **one** free function per cluster, `check_forms(parsed: Vec<ParsedEntry>, ctx: &mut SymbolTableAccess, symbol_tables: &SymbolTables, module_aliases: &ModuleAliases, prelude_fallback: &PreludeFallback) -> Result<CheckResult, CheckError>` (the `PreludeFallback` parameter and the `CheckResult` return joined the surface at S108 Wave G and S110 respectively; `public-api.txt` is the as-built authority) — plus the narrower standalone type-expression validator `check_type_expr(expr: &TypeExpr, ctx: &mut SymbolTableAccess, symbol_tables: &SymbolTables, module_aliases: &ModuleAliases, prelude_fallback: &PreludeFallback, current_module: &ModuleFullPath, span: Span) -> Result<Type, CheckError>` (S76 seam-1; FIXME 0246, FIXME 0231) and the approved monomorphisation reload seed `instantiate_demands` (S121 Packet C below). `check_type_expr` resolves a single `TypeExpr` against the supplied view — no body inference, no cluster atomicity, just leaf-name resolution through the same §7 resolution primitive `check_forms` uses (so schema-declared ADT names referenced in a platform sig resolve identically; int's platform loader uses it to typecheck `PlatformFn.type_sig`, pairing with frontend's `parse_type_expr`). It is **additive and view-respecting**, blessed here: it introduces no new boundary type (`TypeExpr`, `Type`, `CheckError`, `SymbolTableAccess`, `SymbolTables`, `ModuleAliases` all already cross the typecheck boundary) and is consistent with the bounded context (type resolution against a view is in-scope). The per-item contract lands in the lib.rs `///` rustdoc when `/dev` authors it; the baseline-diff two-update discipline is satisfied because the surface is named here. The cluster-atomic entry `check_forms` is, per Decision 44 (amended FIXME 0167 for Approach B + `SymbolTableAccess`; 2026-05-13 third amendment collapsing the prior two-pass facade split into a single function; 2026-09-03 macro-checkpoint amendment). A **cluster** is the unit of non-macro HM typecheck atomicity: one non-macro form (a non-`begin` REPL input), the non-macro contents of `(begin form₁ … formN)` (an explicit REPL cluster), or a file's fully expanded non-structural, non-macro forms (batch). Source-ordered `defmacro` checkpoints publish separately and do not split the forward-reference scope among those non-macro forms. The internal two-pass discipline (Pass 1 register signatures into staging, then Pass 2 check bodies against the unioned staging+live view — spec §5.13.1, supporting forward references / mutual recursion) is preserved as an implementation-phase ordering **inside** `check_forms`; it does not cross the boundary. There is no public pass discriminator and no public accumulator type — Pass-1-to-Pass-2 working state (`defn_type_vars`, default-method-defn deferrals, generalisation inputs) lives inside the one stack frame and is dropped when the call returns, closing the state-threading hole by construction (no working state crosses the facade because there is only one call). See the `check_forms` per-item `///` rustdoc in `crates/cranelisp-typecheck/src/lib.rs` (post-S72 W5 canonical; `facades/typecheck.md` retired) for the per-item contract and Decision 44 for the rationale + rejected alternatives.
+**Types originated here.** `SymbolTableAccess` and its two borrow guards are typecheck-owned because the
+binary is their only consumer ([Principle 15](principles/15-facade-types-live-with-behavior.md));
+the unioned `View` read surface is types-owned because it has several.
 
-**Monomorphisation reload seed `instantiate_demands` (S121 Packet C; FIXME 0553).** This implements the approved "instantiate this symbol at these types" capability designed at `design/typecheck/monomorphisation.md` §3.8. The source and `public-api.txt` carry the signature below. The user approved this exact signature and root re-export on 2026-09-02 ([S121 approvals](../../sprints/archive/sprint-121.md), Packet C); the approved consumer is the Binary/int reload driver. S122 realizes that existing handoff without another interface approval unless its contract changes. It has the `check_forms` context with demands in place of forms:
+**Invariants.**
 
-```rust
-pub fn instantiate_demands<C, L>(
-    demands: Vec<MonoDemand>,
-    ctx: &mut SymbolTableAccess<'_, C, L>,
-    symbol_tables: &SymbolTables<C, L>,
-    module_aliases: &ModuleAliases,
-    prelude_fallback: &PreludeFallback,
-) -> Result<CheckResult, CheckError>
-where
-    C: CodeStore,
-    L: LinkerStore,
-```
-
-Placement: beside `check_forms` in `form.rs`, re-exported by the crate root.
-The production consumer is the Binary/int reload driver. **Implementation
-pending (S122):** the entry point exists, but the driver still replays source
-forms. The driver captures complete `InstanceLink` identities before module
-replacement, projects them through `MonoDemand::from_type_args` with synthetic
-sites, waits for reload to settle, then consumes the returned `CheckResult`
-through normal codegen and staged publication before dependent reload proceeds.
-This seeds the existing collector and minter engine; it adds no second pipeline,
-publication mechanism, Cargo edge, schema change or generated-baseline delta.
-Source-form replay retires with the consumer. The interior handoff belongs to
-[session-transaction.md](../int/session-transaction.md) §10.
-
-**Demand completion (S122 Q1 producer correction).** The existing approved
-entry point completes ordinary ownership inference after its successful demand
-worklist drain, before Binary/int classifies realization ABI or compiles the
-candidate. Reuse the typecheck-private ownership pass over settled bodies and
-its staging-aware publication; do not expose a second public pass or have int
-infer/copy summaries. The existing inference universe, analysis-off toggle and
-refusal behavior still apply: completion does not promise a summary for every
-body. Unknown or incompatible ABI remains subject to the ordinary publication
-guard. This corrects the omitted producer completion inside the existing
-`instantiate_demands` contract, with no signature, return/error vocabulary,
-schema, dependency or generated-baseline change. **Implemented in the S122
-working tree (2026-09-10):** `form.rs::instantiate_demands` invokes the existing
-private pass only after the successful full drain, then returns its unchanged
-result. Supplied producer evidence demonstrates the missing-summary failure
-before the correction and fresh entry/view summary plus staging-isolation
-controls afterward; independent typecheck review remains pending. The
-consumer's old-summary reuse is not a substitute.
-
-- **Identity and settlement.** `MonoDemand { template: CallableTarget, type_args: Vec<ConcreteType>, site: Span }` carries the selected callable and its complete generic substitutions. The canonical vector contract is [interfaces.md](interfaces.md) §Instance identity funnel. Typecheck reconciles the selected scheme with the full settled use type: ordinary calls supply parameters and result, function values supply their whole function type, and auto-curry combines supplied parameters with the residual closure's parameters and result. A function-valued return alone does not indicate auto-curry. Unsettled sites in generic definitions wait for concrete recheck; unresolved runtime uses retain the existing ambiguity error.
-- **Minting and reuse.** Derivation and replay use the same authoritative template scheme, including the checked-body scheme before publication. The minter reconstructs the complete signature, verifies constraints and rechecks the body in its defining scope; nested rechecks use their own captured maps. It preserves the demand's `InstanceLink` through naming, deduplication and installation in the demanding module (Principle 17). Identical `(template, type_args)` reuse the existing instance and GOT slot, including recursive uses; distinct result-only choices produce distinct instances.
-- **Replay and declined demands.** Replay consumes complete substitutions without a live expression map. It validates vector length against generalized-variable count, not value-call arity. A stale root (absent or no-longer-template target, incompatible vector, failed constraints or concreteness) is skipped with one warning naming the target and substitutions, without installing a partial root instance. A missing home module remains a recoverable `CheckError::Gap`; hard invariant failures remain errors. Result-only variables do not need an old call site: their concrete choices are already in the vector.
-- **Diagnostic site.** `site` is excluded from instance identity. Reload-captured demands use `Span::SYNTHETIC` to suppress span-sidecar writes and prevent stale-span aliasing; this does not suppress result specialization.
-
-**Reload handoff.** The future driver captures the reloading module's
-`minted_from: Some(InstanceLink)` entries before replacement and projects
-`(template, type_args)` into demands with synthetic sites. The retirement of
-`redefine.rs::capture_instantiation_drivers` and the reload driver's
-`extra_forms` belongs to that separate integration handoff
-([session-transaction.md](../int/session-transaction.md) §10); the result-context
-wave adds no production reload caller. Backend consumes already-resolved
-concrete bodies and persists the link in cache. The complete-substitution
-carrier/key migration uses schema 26, invalidating schema-25 cache pairs;
-platform ABI, heap layout and calling conventions are unchanged. The
-result-context wave changes no typecheck signature; its exact generated types
-delta was confirmed by the user on 2026-09-07.
-
-**Staging-vs-live abstraction (`SymbolTableAccess`).** The orchestrator (`int::process_cluster`) hands typecheck a `SymbolTableAccess` window. In `Cluster` mode the read accessor returns a `View` unioning an orchestrator-owned transient staging table over live (staging-first); the write accessor returns the staging table. In `Live` mode (REPL introspection, fine-grained drivers) both accessors hit the live per-module table directly. Typecheck calls these accessors uniformly — the ~91 register-call sites and ~51 read-access sites in the crate are unchanged; the staging-vs-live surgery is absorbed entirely in the accessors, so typecheck cannot distinguish staging from live. There is a **single pair** of read+write borrow guards crossing or touching the surface — `SymbolTableRead` / `SymbolTableMut` — returned by both the orchestrator-side `SymbolTableAccess` accessors and the interior `TypeCheckEnv` accessors; no parallel `pub(crate)` pair exists (S72 W2 /review I-2; user-arbitrated unification under the `SymbolTable*` names — the type names *what* is accessed, not the access mode). The `View` read surface lives in `cranelisp-types` (multi-consumer); the `SymbolTableAccess` enum and the two borrow guards are typecheck-interior types per Principle 15 (single implementation-crate consumer, `int`).
-
-**Public surface (canonical enumeration).** The crate-root rustdoc (`crates/cranelisp-typecheck/src/lib.rs` `//!` preamble) is the single source of truth for the approved as-designed public boundary; `crates/cranelisp-typecheck/public-api.txt` is the authoritative as-built enumeration, gated at PR time per the baseline-diff discipline (see `design/arch/CLAUDE.md` §"Baseline-diff discipline"). Per-item rustdoc carries the per-item contract (`pub fn check_forms`, `pub fn check_type_expr` (S76 seam-1, FIXME 0246/0231 — the standalone type-expression validator), `pub fn instantiate_demands` (S121 Packet C, FIXME 0553 — approved 2026-09-02; generated-baseline confirmation pending), `pub struct CheckState`, `pub enum SymbolTableAccess`, `pub enum CheckError`, the `trace` module, `pub fn advance_next_id_past_table`, etc.) — visit them with `cargo doc -p cranelisp-typecheck --no-deps`. `TypeCheckEnv` narrows to two public methods (`new`, `next_type_id`); per-symbol lookups, module-table accessors, and the cluster-introspection helpers become `pub(crate)` callee-side helpers (all callers are inside `check_forms`'s frame). `register_builtins`, `register_imports`, and `register_exports` are **struck** from the surface entirely (not demoted): synthetic-module assembly is `int`'s session-init concern (FIXME 0242), and import/export registration is frontend's StructuralDecl concern processed before typecheck runs — `ParsedEntry` has no `Import`/`Export` variant, so typecheck never receives one.
-
-**Types originated here.** Per Principle 15's placement heuristic, `CheckResult`, `CheckError`, `CheckState`, `TypeCheckEnv`, `SymbolTableAccess`, `SymbolTableRead`, and `SymbolTableMut` live in `cranelisp-typecheck` (referenced by `int` only). `ResolutionGap` is the cross-cutting exception — referenced by both the frontend facade (`ExpansionError::Gap`) and typecheck (`CheckError::Gap`) — so it lives in `cranelisp-types` per the multi-consumer rule; `View` likewise. `CheckResult` is pared to the two cross-cluster items the orchestrator surfaces to the REPL display layer (`display: Option<DisplayInfo>`, `warnings: Vec<Warning>`); per-symbol Pass-2 side products land on staging `ModuleEntry::Def` fields, not on `CheckResult` (invariant 3a). Multi-consumer dependency types (`Scheme`, `Subst`, `Type`, `TypeId`, `ResolvedCall`, `MethodResolutions`, `TypeDefInfo`, `DisplayInfo`, `MonoDefn`, `Warning`, `TraitDecl`, …) live in `cranelisp-types` because backend codegen also consumes them. `MonoDefn` is a single-field wrapper over `Defn` (S81 W-G, FIXME 0033): its former `resolutions: MethodResolutions` + `expr_types: HashMap<Span, Type>` side maps were dropped as redundant after the Phase-1 AST-annotation migration — `monomorphise_call` annotates the `defn` AST in place (`inferred_type`/`resolved_call` on each node), so resolved-stage data lives on the AST (Principle 7 single source of truth), never a parallel Span-keyed map; the maps were produced-but-never-read by any consumer. **Concrete-boundary arc (S84 Phase 2a, landed; `design/arch/concrete-boundary-type.md` §2.4; FIXME 0383):** `cranelisp-types` gains the post-mono codegen AST `MonoExpr` (+ `MonoMatchArm`, `MonoDefnVariant`) — a parallel view of `Expr` whose nodes carry `ty: ConcreteType` non-optionally, so a generic is *structurally unrepresentable* on a codegen node. Typecheck (Phase 2b) builds `MonoExpr` via `MonoExpr::from_expr(&Expr)` at the `monomorphise_call` seam (immediately after `apply_subst_to_defn`), the `from_expr` failure surfacing as the existing `CranelispError::TypeError` ambiguity/could-not-monomorphise error; the backend (Phase 3) switches its read path from `Expr.inferred_type` to `MonoExpr.ty`. In Phase 2a the type is **produced-but-unused** (additive `public-api.txt`; `CACHE_SCHEMA_VERSION` 6 → 7 — the mono serde shape participates in the cached `.meta.json` surface). No crate-root re-exports of `cranelisp-types` items (the legacy `CranelispError` / `TopLevel` convenience re-exports were removed S73 per Principle 15).
-
-**FQTypeName binding at typecheck boundaries.** Per Decision 0047 + §7 ("FQTypeName binding"), every resolved-stage API on the typecheck surface that names a type uses `FQTypeName`; bare `TypeName` is reserved for the two exception classes (syntactic-lift sites at `check_form`; receiver-pinned helpers where `&self` IS the module context). Typecheck carries the largest /dev burden of the six crates' migration (~7 PIF conversions + ~3 syntactic-lift keeps + ~5 receiver-pinned keeps), but most of those APIs become `pub(crate)` under the `TypeCheckEnv` narrowing and stop crossing the boundary entirely.
-
-**Bounded-context invariants.** These hold across sprints — the contract `cranelisp-typecheck` makes with the rest of the workspace:
-
-1. **No code generation.** Typecheck never invokes Cranelift, never produces JIT or object output. Its product is annotated AST + symbol-table entries.
-2. **No commits to live `SymbolTable` from `check_forms`.** Per FIXME 0160 + Decision 44 — `check_forms` is pure with respect to **live state**: it does not mutate the live `SymbolTable` nor any state visible outside the cluster. It MAY mutate the orchestrator-handed staging `SymbolTable` via the same accessor API used in committed-mode (`ctx.current_symbol_table_mut()`); typecheck cannot distinguish staging from live because the accessor abstracts the difference. Cluster atomicity is preserved because staging is orchestrator-local and is committed (drained into live) only on whole-cluster `Ok`. The orchestrator drops staging on the floor on any `Err`; on `Err(Gap)` it dispatches and **retries the whole `check_forms` call** against a fresh staging frame (no sub-cluster granularity). The live table is byte-identical to its pre-cluster state across any failure — preserving Decision 44's Principle 1 (decoupling) + Principle 7 (single durable source of truth) intent without inverting every register-call site. Resolved import bindings are installed by `int` (post-cluster-`Ok` arm), not by typecheck.
-3. **Single source of truth via `defined_symbols()`.** Per Decision 22 — the codegen-compilable predicate is `SymbolTable::defined_symbols()`. Typecheck writes entries that satisfy or fail this predicate; it does not maintain a parallel store.
-
-   3a. **Per-symbol Pass-2 side products land on staging `ModuleEntry::Def` fields; Pass-1-to-Pass-2 working state is internal to `check_forms`.** Two intra-pass data categories must be distinguished (their conflation produced the state-threading hole that triggered Decision 44's third amendment): (i) **per-symbol Pass-2 side products** — the data that survives the cluster and is consumed downstream (codegen, call graph, REPL display) — are written into the staging `Def` entry's existing fields during Pass 2 (call-graph edges into `Def.callees` per Decision 21; expr-type annotations onto `Def.ast` per Decision 22; mono entries staged as additional mangled-name `Def` entries; per-form `method_resolutions` / `expr_types` / `mono_defns` / `callees`). The orchestrator's drain into live carries these with each entry. (ii) **Pass-1-to-Pass-2 working state and cluster-scoped algorithmic intermediaries** (`defn_type_vars`, default-method-defn deferrals, generalisation inputs, multi-sig variant accumulation, the deferred-resolutions working set) are internal to `check_forms`'s stack frame — no `&mut ModuleCheckAccumulator` parameter, no public accumulator type — constructed on entry, consumed across the Pass 1 → Pass 2 boundary internally, dropped on return. Cross-symbol bookkeeping the orchestrator itself collects (warnings, resolved-import bindings, introspection records) is `int`-side data surfaced via the cluster return shape — see §6 (int) + `src/cluster.rs`'s `ProcessedCluster` rustdoc (the `facades/int.md` facade retired S81 W-Retire → BC §6 + `design/int/` + source rustdoc).
-4. **TC-sourced call graph.** Per Decision 21 — call-graph edges are extracted during typechecking from method resolutions. The per-symbol `callees: Vec<FQSymbol>` is the call graph; the rich `CallGraph` (with tail-position info) is for within-module codegen analysis.
-5. **Trait method dispatch via `ResolvedCall::TraitMethod`.** Typecheck always emits `TraitMethod` for trait-dispatched operators; backend handles lowering. Typecheck stays clean of backend-specific concerns. The prior `(TraitName, Symbol, TypeName) → primitive` collusion-table approach in backend is retired per Decision 43 — backend has no trait knowledge; primitive emission goes through `cranelisp-primitives` + `cranelisp-intrinsics` directly.
-6. **Constraint propagation in `generalize`.** Per Decision 19 — `Scheme.constraints` is populated by collecting trait constraints from active type variables during generalisation. Non-empty constraints mark a constrained polymorphic function (monomorphised at call sites).
-7. **TC error rollback via cluster-atomic staging-drop.** `check_forms` allocates type vars within `CheckState`; on `Err` the orchestrator-owned transient staging table (Decision 44) is dropped and the live table is byte-identical to its pre-cluster state — that staging-drop IS the typecheck-state rollback. There is **no** caller-driven snapshot/restore: the `snapshot`/`restore` primitive and the `ReplSnapshot` type were deleted as dead code in S73 (purge Wave 3), superseded by this mechanism. The type-var pool (`next_id`) is monotonic and intentionally NOT rolled back across the retry boundary — fresh vars from a failed attempt are abandoned (allocation is cheap; monotonicity preserves the TypeId-consistency invariant).
-8. **FQ resolution surfaces via `CheckError::Gap` — the ONLY legitimate cross-module concern typecheck has.** When `check_forms` encounters an FQ symbol or FQ type reference whose target module is absent from `symbol_tables` (not yet typechecked), it returns `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` or `Err(CheckError::Gap(ResolutionGap::Type(fqt)))`. This Gap return is the **replacement** for the struck import/export-registration machinery (see the struck `register_imports`/`register_exports` above): typecheck does not reach across to another module by registering imports — it surfaces the missing dependency as a `Gap` and lets the orchestrator load and typecheck that module, then resumes. Typecheck does NOT block, does NOT call the scheduler, does NOT register modules — it surfaces the dependency to `int::process_cluster`, which catches the gap, loads + typechecks `fq.module`, and retries the whole `check_forms` call (via `handle_gap`). It asks for `ResolutionGap::SymbolTypechecked` (not `SymbolInMemory`) for value references because typecheck needs only the entry's `Scheme`, not its compiled code (macros are already expanded by the time `check_forms` runs). While following an FQ reference, typecheck consults the read-only `module_aliases` parameter to substitute import/export aliases for a `module_path` prefix per §8.6.6 — it follows aliases, it does not populate them.
-9. **No `Sess` / `CompileScheduler` dependency.** Same as frontend — typecheck stays a pure function from inputs (`ParsedEntry`, `SymbolTableAccess`, `SymbolTables`, `ModuleAliases`) to outputs (`CheckResult` or `CheckError`). Principle 3.
-10. **Module locality — typecheck never iterates the universe of modules.** Per Principle 17, every cross-module access fits one of four principled shapes; unbounded scans of the module set for short-name resolution, impl resolution, or method-of-type aggregation are forbidden. The four shapes: (1) **unqualified short-name lookup** — current module's view only (staging ∪ live); if the entry is `ModuleEntry::Import { source }`, chain-follow `source.module` one edge at a time to the canonical entry — never iterate the module set; (2) **qualified (FQ) lookup** — direct, single named module; (3) **impl resolution** — chain-follow the trait reference back to its defining module (shape 1) and probe that one module for `impl$FQTypeName$FQTraitName` (storage placement is the trait's defining module per Decision 0045 — no closure walk, no cycle detection); (4) **bulk introspection** — current module only; multi-module aggregation is composed at the orchestrator (session/REPL) layer, not inside `check_forms`. Shapes 1 + 2 are realised by the `cranelisp-types` resolution primitive (§7 "Resolution primitive"; S108 Wave G, LANDED: `cranelisp_types::ResolutionScope::resolve` — the §8.8.1 prelude fallback is intrinsic to the scope, constructed ONCE per module context from the Principle-19 role bit, never decided per call site; `prelude-import-convergence.md`): typecheck's kind-specific resolvers are **thin callers** of it, each projecting the generic `Resolved` / `ResolveError` to its kind-specific result, and the former per-site `_or_prelude` variant family deletes. Typecheck supplies the **staging ∪ live** first-hop view (via its `SymbolTableAccess`) at scope construction; the primitive does the import/alias/visibility/chain walk + the fallback. The view-selection stays with typecheck; the walk is types-owned. The prior typecheck-resident chain-walk copies retire (single source of truth, Principle 7). Mutating writes always go through `ctx.current_symbol_table_mut()`; a typecheck pass MUST NOT mutate a foreign module's table directly. `ModuleEntry::TraitImpl` writes target the trait's defining module (Decision 0045) — the orchestrator selects the target table by chain-following the trait reference at write time, identically to the read side (Decision 0046 retargeting). This invariant is the **structural prerequisite** for invariant 2's cluster-atomic guarantee: the `SymbolTableAccess` accessor surgery only delivers atomicity if every read and write actually flows through it; the absence of orphaned direct-module pierces is what makes that the case. Compliance with Principle 17 and compliance with Decision 44 are the same property viewed from two angles.
-
-11. **Macro recognition uses the types primitive; execution and checkpoint publication are int-owned (S76 W-Macro decision; 2026-09-03 checkpoint amendment).** Macro-head discrimination resolves names through `cranelisp_types::resolve_macro_head`, not a typecheck-resident or module-wide walk. Int's Pass-1 source-order loop calls that primitive over committed tables; typecheck neither executes macros nor owns publication cadence.
-    - **Pass 1 (expand + checkpoints)** runs in int before `check_forms`. Int executes already committed clauses through its `MacroExpander` implementation. At each direct or expansion-produced `defmacro`, it uses typecheck to prepare the complete parent-and-clause unit, closes and codegenerates the full expansion-time dependency/generated-realization closure, and publishes the parent, clauses, and defining-module realization rows before continuing. A dependency module publishes independently. Failed dependency/retry attempts discard the defining-module preparation and restart it; they do not expose an unpublished macro. The later §18 dependent cure is outside this success boundary.
-    - **Passes 2 + 3 = `check_forms`** over the already fully expanded non-macro `Vec<ParsedEntry>`. Its signature-registration and body-check phases remain one atomic HM cluster, including non-macro forms on both sides of successful macro checkpoints.
-
-    Macro invocation and checkpoint orchestration remain behind int's existing `MacroExpander`, prepared-commit, module cadence, and `publish_compiled_staged` composition. A shrinking macro supplies explicit `ChangeAbi` decisions for its structurally identified surplus private clauses, so replacement and removal share that one module transaction; omission never deletes a binding. There is no unpublished-candidate invocation or temporary GOT stack and **no additional public-API item or baseline delta**. See `design/arch/macro-availability-model.md` §0.
-
-**Module-locality rationale (Principle 17 + Decisions 0044/0045).** The "search every module for a short name" pattern is module-system-shaped wrong: the language's visibility rules (spec §5.11, §8.3) already decide which names are reachable from the current module, and an unbounded scan disregards them. The prototype carried 40+ direct module-set accesses across the typecheck crate — short-name lookups iterating every loaded module, `find_impl_for_type` scanning the whole module set, cross-module mutating writes — each violating the spec's visibility rule and blurring the cluster-atomic surface. The remediation encodes the visibility rule in the access pattern: a name is reachable from the current module iff it is local, imported, or imported transitively, and typecheck walks that bounded set via per-symbol point-to-point chain-follow (one edge at a time, terminating at the canonical non-`Import` entry; no closure walk, no cycle detection) rather than the universe. `Import` covers both private (`(import …)`-form) and public (`(export [foreign-sym])`-form, formerly `Reexport`) edges — visibility is a per-entry orthogonal axis, not a separate variant (see §7 "Visibility is per-entry"). Synthetic modules (`primitives`, `macros`) have empty `imports`/`exports` by construction and reference cross-module symbols fully-qualified at registration time, not via short-name resolution. This is why the boundary lies at module-locality: it is the structural prerequisite that makes Decision 44's cluster-atomic shape actually atomic — the `SymbolTableAccess` choke point only buys atomicity if no read or write bypasses it.
-
-**Monomorphisation-from-roots is the codegen-concreteness guarantee (0373 investigation, user-ratified 2026-06-14; full statement at BC §3 invariant 9).** Cranelisp is rank-1 Hindley–Milner — `Type` has no quantified variant in value position, every use instantiates, §3.6.6 forbids first-class constrained values, and monomorphic recursion is enforced (`crates/cranelisp-typecheck/src/program.rs`). The architectural consequence owned here: full monomorphisation from the program roots is **complete**, and it is typecheck's job to deliver concrete parameter and result types for **every reachable fn instance** so that no `Type::Var` reaches codegen (the prerequisite for backend RC soundness — BC §3 invariant 9; the `Type::Var → Mixed → <1024`-guard path is otherwise a use-after-free hole). This is the settled fix direction over the rejected runtime-RC-witness and tagged-value alternatives, because it is the only one that keeps representation backend-internal. **Status (S83):** Tier 1 + 1.5 landed (`5634dd3`, `9e57330`) — polymorphic-result-hop monomorphisation (same- + cross-module) via the 0355 machinery (`collect_local_parametric_calls`, `monomorphise_inner_parametric_hops` in `crates/cranelisp-typecheck/src/{program,traits}.rs`). **Tier 2 (FIXME 0374) is the systematic remainder** — generalise the per-`(Def, type-args)` instance model beyond the result-hop / 0355 constrained / cross-module subsets so concreteness is total. It builds on `5634dd3`/`9e57330`/0355 and connects to the deferred concurrency/mono work. Cross-refs: BC §3 invariant 9 (backend RC soundness + retire-the-guard, FIXME 0375), the §12.1-relaxation intent (FIXME 0373, /spec).
-
-**Concreteness is enforced STRUCTURALLY at the slot gate, not (only) checked downstream (S84 generalisation, user-ratified 2026-06-16; FIXME 0374; BC §7 + Principle 20).** The primary enforcement of "no `Type::Var` reaches codegen" is the **GOT-slot-allocation gate**: a def is slotted ⟺ its type is fully concrete (`Type::is_concrete()`), so a non-concrete def is **slot-less by construction** and physically cannot reach codegen as a callable value (the slot-emission path is the only door, and it is shut). This corrects an as-built leak: the S83 gate (`program.rs:947`/`:1143`) allocated the concrete slot under `constraints.is_empty()` — trait-bounds-emptiness — which a *generic-but-unconstrained* def (`id : ∀a. a→a`, a `(Box a)`-result HOF) satisfies *while still carrying a `Type::Var`*, so it got a `Concrete { got_slot }` and reached `classify(Type::Var)` (the `(Box a)`-through-HOF SIGSEGV, S84 Wave-0). The gate predicate moves to `is_concrete()`; the non-concrete unconstrained generic def gets a slot-less `fn_state` sibling to `Constrained`. **Two consequences for the Tier-2 design:** (1) "is this def concrete?" is answered by *whether it has a slot*, a structural property of the data model (Principle 18), so the monomorphisation pass mints a concrete slotted instance for every *reachable* use and anything left slot-less is either never-used-as-a-value (fine) or the 0373(ii) ambiguity error — coverage is **forced by the representation**, not chased shape-by-shape. (2) The `Type::contains_var()` ambiguity/finalisation check (0373(ii), fired pre-monomorphisation per the Phase-2 ruling) and the codegen `classify(Type::Var)` panic (0375) are **secondary backstops** to this structural primary — they catch what the gate already forbids, and under total Tier-2 coverage they become assertions that can never fire (Principle 18 — the structural form is strictly stronger). The boundary shape is unchanged: more `MonoDefn`/`Defn` instances through the existing enumeration; `Concrete`'s slot precondition is the only `cranelisp-types` semantic that tightens (the `is_concrete()` predicate is now a `cranelisp-types` public item). See `design/typecheck/monomorphisation.md` (re-grounded by FIXME 0376) for the pass-level realisation. **The §3.11.1 ambiguity check is made POSITION-COMPLETE and predicate-shared with the backend backstop (S84 Wave 2, FIXME 0379)** — it fires on every codegen-reaching value position (not just `let` bindings) via the shared `Type::is_representation_undetermined()` predicate, so a `Mixed`-ADT-with-free-var in a match scrutinee / fn arg / vec element / ctor field / if-branch / ParBind binding is caught rather than slipping to a silent-or-SIGSEGV codegen path; the full belt-and-braces statement (shared predicate + typecheck position-complete check + widened backend backstop + the `<1024` guard kept ONLY for type-known nullary-tag discrimination) lives at BC §3 invariant 9. **TIGHTENED (S84, spec commit `2290aa9`): the §3.11.1 verdict is now FULL CONCRETENESS — no representation-based exemption.** The position-complete scan *machinery* stays; its per-node verdict switches from `is_representation_undetermined()` (which admitted `(Vec a)`/`(Fn a)`) to `!is_concrete()` (rejecting ANY residual free var), and the `(is-some None)` direct-constructor skip is removed. This agrees with the `ConcreteType` boundary type by construction. See `design/arch/concrete-boundary-type.md` §1.4/§3.1 and the SUPERSEDED note in BC §3 invariant 9; the predicate retirement is FIXME 0386 (/dev).
-
-**The slot gate is TOTAL: there is NO `monomorphisable-from-params` carve-out (S84 Wave 1b, user-ratified 2026-06-16; FIXME 0378 issue 3; /arch + /int).** The slot⟺concrete invariant is *unconditional* — `Concrete{slot}` is constructed iff `is_concrete()`, with no exception for a def whose only `Type::Var` is in result position. The Wave-1 landing carried a pragmatic carve-out — `fn_type_is_monomorphisable_from_params(&ty)` (`program.rs:181`) — that kept a **result-only-polymorphic** def (`test-* : (Fn [] (Option a))`; body `None`, `[]`) `Concrete`-with-a-slot, on the reasoning that (a) such a def has no call-site parameter to monomorphise *from*, and (b) test discovery (`src/session_v4.rs::discover_test_names`) found `/run-tests` tests by reading `callable_got_slot()` and would strand a slot-less test fn. The user ruling retires this carve-out: **discovery-driven entry points (test functions) become explicit MONOMORPHISATION ROOTS** — like `main` — so the gate is total and result-only-polymorphic defs that are genuinely never used as a value are correctly slot-less (and, at the REPL, surface their polymorphic type via display, not a slot; FIXME 0378 issues 1+2, /spec).
-
-**The mono-root rule for entry points (the architectural mechanism).** Monomorphisation-from-roots works by minting a concrete instance for every *reachable use* — and the root set is what defines "reachable". `pass4_monomorphise` today implicitly roots at the **call sites inside top-level form bodies** (`collect_*_calls` over `defns`): `main`'s body is a top-level defn whose *calls* seed concrete instances, but `main` is reachable as an entry because the program *runs* it, not because anything calls it. A **discovery-driven entry point** — a `test-*` fn invoked by the test runner, never by a body — has no call site, so its result-only `Type::Var` is never pinned by the existing collectors. The rule: **register each discovered entry point as a mono root that forces a concrete instance of the entry fn itself at its expected entry type.** For a test fn the expected entry type is fixed by the discovery contract — `(Fn [] (Option String))` (`src/session_v4/test_runner.rs::test_scheme_is_eligible`; test-discovery.md q-eligibility) — so the root carries that expected type and the pass mints `test-one : (Fn [] (Option String))` (concrete, slotted) from the polymorphic original. **What pins the result var:** in the well-formed case the **body already pins it concretely** — a test asserts on concrete values, so `(if true None (Some "boom"))` infers `(Option String)` by construction and the def is *already* `Concrete` with no mono-root needed (it never entered the carve-out). The mono-root is load-bearing only for the **degenerate** `(defn test-x [] None)` shape whose body leaves the element type free (`(Option a)`); there the entry-type expectation `(Option String)` is what concretises it. This mirrors `main`'s `(Fn [] (IO t))→(Fn [] (IO Int))` finalisation (`program.rs:1408`): an entry point's expected signature is a concretising constraint the root supplies. **Termination + soundness:** the entry-type expectation is a single concrete instantiation per discovered fn; it joins the existing `done`-set dedup; monomorphic-recursion enforcement bounds the closure exactly as for any other root. The risk surface is the same 0344/0349 fold-over-mono canary the rest of Tier-2 guards — no new termination concern.
-
-**Which test-fn shapes actually need the treatment (sizing the change).** Three shapes, two of which are already handled by the unconditional gate:
-1. **Fully-concrete body** (`(defn test-x [] (if true None (Some "boom")))` → `(Fn [] (Option String))`): **already `Concrete`+slotted** under the unconditional gate; needs nothing. This is the common, well-formed test shape.
-2. **Result-only-polymorphic body** (`(defn test-one [] None)` → `(Fn [] (Option a))`): **the only shape the carve-out served.** Under the total gate it becomes slot-less `Polymorphic`; the mono-root mints its `(Option String)` concrete instance. This is the narrow target of the change.
-3. **Parameter-polymorphic** (`test-*` with args): excluded from discovery anyway (eligibility requires `params.is_empty()`), and already slot-less `Polymorphic` under the gate — irrelevant to discovery. The change is therefore **small**: shape 1 is untouched, shape 3 is unaffected, only shape 2 moves from carve-out-`Concrete` to mono-root-minted-`Concrete`.
-
-**The typecheck↔int discovery seam.** There are two discovery readers in int, and the seam differs for each:
-- **`discover_eligible_tests` / the `discover-tests` extern + fn-value path** (`src/session_v4/test_runner.rs::discover_eligible_tests`) **already requires the EXACT concrete scheme `(Fn [] (Option String))`** (`test_scheme_is_eligible`) and reads `callable_got_slot()`. With the mono-root minting a concrete `(Option String)` instance, this path finds the instance unchanged — its eligibility predicate was *already* concrete-only, so a degenerate `(Option a)` test was correctly excluded before (documented at `tests/spec_12_runtime.rs:364`). **No change needed here** beyond the instance now existing.
-- **`discover_test_names` / the `/run-tests` slash-command path** (`src/session_v4/test_runner.rs::discover_test_names`, via `handle_run_tests`/`run_test_by_name`) is names-only: it matches `test-` prefix + `param_names.is_empty()` and reads `callable_got_slot()` on the *polymorphic original* — accepting any nullary `test-*` including the degenerate `(Option a)`. **This is the reader the carve-out propped up.** Under the total gate the original is slot-less; this reader must instead resolve the test's **concrete monomorphised instance**. The seam: discovery looks up the minted concrete instance. Because the entry type is the single fixed `(Fn [] (Option String))`, the mono instance is unambiguous; whether it is registered under the **bare name** `test-one` (the concrete instance *is* the canonical entry — preferred, since there is exactly one entry type so no `name$T` disambiguation is needed) or a **mangled name** `test-one$...` is the /dev implementation choice in Wave 1b — /arch's seam statement is that the names-only reader resolves to whatever name carries the concrete `(Fn [] (Option String))` `Concrete{slot}` instance, NOT the polymorphic original's (now-absent) slot. The preferred shape — register the concretised entry under the bare name, so `run_test_by_name(test-one)` finds the slotted concrete instance directly — keeps `discover_test_names`/`run_test_by_name` byte-identical (they already read `callable_got_slot()`; the slot now rides the concrete instance under the same name). **No new cross-crate signature** is required either way: the mono instance is an ordinary `Concrete` `UserFn` `Def` (the existing `MonoDefn`/`Defn` shape), found through the existing symbol-table lookup + `callable_got_slot()` chokepoint.
-
-**Typecheck is the resolution producer for the backend's keyed reads; value-position monomorphisation is UNIFORM (S110, Principle 24 "Resolve once"; FIXMEs 0583/0585).** Two coupled producer obligations, both consumed by BC §3 invariant 10 (the backend pure keyed-lookup consumer):
-
-- **Every statically-resolved mono-view reference carries its resolved STORAGE identity.** Typecheck records — at the resolution chokepoints, where the identity is first derived (`infer_var`, `instantiate_ctor`, the dispatch-selection seams) — the `FQSymbol` under which the referenced `Def` actually resolved ("whichever storage key HIT": canonical `Type.Ctor` for sum ctors, mangled keys for sig-dispatch/mono instances, the bare key otherwise) into the `MethodResolutions.resolved_targets` sidecar, transported onto `MonoExpr::{Var,Apply}.resolved_target` via the REQUIRED `from_expr` parameter (the S109 §10 `pattern_ctors` template). Typecheck is also the **sole mono-view producer**: every codegen-reached entry carries a view (strict for concrete body-AST targets; LENIENT — placeholder node types, signature-driven reads — for the enumerated classes that legitimately fail strict `from_expr`: ctor/accessor synthetic bodies, `f$Var` variants, generic templates, `__expr` disposition-3, non-concretized macro clauses), with synthesised bodies' ctor identities populated DIRECTLY at synthesis (their `Span::SYNTHETIC` nodes are structurally outside any span-keyed sidecar). The backend builds no views and re-derives no identity. Binding contract + wave plan (LANDED S110 W0–W3): `design/arch/backend-keyed-consumer.md` §1/§4/§5.
-- **Mint and die share ONE value-position enumeration (the 0585 class record).** A generic fn referenced as a VALUE must have a concrete mono minted at its inferred type, and the collection that mints is the SAME `for_each_child_expr` value-position walk the §3.11.1 ambiguity scan uses (landed S109 0571.2) — never a per-position whitelist (three instances of the leak class: 0374 HOF-arg, 0488 imported ref, 0571 Let-binding, with if-branch/match-arm/vec-element found still leaking by review). The invariant that makes a 4th position structurally unable to reintroduce a *silent* leak: a value position either flows through the shared walk (minted or died §3.11.1) or its reference reaches the backend's keyed read as a slot-less `Polymorphic` template and hard-fails with a precise `CodegenError` — the loud backstop is the keyed read itself (`backend-keyed-consumer.md` §7), not a parallel guard.
-
-**The unresolved-return-poly-dispatch diagnostic crosses typecheck→int on `CheckResult` — deliberately NOT a `cranelisp-types` type (S110 `/arch` ratification of FIXME 0611, 2026-07-16).** The R16/R17 signal — the set of return-type-polymorphic dispatch sites still UNRESOLVED after the final substitution (grounded in the dispatch OUTCOME, "no impl selected", never in surface-type concreteness — the `(add2 3 4)` false-positive fence) — is computed once at typecheck finalize and published as a transient `CheckResult.unresolved_dispatch: Vec<UnresolvedDispatchSite>` field (`UnresolvedDispatchSite { span, method, gap: DispatchGap }`, **all typecheck-owned**). int consumes the *decision* at exactly its two execution boundaries (`src/exe.rs::validate_main` + the REPL `__expr` eval path) and emits the §3.11 message (one wording, Principle 7); it never re-runs dispatch (Principle 24), and typecheck stays entry-agnostic (Principle 19 — which fn is `main`, and whether `__expr` is evaluated-for-value, is int's knowledge). Placement per Principle 15's heuristic: producer = typecheck, consumer = int only (int excluded from the two-facade count) ⇒ the types live with the producer; `CheckResult` is already a non-boundary diagnostics payload (`result.rs:14`). **The anticipated backend defence-in-depth consumer is DECLINED**: the backend is a pure keyed-lookup consumer (invariant 10, BC §3) — an arm interpreting dispatch-gap state would re-import resolution knowledge; the backend-side honest error for any slot-less residual already exists WITHOUT dispatch knowledge (the S110 W2 0585 backstop: "generic value reference … reached codegen without a mono instance"). No `cranelisp-types` edit, no `CACHE_SCHEMA_VERSION` bump (the set is EMPTY for every valid program — nothing to cache); cost = a typecheck `public-api.txt` field regen. Design: `design/typecheck/return-poly-dispatch-signal.md` (carrier §5 option (A), ratified as recommended).
-
-**Per-surface documentation.** Like `cranelisp-types` (§7), `cranelisp-frontend` (§1), and `cranelisp-platform` (§5), this surface has no separate `facades/typecheck.md` document as a permanent record — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-typecheck/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S72 Wave 5 following the S69 Sub 42 / S70 Phase B / S71 Wave 4 precedents per Principle 7 (single source of truth) and the lived-experience cost of dual-maintenance — the 4th data point of the facade-retirement pattern. The cross-surface narrative (this section), invariants 1–10, and the module-locality rationale live here in BC §2; the per-item contracts, "types originated here" placements, and per-public-item invariants live in the source rustdoc. The `public-api.txt` baseline gates the surface at PR time per the baseline-diff discipline; rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
+1. **No code generation.** Typecheck never invokes Cranelift and produces no
+   machine code.
+2. **No writes to live tables from `check_forms`.** Typecheck writes only through
+   the supplied accessor and cannot distinguish staging from live. The binary
+   owns staging, publishes it only on whole-cluster success and drops it on any
+   error; on `Gap` it loads the dependency and retries the whole call against
+   fresh staging. The live table is unchanged across any failure.
+3. **One compilable predicate.** What backend may compile is the table's
+   `codegen_targets()` projection. Typecheck authors entries that satisfy or
+   fail it and keeps no parallel store.
+   3a. Per-callable products that survive the cluster (checked body, codegen
+   view, callees, ownership summary, minted instances) land on the staged
+   declaration. Working state between the two internal passes lives in
+   `check_forms`'s frame and is dropped on return.
+4. **The call graph is typecheck-sourced**: callee edges are recorded on each
+   callable during checking.
+5. **Dispatch is resolved here.** Backend has no trait knowledge (§3 invariant
+   10, §4a invariant 4).
+6. **`generalize` collects trait constraints into `Scheme.constraints`**; a
+   non-empty set marks a constrained template, monomorphised at its uses.
+7. **Error rollback is the staging drop.** There is no snapshot/restore
+   primitive. The type-variable counter is monotonic and is not rolled back.
+8. **A missing module surfaces as `CheckError::Gap`** — the only cross-module
+   concern typecheck has. It never blocks, schedules, loads or registers a
+   module. It follows module aliases; it does not populate them.
+9. **No session or scheduler dependency** — a pure function of its inputs.
+10. **Module locality ([Principle 17](principles/17-module-locality-in-typecheck.md)).**
+    Typecheck never iterates the universe of modules. Unqualified lookup uses
+    the current module's view and follows import edges one hop at a time;
+    qualified lookup probes one named module; implementation lookup follows the
+    trait reference to its defining module and probes the one keyed shell; bulk
+    introspection is current-module only. The walk is the types-owned
+    `ResolutionScope`; typecheck supplies the first-hop view. Writes go through
+    the accessor only. This is the structural precondition of invariant 2.
+11. **Macro recognition uses the types primitive; execution and checkpoint
+    publication are the binary's.** `check_forms` receives fully expanded
+    non-macro forms (§6; [macro availability](macro-availability-model.md)).
+12. **Concreteness is delivered here.** Cranelisp is rank-1 Hindley–Milner, so
+    monomorphisation from the roots is complete: every callable backend compiles
+    has a fully concrete scheme, and an unpinned type variable at a
+    codegen-reaching value position is the located ambiguity error rather than
+    a codegen input. Discovery-driven entry points (tests) are monomorphisation
+    roots like `main`. Contracts:
+    [concrete codegen boundary](concrete-boundary-type.md),
+    [total concreteness](total-concreteness.md).
+13. **Typecheck is the sole producer of resolved identities and codegen views.**
+    Every statically resolved reference carries the storage identity under
+    which it resolved; minting and the ambiguity check share one value-position
+    walk. Contracts: [backend keyed consumption](backend-keyed-consumer.md),
+    [typed resolution carriers](typed-resolution-carrier.md).
+14. **Unresolved return-polymorphic dispatch crosses on `CheckResult`.** The
+    types live with their producer because the binary is the only consumer; the
+    binary raises the diagnostic at its two execution boundaries and backend
+    does not interpret dispatch state
+    ([design](../typecheck/return-poly-dispatch-signal.md)).
 
 ---
 
 ## 3. Backend — `crates/cranelisp-backend/`
 
-**Bounded context.** Typed AST becomes executable code. The backend translates symbol-table entries into Cranelift IR and produces compilation artefacts: in-memory machine code for direct execution, object files for linking, and the cache pair (metadata + object) for re-use across sessions. There is one compilation entry point regardless of mode; mode (in-memory vs object) is a property of the Cranelift module supplied by the caller, not a parameter on the entry point. The crate has no cadence; multiple compilations may run concurrently with disjoint inputs.
+**Bounded context.** Concrete typed bodies become executable code. Backend emits
+Cranelift IR and produces in-memory code, object files and the cache pair. There
+is one compilation entry regardless of mode: the mode is a property of the
+Cranelift module the caller supplies. The crate has no cadence; compilations
+with disjoint inputs may run concurrently.
 
-**In-scope.**
-- IR emission for every spec-defined construct
-- RC discipline at the call boundary (callee owns its heap parameters)
-- In-memory artefact production with reclaim on drop
-- Object-file production
-- Cache read and write
-- Per-module link binding for cross-module call indirection
+**In scope.**
+- IR emission for every language construct, including reference-count
+  discipline and type-directed drop glue.
+- In-memory artefacts with reclaim on drop; object files; cache read and write.
+- Per-module GOT binding for cross-module indirection.
+- `(trace …)` codegen: wrapper emission, traced-set discovery from the symbol
+  tables and display-descriptor baking ([tracing](tracing.md)).
+- Platform codegen: GOT-indirect dispatch against the DLL's exported table, the
+  schema generator and layout hash, and the tag-guarded effect-name stamp
+  ([platform interface](platform-interface.md)).
+- Effect-concurrency node construction ([effect concurrency](effect-concurrency.md)).
 
-**Out of scope.**
-- Type inference (typecheck)
-- Macro expansion (frontend)
-- Pipeline scheduling (int)
-- Runtime helpers (intrinsics — backend declares them as imports; §4b) and user-callable primitives (primitives — §4a)
+**Out of scope.** Inference and resolution (typecheck); scheduling and code
+retention (binary); runtime helpers (intrinsics) and primitive bodies
+(primitives).
 
 **What crosses the boundary.**
-- **Inputs**: a symbol-table view; a Cranelift module to emit into.
-- **Outputs**: for JIT mode (per Decision 41 per-symbol cardinality — typecheck cluster commit followed by N parallel backend workers, each calling `compile_to_module` for one assigned symbol), a **per-symbol GOT-slot write** (`got().store_slot(slot, ptr)` — D41 #2, backend's own write) plus a value-returned `CompilationArtifacts` carrying the always-created introspection contributions (`clif_ir`, `code_size`, `compile_duration`) for the caller to retain or drop; on-demand disassembly via the separate `produce_disasm(fq, code_size, symbol_tables)` free function with a caller-supplied `code_size` (S75 W2 Finding-C). The **caller composes the `Code` lifecycle owner** (`Code::Jit` from its owned `Arc<Jit>`, `Code::Linker` from the `LinkerArtefact`) and submits it through the accepted types-owned `SymbolTable::publish_compiled_owner` capability — backend never constructs `Code` (it only borrows `&mut M` and never owns the `Arc<Jit`; S75 W2 Finding-A — symmetric with the cache-hit path). The prior `SymbolTable::write_code` wording named an unimplemented design spelling. Backend does not name the integration-layer `Introspection` type at its boundary; the value-returned artefact replaces what would have been a third direct-write that inverted the DAG. For object mode (per-module), the object artefact and the cache pair.
-- **Window types**: none.
+- **In:** the symbol tables and module aliases, the targets to compile, and a
+  Cranelift module to emit into.
+- **Out:** the populated GOT slot for each compiled target, and returned
+  artefacts (IR text, code size, duration, per-type drop-glue addresses). On a
+  cache hit, `load_object` returns the linker artefact and restored table.
+- The **caller composes the lifecycle owner**: backend names `Code` but never
+  constructs it; the binary builds it from the `Jit` or linker artefact it owns
+  and publishes it through the types table.
+- **Minimal JIT-setup boundary.** The `Jit` boundary is constructor, module handoff, `define_symbol` and `Drop`.
+- The GOT-population observer is an extension point; observer state is the
+  binary's.
+- Drop glue crosses by key, never by ambient lookup: the types-owned
+  `drop_glue_symbol_name` names it per module and concrete type. Glue has no GOT
+  slot because it is neither language-callable nor redefinable.
+- The **cache is an implementation mechanism of this context**, not a separate
+  one. Its sidecar is the serialized symbol table; its interior invariants live
+  in the cache module rustdoc.
 
-**`symbol_tables` is the single codegen source; object mode is a finalize-time difference only.** `compile_to_module<M>` makes every codegen decision from `symbol_tables` (+ `module_aliases`): callee resolution + `got_slot`, arity from `entry.scheme`, dispatch shape from `entry.kind` (user / primitive → GOT-indirect against `__cranelisp_got_{M}`; intrinsic → `Linkage::Import` by name), `DefKind::Constructor` metadata. The emitted CLIF is byte-identical across JIT and object (invariants 1 & 6); object mode differs only at finalize — it emits the `__cranelisp_got_{M}` data symbol with relocations + the `.meta.json` sidecar (§"Object file contract" in the backend facade) — and **fn pointers are a resolution-time concern** (JIT finalize / cache `Linker` / system `ld`), never a codegen concern.
+**Invariants.**
 
-**Minimal JIT-setup boundary (S75 — `Jit` shrinks to construct + handoff + reclaim).** In the converged design, `compile_to_module` drives declare → compile → finalize **internally**; the caller (int) only constructs the `Jit`, hands off `jit.jit_module()`, and holds `Arc<Jit>` for reclaim. The boundary `Jit` surface is therefore minimal: the constructor(s), the `jit_module()` handoff accessor, and `Drop`. The JIT-orchestration methods (`declare_intrinsics`, `declare_functions{_prefixed}`, `declare_imported_functions`, `compile_defn`, `finalize{_and_get_ptr}`, `build_compile_context`, `build_shared_isa`) + the module-level `intrinsic_symbols` / `build_isa` / `declare_intrinsics_generic` + the JIT-setup DTOs (`IntrinsicSymbol`, `IntrinsicFuncIds`, `IntrinsicIds`, `CompileArtifacts`) are **internal (`pub(crate)`)** — they are exercised only by int's PARALLEL hand-rolled REPL path (`src/pipeline.rs`) plus the not-yet-realigned per-symbol worker path (`src/worker.rs::inline_jit_codegen_for_names`, still on the pre-D41 4-arg + `code_ptrs` shape), which collapse into the S75 `compile_to_module` in **S76** (pulled forward from S77 per the 2026-06-02 user scope decision — the int-alignment sprint includes all cross-crate enablement). **Target (S76):** a single `Jit::new(symbol_tables)` derives the entire JIT symbol set from the same `symbol_tables` that feeds codegen — GOT data symbols from `symbol_tables[M].got().base_ptr()` named via `cranelisp_types::got_data_symbol_name` (including the `primitives` synthetic module, preserving the Decision-0048 dep-ban: backend reaches primitives only through the type-erased mount), and intrinsic `Import` targets from the intrinsics-published catalog `cranelisp_intrinsics::intrinsics_table()` (the Decision-0048-for-intrinsics forward commitment, `pub fn` spelling blessed S76 seam-3; see §4b invariant 11). int assembles nothing. `CodeFinalizer` stays `pub` — it is the `compile_to_module<M: Module + CodeFinalizer>` generic bound, named in the entry's own signature. The collapse assumes constructor `Def`s are got-slotted callable (`(map Some list)` reaching the ctor via its `got_slot`) — the typecheck (`register_constructors` got-slot) + int (`derive_codegen_batch` enumeration) enablement for that lands in S76 W-Enablement (mirrors the primitives Decision 0048 got-slotting precedent; see `design/backend/compile-to-module.md` §2.6.5). *(FIXME 0249 — which tracked this enablement — was resolved + deleted at the S76 Phase 2 /arch review: sequencing confirmed 0249-a before 0249-b, no shape change to this section, no new cross-crate types.)*
+1. **One emission path.** `compile_to_module` is the sole IR emission entry;
+   JIT and object differ only in the supplied module. Mode is not a parameter.
+2. **Uniform consuming calling convention.** The conservative call transfers
+   ownership of heap arguments; the callee owns its heap parameters.
+   Constructors, user functions, trait methods, primitives and externs follow
+   the same rule. Ownership inference narrows from this point and never widens
+   past it ([ownership inference](ownership-inference.md)).
+3. **The GOT is the single home of callable addresses.** Backend writes the
+   pointer to the target's slot; the lifecycle owner carries retention only.
+4. **Backend trusts `codegen_targets()`.** A requested target outside that
+   projection is a typed compilation error, never a synthesised body.
+5. **Published-pointer reclaim safety.** Dropping `Jit` frees executable
+   memory. Closures embed raw code and glue pointers from their owning
+   compilation. The binary owns the guarantee that no derived pointer is
+   reachable when the owner drops
+   ([Principle 22](principles/22-published-pointers-have-retention-owners.md));
+   backend relies on it and does not enforce it.
+6. **One IR, two GOT resolutions.** Every emission imports the per-module GOT
+   symbol; the JIT resolves it to the live table and the object file defines it
+   as data. Backend does not branch on mode.
+7. **Bare names, local linkage.** No entry-module special case; the linked
+   `main` alias is the binary's.
+8. **`Jit::define_symbol` is the one host-symbol escape hatch**, for
+   host-promised externs whose body lives in the binary (§7). It forks no
+   constructor and adds no registry.
+9. **Reference counting requires static representation knowledge, so only
+   concrete types reach codegen.** Heap classification is total over
+   `ConcreteType`; there is no type-variable arm and no runtime representation
+   guess. A concrete body realization carries its codegen view by
+   construction. Constructor and accessor templates are signature-driven
+   and may classify a residual declared field conservatively. Open residuals:
+   FIXME 0903, FIXME 0931 and FIXME 0934 under `design/arch/fixmes/`.
+   Representation freedom beyond the one-word value model is a user-arbitrated
+   language question raised in the
+   [release-backend proposal](release-llvm-backend.md).
+10. **Backend is a pure keyed-lookup consumer
+    ([Principle 24](principles/24-resolve-once.md)).** Every identity arrives
+    resolved and fully qualified; a carrier miss is a located codegen error,
+    never a re-resolution, precedence walk or scan. The only by-name references
+    are the fixed intrinsic catalog and the naming primitives.
 
-**What crosses the boundary (cross-surface summary).** Backend is driven by the integration layer (`int`) and observed/relied-upon by it; nothing downstream of backend exists in the workspace. The surfaces that cross:
-
-- **The three codegen entries** — `compile_to_module<M: Module + CodeFinalizer>` (the sole CLIF emission path, generic over the `Module` instance the caller supplies — `JITModule` per-symbol or `ObjectModule` per-module), `load_object` (the JIT-mode cache-hit entry returning a `LinkerArtefact`), and `produce_disasm` (on-demand machine-code disassembly with a caller-supplied `code_size`). Plus the ISA constructor `build_isa`. There is no separate object-compile entry — the object path is `compile_to_module::<ObjectModule>` + caller `finish().emit()`.
-- **The lifecycle types `Code` / `Jit` / `Linker`** — backend *names* `Code` (its variants wrap backend-owned `Jit`/`Linker`) but the **caller composes** both `Code::Jit` (from its owned `Arc<Jit>`) and `Code::Linker` (from the `LinkerArtefact`); backend only borrows `&mut M` and writes the GOT slot. `Jit`/`Linker` are opaque retention newtypes (custom `Drop` reclaims executable pages / mmap).
-- **The cache contract a driver drives** — backend exposes cache read/write and `.o`/sidecar pairing through the `cache` submodule (an internal implementation mechanism, NOT a separate boundary surface — see "Per-surface documentation" below); the integration layer's nice workers + cache-hit path drive it. The cache's own internal invariants live in the cache submodule rustdoc, not here. The `.meta.json` sidecar IS the serde-serialised `SymbolTable` (`cache/serialize.rs::serialise_meta`), so a platform module caches like any other module's `.cl` source. **TARGET (platform-interface.md §6.5):** there is **no** platform `schema_literal` cache field — it RETIRES (the prior FIXME 0250+0251 ruling that stashed schema text into `SymbolTable.schema_literal` is superseded; platforms declare ADTs as ordinary `.cl` modules, which cache normally). The cache-restore path for a platform module re-establishes the GOT by `dlsym`-ing the re-opened dylib at restore — no schema re-serialization is owed. On cache-hit `deserialise_meta` reconstructs the table and `load_object` hands the sidecar back to int.
-- **The GOT-population observer** — `register_got_observer` + `GotEvent`/`GotEventTag`/`GotProvenance`/`GotObserver`: an extension point (not diagnostics) in the same shape as intrinsics' `IoObserver`; events fire from `compile_to_module`'s GOT-slot-store site and `load_object`'s slot population. Observer state lives in int.
-- **The heap-layout ABI** — backend reads the runtime heap layout through intrinsics' named extern functions and the blessed layout-ABI consts (§4b invariant 2); it emits offset-keyed loads/stores against the same `#[repr(C)]` contract intrinsics owns. This is a value-passing ABI, not a Rust-type surface.
-- **The `(trace ...)` codegen role** (S76 user ruling; canonical: `design/arch/tracing.md`). Backend owns three trace responsibilities, all pure codegen: (1) **`compile_trace`** emits the GOT copy-swap wrapper around the body + the trace externs as `Linkage::Import` (resolved from `intrinsics_table()`, §4b invariant 12); (2) **discovery in codegen** — backend computes the traced set by iterating `symbol_tables` itself (ALL modules, primitives included — no project-root filter), reading each callable's address from its GOT slot (the single source of truth, invariant 3); the prior int-side `build_traced_fns` + the compile-context `traced_fns` seam are deleted, and `TracedFnInfo` becomes backend-internal; (3) **display-descriptor baking** — backend bakes a self-contained `#[repr(C)]` `DisplayDescriptor` (type shape + ADT ctor names/arity + field layout, resolved once from `TypeDefInfo` at codegen with the call site's concrete type args substituted) per traced param/result, and emits it as program-lifetime data in **both** module modes (JIT: leaked `Box`; object: a `.rodata` data symbol with a relocation, same family as the GOT data symbol + literal pools — so trace survives `.o` caching, which it must because trace now works in `--link`). The `DisplayDescriptor` layout is intrinsics-owned (the formatter consumes it; §4b invariant 12); backend reads the layout through the owned consts to emit it. Because trace works in all modes, **exe-bundle force-links the trace bodies** with the rest of intrinsics (the deliberately-deleted `pub use cranelisp_intrinsics::trace;` returns; exe-bundle is an int implementation detail but the trace force-link is a consequence of the all-modes ruling).
-- **The platform-dispatch fn-name bake** (S81 / FIXME 0327 — pending implementation). At the GOT-indirect `DefKind::PlatformEffect` call arm, backend bakes the platform fn's statically-known `FQSymbol`/name as a relocated position-independent data symbol — the **same data-symbol family as the trace `DisplayDescriptor` baker** (`crates/cranelisp-backend/src/compiler/trace_codegen.rs` `bake_descriptor_blob` via `declare_anonymous_data` + `define_data`, surviving `.o` caching with object-mode relocations, FIXME 0275) — and, after the platform-fn call returns its `IO` node, emits IR that stamps the baked pointer into the returned `IO_TAG_EFFECT` node's new fourth field (the node-widen, `ABI_VERSION` 3→4). This is the producer half of §5 invariant 9's Option A fn-name plumbing; it is codegen-internal (no backend public-surface delta). **Regen-coordination:** sequence with the 0325 backend baseline regen so the backend `public-api.txt` is regenerated once. Canonical: BC §5 invariant 9 + `design/platform/platform.md §9a`. **S81 W-G status: this bake/stamp LANDED and is correct (`d1949fb`); it is UNTOUCHED by the FIXME-0337 DLL-local-catch correction** — that correction moves only the *panic catch* into the DLL and changes the `call_effect_thunk` *force-return contract* (`ABI_VERSION` 4→5, platform + intrinsics); the `IO_TAG_EFFECT` node layout (field-3) and the backend bake/stamp are unchanged, so backend has no further work on the funnel. **S121 correction (`/arch`, 2026-09-01): the stamp is tag-guarded.** As landed, the stamp fired on the callee's *kind* and stored field-3 unconditionally — an out-of-bounds write when a platform fn returns a `Pure` node (latent; `CLIO::pure` is published author surface). Ruled: the post-call stamp dispatches on the **returned node's tag** — fn-name into `IO_TAG_EFFECT` field-3 only; a `Pure` return takes the payload-glue adoption stamp at base+32 instead; any other tag writes nothing. Canonical: `total-concreteness.md` §3.4 "the platform-return seam"; lands S121 C4 bundle B5; register row R19.
-
-- **The platform-interface codegen role** (TARGET — user-ratified 2026-06-07; canonical: `design/arch/platform-interface.md`). Backend owns three platform responsibilities: (1) **the schema generator** — a routine that, given a root type set + `SymbolTable`, computes the transitive closure of concrete ADT layouts and emits the schema artifact (`Map<FQTypeName, Vec<(CtorName, tag, Vec<(Symbol, FieldType)>)>>` text + canonical layout hash). It lives in backend **beside the trace `DisplayDescriptor` baker, sharing the closure-walk + concrete-instantiation substitution** (the shared asset is the *walk*, not the serialized output form — different consumers/lifetimes; platform-interface.md §6.0). It is the single generator with multiple callers: the `/platform-schema` REPL command (int, §6), the session-load hash check (int, §6), and the `--link` hash recompute (below). (2) **The platform GOT-indirect call arm** — a `DefKind::PlatformEffect` call site emits GOT-indirect dispatch against the DLL's exported `__cranelisp_got_platform_<name>` at the entry's `got_slot` (referenced as a `Linkage::Import` data symbol, resolved by `dlsym` in JIT / `ld` in `--link`), structurally identical to user-module GOT dispatch — replacing the current direct `Linkage::Import`-against-mangled-`jit_name` path (`apply.rs:209-227`). Backend does **not** emit the platform GOT (the DLL exports it); it emits the dispatch. (3) **Startup-object hash baking** — for `--link`, the compiler regenerates the schema from the `.cl` modules it compiled, hashes it, and bakes the hash into the startup object (exe-bundle territory); the startup stub compares it against the statically-linked `__cranelisp_layout_hash_<name>` at process start, aborting with rebuild guidance on mismatch (a stale platform builds but refuses at run — the accepted trade vs reading symbols out of rlib archives at build time). Implementation pending; tracked by the platform-interface backend FIXME.
-
-**Bounded-context invariants.** These hold across sprints — the contract `cranelisp-backend` makes with the rest of the workspace (folded from the retired `facades/backend.md` §"Bounded-context invariants" at S75 W5b; per-item contracts + the object-file contract + the codegen-entry signatures live in the `crates/cranelisp-backend/src/lib.rs` `//!` + per-item `///` rustdoc, which is the canonical surface):
-
-1. **Single compilation entry point per mode (Decision 23).** `compile_to_module<M: Module + CodeFinalizer>` is the sole CLIF emission path. Object vs JIT differs only in the `Module` instance the integration layer supplies; CLIF emission is byte-identical. Mode is NOT a function parameter.
-
-2. **Uniform consuming calling convention (Decision 24).** Every call site emits identically for RC management. Caller transfers ownership of heap-typed args (inc-before-call for non-last-use, direct transfer for last-use); callee owns heap params. Data constructors, user fns, trait methods, builtins, and externs all follow the same rule. There is no "borrowing" classification.
-
-3. **Compiled-code lifecycle owner lives on `ModuleEntry::Def.code`; fn ptr lives in `SymbolTable.got()` indexed by `got_slot` (Decisions 25 + 41).** Backend writes the resulting fn pointer to the entry's GOT slot via `symbol_table.got().store_slot(slot, ptr)` (D41 #2). The **caller** composes the `Code` lifecycle owner and stores it (D41 #1): `Code::Jit(Arc<Jit>)` from the `Arc<Jit>` it owns after a `compile_to_module` call, `Code::Linker(Arc<Linker>)` from the `LinkerArtefact` `load_object` returns. Backend cannot construct `Code::Jit` — it only borrows `&mut M` and never owns the `Arc<Jit>` (symmetric with the cache-hit path; S75 W2 Finding-A). The GOT is the **single source of truth** for callable addresses; `Code` carries lifecycle ownership only (no per-variant `ptr`). There is no separate `compile_to_object` backend free function (the object caller finalises the `ObjectModule`); no `JitArtefact` return shape.
-
-4. **`defined_symbols()` is the codegen-compilable predicate (Decision 22).** `compile_to_module` trusts the contract: a `names` entry that `defined_symbols()` would not include errors (typed `CompilationError`) rather than synthesising. One filter, exposed on `SymbolTable`, consumed identically by callers and the backend's internal loop.
-
-5. **Published-pointer reclaim safety.** Custom `Drop for Jit` calls `unsafe JITModule::free_memory()`. Int owns the "no derived fn pointer reachable at refcount 0" invariant through entry code ownership and the session retention pool, per [Principle 22](principles/22-published-pointers-have-retention-owners.md). Heap closures embed raw wrapper/lambda code and drop-glue pointers from their owning compilation; a wrapper's redefinable callee dispatches through the GOT. Replacing a GOT entry does not itself discharge the lifetime of pointers already stored in closures. Backend relies on int's owner-retention discipline; it does not enforce it.
-
-6. **Two-GOT model, one CLIF (Decision 23).** The same `Linkage::Import` reference against `__cranelisp_got_{M}` appears in every CLIF emission. JIT mode resolves via int's `JITBuilder::symbol_lookup_fn` returning `SymbolTable[M].got.base_ptr()`; `--link` mode resolves via the `.o` data-section GOT defined as `Linkage::Export` (Decision 36). Backend does not branch on mode; the `Module` impl supplied at finalize determines resolution.
-
-8. **`Jit::define_symbol` — the host-symbol escape hatch (test-discovery design, 2026-06-06).** `Jit::new(symbol_tables)`'s derivation of the JIT symbol set from `symbol_tables` (invariant 6 + the §3 "Minimal JIT-setup boundary" target) stands as the default. For symbols whose body is neither codegen-emitted, bundled (`cranelisp-primitives`), nor catalogued (`cranelisp_intrinsics::intrinsics_table()`) — host-promised externs (`DefKind::PrimitiveExtern`, §7) whose body lives in int and reads live session state — `Jit::define_symbol(name: &str, ptr: *const u8)` is the additive escape hatch: it inserts into the mutable map the `symbol_lookup_fn` consults at finalize, so an unresolved `Linkage::Import` relocation against the extern key settles to int's promised pointer. No forked constructor (Principle 11), no callback indirection, no registry. The motivating member is `discover-tests` (int calls `define_symbol` at session init). `catch-runtime-error` does **not** use this path — it is an ordinary `intrinsics_table()` entry resolved by the invariant-6 intrinsic-import path. Implementation pending (backend FIXME); canonical: `design/arch/test-discovery.md` §6 "Backend — `Jit::define_symbol`".
-
-7. **Bare-name + Local linkage uniformly (Decision 36).** Every user function is `Linkage::Local` with a bare-name symbol. No `user`/`main` special case. The `--link` mode `_main` alias is int's job, not backend's.
-
-9. **RC requires static heap-category knowledge; concrete types reach codegen by construction (full-monomorphisation direction — 0373 investigation, user-ratified 2026-06-14).** Reference counting is a representation-dependent operation: the inc/dec emitted at a call boundary (invariant 2) presupposes the backend statically knows whether a value is a heap pointer. `HeapCategory::classify` (`crates/cranelisp-backend/src/heap.rs`) is that knowledge, and it is **exact only for concrete types** — `Type::Int`/`Bool`/`Float` → `NeverHeap`, `Type::String`/`Type::Fn` → `AlwaysHeap`, `Type::ADT` → the constructor-shape verdict (`NeverHeap` all-nullary / `AlwaysHeap` all-data / `Mixed`). For `Type::Var` it has **no** static knowledge and falls back to `Mixed`, which emits the `<1024` runtime RC guard (`emit_rc_inc_guarded`).
-
-   **The `<1024` guard is unsound outside its nullary-tag origin.** The guard's legitimate purpose is discriminating a bare nullary ADT tag (provably `tag < 1024`) from a heap pointer within a *single* `Mixed` ADT — a sound test because the type is known and its tags are bounded. Applied to a `Type::Var`-positioned scalar it is a representation guess: a negative or `≥ 1024` `Int` flowing through a polymorphic position is misread as a heap pointer, and the dec path then frees it (use-after-free). The `Type::Var → Mixed → guarded-RC` path is therefore a soundness hole, not a feature.
-
-   **The settled fix direction is full monomorphisation from the roots — NOT a runtime RC witness, NOT tagged values.** Cranelisp is **rank-1 Hindley–Milner**: `Type` has no quantified (`forall`/`Scheme`) variant in value position, every use site instantiates, §3.6.6 forbids first-class constrained values, and monomorphic recursion is enforced (`crates/cranelisp-typecheck/src/program.rs`). Under rank-1 HM, full monomorphisation from the program roots is **complete** — every reachable fn instance has fully concrete parameter and result types, so no `Type::Var` need ever reach codegen, and `classify(Type::Var)` becomes unreachable. This is the only fix that keeps **representation a backend-internal detail**: the rejected alternatives — a runtime RC witness passed alongside polymorphic values (B), or tagged values that self-describe their representation (C) — both export representation into the calling convention / ABI, defeating the property that the language never commits to a value's machine shape at its surface. (B)/(C) were challenged and rejected; (A) full monomorphisation is the target.
-
-   **Status (S83).** Tier 1 + Tier 1.5 landed (`5634dd3`, `9e57330`): polymorphic-**result-hop** monomorphisation (same-module and cross-module) now routes through the 0355 machinery (`collect_local_parametric_calls`, `monomorphise_inner_parametric_hops` in `crates/cranelisp-typecheck/src/{program,traits}.rs`), closing the SIGSEGV that motivated the investigation. **Tier 2 is the systematic remainder** — generalise the per-`(Def, type-args)` instance model beyond the result-hop subset so that NO `Type::Var` reaches codegen under any reachable instantiation (FIXME 0374, /typecheck). Once Tier 2 guarantees concrete types at the codegen boundary, the `Type::Var` arm of `classify` becomes an assert/panic and the `<1024` guard is retired from that path, kept ONLY for nullary-tag ADT discrimination (FIXME 0375, /backend).
-
-   **The codegen-concreteness invariant is enforced BELT-AND-BRACES — two position-complete sides agreeing via ONE shared predicate (S84 Wave 2, user-ratified 2026-06-16; FIXME 0379).** The §3.11.1 ambiguity check (the typecheck-side guarantor that "no representation-undetermined value reaches codegen") and the 0375 codegen-side backstop (the structural tripwire) were each *positionally incomplete* as first specified: the typecheck check fired only on `let`-binding values, and the 0375 panic — sited on the bare `Type::Var` arm of `classify` — **could never catch a `Mixed`-shaped ADT carrying a free var** (`(Option a)`/`(Box a)`), because `classify` routes such a type to `classify_adt` by ctor shape and the free var rides invisibly in the unused args, never reaching the `Type::Var` arm. So a `Mixed`-ADT-with-free-var in a non-`let` codegen-reaching position (match scrutinee, fn-call arg, vec element, ctor field, if-branch, ParBind binding, return) slipped past **both** guards — exit-0-by-luck-of-shape, one data-ctor field deref away from the `<1024` use-after-free. The fix makes both sides **position-complete and mutually consistent by construction** around a single predicate:
-
-   - **Shared predicate — `Type::is_representation_undetermined()` in `cranelisp-types`** (`crates/cranelisp-types/src/types.rs`; one additive `public-api.txt` line, no cache bump — a pure `&self -> bool` adds no serde shape). THE single source of truth for "does this `Type` carry a representation-undetermined free `Type::Var` at a codegen/RC site." **TRUE** for a bare `Type::Var`, a `Type::TyConApp` (HKT head var), and a non-`Vec` `Type::ADT` carrying a free var anywhere in its args (the `Mixed`-family case the bare-`Var` panic missed). **FALSE** for `Type::Fn` (always a heap closure — RC-uniform), `(Vec a)` (uniformly heap, RC element-type-independent — both matching `classify`'s `AlwaysHeap` routing), any fully concrete type, and a `Type::ADT` with no free var (the legitimate type-known nullary-tag `Mixed` case). It is **table-free and structural**, capturing the "carries a free var in a representation-bearing position" half; the backend supplies the "is `Mixed`-shaped" half from the symbol tables — so the two crates **agree on the dangerous core by construction** (Principle 7, Principle 18; the anti-drift requirement /review raised under FIXME 0379).
-   - **Typecheck side (FIXME 0379, /dev relay) — position-complete §3.11.1 check.** Generalise the `let`-only scan (`find_ambiguous_let_binding`/`is_ambiguous_codegen_reaching_type`, `crates/cranelisp-typecheck/src/program.rs`) to call the shared predicate on the resolved type at **every** codegen-reaching value position `for_each_child_expr` already visits — `Expr::Apply.args`, `Expr::Match` scrutinee + arm bodies, `Expr::If` branches, `Expr::VecLit` elements, `Expr::ConstrADT` fields, `Expr::ParBind` bindings, and nested/return value positions — raising the "ambiguous type" `CheckError`/`TypeError` with a source location. The predicate is **directly** the verdict here: under full monomorphisation-from-roots a *genuinely free* var in a codegen-reaching position means no root pins it — the program is ambiguous (0373(ii)) regardless of heap category, so the conservative `true` is a correct rejection (the clean typecheck-side error, not a crash).
-   - **Backend side (FIXME 0375, /dev relay) — total codegen backstop, WIDENED.** Widen the 0375 panic so the RC-emit path trips on **any** type satisfying the shared predicate at an RC site — gated behind `classify == Mixed`: panic iff `classify(ty, tables) == Mixed && ty.is_representation_undetermined()` (covering both bare `Type::Var` *and* `Mixed`-ADT-with-free-var, the family the as-specified `classify(Type::Var)→unreachable!` missed). The `Mixed` gate is what *excludes* a table-determined `NeverHeap`/`AlwaysHeap` ADT carrying a free var — the backend never panics on a representation-*determined* ADT. The `<1024` guard is retired from this representation-undetermined path; it is **kept ONLY** for the type-known nullary-tag `Mixed`-ADT discrimination (where there is NO free var — `classify == Mixed` with `is_representation_undetermined() == false`), its sound origin. Position-complete by construction (codegen visits every value); the ground-truth tripwire that turns any future gate regression into a located panic, not a silent UAF (Principle 18).
-
-   Together the two position-complete sides + the shared predicate make a representation-undetermined value at codegen structurally impossible: typecheck rejects it cleanly at every value position; the backend backstop catches any residual as a located compiler-bug panic; both decide "dangerous" by the *same* predicate so they cannot drift.
-
-   **SUPERSEDED — the representation-determinacy framing above is REJECTED by the tightened §3.11.1 (commit `2290aa9`, /spec; suite realigned `3fedb6b`, /qa; reconciled by /arch S84 — `design/arch/concrete-boundary-type.md` §1.4/§3.1).** The belt-and-braces narrative (the shared `is_representation_undetermined()` predicate, the `Vec`/`Fn` FALSE arms, the `Mixed`-shape gate) embodies a *representation-determinacy* notion the user removed: it admitted an unpinned `(Vec a)`/`(Fn a)` ("uniformly heap — its machine shape is determinate"). The tightened §3.11.1 has **NO representation-based exemption** — the strictness is **full concreteness** (no `Type::Var` at all). `(Vec a)`, `(Fn [a] a)`, `(Option a)`, and `[]` are **all** ambiguity errors when unpinned at a codegen-reaching value position. The reconciliation: the §3.11.1 verdict switches from `is_representation_undetermined()` (the WRONG predicate — it returns FALSE for `(Vec a)`/`(Fn a)`) to **`!is_concrete()`** (full concreteness — `ConcreteType::from_type(ty).is_err()`), which rejects ANY residual free var, and the `(is-some None)` direct-constructor skip is removed (it was the same determinacy argument). This **agrees with the `ConcreteType` boundary type by construction** — both are full concreteness, neither has a `Vec`/`Fn` carve-out. `is_representation_undetermined()` is RETIRED (gated on /dev flipping the §3.11.1 call site, FIXME 0386); the deferred backend backstop is *deleted not re-armed* when the concrete-boundary arc's Phase 3 lands. The arc doc is the standing reference; this block is retained as the interim-state record only.
-
-   **STRUCTURAL END-STATE (concrete-boundary arc Phase 3 — threading shape LANDED, /arch S84 2026-06-17; `design/arch/concrete-boundary-type.md` §3.0/§4 Phase 3).** The belt-and-braces / shared-predicate framing above is the *interim* guard; the arc's end-state replaces it with a structural property: **the boundary type the backend consumes has no `Var`, so `classify` is TOTAL over `ConcreteType` (no `Var`/`TyConApp` arm, no panic case) — there is nothing for a predicate to decide.** The threading that delivers this is settled + landed in `cranelisp-types`: `ModuleEntry::Def` gains an **additive `codegen_view: Option<MonoDefnVariant>`** field (alongside the existing `ast: Option<DefnVariant>`), read through `ModuleEntry::codegen_view()`. Its `MonoDefnVariant.body: MonoExpr` carries `ty: ConcreteType` on every node — **no `Type`, no `Var`** on the backend's read path, by construction (Principle 18 / Principle 20). The view is populated for **both** codegen-bound cases: monomorphised instances (the mono-population seam, moving off the transitional `CheckState.mono_variants` parallel `Vec` onto the entry) AND ordinary concrete (`UserFnState::Concrete`) defns (the same `MonoExpr::from_expr` over the annotated body at body-check); template kinds / primitives / special forms / `DefKind::Constructor` ctor+accessor bodies / platform-effects get `None` (correctly — the view is total over `DefKind::UserFn { Concrete{slot} }` body-AST-node-typed targets ONLY, NOT the whole `defined_symbols()` set; ctors/accessors are signature-driven — they read field `Type`s off the `scheme` → `from_type` → `classify`, never a body node's type — FIXME 0393 resolution, `concrete-boundary-type.md` §3.1.1). `CACHE_SCHEMA_VERSION` bumped 7 → 8 (the serialized `ModuleEntry::Def` surface changed); `public-api.txt` +3 additive lines. **Phase 3 (/dev(backend)) then: `HeapCategory::classify(&Type, …)` → `classify(&ConcreteType, …)` with the `Var`/`TyConApp` arms DELETED (inexpressible — `classify` becomes total); the ~13 `inferred_type` read sites read `MonoExpr.ty()`; `compile_to_module` consumes `codegen_view`'s `MonoExpr` instead of reconstructing a `Defn` from `ast`; a missing `codegen_view` at a codegen-reached **`DefKind::UserFn { Concrete{slot} }`** entry (the body-AST-node-typed targets — defns + mono instances) is the SINGLE relocated located `expect`/`unreachable` — the one backstop replacing the four behavioural guards. The backstop is SCOPED (FIXME 0393, §3.1.1): it lives inside the `Concrete{slot}` `UserFn` arm and does NOT fire on ctor/accessor/primitive/platform-effect entries (which carry `None` correctly + are signature/extern-driven); their field types convert via `ConcreteType::from_type` at the `classify` call site — **on the once-per-declaration ctor/accessor TEMPLATE path the `Err` arm classifies the residual signature type `Mixed` rather than `expect`ing** (one legal declaration shape — an explicitly declared type parameter (spec §5.2.4) — makes residual field types reachable there; a ctor *use site* inlined in a caller's frame is always concrete. AMENDED S118, FIXME 0902 — the prior "`from_type` failure = relocated compiler-bug `expect`" clause held only for use sites; canonical statement + the resolved declaration-time ruling at `concrete-boundary-type.md` §3.1.1 point 2; release-side admission bounded by `design/backend/transitive-drop-glue.md` §4.1, whole-class re-ruling FIXME 0903). The already-deleted backend backstop (0375) is NOT re-added; `is_representation_undetermined()` is already retired (FIXME 0386).** The §3.11.1 typecheck check STAYS (the user-facing ambiguity diagnostic). Per-site map + the threading ruling + the backstop scope + the ctor/accessor signature-path + rejected alternative (b) live in `concrete-boundary-type.md` §3.0/§3.1/§3.1.1; the /dev(backend) step is FIXME 0391, the /dev(typecheck) population move is FIXME 0392.
-
-   **Spec §12.1-relaxation intent (gated on Tier 2; FIXME 0373, /spec).** Today §12.1 mandates "every value is one machine word". Once full monomorphisation lands, that uniformity is no longer load-bearing: with concrete types at every codegen site the backend can **choose each concrete type's representation** (`char`/`u16`/`f32`/unboxed-small-ADT) with no language-level or ABI-level change. The settled intent is to relax §12.1 from a uniform-word mandate to a backend-chooses-representation statement. The relaxation is /spec's to author and is gated on Tier 2 — **do not pre-edit §12.1 here**.
-
-10. **The backend is a pure keyed-lookup consumer — zero name resolution, zero bare-type-name resolution (Principle 24 "Resolve once"; S110, FIXME 0583; user directive S109 P5).** Every semantic identity the backend consumes — call target, constructor, effect, extern, arity/summary source, type identity for layout/tags/drop-glue/schema — arrives from typecheck as a resolved, fully-qualified VALUE (`FQSymbol` on the mono view's `resolved_target`/`resolved_ctor` carriers; `FQTypeName` on `Type::ADT`/`ConcreteType::ADT`). The backend's read is a direct keyed fetch (`symbol_tables.get(fq.module).get(fq.symbol)` — the `ctor_meta_at` shape) followed by kind-discrimination on the ONE fetched entry's `DefKind`; a carrier miss or entry miss is a hard, located `CodegenError` (Principle 18) — NEVER a re-resolution, a precedence walk, an import-chain re-follow, or a global scan. The historical `resolution.rs` resolver seam (`resolve_driven` + the arbitrary-order `symbol_tables.iter()` fallback + the ten `resolve_*` entry points + `lookup_constructor`) was a bounded-context boundary violation — the backend running its OWN precedence rules that had to agree with typecheck's, the structural root of the recurring "two resolvers, one name" mirror class (3× in S109, incl. run-to-run wrong-tag nondeterminism) — and was DELETED by the S110 W1–W3 waves (landed 2026-07-16; grep-gate verified — zero resolver code in `crates/cranelisp-backend/src/`, `resolution.rs` retaining only the two naming primitives; the migration record + per-site inventory is `design/arch/backend-keyed-consumer.md`, LANDED). Two deliberate non-resolver remainders: extern-by-name int-hosted intrinsics (a fixed catalog, not a table reference — `Linkage::Import` by name) and the two symbol-NAMING primitives (`got_data_symbol_name`, `inner_fn_discriminator_for`). This invariant also discharges this crate's CLAUDE.md "no trait knowledge, one dispatch path" aspiration, which the live resolver contradicted.
-
-**Per-surface documentation.** Like `cranelisp-types` (§7), `cranelisp-frontend` (§1), `cranelisp-platform` (§5), `cranelisp-typecheck` (§2), `cranelisp-intrinsics` (§4b), and `cranelisp-primitives` (§4a), this surface has no separate `facades/backend.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-backend/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S75 Wave 5b (7th data point of the facade-retirement pattern) per Principle 7 (single source of truth) and the lived-experience cost of dual-maintenance. The cross-surface narrative (this section §3), the "what crosses the boundary" summary, and invariants 1–9 live here in BC §3; the per-item contracts (the three codegen entries, `Code`/`Jit`/`Linker`, errors, the GOT-observer extension point, heap classification, the object-file contract) live in the source rustdoc. The `public-api.txt` baseline gates the surface at PR time per the baseline-diff discipline; rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
-
-The cache submodule (`cranelisp_backend::cache`) was the 8th retirement data point (one crate, two facade files — `facades/backend-cache.md` retired alongside `facades/backend.md` at S75 W5b). **The cache is an implementation detail of the backend bounded context, NOT a separate bounded context** — there is no §3a and no BC-level cache entry. Its 5 internal implementation invariants (`Linker` is the only mmap-holder; `CacheManifest` is the single index; cache-validity checked at every hit attempt; `CACHE_FORMAT_VERSION`/`CACHE_SCHEMA_VERSION` independence; no re-codegen on cache-hit) and the four-submodule shape (`linker`/`manifest`/`object`/`serialize`) live in the cache submodule rustdoc (`crates/cranelisp-backend/src/cache/mod.rs` `//!` + per-submodule `//!` + per-item `///`), where a reader of the cache mechanism expects to find them — they are not contracts the rest of the workspace reasons about at the bounded-context boundary.
-
-**Effect concurrency in backend.** Backend constructs the poll-shape, launch and select IO nodes ([`effect-concurrency.md`](effect-concurrency.md) Appendix B, the poll-shape Effect-node seam). A poll-shape effect's arm loads the poll-fn through the platform GOT and builds a state-closure instead of calling the effect; the dispatch *mechanism* (GOT-indirect by slot) is the same as for a blocking effect. The arm is selected by the effect's declared shape (`DefKind::PlatformEffect.poll_shape`), never by a build feature. Driving the node, `HostCtx`/`Waker`, strand identity and the strand event stream belong to intrinsics (§4b).
-
-**ABI v9 — poll-node emit drops the positional `(token, capacity)` bake; the node stays uniform (S97, supersedes FIXME 0482).** Under the ratified `ctx`-vtable handle model (`platform-interface.md` §6.8.0b; `effect-concurrency.md` §4.1.1 — superseding the descriptor-as-representation-overhead cut), scheduling state never touches the value, so the backend's poll-node work **shrinks to a deletion**: it **stops baking `(token@32, capacity@40)` from the first two positional leaf args** (the v8 leading-pair convention is deleted — `inject_poll_leading_pair` + the `arg_vals[0..1]` peel go away; leaf args are `arg_vals[0..]` directly). There is **no** resource-handle header slot to reserve, **no** `ResourceDesc` region, **no** `desc_out` poll argument, and **no** per-role stamp/read wiring — the platform poll-fn does all scheduling through the `ctx` vtable (`acquire`/`register`/`retire`) and the trampoline owns release. The `IO_TAG_EFFECT_POLL` node is **uniform** regardless of role; the dispatch mechanism is unchanged (GOT-indirect by slot). This is **net less backend work** than the descriptor cut. Lands in the v9 cutover change-set (`/dev` on backend); `CACHE_SCHEMA_VERSION` bump as the node shape changes; the backend `public-api.txt` is unaffected (in-process node convention). Canonical: `platform-interface.md` §6.8.0b + `design/backend/io-trampoline.md` §17 (the /design re-cascade target — currently written to the dead descriptor model, flagged for /design).
-
-**Arg-lifetime-across-suspension is NOT a backend obligation (S98 /arch ruling — FIXME 0486 Level-1; canonical §4b invariant 15).** The backend's poll-effect codegen emits the state-closure (baked args + per-lambda drop glue that decs them, invariants 2/5) and the uniform `IO_TAG_EFFECT_POLL` node; its obligation is **unchanged** by the bug-#2 fix. Holding a reactor-deferred effect's baked args alive across suspension — and consuming the state-closure exactly once at resolve — is **runtime-owned** at the intrinsics `EffectPoll`/`reg` seam (§4b invariant 15), because deferral-across-frame-teardown is a runtime-scheduling fact the backend's synchronous lifetime model does not model. No backend source change, no node-layout change, no ABI bump for Level-1; the Phase-5 fix owner is `/backend` deploying on the `cranelisp-intrinsics` runtime library, not on codegen.
-
-**Result-owner access to named type glue (S116 Phase 3; R15/0745).** Backend's per-concrete-type drop functions are module-qualified exported definitions in the same `compile_to_module` transaction as their callers. The cross-crate identity is `cranelisp_types::drop_glue_symbol_name(&ModuleFullPath, &ConcreteType) -> LinkerSymbol`; module qualification prevents duplicate exported definitions when separate module objects need the same type glue. Fresh JIT receives a direct `ConcreteType`-keyed `DropGlueArtifact { symbol, jit_address }` projection on the existing `CompilationArtifacts` return. Cache-hit int uses `Linker::get_symbol` with the same key-derived symbol; linked startup emits an ordinary relocation to it. These are keyed reads, never ambient lookup. Glue has no GOT slot because it is neither language-callable nor redefinable, and the artifact address carries no retention—the existing `Code::Jit(Arc<Jit>)` does. `compile_to_module` remains the only compile entry and proactively includes concrete owning return types, including the inner `a` of `IO a`, so the result owner never asks backend to compile after the fact. Canonical DTO/naming record: `interfaces.md` §“Type-drop glue identity and address boundary”.
+**Effect concurrency.** Backend constructs poll-shape, launch and select nodes;
+the arm is chosen by the effect's declared shape, never by a build feature. The
+poll node is uniform regardless of resource role. Holding a deferred effect's
+arguments alive across suspension is runtime-owned (§4b invariant 15).
 
 ---
 
 ## 4a. Primitives — `crates/cranelisp-primitives/`
 
-**Bounded context.** Spec-defined operations callable from user code via the `primitives/<name>` module path. Primitives are language-level: they appear in the symbol table, they have GOT slots, they are addressable as values (`(let [f +] (f 1 2))` reads a fn pointer from the GOT slot and indirect-calls it). Backend MAY substitute inline CLIF at known direct call sites via a name-keyed substitution table; the named fn pointer is a legitimate fallback for indirect call sites. The crate has no trait knowledge; trait dispatch resolves at typecheck/stdlib level, and the resolved target — an impl body — calls primitives by name. Per Decision 43 the previous combined `cranelisp-runtime` BC retires; this section and §4b replace it.
+**Bounded context.** Language-defined operations callable from user code through
+the `primitives` module. They appear in a symbol table and are addressable as
+values. Together with intrinsics this crate is the backend-emitted runtime
+library; the binary is only its host. It is a leaf with no cadence and no trait
+knowledge.
 
-**Runtime-library ownership affirmation (S97; FIXME 0486 partial action).** `cranelisp-primitives`, together with `cranelisp-intrinsics` (§4b), IS the language's **backend-emitted runtime library** — the code a compiled program invokes at run time. `cranelisp-backend` depends on both crates and **emits calls into** them (primitives via GOT-indirect / inline-CLIF substitution here; intrinsics via `Linkage::Import` externs, §4b invariant 1); neither depends on backend. **This runtime library is NOT an `/int` concern.** `/int` is the *host* — the orchestrator that constructs the session and (for IO) drives the runtime through the single C-ABI entry `cranelisp_run_io` as a thin **host-client** (§6) — it does not own the runtime internals (the reactor, trampoline, RC/drop, permit pools; those live in §4b `cranelisp-intrinsics`, `design/intrinsics/reactor.md`). The only int-side runtime surface is the small set of `Code`-naming externs that physically live in `src/` (e.g. `discover-tests`), which cannot live in these crates (Principle 18 / Decision 0048).
+**In scope.** Scalar arithmetic, comparison and logic; conversions; string and
+vector operations defined by the language; the static `PRIMITIVES_TABLE` and its
+GOT; the declared ownership and ABI facts for each primitive.
 
-**Internal cadence.** None. The crate is a leaf — extern fns called from JIT-emitted code or from user code via GOT-indirect call. No state machine; no scheduling.
-
-**In-scope.**
-- Integer / float / bool primitive operations (arithmetic, comparison, logical)
-- Primitive type conversions (`int_to_string`, `parse_int`, `float_to_string`, `bool_to_string`, …)
-- The named `extern "C"` form is *the* addressable backing for each primitive; no `cranelisp_op_*` parallel form (per Decision 43's Phase 4 deletion)
-
-**Out of scope.**
-- Code generation (backend)
-- Backend-emitted-call targets (intrinsics — §4b)
-- Trait dispatch knowledge (typecheck + stdlib)
-- Session mount + concretization (int — int clones `cranelisp_primitives::PRIMITIVES_TABLE` and calls `into_concrete::<Code, ()>()` at session init; the `()`-flavoured static is owned here, the `<Code, ()>` concretization is int's)
+**Out of scope.** Code generation (backend); backend-emitted call targets
+(intrinsics); trait dispatch (typecheck and the standard library); session
+mounting (binary).
 
 **What crosses the boundary.**
-- **Outward**: the static `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>` (the synthetic `primitives` module's symbol table + the shared `Arc<GotTable>`); behind it, an `extern "C"` symbol surface — primitives by their kebab-case symbol name, reachable only via GOT slots.
-- **Inward**: identifier newtypes + `SymbolTable`/`ModuleEntry`/`DefKind` etc. from `cranelisp-types` (boundary); the runtime substrate from `cranelisp-intrinsics` — allocator, drop/RC/panic helpers, the blessed String layout ABI, and the purpose-specific Rust-path Vec-of-String construction/read operations described in §4b invariant 17. Once Sprint 117 R-3 lands, primitives' `split`/`join` no longer read `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}` or perform Vec offset arithmetic; those constants remain public only for any other already-authorised consumers under FIXME 0245. **Nothing from `cranelisp-backend`** — `primitives ⟂ backend` (S73 sever; FIXME 0244 made every entry `code: None`, so primitives never names `Code`).
-- **Window types**: none.
+- **Out:** one static, `PRIMITIVES_TABLE`, an `Arc<SymbolTable<(), ()>>` whose
+  GOT backs every slot-dispatched primitive. The binary concretises it with the
+  types `into_concrete` bridge at session start; the inner GOT is shared, so the
+  process has exactly one primitives GOT.
+- **In:** types vocabulary; the intrinsics allocator, blessed layout constants,
+  typed counted-reference funnels and the two Vec-of-String operations
+  (§4b invariant 17). Nothing from backend.
 
-**Evolution driver.** Spec-driven — new primitives appear when the spec requires them.
+**Invariants.**
 
-**Session-integration contract (asserted-live).** `CompilerSession` startup holds a `SymbolTables<Code, ()>` map, so it concretizes the `()`-flavoured static `PRIMITIVES_TABLE` to `<Code, ()>` before inserting it at `ModuleFullPath::primitives()`. It does so via `SymbolTable::into_concrete::<Code, ()>()` — the same `cranelisp-types` bridge the cache-restore path uses (`crates/cranelisp-types/src/module.rs`). `into_concrete` maps each entry's `code: Option<()>` to `None::<Code>` (every primitives entry is already `code: None`) and carries `got: self.got` through verbatim, so the inner `Arc<GotTable>` is reference-count-shared with the static-memory backing — one and only one `GotTable` for primitives in the process. This `<(),()>`→`<Code, ()>` bridge is an **exercised contract today, not forward work** (Ruling 1, S74 Phase 2): the cache-restore hot path calls `into_concrete::<Code, ()>()` explicitly (`session_v4.rs`, `worker.rs`) and `into_concrete` is defined and tested in `cranelisp-types`. The distinct seam FIXME 0242 defers is the typecheck-side `register_builtins` synthetic-module assembly, NOT the primitives `into_concrete` bridge. The reconciliation of the `int`-side primary-mount comment/call (which still spells the static as `<Code,()>` + bare `.clone()`, stale to the S73 `<(),()>` shape) is **int's to own** — folded into FIXME 0242's brief (same call site); the rustdoc assertion holds regardless, since both spellings produce the shared-`Arc<GotTable>` `<Code, ()>` table. From session-init onward, primitives dispatch is functionally equivalent to any other module via the standard cross-module GOT-indirect call sequence; backend's `symbol_lookup_fn` carries no primitives-specific branch.
-
-**Bounded-context invariants.** These hold across sprints — the contract `cranelisp-primitives` makes with the rest of the workspace (folded from the retired `facades/primitives.md` §"Bounded-context invariants" at S74 W3; per-item contracts + the static-init contract live in the `crates/cranelisp-primitives/src/lib.rs` `//!` + per-item `///` rustdoc, which is the canonical surface):
-
-1. **User-callable surface.** Every fn populated into `PRIMITIVES_TABLE` is reachable from user code via the `primitives/<name>` module path. Adding a new primitive is a spec change; deleting or renaming one is a breaking change. Spec-driven evolution.
-
-2. **Symbol-table addressable.** Every primitive has an entry in the synthetic `primitives` module's symbol table at `ModuleFullPath::primitives()`. Session init Arc-clones the static; entries are visible identically from every concurrent session. The entry's `got_slot: Some(N)` indexes the address — `(let [f +] (f 1 2))` resolves to the fn ptr at that slot.
-
-3. **Uniform dispatch (Decision 0048).** From session-init onward, every primitive call from JIT-emitted code follows the standard cross-module GOT-indirect call sequence. Backend's `symbol_lookup_fn` carries no primitives-specific branch. `JITBuilder::symbol(name, ptr)` direct registration is reserved exclusively for intrinsics. **Structurally enforced** (Decision 0048 §"Structural invariant — backend dep-ban"): `cranelisp-backend` does not depend on `cranelisp-primitives`, so backend physically cannot name a primitive's extern fn — the GOT-indirect path is the only path available to it.
-
-4. **No trait knowledge.** Per Decision 43 — backend's name-keyed substitution table maps `Symbol → cranelift_op` (e.g., `add-i64 → iadd`), never `(TraitName, method, TypeName) → Symbol`. Trait dispatch resolves at typecheck level; the resolved target is the impl body, which calls primitives by name; backend substitutes from the resolved name.
-
-5. **Inline-substitution is optional.** Backend MAY substitute a primitive call with inline CLIF (e.g., `add-i64 → iadd`) at a known direct call site. It MAY NOT be required to do so — the named fn ptr in `PRIMITIVES_TABLE.got()` is a legitimate fallback for indirect calls (operator-as-value, GOT-indirect cross-module calls before linker resolution). Implementation choices live in `cranelisp-backend/src/primitives_inline.rs`.
-
-6. **Process-static lifecycle.** `PRIMITIVES_TABLE` and its inner `Arc<GotTable>` are constructed once per process at `LazyLock` first-access; never reallocated; never invalidated. Each entry carries `code: None` (post-A2-reversal, FIXME 0244) — primitives have no per-entry reclaimable `Code` resource (the `LazyLock` owns the static fn addresses); the lifecycle category is *not* recorded as a `code` marker variant, it follows from `kind: DefKind::Primitive`. Decision 31's per-batch `JITModule` lifecycle does not apply — primitives are the **named exception**. Cache-hit reload (Decision 30) similarly carves primitives out — primitives are never cached (no `.meta.json`, no `.o`); the static is always present at session start.
-
-7. **Spec-driven evolution.** New primitives appear when the spec requires them. The crate does not accrete primitives for backend convenience; that is what `cranelisp-intrinsics` is for. The categorical line (user-callable vs backend-emitted-call target) is the load-bearing distinction Decision 43 formalised and Decision 0048 makes operational.
-
-8. **Consuming convention at extern boundary (Decision 24).** Every `pub(crate) extern "C"` fn MUST consume its heap-typed arguments — dec any heap arg it does not return. Internal Rust helpers may use any local convention; the extern boundary enforces consuming so backend's call sites can emit uniformly.
-
-**Per-surface documentation.** Like `cranelisp-types` (§7), `cranelisp-frontend` (§1), `cranelisp-platform` (§5), `cranelisp-typecheck` (§2), and `cranelisp-intrinsics` (§4b), this surface has no separate `facades/primitives.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-primitives/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S74 Wave 3 (6th data point of the facade-retirement pattern; doc-only — primitives' source was aligned in S73) per Principle 7 (single source of truth). The cross-surface narrative (this section §4a), the asserted-live session-integration mount, and invariants 1–8 live here in BC §4a; the single-`pub static` shape, the static-init contract, the primitives inventory, the `code: None` lifecycle, the backend severance, and the Option-2 DCE-survival wording live in the source rustdoc. The `public-api.txt` baseline (nine lines — `PRIMITIVES_TABLE` + seven `pub mod` + crate root) gates the surface at PR time; the semantic surface (which primitives exist + their signatures) is governed by spec-conformance tests, not the Rust baseline.
+1. **User-callable surface.** Every populated entry is reachable as
+   `primitives/<name>`. Adding, renaming or removing one is a language change.
+2. **Symbol-table addressable.** A slot-dispatched primitive's slot holds its
+   address, so an operator used as a value works like any function value.
+3. **Uniform dispatch, structurally enforced.** Primitive calls follow the
+   ordinary cross-module GOT sequence. Backend does not depend on this crate and
+   therefore cannot name a primitive's extern function. Direct JIT symbol
+   registration is reserved for intrinsics.
+4. **No trait knowledge.** Backend's inline table maps a resolved primitive name
+   to an instruction, never a trait, method and type to a name.
+5. **Inline substitution is optional.** Backend may inline a known direct call;
+   a slot-dispatched primitive's pointer remains the fallback for indirect use.
+   A primitive realised only inline has no slot by construction (§7).
+6. **Process-static lifecycle.** The table is built once and never invalidated;
+   entries own no reclaimable code; primitives are never cached.
+7. **Language-driven evolution.** Backend convenience belongs in intrinsics.
+8. **Consuming convention at the extern boundary.** Every extern consumes the
+   heap arguments it does not return.
 
 ---
 
 ## 4b. Intrinsics — `crates/cranelisp-intrinsics/`
 
-**Bounded context.** Runtime support code reached primarily as stable-ABI
-backend-emitted-call targets, plus narrow Rust-path operations through which
-the sibling runtime-library crate accesses intrinsics-owned representation and
-lifetime mechanics. Intrinsics are NOT callable from user code; not in any
-symbol table; not in any GOT. The emitted-call ABI is tightly coupled to
-backend's codegen choices. The crate has no knowledge of compilation,
-scheduling, REPL, or development tooling; its job is to provide the language's
-runtime semantics in a way that depends only on the running program — not on
-how that program was loaded, who is observing it, or what process structure
-surrounds it. Diagnostic and observability surfaces are explicitly out: those
-are development concerns, not part of running a program. Per Decision 43 the
-previous combined `cranelisp-runtime` BC retires; this section and §4a replace
-it.
+**Bounded context.** Runtime support reached as stable-ABI call targets from
+emitted code, plus a narrow Rust-path surface through which the sibling runtime
+crate reaches intrinsics-owned representation and lifetime mechanics. Intrinsics
+are not callable from user code, are in no symbol table and have no GOT slot.
+The crate knows nothing of compilation, scheduling or the REPL: runtime
+semantics depend only on the running program. It hosts the **runtime cadence** —
+atomic reference counting, fork-join evaluation and the effect reactor — which
+produces no handoff to any other cadence.
 
-**Runtime-library ownership affirmation (S97; FIXME 0486 partial action).** `cranelisp-intrinsics` is the **backend-emitted IO/RC runtime library** — the analog of a language's GC / async executor. `cranelisp-backend` depends on it and declares its functions as imports (invariant 1; §4b: "primitive emission goes through `cranelisp-primitives` + `cranelisp-intrinsics` **directly**"; invariant 2: "**intrinsics owns**" the runtime heap layout, backend reads it only through named externs). **The whole IO-runtime interior lives here, NOT in `/int`:** the effect **reactor** (mio loop, fd/timer registration, permit pools, launch supervision, `Par`/`select` joins), the **async trampoline** + the IO-tree interpreter (`consume_io_tree`/`feed_continuation`), the `HostCtx`/waker C-ABI vtable, RC/drop discipline, and the arg-lifetime-across-suspension contract. The canonical interior design is **`design/intrinsics/reactor.md`** (relocated from `design/int/` at S97 to stop mis-signalling `/int` ownership). `/int` is only a **host-client** of this runtime (§6): it constructs the reactor once via the single C-ABI entry `cranelisp_run_io` and drives `block_on_reactor` for `--run`/REPL — it does not own, and need not understand, the reactor/`consume_io_tree`/permit-map internals (`reactor.md §0` demarcates the thin seam).
+**In scope.**
+- Heap model: allocation, the two-word header and the base-pointer convention.
+- Reference counting, shallow release and the protocol-specific `consume_*`
+  walks; `free_io_node`, the zero-count IO teardown beneath the typed handles.
+- The typed counted-reference vocabulary (`handle::Owned`, `handle::Borrowed`)
+  and the nine consuming funnels that take `Owned`
+  ([design](../runtime/s119-typed-consume-funnel.md)).
+- String and vector runtime; fork-join cells (`IVar`); the spark-budget gate.
+- The IO trampoline, effect reactor, permit pools, launch supervision and the
+  `HostCtx`/waker vtable ([reactor design](../intrinsics/reactor.md)).
+- The program driver `cranelisp_run_program` and the runtime-error slot.
+- `catch-runtime-error` and the fork-join error-slot ferry.
+- The `(trace …)` runtime family and its display-descriptor layout.
+- The fault guard at the platform-effect force site.
+- The IO-observer registration point; observer state is the binary's.
+- The published catalog `intrinsics_table()` and the single
+  `host_callbacks()` builder.
 
-**Internal cadence.** Intrinsics hosts the **runtime cadence** — atomic RC operations interleaved with normal execution; fork-join scopes during parallel evaluation. This cadence is invisible outside the running program; it produces no handoffs to compilation or REPL.
-
-**In-scope.**
-- Heap memory model (allocation, layout — base-pointer convention per Decision 10)
-- Reference counting primitives
-- Drop glue helpers (consume_shallow, consume_io_tree, dec_shallow_io, and — approved S119 Phase-3 gate — **`free_io_node`**: the tail half of `consume_io_tree` split at the dec (tag-walk + branch release + dealloc; NO dec, NO fence; precondition: caller has dec'd to zero and fenced). The emitted `runtime/free_io_node` target is a `pub(crate) extern "C" fn` with an export name, not a public Rust function (S121 IO teardown packet); backend's `drop<IO T>` glue is a fixed per-`T`-identical body (nullary guard + dec-to-zero + Acquire fence + call) that hands the node to it — the runtime-directed teardown disposition for IO's existential `Bind`, per `design/backend/non-concrete-release-contract.md` §4.4/§5.4 as re-shaped by the S121 0934/R1 ruling. `Pure` field 1 is the single three-state atomic ownership witness (`0 = Scalar`, `1 = Claimed`, otherwise `Owned(glue)`). The run lane claims before reading/transferring field 0; `free_io_node` claims at teardown and calls only an observed `Owned(glue)`. A duplicate force observes `Claimed` and takes the standard runtime-error path without reading the payload. No tag state or side-table owner is added (`design/arch/total-concreteness.md` §3.4), and no tag test or `drop<T>` call remains in the generated glue body itself. `free_io_node` stays raw `i64` permanently — it is *beneath* the typed-handle abstraction (its precondition is a count already at zero; an `Owned` models a live counted reference), classified with `atomic_dec_rc` in the tranche-A residue.)
-- **Typed counted-reference transfer.** Intrinsics owns the closed `Owned`/`Borrowed` vocabulary and the nine Rust discharge operations below. Primitives owns its raw-ABI shim adaptation; Binary/int owns macro argument transfer and returned-Sexp copying/release. Backend-emitted and platform entry signatures remain raw ABI words. The internal design and trusted-base census live in [s119-typed-consume-funnel.md](../runtime/s119-typed-consume-funnel.md); the cross-context contract is stated below.
-- String and vector runtime
-- IO trampoline
-- Fork-join evaluation cells (IVar)
-- Marshal between language Sexp values and host Rust values
-- Panic intrinsic for match exhaustiveness failure
-- **The `catch-runtime-error` protected-call combinator** (test-discovery design, 2026-06-06): the new C-ABI `#[export_name = "catch-runtime-error"]` wrapper that invokes a language thunk closure, reads-and-clears the thread-local error slot, and marshals a heap `Result` — published through `intrinsics_table()` (invariant 13). Its internal mechanism is the existing Rust slot-reader `take_runtime_error()` (two-layer naming).
-- **The fork-join error-slot ferry** on both fork-join join paths (IVar lenient-let spark/join + Par branch dispatch) + a new internal `set_runtime_error` companion — the mechanism that makes the combinator sound under live lenient/Par evaluation (invariant 13).
-- IO observer registration API (per Decision 40 — the registration site lives here; observer state lives in int)
-- **The `(trace ...)` execution-trace runtime** (S76 user ruling — D40's trace-relocation-to-int retracted): the 12 `cranelisp_trace_*` bodies (`enter`/`exit`/`swap_got`/`restore_got`/`collect_trace`/`first_child_nanos`/`name`/`params`/`result`/`children`/`nanos`/`format`), the `TRACE_STACK` call-frame stack, `TRACE_THREAD_ID` role-CAS, the `consume_trace_call` drop helper, the descriptor-driven pure value-formatter, and the same-thread nested-trace runtime guard. Published through `intrinsics_table()` like every other intrinsic. (Backend emits the externs as `Linkage::Import` + bakes the display descriptors + discovers the traced set in codegen; stdlib `core.trace` adds display helpers; int does NOT host trace runtime code. See invariant 12 + `design/arch/tracing.md`.)
-
-**Counted-reference Rust contract.**
-
-**Approved and implemented (S122); allocated runtime evidence complete,
-generated baseline USER-CONFIRMED (2026-09-11).** The user approved the nine-funnel
-`Owned`/`Borrowed` API in the 2026-09-05 IO teardown packet
-([S121 approvals](../../sprints/archive/sprint-121.md)). Current source contains
-`handle.rs` and all nine typed consuming signatures, including the Vec callback.
-Primitives, backend and Binary/int consumers are delivered. Allocated public
-watcher/macro/IO/memory evidence, complete CLIF checks and scoped reviews are
-complete; QA judges this generated checkpoint adequate for presentation. The independent
-ABI-10 IO disposal implementation remains distinct from this Rust contract.
-
-`pub mod handle` exposes `Owned`, a transparent private-field `i64` wrapper
-with no `Copy` or `Clone`, and `Borrowed<'a>`, a private-field lifetime-branded
-`Copy + Clone` view. `Owned` is `#[must_use]`; its leak-detecting `Drop` exists
-only in debug builds and does not panic during an existing unwind. The closed
-public methods are:
-
-- `Owned::from_abi(raw: i64) -> Owned` (`unsafe`), `into_raw(self) -> i64`
-  (`#[must_use]`), `as_borrowed(&self) -> Borrowed<'_>`,
-  `raw_for_read(&self) -> i64`, and `is_nullary_tag(&self) -> bool`.
-- `Borrowed::from_abi(raw: i64) -> Borrowed<'static>` (`unsafe`),
-  `to_owned(self) -> Owned`, and `raw_for_read(self) -> i64`.
-
-`from_abi` asserts an actual transferred or borrowed reference; the nullary
-case remains legal. `into_raw` transfers the obligation rather than releasing
-it. `to_owned` atomically acquires a counted reference. A borrow derived from
-`Owned` cannot outlive it; the unsafe ABI borrow is caller-asserted and carries
-no structural lifetime guarantee beyond that assertion.
-
-| Public Rust function | Approved parameter types |
-|---|---|
-| `rc::consume_shallow` | `Owned` |
-| `drop::consume_slist`, `drop::consume_sexp` | `Owned` |
-| `drop::consume_vec_with` | `Owned, fn(Owned)` |
-| `drop::consume_vec_of_string`, `drop::consume_io_tree` | `Owned` |
-| `drop::consume_closure`, `drop::dec_shallow_io` | `Owned` |
-| `trace::consume_trace_call` | `Owned` |
-
-All nine return `()`. The Vec callback is part of the existing approval; its
-private alias does not become a new public name. Its current callback producers
-are intrinsics' shallow-String and IO-tree disposers. The zero-count teardown
-`free_io_node(i64)` remains beneath this live-reference contract.
-
-Primitives is a required consumer: `int`, `string` and `marshal` call these
-funnels. Their bodies and generated shims remain `pub(crate)`, so the approved
-migration changes no primitives Rust baseline or exported raw-ABI signature.
-Binary/int's macro marshal/invoke consumer is also approved; its executable
-code lease remains separate from counted heap references. A backend closure
-fixture directly calls `consume_closure` through the delivered typed
-adaptation; this does not change the backend's emitted ABI.
-
-**Primitives construction, traversal and storage (D8).** The user approved
-this limited private-boundary amendment on 2026-09-10; **source implementation
-and its allocated integrated/public evidence are delivered**. The exact function/site set and evidence obligations are in the
-[approved D8 packet](../../sprints/s122-primitives-allocation-proposal.md).
-
-- The private `abi_facts::adopt_produced_value(i64) -> Owned` uses
-  existing `Owned::from_abi` at 20 adoption sites across 19 functions. Inputs
-  are fully initialized fresh owners, canonical produced `None`/`SNil`, or
-  the existing `quote_sexp_build` zero error sentinel after `runtime_panic`.
-  That sentinel remains an error-lane word, not a valid initialized Sexp.
-- The private `marshal::borrowed_field` projects a child through
-  existing `Borrowed::from_abi`, preserving the parent borrow lifetime. Its
-  six projections cover SCons head/tail and classified Sexp String/SList
-  fields; scalar payloads remain scalar reads. Reused children acquire an
-  owned reference through `Borrowed::to_owned` before storage.
-- Four storage `into_raw` sites, in the two ADT constructors and the
-  String-Vec receiving helper, transfer child obligations to their receiver.
-  Private `StoredField` distinguishes scalar and owned fields. Prepare the
-  destination before disarming children; complete stores and receiver handoff
-  without an intervening fallible gap. The existing Vec constructor owns its
-  elements from call entry, including unwind cleanup; `Owned` itself supplies
-  no automatic release.
-
-The named mint, borrow and storage sets extend the trusted-base guard together;
-no directory-wide exemption or arbitrary raw round trip is allowed. This
-amendment adds no public handle operation, allocator API, generated-baseline
-row, emitted ABI, heap-layout or schema change. A full public allocation API
-redesign remains separate future work. Approval of this D8 boundary does not
-approve other unresolved design packets or advance the sprint phase.
-
-The intrinsics baseline gains the handle surface and replaces the nine
-signatures, including `fn(Owned)`. Default-debug generation records the
-conditional `Drop`. The generated intrinsics-only **+38/−9** diff matches the
-approved packet; the other six guarded crate outputs are identical. **The user
-explicitly confirmed this actual runtime diff on 2026-09-11**, separately from
-the earlier identity baseline confirmation. ACT0955 contraction remains
-separate and unimplemented; overall Phase 5 remains pending.
-The [QA evidence record](../../tests/plan/s122-evidence-delta.md) retains the Q5
-unclassified residual and evidence limits; [the sprint](../../sprints/SPRINT.md)
-owns remaining streams and overall Phase 5 status. This checkpoint does not
-claim their closure.
-Unchanged approved signatures need no renewed approval. New operations,
-visibility changes or consumers beyond this contract return as exact deltas.
-Do not credit a dormant handle foundation as macro leak recovery: its selected
-production consumers and their executing ownership evidence belong to the same
-completed implementation stream.
-
-**Out of scope.**
-- Code generation (backend)
-- User-callable primitives (primitives — §4a)
-- IO-observability state (int — development concern) — per Decision 40, the `io_trace.rs` ring buffer relocates to int via the `IoObserver` callback contract; intrinsics keeps only a ~50-line extension-point API parallel to `register_alloc_callback`. **This out-of-scope line applies to `io_trace` ONLY.** The `(trace ...)` execution-trace bodies are **IN scope** (invariant 12, below) — the 2026-06-04 user ruling retracted the D40 relocation of the `(trace ...)` bodies to int; the 12 `cranelisp_trace_*` bodies + `trace_format` + `TRACE_STACK`/`TRACE_THREAD_ID`/`consume_trace_call` + the nesting guard live here and publish through `intrinsics_table()` (invariant 12; `design/arch/tracing.md` §4). They are intrinsics by this BC's own definition (backend-emitted-call targets); the "diagnostics/tracing is out of scope" exclusion was the D40-era reading and is superseded for `(trace ...)`.
-- Platform DLL loading and lifecycle (int)
-- Pipeline state (int)
+**Out of scope.** Code generation; user-callable primitives; observability state
+and diagnostics composition (binary); platform DLL loading (binary).
 
 **What crosses the boundary.**
-- **Outward**: an `extern "C"` symbol surface plus a small set of host-callback structures used for inversions of control (e.g., when platform DLLs need runtime services); plus the `IoObserver` registration API. **Plus the published flat Import-catalog `pub fn intrinsics_table() -> &'static [IntrinsicEntry]` (as-built since S76; the `pub fn` spelling blessed over a raw `pub static` per the S76 seam-3 ruling).** See invariant 11 below.
-- **Inward**: layout constants and identifier newtypes from `cranelisp-types`; the `IO_TAG_*` consts and `HostContext` from `cranelisp-platform` (consumed by the IO trampoline).
-- **Window types**: write-once evaluation cells (IVar) held by the runtime cadence. The C-ABI surface itself is value-passing — heap pointers cross as integers, opaque to the consumer.
+- **Out:** the `extern "C"` symbol surface named by the catalog; the Rust-path
+  operations above; the observer registration API.
+- **In:** types layout constants and identifiers; platform's IO tags, host
+  context and effect-outcome types.
+- Emitted-call and platform entry signatures remain raw ABI words. `Owned` and
+  `Borrowed` are a Rust-side discipline for primitives, backend fixtures and the
+  binary's macro marshalling; they change no emitted ABI. A public allocation
+  API redesign is separate future work
+  ([ACT-0959](../../sprints/actions/ACT-0959-public-allocation-api-redesign.md)).
+- Primitives' private adoption, borrowed-projection and storage-transfer sites
+  are a bounded, named trusted base; the approved site set and its evidence
+  obligations are in
+  [the allocation proposal](../../sprints/s122-primitives-allocation-proposal.md).
 
-**Evolution driver.** Backend-driven — new intrinsics appear when backend codegen needs them; existing intrinsics evolve in lock-step with backend's emitted-call shapes.
+**Invariants.**
 
-**Cross-crate dependency edges (post-D43, S73-corrected).**
-
-- **`cranelisp-primitives` depends on exactly two workspace crates**: `cranelisp-types` (boundary) and `cranelisp-intrinsics` (runtime substrate — the allocator + blessed heap-layout-ABI consts + drop/RC/panic helpers, FIXME 0245). It does **NOT** depend on `cranelisp-backend`: `primitives ⟂ backend` is a **bidirectional severance** (S73 — FIXME 0244 made every primitives entry `code: None`, so primitives never constructs or names a `Code` value, so it drops `cranelisp-backend` from its `Cargo.toml`; the reverse `backend → primitives` edge was already banned by Decision 0048 §"Structural invariant — backend dep-ban"). The previously-"permitted" `primitives → backend` edge (for the now-deleted `Code::Primitive` / the `Code` type-parameter mention) retires.
-- **`cranelisp-intrinsics`** imports from `cranelisp-types` and `cranelisp-platform` only; it does NOT depend on primitives (the consumption is the other way — primitives is intrinsics' in-tree Rust consumer).
-- **Backend's own dependency edges** (its current `cranelisp_primitives::*` Rust-path references in `intrinsic_symbols()` and the resulting `cranelisp-primitives` line in `crates/cranelisp-backend/Cargo.toml`) are stale residue of the pre-S73 model and are scheduled for deletion in a **future backend sprint** (deferred per the S73 re-scope; FIXME 0191). Until that lands, backend's manifest is red against the dep-ban; this is a known, sequenced carry, not a fresh defect. `int` depends on primitives (clone + `into_concrete` at session mount), intrinsics (JIT registration of fn ptrs + the trace/io_trace consumer side post-FIXME 0103), and backend.
-
-**Bounded-context invariants.** These hold across sprints — the contract `cranelisp-intrinsics` makes with the rest of the workspace (folded from the retired `facades/intrinsics.md` §"Bounded-context invariants" at S74 W3; per-item contracts live in the `crates/cranelisp-intrinsics/src/lib.rs` `//!` + per-item `///` rustdoc, which is the canonical surface):
-
-1. **Runtime substrate only.** Per Decision 43, the dominant surface is
-   backend-emitted calls and IO-trampoline operations. A narrowly documented
-   Rust-path operation is also admissible when another runtime-library crate
-   must cross into intrinsics-owned representation or lifetime mechanics
-   (allocator/String helpers and invariant 17 are the current cases). Nothing
-   here is directly callable from Cranelisp user code, in a language symbol
-   table, or in a GOT. Adding an emitted-call intrinsic is a backend +
-   intrinsics co-design; adding a Rust-path operation requires a named
-   cross-crate consumer and `/arch` public-surface approval.
-
-2. **Representation containment.** Per `src/CLAUDE.md` "Heap Access" — within intrinsics, only `alloc.rs`, `heap_string.rs`, `vec_runtime.rs` define the layout constants (`HEAP_HEADER_SIZE`, field offsets). **Backend** reads the layout through the named extern functions, never by hard-coding offsets. **`cranelisp-primitives`** may read only blessed layout-ABI constants, never duplicate or re-derive them (FIXME 0245). Sprint 117 R-3 narrows the Vec-of-String case further: `split`/`join` use invariant 17's owned-construction/scoped-read functions and perform no Vec offset access.
-
-3. **Atomic RC discipline (Decision 13).** RC inc/dec emit `atomic_rmw` at all rings, even Ring 1 single-threaded. Acquire fence on the free path before drop_glue reads object fields. Avoids an ABI break when concurrency arrives at Ring 4.
-
-   **One atomicity policy — every RC-inc site is on the blessed `rc_inc` (Release) or carries a documented stronger ordering (S85, FIXME 0397, Principle 7).** The extern-Rust RC path is owned in `crates/cranelisp-intrinsics/src/rc.rs`: `consume_shallow` for the dec half (`fetch_sub(1, Release)` + free-path `fence(Acquire)`) and — added S85 — `rc_inc` for the inc half (`fetch_add(1, Release)`). Release is the NFR C.4.1 floor (`spec/appendix-c-nfr.md` §C.4.1 — "RC increment MUST use at least Release ordering") and is no weaker than the backend's inline `atomic_rmw` inc (Cranelift SeqCst ≥ Release). The **per-site ruling** for every production RC-inc site (S85 ordering review):
-
-   | Site | Op | Ruling | Memory-model rationale |
-   |---|---|---|---|
-   | `cranelisp-primitives::marshal.rs::shallow_rc_inc` | inc | **(A)** route through `rc_inc` (Release) | Was non-atomic `*rc_ptr += 1` — the live S85 hazard. A non-atomic inc racing an atomic inc/dec from a spark worker is a data race (lost update → premature free). Release is sufficient: the inc only publishes the writes that established the new reference; no cross-variable order is required. |
-   | `cranelisp-primitives::string.rs::string_identity` | inc | **(A)** route through `rc_inc` (Release) | Already `fetch_add(1, Release)`; the re-route is a behaviour-preserving dedup onto the single owner. |
-   | `cranelisp-intrinsics::trace.rs::rc_inc_if_heap` | inc (Trace ADT field accessors hand out a sub-reference) | **(A)** route through `rc_inc` (Release) — downgrade SeqCst → Release | The SeqCst here is **gratuitous**, not load-bearing. The inc establishes one new reference to a field value the caller is about to own; nothing in the trace machinery depends on this inc being globally ordered against the trace stack, the `TRACE_THREAD_ID` role-CAS, or `TRACE_BODY_RUNNING`. Those orderings are carried by their *own* SeqCst atomics (the role CAS at `trace.rs:327/651`, the flag's thread-local) and are unaffected by the field-accessor inc's ordering. A field-value inc'd here and dec'd elsewhere via `consume_shallow`/`consume_trace_call` (both Release + free-path Acquire) sees a consistent ≥ Release discipline — exactly what `rc_inc` provides. No cross-variable happens-before is lost by the downgrade. |
-   | `cranelisp-intrinsics::ivar.rs::ivar_spark` RC inc (`ivar.rs:98`) | inc (spark task takes a reference to the IVar cell before `rayon::spawn`) | **(B)** KEEP SeqCst — documented | **Load-bearing.** This inc is *paired with* the spark's later `fetch_sub(1, SeqCst)` on the same RC field (`ivar.rs:117`) and interleaves with the IVar state-machine's SeqCst atomics (`STATE_OFFSET` CAS PENDING→EVALUATING→RESOLVED, the resolved-value/error publish-store at `ivar.rs:184/191/219`). The module's stated discipline is "all atomics use SeqCst (Decision 13)" (`ivar.rs:37`) — a single total order across the cell's RC and state transitions that the fork-join correctness argument (`test-discovery.md` §6 ferry) reasons about. Demoting *one* of the cell's atomics to Release while its siblings stay SeqCst would break the uniform-total-order invariant the IVar protocol is verified against, for no benefit (the inc is not on a hot path — one per spark). The inc stays `fetch_add(1, SeqCst)` and is **NOT** routed through `rc_inc`. Documented divergence, owned not accidental. |
-
-   **`drop.rs` carries NO production RC-inc site** (FIXME 0397 misidentified it). Its production RC operations are all *decrements* (drop glue: `consume_*`, `dec_shallow_io` — atomic `fetch_sub(1, Release)` + free-path Acquire). The two `fetch_add(1, Release)` occurrences in `drop.rs` (`:542`, `:722`) are inside `#[cfg(test)] mod tests` — helpers that simulate a second reference to exercise the non-last-ref dec path. No alignment action; they are test scaffolding, not the RC discipline.
-
-4. **Strings opaque to backend (Decision 12).** `HeapString` layout is intrinsics-owned. All string operations go through extern functions. Enables future rope upgrade.
-
-5. **Embedded `drop_glue_ptr` in closures (Decision 11).** Closures carry their drop fn at offset 24 — `[header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]`. The drop glue function is per-lambda generated by backend; null for closures with no heap captures. Cross-module closures self-describe; no side-table lookup required.
-
-6. **Consuming convention at extern boundary (Decision 24).** Every `#[no_mangle]` extern function MUST consume its heap-typed arguments — dec any heap arg it does not return. Internal Rust helpers may use any local convention; the extern boundary enforces consuming so backend's call sites can emit uniformly.
-
-7. **IO trampoline shallow dec (Decision 29).** `cranelisp_run_io` reduces IO trees node-by-node, consuming each outer allocation via `dec_shallow_io` — a distinct primitive from transitive `consume_io_tree` because field pointers are already re-owned by other holders during the walk.
-
-8. **No state across sessions — and no reset seam (amended S118, FIXME 0876; S116 ruling 5 / S118 ruling 7).** The four stats accessors (`alloc_count`, `dealloc_count`, `bytes_allocated`, `bytes_current`) are process-global, **process-lifetime evidence**: the first three are monotonic counters; `bytes_current` is live-bytes (alloc minus dealloc). There is deliberately **no public reset**: `reset_counts()` (and the consumer-less `bytes_peak()`) are removed from the surface (S118 Track A, riding the 0850 change-set), because a public counter reset can zero the very counters that are the M3 alloc/free-parity check's only evidence — the *absence* of a reset seam is a load-bearing property, not an omission (Principle 18: the M3 ledger is trustworthy because no API exists to break it). Consumers needing per-window deltas snapshot and subtract; no repository consumer ever called `reset_counts` (S115 audit RI-3 — the prior "int calls it at session start in test contexts" sentence prescribed a practice that never existed).
-
-9. **Backend-driven evolution + dispatch asymmetry (Decision 0048).** Intrinsics changes are typically driven by backend codegen choices (a new RC inlining strategy, a new IO node, a new trampoline shape). The crate does not accrete intrinsics for spec convenience; spec-defined operations live in `cranelisp-primitives`. The categorical line is the load-bearing distinction Decision 43 formalised — and Decision 0048 reinforces post-S68 by binding the **dispatch asymmetry**: intrinsics use `JITBuilder::symbol` direct registration; primitives use the standard GOT-indirect path against `cranelisp_primitives::PRIMITIVES_TABLE`. This asymmetry is **intentional and load-bearing, not residual** (the §"Asymmetry justification" prose from the retired facade): primitives are a module (the synthetic `primitives` module, with a `SymbolTable` + GOT slots), so they ride the uniform GOT-indirect path; intrinsics are genuinely runtime-special — not a module, no `SymbolTable` entries, no GOT slots, called by emitted IR via extern-name relocation only. Forcing intrinsics through a synthetic GOT would introduce a categorical fiction (a module with no user-visible surface) for no semantic gain. The dispatch shape is the runtime embodiment of the categorical line; drifting either side toward the other reopens the BC overlap Decision 43 closed.
-
-10. **No `FQTypeName` at the intrinsics public surface.** Per `/arch` Sprint 67 Phase 3 Wave 0 verification — zero pub-api items on this crate name `FQTypeName` or `TypeName`. Intrinsics operates on raw heap pointers + marshaling tags (Sexp tags, IO tags) drawn from `cranelisp-types`; types are never named at the surface. This holds across the FQTypeName-migration sweep (FIXME 0151); no boundary lifts on this crate.
-
-11. **The published flat Import-catalog (Decision-0048-for-intrinsics — as-built since S76).** Intrinsics self-publishes its catalog, applying the `primitives::PRIMITIVES_TABLE` precedent (Decision 0048) to intrinsics: `cranelisp-intrinsics` owns a **published flat catalog** `name → (signature, ptr)` of its backend-emitted-call targets. **The catalog holds 30 entries** — 16 core (the verbatim-relocated set from the retired `cranelisp_backend::jit::intrinsic_symbols()`, including `cranelisp_ivar_dealloc`, the IVar-aware drop path) + the 12 `cranelisp_trace_*` family (invariant 12) + `catch-runtime-error` (invariant 13) + `cranelisp_spark_budget_try_reserve` (the spark-budget create-gate query; note 11a, S92 Slice 1). The authoritative count is the catalog's own test constant (`catalog::tests::EXPECTED_NAMES` / the `name_set_is_exactly_the_expected_*` guardrail — bumped by `/dev` as the catalog grows), the single owner of the name-agreement contract — cite that, not a number restated here.
-
-    **11a. The spark-budget create-gate query `cranelisp_spark_budget_try_reserve` (S92 Slice 1 — `design/backend/lenient-eval.md` §3.6).** One new `#[export_name = "cranelisp_spark_budget_try_reserve"]` C-ABI export in `cranelisp-intrinsics` (`ivar.rs`), joining the `cranelisp_ivar_*` sibling surface. Signature `(n: i64) -> i64`: atomically reserve `n` permits for one sparkable apply/`let` site; returns `1` (granted ⇒ backend emits the lenient create+spark+force arm) or `0` (over budget ⇒ backend emits the direct serial arm, allocating nothing). The `i64`-bool return matches the sibling IVar intrinsics' uniform `i64`-in / `i64`-out C-ABI (§6, invariant 1 — arity + return-ness fully determine the Cranelift signature); its catalog row is `{ param_count: 1, has_return: true, is_runtime: true }`. **This is the ONLY new export:** the reservation counter (`IN_FLIGHT_SPARKS`) + cap (`SPARK_BUDGET`) stay module-private statics, and **release is internal** — one permit per completing spark via the existing `InFlightGuard` RAII drop, balanced by construction (gate reserves `n` ↔ lenient arm creates+sparks `n` IVars ↔ `n` guard drops), so no `release`/`available` symbol is callable from emitted code (a check-only `available()` is rejected — TOCTOU, §3.6.1). No `cranelisp-types` change: this is a C-ABI symbol, not a boundary type (invariant 10 forbids `FQTypeName`/`TypeName` at this surface; the `(param_count, has_return)` scalar pair is the whole signature). **0442 relation:** this is the **CPU instance** of the unified in-flight-budget primitive FIXME 0442 escalates; kept shaped-to-be-subsumed (Principle 8 — a plain atomic counter + cap + one try-reserve + one gate-emission helper) so slice 4's backpressure design generalizes the counter into a per-kind budget table rather than standing up a second throttle. The unify-or-not call stays deferred to slice 4 (unmet trigger; 0442 not actioned here). **`/dev` baseline obligation (baseline-diff discipline, `design/arch/CLAUDE.md`):** the implementing change-set adds the `catalog.rs` `IntrinsicEntry` row, regenerates `crates/cranelisp-intrinsics/public-api.txt` via `cargo public-api --omit blanket-impls,auto-derived-impls -p cranelisp-intrinsics > crates/cranelisp-intrinsics/public-api.txt`, and bumps the catalog name-count guardrail test; `/review` confirms the baseline diff rides side-by-side with the source change. Backend names the symbol by string at codegen (`emit_extern_call("cranelisp_spark_budget_try_reserve", …)`), exactly as it names the IVar symbols.
-
-    **`IntrinsicEntry::is_runtime` disposition (MED-2).** The `IntrinsicEntry` record carries a `pub is_runtime: bool` (true for the `runtime/`-prefixed + IVar + trace infrastructure entries; false for the user-visible-named backend targets `vec-*-copy` / `vec-push-grow` and the `catch-runtime-error` combinator). It has **no dispatch consumer today** — it is classificatory metadata, fully derivable from the name prefix (the `is_runtime_classification` test re-derives it). Its `pub` is justified as a **stable ABI-documentation field**: the catalog is the published self-doc surface of the emitted-call targets, and the runtime-infrastructure-vs-user-visible-named split it records is a property of each target a reader of the catalog is entitled to see at the surface, independent of whether a dispatcher consumes it. It is retained on documentation grounds, not as a speculative dispatch hook; a future dispatcher reading it would be a new commitment, not the current contract. (Dropping the field — re-deriving the split from the name prefix at every read — is a viable alternative tracked as a `/dev` cleanup, not actioned here; it would touch `catalog.rs` + `public-api.txt`.)
-
-    **Spelling blessed (S76 seam-3 ruling) — `pub fn intrinsics_table() -> &'static [IntrinsicEntry]`, NOT a raw `pub static INTRINSICS_TABLE`.** The catalog is exposed as a function returning a `'static` slice of `IntrinsicEntry` records (`{ name: &'static str, ptr: *const u8, param_count: usize, has_return: bool, is_runtime: bool }`), not a bare `pub static` of a raw-pointer-bearing type. Rationale: a `pub static` of `&[IntrinsicEntry]` does not auto-derive `Sync` (`*const u8` is `!Sync`) and would require an `unsafe impl Sync` newtype wrapper. The `pub fn` form sidesteps the `unsafe impl` entirely — it hands out a per-call shared `&'static` borrow of the slice literal, no shared static of a `!Sync` type exists — which is the **minimum mechanism (Principle 6) and avoids `unsafe` where a fn suffices**; it is also a drop-in shape match for today's `intrinsic_symbols() -> Vec<…>` readers. The earlier "static" wording in this invariant (pre-S76, mirroring `PRIMITIVES_TABLE`'s static) is superseded: both forms satisfy the catalog contract (a published, iterable, flat `name → (signature, ptr)` table read at the three resolution points), and the `pub fn` form wins on the Principle-6/no-unsafe ground. The `signature` half is the `(param_count, has_return)` scalar pair — NOT a `cranelisp-types` `Type`/`Scheme` (invariant 10 forbids `FQTypeName`/`TypeName` at this surface; the value-passing C-ABI is uniformly `i64`-in / `i64`-or-void-out, so arity + return-ness fully determine the Cranelift signature). No new `cranelisp-types` type is needed.
-
-    **CRUCIAL ASYMMETRY — the catalog is a flat catalog, NOT a mounted GOT-module like primitives.** Intrinsics are **Import-dispatched, not GOT-dispatched** (invariant 9 — intrinsics are not a module, have no `SymbolTable`, no GOT slots; backend emits `Linkage::Import` against the intrinsic name and the relocation resolves to the registered fn ptr). `PRIMITIVES_TABLE` is a `SymbolTable` + `Arc<GotTable>` mounted into the session's `SymbolTables` map because primitives ride the uniform GOT-indirect path; the intrinsics catalog is a flat `name → (signature, ptr)` table consumed at **three resolution points, never at codegen**: (a) **JIT construct** — `JITBuilder::symbol(name, ptr)` registration at `Jit::new(symbol_tables)` setup (today backend's `pub(crate)` `intrinsic_symbols()` enumerates by Rust path); (b) **cache-hit load** — `Linker::register_symbol(name, ptr)` (`src/worker.rs:3545` today reads `intrinsic_symbols()`); (c) **`--link`** — the exe-bundle resolves the same names against the `cranelisp-intrinsics` archive. Backend's `intrinsic_symbols()` is retired; the canonical reader is `intrinsics_table()`. `backend::IntrinsicSymbol` retired as a *public* concept — the catalog's home is intrinsics. **The catalog exists in source** (`crates/cranelisp-intrinsics/src/catalog.rs`, 309 LOC — `intrinsics_table()` + `IntrinsicEntry` + four guardrail tests; recorded in `public-api.txt`), landed S76 (per the 2026-06-02 user "INCLUDE ALL" scope decision, paired with the backend `Jit::new(symbol_tables)` collapse). The 12 `cranelisp_trace_*` entries (incl. `cranelisp_trace_format`) are in the catalog per the 2026-06-04 trace ruling (invariant 12), and `catch-runtime-error` per the test-discovery design (invariant 13), plus `cranelisp_spark_budget_try_reserve` per the S92 create-gate (note 11a) — bringing the table to its current count (the catalog test constant is the authoritative owner, not a number restated here); the catalog scope-note's "trace deliberately ABSENT" text is flipped. The two int-owned **test** intrinsics (`discover-tests`, `run-test`) remain out of the catalog (parked — out of scope per the same ruling). The §6 emitted-call ABI invariant (the by-string ABI) is **unchanged** — the catalog publishes the same names backend already emits; only the *enumeration source* moved (Rust-path → published table). The crate-root `//!` rustdoc + `public-api.txt` baseline are the canonical surface (facade retired S74 W3); the `pub fn intrinsics_table()` line is what the baseline records.
-
-12. **The `(trace ...)` execution-trace runtime is an intrinsic family (S76 user ruling — D40 trace-half retracted).** The 12 `cranelisp_trace_*` bodies + `TRACE_STACK` + `TRACE_THREAD_ID` + `consume_trace_call` + the descriptor-driven `cranelisp_trace_format` + the same-thread nested-trace runtime guard live in `cranelisp-intrinsics` (`crates/cranelisp-intrinsics/src/trace.rs`) and publish through `intrinsics_table()` (these 12 are part of the catalog's as-built entries — invariant 11; the "trace deliberately ABSENT" scope note is flipped to "trace present"). They are intrinsics by invariant 1's definition (backend-emitted-call targets called by JIT/object-emitted code), resolved at the three resolution points (invariant 11) like every other intrinsic — so the catalog + its tests are the **single owner** of the trace name-agreement contract (closing the prior no-owner gap). `trace_format(value, descriptor_ptr) -> CLString` is a **pure walk of a backend-baked, self-contained `#[repr(C)]` `DisplayDescriptor` + the heap value, with zero symbol-table access and no thread-local state** — the descriptor is a layout-ABI surface in the invariant-2 family (intrinsics owns the `DisplayDescriptor` layout; backend reads it through the owned consts to emit it in both JIT and object mode). Trace works in **all modes including `--link`** — the exe-bundle force-links the trace bodies with the rest of intrinsics. The nested-trace guard raises through the `runtime/panic` intrinsic when a `(trace ...)` is entered while the same thread is actively tracing. **Discovery of the traced set + descriptor baking are backend codegen (BC §3), not intrinsics**; int hosts no trace runtime code. See `design/arch/tracing.md` (canonical) for the full pipeline, the descriptor design (§3.4), discovery-swap-all (§5), and the guard (§6).
-
-13. **The `catch-runtime-error` combinator + the fork-join error-slot ferry (test-discovery design, 2026-06-06 — landed and unit-tested).** `catch-runtime-error` is a **self-contained intrinsic** (not backend codegen, not a host-promised extern): the C-ABI `#[export_name = "catch-runtime-error"]` wrapper (`crates/cranelisp-intrinsics/src/panic.rs` `catch_runtime_error`) taking a language thunk closure (`i64`) and returning a marshalled heap `(Result a String)` (`i64`). Its body clears the slot, loads the thunk's `code_ptr` at `CLOSURE_CODE_PTR_OFFSET` (16) and calls `extern "C" fn(env_ptr) -> i64` with the closure as `env_ptr` (the established `io::call_continuation` / `ivar` precedent — calling a language fn value from an intrinsic is load-bearing as-built), reads the slot via the internal `take_runtime_error()` slot-reader, and marshals `Some(msg)` → `(Err msg)` / `None` → `(Ok result)`. One body serves every `a` (uniform i64 ABI); the `primitives` entry's scheme is a plain `forall a. (Fn [(Fn [] a)] (Result a String))` (empty constraints, modelled on `bind`). It is registered in `intrinsics_table()` (the +1 beyond the 12 trace entries — invariant 11's 29) and resolves at all three resolution points (invariant 11) — so it **works in all modes including `--link`** (no live session needed). **Two-layer naming:** the language/ABI name is `catch-runtime-error`; the internal Rust slot-reader `take_runtime_error()` (`panic.rs`) keeps its name as the combinator's mechanism.
-
-14. **The fault-guarded platform-dispatch guard on the IO trampoline (S81 / FIXME 0327 — landed and unit-tested).** Intrinsics carries the **fault guard** at the `IO_TAG_EFFECT` arm of the IO trampoline (`crates/cranelisp-intrinsics/src/io.rs`, the `force_effect_thunk_protected` call in `crates/cranelisp-intrinsics/src/io_guard.rs`), wrapping the `cranelisp_platform::call_effect_thunk(thunk_ptr)` invocation in the `invoke_jit_protected` mechanism (`catch_unwind` for Rust panics + `sigsetjmp`/signal handlers for SIGFPE/SIGILL/SIGBUS/SIGSEGV + the `take_runtime_error()` slot check). This is the single force site for every platform Effect in every mode (Principle 7 + Principle 6 — one guard, not per-DLL). The guard **captures** the fault (signal/panic/slot message) **and the fn-name** read from the Effect node's new fourth field (the backend-baked name handle the node now carries — §5 invariant 9 Option A; the trampoline reads field-3 alongside `thunk_ptr` and the resource token) and returns an intrinsics-internal **fault outcome** (or sets the slot + a sentinel). It does **NOT** construct a `PlatformError` — intrinsics is diagnostics-free by charter (it can *name* `PlatformError` via `cranelisp-types`, but composing diagnostics is int's job). **int composes `PlatformError::DispatchError { fn_name, cause, location }`** at its runtime-error surface (the two-layer split `invoke_jit_protected` already uses: intrinsics sets the slot, int reads + composes). The fork-join slot-ferry property (invariant 13) holds unchanged — platform Effects force on the trampoline's own joining thread. The full ruling (guard placement, fn-name plumbing, ABI bump, cross-component sequence) is §5 invariant 9; this entry records intrinsics' half (the guard + capture). Canonical: BC §5 invariant 9 + `design/platform/platform.md §9a`.
-
-    **S81 W-G correction — the panic catch is DLL-local; intrinsics reads a cross-ABI signal, it does NOT `catch_unwind` the panic itself (FIXME 0337).** The W-G implementation landed this guard with a host-side `catch_unwind` (`io_guard::force_effect_thunk_protected`), and it works for an in-host panicking thunk but **aborts** for a panic raised inside a separately-compiled, dlopen'd platform cdylib — the DLL links its own Rust panic runtime, so the unwind is a foreign exception at the host frame (the full diagnosis + the Option-A ruling are §5 invariant 9). The corrected intrinsics half: the panic catch moves **into the DLL** (`cranelisp_platform::CLIO::effect*`'s thunk wrapper, §5); `call_effect_thunk` returns a `#[repr(C)] EffectOutcome { value, fault_cause, fault_len }` cross-C-ABI signal. The trampoline guard **drops its panic-side `catch_unwind`** (nothing to catch host-side any more) and instead **reads `EffectOutcome`** — clean → the value; faulted → compose `DispatchFault { fn_name (field-3, read host-side as before), cause (the DLL-supplied C-string) }` onto the dispatch-fault slot and return the fault outcome. The guard **keeps** its `sigsetjmp`/signal half for genuine hardware traps from C code (signals are process-global, so the host handler catches them across the DLL boundary once reached). int's `DispatchError` compose is unchanged. ABI gate: `ABI_VERSION` 4→5 (the `call_effect_thunk` return contract changes; §5). Canonical: §5 invariant 9 (the DLL-local-catch sub-ruling) + FIXME 0337.
-
-    **The fork-join error-slot ferry (landed on the join paths, NOT the combinator).** The error slot is `thread_local!`; lenient evaluation is live (sparks pure work onto rayon workers via IVars) and Par branches run on rayon workers, so a worker-thread panic lands in a *different* slot than the combinator reads. **As-built, both fork-join boundaries ferry the slot:** the IVar join path (`crates/cranelisp-intrinsics/src/ivar.rs` — worker-side `take_runtime_error()` after the work item + `reraise_ferried_error` on join) and the Par dispatch path (`crates/cranelisp-intrinsics/src/io.rs` `dispatch_par_branches_with_trace` — worker-take / join-set) both check the worker slot and re-raise into the joining thread's slot via the internal **`set_runtime_error(msg)` companion** (`crates/cranelisp-intrinsics/src/panic.rs`) to `take_runtime_error()` (both internal Rust, not C-ABI exports, not language names), first-error-wins. Because both parallelism forms are **structured** fork-join (§12.4.3 + §10.12 — the expression does not return until all branches join), every spark joins back inside the dynamic extent of any enclosing `catch-runtime-error`, so the combinator stays a plain own-thread slot-reader with **zero special-casing** — the ferry lives entirely in the join paths (intrinsics-owned), not in the combinator. First-error-wins matches sequential semantics (the first panic aborts the whole expression); aggregation is rejected. The prior "pre-existing defect / neither boundary ferries" reading (BC §12.4.3 observational-equivalence gap) is **closed** — the ferry is the regression guard, not an open defect. Canonical: `design/arch/test-discovery.md` §5 + §6 "Publishing `catch-runtime-error`" / "The fork-join error-slot ferry requirement".
-
-15. **Arg-lifetime-across-suspension is runtime-owned at the `EffectPoll`/`reg` seam (S98 /arch ruling — FIXME 0486 Level-1; the contract `reactor.md §0`/§7 only *named*).** A **reactor-deferred effect's baked heap arguments are LIVE until the reactor resolves the effect** — and keep-alive is **owned by the runtime (`cranelisp-intrinsics`), NOT backend-emitted.** The full contract:
-
-    - **The value + its home.** A poll-shape effect's baked arguments live in the host-built **state-closure** carried at the `IO_TAG_EFFECT_POLL` node's field-0 (`[header | code_ptr | drop_glue_ptr | args…]`, invariant 5). The state-closure's per-lambda **drop glue is backend-generated** and decs those captured args (invariant 5 + the consuming convention, invariant 6) — this backend obligation is **unchanged** by this ruling.
-    - **Liveness window.** The args are live from the moment the trampoline **establishes** the effect (`io::await_poll_node` reads the state-closure and constructs `crate::reactor::EffectPoll`) until the reactor **resolves** it — `Poll::Ready` (eager) OR cancellation (the `EffectPoll` future drops). Consuming the state-closure (running its drop glue → dec'ing the baked args) is the **runtime's** responsibility **at resolve, exactly once**.
-    - **Owner + seam.** Keep-alive is established at the `EffectPoll`/`reg` establish site (`await_poll_node` → `EffectPoll::new`, `reactor.rs`) and released at the **exactly-once two-path resolve keyed on the per-leaf `reg: RegId`** — `Poll::Ready` in `EffectPoll::poll` + cancel in `ReactorInterest::drop`, the same working, tested key/paths that already release the token permit. The keep-alive rides the identical key and the identical two paths; it invents no new release mechanism.
-    - **Why runtime-owned, not backend-emitted.** The reified-IO-as-data trade (`effect-concurrency.md §6`) deliberately made lifetime-across-suspension a **runtime discipline**, not a compile-time guarantee: the backend emits reified IO *data* and does **not** model *when* the runtime polls. Deferral-across-frame-teardown is a runtime-scheduling fact the backend's synchronous lifetime model does not — and, under Level-1, must not — capture. Keep-alive is a *consequence* of deferral; deferral is runtime-owned (the reactor decides when to poll); therefore keep-alive is runtime-owned (Principle 7 — the guarantee has one home, the `EffectPoll` future that owns the effect across its suspend arc; Principle 18 — release is structurally paired with the resolve the future already owns). Making keep-alive a backend obligation would require the backend to model suspension points (Rust-async state-machine transform) — the **Level-2** state-machine transform, deferred to its recurrence trigger (canonical: `effect-concurrency.md §6` Level-2 note). The S97 attempt that placed a keep-alive registry in `alloc.rs` failed for the same structural reason: the allocator has no reactor-resolution signal; the `reg`-keyed `EffectPoll` two-path does.
-    - **The bug this closes (bug #2 UAF).** Without runtime keep-alive, a launched strand's `consume_io_tree` tag-4 arm (`drop.rs` — `4 => consume_closure(field0)`) runs the state-closure's drop glue and frees the baked `Response` **before** the reactor-deferred terminal `send-conn` reads it → use-after-free (RC-balanced; a UAF, not a miscount). Runtime keep-alive holds the state-closure alive across the await and consumes it once, at resolve.
-    - **Implementation variant is Phase-5, not arch.** Two candidate variants (net-zero-inc vs. move-out-with-sentinel) are RC-trace-decided on the reduced repro; both are runtime-internal and localized. **The move-out-with-sentinel variant is the architecturally-coherent one** — it reuses the already-blessed launch move-out contract (`io-trampoline.md §15.5`: the trampoline moves field-0 out and writes the `0` sentinel so the sub-tree's own tag-4 reclamation does not double-free; ownership transfers to the `EffectPoll`, freed at the two-path resolve), so the poll tag-4 arm gains the same `field0 != 0` null-guard the launch tag-5 arm already carries. This reuses a tested ownership-transfer pattern rather than adding a new RC-balance convention.
-    - **No interface / ABI / node-layout change (Level-1).** No `cranelisp-types` type, no `ABI_VERSION` bump, no `IO_TAG_EFFECT_POLL` node-layout change (field-0 = state-closure is the existing shape; the `0` sentinel reuses the §15.5 mechanism), no `CACHE_SCHEMA_VERSION` bump (runtime *handling* of field-0 changes, not the node *shape*), and **no `public-api.txt` churn on any crate** — the fix touches only runtime-library interior (`crates/cranelisp-intrinsics/src/{io.rs, reactor.rs, drop.rs}`). **Phase-5 owner was `/backend`** (narrow-deployed on `cranelisp-intrinsics`, the runtime library it is paired with — §"Runtime ownership note" — NOT `/int`, whose contact is only the host-client seam, §6). **DELIVERED (S98, FIXME 0486 closed):** the runtime keep-alive landed (`75f286d`, net-zero-inc `StateClosure` at the `EffectPoll`/`reg` seam, `/review`-confirmed exactly-once); bug #2 is closed (`5ca6ef2`, FIXME 0494 — the actual cause was a `/backend` `find_var_type_in_expr` AST-traversal gap starving the existing consuming-inc for `conn`, hardened by `0497` — NOT a lifetime-model failure); `tests/launch_grid_corrupt.rs` (`launch_grid_corrupt` + `launch_vec_send_corrupt`) are GREEN and `exemplar_web` is un-quarantined + green. This invariant is the permanent contract; Level-2 stays deferred (`effect-concurrency.md §6`).
-
-16. **Deep release is type-directed; every ownership displacement and typed-context exit has a named owner (S116, FIXMEs 0837/0853 + 0688 top-up).** The universal heap header remains exactly two words, `{ alloc_size, rc }`. Intrinsics therefore exposes no generic “release this `i64` deeply” operation: `consume_shallow` is deliberately shallow, while each `consume_*` routine owns one known runtime protocol layout. Generated program values are discharged by backend-emitted type-directed glue at arbitrary finite value depth; a fixed compiler recursion cutoff that falls back to a shallow dec is unsound. Replacement inside generated code is an ownership event too: before a TCO tail jump overwrites a loop-parameter slot, backend releases the superseded typed value through the same glue unless its single replacement/transfer predicate proves that owner moves into the next iteration (including the existing in-place-COW exemption). This is not a separate TCO drop mechanism. When a value leaves generated typed code, ownership transfers rather than vanishes: a `Pure` force retains the payload for the program result while the node keeps its own reference until teardown, so a repeated or concurrent force of a reused IO value is valid (`total-concreteness.md` §3.4). Int's `(value, Type)` result seam owns a successful result through display/exit-code observation and releases it afterwards, while the linked startup stub owns the compile-time-equivalent release before process exit. Platform crossings retain their typed `CLOwned<T>` / callback ownership contracts. Adding a header glue/type word is rejected for this architecture: it would tax every allocation and change the heap ABI/cache representation to solve a finite, enumerable set of typed displacements/exits that already carry—or can preserve—the necessary type. Canonical safety register: `safety-invariants.md` R15/R20.
-
-**Per-surface documentation.** Like `cranelisp-types` (§7), `cranelisp-frontend` (§1), `cranelisp-platform` (§5), and `cranelisp-typecheck` (§2), this surface has no separate `facades/intrinsics.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-intrinsics/src/lib.rs` plus per-item `///` comments) IS the facade. Retired in S74 Wave 3 (5th data point of the facade-retirement pattern) per Principle 7 (single source of truth) and the lived-experience cost of dual-maintenance. The cross-surface narrative (this section §4b), invariants 1–17, the cross-crate dependency edges, and the §"What crosses the boundary" 0245 contract live here in BC §4b; the per-item contracts (allocator family, drop helpers, IO trampoline, IVar, panic, IO-observation extension point, the trace family + `DisplayDescriptor` layout, `HeapString`/`vec_runtime` layout-ABI consts and Vec-of-String Rust helpers), the forbidden-patterns rule, the `JITBuilder::symbol`-narrowing, and the Option-2 DCE-survival wording live in the source rustdoc. The `public-api.txt` baseline gates the surface at PR time per the baseline-diff discipline; rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
-
-17. **Vec-of-String Rust-path ownership boundary (Sprint 117 R-3).**
-    `cranelisp-primitives::string::{split,join}` cross into the Vec layout owner
-    through exactly two purpose-specific operations:
-    `pub unsafe fn vec_strings_from_owned(elements: Vec<i64>) -> i64` and
-    `pub unsafe fn with_vec_strings<R>(base: i64, read: impl
-    FnOnce(&[i64]) -> R) -> R`. They are ordinary Rust-path functions: absent
-    from `intrinsics_table()`, without `export_name`/`no_mangle`, and never
-    backend-emitted call targets. A crate-private alternative is impossible
-    because primitives is a separate crate; relocating String semantics into
-    intrinsics or publishing a general raw-Vec builder/view would widen the
-    boundary. This pair is therefore the minimum public Rust surface.
-
-    The constructor's `unsafe` contract requires every input word to be the
-    base pointer of one live HeapString allocation and to carry one owned
-    reference that the caller transfers to the function; duplicate words are
-    valid only when the caller actually owns the corresponding number of
-    references. From call entry the caller must neither consume nor separately
-    release those transferred references, including if the function unwinds.
-    On success the returned live Vec owns exactly those references. Before
-    publication the implementation owns the input `Vec<i64>`, any allocated
-    Vec object/data buffer, and the transferred HeapString references: it
-    initialises element slots before writing `len`, writes `len` last, and an
-    unwind guard shallow-consumes each transferred reference exactly once and
-    frees each unpublished allocation exactly once. Only `0..len` is live.
-
-    The reader's `unsafe` contract requires `base` to be a non-null, correctly
-    aligned base pointer to a live Vec whose live elements are HeapString base
-    pointers, with an owning Vec reference kept alive and no concurrent
-    mutation for the complete callback. Before forming a slice it checks
-    `0 <= len <= cap`, checked `cap * size_of::<i64>()` representability, and
-    that `data_ptr` is non-null and correctly aligned when `cap > 0`; the
-    caller remains responsible for allocation provenance and liveness, which
-    runtime field checks cannot establish. The slice borrow cannot escape the
-    callback in safe Rust. The callback may copy an element word only as a
-    non-owning observation; retaining or consuming an element requires an
-    explicit RC operation outside this helper's contract. Normal return and
-    unwind perform no increment, decrement, transfer, or consumption of the
-    Vec or its elements.
-
-    These functions own only representation and lifetime mechanics; String
-    semantics stay in primitives. They do not expose offsets, provide general
-    Vec mutation, change heap layout/C ABI/the intrinsic catalog, or action
-    FIXME 0850's intrinsics-internal `drop.rs` raw-read convergence.
+1. **Runtime substrate only.** The dominant surface is emitted-call targets and
+   trampoline operations. A Rust-path operation is admissible only with a named
+   cross-crate consumer and `arch` approval of the public delta.
+2. **Representation containment.** Layout constants are defined only in the
+   allocator, string and vector modules. Backend reads layout through named
+   externs and blessed constants; primitives read blessed constants and never
+   re-derive offsets.
+3. **Atomic reference counting.** Every increment and decrement is atomic, with
+   an acquire fence on the free path before glue reads fields. Every Rust-path
+   increment routes through `rc::rc_inc` (release ordering, the NFR floor)
+   unless a stronger ordering is documented at the site. The one documented
+   exception is the `IVar` spark increment, which stays sequentially consistent
+   because the cell's count and state machine share one total order.
+4. **Strings are opaque to backend.** All string operations are extern calls.
+5. **Closures embed their drop-glue pointer** beside the code pointer, so a
+   closure released in another module needs no side table. The glue is
+   backend-generated per lambda and null when nothing is captured by heap.
+6. **Consuming convention at the extern boundary.**
+7. **The trampoline releases an intermediate IO node shallowly**, because its
+   fields are already re-owned during the walk; transitive release is a
+   distinct operation.
+8. **No state across sessions, and no reset seam.** The allocation counters are
+   process-lifetime evidence. The absence of a public reset is deliberate: a
+   reset could zero the only evidence the allocation-parity check has.
+   Consumers needing a window snapshot and subtract.
+9. **Backend-driven evolution and deliberate dispatch asymmetry.** Intrinsics
+   resolve by name through direct symbol registration; primitives dispatch
+   through a module GOT. Intrinsics are not a module, and forcing them through a
+   synthetic one would invent a module with no user-visible surface.
+10. **No type names at the public surface.** The crate operates on heap words
+    and marshalling tags.
+11. **The catalog is flat and self-published.** `intrinsics_table()` returns
+    `name → (arity, has-return, pointer)` records. It is read at three
+    resolution points — JIT construction, cache-hit linking and the linked
+    executable — and never at codegen, which names intrinsics by string. It is a
+    function rather than a static to avoid an `unsafe impl Sync` over raw
+    pointers. The catalog's own name-set test owns the entry list; no count is
+    restated here. `IntrinsicEntry::is_runtime` is documentation metadata with
+    no dispatch consumer. Host-promised externs (§7) are not catalog entries.
+12. **The `(trace …)` runtime is an intrinsic family** published through the
+    catalog and working in every mode, including linked executables. The value
+    formatter is a pure walk of a backend-baked descriptor and the heap value,
+    with no symbol-table access. Discovery and baking are backend's; the binary
+    hosts no trace runtime ([tracing](tracing.md)).
+13. **`catch-runtime-error` is a self-contained intrinsic** over the thread-local
+    error slot. Both fork-join join paths ferry a worker's error into the
+    joining thread's slot, first error wins, so the combinator stays a plain
+    own-thread reader. Both parallelism forms are structured, so every spark
+    joins inside the combinator's dynamic extent
+    ([test discovery](test-discovery.md)).
+14. **Intrinsics captures a platform fault; the binary composes the
+    diagnostic.** The guard at the single effect force site keeps the signal
+    half host-side, reads the DLL-returned effect outcome and the effect name
+    carried on the node, and records an internal fault. It constructs no
+    `PlatformError` (§5 invariant 9).
+15. **Argument lifetime across suspension is runtime-owned.** A reactor-deferred
+    effect's baked arguments stay alive until the reactor resolves the effect
+    by completion or cancellation, and the state closure is consumed exactly
+    once on those same two paths that release the permit. Backend's obligation
+    is unchanged: it emits data and does not model when the runtime polls. A
+    compile-time suspension transform is deferred
+    ([effect concurrency](effect-concurrency.md)).
+16. **Deep release is type-directed; every displacement and typed-context exit
+    has a named owner.** The header stays two words, so there is no generic deep
+    release of an untyped word: `consume_shallow` is shallow and each
+    `consume_*` owns one known layout. Generated values are released by
+    backend's type-directed glue at any depth. Replacement inside generated code
+    (a tail-call parameter overwrite) releases the superseded value through the
+    same glue unless ownership moves forward. A forced `Pure` retains its
+    payload for the result while the node keeps its own reference, so a repeated
+    force is valid. The binary's result seam and the linked startup stub own
+    release after observation. A header type word is rejected: it would tax
+    every allocation to solve an enumerable set of typed exits. Register:
+    [safety invariants](safety-invariants.md); seam detail:
+    [total concreteness](total-concreteness.md).
+17. **Vec-of-String crossing.** Primitives' `split` and `join` reach the vector
+    layout owner through exactly two Rust-path operations,
+    `vec_strings_from_owned` and `with_vec_strings`. They are absent from the
+    catalog, are never emitted call targets and expose no offsets. Their
+    `unsafe` caller obligations — transferred references, initialise-before-
+    publish, the bounds checked before a slice is formed, and a non-escaping
+    non-owning read — are stated in their rustdoc. String semantics stay in
+    primitives.
 
 ---
 
 ## 5. Platform — `crates/cranelisp-platform/`
 
-**Bounded context.** The shared interface contract between the cranelisp host binary and platform DLLs. Both the host and every platform DLL link against this crate; that is its purpose. It defines the C-ABI types, the wrappers that present those types safely in Rust, the layout constants both sides must agree on, and the macro DLLs use to publish their manifests. The crate owns **no session-coordinated state** and no cadence; its only state is three per-DLL write-once globals — two `AtomicPtr` allocator slots (`GLOBAL_ALLOC`, `GLOBAL_ALLOC_WITH_TAG`, `crates/cranelisp-platform/src/lib.rs`) and one `OnceLock<Schema>` (`GLOBAL_SCHEMA`, `crates/cranelisp-platform/src/adt.rs`) — all initialised at DLL load (`HostContext::init` / `set_global_schema`) and never re-written, bounded by invariant 6's no-unload rule. These are load-time-initialised facts, not mutable runtime state.
+**Bounded context.** The shared interface contract between the host binary and
+platform DLLs; both link this crate. It defines the C-ABI types, safe wrappers
+over them, the layout constants both sides agree on, and the macro DLL authors
+use to publish a manifest. It owns no session state and no cadence; its only
+state is per-DLL write-once globals initialised at load (the allocator slots
+and the parsed schema).
 
-**External audience — Principle 15 exception.** `cranelisp-platform` is the only implementation crate with an explicitly external audience: out-of-tree DLL authors (`cranelisp-stdio`, `cranelisp-fs`, etc.) depend only on this crate and would not otherwise see `cranelisp-types`. Per Principle 15's external-audience exception, the facade lives with the source rustdoc — Sprint 71 retired the standalone `design/arch/facades/platform.md` and folded its narrative into the crate-root `//!` preamble + per-item `///` docs (3rd data point of the facade-retirement pattern after `types.md` S69 + `frontend.md` S70). Audit F9 (S69) verified the exception's scope health when the re-export set was `SchedulingClass` + `PlatformError`; the set has since grown with the poll ABI's vocabulary (`ConcurrencyDescriptor`, `Poll`, `Acquire`, `ResourceRole`, `GOT_TABLE_SIZE` — see §In-scope), each grounded in the same external-audience criterion (a DLL author needs them to declare a manifest without depending on `cranelisp-types`).
+**External audience.** This is the only implementation crate with out-of-tree
+consumers. DLL authors depend on it alone, so it re-exports the types-owned
+vocabulary they need — for example `SchedulingClass`, `PlatformError`, the
+concurrency descriptor vocabulary and `GOT_TABLE_SIZE` — under
+[Principle 15](principles/15-facade-types-live-with-behavior.md)'s
+external-audience exception.
 
-**The three exports (AS-BUILT — platform-interface.md, user-ratified 2026-06-07; landed S79, export namespacing v6/S86).** A platform DLL exports exactly **three** things, and only three: (1) its **GOT** — a function-pointer table, one slot per effect function, in manifest order, under `__cranelisp_got_platform_<name>` (const-initialised fn pointers, linker-fixed-up via relocations; the `PRIMITIVES_GOT_SLAB` precedent); (2) its **manifest** — the declarative fn data a live session builds a symbol table from, exported as `cranelisp_platform_manifest_<name>` (namespaced since ABI v6 so two platforms link into one binary; `platform_manifest_symbol` computes the name consume-side); (3) its **schema + layout hash** — a `/platform-schema`-generated, `include_str!`-embedded layout artifact plus the data symbol `__cranelisp_layout_hash_<name>` that binds it to the live tables. **Dual-artifact deployment model:** the platform crate builds a **cdylib** (live sessions `dlopen` it) and an **rlib** (`--link` statically links it, `-force_load`); same three exports, two binders (`dlsym` vs `ld`), no mode fork in the platform's own code. The governing principle: **the DLL builds the GOT (its facts); the host builds the SymbolTable (its invariants).** `declare_platform!` emits the **GOT + manifest + embedded schema** from one declaration list (slot *i* of the GOT = manifest entry *i* by construction); platforms **do not author a schema dialect** and **export no function names** (dispatch is slot-indexed GOT-indirect; the pre-v3 `jit_name` mangled-extern dispatch is retired).
+**The three exports.** A platform exports exactly its GOT (one slot per effect
+in manifest order), its manifest and its schema with a layout hash, each
+namespaced by platform name. The crate builds both a dynamic library for live
+sessions and a static library for linked executables: same exports, two
+binders. **The DLL builds the GOT (its facts); the host builds the symbol table
+(its invariants).** Platforms author no schema dialect and export no function
+names; dispatch is slot-indexed. Canonical contract:
+[platform interface](platform-interface.md); interior design:
+[platform design](../platform/platform.md).
 
-**In-scope.**
-- C-ABI contract types — all `#[repr(C)]`, layout-governed by `ABI_VERSION` per Principle 14: `PlatformManifest`, `PlatformFn` (ONE manifest entry type — each effect is independently blocking or poll-shape via its `ConcurrencyDescriptor`), `HostCallbacks`, the host-reactor vtable `HostCtx`, the C-ABI `Waker`/`WakerVTable`, and the force-return `EffectOutcome`
-- Safe wrappers over the C-ABI representation (`CLInt`/`CLBool`/`CLFloat`/`CLString`/`CLIO`/`CLAdt`/`CLOwned`) — all `#[repr(transparent)]` over `i64`. The `CLAdtType` marker trait binds a DLL-side Rust marker type to its FQ schema type name (`TYPE_NAME`); binding ergonomics are under review now that multi-ADT platforms exist (audit S117 R4 / FIXME 0873)
-- Layout constants shared between host and DLL (`ABI_VERSION`, `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, the `IO_TAG_*` family incl. `IO_TAG_EFFECT_POLL`, the `IO_EFFECT_*` offsets)
-- The DLL manifest macro (`declare_platform!`) — the DLL-author entry point; emits the three exports from one declaration list (per-fn concurrency declared via a `scheduling:` `SchedulingClass` shorthand or a full descriptor)
-- Host-side conversion of manifests into safe Rust descriptors (`manifest_to_descriptors`, `OwnedPlatformFnDescriptor`)
-- Schema **parser** — `Schema`, `SchemaParseError`; reads the **machine-generated `/platform-schema` artifact** DLL-side for `read_field` name→index (platform-interface.md §5.5)
-- `poll_support` — the DLL-side ergonomics suite for authoring poll-shape leaves (`PollEnv` as the single home for the state-closure env layout, `Reactor`, `PollState`/`PollStep`); core/ungated since the v8 cutover
-- Re-exports for the external audience (the Principle-15 exception): `SchedulingClass`, `PlatformError`, `ConcurrencyDescriptor`, `Poll`, `Acquire`, `ResourceRole`, `GOT_TABLE_SIZE` from `cranelisp-types`
+**In scope.** `#[repr(C)]` contract types governed by `ABI_VERSION`; transparent
+wrappers over the one-word value representation; shared layout constants and IO
+tags; `declare_platform!`; host-side manifest conversion; the schema parser;
+poll-leaf authoring support.
 
-**Out of scope.**
-- DLL session lifecycle and retention (int — see §6)
-- IO trampoline implementation (intrinsics — §4b)
-- Per-DLL platform implementations (separate downstream crates)
-- Spec definition of IO semantics (`/spec`)
-- Type-signature parsing (`int`-side because it requires `cranelisp-typecheck` vocabulary that platform must not depend on per Principle 3 + FIXME 0155)
-- **ADT *declaration*** — a platform's data types are ordinary importable `.cl` modules referenced by FQ name; platforms do not declare ADTs (platform-interface.md §5.4)
-- **The schema *generator* + the layout-hash *checker*** — both live in `cranelisp-backend` (shared closure-walk + substitution with the trace `DisplayDescriptor` baker; BC §3), not in platform
-- Platform-as-module registration + the load path — int's (§6, landed): each loaded platform gets its own `SymbolTable` + a `GotTable` wrapping the dlsym'd GOT in place
-- `/platform-schema <name>` REPL command — int/REPL dispatch (§6, landed: `src/repl/mod.rs`)
+**Out of scope.** DLL lifecycle, the load path and the `/platform-schema`
+command (binary); the trampoline (intrinsics); the schema generator and layout
+hash (backend); type-signature parsing (frontend and typecheck, driven by the
+binary); ADT declaration — a platform's data types are ordinary modules
+referenced by qualified name.
 
-**What crosses the boundary.**
-- **Outward**: the C-ABI types, wrappers, constants, and macro to both host and DLL consumers.
-- **Inward**: a small set of layout/vocabulary types from `cranelisp-types` — `SchedulingClass`, `ConcurrencyDescriptor`, `Poll`, `Acquire`, `ResourceRole`, `PlatformError`, `CranelispError`, `Symbol`, `Span`, `ErrorLocation`, `GOT_TABLE_SIZE`.
-- **Window types**: none.
+**Contracts stated here.**
+- **Heap values cross as allocation-base pointers.** Wrapper increments and
+  decrements match emitted-code atomicity. `CLOwned<T>` is the host-side
+  ownership wrapper; the consuming conversion follows the consuming convention.
+- **The schema is a machine-written artefact**, generated from the loaded
+  platform's tables and embedded by the platform. The host never takes schema
+  text from the DLL: at load it regenerates, hashes and compares. `--run` and
+  linked executables refuse a mismatch; the REPL warns and loads, because it is
+  where the artefact is regenerated.
+- **`ABI_VERSION` is the single layout gate**
+  ([Principle 14](principles/14-ffi-layout-discipline.md)). Any layout-affecting
+  change to a contract struct, or to a constant a DLL reads by offset, bumps it;
+  a transparent wrapper or method alone does not. The current value and the
+  per-version history live in the `ABI_VERSION` rustdoc only.
+- **The effect call is a poll-based async C ABI.** The platform is a leaf that
+  owns *what*; the host owns *when*. Each effect is independently blocking or
+  poll-shaped through its concurrency descriptor. Resource scheduling flows
+  through the host's `HostCtx` vtable (register, acquire, retire); release is
+  trampoline-owned and cancellation never re-enters the poll function. Resource
+  role is a compile-time fact. Resource handles are opaque to the trampoline and
+  ordinary ADTs to the program.
+- **`HostCallbacks` is permanently the two allocator entries.** It is built by
+  the single `cranelisp_intrinsics::host_callbacks()` for every host mode.
 
-### Cross-cutting RC discipline
+**Invariants.**
 
-All heap CL types (`CLString`, `CLAdt<T>`, `CLIO<T>`) store **alloc base pointers** (the address of the `[total_size: i64][rc: i64][...]` heap allocation), NOT payload pointers. This matches the compiler's convention (Decision 0013); JIT-emitted code, the `CLString::from(&str)` builder, and the `CLAdt::from_raw` constructor all agree on what an `i64` "heap reference" means. `inc_rc` / `dec_rc` (per `CLHeap`; method-name asymmetry preserved per audit F5 R3) use `Ordering::SeqCst` to match Cranelift's `atomic_rmw` semantics — `Relaxed` is unsound for both directions (allows reordering relative to field reads, producing potential read-after-free).
+1. **Platform function pointers live in the platform module's GOT**, which wraps
+   the DLL's exported table in place; the slot is the manifest index. A loaded
+   platform is a synthetic module whose callables carry a platform-effect origin
+   with their scheduling class and poll shape. The binary retains the DLL handle
+   for the session.
+2. **Stable C ABI.** Contract structs are `#[repr(C)]`; the loader refuses a
+   mismatched `ABI_VERSION`.
+3. **No closure crosses the boundary.** The boundary is poll-in, wake-out. There
+   is no host-mediated closure call and `HostCallbacks` will not grow
+   reference-count entries. An uninvertible synchronous C dispatcher is handled
+   inside the platform in its own language.
+4. **One word representation per wrapper type**, agreed with intrinsics; strings
+   are intrinsics-allocated.
+5. **Host callbacks are installed once per loaded platform**, when the host
+   calls its manifest function, and are never rewritten.
+6. **No DLL unloading mid-session.** This bounds the crate's deliberate leaks and
+   keeps slot pointers valid.
+7. **Concurrency facts are declared by the DLL and consumed by the host.** The
+   loader lifts the scheduling class and poll shape onto the callable; runtime
+   permits flow through the vtable, never on values.
+8. **No resolved type identifiers at this surface.** Signatures cross as text and
+   are resolved by the binary's loader.
+9. **Faults are funnelled, never aborts.** A platform fault surfaces as a located
+   `PlatformError::DispatchError` naming the effect. The effect name travels
+   with the effect node, stamped by backend only when the returned node is an
+   effect node; an unstamped node degrades to an unknown name. The panic catch
+   is DLL-local because each dynamic library carries its own panic runtime; the
+   fault crosses as a returned value. Intrinsics captures; the binary composes
+   (§4b invariant 14).
 
-`CLOwned<T>` is the host-side RAII wrapper for cross-callback RC discipline; the consuming variant `CLHeap::into_owned_consuming` is the consuming calling convention per Decision 0024 (used by platform externs that capture a heap parameter into an Effect closure — see `design/backend/ring2-rc.md` §10.4).
-
-### Schema mechanism — compiler-generated artifact + layout-hash binding (AS-BUILT — platform-interface.md §5.5, user-ratified 2026-06-07; landed S79)
-
-A platform's ADTs are ordinary `.cl` modules (compiled through the normal pipeline; referenced by FQ name in the platform's sigs). The schema is a **machine-written build artifact**, never hand-authored: the **`/platform-schema <name>` REPL command** (int/REPL dispatch, §6) derives the referenced-type set from the loaded platform's symbol table, takes the **transitive closure** over field types, and emits the schema as text — `Map<FQTypeName, Vec<(CtorName, tag, Vec<(Symbol, FieldType)>)>>` (ordered NAMED + TYPED fields; `FieldType` a recursive type-expr — typed fields make nested-ADT navigation work; concrete instantiations keyed by the structured type expression itself, not a mangle) plus a `;; layout-hash:` header. The platform embeds the artifact (`schema: include_str!("<name>.platform-schema")`); the retained **parser** reads it DLL-side for `read_field` name→index. The **generator** (closure-walk + substitution + canonical emit) lives in `cranelisp-backend`, sharing the walk with the trace `DisplayDescriptor` baker — the shared asset is the *walk*, not a single serialized form (different consumers, lifetimes, serializations).
-
-The host never acquires schema *text* from the DLL. The **layout hash** (ONE per platform, `__cranelisp_layout_hash_<name>`) is the canonical hash of the generated artifact; at load the host **regenerates the schema from the live tables**, re-hashes, and compares to the DLL's exported hash: **`--run`/`--link` REFUSE on mismatch** (`PlatformError::LayoutHashMismatch`), **the REPL WARNS-AND-LOADS** (the regeneration bootstrap; `src/process_form/platform.rs`). One generator + one checker, both in the compiler — the canonical-form/DAG problem dissolves.
-
-*Historical pointers.* Two superseded acquisition mechanisms preceded this: the **S71 hand-authored schema dialect** (a `schema:` S-expression declaration arm on `declare_platform!`, a `LazyLock<Schema>`-as-DSL static, and the `GetSchema`/`AnyAdt` trampoline — platforms declared their own ADTs) and the **S76 seam-2 `validate_schema` callback** (raw schema text crossing the boundary via `HostCallbacks`, stashed in a `SymbolTable.schema_literal` cache field). Both retired when the generated-artifact model landed (S79): `HostCallbacks::validate_schema`, `schema_literal`, the dialect, and `GetSchema`/`AnyAdt` are deleted; `CLAdtType` markers survive as the DLL-side name binding. See `platform-interface.md` §5.5 + git history.
-
-### ABI versioning rationale
-
-`ABI_VERSION: u32` is the single layout-discipline gate between host and DLL (Principle 14). Any layout-affecting change to a `#[repr(C)]` struct (`PlatformManifest`, `PlatformFn`, `HostCallbacks`, `HostCtx`, `Waker`/`WakerVTable`, `EffectOutcome`) or a const the DLL reads by hard-coded offset (`HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_TAG_*`, the `IO_EFFECT_*` offsets, new `CL_TYPE_TAG_*` values) bumps the version. The host validates `abi_version` at DLL load and refuses mismatched DLLs with `PlatformError::AbiVersionMismatch`. Adding a method on `CLAdt` (no new `HostCallbacks` field, no new const) does NOT bump; adding a new pub `CL<T>` wrapper variant alone does NOT bump (Principle 14's `#[repr(transparent)]` exemption — the wrapper is a host-side typing convenience over an `i64`; the ABI is the `i64`).
-
-The current version is **9**. The canonical per-version bump history (v1→v9: S71 marshaling surface; S79 three-exports cutover; S81 fn-name node-widen + DLL-local fault catch; S86 manifest-export namespacing; S93 poll-ABI reservation; S96 single-ABI cutover; S97 ctx-vtable handle model) lives in the `ABI_VERSION` rustdoc (`crates/cranelisp-platform/src/lib.rs`) — maintained there, not restated here.
-
-### The poll ABI — v9, core (AS-BUILT; S93 slice-2 reservation → S96 single-ABI cutover → S97 ctx-vtable handle model)
-
-The effect-call shape is a **poll-based async C-ABI**: the platform is a C-ABI async *leaf* (owns the *what*); the host owns the reactor (the *when*). Core and ungated since the v8 cutover — there is ONE manifest type, ONE macro, ONE GOT export, ONE loader path (the v6/v7 dual-channel split, `ConcurrentPlatformFn`/`declare_concurrent_platform!`, and the `concurrency` feature gates are all deleted). Source: `crates/cranelisp-platform/src/concurrency.rs` + `cranelisp-types` `scheduling.rs`; design: `platform-interface.md` §6.8 + `effect-concurrency.md` §4.1.1/§12.
-
-- **`PollFn`** — `poll(state, *HostCtx, *Waker) -> Poll`, dispatched GOT-indirect like every effect. Each `PlatformFn` is independently blocking or poll-shape via its `concurrency.blocking` bit; the uniform leaf skeleton is `acquire(token,cap,waker)? → syscall → (would-block? register+Pending : Ready)` — a commutative leaf omits acquire; `sleep` is the degenerate one-shot.
-- **`HostCtx`** — the trampoline-owned reactor vtable handed to every poll call: `register_readable`/`register_writable`/`register_timer` (+ an opaque host reactor handle), plus `acquire(host, token, capacity, waker) -> Acquire` (`Acquire { Acquired, Parked }`, `#[repr(i32)]` in `cranelisp-types`; `Parked` enqueues the waker on the permit-wait queue) and `retire(host, token)`. **Release is trampoline-owned — no vtable entry** (fired on `Ready`/cancel; cancel never re-enters the poll-fn). **All resource-scheduling state flows through this vtable — never on user values.**
-- **`Waker` + `WakerVTable`** — the C-ABI projection of `std::task::Waker` (`(data, vtable)` pair + `extern "C"` callbacks). The platform never learns an async concept; it calls `wake` when its fd/timer fires.
-- **`ConcurrencyDescriptor`** — token + cardinality + the inert-until-slice-≥4 `global_budget` + `blocking` + `role: ResourceRole {None, Produce, Consume, Retire}` (a **compile-time-only** fact — the trampoline never branches on role at runtime).
-- **Resource handles are tramp-opaque, user-readable ADTs** carrying the platform's own `r`/`fd` in a genuine field: opaque to the trampoline (which never introspects the handle), NOT opaque to the user program (ordinary destructuring reads fd/peer-addr like any ADT; fabrication is a platform-IO concern — the OS syscall is the capability checkpoint). A singleton resource (stdin) declares a manifest-static serial token (`{token != 0, cardinality 1, role Consume}`), structurally enforcing single-in-flight.
-
-### Host callbacks — the permanently two-field allocator surface (S98 ruling, supersedes Decision 0031's "callback support forward commitment")
-
-`HostCallbacks` carries exactly `alloc` + `alloc_with_tag` — the three-way heap-layout allocator ABI (int↔intrinsics↔platform) that ADT *construction* across the FFI needs — and will not widen. The platform-effect boundary is **poll-in / wake-out only** (invariant 3): the retired D0031 forward commitment (widening with `rc_inc`/`rc_dec`/`invoke_closure` when `Fn a b` joined the spec §10.10.1 permitted list) is superseded — there is no host-mediated closure-call capability, by design (`effect-concurrency.md` §12.1, user 2026-07-01). The concurrent-serve case is the scheduler-trampoline's (cranelisp owns the loop); the only residual (an un-invertible synchronous C dispatcher — a `qsort` comparator, a GUI `run()` loop) is handled one layer lower with the callback written in the platform's own language (Rust), exposing only a poll-shaped effect.
-
-Construction is single-sourced: the ONE builder `cranelisp_intrinsics::host_callbacks()` populates the two fields with intrinsics fn pointers, consumed by both host modes (`src/platform.rs` for JIT/REPL/`--run`; `crates/cranelisp-exe-bundle` for `--link`) — the S87 F2 allocator-wiring divergence is closed structurally (S117 audit §2.1).
-
-### Bounded-context invariants
-
-These hold across sprints — the contract `cranelisp-platform` makes with the rest of the workspace:
-
-1. **Platform fn pointers live in `SymbolTable.got()`, indexed by the slot on the callable `DefKind` variant** (read via `ModuleEntry::callable_got_slot()`; Decision 0026 + the S83 slot-onto-kind reshape — GOT is the single source of truth for callable addresses). Per spec §8.9.3, `(platform <name>)` registers a synthetic module at `symbol_tables["platform.<name>"]`; per-fn `ModuleEntry::Def` entries (with `kind: DefKind::PlatformEffect { scheduling_class }` distinguishing the platform origin) live in that synthetic module's `symbols`. The DLL handle is the lifecycle owner, retained on the platform module's own `SymbolTable.dll: Option<D>` field (per `crates/cranelisp-types/src/module.rs` `SymbolTable` rustdoc — `D: DllStore` generic). Drop semantics: dropping the platform module's SymbolTable drops the DLL. `scheduling_class` lives inside `DefKind::PlatformEffect { scheduling_class }` — a `DefKind` sibling variant promoted from the retired `PrimitiveKind` sub-discriminator (S69 Submission 36); ill-formed states ("a user fn with a scheduling class") unrepresentable. **As-built (platform-interface.md §5.1/§5.3, landed):** the GotTable **wraps the DLL's exported GOT (`__cranelisp_got_platform_<name>`) in place — no copy** (`GotTable::with_static_backing` over the dlsym'd base, `src/platform.rs`), and `got_slot = manifest array index` (the manifest's declared order IS the GOT slot order; no host-side slot allocation) — the slot is **mandatory** on `DefKind::PlatformEffect`, and dispatch is GOT-indirect in every mode incl. `--link`.
-
-2. **Stable C ABI at the DLL boundary.** `PlatformManifest`, `PlatformFn`, `HostCallbacks` are `#[repr(C)]`. Layout changes require an `ABI_VERSION` bump. `load_manifest` (int-side) validates the version on load and refuses mismatched DLLs with `PlatformError::AbiVersionMismatch`.
-
-3. **No closure-callback capability across the platform-effect boundary (S98 ruling, supersedes Decision 0031's callback-support forward commitment).** The boundary is **poll-in / wake-out only** — a cranelisp closure never crosses it; a continuation is the trampoline's own host-side suspended state, not a handle the platform holds and calls back (`effect-concurrency.md` §12.1). There is no `HostCallbacks::invoke_closure`, and `HostCallbacks` will not gain `rc_inc`/`rc_dec` for closure retention. The former forward commitment (pass `Fn a b` args as GOT-dispatched heap closures the platform invokes) is retired: platforms are thin, stateless C-ABI leaves; the synchronous-C-reentrancy residual is handled Rust-side inside the platform, never as a cranelisp-closure-across-the-C-ABI contract. (The heap-closure GOT-dispatch machinery — Decision 0011 layout, GOT retargeting on REPL redefinition — remains the *in-process* model for cranelisp-to-cranelisp closure calls, e.g. `io::call_continuation` inside `cranelisp-intrinsics`; it simply never becomes a DLL-boundary capability.)
-
-4. **Marshaling tags shared with intrinsics.** The `CLType` impls use the same `i64` layout the intrinsics helpers expect. `CLString.0` is an alloc-base pointer to an intrinsics-allocated `HeapString` (Decision 0012 — string layout owned by `cranelisp-intrinsics`; Decision 0043 — intrinsics is the post-runtime-split host); `CLOwned<CLString>` participates in RC via `HostCallbacks.alloc` and the intrinsics-side dec path. There is one `i64` representation per CLType, agreed between platform and intrinsics via this crate's documented layout.
-
-5. **`HostContext` initialised once per session.** `int` constructs `HostCallbacks` (with fn pointers into `cranelisp_intrinsics`) at `CompilerSession::new` and calls `HostContext::init` exactly once. Subsequent platform fn calls see the same callbacks for the session's lifetime. `HostContext` is `Send + Sync` by auto-derivation (`AtomicPtr<HostCallbacks>` is `Send + Sync`); `HostCallbacks` auto-projects `Send + Sync` (its fields are extern "C" function pointers; pointers passed as callback arguments are not stored fields); `OwnedPlatformFnDescriptor` auto-projects `!Send + !Sync` (raw `ptr: *const u8`); `PlatformFn` carries explicit `unsafe impl Send + Sync` because the IO trampoline reads descriptors from multiple threads when dispatching Effect nodes (safety justified by BC §5 invariant 6 — no DLL unloading mid-session).
-
-6. **No DLL unloading mid-session.** Once a platform DLL is loaded via `load_manifest`, it stays loaded until session shutdown. This is what makes the per-symbol GOT-slot pointer valid for the session — DLL pages are not unmapped while symbols reference them. The crate's bounded leaks (`declare_platform!` per-fn allocations; the `EffectOutcome.fault_cause` panic-message bytes, invariant 9) are bounded by this invariant.
-
-7. **Concurrency facts declared by the DLL, consumed by the host.** Platform authors declare each fn's concurrency statically in `declare_platform!` (a `scheduling:` `SchedulingClass` shorthand or a full `ConcurrencyDescriptor`). The loader lifts two facts onto `DefKind::PlatformEffect`: `scheduling_class` (the conflict-domain axis — token/cardinality semantics, Decision 0026) and `poll_shape` (the dispatch axis — `concurrency.blocking == 0`; keys the backend's poll-construction vs blocking emission arms, S94 R1). At runtime, permit scheduling flows through the trampoline-owned `HostCtx` vtable (§"The poll ABI"), never on values.
-
-8. **FQTypeName migration: zero-hit (Decision 0047).** Per Decision 0047 + §7 ("FQTypeName binding"), `cranelisp-platform` has zero public-surface changes and zero in-crate hits under the FQTypeName binding migration. The platform-DLL ABI uses S-expression type-signature strings (`PlatformFn.type_sig`) rather than resolved-stage type identifiers; resolution happens int-side downstream of `manifest_to_descriptors`. Migration disposition: no-op.
-
-9. **Fault-guarded platform-fn dispatch funnel (S81, FIXMEs 0327 + 0337 — LANDED; ABI v4 + v5).** A platform-fn fault surfaces as a located `PlatformError::DispatchError { fn_name }`, never a process abort. Three durable coordinates:
-
-   - **The fn-name travels WITH the Effect node** (the v4 node-widen): the `IO_TAG_EFFECT` node carries a fourth field — a backend-baked position-independent data-symbol pointer to the fn name (the trace `DisplayDescriptor` baker's data-symbol family, surviving `.o` caching), stamped by the backend's GOT-indirect `DefKind::PlatformEffect` call arm after the call returns its IO node. A thread-local "current fn" cannot work: the node is forced far from where it was produced (Bind/Par deferral, often another thread). An unstamped node (out-of-tree DLL building its own nodes) degrades to `fn_name: "<unknown>"`, never a crash. **S121: the stamp is tag-guarded** — the fn-name store lands only when the returned node's tag is `IO_TAG_EFFECT`; a `Pure` return takes the payload-glue adoption stamp instead, and an unrecognised tag writes nothing and degrades to `"<unknown>"` (`total-concreteness.md` §3.4 "the platform-return seam"; R19).
-   - **The panic catch is DLL-local** (the v5 force-return contract): a platform cdylib statically links its **own** Rust panic runtime, so a host-side `catch_unwind` sees a DLL-originated unwind as a foreign exception → abort (and `extern "C-unwind"` cannot bridge two distinct panic runtimes — rejected). The catch runs inside the DLL — `CLIO::effect[_on_resource]`'s thunk wrapper, monomorphised into every DLL — and the caught fault crosses the C-ABI **as a value**: `call_effect_thunk` returns `EffectOutcome { value, fault_cause, fault_len }` (`#[repr(C)]`, no `#[non_exhaustive]`; the fault-cause bytes are DLL-leaked, bounded by invariant 6). The host's copy of `call_effect_thunk` only forwards the struct — it performs no `catch_unwind` of its own.
-   - **Intrinsics captures, int composes.** The trampoline guard (`cranelisp_intrinsics::io_guard::force_effect_thunk_protected`) keeps the **`sigsetjmp` signal half host-side** (hardware traps from C code are process-global: SIGSEGV/SIGFPE/SIGILL/SIGBUS take the signal path; Rust-level panics, including null-deref panics, take the DLL-local catch), reads the `EffectOutcome`, and on fault sets the intrinsics-internal `DispatchFault { fn_name, cause }` slot; int composes `PlatformError::DispatchError` at its runtime-error surface (the `invoke_jit_protected` split — intrinsics stays diagnostics-free per §4b). Platform Effects force on the trampoline's own joining thread, so the fork-join own-thread-slot-reader property (§4b invariant 13) holds.
-
-   The full ruling narrative (the Option A/B analyses, the cross-cdylib panic-runtime evidence, the per-skill landing sequence) lives in git history and is summarized in the `ABI_VERSION` rustdoc v4/v5 entries; e2e: `tests/platform_errors.rs::platform_dispatch_error_carries_fn_name` (green).
+Open: marker-binding ergonomics for multi-ADT platforms (FIXME 0873 under
+`design/arch/fixmes/`).
 
 ---
 
 ## 6. Binary / int — `src/` + `crates/cranelisp-exe-bundle/`
 
-**Public candidate isolation — S122 closure of 0604/0740/0793/0818.** The
-current route census, three session-init dispositions and publication-before-
-mutation contract live in [prelude-table-write-isolation.md](../int/prelude-table-write-isolation.md)
-§§2.1, 2.4 and 4. QA's existing no-flip retirement ruling and the delivered
-census discharge the structural obligation. The retained
-[foreground regression sweep](../../tests/index_race_foreground_0604.rs) now
-states that scope and its evidence limit. The historical contaminated-probe
-signature in 0818 is an **unconfirmed explanatory lead**: neither the original
-firing environments' directory state nor a recovered writer was established.
-Quiet sweeps do not prove historical absence, and structural closure does not
-attribute the old firings to contamination. This limitation survives filing
-retirement; no experiment to reconstruct unavailable attribution is owed.
+**Bounded context.** The integration layer wires the other contexts into a
+deployable compiler and a working REPL. It hosts three cadences, coordinates
+their handoffs, owns all development tooling and is the only context that knows
+the concrete carrier of compiled code. `src/` and the exe-bundle are one surface
+for design, development and review. Interior design:
+[binary design](../int/int.md).
 
-
-**Bounded context.** The integration layer wires the other surfaces into a deployable artefact and into a working REPL. It hosts three internal cadences with distinct execution shapes — compilation, REPL, watcher — coordinates the typed handoffs between them, owns all development tooling (slash commands, observability ring buffers, introspection), and is the only crate that knows the concrete carrier of compiled code. The two crate paths (`src/` and `cranelisp-exe-bundle`) are one surface for triad purposes: a change touching both is one design/development/review cycle.
-
-**Session-construction error boundary (approved 2026-09-04).** The root library
-publishes `CompilerSession::new(settings: SessionSettings, project_root:
-PathBuf, entry_module_name: &str) -> Result<CompilerSession,
-CranelispError>` to its binary target. Binary/int owns bootstrap and the
-contextual projection of bootstrap lifecycle refusals into the existing
-`CranelispError`; `main.rs` propagates the result through its existing `run`
-error boundary. Startup inconsistency is a typed error rather than a bootstrap
-panic. This root-library-to-binary signature is internal to this bounded
-context: it introduces no workspace-crate consumer edge or public API change
-in types, frontend, typecheck, backend, primitives, intrinsics, platform,
-exe-bundle, or cache/schema surfaces.
-
-**Host-client affirmation for the IO/RC runtime (S97; FIXME 0486 partial action).** `/int` is a **host-client** of the language's backend-emitted IO/RC runtime library (`cranelisp-intrinsics`, §4b), **NOT its owner**. int's entire contact with the runtime is a thin seam: it constructs the reactor once through the single C-ABI entry `cranelisp_run_io`, drives `block_on_reactor` for `--run`/REPL IO forcing (`io-integration.md` I6/I7), passes a `SupervisorPolicy` config + the one-shot-vs-server mode knob, propagates the loader `ABI_VERSION` refusal, and reads the optional `/strand` dev sink. **int constructs no `Reactor`/`HostCtx`/waker/permit-pool and reaches into no reactor internals** (`consume_io_tree`, lifetime discipline, poll deferral) — those are runtime-library guts owned by §4b (`design/intrinsics/reactor.md`, whose §0 demarcates this seam). The compiler-internal scheduler under §"Known architectural constraints" (dependency service, signature/body pre-pass) is a **different** concurrency axis — genuinely int's — and must not be conflated with the language-level effect runtime. The only int-side *runtime* surface is the `Code`-naming externs in `src/` (e.g. `discover-tests`), which cannot live in the runtime crates (Principle 18 / Decision 0048). **(For the `(trace ...)` feature specifically — per the S76 user ruling 2026-06-04 — int hosts NO trace runtime code: the bodies live in `cranelisp-intrinsics` (§4b invariant 12), discovery + descriptor baking are backend codegen (§3), and int's only S76 trace work is deleting `src/trace.rs` + `build_traced_fns` + `repl_trace_format` + the trace half of `int_intrinsics()`. The unrelated `io_trace`/`scheduler_trace`/`got_trace` observability ring buffers STAY in int. See `design/arch/tracing.md`.)**
+**Host-client of the runtime.** The binary constructs nothing inside the effect
+runtime. It calls the single program driver and configures no reactor policy;
+the runtime lives in intrinsics because a linked program contains no `src/`.
+The compiler's own scheduler is a separate concurrency axis and is this
+context's. The only runtime-facing code here is the host-promised externs that
+must read live session state.
 
 ### 6.1 Internal cadences
 
-**Compilation cadence.** Workers consume work packets off internal queues. Each worker claims a packet, processes it, publishes results into compilation-cadence windows, and notifies the scheduler. Closed-loop within the compilation subsystem; no external clock.
-
-**REPL cadence.** Turn-based, synchronous to user input. One prompt → one parse → one submission to the compilation cadence → wait for result → display. Owns input handling, slash-command dispatch, prompt formatting, display, and the diagnostic surface (tracing, observability, introspection). Does not own compilation state — interacts with compilation only through handoffs.
-
-**Watcher cadence.** OS file-change notifications arrive on a callback thread; the watcher captures them. The cadence is open-loop — its timing is dictated by the operating system. Captured changes do not act directly on compilation; they cross to the REPL cadence at a poll point and from there to the compilation cadence as re-register requests.
+- **Compilation.** Workers claim work packets, publish results into
+  compilation-scoped state and notify the scheduler. Closed loop; no external
+  clock.
+- **REPL.** Turn-based: one prompt, one parse, one submission, one display. It
+  owns input, slash commands, formatting and the diagnostic surface, not
+  compilation state.
+- **Watcher.** Open loop: the operating system dictates its timing. Captured
+  changes cross to the REPL at a poll point and become re-register requests.
 
 ### 6.2 Inter-cadence handoffs
 
-Handoffs are how cadences communicate. The pattern matters; the int facade pins the typed objects. Three patterns suffice:
+- **REPL → compilation:** submit and wait on a terminal signal. A worker that
+  meets a missing dependency drops its stack-local cluster state, registers the
+  dependency, returns its thread to the pool and is requeued when the dependency
+  is ready; nothing is parked in shared maps.
+- **Compilation → REPL:** a displayable result or an error.
+- **Watcher → REPL → compilation:** file changes are polled at prompt boundaries
+  and never interleave with input.
 
-- **REPL → compilation**: the REPL submits work (an evaluation, a module load) and waits. Compilation signals when ready. The dependency-gap case realizes this same "submit and wait on a terminal signal" pattern *within* the compilation cadence: a worker that hits a missing dependency drops its in-progress (stack-local) cluster state, registers the dependency, and blocks on the scheduler's monotonic terminal-readiness signal, then retries its cluster from the top against now-committed live state — no in-progress state is parked in shared maps for another thread to resume. (Int-internal realization; see `design/int/int.md` §6.2 + `design/int/concurrency/dependency-protocol-target.mmd`.)
-- **Compilation → REPL**: each evaluation completes with either a displayable result or an error. The REPL formats and prints.
-- **Watcher → REPL → compilation**: file-change events do not flow directly into compilation. They are polled by the REPL at prompt boundaries (avoiding mid-input interleave) and become re-register requests.
-
-The runtime cadence (inside running programs) produces no handoffs to other cadences.
-
-**Session re-registration surface (ACT-0954).** The user approved removal of
-`cranelisp::session_v4::CompilerSession::re_register_module(&mut self,
-module: &ModuleFullPath) -> Result<bool, CranelispError>` at the S122 Phase-3
-checkpoint, 2026-09-09 ([approval](../../sprints/SPRINT.md)). The wrapper has no
-production caller and exposes background publication without a completion
-contract. Remove it; retain the internal scheduler re-registration operation
-and the synchronous watcher reload path. Do not introduce a publication clock
-or replacement public async protocol to preserve the unused wrapper.
-
-**Implementation pending:** `src/lib.rs` publicly exports `session_v4`, and the
-wrapper remains in source. Its removal is a breaking root-library API change
-with no effect on the seven tracked library baselines. The source-text facade
-presence assertion and the interior API documentation retire with it. The
-synchronous reload → subsequent-eval behavior remains the observable contract.
+The runtime cadence inside a running program produces no handoff.
 
 ### 6.3 Within-cadence access
 
-Each cadence accesses shared state only through typed handles owned by the cadence-relevant subsystem. There is no ambient session-state god-handle that any consumer can reach into; the access primitive is the window, and the windows are partitioned along cadence lines so that REPL state, compilation state, and watcher state cannot cross-contaminate. The int facade enumerates the windows; this document fixes the partitioning principle.
+Each cadence reaches shared state only through handles scoped to it. There is
+no ambient session handle that any consumer may reach into; REPL, compilation
+and watcher state cannot cross-contaminate.
 
 ### In-scope
 
-- The three cadences and their handoffs
-- The compiler-shared state (symbol tables, code-pointer carriers, retention roots) decomposed into cadence-scoped windows
-- Scheduler and worker subsystem (one ownership boundary, both priority and background work)
-- REPL session, slash-command dispatch, prompt formatting, display
-- Development tooling: observability (`io_trace` / `scheduler_trace` / `got_trace` ring buffers), introspection. **Introspection is REPL-mode-only (D1, S80; `design/arch/d1-introspection-repl-only.md`).** `SharedState.introspection` backs the REPL slash-commands (`/sig`/`/doc`/`/source`/`/sexp`/`/clif`/`/disasm`) ONLY and is populated ONLY when the session's run mode is `Repl` — `cluster::process_cluster` gates the `introspection:` field on `RunMode::Repl`, passing `None` under `--run`/`--link`. **Any data the compile pipeline reads lives on the symbol table, never on introspection** ("it's in the name"): the one prior violation — the on-demand macro-clause recompile reading `introspection[fq].sexp` — is fixed by carrying the macro source form on `DefKind::Macro.macro_sexp` (reversing Decision 41 for that one field; §7 types). **D1b (S80) completes this at the storage level: `SharedState.introspection` is `Option<DashMap>`, `None` outside REPL — the store does not merely go unpopulated, it does not exist in batch.** The `Some`/`None` discriminator is the same `run_mode.populates_introspection()` carrier (no second discriminator). Codegen byproducts split two ways: free byproducts codegen knows anyway (`code_size`) are **returned to the worker and conditionally retained** (`Some` → write, `None` → drop); introspection-only products (CLIF-IR text, disasm strings) are **not generated at all in batch** (disasm already on-demand via `produce_disasm`; the CLIF-not-generated refinement at `compile_to_module` is a backend follow-up — see D1b §B4, the int-scoped increment drops it unread). The **run-mode signal** the platform layout-hash gate reads (REPL warns-and-loads; `--run`/`--link` refuse) is the explicit `RunMode` enum on `SharedState`, set from `main.rs`'s `Action` — NOT `introspection.is_some()` (the conflation D1 retires). `RunMode` is int-internal (not `cranelisp-types`); it is a separate axis from backend's `CompileMode` codegen strategy. **NOT `(trace ...)` runtime** — the S76 user ruling (2026-06-04) retracted D40's relocation of the `(trace ...)` bodies to int: the 12 `cranelisp_trace_*` bodies, `TRACE_STACK`/`TRACE_THREAD_ID`, `consume_trace_call`, the value-formatter, the discovery (`build_traced_fns`), and the trace half of `int_intrinsics()` all leave int (the bodies → intrinsics §4b invariant 12; discovery + descriptor baking → backend §3). int's trace work in S76 is **deletion only**. `io_trace`/`scheduler_trace`/`got_trace` (the IO-observation + scheduler + GOT-population ring buffers) STAY in int — they are unrelated to `(trace ...)`. See `design/arch/tracing.md` §4.3 for the deletion inventory.
-- **Ordered definition-result presentation (S117 W3c, amended S121).** A REPL
-  statement that publishes several definitions reports every one in emitted
-  order. The eval-owned, stack-local `TurnDefinitions` receipt records exact
-  canonical identities and whether each macro-checkpoint or ordinary-HM
-  publication boundary completed; it is not shared compilation state and does
-  not scan the symbol table. `EvalResult::Definitions` carries the published
-  identities to the formatter, which renders each binding through its ordinary
-  `ModuleEntry` classification. A zero-argument macro therefore remains
-  `defmacro` in its echo, `/sig`, and `/info`; only invocation exposes the type
-  of its expansion result. There is no selected subject,
-  `presentation_scheme`, `PreparedPresentation`, dry macro typecheck, or
-  parallel presentation store. Compiler-generated realization rows do not
-  enter the receipt.
-- **Cache-hit introspection rehydration — lazy on-demand re-read; NOT eager, NOT cached (S81 / FIXME 0220 ruling).** On a cache-hit module load in the REPL, the int `Introspection` records (`source`/`sexp`/`expanded`/`clif_ir`/`code_size`; disasm is not a persisted field — it is on-demand via `produce_disasm`, S87 Wave 0 / FIXME 0418) are **NOT** populated at restore (the cache stores binary code + the serde'd `SymbolTable`, never the REPL-only `Introspection` map — D1/D1b: introspection does not exist outside REPL, and serializing it would mix concerns + bloat the cache + raise invalidation questions). The disposition, grounded in D1/D1b:
-  - **Compile-necessary data is already on the symbol table — no rehydration owed for it.** The one compile-path read that 0220 flagged as "more load-bearing" (on-demand macro-clause recompile + `.cl` regen dropping cached macros) is **resolved by D1**: macro source rides `DefKind::Macro.macro_sexp` (serialized, cache-survives), read by `worker::resolve_macro_sexp_from` and used by `save::generate_fns_and_macros` as the macro fallback when introspection is absent. Every other Def kind carries its compile input as `ast: Option<DefnVariant>` on the symbol table (D1 §1). So nothing the *compiler* needs lives only in introspection on cache-hit.
-  - **REPL-display data (`/source`/`/sexp`/`/expand`/`/clif`/`/disasm`) is rehydrated LAZILY ON DEMAND** when an introspection command (or `.cl` regeneration) first asks for a cache-loaded symbol whose record is absent — by re-reading + re-parsing the backing `.cl` file (the cache key, always present) for the symbol's source/sexp, and (for `/clif`/`/disasm`) regenerating from the now-resident GOT-slot code via the existing `produce_disasm` on-demand path. Lazy, not eager-at-restore (the common read-only REPL session pays nothing) and not cached (content fresh at the moment of need; re-parse is cheap — frontend is the fast crate — vs. recompiling). This is option (a) of 0220's open question, chosen over (b) eager-at-restore and over the rejected serialize-into-cache non-fix.
-  - **The residual concrete gap is non-macro `.cl` regeneration.** `save::generate_fns_and_macros` regenerates a `UserFn`'s `.cl` text from `introspection_sexp` only (`.or(macro_table_sexp)` covers macros, never UserFns) — so a cache-restored regular function with no introspection record is silently dropped from the regenerated `.cl`. The fix is the same lazy re-read (re-parse the backing file for the symbol's region) or reconstruction from the entry's `ast`; both are REPL-only and touch neither the cache nor D1.
-  - **Int-side implementation shape.** One int-crate private path, e.g. `SharedState::rehydrate_introspection(fq: &FQSymbol)` (option from 0220 §"WHO"): map FQSymbol → backing-file path (the watcher/module loader already knows it), re-parse the file (or the symbol's region), populate the REPL `Introspection` DashMap entry, return it. No new cross-crate type or trait. `cranelisp-frontend` owns the parse; the file-IO + populate is int's. **For the int wave (0220 stays open).**
-- Module loading orchestration; cache writer; save/regenerate
-- File watcher
-- DLL session lifecycle (handles retained for the session)
-- The integration-layer concrete code carrier (the only crate that names it)
-- **Macro execution + source-ordered checkpoint orchestration** (S76 W-Macro decision, 2026-09-03 checkpoint amendment) — int implements `cranelisp_types::MacroExpander` over its invocation core (`src/expander.rs`'s signal-protected JIT call + `src/marshal.rs`'s `Sexp`↔heap marshalling + span rewrite), and owns the Pass-1 source-order expand loop in `process_cluster`. Recognition uses `cranelisp_types::resolve_macro_head` over committed symbol tables. When the loop encounters a direct or expansion-produced `defmacro`, int builds and typechecks the complete parent-and-clauses unit, closes and codegenerates its full expansion-time dependency/generated-realization closure, and publishes the macro plus its defining-module realization rows once through its existing prepared commit and `SymbolTable::publish_compiled_staged`. A redefinition whose active clause count shrinks derives the exact surplus keys from typed `(group, clause_index)` identities and the canonical key constructor, verifies that each live target is a private slotted `MacroClause` of that parent, and supplies explicit absent-key `ChangeAbi` decisions in the same publication; it never scans a name prefix, and omission alone removes nothing. Only then can subsequent expansion invoke the macro. A failed checkpoint exposes none of the new macro and preserves an earlier committed definition; a successful checkpoint survives any later expansion, non-macro typecheck, codegen, or §18 dependent-cure failure. Dependency modules typecheck, compile, and publish independently rather than joining a cross-module transaction. The fully expanded non-macro forms then enter one atomic `check_forms` call. There is no unpublished-candidate invocation, temporary/reserved-GOT candidate stack, cluster-wide publication set, or `MacroObservationFence`; readers snapshot the committed macro parent and chosen clause pointer/code under the existing module-table read guard, and the module write cadence excludes publication while that snapshot is taken. This composition needs no new public item or baseline line, cache schema, backend contract, or platform interface; it uses the approved semantic extension of the existing `ChangeAbi` decision. **Same-module non-macro definitions remain unavailable at expansion** (`macro-availability-model.md` §0). The free-standing `expand_sexp_recursive` walk + `MacroResolver` trait delete; only the per-invocation core survives behind the trait impl. The dead `block_for_macro_codegen` path is deleted. **Quote shield (S111, FIXME 0613 — paired with §1 invariant 10; shield lands ≤ the frontend fold):** the Pass-1 expansion walk is quote-blind BY SHIELD, not by accident — `src/expander.rs`'s recursive walk holds `quote` subtrees fully verbatim and, under `quasiquote` (nesting depth tracked, so nested quasiquotes stay shielded), descends ONLY into `unquote`/`unquote-splicing` bodies. Pass-1 runs before the frontend's `build_form` desugar point; desugar-before-expansion remains rejected because it would change the macro-argument representation.
-- **Checkpoint-effect custody is stack-only (approved 2026-09-04).** A successful macro checkpoint may precede a later `Done`, dependency `Gap`, or error outcome. Binary/int carries only the already-committed redefinition facts in one private, move-only `PublicationReceipt`, held on the receiving orchestration stack and settled exactly once on every outcome; pool-driven replacement settles it locally. The receipt contains no compiler world, prepared candidate, dependency request, retry cursor, or source continuation. It never enters a scheduler mailbox or shared-state map and is not restart state; dependency retry retains source continuation only and never replays the committed checkpoint. This introduces no cross-crate type or API.
-- **The macro-clause ABI declares its parameter ownership — pinned, never inferred (S119 Phase-3 gate ruling, FIXME 0922).** `MacroClauseAbi::SexpListToSexpI64V1` witnesses ownership as well as calling convention: *the argument word is an owned `(SList Sexp)` reference consumed by the callee; the result word is an owned `Sexp` reference transferred to the caller* — the Decision-24 consuming convention, exactly. This is NOT satisfied by construction today: clause defns run the full `check_forms` path and the ownership fixpoint publishes summaries onto callable entries (`crates/cranelisp-typecheck/src/ownership/publish.rs:38`), so a fresh-result clause can legally classify `Mode::Borrowed` on its parameter and backend elides the release (`fn_compiler.rs:784-799`) — two clauses of one macro could then demand opposite host protocols (transfer-to-borrower leaks; retain-from-consumer double-frees). **The pin lives at int's clause-preparation seam**: after `check_forms` returns and before the clause entry is published for codegen, int **clears the synthesized clause entry's `mode_summary`** — summary-absent ⇒ the all-Owned Decision-24 compilation, which IS the declared convention. Widening toward Owned is always sound (`ownership-inference.md` §2.1); the cost is a few redundant RC ops inside clause bodies, compile-time only. The pin is structural under Principle 19 — int knows clause-ness by construction (it synthesized the defn in `src/process_form/macro_clause.rs`), so no name-prefix privileging enters typecheck or backend, and no types/schema/public-API delta exists. **The standing fence lives in int** (the `macro-turn-ownership.md` §8 D4 obligation): a unit row over the prepared turn asserting the published clause entry carries no mode summary — it fails if a future inference widening reattaches one. The §8 D0 CLIF measurement remains the binding emission-side gate before the transfer protocol's Rules 1–3 land.
-- **Expansion-side name qualification operates on REFERENCES only; a binder is never qualified (S114 `/arch` ruling, FIXME 0670).** int's macro-expansion name-resolution pass qualifies symbols whose bare name resolves to an importable (`name` → `primitives/name`) — that rewrite is legal ONLY for reference positions. Binder positions — defn/fn params, `let` names, `match` var-patterns (the spec §5 value-level binder slots) — introduce a name rather than resolve one and MUST be skipped by the qualification walk; a qualified binder in int's output is the 0670 defect (it masked as a consistently-mis-qualified-but-running program pre-S113, and it blocks the frontend build-layer §5 qualified-binder reject from landing without rejecting valid programs). The binder-slot enumeration in the walk must be complete per the 0660 discipline (every binder-introducing form contributes a skip, or names why not). Enforcement of the user-facing §5 reject stays at the frontend build seams (`build_annotated_params`/`build_let_bindings`/`build_pattern`), which see the now-clean expansion output; a reader-layer reject is rejected as the mechanism (FIXME 0683 corrects the spec's "structural at the reader" wording). int orchestrates the *sequence* of top-level forms; the `:Type`-binds-following-form *construction* (the `Expr::Annotate` node) is owned wholly by the frontend (§1 invariant 9; Principle 7 single source of truth, Principle 1 decoupling). The boundary is **not** a single call-site swap: wherever int splits the sexp stream per-form — which it must do for its own internal orchestration reasons — it must **group a leading `:Type` cluster (annotation prefix + the form it binds) before delegating**, then hand the grouped span to the frontend, which still owns the actual pairing + validation. Three sites:
-   - **`src/worker.rs::build_program_compat`** hands the *whole* flattened slice to the frontend's form-sequence builder `cranelisp_frontend::build_forms` (§1 "S81 — top-level `:Type` annotation-pairing builder"), which pairs internally — no int-side grouping needed there (the frontend sees the full sequence).
-   - **`src/process_form.rs` (the Pass-2 macro-expansion per-form loop, `pass2_check_bodies_with_expansion`)** and **`src/session_v4.rs::eval` (the REPL sequence loop)** split per-sexp for genuinely int-internal reasons (macro expansion is inherently per-form; the REPL captures per-cluster `/source` text), so they cannot hand the frontend a whole slice. Each groups via the **`pub(crate)` recognition-only helper `worker::leading_annotation_len`** (`src/worker.rs:103`) — which counts the leading-`:Type` prefix span (1 sexp for `:Int`/`:a`; 2 for a bare `:` + compound type sexp) and then hands `[prefix.., bound-form]` to the frontend as one unit. int decides *which span is one form*; the frontend decides *what that form lowers to*.
-
-   **Recognition-helper placement ruling (FIXME 0333).** `leading_annotation_len` **stays in int** as a `pub(crate)` recognition-for-grouping helper; it is NOT promoted to a frontend-exposed predicate. The Principle-7 tension (recognition in int, construction in frontend) is resolved by observing that the *authoritative* pairing+validation has exactly one home — the frontend's `try_consume_annotation` / `build_forms`, the single source of truth for what a `:Type` token is and the sole site that builds `Expr::Annotate` and raises the trailing-annotation parse error. `leading_annotation_len` is documented as *mirroring* that shape for recognition-only and defers all validation/construction to `build_forms`; it cannot diverge in a load-bearing way (a mis-grouping merely hands the frontend a different span, which the frontend still validates). Promoting it would add a public frontend API line whose only consumers are two int-internal split loops — surface for no second consumer (Principle 6). The frontend already exposes the right primitive (`build_forms` over a slice); the residual concern is purely int-internal span-selection, which is int's. int re-implements no `try_consume_annotation` / `build_one_expr_at` logic. No new int-side boundary type; no `cranelisp-types` change. **Landed + green (1252/0/1).**
-- **Test discovery — the `discover-tests` host-promised extern (test-discovery design, 2026-06-06 — pending implementation).** int publishes `discover-tests` as a `primitives`-module `Def { kind: DefKind::PrimitiveExtern }` (§7) at its synthetic-module mount (`src/bootstrap.rs`) with an ordinary scheme, and promises the body at session init via backend's `Jit::define_symbol("discover-tests", discover_tests_extern as *const u8)` (§3 invariant 8). The body (`discover_tests_extern`) reads int's **live typed session state** (per-module `SymbolTable` + GOT, via int's `TestRunnerState`), scans for eligible `test-*` functions (the `test-` name prefix **AND** the exact `(Fn [] (Option String))` scheme — q-eligibility), and returns a heap `(Vec (Pair String (Fn [] (Option String))))` of FQ-name + late-bound GOT-slot-indirect callable-wrapper pairs (the freshness property). The extern itself takes the canonical `(Vec String)` of module paths; the no-arg (current module) and single-`String` shapes are **stdlib-macro sugar** normalising to it (q-overload — one extern, not `DefKind::Overloaded`). This body is irreducibly an int concern — `cranelisp-intrinsics` cannot name `Code` (Principle 18 / Decision 0048) — which is why it is host-promised rather than a bundled primitive or intrinsic. Canonical: `design/arch/test-discovery.md` §5/§6 "Int — bootstrap publication + the live-scan discovery extern".
-- **Bootstrap seeds for `Pair` and `Result` (test-discovery design).** int's synthetic-module mount seeds two ADTs into the `primitives` module, each modelled on the existing `register_option_type`: `(Pair a b)` (one 2-field data ctor — the `discover-tests` pair return) and `(Result a b)` (`Ok`/`Err` data ctors — the `catch-runtime-error` return). `Option` is already seeded. These are int's bootstrap responsibility (the seeds ride `mount_synthetic_modules`); the combinator + ferry that consume `Result` are intrinsics' (§4b invariant 13).
-- **`int_intrinsics()` test-half removal (test-discovery design).** The two int-owned test intrinsics (`discover-tests`/`run-test`) that were parked out of the intrinsics catalog (§4b invariant 11) are superseded: `discover-tests` becomes the host-promised extern above, `run-test` is subsumed (running a test = invoking a discovered wrapper, bracketed by `catch-runtime-error`). The `int_intrinsics()` remnant that hosted them is deleted.
-- **Platform interface — the load path + `/platform-schema` command (TARGET — user-ratified 2026-06-07; canonical: `design/arch/platform-interface.md`).** int's platform-load rework (`load_platform_dll` + `register_platform_in_tc`): dlopen → read manifest → resolve+compile the associated `.cl` type module(s) through **ordinary** module resolution (project tree + `CRANELISP_LIB`, NOT `CRANELISP_PLATFORM_PATH`) before the sigs are parsed → **layout-hash check** (regenerate via the backend generator, BC §3, and compare to `dlsym("__cranelisp_layout_hash_<name>")`: REPL warns-and-loads, `--run` hard-refuses) → **dlsym the GOT and build `GotTable::with_static_backing` wrapping it in place (no copy)** → build the SymbolTable in host memory from the manifest (`got_slot = manifest index`, FQ sig → scheme, `DefKind::PlatformEffect`, metadata). **`inject_primitives_import_for_platform` is DELETED** (sigs are FQ — zero injected imports). **The `jit_name`/`JITBuilder::symbol` platform-registration path is DELETED** (GOT-indirect dispatch replaces it; the old `(jit_name, ptr)` return vec goes away). int also dispatches the new **`/platform-schema <name>` REPL command** (introspection-family sibling) — a thin caller of the backend schema generator — and drives the `--link` startup-object hash-bake step (exe-bundle). The load-time/`--run`/`--link` refusals surface as a new `PlatformError` variant (Decision 0042; `cranelisp-types`). Implementation pending; tracked by the platform-interface int FIXME.
-- CLI argument parsing
-- Exe-bundle: link-target re-exports and the standalone-binary startup stub
+- The cadences, scheduler and worker pool; module loading; the cache writer;
+  save and source regeneration; the file watcher; CLI parsing.
+- The concrete code carrier, the retention pool for displaced code and DLL
+  retention.
+- **Staging and publication policy.** The binary owns the staging table handed
+  to typecheck, the gap-retry loop, and the choice of publication decisions the
+  types table executes ([symbol-table lifecycle](symbol-table-lifecycle.md)).
+  Candidate work is isolated until publication
+  ([design](../int/prelude-table-write-isolation.md)).
+- **Macro execution and source-ordered checkpoints.** The binary implements
+  `MacroExpander` and owns the expansion loop that runs before `check_forms`.
+  Each direct or expansion-produced `defmacro` is prepared, compiled and
+  published as one module-local checkpoint before later forms expand. A failed
+  checkpoint exposes nothing; a successful one survives later failures.
+  Same-module non-macro definitions are unavailable at expansion. The walk
+  shields quoted subtrees, qualifies references and never binders, and only
+  selects annotation spans for the frontend (§1 invariant 9). A committed
+  checkpoint's redefinition effects are carried on the orchestrating stack and
+  settled exactly once; they never enter a scheduler mailbox or shared map and
+  are not retry state.
+  Contracts: [macro availability](macro-availability-model.md),
+  [macro expansion ownership](macro-expansion-ownership.md),
+  [quote shield](../int/quote-shield.md).
+- **Macro clause ownership is pinned, not inferred.** A clause receives an owned
+  argument list and returns an owned result, so the binary clears any inferred
+  ownership summary from a synthesised clause before publication; two clauses
+  of one macro could otherwise demand opposite host protocols
+  ([design](../int/macro-turn-ownership.md)).
+- **Development tooling.** Observability ring buffers and introspection.
+  Introspection is REPL-only: its store does not exist in batch modes, and
+  anything the compile pipeline reads lives on the symbol table
+  ([introspection ownership](d1-introspection-repl-only.md)). On a cache hit,
+  display records are rehydrated lazily from the backing source file and are
+  never cached. The explicit run mode, not the presence of introspection, is
+  what mode-conditional behaviour reads.
+- **Ordered definition results.** A REPL turn that publishes several definitions
+  reports each in emitted order from a stack-local receipt of exact identities,
+  without scanning the table. Each binding renders through its ordinary
+  declaration classification, so a macro stays a macro in its echo.
+- **Synthetic-module bootstrap**: mounting the primitives table, seeding the
+  `Option`, `Pair` and `Result` types, and publishing the host-promised
+  `discover-tests` extern whose body reads live session state
+  ([test discovery](test-discovery.md)).
+- **The platform load path** and the `/platform-schema` command
+  ([platform interface](platform-interface.md)).
+- **Exe-bundle:** force-linking the runtime crates and the startup stub.
 
 ### Out of scope
 
-- Source parsing (frontend)
-- Type inference (typecheck)
-- Code emission (backend)
-- Runtime helpers (intrinsics — §4b) and user-callable primitives (primitives — §4a)
-- Platform ABI contract (platform)
+Parsing (frontend); inference (typecheck); emission (backend); runtime helpers
+and primitives (§4b, §4a); the platform ABI (§5).
 
 ### What crosses the boundary
 
-- **Inward**: the public surfaces of all five other crates.
-- **Outward**: nothing for other crates — the integration layer is the application root. The exe-bundle exposes a startup stub used only by the system linker.
-- **Window types**: cadence-scoped. Not exposed to other crates.
+- **In:** the public surface of every other context.
+- **Out:** nothing to another crate — this is the application root. The
+  root library's session surface serves its own binary target and tests; it has
+  no generated baseline, but a public change still takes contract review and the
+  applicable user approval. The exe-bundle exposes a startup stub to the system
+  linker only.
+- **Windows:** cadence-scoped and never exposed.
 
 ### Known architectural constraints
 
-- **Mutual-import deadlock + the H6/H7 import/typecheck race** (resolved S93 — FIXMEs 0426 + 0425 item 1 resolved-by-deletion; the resolution is recorded in this bullet + `design/int/signature-body-prepass.md` + the passing gate tests `scheduler::tests::{signature_barrier_closes_publish_read_window, await_signature_barrier_blocks_until_last_registration, atomic_block_never_strands_on_terminal_member}` + `spec_08_modules::mutual_import_pair_diagnoses_cycle_not_hang`): two coupled defects in the *compiler-internal* scheduling axis (`design/int/concurrency-architecture.md`; distinct from the language-level effect-concurrency track). Two modules that import from each other deadlock the form-by-form scheduler (D0030); separately, the per-symbol publish/readiness/block/resume coordination has a race window that fires `'X' not found in module 'Y'` under contention (~5–10%), worsening as the effect-concurrency track adds CPU-parallel load. **Structural resolution — the signature/body pre-pass (S93 reactor gate).** Both are resolved by making the publish/readiness/block/resume invariant **structural, not convention**: register **all** module signatures before **any** body typechecks (a signature pre-pass barrier), so a body never observes a half-published sibling. **Mutual imports are a compile-time cycle-error (user ruling, S93 Phase-3 review — resolves FIXME 0448 the COARSE reading; the FINE reading is REJECTED, not deferred).** Phase A drives each closure module's signature registration in **topological** order; a cyclic (mutual) import has no topological order, so `dependency_closure` returns a `CycleError` and the existing cycle detection fires. The pre-pass thus converts the D0030 **deadlock (a hang)** into a **deterministic cycle-error at the import site** — it does **NOT** compile mutually-importing modules, by design ruling. There will be no mutual-import compilation: the fine reading (Pass-1-only signature registration of both cycle directions, needing a cross-crate `cranelisp-typecheck` entry) is rejected. This is **internal to the `src/` int surface — no cross-crate interface impact**; it is owned by `/design`(int) + `/dev`(int). `/arch`'s only interaction is keeping `sequences/concurrency-dependency-service.mmd` reconciled to the as-built pre-pass (done S93 — the diagram now shows the two-phase barrier, retiring the per-symbol wait/notify race window). The prior tactical `eval_in_flight` convention-flag is **rejected as the gate** (Principle 8 — no interim structure). The earlier "test-scaffolding workaround for the common case" is the stopgap this pre-pass retires.
-
-- **Signature-barrier worker-pool model — free-back-to-pool requeue, NOT thread-park (S93 reactor-gate continuation; resolves FIXME 0450).** Completing the *live* body-barrier (`design/int/signature-body-prepass.md` §7 steps 4–5 — gating live Phase-2 bodies behind `await_signature_barrier` + retiring `eval_owned` under Invariant SW; the GATE substrate of steps 1–3 + the deterministic P_publish/P_read pin is landed) raised a worker-pool decision that gates the reactor: **parking a worker thread on `await_signature_barrier` would re-introduce the starvation/deadlock axis the S78 free-back-to-pool model deleted** — a worker parked on a dependency that itself needs a worker can deadlock a bounded pool, and the production pool size is **not** guaranteed `>` closure depth (the contention guard's 6 threads are not a floor; single-worker configs exist). **Ruling: the barrier is realized as the S78 requeue gate, NOT a thread-park (FIXME 0450 option B; option A — a pool-size-≥-closure-depth invariant or an elastic/park-with-yield worker — is rejected).** A pool worker that reaches a module whose static-import closure is not yet wholly `signatures_ready` registers the unregistered closure members into the Phase-A queue (the existing register-edge), **frees its thread back to the pool**, and requeues its body work to be re-claimed when the barrier opens — exactly the `drive_gap_to_readiness` "register-edge + return-to-pool + requeue, never block internally" discipline S78 established (`design/int/int.md` §6.2). `try_unblock_locked` gates the requeue on the **closure-barrier predicate** (every module in the closure has `signatures_ready`) in place of the per-dep `blocked_on` flag; the scheduler opens the barrier — sweeps the requeue via the existing `notify`/`completion` condvar — when the last closure module reaches `signatures_ready`. Pool workers therefore **never block their thread** on a signature dependency, so a bounded pool of size ≥ 1 cannot deadlock by all-workers-parked: there are no parked workers. The eval thread (the REPL main thread — *not* a pool thread) genuinely waits, but it consumes no pool slot, so its wait never reduces pool capacity. **`eval_owned` retires via the exclusive-claim rule (Invariant SW), not a flag:** the eval thread rests the entry module in the terminal `TypecheckDone` pool state (the **as-built**; B1-equivalent to the originally-designed exclusive `TypecheckWorking` claim — neither state sits in a typecheck queue, so neither is pool-reclaimable) and **never releases it to the pool while driving** — on a dependency gap it waits on the *dependency's* terminal readiness while the entry stays in `TypecheckDone` (it does NOT move the entry to `TypecheckBlocked`), so the entry is `claimable XOR owned → owned` and no pool worker can ever re-claim it (closing the B1 dual-orchestration defect by construction). The single-owner property `eval_owned` asserted by convention thus falls out of the representation; the `eval_owned` field and its `try_unblock_locked` early-return branch **delete**. **Deadlock-freedom argument:** every wait is on the **acyclic** static-import closure — a cycle is rejected up front by `dependency_closure → CycleError` (the landed gate) — so for an acyclic closure the topologically-least unregistered module always has a free pool worker available (no worker is ever blocked holding a slot); Phase-A registration always makes progress, the barrier always opens, and the eval thread waits only on a strictly-lower dependency a pool worker advances. B preserves S78's deadlock-freedom **by construction** where A would add unguaranteed/elastic-pool machinery (Principle 6 budget, Principle 8 interim risk). **Machinery-LOC floor (Principle 7 / Principle 8 / Principle 18 — 0452 ruling, S93 Wave-2c):** B **reuses** the S78 requeue/free-back-to-pool kernel and only swaps the gate predicate; it **retires** the per-symbol `block_for_typecheck`/`notify_symbol_typechecked` signature path AND the `eval_owned` flag + branch. The **load-bearing invariant** — *one* readiness protocol, no second live wait/notify subsystem — **holds**, and that is the claim worth making. The earlier *net-subtractive machinery-LOC projection* (`signature-body-prepass.md` §5 / §7 step 2) is **retired as wrong, not a defect**: the requeue kernel is **reused** (it also drives dep-file discovery + the submodule super-import drive order — not deletable), and the Invariant-SW structural single-owner claim (`register_dep_edge_for_cycle_check` + routing) inherently costs more LOC than the deleted `eval_owned` convention flag — the Principle-18 structure-over-convention trade. **Net-additive (~+75) is the correct floor** for this shape, a sound trade for closing the B1/H6/H7 race by construction; a genuinely net-subtractive variant would require retiring the per-dep Phase-0 signature drive, which the submodule super-import ordering blocks (a fresh design pass, out of Wave-2c scope — option B of 0452, not taken). **One genuine subtraction IS mandated and taken (S93 Wave-2c, option (i)):** the `signatures_ready` `ModuleState` field + `register_module_signatures` + the `SignatureBarrierRegister` trace tag are **live-dead** — `signatures_ready` is set ONLY by `notify_typecheck_done` (coincident with `pool → TypecheckDone`), `signatures_ready_locked` already treats `TypecheckDone|Complete` as ready, and `register_module_signatures` has NO live caller (unit tests only). The bit carries no live information beyond pool-terminal state. **`/dev` removes all three; the barrier predicate reads pool-terminal state (`TypecheckDone|Complete`) directly.** Correctness is preserved because `notify_typecheck_done` runs post-`finalize_cluster`, so `pool → TypecheckDone` **happens-after** signature publication — the terminal pool transition already *is* the publication edge (recovers ~30–40 lines, offsetting the +75 toward net-neutral). The keep-and-wire alternative (route `register_module_signatures` onto the live path for an explicit publication edge) is **rejected**: `pool → TypecheckDone` is already that edge, so an explicit register call would be a second mirror of one fact (Principle 7), the opposite of the subtraction. `/dev` Wave-2b lands the barrier-drive and retires the per-symbol drive + `eval_owned` in the **same** change-set (no half-migrated interim — Principle 8). **Seams:** `src/worker.rs::handle_typecheck_work_shared` (Phase-A/B split + barrier-gated body claim), `src/process_form.rs` + `src/process_form/dependency.rs::drive_module_dep` (closure-walk Phase-A driver — register-edge + return, never park), `src/eval.rs::process_single_form` (eval thread joins the barrier holding the exclusive entry claim), `src/scheduler.rs` (`await_signature_barrier` realized as the requeue gate; `try_unblock_locked` gates on the closure-barrier predicate; `eval_owned` field + branch deleted). Owned by `/design`(int) + `/dev`(int); `/arch`'s artefact reconciliation: `sequences/concurrency-dependency-service.mmd`'s barrier Note now reads requeue-gate (not literal thread-park) for pool workers. The `/design`-owned `signature-body-prepass.md` §7 steps 4–5 + §3.1 `await_signature_barrier` phrasing ("park the caller … wait inside the scheduler") is reconciled to this requeue-gate model under FIXME 0451.
-
-- **Language-level effect concurrency places no policy in int.** The reactor, the token-capacity pool, the admission budget, the supervisor and the strand event sink are constructed inside `cranelisp-intrinsics` (`reactor::block_on_reactor`, reached from `cranelisp_run_io` / `cranelisp_run_program`). They live in the runtime crate because a `--link`ed program contains no `src/` at run time, so a reactor hosted in the binary could not drive a linked program's effects. The binary configures nothing: the drive mode, backstop and degree throttle are runtime environment knobs read by intrinsics. The substrate is `mio` + `futures`, not tokio, because the `HostCtx` C-ABI is mio-shaped ([`effect-concurrency.md`](effect-concurrency.md) Appendix B). A developer-facing strand inspector (`/strand`) would be int's; it is unscheduled.
-
-- **ABI v9 trampoline — the host implements the `ctx` vtable (acquire/retire) + tramp-owned release; the §4.1 single-step E2 hardening (S97, supersedes FIXME 0482; + 0478).** Under the ratified `ctx`-vtable handle model (`platform-interface.md` §6.8.0b; `effect-concurrency.md` §4.1.1 — superseding the descriptor cut), the trampoline (the reactor driver in `cranelisp-intrinsics`, int-owned policy) does **not** split the resource-leaf path by role, and does **not** stamp or read any value header (there is none). Instead the host **implements the `ctx` vtable**: `acquire(token, capacity, waker)` against the §8.1 semaphore-per-token permit map (returning `Acquired`/`Parked`, enqueuing the waker on the permit-wait queue when parked, idempotent per in-flight effect keyed by waker identity), and `retire(token)` (drop the token's pool, wake permit-waiters). **Release is trampoline-owned**: when an effect completes (`Ready`) or is cancelled (the future drops), the host releases the permits that effect holds — without re-entering the poll-fn. The poll node is uniform (backend §3); the platform poll-fn computes the token from its handle and calls the vtable. **FIXME 0478 co-lands but is decoupled:** the single-step launch arm (`src/bind_chain_analysis.rs`) admits a discarded `ResourceSerial` step without the E2 value-locality check the sub-tree arm runs (`effect-concurrency.md` §4.1.1) — a **compile-time inference soundness** gap sound under any representation, so it is a co-located /int hardening (run E2 in the single-step arm + pin the `discarded same-token middle step + same-token continuation` unit), **not gated on the model cut**. Lands in the v9 cutover. The ABI types (`HostCtx` acquire/retire, `Acquire`, `ConcurrencyDescriptor.role`) are §5/§7; the host's permit-map + release accounting are int-internal (no `cranelisp-types` boundary impact).
-
-- **Run/link program-driver — UNIFIED (S85, FIXME 0366 resolved).** The *clear-slot → drive-main → pre-IO slot peek → run-IO-trampoline → post-IO slot peek → surface message + exit code* sequence is, by intent, the same program in both batch modes (differing only in bootstrapping — Principle 11), and it is now **one program by construction**. The shareable core — everything between "main is callable" and "the program's terminal result is known" — lives in a single C-ABI driver `cranelisp_run_program(main_ptr, main_returns_io) -> ProgramOutcome` in `cranelisp-intrinsics` (`crates/cranelisp-intrinsics/src/panic.rs`). `ProgramOutcome` is an intrinsics-local `#[repr(C)] { exit_code: i64, error_kind: i32 }` carrier (Principle 14 — named only by the two callers, not a `cranelisp-types` boundary type). The driver RETURNS the outcome — it does NOT `exit` and does NOT clear the slots (it peeks; the caller drains and surfaces) — which keeps the host REPL-safe (no `process::exit` inside the driver) and keeps the error text in the thread-local slots (no string marshalling across the C-ABI). Both modes call this one driver:
-  - **`--run`/REPL host** (`src/session_v4/lifecycle.rs::trampoline`) calls it directly (Rust calling the `extern "C"`), then translates the returned `ProgramOutcome` into `CranelispError` / `(value, Type)` for `main.rs::run` to display — **the host never exits inside the driver**.
-  - **`--link` stub** (`src/exe.rs::generate_startup_object`) emits a single `call cranelisp_run_program` and branches on `error_kind`: a non-zero kind prints the carried text + `exit(1)`, else `exit(exit_code)`.
-
-  The three former lockstep slot-check points (pre-IO runtime-error, post-IO runtime-error, post-IO dispatch-fault) — previously transcribed independently into the host Rust and the Cranelift-emitted stub, the confirmed root cause of S85's 0399/0401 divergences — now collapse to **one site** inside the driver, so a newly-added error-slot cannot diverge across modes by silent omission (Principle 11). **One acknowledged residual:** the `PlatformError::DispatchError` message-format string has a single intrinsics-side copy in `panic.rs` (charter-imposed — `cranelisp-intrinsics` is diagnostics-free by BC §4b and must not depend on `cranelisp-types`'s `PlatformError` `Display`); this is a single documented format-string copy, not a sequence duplication, and is flagged in the `panic.rs` source. `/review` verdict on the unification: CLEAN, behaviour-preserving (the S85 0399/0401/dispatch-fault repros stay green in both `--run` and `--link`).
-
-- **REPL-only facilities are mode-conditional, not mode-forked (S91 single-pipeline audit, 2026-06-26).** Two S91 additions are reachable in REPL mode only — the Pillar-3 importable-symbol indexer (`src/session_v4/index_worker.rs`) and the `Cranelisp.toml` scaffold (`src/session_setup.rs::scaffold_project_config`). Both are wired as **side-effects gated inside `main.rs`'s `Action::Repl` arm** (`s.arm_importable_index()` and the `is_rule3 && scaffold_project_config()` call), which is their *sole* call site; `--run`/`--link`/`--release` (the `Action::Run`/`Action::Link` arms; `--release` is a codegen flag, not a fourth arm) never reach them. The indexer is **provably inert in batch modes by construction**: its worklist is `None`/unarmed until `arm_importable_index` runs, so the shared nice-worker loop's `run_one_index_task` returns `false` immediately and the worker parks exactly as before — a no-op probe, no extra work. Crucially the indexer is **not a parallel reimplementation of the compile path**: `index_branch_c` → `checked_typecheck_module` reuses the *same* shared pipeline functions the real path uses (`extract_module_declarations`, `imports::install_imports`/`install_exports`, `worker::build_program_compat`, `cranelisp_typecheck::check_forms`), differing only in the **substrate** — it writes to a private isolated `DashMap` snapshot rather than `shared.symbol_tables`, never calls `register_module`, never emits `.o`, and restores the four `SharedState` maps byte-unchanged on every path (R13 no-residue). That is Principle 11's "difference is a parameter on a shared function" model applied to the symbol-table target, not a fork. The new scheduler primitives `try_take_object_codegen` (non-blocking object-codegen claim) and `park_nice_worker` are mode-agnostic shared primitives; object codegen retains unconditional priority (claimed first in the loop; index work runs only when no object work is pending AND the worker is not flush-promoted).
-
-- **The bare-name ambiguity hint is single-path-made-cluster-robust, not a REPL-vs-run fork (S91 audit).** The §5.2.6 "ambiguous bare name … use a qualified accessor" hint (`crates/cranelisp-typecheck/src/infer.rs`) reads the per-cluster `state.accessor_owning_types` map first and, when it is empty, falls back to `reconstruct_accessor_alternatives` over the durable symbol table. The two situations (`--run` = one big cluster, the owners recorded in-cluster; REPL = each form is its own cluster with a fresh `CheckState`, so the map is empty at the bare-use turn) are the **pre-existing cluster-atomicity model (Decision 44)**, not a new mode divergence — the fix is one code path branching on a *data* condition (map populated?), giving both situations the identical canonical alternatives. No `run_mode` discriminator is consulted.
-
-### Per-surface documentation (the 8th and final facade retirement — S81 W-Retire, FIXME 0298)
-
-`int` is the last surface to retire its `facades/int.md` document, completing the 8-surface arc (after `types` S69, `frontend` S70, `platform` S71, `typecheck` S72, `intrinsics`/`primitives` S74, `backend`/`backend-cache` S75). **There are no remaining live facade-spec documents.** The retirement is a documentation reorganization, not gated on the SharedState field reduction (FIXME 0176/0179 — landed) — a binary's "facade" was never a library-boundary contract gated by `public-api.txt`, so `facades/int.md` was ~90% int-internal architecture mislabeled as a facade.
-
-The retirement classifies int's documentation by what it actually is:
-
-- **int's real outside-in contracts** keep their settled homes: the **CLI surface** (the three modes `--run`/`--link`/REPL + options, parsed in `src/main.rs::parse_args` / `resolve_target`) is canonically documented in the `src/main.rs` crate-level `//!` rustdoc narrative for the modes + options, with a user-facing CLI reference owed to `/docs` under `user/` (filed `target: /docs` — `user/` is currently empty); the **REPL experience** is `repl/spec.md`; **language behaviour** is `spec/`; the **cross-crate types** int operates on (`check_forms<C,L>` and the `cranelisp-types` values) are the types crate + typecheck rustdoc. `int` itself has **no `public-api.txt` baseline** — a binary has no external consumers (`facade_compliance.rs` excludes it); its conformance gate is the e2e suite.
-- **int's internal orchestration** — `CompilerSession`, `SharedState`, `CompileScheduler`, `worker`, `cluster`, the three cadences, the windowed state model, the introspection/observability machinery, the macro-execution + Pass-1 expand loop, the platform load path, cache writer/save, exe-bundle link orchestration — is **not a boundary**; no external or cross-crate consumer can name those types. Its canonical home is the cross-surface narrative in **this section (BC §6)** for *why these cadences and handoffs exist as they do*, plus the **`design/int/` design docs** (`design/int/int.md` §6.2, `design/int/int.md` §6.5, `bind-chain-analysis.md`, the concurrency docs, et al.) and the **`src/` source rustdoc** for the per-item interior contracts. The target-stating + PIF/drift annotations that filled `facades/int.md` dissolve exactly as in the seven prior library-facade retirements — they tracked an as-designed↔as-built gap that is meaningless once source is the canonical surface.
-
-The int-internal structural-target guard that introspected `SharedState` (`shared_state_field_count_matches_facade_after_pif`) was relocated out of the boundary-conformance file `tests/facade_pif_rows.rs` into `tests/regression.rs` (`shared_state_field_count_at_target_14`, S78 Wave 1) — it guards an int-internal struct, not a boundary, regrounded on `design/int/int.md §6.2` (+ S78 §2.7 + S80 D1; target == 16 fields). No int boundary-conformance test rides on the retired facade.
+- **One pipeline, mode as a parameter
+  ([Principle 11](principles/11-single-pipeline-mode-parameters.md)).** REPL-only
+  facilities are side effects gated in the REPL arm and provably inert
+  elsewhere; they reuse the shared pipeline functions against an isolated
+  substrate rather than forking them.
+- **One program driver.** `--run`, the REPL and linked executables all reach the
+  runtime through intrinsics' `cranelisp_run_program`, which returns an outcome
+  and neither exits nor clears the error slots. The host translates the outcome
+  into an error or a value; the linked stub branches on it. Error-slot checks
+  therefore exist at one site and cannot diverge across modes.
+- **Mutual imports are a cycle error, not a deadlock.** All signatures of a
+  module's import closure register, in topological order, before any body
+  checks; a cyclic closure has no order and is diagnosed at the import.
+  Mutually importing modules are not compiled.
+- **The signature barrier is a requeue gate, never a parked pool thread.** A
+  worker that reaches an unready closure registers the missing members, frees
+  its thread and is requeued when the closure is ready, so a bounded pool cannot
+  deadlock by exhaustion. The REPL thread waits without consuming a pool slot
+  and holds its entry module exclusively while driving. Readiness is the
+  module's terminal pool state; there is one readiness protocol
+  ([design](../int/signature-body-prepass.md)).
+- **Bare-name ambiguity hints are cluster-robust by data, not by mode**: the
+  same path serves one large batch cluster and per-form REPL clusters.
 
 ---
 
 ## 7. Cross-crate types — `crates/cranelisp-types/`
 
-**Concrete executable identity — implemented; API and generated baseline user-confirmed 2026-09-10.**
-The exact [S122 signature-key contract](s122-overload-reorder-publication.md)
-uses canonical authored owner plus full concrete function signature, including
-result. Types owns the key and its slot relationship; backend only adapts actual
-old-key dependencies, with no wholesale native-label rename. Authored bindings
-and generation-local roster selectors remain distinct from executable identity.
+**Bounded context.** The single home for everything that crosses crate
+boundaries: data that flows by ownership, and marker traits downstream crates
+implement to supply concrete types where a boundary is generic. It depends on
+nothing in the workspace. The crate is `arch`'s own; consumers route shape
+changes to `arch`. [Principle 15](principles/15-facade-types-live-with-behavior.md)
+governs membership: crossing one boundary alone does not move a type here.
 
-Types owns `MonoDemand`, `InstanceLink` and the
-sole instance-key encoder. Their `CallableTarget` plus complete `type_args`
-contract, constructors and cache compatibility are recorded in
-[interfaces.md](interfaces.md) §Instance identity funnel. Typecheck derives and
-replays those substitutions (§2); table-owned `install_instance` validates and
-publishes the same link ([symbol-table-lifecycle.md](symbol-table-lifecycle.md)
-§5.2). Backend consumes the resolved concrete body and persists its link, without
-inferring generic choices or reconstructing keys.
+**Catalog by family.** AST and type expressions; the type representation,
+schemes, substitutions and the concrete boundary type; `Sexp` and the
+reader-quote classifier; the symbol table, its declarations and lifecycle;
+resolution; module aliases; typed resolution and ownership carriers; the
+post-monomorphisation codegen view; heap header and value-layout classification;
+the GOT table; marshal tags; scheduling and concurrency vocabulary; identifier
+newtypes; spans, errors and warnings; shared constants. Narrative companion:
+[boundary types](interfaces.md).
 
-**Bounded context.** The single home for everything that crosses crate boundaries. The crate is *data and contract*: data types that flow by ownership across the workspace, and trait contracts that downstream crates implement to participate in cross-crate generic shapes. It depends on nothing within the workspace, and nothing outside is allowed to invert that direction. The crate is `/arch`'s own; consumers file `target: /arch` to add or change shapes.
+**Contracts stated here.**
 
-**In-scope (catalog by family).**
-- AST: expression trees, top-level forms, definitions, patterns, type expressions, trait declarations and impls, visibility
-- Types: type representation, schemes, substitutions, identifiers, and the single parameterized `Type` renderer (`render_type` + `PrimitiveNaming`/`VarNaming` config — see "Type rendering" below)
-- Sexp: the s-expression value type, its marshal tag constants, and the ONE structural reader-quote classifier (`quote_head(&[Sexp]) -> Option<QuoteHead>` + the closed sum `QuoteHead { Quote, Quasiquote, Unquote, UnquoteSplicing }` — S121, resolving FIXME 0789's home question: the purely structural bare-symbol-head + `len() == 2` shape test lives beside the datum it classifies; `cranelisp-frontend`'s quasiquote fold and `src/expander.rs`'s two scope-aware shields consume it, collapsing the three predicate copies; see `interfaces.md` §"Reader Output")
-- Symbol table: per-module symbol tables (generic over per-symbol code carrier and per-module link carrier), entry variants, definition kinds, primitive classifications, structural declarations, import/export specifications, macro clause information
-- Symbol-table resolution: the name-resolution primitive (`Resolved` / `ResolveError`; S108 Wave G, LANDED: `ResolutionScope` — ONE lookup with the §8.8.1 prelude fallback intrinsic at scope construction, plus the types-owned §8.6.4 seam `reject_def_over_binding`; the free `resolve`/`resolve_with_fallback`/`resolve_macro_head` folded into it) — a pure query over the table set following imports/aliases/visibility/chain (caller supplies the first-hop view and the already-resolved fallback decision); see `interfaces.md` §"Resolution primitive" + `prelude-import-convergence.md`
-- Heap layout: header type, heap classification
-- GOT runtime memory: per-module code-pointer table
-- Operator catalog: descriptor type and registry for the named primitive functions the language exposes
-- Marshal: tag constants
-- Scheduling: scheduling-class enum
-- Identifier newtypes: symbols, type names, trait names, module names, fully-qualified variants
-- Span and error: source spans, error and warning types
-- Constants: shared sizes and thresholds
+- **Symbol table and lifecycle.** Types owns the per-spelling candidate and
+  binding store, the declaration families, callable lifecycle states, slot
+  claims and atomic module publication. One authored declaration has one
+  canonical `Binding`; imports and re-exports are candidate references that
+  carry identity and local visibility, never a copied scheme or lifecycle.
+  **Callability is structural:** a callable has a GOT slot only in a concrete state whose scheme is concrete, and
+  slots are minted only by the table. Templates, inline primitives and
+  host-promised externs have no slot by construction
+  ([Principle 20](principles/20-model-invariants-by-representation.md)). The
+  compilable projection is `codegen_targets()`; the table is deliberately both
+  the checking environment and the codegen manifest, because a second structure
+  would be a parallel store. Contract:
+  [symbol-table lifecycle](symbol-table-lifecycle.md). Executable identity:
+  [uniform executable identity](s122-overload-reorder-publication.md).
+  Concreteness: [total concreteness](total-concreteness.md) and its
+  [retained reasoning](concreteness-types-first.md).
+- **Plain fields under a table guard are the concurrency end state.** Every
+  per-module write is serialized by the session map's guard; the GOT is the one
+  genuinely concurrent surface and is atomic per slot. The session collection is
+  a map of module path to table; there is no per-symbol concurrent map.
+- **Visibility is per exposure; documentation is per declaration.** A
+  declaration's visibility lives once on its binding and an exposure's on its
+  candidate. Docstrings live on the declaration facet that owns them. A module
+  preamble is a table-level field, deliberately off the symbol axis so it cannot
+  leak into import or export enumeration.
+- **Form records and effects are complementary.** The table's import and export
+  lists record what the user wrote, in order, for source regeneration and
+  duplicate warnings. Binding and candidate visibility record the effect used by
+  resolution. Neither retires the other; parse-time installers keep them
+  consistent.
+- **Insertion-time conflict enforcement.** Rename collisions within a table and
+  mount collisions within one owner's aliases are structural. A mount that
+  collides with a loaded module path crosses two tables, so the installer must
+  check it atomically.
+- **Module aliases are session-level**, keyed by owner and name through the one
+  types key function, and looked up by a referring-module-scoped walk
+  ([scoped module aliases](module-alias-scoped-lookup.md)). Module path,
+  in-module symbol and receiver-pinned type name remain three distinct keying
+  domains.
+- **Resolution is a types-owned query.** `ResolutionScope` performs the import,
+  alias, visibility and chain walk with the prelude fallback fixed at scope
+  construction; the caller chooses the first-hop view. The binary's macro
+  recognition passes committed tables and typecheck passes staging over live.
+  Cross-module hops always land in committed modules
+  ([prelude and explicit imports](prelude-import-convergence.md),
+  [resolve home before enumeration](resolve-home-enumeration.md)).
+- **Trait implementations split by placement.** The discovery shell lives in the
+  trait's defining module under a keyed name and points at the writer's module,
+  which holds the method bodies and their slots. Importers follow the trait
+  reference and probe one key
+  ([trait-implementation persistence](trait-impl-cache-carrier.md)).
+- **Trait methods are addressed by a composite member key** in the trait's
+  defining module. A trait is not a module namespace and `FQSymbol` stays two
+  components. Constructor keys follow
+  [constructor keys](dotted-ctor-canonical-keys.md).
+- **FQTypeName binding — resolved-stage type identity is module-qualified.** Bare type names are
+  confined to syntactic-lift sites and receiver-pinned helpers.
+- **One structural renderer.** `render_type` is the single type-to-text walk;
+  naming conventions are configuration values, and REPL-only decoration stays in
+  the binary.
+- **Soundness-coupled predicates are single-sourced here.** Value-layout
+  eligibility, concreteness, the IO result-root rule and the
+  ownership-analysis toggle each have one definition that typecheck and backend
+  both delegate to, because two copies could disagree unsoundly. FIXME 0898
+  under `design/arch/fixmes/` tracks the result-root rule's second encoding.
+- **Registration funnels.** ADT registration derives its complete entry set
+  through one builder shared by typecheck and the binary's bootstrap. No generic
+  "module table from a source" abstraction exists, because no consumer
+  dispatches over an unknown source kind.
+- **State types expose accessors; data-record DTOs expose fields.**
+- **Test support is feature-gated.** `test_support` is compiled only for tests
+  or the `test-support` feature, and the production baseline is generated
+  without it.
+- **Marker traits** (`CodeStore`, `LinkerStore`) keep this crate ignorant of
+  backend and runtime concrete state; `MacroExpander` is the execution callback
+  the binary implements.
 
-**Type rendering — one parameterized walk (S87, FIXME 0420; Principle 7 + Principle 15).** `Type`'s structural-to-string rendering is single-sourced here, beside `Type`'s `Display` impl, as **`render_type(ty: &Type, prim: PrimitiveNaming, vars: VarNaming<'_>) -> String`** — the one structural walk every renderer in the workspace delegates to. Two `#[non_exhaustive]` config enums select output convention without forking the walk: `PrimitiveNaming { Bare, Qualified }` (bare `Int` for `Display`/internal vs FQ `primitives/Int` for user-facing, repl/spec.md §5.3) and `VarNaming<'a> { Numbered, Lettered(&'a HashMap<TypeId, String>) }` (raw `t{id}` vs the friendly lettered map from `type_var_names`). This consolidated **five** copy-pasted `Type` walks across three crates (`Type::Display` here; `format_type_fq` in typecheck `unify.rs`; `format_type_qualified_inner` + `format_type_with_inline_constraints` in `src/display.rs`) into one — keeping the Wave-0 keep-distinct advisory honoured *at the output-convention level* (conventions become config *values*, not copied walks). `Display` delegates (`Bare`/`Numbered`); the REPL-only `:TraitName var` inline-constraint decoration stays in `src/display.rs` and delegates its leaves (Principle 1 — the boundary crate owns no REPL-display concern). The two formerly-exported free fns `format_type_display` / `format_type_with_vars` were **dead surface** and are **removed**; their lettered-var capability is preserved as `VarNaming::Lettered`. `type_var_names` is retained (it supplies the lettered map). Design: `design/typecheck/s87-fq-walk-consolidation.md`; canonical surface record is the per-item rustdoc on `render_type` + the config enums.
+**Out of scope.** Anything that would invert the dependency graph (Cranelift,
+JIT or linker types, the concrete code carrier); orchestration; runtime
+intrinsics; typecheck's per-form transient state.
 
-**Visibility is per exposure.** A canonical declaration's `Visibility` lives
-once on `Binding`; an imported or re-exported exposure carries its local
-visibility on `NameCandidate`. `Binding` contains `declaration: Decl<C>` and
-has no alias or ambiguity state. Resolution therefore applies visibility
-without inspecting `Decl`, and no callable/type/trait payload duplicates it.
-The same one-owner pattern applies at adjacent layers:
-`ModuleAliasEntry`, form-level `Defn` / `TraitDecl` / `ModDecl` /
-`ImportSpec` / `ExportSpec`.
-
-**Docstrings live on the declaration facet that owns them.** `Callable`,
-`Group`, `TraitRecord`, `SpecialFormRecord`, and each `TypeRecord` arm carry
-their own `docstring: Option<String>`; `Binding` does not.
-This keeps one canonical value without forcing resolution's outer vocabulary
-to carry declaration metadata. `TypeDefInfo` and `TraitDeclInfo` remain
-structural payloads only. Intrinsic scalar types carry their documentation on
-`TypeRecord::Intrinsic`, so they stay introspectable like other declarations.
-
-**Module preamble is a module-level metadata field (spec §8.16, FIXME 0428, S88).** Where a declaration-facet `docstring` documents a named symbol, a **module preamble** documents the module *as a whole* — its purpose, its public surface's intent, design notes. The module-level analogue of a docstring, it lives on the per-module `SymbolTable` as `module_preamble: Option<String>` — a **direct top-level field on the table itself**, deliberately **off the symbol axis**. A synthetic binding was rejected (R2, Phase-2 review): it would force a fake name into `symbols` and leak module-level documentation into export/import enumeration; the field-on-`SymbolTable` placement mirrors how declaration docstrings live on their owning facets, one level down. `None` for a module with no preamble — the common, valid case, purely additive like the optional prelude (spec §8.16 / §8.8.3); `Some(text)` carries the preamble text. Per §8.16, the preamble form is the file's **contiguous leading `;;` comment block**, not a string literal (a module has no enclosing binding form to anchor a leading literal, §8.16.6); the stored `String` is that block's content with each line's marker + one following space stripped and the lines newline-joined (§8.16.2). A bare `String` is the correct carrier — documentation text, an explicitly-allowed bare-`String` use (`design/arch/CLAUDE.md` §"String Newtypes"), so no newtype is warranted. The frontend reader populates the field from the leading comment block and source regeneration emits it back verbatim. The field is a `#[serde(default)]` participant in the cached `.meta.json` symbol-table shape; its original addition bumped `CACHE_SCHEMA_VERSION` 8 → 9.
-
-**Two complementary stores, two purposes** — the form record on
-`SymbolTable.{imports,exports}` is not the same thing as per-binding
-`visibility`:
-
-- **`SymbolTable.imports: Vec<ImportSpec>` and `SymbolTable.exports: Vec<ExportSpec>`** are **form-records**: append-only, source-order, only user-authored forms. They are the source-of-truth for `.cl` regeneration (`repl/spec.md` §15.4), duplicate-form warnings, and form-by-form parse-time classification. The form-record records *what the user wrote*.
-- **`Binding.visibility: Visibility`** is the source of truth for visibility
-  decisions: used by cross-module resolution's visibility filter and by the
-  `/exports M` REPL command. It records the effect on each symbol — one
-  binding per symbol-table key.
-
-Both are load-bearing; neither retires the other. An `(export [a b c])` form
-persists one `ExportSpec` row and exposes the three corresponding candidates
-as Public; an `(import …)` form persists one `ImportSpec` row and installs
-private `NameCandidate` exposures. Parse-time installers keep the form record
-and per-exposure effects structurally consistent.
-
-**`SymbolTable.schema_literal: Option<String>` — RETIRES under the platform-interface TARGET (user-ratified 2026-06-07; canonical: `design/arch/platform-interface.md` §6.5).** The S76 seam-2 ruling (FIXMEs 0250+0251) added this field to carry the DLL's embedded schema text through the cache round-trip. The platform-interface design supersedes it: platforms declare ADTs as **ordinary `.cl` modules** (which cache normally), no schema text crosses the DLL boundary, and the layout-hash gate (regenerate-and-compare from live tables) replaces both `validate_schema` and the cache round-trip. **No `schema_literal` field is owed.** Authoring the field's removal from `cranelisp-types` is flagged for the cascade when the design is actioned. (As-built today the field may exist in source per the S76 seam-2 landing; it is removed when the platform-interface int/backend work lands.)
-
-**Module aliases live at session level**, not on `SymbolTable`. A
-`SymbolTable<C, L>` owns a private
-`HashMap<Symbol, SymbolEntry<C>>`; the outer session collection is
-`SymbolTables<C, L> = DashMap<ModuleFullPath, SymbolTable<C, L>>`. Per-module
-writes therefore occur under the owning DashMap shard's mutable table guard,
-while binding writes remain funnelled through `SymbolTable` — there is no
-per-symbol DashMap. The module-path-namespace aliases introduced by spec
-§8.3.4 and §8.4.4 live in the parallel session table
-`ModuleAliases = DashMap<ModuleFullPath, ModuleAliasEntry>`, keyed
-`<owner>.<name>` via the one types mint `module_alias_key`. Aliases name parts
-of module paths, not value bindings. Per
-`design/arch/module-alias-scoped-lookup.md`, lookup is the
-referring-module-scoped segment walk of keyed probes: the leading segment may
-use the referring module's private alias, later segments are Public-only, and
-the shared depth cap bounds the walk. The owning module is derived from the
-key, never stored on `ModuleAliasEntry`. Three keying domains —
-`ModuleFullPath` (module/alias path), `Symbol` (in-module binding), and
-`TypeName` (receiver-pinned ADT lookup) — remain distinct.
-
-**Per-namespace insertion-time conflict enforcement** (spec §8.6.4). Three conflict cases — two within-table, one cross-table:
-
-- **Rename collision** (within `SymbolTable.symbols`) — two import/export entries producing the same local `Symbol` collide on insertion; structurally detected by a second `symbols.insert(sym, …)` for an already-occupied key.
-- **Mount collision** (within session-level `ModuleAliases`) — two mounts at the same alias **inside the same owner module** collide; different owner modules mounting the same local alias name land at different `ModuleFullPath` keys and do not collide.
-- **Mount-vs-submodule cross-namespace collision** (cross-table — `ModuleAliases` vs `SymbolTables`) — an alias path in `ModuleAliases` clashes with a real loaded module path in `SymbolTables`. NOT structural via the type system; the parse-time installer MUST perform an atomic cross-table check at insert time.
-
-**Multi-legged authoring.** Some declarations author multiple `Def` entries from a single source form. The parent metadata `Def` carries the authored form (`sexp`, `source`); synthesized sub-entries derive from it. Pattern:
-
-| Source form | Parent metadata `Def` | Synthesized sub-entries |
-|---|---|---|
-| `(defn name ([sig-1] body-1) ([sig-2] body-2))` (multi-sig) | `Def { kind: Overloaded { variants, sexp, source } }` | One `Def { kind: UserFn, ast, code }` per variant, mangled name (e.g., `add$Int+Int`) |
-| `(defmacro name [pat-0] body-0 [pat-1] body-1)` | `Def { kind: Macro { clauses_meta, sexp, source } }` | One `Def { kind: UserFn, ast, code }` per clause body, mangled name `{name}$clause-{N}` |
-| `(deftype (Name a) Ctor-0 Ctor-1)` (sum/enum) | `ModuleEntry::TypeDef { … }` (type name distinct from every ctor name) | One `Def { kind: Constructor { type_def: None }, ast, code }` per constructor (D49) |
-| `(deftype Name [:T f-0 :U f-1])` (single-ctor **product**, type-name == ctor-name) | — (no separate `TypeDef` entry) | ONE `Def { kind: Constructor { type_def: Some(TypeDefInfo) }, ast, code }` that is **both** the type and its constructor |
-| `(deftrait Name methods…)` | `Def { kind: Trait { … } }` | Methods stored per D45 (TraitImpl placement) |
-
-The `sexp` + `source` fields live on the parent metadata `DefKind` variant, not on synthesized sub-entries. REPL `/source name` resolves through the parent metadata if a sub-entry is named (e.g., `/source thread-first$clause-0` resolves to the parent `thread-first`'s form). `ast` and `code` are sub-entry concerns — each clause body, constructor body, or multi-sig variant body has its own.
-
-**Product types are ctor-Defs carrying a type facet (S79 Option 3a, FIXME 0319).** A single-ctor product type has type-name == ctor-name, so the type and its constructor collide on one symbol-table key (`"Rectangle"`). The prior model let a `ModuleEntry::TypeDef` **overwrite** the got-slotted ctor `Def` on that shared key — which silently dropped the ctor's `param_names` field names AND broke product-ctor-as-first-class-value (the ctor was no longer a got-slotted callable), a §4.2.1 spec violation that six bespoke `constructor_scheme` fallback legs propped up. The model is now uniform with sum ctors: the surviving `"Rectangle"` entry IS the got-slotted ctor `Def`, carrying a **type facet** `DefKind::Constructor.type_def: Option<Box<TypeDefInfo>>` so it ALSO answers as its type. `type_def: Some(..)` ⟺ the ctor IS its own type (the product case); `type_def: None` ⟺ an ordinary sum/enum ctor whose type is a separate `TypeDef` entry. Consumers needing the **type-def view of an entry** read it uniformly: a `ModuleEntry::TypeDef` yields its `info`; a `Def { kind: Constructor { type_def: Some(td) } }` yields `*td` — since S109 this uniform read IS the structural accessor `ModuleEntry::type_def_info()` (the `callable_got_slot()` read-through precedent applied to the type facet); matching `ModuleEntry::TypeDef` directly at a type-consuming seam silently skips product types (the FIXME-0573 persistence data-loss class). Field names stay on the ctor `Def`'s `param_names` (single source, Principle 7) — `TypeDefInfo` carries NO `field_names` list. The retired `ModuleEntry::TypeDef.constructor_scheme: Option<Scheme>` smuggling field (the seam those fallback legs keyed on) is gone; the product ctor's function-type signature lives canonically on the `Def`'s own `scheme`. See the `DefKind::Constructor` source rustdoc.
-
-**Macros are Defs.** Macro clause bodies are stored as `Def { kind: UserFn { … } }` entries with mangled names `{macro-name}$clause-{N}`, dispatched via the normal GOT mechanism — uniform with multi-sig fn variants. Macro parent entries are `Def { kind: Macro { clauses_meta, sexp, source } }` carrying **metadata only**. Expansion-time dispatch walks `clauses_meta` to pattern-match the call sexp, then GOT-dispatches to the matched clause's mangled-variant Def. No sidecar `MacroEnv` table exists — clause-body lookup is the same GOT-dispatch path as any other callable.
-
-**Host-promised externs — `DefKind::PrimitiveExtern`.** A `primitives`-module `Def` whose body lives **outside** `cranelisp-primitives` and is supplied by the integration layer (`int`) at JIT-finalize via `Jit::define_symbol`, rather than bundled (`DefKind::Primitive`) or DLL-loaded (`DefKind::PlatformEffect`). `discover-tests` is the motivating member: its body must read int's live typed session state (per-module `SymbolTable` + GOT) to enumerate eligible `test-*` functions, which `cranelisp-intrinsics` cannot do because it cannot name `Code` (Principle 18 / Decision 0048). The kind is a payload-free unit variant (Principle 6) and carries the slot-less host-promised invariants: the symbol-table key **IS** the ABI name (no `jit_name`), `got_slot: None`, `code: None`; a call lowers as a `Linkage::Import` against the key (the same import shape `DefKind::PlatformEffect` uses), and is therefore structurally untraceable (no GOT-indirect callee to redirect — the GOT-indirect callables it *returns* stay traceable). `DefKind::PlatformEffect` is the direct structural precedent; `PrimitiveExtern` differs only in that int promises the body via `Jit::define_symbol` rather than a DLL supplying it, and it carries no `scheduling_class` (it is not an IO effect). See `design/arch/test-discovery.md` §6/§7 and the `DefKind::PrimitiveExtern` source rustdoc.
-
-**Resolution carriers — call position AND value position (S77, FIXME 0300).** A typecheck-resolved dispatch target (`ResolvedCall`) reaches backend by riding on the AST node it resolves, via the span-keyed `MethodResolutions` side map overlaid by the annotate pass. There are **two** carrier fields, one per syntactic position the same trait method can occupy: `Expr::Apply.resolved_call` carries the **call-position** resolution (`(= x y)` — the method is the callee); `Expr::Var.resolved_call` carries the **value-position** resolution (`(let [f =] (f x y))` — the method name escapes as a value / HOF argument, and the enclosing `Apply`'s callee is the *local* `f`, not the method). Both are `Option<Box<ResolvedCall>>`, `#[serde(default)]`, defaulting `None` before typecheck. The value-position carrier exists because the side map is overlaid onto `Apply` nodes only, so a trait method escaping the call site otherwise received an `inferred_type` (the `Fn` shape) but no resolution — leaving backend (which has no trait knowledge, Decision 43; punctuation symbols are ordinary names, Principle 16) with only the bare name and a hard-coded Int fallback. The carrier is the channel that hands the value-position dispatch target across the boundary so backend emits a dispatch-wrapper closure keyed by the resolved name, not a re-derived `(Trait, method, Type)` intercept. Arity for the wrapper comes from the Var's `inferred_type`; no new `ResolvedCall` variant is required (the existing `TraitMethod`/`BuiltinFn` carry the callable name) — `ResolvedCall` being `#[non_exhaustive]`, a future variant remains non-breaking if a concrete need surfaces.
-
-**Trait-method addressing convention.** Trait methods are addressed by a composite `Symbol` within the trait's defining module. For a trait method `Display.show` declared in module `core`, the canonical `Decl::TraitMethod` binding lives in `core` at `Symbol::from("Display.show")`. The one `symbols["show"]` per-spelling entry may contain candidate references to both an ordinary field accessor such as `Box.show` and the method terminal `core/Display.show`; there is no parallel trait-method map or namespace. Candidate references copy only canonical identity and scope-local visibility, never the declaration scheme or lifecycle. Prelude fallback and explicit import/re-export add references through the same entry mechanism. Type information selects a unique compatible callable when possible; unresolved multiplicity is a call-site ambiguity and qualification probes the canonical key directly. `Trait.method` resolves the trait head then probes that key without a trait scan. The trait is **not** a distinct module namespace — `FQSymbol` remains two-component; its `symbol` field contains the composite member key. The exact general candidate carrier and the fate of the current `Alias`/`Ambiguous` arms remain at the S121 public-API/spec gate.
-
-**TraitImpl storage.** Per Decision 0045 (as amended S110 W0.1 — `design/arch/backend-keyed-consumer.md` §1.1.1), an `(impl Trait Type method-defns…)` form splits across two placements: the `ModuleEntry::TraitImpl` **shell** (the discovery record) lands in the **trait's defining module** keyed by the synthetic name `impl$FQTypeName$FQTraitName`, while the mangled method **`Def`s** (`Trait.method$m/Type`) land in the **impl-writer's module** — the module whose codegen batch compiles the bodies, whose table must hold their entries + GOT slots (`compile_to_module`'s own-table invariant). The shell carries `impl_module: ModuleFullPath` (W0.1b), the pointer from the discovery record to the storage module, so dispatch derives the method entry's home with one keyed probe. Importers discover impls by chain-following the trait reference back to its defining module and probing for the synthetic key. No closure walk; no cycle detection; per-symbol point-to-point navigation only (Principle 17).
-
-**FQTypeName binding** (Decision 0047). FQTypeName is binding as the cross-crate boundary type for resolved-stage type identifiers; two narrow exceptions — syntactic-lift sites (`check_form` resolving `TypeRef` → `FQTypeName`) and receiver-pinned helpers (e.g., `SymbolTable::get_type(name: &TypeName)` where `&self` IS the module context). Syntactic-stage qualification is captured structurally by `TraitRef` and `TypeRef` (both carrying `Option<ModuleFullPath>`) rather than letting a "bare name slip through" the AST.
-
-**Resolution primitive (S76 W-Macro fold-in).** Resolving a name — "in this table set, what does `name` mean when looked up from `current_module`, after following import/reexport chains, applying §8.6.6 module-path aliases, and honouring visibility?" — is a **query over the symbol-table data structure**: no inference, no unification, no substitution. By Principle 15 (behaviour lives with the type it operates on) and Principle 7 (single source of truth) it lives here, alongside `ensure_module_exists`, `got_data_symbol_name`, and the chain-follow family (`resolve_terminal_entry_and_home` et al.). The surface is one general primitive plus thin typed wrappers (Principle 6 — minimum surface):
-
-- **`resolve(symbol_tables, module_aliases, first_hop, current_module, name, span) -> Result<Resolved<C>, ResolveError>`** — the general walk. Pure over `symbol_tables` + `module_aliases` (both types-owned); generic over `<C, L>`; **no `CheckState`** (the property that keeps it in the data-only crate). `Resolved { entry, home, fq }` carries the canonical entry, its chain-follow-terminus home module, and the FQ identity.
-- **`resolve_macro_head(...) -> Result<Option<FQSymbol>, ResolveError>`** — the macro-recognition wrapper: succeeds with `Some(fq)` only when the canonical entry is `DefKind::Macro`; `Ok(None)` for a non-macro or not-yet-defined head (the locked defmacro-before-use rule treats a forward reference as an ordinary name, not an error).
-- **`substitute_module_alias(module_aliases, referring_module, module_path) -> ModuleFullPath`** — the §8.6.6 module-alias substitution used internally by `resolve_qualified` and **also public** (promoted S81 W-G item 0303, Principle 7) because int's FQ-autoload boundary (`SymbolTableMacroResolver::recognize`, `src/process_form.rs`) computes the dependency module to load from a raw `mod/sym` reference *before* typecheck runs and must apply the same alias resolution — it calls this primitive directly rather than re-implementing the walk (the former byte-identical int-side `resolve_module_alias` re-impl is deleted). **S121 (FIXME 0798 ruling — canonical: `design/arch/module-alias-scoped-lookup.md`):** the fn gains the referring module and is the scoped segment walk of keyed probes — every caller passes the module doing the referring; an alias resolves from its declaring module (any visibility) or as a §8.4.4 Public mount from anywhere, and an undeclared alias falls through unchanged to the located not-found error.
-- **`ResolveError`** — the typed failure (`TraitNotFound` / `TypeNotFound` / `ConstructorNotFound` / `QualifiedModuleUnknown` / `PrivateInaccessible`), relocated here from `cranelisp-typecheck` at S76. Its types-side projection target is the neutral `CranelispError`; the `From<ResolveError> for CheckError` projection stays in `cranelisp-typecheck` (single-consumer target type, Principle 15).
-
-**The primitive-vs-view line.** The search primitive is types-owned, but the **choice of which view to search stays with the caller**, supplied as the first-hop `View` over the current module: int's Pass-1 macro recognition passes `View::single(live)` (committed tables — no staging during the expand phase); typecheck's Pass-2/3 body resolution passes `View::union(staging, live)` via its `SymbolTableAccess`. Cross-module hops (an `Import` edge's `source.module`, an alias-resolved FQ target) always land in *other, already-committed* modules — staging only ever holds the current cluster's module — so the view parameterises only the entry point, not the whole walk. This consolidates int's former `SymbolTableMacroResolver` (`src/worker.rs`) and typecheck's `resolve_*` family (`crates/cranelisp-typecheck/src/checker.rs`) onto one walk; **no DAG impact** (types has no deps). See `interfaces.md` §"Resolution primitive" and the `crates/cranelisp-types/src/resolve.rs` rustdoc.
-
-**Field-level access on state types is discouraged outside the types crate.** State types (`ModuleEntry`, `DefKind`, `SymbolTable`) expose method-level accessors as their public contract — e.g., `ModuleEntry::arity()` (delegating to `Type::fn_arity()` on `scheme.ty`), `SymbolTable::get` / `get_type` / `defined_symbols` / `public_symbols`. Direct field access remains permitted on **data-record DTOs** (`NamedImport`, `ImportSpec`, `ExportSpec`, `ModDecl`, `PlatformSpec`, `Span`, `FQSymbol`, `FQTypeName`, `FQTraitName`, `TypeDefInfo`, `TraitDeclInfo`, `MethodResolutions`) where the field set IS the contract and serde round-trips structurally.
-
-**Callability is structural — the GOT slot lives on the callable `DefKind` variants; a def has a slot ⟺ its type is fully concrete (FIXME 0356/0357 + 0374, Principle 20; amends Decision 0035; S83 target, S84 generalisation).** Two correlated facts on `ModuleEntry::Def` together answer "is this entry callable, and through which GOT slot": whether the def is a directly-callable concrete function, and which GOT slot holds its runtime address. A constrained-fn *template* is **never directly callable** (it needs trait dictionaries resolved per call; only its monomorphised variants — `cmp$Int+Int`, each carrying their own `got_slot` allocated at `monomorphise_call` — are emitted and callable). S83 stated this as "a constrained template has no directly-callable GOT slot"; **S84 generalises it to its true form: "a non-concrete def has no directly-callable GOT slot"** — see the "slot ⟺ fully concrete" paragraph below for why the constrained-template case is one species and the plain-parametric-generic case is another, and why the gate predicate is `is_concrete()` not `constraints.is_empty()`.
-
-The S82 stopgap enforced this at the *read seam* — a `got_slot: Option<usize>` field sat parallel to `kind: DefKind::UserFn { constrained_fn }`, the illegal pairing (`constrained_fn: Some(_)` + `got_slot: Some(_)`) was representable, and an accessor (`callable_got_slot()`) plus a sole-writer (`mark_constrained_template()`) hid and maintained the invariant by discipline. Reading the raw field at one call site (`resolve_got_target`) was the 0354 SIGSEGV (cross-module the template's never-populated slot is NULL → `call_indirect` through null). Per Principle 20 (model a cross-field invariant by representation; accessor is the explicit fallback), **the S83 target makes the illegal state unconstructable**: the `got_slot` migrates **off `ModuleEntry::Def` and onto the callable `DefKind` variants** (`UserFn`'s `Concrete` `fn_state`, `Primitive`, `Constructor`, `PlatformEffect`, the macro-clause `UserFn` mangled variants — every variant a call can target GOT-indirect carries `got_slot`); the **non-callable / non-GOT-dispatched kinds carry no slot field** (`UserFn`'s constrained-template form, `Macro` parent, `PrimitiveExtern` which dispatches by-name via `Linkage::Import`, `Overloaded` base whose mangled variants carry the slots). `PlatformEffect` IS a GOT-addressable callable — it is invoked GOT-indirect exactly like a `Primitive` and its DLL pointer reaches the JIT *through* its GOT slot (see §5 invariant 1, the platform-interface codegen role in §3, and FIXME 0358's ratification below); the Phase-2 gating-decision-2 statement that placed it in the slot-less set was a factual error, corrected here. `PrimitiveExtern` is the sole *callable* kind in the slot-less set: it dispatches by-name as a `Linkage::Import`, never GOT-indirect, and is never an operator-as-value (its rustdoc and the backend's `BuiltinFn` extern arm `apply.rs:248` are the canonical statement; see FIXME 0360's ruling for the synthetic externs — `bind`/`sconcat`/`quote-sexp`/the Trace field accessors — that are correctly `PrimitiveExtern`, not slot-bearing `Primitive`). A constrained template structurally *cannot hold* a callable slot. `callable_got_slot()` becomes a trivial read of the present-or-absent slot on the matched kind variant (it does not disappear — it stays the single read-through point so callers do not re-pattern the kind set, but it can no longer "read around" an illegal field because there is no illegal field to read around); the `mark_constrained_template()` flip-and-clear sole-writer **retires** (there is no sibling slot to clear — the template variant simply has no slot), as does `assert_well_formed()`'s phantom-slot assertion.
-
-**The invariant is GENERAL: slot ⟺ fully concrete, NOT slot ⟺ unconstrained (S84 generalisation, user-ratified 2026-06-16; FIXME 0374).** S83's statement above — "a constrained template has no slot" — is the *constrained-template species* of a broader invariant: **a GOT slot is the value-capability of a CONCRETE callable, so a def has a GOT slot ⟺ its type is fully concrete (no `Type::Var` anywhere in its signature; `Type::is_concrete()` in `crates/cranelisp-types/src/types.rs`).** A constrained template is non-concrete because its vars are pinned per call by trait dictionaries; a **plain parametric/generic def** (`id : ∀a. a→a`, a HOF whose result is `(Box a)`) is *equally* non-concrete — it carries **no trait constraints at all**, yet its `Type::Var` makes it not-directly-callable-as-a-value. Only its monomorphised concrete instances (`id$Int`, `(Box Int)`) are slotted and callable. **"Unconstrained" (`constraints.is_empty()`) and "concrete" (`!ty.contains_var()`) are different predicates**, and a generic-but-unconstrained def satisfies the first while failing the second — so the slot-allocation gate must test **`is_concrete()`, not `constraints.is_empty()`**. The as-built S83 gate tested the wrong one: `program.rs:947` (single-sig) and `:1143` (multi-sig) allocate `Concrete { got_slot }` under `if !trial_scheme.constraints.is_empty() { …Constrained… } else { …allocate slot… }` — i.e. a generic-unconstrained def fell into the `else` arm and got a slot **while still carrying a `Type::Var`** (the `existing_callable_slot`/`redef_slots` reuse legs at `:919`/`:1129`/`:1312` share the same constraint-emptiness gate). That non-concrete-def-with-slot then reached `HeapCategory::classify(Type::Var)` at codegen → the unsound `<1024` RC guard → the `(Box a)`-through-HOF SIGSEGV (S84 Wave-0 `mono_tier2_generic_adt_field_through_hof_no_crash`). **The representation fix (S84): `Concrete { got_slot }` requires `is_concrete()` at construction; a determined-but-non-concrete unconstrained generic def gets its own slot-less `fn_state` (a `Polymorphic`/parametric variant, sibling to `Constrained` — both slot-less, differing only in *why*: unpinned type vars vs trait dictionaries).** With the slot-less arm in place, `Concrete{slot} ∧ non-concrete-type` is unconstructable — the door to codegen-as-a-value is shut for every non-concrete def by construction (the strongest Principle 18 form), and the codegen-side `classify(Type::Var)` panic (FIXME 0375) becomes a backstop that *can never fire* rather than the mechanism that prevents the bug. **This is the typecheck-side complement of monomorphisation-from-roots:** Tier-2 (FIXME 0374) mints a concrete slotted instance for every *reachable* use, so anything left non-concrete is genuinely never used as a value (slot-less, fine) or is the 0373(ii) ambiguity error. **The slot-less arm landed (S84 Wave 1, FIXME 0377, /arch): a distinct `UserFnState::Polymorphic(Box<ParametricFn>)` variant** — sibling to `Constrained`, carrying a dedicated `ParametricFn { variant: DefnVariant, scheme: Scheme }` body (the minimum `monomorphise_call` needs to re-check at concrete types; the same shape `ConstrainedFn` carries, minus the trait-dictionary semantics). The *distinct* variant (not a reuse of `NotDetermined`-shaped slot-lessness, not a reuse of `Constrained`) keeps the *why*-distinction legible at every exhaustive matcher: `NotDetermined` means "Pass-2 has not run" (interim, not determined); `Constrained` means "vars pinned by trait dictionaries"; `Polymorphic` means "vars unpinned, no constraints at all". `callable_got_slot()` answers `None` for it structurally (same fall-through as `Constrained`/`NotDetermined`), and `defined_symbols()` treats it as a **mono target** (NOT skipped like `Constrained`, because the `Polymorphic` template's body IS what monomorphisation specialises). The boundary fact `/arch` fixes: `Concrete` carries `got_slot` and is constructed only when `is_concrete()`; the non-concrete-unconstrained def is `Polymorphic`, slot-less.
-
-**S119 step-back ruling — the invariant is kind-partitioned: slot ⟺ sound-single-body, one licence per producer class (`/arch`, 2026-07-27; the R11 regrade's cure).** The S84 paragraph above phrases the invariant universally — "a *def* has a slot ⟺ its type is fully concrete" — and at HEAD that universal phrasing is false for two slot-carrier populations: `DefKind::Constructor` carries a **mandatory** slot over `∀a.` schemes (a `GOT_TRACE` of `(deftype (Bx a) [:a val])` shows slot 0 = `Bx`, scheme `∀a. Fn([a], Bx a)`), and `PrimitiveBody::Extern` carries ONE polymorphic slotted entry, `vec-len : ∀a. (Vec a)→Int` (`declarations.rs:660-671`). *(Corrected 2026-07-28: this paragraph originally also named `bind : ∀a b.…` and `catch-runtime-error : ∀a.…` as slotted-since-bootstrap — FALSE at source; both are slot-less `DefKind::PrimitiveExtern`, by-name dispatch per FIXME 0360. `PlatformEffect` schemes are all concrete at HEAD. Full census: `total-concreteness.md` §1.)* An invariant stated universally with an unstated sanctioned exception **cannot be asserted as stated**, so it was asserted nowhere — which is precisely how two *unsanctioned* `UserFn` violations (`adt.rs` accessor mint, `impl_check.rs` `scheme::mono` mint) hid in the exception's shadow from S84 to S119 while R11 sat graded `unconstructable`. The true general invariant: **a GOT slot is the value-capability of an entry whose ONE compiled/hosted body is sound for every instantiation reachable through the slot** — and each producer class has a different licence for that soundness: (1) **`UserFn` — inference-derived bodies**, whose emitted RC is type-directed: concreteness is the ONLY licence (`non-concrete-release-contract.md` §4.3 proves no in-frame disposition exists for a residual word under the Decision-24 consuming ABI); predicate `scheme.ty.is_concrete()`, quantifiable whole-table (the NC-1 sweep; register row R11). The S84 ⟺ survives intact as this clause. (2) **`Constructor` — derivation-synthesised bodies**: representation-parametricity under I-CT′ (`non-concrete-release-contract.md` §4.1) — the body moves each parameter word opaquely into the box and owes zero RC operations on residual words, so one compiled body is sound for every instantiation; checked by the ctor-template zero-RC-on-residual negative cells + the R17 census ctor partition, never by a scheme predicate. (Pre-I-CT′, the ctor template's wild inc/dec pair *was* a type-directed operation on residual words — i.e. the ctor slot was licensed only once face 1 deleted the pair; the ctor rustdoc's former "born concrete at synthesis (it is never constrained)" wording was the S84-named unconstrained-vs-concrete conflation, corrected in `module.rs`.) (3) **`Primitive{Extern}` / `PlatformEffect` — hand-written bodies**: the declared contract (R3 declared-fact truthfulness, R16 marshal fences, platform layout-hash + `CLOwned`). **The module-boundary corollary (the user's question, answered):** `SymbolTable` deliberately serves two roles — the *checking environment* (templates, type defs, trait decls, macros — declaration-side artefacts that MUST cross module boundaries, because cross-module monomorphisation mints the consumer-side instance from the producer's persisted `ast`+`scheme`) and the *codegen manifest* (the compilable projection). These are **not split into two structures**: the manifest is the `defined_symbols()` projection (Decision 22 — one filter, one canonical location) plus the slot as the value-capability token, and a physical split would be the Principle-7 parallel-store defect (double keying, a second serialised carrier, drift by construction) while saving nothing on the wire — the templates must serialise regardless. What failed in S119's census was not the transport of non-compilable entries but the **mint**: manifest membership was derived from a producer-written field (`fn_state`) that nothing checked against the scheme. The cure is therefore mint-side: P-1's one helper (S119, typecheck-internal), then the **S120 structural completion** — a types-owned witness mint for `UserFnState::Concrete` (fallible constructor checking `is_concrete()` at the crate boundary; no serde-shape change) and the R6 load-boundary re-check of restored `Concrete{slot}` entries (serde bypasses any constructor; the cache trust boundary re-validates → diagnosed `CacheStale`). Register: `safety-invariants.md` §4 R11.
-
-**S119 re-ruling — the kind-partition is TRANSITIONAL, not the target; the end state is total concreteness (`/arch`, 2026-07-28, user-directed: "we need concrete types at the end of typecheck… in the future when we have more sophisticated storage layouts, there will be no chances for generic functions").** The paragraph above stands as the description of HEAD and of S119's scope, with **one factual correction**: `bind : ∀a b.…` and `catch-runtime-error : ∀a.…` are **NOT slotted** — both are slot-less `DefKind::PrimitiveExtern`, dispatched by ABI name (FIXME 0360; `callable_got_slot()` answers `None` structurally). The polymorphic slot-holders at HEAD are: every generic-ADT `Constructor` (incl. the `IO.Bind` existential), `vec-len` (the ONE polymorphic `Primitive{Extern}`), and the two censused `UserFn` hand-mints; the full source census is `design/arch/total-concreteness.md` §1. The **target invariant** replaces the three-licence partition with three exception-free clauses (`total-concreteness.md` §2): **I-CONC** — `callable_got_slot().is_some() ⇒ scheme.ty.is_concrete()`, universal, kind-free, whole-table (the S84 ⟺ restored *as stated*); **I-FRAME** — every frame backend compiles and every site it emits is fully concrete; `defined_symbols()` admits no non-concrete scheme (generic ctor templates join `Polymorphic`/`Constrained` in the exclusion); **I-ABI** — the only surviving polymorphic callables are hand-written runtime bodies dispatched by name, never compiled, never slotted, on a closed enumerated roster (`bind`, `race`, `select`, `catch-runtime-error` at HEAD) each declaring its representation dependencies *(I-ABI re-ruled 2026-07-28 → **I-EMIT**: no polymorphic callable is referenced by the emitted tree at all — `bind`/`race`/`select` re-kind to the inline model, `catch-runtime-error` gets per-instantiation concrete facades over its one uniform body, and the roster survives only as the backend-interior realization contract; `design/arch/concreteness-types-first.md` §1)*. Rationale: every licence in the partition is a property of the uniform i64 representation, which the `--release` layout work (`release-llvm-backend.md` §6/§8; `(Vec Int)` flat vs `(Vec String)` pointer-array) is scheduled to demolish — a licence that dies with the representation is not an invariant. Route + staging (ctor monomorphisation with template-slot retirement; `vec-len` de-slot — spelling (a) `Inline` settled + backend-arm gate ruled 2026-09-01, `total-concreteness.md` §3.2; platform-sig `Type::Var` refusal; `Bind` payload-glue self-description, dissolving the face-4 residual — all re-staged 2026-09-01 from the original S120/S121+ split into arms of the ONE S121 C1-led unified-lifecycle wash, `symbol-table-lifecycle.md` §9): `total-concreteness.md` §3–§5. S119's landed obligations (P-1, faces 1–5, A-MINT, L-1..3) are strict steps toward this target and ship unchanged; face 1's I-CT′ is subsumed (not contradicted) when ctor templates stop compiling.
-
-**S119 types-first slice — LANDED (`/arch`, the `concreteness-types-first.md` §3 vocabulary, ahead of the kind-field flip).** The witness half of I-CONC is now code: `CallableSlot` (opaque; private field; `#[serde(transparent)]`) is obtainable only from the ONE fallible `SymbolTable::mint_callable_slot(scheme)` (checks `is_concrete()` + allocates in one act), from the re-checking `CallableSlot::rebind` (the Decision-31 REPL slot carry-forward), or from deserialization — which is why the cache trust boundary gains the restored-slot re-check (`CacheStale::NonConcreteSlot`, the backend-wash arm). The kind-field retypes (`UserFnState::Concrete`, `PrimitiveBody::Extern`, `PlatformEffect`, and `DefKind::Constructor` → the landed-dormant `CtorState { Template, Concrete }` sum) were the pinned per-kind wash flip (FIXME 0931) — **superseded 2026-09-01 by the adopted unified lifecycle machine (the S121 paragraph below): the same sites re-arm once onto `Life<C>`, the dormant `CtorState` deletes unwired, and the transitional `allocate_got_slot` retires into the settlement funnel** rather than merely demoting. Landed alongside, same change-set: the instantiation-substituting `heap::ctor_field_types_at` (concrete-or-refuse, beside the preserved `value_layout` model site — R-6/R-16), `ConcreteType::result_root()` (the ONE IO-head-strip rule, FIXME 0898), the **injective** `got_data_symbol_name` escape (FIXME 0748 — `a.b`/`a_b` can no longer share a GOT slab symbol; alphanumeric paths stay fixed points for the `__cranelisp_got_primitives` link-time ABI literal), the 0869 writer-side trait-impl cache carrier (`SymbolTable.written_trait_impls: Vec<WrittenTraitImpl>` with NO serde default + `enrol_written_trait_impl` + the hoisted `trait_impl_key` mint), and the FIXME-0918 dead-surface deletions (`ImplSexp`, `CompileResult`, `CallEdge`/`CallInfo`/`CallGraph`, `StructuralDeclEntry`/`append_structural_decl` — the pub structural Vec fields ARE the append contract). ONE `CACHE_SCHEMA_VERSION` window (23→24) covers all of it; in-sprint downstream waves ride that bump.
-
-**Symbol lifecycle and publication.** Types owns the private per-spelling
-candidate/binding store, lifecycle transitions, slot claims and atomic module
-publication. Integration supplies semantic ABI decisions and retains displaced
-compiled owners; typecheck authors unpublished state. The current shared
-contract is [symbol-table lifecycle](symbol-table-lifecycle.md), especially §4.4
-for publication and §5 for declaration families and instances. Exact Rust
-contracts live beside the types items; generated baselines and approval history
-are evidence, not a parallel facade definition.
-
-**Concurrency "facade target" — RETRACTED (S119, FIXME 0919; no third state).** The long-stale target narrative on `SymbolTable`'s allocator fields (DashMap-inner atomics — `next_seq: AtomicU64` / `next_got_slot: AtomicUsize`, the S-DRIFT-19/20/21 cascade) is formally retracted: plain fields mutated under `&mut SymbolTable` ARE the end-state, because every per-module write is already serialized by the DashMap shard guard the orchestrator holds — the atomic conversion buys nothing the access pattern needs, and the GOT (the one genuinely concurrent surface) is already atomic per-slot. There was never a `SymbolTable.dll` field or `D: DllStore` generic (platform DLL handles are retained int-side in `SharedState.kept_dlls`); the phantom narratives are corrected at source.
-
-**The timing wall and its resolution (the architectural crux).** The slot was historically allocated in typecheck Pass 1 (`register_defn_signature`) *before* Pass-2 constraint detection knew the def was a template — the flat shape let the entry sit in an indeterminate state between the two passes (the latent root of 0354). The structural shape makes `Def{slot}+template` unconstructable, so the indeterminacy must be resolved. **Resolution (S83, ratified Phase 2): defer slot allocation past Pass-2 constraint detection** (Principle 20 resolution form 1). Pass-1 `register_defn_signature` registers the signature/scheme without a GOT slot; the slot is allocated at the point the def is known to be a concrete callable — for a defn whose finalised type is **fully concrete** (`is_concrete()` — S84 correction; the original "unconstrained, constraint detection found no constraints" phrasing was the leak's textual root, see the generalisation paragraph above), that is at end of Pass 2; and for a constrained def the slots are allocated per mono variant at `monomorphise_call` (already the case). The entry between registration and that determination simply has no slot — which is correct, because nothing may legally call it until its callability is known. No `Pending` interstage variant is required (the deferral is local and cheap, the entry is not call-resolvable in the interim anyway); the determined `fn_state` already names the determined state. The non-concrete branches (constrained template + parametric generic) carry no slot field; the concrete-callable branch carries the deferred-allocated slot. Mono variants (`cmp$Int+Int`, `id$Int`) are ordinary concrete `UserFn` entries that own their slot — the natural home for the S83 cross-module-mono feature (FIXME 0355) and the S84 Tier-2 reachable-instance set (FIXME 0374).
-
-**Amends Decision 0035.** Decision 0035's post-rollback statement — "GOT is the single source of truth for callable addresses; `got_slot` is a flat field on `ModuleEntry::Def`" — is amended in its *placement* clause only: the GOT remains the single source of truth for callable *addresses* (the slot still indexes `SymbolTable.got()`); what changes is *where the slot index lives* — on the callable `DefKind` variants rather than as a flat `Def` field. The flat-field placement (which the rollback chose over a sibling `fn_ptr` field, on Principle-7 grounds) was correct against *that* alternative; it is superseded against the *correlated-invariant* alternative now that the slot's legality is correlated with the kind discriminator. The single-source-of-truth property is unchanged (still one slot per callable, still GOT-indexed); the field moves to where its determinant lives. Storage/codegen/serde sites that legitimately need the allocated index continue to read it — now off the matched kind variant rather than the flat field; this is the mechanical part of the cascade (~50–75 sites name `got_slot` in a `Def` construct or `.got_slot` read, predominantly storage/serde/codegen — see the reader-cascade note below). This mirrors the existing `defined_symbols()` filter, which already excludes constrained templates from codegen on the same grounds.
-
-**S102 — Principle 20 applied one level down: `PrimitiveBody` makes "resolvable but not slot-callable" a KIND (FIXME 0476); the ownership summary rides the callable variants (CS-A).** Two same-change-set extensions of the callability-is-structural shape (one `CACHE_SCHEMA_VERSION` bump, 11 → 12; `design/arch/ownership-inference.md` §3.3 + the FIXME-0476 ruling). **(1) The phantom-NULL-slot cure:** `DefKind::Primitive` reshapes from `{ got_slot: usize }` to `{ body: PrimitiveBody, mode_summary }` — `PrimitiveBody::Extern { got_slot, borrowed_sibling_slot }` (a stored extern shim; the optional §3.1(b) borrowed-convention sibling slot rides the Extern arm only, so inline-with-sibling is unrepresentable) vs `PrimitiveBody::Inline` (backend inline emission keyed by canonical bare name; **no slot field at all**). The S101 defect class — an allocated-but-never-stored slot dispatched through by a value-use path (`vec-get`/`vec-set`/`vec-push` SIGSEGV, third phantom-slot instance) — becomes unrepresentable exactly as S83 made the template+slot pairing unrepresentable: `callable_got_slot()` answers `None` for `Inline` **by construction**. The resolution **stop predicate moves from slot-presence to kind-callability**: `ModuleEntry::is_callable_target()` (slot-dispatched ∪ inline-dispatched) replaces `callable_got_slot().is_some()` at the `resolve_driven`-family stop condition, preserving shadowing precedence; dispatch sites still read `callable_got_slot()` and handle the `is_callable_target() ∧ slot-less` case by inline emission. Consumption (the vec trio flips to `Inline`; the S101 `resolve_vec_query_primitive` name-list + both wrapper-seam exemption arms retire) is the S102 B1-be backend/primitives change-set — at CS-A landing every primitive is still `Extern` and behaviour is byte-identical. **(2) The ownership carrier:** `mode_summary: Option<ModeSummary>` joins the four callable kind variants (`UserFnState::Concrete`, `Primitive`, `Constructor`, `PlatformEffect`) — the summary correlates with callable-ness the same way the slot does, so it rides the same variants and non-callable kinds carry no summary field by construction — read/written via `ModuleEntry::mode_summary()`/`set_mode_summary()` (the `callable_got_slot()` single-read-through precedent); `DefKind::Primitive`'s slot doubles as the hand-declared fact table (Principle 19 — the pass cannot tell a declared leaf from an inferred summary except by `DefKind`). The per-entry `value_use: bool` mark rides `ModuleEntry::Def` (pass-written, like `callees` — no builder setter); `MonoDefnVariant.mode_summary` is the compile-in-hand twin; advisory site facts ride `MonoExpr` nodes. The carrier types (`Mode`/`ModeSummary`/`ResultMode`/`ParamFlow` + the ⊤-on-absence accessors + `abi_eq` + the relocated `ownership_analysis_off()` toggle gate) live in `crates/cranelisp-types/src/ownership.rs`; narrative: `interfaces.md` §"Ownership-inference carriers".
-
-**S121 — `ResultMode::MayAliasAny`, the result axis's ⊤ (types half landed; `interfaces.md` §"`ResultMode::MayAliasAny`" is the carrier record).** One added unit variant on the S102 ownership carrier, discharging FIXME 0521's deferred ⊤. It exists because the axis had no representation for "the result reaches SOME parameter, which one undetermined", which left the producer's lowest-index representative without a join target and let a non-converging cluster publish `result: Fresh` — the axis's strongest claim — as its recovery. `Default`, `abi_eq`, `abi_eq_opt`, `is_abi_conservative` and the per-parameter conservative-read accessors are unchanged; the generated baseline moves by exactly one added line. The variant makes the result dimension's conservative value nameable for the first time (`ownership-inference.md` §6.1); the companion ruling — a whole summary's conservative spelling is its **absence**, so non-convergence publishes nothing — is a typecheck-interior obligation of the same wave (safety register R21), not a carrier change.
-
-**S103 — the R5 value-layout carrier: the soundness-coupled Copy/value predicate single-sourced beside `HeapHeader` (increment II Wave 1; `design/arch/ownership-inference.md` §6.3, resolving FIXME 0468).** Increment II's *one* genuinely-new cross-crate edge. `value_layout(ty: &ConcreteType, type_defs: Option<&SymbolTables<C, L>>) -> Option<ValueLayout>` + `pub const VALUE_LAYOUT_MAX_WORDS: usize = 1` land in `crates/cranelisp-types/src/heap.rs` (beside `HeapHeader`, its natural home — a pure classification over the persisted type-def view both crates already hold). `Some(ValueLayout { words })` ⟺ Copy-eligible (scalar, or a single-ctor ADT with exactly one transitively value-eligible field) ∧ ≤ `VALUE_LAYOUT_MAX_WORDS` words; `None` ⟺ today's heap/scalar representation. **Why it lives here and not in either consumer (Principle 7, the same mirror-defect logic as the `render_type` and `ownership_analysis_off` single-sourcings):** typecheck's `Copy` mode classifier and backend's `HeapCategory::Value` arm are **soundness-coupled** — a param moded `Copy` whose representation the backend did *not* flatten is a pointer bit-copied with no `rc_inc`, a missing-inc UAF — so two independent copies of the predicate is not merely inconsistent but unsound; ONE predicate, both delegate, neither derives its own (the backend's narrowness counterweight, Principle 2). `ValueLayout` is a **classification result** (a `HeapCategory` analogue — recomputed each compile, never serialised), so it carries no serde and is `#[non_exhaustive]` for the multi-word extension (§7.2). Landing it is a representation change ⇒ `CACHE_SCHEMA_VERSION` bump **14 → 15** (rejects every pre-R5 `.o` wholesale via the manifest `cache_format_version` global key, `cranelisp-backend/src/cache/manifest.rs`). Carrier + unit tests only in Wave 1; the `HeapCategory::Value` consuming arm + the F2v single-ctor witness are the Wave-3 backend work, and the predicate lands **with** that mechanism design's sprint, never ahead (Principle 8) — here it lands in Wave 1 because the sprint sequenced the carrier + schema bump first, gating both Wave-2 (typecheck classifier) and Wave-3 (backend arm). Narrative: `interfaces.md` §"R5 value-representation flattening".
-
-**S121 — declaration access for value layout.** The additive
-`value_layout_with_lookup<C, F>` takes a borrowed closure returning an owned
-`Binding<C>` at an exact `ModuleFullPath`/`Symbol` key. The existing table
-function wraps this one walk; `type_ctor_names` shares its private constructor
-projection. Staging policy belongs to typecheck's existing lookup, while types
-owns eligibility and releases metadata before recursive lookups. Typecheck
-routes both Copy and uniqueness eligibility through its shared private adapter
-over that view. Backend retains its table API. No schema,
-platform ABI or live-redefinition rule changes. Current contract:
-[R5 value layout](interfaces.md#r5-value-representation-flattening) and
-[types lookup rustdoc](../../crates/cranelisp-types/src/heap.rs).
-
-**`Def` entry construction — the builder (Tier 1, production).** `ModuleEntry::Def` carries ~11 fields, six of which are construction-time defaults at every static-table / mount call site (`callees`, `value_use`, `trait_origin`, `seq`, `ast`, `code`). Enum variants cannot use `..Default::default()`, so hand-rolled `ModuleEntry::Def { … }` struct literals spell out all 11 fields even where only three matter. `ModuleEntry::def(scheme, kind) -> DefBuilder<C>` is the single production constructor for `Def` entries: chainable setters for the construction-time concerns (`visibility` — defaulting to `Public`, `docstring`, `param_names`, `trait_origin`, `seq`, `ast`, `codegen_view`), terminated by `.build()` (or the `From<DefBuilder<C>>` conversion). There is **no `got_slot` setter** — the slot rides the callable `DefKind` variants (S83), so a slot-carrying caller passes it inside the kind it builds with (an earlier revision of this paragraph listed `got_slot` among the builder setters; that was drift against source, corrected S119/FIXME 0919). `callees` and `code` are deliberately *not* settable — they are runtime-state fields written downstream (callees by typecheck's `finalize_check_result`, code by backend after `compile_to_module`); the builder is construction-time-only, keeping the runtime-state single-source-of-truth invariants intact (Principle 7). The builder is the multi-consumer Tier-1 piece shared by `cranelisp-primitives` static-table assembly, `int`'s synthetic-module mount (FIXME 0242), and the Tier-2 test helpers. It realizes the `declare_def` helper deferred by FIXME 0241; the broader `declare_adt` / `declare_special_form` / `declare_trait` vocabulary remains deferred (minimum mechanism — only the `Def` constructor has two real production consumers today).
-
-**S110 — the ADT-entry builder: registration derives through ONE function (R-2, Principle 24 "Resolve once").** One level up from the Tier-1 `Def` builder: `AdtCtorSpec` + `build_adt_entries(fqtn, type_params, type_var_ids, adt_docstring, ctors, visibility) -> Vec<(Symbol, ModuleEntry<C>)>` (`crates/cranelisp-types/src/adt_build.rs`) is the single derivation of the FULL entry set an ADT registration produces — the product/sum split (S79 Option 3a), per-ctor got-slotted `DefKind::Constructor` `Def`s with synthesised `ConstrADT` bodies, canonical `member_key(Type, Ctor)` keying + bare-name `Import` aliases for sum ctors (S109), the product type facet + docstring fallback, and the sum `TypeDef`, with `TypeDefInfo` computed once. Its two production consumers — typecheck `adt.rs::register_type_def_with_ctor_infos` (user `deftype`) and int `src/bootstrap.rs::register_synth_adt` (synthetic seeds) — previously maintained this shape as a near-line-for-line mirror that S109's keying change had to be hand-edited into twice (the `src/`-audit R-2 finding); they become thin callers. The builder is PURE: callers keep GOT-slot allocation (pre-allocated on the spec), insertion policy (typecheck's §8.6.5 contest classification runs over the returned `Import` alias pairs — the only `Import` shape the builder emits), the recursive-field pre-seed, and product accessor synthesis. No serde-shape change (existing entry shapes ⇒ no `CACHE_SCHEMA_VERSION` impact). Narrative: `interfaces.md` §"ADT-entry builder"; caller wiring is the S110 Phase-5 coordinated `/dev` change-set.
-
-**Test-support symbol-table construction (Tier 2, feature-gated, NOT in the production baseline).** `cranelisp_types::test_support` (compiled only under `#[cfg(any(test, feature = "test-support"))]`) hosts `SymbolTableBuilder<C, L>` — a **generic, content-agnostic** convenience for building a single populated `SymbolTable<C, L>` from declared entries, for use by OTHER crates' test suites (typecheck's unit suite). It shares only the Tier-1 `ModuleEntry::def` constructor with production; it carries no specific module's content (no Option/IO/primitive schemes — that domain content is typecheck-owned Tier 3). The boundary is deliberate: the builder covers per-`SymbolTable` construction only; the multi-module `SymbolTables` DashMap, the session-level type-id allocator, and bootstrap ordering between synthetic modules are typecheck's Tier-3 concern (content- and bootstrap-aware). Pure `#[cfg(test)]` would be crate-local and invisible to downstream test builds, hence the `test-support` Cargo feature is the visibility mechanism. The `public-api.txt` baseline is generated WITHOUT `--features test-support`, so `test_support` never enters the production contract — that delineation is what makes the test-only boundary enforceable.
-
-**The broader "instantiate a module symbol table from a source" generalization stays deferred (S81 /arch ratification, closing FIXME 0239).** A `ModuleSymbolTableSource` trait family — one abstraction the four production source-paths (`cranelisp-primitives::PRIMITIVES_TABLE` static; int's `src/bootstrap.rs` mount; platform's `src/platform.rs` manifest registration; the `.meta.json` cache reload) would be generic over — is NOT introduced, because no consumer needs to dispatch over an unknown-at-compile-time source kind. Three of those paths are constructive and already share the right abstraction at the *entry* level (the Tier-1 `ModuleEntry::def` builder, above); the fourth (cache reload, `crates/cranelisp-backend/src/cache/serialize.rs`) is serde deserialization, not a construction path at all. A source-trait would unify paths that share no behaviour beyond "produce a `SymbolTable`" — added surface for an abstraction no consumer is generic over (Principle 6 — complexity has a budget). The original test-fixture motivation (S72 W2 /review I-3) is settled by the Tier-2 `SymbolTableBuilder` above (test fixtures construct from builders that flex the data-structure surface rather than mirror `PRIMITIVES_TABLE`); any drift-guard wanted for typecheck's in-crate `seed_test_primitives` test helper is a `/typecheck` test-discipline matter, not an architectural-facade gap. Re-open only if a future source must be dispatched generically.
-
-**Trait contracts (marker traits for cross-crate windows).** The crate hosts empty marker traits that downstream crates implement to supply concrete types where the boundary is generic. Concrete window types live in the owning crate, not here, so this crate stays ignorant of backend and runtime concrete state.
-
-**Out of scope.**
-- Anything that would invert the dependency graph (Cranelift types, JIT/linker types, the integration-layer code carrier)
-- Pipeline orchestration (int)
-- Runtime intrinsics (intrinsics — §4b)
-- Per-form transient typecheck-internal state
-
-**What crosses the boundary.**
-- Every type in this crate is a boundary type by definition. The crate IS its surface. The full enumeration is at `crates/cranelisp-types/public-api.txt` (auto-generated by `cargo public-api`); per-item rustdoc lives on the items themselves and can be browsed via `cargo doc -p cranelisp-types --no-deps`.
-
-**Per-surface documentation.** Unlike the other crate-shaped surfaces, `cranelisp-types` has no separate `facades/types.md` document — the source-side rustdoc (crate-root `//!` narrative in `crates/cranelisp-types/src/lib.rs` plus per-item `///` comments) IS the facade. Decision retired the facade as a permanent record in S69 Submission 42 per Principle 7 (single source of truth) and lived-experience cost of dual-maintenance. The `public-api.txt` baseline gates the surface at PR time per the baseline-diff discipline (see `design/arch/CLAUDE.md` §"Baseline-diff discipline"); rustdoc-coverage is the source-side equivalent of the per-crate facade-compliance test for the other crates.
-
----
-
-## Cross-references
-
-- `principles.md` — architectural principles
-- `facades/{crate}.md` — per-surface facade specs (as-designed public surface)
-- `interfaces.md` — narrative companion to `crates/cranelisp-types/`
-- `spec/` — language definition
+**What crosses the boundary.** Every public item is a boundary type; the crate
+is its surface. Cache serialization rules and runtime-only exceptions are in the
+[types memory](../../crates/cranelisp-types/CLAUDE.md).

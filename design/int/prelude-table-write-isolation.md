@@ -353,7 +353,6 @@ The delivered structural evidence retained by
   mount, the third session-init census row.
 - `src/platform.rs::register_platform_in_tc` — the canonical own-definition
   DLL-load seam and its named legal skip.
-- `design/int/s121-c6-visit.md` §10 — the C6 visit that closes this census.
 - `src/cluster.rs` (`insert_cluster`:337) — the Wave-3a-β scaffold gate call
   (normally-empty entries loop).
 - `crates/cranelisp-primitives/src/declarations.rs:314` — `bit-and` IS a bundled

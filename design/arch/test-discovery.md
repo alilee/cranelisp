@@ -4,7 +4,7 @@
 (user-converged 2026-06-06, **fourth convergence** — the user answered every open
 question of the third convergence; the design is now SETTLED). The fork-join
 error-slot ferry obligation decided in this document **landed in S76** and is recorded
-**closed** in `bounded-contexts.md` §4b invariant 13 (both join paths ferry; the prior
+**closed** in `bounded-contexts.md` §4b (invariant 13: both join paths ferry; the prior
 "pre-existing defect / neither boundary ferries" reading is closed, the ferry is the
 regression guard). The design rationale below (the correctness argument for why
 ferrying makes `catch-runtime-error` sound under lenient/Par evaluation) is retained as

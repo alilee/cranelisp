@@ -1403,7 +1403,7 @@ once). The shutdown hooks:
 ### 2.20 Arg-lifetime across suspension — the invariant-15 keep-alive (S98, FIXME 0486; landed `75f286d`)
 
 The seam §0 line 150 names ("the arg-lifetime-across-suspension discipline") is now specified.
-Its canonical statement is **`bounded-contexts.md` §4b invariant 15** (`/arch`-owned; cite, do
+Its canonical statement is **`bounded-contexts.md` §4b, invariant 15** (`/arch`-owned; cite, do
 not restate); this is its interior realization.
 
 **The contract.** A reactor-deferred poll effect (any leaf that returns `Pending` — launch /

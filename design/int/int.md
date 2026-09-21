@@ -2,33 +2,25 @@
 
 Owner: `/design`. Single source of design intent for the integration layer (`src/` + `crates/cranelisp-exe-bundle/`). Authored Sprint 63; refreshed Sprint 64 against the pinned Decision 40 / 41 / 42 + Principle 14 / 15 configuration.
 
-**Sprint 122 — selected Binary/int closure.** `s122-closure.md` is the current
+**Sprint 122 — selected Binary/int closure.** `design/int/s122-closure.md` is the current
 entry point for the approved reload/session, macro/quote, result-root, `/mem`,
 diagnostic-recovery and eval-client review. It records the source-reconciled
 mechanics, one continuous Phase-5 reservation and the explicit stop on an
-ungrounded public codegen-failure trigger. `s121-c6-visit.md` remains the
-preceding complete-surface record: it states the ordered bundles, the per-FIXME dispositions,
-and the exact source and module-test reservations. Its thesis in one line: int
-stops carrying private copies of facts its neighbours now own — the symbol
-lifecycle, the result-root rule, the RC primitive, the instantiation trigger —
-and in the same visit makes the cache-restored world equal the freshly-built one
-for a module's declared children, written trait impls, module aliases and
-monomorphic instances. It consumes the S121 upstream contracts (the unified
-lifecycle machine and its single `CACHE_SCHEMA_VERSION` 24→25 window, the
-approved `instantiate_demands` reload seed, the written-trait-impl carrier with
-its C3 producer, the scoped module-alias walk and its one key mint, backend's
-canonical result-root glue, the runtime pair's typed handle vocabulary) and
-decides nothing they own.
-The subordinate docs it re-rules —
-`prelude-table-write-isolation.md`, `impl-redefinition-hot-reload.md`,
-`macro-turn-ownership.md`, `session-transaction.md` §10, `result-owner.md` —
-carry their own amendments in place.
+ungrounded public codegen-failure trigger.
+
+**Int holds no private copy of a neighbour's fact.** The symbol lifecycle,
+alias-key mint, result-root rule, RC release and instantiation trigger are
+owned upstream (`design/arch/symbol-table-lifecycle.md`,
+`design/arch/module-alias-scoped-lookup.md`, `ConcreteType::result_root`, the
+intrinsics consume funnels, `instantiate_demands`); int consumes them and
+decides nothing they own. `design/int/int.md` §12.1 states the standing review rejects that keep it
+so, and `design/int/int.md` §16.0 the obligations still open against it.
 
 **S121 correction, approved 2026-09-04.** Committed publication outcomes leave
 processing in one stack-owned, move-only receipt and are settled once by eval,
 dependent recheck, or the pool route before that route handles `Done`, `Gap`,
 or `Err`; neither scheduler/session state nor source continuation stores them.
-Public exposure is guarded only at `NameCandidate` routes—the obsolete
+Source does not realise this receipt; §16.0 records the gap. Public exposure is guarded only at `NameCandidate` routes—the obsolete
 binding-shaped no-op closure gate deletes. Synthetic tables are constructed
 off-map through fallible lifecycle operations, so the public constructor is
 `pub fn CompilerSession::new(settings: SessionSettings, project_root: PathBuf,
@@ -152,17 +144,10 @@ Three structural notes about the surface worth naming:
 
 ---
 
-## 3. Current-state summary (structural map) — AS-BUILT S110
+## 3. Current-state summary (structural map)
 
-> **S110 currency pass (FIXME 0607).** This section was rewritten from the S81-era snapshot
-> it carried (which cited "Total today: 28,592 LOC", a `session_v4.rs` 6,452 / `worker.rs`
-> 2,868 god-file pair, a phantom `observability.rs → src/scheduler_trace/` rename that never
-> happened, and FIXME-0109 "Wave D carried"). **Wave D has since LANDED** — `eval.rs` and
-> `repl.rs` are split out of `session_v4.rs`, which is now a thin lifecycle facade over a
-> `session_v4/` submodule directory — and the S101 dev-session transaction landed as
-> `redefine.rs`. Per-file LOC is deliberately **not** re-pinned (it rots; the memory lesson
-> — counts are knowable from `wc -l src/**/*.rs`, not durable in docs). The map below is by
-> **subsystem + module home**, current as of S110.
+The map is by subsystem and module home. Per-file line counts are deliberately
+not pinned; `wc -l` over `src/` is the current measure.
 
 The two structural facts that dominate the tree today:
 
@@ -184,10 +169,10 @@ The two structural facts that dominate the tree today:
 | Session lifecycle + shared state | `session_v4.rs` (facade) + `session_v4/{lifecycle,shared_state,nice_worker,types}.rs`; `session_setup.rs` (construction helpers independent of `CompilerSession`) |
 | Scheduling + workers | `scheduler.rs` (+ `scheduler/tests.rs`) — the single coordination authority; `worker.rs` (+ `worker/tests.rs`) priority/nice loops + codegen/cache subsystem; `worker_pool.rs`; `thread_util.rs` |
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
-| Cluster processing | `cluster.rs` (`PreparedCommit`; crate-private `ProcessAttempt` + move-only `PublicationReceipt`; `process_cluster` compatibility entry). `ProcessedCluster` carries no committed outcomes. |
+| Cluster processing | `cluster.rs` (`process_cluster` → `ClusterOutcome::{Done, Gap}`; `ProcessedCluster` carries warnings, resolved imports, introspection records, the committed `RedefinitionOutcome`s and the boxed `PreparedCommit`, which lives in `worker.rs`). The approved move-only publication receipt is not realised; see §16.0. |
 | REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
 | REPL command/display surface | `src/repl/` — five files; §3.3 states the structure and `src/CLAUDE.md` §"Session/REPL module map" lists the members |
-| Dev-session transaction | `redefine.rs` — the S101 dependent-recompilation machinery (`session-transaction.md`): `AbiSurface` summary-diff, `RedefKind`, on-demand `ReverseIndex`, reverse-topo recompile, `mark_broken`/trap-stubs, `TransactionReport` |
+| Live redefinition | `redefine.rs` — the guarded-redefinition gate, blocking-dependent scan, instance-rematerialization policy, `RedefKind` slot classification and the retention pool (`session-transaction.md`); it still carries the superseded dependent-recompilation machinery recorded in `design/int/int.md` §16.0 |
 | Import/export + prelude fallback | `imports.rs` (+ `imports/tests.rs`) — the int-side installer; the `prelude_fallback` mechanism (`src/CLAUDE.md` §"Prelude as a resolution FALLBACK") |
 | Bootstrap seeds | `bootstrap.rs` — `mount_synthetic_modules` (special forms, intrinsic types, `macros`/`Option`/`IO`/`Trace` seeds) |
 | Macro execution | `expander.rs` (the `JitMacroExpander` invocation core + expand loop); `marshal.rs` (sexp marshaling) |
@@ -197,7 +182,7 @@ The two structural facts that dominate the tree today:
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
 | Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` transform (wired live S84; `bind-chain-analysis.md`) |
-| Observability sinks | `observability.rs` (+ `observability/tests.rs`) scheduler/worker event log; `io_trace.rs`; `got_trace.rs`; `sched_dump.rs` — all env-var-gated ring buffers. **(The S81-era "renames to `src/scheduler_trace/`" plan never happened and is retired; `observability.rs` is the stable home.)** |
+| Observability sinks | `observability.rs` (+ `observability/tests.rs`) scheduler/worker event log; `io_trace.rs`; `got_trace.rs`; `sched_dump.rs` — all env-var-gated ring buffers. |
 | Embedded agent | `src/agent/` (fully `#[cfg(feature = "agent")]`; `agent.md`) |
 | `Code` carrier + aliases | `code.rs` — `SessionSymbolTable`/`SessionModuleEntry` aliases; `Code` is re-exported from `cranelisp-backend` (Decision 41) |
 | Pipeline helpers | `pipeline.rs` (`resolve_module_file`, shared worker/eval helpers) |
@@ -474,7 +459,7 @@ Cranelift 0.116 leaks per-function memory on default `Drop` (`cranelift-jit/src/
 
 1. Wrapping `JITModule` in our `Jit` wrapper with a custom `Drop` that calls `unsafe free_memory()` once.
 2. Refcounting `Jit` via `Arc`, with one `Arc<Jit>` clone per `Code::Jit { jit, ptr }` entry. With Decision 41's per-symbol cardinality, that's one clone per entry, no sharing.
-3. Per-redefinition reclaim falls out: REPL user redefines `(defn f [x] x)` → old `ModuleEntry::Def` is replaced → prior `Code::Jit` drops → `Arc<Jit>` decrement → `Arc::drop` → `Jit::drop` → `unsafe free_memory()`.
+3. Reclaim follows the last owner. A redefinition does **not** free the replaced body: every retaining publication path moves the displaced `Code` into the session retention pool, because a detached strand or heap closure may still execute it (`session-transaction.md` §6). Its pages are reclaimed at session end, or at replacement only on the two non-pooling paths §6.1 there names.
 
 **Carry-forward invariant** (typecheck's defn re-registration upsert, Wave 3b discovery; the S64 typecheck program module is now Git history and the seam needs re-anchoring against HEAD): `register_defn_signature` clones the existing `code: Option<C>` forward into the rebuilt entry on REPL upsert. Without this, mid-typecheck `Arc<Jit>` drop would call `free_memory()` on JIT pages still referenced by the GOT slot before the new code address is written. This is the fix that made `C: Clone` a `CodeStore` super-bound (Decision 32 Wave 3 close).
 
@@ -485,10 +470,10 @@ Cranelift 0.116 leaks per-function memory on default `Drop` (`cranelift-jit/src/
 | Scenario | Module | Lifetime | Reclaim trigger |
 |---|---|---|---|
 | REPL eval | Fresh `JITModule` for `__expr` | Per-eval | Custom `Drop` on `Jit` after value consumed |
-| Defn JIT (per-symbol) | Fresh `JITModule` per `compile_to_module` | `Arc<Jit>` per entry | Last `Arc<Jit>` clone drops (eviction / redefinition) |
+| Defn JIT (per-symbol) | Fresh `JITModule` per `compile_to_module` | `Arc<Jit>` per entry | Last `Arc<Jit>` clone drops — at session end for a pooled displaced body |
 | Object | `ObjectModule` | Per compile batch | Plain `Drop`; no executable memory to reclaim |
 
-Verified by `tests/v4_jit_reclaim.rs::decision31_scenario2_per_redefinition_jit_pages_reclaimed` — observes Arc refcount transitions and `jit_free_memory_call_count()` increment.
+No current test observes per-JIT reclaim; the former Decision 31 Scenario 2 reclaim test was removed.
 
 **Decision 28 retraction**: the older "per-worker persistent JIT" framing (Decision 28) was retracted by Decision 31 — long-lived per-worker JIT coalesces batches and defeats Scenario-2 reclaim. Don't perpetuate.
 
@@ -714,7 +699,7 @@ Production batch (`shared.introspection == None`) skips the populate path entire
 ### 8.2.1 `/disasm` — on-demand disassembly (Decision 41)
 
 `/disasm <name>` does NOT read a stored field. The handler
-(`src/repl.rs::handle_disasm`) re-derives the disassembly at the keystroke:
+(`src/repl/commands.rs::handle_disasm`) re-derives the disassembly at the keystroke:
 
 ```text
 handle_disasm(name):
@@ -766,7 +751,7 @@ This closes the S86 ledger guard `disasm_command_shows_native_code_for_compiled_
 ### 8.2.2 `/info` macro card — clause-count line (`repl/spec.md §11.2.2`)
 
 `/info <macro>` renders through `format_def_entry` → `format_macro_display`
-(`src/repl.rs`). Per `repl/spec.md §11.2.2` the macro card MUST, for a
+(`src/repl/format_type.rs`). Per `repl/spec/11-macro-introspection.md` §11.2.2 the macro card MUST, for a
 **multi-clause** macro, emit a clause-count summary line after the per-clause
 signature lines:
 
@@ -847,30 +832,23 @@ Per `facades/int.md` §"Composed introspection flows": slash commands are compos
 
 Universal output format (Sprint 14): `:Type {value|name} ; {classification} - {docstring}` + optional related symbol comment lines. Defined in `repl/spec.md`; implemented across `Sess::format_*` family.
 
-### 8.6 Redefinition transaction — dependent recompilation + ABI-epoch slot versioning (S101)
+### 8.6 Live redefinition — guarded publication and slot versioning
 
-Redefinition is no longer unconditionally a GOT-slot patch. The staging→live commit gains a
-**summary-diff gate** (at stage M: alpha-canonical type scheme; increment I appends the
-ABI-bearing `ModeSummary` half): ABI-preserving redefinitions keep today's reuse-and-patch
-late-binding path at today's cost (L-D1); ABI-changing redefinitions allocate a **fresh GOT
-slot**, freeze the old one on retained code, and run the **dependent-recompilation
-transaction** on the eval thread — reverse-index-derived affected-set closure, SCC
-reverse-topo re-typecheck + recompile, cascade failures surfaced as **BROKEN** symbols with
-in-place trap-stub slots + provenance (`/info`/`/sig` answer broken status). Full design:
-**`design/int/session-transaction.md`** (scope authority
-`design/arch/ownership-inference.md` §5; pinned backend interface
-`design/backend/ownership-codegen.md` §8.3). New session state: `SharedState.broken` +
-`SharedState.retained_code` (the paired provenance-string/`Code` retention pool). The
-watcher Replace path joins the same commit gate (per-symbol slot policy; slot-zeroing
-retired) at module grain.
+`repl/spec/18-redefinition.md` §18 is normative: a replacement is fully checked
+and compiled before live state changes, and an ordinary callable redefinition
+never recompiles a dependent, marks a symbol broken or installs a trap. Int
+realizes it inside the ordinary prepared transaction:
 
-**S102 amendments**: the §10 T1 downgrade (non-concrete targets) is no longer silent —
-the turn prints the `repl/spec.md` §18.1.1 `stale:` section (data contract:
-`session-transaction.md` §9.1.1); the T1 full cure (end-of-turn module-grain reload) is
-designed with preconditions and recommended for S103. The S102 /int defect-wave cluster
-designs (persistence integrity D1/D2/0489, file-backed dev-loop D3/0487,
-display/diagnostic batch) live in **`design/int/s102-defect-wave.md`**, including the
-Principle-23 scenario-space matrices that FIXME 0496's unit drain derives from.
+- the guard rejects a declaration-class or visibility change, a
+  language-type change with a blocking dependent, and a same-type replacement
+  whose ownership ABI differs;
+- an admitted generic base or overload family rematerializes its prior
+  concrete instances into the same candidate (`design/int/s122-closure.md` §2);
+- the commit gate's `RedefKind` decides slot reuse versus a fresh slot, and
+  every displaced compiled owner enters the session retention pool.
+
+Full design: **`session-transaction.md`**. The S102 persistence and dev-loop
+cures it relies on are in **`s102-defect-wave.md`**.
 
 ---
 
@@ -900,7 +878,7 @@ REPL display path AND production batch CLI display path call this — one format
 — **the subject presentation** — is int's, and this is its ruling.
 
 Two spellings reach the user that never should
-(`repl/spec.md` §5.5, new this sprint):
+(`repl/spec/05-error-presentation.md` §5.5):
 
 | Seen | What the user wrote |
 |---|---|
@@ -987,7 +965,7 @@ live-state snapshot (a fifth instrument, not a sink) is in its §8.
 
 | Sink | Activator | What it observes | Implementation |
 |---|---|---|---|
-| Scheduler trace | `CRANELISP_SCHEDULER_TRACE=1\|*\|<module-list>` | Worker lifecycle, scheduler dispatch, pool transitions, `is_typechecked` hit/miss | `src/observability.rs` (+ `observability/tests.rs`) — the stable home; the S81-era "renamed `src/scheduler_trace/`" plan never happened and is retired |
+| Scheduler trace | `CRANELISP_SCHEDULER_TRACE=1\|*\|<module-list>` | Worker lifecycle, scheduler dispatch, pool transitions, `is_typechecked` hit/miss | `src/observability.rs` (+ `observability/tests.rs`) |
 | IO trace | `CRANELISP_IO_TRACE=1\|*` | IO trampoline transitions, platform effects, Par fork-join | `src/io_trace.rs` |
 | GOT trace | `CRANELISP_GOT_TRACE=1\|*` | GOT-slot writes: JitWrite, LinkerWrite, Redefinition, SlotFreeze, TrapPatch | `src/got_trace.rs` |
 | Introspection store | `RunMode::Repl` only (D1 §4) | Per-symbol metadata: source, sexp, clif_ir, code_size, compile_duration | `SharedState.introspection` |
@@ -1011,13 +989,68 @@ The fourth sink (introspection) is a per-key store, not a ring; it serves slash 
 | Observability | §11. Four sinks; one pattern; all production-batch zero-cost. The four-pattern uniformity is a deliberate design choice — once a developer learns the IO-trace shape, the GOT-trace and scheduler-trace shapes are mechanically the same. |
 | Concurrency-safety (P4) | §10 invariants. Decision 31 reclaim safety invariant ("Arc-refcount-zero means no fn pointer reachable") is upheld by the GOT swap discipline + the language-level "function values are heap closures, not raw code pointers" rule. Per-symbol mutability discipline removes the per-form whole-module write lock. Decision 41's per-symbol JIT cardinality eliminates batch-level Arc-clone aliasing. |
 | Performance (P6) | Per-symbol JIT (Decisions 31 + 41) is the chosen target — long-lived per-worker JIT (Decision 28) was retracted because it coalesces batches and defeats reclaim. Persistent worker pool (Decision 27) avoids per-module thread spawn cost. Cache-hit-via-`LoadObject` skips codegen entirely on cache-hit. Production batch zero-overhead introspection (`shared.introspection == None`) and zero-overhead observer ring buffers (no observer registered → relaxed load + null-check branch). |
-| Testability (P5) | `process_form` is a free function over `&SharedState` — testable with a synthetic SharedState. The scheduler's wait/notify primitives are unit-testable in isolation. `Code` reclaim verified by `tests/v4_jit_reclaim.rs` (Decision 31 Scenario 2). `Introspection` populate paths are conditional on a single discriminator — easy to assert in integration tests. The observer contracts are unit-testable: register a captured-events observer; assert events fired in the expected order. |
+| Testability (P5) | `process_form` is a free function over `&SharedState` — testable with a synthetic SharedState. The scheduler's wait/notify primitives are unit-testable in isolation. `Introspection` populate paths are conditional on a single discriminator — easy to assert in integration tests. The observer contracts are unit-testable: register a captured-events observer; assert events fired in the expected order. |
 
 Sprint 116 touches maintainability, performance, and testability at the typed
 result exit: one owner state machine accepts three keyed code-housing adapters;
 scalar results stay call-free; observe-before-release and exact-once behavior are
 unit-testable with recorded callbacks. It does not change compiler-internal
 concurrency or the observability sink architecture (`result-owner.md` §7).
+
+### 12.1 Standing review rejects
+
+Each item names a structure int must not reintroduce. The subject document
+carries the rule; this list is the review checklist.
+
+1. **A second lifecycle representation** — an int predicate re-deriving slot
+   legality, origin×state legality, concreteness or tombstone conservation
+   (`design/arch/symbol-table-lifecycle.md`).
+2. **A source-form instantiation replay** — re-injecting an `__expr` or any
+   other form to re-mint instances; reload carries demands as data
+   (`design/int/s122-closure.md` §2).
+3. **A cache-specific parallel** — child, written-impl or alias restoration on
+   the restore branch only; a silent pick on written-impl divergence; any
+   tolerance for an empty `written_trait_impls` vector (`cache-hit-loading.md`
+   §0).
+4. **An alias outside the one mint** — a `module_aliases.insert` key not produced
+   by `cranelisp_types::module_alias_key`, a bare-key fallback beside the
+   scoped walk, or a substitution that accepts an undeclared alias.
+5. **A name-shape test in presentation** — branching on `def`, `-def`, a
+   `*-def` suffix, `stdlib` or a module identity (Principles 10 and 19).
+6. **A projected macro presentation** — a presentation scheme, parallel store,
+   post-publication scan, dry invocation typecheck or cache field predicting the
+   type of invoking a macro (`s117-conformance-recovery.md` §6).
+7. **A compensating RC walk in `src/marshal.rs`** — the releaser is intrinsics'
+   `consume_sexp` (`macro-turn-ownership.md`, protocol Rule 5).
+8. **A lexical annotation test** — a `starts_with(':')` or string-prefix
+   dispatch standing in for `Sexp::Annotated`
+   (`design/arch/annotated-sexp-node.md` §7).
+9. **A GOT-cursor write or a direct platform pointer store** — manifest slots
+   are ordinary claims and the DLL owns its slab
+   (`design/arch/platform-interface.md` §6.4).
+10. **A panic at the platform load boundary** — manifest refusals are located,
+    diagnosed load errors.
+11. **A macro-specific publication writer** — macro checkpoints publish through
+    the ordinary prepared publication, including `fresh_jit_drop_glues` pairs.
+12. **A split compiled publication or early owner release** — publishing before
+    every compiled owner attaches, owner-bearing ordinary staging, or dropping a
+    returned owner before refused GOT cells are restored
+    (`design/arch/symbol-table-lifecycle.md` §4.4).
+13. **A retained temporary macro world or replayed checkpoint** — any
+    `PreparedMacroTurn`, `TurnCheckWorld`, `TurnDelta`, candidate-clause
+    invocation, reserved unpublished slot or cross-module rollback; or a retry
+    that re-expands an already-committed macro (`s117-conformance-recovery.md`
+    §1.1.2).
+14. **Persistent publication receipts** — committed outcomes in a scheduler
+    mailbox, `SharedState`/`ModuleState`, parking record, cache field or source
+    continuation (`s117-conformance-recovery.md` §1.1.3).
+15. **A binding-shaped closure gate** — any exposure predicate over `Binding`
+    beside the candidate-shaped gate (`prelude-table-write-isolation.md` §2.4).
+16. **A bootstrap lifecycle panic** — `unwrap`, `expect` or `unreachable!`
+    asserting a fallible lifecycle transition during session construction.
+17. **Dependent recompilation on an ordinary redefinition** — re-typechecking,
+    recompiling, breaking or trap-patching a dependent where §18 requires
+    rejection (`session-transaction.md` §0).
 
 ---
 
@@ -1042,23 +1075,13 @@ Retracted/superseded Decisions deleted (rely on git for history) include 28 (per
 
 ## 14. As-designed vs as-built
 
-The S64 Decisions (40, 41, 42) and the FIXMEs that close them (0098, 0099, 0100, 0103, 0104, 0107, 0108) define a destination shape that the source has not yet reached. The drift is real and tracked; this section is the consolidated map.
-
-| Drift | As-built today | As-designed (post-FIXME) | Tracker |
-|---|---|---|---|
-| Typed gap-orchestration errors | Ad-hoc string-parsing in `worker.rs` to detect `Gap`-shaped error returns | Typed pattern-match on `Err(CheckError::Gap(...))` and `Err(ExpansionError::Gap(...))` | FIXME 0098 Phase 4 |
-| GOT trace observer | None — GOT writes are silent | `src/got_trace/` ring buffer; `cranelisp_backend::register_got_observer` registered at session startup | FIXME 0099 Phase 2 |
-| Single-consumer type homes | `CheckError`, `ResolutionGap`, `CompilationError` live in `cranelisp-types` | Live in their originating crates (`cranelisp-typecheck`, `cranelisp-backend`); int imports directly | FIXME 0100 |
-| `trace.rs` + `io_trace.rs` location | Live in `cranelisp-runtime/src/`; ~1,690 LOC of int concerns in runtime | Live in `src/trace/` + `src/io_trace/`; runtime exposes `IoObserver` callback contract; int registers from session startup | FIXME 0103 (Decision 40) |
-| `PlatformError` shape | Stringly-typed `Result<…, String>` + `CranelispError::ModuleError` with embedded message | Structured `PlatformError` enum with per-variant `ErrorLocation`; `CranelispError::Platform(PlatformError)`; `Sess::format_error` Platform arm | FIXME 0104 (Decision 42) |
-| `display.rs` location | Lives in `cranelisp-backend/src/display.rs` (831 LOC) | Lives in `src/display.rs` (or sub-module of REPL session); BC §6 alignment | FIXME 0108 |
-| `code.rs` location | Lives in `src/code.rs` (397 LOC) | Lives in `cranelisp-backend/src/code.rs`; int re-exports | Decision 41 (no specific FIXME; bundled with 0098) |
-| Backend per-symbol JIT cardinality | `compile_to_module` returns a tuple; int unpacks at `worker.rs:2860–3018` | `compile_to_module` returns `Result<(), CompilationError>`; backend writes `Code::Jit` directly via `SymbolTable::write_code` | Decision 41 (bundled with 0098) |
-| god-file decomposition | **LANDED (S110).** `session_v4.rs` is a thin facade over `session_v4/`; `worker.rs`/`process_form.rs` carry `*/tests.rs` + helper submodules; `repl.rs` → the five-file `src/repl/` (§3.3) | Decomposed per the §3.1/§3.3 module map | FIXME 0109 (session_v4/worker) + 0606/0627 (repl) — all resolved |
-| Legacy `session.rs` | 543 LOC of v3 session code lingers | Deleted; v4 is the only pipeline | 2026-04-23 src audit (Git history), F6 — open `/dev` work |
-| `lib.rs` narrowing | 18 public modules exported | Narrows to facade-shape exports (`CompilerSession`, worker loops, scheduler types, etc.) | 2026-04-23 src audit (Git history), F5 — open `/dev` work |
-
-The destination shape is the working reference for design. The as-built reality is the working reference for source navigation. Every drift row above has a closure mechanism — either a numbered FIXME or an audit recommendation.
+The S64 destination rows this section once tracked have landed (verified
+against source 2026-09-21): gap orchestration matches typed `CheckError::Gap`;
+the GOT, IO and scheduler trace sinks live in `src/`; `PlatformError` is a
+structured `cranelisp-types` enum; `display.rs` lives in `src/`; the legacy v3
+`session.rs` is deleted; and the god-file decomposition is complete (§3.3).
+`src/lib.rs` exports ten public modules; no filing currently tracks narrowing it
+further. Open Binary/int work is §16.0.
 
 ---
 
@@ -1076,6 +1099,76 @@ dispositions never executed, and on files since deleted.
 
 ## 16. Open questions / FIXMEs filed
 
+### 16.0 Open Binary/int obligations (verified against source 2026-09-21)
+
+The S121 C6 visit delivered most of its bundles; these obligations remain open
+in source. Each owning filing stays the tracker; this list is the design intent.
+
+- **Annotation-mirror tail (FIXME 0708).** Four lexical `src/` mirrors of the
+  retired pre-fold annotation shape survive and each goes one way:
+  `worker::leading_annotation_len` (a constant-`0` stub) deletes with its
+  caller's `annotation_prefix` plumbing and its pin test;
+  `save.rs::is_bare_colon` and `expander::is_annotation_symbol` are re-expressed
+  as matches on `Sexp::Annotated`; `pretty.rs::is_type_annotation_list`, its
+  `pp_type_annotation_list` helpers and the `starts_with(':')` symbol-role arms
+  delete, because the printer's `Sexp::Annotated` arms already render the
+  annotation. The printer deletion removes a wrong-accept, not dead code: a
+  macro can mint a symbol spelled with a leading colon, which is not an
+  annotation and must render with an ordinary role. Its arming evidence is a
+  printer unit row that fails before the deletion — a hand-built
+  `(:Int 42)`-shaped list with a colon-spelled head symbol takes no
+  type-annotation span — plus colour-off identity and colour-on span rows.
+- **Import-alias key mint (FIXME 0798 residue).** The fresh and restore
+  import-alias writers in `src/imports.rs` still key through the private
+  `alias_key` helper. The key value equals
+  `cranelisp_types::module_alias_key`'s, but the private mint must delete so the
+  one types-owned mint is the only key source (§12.1 reject 4).
+- **Located platform-signature refusal (FIXME 0933).** A manifest signature
+  whose checked type retains a free type variable is refused structurally:
+  `SymbolTable::install_platform` requires a concrete type, and
+  `register_platform_in_tc` wraps the refusal as a load error naming the
+  platform module and function. Int owns the frame: the refusal must stay a
+  diagnosed load error, never a panic, and should name the offending leaf. No
+  test pins this refusal, and whether the current text names the leaf is
+  unverified; the filing stays open until a platform-module unit row shows a
+  concrete signature registering and a bare-lowercase-leaf signature refusing.
+- **Load-boundary lifecycle validation.** The cache decoder treats only an
+  instance-key mismatch as stale (`cache-hit-loading.md` §0). Whether other
+  invalid decoded lifecycle states can restore is unmeasured; attribution
+  belongs to `qa` and the fix, if needed, to the types/backend owners.
+- **Superseded dependent-recompilation machinery.** `src/redefine.rs` still
+  contains the S101–S103 transaction (`run_transaction`, `mark_broken` and trap
+  stubs, the T1 end-of-turn reload and its error block, `TransactionReport`
+  sections). It serves no current requirement and should delete
+  (`session-transaction.md` §0). Reachability differs by leg. The per-symbol
+  transaction runs only for an admitted language-type change, which the guard
+  admits only without a blocking dependent, so its closure should be empty
+  (read from source). The T1 reload is not guarded that way: a redefinition
+  where either the prior or the staged entry is slot-less — for example a
+  same-type generic body edit after realization, which changes no slot shape —
+  whose target has compiled callers satisfies `is_t1_downgrade`, and
+  `drive_t1_full_cure` would then reload the target and dependent modules,
+  which §18.1 excludes. `qa`'s S122 REPL probe of that shape (generic `f`,
+  named compiled caller `g`, same-type body edit, concrete twin as control)
+  observed conforming public behaviour: `g` returned the new value, the turn
+  printed only the ordinary confirmation, and no dependent was visibly
+  re-typechecked. Whether the reload leg executed is still unobserved — the
+  probe's sentinel was unarmed and confounded by stale macro persistence — so
+  this remains a suspected defect, not a confirmed one. The discriminating
+  observation is at the seam: whether `drive_t1_full_cure` reaches
+  `reload_module` on that input.
+- **Unrealised publication receipt.** The approved 2026-09-04 rule (the S121
+  correction above; `s117-conformance-recovery.md` §1.1.3) moves committed
+  outcomes in a move-only `PublicationReceipt` owned by a `ProcessAttempt`
+  wrapper. Neither type exists in `src/`. Committed `RedefinitionOutcome`s
+  ride `ProcessedCluster` inside `ClusterOutcome::Done`, and eval settles them
+  through `apply_redefinition_outcomes` only on paths that reach it; an error
+  returned from `codegen_and_execute` skips settlement. Standing reject 14
+  holds: nothing stores the outcomes in scheduler or session state. Today the
+  only consumers of those outcomes are the superseded machinery above, so
+  whether the rule is still owed or retires with that machinery is an
+  authority question for `arch` and the user, not a wording fix.
+
 **S116 typed-context exit:** FIXME 0745 remains open for implementation. Its
 design question is settled by `result-owner.md`: int owns the successful result
 through final display/exit conversion and releases it once through the approved
@@ -1087,7 +1180,7 @@ heap-header, cache-schema, or private release mechanism is required.
 **S81 Wave 9a — light int items:**
 
 - **FIXME 0013** (`/int`) — `observability.rs::reset_panic_hook_installed_for_tests` mutates process-global panic-hook state without a serialisation lock. Add a `static TEST_GUARD: Mutex<()>` and take it at the top of every test that touches the install path. ~10 LOC; test-only; no baseline impact.
-- **FIXME 0217** (`/int`) — inline-module spec §8.2.2 step-2 parent-file rewrite. `handle_mod` (`worker.rs:2650`) calls `write_inline_mod_to_disk` (step 1) but never rewrites the parent file's `(mod name forms…)` → `(mod name)` (step 2). Real behavioural gap (the "one-time creation" + "indistinguishable from manually created" semantics are violated; `inline_body` persists in the symbol table forever). Needs the rewrite + a reload of the parent's structural decls + a new integration test (target /qa for the test). Files: `worker.rs`, possibly `repl/spec.md` §15.4.
+- **FIXME 0217** (`/int`) — inline-module spec §8.2.2 step-2 parent-file rewrite. `handle_mod` (`worker.rs:2650`) calls `write_inline_mod_to_disk` (step 1) but never rewrites the parent file's `(mod name forms…)` → `(mod name)` (step 2). Real behavioural gap (the "one-time creation" + "indistinguishable from manually created" semantics are violated; `inline_body` persists in the symbol table forever). Needs the rewrite + a reload of the parent's structural decls + a new integration test (target /qa for the test). Files: `worker.rs`, possibly `repl/spec/15-session-persistence.md` §15.4.
 - **FIXME 0266** (`/dev (int)`) — move the `trace` SpecialForm metadata entry from the `primitives` module to root `""`. As-built: `bootstrap.rs::register_trace_type` (~L894) inserts it into the `primitives` table; the 2026-06-04 root-special-form ruling + corrected FIXME 0241 Trace row require it at root `""` alongside the structural special forms. ~1-line mount-move (the `Trace`/`TraceCall` ADT + accessors STAY in `primitives` — form/ADT asymmetry). Regression check: `/imports`/`/exports primitives`/`/info trace` reflect the new placement; recognition is parser-side (`Expr::Trace`) and does not consult this entry, so dispatch is unaffected.
 
 **S81 Wave 9b — FIXME 0109 Waves A/B/C only** (see §3.4). The carry boundary: Wave D + the dependent observability harvest cluster co-carry to the next arc sprint.
@@ -1145,7 +1238,7 @@ dev-direct disposition:
   CLASS as the S112-guarded `impl user/Functor for user/Functor` defect. `/testing`
   pins first (repl/spec.md §1.3); `/repl` tightens §1.3 to the canonical-home rule
   (6b). No int design elaboration beyond this constraint.
-- **FIXME 0674** (startup restore notice, `repl/spec.md` §15.2.2) — **dev-direct**.
+- **FIXME 0674** (startup restore notice, `repl/spec/15-session-persistence.md` §15.2.2) — **dev-direct**.
   Implement at the session-restore seam: emit `; resumed N definitions from
   <file>` when startup restores a **non-empty** backing file, **suppressed** when
   absent/empty (fresh-dir transcripts stay byte-identical). Count = restored

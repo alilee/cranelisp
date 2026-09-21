@@ -279,7 +279,7 @@ parallel-store defect P7 forbids.
 ## 9. S121 allocation (the C6 H1 blocker, discharged 2026-09-01)
 
 The S121 C6 int visit verified the carrier had **no producer and no scheduled
-producer** (`design/int/s121-c6-visit.md` §5.2) — an enrolment loop over a
+producer** — an enrolment loop over a
 permanently empty vector cannot flip the discriminator. `arch` rules the
 allocation rather than rejecting the feature (SPRINT's C3 scope row already
 carried "populate the already-landed written-trait carrier"; the C3 design
@@ -300,8 +300,9 @@ question):
   inventing a local transaction vocabulary, alongside `bounded-contexts.md`
   §2's `instantiate_demands` contract.
   Zero typecheck public-API delta; zero schema delta (§6).
-- **C6 (int, bundle N3) — the restore enrolment**, exactly as §5 and the C6
-  visit §5.2 design it, at both cache entry points, after the writer's
+- **C6 (int, bundle N3) — the restore enrolment**, exactly as section 5 of this
+  contract and [cache-hit loading](../int/cache-hit-loading.md) design it, at both cache
+  entry points, after the writer's
   dependency closure installs. N3's entry gate "0869 producer placed" reads
   **"C3's producer landed"**.
 - **Order:** C3 before C6's N3 — already the §9 stream order of

@@ -8,7 +8,7 @@ this crate.
 This crate is the **user-callable** half of the language runtime library (kebab-case,
 symbol-table-addressable ops: `add-i64`, `str-concat`, `vec-len`, …); its backend-paired
 sibling `cranelisp-intrinsics` hosts the backend-emitted-call substrate (alloc/RC/drop,
-IO trampoline). Canonical BC + direction: `design/arch/bounded-contexts.md` §4a and
+IO trampoline). Canonical BC + direction: `design/arch/bounded-contexts.md` §4a, and
 `design/primitives/primitives.md` — do NOT restate them here.
 
 ## The public Rust surface is ONE item (Decision 0048, S68)

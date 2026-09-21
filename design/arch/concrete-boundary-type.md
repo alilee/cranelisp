@@ -503,13 +503,6 @@ This is filed as a FIXME `target: /dev` (cache decoupling, part of the Phase-4-p
 - **Risk:** LOW (spec text) for the relaxation; any representation-exploitation is separately scoped.
 - **Size:** SMALL (the relaxation) + open-ended (exploitation, out of arc).
 
-### Phase 5 — relax §12.1 (now genuinely backend-internal)
-
-- **Crates:** `spec/` (the staged 0373(iii) wording), no compiler change required by the relaxation itself.
-- **Work:** land the staged §12.1 relaxation (backend-chooses-representation). Optionally, backend may *then* exploit it (unboxed small ADTs, `char`/`u16`/`f32`) — but that exploitation is future capability, not part of this arc's correctness.
-- **Risk:** LOW (spec text) for the relaxation; any representation-exploitation is separately scoped.
-- **Size:** SMALL (the relaxation) + open-ended (exploitation, out of arc).
-
 ### Sequencing + gating
 
 **RE-SEQUENCED (/arch, 2026-06-16, user-directed): Phase 1 → 2 → 4 → 3 → 5.** Phase 4 (mono-completeness + generic-body elimination) runs *before* Phase 3 (backend consumes `MonoExpr`), because Phase 3 requires every instance to have a `MonoExpr`, which only Phase-4 part A delivers (Phase 2b's `allowed_vars` carve-out admits instances with no `MonoExpr`). Within Phase 4: part A (mono-completeness — suppress the spurious partial-instance mint; delete the carve-out) strictly before part B (generic-body elimination — exclude `Polymorphic` from both codegen-target filters), because B removes the template fallback that an incomplete instance would otherwise rely on. Phase 1 + 2a + 2b LANDED. Phase 1 is independent. The interim S84 guards (§3.11.1 check + deferred 0381 backstop) hold the soundness line across the gap until Phase 3 retires them — they are why the arc can stage without re-opening the SIGSEGV.

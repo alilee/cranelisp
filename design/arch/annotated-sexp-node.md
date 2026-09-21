@@ -315,7 +315,7 @@ cache/mod.rs:371`, currently 22).
 > list-head string test is live at relocated loci
 > (`src/pretty.rs:583` `is_type_annotation_list` — still
 > `name.starts_with(':')` — and `:590`). Rows 2–4 are owned by the S121 C6
-> visit (`design/int/s121-c6-visit.md` §7.3: the stub deletes outright; the
+> visit (the stub deletes outright; the
 > other two are structural re-expressions over the node, never blind
 > deletions — a deletion leaving a lexical test under another name is a
 > `/review` reject). Row 5 was not in C6's routed three and is flagged to

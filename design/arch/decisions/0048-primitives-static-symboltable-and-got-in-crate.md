@@ -118,7 +118,7 @@ The following facades and design docs must update because of this Decision (S68 
 - `design/arch/facades/intrinsics.md` — confirm `JITBuilder::symbol(name, ptr)` is intrinsics-only post-S68. No public-API change expected; doc-comment refresh only.
 - `design/arch/facades/int.md` — session-init references `cranelisp_primitives::PRIMITIVES_TABLE`. No `ring0_jit_symbols()` consumption.
 - `design/backend/module-caching.md` (FIXME 0163) — cache-hit reload carve-out for the primitives module.
-- `design/int/platform-registry-removal.md` (FIXME 0162) — GOT-as-source-of-truth narrative.
+- `design/arch/platform-interface.md` §6.4 — platform loading and registration.
 - `design/typecheck/ast-annotation.md` (FIXME 0164) — same.
 - `src/CLAUDE.md` §"JIT Symbol Names" — table row for primitives changes to "GOT-indirect via `PRIMITIVES_TABLE.got()`".
 - `design/arch/fixmes/0161-*.md` — closes with one-line note "superseded by Decision 48 (static-table-in-crate hybrid)".

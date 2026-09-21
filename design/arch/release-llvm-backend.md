@@ -174,8 +174,8 @@ Once release lowering legitimately diverges, the invariant becomes **same observ
 > the correctness oracle). D-Rel-5's "`MonoExpr` frozen" is superseded for these fields. Full contract:
 > the S100 Phase-3 arch spine **`design/arch/ownership-inference.md`** (landed 2026-07-02 — the
 > lattice §2, the two-class contract §3, sequencing §4, the R3 dependent-recompilation model §5,
-> soundness discipline §6); the §7 table and §13 have been amended in step with it.
-> Recorded in `sprints/SPRINT.md` §Architecture review (S100).
+> soundness discipline §6). This proposal's mechanism table and open-decision list were amended
+> in step with it.
 
 Perceus precision improves with borrow-vs-own knowledge. The calling convention is **uniformly consuming** (Decision 24 — the backend has no borrowing classification). **Recommendation: derive borrow/own in-backend** from `MonoExpr` use-structure (a parameter used only in non-escaping read positions is borrowable) rather than adding a facade field — preserving encapsulation at some precision cost. *Only if* in-backend derivation can't reach the precision FIXME 0408 needs does a typecheck-side ownership annotation on `MonoExpr` become warranted — and that piece would necessarily live above the backend. This is the single contingent breach of the encapsulation goal.
 

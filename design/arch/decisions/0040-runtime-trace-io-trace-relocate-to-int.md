@@ -57,7 +57,7 @@ currently hosted in `cranelisp-intrinsics` post-D43) relocate in full to
 `int` — bodies *and* JIT-emitted-call symbol registrations. The intrinsics
 crate keeps a small (~50 LOC) `IoObserver` callback contract as the IO
 trampoline's extension point for IO-state observation. `bounded-contexts.md`
-§4 / §4b's exclusion of "diagnostics, tracing, observability" from
+§4a / §4b's exclusion of "diagnostics, tracing, observability" from
 intrinsics' scope holds; the implementation drift is corrected by full
 relocation under the `--link`-rejects-`(trace ...)` premise.
 

@@ -417,7 +417,7 @@ read costs and clones no element.
 
 ## 9. References
 
-- `design/arch/bounded-contexts.md` §4a and §4b invariant 17
+- `design/arch/bounded-contexts.md` §4a, and §4b, invariant 17
 - `crates/cranelisp-primitives/src/lib.rs` crate and item rustdoc
 - `crates/cranelisp-primitives/public-api.txt`
 - `crates/cranelisp-primitives/CLAUDE.md`

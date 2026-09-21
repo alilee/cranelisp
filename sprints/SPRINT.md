@@ -1,9 +1,9 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
 **Status:** PHASE 5. The compiler corrections, bounded Haiku eval and IO reuse
-corrections have executing evidence; checkpoint `57253cf2` is committed.
-Document consolidation continues: the last integrated check has 1,000 findings
-across 593 documents. Historical audit reports are retired to Git with open
+corrections have executing evidence; checkpoint `07f46769` is committed.
+Document consolidation continues: the last integrated check has 846 findings
+across 591 documents. Historical audit reports are retired to Git with open
 points preserved in actions and existing filings. Current reservations appear
 at the end of this plan. No phase transition or publication is authorized.
 
@@ -1856,3 +1856,42 @@ assertion changed, so no broad suite rerun. NOTES and the shared-package index
 pin remain unchanged. All role reservations are released; the batch remains
 uncommitted. Next document concentrations are architecture boundary/ownership
 contracts, Binary/int visit records, and specification references.
+
+### Architecture and integration document continuation
+
+Checkpoint `07f46769` records the completed consolidation and audit retirement.
+Within Phase 5, `arch` reserves top-level `design/arch/*.md`; `design` (int)
+reserves `design/int/*.md` for independent documentation-only consolidation.
+Source, tests, NOTES and the shared-package checkout are outside these writes.
+The integrated starting check is 1,000 findings across 593 documents.
+
+| Role | Provider / model / effort | Session | State |
+|---|---|---|---|
+| arch | Claude / Fable / high | `56616baf-fe9b-4b64-b2eb-9e37c1a40e3a` | completed; architecture documents |
+| design (int) | Claude / Opus / high | `b2ee8220-afb4-416a-a97a-a62a5a54d8d1` | completed; integration documents |
+
+QA read `8917f705-8a26-4eea-9410-f0f8d3cc447d` (Claude Fable high, exit 0)
+did not reproduce a generic-redefinition public failure. The named-caller
+acceptance combination remains uncovered, and the reload seam remains
+unobserved; keep both as pending Phase-5 evidence work, not a confirmed defect
+or an accepted carry. The incidental macro-persistence suspicion is retained
+in ACT-0970 for QA intake. No source behavior changed in this batch.
+
+Review `523cb9dd-1872-4c0e-8f4f-bf65dea2ca33` (Claude Fable high) inspects
+the rewritten boundary contract; design `011fbdcf-eedf-40da-a91e-8d691bfbd49b`
+(Claude Opus high) owns the bounded integration wording correction.
+
+**Integrated result:** 846 document findings, down from 1,000: 154 prior
+finding identities removed, none introduced. Diff whitespace and role wiring
+checks pass; all Rust changes are citation comments only. Review and the
+bounded design correction completed successfully; reviewer-required label
+restorations and comment repoints are applied. Their reservations are released.
+The continuation remains uncommitted after checkpoint `07f46769`.
+
+**Next cohesive work:** the architecture boundary-types guide and concrete
+boundary contract still need consolidation. Before deciding whether to realise
+or withdraw the approved publication-receipt rule, observe the generic
+redefinition reload seam; design records the unrealised rule and its current
+consumers in `design/int/int.md` §16.0. No withdrawal or implementation is
+authorised by this documentation correction. Current CLI guidance exists at
+`user/cli-reference.md`; the obsolete claim that `user/` is empty is retired.

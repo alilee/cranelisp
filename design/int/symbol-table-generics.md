@@ -178,7 +178,7 @@ The hot path (fresh build of a single module) exercises stages 3 and 4 together;
 |---|---|
 | `/typecheck` | Owns `cranelisp-types/src/module.rs` (per Decision 33). Lands the trait definitions + parameterisation in one commit alongside the typecheck-side sweep. |
 | `/backend` | Owns `compile_to_module` signature. Decides Layer 2 Option A vs B. Updates `compile-to-module.md` minor. |
-| `/platform` | No direct touch; `kept_dlls` and `platform_fn_ptr` are out of Step 5c scope. Confirms in addendum to `platform-registry-removal.md`. |
+| `/platform` | No direct touch; `kept_dlls` and platform function pointers are out of Step 5c scope (the DLL owns its GOT slab, `design/arch/platform-interface.md` §6.4). |
 | `/qa` | Wave 5 reclaim test (Decision 31 Scenario 2) is the headline verification. Without the test, the Step 5c claim is unverified. |
 | `/repl` | New demo vignette: redefine + `/mem` showing live-bytes drop. |
 

@@ -48,7 +48,7 @@ The result is an AST where parallelisable IO groups are explicit, enabling the b
 ### Input
 
 - **Expanded AST** (`Program`, i.e. `Vec<TopLevel>`): the output of macro expansion and AST building, before typechecking. Bind chains appear as nested `Expr::Apply(Var("bind"), [io_expr, Lambda([name], body)])`.
-- **Scheduling class registry** (`HashMap<String, SchedulingClass>`): maps platform function names to their scheduling class, populated during DLL loading (see §4 below).
+- **Live symbol tables and the current module**: the scheduling class of a direct platform call is read from the callee's `CallableOrigin::PlatformEffect` entry (see §4 below).
 
 ### Output
 
@@ -93,9 +93,8 @@ This walks the nested structure: each bind's lambda body is either another bind 
 
 For each `io_expr` in the chain, `classify_expr()` determines the scheduling class:
 
-1. If `io_expr` is `Apply(Var(name), ...)`, look up `name` in the scheduling class registry.
-2. Try bare name first, then strip module prefix (`platform.stdio/print` → `print`).
-3. Default to `Sequential` for any expression that is not a direct platform function call (function composition, nested binds, let expressions, etc. are conservatively sequential).
+1. If `io_expr` is `Apply(Var(name), ...)`, resolve `name` to its defining entry (§4).
+2. Default to `Sequential` for any expression that is not a direct platform function call (function composition, nested binds, let expressions, etc. are conservatively sequential).
 
 This conservative approach means only direct calls to platform functions with known scheduling classes are eligible for parallelisation. Wrapper functions that call platform functions are treated as sequential — the analysis does not chase through function bodies.
 
@@ -226,55 +225,28 @@ the retry-from-top property is preserved.
 
 ## 4. Platform Scheduling Data Access
 
-### Data Flow
+The symbol table is the only store of platform-function facts; there is no
+side registry.
 
-The scheduling class registry must be available to the bind chain analysis pass. The data originates from platform DLL manifests:
-
-```
-DLL manifest → OwnedPlatformFnDescriptor.scheduling_class
-  → registered during load_and_register_platform()
-    → stored in ???
-      → passed to bind chain analysis
-```
-
-The sketch stores this in `TypeChecker.platform_scheduling: HashMap<String, SchedulingClass>` and provides `tc.scheduling_of(name)`. The reimplementation's typechecker does not currently have this field.
-
-### Design
-
-Add a `platform_scheduling: HashMap<Symbol, SchedulingClass>` field to the `CompilationSession` (not the typechecker — the scheduling class is a pipeline concern, not a type system concern). This keeps the typechecker crate free of platform dependencies.
-
-The field is populated during platform DLL loading in `load_and_register_platform()` (already called in `compile_graph_only()` before module compilation begins). Each descriptor's `(name, scheduling_class)` pair is inserted.
-
-The bind chain analysis pass receives a `&HashMap<Symbol, SchedulingClass>` (or a wrapper with a `scheduling_of(name) -> SchedulingClass` method) when invoked.
-
-**Alternative considered**: Store in `TypeChecker` as the sketch does. Rejected because the typechecker crate (`cranelisp-typecheck`) should not depend on `cranelisp-platform` for a single enum. The scheduling class is only used by this pass, which lives in the binary crate.
-
-**Alternative considered**: Pass the full `OwnedPlatformFnDescriptor` list. Rejected because only the scheduling class is needed, and the descriptors may not be retained after loading.
-
-### Lookup Logic
-
-```rust
-fn scheduling_of(
-    registry: &HashMap<Symbol, SchedulingClass>,
-    name: &str,
-) -> SchedulingClass {
-    // Direct lookup (bare name after import).
-    if let Some(sc) = registry.get(name) {
-        if *sc != SchedulingClass::Sequential {
-            return *sc;
-        }
-    }
-    // Qualified name fallback: "platform.stdio/print" → "print".
-    if let Some(pos) = name.rfind('/') {
-        if let Some(sc) = registry.get(&name[pos + 1..]) {
-            return *sc;
-        }
-    }
-    SchedulingClass::Sequential
-}
-```
-
-This matches the sketch's `classify_expr` approach. The function strips module qualifiers because bind chain expressions may reference platform functions by their qualified import name.
+- **One entry per platform function.** Platform load (`src/platform.rs::register_platform_in_tc`,
+  sequence in `design/arch/platform-interface.md` §6.4) installs each manifest
+  function in the `platform.{name}` module as one callable entry whose
+  `CallableOrigin::PlatformEffect { scheduling_class, poll_shape }` carries the
+  manifest's scheduling data. Its GOT slot is the manifest index; the module's
+  GOT wraps the DLL's exported slab (§5.3 of the same document), so no host code stores a
+  function pointer.
+- **Lookup follows resolution.** For a direct call `Apply(Var(name), …)`, a
+  slashed name is looked up in its named module; otherwise the name resolves
+  from the current module through its import and re-export chain to the
+  terminal entry (`cranelisp_types::resolve_terminal_entry_and_home`). Only a
+  terminal `PlatformEffect` origin yields a class; a user-function wrapper,
+  a non-platform callable, or an unresolved name classifies `Sequential`.
+- **Why no bare-name fallback.** Matching on the unqualified symbol would let
+  two platforms that export the same name collide; resolution through the
+  defining module is exact.
+- **The launch predicate reads the same record.** `poll_shape` from that origin
+  feeds the §3.7 E3 token-0 refusal, so classification and launch eligibility
+  cannot disagree about which entry was called.
 
 ---
 

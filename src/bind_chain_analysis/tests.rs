@@ -353,7 +353,7 @@ fn test_scheduling_of_qualified_name() {
     );
 }
 
-// spec: design/int/platform-registry-removal.md §9.1 —
+// spec: design/int/bind-chain-analysis.md §4 —
 // bind_chain_analysis reads scheduling_class from ModuleEntry::Def
 // (post-G8 migration: no PlatformRegistry).
 // spec: 10-io.md §10.12.1 — idempotency (the retry-from-top requirement, §5.2).
@@ -460,7 +460,7 @@ fn test_dependent_via_let_rhs_stays_sequential() {
     );
 }
 
-// spec: design/int/platform-registry-removal.md §9.1 —
+// spec: design/int/bind-chain-analysis.md §4 —
 // bind_chain_analysis reads scheduling_class from ModuleEntry::Def
 // (post-G8 migration: no PlatformRegistry).
 #[test]

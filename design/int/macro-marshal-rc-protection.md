@@ -253,8 +253,8 @@ other; SPRINT.md Track-C §4.1).
 - **Principle 21** — actors + the function between them named before the
   mechanism (§0).
 - **Principle 26** — protect by counting the reference the marshaller actually
-  holds, not by a floor heuristic (`safety-invariants.md` §2: the leak is a
-  retained reference the RC must reflect).
+  holds, not by a floor heuristic (the leak is a retained reference the RC
+  must reflect; see the [assurance ladder](../arch/safety-invariants.md#2-the-assertion-mechanism-ladder)).
 - **Principle 18 / Principle 7** — the deep protection is single-sourced with the
   allocation whose retention it accounts for (§2.1(a)); the completeness
   obligation names every cell kind (§2.1) so no variant grows an unprotected slot.

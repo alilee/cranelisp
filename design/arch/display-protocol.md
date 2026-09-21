@@ -311,5 +311,5 @@ outstanding.
 - `design/arch/tracing.md` §3.4 — the descriptor bake/emit contract (JIT + object mode).
 - `repl/spec.md` §1.5 — the aspirational List/Seq forms + the current normative generic-ADT form.
 - `design/arch/fixmes/0050-promote-list-seq-pretty-printer-aspirational.md` — the originating FIXME (`target: /int`; deleted at the follow-on exit gate, §9.6).
-- `design/arch/bounded-contexts.md` §3 (backend bakes) / §4b invariant 12 (intrinsics hosts the formatter) / §6 (int result-display) — the surfaces the two render paths sit in.
+- `design/arch/bounded-contexts.md` §3 (backend bakes), §4b (invariant 12: intrinsics hosts the formatter) and §6 (int result-display) — the surfaces the two render paths sit in.
 - Principle 7 (single source of truth), Principle 19 (no module privileged by name), Principle 6 (complexity budget), Principle 8 (no interim implementations) — the axioms the containment rests on.

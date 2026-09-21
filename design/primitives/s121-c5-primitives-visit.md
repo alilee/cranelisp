@@ -9,7 +9,7 @@ pair; the `cranelisp-intrinsics` half — the handle vocabulary, the discharge
 walk, the IO teardown slice — is `design/intrinsics/ownership-and-disposal.md`
 and is named here only where this crate consumes it or hands it something.
 
-**Authority.** Elaborates `design/arch/bounded-contexts.md` §4a and
+**Authority.** Elaborates `design/arch/bounded-contexts.md` §4a, and
 `design/primitives/primitives.md`. Consumes, without re-deciding: the cross-pair
 typed-handle contract (`design/runtime/s119-typed-consume-funnel.md`, held and
 reconciled by the intrinsics pass — **this visit does not edit it**), the

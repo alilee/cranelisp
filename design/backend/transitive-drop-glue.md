@@ -6,7 +6,7 @@ post-W3 (S118)** as the ruling on the entry check's single measured escapee
 (FIXME 0891).
 **Subordinate to:** `backend.md`.
 **Architecture inputs:** `design/arch/safety-invariants.md` R15;
-`design/arch/bounded-contexts.md` §4b invariant 16; S116 arch rulings 1, 2, 7,
+`design/arch/bounded-contexts.md` §4b, invariant 16; S116 arch rulings 1, 2, 7,
 8, 9 (`sprints/archive/sprint-116.md`); **S118 arch rulings 9 and 10**
 (`sprints/SPRINT.md`) — ruling 10 makes the atomic legacy-emitter deletion
 architecturally binding, not capacity policy.

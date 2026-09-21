@@ -313,7 +313,7 @@
 //! body expression is an `Expr::ConstrADT { type_name, tag, fields, span }`
 //! node (see `crates/cranelisp-types/src/ast.rs` for the node shape and
 //! `crates/cranelisp-types/src/module.rs` `DefKind::Constructor` rustdoc
-//! plus `bounded-contexts.md` §7 "Multi-legged authoring" for the
+//! plus `design/arch/symbol-table-lifecycle.md` for the
 //! ctor-as-Def shape and rejected alternatives). The resulting
 //! `ModuleEntry::Def` carries
 //! `kind: DefKind::Constructor { type_name, tag, field_count, internal }`

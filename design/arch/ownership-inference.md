@@ -1,16 +1,21 @@
 # Ownership inference — one analysis, five queries (the memory-model spine)
 
-**Status:** DESIGN (S100 Phase 3) — the master architecture spine for interprocedural
-ownership inference. Authored by `/arch` under the S100 Phase-2 **SIGN-OFF WITH REVISIONS**
-(R1–R8, `sprints/SPRINT.md` §Architecture review) and the **user-directed R3 resolution**
-(2026-07-02: dependent recompilation, not ABI-pinning). Pre-implementation; pre-user-ratification
-at sprint close. **Phase-3 exit gate passed 2026-07-03 (§12 — PASS-with-notes; FIXMEs
-0467/0468/0469 drained into §3.3/§6.3/§3.1(b)).**
-**Owner:** `/arch`. Subsystem-design peer of `effect-concurrency.md`.
-**Role:** the **scope authority** the per-crate proposals cite —
-`design/typecheck/ownership-inference.md` (parts 6–11), `design/backend/ownership-codegen.md`
-(parts 12–16), and the `/qa` verification plan (parts 17–18, `tests/plan/`). Where a per-crate
-proposal and this spine disagree, this spine governs until amended.
+**Owner:** `arch`. Subsystem-design peer of `effect-concurrency.md`.
+**Role:** the architecture contract for interprocedural ownership inference — the lattice,
+the typecheck→backend contract classes, the conservative point and its oracle, and the
+redefinition model. The interiors are
+[typecheck's analysis](../typecheck/ownership-inference.md) (parts 6–11) and
+[backend's mechanisms](../backend/ownership-codegen.md) (parts 12–16); the verification plan
+is [`tests/plan/s100-ownership-verification.md`](../../tests/plan/s100-ownership-verification.md)
+(parts 17–18). Where an interior design and this contract disagree, this contract governs
+until amended.
+**Status:** adopted. The carriers (`crates/cranelisp-types/src/ownership.rs`), the typecheck
+pass (`crates/cranelisp-typecheck/src/ownership/`) and backend consumption of published
+summaries exist in source. This document states the contract; it does not grade how much of
+each increment (§7) is delivered — the interior designs and the verification plan own that.
+The user-directed R3 resolution (dependent recompilation, not ABI pinning) governs §5; the
+interim live-redefinition restriction it implies is tracked by
+[ACT-0953](../../sprints/actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md).
 **Provenance / measured basis:** the S99 ablation settlement (`sprints/archive/sprint-99.md`;
 `effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2.6–.7; `tests/plan/s99-measurement.md`) —
 the parallel slowdown is essentially all contention, dominated on release by **(b) atomic-RC
@@ -67,7 +72,8 @@ actors map — one producer, one boundary, five queries, five consumers.
   already lives, `traits/monomorphise.rs`): computes the analysis per module-cluster, after
   mono instantiation, as a fixpoint over the mono call graph.
 - **The boundary** (`cranelisp-types`, `/arch`-owned): `MonoDefn`/`MonoExpr`
-  (`src/mono_expr.rs`) + the callable's symbol-table entry (`src/module.rs`). Carries the
+  (`crates/cranelisp-types/src/mono_expr.rs`) + the callable's symbol-table declaration
+  (`crates/cranelisp-types/src/lifecycle.rs`). Carries the
   analysis outputs down; persists the per-function **mode summary** via `.meta.json`
   (a serialised `SymbolTable` — `module-caching.md` §14.1).
 
@@ -185,10 +191,9 @@ construction. The one place widening is NOT free is the ABI-bearing mode vector,
 must widen together* — which is precisely why it is classed ABI-bearing (§3.1) and why R3 exists
 (§5). **Enforcement arm (S111 assessment): this property protects the widening direction only —
 every optimization is a NARROWING that elides a safety operation, and each narrowing must carry a
-mechanical check against the conservative reference (`design/arch/safety-invariants.md`;
-Principle 25 "Narrowing carries its check",
-`principles/25-narrowing-carries-its-check.md`, ratified at S111 Phase-7 close
-2026-07-18). The §6.2 oracle is thereby elevated from test
+mechanical check against the conservative reference ([safety invariants](safety-invariants.md);
+[Principle 25 "Narrowing carries its check"](principles/25-narrowing-carries-its-check.md)).
+The §6.2 oracle is thereby elevated from test
 technique to reference semantics: an elision is correct iff equivalent to the conservative
 lowering, and an elision whose conservative twin is unreachable is inadmissible.**
 
@@ -238,8 +243,9 @@ relocating site (never a widening of the fact, and never a new analysis input):
    backend synthesizes a spark thunk (`MonoExpr::Lambda`) whose frame pops at the join,
    relocating a sparked arg / `let`-RHS computation out of the frame the escape fact was
    computed against; the backend declines stack-alloc for any construction it compiles inside a
-   spark-thunk body. Spark placement is codegen-internal (`lenient-eval.md` §2; the confinement
-   §5.2 over-approximation is a coarse superset of this set, NOT a substitute for it — see the
+   spark-thunk body. Spark placement is codegen-internal
+   ([sparkability analysis](../backend/lenient-eval.md#2-sparkability-analysis); the
+   typecheck design's confinement over-approximation is a coarse superset of this set, NOT a substitute for it — see the
    0525 ruling for why confinement is the wrong axis).
 
 The pattern is a **property of the escape query's boundary**, not a mechanism: the escape fact
@@ -339,18 +345,11 @@ already exhibit exactly the dual-entry shape §10 item 6 asks about for user fun
 **GOT-backed Decision-24 value path** for closure/HOF use (synthesized zero-capture closure
 wrappers resolving through standard GOT-indirect dispatch — `compile_operator_as_value`,
 `compiler/literals.rs:263`, operator wrapper map at `:239`). The per-crate proposals treat this
-as the precedent informing the dual-entry candidate. **As-built gap, recorded honestly:** the
-precedent is only partially real today — `vec-get`/`vec-set`/`vec-push` allocate GOT slots that
-stay **NULL** (no extern body exists; `cranelisp-primitives/src/lib.rs` rustdoc on the
-vec-query-family insert, ~:245–262); only `vec-len` has an extern shim; and the
-operator-as-value wrapper map covers arithmetic/comparison only. Value-use of the vec query
-family is a **verified defect** (`/qa` triage, S100 Phase 3: `vec-get`/`vec-set`/`vec-push` as
-values SIGSEGV through the NULL slot in both `--run` and the REPL; failing-not-ignored repros
-`tests/vec_query_value_use.rs` + green `vec-len` control; owner `/backend`). **Sequencing pin:
-the fix precedes the §3.1(b) sibling landing (same registration seam) and the R2
-value-wrapper seam — wrapper emission must never route value-use of a summary-carrying
-primitive through a NULL slot** (backend proposal §12.7 carries the same requirement). The
-target design implies every primitive gets a real GOT-backed value entry.
+as the precedent informing the dual-entry candidate. **Standing constraint: wrapper emission
+must never route value use of a primitive through a slot that holds no body.** The vec query
+family is realised inline and carries no slot by construction
+(`crates/cranelisp-primitives/src/tests.rs::vec_query_family_is_inline_and_has_no_slot`);
+value use of an inline primitive is fenced end to end by `tests/vec_query_value_use.rs`.
 
 **Boundary pins (all Decision-24-by-construction — modes never cross these edges):**
 
@@ -408,31 +407,15 @@ for non-escaping temporaries, non-atomic RC for confined values, and reuse are a
 per-site permissions; the ABI-bearing vector is what makes the *interprocedural* read-path
 (callee-borrows-its-param) reach through calls.
 
-### 3.3 The designed carrier fields (LANDED S102 — CS-A)
+### 3.3 The carrier fields
 
-> **No `cranelisp-types` edit lands in S100.** The fields below are the designed shape the first
-> implementation sprint lands, `/arch`-authored, with the `public-api.txt` + `interfaces.md` +
-> [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) cascade and a `CACHE_SCHEMA_VERSION` bump in that change-set. Landing them now would be
-> speculative-interface debt (Phase-2 ruling).
->
-> **LANDED 2026-07-03 (S102 Phase 3, CS-A)** — one `cranelisp-types` change-set, one
-> `CACHE_SCHEMA_VERSION` bump (11 → 12), covering this section's shape plus the typecheck
-> needs-list enrichments (`design/typecheck/ownership-inference.md` §2.2 items 1–12) and the
-> FIXME-0476 `PrimitiveBody::{Extern, Inline}` reshape riding the same bump. Carrier home:
-> `crates/cranelisp-types/src/ownership.rs` (+ `module.rs`/`mono_expr.rs` fields). Item-12
-> ruling: the read-once `CRANELISP_NO_OWNERSHIP` gate relocated to
-> `cranelisp_types::ownership_analysis_off()` (backend delegates; one polarity, one function —
-> Principle 7). Cascade landed: `public-api.txt` (types only; six consumer baselines verified
-> unchanged), `interfaces.md` §"Ownership-inference carriers", [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) "S102 — Principle 20
-> applied one level down". Carrier-only: nothing produces or consumes summaries until
-> typecheck CS-1..4 / backend B1-be+.
-
-Sketch (still subject to the implementing sprint's `/arch` pass; enriched shape folded in
-2026-07-03, resolving FIXME 0467 — the typecheck proposal's §2.2 carries the field-by-field
-justification):
+The carriers live in `crates/cranelisp-types/src/ownership.rs`; their rustdoc and the types
+`public-api.txt` are the exact contract, and the typecheck design carries the field-by-field
+justification. The one analysis-off gate is `cranelisp_types::ownership_analysis_off()`;
+backend delegates to it (one polarity, one function — Principle 7). The shape, annotated
+with the role each field plays in this contract:
 
 ```rust
-// cranelisp-types/src/mono_expr.rs (designed)
 pub enum Mode { Owned, Borrowed, Copy }            // §2.1; Unique is NOT a Mode — see below
 
 pub struct ModeSummary {                            // per callable
@@ -448,9 +431,11 @@ pub struct ModeSummary {                            // per callable
     // uniqueness-as-mode deliberately absent: not static ABI (R4)
 }
 
-pub enum ResultMode { Fresh, ProjectionOf(usize), AliasOf(usize) }  // §4.4
-// S111 adds MayAliasOf(usize) — the COW point (§3.7; pinned diff + consumer
-// census in interfaces.md §"Ownership-inference carriers"; schema 19→20)
+pub enum ResultMode {                               // §4.4
+    Fresh, ProjectionOf(usize), AliasOf(usize),
+    MayAliasOf(usize),                              // the COW point (§3.7)
+    MayAliasAny,                                    // the result axis's ⊤ (§6.1)
+}
 pub enum ParamFlow  { Consumed, IntoResult, Retained }              // makes Q2 interprocedural
 
 // MonoDefnVariant gains: pub mode_summary: Option<ModeSummary>,   // None ⇒ Decision 24
@@ -474,25 +459,25 @@ at every summarised call — `(defn keep [x] (Some x))` vs `(str-len s)` are ind
 `spark_ops` is what makes Q3 interprocedural (§2.3's propagation question, now with a field).
 Defaults preserve strict additivity: absent/omitted ⇒ `Fresh` / all-`Retained` / all-set /
 `false` — byte-for-byte the Decision-24 conservative point, so old caches and unresolved edges
-deserialise to today's behaviour. Two small carriers ride the same implementing-sprint
-change-set: the **per-entry value-use mark** (typecheck §8.3 — tells the backend wrapper
-emission is required) and the **declared-fact payload on `DefKind::Primitive` entries**
-(§3.1(a); plus the optional `borrowed_sibling_slot` when a §3.1(b) sibling is registered —
-backend §9.1).
+deserialise to today's behaviour. Two small carriers accompany the summary: the **per-callable
+value-use mark** (tells the backend wrapper emission is required) and, for primitives, the
+**declared facts** of §3.1(a) plus the optional borrowed-convention sibling slot of §3.1(b),
+which rides the extern-shim realization only.
 
-The symbol-table half: `ModeSummary` joins the **callable `DefKind` variants** (the S83
-Principle-20 reshape put `got_slot` on `UserFn`/`Primitive`/`Constructor`/`PlatformEffect`; the
-mode vector correlates with callable-ness the same way and rides the same variants —
-non-callable kinds carry no summary field by construction). Serde-visible ⇒ persisted in
-`.meta.json`; `#[serde(default)]` = `None` = Decision 24, so old caches deserialise to the
+The symbol-table half: the summary and the value-use mark live on the **concrete callable
+state** (`Life::Concrete`), beside the slot they correlate with, and on the compile-in-hand
+`MonoDefnVariant`. States with no slot carry no summary by construction. The table's
+`publish_body_ownership` updates the annotated view and the persisted summary together
+([symbol-table lifecycle](symbol-table-lifecycle.md)). Serde-visible ⇒ persisted in
+`.meta.json`; absent = `None` = Decision 24, so an entry without a summary compiles at the
 conservative point (§5.1).
 
 **The narrowness counterweight (Principle 2 — binding on both per-crate proposals).**
 `compute_last_uses`, `HeapCategory::classify`, reuse-token plumbing, and every intra-function
 site decision **stay in the backend**. The boundary carries only what locality cannot compute —
 interprocedural facts. Phase-3+ proposals must resist enriching the contract with anything the
-backend can derive soundly in-function; every proposed field addition is an `/arch` FIXME, judged
-against this sentence.
+backend can derive soundly in-function; every proposed field addition routes to `arch` and is
+judged against this sentence.
 
 ### 3.4 Tier statement + oracle (R7)
 
@@ -566,7 +551,7 @@ comparable value, no new machinery** — the slot-versioning discipline already 
 
 **Interface impact (the two halves have different answers).** The escape→stack **mechanism** itself
 stays **backend-internal** — the `escapes` site fact is already an advisory `Option<bool>` on
-`MonoExpr` (§3.3), the stack slot + immortal header are backend-local (`ownership-codegen.md` §4),
+`MonoExpr` (§3.3), the stack slot + immortal header are backend-local ([stack placement](../backend/ownership-codegen.md#4-stack-placement-for-noescape)),
 and no interface edit is owed to broaden it to statically-sized aggregates. But the **`MutBorrowed`
 ABI half DOES need a `cranelisp-types` carrier**: it is a new `Mode::MutBorrowed` variant in
 `crates/cranelisp-types/src/ownership.rs`, ABI-bearing on `param_modes`, therefore requiring a
@@ -619,7 +604,7 @@ Candidate (b) — flipping the `:590` default — is REJECTED.**
   protection on it, and must never assume it IS the param". ABI-bearing like its siblings
   (compared by `abi_eq`). Serde-visible on persisted summaries ⇒ **`CACHE_SCHEMA_VERSION`
   19→20** + types `public-api.txt` regen + `interfaces.md` §"Ownership-inference carriers" +
-  the [carrier sketch](ownership-inference.md#33-the-designed-carrier-fields-landed-s102-cs-a), all in the implementing change-set (baseline-diff discipline).
+  the [carrier shape](ownership-inference.md#33-the-carrier-fields), all in the implementing change-set (baseline-diff discipline).
   Consumer semantics:
   - transfer walk (`transfer.rs:591` match): `MayAliasOf(k)` ⇒ the join of `Fresh` with
     `arg_origins[k]` — a param-reaching arg yields `Origin::MayParam` (never collapses to
@@ -839,8 +824,10 @@ inline-`vec-get` shapes.
 
 ### 5.1 Batch (`--run`/`--link`): already conservatively covered
 
-The `.meta.json` **is** a serialised `SymbolTable` (`module-caching.md` §14); the per-callable
-`ModeSummary` joins the serde-visible payload on the callable `DefKind` variants (§3.3), gated by
+The `.meta.json` **is** a serialised `SymbolTable`
+([cache rewrite](../backend/module-caching.md#14-step-5b-cache-rewrite-via-symboltable-serialisation-sprint-58-phase-5));
+the per-callable `ModeSummary` joins the serde-visible payload of the concrete callable state
+(§3.3), gated by
 the existing `CACHE_SCHEMA_VERSION` bump discipline — old caches deserialise summaries as `None`
 = Decision 24 and, being pre-bump, are invalidated wholesale anyway.
 
@@ -1013,10 +1000,10 @@ illegal state unrepresentable by encoding ABI identity in slot identity):
   dropping (extending Decision 31 Scenario 2, whose reclaim currently fires on entry
   replacement; precedent for session-lifetime retention: `kept_dlls`). A dev-session-bounded
   leak, proportional to ABI-changing redefinitions — acceptable and measurable.
-- **Persistence footprint (binding facts, user-verified against source 2026-07-02).**
-  (i) `got_slot` values AND `next_got_slot` are serialized in `.meta.json` (§5.1's carrier;
-  `module.rs:135` — a serde-visible monotone counter, no free list; allocator at `:609`), and
-  REPL definitions **persist** (regenerated backing file per `repl/spec.md` §15.4 + the
+- **Persistence footprint (binding facts).**
+  (i) Slot indices are serialized with the symbol table in `.meta.json` (§5.1's carrier), and
+  REPL definitions **persist** (the regenerated backing file of
+  [REPL session persistence](../../repl/spec/15-session-persistence.md) plus the
   nice-worker `.o`/`.meta` writes). (ii) `.meta` slot numbers are **load-bearing against the
   `.o`'s machine code** — GOT-indirect call sites embed slot indices
   (`load(slab_base + slot*8)`) — so faithful-write after every redefinition is mandatory and
@@ -1024,13 +1011,14 @@ illegal state unrepresentable by encoding ABI identity in slot identity):
   cache-invalid full-recompile path. (iii) An ABI-changing **persisted** redefinition therefore
   leaves a **permanent hole** in the slot space that survives restart in a valid cache — 8
   bytes of GOT slab each (body-only edits take the §5.4 fast path and keep their slot).
-  (iv) The persisted `next_got_slot` high-water mark **is the freeze boundary**: a new session
-  allocates strictly above anything any cache could reference. Frozen-slot **bindings** — the
-  retained `Code::Jit`, the old code pointers — die with the session: freezing is a
-  **session-memory commitment only**, and restart is the zero-cost reclamation of the
-  retention-rule leak. (v) Load-time hole reclamation would be sound (after restart no referent
-  survives) but is **rejected — deferred indefinitely, trigger-based**: see FIXME 0466
-  (`design/arch/fixmes/0466-got-frozen-slot-reuse-at-session-load.md`).
+  (iv) **Claims and tombstones are the freeze boundary**: slot allocation scans live claims and
+  retired-slot tombstones, so a published index never silently becomes a fresh slot
+  ([symbol-table lifecycle](symbol-table-lifecycle.md), slot identity). Frozen-slot
+  **bindings** — the retained `Code::Jit`, the old code pointers — die with the session:
+  freezing is a **session-memory commitment only**, and restart is the zero-cost reclamation
+  of the retention-rule leak. (v) Load-time hole reclamation would be sound (after restart no
+  referent survives) but is **rejected — deferred indefinitely** until measured slot
+  exhaustion makes it worth its mechanism; no filing is open for it.
 - **Semantics note.** Stale code sees pre-redefinition behaviour of the whole old chain (frozen
   world), rather than today's mid-chain late-binding mix — for ABI-changing edits this is the
   *more* coherent semantic, and recompiled callers (the reachable-by-name world) are fully
@@ -1135,7 +1123,7 @@ proposal §7.1). The two are **soundness-coupled, not merely consistency-coupled
 moded `Copy` whose representation the backend did NOT flatten is a pointer bit-copied with no
 `rc_inc` — a missing-inc use-after-free. Two independently-maintained copies of a
 soundness-coupled pure predicate is the Principle-7 mirror-defect class, so ONE predicate lives
-in **`cranelisp-types` beside `HeapHeader`** (`src/heap.rs`) as a pure function over the
+in **`cranelisp-types` beside `HeapHeader`** (`crates/cranelisp-types/src/heap.rs`) as a pure function over the
 persisted type-def view both crates already hold (illustrative:
 `value_layout(ty: &ConcreteType, type_defs: …) -> Option<ValueLayout>`); both consumers
 delegate to it. The size bound (one word for the first landing — backend §7.2) is a named
@@ -1234,12 +1222,9 @@ the same fixtures). Metrics discipline carries from S99: RC-op + alloc counts
 (`CRANELISP_RC_STATS`), wall+user+sys separately, release-tier attribution, per-rep spread against
 false greens. Mandatory guards: the analysis-off differential oracle (§6.2), the ASan/UAF lane on
 the R6 suspension-escape site, and the S98-bug-#2 class (any "skip the inc" emission gets a
-starved-inc regression fence). The §3.1 triage candidate is **RESOLVED — real defect**: `/qa`
-verified value-use of the vec query family SIGSEGVs through NULL GOT slots in both `--run` and
-the REPL (4 failing-not-ignored repros + 1 green `vec-len` control,
-`tests/vec_query_value_use.rs`, ledgered; owner `/backend`; no FIXME filed — the tests are the
-record and trigger per `memory/feedback_no_fixme_with_failing_test.md`). The §3.1 sequencing
-pin applies: fix before the sibling lands and before the R2 wrapper reaches primitives.
+starved-inc regression fence). Value use of an inline-realised primitive is fenced by
+`tests/vec_query_value_use.rs`; an inline primitive has no slot by construction
+([BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types)).
 
 ---
 
@@ -1319,95 +1304,3 @@ pin applies: fix before the sibling lands and before the R2 wrapper reaches prim
 
 **To `/qa` (parts 17–18):** the plan per §9, including the differential harness shape and the
 per-increment F1–F4 target numbers.
-
----
-
-## §11. Manifestation sites when implemented (forward ledger)
-
-- `cranelisp-types`: `Mode`/`ModeSummary` (enriched shape per §3.3: `result: ResultMode` +
-  advisory `param_flow`/`spark_ops`/`result_unique`) + `MonoDefnVariant.mode_summary` +
-  `MonoExpr` site facts (incl. projection provenance) + callable-`DefKind` summary field +
-  the per-entry value-use mark + the `DefKind::Primitive` declared-fact payload (§3.3) —
-  `/arch`-authored, first implementation sprint, with `public-api.txt` + `interfaces.md` +
-  [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) + `CACHE_SCHEMA_VERSION` cascade.
-- `cranelisp-types` (R5 increment, separately): the single-sourced Copy/value-layout predicate
-  beside `HeapHeader` + its size-bound constant ([layout ruling](ownership-inference.md#63-the-copy-rows-mechanism-r5-named-routed-to-the-backend-proposal)) — lands with the R5-increment
-  `/arch` carrier change-set, not before.
-- `bounded-contexts.md` §2 (typecheck: the inference pass joins the bounded context) and §3
-  (backend: the five mechanisms + oracle toggle) — with the implementing sprints.
-- `release-llvm-backend.md` §7/§8.3/§13 — amended NOW (S100 Phase 3) per the inversion ruling.
-- `effect-concurrency.md` §3.1 — forward-pointer added NOW (the (b)-cure's designed home).
-- `ring2-rc.md` §3 (Decision-24 prose gains the conservative-point framing) — FIXME filed to
-  `/design`(backend), owning-skill edit.
-- `repl/spec.md` — the §5.5 cascade-reporting/broken-symbol UX needs a normative home when the
-  machinery is scoped for implementation; file to `/repl` at that sprint, not now.
-- Sequence diagrams: a redefinition-transaction diagram (REPL turn × scheduler × GOT slot
-  allocation/freeze × cascade report) joins `sequences/` when the machinery's facade signatures
-  exist (nothing to draw against until the `/int`/backend proposals name the calls).
-
-## §12. Phase-3 exit gate — interface-set confirmation (2026-07-03, `/arch`)
-
-**Verdict: PASS-with-notes.** The four-document set — this spine, the typecheck proposal
-(parts 6–11), the backend proposal (parts 12–16), and the `/qa` verification plan (parts
-17–18) — is complete and mutually coherent for the two implementing increments. Findings:
-
-1. **Interface-set completeness.** Every cross-crate seam the increments need is specified:
-   typecheck→backend (the §3.3 carrier — now including the result mode, the advisory
-   analysis-fact half, projection provenance, and the value-use mark, folded from FIXME 0467);
-   typecheck→backend coordination for the R2 wrapper (typecheck §8.4 states what the backend
-   consumes and what it owes back; backend §3.4/§3.5 answers each owed item — the adaptation
-   algebra, `__d24wrap_{fq}_{slot}__` naming, curry composition); backend→`/int` (backend §8.3:
-   `compile_to_module` unchanged, `compile_trap_stub` NEW, `store_slot`/`allocate_got_slot`
-   existing); primitives→typecheck (the §3.1(a) declared facts riding `DefKind::Primitive`
-   entries, typecheck §9). **The one seam deliberately not yet designed** is the R3 session
-   transaction's orchestration interior (reverse-index lifecycle, cascade reporting, frozen-
-   `Code` pool residency) — its design home is `design/int/` (a later fire, §10 item 12), its
-   consuming interface is pinned (backend §8.3), and it MUST be scheduled at the machinery
-   sprint per §5.7. Deferred-with-pinned-interface, not unspecified.
-2. **Contract coherence.** No contradictions found. Verified pairs: `Transferred`
-   collapse-at-emission (typecheck §5.4) ↔ backend §5.3 (promotion arrives as more
-   `Some(true)` verdicts, zero emission change); R2 moded-body-on-the-slot + lazy wrapper
-   (typecheck §8.2) ↔ backend §3.5 slot-keyed wrapper naming, which composes correctly with
-   §5.6 ABI-epoch slot versioning (slot identity = ABI identity ⇒ fresh slot ⇒ fresh wrapper
-   name, stale closures keep old-world consistency transitively); `result_unique` chaining
-   (typecheck §7.2, advisory, emitted false in I) ↔ backend §6.2 check-elision — off the ABI
-   per §3.5, both sides; `borrowed_vars` as the callee-side carrier (backend §3.2) ↔ the §8.2
-   subsumption; per-site non-atomic re-gating of the existing emission arms (backend §5) ↔
-   typecheck §5's op-wise per-cell join, with the backend performing no strand reasoning
-   (narrowness counterweight held on both sides).
-3. **QA-plan routing confirmed** — the plan's four flagged gaps are increment-sprint
-   obligations, not S100 gaps: (i) CLIF-dump determinism (hook H1) is decided at increment-I
-   drafting and is `/backend`'s implementing-change-set obligation; (ii) the L-B1 golden
-   capture MUST be the first-scheduled item of the increment-I sprint (baseline commit before
-   any mechanism lands) — `/sprint` carries this ordering into the roadmap at close; (iii)
-   trap-stub UX wording stays substring-anchored until the `/repl` normative half lands at the
-   machinery sprint (§11 already routes it); (iv) observability hooks H2–H5 land in the
-   implementing change-sets per `tests/CLAUDE.md` §Diagnostic Requirements — several
-   acceptance gates (I-G3, I-G7, II-G2, L-D2, L-D5) are unmeasurable without them, so they are
-   in-increment deliverables, never follow-ups.
-4. **Known defect accommodated.** The NULL-GOT-slot fn-as-value SIGSEGV
-   (`tests/vec_query_value_use.rs`, owner `/backend`) is pinned in §3.1/§9 with its sequencing
-   constraint: the fix precedes the §3.1(b) `str-len` sibling (same registration seam) and the
-   R2 wrapper's reach into primitives (backend §12.7). The §5.7 ordering (machinery →
-   increment I) is unaffected; the pin binds within increment I's internal sequencing.
-
-**Notes carried to `/sprint` for close:** the `design/int/` R3-orchestration design fire must
-be scheduled at (or before) the machinery sprint; the golden-capture-first ordering inside
-increment I; the F2v fixture decision is worth user ratification (qa plan §1.1); root
-`CLAUDE.md` §Testing's intentional-failing count (16→20) needs its owner's update at close.
-
-## Next skills
-
-(Parts 6–18 are delivered: `design/typecheck/ownership-inference.md`,
-`design/backend/ownership-codegen.md`, `tests/plan/s100-ownership-verification.md` — exit gate
-§12 passed 2026-07-03.)
-
-- `/sprint` — sequence the implementation roadmap at close: machinery (§5.7, incl. the
-  `design/int/` R3-orchestration design fire) → increment I (golden capture first; NULL-slot
-  fix before sibling/wrapper reach) → increment II; `--release` stays gated behind the settled
-  memory model. Carry the §12 close notes (F2v ratification; intentional-failing count).
-- `/design` (int, at the machinery sprint) — consume backend §8.3 and design the session
-  transaction in `design/int/`; `/repl` receives the cascade-report/broken-symbol UX spec half
-  at the same sprint (§11).
-- `/qa` + per-crate `/dev` triads — QA-first drafting lists per implementing sprint are in the
-  verification plan §6.

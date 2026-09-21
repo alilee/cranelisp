@@ -1694,8 +1694,9 @@ rayon-side increment (§7 de-risking), guarded by `tests/concurrency_spark.rs`.
   the token pool, the admission budget, the supervisor and the strand event stream
   ([strand identity](effect-concurrency.md#11-observability-instrumenting-concurrency-written-by-nobody)). They live in the runtime crate so that a linked program, which contains no
   compiler binary, runs the same runtime. Interior: `design/intrinsics/reactor.md`.
-- **`bounded-contexts.md` §5 (platform)** — the concurrency descriptor (§5); the A2
-  C-ABI-async-leaf model and the host-reactor callback contract (§12): platforms own
+- **`bounded-contexts.md` §5 (platform)** — the concurrency descriptor; the A2
+  C-ABI-async-leaf model and the host-reactor callback contract (this document's
+  sections 5 and 12): platforms own
   the *what*, the host owns the *when*.
 - **`bounded-contexts.md` §6 (int)** — no language-level concurrency policy; the binary
   reaches the runtime only through the program and IO drivers.

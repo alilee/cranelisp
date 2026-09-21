@@ -9,7 +9,17 @@ It describes the types that cross a crate boundary. All live in `cranelisp-types
 Types are organized by pipeline stage, following the pipeline-v4 data flow:
 source text -> Sexp -> (ModuleDecls, Sexp) -> Sexp (expanded) -> TopLevel -> annotated AST on `SymbolTable` -> executable code.
 
-**Sprint 55/56 update:** `CheckResult` is no longer a cross-crate boundary type. Typecheck deposits its outputs directly onto `SymbolTable` entries (annotated `ast`, `scheme`, `got_slot`, `callees`, mangled multi-sig / mono variants) and returns a slim transient value to its caller. The backend reads from `SymbolTable` via `SymbolTable::defined_symbols()`; it no longer receives `CheckResult`. See §"TypeChecker Internal State (was: CheckResult Boundary)" and §"Backend Compilation Entry Point" below, and `design/backend/compile-to-module.md` §2.1.
+**Currency.** The symbol-table sections below predate the unified lifecycle model: where they
+name `ModuleEntry`, `DefKind`, `UserFnState`, `PrimitiveBody`, `DefBuilder` or
+`defined_symbols()`, the current vocabulary is `Binding`, `Decl`, `Callable`, `Life`,
+`Realization` and `codegen_targets()`, stated in
+[symbol-table lifecycle](symbol-table-lifecycle.md) and
+[BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types). Those sections are owed
+a rewrite against source; until then source rustdoc governs wherever they disagree.
+
+`CheckResult` is not a cross-crate boundary type. Typecheck deposits its outputs on
+symbol-table declarations and returns a slim transient value to its caller; backend reads the
+table's `codegen_targets()` projection.
 
 **Architectural invariants** (Principles 11, 12, 13):
 - No structurally identical types at any pipeline boundary.
@@ -1692,10 +1702,6 @@ pub enum MacroParam {
 No changes from v1.
 
 ---
-
-## REPL Snapshot
-
-`ReplSnapshot` was deleted as dead code in S73 (purge Wave 3) — superseded by the cluster-atomic staging-drop rollback mechanism (BC §2 invariant 7). The v1 sketch that lived here is retired; there is no `ReplSnapshot` type.
 
 ## Resolution primitive — `ResolutionScope`
 

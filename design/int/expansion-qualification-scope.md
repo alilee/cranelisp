@@ -121,15 +121,11 @@ structurally, so a form it does not special-case is qualified as ordinary childr
 
 ## 2.4 Residual ruling 1 — the quote shield (FIXME 0699 item 1, Important)
 
-**Current state.** The Rule Q / Rule QQ shield is present in both int walks:
-`qualify_scoped` and `qualify_shield_qq` call int's local
-`expander::quote_head`, as do `expand_scoped` and `shield_qq`. The shared
-`cranelisp_types::quote_head`/`QuoteHead` contract now controls the structural
-classification beside `Sexp`, and the frontend fold consumes it. Int has not
-yet migrated: C6 is allocated to turn its local classifier into a thin bridge
-to that shared contract (`s121-c6-visit.md` §1). Until that bridge lands, the
-local classifier preserves the shield behaviour but remains the duplicate the
-shared contract retires.
+**Current state.** The Rule Q / Rule QQ shield is present in both int walks,
+and both classify through the shared `cranelisp_types::quote_head`/`QuoteHead`
+contract beside `Sexp` (`src/expander.rs`,
+`src/process_form/macro_resolution.rs`) — the same classifier the frontend fold
+consumes. Int keeps no private copy.
 
 **Ruling.** A symbol inside quoted data is **not a reference at all**, so the §2.1
 rule ("qualify iff a free reference") already excludes it. `qualify_scoped`'s
