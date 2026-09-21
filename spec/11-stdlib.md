@@ -10,7 +10,7 @@ The language guarantees the following regardless of which standard library (if a
 
 - **Compiler-seeded synthetic modules**: The `primitives` and `macros` modules are always available. Their contents are normatively specified in [Section 8.9](08-modules.md#89-synthetic-modules) and [Section 9.1](09-macros.md#91-sexp-data-model).
 
-- **Module search order**: The implementation searches for library modules in the locations described in [Section 8.11](08-modules.md#811-lib-directory). A project may shadow any library module by providing a file with the same name in the project root.
+- **Module search order**: The implementation searches for library modules in the locations described in [Section 8.11](08-modules.md#811-search-paths). A project may shadow any library module by providing a file with the same name in the project root.
 
 - **Implicit prelude injection**: When a module named `prelude` is found on the search path, the compiler injects `(import [prelude [*]])` for all user modules (normatively defined in [Section 8.8](08-modules.md#88-prelude)). An empty prelude is valid — the language does not require the prelude to contain anything.
 

@@ -91,10 +91,10 @@ Rejected alternatives:
 
 - Sprint 63 substance-scoping pass §1.7 (Git history; the legacy record was retired S122) — the symptom and tension analysis this Decision distils
 - `design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md` — IoObserver callback contract; the registration API now resides in `cranelisp-intrinsics` post-split
-- `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md` — backend's substitution-table responsibility becomes explicit at the per-symbol JIT site
+- Decision 41 ([label index](README.md)) — backend's substitution-table responsibility becomes explicit at the per-symbol JIT site
 - `design/arch/principles.md` — Principle 1 (decoupling), Principle 7 (no duplicate addressable forms) cited as rationale
 - FIXME 0150 — the implementation tracker, closed with this Decision at S67 (Git history); it coordinated with FIXME 0103 (trace/io_trace relocation)
-- `design/arch/legacy/decisions/` — Decisions 0014, 0015 NOT present (deleted in commit `754d525` per "rely on git for history"); historical bodies recoverable via `git show 754d525^:design/arch/decisions/0014-*.md` and similarly for 0015. This Decision is the formal replacement direction.
+- Decisions 14 and 15 were deleted in commit `754d525`; their bodies are recoverable with `git show 754d525^:design/arch/decisions/0014-*.md` (likewise 0015). This Decision is the formal replacement direction.
 
 ## Sequencing
 

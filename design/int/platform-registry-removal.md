@@ -1,8 +1,10 @@
-> **HISTORICAL — superseded / completed working doc (triaged S110, FIXME 0607).** A
-> point-in-time record retained for the audit trail only; NOT current design intent. The
-> durable design is `int.md` (master) plus the subsystem docs indexed in
-> `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the current source
-> or the master, the source and master win.
+> **REFERENCE LINEAGE.** The G8 migration record, refreshed for the post-S66 storage rule.
+> Its substance — no `PlatformRegistry`; cross-module platform-fn resolution follows Import
+> chains to the defining `ModuleEntry::Def`; the GOT is the single source of truth for
+> callable addresses — remains correct, and §9.1 is pinned by live source tests. The
+> wave-by-wave migration narrative around it is dated. Current design is `int.md` (master)
+> plus the subsystem docs indexed in `design/int/CLAUDE.md` §"Document index"; where this
+> record disagrees with the source or the master, they win.
 
 # Platform Registry Removal — G8 Design
 
@@ -12,13 +14,13 @@
 
 This document covers the original G8 migration plus the post-S66 rollback storage location. The PlatformRegistry-deletion substance is unchanged; the §"platform_fn_ptr field" language across this doc is updated below to read against the per-module GOT.
 
-`/arch` Decision 26 establishes the shape. This doc fixes the `scheduling_class` placement (§3 below), the registration path (§4), the IO trampoline migration (§5), and error handling (§5.3). For the post-rollback canonical statement see `design/arch/decisions/0035-code-enum-integration-layer.md` §"Amendment (Sprint 66 — rollback, 2026-05-09)" and `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md` §"S66 amendment + rollback".
+`/arch` Decision 26 establishes the shape. This doc fixes the `scheduling_class` placement (§3 below), the registration path (§4), the IO trampoline migration (§5), and error handling (§5.3). For the post-rollback canonical statement see [Decision 35](../arch/decisions/README.md) and [Decision 41](../arch/decisions/README.md).
 
 ## 1. References
 
-- `design/arch/decisions/0035-code-enum-integration-layer.md` §"Amendment (Sprint 66 — rollback, 2026-05-09)" — **the post-rollback canonical statement: GOT is the single source of truth for callable addresses; no per-entry pointer field.**
-- `design/arch/decisions/0041-compile-to-module-per-symbol-jit-direct-writes.md` §"S66 amendment + rollback" — same post-rollback canon for primitive/JIT cardinality interactions.
-- `design/arch/legacy/decisions/0026-platform-fn-pointers-on-moduleentry-def.md` §"Postscript (Sprint 66 — fn_ptr unification + rollback)" — superseded; the original `platform_fn_ptr` field location.
+- [Decision 35](../arch/decisions/README.md) — **the post-rollback canonical statement: GOT is the single source of truth for callable addresses; no per-entry pointer field.**
+- [Decision 41](../arch/decisions/README.md) — same post-rollback canon for primitive/JIT cardinality interactions.
+- [Decision 26](../arch/decisions/README.md) — superseded; the original `platform_fn_ptr` field location.
 - `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def.got_slot` rustdoc + `design/arch/bounded-contexts.md` §7.
 - `crates/cranelisp-types/src/module.rs` `ModuleEntry::Def` (no `fn_ptr` field, no `platform_fn_ptr` field — just `got_slot: Option<usize>`).
 - `crates/cranelisp-types/src/got.rs` (`GotTable` API — `load_slot`, `store_slot`, `base_ptr`).

@@ -1,15 +1,8 @@
 # Symbol-Table Cache (Step 5b)
 
-<!-- Sprint 58 Wave 2c (/int): FIXME resolved — §3.1 row and §3.2 narrative
-     rewritten in line with Decisions 36 + 37; §"Investigation findings"
-     subsections reframed (Bug A dissolved by /backend's bare-Local change,
-     Bug B fixed by /backend's `define_module_got_data`, /int's residual
-     work is the recursive transitive cache-hit walk in `try_cache_hit_load`
-     and the `_main` Export alias `.o` for `--link`). -->
+Implementation design for the worker-side cache write path that emits the enriched `SymbolTable` as the single cache artefact, and consumes it on cache-hit. Coordinates with `design/backend/module-caching.md`, the consumer-and-format owner of the `.meta.json` envelope; the `.meta.json` file is a serialized `SymbolTable`, and `int.md` §7.3 owns its schema versioning.
 
-Implementation design for the worker-side cache write path that emits the enriched `SymbolTable` as the single cache artefact, and consumes it on cache-hit. Coordinates with `/backend`'s `module-caching.md` (the consumer-and-format-owner of the `.meta.json` envelope).
-
-Spec anchor: `pipeline-v4.md` §9.5 ("the `.meta.json` file is a serialized `SymbolTable`"). Decisions 25 (compiled code on entry, `#[serde(skip)]`), 26 (platform fn ptr on entry, `#[serde(skip)]`), 33 (structural decls as fields), 34 (`schema_version: u32`).
+Governing decisions: 25 (compiled code on entry, `#[serde(skip)]`), 26 (platform fn ptr on entry, `#[serde(skip)]`), 33 (structural decls as fields), 34 (`schema_version: u32`).
 
 ## 1. Problem Statement
 

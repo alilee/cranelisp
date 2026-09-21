@@ -51,7 +51,7 @@ The BC is the contract. Restated as crate responsibilities:
 
 ## 2. Public surface
 
-The canonical surface is **source rustdoc + `crates/cranelisp-typecheck/public-api.txt` + BC §2** (all nine `design/arch/facades/` docs retired S69–S81; the directory holds only S69/S70 audit records — `design/arch/CLAUDE.md` facades row). This section restates the *as-built* surface (verified against `public-api.txt` + `lib.rs` re-exports, S115); the crate-root `//!` in `lib.rs` is the per-item authority.
+The canonical surface is **source rustdoc + `crates/cranelisp-typecheck/public-api.txt` + BC §2**. This section restates the *as-built* surface (verified against `public-api.txt` + `lib.rs` re-exports, S115); the crate-root `//!` in `lib.rs` is the per-item authority.
 
 The entry surface is **one free function per cluster** (Decision 44, third amendment 2026-05-13 — the two-pass `check_form_signatures`/`check_form_body` facade split collapsed into one `check_forms`):
 
@@ -813,7 +813,7 @@ Decisions not listed (3, 4, 5, 7, 10–13, 16, 18, 20, 23–29, 31, 32, 34–37,
 ## 13. Cross-references
 
 - `design/arch/CLAUDE.md` Decisions 38, 39 (legacy — embodied; NEW MODEL framing); 1, 2, 6, 8, 14, 19, 21, 22, 30 (READ THROUGH 38/39 lens), 33 (structural decls on SymbolTable), 41 (active — peripheral). Decisions 15 and 17 retracted; their constraints embodied per §12 "Retracted — invariants preserved"
-- **Public surface (canonical):** `crates/cranelisp-typecheck/public-api.txt` (checked baseline) + `crates/cranelisp-typecheck/src/lib.rs` crate-root `//!` (per-item contracts) + `design/arch/bounded-contexts.md` §2 (Typecheck — the BC, cross-context invariants 1–10). **All nine `design/arch/facades/` docs are RETIRED** (S69–S81; the directory holds only S69/S70 audit records) — do NOT cite `facades/typecheck.md` / `facades/types.md` / `facades/int.md` as normative.
+- **Public surface (canonical):** `crates/cranelisp-typecheck/public-api.txt` (checked baseline) + `crates/cranelisp-typecheck/src/lib.rs` crate-root `//!` (per-item contracts) + `design/arch/bounded-contexts.md` §2 (Typecheck — the BC, cross-context invariants 1–10).
 - `crates/cranelisp-types/src/module.rs` rustdoc — `SymbolTable` shape consumed (Decision 33 structural decls; the `Warning`/`ErrorLocation` shapes for §8)
 - `design/int/` design docs + `src/` rustdoc — the `int` caller of `check_forms` + the gap-orchestration retry loop (the retired `facades/int.md` narrative → BC §6 + `design/int/`)
 - `crates/cranelisp-frontend/src/lib.rs` //! preamble + `bounded-contexts.md` §1 — peer crate's public-surface contract (`SymbolTables` alias canonical home is `cranelisp-types`)

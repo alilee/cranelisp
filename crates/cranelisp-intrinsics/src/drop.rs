@@ -72,48 +72,42 @@ const NULLARY_THRESHOLD: i64 = NULLARY_TAG_THRESHOLD as i64;
 const TAG_OFFSET: isize = HeapHeader::SIZE as isize;
 const FIELD0_OFFSET: isize = TAG_OFFSET + 8;
 const FIELD1_OFFSET: isize = TAG_OFFSET + 16;
-const PURE_STATE_OFFSET: isize = HeapHeader::SIZE as isize + IO_PURE_GLUE_OFFSET as isize;
-const _: () = assert!(PURE_STATE_OFFSET == FIELD1_OFFSET);
+const PURE_WITNESS_OFFSET: isize = HeapHeader::SIZE as isize + IO_PURE_GLUE_OFFSET as isize;
+const _: () = assert!(PURE_WITNESS_OFFSET == FIELD1_OFFSET);
 
+/// What an ABI-10 `Pure` node's witness word says field 0 owes: nothing
+/// (`Scalar`), or one counted reference discharged by the named `drop<T>` glue.
+/// `1` is reserved and emitted by nothing; it decodes to its own named variant
+/// so the reserved word can never become a call target (§6.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PurePayloadState {
+pub(crate) enum PurePayloadWitness {
     Scalar,
-    Claimed,
+    Reserved,
     Owned(i64),
 }
 
-impl PurePayloadState {
+impl PurePayloadWitness {
     fn decode(raw: i64) -> Self {
         match raw {
             0 => Self::Scalar,
-            1 => Self::Claimed,
+            1 => Self::Reserved,
             glue => Self::Owned(glue),
         }
     }
 }
 
-/// Atomically replace a published Pure node's payload witness with `Claimed`.
+/// Read a published `Pure` node's payload witness.
+///
+/// A published node is immutable (§1 invariant 6): both words are written only
+/// while the node is fresh and unpublished, so this is a plain field read under
+/// the `Pure` arm — there is no modification order to linearise.
 ///
 /// # Safety
 /// `ptr` must be a live `IO_TAG_PURE` node using the ABI-10 three-word payload.
-pub(crate) unsafe fn swap_pure_payload_to_claimed(ptr: i64) -> PurePayloadState {
+pub(crate) unsafe fn pure_payload_witness(ptr: i64) -> PurePayloadWitness {
     // SAFETY: the caller establishes the Pure shape before this offset is
-    // formed. ABI 10 makes the field an aligned i64 at absolute offset 32, and
-    // every post-publication access to it is atomic.
-    let state =
-        unsafe { &*((ptr as *const u8).add(PURE_STATE_OFFSET as usize) as *const AtomicI64) };
-    PurePayloadState::decode(state.swap(1, Ordering::AcqRel))
-}
-
-/// Read a published Pure node's payload-witness state without changing it.
-///
-/// # Safety
-/// `ptr` must be a live `IO_TAG_PURE` node using the ABI-10 three-word payload.
-unsafe fn load_pure_payload_state(ptr: i64) -> PurePayloadState {
-    // SAFETY: same ABI-10 shape and alignment contract as the swap helper.
-    let state =
-        unsafe { &*((ptr as *const u8).add(PURE_STATE_OFFSET as usize) as *const AtomicI64) };
-    PurePayloadState::decode(state.load(Ordering::Acquire))
+    // formed; ABI 10 makes the witness an aligned i64 at absolute offset 32.
+    PurePayloadWitness::decode(unsafe { heap_access::read_i64(ptr, PURE_WITNESS_OFFSET) })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -218,6 +212,13 @@ enum IoFieldKind {
     Closure,
     InlineIoBranches,
     IoBranchVec,
+    /// A payload whose discharge is named by the node's own witness word — the
+    /// `Pure` payload (§6.1). Declared only for `Pure`, under both dispositions.
+    GlueWitnessedPayload,
+    /// The platform-owned thunk of an `Effect` node, discharged through
+    /// `cranelisp_platform::drop_effect_thunk` (§6.2). Declared only for
+    /// `Effect`, under both dispositions.
+    EffectThunk,
 }
 
 #[derive(Clone, Copy)]
@@ -227,6 +228,14 @@ struct IoField {
 }
 
 const NO_IO_FIELDS: &[IoField] = &[];
+const PURE_FIELDS: &[IoField] = &[IoField {
+    offset: FIELD0_OFFSET,
+    kind: IoFieldKind::GlueWitnessedPayload,
+}];
+const EFFECT_FIELDS: &[IoField] = &[IoField {
+    offset: FIELD0_OFFSET,
+    kind: IoFieldKind::EffectThunk,
+}];
 const BIND_FIELDS: &[IoField] = &[
     IoField {
         offset: FIELD0_OFFSET,
@@ -528,17 +537,8 @@ pub fn consume_vec_of_string(handle: Owned) {
 
 /// Consume an IO ADT tree.
 ///
-/// - Pure (tag 0): field0 is the payload — may or may not be heap-typed;
-///   we conservatively treat it as opaque scalar (Pure-over-heap requires
-///   the caller to release the payload separately, matching the sketch's
-///   behavior where the trampoline returns the payload's ownership to
-///   the caller).
-/// - Effect (tag 1): field0 is the thunk pointer (opaque), field1 is the
-///   resource token (Int). Neither is a Cranelisp heap allocation.
-/// - Bind (tag 2): field0 is the inner IO tree, field1 is a continuation
-///   closure (HeapClosure).
-/// - Par (tag 3): field0 is the count (Int), field1..N are branch IO
-///   pointers.
+/// On the last reference, every field the node's tag declares is discharged
+/// (`ownership-and-disposal.md` §6 table) and the node is freed.
 ///
 /// # Safety
 /// `ptr` must be a valid IO tree root pointer (rc > 0) or bare nullary tag.
@@ -560,7 +560,11 @@ pub fn consume_io_tree(handle: Owned) {
 
 fn io_fields(tag: IoTag, disposition: IoDisposition) -> &'static [IoField] {
     match (tag, disposition) {
-        (IoTag::Pure | IoTag::Effect | IoTag::Unknown(_), _) => NO_IO_FIELDS,
+        // `Pure`'s payload and `Effect`'s thunk are never transferred out of
+        // the node, so both dispositions discharge them (§6.1, §6.2).
+        (IoTag::Pure, _) => PURE_FIELDS,
+        (IoTag::Effect, _) => EFFECT_FIELDS,
+        (IoTag::Unknown(_), _) => NO_IO_FIELDS,
         (IoTag::Bind, IoDisposition::Structural) => BIND_FIELDS,
         (IoTag::Bind, IoDisposition::SpineTransferred) => NO_IO_FIELDS,
         (IoTag::Par, _) => PAR_FIELDS,
@@ -604,6 +608,40 @@ fn discharge_io_field(ptr: i64, field: IoField) {
             let value = owned_field(ptr, field.offset);
             consume_vec_with(value, consume_io_tree);
         }
+        IoFieldKind::GlueWitnessedPayload => {
+            // SAFETY: this kind is declared only for Pure, whose ABI-10 payload
+            // sits at `field.offset` with its witness in the following word.
+            match unsafe { pure_payload_witness(ptr) } {
+                PurePayloadWitness::Owned(glue) => {
+                    // SAFETY: the same table-owned shape guarantee.
+                    let payload = unsafe { heap_access::read_i64(ptr, field.offset) };
+                    // SAFETY: every witness that is neither `0` nor the reserved
+                    // `1` is the canonical backend-generated `drop<T>` entry for
+                    // the payload's concrete type, with ABI `(i64) -> ()`.
+                    let drop_payload: extern "C" fn(i64) =
+                        unsafe { std::mem::transmute(glue as *const ()) };
+                    drop_payload(payload);
+                }
+                PurePayloadWitness::Scalar => {}
+                // The §4 `Unknown` precedent: discharge nothing, and report
+                // under the existing gate rather than calling a reserved word.
+                PurePayloadWitness::Reserved => {
+                    if crate::diagnostics::rc_check_release_enabled() {
+                        crate::diagnostics::seam_hard_fail(&format!(
+                            "free_io_node: reserved Pure payload witness at ptr {ptr:#x}"
+                        ));
+                    }
+                }
+            }
+        }
+        IoFieldKind::EffectThunk => {
+            // SAFETY: the same table-owned shape guarantee as the `IoTree` arm.
+            let thunk = unsafe { heap_access::read_i64(ptr, field.offset) };
+            // SAFETY: every `Effect` node is built by `CLIO::effect*`, whose
+            // thunk word stays live until this, its one discharge. The node's
+            // count has reached zero, so no lane can still force it.
+            unsafe { cranelisp_platform::drop_effect_thunk(thunk) };
+        }
     }
 }
 
@@ -626,60 +664,14 @@ fn free_io_node_with_disposition(ptr: i64, disposition: IoDisposition) {
         }
     }
 
-    if tag == IoTag::Pure {
-        discharge_pure_payload(ptr, disposition);
-    }
-
     for field in io_fields(tag, disposition) {
         discharge_io_field(ptr, *field);
-    }
-
-    if tag == IoTag::Pure {
-        crate::diagnostics::forget_pure_claim(ptr);
     }
 
     // SAFETY: `ptr` is still allocated and solely owned; every declared field
     // has now been discharged. Unknown tags retain the conservative historical
     // direction: no field is touched before the outer node is freed.
     unsafe { alloc::dealloc(ptr as *mut u8) };
-}
-
-fn discharge_pure_payload(ptr: i64, disposition: IoDisposition) {
-    match disposition {
-        IoDisposition::Structural => {
-            // SAFETY: the caller decoded a live ABI-10 Pure node and owns its
-            // zero-count teardown. Competing force and teardown paths use this
-            // same exchange, so exactly one can acquire the payload obligation.
-            let prior = unsafe { swap_pure_payload_to_claimed(ptr) };
-            if let PurePayloadState::Owned(glue) = prior {
-                // Read payload only after this teardown won the obligation.
-                // SAFETY: field 0 is present on every Pure node and the caller's
-                // Acquire fence completed before dispatch.
-                let payload = unsafe { heap_access::read_i64(ptr, FIELD0_OFFSET) };
-                // SAFETY: every non-zero/non-tombstone witness is the canonical
-                // backend-generated `drop<T>` entry with ABI `(i64) -> ()`.
-                let drop_payload: extern "C" fn(i64) =
-                    unsafe { std::mem::transmute(glue as *const ()) };
-                drop_payload(payload);
-            }
-        }
-        IoDisposition::SpineTransferred => {
-            // SAFETY: the caller decoded a live ABI-10 Pure node. This path does
-            // not mutate the state: only the force path may have transferred it.
-            let state = unsafe { load_pure_payload_state(ptr) };
-            if state != PurePayloadState::Claimed {
-                if crate::diagnostics::rc_check_release_enabled() {
-                    crate::diagnostics::seam_hard_fail(&format!(
-                        "dec_shallow_io: Pure payload reached SpineTransferred in state {state:?} at ptr {ptr:#x}"
-                    ));
-                }
-                debug_assert!(
-                    false,
-                    "dec_shallow_io: Pure payload reached SpineTransferred in state {state:?} at ptr {ptr:#x}"
-                );
-            }
-        }
-    }
 }
 
 /// Backend-callable structural teardown tail for an IO node at RC zero.
@@ -719,9 +711,13 @@ pub(crate) extern "C" fn free_io_node(ptr: i64) {
 ///
 /// # Safety
 /// `ptr` must be either a valid IO ADT heap pointer with `rc > 0`, or a
-/// bare nullary tag. Fields at offsets 24/32/… must NOT still be owned
-/// solely through this pointer — the caller is asserting that every
-/// heap-typed field has already been re-owned elsewhere.
+/// bare nullary tag. Every field this tag declares as *transferred* — `Bind`'s
+/// inner and continuation, the only such fields — must already have been
+/// re-owned elsewhere. Fields the node still owns are not part of that
+/// assertion: a `Pure` payload and an `Effect` thunk are never transferred,
+/// are still owned through this pointer, and are discharged here by the same
+/// declared field the structural walk discharges (`ownership-and-disposal.md`
+/// §6.1, §6.2).
 pub fn dec_shallow_io(handle: Owned) {
     let ptr = handle.into_raw();
     if ptr < NULLARY_THRESHOLD {

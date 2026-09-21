@@ -9,7 +9,7 @@ pins the coordinated flip diff. The corollary itself is canonical at
 **Archive trigger**: the Phase-5 carrier wave lands (types flip + typecheck
 producer + backend consumer + `CACHE_SCHEMA_VERSION` 21→22) and the contract
 folds into `mono_expr.rs`/`check.rs` rustdoc + `interfaces.md` §"Method
-Resolutions" + BC §2 producer obligation / §3 invariant 10.
+Resolutions" + [BC 2](bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) producer obligation / [BC 3](bounded-contexts.md#3-backend-cratescranelisp-backend), invariant 10.
 
 ## 1. Problem — the `Option<FQSymbol>` conflation
 

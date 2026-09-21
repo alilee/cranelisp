@@ -106,7 +106,7 @@ The `& rest` syntax captures all remaining arguments as a single value of type `
 
 **Annotated arguments are ONE argument. [S115]** Because `:Type <form>` folds at read time (§1.4.5), an annotation in a macro-call argument list is **not** a separate argument: the annotation and the form it binds arrive as a **single** `SexpAnnotated` value. Argument counts therefore match what the user wrote — `(def x :Int 5)` is a **two**-argument call to `def` (`x`, and the annotated `5`), and it MUST NOT be reported as a three-argument arity failure. Two obligations follow for macro authors:
 
-- **A macro that only transports an argument is annotation-correct for free.** A clause that binds an argument and splices it into a template (`~value`) carries the `SexpAnnotated` node through unexamined, so the annotation survives into the expansion. `def` and `const` (§11.7) need no special handling.
+- **A macro that only transports an argument is annotation-correct for free.** A clause that binds an argument and splices it into a template (`~value`) carries the `SexpAnnotated` node through unexamined, so the annotation survives into the expansion. `def` and `const` (§9.10) need no special handling.
 - **A macro that structurally matches its arguments' constructors owns its arms.** Handing such a macro an annotated argument produces an ordinary match failure at the macro — a located macro-level error, not a compiler artifact. To accept annotated arguments, the macro adds a `(macros/SexpAnnotated t f)` arm (to inspect, re-attach, or discard the annotation).
 
 ```clojure

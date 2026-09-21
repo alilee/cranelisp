@@ -95,7 +95,7 @@ fn rc_balance_adt_product_two_string_fields() {
     );
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — the two owned
+// spec: design/intrinsics/ownership-and-disposal.md §5 — the two owned
 // Sexp fields of an Annotated node are included in the structural RC walk.
 #[test]
 fn rc_balance_nested_sexp_annotated_tree() {

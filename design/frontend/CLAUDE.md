@@ -1,53 +1,74 @@
 # design/frontend/
 
-Solution design documents for the Cranelisp frontend (reader, macro expander, AST builder). Owned by `/design`, narrow-deployed to this crate.
+Interior design for `crates/cranelisp-frontend/` — reading, syntactic
+validation, AST construction, module-declaration extraction and quasiquote
+desugaring. Owned by `design`, narrow-deployed to this surface.
 
-## Purpose
-
-These documents describe *how* the frontend solves problems — algorithms, data structures, internal architecture, and trade-offs. They evolve alongside the implementation: sketched before coding, refined during, and updated when designs change.
-
-This is distinct from:
-- `design/arch/interfaces.md` — the *boundary contract* (what goes in and out)
-- `spec/` — the *language definition* (what behaviour is correct)
+These documents describe **how** the frontend solves its problems: algorithms,
+seams, data shapes and the judgments behind them. They are distinct from
+`design/arch/bounded-contexts.md` §1 (the boundary contract), the crate's
+`lib.rs` rustdoc (the public surface), and `spec/` (what behaviour is correct).
+Cite those rather than restating them.
 
 ## Document collection
 
 | Collection | Purpose | Boundary |
 |---|---|---|
-| `frontend-designs` | Frontend interior designs and retained live design evidence for reading, syntactic validation, AST construction, module syntax and quasiquote desugaring. | The named Markdown products directly under `design/frontend/`, excluding this memory. |
+| `frontend-designs` | Frontend interior designs. | The named Markdown products directly under `design/frontend/`, excluding this memory. |
 
-This is an established collection with live reference checking. The staleness
-register in `frontend.md` §9 governs documents with partially superseded content;
-each retains a stated live purpose. No remaining product is historical-only.
+An established collection with live reference checking. Every product is
+current: a document whose subject is delivered states the delivered shape and
+the judgments that hold it, not the migration that produced it.
 
-## What to Document
+- [frontend.md](frontend.md) — the master design: what the surface is, its
+  public shape, its interior modules, and the form-classification chain.
+- [reader.md](reader.md) — source bytes to `Sexp`: precedence, reader macros,
+  name lexing, comment preservation.
+- [ast-builder.md](ast-builder.md) — `Sexp` to AST: entry points, `build_form`,
+  head classification, type expressions, `deftype`, patterns.
+- [modules.md](modules.md) — structural-declaration extraction and `super`
+  normalisation.
+- [module-preamble.md](module-preamble.md) — leading comment-block capture and
+  its round-trip contract.
+- [defmacro-synthesis.md](defmacro-synthesis.md) — `defmacro` shape parse and
+  per-clause definition synthesis.
+- [quasiquote-fold.md](quasiquote-fold.md) — quote-family desugaring and its
+  fold into the AST chokepoints.
+- [s116-syntax-and-annotation.md](s116-syntax-and-annotation.md) — the read-time
+  annotation fold and `deftype` declaration-shape enforcement.
+- [binder-head-reject.md](binder-head-reject.md) — the one reject for a
+  qualified or dotted spelling in any binder position.
+- [enforcement-matrices.md](enforcement-matrices.md) — the operand-position body
+  seam and the reader's dangling-qualifier rejects.
+- [trait-impl-head-parse.md](trait-impl-head-parse.md) — the `deftrait` and
+  `impl` head grammar.
 
-The frontend is **purely syntactic** post-S76 W-Macro: text → `Sexp` → AST. It
-does **no macro recognition or execution** (recognition → typecheck via
-`cranelisp_types::resolve_macro_head`; execution → int via
-`cranelisp_types::MacroExpander`) — only quasiquote desugaring. The reader is a
-**hand-written recursive-descent** parser (there is no PEG grammar — the stale
-`peg` references in `plan-frontend.md`/history are drift).
+## What belongs here
 
-- **Reader internals**: hand-written recursive-descent dispatch (the
-  load-bearing first-byte precedence + `/`/`.` structural significance), the
-  dangling-qualifier reject placement, span threading, error recovery
-- **AST builder**: Sexp-to-AST translation decisions, desugaring rules,
-  validation passes, the annotation-pairing (`build_one_expr_at`) and
-  binder-reject (`reject_qualified_binder_head`) single-seams, enforcement
-  matrices (operand-position ascription/trailing; binder heads)
-- **Quasiquote desugaring**: `` ` ``/`~`/`~@`/`quote` → synthetic `macros/`
-  constructor Sexps; the fold into `build_forms`/`build_form`; synthetic-span
-  allocation
-- **Defmacro shape-parse**: `(defmacro name [params] body)` → `DefmacroInfo` +
-  per-clause `Defn` synthesis (shape only — no execution)
-- **Design evolution**: what changed and why across sprints, and what was
-  considered but rejected (per-sprint history lives in the docs themselves and
-  `sprints/archive/`)
+The frontend is **purely syntactic**: text → `Sexp` → AST. It does no macro
+recognition and no macro execution — recognition is
+`cranelisp_types::resolve_macro_head`, driven by typecheck and int; execution is
+int's. Quasiquote desugaring is the whole of its macro-adjacent role. The reader
+is a **hand-written recursive-descent** parser; there is no parser-generator
+grammar.
+
+Record a decision here when it shapes the crate's interior: a seam that
+single-sources a rule, a placement judgment and why the alternative was wrong, a
+representation that makes an invalid state unrepresentable, or a boundary the
+frontend deliberately does not cross. Record the falsifier when a claim rests on
+a neighbouring crate's behaviour.
+
+Do not record: public signatures (the rustdoc and `public-api.txt` own them),
+spec rules (cite the section), a neighbouring context's interior (name its
+capability in its owner's language), or the sequence of sprints that produced the
+current shape (git carries that).
 
 ## Conventions
 
-- One file per major subsystem (e.g., `reader.md`, `macro-expansion.md`, `ast-builder.md`)
-- Include diagrams (ASCII) for non-obvious data flow
-- Record rejected alternatives briefly — "considered X, chose Y because Z"
-- Update docs when the implementation changes; stale design docs are worse than none
+- One file per subsystem or per cross-cutting judgment, named for the subject
+  rather than for the increment that produced it.
+- Prefer a diagram only where the data flow is not obvious from prose.
+- Record a rejected alternative when a reader could reasonably re-propose it, and
+  say what makes it wrong.
+- A design that no longer matches the source is worse than none. When the
+  implementation changes, the design changes with it in the same increment.

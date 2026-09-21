@@ -9,7 +9,7 @@
 // (discarded `Pure Unit`) launch result and evaluates the continuation.
 //
 // See `design/backend/io-trampoline.md §15` (the launch node + bake + the
-// move-out RC contract) and `design/int/reactor.md §2.11` (the runtime detach).
+// move-out RC contract) and `design/intrinsics/reactor.md §2.11` (the runtime detach).
 // The launch node is the structural twin of the `Par` node in `Bind(Par(..),
 // cont)` (`par_bind.rs`) — the trampoline's "inner yields a value, pop the
 // continuation" contract is reused verbatim; `Launch`'s value is always `Unit`.

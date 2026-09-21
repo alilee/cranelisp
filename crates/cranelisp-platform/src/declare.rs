@@ -224,9 +224,9 @@ pub const fn schema_declares_type(artifact: &str, type_key: &str) -> bool {
 /// 0`), and an OPTIONAL `drop_state:` (an
 /// `unsafe extern "C" fn(*mut c_void)` poll-leaf teardown hook).
 ///
-/// # ABI v10 — the single ABI
+/// # The single ABI
 ///
-/// [`crate::ABI_VERSION`] is now **10**. The v6/v7 dual-channel split was
+/// [`crate::ABI_VERSION`] is now **11**. The v6/v7 dual-channel split was
 /// collapsed into one ABI (`design/arch/platform-interface.md` §6.8.0): one macro
 /// (`declare_concurrent_platform!` is **deleted**), one manifest type, one GOT
 /// export, ONE loader path. A platform may freely mix blocking effects

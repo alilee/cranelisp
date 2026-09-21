@@ -84,9 +84,10 @@ pub(crate) enum ForceOutcome {
 /// the Effect node's baked field-3, or `"<unknown>"` when the handle is null).
 ///
 /// # Safety
-/// `thunk_ptr` must be a valid double-boxed thunk pointer as produced by
-/// `CLIO::effect*` — the contract `cranelisp_platform::call_effect_thunk`
-/// requires (forced at most once).
+/// `thunk_ptr` must be the live thunk word of an `Effect` node built by
+/// `CLIO::effect*`, borrowed for this call while the caller holds a counted
+/// reference to that node — the contract `cranelisp_platform::call_effect_thunk`
+/// requires. The thunk is intact after the call, whatever its outcome.
 pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str) -> ForceOutcome {
     // Clear any stale runtime error so a leftover slot value cannot be
     // misattributed to this thunk (defensive — DLL-origin panics no longer set
@@ -114,8 +115,8 @@ pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str)
         } else {
             // Install trap handlers that siglongjmp back on fault.
             let old_handlers = install_signal_handlers();
-            // SAFETY: caller guarantees `thunk_ptr` is a valid, not-yet-forced
-            // double-boxed Effect thunk; it returns an EffectOutcome (ABI v5).
+            // SAFETY: the caller guarantees a live, borrowed thunk whose node it
+            // holds; the call returns an EffectOutcome.
             let eo = cranelisp_platform::call_effect_thunk(thunk_ptr);
             restore_signal_handlers(old_handlers);
             Ok(eo)

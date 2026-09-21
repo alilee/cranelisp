@@ -392,7 +392,7 @@ exercises through `sfold`.
 | **Simplicity** (P6) | The fix deletes a function and replaces two calls with two one-line calls. No new API, no new mode, no new carrier. Atomic traffic per call drops from `2\|ys\| + 2` to `2` |
 | **Maintainability** | RE-1's corollary — "the inc count for an embed is 1, whatever the structure" — is checkable by reading one function and is asserted by a counter-based unit row, so the class cannot silently return |
 | **Observability** | Unchanged by design (`marshal.rs` carries no diagnostics — primitives invariant 12). The observation surface for this defect is the intrinsics detector kit, pointed at it by §4.1 rather than instrumented into the producer |
-| **Concurrency-safety** | Improved incidentally: `shallow_rc_inc` already routes to the blessed atomic `rc::rc_inc` (audit MED-1 / `rc-inc-entry-point.md`), and the fix removes `2(\|ys\|−1)` atomic RMWs from a path a spark can reach |
+| **Concurrency-safety** | Improved incidentally: `shallow_rc_inc` already routes to the blessed atomic `rc::rc_inc` (audit MED-1 / [ownership/disposal 3](../intrinsics/ownership-and-disposal.md#3-rcinc-the-blessed-inc-entry-point)), and the fix removes `2(\|ys\|−1)` atomic RMWs from a path a spark can reach |
 | **Performance** | Macro expansion is the hot consumer (the ambient face is `+2` per invocation, `1143` across a full stdlib prelude load). The fix is a strict reduction in both allocations retained and atomics executed |
 | **Testability** (P5) | The seam is unit-testable in-crate against the alloc/RC counters with no session, no JIT and no subprocess; §5's inc-count fence tests the *rule*, not a symptom |
 
@@ -413,7 +413,7 @@ exercises through `sfold`.
   invariant table.
 - `design/backend/transitive-drop-glue.md` §7.2 — the falsification recipe that
   routed this defect out of backend; slice S2 is removed from the backend wave.
-- `design/intrinsics/rc-inc-entry-point.md` — `rc::rc_inc` is the blessed inc
+- [ownership/disposal 3](../intrinsics/ownership-and-disposal.md#3-rcinc-the-blessed-inc-entry-point) — `rc::rc_inc` is the blessed inc
   entry point and carries the nullary-tag skip the fix relies on.
 - `crates/cranelisp-primitives/src/marshal.rs` (S1–S4);
   `crates/cranelisp-intrinsics/src/drop.rs::consume_slist` (**unchanged**;

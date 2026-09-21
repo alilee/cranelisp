@@ -4557,9 +4557,9 @@ fn primary_lines(capture: &str) -> Vec<String> {
 // passed — the terminal qualifier `primitives/add-i64` displayed identically at
 // the prompt and under `/sig` — while leg A's prompt printed
 // `:(Fn [primitives/Int primitives/Int] primitives/Int) <closure>`. Qualified
-// introspection is therefore not broken generally: the re-exporting qualifier
-// alone misses it.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// introspection was therefore not broken generally: the re-exporting qualifier
+// alone missed it.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn qualified_reexport_bare_display_parity_with_sig_neg_not_closure() {
     // Leg B (control) — the terminal qualifier, asserted before the target.
@@ -4959,9 +4959,9 @@ fn two_import_session(b_module: &str, turns: &str) -> helpers::e2e::CrOutput {
 //
 // Observed RED, S122 (`.local/s122-display-red.log`): the control passed
 // (`(foo 1)` → `:primitives/Int 1`) and both surfaces printed only `user/foo` —
-// 1 line where 2 candidates are in scope, so the omission is in the display,
+// 1 line where 2 candidates were in scope, so the omission was in the display,
 // not in a broken fixture. Parity held, so one candidate query served both.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn prelude_and_local_candidates_both_list_at_bare_lookup_and_sig() {
     let expected = [
@@ -5013,9 +5013,9 @@ fn prelude_and_local_candidates_both_list_at_bare_lookup_and_sig() {
 // Observed RED, S122 (`.local/s122-display-red.log`), and NOT CD-1's shape:
 // the control passed (`:primitives/Int 11`), but the bare lookup turn answered
 // with the §8.6.5 USE-site rejection — `type error … ambiguous bare name 'f';
-// surviving declarations: a/f, b/f` — so this provenance reaches no
+// surviving declarations: a/f, b/f` — so this provenance reached no
 // introspection answer at all rather than a short one.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn two_imported_candidates_both_list_at_bare_lookup_and_sig() {
     let expected = [("a/f", "primitives/Int"), ("b/f", "primitives/Bool")];
@@ -5061,9 +5061,9 @@ fn two_imported_candidates_both_list_at_bare_lookup_and_sig() {
 // `identically_typed_candidates_ambiguous_use_still_rejected_neg_no_silent_selection`.
 //
 // Observed RED, S122 (`.local/s122-display-red.log`): the import turns were
-// silent (the negative face holds there) and the bare lookup turn answered
+// silent (the negative face held there) and the bare lookup turn answered
 // with the use-site `ambiguous bare name 'f'` rejection.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn identically_typed_candidates_both_list_neg_no_ambiguity_at_lookup() {
     let expected = [("a/f", "primitives/Int"), ("b/f", "primitives/Int")];
@@ -5196,8 +5196,8 @@ fn one_terminal_reached_two_ways_lists_once() {
 // spec: repl/spec/04-self-documentation.md §4.1.11 — CD-6 `/info` over the CD-1
 // fixture. Observed RED, S122 (`.local/s122-display-red.log`): the turn printed
 // `user/foo` alone and dropped `prelude/foo` — the same short answer CD-1's
-// bare lookup gives.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// bare lookup gave.
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn info_lists_prelude_and_local_candidates() {
     let info = foo_collision_session(&format!("{TURN_MARKER}\n/info foo\n"));
@@ -5214,7 +5214,7 @@ fn info_lists_prelude_and_local_candidates() {
 // fixture. Observed RED, S122 (`.local/s122-display-red-followup.log`): the
 // turn printed `foo: "local candidate over Bool"` alone and dropped the prelude
 // candidate's docstring — `/info`'s omission face over the same fixture.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn doc_lists_prelude_and_local_candidates() {
     let doc = foo_collision_session(&format!("{TURN_MARKER}\n/doc foo\n"));
@@ -5233,7 +5233,7 @@ fn doc_lists_prelude_and_local_candidates() {
 // (`.local/s122-display-red.log`): the turn answered `error: unknown symbol
 // 'f'`, where the bare lookup over the same fixture answered with the use-site
 // ambiguity — two surfaces, two different answers for one spelling.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn info_lists_identically_typed_candidates() {
     let info = two_import_session(MODULE_B_F_INT, &format!("{TURN_MARKER}\n/info f\n"));
@@ -5250,7 +5250,7 @@ fn info_lists_identically_typed_candidates() {
 // fixture. Observed RED, S122 (`.local/s122-display-red-followup.log`): the
 // turn answered `error: unknown symbol 'f'` — `/info`'s unknown-symbol face
 // over the same fixture, where bare lookup answered with the use-site ambiguity.
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn doc_lists_identically_typed_candidates() {
     let doc = two_import_session(MODULE_B_F_INT, &format!("{TURN_MARKER}\n/doc f\n"));
@@ -5277,7 +5277,7 @@ fn doc_lists_identically_typed_candidates() {
 // declarations are named and the set is not rejected. The single-candidate form
 // stays pinned by `prelude_option_none_value_display_neg_definition_metadata`.
 //
-// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev
+// defect: class=resolver-mirror locus=binary-introspection-lookup found=S122 owner=/dev fixed=S122/48d6e713
 #[test]
 fn nullary_ctor_and_function_candidates_both_list_at_bare_lookup() {
     let bare = Cranelisp::new()

@@ -44,7 +44,7 @@ macro-expansion pipeline discards all source provenance from macro output:
   unique synthetic span** in the ≥ 1_000_000 band (span-uniqueness is a landed
   invariant for the `backend-keyed-consumer.md` span-keyed carriers; preserving
   real spans through the marshal boundary is REJECTED — it would collide with that
-  invariant, `binder-head-reject.md` §4.1).
+  invariant, `binder-head-reject.md` §4).
 
 So the reject on the synthesized `(defn fmt/x-def …)` head points at a span that
 maps to **no source byte**, and for `def` (which mangles `~impl-name = fmt/x-def`)
@@ -219,7 +219,7 @@ e2e/provenance-through-expansion assertion (BD-M2/M3) is `/qa`+`/testing`'s.
 ## 8. Cross-references
 
 - `design/frontend/binder-head-reject.md` §4 — the paired frontend reject + the
-  §4.1 rejected deep fixes (span-preservation breaks span-uniqueness; per-form
+  rejected deep fixes in that section (span-preservation breaks span-uniqueness; per-form
   special-casing violates P19).
 - `design/int/quote-shield.md` — the 0613 frontend-fold + int-shield pairing this
   mirrors (one logical wave, two `/dev` surfaces).

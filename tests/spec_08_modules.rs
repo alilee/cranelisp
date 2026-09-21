@@ -1195,7 +1195,7 @@ fn multiple_import_forms_in_one_module() {
 // declared above the import remain available after the dep loads.
 // (carry: legacy/v4_pipeline.rs::v4_resumption_correctness)
 // REGRESSION-GUARD: Step 5 lazy-discovery resumption invariant
-// (design/int/step5-lazy-discovery.md §5).
+// (design/int/int.md §6.2).
 //
 // Clean stderr shows the resumption compiled; exit 42 (10 + 32) shows the
 // defn declared before the import is the one called after the dep loads.

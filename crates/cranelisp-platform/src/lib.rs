@@ -298,7 +298,12 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// v10 (Sprint 121, FIXME 0934) — the DLL-constructed [`IO_TAG_PURE`] node
 /// appends its payload-drop-glue witness word. A v9 DLL returns a shorter node,
 /// so the host must reject it before reading the v10-only word.
-pub const ABI_VERSION: u32 = 10;
+/// v11 (Sprint 122) — the [`IO_TAG_EFFECT`] node's `thunk_ptr` word denotes a
+/// **repeatable, borrowed** thunk: [`call_effect_thunk`] forces it by reference
+/// any number of times, and [`drop_effect_thunk`] discharges it once, when the
+/// node is freed. The layout is unchanged; the pointer's contract is not
+/// (rule (i)): a v10 DLL's single-shot box cannot be called by reference.
+pub const ABI_VERSION: u32 = 11;
 
 /// The exported-symbol name of a platform's manifest entry point, namespaced by
 /// the platform's raw `name:` literal (`cranelisp_platform_manifest_<name>`).
@@ -351,7 +356,7 @@ pub const IO_TAG_EFFECT_POLL: i64 = 4;
 /// `consume_io_tree`. An in-process backend↔intrinsics convention — the node is
 /// host-built and host-interpreted, never crossing the platform DLL ABI (no
 /// `ABI_VERSION` bump), mirroring [`IO_TAG_EFFECT_POLL`]. See
-/// `design/backend/io-trampoline.md §15` + `design/int/reactor.md §2.11`.
+/// `design/backend/io-trampoline.md §15` + `design/intrinsics/reactor.md §2.11`.
 pub const IO_TAG_LAUNCH: i64 = 5;
 
 /// Race/select combinator node (the control-layer slice, S96 Chunk C, slice 7).
@@ -367,7 +372,7 @@ pub const IO_TAG_LAUNCH: i64 = 5;
 /// trampoline + `consume_io_tree`. An in-process backend↔intrinsics convention —
 /// host-built and host-interpreted, never crossing the platform DLL ABI (no
 /// `ABI_VERSION` bump), mirroring [`IO_TAG_LAUNCH`]. See
-/// `design/backend/io-trampoline.md §16` + `design/int/reactor.md §2.15`.
+/// `design/backend/io-trampoline.md §16` + `design/intrinsics/reactor.md §2.15`.
 pub const IO_TAG_SELECT: i64 = 6;
 
 /// Payload-relative byte offset of a `Pure` node's payload-drop-glue witness.
@@ -587,7 +592,7 @@ unsafe impl Sync for PlatformFn {}
 /// `cranelisp_platform_manifest` entry point; [`HostContext::init`]
 /// stores it for the DLL's lifetime.
 ///
-/// # Current shape (ABI v10)
+/// # Current shape (ABI v11)
 ///
 /// The struct permanently carries two fields: `alloc` and `alloc_with_tag`
 /// (consumed by [`CLAdt::construct`], because ADT construction across the FFI
@@ -928,10 +933,9 @@ impl<CL: CLType> CLIO<CL> {
 
     /// Wrap a Rust closure as a deferred IO Effect node with no resource token.
     ///
-    /// The closure is double-boxed to produce a thin pointer (fits in one i64).
-    /// The trampoline unboxes and calls it when forcing the IO tree.
-    /// Resource token is set to 0 (unrestricted).
-    pub fn effect(f: impl FnOnce() -> CL + 'static) -> Self {
+    /// Resource token is 0 (unrestricted). The closure's contract is that of
+    /// [`effect_on_resource_with_capacity`](Self::effect_on_resource_with_capacity).
+    pub fn effect(f: impl Fn() -> CL + Send + Sync + 'static) -> Self {
         Self::effect_on_resource(0, f)
     }
 
@@ -945,7 +949,7 @@ impl<CL: CLType> CLIO<CL> {
     /// semantics, preserved by construction. The node it builds is byte-identical
     /// to the pre-slice-3 node at offsets 0–24 and carries `capacity = 1` at the
     /// appended offset 32 ([`IO_EFFECT_CAPACITY_OFFSET`]).
-    pub fn effect_on_resource(token: i64, f: impl FnOnce() -> CL + 'static) -> Self {
+    pub fn effect_on_resource(token: i64, f: impl Fn() -> CL + Send + Sync + 'static) -> Self {
         Self::effect_on_resource_with_capacity(token, 1, f)
     }
 
@@ -967,24 +971,32 @@ impl<CL: CLType> CLIO<CL> {
     /// the way the token already does — NOT a static per-effect/`DefKind` field.
     ///
     /// Additive sibling of [`effect_on_resource`](Self::effect_on_resource), which
-    /// is `…_with_capacity(token, 1, f)`. On the **default (ungated)** public-api
-    /// edge — no `concurrency` feature gate; the runtime that *consumes* the
-    /// capacity is feature-gated, but the carrier the platform writes is not.
+    /// is `…_with_capacity(token, 1, f)`.
+    ///
+    /// # The closure is repeatable (ABI 11)
+    ///
+    /// An `Effect` node is a reusable IO value, so `f` may run any number of
+    /// times, including concurrently from `Par` branches on different threads:
+    /// hence `Fn + Send + Sync`. A closure that consumes a capture must clone it
+    /// per call; interior mutability must be thread-safe (`Mutex`, atomics).
+    /// Captures live until the node is freed, when the host discharges the
+    /// thunk with [`drop_effect_thunk`]. A panic in `f` is caught on the DLL's
+    /// own runtime and returned as a faulted [`EffectOutcome`]; the closure
+    /// survives it, and a later force runs it again. A panic in a capture's
+    /// destructor at discharge is likewise contained DLL-side and leaked; it
+    /// never unwinds into the host.
     pub fn effect_on_resource_with_capacity(
         token: i64,
         capacity: i64,
-        f: impl FnOnce() -> CL + 'static,
+        f: impl Fn() -> CL + Send + Sync + 'static,
     ) -> Self {
-        // DLL-LOCAL fault catch (FIXME 0327 Option A). This wrapper closure is
-        // monomorphised at the `CLIO::effect*` call site — i.e. INTO the DLL
-        // that owns `f` — so the `catch_unwind` below executes in DLL-compiled
-        // code, caught by the DLL's OWN panic runtime. A `panic!` in `f`
-        // therefore does NOT cross the cdylib runtime boundary as a foreign
-        // unwind (which would abort); it is converted here, DLL-side, into an
-        // `EffectOutcome` carried back to the host as a C-ABI return value. The
-        // host's `call_effect_thunk` merely forwards it (no host-side catch).
-        let thunk: Box<Box<dyn FnOnce() -> EffectOutcome>> = Box::new(Box::new(move || {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || f().to_raw())) {
+        // DLL-LOCAL catches (FIXME 0327 Option A; platform.md §4.2). This wrapper
+        // and the holder's destructor are monomorphised here — INTO the DLL that
+        // owns `f` — so both `catch_unwind`s run on the DLL's own panic runtime.
+        // A DLL-originated unwind reaching host frames would abort.
+        let held = ContainedCaptureDrop(std::mem::ManuallyDrop::new(f));
+        let wrapper: StoredEffectThunk = Box::new(move || {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (held.0)().to_raw())) {
                 Ok(value) => EffectOutcome {
                     value,
                     fault_cause: std::ptr::null(),
@@ -1009,8 +1021,8 @@ impl<CL: CLType> CLIO<CL> {
                     }
                 }
             }
-        }));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
+        });
+        let thunk_ptr = Box::into_raw(Box::new(wrapper)) as i64;
 
         let alloc = get_global_alloc();
         // 5 x i64: tag + thunk_ptr + resource_token + fn_name_handle + capacity.
@@ -1025,8 +1037,9 @@ impl<CL: CLType> CLIO<CL> {
         // SAFETY: `payload` is a valid pointer returned by the host allocator for
         // at least 40 bytes. We write five i64 fields (tag, thunk_ptr, token,
         // fn_name_handle, capacity) at offsets 0, 8, 16, 24, 32 within that
-        // allocation. `thunk_ptr` is a valid pointer from `Box::into_raw` and will
-        // be consumed exactly once by `call_effect_thunk`. Field-3 is null — the
+        // allocation. The `thunk_ptr` word becomes the thunk's sole owner: forced
+        // by reference any number of times, discharged exactly once by
+        // `drop_effect_thunk` when the node is freed. Field-3 is null — the
         // backend stamps the real handle after this node is returned.
         unsafe {
             *(payload as *mut i64) = IO_TAG_EFFECT;
@@ -1040,10 +1053,37 @@ impl<CL: CLType> CLIO<CL> {
     }
 }
 
-/// Call a double-boxed thunk pointer (created by `CLIO::effect()`).
+/// What an Effect node's `thunk_ptr` word points to: `Box::into_raw` of a box
+/// around this one (the outer box makes the trait-object pointer thin). The
+/// constructor, [`call_effect_thunk`] and [`drop_effect_thunk`] all name this
+/// one type, so they cannot disagree about the representation.
+type StoredEffectThunk = Box<dyn Fn() -> EffectOutcome + Send + Sync>;
+
+/// Holds an author closure so that its destructor — the capture destructors —
+/// runs under `catch_unwind`. Instantiated in the generic `CLIO::effect*`
+/// constructor, so the drop entry reached through the trait object is
+/// monomorphised into the DLL and the catch runs on the DLL's panic runtime.
+struct ContainedCaptureDrop<F>(std::mem::ManuallyDrop<F>);
+
+impl<F> Drop for ContainedCaptureDrop<F> {
+    fn drop(&mut self) {
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: `self.0` is dropped exactly once, here, and never used after.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.0) }
+        }));
+        if let Err(payload) = dropped {
+            // Leaked, not dropped: a payload whose destructor panics must not
+            // escape either. Bounded like the fault-cause bytes (§5 invariant 6).
+            std::mem::forget(payload);
+        }
+    }
+}
+
+/// Force an Effect node's thunk (built by [`CLIO::effect`] and siblings).
 ///
-/// This **consumes** the thunk -- it is valid to call exactly once.
-/// The trampoline must not force the same Effect node twice.
+/// The thunk is **borrowed**: it may be forced any number of times, including
+/// concurrently from several threads. Its captures are destroyed only by
+/// [`drop_effect_thunk`].
 ///
 /// Returns an [`EffectOutcome`] (ABI v5, FIXME 0327 Option A). The thunk is the
 /// DLL-local wrapper that already ran the user closure under `catch_unwind`
@@ -1055,12 +1095,29 @@ impl<CL: CLType> CLIO<CL> {
 /// panic-cause bytes.
 ///
 /// # Safety
-/// `thunk_ptr` must be a valid pointer from
-/// `Box::into_raw(Box<Box<dyn FnOnce() -> EffectOutcome>>)`.
+/// `thunk_ptr` must be the `thunk_ptr` word of an Effect node built by
+/// `CLIO::effect*`, not yet passed to [`drop_effect_thunk`].
 pub unsafe fn call_effect_thunk(thunk_ptr: i64) -> EffectOutcome {
-    let thunk: Box<Box<dyn FnOnce() -> EffectOutcome>> =
-        unsafe { Box::from_raw(thunk_ptr as *mut Box<dyn FnOnce() -> EffectOutcome>) };
-    (*thunk)()
+    // SAFETY: per the contract, `thunk_ptr` points at a live `StoredEffectThunk`;
+    // the wrapper is `Sync`, so a shared borrow may be called from any thread.
+    let thunk: &StoredEffectThunk = unsafe { &*(thunk_ptr as *const StoredEffectThunk) };
+    thunk()
+}
+
+/// Discharge an Effect node's thunk: free it and run its capture destructors.
+///
+/// Call exactly once per node, when the node is freed, after its last force
+/// (or with no force at all). A panic in a capture destructor is contained
+/// DLL-side and leaked; this function does not unwind.
+///
+/// # Safety
+/// `thunk_ptr` must be the `thunk_ptr` word of an Effect node built by
+/// `CLIO::effect*`, not previously discharged, with no force in progress or
+/// to follow.
+pub unsafe fn drop_effect_thunk(thunk_ptr: i64) {
+    // SAFETY: per the contract, `thunk_ptr` came from `Box::into_raw` of a
+    // `Box<StoredEffectThunk>`, and ownership is reclaimed exactly once.
+    drop(unsafe { Box::from_raw(thunk_ptr as *mut StoredEffectThunk) });
 }
 
 impl<CL: CLType> From<CLIO<CL>> for i64 {

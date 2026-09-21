@@ -9,7 +9,7 @@ This crate is the **runtime library `cranelisp-backend` emits calls into** (BC
 `Linkage::Import` string-named calls to these targets. Do NOT restate the ABI /
 consumer / catalog contract here — it is the crate-root `lib.rs` `//!` (the
 facade doc, `/arch`-approved). Design direction lives in `design/intrinsics/`
-(`reactor.md`, `intrinsics-table.md`, `rc-inc-entry-point.md`). This file is
+(`reactor.md`, `intrinsics-table.md`, `ownership-and-disposal.md`). This file is
 only what the next code-touching agent would otherwise re-derive from source.
 
 ## Submodule seam map (where the `#[cfg(test)]` lives)
@@ -66,6 +66,12 @@ the consuming dec sequences (those stay per-module by design).
   consume fn and you leak or dangle.
 - **Nullary-tag guard**: every RC entry no-ops when `ptr < NULLARY_TAG_THRESHOLD`
   (a bare Mixed-category tag, not a heap pointer). Preserve it in any new RC path.
+- **An `Effect` node owns its platform thunk** (`ownership-and-disposal.md`
+  §6.2): a force borrows it; the IO teardown tail discharges it once through
+  `cranelisp_platform::drop_effect_thunk`. Build test `Effect` nodes with
+  `io::test_effect_node` (the platform constructor) and free them through
+  `consume_io_tree`/`dec_shallow_io`. A hand-boxed thunk compiles and is UB at
+  the call; a raw `dealloc` leaks the captures.
 - **IVar spark RC stays SeqCst-atomic** (Decision 13) and is deliberately NOT
   covered by the `NONATOMIC_RC` switch — a small fixed per-spark cost, not the
   per-node data RC the volume claim is about (arch R4 scoped `heap.rs`/`rc.rs`/

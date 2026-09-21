@@ -2,7 +2,7 @@
 //!
 //! QA-first (Phase 5 Stage 1) e2e guards for the ratified backend↔intrinsics
 //! poll-shape Effect-node seam (`design/arch/effect-concurrency.md` Appendix B
-//! §"the ratified … seam" (a)–(d); `design/int/reactor.md` §2.5/§2.7/§4).
+//! §"the ratified … seam" (a)–(d); `design/intrinsics/reactor.md` §2.5/§2.7/§4).
 //!
 //! Two lanes share this file:
 //!   - DEFAULT `nt` (feature OFF): the ungated structural replays (a)/(d) — the
@@ -17,7 +17,7 @@
 //! Observability note (the e2e vs unit split). The strand sink
 //! (`cranelisp-intrinsics::strand`) is an in-memory buffer drained only by the
 //! gated intrinsics unit tests; the dev-facing `/strand` dump is DEFERRED
-//! (`design/int/reactor.md` §3). So the `EffectDispatched → EffectSuspended →
+//! (`design/intrinsics/reactor.md` §3). So the `EffectDispatched → EffectSuspended →
 //! EffectResumed` strand-stream assertions are NOT subprocess-observable and
 //! live in the intrinsics-unit regression-replay rows (`/dev`-authored,
 //! `reactor/tests.rs`). These e2e rows assert the OBSERVABLE proxy of
@@ -85,7 +85,7 @@ fn link_io_program_runs_without_executor() {
 
 // The intended Wave-2 in-tree async leaf surface (R2/R6): a real
 // `declare_platform!`-emitted async-capable `DefKind::PlatformEffect`
-// (`design/int/reactor.md` §2.7 — "Demo leaf — `async-read`"). The exact
+// (`design/intrinsics/reactor.md` §2.7 — "Demo leaf — `async-read`"). The exact
 // platform/effect NAME and arg signature are the `/platform` + `/dev` Wave-2
 // deliverable; reconcile these two consts when the leaf lands. Until then these
 // programs reference a platform that does not exist, so the binary errors at

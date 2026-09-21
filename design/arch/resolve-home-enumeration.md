@@ -110,7 +110,7 @@ carries the open indexing work. Current evidence navigation is
 primary line qualifies with it, and the `; defn:` and `; impl:` section lookups
 root there, where the `Decl::Trait` binding is local. Rooting the implementing-type
 enumeration at the trait's home is complete by construction, because
-[Decision 0045](decisions/0045-traitimpl-storage-in-trait-defining-module.md)
+[bounded contexts §7 "TraitImpl storage"](bounded-contexts.md#7-cross-crate-types--cratescranelisp-types) (Decision 45)
 stores every implementation shell in the trait's defining module: "which types
 implement this trait" is a home question, not a view question.
 

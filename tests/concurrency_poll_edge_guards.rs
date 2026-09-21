@@ -51,9 +51,9 @@ fn poll_capacity_rides_node_convention_and_abi_is_v8() {
         );
     }
 
-    // (2) The current ABI stamp is 10 after the S121 DLL-constructed Pure-node
-    // witness append. The earlier poll-capacity work still contributed no ABI
-    // change of its own.
+    // (2) The current ABI stamp is 11 after the S122 `Effect` thunk-contract
+    // change (repeatable, borrowed `thunk_ptr`). The earlier poll-capacity work
+    // still contributed no ABI change of its own.
     let lib_rs = std::fs::read_to_string(
         workspace_root()
             .join("crates")
@@ -63,9 +63,9 @@ fn poll_capacity_rides_node_convention_and_abi_is_v8() {
     )
     .expect("read cranelisp-platform/src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 10;"),
-        "the S121 Pure witness append stamps `ABI_VERSION = 10`. The \
-         `pub const ABI_VERSION: u32 = 10;` line was not found in \
+        lib_rs.contains("pub const ABI_VERSION: u32 = 11;"),
+        "the S122 `Effect` thunk-contract change stamps `ABI_VERSION = 11`. The \
+         `pub const ABI_VERSION: u32 = 11;` line was not found in \
          cranelisp-platform/src/lib.rs."
     );
 
@@ -118,10 +118,10 @@ fn chunk_c_no_new_public_api_edge_or_abi_bump_neg() {
     }
 
     // (2) The combinator/cancellation work (Chunk C) added no public-api edge
-    // (asserted above). The ABI stamp is now `10` after the S121 Pure-node
-    // witness append — the combinators remain in-process
+    // (asserted above). The ABI stamp is now `11` after the S122 `Effect`
+    // thunk-contract change — the combinators remain in-process
     // node tags + derived `.cl` (they contributed no ABI change; the bump is the
-    // `HostCtx`/`ConcurrencyDescriptor` ctx-vtable change, not Chunk C).
+    // `Effect` `thunk_ptr` contract, not Chunk C).
     let lib_rs = std::fs::read_to_string(
         workspace_root()
             .join("crates")
@@ -131,8 +131,8 @@ fn chunk_c_no_new_public_api_edge_or_abi_bump_neg() {
     )
     .expect("read cranelisp-platform/src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 10;"),
-        "post-S121 the ABI stamp is `10` (the Pure witness append); the combinators \
+        lib_rs.contains("pub const ABI_VERSION: u32 = 11;"),
+        "post-S122 the ABI stamp is `11` (the `Effect` thunk contract); the combinators \
          themselves are in-process node tags + derived `.cl` (no Chunk-C edge)."
     );
 }

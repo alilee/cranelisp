@@ -9,7 +9,7 @@
 //! launched and not joined; the accept loop fans out automatically, TCO'd) / §5
 //! (the *degree* program-throttle, `effective permits = min(capacity, degree)`) /
 //! §10 (supervisor semantics — 500 + log + drop, never a whole-server abort) /
-//! §16 (the worked pure-side server sketch). `design/int/reactor.md` §5 (the
+//! §16 (the worked pure-side server sketch). `design/intrinsics/reactor.md` §5 (the
 //! backpressure / supervisor forward-looking seams). Spec of record:
 //!   - `spec/10-io.md` §10.12.7  (Launch-and-Continue / Detached Effects)
 //!   - `spec/10-io.md` §10.12.4.2 (Admission Degree — Program-Chosen Throttle)

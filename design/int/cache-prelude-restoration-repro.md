@@ -1,15 +1,15 @@
-> **HISTORICAL — superseded / completed working doc (triaged S110, FIXME 0607).** A
-> point-in-time record retained for the audit trail only; NOT current design intent. The
-> durable design is `int.md` (master) plus the subsystem docs indexed in
-> `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the current source
-> or the master, the source and master win.
+> **REFERENCE LINEAGE.** A dated diagnosis record, not current design intent. It is retained
+> because `tests/cache.rs` names it as the diagnosis anchor for this failure. Current design
+> is `int.md` (master) plus the subsystem docs indexed in `design/int/CLAUDE.md`
+> §"Document index"; where this record disagrees with the source or the master, they win.
 
 # Cache-hit prelude restoration: diagnostic repro (Sprint 59 Wave 1)
 
 **Status**: diagnosis-only (no fix).
-**Owner**: `/int` (session wiring; worker prelude injection).
-**Carried test**: `tests/sprint23.rs::cache_repl_loads_on_startup`.
-**Repro test**: `tests/sprint59_cache_repro.rs::s59_cache_hit_plain_prelude_fn_not_restored`.
+**Owner**: `design` (int) — session wiring; worker prelude injection.
+**Anchored tests**: both now live in `tests/cache.rs`, which carries them from the retired
+`legacy/sprint23.rs::cache_repl_loads_on_startup` and
+`legacy/sprint59_cache_repro.rs::s59_cache_hit_plain_prelude_fn_not_restored`.
 **Prepared**: 2026-04-20, after `/backend`'s Wave 1 GOT_LOAD local-symbol
 fix (previously surfaced as `.Ldata0` relocation failure — now resolved).
 
@@ -35,8 +35,8 @@ plain function.)
 
 ## 2. Minimal repro
 
-File: `tests/sprint59_cache_repro.rs` (already committed as failing,
-NOT `#[ignore]`'d — per `feedback_failing_not_ignored.md`).
+Committed as failing and NOT `#[ignore]`'d. Both tests now live in
+`tests/cache.rs`, carried from the retired `legacy/sprint59_cache_repro.rs`.
 
 Two tests, both driving the shipped `cranelisp` binary as a subprocess:
 
@@ -186,34 +186,3 @@ assertion. A complementary test for the fresh-load case
 (`try_cache_hit_load` returns `false`, scheduler blocks, glob is
 registered post-block) already exists implicitly via every integration
 test — the unit test need only cover the cache-hit branch.
-
-## 7. Estimated fix effort
-
-**S (small, <2 hours).** The fix is one copy of the four-line
-`register_imports` block from the "else" arm into the cache-hit arm
-of `inject_prelude_if_needed`. No cross-crate impact, no data-model
-change, no spec or design-doc restructure.
-
-Breakdown:
-
-- Code change: ~5 min (copy-paste from line 2329-2335).
-- Unit test (per §6): ~45 min.
-- Verify `sprint23::cache_repl_loads_on_startup` +
-  `tests/sprint59_cache_repro.rs` flip green; run full `sprint23`
-  suite + `cache` suite for regression: ~15 min.
-- Total: ~1 hour active work, ~2 hours with review.
-
-## 8. Repro instructions
-
-```bash
-# Baseline (pre-existing carry — should FAIL):
-cargo nextest run --test sprint23 cache_repl_loads_on_startup
-
-# Minimal reduction (new, committed un-ignored — should FAIL):
-cargo nextest run --test sprint59_cache_repro s59_cache_hit_plain_prelude_fn_not_restored
-
-# Control (minimal — should PASS):
-cargo nextest run --test sprint59_cache_repro s59_cache_hit_empty_prelude_basic_eval_works
-```
-
-After the fix in §5, all three are expected to go green.

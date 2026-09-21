@@ -137,7 +137,7 @@ value (`platform.md` §2, §4.4).
 payload-glue word. That sentinel is the **only** value a DLL may write there: a
 DLL cannot name a host `drop<T>` address and must not try, and the host adopts
 the node with the real glue when it crosses back (`platform.md` §4.1, §4.4). The
-DLL implements no part of the post-publication claim.
+DLL implements no part of the force or teardown rule.
 
 The `effect` family builds an `Effect` node around a double-boxed closure — the
 double box is what produces a thin pointer from a trait object. Two of that
@@ -150,9 +150,16 @@ node's fields the constructor does not fill with a meaningful value:
 - **`capacity`** defaults to serial-within-token and is supplied explicitly by
   the capacity-carrying sibling constructor.
 
-`call_effect_thunk` reclaims the boxed closure and invokes it **exactly once** —
-single-shot by contract, so the trampoline must never force one node twice — and
-returns an `EffectOutcome` under the DLL-local fault catch (`platform.md` §4.2).
+The closure is **repeatable**: `call_effect_thunk` borrows it, and forcing a
+node again runs it again, possibly concurrently from two `Par` branches. It
+must therefore be `Fn() -> CL + Send + Sync + 'static`. It lives as long as
+the node, and `drop_effect_thunk` drops it and its captures once, when the host
+frees the node. `platform.md` §4.2 records the ownership and the DLL-local
+fault catch on both paths. For an author, this means:
+
+- A closure that consumes a capture must clone it on each call.
+- `Rc`, `RefCell` and `Cell` captures become `Arc`, `Mutex` or atomics.
+- A closure's side effect happens once per force, not once per node.
 
 ---
 
@@ -175,7 +182,7 @@ by being handed on as a value.
 ```rust
 pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
     let owned = s.own();          // +1 — the capture's own reference
-    CLIO::effect(move || {        // `owned` decrements when the closure returns
+    CLIO::effect(move || {        // `owned` decrements when the node is freed
         println!("{}", owned.as_str());
         CLInt::from(0i64)
     })

@@ -270,5 +270,4 @@ The full test suite SHOULD complete in under 30 seconds. Individual tests SHOULD
 - [§10.12](10-io.md) — Automatic IO scheduling specification
 - [§12.5](12-runtime.md#125-tail-call-optimization) — Tail call optimization
 - [§7](07-traits.md) — Traits, higher-kinded types, multi-parameter traits (collection extensibility)
-- `design/arch/architecture.md` — Architectural decisions informed by these NFRs
-- `design/arch/design-space.md` — Forward-compatibility analysis against these NFRs (Part 1: Ring 1 decisions, Part 2: beyond-ring resilience)
+- [`design/arch/overview.md`](../design/arch/overview.md) — the architecture these NFRs constrain, and the entry point to the architecture contracts that record how each is met

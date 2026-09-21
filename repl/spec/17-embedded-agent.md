@@ -2,7 +2,7 @@
 
 ## 17. Embedded Agent Experience [S88]
 
-This section is **additive and behaviorally feature-gated.** It specifies the user-visible experience of the optional embedded LLM agent — a development partner that lives inside the live REPL session (`design/arch/repl-embedded-agent.md`). **None of §1–§16 changes.** When the agent feature is compiled out, or built-in but dormant (§17.4), the REPL is byte-identical to the deterministic REPL §1–§16 describes — every requirement below that references the agent is gated on it being **both compiled-in and runtime-enabled**.
+This section is **additive and behaviorally feature-gated.** It specifies the user-visible experience of the optional embedded LLM agent — a development partner that lives inside the live REPL session ([design/arch/repl-embedded-agent.md](../../design/arch/repl-embedded-agent.md)). **None of §1–§16 changes.** When the agent feature is compiled out, or built-in but dormant (§17.4), the REPL is byte-identical to the deterministic REPL §1–§16 describes — every requirement below that references the agent is gated on it being **both compiled-in and runtime-enabled**.
 
 The agent extends the self-documentation principle (§4) into a conversational partner, but it does **not** replace, alter, or contend with the deterministic surface. Three invariants hold unconditionally:
 
@@ -69,8 +69,8 @@ build-a-function turn issues **many** self-directed probes — *does `fn` take m
 0575), *do multi-arity `defn` clauses share inference?* (0576), *what is this symbol's type?* — and
 echoing each `agent> /type …` command and its result **line after line** floods the user's session
 with the agent's private search, burying the one thing the user asked for (the finished function).
-The observed session (`design/arch/fixmes/0577`) scrolled dozens of such probes and then hit the
-step budget without ever delivering the definition. This section carves the agent's **probe
+The observed session (the S109 agent-context observation, FIXME 0577, closed S113) scrolled
+dozens of such probes and then hit the step budget without ever delivering the definition. This section carves the agent's **probe
 traffic** off the user session. [S109]
 
 **The probe set.** A **probe** is a read/introspection **pull** the agent issues to **check**
@@ -100,8 +100,8 @@ serve. The user learns the vocabulary from the agent's **conclusions**, not from
 
 **Arch constraint — the probe channel is an E4 agent-gutter PRODUCER, not a bespoke renderer
 (P2).** Where a probe's finding **does** surface to the user (a prose summary, per item 1 above), it
-renders as **agent prose through the one styling seam** (`design/arch/repl-styling-seam.md` — the
-`AgentGutter` producer, §10.3 R14), exactly like every other line of framed prose. There is **no
+renders as **agent prose through the one styling seam** ([design/arch/repl-styling-seam.md](../../design/arch/repl-styling-seam.md)
+— the `AgentGutter` producer, `10-terminal-styling.md` §10.3 R14), exactly like every other line of framed prose. There is **no
 new probe-summary renderer**: a probe summary is prose, styled by the single formatter, degrading
 `--no-color`/non-TTY byte-clean like all agent prose (§17.13.3). The private working channel itself
 is not a screen surface at all — it is the log/trace sinks (§17.20/§17.21), which are already silent

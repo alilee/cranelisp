@@ -367,10 +367,10 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                 .map_or(terminal_disposer, |cont| cont.input_disposer);
 
             let produced = match tag {
-                t if t == IO_TAG_PURE => match force_pure_node(current, current_is_fresh, strand) {
-                    PureStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
-                    PureStep::AlreadyClaimed => return TrampolineOutcome::Stopped,
-                },
+                t if t == IO_TAG_PURE => ProducedValue::with_disposer(
+                    force_pure_node(current, current_is_fresh),
+                    edge_disposer,
+                ),
                 t if t == IO_TAG_EFFECT => match force_effect_node(current) {
                     EffectStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
                     EffectStep::Aborted => {
@@ -1283,31 +1283,21 @@ enum EffectStep {
     Aborted,
 }
 
-enum PureStep {
-    Value(i64),
-    AlreadyClaimed,
-}
-
-/// Claim a Pure node's payload obligation before reading or transferring it.
-/// Both trampoline bodies use this one seam.
-fn force_pure_node(node: i64, is_fresh: bool, strand: crate::strand::StrandId) -> PureStep {
+/// Force a `Pure` node, minting the consumer's reference where the node owns one
+/// so the node keeps its own for later forces and its teardown
+/// (`ownership-and-disposal.md` §6.1).
+fn force_pure_node(node: i64, is_fresh: bool) -> i64 {
     // SAFETY: callers select this helper only after reading `IO_TAG_PURE`, so
-    // ABI 10 guarantees the aligned state word at absolute offset 32.
-    match unsafe { crate::drop::swap_pure_payload_to_claimed(node) } {
-        crate::drop::PurePayloadState::Claimed => {
-            crate::diagnostics::record_pure_claim_lost(node, strand);
-            crate::panic::set_runtime_error("Pure node forced more than once".to_string());
-            PureStep::AlreadyClaimed
-        }
-        crate::drop::PurePayloadState::Scalar | crate::drop::PurePayloadState::Owned(_) => {
-            crate::diagnostics::record_pure_claim_success(node, strand);
-            // Read only after winning the exchange. The losing path must never
-            // inspect, return, retain, or discharge the payload.
-            let value = unsafe { read_node_field(node, FIELD_0_OFFSET) };
-            io_observer::emit(IoEventTag::PureStep, &IoEvent::PureStep { value, is_fresh });
-            PureStep::Value(value)
-        }
+    // ABI 10 guarantees the payload word and the witness word after it.
+    let value = unsafe { read_node_field(node, FIELD_0_OFFSET) };
+    // SAFETY: same ABI-10 shape; the witness is written only before publication.
+    if let crate::drop::PurePayloadWitness::Owned(_) =
+        unsafe { crate::drop::pure_payload_witness(node) }
+    {
+        crate::rc::rc_inc(value);
     }
+    io_observer::emit(IoEventTag::PureStep, &IoEvent::PureStep { value, is_fresh });
+    value
 }
 
 /// Force an `IO_TAG_EFFECT` node's thunk under the platform fault guard
@@ -1318,8 +1308,8 @@ fn force_pure_node(node: i64, is_fresh: bool, strand: crate::strand::StrandId) -
 /// `io_guard::force_effect_thunk_protected`. A fault in foreign platform code
 /// (Rust panic or SIGFPE/SIGILL/SIGBUS/SIGSEGV) is captured into the
 /// dispatch-fault slot (paired with the fn-name) for int to compose into
-/// `PlatformError::DispatchError`. The happy path is identical to the former
-/// unguarded `call_effect_thunk(thunk_ptr)`.
+/// `PlatformError::DispatchError`. The thunk is borrowed: the node keeps it for
+/// later forces and discharges it at teardown (`ownership-and-disposal.md` §6.2).
 fn force_effect_node(node: i64) -> EffectStep {
     // SAFETY: `node` is the live `current` Effect node base pointer; its
     // thunk/token fields are within its payload.
@@ -1342,12 +1332,36 @@ fn force_effect_node(node: i64) -> EffectStep {
         },
     );
     let fn_name = read_effect_fn_name(node);
-    // SAFETY: `thunk_ptr` is the Effect node's field-0 — a valid not-yet-forced
-    // double-boxed thunk produced by `CLIO::effect*`.
+    // SAFETY: `thunk_ptr` is the Effect node's field 0, a live `CLIO::effect*`
+    // thunk; the caller holds a counted reference to `node`, so teardown cannot
+    // discharge it during this force.
     match unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, &fn_name) } {
         crate::io_guard::ForceOutcome::Value(v) => EffectStep::Value(v),
         crate::io_guard::ForceOutcome::Faulted => EffectStep::Aborted,
     }
+}
+
+/// A test `Effect` node built by the platform constructor, as a platform DLL
+/// builds one, with the host allocator wired to this crate's. Its thunk returns
+/// `value()`; its fn-name field is unstamped. A test frees it through the IO
+/// teardown tail, which discharges the thunk.
+#[cfg(test)]
+pub(crate) fn test_effect_node(
+    token: i64,
+    capacity: i64,
+    value: impl Fn() -> i64 + Send + Sync + 'static,
+) -> i64 {
+    static HOST: cranelisp_platform::HostContext = cranelisp_platform::HostContext::new();
+    static WIRED: std::sync::Once = std::sync::Once::new();
+    WIRED.call_once(|| {
+        let callbacks = crate::host_callbacks();
+        // SAFETY: `init` copies the callbacks out of the live local.
+        unsafe { HOST.init(&callbacks) };
+    });
+    cranelisp_platform::CLIO::effect_on_resource_with_capacity(token, capacity, move || {
+        cranelisp_platform::CLInt::from(value())
+    })
+    .into()
 }
 
 #[derive(Clone, Copy)]
@@ -1455,10 +1469,10 @@ fn run_io_trampoline_inner(
         // continuation via the shared `feed_continuation` step. Bind descends
         // in-place and `continue`s without producing a value.
         let produced = match tag {
-            t if t == IO_TAG_PURE => match force_pure_node(current, current_is_fresh, strand) {
-                PureStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
-                PureStep::AlreadyClaimed => return TrampolineOutcome::Stopped,
-            },
+            t if t == IO_TAG_PURE => ProducedValue::with_disposer(
+                force_pure_node(current, current_is_fresh),
+                edge_disposer,
+            ),
             t if t == IO_TAG_EFFECT => match force_effect_node(current) {
                 EffectStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
                 // Abort: the fault is in the dispatch-fault slot. Return the

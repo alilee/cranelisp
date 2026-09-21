@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(d._reserved, [0u8; 2]);
     }
 
-    // spec: design/arch/platform-interface.md §6.8 (FIXME 0457) —
+    // spec: design/arch/platform-interface.md §6.8.0 —
     // `nearest_scheduling_class` is the best-effort inverse of
     // `from_scheduling_class` (token/cardinality → nearest class), the v7
     // loader's derivation of the still-required `scheduling_class`. Round-trips

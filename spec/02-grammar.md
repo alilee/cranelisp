@@ -53,7 +53,7 @@ top_level    = defn_form
              | platform_form      (* handled in module phase *)
 ```
 
-Note: `const`, `const-`, `def`, and `def-` are library macros defined in the prelude. They are not primitive syntactic forms and are not described here. See [Section 11.7](11-stdlib.md#117-prelude-macros) for their definition and expansion.
+Note: `const`, `const-`, `def`, and `def-` are library macros defined in the prelude. They are not primitive syntactic forms and are not described here. See [Section 9.10](09-macros.md#910-example-prelude-macros) for their definition and expansion.
 
 ### 2.2.1 `defn` -- Function Definition [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_defn]
 
@@ -877,7 +877,7 @@ The following forms have no private variant:
 | `export` | Re-exports are inherently public |
 | `platform` | Platform declarations are inherently public |
 
-Library macros such as `const`/`const-` and `def`/`def-` follow `defmacro` visibility rules and are described in [Section 11.7](11-stdlib.md#117-prelude-macros).
+Library macros such as `const`/`const-` and `def`/`def-` follow `defmacro` visibility rules and are described in [Section 9.10](09-macros.md#910-example-prelude-macros).
 
 By default (without the `-` suffix), all definitions are public. Private definitions MUST NOT be accessible to importing modules through `import` or `export`.
 

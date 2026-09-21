@@ -350,9 +350,9 @@ the workspace does not compile until every member lands — is:
    (`MonoExpr::Var.resolution: VarRef`, `MonoExpr::Apply.dispatch: ApplyRef`);
    `MethodResolutions` split (`var_refs` + `apply_refs`); `from_expr`/`lenient_from_expr`
    signature change (typed maps + `ViewBuildError`); `public-api.txt` regen +
-   `interfaces.md` §"Method Resolutions". **Plus the FIXME-0685 resolution** (the
+   `design/arch/interfaces.md` §"Method Resolutions". **Plus the FIXME-0685 resolution** (the
    sanctioned synthetic all-local shape — direct construction or `synthetic_local_from_expr`).
-2. **typecheck** (this pass): the §2 chokepoint verdicts (Var totality at
+2. **typecheck** (this pass): the [chokepoint verdicts](typed-resolution-carrier.md#2-the-producer-chokepoints-where-the-total-verdict-is-recorded) (Var totality at
    infer.rs:356–360; Apply `ViaCallee`/`Dispatch` totality); the §3 provenance
    plumbing (`ScopeStack.frame_spans` + `push_scope` span threading × 6 seams);
    the §4 `MethodResolutions`-split re-targeting (~30 write-sites); the §4.3

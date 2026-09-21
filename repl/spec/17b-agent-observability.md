@@ -7,7 +7,8 @@ and a full-content **trace** (§17.21), joined by a shared `turn` key (§17.21.3
 specifies the **index** half: a **silent, persistent, structured** log of the agent's activity,
 written to a **file**, with enough structure to **`grep`/`jq` "where did the agent struggle"** by
 hand — the *recording* half of self-tuning, captured now so insight can be extracted manually (and
-automated later) (`sprints/SPRINT.md §Pillar 4`; `repl-embedded-agent.md §11.6`, R5). The `/arch`
+automated later) (the S90 plan's Pillar 4, `sprints/archive/sprint-90.md`;
+`design/arch/repl-embedded-agent.md` §11.6, R5). The `/arch`
 ruling makes it a **new feature-gated sibling sink** (`src/agent/log.rs` / the reserved
 `telemetry.rs` slot); its content companion, the full-content trace, **re-purposes** S89's
 `CRANELISP_AGENT_TRACE` from an ephemeral stderr view into a persistent file sink (§17.21). This
@@ -83,7 +84,7 @@ which stays in the trace. [S90]
 
 The §17.20.3 keys record **that** the agent struggled; the six fields below record **why the
 context did or did not serve it**, so the log closes a **tuning loop** rather than only marking
-trouble spots (`design/arch/fixmes/0577`). The governing constraints:
+trouble spots (the S109 agent-context observation, FIXME 0577, closed S113). The governing constraints:
 
 - **Derived, never narrated.** Every field is computed from state the **harness already sees** —
   a tool name and its arguments, a result's error class, the step counter, the assembled request,
@@ -98,7 +99,7 @@ trouble spots (`design/arch/fixmes/0577`). The governing constraints:
   output, an unwritable-path failure is swallowed, and the fields are absent on a non-`agent`
   build. The keys stay **stable and greppable** so a one-line `grep`/`jq` extracts each metric.
 
-**The six fields (normative schema additions to the §27 `LogEvent`):**
+**The six fields (normative schema additions to the `design/int/agent.md` §27 `LogEvent`):**
 
 | # | Field | On event(s) | Derived from (harness-visible) |
 |---|---|---|---|
@@ -148,8 +149,8 @@ Two harness-surface requirements the F1/F5 fields depend on:
 
 ##### 17.20.3c The Primer-Gap Loop — `question` Log Is the Per-Sprint Worklist [S109]
 
-The F1 `question` log is a **standing signal for primer completeness** (thread D of
-`design/arch/fixmes/0577`). Recurring questions across scenarios are the primer's **uncovered
+The F1 `question` log is a **standing signal for primer completeness** (thread D of the S109
+agent-context filing, FIXME 0577, closed S113). Recurring questions across scenarios are the primer's **uncovered
 rows**: a syntax/semantics question the agent had to probe for is a question the static primer
 (`src/agent/primer.txt` + the `/syntax` cheatsheet, §17.17) should have pre-answered. Each sprint,
 `/repl` reviews the deduped-and-ranked unresolved-question list (§4 of the `/qa` eval doc) and
@@ -157,9 +158,9 @@ folds the recurring **static** ones back into the primer — static syntax/seman
 primer (it never changes per session); **session-dependent** facts (what is in scope, prelude
 status, existing-defn style) belong in the harvest (§17.18), never the primer. This is the
 `/repl`-owned half of the tuning loop; `/qa` owns the scenario suite + metric definitions
-(`tests/plan/agent-context-tuning.md`). The probe set the loop mines is enumerated in §17.2.1 (the
-probe *channel* — where probe traffic goes on screen); this section (§17.20.3c) is the *loop* that
-reads the resulting `question` log.
+(`tests/plan/agent-context-tuning.md`). The probe set the loop mines is enumerated in
+`17-embedded-agent.md` §17.2.1 (the probe *channel* — where probe traffic goes on screen); this
+section is the *loop* that reads the resulting `question` log.
 
 > **Sequencing (user, S108, recorded for the reader).** Observability (this section, thread A)
 > ships **first** — it is the substrate the eval process reads. Driving the primer to ~99%

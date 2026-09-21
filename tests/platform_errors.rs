@@ -249,12 +249,12 @@ const SHAPES_MODULE: &str = "(deftype Rectangle [:primitives/Int w :primitives/I
 // { expected, found }`, and BOTH values MUST appear in the stderr message so a
 // user can see what they have vs. what the runtime expects. The DLL
 // (`platforms/shapes-badabi/`) is hand-rolled with the immediately preceding
-// `abi_version` literal (= 9). Per the §5.5.5 DEF-5 invariant it exports the
+// `abi_version` literal (= 10). Per the §5.5.5 DEF-5 invariant it exports the
 // per-platform-namespaced
 // manifest symbol `cranelisp_platform_manifest_shapes-badabi` (matching
 // `platform_manifest_symbol("shapes-badabi")`), so the host FINDS the manifest,
 // reads the stale ABI, and rejects on the mismatch — NOT a missing-symbol error.
-// Host expected = 10 (Pure payload-glue append); DLL found = 9.
+// Host expected = 11 (S122 `Effect` thunk contract); DLL found = 10.
 #[test]
 fn platform_abi_version_mismatch_e2e() {
     let out = Cranelisp::new()
@@ -286,7 +286,7 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     // BOTH versions MUST surface so the user sees what they have (the DLL's
-    // stale `found` = 9) vs. what the runtime requires (`expected` = 10). The
+    // stale `found` = 10) vs. what the runtime requires (`expected` = 11). The
     // `PlatformError::AbiVersionMismatch` Display
     // (`crates/cranelisp-types/src/error.rs:327`) renders
     // `DLL <path> ABI version <found> does not match expected <expected>` — it
@@ -302,9 +302,9 @@ fn platform_abi_version_mismatch_e2e() {
     );
     assert!(
         out.stderr
-            .contains("ABI version 9 does not match expected 10"),
+            .contains("ABI version 10 does not match expected 11"),
         "ABI-version-mismatch error MUST report the adjacent DLL/runtime pair \
-         exactly (`9` found, `10` expected), without passing on unrelated digits; \
+         exactly (`10` found, `11` expected), without passing on unrelated digits; \
          got stderr:\n{}",
         out.stderr
     );

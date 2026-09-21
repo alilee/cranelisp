@@ -162,7 +162,8 @@ Linkers from cache-hit loads must outlive the worker's current task. The existin
 3. At module completion, `drain_to_shared()` moves it to `shared_codegen.kept_linkers: Mutex<Vec<Linker>>`.
 4. `kept_linkers` lives on `SharedCodegenState`, which lives on `CompilerSession`, which lives for the session's lifetime.
 
-No new data structures needed. The existing design from Sprint 47's `concurrent-workers.md` already anticipates this use case.
+No new data structures needed — the worker-local/shared split already
+anticipates this use case.
 
 ## 4. Step 14: File Watcher Migration
 
@@ -244,7 +245,8 @@ The file watcher also needs to register files it watches. In `try_cache_hit_load
 
 ### 4.5 Cascade Strategy for Dependents (T-3 Resolution)
 
-The v3 path uses `ModuleDependencyGraph.transitive_dependents()` which maintains explicit reverse dependency edges. In v4, dependency edges are implicit in the TypeChecker's import specs (pipeline-v4.md invariant 7).
+Dependency edges are not held as an authored reverse index: they are implicit in the
+modules' import specs, and the reverse direction is derived on demand.
 
 Walk `tc.modules` to find dependents:
 
@@ -276,9 +278,17 @@ fn find_dependents(
 
 This is O(modules * symbols) per changed module. For typical project sizes (tens of modules), this is negligible. A reverse index optimization can be added later if profiling shows it matters.
 
-Cascade is not recursive — per `pipeline-v4.md` section 6.3: "Dependents are NOT automatically re-registered. If the changed module's exported symbol types are unchanged, dependents remain valid (they call through the GOT, which is updated with new code pointers)." Only the directly changed module is re-typechecked and re-codegenned. The GOT update makes dependents see the new code without recompilation.
+**This section designs the watcher's *dependent discovery* only. What happens to a
+dependent once the changed module's ABI surface moves is no longer decided here.**
 
-If the changed module's exported symbol types DO change, it is an error per `pipeline-v4.md`: "changing the type of an exported symbol is an error." The re-typecheck will succeed but dependents compiled against the old type are stale. The user is told to restart the REPL or update dependent code.
+The original rule was: re-register the changed module alone, because dependents call through
+the GOT and pick up new code pointers, and a changed exported *type* was simply declared an
+error with the user told to restart the REPL. The first half survives for an ABI-preserving
+change; the second half was superseded by the S101 redefinition transaction, which
+classifies the change at the commit gate and drives dependent recompilation — with BROKEN
+marking and a cascade report — instead of leaving stale dependents behind. The watcher path
+joins that same discipline at module grain
+(`design/int/session-transaction.md` §7.3). Read it before changing anything here.
 
 ### 4.6 Watcher Integration with v4 REPL
 
@@ -366,52 +376,3 @@ The sequence in `try_cache_hit_load` is:
 2. Register with scheduler via `register_module_cached`.
 
 This order is important: `register_module_cached` satisfies pending typecheck waiters. If called before TC restoration, a waiting worker would unblock and try to read type info that isn't yet available.
-
-## 6. Sketch Comparison
-
-The sketch handles caching in `sketch/src/cache.rs` and `sketch/src/batch.rs`:
-
-- **Cache validity**: SHA-256 source hash checked against a manifest file (`manifest.json`). The reimplementation uses the same approach via `cranelisp_backend::cache::hash_source`.
-- **Cache restoration**: `try_load_cached_module` in `sketch/src/batch.rs` loads `.meta.json`, deserializes a `CompiledModule`, and wires code pointers via a custom Linker. The reimplementation follows the same pattern: load metadata, restore symbol table into TC, load `.o` via Linker.
-- **Linker**: `sketch/src/linker.rs` implements a minimal linker (Mach-O/ELF relocation resolution, mmap+mprotect). The reimplementation uses the same `cranelisp_backend::cache::Linker`.
-- **Background cache writes**: The sketch uses `CacheWritePacket` with rayon `par_iter` for deferred writes in batch mode, and `CacheWriter` (mpsc channel + background thread) for REPL. The reimplementation uses nice worker threads — a cleaner model where .o compilation is just another work item in the scheduler.
-
-**Divergence**: The sketch's cache loading is caller-driven (`try_load_cached_module` called inline during the batch loop). The reimplementation's is scheduler-driven: cache hits enter `TypecheckDone` in the scheduler, and in-memory code loading is deferred to when a worker actually needs callable symbols. This is a consequence of the scheduler architecture — the reimplementation does not load code eagerly on cache hit because no worker may need it (e.g., `--link` mode only needs `.o` files, not in-memory code). The lazy loading is an improvement over the sketch.
-
-**File watcher**: The sketch's REPL (`sketch/src/repl.rs`) uses `find_direct_dependents` / `find_transitive_dependents` and recompiles the full cascade. The reimplementation limits cascade to the directly changed module (per `pipeline-v4.md` §6.3) because the GOT indirection makes dependent code pointer updates transparent. This is a deliberate simplification — the sketch's full cascade is unnecessary in the reimplementation's architecture.
-
-## 7. Implementation Plan
-
-### Wave 1: Cache-Hit in handle_import
-
-1. Add `cached_modules`, `file_to_module`, `cache_state` fields to `SharedState`.
-2. Initialize `cache_state` from the cache directory in `CompilerSession::new`.
-3. Write `try_cache_hit_load` function in `worker.rs`.
-4. Insert cache check in `handle_import` before the parse-and-register path.
-5. Populate `file_to_module` in both `handle_import` and `try_cache_hit_load`.
-6. Test: second `--v4 --run` is faster (cache hit observed via timing or log).
-
-### Wave 2: Linker Loading for Cached Modules
-
-1. Add cache-hit detection in `codegen_module_symbols` (check `cached_modules`).
-2. Write `load_cached_module_via_linker` function reusing v3 `load_cached_object_via_linker` logic.
-3. Call `scheduler.notify_inmem_codegen_batch_complete` after loading.
-4. Handle priority codegen for cached macro deps (detect + batch load).
-5. Test: prelude loads from cache on second run, macro expansion works.
-
-### Wave 3: File Watcher Migration
-
-1. Add `re_register_module` to `CompileScheduler`.
-2. Write `find_dependents` function walking `tc.modules`.
-3. Rewrite `reload_changed_modules` to use v4 path:
-   - Map file path to module via `file_to_module`.
-   - Clear TC module state.
-   - Re-register with scheduler.
-   - Process via worker loop.
-4. Test: edit file while REPL running, see `[updated: path]`.
-
-### Wave 4: Cleanup
-
-1. Verify all v3 reload methods (`recompile_module_and_dependents`, etc.) are unreachable.
-2. Mark as dead code (deleted in Step 15).
-3. Run full test suite.

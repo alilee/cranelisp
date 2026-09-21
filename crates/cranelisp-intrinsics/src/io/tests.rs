@@ -13,59 +13,48 @@ fn make_pure_node(value: i64) -> i64 {
     base as i64
 }
 
-/// Helper: allocate an Effect node with a pre-built thunk.
-/// Layout (ABI v4): [header(16) | tag=1(8) | thunk_ptr(8) |
-/// resource_token(8) | fn_name_handle(8)] — 32-byte payload. Field-3 is
-/// init to null (the "backend did not stamp" case), so the trampoline's
-/// `read_effect_fn_name` degrades to `"<unknown>"`.
-fn make_effect_node(result_value: i64) -> i64 {
-    make_effect_node_with_name(result_value, 0)
+/// An unrestricted [`test_effect_node`].
+fn effect_node(value: impl Fn() -> i64 + Send + Sync + 'static) -> i64 {
+    test_effect_node(0, 1, value)
 }
 
-/// Helper: allocate an ABI-v4 Effect node, optionally stamping field-3 with
-/// a baked fn-name handle (a NUL-terminated C-string pointer, or 0 for the
-/// unstamped case).
-fn make_effect_node_with_name(result_value: i64, fn_name_handle: i64) -> i64 {
-    // Double-box a CLEAN wrapper thunk the way `CLIO::effect*` does post-ABI-v5
-    // (FIXME 0327 Option A): the stored thunk returns an `EffectOutcome`.
-    let thunk_ptr = clean_effect_thunk(result_value);
-
-    let base = alloc_with_rc(32); // tag + thunk + token + fn_name = 32 bytes (ABI v4)
-    unsafe {
-        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
-        *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
-        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0; // resource_token
-        *((base as isize + FIELD_2_OFFSET) as *mut i64) = fn_name_handle;
-    }
-    base as i64
+fn effect_node_on(
+    token: i64,
+    capacity: i64,
+    value: impl Fn() -> i64 + Send + Sync + 'static,
+) -> i64 {
+    test_effect_node(token, capacity, value)
 }
 
-/// Build a CLEAN wrapper thunk returning `EffectOutcome { value, null, 0 }`,
-/// matching `CLIO::effect*`'s ABI-v5 stored-thunk shape. Returns the
-/// double-boxed thunk pointer (consumed once by `call_effect_thunk`).
-fn clean_effect_thunk(value: i64) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-        Box::new(Box::new(move || cranelisp_platform::EffectOutcome {
-            value,
-            fault_cause: std::ptr::null(),
-            fault_len: 0,
-        }));
-    Box::into_raw(thunk) as i64
+/// An `Effect` node whose thunk returns `value`, with its fn-name field
+/// stamped by `fn_name_handle` the way the backend does after the platform call
+/// (a NUL-terminated C-string pointer, or 0 for the unstamped case).
+fn make_effect_node_with_name(value: i64, fn_name_handle: i64) -> i64 {
+    let node = effect_node(move || value);
+    // SAFETY: a fresh, unpublished 40-byte `Effect` node; field 2 is the fn-name.
+    unsafe { crate::heap_access::write_i64(node, FIELD_2_OFFSET, fn_name_handle) };
+    node
 }
 
-/// Build a FAULTING wrapper thunk returning an `EffectOutcome` with a
-/// non-null `fault_cause` carrying `cause`, modelling what the DLL-local
-/// `catch_unwind` in `CLIO::effect*` produces when the user closure panics.
-/// The cause bytes are leaked (session-bounded), mirroring the DLL wrapper's
-/// `String::leak`. Returns the double-boxed thunk pointer.
-fn faulting_effect_thunk(cause: &'static str) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-        Box::new(Box::new(move || cranelisp_platform::EffectOutcome {
-            value: 0,
-            fault_cause: cause.as_ptr(),
-            fault_len: cause.len(),
-        }));
-    Box::into_raw(thunk) as i64
+fn make_effect_node(value: i64) -> i64 {
+    make_effect_node_with_name(value, 0)
+}
+
+/// An `Effect` node whose closure panics with `cause`. The platform wrapper
+/// catches the panic and returns it as a faulted `EffectOutcome`, as it does in
+/// a platform DLL.
+fn faulting_effect_node(cause: &'static str) -> i64 {
+    effect_node(move || -> i64 { panic!("{cause}") })
+}
+
+/// The thunk word of an `Effect` node.
+fn effect_thunk(node: i64) -> i64 {
+    // SAFETY: `node` is a live `Effect` node; field 0 is its thunk.
+    unsafe { crate::heap_access::read_i64(node, FIELD_0_OFFSET) }
+}
+
+fn release_io(node: i64) {
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
 }
 
 static RESULT_DISPOSALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -469,27 +458,10 @@ fn test_run_io_par_with_effects() {
     let order_clone = order.clone();
     let make_tracking_effect = |id: i64, token: i64| -> i64 {
         let order = order_clone.clone();
-        // Wrapper thunk returning a clean EffectOutcome (ABI v5), preserving
-        // the ordering side effect.
-        let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-            Box::new(Box::new(move || {
-                order.lock().unwrap().push(id);
-                cranelisp_platform::EffectOutcome {
-                    value: id,
-                    fault_cause: std::ptr::null(),
-                    fault_len: 0,
-                }
-            }));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
-
-        let base = alloc_with_rc(32); // ABI v4: + fn_name_handle field-3
-        unsafe {
-            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
-            *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
-            *((base as isize + FIELD_1_OFFSET) as *mut i64) = token;
-            *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // fn_name: unstamped
-        }
-        base as i64
+        effect_node_on(token, 1, move || {
+            order.lock().unwrap().push(id);
+            id
+        })
     };
 
     let e0 = make_tracking_effect(1, 0); // token=0, independent
@@ -656,6 +628,334 @@ fn continuation_returned_shared_bind_preserves_retained_parent_fields() {
     );
 }
 
+// ---------------------------------------------------------------------
+// The `Pure` payload witness — retain on force
+// (`design/intrinsics/ownership-and-disposal.md` §6.1).
+// ---------------------------------------------------------------------
+
+/// A `drop<T>` glue with the shape every emitted glue shares for a shallow heap
+/// payload: one atomic decrement, with the free strictly inside the
+/// last-reference branch.
+extern "C" fn drop_shallow_payload(payload: i64) {
+    crate::rc::consume_shallow(crate::handle::test_owned(payload));
+}
+
+/// Nullary-tag skips taken by [`drop_mixed_payload`]. A `Mixed`-category
+/// payload can be a bare tag rather than a pointer, and the emitted glue skips
+/// it with the same polarity `rc_inc` does; the counter makes the skip observed
+/// rather than assumed.
+static MIXED_GLUE_SKIPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The `Mixed`-category glue shape: the below-threshold skip, then the ordinary
+/// shallow release.
+extern "C" fn drop_mixed_payload(payload: i64) {
+    if payload < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
+        MIXED_GLUE_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Release);
+        return;
+    }
+    crate::rc::consume_shallow(crate::handle::test_owned(payload));
+}
+
+/// Allocate an ABI-10 `Pure` node whose witness is an `Owned(glue)` address —
+/// the canonical `drop<T>` entry for the payload's concrete type.
+fn make_pure_node_with_glue(payload: i64, glue: extern "C" fn(i64)) -> i64 {
+    let base = alloc_with_rc(24);
+    unsafe {
+        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_PURE;
+        *((base as isize + FIELD_0_OFFSET) as *mut i64) = payload;
+        *((base as isize + FIELD_1_OFFSET) as *mut i64) = glue as *const () as i64;
+    }
+    base as i64
+}
+
+// spec: spec/10-io.md §10.8.1 — T1: an `Owned(glue)` `Pure` released through the
+// shallow last-ref path after one force. The consumer discharges the reference
+// the force minted; the node still owns its own, and its teardown discharges the
+// declared payload field under `SpineTransferred` exactly as under `Structural`.
+#[test]
+fn forced_pure_node_retains_its_payload_and_shallow_release_discharges_it() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+
+    let payload = crate::heap_string::alloc_string(b"t1") as i64;
+    let node = make_pure_node_with_glue(payload, drop_shallow_payload);
+
+    let value = force_pure_node(node, false);
+    assert_eq!(
+        value, payload,
+        "the force hands the payload to the consumer"
+    );
+
+    // The consumer releases what it was handed, as the edge disposer would.
+    drop_shallow_payload(value);
+    assert!(
+        crate::alloc::is_live(payload as usize),
+        "the node keeps its own reference to the payload across a force"
+    );
+    assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 0);
+
+    crate::drop::dec_shallow_io(crate::handle::test_owned(node));
+    assert!(!crate::alloc::is_live(node as usize));
+    assert!(
+        !crate::alloc::is_live(payload as usize),
+        "the node's teardown discharges the payload reference it retained"
+    );
+    assert_eq!(crate::alloc::alloc_count() - allocs_before, 2);
+    assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 2);
+}
+
+// spec: spec/10-io.md §10.8.1 — T2: the same node never forced, and forced once
+// then released structurally. Both balance, which is the disposition table's
+// claim that `Structural` and `SpineTransferred` are one operation for `Pure`.
+#[test]
+fn unforced_and_forced_pure_nodes_both_balance_under_structural_release() {
+    // Leg 1 — never forced (the `Select`-loser / unrun-`Bind` shape): the
+    // structural walk discharges the declared payload field.
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let payload = crate::heap_string::alloc_string(b"t2a") as i64;
+    let node = make_pure_node_with_glue(payload, drop_shallow_payload);
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    assert!(!crate::alloc::is_live(payload as usize));
+    assert_eq!(crate::alloc::alloc_count() - allocs_before, 2);
+    assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 2);
+
+    // Leg 2 — forced once, then released structurally: same outcome.
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let payload = crate::heap_string::alloc_string(b"t2b") as i64;
+    let node = make_pure_node_with_glue(payload, drop_shallow_payload);
+    drop_shallow_payload(force_pure_node(node, false));
+    assert!(
+        crate::alloc::is_live(payload as usize),
+        "a forced node still owns the payload its structural teardown discharges"
+    );
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    assert!(!crate::alloc::is_live(payload as usize));
+    assert_eq!(crate::alloc::alloc_count() - allocs_before, 2);
+    assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 2);
+}
+
+// spec: spec/10-io.md §10.8.1 — T3: one `Owned(glue)` node with a second owner
+// forced twice. Each force yields the live payload and mints one reference for
+// its consumer, the node's own reference keeps the payload live past both
+// consumer releases, and the last owner's teardown balances the fixture.
+#[test]
+fn shared_pure_node_forced_twice_yields_its_payload_each_time_and_balances() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+
+    let payload = crate::heap_string::alloc_string(b"t3") as i64;
+    let node = make_pure_node_with_glue(payload, drop_shallow_payload);
+    crate::rc::rc_inc(node); // a second owner — the caller's own tree
+
+    let first = force_pure_node(node, false);
+    let second = force_pure_node(node, false);
+    assert_eq!(
+        (first, second),
+        (payload, payload),
+        "every forcing of one node is interpreted as the first is"
+    );
+
+    drop_shallow_payload(first);
+    drop_shallow_payload(second);
+    assert!(
+        crate::alloc::is_live(payload as usize),
+        "each force minted its consumer's reference; the node kept its own"
+    );
+
+    crate::drop::dec_shallow_io(crate::handle::test_owned(node));
+    assert!(
+        crate::alloc::is_live(node as usize) && crate::alloc::is_live(payload as usize),
+        "the remaining owner keeps the node and its payload"
+    );
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    assert!(!crate::alloc::is_live(node as usize));
+    assert!(!crate::alloc::is_live(payload as usize));
+    assert_eq!(crate::alloc::alloc_count() - allocs_before, 2);
+    assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 2);
+}
+
+// spec: spec/10-io.md §10.8.1 — T3, scalar leg: a `Scalar` witness forced twice
+// yields its word each time with no RC operation on either force.
+#[test]
+fn scalar_pure_node_forced_twice_yields_its_word_with_no_rc_operation() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+
+    let node = make_pure_node(42);
+    assert_eq!(force_pure_node(node, false), 42);
+    assert_eq!(force_pure_node(node, false), 42);
+    assert_eq!(
+        crate::alloc::dealloc_count() - deallocs_before,
+        0,
+        "forcing a scalar payload releases nothing"
+    );
+
+    crate::drop::dec_shallow_io(crate::handle::test_owned(node));
+    assert_eq!(crate::alloc::alloc_count() - allocs_before, 1);
+    assert_eq!(crate::alloc::dealloc_count() - deallocs_before, 1);
+}
+
+// spec: spec/10-io.md §10.8.1 — T4: an `Owned(glue)` witness over a bare
+// nullary-tag payload. `rc_inc` and the emitted glue carry the same
+// below-threshold skip, so neither the mint nor either discharge can write at
+// `tag + 8`; this cell pins that the skip is the path actually taken on both
+// discharges and that the node is the only allocation in play.
+#[test]
+fn pure_glue_over_a_bare_nullary_tag_payload_touches_no_count() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let skips_before = MIXED_GLUE_SKIPS.load(std::sync::atomic::Ordering::Acquire);
+
+    let tag = 3i64; // a bare nullary-constructor tag, not a heap pointer
+    assert!(tag < cranelisp_types::NULLARY_TAG_THRESHOLD as i64);
+    let node = make_pure_node_with_glue(tag, drop_mixed_payload);
+
+    assert_eq!(force_pure_node(node, false), tag);
+    assert_eq!(force_pure_node(node, false), tag);
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        1,
+        "the force allocates nothing"
+    );
+
+    // Both consumers release what they were handed, then the node tears down.
+    drop_mixed_payload(tag);
+    drop_mixed_payload(tag);
+    crate::drop::dec_shallow_io(crate::handle::test_owned(node));
+    assert_eq!(
+        MIXED_GLUE_SKIPS.load(std::sync::atomic::Ordering::Acquire) - skips_before,
+        3,
+        "the two consumer releases and the node's teardown each ran the glue and \
+         took the nullary skip"
+    );
+    assert_eq!(
+        crate::alloc::dealloc_count() - deallocs_before,
+        1,
+        "only the node was ever an allocation"
+    );
+}
+
+// ---------------------------------------------------------------------
+// The `Effect` thunk — borrowed on force, discharged at teardown
+// (`design/intrinsics/ownership-and-disposal.md` §6.2).
+// ---------------------------------------------------------------------
+
+/// Counts the forces of a thunk and the destruction of its captures.
+#[derive(Clone, Default)]
+struct ThunkLedger {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    discharges: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ThunkLedger {
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn discharges(&self) -> usize {
+        self.discharges.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A capture whose destructor records the thunk's discharge.
+struct DischargeSentinel(ThunkLedger);
+
+impl Drop for DischargeSentinel {
+    fn drop(&mut self) {
+        self.0
+            .discharges
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// An `Effect` node whose thunk returns `value` and records each force and its
+/// discharge in `ledger`.
+fn make_ledgered_effect_node(ledger: &ThunkLedger, value: i64) -> i64 {
+    let sentinel = DischargeSentinel(ledger.clone());
+    effect_node(move || {
+        sentinel
+            .0
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        value
+    })
+}
+
+fn force_effect_value(node: i64) -> i64 {
+    match force_effect_node(node) {
+        EffectStep::Value(value) => value,
+        EffectStep::Aborted => panic!("a clean thunk must not fault"),
+    }
+}
+
+// spec: spec/10-io.md §10.8.1 — E-T1: a node that is never forced (a `Select`
+// loser, an unrun `Bind` sub-tree) still owns its thunk; structural teardown
+// discharges it once.
+#[test]
+fn unforced_effect_node_teardown_discharges_its_thunk_once() {
+    let ledger = ThunkLedger::default();
+    let node = make_ledgered_effect_node(&ledger, 5);
+
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
+
+    assert!(!crate::alloc::is_live(node as usize));
+    assert_eq!((ledger.calls(), ledger.discharges()), (0, 1));
+}
+
+// spec: spec/10-io.md §10.8.1 — E-T2: a node with a second owner is forced
+// twice. The thunk is borrowed by each force, so both run it and neither
+// destroys its captures; the last owner's structural teardown discharges it
+// once, after the last call.
+#[test]
+fn shared_effect_node_forced_twice_keeps_its_thunk_until_last_release() {
+    let ledger = ThunkLedger::default();
+    let node = make_ledgered_effect_node(&ledger, 21);
+    crate::rc::rc_inc(node);
+
+    assert_eq!(force_effect_value(node), 21);
+    assert_eq!(force_effect_value(node), 21);
+    assert_eq!((ledger.calls(), ledger.discharges()), (2, 0));
+
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    assert_eq!(ledger.discharges(), 0, "a remaining owner keeps the thunk");
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    assert!(!crate::alloc::is_live(node as usize));
+    assert_eq!((ledger.calls(), ledger.discharges()), (2, 1));
+}
+
+// spec: spec/10-io.md §10.8.1 — E-T3: the trampoline's shallow last-reference
+// release after a force discharges the thunk, which is never transferred out
+// of the node.
+#[test]
+fn forced_effect_node_shallow_last_release_discharges_its_thunk_once() {
+    let ledger = ThunkLedger::default();
+    let node = make_ledgered_effect_node(&ledger, 8);
+
+    assert_eq!(force_effect_value(node), 8);
+    crate::drop::dec_shallow_io(crate::handle::test_owned(node));
+
+    assert!(!crate::alloc::is_live(node as usize));
+    assert_eq!((ledger.calls(), ledger.discharges()), (1, 1));
+}
+
+// spec: spec/10-io.md §10.8.1 — negative leg: a shallow release of one of two
+// references is not the node's teardown and discharges nothing.
+#[test]
+fn releasing_one_of_two_effect_references_discharges_nothing() {
+    let ledger = ThunkLedger::default();
+    let node = make_ledgered_effect_node(&ledger, 3);
+    crate::rc::rc_inc(node);
+
+    crate::drop::dec_shallow_io(crate::handle::test_owned(node));
+    assert!(crate::alloc::is_live(node as usize));
+    assert_eq!(ledger.discharges(), 0);
+
+    crate::drop::consume_io_tree(crate::handle::test_owned(node));
+    assert_eq!(ledger.discharges(), 1);
+}
+
 // spec: design/arch/CLAUDE.md Decision 29 — deep bind chain is RC-balanced
 // (was the O(N) leak reason before Wave 3).
 #[test]
@@ -808,19 +1108,9 @@ fn test_read_resource_token() {
     let pure = make_pure_node(42);
     assert_eq!(read_resource_token(pure), 0);
 
-    // Effect with token=5 (thunk never forced — only the token is read).
-    let effect = {
-        let thunk_ptr = clean_effect_thunk(0);
-        let base = alloc_with_rc(32); // ABI v4
-        unsafe {
-            *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
-            *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
-            *((base as isize + FIELD_1_OFFSET) as *mut i64) = 5;
-            *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // fn_name: unstamped
-        }
-        base as i64
-    };
+    let effect = effect_node_on(5, 1, || 0);
     assert_eq!(read_resource_token(effect), 5);
+    release_io(effect);
 }
 
 // -- FIXME 0327 — the fault-guarded platform-dispatch funnel (step 3) --
@@ -840,10 +1130,10 @@ fn bake_fn_name(name: &str) -> i64 {
 #[test]
 fn force_effect_thunk_protected_happy_path_returns_value() {
     let _ = crate::panic::take_dispatch_fault(); // clear
-    // Clean wrapper thunk (ABI v5): EffectOutcome with null fault_cause.
-    let thunk_ptr = clean_effect_thunk(1234);
-    let outcome =
-        unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line") };
+    let node = make_effect_node(1234);
+    let outcome = unsafe {
+        crate::io_guard::force_effect_thunk_protected(effect_thunk(node), "stdio/read-line")
+    };
     match outcome {
         crate::io_guard::ForceOutcome::Value(v) => assert_eq!(v, 1234),
         crate::io_guard::ForceOutcome::Faulted => panic!("clean thunk must not fault"),
@@ -852,6 +1142,7 @@ fn force_effect_thunk_protected_happy_path_returns_value() {
         crate::panic::take_dispatch_fault().is_none(),
         "no dispatch fault on the happy path"
     );
+    release_io(node);
 }
 
 // spec: design/arch/bounded-contexts.md §4b invariant 14 — a faulted
@@ -863,11 +1154,10 @@ fn force_effect_thunk_protected_happy_path_returns_value() {
 fn force_effect_thunk_protected_faulted_outcome_captures_fn_name() {
     let _ = crate::panic::take_dispatch_fault();
     let _ = crate::panic::take_runtime_error();
-    // The DLL-local catch already converted the panic into an EffectOutcome
-    // carrying the cause; the guard reads it (no host-side catch_unwind).
-    let thunk_ptr = faulting_effect_thunk("device unavailable");
-    let outcome =
-        unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, "stdio/read-line") };
+    let node = faulting_effect_node("device unavailable");
+    let outcome = unsafe {
+        crate::io_guard::force_effect_thunk_protected(effect_thunk(node), "stdio/read-line")
+    };
     assert!(
         matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
         "faulted EffectOutcome must fault"
@@ -879,6 +1169,7 @@ fn force_effect_thunk_protected_faulted_outcome_captures_fn_name() {
         "cause must carry the EffectOutcome message, got {:?}",
         fault.cause
     );
+    release_io(node);
 }
 
 // spec: design/arch/bounded-contexts.md §4b invariant 14 — a Rust panic in
@@ -888,9 +1179,9 @@ fn force_effect_thunk_protected_faulted_outcome_captures_fn_name() {
 fn force_effect_thunk_protected_dll_caught_panic_is_read() {
     let _ = crate::panic::take_dispatch_fault();
     let _ = crate::panic::take_runtime_error();
-    let thunk_ptr = faulting_effect_thunk("boom in platform fn");
+    let node = faulting_effect_node("boom in platform fn");
     let outcome =
-        unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, "net/connect") };
+        unsafe { crate::io_guard::force_effect_thunk_protected(effect_thunk(node), "net/connect") };
     assert!(
         matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
         "DLL-caught panic must surface as a fault"
@@ -898,6 +1189,7 @@ fn force_effect_thunk_protected_dll_caught_panic_is_read() {
     let fault = crate::panic::take_dispatch_fault().expect("fault captured");
     assert_eq!(fault.fn_name, "net/connect");
     assert!(fault.cause.contains("boom in platform fn"));
+    release_io(node);
 }
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 — the trampoline
@@ -908,25 +1200,15 @@ fn force_effect_thunk_protected_dll_caught_panic_is_read() {
 fn trampoline_effect_fault_reads_baked_fn_name() {
     let _ = crate::panic::take_dispatch_fault();
     let _ = crate::panic::take_runtime_error();
-    // Build an Effect node whose forced thunk yields a faulted EffectOutcome
-    // (modelling the DLL-local catch), with field-3 stamped to a baked
-    // fn-name the way the backend would.
-    let handle = bake_fn_name("clock/now");
-    let thunk_ptr = faulting_effect_thunk("clock read failed");
-    let base = alloc_with_rc(32);
-    unsafe {
-        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
-        *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
-        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0;
-        *((base as isize + FIELD_2_OFFSET) as *mut i64) = handle;
-    }
-    // Drive the trampoline; the EFFECT arm faults and returns the sentinel.
-    let result = run_io_trampoline(base as i64);
+    let node = faulting_effect_node("clock read failed");
+    // SAFETY: a fresh, unpublished `Effect` node; field 2 is the fn-name.
+    unsafe { crate::heap_access::write_i64(node, FIELD_2_OFFSET, bake_fn_name("clock/now")) };
+    let result = run_io_trampoline(node);
     assert_eq!(result, 0, "faulting trampoline returns the sentinel");
     let fault = crate::panic::take_dispatch_fault().expect("fault captured");
     assert_eq!(fault.fn_name, "clock/now", "field-3 fn-name read");
     assert!(fault.cause.contains("clock read failed"));
-    unsafe { crate::alloc::dealloc(base) };
+    release_io(node);
 }
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 — a node the backend
@@ -936,17 +1218,8 @@ fn trampoline_effect_fault_reads_baked_fn_name() {
 fn trampoline_effect_fault_null_fn_name_degrades_to_unknown() {
     let _ = crate::panic::take_dispatch_fault();
     let _ = crate::panic::take_runtime_error();
-    // make_effect_node leaves field-3 null, but its thunk is clean; build a
-    // faulting one (faulted EffectOutcome) with a null field-3 directly.
-    let thunk_ptr = faulting_effect_thunk("unstamped fault");
-    let base = alloc_with_rc(32);
-    unsafe {
-        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
-        *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
-        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0;
-        *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // unstamped
-    }
-    let result = run_io_trampoline(base as i64);
+    let node = faulting_effect_node("unstamped fault");
+    let result = run_io_trampoline(node);
     assert_eq!(result, 0);
     let fault = crate::panic::take_dispatch_fault().expect("fault captured");
     assert_eq!(
@@ -954,7 +1227,7 @@ fn trampoline_effect_fault_null_fn_name_degrades_to_unknown() {
         "null field-3 degrades to <unknown>"
     );
     assert!(fault.cause.contains("unstamped fault"));
-    unsafe { crate::alloc::dealloc(base) };
+    release_io(node);
 }
 
 // spec: design/arch/bounded-contexts.md §4b invariant 14 — the existing
@@ -971,7 +1244,7 @@ fn trampoline_clean_effect_leaves_no_fault() {
         crate::panic::take_dispatch_fault().is_none(),
         "clean effect must leave no dispatch fault"
     );
-    unsafe { crate::alloc::dealloc(io as *mut u8) };
+    release_io(io);
 }
 
 /// Build a BLOCKING `IO_TAG_EFFECT` node carrying the §13.2 widened capacity
@@ -979,58 +1252,21 @@ fn trampoline_clean_effect_leaves_no_fault() {
 /// Used by the feature-off negative guard to prove the default build's sync path
 /// is unchanged by the capacity append (it ignores capacity — no pool exists).
 fn make_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
-    let thunk_ptr = clean_effect_thunk(value);
-    let base = alloc_with_rc(40) as i64;
-    unsafe {
-        crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT); // abs 16
-        crate::heap_access::write_i64(base, FIELD_0_OFFSET, thunk_ptr); // abs 24
-        crate::heap_access::write_i64(base, FIELD_1_OFFSET, token); // abs 32
-        crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0); // abs 40 fn_name
-        crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity); // abs 48 capacity
-    }
-    base
+    effect_node_on(token, capacity, move || value)
 }
 
 fn make_observed_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-        Box::new(Box::new(move || {
-            LATER_SERIAL_EFFECT_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
-            cranelisp_platform::EffectOutcome {
-                value,
-                fault_cause: std::ptr::null(),
-                fault_len: 0,
-            }
-        }));
-    let base = alloc_with_rc(40) as i64;
-    unsafe {
-        crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT);
-        crate::heap_access::write_i64(base, FIELD_0_OFFSET, Box::into_raw(thunk) as i64);
-        crate::heap_access::write_i64(base, FIELD_1_OFFSET, token);
-        crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0);
-        crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity);
-    }
-    base
+    effect_node_on(token, capacity, move || {
+        LATER_SERIAL_EFFECT_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
+        value
+    })
 }
 
 fn make_capacity_runtime_error_effect(token: i64, capacity: i64, message: &'static str) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-        Box::new(Box::new(move || {
-            crate::panic::set_runtime_error(message.to_string());
-            cranelisp_platform::EffectOutcome {
-                value: 0,
-                fault_cause: std::ptr::null(),
-                fault_len: 0,
-            }
-        }));
-    let base = alloc_with_rc(40) as i64;
-    unsafe {
-        crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT);
-        crate::heap_access::write_i64(base, FIELD_0_OFFSET, Box::into_raw(thunk) as i64);
-        crate::heap_access::write_i64(base, FIELD_1_OFFSET, token);
-        crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0);
-        crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity);
-    }
-    base
+    effect_node_on(token, capacity, move || {
+        crate::panic::set_runtime_error(message.to_string());
+        0
+    })
 }
 
 // spec: design/intrinsics/reactor.md §2.9 — the RETAINED synchronous rayon dispatcher
@@ -1398,51 +1634,20 @@ mod poll_arm {
     /// field) whose thunk SLEEPS `sleep_ms` then returns `value`. Models the
     /// `pool-demo` blocking leaf at the unit tier.
     fn build_sleeping_blocking_effect(token: i64, capacity: i64, sleep_ms: u64, value: i64) -> i64 {
-        let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-            Box::new(Box::new(move || {
-                BLOCKING_EFFECT_ENTERED.store(true, std::sync::atomic::Ordering::Release);
-                std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
-                cranelisp_platform::EffectOutcome {
-                    value,
-                    fault_cause: std::ptr::null(),
-                    fault_len: 0,
-                }
-            }));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
-        // payload: tag+thunk+token+fn_name+capacity = 40 bytes (§13.2 widened).
-        let base = alloc_with_rc(40) as i64;
-        unsafe {
-            crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT); // abs 16
-            crate::heap_access::write_i64(base, FIELD_0_OFFSET, thunk_ptr); // abs 24 thunk
-            crate::heap_access::write_i64(base, FIELD_1_OFFSET, token); // abs 32 token
-            crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0); // abs 40 fn_name
-            crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity); // abs 48 capacity
-        }
-        base
+        effect_node_on(token, capacity, move || {
+            BLOCKING_EFFECT_ENTERED.store(true, std::sync::atomic::Ordering::Release);
+            std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+            value
+        })
     }
 
     /// Build a blocking leaf whose worker cannot publish until the test has
     /// observed the branch future suspended on its receiver.
     fn build_gated_blocking_effect(start: std::sync::Arc<std::sync::Barrier>, value: i64) -> i64 {
-        let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-            Box::new(Box::new(move || {
-                start.wait();
-                cranelisp_platform::EffectOutcome {
-                    value,
-                    fault_cause: std::ptr::null(),
-                    fault_len: 0,
-                }
-            }));
-        let thunk_ptr = Box::into_raw(thunk) as i64;
-        let base = alloc_with_rc(40) as i64;
-        unsafe {
-            crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT);
-            crate::heap_access::write_i64(base, FIELD_0_OFFSET, thunk_ptr);
-            crate::heap_access::write_i64(base, FIELD_1_OFFSET, 0);
-            crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0);
-            crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, 1);
-        }
-        base
+        effect_node_on(0, 1, move || {
+            start.wait();
+            value
+        })
     }
 
     // spec: spec/10-io.md §10.12.9 — a blocking Select loser whose owning
@@ -1849,24 +2054,10 @@ fn make_bogus_tag_node(tag: i64) -> i64 {
 /// thread-local error slot, as `runtime_panic` does) then returns `0` — so the
 /// strand's completion-boundary `take_runtime_error` capture (§2.12) sees it.
 fn make_runtime_error_effect(msg: &'static str) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-        Box::new(Box::new(move || {
-            crate::panic::set_runtime_error(msg.to_string());
-            cranelisp_platform::EffectOutcome {
-                value: 0,
-                fault_cause: std::ptr::null(),
-                fault_len: 0,
-            }
-        }));
-    let thunk_ptr = Box::into_raw(thunk) as i64;
-    let base = alloc_with_rc(32); // tag + thunk + token + fn_name (ABI v4)
-    unsafe {
-        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
-        *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
-        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0; // resource_token
-        *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // fn_name handle
-    }
-    base as i64
+    effect_node(move || {
+        crate::panic::set_runtime_error(msg.to_string());
+        0
+    })
 }
 
 // spec: spec/10-io.md §10.12.7 — launch-and-continue: a launched effect runs

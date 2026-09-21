@@ -137,8 +137,8 @@ The boundary is precise:
   code — polluting the module the user is building. [S106]
 
 **Why this is clean, not a loss of behaviour:** top-level expressions are a **REPL-interactive-only
-construct** (`spec/02-grammar.md §34`; a top-level expression in module-body position is "ambiguous
-and fragile", `spec/08-modules.md §1245`). There is no module-init-evaluates-top-level-expressions
+construct** (`spec/02-grammar.md` §2.1; a top-level expression in module-body position is "ambiguous
+and fragile", `spec/08-modules.md` §8.16.6). There is no module-init-evaluates-top-level-expressions
 semantics to preserve — batch mode runs `main` — so excluding `__expr` forms from the backing file
 is semantically clean. This settled scribe **reverses** the earlier deliberate persist-`__expr`
 posture per the user ruling. [S106]

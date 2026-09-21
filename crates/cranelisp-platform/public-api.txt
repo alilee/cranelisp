@@ -191,9 +191,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::CLFloat
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLFloat
 #[repr(transparent)] pub struct cranelisp_platform::CLIO<CL: cranelisp_platform::CLType>(_, _)
 impl<CL: cranelisp_platform::CLType> cranelisp_platform::CLIO<CL>
-pub fn cranelisp_platform::CLIO<CL>::effect(impl core::ops::function::FnOnce() -> CL + 'static) -> Self
-pub fn cranelisp_platform::CLIO<CL>::effect_on_resource(i64, impl core::ops::function::FnOnce() -> CL + 'static) -> Self
-pub fn cranelisp_platform::CLIO<CL>::effect_on_resource_with_capacity(i64, i64, impl core::ops::function::FnOnce() -> CL + 'static) -> Self
+pub fn cranelisp_platform::CLIO<CL>::effect(impl core::ops::function::Fn() -> CL + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn cranelisp_platform::CLIO<CL>::effect_on_resource(i64, impl core::ops::function::Fn() -> CL + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn cranelisp_platform::CLIO<CL>::effect_on_resource_with_capacity(i64, i64, impl core::ops::function::Fn() -> CL + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn cranelisp_platform::CLIO<CL>::pure(CL) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_platform::CLIO<cranelisp_platform::CLString>
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLString>::from(alloc::string::String) -> Self
@@ -533,6 +533,7 @@ pub fn cranelisp_platform::CLAdt<T>::check_witness(&str, &str, &cranelisp_platfo
 pub fn cranelisp_platform::CLAdt<T>::expected_field_type() -> cranelisp_platform::ExpectedFieldType
 pub fn cranelisp_platform::CLAdt<T>::from_raw_i64(i64) -> Self
 pub unsafe fn cranelisp_platform::call_effect_thunk(i64) -> cranelisp_platform::EffectOutcome
+pub unsafe fn cranelisp_platform::drop_effect_thunk(i64)
 pub const fn cranelisp_platform::extract_layout_hash(&str) -> &str
 pub unsafe fn cranelisp_platform::manifest_to_descriptors(&cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), cranelisp_types::error::PlatformError>
 pub c fn cranelisp_platform::null_alloc_with_tag(u32, u32, *const i64) -> i64

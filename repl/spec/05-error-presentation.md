@@ -32,7 +32,7 @@ Type errors SHOULD suggest common fixes when applicable.
 
 ### 5.4 Reader-Level Diagnostics Are Self-Documenting [S114]
 
-The self-documenting-REPL principle (root `CLAUDE.md` §Design Principles) reaches
+The self-documenting-REPL principle ([root CLAUDE.md, Design Principles](../../CLAUDE.md#design-principles)) reaches
 below type checking to the **reader** itself: a malformed lexical or grammatical
 construct MUST produce a **located, self-documenting** error, never a silent
 degradation to a different-but-valid form and never an opaque internal failure.
@@ -124,7 +124,7 @@ particular failure's cause:
   load-bearing.
 
 - **Every noun in the message is discoverable, or is rephrased.** The
-  self-documenting principle (root `CLAUDE.md` §Design Principles) makes this
+  self-documenting principle ([root CLAUDE.md, Design Principles](../../CLAUDE.md#design-principles)) makes this
   binary: if the message's central noun is a type or constructor, then typing
   that name — or `/info` on it — MUST describe it. A message whose subject the
   REPL itself answers with `undefined variable` / `unknown symbol` is not

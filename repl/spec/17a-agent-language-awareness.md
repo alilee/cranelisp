@@ -6,9 +6,9 @@ S88/S89 made the agent *act*; the S90 fluency phase makes it *reach* for supplem
 detail rather than guess. The first reach is **`/syntax`** — a topic-indexed,
 token-dense, **verified-compiling** reference for the **core language syntax**, surfaced
 as a REPL command that is useful to **both the human at the prompt and the agent**
-(the self-documenting-REPL principle, root `CLAUDE.md` §"Design Principles", turned toward
-syntax discovery). It is the curated, higher-precision replacement for fuzzy spec-grep
-(`design/arch/repl-embedded-agent.md §11` R7; `sprints/SPRINT.md §Pillar 1`). [S90]
+(the self-documenting-REPL principle — [root CLAUDE.md, Design Principles](../../CLAUDE.md#design-principles)
+— turned toward syntax discovery). It is the curated, higher-precision replacement for fuzzy spec-grep
+(`design/arch/repl-embedded-agent.md` §11 R7; the S90 plan's Pillar 1, `sprints/archive/sprint-90.md`). [S90]
 
 **Ownership boundary (R7 — do not author content here).** This section specifies the
 **command UX only**. The cheat-sheet **content** — the topic taxonomy and each topic's
@@ -334,7 +334,8 @@ search-specific drawer lines (module column + import how-to). The row is **not**
 independently-formatted render of "what is this symbol"; it is the shared envelope constructor
 (E4 seam, `design/arch/repl-styling-seam.md` §4) with the search drawers added. A row whose primary line
 diverges from the envelope — for example, a `name :: (Fn …)` shape — is a conformance defect
-against §1.1, not a stylistic choice. Macro declarations produce no row (§17.19.2a). [S109]
+against `01-display-format.md` §1.1, not a stylistic choice. Macro declarations produce no row
+(`17a-agent-language-awareness.md` §17.19.2a). [S109]
 
 Each result row MUST show enough for the reader to **decide and act** — these facets:
 

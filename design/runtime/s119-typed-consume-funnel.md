@@ -16,7 +16,7 @@
 > public, emitted-ABI, schema or consumer-edge delta was found. The current
 > intrinsics interior, owner-seam allow-list, dependency order and ACT-0956
 > evidence are in
-> [`design/intrinsics/s122-typed-consume-closure.md`](../intrinsics/s122-typed-consume-closure.md).
+> [`design/intrinsics/ownership-and-disposal.md`](../intrinsics/ownership-and-disposal.md).
 > On 2026-09-10 the user also approved the bounded D8 private amendment in
 > `sprints/s122-primitives-allocation-proposal.md`: 19 primitives functions / 20
 > produced-value adoption sites, six parent-lifetime child-borrow projections,
@@ -73,7 +73,7 @@
 > both rewrite the same contract; the **primitives** invocation *consumes it
 > without editing*. The intrinsics-half implementation design — the funnel's
 > ordering against the IO slice and the `Sexp` walk, its reservations and its
-> test rows — is `design/intrinsics/s121-c5-intrinsics-visit.md` §6.
+> test rows — is `design/intrinsics/ownership-and-disposal.md` §2.
 
 **Status:** PARTIALLY DELIVERED — intrinsics producer/internal callers, Q3/Q11
 module evidence, primitives/backend consumers and the exact-site guard are
@@ -246,7 +246,7 @@ shim, and §4's derivation does not reach it. Left unnamed, it would
 have arrived as ~15 scattered `from_abi` calls and quietly emptied the third
 grep row below of meaning. It is confined to **two** sites, both in `drop.rs`:
 one private `owned_field` operation shared by the current Sexp and IO
-dispatchers (`design/intrinsics/s122-typed-consume-closure.md` §2), and
+dispatchers ([ownership/disposal 7](../intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions)), and
 `consume_vec_with`'s element loop, which mints one `Owned` per element for its
 `fn(Owned)` callback. A third `drop.rs` mint is a `/review` reject.
 
@@ -565,7 +565,7 @@ be read as covering:
   They take a base and an offset, not a handle.
 - `rc::rc_inc(ptr: i64)` — stays `pub` and raw. It is the *mechanism*;
   `Borrowed::to_owned` is the only typed mint and delegates to it. Retiring it
-  to `pub(crate)` would touch `design/intrinsics/rc-inc-entry-point.md`'s
+  to `pub(crate)` would touch [ownership/disposal 3](../intrinsics/ownership-and-disposal.md#3-rcinc-the-blessed-inc-entry-point)'s
   blessed-entry-point ruling and reaches `io.rs`/`trace.rs` — tranche C.
 - Everything in `io.rs`, `reactor.rs`, `ivar.rs`, `vec_runtime.rs`,
   `trace_format.rs` beyond the funnel entries above — tranche C.
@@ -814,10 +814,10 @@ attributable.
 > `Pure` atomic claim/discharge and R2's bridge join) and the `Sexp` discharge walk land
 > **before** CS-1, because they rewrite the exact bodies CS-2 and CS-3 retype;
 > retyping first would churn `drop.rs` twice and destroy this section's own
-> Class-2 "types-only diff" acceptance property for that file. The full ordered
-> bundle list, with the C4 wave collision resolved, is
-> `design/intrinsics/s121-c5-intrinsics-visit.md` §10; CS-1…CS-5 are its
-> bundle **I2** and their internal order below is unchanged.
+> Class-2 "types-only diff" acceptance property for that file. The delivered
+> interior and its evidence now live in
+> `design/intrinsics/ownership-and-disposal.md`; the internal order below
+> records the historical tranche.
 
 ---
 
@@ -903,10 +903,8 @@ this tranche's.
 
 ## 12. References
 
-- **`[S121]`** `design/intrinsics/s121-c5-intrinsics-visit.md` — the C5
-  intrinsics visit this tranche is bundle I2 of: the IO teardown slice it must
-  follow, the structural discharge mechanism it inherits, its reservations,
-  reject criteria and test rows
+- `design/intrinsics/ownership-and-disposal.md` — the delivered intrinsics
+  ownership, structural discharge, IO teardown and evidence
 - **`[S121]`** FIXME 0928 — the three settled rulings and `free_io_node`'s
   residue classification, absorbed at §6.3, §7 and §8
 - `design/arch/ownership-stratum-options.md` §1.5, §2.1–§2.4 (as amended `3232a061`)
@@ -915,7 +913,7 @@ this tranche's.
   contract §6.3's `marshal.rs` interior now spells in types
 - `design/runtime/s117-primitives-integrity.md` — the Vec-of-String boundary precedent
 - `design/primitives/primitives.md` §3.2, §4 invariants 7 + 14
-- `design/intrinsics/rc-inc-entry-point.md` — `rc_inc` stays the blessed mechanism;
+- [ownership/disposal 3](../intrinsics/ownership-and-disposal.md#3-rcinc-the-blessed-inc-entry-point) — `rc_inc` stays the blessed mechanism;
   `Borrowed::to_owned` becomes its only typed caller
 - `design/intrinsics/diagnostic-modes.md` §7.5 — the precheck-hoist precedent for §5 leg 3
 - `crates/cranelisp-platform/src/lib.rs` — the `CLOwned<T>` family (tranche-D naming alignment)

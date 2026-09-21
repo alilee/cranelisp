@@ -1238,16 +1238,24 @@ to be sourced from the declaration, not the manifest. The GOT + layout-hash dlsy
 the dual gate, the `--link` startup-stub hash bake — all unaffected. The hash symbol was
 already namespaced; the schema model does not change. Only the manifest fn's name moves.
 
-### 6.8.0 SINGLE-ABI CUTOVER — `ABI_VERSION` 7→8 (S96, user-directed; supersedes the dual-channel design below)
+### 6.8 The async-leaf ABI
 
-> **Status: RATIFIED target (S96 /arch), pre-`/dev`-migration.** User direction
-> 2026-06-29: *"Jump to the latest ABI and ditch backward compatibility — there are
-> no users."* This **retires the v6/v7 coexistence envelope** that the rest of §6.8
-> (below) and the FIXME-0464 dual-manifest-merge ruling were built to preserve.
-> Everything below from "§6.8 The ABI-v4 cascade" onward is **HISTORICAL** — it
-> records how the additive, byte-identical-off, dormant-`concurrency`-feature
-> coexistence worked. The target is now a single ABI; read §6.8.0 as authoritative
-> and the rest as the path that led here.
+`effect-concurrency.md` §12–§13 changes the *effect-call shape*: a platform effect is
+either a blocking `extern "C"` function or a poll-shape async leaf driven by the host
+reactor. The three-exports deployment model, the dual cdylib/rlib artifacts,
+GOT-indirect dispatch and per-platform export namespacing (§5.5.5, §6.7) carry over
+unchanged. §6.8.0 states the single platform ABI, §6.8.0a the single trampoline with
+its lazily constructed reactor, and §6.8.0b the `ctx` vtable handle model. The numeric
+`ABI_VERSION` and each version's layout change are recorded in
+`crates/cranelisp-platform/src/lib.rs` rustdoc. The reactor substrate and its placement
+in `cranelisp-intrinsics` are stated in `effect-concurrency.md` Appendix B.
+
+### 6.8.0 SINGLE-ABI CUTOVER — `ABI_VERSION` 7→8 (S96, user-directed)
+
+> **Status: delivered (S96).** User direction 2026-06-29: *"Jump to the latest ABI and
+> ditch backward compatibility — there are no users."* The earlier design kept a
+> blocking-only ABI and a feature-gated poll ABI side by side; that coexistence is
+> retired and no part of it remains in source.
 
 **The target: ONE platform ABI (v8).** One manifest type, one macro, one GOT
 export, one loader path. Each effect is **independently blocking or poll-shape via
@@ -1370,8 +1378,7 @@ version is re-pinned wrong-relative-to-8 (`/qa`).
 
 ### 6.8.0a FULL STREAMLINE — single trampoline + lazy reactor (S96 SCOPE PIVOT EXTENDED, user-directed)
 
-> **Status: RATIFIED target (S96 /arch), pre-`/dev`-migration. Extends §6.8.0
-> in the SAME A4c jump.** User direction 2026-06-29: *"are we still carrying two
+> **Status: delivered (S96), in the same change as §6.8.0.** User direction 2026-06-29: *"are we still carrying two
 > tramps or variations? would it make sense to cutover to the streamlined state
 > in one jump? simple platform, simplest tramp?"* §6.8.0 above kept the host
 > **reactor optional** behind `concurrency-runtime` — i.e. TWO `#[cfg]`-selected
@@ -1498,7 +1505,7 @@ single async trampoline unchanged.
 
 ### 6.8.0b ABI v8→v9 — scheduling state moves off values into the `ctx` vtable handle model (S97, supersedes FIXME 0482; /arch-ruled)
 
-> **Status: RATIFIED target (S97 /arch, 2026-06-30; supersedes FIXME 0482 + the
+> **Status: delivered (S97; ratified 2026-06-30, superseding FIXME 0482 and the
 > Phase-2 value-header descriptor ruling).** The earlier S97 cut (the
 > descriptor-as-representation-overhead model: a `ResourceDesc` value-header slot, a
 > `desc_out` out-param on `PollFn`, a per-value `(token, capacity)`) is **RETIRED**.
@@ -1642,178 +1649,6 @@ same change-set.
   `acquire`/`retire` (the §8.1 permit map) + **tramp-owned release** on `Ready`/cancel,
   keyed by effect identity. §8 (0479 watchdog) + §9 (0475) are model-independent and
   stand. §7.5 singleton `read-line` acquires the manifest-static token (carries forward).
-
----
-
-### 6.8 The ABI-v4 cascade — numeric `ABI_VERSION` 6→7 (S93, effect-concurrency slice 2) — HISTORICAL (superseded by §6.8.0)
-
-**Framing — "v4" is a doc-label, the version is numeric.** The
-`design/arch/effect-concurrency.md` §12 / §13 cascade is named the **A2
-C-ABI-async-leaf model**, colloquially "ABI v4". The *operative* instruction is the
-same `current + 1` rule §6.7 used: the numeric `ABI_VERSION` steps **6 → 7**. The
-"v4" label denotes the async-leaf model relative to the three-exports baseline; it
-is **not** the numeric stamp. (Recorded explicitly because the pre-implementation
-`effect-concurrency.md` §13 still says "`ABI_VERSION` 3 → 4" — that was written when
-the stamp was 3; the live stamp at this sprint is 6, so the bump is 6→7, sprint R5.)
-
-**What v7 changes — the effect-call shape, not the deployment model.** The
-three-exports model (GOT + manifest + schema+layout-hash), the dual-artifact
-cdylib/rlib deployment, the GOT-indirect dispatch, the per-platform export
-namespacing (§5.5.5 / §6.7) — all carry forward **unchanged**. Three additions, all
-governed by Principle 14 (explicit ABI bump, not source-evolution guards):
-
-1. **Poll-shape effect fns GO through the GOT (mechanism unchanged; signature
-   shape changes).** A v6 effect fn is a blocking `extern "C" fn(...) -> i64`; a v7
-   effect fn is the **poll-shape** `unsafe extern "C" fn(state, *HostCtx, *Waker)
-   -> Poll` (`cranelisp_platform::PollFn`). It still lives in the platform GOT and is
-   still dispatched GOT-indirect against `__cranelisp_got_platform_<name>` — only the
-   slot's *signature* changes. Sync / non-blocking effects return `Poll::Ready`
-   immediately, so blocking-style and poll-style coexist (§12). Cancellation is the
-   host ceasing to poll + a `drop_state` export — the platform never truly blocks.
-
-2. **The concurrency descriptor joins the manifest, subsuming `scheduling_class`.**
-   The v6 `PlatformFn.scheduling_class: u32` is generalized by
-   `cranelisp_types::ConcurrencyDescriptor` (token + cardinality + global_budget +
-   blocking — §5). The v7 manifest entry is
-   `cranelisp_platform::ConcurrentPlatformFn` (the poll-shape successor to
-   `PlatformFn`: `ptr` → `poll: PollFn`, `scheduling_class: u32` → `concurrency:
-   ConcurrencyDescriptor`). **The `global_budget` field is reserved-but-inert until
-   slice 4** (backpressure; FIXME 0442) — present now solely so slice 4 does not force
-   a second bump 7→8 (sprint R5/§6). `jit_name` was already retired at v3 (FIXME
-   0288); there is nothing further to drop.
-
-3. **The host-reactor C-ABI — the one genuinely new designed artifact.** A
-   host-provided `cranelisp_platform::HostCtx` vtable (`register_readable` /
-   `register_writable` / `register_timer` + an opaque host reactor handle) + a C-ABI
-   `cranelisp_platform::Waker` (`(data, vtable)` fat-pointer pair projecting
-   `std::task::Waker`). On `WouldBlock` the platform registers interest through these
-   and returns `Poll::Pending`; the host's single reactor (epoll / io_uring / kqueue)
-   owns the *when* and re-polls via the Waker. "Platforms own the *what*; the host
-   owns the *when*" (§12). It is small, stable, Unix-reactor-shaped.
-
-**Landed this sprint (S93) — the layout contracts only.** The v7 types
-(`ConcurrencyDescriptor`, `Poll`, `PollFn` in `cranelisp-types`; `HostCtx`,
-`Waker`, `WakerVTable`, `PollFn`, `ConcurrentPlatformFn` in `cranelisp-platform`;
-`StrandId`, `StrandEvent` in `cranelisp-intrinsics`) are landed as code **gated
-behind an off-by-default `concurrency` feature** — out of the default build and the
-`public-api.txt` frozen edge (so the v6 `PlatformFn` / `PlatformManifest` /
-`HostCallbacks` field-order tables in `tests/facade_pif_rows.rs` stay green), exactly
-the "landed-and-dormant" pattern §6.2 used for the GOT-indirect dispatch arm at v3.
-The numeric `ABI_VERSION` stamp is bumped to **7** now (the `declare_platform!` macro
-+ host loader still emit / read the v6 `PlatformFn` shape; in-workspace host + DLLs
-rebuild together, so the stamp stays consistent). **The wiring** — the macro emitting
-poll-fns + descriptors, the host loader reading `ConcurrentPlatformFn` + adopting
-`got_slot`, and the host reactor implementing the `HostCtx` vtable — **is the
-slice-2 reactor implementation** (`/dev`, next sprint/stretch), feature-gated and
-byte-identical-when-off.
-
-**Per-crate change list when the wiring lands (not actioned this sprint):**
-
-- **`/platform` — `cranelisp-platform`** (`src/declare.rs`, `src/concurrency.rs`):
-  the `declare_platform!` macro emits each effect fn in poll-shape and a
-  `ConcurrencyDescriptor` per fn; the manifest entry array switches `PlatformFn` →
-  `ConcurrentPlatformFn`. The host-reactor C-ABI types are already landed in
-  `src/concurrency.rs` (gated).
-- **`/backend` — `cranelisp-backend`**: an additive **poll-construction arm** (NOT a
-  direct poll call — the trampoline owns the call). For a poll-shape (`blocking == 0`)
-  effect it loads the poll-fn from `__cranelisp_got_platform_<name>` (GOT-indirect
-  dispatch preserved) and builds an `IO_TAG_EFFECT_POLL` node over a **host-built
-  state-closure** (`code_ptr` = poll-fn, captures = the marshaled i64 args, a reserved
-  result slot), reusing the existing closure-construction codegen; blocking effects
-  keep the unchanged v6 arm (byte-identical-off). `HostCtx`/`Waker` are passed at
-  *poll* time by the trampoline's `async fn`, not at the backend site
-  (`effect-concurrency.md` §6 + Appendix B §"ratified backend↔intrinsics seam").
-- **`/int` — `src/`** (host reactor): implements the `HostCtx` vtable over the host's
-  single reactor + the feature-gated host async runtime; the loader reads
-  `ConcurrentPlatformFn` and adopts `got_slot = manifest index` as today.
-
-**Host substrate + feature topology (S93 Phase-5 Wave-3, /arch — the reactor-gate
-decision).** The host that drives the v7 poll-fns is **`mio` (reactor) + `futures`
-(`block_on` executor), NOT tokio** — `effect-concurrency.md` §6's
-"tokio-or-equivalent" resolved to the *or-equivalent* because the landed
-host-reactor C-ABI (`HostCtx` = "register a raw fd + a `std::task::Waker`
-projection") is **mio-shaped, not tokio-shaped**, and the C-ABI insulates platforms
-from the executor choice entirely (a later swap is gate-local + ABI-invisible). The
-runtime is gated by a **new `concurrency-runtime` feature** in
-`cranelisp-intrinsics` (`= ["concurrency", "dep:mio", "dep:futures"]`) — distinct
-from the existing `concurrency` feature, which stays **layout-contracts-only / zero
-runtime deps** so a *platform* enabling it pulls in **no executor** (the A2
-"platforms carry no runtime" thesis, preserved structurally). The
-`--link`-links-no-executor guarantee is structural (the runtime deps are
-`dep:`-gated optional; the exe-bundle `--link` path never requests
-`concurrency-runtime`). The reactor *implementation* is hosted in
-`cranelisp-intrinsics` (not `src/`) so it links into `--link` output — int owns
-construction-for-REPL/`--run` + policy + the dev sink + feature-gating. The full
-implementable slice-2 plan (the one async await boundary, the demo `async-read`
-leaf, the strand hook, the per-crate `/dev` step list + spill marker) lives at
-`effect-concurrency.md` Appendix B §"Slice-2 reactor — the implementable plan."
-
-**S94 R1 — node seam ratified + one ABI field reserved.** The backend↔intrinsics
-poll-shape Effect-node representation (left undefined by the S93 platform↔host
-contracts) is ratified as the **closure-env model** — full /dev contract in
-`effect-concurrency.md` §13 "S94 R1" + Appendix B §"ratified backend↔intrinsics seam."
-Its single platform-DLL consequence: a **`drop_state: Option<unsafe extern "C"
-fn(*mut c_void)>`** field is appended to the still-dormant v7 `ConcurrentPlatformFn`
-(`crates/cranelisp-platform/src/concurrency.rs`) **with NO `ABI_VERSION` bump** — v7
-is not yet frozen (no real cdylib has shipped against it), so the field is reserved in
-place under the same reserve-now discipline as `ConcurrencyDescriptor.global_budget`,
-inert until the cancellation slice (≥ 7). State construction (backend-built, no
-`make_state` export) and result extraction (generic offset read, no per-effect
-`ResultReader`) stay host-internal — they add **no** platform-DLL field. The gated v7
-layout guard (`crates/cranelisp-platform/src/tests.rs::concurrent_platform_fn_repr_c_field_order_v7`)
-stays green because `drop_state` sits between `poll` and `param_count` (the listed
-offsets stay strictly increasing; `concurrency` stays last); /qa should extend that
-guard to pin `drop_state` explicitly.
-
-**S94 R1 (FIXME 0457) — the manifest → loader → symbol-table → backend channel, RATIFIED.** R1 fixed the poll-node *runtime representation*; 0457 closes the *data channel* that carries the poll discriminator from a loaded platform to the backend's emission arm. The ratified channel, end to end:
-
-1. **Symbol table (LANDED, /arch).** `DefKind::PlatformEffect` gains `poll_shape: bool` (`#[serde(default)]`, default `false` = the byte-identical v6 blocking world; a pre-S94 cache deserializes as blocking). It is the **orthogonal dispatch axis** beside `scheduling_class` (the conflict-domain axis) — the full `ConcurrencyDescriptor` is deliberately NOT put on `DefKind` because that type stays `#[cfg(feature="concurrency")]` (a dormant C-ABI contract off the frozen edge) while `DefKind` is core/ungated; graduating it is a later step gated on lifting that dormancy. `cranelisp-types/public-api.txt` regenerated (one line: `poll_shape: bool`); `ConcurrencyDescriptor` stays absent from the default edge (the `_neg` guard holds).
-2. **Manifest channel (SPECIFIED for /dev, all `#[cfg(feature="concurrency")]`).** A v7 platform exposes poll-shape effects through a **separate manifest type + separate export symbol** (NOT a reinterpreted `PlatformFn` array — that would break v6 byte-identical layout): a gated `#[repr(C)] ConcurrentPlatformManifest { abi_version, name, name_len, version, version_len, functions: *const ConcurrentPlatformFn, function_count }` in `concurrency.rs`, exported by the v7 `declare_platform!` as `cranelisp_concurrent_manifest`. v6 platforms keep exporting only `cranelisp_platform_manifest` (PlatformFn array) — untouched.
-3. **Loader (SPECIFIED for /dev).** The concurrency-built host (`src/platform.rs`) dlsym-probes `cranelisp_concurrent_manifest` FIRST; hit ⇒ `concurrent_manifest_to_descriptors` (gated sibling of `manifest_to_descriptors`); miss ⇒ the existing v6 path. `OwnedPlatformFnDescriptor` gains a gated `concurrency: Option<ConcurrencyDescriptor>` (`Some` for v7-lifted, `None`/absent for v6). The DefKind construction cfg-splits: ungated ⇒ `poll_shape: false`; `#[cfg(feature="concurrency")]` ⇒ `poll_shape: desc.concurrency.map_or(false, |c| c.blocking == 0)`. The v7 path derives the still-required `scheduling_class` from the descriptor via a gated `ConcurrencyDescriptor::nearest_scheduling_class` reverse map (token/cardinality → nearest class).
-4. **Backend (SPECIFIED for /dev, NO cargo feature).** The effect-site codegen reads `DefKind::PlatformEffect { poll_shape, .. }`: `true` ⇒ the poll-construction arm (`IO_TAG_EFFECT_POLL` + host-built state-closure, the R1 seam); `false` ⇒ the unchanged blocking call. The default world only ever sees `poll_shape == false` (no v7 platform loaded) ⇒ byte-identical.
-
-This refines §6.8's earlier loose "the manifest entry array switches `PlatformFn` → `ConcurrentPlatformFn`": the switch is via a separate v7 manifest type + a probed v7 export symbol, so v6 platforms + the default host stay byte-identical. **As-built (S94):** the channel shipped end-to-end (`ConcurrentPlatformManifest` + `cranelisp_concurrent_manifest` export + dlsym-probe loader + the `poll_shape` symbol-table field + backend poll-construction arm + intrinsics async Effect arm); the 5 reactor e2e rows (`tests/concurrency_reactor.rs`) are green (two real leaves overlap ≈max on one reactor thread). FIXME 0457 resolved + deleted S94.
-
-**Status: ACTIONING (S93 → S94).** The pre-implementation §13 "flagged, not executed"
-state is superseded — slice 2 has opened, the layout contracts are landed, the node
-seam is ratified (S94 R1), and this §6.8 is the cascade record. The remaining wiring
-is tracked by the slice-2 work in `sprints/ROADMAP.md`, not a separate FIXME (the
-manifestation-site discipline: the cascade lives here at its natural home, actioned by
-the open track).
-
-**Within-DLL v6+v7 mixing — the boundary, and the deferred merge mechanism (S96 /arch
-ruling, FIXME 0464). — SUPERSEDED by §6.8.0 (single-ABI cutover, 2026-06-29).** The
-whole within-DLL-mixing *problem* dissolves under the single ABI: one manifest carries
-both blocking and poll-shape entries natively, so the dual-manifest-merge mechanism
-below is never built and FIXME 0464 is resolved-by-superseding-pivot (deleted). The
-paragraph is retained as the record of the coexistence-era reasoning.
-
-**The §6.8 byte-identical-off design supports **system-level
-coexistence** — some platforms v6, some v7, the host loading each by the either/or probe
-(`cranelisp_concurrent_manifest` first, else `cranelisp_platform_manifest_<name>`). It does
-NOT, as built, support **within-DLL mixing** — a SINGLE DLL carrying both a v6 blocking
-effect AND a v7 poll effect. Two structural walls: (1) both `declare_platform!` and
-`declare_concurrent_platform!` export the same `__cranelisp_got_platform_<name>` GOT static
-⇒ a crate invoking both fails to link; (2) the loader is strictly either/or per handle — a
-v7 hit uses the v7 manifest *exclusively*, never also reading the v6 manifest from the same
-handle. **This is a deliberate boundary, not a defect to fix on sight.** The S96 server demo
-sidesteps it entirely: the exemplar **`web`** platform is **pure-v7 + concurrency-host-only**
-(all leaves poll-shape — sync leaves via a trivially-ready `Poll::Ready` poll per point 1
-above; `declare_concurrent_platform!` only ⇒ one GOT export, either/or loader suffices), and
-**`stdio` stays fully v6** (`print` must stay default-host-loadable; its `read_line`-poll
-ergonomics rewrite is descoped). **The merge mechanism, when a genuine within-DLL mixed
-platform is needed (unmet trigger as of S96):** the ruled path is **dual-manifest merge** —
-one DLL exports BOTH manifests over ONE shared GOT (disjoint slot ranges; GOT static emitted
-once via the `declare_platform!`/`declare_concurrent_platform!` shared `@spine` macro
-convergence), the `concurrency` host reading + merging both (blocking → v6 descriptors, poll
-→ v7), the default host reading only the v6 subset (poll effects simply absent). It stays in
-the §6.8 envelope: **no `cranelisp-types` touch, no `ABI_VERSION` bump, no `public-api.txt`
-touch** — both manifest exports already exist; the change is macro-internal (GOT de-dup) +
-int-internal (`src/platform.rs` loader merge), and the v7 manifest read is already
-`#[cfg(feature="concurrency")]` so default-host byte-identical-off is preserved. The
-rejected alternative (a unified v7 manifest carrying a blocking effect + a v6 *view*/shim for
-the default host) couples the default load path to v7 types and re-opens the v7-unfrozen
-posture — denied. Build the merge WITH the macro convergence when the trigger fires.
 
 ---
 

@@ -7,7 +7,7 @@
 //! Contract of record: `design/arch/effect-concurrency.md` §9 (the control half —
 //! the combinators are ordinary typed functions constructing trampoline-interpreted
 //! IO-ADT nodes; `cancel` is the *consequence* of losing a race = drop the future)
-//! / §11 (the cancellation observability event). `design/int/reactor.md` (the
+//! / §11 (the cancellation observability event). `design/intrinsics/reactor.md` (the
 //! Chunk-C cancellation interior — finding #3 active fd-interest deregistration +
 //! finding #4 `Drop for AcquirePermit` / pop-until-live). Spec of record (landed
 //! this Phase by `/spec`):

@@ -1,49 +1,14 @@
 # Sprint 114 — sprint-wide test plan (Phase 3, 2026-07-20, /qa)
 
-Scope: SPRINT.md tracks A–E (typed resolution carrier + settlement-consumer
-drain + binding-indirection contract + src/frontend drains). The S113
-attributed-carry ledger (31 suite REDs at close, every one owner+trigger
-attributed) is the acceptance backbone: **most drain waves have their
-acceptance rows already committed as REDs** — this plan states which REDs
-flip per wave, which NEW cells /testing authors in the Phase-5 Stage-1
-QA-first battery, and what is unit-tier (/dev) vs e2e (/testing).
-
-Companions: `s113-test-plan.md` (row IDs reused where the family continues),
-`design/arch/typed-resolution-carrier.md` (binding for §3), FIXME 0668 (the
-Track-B seam evidence). Conventions unchanged from S113: twin-row-per-axis is
-binding on every matrix; `[oracle]` rows run under the safety lane;
-RED = failing-not-ignored until the named flip trigger.
-
-**Do not run the suite during the parallel-free design phase** — the RED
-inventory below is documented from the S113 close records; /testing verifies
-it live at Phase 5 Stage 1 before authoring (any drift from this accounting
-is reported to /qa, not silently absorbed).
-
-## 0. Risk read (shapes depth)
-
-1. **The carrier flip is the sprint's heaviest surgery** (multi-crate,
-   serde-visible, `resolved_target` ×368/59 files). The risk is a partial
-   flip: a consumer arm keeping the old `Option`-convention behaviour behind
-   an exhaustive-looking match, or a producer chokepoint that is total for
-   Globals but silently manufactures `Local`. Mitigation: §3's totality
-   cells + the helper-classification sweep AS the acceptance check (carrier
-   doc §5.2), plus the unit-tier obligations enumerated in §3.4 (the
-   enumerated-deferral discipline — e2e cannot see `from_expr`'s error arm
-   directly).
-2. **Track B is the UAF family** — the standing risk is instance-patching
-   (the review-REJECTED one-level recognizer). The §2 matrix pressures ONE
-   contract: a variant that fixes differently from its siblings names a
-   second codepath.
-3. **ONE schema window** (21→22). Two bump-worthy changes (carrier reshape +
-   B-2 escape-fact correction) must land in one invalidation event; a second
-   bump in this sprint is a plan violation to report, not absorb (F7).
-4. **Two-skills-one-seam** (F3) — discharged by §1; no typecheck change-set
-   may touch the capture/let-alias consume accounting, and no backend
-   change-set may touch the match-var-pattern escape *fact*.
-5. **Mode-axis debt in the Track-B family file**: `binding_indirection_consume.rs`
-   currently runs `--run` only; the S113 matrix discipline (variant ×
-   {on,off} × {repl,--run,--link}) is completed this sprint (§2).
-
+> **Retained dated record (S122 consolidation).** Only the sections that current
+> source, designs, the exemplar, audits or open filings (0694, 0708, 0811) cite
+> by number remain, with their original numbering: §1, §2 (2.1), §3 (3.3, 3.6),
+> §4, §5, §6, §8, §11 (11.1) and §12. They are S114 allocations, adjudications
+> and observations dated 2026-07-20, not current status; compare any RED, carry
+> or count with current source before reuse. References to a section that is no
+> longer here, and the removed risk read, flip ledger, traceability notes and
+> W1 findings record, are recoverable with
+> `git show 48d6e713:tests/plan/s114-test-plan.md`.
 ## 1. FIXME 0669 disposition — the I-1 capture face (REQUIRED-BEFORE-PHASE-4 item, F3)
 
 **Verdict: the 0641 I-1 capture face JOINS the 0668 backend consume-seam
@@ -209,32 +174,6 @@ and stays untouched by any "distinguish wrong-Some(false)" workaround.
 
 ## 3. Track A — typed carrier + settlement-consumer family
 
-### 3.1 Existing REDs and their flip waves
-
-| RED set | Flip trigger |
-|---|---|
-| F-D2-10 ×4 (nullary no-impl check-gate-leak) | **RIDES the carrier change-set** (F1) — never a pre-carrier interim gate patch. See §3.2 re-shape |
-| MC-X4 + MC-X4b (P26-temporal consumer harvest, two faces) | The settlement-consumer /dev(typecheck) change-set — orthogonal to the carrier, may land before/interleaved (F2). The face PAIR is the fence against a partial fix |
-| MC-X5 (raw-name overload gates) | Same deployment, distinct mechanism row (MC-V1 verdict stands) |
-| PS-SH1 residual (multi-sig value-ref matrix) | §3.5 completion cells + the typecheck drain |
-| MS-P7 | **ADJUDICATED (W3): W7 /dev(typecheck) rider, priority over the conditional 0590 slot** — §3.6 adjudication record |
-| ~~0641 I-1 ×2~~ | moved to Track B per §1 |
-
-### 3.2 Carrier-wave cells (the F-D2-10 re-shape + totality)
-
-The carrier makes "unresolved" unrepresentable; the phase-boundary gate is a
-**located typecheck-phase error** (`ViewBuildError::Unresolved{span,name}`,
-carrier doc §4). The flip change-set therefore RE-SHAPES the F-D2-10
-assertions, and new totality cells pin what the constructor now guarantees:
-
-| Row | Cell | Directive |
-|---|---|---|
-| CA-1 | F-D2-10 ×4 re-shape | The flips assert a **located typecheck-family error naming the owning trait** (§7.11.2(c)), uniform across REPL/`--run`/`--link` (F-D2-9 discipline) — NOT merely "no `undefined function` leak". The negative facet (no codegen-phase symbol leak, no panic) is RETAINED through the flip (preserved-facet discipline) |
-| CA-2 | **Totality positive — all-local body** | `(defn f [x] (let [y x] y))`-class program, ×3 modes: the retired "empty maps for all-local bodies" license means every local now takes the `VarRef::Local` path end-to-end. Born-green fence; guards the flip against over-gating legal locals |
-| CA-3 | **Totality positive — local shadowing a global** | A param/`let` name equal to an in-scope global (and to a prelude-importable name): resolves Local, correct value, no phantom Global dispatch — the `Option`-conflation's sharpest cell, now decided by constructor. Born-green ×2 (defn-param, let), + the match-var sibling |
-| CA-4 | **ViaCallee positive** | HOF/computed-callee apply (callee is a param) runs correctly — `ApplyRef::ViaCallee` is a positive verdict, not a default. Born-green |
-| CA-5 | **No-codegen-`undefined function`-for-check-decidable-faults standing negative** | Covered by CA-1 + the MC-X3d §2.7 annotation becoming true; /qa audits at Phase 6 that zero suite REDs surface codegen-phase resolution errors on typecheck-decidable inputs |
-
 ### 3.3 The ONE schema window (21→22) — cache-invalidation cells (S111 0621 precedent)
 
 | Row | Cell | Directive |
@@ -242,49 +181,6 @@ assertions, and new totality cells pin what the constructor now guarantees:
 | CS-1 | **Warm-cache correctness twin of the B-2 shape** | Compile the B-2 program `--run` with a cache dir, run again warm: cold == warm == 99 (both toggles once BI-C-off flips). Guards the escape-fact correction's persistence: a stale `Some(false)` served from cache would reproduce the UAF post-fix — the exact hazard F7 names |
 | CS-2 | **Schema-gate refusal fence** | The stale-`CACHE_SCHEMA_VERSION` wholesale-refusal behaviour (AG-1 class): verify the existing gate fence covers the 21→22 bump (re-point the existing cell if present; author one if the S111-era cell was version-pinned). One cell — the mechanism, not per-version |
 | CS-3 | **Window-count verification** (/qa, Phase 6/7 audit — not a test) | Exactly ONE bump lands this sprint, in the carrier flip change-set, with the B-2 fact correction in the same window. A second invalidation event is reported to /sprint |
-
-### 3.4 Unit-tier obligations (/dev, enumerated — the deferral names its cases)
-
-E2e cannot reach `from_expr`'s error arm or the lenient seam assert
-directly. The carrier wave's /dev change-sets MUST land unit tests for, at
-minimum (each fails on revert of its half):
-
-1. `from_expr` with a missing `var_refs` entry for a real-span `Var` →
-   `ViewBuildError::Unresolved{span,name}` (and the Apply sibling).
-2. `lenient_from_expr` resolution miss → tier-3 seam assertion fires (never
-   a silent manufactured `Local`); the legitimate-miss population question
-   escalates to /arch as a FIXME if evidence names one (carrier doc §3.5).
-3. Binder-identity provenance: `VarRef::Local.binding_span` = the binding
-   FORM's span for each binder kind (param, `let`, match-arm) — the shadow
-   frames disambiguation grain.
-4. Backend consumer: `VarRef::Local` scope-stack miss = hard invariant
-   failure carrying the binder identity; `is_self_call` keys on
-   `VarRef::Global == current fn's storage FQ` (the S25 TCO read stays
-   keyed).
-5. B-2 escape fact: match-var-pattern transfer records `escapes` truthfully
-   (the S113 fix's unit pin — confirm it exists; author if the fix landed
-   e2e-only).
-
-### 3.5 PS-SH1 completion — as-built (W1; /qa disposition item 5 ACCEPTED)
-
-The S113 residual: {let-shadowed} × {single-sig defn, multi-sig base} ×
-**value-ref** cells (call cells landed + flipped S113). /testing completed
-the shape as **matrix-missing POSITIONS, not net-new scenarios** — the
-right reading of the residual (the matrix pressures ONE codepath; a
-per-position fix that greens one value-ref position but not a sibling
-names a divergent resolver). As built in `tests/shadowing_scope_lookup.rs`:
-
-- **+2 RED positions**: multi-sig-base value-ref **returned**
-  (`…value_ref_returned…`) and **stored-in-container**
-  (`…value_ref_in_container…`) — both resolve to the module overload base
-  today; flip with the Track-A typecheck drain.
-- **+1 GREEN control**: the single-sig value-ref HOF twin
-  (`let_shadowed_single_sig_defn_value_ref_hof_resolves_to_local`) —
-  proves the bug is the overload-base gate, not value-ref resolution
-  generally; must stay green.
-
-Counts: ×3 as built (2 RED + 1 born-green control), vs the planned "NEW
-×2"; the in-file call cells remain the flipped-S113 GREEN twins.
 
 ### 3.6 MS-P7 — evidence gate (F5; do NOT pre-commit a wave)
 
@@ -420,70 +316,6 @@ Every "MS-P7 FIXED" statement in this plan, SPRINT.md, and the
   arithmetic); the pins are the record + trigger, so **FIXME 0706 deletes
   with the pin commit** (no-FIXME-with-failing-test rule). Face 3 is an
   S115 probe row, not a pre-committed RED.
-
-### 3.7 Sweep acceptance (no new cells)
-
-The P26 full typecheck sweep + the 0653 helper-classification sweep run
-AFTER the carrier (F2) and ARE its acceptance check: /qa verifies at wave
-close that (a) the sweep inventory was classified post-reshape, (b) zero
-keyed-read-else-resolver hybrids appear (the Rev-2 REJECT), (c) the two
-camps of bare-name helpers (legitimate pre-resolution vs re-resolvers to
-delete) are dispositioned. Register updates, not tests.
-
-**Sweep inventory additions (/qa, W3 — from the W2 review Important-3 +
-Minor-2 findings):**
-
-| Row | Inventory item | Directive |
-|---|---|---|
-| SW-1 | **`try_resolve_trait_method` Err-disposition family** — classify EVERY caller by what it does with the `Err` (the located no-impl reject): propagate / justified-benign (rationale comment in code) / swallow-defect. Known members: the W2-fixed settlement re-attempt (propagates); `infer.rs::resolve_value_position_trait_methods` (~1274) and `program/mono_collect.rs::resolve_auto_curry` re-attempt (~768) — both `if let Ok(Some(..))` swallows, dispositioned §3.8 as propagation candidates | The sweep confirms the family is CLOSED: zero unclassified swallows remain; any new member found joins §3.8's disposition |
-| SW-2 | **Minor-2 invariant** — no producer writes `var_refs`/`apply_refs` at `Span::SYNTHETIC` (the W2 SYNTHETIC carve-out, review-verified at the flip) | Sweep row: mechanical check (grep + the carve-out's single licensed site) that the invariant still holds post-drain; a violation is a carrier-provenance defect, not a style nit |
-
-### 3.8 W2-review Important-3 — the two surviving no-impl swallow siblings (/qa disposition, W3)
-
-Both sites repeat the exact shape whose call-position instance WAS the
-F-D2-10 root cause (W2: "the settlement re-attempt SWALLOWED the located
-no-impl error via `if let Ok(Some(..))`"): same `try_resolve_trait_method`,
-same discarded `Err`. Neither is a benign swallow — both are **propagation
-candidates**, same family, different severity than F-D2-10:
-
-1. **`infer.rs::resolve_value_position_trait_methods` (~1274)** — a trait
-   method used as a first-class VALUE (let-binding, HOF argument) whose
-   concrete types have no impl: the located no-impl `Err` is dropped, the
-   Var keeps no resolution, and the reject (if any) surfaces later from a
-   generic gate naming the METHOD, not the owning trait — a
-   diagnostic-phase gap against the CA-1/§7.11.2(c) standard (located
-   typecheck-family error naming the owning trait, uniform ×3 modes).
-   Structural note for the fix: the fn returns `()` — propagation needs
-   the same Result-widening the W2 fix gave the call path; that is why
-   the swallow survived the W2 change-set.
-2. **`program/mono_collect.rs::resolve_auto_curry` re-attempt (~768)** —
-   partial application of a trait method whose late-pinned types have no
-   impl: `Err` is swallowed AND control falls through to the
-   `resolve_primitive_jit_name` fallback, so a definitive no-impl can be
-   masked by a primitive-name resolution (a `wrong-accept`-shaped hazard,
-   not just a diagnostic gap) or else ships an `AutoCurry` with no inner
-   resolution for a later gate to reject generically.
-
-**Disposition — probe-first (the BD-A3/0670 lesson), then RED cells:**
-
-- **/testing probes** (small rider, before/with W7): (P1) value-position
-  no-impl — e.g. bind `=` at a type with no `Eq` impl via a let/HOF and
-  force resolution; (P2) auto-curry no-impl — partially apply a trait
-  method at an impl-less concrete type. Each probe ×3 modes; record WHICH
-  layer rejects and WHETHER the error names the owning trait.
-- If a probe shows a trait-naming-less generic error, a wrong-layer leak,
-  or (P2) a primitive-fallback wrong-accept: author the RED cells
-  **F-D2-11** (value-position) / **F-D2-12** (auto-curry), asserting the
-  CA-1 standard; they flip with the W7 typecheck rider (behind MS-P7 in
-  priority, ahead of 0590).
-- If a probe shows the surface is already conformant (some other path
-  produces the trait-naming located error): pin it as a born-green fence
-  and the SW-1 sweep row records the site as justified-benign WITH the
-  fence as evidence — that is the only acceptable "benign swallow"
-  closure; an undocumented swallow is not one.
-- If W7 capacity does not reach the fix: attributed carry with the RED
-  cells as record + trigger (no FIXME), reported into the Phase 7
-  RED-vs-known-defect accounting.
 
 ## 4. Track C — src/ (0638 + riders + 0604)
 
@@ -816,24 +648,6 @@ family. Rows reserved — /qa adds them when the enumeration table exists
 - Archive-demo de-rot + "in expansion of" finalize-path: /repl-side and
   display-side items — no plan rows beyond the existing demo gates.
 
-## 7. Wave-flip ledger (Phase-4 input; **RE-BASED post-W1 as-built, /qa 2026-07-20**)
-
-| Wave (per SPRINT §Required sequencing) | REDs that flip | Must-hold fences |
-|---|---|---|
-| Carrier wave (types+typecheck+backend+bump, ONE change-set) | F-D2-10 ×4 (re-shaped per CA-1) | CA-2..4 born-green, F-D2-8 declaration gate, F-D2-4, MC-N1 inversion set, CS-1/CS-2, golden lane |
-| Typecheck settlement-consumer drain (before/interleaved) | MC-X4, MC-X4b, MC-X5, PS-SH1 residual + §3.5 new ×2 (returned + container value-ref) | MC-X4 typed-field twin, MC-G1 fences, standalone twins, §3.5 single-sig value-ref GREEN control |
-| Track B consume-contract change-set(s) (behind §1 disposition — now discharged) | BI-G (+link twin), BI-F, BI-C-off (+link twin), BI-B-cow ×2, BI-I1 ×2, BI-H-heap ×2 (rider, §2), then F-R1 ×2 (backend `protect_return_value` entry-main seam) + MS-P8 ×2 (backend TCO tail-jump param-flush seam) per their own backend fixes — both adjudicated backend per §2.1, no intrinsics deployment | A/E ×2 + A-link fence, H scalar control, l_c3 ×2, `vec_lifecycle`, match-cow ON twins, golden |
-| Track C: 0638 fix | 0638 ×5 (both mode-faces in one change-set) | marshal sustained-repetition guards |
-| Track C: 0604 chokepoint | none (structural gate — census + unit test + sweeps) | twin guards ×2 GREEN |
-| Track C: 0670 int fix (W5-C1; F8 wave 1) | **none e2e — acceptance is the §4.3 expansion-seam UNIT flip** (RED-first fixture defeating the availability skip-guard) | IQ-P1..P3 born-green fences + repl_persist `name`-param programs stay GREEN |
-| Track D: frontend one-seam + case-mirror (W-D1) | BD-A ×6, deftype-ctor ×1, M1/M2 new cells incl. M2-TP1 (uppercase type-param reject, rider) | M1 GREEN column + M1 spot fences, M2-TP2 deftrait twin per probe, structural grep |
-| Track D: 0670 wave 2 (W-D2, reject re-lands; requires C1 committed) | IQ-N1..N4 | IQ-P1..P3 + IQ-N bare twins stay GREEN (the reject must not re-break the valid program) |
-| Track D: 0682 fix (rides W-D1) | RA-N1, RA-N2, RA-N5, RA-N6 ×2 | RA-P1/P2 + RA-N3 ×2 born-green, RA-N4 division fence |
-| Track E: 0590 (if it lands) | none | `_hkt` born-green fence ×2 (§6) + mint-family pins; unit-tier `Named`-arm obligation |
-| W7: /dev(typecheck) rider (adjudicated W3; priority over the conditional 0590 slot) | MS-P7 **immediate-link face only** (§3.6 adjudications: typecheck ownership, `MayAliasOf` projection-out reaching context; class re-labeled `uaf`; chained faces carried per the §3.6 second adjudication) + F-D2-11/F-D2-12 IF the §3.8 probes confirm RED | Safety-lane clean/green cells both toggles; MS-P6 capability cell re-planted in the flip change-set (§3.6 flip hazard); W4 fences: no backend workaround, pin color-change reported to /qa |
-| W7-close /testing pin rider (§11 items 4+5) | none flip — **+2 intended NEW REDs carried into S115**: toggle-off entry-return HEAP-PAYLOAD leak (rc-miscount, backend; §11 item-4 drift note — the mechanism is toggle-independent) + fn-as-value GOT-slot carrier-loss (carrier-loss, typecheck) — landed `7c2d5168` | Phase-7 certification names them per the §11 counting convention (stable-exact + named flap set); ≥3 full-suite runs verify the 0694 nullary face |
-| W7-close 0706 chained-face pins (/testing, with the §3.6 second adjudication) | none flip — **+2 intended NEW REDs carried into S115**: nested-projection chain + let-chained intermediate (`class=uaf`, typecheck ownership, family grain per §3.6; whole-value-transfer control stays GREEN) | FIXME 0706 deletes in the pin commit (pins = record + trigger); 0693 fence lands before/with the S115 fix; Phase-7 certification: stable-REDs-exact = **5** |
-
 ## 8. Stage-1 battery — AS BUILT (W1 delivered 2026-07-20; /qa re-base)
 
 **Delivered: 45 new tests — 17 RED defect cells + 28 born-green fences.**
@@ -864,52 +678,6 @@ Unit-tier (/dev, enumerated so nothing falls through the deferral): §3.4
 items 1–5 (carrier + escape-fact), §4.2 item 4 (0604 chokepoint), the
 0670 expansion-seam tests (**now W5-C1's acceptance**, §4.3), the 0590
 `Named`-arm obligation (§6), per-fix unit tests per METHOD §2.2 throughout.
-
-## 9. Traceability
-
-- §7.11.2 bands flip to `[Tested+Neg …]` at the carrier-wave close (CA-1).
-- §2.3.8 / §5 binder bands flip at the Track-D closes; §1.4.5/§2.4/§8.5
-  annotation bands flip after /spec's 0682 scribe + the RA flips.
-- `spec/12-runtime.md` §12.1 rows upgrade `+Neg` as the BI family flips.
-- Run `spec_link_check.py` + `spec_coverage_reconcile.py` before any
-  annotation flip; re-run at Phase 6.
-- Phase-6/7 audit: every remaining RED traces to an open owner+trigger;
-  expected end-state = the 31-RED ledger drained except explicit carries
-  (MS-P7 if evidence arrives late; anything Phase 4 defers with rationale).
-  **As-closed (2026-07-20): the certification expectation is §11.1 item 3 —
-  stable-REDs-exact = 5 + the named flap set.**
-
-## 10. W1 findings disposition record (Phase 5 post-W1, /qa, 2026-07-20)
-
-The six /testing findings (SPRINT.md §Notes, W1 DELIVERED entry), each
-dispositioned in place above — this section is the index:
-
-1. **0670 e2e non-reproduction** → §4.3 re-base. **C1 ships as designed**;
-   the architectural fix stands (scope-blind walk = the wrong mechanism;
-   the availability skip-guard is a table-state-dependent suppressor, the
-   0604-heisenbug class, not a fix). W5-C1 acceptance = the RED-first
-   expansion-seam UNIT flip + IQ-P/repl_persist fences + shared
-   binder-predicate home; W6-W-D2 acceptance = IQ-N1..N4 flip with IQ-P +
-   bare twins green; C1-before-W-D2 gate unchanged. Escalation clause
-   recorded (§4.3) if the unit fixture cannot defeat the suppressor.
-2. **RA polarity** → §5.2 absorbed (RA-N3/N4/P1/P2 born-green; RA-N1/N2
-   RED; RA-N5/N6 RED via incidental-artifact assertions; 5 REDs flip
-   W-D1).
-3. **BD-A3 uppercase type param** → §5.1 RULED spec-mandated (spec §2.2.2
-   "Type parameters MUST be lowercase symbols" + §2.4.2; audit R1 Done
-   criterion). M2-TP1 RED + M2-TP2 deftrait probe twin, /testing W-D1
-   rider. No user question — the spec text is decisive.
-4. **BI-T cell-H** → §2 scalar control substitution ACCEPTED;
-   heap-forward-through-match broken wholesale; NEW row BI-H-heap ×2 RED
-   (inline face was unaccounted) as a pre-W4 rider.
-5. **PS-SH1** → §3.5 matrix-completion shape ACCEPTED (+2 positions +
-   single-sig control); counts updated.
-6. **0590 `_hkt`** → §6 recorded: e2e mask = `form.rs::check_type_expr`
-   pre-walk; born-green fence stands; `Named`-arm latent defect is an
-   enumerated unit-tier obligation on the 0590 deployment.
-
-Ledger (§7) and counts (§8) re-based to the as-built battery: 45 tests,
-17 RED + 28 born-green; suite 5033/4985/48/1.
 
 ## 11. Pre-W7 disposition batch (Phase 5, /qa, 2026-07-20 — evidence-only)
 
@@ -1291,32 +1059,3 @@ it as an expectation reconciliation, not a flip.
   guards, the 0708 polarity-safe pin (after/with the /spec ruling), the
   examples 119→120 reconciliation.
 - 0604 re-based plan per item 4 (amends §11's S115 input).
-
-## Next skills
-
-- `/testing` — riders (§8): M2-TP1/TP2 (with/before W-D1), BI-H-heap ×2
-  (pre-W4), the §3.8 swallow-sibling probes (before/with W7), the
-  MS-P6 capability re-plant with the MS-P7 flip (W7), and the §11
-  W7-close pin rider (toggle-off entry-return leak + fn-as-value
-  carrier-loss, +2 intended REDs).
-- `/dev`(typecheck, W7 rider) — MS-P7 fix per the §3.6 adjudication
-  (ownership `MayAliasOf` projection-out; falsifiability check first),
-  priority over the conditional 0590 slot; then F-D2-11/12 if the probes
-  confirmed RED.
-- `/dev`(backend, W4) — carry the three §3.6 W4 fences into the dispatch
-  brief: no MS-P7 workaround in the consume contract, the ARG-TEMP
-  `MayAliasOf` consume-arm unit confirmation, pin color-change reporting.
-- `/dev`(src, W5-C1) — the expansion-seam unit tests are the wave's
-  acceptance (§4.3), authored RED-first; escalate to /qa per the §4.3
-  clause if the suppressor cannot be defeated in a fixture.
-- `/spec` — 0682 ruling scribe (queued in the serial order; before the
-  Track-D 0682 fix so anchors resolve).
-- `/design`(typecheck) — carrier doc §3–§5 elaboration; §3.4 unit items
-  1–3/5 named in its plan; MS-P7 evidence if its deployment reaches the
-  mode seam.
-- `/design`(backend) — 0668 contract, UNBLOCKED by §1 (the capture row is
-  yours; B-2's fact half is not); 0664 §13.5/§13.7 correction first-within.
-- `/design`(int) — 0604 isolation contract record (§4.2 item 5).
-- `/testing` — Phase 5 Stage 1: verify the RED inventory live, then author
-  §8's battery QA-first; report any inventory drift to /qa.
-- `/sprint` — Phase 4 wave assignment consumes §1, §3.6, and §7.

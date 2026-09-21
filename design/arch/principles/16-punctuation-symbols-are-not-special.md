@@ -19,7 +19,7 @@ title: Punctuation symbols are not special
 
 **Cross-references.**
 
-- Decision 14 — retracted by Decision 43; deleted from the active register (commit `754d525` per `design/arch/CLAUDE.md` §Decisions). The retracted commitment created the closure-table this Principle prohibits.
+- Decision 14 — retracted by Decision 43; deleted from the active register (commit `754d525` per [decision index](../decisions/README.md)). The retracted commitment created the closure-table this Principle prohibits.
 - Decision 15 — reframed by Decision 43; the operator-resolution mechanism it specified retracts with Decision 14.
 - [Decision 43](../decisions/0043-runtime-split-into-primitives-intrinsics.md) — operator-category retirement; the runtime split where the closure-table mechanism deletes.
 - `crates/cranelisp-backend/src/primitives_inline.rs` — the surviving name-keyed table. The trait-keyed map, the `literals.rs` operator-as-value map and the `cranelisp_op_*` duplicate externs were deleted at the Decision 43 close (S67).

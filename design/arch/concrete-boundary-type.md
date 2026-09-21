@@ -248,7 +248,7 @@ The position-complete scan (`crates/cranelisp-typecheck/src/program.rs`, `find_a
 - **Work:** the `ConcreteType` enum (§1.2), `from_type`/`to_type` (§1.3), `NotConcrete`, unit tests (concrete round-trips; every `Var`/`TyConApp` failure arm; nested `ADT`/`Fn` concreteness). Re-express `Type::is_concrete()` in terms of `from_type(..).is_ok()` (or leave it; either is fine).
 - **Public-API / BC / cache:** additive — new public type + two methods + one error enum. `public-api.txt` regen (a handful of additive lines). `ConcreteType` derives `Serialize`/`Deserialize` (cache convention) but is *not yet on any cached shape*, so **no cache bump**. No BC shape change (this doc is the manifestation site; `interfaces.md` gains a one-line pointer).
 - **Risk:** near-zero — dead code until a consumer uses it. Pure addition.
-- **Size:** SMALL — S84-fits as a foundational scaffold (see §Commit note).
+- **Size:** SMALL — S84-fits as a foundational scaffold.
 
 ### Phase 2 — mono produces `ConcreteType`; the AST carries it
 

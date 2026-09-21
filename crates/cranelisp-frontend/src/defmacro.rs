@@ -11,7 +11,7 @@
 //! but not part of the four-free-function form-by-form boundary. They are
 //! called directly by `int` (`src/process_form.rs`, `src/repl/commands.rs`,
 //! `src/session_v4/index_worker.rs`) — a settled, permanent part of the
-//! surface (`design/frontend/frontend.md` §9.1: `lib.rs` is correct, there
+//! surface (`design/frontend/frontend.md` §2.2: `lib.rs` is correct, there
 //! is NO "narrow back"). The former "narrow to `pub(crate)` at FIXME 0098
 //! Phase 2 close" plan was withdrawn by S76 W-Macro, which DELETED `expand`
 //! rather than migrating it — the conditioning event never happens.
@@ -193,7 +193,7 @@ fn parse_bracket_pattern(inner: &[Sexp]) -> Result<(Vec<Symbol>, Option<Symbol>)
 ///
 /// Internal-but-exposed: pub at the crate root, called directly by `int`
 /// (`src/process_form.rs`, `src/repl/commands.rs`, index worker) — a settled
-/// part of the surface (`frontend.md` §9.1: no "narrow back").
+/// part of the surface (`frontend.md` §2.2: no "narrow back").
 ///
 /// `MacroParam`, `MacroClauseInfo`, and `DefmacroInfo` live in
 /// `cranelisp-types` (they cross the typecheck boundary).
@@ -334,7 +334,7 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
 /// helpers"): pub at the crate root so `int` can build per-clause `Defn`s
 /// for the backend per Decision 21 without rebuilding the shape-checking
 /// logic outside the frontend. A settled part of the surface (`frontend.md`
-/// §9.1: no "narrow back").
+/// §2.2: no "narrow back").
 ///
 /// Takes a `&MacroClause` parameter — the type comes from
 /// `cranelisp_types::parsed::MacroClause` (re-exported at crate root for

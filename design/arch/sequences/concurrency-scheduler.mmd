@@ -1,10 +1,10 @@
 sequenceDiagram
-    title Effect-concurrency slice 2 — the async trampoline scheduler over a host-owned reactor — TARGET, effect-concurrency.md §6/§12. The trampoline is the single serializing interpreter, an async fn, platforms are C-ABI async leaves, the host owns the reactor. Every arrow is also the annotation site for the strand-correlated observability event stream §11 — the StrandEvent each step emits is the Note beneath it.
+    title Effect-concurrency slice 2 — the async trampoline scheduler over a host-owned reactor — effect-concurrency.md §6/§12. The trampoline is the single serializing interpreter, an async fn, platforms are C-ABI async leaves, the host owns the reactor. Every arrow is also the annotation site for the strand-correlated observability event stream §11 — the StrandEvent each step emits is the Note beneath it.
 
     participant Tramp as Trampoline<br/>cranelisp-backend / intrinsics<br/>(the single serializing interpreter — an async fn over the IO tree)
     participant Leaf as Platform async leaf<br/>cranelisp_platform::PollFn (GOT slot)<br/>poll(state, *HostCtx, *Waker) -> Poll
-    participant Reactor as Host reactor<br/>cranelisp-intrinsics — single epoll/kqueue via mio (runtime-feature-gated)<br/>impl cranelisp_platform::HostCtx vtable — hosted in intrinsics so it LINKS INTO --link output (int is absent at a linked program's runtime). int owns construction-for-REPL/--run + policy + feature-gating.
-    participant Obs as Observability sink<br/>cranelisp_intrinsics::StrandEvent stream<br/>(feature-gated, byte-identical-when-off — §11)
+    participant Reactor as Host reactor<br/>cranelisp-intrinsics — single epoll/kqueue via mio (constructed lazily)<br/>impl cranelisp_platform::HostCtx vtable — hosted in intrinsics so it LINKS INTO --link output (int is absent at a linked program's runtime). int owns construction-for-REPL/--run + policy + feature-gating.
+    participant Obs as Observability sink<br/>cranelisp_intrinsics::StrandEvent stream<br/>(silent until a consumer records — §11)
 
     Note over Tramp,Obs: invariant: the trampoline unwinds to itself at every effect (IO is reified as data — the continuation is a heap value, never a suspended native frame). All awaiting lives in Rust. A strand id (cranelisp_intrinsics::StrandId, the `turn` precedent) is threaded through every dispatch/suspend/resume.
 

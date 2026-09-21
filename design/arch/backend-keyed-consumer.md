@@ -33,10 +33,10 @@ construction/reference position, which folds into the symbol-axis waves).
 **Archive trigger — MET for the contract (verified 2026-07-16):** W3 landed
 (resolver seam deleted; grep gate green) and the carrier contract is folded
 into all four permanent homes — `crates/cranelisp-types/src/{mono_expr,check}.rs`
-rustdoc, BC §2 (the producer obligation) + §3 invariant 10 (the consumer
+rustdoc, [BC 2](bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) (the producer obligation) + §3 invariant 10 (the consumer
 statement), and `interfaces.md` §"`resolved_targets` — the 0583 keyed-consumer
 carrier" (0618, `0cb5fbf7`). The physical move to `design/arch/archive/` is
-PARKED on the one §6 tail still sprint-tracked — the
+PARKED on the one [remaining integration tail](backend-keyed-consumer.md#6-r-2-the-adt-entry-builder-folds-under-the-centrepiece) still sprint-tracked — the
 `src/bootstrap.rs::register_synth_adt` R-2 caller wiring (S110 src-chain) — so
 the active sprint's citations stay live; the next `/arch` archive triage
 executes the move. Residuals tracked at their own homes: FIXME 0621 (`callees`
@@ -720,7 +720,7 @@ deliberately, from this table, not from the grep):
 
 The pre-S113 shape decided self-call by BARE written-name equality
 (`*name == *fn_name`) before consulting the carrier — a
-name-equality-as-identity judgment (BC §3 invariant 10 / Principle 24 class,
+name-equality-as-identity judgment ([BC 3](bounded-contexts.md#3-backend-cratescranelisp-backend) invariant 10 / Principle 24 class,
 the 0632 register) that survived the S110 W1–W3 excision precisely because it
 was neither a `resolve_*` call nor a scan, so S1–S24 and the grep gate never
 counted it. The S113 W2 fix DELETED the bare-name match (not demoted to a
@@ -755,10 +755,9 @@ window):
 
 **W0.a — carriers + population.**
 - `cranelisp-types`: the §1 contract (sidecar field, 2 mono fields, `from_expr`
-  third param). Baseline regen + `interfaces.md` + BC §2/§3 already carry the
+  third param). Baseline regen + `interfaces.md` + [BC 2](bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) / [BC 3](bounded-contexts.md#3-backend-cratescranelisp-backend) already carry the
   narrative (this phase).
-- `cranelisp-typecheck`: `record_resolved_target` writer at the §1.1
-  chokepoints, for ALL statically-resolved reference kinds; all `from_expr`
+- `cranelisp-typecheck`: `record_resolved_target` writer at the [writer chokepoints](backend-keyed-consumer.md#11-semantics-whichever-storage-key-hit), for ALL statically-resolved reference kinds; all `from_expr`
   callers updated (`program/support.rs:235`, `traits/monomorphise.rs:491`).
 - `cranelisp-backend`: `from_expr` callers in `test_support.rs:327/692`
   updated; the **unit-test harness populates the sidecar for its fixtures**
@@ -918,7 +917,7 @@ diff grows by the lenient builder (§8).
 **LANDED this phase (additive, no consumers):**
 `cranelisp_types::{AdtCtorSpec, build_adt_entries}`
 (`crates/cranelisp-types/src/adt_build.rs`; narrative `interfaces.md` §"ADT-
-entry builder"; BC §7 paragraph; baseline regenerated, +16 additive lines;
+entry builder"; [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) paragraph; baseline regenerated, +16 additive lines;
 4 unit tests). The single derivation of the ADT registration entry set —
 product/sum split, ctor schemes + `ConstrADT` synth bodies, canonical
 `member_key` + bare-alias edges, product facet + docstring fallback,
@@ -960,7 +959,7 @@ Ruled Phase-2 §5; recorded here as the wave-2 work item. Three legs:
 3. `/qa`'s value-position × {mint, die} matrix (unchanged, proceeds in
    parallel).
 
-Permanent manifestation: Principle 24 + the BC §2 producer-obligation note
+Permanent manifestation: Principle 24 + the [BC 2](bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) producer-obligation note
 (landed this phase). FIXME 0585 closes when W2 + the matrix land.
 
 ---

@@ -333,8 +333,8 @@
 //! - `design/arch/principles.md` — Principles 2, 13, 15, 17, 18
 //! - `design/arch/macro-availability-model.md` §0 — defmacro-before-use; three-pass model (LOCKED)
 //! - `design/arch/macro-expansion-ownership.md` — the W-Macro recognition→typecheck / execution→int split
-//! - `design/frontend/s76-syntactic-only.md` — the S76 frontend target (W-Macro + `parse_type_expr`)
-//! - `design/frontend/wave-3a-build-form.md` — per-form boundary detailed design
+//! - `design/frontend/frontend.md` §1 — the purely-syntactic role
+//! - `design/frontend/ast-builder.md` §2 — the per-form boundary
 //! - `crates/cranelisp-frontend/public-api.txt` — authoritative surface enumeration
 
 // `CranelispError` is the shared, intentionally rich compiler diagnostic

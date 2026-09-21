@@ -2,7 +2,8 @@
 
 Owner: `/design` (backend). Status: **Selected backend runtime-consumer and Q4
 alias corrections delivered and independently reviewed; solution-golden,
-final Q5/API and integrated acceptance pending**. The
+final Q5/API and integrated acceptance pending; the §8 IOR-5 correction is
+implemented; final integrated acceptance pending**. The
 Phase-3 scope and existing contracts were authorized 2026-09-09 against
 compiler checkpoint `dc78ddbe` and package checkpoint `98436c9`; this design
 has completed independent runtime review with no material findings. This
@@ -262,3 +263,86 @@ public pair passes 2/2 in run `0ce70208-1654-41a3-887f-89431a0b7b84`. The
 independent backend review found no material defect. No additional mode matrix
 or public seam is added. Actual solution-golden selection, Q5 remeasurement,
 final API confirmation and integrated macro/host evidence remain open.
+
+## 8. IOR-5 — an IO-combinator result is fresh
+
+The correction is implemented. The two IOR-5 public balance cells and IOR-2
+pass with zero marginal residual. [QA's evidence plan](../../tests/plan/s122-evidence-delta.md)
+owns acceptance and the remaining scope limits.
+
+### 8.1 Mechanism, read at source
+
+The pre-fix failure, confirmed by emitted-code observation:
+
+- `bind`, `select`, `race` and `sleep` resolve as `ResolvedCall::BuiltinFn`,
+  and `compile_builtin_fn_call` lowers them inline. Each lowering allocates a
+  new IO node at rc=1. The node takes over its operands under the consuming
+  convention: a `Var` operand is retained and a temporary is transferred. The
+  node never returns an operand.
+- `value_provenance_with_calls` classifies such an `Apply` as
+  `OwnedTemporary`, because `call_returns_owned_reference` answers `false` for
+  every `Some(_)` carrier other than `SigDispatch`/`TraitMethod`.
+- `protect_return_value` retains the result whenever the exiting frame owns a
+  heap binding and `body_has_independent_result` is false. The caller releases
+  the node once. The protective retain therefore strands the node and
+  everything it owns, and nothing balances it.
+- Before the correction, CLIF showed the extra retain on the new Bind node
+  before the binding release; the inline control had none (§8.4).
+
+### 8.2 Correction
+
+- **Classify the IO-combinator carrier as `Fresh` in `value_provenance_with_calls`.**
+  Physical freshness is the true fact. `TransferredCall` would claim a possible
+  parameter alias that does not exist.
+- **One classification, used by every reader of this fact.** The backend-private
+  `apply.rs::IoCombinator` classifies the four `BuiltinFn` carriers.
+  Three readers consume it:
+  - the spark exclusion;
+  - `compile_builtin_fn_call`'s interceptors, matched exhaustively;
+  - the provenance `Apply` arm, which matches every variant to `Fresh` with no
+    wildcard.
+
+  With this shape, adding a combinator whose lowering does not mint a node is a
+  compile-time decision, not a silent claim (Principles 07 and 24).
+- **Identity comes from the carrier, not the spelling.** An `Apply` whose
+  callee is spelled `bind` but whose carrier is not `BuiltinFn` is not
+  classified by this rule.
+- **The rule does not extend to other builtins.** Inline Vec operations can
+  return an existing element or an in-place COW source. Extern primitives such
+  as `string-identity` may return an argument. They stay `OwnedTemporary`.
+  A per-primitive result contract belongs to its owners and is not assumed
+  here.
+- **Joins stay conservative.** `(if c (bind p k) p)` joins to `NotOwnedHere`,
+  so its protect remains. Per-arm protection is out of scope.
+
+### 8.3 Behavioural reach
+
+- `yields_owned_temporary` already accepts `Fresh`, and `is_fresh_construction`
+  is used only by tests.
+- The only emitted change is therefore the one read by
+  `body_has_independent_result`: protect elision at function, binding, lambda,
+  continuation and match-arm exits, including `match_codegen`'s
+  independent-arm plan.
+- Nothing else changes: no `cranelisp-types` change, no public API or
+  `public-api.txt` delta, no emitted-call ABI change, no cache-schema change
+  (`BUILD_ID` invalidates object caches), and no intrinsics or platform change.
+- CLIF goldens containing a heap-binding scope that returns an IO combinator
+  change, with attribution to IOR-5 only.
+
+### 8.4 Evidence and falsifiers
+
+- Pre-fix CLIF showed an extra `atomic_rmw add` on the returned Bind node's
+  RC word in the let-bound subject, absent in the inline control. The corrected
+  CLIF removes only that pointer calculation, increment constant and retain.
+- The classification and emitted-retain module cells were observed red before
+  the provenance correction, then green. They live in
+  `crates/cranelisp-backend/src/compiler/apply/io_combinator_freshness_tests.rs`.
+- Borrowed-result controls pass before and after: the new mixed-join cell
+  observes `NotOwnedHere` classification; existing return-ownership CLIF
+  evidence observes the protective retain. Non-combinator builtins stay
+  `OwnedTemporary`, and a
+  `bind` spelling without the builtin carrier does not classify as `Fresh`.
+- Both IOR-5 cells and IOR-2 pass with zero marginal residual. A check trip,
+  double release or changed value refutes the correction.
+- The reused-Pure program returns 7 in run, linked and REPL observations with
+  checks armed. Existing CLIF goldens pass without regeneration.

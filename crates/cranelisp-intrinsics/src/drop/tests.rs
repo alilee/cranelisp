@@ -168,7 +168,7 @@ fn decision24_consume_sexp_preserves_shared_ref() {
     assert_eq!(dealloc_count() - deallocs, 2);
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §3.3, §5 — the closed
+// spec: design/intrinsics/ownership-and-disposal.md §4, §5 — the closed
 // runtime enum covers every published Sexp tag, including Annotated.
 #[test]
 fn sexp_tag_decode_covers_the_published_tag_set() {
@@ -183,7 +183,7 @@ fn sexp_tag_decode_covers_the_published_tag_set() {
     assert_eq!(SexpTag::decode(999), SexpTag::Unknown(999));
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — every published
+// spec: design/intrinsics/ownership-and-disposal.md §5 — every published
 // unary heap constructor selects its declared field discharge.
 #[test]
 fn consume_sexp_unary_heap_tags_discharge_their_declared_field() {
@@ -213,7 +213,7 @@ fn consume_sexp_unary_heap_tags_discharge_their_declared_field() {
     }
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — Annotated owns two
+// spec: design/intrinsics/ownership-and-disposal.md §5 — Annotated owns two
 // Sexp fields and structural teardown discharges both exactly once.
 #[test]
 fn consume_sexp_annotated_discharges_both_sexp_fields() {
@@ -232,7 +232,7 @@ fn consume_sexp_annotated_discharges_both_sexp_fields() {
     );
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — either Annotated
+// spec: design/intrinsics/ownership-and-disposal.md §5 — either Annotated
 // half may be a bare nullary Sexp tag.
 #[test]
 fn consume_sexp_annotated_accepts_nullary_halves() {
@@ -248,7 +248,7 @@ fn consume_sexp_annotated_accepts_nullary_halves() {
     assert_eq!(dealloc_count() - deallocs, 1);
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §5 — scalar Sexp tags
+// spec: design/intrinsics/ownership-and-disposal.md §5 — scalar Sexp tags
 // never interpret field 0 as an owned heap reference.
 #[test]
 fn consume_sexp_scalar_tags_discharge_no_fields() {
@@ -270,7 +270,7 @@ fn consume_sexp_scalar_tags_discharge_no_fields() {
     }
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §3.1 — without the
+// spec: design/intrinsics/ownership-and-disposal.md §4 — without the
 // diagnostic gate, unknown tags discharge no guessed fields and still release
 // the outer node. A tag-only allocation also guards against a field-0 snapshot.
 #[test]
@@ -285,28 +285,56 @@ fn unknown_io_and_sexp_tags_release_only_the_outer_node_ordinarily() {
     assert_eq!(dealloc_count() - deallocs, 2);
 }
 
+/// A `Pure` node whose witness is the reserved `1`, over a live string the node
+/// does not own.
+fn make_reserved_witness_pure() -> (i64, i64) {
+    let unowned = alloc_string(b"not-owned-by-a-reserved-witness") as i64;
+    let node = alloc_slot(24);
+    write_field(node, TAG_OFFSET, IO_TAG_PURE);
+    write_field(node, FIELD0_OFFSET, unowned);
+    write_field(node, FIELD1_OFFSET, 1);
+    (node, unowned)
+}
+
+// spec: design/intrinsics/ownership-and-disposal.md §6.1 — R1-a: without the
+// diagnostic gate, teardown of a reserved-witness `Pure` calls nothing and
+// discharges no field; only the node is released.
+#[test]
+fn reserved_pure_witness_teardown_discharges_nothing() {
+    let deallocs = dealloc_count();
+    let (node, unowned) = make_reserved_witness_pure();
+
+    consume_io_tree(crate::handle::test_owned(node));
+
+    assert_eq!(dealloc_count() - deallocs, 1);
+    assert!(!crate::alloc::is_live(node as usize));
+    assert!(crate::alloc::is_live(unowned as usize));
+    rc::consume_shallow(crate::handle::test_owned(unowned));
+}
+
 // The armed child is selected by exact test name in a fresh process because
 // the diagnostics gate is process-cached. It is inert in the ordinary suite.
 #[test]
 fn unknown_sexp_tag_gate_child() {
-    let tag_family = std::env::var("CRANELISP_UNKNOWN_TAG_GATE_CHILD").ok();
-    let node = match tag_family.as_deref() {
-        Some("sexp") | Some("io") => {
-            let node = alloc_slot(8);
-            write_field(node, TAG_OFFSET, 999);
-            node
-        }
-        _ => return,
+    let family = std::env::var("CRANELISP_UNKNOWN_TAG_GATE_CHILD").ok();
+    let unknown_tag_node = || {
+        let node = alloc_slot(8);
+        write_field(node, TAG_OFFSET, 999);
+        crate::handle::test_owned(node)
     };
-    match tag_family.as_deref() {
-        Some("sexp") => consume_sexp(crate::handle::test_owned(node)),
-        Some("io") => consume_io_tree(crate::handle::test_owned(node)),
-        _ => unreachable!(),
+    match family.as_deref() {
+        Some("sexp") => consume_sexp(unknown_tag_node()),
+        Some("io") => consume_io_tree(unknown_tag_node()),
+        Some("reserved-pure") => {
+            consume_io_tree(crate::handle::test_owned(make_reserved_witness_pure().0))
+        }
+        _ => {}
     }
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §3.1 — the same unknown
-// tag becomes a located hard failure when CRANELISP_RC_DEC_CHECK is enabled.
+// spec: design/intrinsics/ownership-and-disposal.md §4, §6.1 — the same unknown
+// tags, and a reserved `Pure` witness (R1-b), become located hard failures when
+// CRANELISP_RC_DEC_CHECK is enabled.
 #[test]
 fn unknown_tags_hard_fail_under_the_diagnostic_gate() {
     let exe = std::env::current_exe().expect("current intrinsics test binary");
@@ -319,6 +347,7 @@ fn unknown_tags_hard_fail_under_the_diagnostic_gate() {
     for (family, expected) in [
         ("sexp", "unknown Sexp tag 999"),
         ("io", "unknown IO tag 999"),
+        ("reserved-pure", "reserved Pure payload witness"),
     ] {
         let mut command = std::process::Command::new(&exe);
         command.env_clear();
@@ -338,7 +367,7 @@ fn unknown_tags_hard_fail_under_the_diagnostic_gate() {
         );
         assert!(
             stderr.contains("[CRANELISP RC/ALLOC SEAM VIOLATION]") && stderr.contains(expected),
-            "the failure must be located at the unknown {family} tag seam: {stderr}"
+            "the failure must be located at the {family} seam: {stderr}"
         );
     }
 }
@@ -644,11 +673,6 @@ fn dec_shallow_io_preserves_shared_reference() {
         "dec_shallow_io must not free when other refs exist"
     );
 
-    // Model the force-side transfer before the last shallow release.
-    assert_eq!(
-        unsafe { swap_pure_payload_to_claimed(node) },
-        PurePayloadState::Scalar
-    );
     // Clean up the remaining reference.
     dec_shallow_io(crate::handle::test_owned(node));
     assert_eq!(dealloc_count() - deallocs, 1);

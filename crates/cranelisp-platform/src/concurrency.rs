@@ -1,7 +1,7 @@
 //! Host-reactor C-ABI — the one genuinely new designed artifact of the
 //! effect-concurrency track (`design/arch/effect-concurrency.md` §12). Under the
 //! single-ABI cutover (`platform-interface.md` §6.8.0) these types are CORE
-//! (ungated) at [`crate::ABI_VERSION`] = 10.
+//! (ungated) at [`crate::ABI_VERSION`] = 11.
 //!
 //! The A2 model: **the host owns the reactor; platforms are C-ABI async
 //! *leaves*.** A platform does the non-blocking syscall (it owns the *what*); on
@@ -18,7 +18,7 @@
 //! `ConcurrentPlatformManifest` are **deleted** (absorbed into the unified
 //! `PlatformFn` / `PlatformManifest`).
 //!
-//! `#[repr(C)]` layout governed by [`crate::ABI_VERSION`] (= 10), per Principle 14.
+//! `#[repr(C)]` layout governed by [`crate::ABI_VERSION`] (= 11), per Principle 14.
 //! None of these types is `#[non_exhaustive]`: a layout contract evolves by an
 //! explicit ABI bump, not by source-evolution guards.
 

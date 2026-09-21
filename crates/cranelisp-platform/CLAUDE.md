@@ -14,7 +14,7 @@ what they return:
 - **`alloc(size) -> i64`** returns the **payload pointer** (`base + 16`). Every
   scalar/string/IO constructor subtracts `HEAP_HEADER_SIZE` to recover the base
   before storing it: `CLString::from` (`lib.rs:1207`), `CLIO::pure` (`lib.rs:923`),
-  `CLIO::effect_on_resource_with_capacity` (`lib.rs:1036`) all do `payload - HEAP_HEADER_SIZE`.
+  `CLIO::effect_on_resource_with_capacity` all do `payload - HEAP_HEADER_SIZE`.
 - **`alloc_with_tag(tag, n, fields) -> i64`** returns the **alloc BASE** already
   (`lib.rs:621` rustdoc step 5). `CLAdt::construct` (`adt.rs:216`) passes the result
   straight into `from_raw` with **no subtraction** — the local is misleadingly named
@@ -27,7 +27,7 @@ All heap `CL*` wrappers store **base pointers** (address of the
 
 ## ABI_VERSION is the single layout-discipline gate (Principle 14)
 
-`ABI_VERSION` (currently **10**) is the only host↔DLL compatibility
+`ABI_VERSION` (currently **11**) is the only host↔DLL compatibility
 mechanism — there is no `#[non_exhaustive]` on any `#[repr(C)]`/`#[repr(transparent)]`
 boundary type (they are exempt; a field change IS a breaking change → bump). The
 bump-rule enumeration lives in the `ABI_VERSION` rustdoc; read it before touching any
@@ -45,7 +45,7 @@ only the unpublished `0` sentinel; the backend crossing adopts it as scalar `0`
 or canonical `drop<T>`, and the runtime claims it after publication.
 
 The IO Effect node payload is `[tag][thunk_ptr][resource_token][fn_name_handle][capacity]`
-= 40 bytes, built by `effect_on_resource_with_capacity` (`lib.rs:1028`). Offsets are
+= 40 bytes, built by `effect_on_resource_with_capacity`. Offsets are
 **append-only across every widening** (24→32 FIXME 0327, 32→40 slice-3 S95), so
 `IO_EFFECT_RESOURCE_OFFSET`=16, `IO_EFFECT_FN_NAME_OFFSET`=24 (backend stamps this
 post-call; DLL inits it **null** — a null handle degrades to `fn_name: "<unknown>"`,
@@ -53,12 +53,29 @@ not a crash), `IO_EFFECT_CAPACITY_OFFSET`=32 all stay put. A new field appends; 
 reorders. Because DLLs construct `Pure` and `Effect`, widening either is an
 `ABI_VERSION` bump. Host-only nodes remain backend↔intrinsics conventions.
 
-**DLL-local fault catch (FIXME 0327 Option A, `lib.rs:975`).** The `catch_unwind` in
-the effect thunk runs INSIDE the DLL (monomorphised at the `CLIO::effect*` call site),
-because a DLL statically links its own panic runtime — a foreign unwind reaching the
-host's catch aborts. The caught panic returns as an `EffectOutcome` value
-(`lib.rs:872`), NOT a thread-local (DLLs have their own thread-locals). Host-side
-`call_effect_thunk` (`lib.rs:1057`) merely **forwards** it; it does NO catch of its own.
+**The Effect thunk is repeatable and borrowed (ABI 11; `design/platform/platform.md` §4.2).**
+
+- The node's `thunk_ptr` word is the thunk's sole owner. One private alias,
+  `StoredEffectThunk`, names what it points to; the constructor,
+  `call_effect_thunk` and `drop_effect_thunk` all use it. Never restate the
+  representation elsewhere: a wrong stored type compiles and is UB at the cast.
+- `call_effect_thunk` borrows — any number of forces, possibly concurrent.
+  `drop_effect_thunk` discharges exactly once, when intrinsics teardown frees
+  the node. Captures live until then.
+- The author closure is `Fn + Send + Sync + 'static`; that bound, not a lock or
+  runtime check, makes concurrent forcing sound.
+- Unit tests that build an Effect node must discharge its thunk themselves.
+
+**DLL-local catches (FIXME 0327 Option A).** Both `catch_unwind`s run INSIDE the
+DLL, monomorphised at the `CLIO::effect*` call site, because a DLL statically links
+its own panic runtime — a foreign unwind reaching host frames aborts.
+
+- Force: the wrapper catches a panic in the closure and returns it as an
+  `EffectOutcome` value, NOT a thread-local (DLLs have their own thread-locals).
+  Host-side `call_effect_thunk` merely **forwards** it; it does NO catch of its own.
+- Discharge: `ContainedCaptureDrop` drops the closure under `catch_unwind` and
+  leaks the payload. It is instantiated in the generic constructor, so its drop
+  entry is DLL code. Do not move the holder out of the generic path.
 
 ## IO_TAG_* — which cross the ABI, which do not
 

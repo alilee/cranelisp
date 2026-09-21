@@ -36,7 +36,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | [Types-first concreteness reasoning](concreteness-types-first.md) | Retained design reasoning and forty-row dispositions. |
 | [Trait-implementation persistence](trait-impl-cache-carrier.md) | Writer records, discovery shells and restoration. |
 | [Platform interface](platform-interface.md) | DLL authoring, generated schemas and host boundary. |
-| [Effect concurrency](effect-concurrency.md) | Ratified concurrency architecture and documented implementation gap. |
+| [Effect concurrency](effect-concurrency.md) | Ratified, delivered language-level concurrency architecture and its implementation limits. |
 | [Introspection ownership](d1-introspection-repl-only.md) | REPL-only collection boundary. |
 | [Embedded REPL agent](repl-embedded-agent.md) | Ratified architecture and staged capability scope. |
 | [REPL styling](repl-styling-seam.md) | Shared formatter and styling contract. |
@@ -55,8 +55,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | Collection | Purpose | Navigation |
 |---|---|---|
 | `architecture-contracts` | Current architecture contracts and explicitly retained design proposals. | The top-level products linked above. |
-| `architecture-decisions-drain` | Existing decisions retained while their substance is folded into its canonical home. | [Decisions](decisions/). |
-| `architecture-legacy-drain` | Retained reference material awaiting its existing per-file promotion, archive or deletion disposition. | [Legacy decisions](legacy/decisions/) — the only remaining legacy material. |
+| `architecture-decisions-drain` | The decision-label index, and the five decision records that tests still cite by section. | [Decision labels](decisions/README.md). |
 | `architecture-filings` | Actionable architecture filing register, retained until its owning obligation is discharged. | [Open filings](fixmes/). |
 | `architecture-sequences` | Current execution and lifecycle sequence diagrams with their navigation and rendering conventions. | [Sequence guide](sequences/README.md). |
 | `architecture-archive` | Frozen superseded architecture records retained as historical reference. | [Archive](archive/); historical references retain their recorded meaning. |
@@ -68,19 +67,19 @@ membership does not waive live references or settle a file's outstanding work.
 ## Archive (`archive/`)
 
 The existing archive is historical reference, not current architecture. Its
-bounded historical-reference policy does not cover `decisions/` or `legacy/`.
+bounded historical-reference policy does not cover `decisions/`.
 Retention follows the project method: Git suffices for ordinary working history;
 retain a document only for useful evidence or rationale beyond that history.
 Do not move obsolete prose into the archive merely to preserve file counts.
 
-## Decisions drain backlog
+## Decision labels
 
-The files in `decisions/` and `legacy/decisions/` are the draining inventory;
-this memory does not duplicate their technical content or implementation status.
-When touching a grounded contract, compare the record with its canonical home,
-fold any useful missing substance, repair references and retire the redundant
-record in the same change-set. Record any still-needed destination on that
-record; do not create new Decision files. Open filings retain their own lifecycle.
+Source, tests and designs cite rulings as "Decision N". The
+[label index](decisions/README.md) resolves each label to the ruling's current
+home. Do not create Decision files; write a new cross-context commitment into
+bounded contexts or a focused contract. A remaining record retires when its
+contract is restated in that home and `test` repoints the `// spec:` citations
+in the same change. Open filings retain their own lifecycle.
 
 ## Where a commitment manifests
 

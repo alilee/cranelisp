@@ -159,7 +159,7 @@ fn bind_with_list_owner_live(items: Expr) -> Expr {
     }
 }
 
-fn sequence_defn() -> Defn {
+pub(super) fn sequence_defn() -> Defn {
     Defn {
         name: Symbol::from("sequence"),
         docstring: None,
@@ -198,7 +198,11 @@ fn sequence_defn() -> Defn {
     }
 }
 
-fn entry_defn() -> Defn {
+/// `(defn sequence_entry [] (let [items <List literal>] (bind (sequence items) k)))`
+/// — the IOR-5 shape: a frame that owns a live heap binding and returns an inline
+/// IO-combinator result. Shared with `io_combinator_freshness_tests`, which reads
+/// the other half of this frame's emission.
+pub(super) fn entry_defn() -> Defn {
     Defn {
         name: Symbol::from("sequence_entry"),
         docstring: None,
@@ -315,6 +319,58 @@ fn install_list_fixture(table: &mut SymbolTable) {
         .expect("install Cons constructor template");
 }
 
+/// The symbol tables, dispatch carriers and pattern-constructor keys the two
+/// defns above need to compile. Shared with `io_combinator_freshness_tests` so
+/// the two readings of this one frame cannot drift apart.
+pub(super) struct IoOwnershipFixture {
+    pub(super) tables: DashMap<ModuleFullPath, SymbolTable>,
+    pub(super) targets: HashMap<Span, FQSymbol>,
+    pub(super) pattern_ctors: HashMap<Span, FQSymbol>,
+    pub(super) module: ModuleFullPath,
+}
+
+pub(super) fn io_ownership_fixture(sequence: &Defn, entry: &Defn) -> IoOwnershipFixture {
+    let user = ModuleFullPath::from("user");
+    let lists = ModuleFullPath::from("collections.list");
+    let tables = DashMap::new();
+    let mut list_table = SymbolTable::new(lists.clone());
+    install_list_fixture(&mut list_table);
+    tables.insert(lists.clone(), list_table);
+    let mut user_table = SymbolTable::new(user.clone());
+    insert_user_fn_stub_typed(&mut user_table, "sequence", &[list_io_int()], io_int());
+    tables.insert(user.clone(), user_table);
+
+    let mut targets = crate::test_support::call_carriers(sequence.body(), &user, &["sequence"]);
+    targets.extend(crate::test_support::call_carriers(
+        entry.body(),
+        &user,
+        &["sequence"],
+    ));
+    let pattern_ctors = HashMap::from([
+        (
+            Span::new(10, 14),
+            FQSymbol {
+                module: lists.clone(),
+                symbol: Symbol::from("Cons"),
+            },
+        ),
+        (
+            Span::new(40, 43),
+            FQSymbol {
+                module: lists,
+                symbol: Symbol::from("Nil"),
+            },
+        ),
+    ]);
+
+    IoOwnershipFixture {
+        tables,
+        targets,
+        pattern_ctors,
+        module: user,
+    }
+}
+
 /// The `hd` pattern-field load must both receive an independent increment and
 /// be the value stored in the newly constructed Bind input field. This follows
 /// the specific dataflow edge instead of counting unrelated RC operations.
@@ -372,47 +428,16 @@ fn bind_input_has_independent_retain(clif: &str) -> bool {
 fn sequence_io_recursive_bind_keeps_the_matched_io_owned_until_release() {
     let sequence = sequence_defn();
     let entry = entry_defn();
-    let user = ModuleFullPath::from("user");
-    let lists = ModuleFullPath::from("collections.list");
-    let tables = DashMap::new();
-    let mut list_table = SymbolTable::new(lists.clone());
-    install_list_fixture(&mut list_table);
-    tables.insert(lists.clone(), list_table);
-    let mut user_table = SymbolTable::new(user.clone());
-    insert_user_fn_stub_typed(&mut user_table, "sequence", &[list_io_int()], io_int());
-    tables.insert(user.clone(), user_table);
-
-    let mut targets = crate::test_support::call_carriers(sequence.body(), &user, &["sequence"]);
-    targets.extend(crate::test_support::call_carriers(
-        entry.body(),
-        &user,
-        &["sequence"],
-    ));
-    let pattern_ctors = HashMap::from([
-        (
-            Span::new(10, 14),
-            FQSymbol {
-                module: lists.clone(),
-                symbol: Symbol::from("Cons"),
-            },
-        ),
-        (
-            Span::new(40, 43),
-            FQSymbol {
-                module: lists,
-                symbol: Symbol::from("Nil"),
-            },
-        ),
-    ]);
+    let fixture = io_ownership_fixture(&sequence, &entry);
 
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
     let clifs = compile_defns_in_module_with_pattern_ctors(
         &[&sequence, &entry],
         &[],
-        &targets,
-        &pattern_ctors,
-        &tables,
-        user,
+        &fixture.targets,
+        &fixture.pattern_ctors,
+        &fixture.tables,
+        fixture.module,
         jit.jit_module(),
     );
     assert!(

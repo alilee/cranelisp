@@ -104,7 +104,7 @@ same-named ctors would otherwise collide.) [Tested tests/repl_introspection::lis
 
 **Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/repl_introspection::list_prefix_filter_matches_names] `/list` with no argument shows all definitions. [Tested tests/repl_introspection::list_empty_session]
 
-**Large category display layout algorithm** [Tested+Neg repl/spec.md→tests/repl_introspection.rs::layout_cross_command_list_exports_byte_identical]**.** The multi-column line-breaking layout below is a **normative MUST**, not advisory. It is a deterministic, exactly-reproducible contract — the same input symbol set MUST always produce byte-for-byte identical output. Because this layout is **shared verbatim** by `/list` (§3.3), `/imports` (§3.4), `/exports` (§3.5), and related-symbol lists (§2, repl/spec.md:198), divergence between any two of those commands is a conformance defect, not a stylistic variation. Each rule below is individually checkable.
+**Large category display layout algorithm** [Tested+Neg repl/spec.md→tests/repl_introspection.rs::layout_cross_command_list_exports_byte_identical]**.** The multi-column line-breaking layout below is a **normative MUST**, not advisory. It is a deterministic, exactly-reproducible contract — the same input symbol set MUST always produce byte-for-byte identical output. Because this layout is **shared verbatim** by `/list` (§3.3), `/imports` (§3.4), `/exports` (§3.5), and related-symbol lists (`04-self-documentation.md` §4), divergence between any two of those commands is a conformance defect, not a stylistic variation. Each rule below is individually checkable.
 
 The layout is a **MUST** (not SHOULD) so that exact output can be asserted in tests and so the four commands stay mutually consistent. Each numbered rule is a separate conformance obligation:
 
@@ -310,7 +310,7 @@ user> /sig double
 ```
 
 Unqualified type names or an unqualified symbol name in `/sig` output are non-conformances
-(root `CLAUDE.md` §Design Principles — `:Type value` notation with fully-qualified names):
+([root CLAUDE.md, Design Principles](../../CLAUDE.md#design-principles) — `:Type value` notation with fully-qualified names):
 `:(Fn [Int] Int) double ; defn` is wrong in both positions. [S102]
 
 > Arbitration record (FIXME 0492, S102): the short-form rendering the binary produces today

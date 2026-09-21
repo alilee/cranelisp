@@ -205,7 +205,7 @@ session — which CLI verb launched it. It crosses no crate boundary (frontend /
 / backend never see it; backend's codegen-strategy axis is the *separate*
 `CompileMode::{Interactive, Batch, Release}` in `interfaces.md` §"CompileMode", which is
 orthogonal — it governs GOT-indirect-vs-direct codegen, not REPL-vs-batch session
-behavior). Per Principle 15 (facade types live with behavior) and the BC §6 placement of
+behavior). Per Principle 15 (facade types live with behavior) and the [BC 6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle) placement of
 session orchestration in int, `RunMode` lives in `src/session_v4.rs` beside
 `SharedState`. **Do not conflate it with `CompileMode`** and **do not add it to
 `cranelisp-types`.**
@@ -284,9 +284,8 @@ against the symbol-table source.
 - **`design/arch/interfaces.md`** — the `CompileMode` note gains a one-line disambiguation
   that `RunMode` (REPL/Run/Link, int-internal) is a **separate** axis from `CompileMode`
   (codegen strategy).
-- **Decision 41 file** (`design/arch/decisions/0041-*.md`) — annotated with a D1
-  reversal pointer (drain backlog; the substance lives here + BC §3/§6 + the source
-  rustdoc).
+- **Decision 41** — its record is retired ([label index](decisions/README.md)); the
+  reversed macro-`sexp` placement is stated here, in [BC 3](bounded-contexts.md#3-backend-cratescranelisp-backend)/§6 and in source rustdoc.
 - **Principles** — no new principle. The ruling is a direct application of Principle 7
   (single source of truth — compile data has one home, the symbol table), Principle 1
   (decoupling — REPL facility is not a compile dependency), and Principle 19 spirit
@@ -554,7 +553,7 @@ producer site.
 - **No baseline regen for `cranelisp-types`.** Confirmed.
 - **Backend (disposition-1 follow-up only).** IF the CLIF-not-in-batch refinement is taken,
   `compile_to_module` gains one parameter (or a `CompileOptions` field) → a
-  `cranelisp-backend` baseline regen + BC §3 note, owned by `/dev backend`. That is the
+  `cranelisp-backend` baseline regen + [BC 3](bounded-contexts.md#3-backend-cratescranelisp-backend) note, owned by `/dev backend`. That is the
   *follow-up* FIXME, NOT this int increment. The int-scoped D1b is public-API-neutral.
 
 ---
@@ -586,7 +585,7 @@ for one idiom everywhere. Recommend the latter for a single idiom; either is cor
 **Disposition-1 follow-up (NOT this increment):** `/dev int` files a FIXME `target:
 /backend` — "`compile_to_module` should skip CLIF-IR `func.display()` formatting when
 introspection is off (`capture_clif: bool` / `CompileOptions`); backend baseline regen +
-BC §3 note." This records the Class-2 not-generated-in-batch obligation (§B4) durably.
+[BC 3](bounded-contexts.md#3-backend-cratescranelisp-backend) note." This records the Class-2 not-generated-in-batch obligation (§B4) durably.
 
 **Verification anchors.** No new red is owed by D1b (it is a structural cleanup behind D1's
 already-green behaviour): `hash_gate_run_refuses` stays green; the macro round-trip / cache

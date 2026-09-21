@@ -1,57 +1,36 @@
-# Syntax and annotation — the frontend's declaration and annotation judgments
+# Syntax and Annotation
 
-> Interior design for `cranelisp-frontend`, authored S116 and current at S121.
-> It elaborates the master design (`frontend.md` §4);
-> `design/arch/annotated-sexp-node.md` owns the cross-crate `Sexp::Annotated`
-> carrier.
+> Interior design for `cranelisp-frontend`, elaborating the master design
+> (`frontend.md` §3). `design/arch/annotated-sexp-node.md` owns the cross-crate
+> `Sexp::Annotated` carrier.
 
-## 1. Boundary and current state
+## 1. Boundary
 
-The frontend remains purely structural. It owns four judgments: read-time
+The frontend is purely structural here. It owns four judgments: read-time
 `Sexp::Annotated` folding; malformed annotation and declaration-shape rejection;
-definition-wide constructor/field uniqueness and type-parameter closure; and
-structural parsing of the one §7.1 method tail without deciding whether it is a
-type or default body.
+definition-wide constructor and field uniqueness with type-parameter closure; and
+structural parsing of the one §7.1 method tail **without** deciding whether that
+tail is a type or a default body.
 
-There is one annotation carrier and one producer (Principles 7, 18, and 20). No
+There is one annotation carrier and one producer (Principles 7, 18, 20). No
 metadata sidecar, macro-only path, top-level path, or second annotation
 representation is admissible.
 
-**The read-time fold is landed.** `reader::read_colon_prefix` constructs
-`Sexp::Annotated` directly, and no annotation mirror scans siblings any more. The
-S116 migration order this section once carried — corpus repair, dormant carrier,
-dormant consumers, the flip, the completion gates — is spent, and is not
-re-stated here; `sprints/archive/sprint-116.md` holds it as a record. Two
-consequences are load-bearing and are stated as current facts rather than as
-work:
+**A trailing `:Type` with nothing to bind is a reader error.** Because the fold is
+universal, the introducer in `(dp [x] :Int)` is followed by `)` rather than by a
+form and rejects at the introducer span with `annotation missing expression`.
+§7.1.1 always stated the rule; nothing enforced it, which is what let the invalid
+spelling spread through the corpus. The enforcement is **structural** — the shape
+does not survive reading — so no predicate, position table or corpus discipline
+has to keep holding it.
 
-- **A trailing `:Type` with nothing to bind is a reader error.** Because the fold
-  is universal, the introducer in `(dp [x] :Int)` is followed by `)` rather than
-  by a form, and rejects at the introducer span with `annotation missing
-  expression`. §7.1.1 always stated that rule; nothing enforced it, which is what
-  let the invalid spelling colonise the corpus. This is the frontend arm of FIXME
-  0785, and it is **structural** — the shape does not survive reading, so no
-  predicate, position table or corpus discipline has to keep holding it. The
-  positive fixtures 0785 listed have been rewritten to the valid bare-`Type`
-  spelling; the spec's own malformed `(zed [] :a)` examples remain as negatives.
-- **The `repl/demos/runs/` half of 0785 never existed.** Those directories are
-  git-ignored per-replay artifacts (FIXME 0801, verified at S115); the tracked
-  demo sources were repaired at S114. Nothing in `repl/` is a frontend
-  prerequisite, and no frontend record schedules work against them.
-
-What remains of 0785 is **not frontend's**: the `{parameter, return}` ×
-`{annotated, bare}` × `{deftrait method, defn, deftype field}` matrix cell and
-the proposed tracked-paths-only corpus lint are `qa`'s evidence questions against
-a rule the reader now enforces. Frontend supplies the reject and its unit pins;
-it does not own the instrument.
-
-One residue of the flip is worth naming because it will read as design intent
-otherwise. The annotation-pairing helpers still return `(Expr, usize)` and their
-callers still do `consumed` arithmetic, but `build_one_expr_at` now always
-consumes exactly one item — the width was the mirror's, and the mirror is gone.
-Collapsing that pair to a plain `Expr` is a simplification the crate has earned;
-**no S121 obligation schedules it**, and it is recorded here so a later reader
-does not mistake vestigial arithmetic for a variable-width contract.
+One residue is worth naming because it will otherwise read as design intent. The
+annotation-pairing helpers still return `(Expr, usize)` and their callers still
+do `consumed` arithmetic, but `build_one_expr_at` now always consumes exactly one
+item — the width belonged to the sibling-scanning mirror, and that mirror is
+gone. Collapsing the pair to a plain `Expr` is a simplification the crate has
+earned; nothing schedules it, and it is recorded here so a later reader does not
+mistake vestigial arithmetic for a variable-width contract.
 
 ## 2. Read-time annotation fold
 
@@ -197,36 +176,23 @@ constructor matrix, duplicate field location, macro fold, round-trip/schema, and
   are pinned by span, not merely by message (Principle 5), and the omitted-mode
   pair is chosen to discriminate the mechanism rather than confirm the symptom.
 
-## 7. Handoffs
+## 7. Boundaries with neighbouring owners
 
-- `spec` — **nothing open.** The user-approved §5.2.4 rule is explicit: a bare
-  head is monomorphic, a parenthesized head is complete, and every field type is
-  written.
-- `qa` — the 0785 evidence tail: the `{parameter, return}` × `{annotated, bare}` ×
-  `{deftrait method, defn, deftype field}` matrix cell against a rule the reader
-  now enforces, and the corpus-lint instrument scoped to **tracked** paths per
-  FIXME 0801. Also the spec-side traceability band for §5.2.4's explicit-head
-  and explicit-field rules, including located negatives and no partial entry
-  emission.
-- `dev` (frontend) — landed in S121: no sequential allocator; every missing type
-  and undeclared variable rejects before entry emission.
-- `design`/`dev` (typecheck) — do not add a compensating declaration-shape check
-  for §5.2.4; concrete-type resolution failure is a different diagnostic at a
-  different seam.
-- `sprint` — migrate active fixtures to explicit generic declarations without
-  changing the behavior each fixture exercises.
-  `crates/cranelisp-typecheck/src/checker/test_support.rs:547` says it registers
-  `(deftype Box [:a v])` and
-  `crates/cranelisp-types/src/heap/value_layout_tests.rs:323` says
-  `(deftype Box (Box [:a value]))`; both build the AST by hand with `a` as a
-  **written head parameter**, so the code is right and only the prose is wrong.
-  Corrected spellings are `(deftype (Box a) [:a v])` and
-  `(deftype (Box a) (Box [:a value]))`. No behavioural, signature or
-  `public-api.txt` consequence, and no frontend edit — these are outside the
-  frontend surface and are not part of its one-visit reservation.
-- `review` (frontend) — reject annotation mirrors, partial `ParsedEntry` emission,
-  first-occurrence locations, parse-time tail commitment, a surviving
-  empty-string `TypeExpr::TypeVar`, any reject implemented as a post-hoc scan
-  over already-allocated parameters, and — the omitted-mode leg's specific
-  failure — a closure walk that reads the resolved `FieldDef` rather than the
-  parsed field record's written half.
+- **Typecheck adds no compensating declaration-shape check for §5.2.4.** Every
+  declaration-shape reject is the frontend's and exclusive. A concrete-type
+  resolution failure is a different diagnostic at a different seam, and
+  duplicating the shape check there would split the rule across two owners.
+- **The evidence instrument is `qa`'s.** The frontend supplies the rejects and
+  their unit pins; the `{parameter, return}` × `{annotated, bare}` ×
+  `{deftrait method, defn, deftype field}` matrix and any corpus lint are
+  evidence questions against a rule the reader already enforces.
+- **The §7.1 tail carrier is `arch`'s.** The frontend must not encode an early
+  `Result<TypeExpr, Expr>` guess, nor recover from an invalid-type-expression
+  error, to anticipate typecheck's judgment.
+
+Five shapes are defects in this surface, and each has been built at least once:
+an annotation mirror that scans siblings; partial `ParsedEntry` emission before
+validation completes; a duplicate reported at the first occurrence rather than
+the second; a reject implemented as a post-hoc scan over already-allocated
+parameters; and a type-parameter closure walk that reads the resolved `FieldDef`
+rather than the parsed field's written half.

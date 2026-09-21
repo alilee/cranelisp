@@ -1,10 +1,10 @@
 ---
 number: 0044
 title: Cluster-atomic typecheck via orchestrator-owned staging + SymbolTableAccess; single `check_forms` facade
-status: pre-implementation
+status: operative (implemented S66 as `cranelisp_typecheck::check_forms`; amended 2026-05-13 and 2026-09-03)
 filed: sprint 66 (Phase 5 Wave 3a structural-finding resolution)
 amended: sprint 66 Phase 3 (FIXME 0167 — Approach B; staging mutation via `current_symbol_table_mut` accessor; SymbolTableAccess introduction; invariant 2 revision; pass return type changes to `Result<(), CheckError>`); sprint 66 Phase 3 (FIXME 0168 — Sequencing α/β split; Wave 3a-α locality-correctness refactor precedes Wave 3a-β triad re-fire — see Decision 0046); 2026-05-13 (state-threading resolution — two-pass split collapsed into single `check_forms` function; Pass-1-to-Pass-2 working state internalised; state-threading hole closed by construction); 2026-09-03 (source-ordered `defmacro` checkpoints precede and are outside the non-macro HM rollback domain)
-canonical_location: design/arch/facades/typecheck.md §"check_forms — cluster check"; design/arch/facades/int.md §"process_cluster — the cluster-atomic orchestration loop"; design/arch/facades/types.md §"`ParsedEntry`" + §"`View`"; design/arch/sequences/exec-flow-compilation.mmd, exec-flow-repl.mmd, concurrency-symbol-table-entry.mmd
+canonical_location: design/arch/bounded-contexts.md §2 "Cluster-atomic entry surface" + invariants 2, 3a and 7; design/arch/interfaces.md §"`check_forms`"; crates/cranelisp-typecheck/src/lib.rs rustdoc; src/CLAUDE.md §"Cluster-atomic orchestration"; design/arch/sequences/exec-flow-compilation.mmd, exec-flow-repl.mmd, concurrency-symbol-table-entry.mmd
 amends: []
 amended_by: []
 retracts: []
@@ -162,7 +162,7 @@ No BC moves. Typecheck's BC ("AST → typed AST + symbol tables; pure transform"
 - `design/arch/sequences/exec-flow-repl.mmd` — REPL eval path updated for one-form-cluster + `(begin)` cluster
 - `design/arch/sequences/concurrency-symbol-table-entry.mmd` — concurrent worker view updated to reference the View read surface
 - `design/arch/principles.md` — Principle 1 (Decoupling), Principle 2 (Narrow interfaces), Principle 7 (Single source of truth), Principle 11 (Single pipeline mode parameters) cited as rationale
-- `design/arch/decisions/0038-sharedstate-formal-worker-shareable-subset.md` (legacy) — reframes its `check_form` shape commitment to the two-pass split
+- Decision 38 ([label index](README.md)) — reframes its `check_form` shape commitment to the two-pass split
 - `design/arch/fixmes/0165-spec-repl-non-macro-forward-refs-and-begin-clusters.md` — `/spec` twin: §5.13.2 extension to non-macro defns; `(begin)` as REPL cluster boundary
 - `spec/05-definitions.md` §5.13.1 (file scope two-pass) and §5.13.2 (REPL) — the normative grounding
 

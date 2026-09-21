@@ -158,31 +158,26 @@ at `base + HEAP_HEADER_SIZE`.
 | `IO_TAG_LAUNCH` | 5 | — | `[tag, sub-tree \| 0 sentinel]` | host |
 | `IO_TAG_SELECT` | 6 | — | `[tag, branch carrier]` | host |
 
-**The `Pure` payload-glue word** is the one three-state force/ownership witness
-after publication: `0 = Scalar`, `1 = Claimed`, and every other value is
-`Owned(glue)`, naming the canonical `drop<T>` for the payload's concrete type.
-Force and teardown both atomically exchange the word to `Claimed`; only a force
-that observes `Scalar` or `Owned(glue)` may read and transfer field 0, and only
-teardown that observes `Owned(glue)` calls the glue with field 0. A force that
-observes `Claimed` refuses through the standard runtime-error path before
-touching the payload. The payload stays at field 0, so its offset is unchanged.
-The complete publication, ordering and failure rule is `arch`'s at
-`design/arch/total-concreteness.md` §3.4.
+**The `Pure` payload-glue word** says what field 0 owes: `0 = Scalar` (nothing)
+or `Owned(glue)`, the canonical `drop<T>` for the payload's concrete type. `1` is
+reserved and emitted by nothing; it is not a platform tag, field or public
+constant. The payload stays at field 0.
 
-**Three stages, one word — the write authority at this seam.** A DLL cannot supply
-a real glue address: those are host-process, per-concrete-type values, and
-`HostCallbacks` has no channel to fetch one and will not gain one (§5, invariant
-3). The authority is therefore split by publication stage:
+**Two writers, both before publication — the write authority at this seam.** A
+DLL cannot supply a real glue address: those are host-process, per-concrete-type
+values, and `HostCallbacks` has no channel to fetch one and will not gain one
+(§5, invariant 3). The authority is therefore split:
 
 | Stage | Who | What |
 |---|---|---|
 | **Initialise** | the DLL, in `CLIO::pure` | while the fresh node is exclusively owned and unpublished, writes the `0` sentinel and nothing else |
 | **Stamp/adopt** | the backend | while the node remains exclusively owned and unpublished, writes `0` or the payload type's canonical `drop<T>`; at construction for a host-built node, and at the ABI crossing for a DLL-built one (§4.4) |
-| **Claim** | intrinsics | after publication, force and teardown are the only state owners and both use the aligned atomic word at absolute byte 32 to exchange the state to `1`; platform code has no claim implementation |
 
-`Claimed` reuses the existing word and is not a platform tag, field or public
-constant. The R1 cure therefore changes no platform surface or layout beyond the
-already-planned `Pure` word and ABI 9→10 cutover.
+Nothing writes either word after publication. Forcing reads the word and mints
+the consumer's reference, so one node may be forced any number of times, and
+teardown discharges `Owned(glue)` once. That rule, and the handling of the
+reserved `1`, are `intrinsics`' (`design/intrinsics/ownership-and-disposal.md`
+§6.1); platform code implements no part of it.
 
 The DLL's `0` is therefore not a claim about ownership: it is an initial value the
 crossing replaces, exactly as the `Effect` node's null `fn_name` already is.
@@ -194,16 +189,85 @@ the host under the tag licence of §4.4, so an unstamped node degrades to
 
 ### 4.2 Effect forcing
 
-`call_effect_thunk` reclaims the double-boxed thunk, invokes it **once** — the
-trampoline must never force the same node twice, by contract — and returns an
-`EffectOutcome` by value.
+An `Effect` node is a reusable IO value: a program may force one node any
+number of times, sequentially or from concurrent `Par` branches. The thunk is
+therefore **repeatable and borrowed**, and its lifetime is the node's. The
+approved surface is `arch`'s (`design/arch/total-concreteness.md` §3.4,
+"`Effect` public-API delta"); this section is its interior.
 
-The panic catch is **DLL-local**, and that is the only sound arrangement: a
-platform cdylib statically links its own panic runtime, so a host-side
-`catch_unwind` would see a DLL-originated unwind as a foreign exception and
-abort, and `extern "C-unwind"` cannot bridge two panic runtimes. The catch is
-monomorphised into the DLL at the `CLIO::effect*` call site, and the fault
-crosses as a value. The host's `call_effect_thunk` only forwards it.
+**Ownership.** The node's `thunk_ptr` word is the sole owner of one heap thunk:
+a double box (the outer box makes a thin pointer from the trait object) around
+the DLL-built wrapper closure, which owns the author's closure and every
+capture. One private type names that stored shape, and the constructor, the
+force and the drop all use it, so the three cannot disagree about what the word
+points to. The box carries no count of its own; the node's reference count
+already covers every lane still able to force it.
+
+| Operation | Who | What happens to the thunk |
+|---|---|---|
+| construct | `CLIO::effect*`, in the DLL | boxes the wrapper; writes its pointer into the fresh node |
+| force | `call_effect_thunk`, host, any number of times, possibly concurrently | calls the wrapper through a shared reference; nothing is moved or freed |
+| discharge | `drop_effect_thunk`, host, exactly once | reclaims and drops the box, running the capture destructors |
+
+The author closure's bound, `Fn() -> CL + Send + Sync + 'static`, is what makes
+this sound without a lock: `Fn` permits calls through a shared reference,
+`Sync` permits two branches to make them at once, and `Send` permits the box to
+be built on one thread and discharged on whichever thread releases the node.
+The compiler rejects a capture that cannot meet them; the surface adds no
+runtime check and no per-node lock (Principle 20).
+
+**The wrapper, per force.** It calls the author closure by reference under
+`catch_unwind`, converting a panic into an `EffectOutcome` fault. Because the
+closure survives a caught panic, a later force of the same node runs it again; a capture left inconsistent by that panic is the author's
+to guard (a `Mutex` capture poisons). A hardware trap that the host's signal
+guard recovers from leaves the thunk intact, so discharge still runs.
+
+**Discharge and capture-destructor containment.** Capture destructors run at
+discharge, outside the per-force catch, and a DLL-originated unwind must
+never reach host frames. The wrapper therefore holds the author closure in a
+private containment holder whose destructor drops the closure under
+`catch_unwind`. The holder is instantiated inside the generic constructor, so
+its destructor — reached through the trait object's drop entry — is
+monomorphised into the DLL and caught by the DLL's own runtime; unwinding drop
+glue still drops the remaining captures. The caught payload is leaked rather
+than dropped, so a payload whose own destructor panics cannot escape either;
+that leak is bounded like the fault-cause bytes (§5 invariant 6). Nothing is
+reported to the host: the effect's result has already been delivered, there is
+no outcome channel at discharge, and `HostCallbacks` will not widen (§5
+invariant 3). The DLL's panic hook has already printed the message. What the
+panicking destructor failed to release stays leaked.
+
+*Grade: asserted, with a named falsifier — not structural.* Building the holder
+outside the generic constructor still compiles, and the platform unit test runs
+in one panic runtime, so it proves the holder catches but not that the catch
+runs on the DLL's side of a cdylib boundary. The falsifier is a real platform
+DLL whose `Effect` capture panics in its destructor: discharge must leave the
+host running with the DLL's panic message, not abort. The force path has that
+measurement (`platforms/boom`); discharge does not. Whether a fixture earns its
+cost is `qa`'s decision.
+
+Aborting was rejected, because it would let one DLL destructor end the host
+process when the force path already contains the same failure. A host-side
+catch is impossible for the reason below.
+
+The panic catch is **DLL-local** on both paths, and that is the only sound
+arrangement: a platform cdylib statically links its own panic runtime, so a
+host-side `catch_unwind` would see a DLL-originated unwind as a foreign
+exception and abort, and `extern "C-unwind"` cannot bridge two panic runtimes.
+The catch is monomorphised into the DLL at the `CLIO::effect*` call site, and a
+force fault crosses as a value. The host's `call_effect_thunk` only forwards it.
+
+**Allocator pairing.** The boxes are allocated by the DLL's Rust global
+allocator and freed host-side. This holds because both sides use the default
+system allocator. *Asserted, with a named falsifier:* a `#[global_allocator]` in the host binary or in any platform
+DLL breaks the pairing.
+
+**Consciously unprotected.** A hardware trap inside a capture destructor is not
+recovered: the host's signal guard covers the force, and discharge runs during
+teardown. Known captures are `i64`s and `CLOwned`, whose destructor is a host
+reference decrement. *Trigger:* a platform whose captures own foreign resources
+with destructors that can trap. That trigger returns the question to
+`intrinsics`, which owns teardown and the guard.
 
 ### 4.3 Version discipline
 
@@ -223,7 +287,9 @@ rustdoc states:
 So `Pure` and `Effect` are governed — `CLIO::*` builds them inside the DLL — and
 `EffectPoll`/`Launch`/`Select` are not, because they are host-built and
 host-interpreted and never cross the boundary. Adding those three tags was
-correctly no bump; widening `Pure` is one.
+correctly no bump; widening `Pure` is one, and so is changing what `Effect`'s
+thunk word denotes (a repeatable borrowed thunk, ABI 11), because the layout
+does not move but the pointer's contract does.
 
 Mismatch is an unconditional load failure surfaced as
 `PlatformError::AbiVersionMismatch` — the host refuses to call anything in an
@@ -448,7 +514,7 @@ scheduled.
   tag-dispatched platform-return stamp and the manifest-signature concreteness
   rule
 - `design/arch/safety-invariants.md` §4 rows R19–R20 — IO-node stamp writes are
-  tag-licensed and a `Pure` payload transfers at most once
+  tag-licensed, and an IO value is a reusable description of work
 - `design/arch/interfaces.md` §"IO Tag Constants" — the node layouts of record
 - `design/platform/platform-dlls.md` — authoring and loading mechanics
 - `design/platform/poll-leaf-authoring.md` — the poll-shape leaf contract

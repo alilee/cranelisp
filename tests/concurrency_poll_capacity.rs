@@ -5,7 +5,7 @@
 //! (`git show 7e56a81c:tests/plan/sprint-96.md`). Contract of record:
 //! `design/arch/effect-concurrency.md` §8.1 (the `(token, capacity)`
 //! dynamic-on-the-node carrier — now lit up on the POLL carrier) / §8.2
-//! (within-token source ordering) / §7 (two-pool model). `design/int/reactor.md`
+//! (within-token source ordering) / §7 (two-pool model). `design/intrinsics/reactor.md`
 //! §2.8 (the token-capacity `Semaphore` pool, carrier-agnostic) / §2.9 / §5 (the
 //! acquire-around-poll lifecycle — the permit wraps the whole `EffectPoll`
 //! establish→ready arc). `design/backend/io-trampoline.md` §14 (the poll-node

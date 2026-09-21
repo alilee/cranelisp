@@ -1,326 +1,172 @@
-# Trait/impl head parsing — the echo-the-head slot-1 shape (S112 b0)
+# Trait and Impl Head Parsing
 
-**Status: current (authored S112 Phase 3, leg b0).** Design intent for the
-narrow frontend change-set that admits the S111-settled echo-the-head `impl`
-form. `/dev`(frontend) implements against this; `/review` checks against it.
+Interior design for the `deftrait` and `impl` head shapes in
+`crates/cranelisp-frontend/src/ast_builder.rs`. Spec: `spec/07-traits.md` §7.2
+(the `deftrait` head grammar), §7.3 and §7.3.4 (the `impl` form — slot 1 echoes
+the declared head, slot 2 names the target), §7.3.5 (kind matching, a
+**typecheck** seam).
 
-Spec anchors: `spec/07-traits.md` §7.2 (deftrait head grammar), §7.3 / §7.3.4
-(the `impl` form — slot 1 echoes the declared head, slot 2 names the target),
-§7.3.5 (kind-matching — a **typecheck** seam, not frontend). Consumer contract:
-`design/typecheck/hkt.md` §5.1/§5.4 (the Case-3 seam that reads what we parse).
-Arch: SPRINT.md §Architecture-review adjustment **A1** (frontend is the missing
-fourth surface) + the pinned types diff `TraitImpl.head_con_var: Option<Symbol>`
-(`#[serde(default)]`, /arch-authored, we consume it).
+## 1. Head shape and written spelling
 
-Implementation site: `crates/cranelisp-frontend/src/ast_builder.rs` — `parse_impl`
-(:941), `build_impl_target` (:997), `build_trait_head` (:834).
-
----
-
-## 1. The problem the settled form creates for the parser
-
-Today `parse_impl` reads slot 1 with `expect_symbol(&children[1])` (:954): slot 1
-MUST be a bare symbol. The settled higher-kinded (HK) impl form echoes the
-parenthesized `deftrait` head at slot 1:
+An `impl`'s slot 1 echoes the `deftrait` head as declared:
 
 ```clojure
-(impl (Functor f) (Functor Option)        ; slot 1 = (Functor f), slot 2 = (Functor Option)
-  (defn fmap [g x] …))
+(impl Display String         …)   ; slot 1 = Display,     conventional
+(impl (Functor f) (Functor Option) …)   ; slot 1 = (Functor f), higher-kinded
 ```
-
-so `children[1]` is a `Sexp::List`, and `expect_symbol` hard-errors. That hard
-error is exactly what /arch's A1 identifies as the missing fourth surface: the
-settled form does not parse at all today. b0 is the additive parse change plus
-the pinned types carrier.
-
-Two head shapes, one meaning bit (spec §7.1/§7.3, "Slot 1 is fixed, not
-inferable"):
 
 | Slot-1 shape | Trait kind | `head_con_var` |
 |---|---|---|
 | bare `Display` | conventional (kind `*`) | `None` |
-| `(Functor f)` | higher-kinded (echoed head) | `Some("f")` |
+| `(Functor f)` | higher-kinded | `Some("f")` |
 
-## 2. What the parser does — and the hard line at what it does NOT
+Slot 1 is fixed, not inferable (spec §7.1/§7.3), which is why the parser records
+it rather than deriving it.
 
-**Does (b0):**
+## 2. What the parser does — and the hard line
 
-1. Accept BOTH slot-1 shapes. Bare symbol → `head_con_var: None` (byte-identical
-   to today's path). Parenthesized `(TraitName con_var)` → `head_con_var:
-   Some(con_var)`.
-2. Route the head trait-name through `trait_ref_from_name` in BOTH shapes — the
-   §8.5 D-qual discipline (`crates/cranelisp-frontend/CLAUDE.md` §Qualified-name
-   splitting; a whole slash-name stuffed into the bare-name slot re-roots under
-   the current module). For the parenthesized shape the name is `head[0]`.
-3. Leave slot 2 (`children[2]`) on the **existing** `build_impl_target` path,
-   unchanged. For the HK case `(Functor Option)` parses to
-   `TypeExpr::Applied(type_ref_from_name("Functor"), [Named("Option")])` — the
-   pairing rides the existing `Applied` machinery. The parser assigns it no
-   special meaning; it is a `TypeExpr` like any other.
+**Does:**
 
-**Does NOT (the hard line — Principle 24, "Resolve once"; one classifier):**
+1. Accept both slot-1 shapes, recording the shape and written constructor-variable spelling.
+2. Route the head trait name through `trait_ref_from_name` in **both** shapes, so
+   a qualified echoed head splits per spec §8.5 instead of re-rooting under the
+   current module. For the parenthesized shape the name is the head element.
+3. Leave slot 2 on the existing target path. `(Functor Option)` parses to an
+   applied type expression like any other; the parser assigns it no special
+   meaning.
+
+**Does not** (Principle 24 — resolve once; one classifier):
 
 - **No kind classification.** The parser does not decide whether the trait is
-  conventional or HK, does not read any trait declaration, does not look at slot
-  2 to infer a kind. It records the *written shape bit* (`Some`/`None`) and stops.
-- **No echo validation.** Whether slot 1's shape matches the trait's *declared*
-  kind — an HK trait requiring `Some(_)`, a conventional trait requiring `None`
-  — is checked at typecheck's §7.3.5 **Case-3 seam** (`register_trait_impl`,
-  `hkt.md` §5.4 step 3), the single site that holds the trait declaration. A
-  parser-side echo check would be a second classifier that could only ever agree
-  with the kind-driven one (spec §7.3.5, "no separate classifier is needed or
-  wanted").
-- **No slot-2 interpretation.** `(Functor Option)`-as-pairing vs `(Option a)`-as-
-  type-application is resolved by the trait's declared kind at the Case-3 seam,
-  *before* slot 2 is inspected. The parser emits the same `Applied` shape for
-  both and never disambiguates.
+  conventional or higher-kinded, does not read any trait declaration, and does
+  not inspect slot 2 to infer a kind.
+- **No echo validation.** Slot 1's shape and constructor-variable spelling
+  are checked at typecheck's §7.3.5 seam, the single site that holds the
+  declaration. A parser-side echo check would be a second classifier that could
+  only ever agree with the kind-driven one.
+- **No slot-2 interpretation.** `(Functor Option)`-as-pairing versus
+  `(Option a)`-as-application is resolved by the declared kind at that same seam,
+  before slot 2 is inspected. The parser emits the same applied shape for both.
 
-The parser's whole contribution is: parse the two slot-1 shapes into a
-well-formed `(TraitRef, Option<Symbol>)`, and surface a located diagnostic for a
-structurally malformed slot 1. Everything semantic is downstream.
+The parser's whole contribution is: parse the two shapes into a well-formed
+`(TraitRef, Option<Symbol>)`, and surface a located diagnostic for a structurally
+malformed slot 1. Everything semantic is downstream.
 
-## 3. One grammar for the head shape (Principle 7 — single source of truth)
+## 3. One grammar for the head shape
 
-Spec §7.3 states the slot-1 shape **is** the `deftrait` head shape ("echoes the
-`deftrait` head as declared"). The frontend already parses the `deftrait` head in
-`build_trait_head` (:834), which accepts exactly `Symbol` or a 2-element
-`(TraitName var)` list with the same uppercase-head rule. If `parse_impl` grows
-its own copy of that shape logic, the two can drift: a head shape `deftrait`
-accepts but `impl` rejects (or vice versa) would make a legal echo unparseable —
-the precise failure spec §7.3 forbids.
+Spec §7.3 states that the slot-1 shape **is** the `deftrait` head shape. If
+`parse_impl` carried its own copy of that shape logic, the two could drift — a
+head that `deftrait` accepts but `impl` rejects would make a legal echo
+unparseable, the precise failure §7.3 forbids.
 
-**Design intent:** extract the head *shape* parse into one shared helper that
-both `build_trait_head` and `parse_impl` call. Suggested shape:
+`parse_trait_head_shape` is therefore the one structural parser: it enforces
+`Symbol` or a two-element `(UppercaseSymbol symbol)` list and returns the raw
+head name with the con_var, if any.
 
-```
-fn parse_trait_head_shape(sexp: &Sexp)
-    -> Result<(&str /* head name, unsplit */, Option<(Symbol, Span)> /* con_var */), CranelispError>
-```
+**Each caller keeps its own name policy, and that divergence is intentional:**
 
-- structural only: enforces `Symbol` OR 2-element `(UppercaseSymbol symbol)`;
-  returns the raw head-name `&str` (unsplit) plus the con_var (if any);
-- each **caller keeps its own name-resolution policy** — the divergence is
-  intentional and must stay caller-side:
-  - `build_trait_head` (deftrait): `TraitName::from(name)` (home-module name, no
-    split) and folds the con_var into `type_params: vec![var]` + `hkt_param_name`;
-  - `parse_impl` (impl): `trait_ref_from_name(name)` (§8.5 split for a qualified
-    echoed head) and stores the con_var symbol into `head_con_var`.
+- `build_trait_head` (deftrait) takes the name as a home-module name with no
+  split, and folds the con_var into the declared type parameters;
+- `parse_impl` routes the name through `trait_ref_from_name` — a qualified echoed
+  head is a *reference* — and stores the con_var into `head_con_var`.
 
-So the **shape** grammar is single-sourced (they cannot drift on what a legal head
-looks like) while the **name policy** stays where it belongs (deftrait resolves in
-its home module; impl applies the D-qual splitter). This is the minimal cut that
-honours both Principle 7 and the frontend's existing splitter discipline.
+So the **shape** grammar is single-sourced while the **name** policy stays where
+it belongs. The same split governs the binder reject: the con_var reject lives in
+the shared parser (a con_var binds in both forms), the trait-name binder reject
+lives in the deftrait caller only (`binder-head-reject.md` §3).
 
-> If `/dev` finds the extraction disproportionate for a 2-shape grammar, the
-> fallback is: `parse_impl` reuses `build_trait_head`'s exact structural checks
-> verbatim, with a code comment pinning the two to spec §7.3's "same grammar"
-> requirement. The shared helper is preferred (drift-proof); the verbatim mirror
-> is acceptable only with the pin comment. A silent independent copy is not.
+## 4. Malformed slot-1 diagnostics
 
-## 4. Malformed slot-1 diagnostics (self-documenting REPL principle)
+Every rejection is a located `parse_err` at the span of the offending head,
+rendering the form via `Sexp::format_flat` and never `{:?}`, and each names the
+fix.
 
-Every rejection is a `parse_err` with the **span of the offending head**
-(`children[1].span()` or the inner element's span), rendered via
-`Sexp::format_flat()` never `{:?}` (the 0500 rendered-diagnostic class,
-`crates/cranelisp-frontend/CLAUDE.md` §Debugging). Each names the fix.
-
-| Written slot 1 | Reject reason (located) | Fix named |
+| Written slot 1 | Fault | Fix named |
 |---|---|---|
-| `(impl (Functor) …)` | HK impl head is missing its constructor variable | write `(Functor f)` |
-| `(impl (Functor f g) …)` | too many elements in the impl head | a higher-kinded head is `(Trait con_var)` |
-| `(impl () …)` | empty impl head | write the bare trait name, or `(Trait con_var)` |
-| `(impl ((Functor f)) …)` | head element is not a symbol | trait name must be a bare symbol (see dispatch-order note) |
-| `(impl (functor f) …)` | trait name must start with uppercase | reuse existing check (`build_trait_head`:848) |
+| `(impl (Functor) …)` | head is missing its constructor variable | write `(Functor f)` |
+| `(impl (Functor f g) …)` | too many elements | a higher-kinded head is `(Trait con_var)` |
+| `(impl () …)` | empty head | write the bare trait name, or `(Trait con_var)` |
+| `(impl ((Functor f)) …)` | head element is not a symbol | the trait name must be a bare symbol |
+| `(impl (functor f) …)` | trait name must start with uppercase | — |
 | `(impl (Functor 3) …)` | constructor variable must be a symbol | write a name, e.g. `(Functor f)` |
 
-Notes:
+Two judgments hold the table together.
 
-- The 1-element and 3+-element cases are the `children.len() != 2` arm of the
-  shared shape parser (`build_trait_head`:840 today emits `"HKT trait head must
-  be (TraitName var)"`). The impl-side message should read in impl terms
-  ("impl head"), which is a caller-side wrapping of the shared shape error, OR a
-  message the shared helper phrases neutrally ("trait head must be `(Trait
-  con_var)`") that reads correctly for both callers. `/dev` picks; the neutral
-  phrasing keeps it single-sourced. **As-built:** `/dev` chose the neutral
-  "trait head" phrasing — one message reads correctly for both callers
-  (`parse_trait_head_shape`, `ast_builder.rs`).
-- **Dispatch order is head-symbol-BEFORE-arity (as-built, this is the design).**
-  The `(impl ((Functor f)) …)` row is subtle: its slot 1 is structurally a
-  **1-element list whose sole element is itself a list** (`((Functor f))`), not
-  the "2-element with a non-symbol head" the row's plain reading suggests. A
-  naive arity-first dispatch would hit the `len == 1` arm and emit the
-  missing-con_var message ("HK head is missing its constructor variable") —
-  misleading, since the real fault is that the head element is not a bare symbol.
-  The shared helper therefore checks **head-element-is-a-bare-uppercase-symbol
-  first** (`children[0]` must be an uppercase `Sexp::Symbol`), and only then
-  dispatches on `children.len()`. This ordering produces the table-intended
-  diagnostic on all six rows — the non-symbol-head fault is named before any
-  arity conclusion is drawn.
-- **con_var lowercase IS enforced at parse (b0, as-built).** Spec §7.2 grammar
-  says `con_var = lowercase_symbol`; an uppercase con_var is malformed. The
-  earlier b0-scope framing kept the parser non-enforcing "in lockstep with the
-  pre-existing `build_trait_head` gap" — that was **superseded** by a /qa ruling
-  during Phase 3 (`tests/plan/s112-0628-ic-wave.md` §7.2): b0 creates the ONE
-  shared seam (`parse_trait_head_shape`) where a single check covers `deftrait`
-  AND `impl`, so enforcing it here *closes* the two-parser drift window rather
-  than deferring into it — deferral would re-open exactly what the shared helper
-  exists to prevent. The as-built helper rejects an uppercase con_var in **both**
-  forms, located, naming the lowercase rule. **Honesty note:** this deliberately
-  *narrows* acceptance — `(deftrait (Functor F) …)` and `(impl (Functor F) …)`
-  were previously parse-accepted and now reject. Verified corpus-clean at
-  landing (no existing deftrait/impl anywhere writes an uppercase con_var), so
-  the narrowing breaks nothing. See §8.2.
-- **Known-open tightening (F3, routed to /qa's matrix — not a b0 fix).** The
-  case check is `is_uppercase_start` (`ast_builder.rs`:120), which tests only the
-  segment **after the final `/`**. So a slash-bearing con_var like
-  `(Functor prim/x)` currently passes the lowercase gate (bare part `x` is
-  lowercase), whereas spec §7.2 intends a bare lowercase *identifier* (no
-  qualifier). This is a narrow residual tightening candidate pending the /qa
-  coverage-matrix row; it is not designed here.
+**Dispatch order is head-symbol before arity.** The `((Functor f))` row is
+subtle: its slot 1 is a one-element list whose sole element is itself a list, not
+the "two elements with a non-symbol head" the row's plain reading suggests. A
+naive arity-first dispatch would hit the one-element arm and report a missing
+constructor variable — misleading, since the real fault is that the head element
+is not a bare symbol. The shared parser therefore checks that the head element is
+a bare uppercase symbol **first**, and only then dispatches on length. That
+ordering is what makes every row report its intended fault.
 
-## 5. Additive-green at b0 (the /arch staging requirement)
+**The message is phrased neutrally** ("trait head …") so one string reads
+correctly for both callers, rather than each caller wrapping the shared error.
 
-b0 must leave the old form and all existing typecheck behaviour byte-identical.
-It does:
+**con_var lowercase is enforced at parse.** Spec §7.2 says
+`con_var = lowercase_symbol`, and the shared seam is the one place where a single
+check covers `deftrait` and `impl` together — so enforcing it here closes the
+two-parser drift window rather than deferring into it. This deliberately
+*narrows* acceptance: `(deftrait (Functor F) …)` and `(impl (Functor F) …)` were
+previously parse-accepted. The corpus was verified clean at landing.
 
-1. **Field is additive.** `TraitImpl.head_con_var: Option<Symbol>` with
-   `#[serde(default)]` (/arch-pinned) — a fresh parse of a bare-head impl sets it
-   to `None`, which equals the serde default, so no `CACHE_SCHEMA_VERSION` bump is
-   needed *for b0* (the 20→21 bump is pinned to b2, for the `TraitDeclInfo.
-   type_params` **meaning** change — /arch A4; unrelated to this field).
-2. **Old path unchanged.** A bare-symbol slot 1 flows through the identical
-   `trait_ref_from_name` + `build_impl_target` calls it does today, now with
-   `head_con_var: None` attached. Same `TraitRef`, same `target`, same
-   `type_constraints`, same methods.
-3. **No new corpus, no consumer at b0.** No test or corpus file uses the
-   parenthesized slot-1 form (verified: every existing HK impl is written
-   `(impl Functor Option …)`, bare slot 1). typecheck ignores `head_con_var`
-   until its Case-3 seam lands at b2. So b0 adds *acceptance* of a shape nothing
-   yet writes, plus an unread field — pure additive surface, zero behaviour delta
-   on the green suite.
+## 5. The carrier
 
-**One caveat for `/dev` + `/testing` to confirm, not assume:** grep the suite for
-any test that asserts the *old hard error* on a parenthesized slot-1 head (i.e.
-feeds `(impl (Trait v) …)` and expects a parse failure). None was found in this
-survey — but if one exists it inverts at b0 (the shape now parses) and must
-migrate. This is the additive-green boundary to verify.
+`TraitImpl.head_con_var: Option<Symbol>` carries the written constructor-variable spelling; `None` records a bare head. It is
+`#[serde(default)]`, so a bare-head impl parsed fresh sets `None`, which equals
+the serde default — the field is additive to the persisted shape and needs no
+schema bump of its own. A bare slot 1 flows through the identical name-splitting
+and target-building path it always did, with `None` attached.
 
-## 6. Sibling parse / round-trip sites — per-site verdict
+## 6. Sibling parse and re-emit sites
 
-The dispatch asks whether any other consumer parses or *re-emits* impl forms, and
-whether the pretty-printer / `/source` / session-persistence round-trip the new
-form faithfully. Enumeration (`parse_impl` / `TraitImpl` / `"impl"` consumers):
+`parse_impl` is the **sole** parse site for the form. The question that matters
+for a grammar change is what else *re-emits* it, and the answer is a genuine
+design strength worth stating.
 
-| Site | Crate | Role | Change needed? |
-|---|---|---|---|
-| `ast_builder.rs::parse_impl` | frontend | **the sole parse site** | **YES — b0, this doc** |
-| `ast_builder.rs::build_impl_target` | frontend | slot-2 parse | **No** — slot 2 unchanged; `(Functor Option)` rides existing `Applied` |
-| `lib.rs` re-exports | frontend | surface only | No |
-| `src/pretty.rs::pp` | int | Sexp→styled-source (`/sexp`, `/source`, agent blocks) | **No — form-agnostic** (see below) |
-| `src/save.rs::render_decl_sexp` | int | `user.cl` regeneration | **No — form-agnostic** (see below) |
-| `src/repl/format_type.rs` (`format_trait_display`, `impls_for_type_in_view`, `; impl:` sections) | int | introspection **display** of *resolved* impls | Flag to /sprint (non-frontend; already in hkt.md §5.4 migration list) |
-| typecheck `traits/*`, `program/*`, `checker.rs`, `builtins.rs` | typecheck | consume the parsed AST (leg b) | Owned by /design typecheck — not here |
-| `src/{eval,worker,process_form,bootstrap,session_setup}.rs` | int | drive AST through pipeline | No parse/re-emit of impl syntax |
+The REPL pretty-printer and the session-persistence regenerator both walk the
+`Sexp` tree **structurally**. They render nested lists generically and are
+entirely form-agnostic; `"impl"` appears in the printer only to select body
+indentation, and neither pattern-matches the internals of an impl form. The
+parenthesized head is ordinary nested s-expressions, so:
 
-**Why pretty.rs and save.rs need no change — the load-bearing finding.** Both the
-pretty-printer (`src/pretty.rs::pp`) and the session-persistence regenerator
-(`src/save.rs::render_decl_sexp`) walk the **`Sexp` tree structurally** — they
-render nested lists generically and are entirely **form-agnostic**. `"impl"`
-appears in `pretty.rs`'s `SPECIAL_FORM_INDENT` list only to pick 2-space body
-indentation; neither renderer pattern-matches the *internals* of an impl form.
-The new `(impl (Functor f) (Functor Option) …)` is ordinary nested s-expressions,
-so:
+- `/sexp` and `/source` render it faithfully by construction;
+- source regeneration round-trips it — the preferred path re-emits the authored
+  bytes verbatim, and the structural fallback re-emits the nested lists — and
+  either way the regenerated form re-parses through the same `parse_impl`.
 
-- `/sexp` and single-line `/source` (`pp`) render it as nested lists with the
-  impl 2-space indent — faithful by construction;
-- `user.cl` regeneration (`save.rs`) round-trips it: the **verbatim source-slice**
-  path (`process_form::verbatim_source_slice`, the preferred path) re-emits the
-  authored bytes exactly, and the structural `render_decl_sexp` fallback re-emits
-  the nested lists faithfully. Either way the regenerated form re-parses through
-  the same b0 `parse_impl`.
+**Because these serialisers never learned the impl grammar, they cannot fall out
+of sync with it.** Round-trip fidelity is inherited from the structural design
+rather than added; it is a behaviour to verify with an end-to-end test, not code
+to write.
 
-So round-trip fidelity is **inherited from the structural design**, not something
-b0 must add. It is a *behaviour to verify with an e2e*, not a code change — see
-§7. This is a genuine design strength worth stating: because these int-side
-serializers never learned the impl grammar, they cannot fall out of sync with it.
+The one site that *does* shift under a trait-kind model change is the REPL's
+resolved-impl display, which renders from resolved entries rather than the parsed
+AST. That is an int display concern downstream of typecheck, not a frontend parse
+concern.
 
-**Flagged non-frontend site (to /sprint):** `src/repl/format_type.rs` renders the
-*resolved* impl summary (`impl Trait for Type`, the `; impl:` sections) from the
-resolved `ModuleEntry::TraitImpl`/view data, not the raw AST. Its output shifts
-under the b2 kind-model change — `hkt.md` §5.4 already names the two affected e2e
-(`repl_introspection::bare_user_trait_lookup_impl_section_lists_type_not_others`,
-`impl_form_display_result_is_exactly_impl_trait_for_type`, message drift). This is
-an int-display concern downstream of typecheck's model change, **not a frontend
-parse concern**; I flag it so /sprint routes the display reconciliation to the int
-surface at b2, but I do not design it here.
+## 7. Typecheck validates the echo
 
-## 7. Testability notes (for /dev unit tests + /qa/​/testing e2e)
+The parser preserves the written constructor-variable spelling in
+`head_con_var`. Typecheck validates both shape and spelling against the
+resolved declaration ([HKT design](../typecheck/hkt.md) §5.4 step 3;
+[trait specification](../../spec/07-traits.md) §7.3 and §7.3.5).
+The existing guard
+`tests/spec_07_traits.rs::hkt_impl_echo_wrong_convar_spelling_rejected_neg`
+falsifies a regression that accepts `(Functor g)` for declared `(Functor f)`.
 
-Unit tests (`ast_builder/tests.rs`), asserting on the parsed `TraitImpl` — all
-pure, no session (Principle 5):
+## 8. Principles
 
-- bare slot 1 → `head_con_var == None`, `trait_name` unchanged (regression pin on
-  the additive-green path);
-- `(Functor f)` slot 1 → `head_con_var == Some("f")`, `trait_name.name == "Functor"`,
-  `target` still the parsed slot-2 `Applied`;
-- qualified echoed head `(fmt/Functor f)` → head name splits to
-  `TraitRef{ module: Some("fmt"), name: "Functor" }` (D-qual discipline holds for
-  the parenthesized shape too);
-- each §4 malformed row → located `parse_err` (assert the span points at the
-  head, and the message names the fix);
-- **grammar-parity pin**: a head shape `build_trait_head` accepts, `parse_impl`
-  accepts identically, and vice versa — the structural guard that the two do not
-  drift (directly exercises the Principle-7 single-source intent).
+- **Principle 7** — one head-shape grammar for `deftrait` and `impl`; the
+  form-agnostic serialisers that cannot drift from it (§6).
+- **Principle 24** — the parser records the shape and spelling and does no kind
+  classification, echo validation or slot-2 interpretation.
+- **Principle 5** — `parse_impl` stays a pure `&[Sexp]` → `TraitImpl` function,
+  unit-testable with no session.
 
-E2e (design-only recommendation; /qa's plan, /testing authors): a **round-trip
-guard** — enter/define an HK impl in the new form, `/source` (or restart from the
-regenerated `user.cl`) it, and assert the re-emitted text re-parses to the same
-`TraitImpl`. This is the durable proof of the §6 "form-agnostic serializers"
-claim; it belongs to the b1/b2 corpus wave, not b0 (no new-form corpus exists at
-b0).
+## Cross-references
 
-## 8. Open questions (routed to /sprint; frontend does not rule)
-
-None are language-normative *for the frontend parse* — the parser only records
-the written shape — but two touched the seam. Item 1 (spelling match) is routed
-and open; item 2 (con_var lowercase) was **resolved during b0** by /qa's ruling
-and is recorded here for history:
-
-1. **Slot-1 con_var spelling match (→ /design typecheck / possibly user).** Spec
-   §7.3 says slot 1 reproduces the head "verbatim as declared… the same
-   constructor-variable spelling `(Functor f)`." The typecheck Case-3 design
-   (`hkt.md` §5.4 step 3) validates only the *shape bit* (`Some` vs `None`), NOT
-   the spelling — so `(impl (Functor g) …)` against `(deftrait (Functor f) …)`
-   would pass echo-validation under the current design. The frontend is
-   unaffected either way (it records whatever spelling is written into
-   `head_con_var`, so the datum for a spelling check is *available*). Route to
-   /sprint: is spelling-match enforcement intended? If yes, it lands at the
-   typecheck seam reading `head_con_var`, not in the parser.
-
-2. **con_var lowercase enforcement — RESOLVED, rides b0 (was: → /qa
-   completeness).** This originally proposed keeping the parser non-enforcing in
-   lockstep with `build_trait_head`, deferring the tightening. **Superseded by
-   /qa's Phase-3 ruling** (`tests/plan/s112-0628-ic-wave.md` §7.2): enforcement
-   is a matrix row NOW, not a deferred gap — spec §7.2 is clear
-   (`con_var = lowercase_symbol`) and b0 creates the ONE shared seam where a
-   single check covers `deftrait` AND `impl`, so deferring re-opens exactly the
-   two-parser drift window the shared helper exists to close. **As-built:**
-   `parse_trait_head_shape` rejects an uppercase con_var in both forms (located,
-   naming the lowercase rule); this narrows previously-accepted
-   `(deftrait (Functor F) …)` / `(impl (Functor F) …)`, verified corpus-clean at
-   landing. Detail and honesty note in §4. **Residual (open):** the check keys on
-   the after-slash segment, so a slash-bearing con_var `(Functor prim/x)` still
-   passes — a narrow tightening candidate on /qa's matrix (§4 F3 note), out of b0.
-
-## 9. Principles cited
-
-- **Principle 7 (single source of truth)** — one head-shape grammar for
-  `deftrait` and `impl` slot 1 (§3); the form-agnostic serializers that cannot
-  drift from the grammar (§6).
-- **Principle 24 (resolve once) / "one classifier"** — the parser records the
-  shape bit and does no kind classification, echo validation, or slot-2
-  interpretation; all of that is the single typecheck §7.3.5 Case-3 seam (§2).
-- **Principle 5 (testability is structural)** — `parse_impl` stays a pure
-  `&[Sexp]` → `TraitImpl` function, unit-testable with no session (§7).
-- **Principle 6 (complexity has a budget)** — b0 adds one shape branch + one
-  additive field; it does not add a parser-side kind model (§2).
+- `spec/07-traits.md` §7.2, §7.3, §7.3.5.
+- `design/typecheck/hkt.md` §5.4 — the Case-3 seam that reads what this parses.
+- `design/frontend/binder-head-reject.md` §3 — the shared-parser versus caller-policy split for the binder reject.

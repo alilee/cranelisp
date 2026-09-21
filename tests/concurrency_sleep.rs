@@ -1,5 +1,5 @@
 //! Sprint 96 — effect-concurrency Chunk C4: the `sleep` runtime timer poll leaf
-//! (`design/int/reactor.md §2.18`, spec `spec/10-io.md §10.12.8`).
+//! (`design/intrinsics/reactor.md §2.18`, spec `spec/10-io.md §10.12.8`).
 //!
 //! `(sleep d)` (`sleep : Int -> IO Int`) arms the reactor's timer and resumes
 //! (with `0`) after `d` MILLISECONDS, reusing the entire `IO_TAG_EFFECT_POLL` /

@@ -412,7 +412,7 @@ per-site permissions; the ABI-bearing vector is what makes the *interprocedural*
 
 > **No `cranelisp-types` edit lands in S100.** The fields below are the designed shape the first
 > implementation sprint lands, `/arch`-authored, with the `public-api.txt` + `interfaces.md` +
-> BC §7 cascade and a `CACHE_SCHEMA_VERSION` bump in that change-set. Landing them now would be
+> [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) cascade and a `CACHE_SCHEMA_VERSION` bump in that change-set. Landing them now would be
 > speculative-interface debt (Phase-2 ruling).
 >
 > **LANDED 2026-07-03 (S102 Phase 3, CS-A)** — one `cranelisp-types` change-set, one
@@ -423,7 +423,7 @@ per-site permissions; the ABI-bearing vector is what makes the *interprocedural*
 > ruling: the read-once `CRANELISP_NO_OWNERSHIP` gate relocated to
 > `cranelisp_types::ownership_analysis_off()` (backend delegates; one polarity, one function —
 > Principle 7). Cascade landed: `public-api.txt` (types only; six consumer baselines verified
-> unchanged), `interfaces.md` §"Ownership-inference carriers", BC §7 "S102 — Principle 20
+> unchanged), `interfaces.md` §"Ownership-inference carriers", [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) "S102 — Principle 20
 > applied one level down". Carrier-only: nothing produces or consumes summaries until
 > typecheck CS-1..4 / backend B1-be+.
 
@@ -570,7 +570,7 @@ stays **backend-internal** — the `escapes` site fact is already an advisory `O
 and no interface edit is owed to broaden it to statically-sized aggregates. But the **`MutBorrowed`
 ABI half DOES need a `cranelisp-types` carrier**: it is a new `Mode::MutBorrowed` variant in
 `crates/cranelisp-types/src/ownership.rs`, ABI-bearing on `param_modes`, therefore requiring a
-`CACHE_SCHEMA_VERSION` bump + `public-api.txt` regen + the `interfaces.md`/BC §7 cascade in the
+`CACHE_SCHEMA_VERSION` bump + `public-api.txt` regen + the `interfaces.md`/[BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) cascade in the
 implementing change-set (the full baseline-diff discipline, `design/arch/CLAUDE.md`). Unlike the
 escape→stack fact, it **cannot** stay within the backend/intrinsics boundary — the mode vector is the
 typecheck→backend contract and crosses the crate edge by construction. `/arch` authors the variant at
@@ -619,7 +619,7 @@ Candidate (b) — flipping the `:590` default — is REJECTED.**
   protection on it, and must never assume it IS the param". ABI-bearing like its siblings
   (compared by `abi_eq`). Serde-visible on persisted summaries ⇒ **`CACHE_SCHEMA_VERSION`
   19→20** + types `public-api.txt` regen + `interfaces.md` §"Ownership-inference carriers" +
-  the §3.3 sketch, all in the implementing change-set (baseline-diff discipline).
+  the [carrier sketch](ownership-inference.md#33-the-designed-carrier-fields-landed-s102-cs-a), all in the implementing change-set (baseline-diff discipline).
   Consumer semantics:
   - transfer walk (`transfer.rs:591` match): `MayAliasOf(k)` ⇒ the join of `Fresh` with
     `arg_origins[k]` — a param-reaching arg yields `Origin::MayParam` (never collapses to
@@ -1302,7 +1302,7 @@ pin applies: fix before the sibling lands and before the R2 wrapper reaches prim
     mutate-in-place; the dynamic rc==1 check's cost model.
 11. **The R5 value-representation flattening design** (§6.3) — `HeapCategory` arm, ABI/size
     bounds, Vec-of-values layout, cache/`--link` parity, trace descriptors; the eligibility
-    predicate is single-sourced in `cranelisp-types` per the §6.3 ruling (FIXME 0468 resolved).
+    predicate is single-sourced in `cranelisp-types` per the [layout ruling](ownership-inference.md#63-the-copy-rows-mechanism-r5-named-routed-to-the-backend-proposal) (FIXME 0468 resolved).
 12. The R3 machinery's backend half: the trap-stub mechanism for broken callers (§5.5 — stub
     args-untouched raise semantics + the RC-mid-panic caveat), fresh-slot allocation + frozen-slot
     retention (§5.6 — the `Code::Jit` retention rule extending Decision 31 Scenario 2) — jointly
@@ -1329,9 +1329,9 @@ per-increment F1–F4 target numbers.
   `MonoExpr` site facts (incl. projection provenance) + callable-`DefKind` summary field +
   the per-entry value-use mark + the `DefKind::Primitive` declared-fact payload (§3.3) —
   `/arch`-authored, first implementation sprint, with `public-api.txt` + `interfaces.md` +
-  BC §7 + `CACHE_SCHEMA_VERSION` cascade.
+  [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) + `CACHE_SCHEMA_VERSION` cascade.
 - `cranelisp-types` (R5 increment, separately): the single-sourced Copy/value-layout predicate
-  beside `HeapHeader` + its size-bound constant (§6.3 ruling) — lands with the R5-increment
+  beside `HeapHeader` + its size-bound constant ([layout ruling](ownership-inference.md#63-the-copy-rows-mechanism-r5-named-routed-to-the-backend-proposal)) — lands with the R5-increment
   `/arch` carrier change-set, not before.
 - `bounded-contexts.md` §2 (typecheck: the inference pass joins the bounded context) and §3
   (backend: the five mechanisms + oracle toggle) — with the implementing sprints.

@@ -369,7 +369,7 @@ This assessment reuses the existing stocktake and source observations; it create
 | Shared document-checking pilot | GO at the Phase-3 design/evidence-allocation boundary: D7 and host/adapter choices are approved, the shared checker contract and bounded evidence allocation are reviewed. Shared mechanism/project declaration work, read-only validation in both repositories, Cranelisp adoption and repairs remain pending under Phase-5 reservations and subsequent closure gates. Magic edits/upstream publication need subsequent approval; no blanket residual baseline migration. |
 | Record retirements and baseline formatting | Ready for source/evidence reconciliation within owning streams; generated API contraction still returns for user confirmation. |
 
-The reviewed design carriers are [Binary/int](../../design/int/s122-closure.md), [intrinsics](../../design/intrinsics/s122-typed-consume-closure.md), [primitives](../../design/primitives/s122-typed-consume-consumers.md), [backend](../../design/backend/s122-closure.md), and the existing [auto-curry evidence design](../../design/typecheck/auto-curry.md). D1 and D8 are approved with implementation and executing evidence pending. D7 shared document-checking pilot scope, host ownership and checked-in adapter choices are approved; the shared checker design and evidence allocation are adequate. Phase 4 was authorized on 2026-09-10; Phase 5 was authorized on 2026-09-10, and subsequent Magic edits/upstream publication remain separately gated. D6 is a future live-evaluation configuration/budget gate and does not block runner design or implementation planning. No additional compiler contract decision is inferred from owner/copilot execution policy.
+The reviewed design carriers are [Binary/int](../../design/int/s122-closure.md), [intrinsics](../../design/intrinsics/ownership-and-disposal.md), [primitives](../../design/primitives/s122-typed-consume-consumers.md), [backend](../../design/backend/s122-closure.md), and the existing [auto-curry evidence design](../../design/typecheck/auto-curry.md). D1 and D8 are approved with implementation and executing evidence pending. D7 shared document-checking pilot scope, host ownership and checked-in adapter choices are approved; the shared checker design and evidence allocation are adequate. Phase 4 was authorized on 2026-09-10; Phase 5 was authorized on 2026-09-10, and subsequent Magic edits/upstream publication remain separately gated. D6 is a future live-evaluation configuration/budget gate and does not block runner design or implementation planning. No additional compiler contract decision is inferred from owner/copilot execution policy.
 
 At stream closure, inspect the actual change, dev unit evidence, independent test evidence, review findings and exact API confirmation. At composition closure, run the fresh default suite and isolated agent lane in their required environments, then the authorized live eval baseline. Report known/environment/provider limits separately. Broaden testing only for a changed condition or unresolved composition risk. Update PLAN/spec traceability once actual evidence establishes coverage; this assessment does not confer Tested status.
 
@@ -1605,3 +1605,505 @@ changed hunk (`.local/s122-display-final-clippy.log`; no pre-change count was
 recorded, so the comparison is by location); and the `public-api.txt` set
 unchanged, its drift guard green in the full run. Evidence is adequate for the
 listing rule and the qualified lead.
+
+## Reuse of an IO value — defect allocation
+
+Authority: the user's ruling of 2026-09-21, recorded at the
+[reuse checkpoint](../../sprints/SPRINT.md) and scribed in `spec/10-io.md`
+§10.8.1: IO values are reusable descriptions of work; every forcing is
+interpreted as the first is; refusing a reused `Pure` is a compiler defect;
+memory safety is preserved while ownership is corrected, and removing the guard
+alone is not a fix. The proposed correction is `arch`'s retain-on-force rule in
+`design/arch/total-concreteness.md` §3.4 — a published `Pure` node is never
+written, a force of an `Owned(glue)` payload mints the consumer's reference, and
+node teardown discharges the node's own reference under both dispositions.
+`design` (intrinsics) owns its interior. This section allocates evidence for the
+`Pure` correction only. That correction is private to intrinsics; the only user
+gate in this area is a public-API proposal, which it does not make.
+
+This section supersedes the expected-error observable of cell 1 in the
+[S121 shared-`Pure` allocation](s121-test-plan.md#31-r1--shared-pure-double-force).
+
+**Observed.** Root's single `--run` observations
+(`.local/s122-r1-root-observation-result.md`) and the authored pair, red and
+green for the allocated reason (`.local/s122-io-reuse-test-log.txt`):
+
+| Source | Differs from control by | Observed |
+|---|---|---|
+| `(let [p (Pure 7)] (bind p (fn [a] (Pure a))))` — control | — | exit 7 |
+| `(let [p (Pure 7)] (bind p (fn [a] p)))` — reuse | the continuation returns `p` | exit 1, `runtime panic: Pure node forced more than once` |
+
+The control discriminates the mechanism: a second force of one node. The
+message has one emission site, `io.rs::force_pure_node`. The defect entered at
+the S121 once-only force ruling, which no requirement carried; the claim
+realizes that ruling as designed. Class `wrong-reject`.
+
+**Not observed, and not inferred from the above.** Concurrent reuse (the two
+`race` probes returned 7 and do not show a second lane forced the node); reuse
+of a `Launch` or `EffectPoll` node. `Effect` reuse is observed and is separate
+intake — see [the probes](#effect-and-launch-probes--diagnostic-separate-from-the-pure-defect).
+
+### Conditions
+
+| ID | Class | Condition | Plausible wrong outcome | Layer, owner | State |
+|---|---|---|---|---|---|
+| IOR-1 | acceptance | One `Pure` value forced twice in sequence yields its value each time: the reuse source exits 7. | refusal (today); a second force yielding a stale or zero value | e2e `--run`, `test`: `tests/spec_10_io.rs::run_mode_reused_pure_yields_its_value_on_each_force` | green since the retain-on-force correction; observed RED on the refusal first |
+| IOR-C | acceptance control | The control source exits 7 before and after. | a harness, import or exit-path fault posing as the defect or its fix | `tests/spec_10_io.rs::run_mode_fresh_pure_per_force_yields_its_value_control` | green |
+| IOR-2 | safety fence | The reuse shape with a `String` payload: both forced values contribute to the exit code, and the marginal allocation balance against the fresh-node twin is exact, with `CRANELISP_RC_DEC_CHECK` armed. | a force that still moves the payload on some path — the claim deleted without the retain, or a move kept for a fresh or uniquely-held node — so the payload is released twice or read after release. IOR-1 stays green under all of these: a scalar has no second owner | e2e, `test`, the `platform_pure_string_*` marginal-pair harness in `tests/spec_10_io.rs`; subject and control differ only in `p` versus a second fresh `Pure` | `tests/spec_10_io.rs::platform_pure_string_reused_node_yields_payload_to_each_force_and_balances`: green, exits 17 and 17, marginal 0, seam checks armed. The balance leg read −2 until the [IOR-5](#scope-result-bind-leak--intake) correction and flipped with it unchanged, as predicted: no second cause |
+| IOR-3 | — | One heap `Pure` forced on two completing `par` lanes. | two lanes both take one payload | not written — see below | discharged by construction, conditionally |
+| IOR-4 | acceptance | A reused `Effect` value performs its effect on each use, in order (§10.8.1 covers every IO value). | the effect runs once; the second force faults or reads released memory | e2e `--run`, `test`: `tests/spec_10_io.rs::run_mode_reused_effect_performs_its_effect_on_each_force`, control `run_mode_fresh_effect_per_force_performs_its_effect_control` — [cell](#ior-4--permanent-regression-cell) | green with the approved `Effect` correction; observed RED on the dispatch fault first |
+| IOR-5 | safety fence | A `bind` node returned from a scope that owns a heap binding is released with its tree: the `let`-bound forced platform `Pure` balances against its inline twin. | the scope's result keeps one reference nothing releases, stranding the whole IO tree | e2e marginal pair, `test` — [intake below](#scope-result-bind-leak--intake); correction evidence [here](#ior-5-correction--evidence-delta) | both cells green at marginal 0 on the corrected build; observed RED first at +4 (trigger) and +3 (mechanism control) |
+| IOR-6 | safety fence | An `Effect` node discarded unforced releases its thunk and the thunk's captures. | the node-owned thunk is never destroyed, or is destroyed by a force and again at teardown | e2e marginal pair, `test` — [fence below](#effect-correction--lifetime-and-reuse-fence) | green at marginal 0 on the corrected build; proven to detect by the one-off `Effect`-row mutant (+1) — [IOR-6 sentinel](#ior-6--capture-release-sentinel) |
+
+**Why IOR-2 is an e2e cell and not only `dev`'s unit.** The retain is a source
+property, not a structural one: a force that omits `rc_inc`, or keeps the move
+behind a freshness or count test, compiles and passes IOR-1 and every
+single-force program. `dev`'s unit sees it at the seam, but is written from the
+implementer's own model of which forces alias; IOR-2 reaches the seam through
+the compiler's real aliasing of a `let`-bound IO value. It costs one cell and its
+twin on an existing harness. Its detection does not rest on its own pre-fix red
+(that red is the refusal): it rests on the marginal harness's capability fence
+(`tests/marginal_harness_capability.rs`, one-block resolution) for the leak
+direction and the proven A1 stale-inc/dec seam checks for the double release.
+
+**Why IOR-3 is not written.** Under retain-on-force no word of a published
+`Pure` node is written, so lane contention on the witness has no code path. What
+two lanes share is the payload's count, moved only by the atomic `rc_inc` and
+release every heap value already uses and the `concurrency_*` corpus already
+exercises. This prevention is structural only if the as-built change deletes
+`swap_pure_payload_to_claimed` and the `Claimed` decode, and adds no
+post-publication write and no count- or freshness-directed move. `review`
+confirms those four facts at source; if any fails, IOR-3 returns to `qa`. A
+two-lane e2e cell would also be a weak instrument: scheduling decides whether
+both lanes force, as the `race` probes showed. S121 cells 2 and 3 stay credited
+to their existing equivalents.
+
+No e2e cell covers a reused `Bind`: it has no force-time write and reaches the
+same leaves; the shared-parent fresh-`Bind` module pair already carries its
+ownership.
+
+### Retired with the claim
+
+Retain-on-force removed the one transfer that A6 and the claim observers
+refereed, so they retired in the correcting change-set. Their obligations moved:
+
+| Obligation | Carried by |
+|---|---|
+| a payload leaving through the shallow last-reference release has exactly one owner | teardown discharging `Owned(glue)` under both dispositions — `dev` units T1–T2 — and IOR-2 |
+| a second successful transfer of one node is reported | no transfer remains; a double release is caught by the A1 seam checks and marginal balance |
+| the claimed state is visible before any later release | nothing is written after construction |
+
+Unchanged and required green: the Q3 public aggregate and its controls, the
+shared- and unique-parent fresh-`Bind` pair, the `Select`-loser release unit,
+the `platform_pure_string_*` cells and the healthy `concurrency_*` corpus.
+Error-abort, `Select`-loser and cancelled-frame paths need no new cell: the
+consumer holds the same one reference it held before (minted now, moved then),
+and the only new obligation — the node's own reference — is T1–T2's.
+
+### `dev` module evidence (intrinsics force and teardown seams)
+
+Red first against the current seam, on the existing intrinsics `io` and `drop`
+test-module fixtures and the `alloc` ledger:
+
+- T1 — an `Owned(glue)` `Pure` released through the shallow last-ref path after
+  one force: payload released exactly once, balanced. Replaces A6's planted leg.
+- T2 — the same node never forced, and forced once then released structurally:
+  balanced each way.
+- T3 — one `Owned(glue)` node with a second owner forced twice: each force
+  returns a live value the consumer releases; the payload stays live for the
+  node; final teardown balances. Scalar witness once.
+- T4 — `Owned(glue)` over a bare nullary-tag payload: no count is touched.
+- One further unit per payload category for which `design`'s source analysis
+  finds `rc_inc` is not the exact inverse of `drop<T>` (`arch` names `IVar` as
+  the candidate); none if the analysis finds none. No category matrix.
+
+T1–T4 and a scalar T3 twin are landed in
+`crates/cranelisp-intrinsics/src/io/tests.rs`, where the private force seam is
+reachable; each was observed RED on the seam without the retain
+(`.local/s122-io-reuse-dev-red-log.txt`).
+
+Completion: IOR-1 flips and IOR-2's exit legs pass in the change-set carrying
+the correction; IOR-C and the unchanged set stay green; the retirements above
+land in that change-set; the full `cargo nextest run --no-fail-fast` shows no
+RED that does not trace to an open defect. IOR-2's balance leg completed with
+IOR-5. If the correction touches codegen or the result root, IOR-1 is also entered
+once at the REPL; otherwise one mode suffices and `--link` is a stated limit. No
+test may pin `Pure node forced more than once` as an outcome of a legal program.
+The cost measurement `arch` asks for is `design`'s, order of magnitude only, and
+is not acceptance evidence.
+
+#### Reserved witness — review R1 allocation
+
+`1` has no producer: the claim swap that wrote it is deleted, the backend stamp
+cell pins that no emitter writes it, and no artifact carries it. A witness-`1`
+node therefore reaches teardown only through a future emitter or a corrupted
+word. What is worth evidence is the decode, because `glue => Owned(glue)` is a
+catch-all: dropping the `1` arm compiles, keeps every current test green, and
+turns the word into a call to address 1. The gated report is a new instrument,
+so its detection proof belongs to the introducing change-set (root `CLAUDE.md`
+§Assurance).
+
+Conditional on `design` (intrinsics) retaining `Reserved`. If `design` retires
+the variant instead, the arm, the "never a call target" sentence and both cells
+go together and nothing replaces them: `1` is then no more special than any
+other corrupt word, and that narrowing is truthful.
+
+| ID | Class | Condition | Plausible wrong outcome | Layer, owner |
+|---|---|---|---|---|
+| R1-a | safety fence | Ungated structural teardown of a `Pure` node with witness `1`, whose field 0 holds a live string the node does not own, deallocates exactly the node and leaves the string live. | `1` decodes as `Owned` and is called (the process faults); or field 0 is discharged as if owned | `dev` (intrinsics) unit in `drop/tests.rs`, on the scalar-node fixture pattern beside it |
+| R1-b | maintenance check | The same node torn down with `CRANELISP_RC_DEC_CHECK` armed hard-fails with the seam banner and `reserved Pure payload witness`. | the report never fires, or fires for another reason | `dev` (intrinsics): one more leg and child arm on `drop::tests::unknown_tags_hard_fail_under_the_diagnostic_gate` |
+
+- R1-a is also R1-b's silent leg and the decode's witness; no separate `decode`
+  unit, no second disposition (one dispatcher, one arm) and no force cell.
+  Force never calls the witness; a `1` misread there retains a payload once —
+  a leak, not a wild call — and R1-a already fails on that misdecode.
+- R1-a's red is observed once by deleting the `1` arm locally; R1-b's by
+  observing the child pass ungated. Record both; no standing mutation run.
+- Force staying silent on `Reserved` needs no evidence: a forced node still
+  reaches teardown, which reports. If `design` rules that force must report,
+  the condition returns to `qa`.
+- The four IOR-3 source facts get no standing guard: a reintroduced
+  post-publication write needs a deliberate new `AtomicI64` or `write` site in a
+  reviewed crate, and IOR-2 plus T1–T3 fail on its ownership consequences.
+
+**Advisories, resolved in the same source visit as E-T1–E-T3.** A1: `// defect:`
+marks a repro born from a defect, which here is IOR-1 and IOR-2 under `tests/`;
+T1–T4 and the scalar twin are module evidence of the correction and name a locus
+that is now cured, so `dev` removes those lines and keeps the `// spec:` cites.
+The notation is not extended to the module tier. A2 (commentary weight, inline
+`force_once`) and A3 (rename `PurePayloadState` / `PURE_STATE_OFFSET` to witness
+vocabulary) change no condition and need no evidence beyond the crate gate. One
+finding-scoped re-review covers R1-a and R1-b only.
+
+### `Effect` and `Launch` probes — diagnostic, separate from the `Pure` defect
+
+Class: diagnostic observer. The probes decide whether `Effect` or `Launch` reuse
+enters scope as new defect intake. They do not gate the `Pure` correction, and
+no protective claim or other fix is allocated on their account before a result
+and its approval. `test` runs them sequentially against the HEAD debug binary in
+its own scratch directory (`sprints/METHOD.md` probe hygiene), uncommitted, one
+run per source, ten-second timeout, recording exit status or signal, stdout and
+stderr verbatim.
+
+| Probe | Subject | Control — differs only by | Conforming observation |
+|---|---|---|---|
+| P-E | one platform effect value bound by `let` and forced twice in sequence (`bind e (fn [_] e)`), using the effect the neighbouring `spec_10_io` effect cells use | the continuation constructs the effect afresh | the effect's output twice, in order; same exit as the control |
+| P-L | an existing `concurrency_*` launch-and-continue source whose launching IO value is `let`-bound and forced twice | the second force builds the value afresh | the control's output and exit |
+
+P-L runs only if such a source is a one-token change to an existing cell;
+otherwise `test` reports it not constructed. A clean-looking P-E does not clear
+the hazard `arch` reads at source — a second `Box::from_raw` can pass unobserved
+— so a conforming result is reported as inconclusive for memory safety, not as
+green. Results return to `qa`. A non-conforming subject becomes a permanent
+failing, unignored, spec-traced repro with its control (IOR-4 for `Effect`), and
+`arch` scopes the correction, including any public-API proposal to the user.
+`EffectPoll` stays unprobed until `arch` asks.
+
+**Results** (`.local/s122-io-reuse-test-heap-probes.txt`, HEAD `48d6e713` plus
+the working tree, one run each). P-L was not constructed: no `concurrency_*`
+source `let`-binds its launching value.
+
+| P-E source (`main` body) | Exit | stdout | stderr |
+|---|---|---|---|
+| control `(let [e (print "p-e")] (bind e (fn [_] (print "p-e"))))` | 0 | `p-e` twice | — |
+| subject `(let [e (print "p-e")] (bind e (fn [_] e)))` | 1 | `p-e` once | ``platform fn `platform.stdio/print` dispatch failed: segmentation fault`` |
+
+#### `Effect` reuse — intake
+
+- **Accepted as a defect**, separate from the `Pure` refusal: §10.8.1 makes the
+  subject legal; it lost one effect and took a hardware fault. The `Pure`
+  defect is a deliberate guard refusing; this one has no guard.
+- **Confirmed by the control:** the fault follows the second force of one
+  `Effect` node. A parse, import, platform-load or `print` fault is excluded.
+- **Mechanism.** At the defect's source
+  `cranelisp-platform::call_effect_thunk` rebuilt and consumed
+  `Box<Box<dyn FnOnce>>` from node field 0, and
+  `io.rs::force_effect_node` neither wrote that field nor refused a second
+  force, so a second force re-boxed a released thunk. The named refuter — the
+  fault persisting with a re-callable thunk — did not occur: IOR-4 flipped on
+  the borrowing `call_effect_thunk`, so the attribution stands.
+- **Entered** at the consume-once thunk contract (`call_effect_thunk` rustdoc,
+  `total-concreteness.md` §3.4), which the 2026-09-21 ruling now contradicts.
+  The contract is `cranelisp-platform` public API and ABI; the user approved
+  `arch`'s exact `Effect` delta on 2026-09-21 (`total-concreteness.md` §3.4).
+  The `Pure` correction does not cure it.
+- The guard turned the fault into exit 1; without the `sigsetjmp` recovery the
+  same program is a process crash. One run: determinism is unmeasured.
+
+#### IOR-4 — permanent regression cell
+
+In `tests/spec_10_io.rs` beside IOR-1/IOR-C, on the `sequential_class_program`
+spawn shape.
+
+- Subject `run_mode_reused_effect_performs_its_effect_on_each_force` and control
+  `run_mode_fresh_effect_per_force_performs_its_effect_control`: the two P-E
+  sources unchanged, `--run --no-cache`.
+- Both assert exit 0 and stdout exactly `p-e` twice. Neither matches the fault
+  text or the signal: the fault is one face of undefined behaviour, not the
+  condition.
+- `// spec: spec/10-io.md §10.8.1`; subject carries
+  `// defect: class=uaf locus=crates/cranelisp-platform/src/lib.rs::call_effect_thunk found=S122 owner=/dev`,
+  closed with its `fixed=` stamp under
+  [integration state](#io-correction--adequacy-and-integration-state).
+- No balance assertion: the subject's literal is last owned by the DLL capture,
+  which the ledger cannot see
+  ([instrument limit](#ior-6--capture-release-sentinel)). Forced-node
+  destruction rests on E-T2 and E-T3.
+- Its lifetime fence is [below](#effect-correction--lifetime-and-reuse-fence).
+
+#### Abort-path leak — source-only intake, unconfirmed
+
+`design` (intrinsics) reads `io.rs`'s runtime-error / dispatch-fault return as
+disarming the frame without releasing a fresh `current` or the un-popped fresh
+continuations
+([trampoline ownership transitions](../../design/intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions)).
+`qa` opened the site: it
+disarms and returns; `TrampolineFrame`'s own rustdoc calls that exit "already
+balanced", so the two source readings disagree. No leak is measured and no
+repro exists; it is a hypothesis, independent of node kind and of the `Pure`
+correction, which changes only what a leaked forced `Pure` holds. No cell, fix
+or fence is allocated. Confirming it takes one marginal pair differing only in
+whether a fresh node is in flight at an abort; `qa` allocates that when `sprint`
+schedules the intake.
+
+#### `Effect` correction — lifetime and reuse fence
+
+Authority: the approved delta — `Fn() -> CL + Send + Sync + 'static`
+constructors, a borrowing `call_effect_thunk`, `drop_effect_thunk` called once
+by node teardown under both dispositions, ABI 11. One owner, one discharge.
+
+| Condition | Plausible wrong outcome | Layer, owner |
+|---|---|---|
+| IOR-4: reuse performs the effect on each force | second force faults or is lost | e2e, `test` — flips RED→GREEN in the correcting change-set |
+| IOR-6: an unforced, discarded `Effect` releases its thunk and captures | teardown row missing under one disposition, so thunk and captured `CLOwned` strand | e2e marginal pair, `test` — subject and control in [IOR-6 sentinel](#ior-6--capture-release-sentinel) |
+| E-T1: node released unforced destroys the thunk once | as IOR-6, at the seam | `dev` (intrinsics) unit, drop-counting capture; RED first on the current empty `Effect` field row |
+| E-T2: node with a second owner forced twice, then released: two calls, one destruction, after the last call | force still frees the box; destruction doubled; destruction before a later call | `dev` (intrinsics) unit on the new seam. Not run against the current seam — it is undefined behaviour in-process; its pre-fix red is IOR-4's |
+| E-T3: shallow last-reference release after a force destroys the thunk once | the `SpineTransferred` disposition omits the row | `dev` (intrinsics) unit |
+| E-P1: a capture whose destructor panics does not unwind out of `drop_effect_thunk` | unwind across the `extern` boundary aborts the host | `dev` (platform) unit |
+
+- `Send + Sync` is structural: a violating closure does not compile. Its
+  evidence is the workspace build of every in-tree platform DLL plus the
+  generated `public-api.txt` lines, which the executing baseline guard then pins
+  against removal. No compile-fail test and no two-lane e2e cell: scheduling
+  decides whether both lanes force, as for IOR-3.
+- The two `ABI_VERSION` literal pins in `tests/concurrency_poll_edge_guards.rs`
+  and the adjacent-pair message in
+  `tests/platform_errors.rs::platform_abi_version_mismatch_e2e` read 11
+  (maintenance check).
+- **Trampoline-driven discharge gets no further cell** (intrinsics review
+  advisory). `feed_continuation` releases a fresh `current` through one
+  tag-blind `dec_shallow_io` call. E-T3 observes that function discharging an
+  `Effect` once, and every green e2e balance cell that forces a fresh node
+  observes the call being made. A counting trampoline cell fails only where
+  one of those already fails.
+- The host-side thunk box is outside the allocation ledger; e2e sees its
+  destruction only through a captured counted value.
+
+##### IOR-6 — capture-release sentinel
+
+- **Instrument limit.** `RcStats` and `AllocParity` read the host allocator's
+  counters in `cranelisp-intrinsics`. A platform DLL's last release —
+  `CLOwned` drop → `CLHeap::dec_rc` — frees with `std::alloc::dealloc` and
+  reaches neither. A counted block whose last owner is a DLL capture reads +1
+  whether the DLL frees it or strands it.
+- **Consequence.** The first subject, `(let [_ (print "p-e")] (Pure 0))`, made
+  the thunk the literal's only owner. It measured +1 before and after the
+  teardown correction; the traced run counts the `Effect` and `Pure` node frees
+  and no free of the string. That +1 is not evidence of a product leak, and
+  production is not changed to satisfy it. That the DLL-side free happens is a
+  source argument, not a measurement.
+- **Fixture property.** The captured value has a second, host-held owner that
+  outlives the discard, so the host performs the last release:
+  control `(let [s "p-e" n 0] (Pure (add-i64 n (str-len s))))`, subject the same
+  with `n (let [_ (print s)] 0)`. Exits equal and non-zero, stdout empty,
+  `pair.allocs() > 0`, `CRANELISP_RC_DEC_CHECK` armed, `assert_balanced`.
+  `test` may respell with free-standing primitives; the property is what binds.
+- **Discrimination.** A stranded capture pins the string's count at 1 after the
+  host's release: +1. A doubled destruction releases it early, so the later
+  `str-len` and host release meet a freed block under the armed seam check.
+- **Detection — proven.** `dev`(intrinsics) retargeted the `Effect` field row
+  at the empty field set once and restored it byte-exactly. Under the mutant:
+  control 2/2, subject 3/2, marginal +1, failing at `assert_balanced`, both
+  exits still 3. Restored: subject 3/3, marginal 0. No standing mutation run.
+- **Classification.** Safety fence on the composed path (real DLL constructor,
+  real teardown, `CLOwned` capture). E-T1–E-T3 remain the seam evidence. The
+  `// defect:` tag on the first subject is withdrawn, not retagged: its red was
+  the instrument's.
+- A non-zero marginal on the corrected build returns to `qa`; `test` does not
+  adapt the subject to reach zero.
+- **Limit carried.** Any program whose DLL capture is a block's last owner —
+  for example a forced `(print "literal")` — reads as a leak under both
+  instruments. Diagnostic-observer limit; no ledger or allocator change is
+  allocated, and none is authorized by the approved `Effect` delta.
+
+##### Discharge-panic containment (platform review R1)
+
+- **Grade.** Asserted with a named falsifier. E-P1 measures the catch in
+  process; nothing measures it across a real `cdylib` boundary.
+- **Falsifier.** A DLL-built `Effect` whose capture's destructor panics, torn
+  down by the host, aborts the process instead of completing.
+- **Decision: bounded residual, no fixture now.** In-tree captures are `i64`
+  and `CLOwned`; neither destructor can panic. The uncontained outcome is an
+  abort, not corruption. The containment is lost if the holder moves out of
+  the generic constructor; that compiles and keeps E-P1 green, which is why
+  the grade is asserted and not structural.
+- **Trigger.** The first in-tree capture with a fallible destructor, or a
+  change to where the holder is constructed, allocates one extern on the
+  existing `platforms/boom` fixture plus one `tests/platform_errors.rs` cell.
+  A new `cdylib` is not warranted.
+
+#### Scope-result `bind` leak — intake
+
+Accepted as a defect: a legal program strands its IO tree. Measured by `dev`
+(`.local/s122-io-reuse-dev-scratch/`, one `--run` each, allocation counts from
+`CRANELISP_RC_STATS`), all on the `platform_pure_program` preamble:
+
+| `main` body | allocs / deallocs |
+|---|---|
+| `(bind (pure-string) (fn [s] (Pure …)))` | 6 / 6 |
+| `(let [p (pure-string)] (bind p (fn [s] (Pure …))))` | 6 / 2 |
+| `(let [p (pure-int)] (bind p (fn [_] (Pure 17))))` | 4 / 1 |
+| `(bind (Pure 0) (fn [_] (bind (pure-string) (fn [s] (Pure …)))))` | 9 / 9 |
+| IOR-2 control | 11 / 3 |
+| IOR-2 subject | 9 / 3 |
+
+- **Confirmed by control:** the leak follows `let`-binding the operand (rows 1
+  and 2 differ in that alone) and does not need a heap payload (row 3).
+- **Mechanism — observed at its seam ([C0](#ior-5-correction--evidence-delta)).**
+  Not the binding's own release: that strands `p` and its payload only, and rows 2 and 3 strand the
+  `bind` node and its closure as well. One reading fits all six counts: a
+  `bind` node that is the result of a scope owning a heap binding takes the
+  protective retain in
+  `crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value`
+  (a builtin call is not an independent result there), and no release balances
+  it. Row 4's closure parameter is an `Int`, so no retain; IOR-2's continuation
+  parameter is a `String`, so the inner `bind` strands four nodes in the control
+  and two in the subject — the −2. The pre-fix CLIF of `let1` carries an
+  `atomic_rmw add` on the new Bind node's RC word and `sib` carries none; the
+  corrected build's CLIF differs by exactly those three lines.
+- **Unmeasured:** a build without the `Pure` correction; balance under `--link`
+  and the REPL (value only: the IOR-1 subject returned 7 in all three modes); a
+  non-IO heap binding; a `select`, `race` or `sleep` result publicly.
+- **Coverage attribution:** every IO balance cell either ends its scope in a
+  fresh `Pure` or holds no heap binding beside its `bind`, and IOR-2 assumed two
+  healthy children without a cell establishing it.
+- The `Pure` correction is intrinsics-only and changes what a stranded forced
+  node holds, not whether it is stranded; the backend correction is
+  [below](#ior-5-correction--evidence-delta).
+
+Landed by `test` in `tests/spec_10_io.rs` beside the `platform_pure_string_*`
+cells, `MarginalPair` over `platform_pure_program`, each observed once:
+
+| Cell | Control allocs/deallocs | Subject | Residual |
+|---|---|---|---|
+| `platform_pure_let_bound_bind_operand_balances` — rows 1 and 2 above | 6/6 | 6/2 | +4 |
+| `platform_pure_unused_heap_binding_beside_bind_balances` — control `(bind (pure-int) (fn [_] (Pure 17)))`, subject the same inside `(let [q (pure-int)] …)` | 4/4 | 5/2 | +3 |
+
+- The table records the pre-fix observation; both read 0 on the corrected
+  build. Both exit 17 on both children. The +3 fits node, inner node and
+  closure; that breakdown was not traced.
+- Both cells and IOR-2 carry
+  `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev`;
+  C0 confirmed the locus. They cite `spec/10-io.md` §10.12.9, which governs
+  cancellation and which they do not observe; the requirement they fence is
+  `spec/12-runtime.md` §12.3.1. `test` re-traces them in the pass that closes
+  the tags; the cancellation coverage band claims nothing from them.
+- Do not re-axis IOR-2 or any sibling to avoid the shape.
+
+#### IOR-5 correction — evidence delta
+
+Authority: `design/backend/s122-closure.md` §8 — a closed backend-private
+classification of the four IO-combinator `BuiltinFn` carriers (`bind`, `select`,
+`race`, `sleep`), read by the spark exclusion, the interceptors and the `Apply`
+arm of `value_provenance_with_calls`, which maps each to `Fresh`. No public-API,
+ABI or schema change. `design` confirmed the structure at source
+(`call_returns_owned_reference` answers `Some(_) => false`, so the result was
+`OwnedTemporary` and took the protect); C0 observed the emitted retain.
+
+| # | Condition | Plausible wrong outcome | Layer, owner |
+|---|---|---|---|
+| C0 | Before any edit, the pre-fix CLIF of `let1.cl`'s `main` shows an `atomic_rmw add` on the new Bind node's RC word that no release balances; `sib.cl`'s shows none. | the counts fit a different mechanism and the correction cures nothing or something else | `dev` (backend), one `CRANELISP_CODEGEN_DUMP` run per source from `.local/s122-io-reuse-dev-scratch/`, stderr kept. No such retain: stop, return to `qa`. This observation retires "provisional" on the locus |
+| C1 | Each of the four carriers, as a scope result, classifies `Fresh`; the IOR-5 shape's CLIF carries no retain on the Bind node's RC word. | one carrier omitted; the classification lands but a second reader still names the spelling | module, `dev`: `compiler/apply/io_combinator_freshness_tests.rs`, pure tier and CLIF tier, both observed RED before the fix |
+| C2 | Narrowing holds: `(let [p io] (if c (bind p k) p))` stays `NotOwnedHere`; a `vec-get` builtin stays `OwnedTemporary`; a `bind`-spelled `Apply` without the carrier is not `Fresh`. | `Fresh` granted to a join, to every builtin, or by spelling — the binding arm's node is freed at scope exit and then forced | module, `dev`, same file, pure tier. Green before and after; this is the control that makes C1's red discriminating |
+| C3 | The two IOR-5 cells and IOR-2's balance leg read zero on the corrected build; `sib`, `nested` and every IO balance cell stay green; no `CRANELISP_RC_DEC_CHECK` trip, double release or exit change. | the elision fires on the module fixture and not on the public shape; or it over-releases | existing e2e cells, unchanged. IOR-2 is a prediction: if it stays RED after the IOR-5 cells flip, its −2 has a second cause and returns to `qa` as new intake |
+
+**The suggested public borrowed-result negative is not allocated.** Its wrong
+outcome is C2's. The join is `ValueProvenance::join`, a `max` this correction
+does not touch, already pinned for a `Fresh` arm beside a binding arm
+(`fn_compiler.rs::one_non_fresh_arm_makes_the_join_non_fresh_neg`); the only
+new fact is which `Apply` nodes are `Fresh`, and C2 observes that and the
+verdict at its own seam. An e2e twin would be green before and after and could
+fail only where C2 already fails.
+
+**C2 carries no CLIF leg of its own** (backend review R1). Emission reads the
+verdict through one gate, `body_has_independent_result`, over the same walk C2
+calls. Both sides of that gate are already pinned in CLIF: a borrowed join
+keeps the protect
+(`rc_emission/return_ownership_tests.rs::mixed_callable_and_scope_binding_return_keeps_protection`)
+and C1's `Fresh` result loses it. The only fact this correction adds to the
+join is its verdict, which C2 observes. A CLIF twin would fail only where one
+of those three fails.
+
+**Modes.** Shared codegen changes, so every mode takes the elision. The final
+full `cargo nextest run --no-fail-fast` already carries the REPL and `--link`
+`bind` cells and is the standing mode evidence. Added once, uncommitted, by
+`dev` on the corrected build: the IOR-1 subject — itself a heap-binding scope
+returning `bind`, needing no platform preamble — entered at the REPL and built
+with `--link`, seam checks armed where the mode honours them. Expected 7 each.
+Diagnostic observer; a wrong value, fault or check trip is a refuter and returns
+to `qa`. No per-mode balance cell: nothing in the correction is mode-conditional.
+
+**CLIF goldens** (maintenance check). A golden may change only where a
+heap-binding scope returns one of the four carriers, and only by losing the
+protect retain. `dev` re-baselines those with that attribution; any other golden
+difference is a refuter.
+
+Completion: met. C0 recorded before the edit; C1 red then green; C2 green on
+both builds; C3 zero on the full run; the three mode entries returned 7; no
+golden changed.
+
+**Residual intake — not accepted semantics, nothing allocated.**
+
+- *Joined fresh arm.* A join with a fresh-combinator arm and a binding arm keeps
+  the protect, so it still leaks when the fresh arm is taken. Read at source by
+  `design`; unmeasured. The leak is a defect, not a sanctioned cost of the
+  conservative join; per-arm protection needs its own design.
+- *Unmeasured neighbours.* An extern string primitive
+  (`(let [a (int-to-string 1)] (int-to-string 2))`) or a platform call
+  (`(let [q (pure-int)] (pure-int))`) returned from a heap-binding scope may
+  share the class. Neither is confirmed, and each needs its owner's result
+  contract before a probe means anything. No probe is run on their account now.
+
+`qa` allocates a marginal pair for either when `sprint` schedules the intake.
+
+**Limits.** One observation per source and one binary; public cells run under
+`--run` only. Concurrent reuse is argued from construction, not measured.
+`Launch` and `EffectPoll` reuse are unobserved, as is reuse of a `Bind`, `Par`
+or `Select` node as such; the §10.8.1 band names `Pure` and `Effect` and no
+more.
+
+#### IO correction — adequacy and integration state
+
+- **Evidence: adequate** for the approved reusable-`Pure`, `Effect` ABI-11 and
+  IOR-5 corrections. One full `cargo nextest run --no-fail-fast` on the
+  integrated tree: 6011 run, 6010 passed, 1 failed, 1 skipped. The failure is
+  `citation_drift::project_documents_conform_to_the_checked_in_declaration`, a
+  maintenance check on project documents that gates no IO condition; the skip
+  is the `#[ignore]`d contention benchmark in `tests/concurrency_spark.rs`.
+- **User gate, closed (2026-09-21).** The generated
+  `crates/cranelisp-platform/public-api.txt` diff matches the approved delta
+  under independent review. The user confirmed that exact generated diff.
+- **Integration, pending.** The corrections and their tests are uncommitted, so
+  no `fixed=S122/<sha>` stamp can be minted. After the commit, `test` closes
+  the `// defect:` tags on the IOR-1, IOR-2, IOR-4 and IOR-5 cells, removes
+  their "Attribution provisional" lines and re-traces the IOR-5 cells. Until
+  then those tags read as open guards: a RED on any of those cells is a
+  regression and returns to `qa`; it is not a known defect.
+- **Residuals carried to close:** the ledger's blindness to DLL-side frees
+  ([limit](#ior-6--capture-release-sentinel)); asserted discharge-panic
+  containment ([grade](#discharge-panic-containment-platform-review-r1)); and
+  the open intakes — the severed join and cross-lane no-overlap that
+  `design/intrinsics` grades asserted, the
+  [abort-path leak](#abort-path-leak--source-only-intake-unconfirmed), the
+  joined fresh arm and the unmeasured neighbours above. Each stays an
+  unconfirmed or uncorrected defect hypothesis, not accepted semantics.

@@ -409,7 +409,7 @@ later evidence-driven refinement.
 
 ### Producer and backend designs
 
-[Intrinsics closure](../design/intrinsics/s122-typed-consume-closure.md) retains
+[Intrinsics closure](../design/intrinsics/ownership-and-disposal.md) retains
 the already-approved public vocabulary and updates current same-crate callers.
 The backend closure fixture remains with the backend owner. ACT-0956 uses a
 module-level post-send barrier with observed initial admission, cancellation
@@ -1936,3 +1936,190 @@ remains the previously recorded 5,983 default passes (known document gate red),
 1,131 focused passes and 81 isolated agent passes; subsequent edits are prose
 and citation corrections. Latest document check: 1,878 findings, no new
 identities from the obligation correction. Phase 5 remains active.
+
+Checkpoint committed as `48d6e713`. The nine accepted REPL defect records now
+name that fixing commit; this post-checkpoint update changes comments only.
+
+The next whole-surface batch reserves frontend design, intrinsics design and
+retained S102–S121 QA plans independently. Root owns incoming citation repairs,
+collection declarations and one integrated document check. Coverage assurance
+extensions remain deferred in ACT-0962. No implementation or phase transition.
+
+| Reservation | Provider / model / effort | Session | Status |
+|---|---|---|---|
+| `design/frontend/**` | Claude / Opus / high | `49da08df-ec23-4f74-9414-1c4df39b8a34` | complete; 15 products to 12, current interiors |
+| `design/intrinsics/**` | Claude / Opus / high | `4118c29c-7a1d-4415-b25c-4d306972015e` | complete; ownership/disposal consolidated |
+| S102–S121 `tests/plan/` records and PLAN.md | Claude / Fable / high | `0c11c7e8-0b52-43d2-8754-42f6def2295e` | complete; six retired plans, cited sections retained |
+
+Batch baseline: `.local/s122-next-docs-before.json`; checker baseline:
+`.local/s122-obligation-repair-final-documents.json` (682 documents,
+1,878 findings). Role results are `.local/s122-next-{frontend,intrinsics,qa}-result.md`.
+
+QA removed six completed records and trimmed seven plans to still-cited
+sections. Root applied its incoming citation and collection-registration map.
+Retained S117 module-matrix allocations remain dated, unverified evidence; no
+new evidence claim or obligation is inferred. ACT-0950 already carries the S122
+pilot disposition; its older request is not new scope.
+
+The released slot continues with the Binary/int standing surface, including
+older compiler-concurrency and session narratives. Reservation: `design/int/**`;
+Claude / Opus / high, session `98c00e36-3f1f-450a-909d-490322097ae4`, running.
+Result: `.local/s122-next-int-result.md`. Other owners' citation edits wait for
+that reservation to release.
+
+Intrinsics consolidation produced the current ownership/disposal home and
+retired three predecessor plans. Root applied the owner's relocation map
+except Binary/int citations, which await its active reservation. Integration
+corrected a stale open-runtime-acceptance sentence against QA's later explicit
+closure and the user's 2026-09-11 baseline confirmation; no evidence rerun.
+
+QA is classifying the separate A6 diagnostic detection-proof lead read-only:
+Claude / Fable / high, session `a6020cb1-5b30-4232-a227-0204cd6bc4c2`, running;
+result `.local/s122-a6-qa-result.md`. No new control or defect is inferred from
+the design search alone.
+
+Frontend consolidation and its source-comment relocation map are complete.
+QA classifies A6 as an already allocated, undischarged intrinsics module proof,
+not a compiler defect or a new control. Its bounded assessment is complete;
+root applied the exact truthful evidence wording. One dev-owned debug-twin
+unit and fail-on-revert observation discharge it without changing production
+behavior or reopening runtime acceptance.
+
+A6 dev reservation: `crates/cranelisp-intrinsics/src/drop/tests.rs`, plus a
+temporary scoped `drop.rs` mutation restored after the detection observation;
+Claude / Opus / high, session `d3774cee-0c66-4940-a659-389536da625c`, running.
+Only the allocated two module units run; no production change is authorized.
+Result: `.local/s122-a6-dev-result.md`.
+
+QA read-only assessment of the retained trait-head echo question: Claude /
+Fable / high, session `8047113b-c191-4bfd-90df-ded95012c66d`, running; result
+`.local/s122-trait-echo-qa-result.md`. It compares the current spec, source and
+existing evidence before treating the old frontend question as unresolved.
+No concurrent tests or implementation are allocated.
+
+A6 dev completed the allocated proof: planted and clean units pass 2/2;
+removing the debug assertion fails only the planted unit with the intended
+"did not panic" message; restoration passes 2/2. Production `drop.rs` is
+byte-identical to HEAD (SHA256 `5e0562cf5d512747476f7d295657017a4fecc086cf4549b5b0e2256427469969`).
+Only one unit was added; no production change or expanded evidence matrix.
+Root updated the design evidence with its explicit debug-twin/scalar limits.
+
+The trait-head QA assessment is complete: the supposed open question was
+already settled and implemented in S112, with existing module and e2e guards.
+Root corrected the retained false claim and the shape-only wording against
+QA's exact source-backed disposition. No user question or new test is needed.
+
+Final A6 QA verdict: adequate within the allocated debug-profile/module-seam
+limits; no further test or review needed. Claude / Fable / high, session
+`5bce35d7-23ae-477a-b486-8049d7562f01`, complete;
+`.local/s122-a6-adequacy-result.md`. This closes the allocated proof.
+
+Continued architecture document reservation: `design/arch/**` excluding
+`fixmes/**`; source, specs and public baselines remain read-only. Claude / Fable /
+high, session `ac6fb85c-ff9b-43eb-89c6-20bc7b743dc0`, running;
+Result pending. No boundary/API/semantic change authorized.
+
+Binary/int consolidation complete: 46→39 Markdown files and 26,614→21,047
+lines, with six obsolete diagrams retired. Root applied the relocation map
+and merged the misleading historical collection into its current/retained
+carriers. This is ordinary declared-collection maintenance under the user's
+approved retention policy, not a new permission gate or checker exception.
+The architecture decision's old persistent-worker section citation waits for
+the active architecture reservation. Remaining stale bodies require repair,
+not an inferred banner-scoped exemption.
+
+The completed four-surface batch reduces its Markdown burden by roughly
+14,800 lines and 19 documents. Integrated check after mechanical repairs:
+`.local/s122-next-repaired-documents.json` reported 1,597 findings; three new
+identities were a pending local result link (removed until it exists) and an
+ambiguous typecheck citation (qualified). Architecture edits were beginning
+during that check; the next stable gate will supply the final count.
+
+Specification navigation reservation: `spec/**`, `repl/spec/**`, `repl/spec.md`;
+Claude / Opus / high, session `9b8ea257-e980-4137-9c15-5eb0b3ac64ad`, running.
+Meaning, user rulings and coverage bands are unchanged by authorization.
+
+QA is classifying the remaining R1 observer/public-evidence lead read-only,
+without reopening Q3 or A6: Claude / Fable / high, session
+`03a19781-a3cf-4352-9510-793be883f350`, running. Filename absence alone is not
+credited as a gap; existing equivalent evidence and current authority govern.
+
+R1 QA classification complete (read-only). The loser-force path and its
+diagnostic observer lack their previously allocated observations; this is not
+a reproduced product defect. QA separates module refusal evidence, observer
+proof and language-level acceptance. The last depends on whether repeated
+forcing of one IO value is specified to succeed, refuse, or remain unspecified.
+Root is preparing a bounded public probe and spec-authority framing before
+asking the user; Q3/runtime and A6 remain accepted.
+
+Public R1 probe: `test`, Claude / Opus / high, session
+`b3fd7c01-c685-451c-b24b-60d53aa304d1`, running; existing binary only, disposable
+inputs, no permanent expected-behavior test before specification authority is
+settled. Root narrowed the ownership/disposal evidence credit using QA's exact
+disposition. The architecture register wording awaits its reserved owner.
+
+Architecture consolidation complete: 54 tracked files retired; decision labels
+resolve through their canonical homes. Root applied collection and incoming-link
+repairs. The lifecycle/transaction facade approval basis is the archived S121
+confirmation; no new public surface was approved by document status correction.
+Spec navigation repair complete: one spent readiness record retired and stale
+section/path references repaired without normative or coverage-band changes.
+
+The test role could only observe typechecking under its Bash permission policy.
+After its reservation released, root executed the exact prepared sources through
+explicitly escalated/approved bounded invocations. Sequential reuse of one Pure
+refuses with the named runtime error; the fresh-Pure sequential control returns
+7. Both race probes return 7 in these single observations; the invalid-type
+control rejects. No rebuild or production change. Recorded in
+`.local/s122-r1-root-observation-result.md`; this is not an acceptance ruling.
+
+Read-only specification-authority framing is running: Claude / Opus / high,
+session `33e098a1-9d61-4508-a96c-1f3c6742c258`. The conformance sentence still
+using the retired ring axis is a separate spec-reported question, held behind
+the IO-reuse question for one-at-a-time review.
+
+### Approved IO reuse — current correction status
+
+- **Authority (user, 2026-09-21):** IO descriptions are reusable, recorded in
+  `spec/10-io.md` §10.8.1. Once-only refusal is a defect, not language behavior.
+- **Approved Effect API:** three `CLIO::effect*` constructors require
+  `Fn() -> CL + Send + Sync + 'static`; `call_effect_thunk` borrows;
+  add `pub unsafe fn drop_effect_thunk(i64)`; `ABI_VERSION` 10 → 11.
+  [Architecture contract](../design/arch/total-concreteness.md#34-the-io-existential-bind-a-representation-question-and-it-dissolves)
+  owns the exact delta. The generated platform baseline matches: three changed
+  constructor lines and one added cleanup function. **User confirmed the exact
+  generated diff on 2026-09-21.** No other public delta changed.
+- **Implemented:** Pure retain-on-force and node-owned Effect thunk teardown;
+  private backend IO-combinator freshness classification removes the observed
+  unbalanced scope-result retain. Producer, consumer and backend reviews found
+  no blocking implementation issue. QA accepted the existing mixed-join evidence:
+  the new cell observes classification, while an existing test covers emitted
+  protection.
+- **Evidence:** Pure and Effect reuse, heap balance, both backend leak cases,
+  and ABI-11 checks pass. Run, linked and REPL observations return 7. Module
+  tests prove capture lifetime and both teardown dispositions; Reserved-word
+  and capture-cleanup detection proofs fail under mutation and pass restored.
+- **Final full suite:** `cargo nextest run --no-fail-fast` — **6,010 passed,
+  one standing document-gate failure, one existing skip**; 114 seconds. No other
+  RED. Raw evidence: `.local/s122-ior6-proof-dev-logs/ior6-full-suite.log`.
+  Mutation restoration is byte-exact; no test expectation was weakened.
+- **Document check:** 615 documents, **1,491 findings**; five prior identities
+  removed against the 1,496-finding IO-review baseline, no new identity after
+  the sprint reference repair. Role wiring and diff checks pass. The architecture
+  once-only contract was replaced, removing 285 lines of superseded prose.
+- **Final QA:** Claude / Fable / high, session
+  `0b05ad08-de6a-49b9-8004-d241fb33c385`, finds implementation and evidence
+  adequate for the approved correction. All reservations are complete.
+  Test attribution stamps, corrected runtime trace links and the stale ABI-8
+  test name remain integration work; any new test failure is a regression.
+- **Residual limits:** host allocation counters cannot observe direct DLL frees;
+  IOR-6 now keeps a host owner to make its final release visible and is proven
+  to detect missing teardown. DLL-side capture-panic containment is asserted
+  with a named falsifier; no new fixture is allocated for current captures.
+  Launch/EffectPoll reuse, severed-join, abort-path and joined-fresh-arm/other
+  result-ownership intakes remain separate, unmeasured work, not accepted
+  semantics or newly approved scope.
+- **Integration:** Phase 5 remains active. User-directed checkpoint integration
+  follows confirmation of the generated baseline. Test fixed-commit stamps
+  follow the checkpoint. Preserve NOTES and the published shared-package index
+  pin; no push or phase transition.

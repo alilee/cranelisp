@@ -300,13 +300,13 @@ fn decision24_capture_effect_pattern_balanced() {
 // `tests/plan/PLAN.md` §Platform structural and crossing evidence.
 // ---------------------------------------------------------------------
 
-// ABI_VERSION is 10 because the DLL-constructed Pure node appends the payload
-// drop-glue witness word. A v9 DLL's shorter node must be rejected before the
-// host reads that word.
+// ABI_VERSION is 11 because the Effect node's thunk word now denotes a
+// repeatable, borrowed thunk. A v10 DLL's single-shot box must be rejected
+// before the host forces it by reference.
 // spec: design/platform/platform.md §4.3; total-concreteness.md §3.4
 #[test]
-fn abi_version_is_10() {
-    assert_eq!(ABI_VERSION, 10);
+fn abi_version_is_11() {
+    assert_eq!(ABI_VERSION, 11);
 }
 
 // The macro's `concat!("cranelisp_platform_manifest_", name)` export-name
@@ -395,12 +395,8 @@ fn effect_thunk_panic_yields_fault_cause() {
         cause.contains("device exploded"),
         "fault_cause must carry the panic message, got {cause:?}"
     );
-    // Free the node (the thunk box was consumed by call_effect_thunk).
-    unsafe {
-        let total = *((base) as *const i64) as usize;
-        let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
-        std::alloc::dealloc(base as *mut u8, layout);
-    }
+    unsafe { drop_effect_thunk(thunk_ptr) };
+    free_node(base);
 }
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 — a clean
@@ -422,11 +418,153 @@ fn effect_thunk_clean_yields_null_fault_cause() {
         "clean thunk forwards the closure value"
     );
     assert_eq!(outcome.fault_len, 0, "clean thunk has fault_len 0");
+    unsafe { drop_effect_thunk(thunk_ptr) };
+    free_node(base);
+}
+
+// ---------------------------------------------------------------------
+// Repeatable, borrowed Effect thunk (ABI 11) — design/platform/platform.md §4.2.
+// A capture's destructor runs exactly once, at discharge, never at force.
+// ---------------------------------------------------------------------
+
+/// Counts how many times the value it is captured in has been destroyed.
+struct DropSentinel(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for DropSentinel {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn drop_counter() -> (DropSentinel, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    (DropSentinel(count.clone()), count)
+}
+
+fn effect_thunk_ptr(base: i64) -> i64 {
+    // SAFETY: `base` is a live Effect node; the thunk word is at payload+8.
+    unsafe { *((base + HEAP_HEADER_SIZE + 8) as *const i64) }
+}
+
+fn free_node(base: i64) {
+    // SAFETY: `base` came from `effect_force_test_alloc`, whose header records
+    // the allocation's total size at base+0.
     unsafe {
-        let total = *((base) as *const i64) as usize;
+        let total = *(base as *const i64) as usize;
         let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
         std::alloc::dealloc(base as *mut u8, layout);
     }
+}
+
+// spec: design/platform/platform.md §4.2 — forcing borrows the thunk; the
+// captures survive the force (T1, the discriminating red).
+#[test]
+fn effect_force_does_not_consume_thunk() {
+    wire_effect_force_alloc();
+    let (sentinel, drops) = drop_counter();
+    let io: CLIO<CLInt> = CLIO::effect(move || {
+        let _held = &sentinel;
+        CLInt::from(7i64)
+    });
+    let base: i64 = io.into();
+    let thunk = effect_thunk_ptr(base);
+    let outcome = unsafe { call_effect_thunk(thunk) };
+    assert_eq!(outcome.value, 7);
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        0,
+        "forcing must not destroy the thunk's captures"
+    );
+    unsafe { drop_effect_thunk(thunk) };
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "discharge destroys them");
+    free_node(base);
+}
+
+// spec: design/platform/platform.md §4.2 — a node forced twice runs its
+// closure twice and destroys its captures once, only at discharge (T2).
+#[test]
+fn effect_forced_twice_destroys_captures_once_at_discharge() {
+    wire_effect_force_alloc();
+    let (sentinel, drops) = drop_counter();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_in = calls.clone();
+    let io: CLIO<CLInt> = CLIO::effect(move || {
+        let _held = &sentinel;
+        calls_in.fetch_add(1, Ordering::SeqCst);
+        CLInt::from(9i64)
+    });
+    let base: i64 = io.into();
+    let thunk = effect_thunk_ptr(base);
+    let first = unsafe { call_effect_thunk(thunk) };
+    let second = unsafe { call_effect_thunk(thunk) };
+    for outcome in [&first, &second] {
+        assert!(outcome.fault_cause.is_null());
+        assert_eq!(outcome.value, 9);
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "each force runs the closure"
+    );
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        0,
+        "no destruction before discharge"
+    );
+    unsafe { drop_effect_thunk(thunk) };
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "exactly one destruction");
+    free_node(base);
+}
+
+// spec: design/platform/platform.md §4.2 — a never-forced node's captures are
+// destroyed by discharge (T3; the negative leg for T4).
+#[test]
+fn effect_never_forced_discharge_destroys_captures() {
+    wire_effect_force_alloc();
+    let (sentinel, drops) = drop_counter();
+    let io: CLIO<CLInt> = CLIO::effect(move || {
+        let _held = &sentinel;
+        CLInt::from(0i64)
+    });
+    let base: i64 = io.into();
+    unsafe { drop_effect_thunk(effect_thunk_ptr(base)) };
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    free_node(base);
+}
+
+// spec: design/platform/platform.md §4.2 — a panicking capture destructor is
+// contained inside `drop_effect_thunk`, and the remaining captures are still
+// destroyed (T4 / qa E-P1). Single-runtime limit: this proves the holder
+// catches; that the catch runs on the DLL's side of a cdylib boundary is
+// asserted from the monomorphisation site, not observed here.
+#[test]
+fn effect_discharge_contains_panicking_capture_destructor() {
+    struct PanicsOnDrop;
+    impl Drop for PanicsOnDrop {
+        fn drop(&mut self) {
+            panic!("capture destructor exploded");
+        }
+    }
+    wire_effect_force_alloc();
+    let (sentinel, drops) = drop_counter();
+    let bomb = PanicsOnDrop;
+    let io: CLIO<CLInt> = CLIO::effect(move || {
+        let _held = (&bomb, &sentinel);
+        CLInt::from(0i64)
+    });
+    let base: i64 = io.into();
+    let thunk = effect_thunk_ptr(base);
+    let discharged = std::panic::catch_unwind(|| unsafe { drop_effect_thunk(thunk) });
+    assert!(
+        discharged.is_ok(),
+        "the destructor panic must not unwind out"
+    );
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "the other capture is still destroyed"
+    );
+    free_node(base);
 }
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 + io-trampoline.md §13.2
@@ -504,10 +642,7 @@ fn effect_node_is_40_bytes_with_null_fn_name_and_capacity_1() {
                  lowers to `…_with_capacity(token, 1, f)` (ResourceSerial)"
         );
     }
-    // Note: the thunk_ptr (field-0, offset 8) holds a leaked
-    // Box<Box<dyn FnOnce>> that the trampoline would consume; we do not
-    // force it here, so the closure box is intentionally left unfreed
-    // (a one-shot leak bounded to this test).
+    unsafe { drop_effect_thunk(effect_thunk_ptr(base)) };
 }
 
 // =====================================================================
@@ -634,7 +769,9 @@ fn effect_on_resource_with_capacity_appends_capacity_at_offset_32_byte_identical
         "effect_on_resource(token, f) is byte-identical to \
              effect_on_resource_with_capacity(token, 1, f) on all stable fields"
     );
-    // (thunk_ptr boxes intentionally leaked — bounded to this test.)
+    for base in [a_base, b_base, c_base] {
+        unsafe { drop_effect_thunk(effect_thunk_ptr(base)) };
+    }
 }
 
 // ---------------------------------------------------------------------

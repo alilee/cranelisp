@@ -1125,7 +1125,7 @@ project/
 
 ## 8.16 Module Preamble [S88]
 
-A **module preamble** is module-level documentation: the module analogue of a definition docstring (§5.12). Where a `defn` docstring documents a function, a module preamble documents the module as a whole — its purpose, its public surface's intent, design notes. It is the module-level realization of the self-documenting principle (root `CLAUDE.md` §"Design Principles") and is purely additive: a module **without** a preamble is valid, exactly as the optional-prelude principle requires (§8.8.3).
+A **module preamble** is module-level documentation: the module analogue of a definition docstring (§5.12). Where a `defn` docstring documents a function, a module preamble documents the module as a whole — its purpose, its public surface's intent, design notes. It is purely additive: a module **without** a preamble is valid, exactly as the optional-prelude principle requires (§8.8.3). It is the module-level realization of the self-documenting principle ([root CLAUDE.md, Design Principles](../CLAUDE.md#design-principles)).
 
 ### 8.16.1 Syntax and Position [S88]
 

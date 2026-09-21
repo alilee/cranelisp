@@ -1125,7 +1125,7 @@ Principle 2); it reads the carrier's verdict exactly as typecheck's mode classif
 This is the one genuinely-new cross-crate edge of increment II (`sprints/SPRINT.md` Phase-2
 needs-list) and it lands **in the B3 implementing change-set, never ahead of the R5
 mechanism** (Principle 8 speculative-interface discipline), carrying the
-`public-api.txt`/`interfaces.md`/BC §7 + `CACHE_SCHEMA_VERSION` 12→13 cascade. Until the
+`public-api.txt`/`interfaces.md`/[BC 7](../arch/bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) + `CACHE_SCHEMA_VERSION` 12→13 cascade. Until the
 carrier lands, the spine's rule stands: the `Copy` point is scalars-only and `classify` has
 no `Value` arm.
 
@@ -2561,7 +2561,7 @@ gradeable.
 
 | # | Change-set | Contents | Depends on | [oracle] | [gate] |
 |---|---|---|---|---|---|
-| **II-B1** | R5 carrier consumption + `HeapCategory::Value` arm | Consume the `/arch`-authored `cranelisp-types` carrier (`value_layout(ty) -> Option<ValueLayout>` + `VALUE_LAYOUT_MAX_WORDS=1`, §7.1); add the `HeapCategory::Value` arm by delegation (§7.1); construction/field-read/match lowering to bare-word moves; Vec-of-values null-elem-fn path (§7.3); trace descriptor arm (§7.5); `CACHE_SCHEMA_VERSION` **12→13**; `public-api.txt`/`interfaces.md`/BC §7 cascade **as consumer** (the carrier is `/arch`'s to author). Rides `0498` types marshal-drift guard (Block C2). | B1; the `/arch` `value_layout` carrier change-set (lands **with** this, never ahead — Principle 8) | emission-affecting where a type flattens: **scoped re-baseline** (F2v-shape `Cell` alloc→value-word; heap-`Cell` restored byte-identical off) | **II-G1** (F2v rc_inc < 1% of B2; F2v N-worker < serial) |
+| **II-B1** | R5 carrier consumption + `HeapCategory::Value` arm | Consume the `/arch`-authored `cranelisp-types` carrier (`value_layout(ty) -> Option<ValueLayout>` + `VALUE_LAYOUT_MAX_WORDS=1`, §7.1); add the `HeapCategory::Value` arm by delegation (§7.1); construction/field-read/match lowering to bare-word moves; Vec-of-values null-elem-fn path (§7.3); trace descriptor arm (§7.5); `CACHE_SCHEMA_VERSION` **12→13**; `public-api.txt`/`interfaces.md`/[BC 7](../arch/bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) cascade **as consumer** (the carrier is `/arch`'s to author). Rides `0498` types marshal-drift guard (Block C2). | B1; the `/arch` `value_layout` carrier change-set (lands **with** this, never ahead — Principle 8) | emission-affecting where a type flattens: **scoped re-baseline** (F2v-shape `Cell` alloc→value-word; heap-`Cell` restored byte-identical off) | **II-G1** (F2v rc_inc < 1% of B2; F2v N-worker < serial) |
 | **II-B2** | Reuse tokens / drop-guided reuse | §6.1 token mechanism (function-local SSA maybe-null, drop-site→alloc-site, **never on the ABI** — spine §3.5, confirmed structurally in §6/§14.4); §6.2 per-call entry-check placement (copy-once-then-in-place); §6.4 static-proof check-elision + chaining (consume `unique_static` + `result_unique`); §6.5 `reuse_hit`/`reuse_miss` counters go live (H2 family, §13.2.1). The pairing analysis is intra-function, greedy, conservative (no pair ⇒ today's code). | B1 (dynamic rc==1 discriminator + `/design`(typecheck) §7.2 static proof); `0495` backend `tests.rs` split (Block C2) for scenario-test homes | emission-affecting: scoped re-baseline (reuse/in-place branches on the F4 guess chain + proof-elided sites) | **II-G2** (reuse hit-rate ≥50% on F4), **II-G3** (F4-hard median ≤ 2× serial), **II-G4** (F2 two-ctor honesty, reported not R5-graded) |
 | — | **CLOSE-SHORT SEAM** (`sprints/SPRINT.md` §Sizing) — II-B1+II-B2 deliver II-G1–G4; region arena defers | | | | |
 | **II-B3** | Producer-side escaping-projection elision (§3.3 promoted) — **DEFERRED RIDER** | The §3.3 producer-side model (return-boundary `ProjectionOf` propagation, `Let`-binding `borrowed_vars` join, `compute_last_uses` provenance extension), gated by the Q4 uniqueness/confinement proof (§3.3 re-frame + §6.4). Rides only if II-B2's proof machinery lands with capacity to spare; **not required for any II-G gate** (I-G1 is already 100% on the consumer-driven seam). | II-B2 (the uniqueness/confinement proof) | emission-affecting: scoped re-baseline (elided escaping projections) — behind the moded-summary check, byte-identical off | — (perf-additive; no II-G gate) |
@@ -2647,9 +2647,9 @@ obligation. `/qa`'s e2e lanes (F2v witness, II-G measurement, L-C3) sit above th
   increment II. **Seam contract:** `/arch` authors the carrier; the backend's `classify` and
   typecheck's mode classifier both **delegate** to it (no local copy — the soundness-coupled
   single source, spine §6.3). Lands **in the II-B1 change-set, never ahead** (Principle 8),
-  carrying the `CACHE_SCHEMA_VERSION` 12→13 + `public-api.txt`/`interfaces.md`/BC §7 cascade.
+  carrying the `CACHE_SCHEMA_VERSION` 12→13 + `public-api.txt`/`interfaces.md`/[BC 7](../arch/bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) cascade.
 - **From `/design`(typecheck):** (i) the **dynamic rc==1 discriminator** (the general write-path
-  permission check, spine §4.3 / typecheck §7.1(a)) — the backend emits the token; (ii) the
+  permission check, [ownership spine discriminator](../arch/ownership-inference.md#43-the-borrow-monomorphisation-chicken-and-egg-resolved-for-i-open-by-design-for-ii) / [typecheck discriminator](../typecheck/ownership-inference.md#71-the-three-mechanism-ruling-under-the-spines-framing) (a)) — the backend emits the token; (ii) the
   **static-uniqueness proof** — `unique_static` site fact + `result_unique` summary bit
   (typecheck §7.2). **Seam contract:** both are advisory, `#[serde(default)]`-absent ⇒
   Decision-24; the backend consumes them only at reuse/COW sites it already emits a token for,

@@ -20,8 +20,7 @@ orchestrator + application root — and is only a **host-client** of this runtim
 constructs the reactor once through the single C-ABI entry `cranelisp_run_io` and drives
 `block_on_reactor` for `--run`/REPL (`reactor.md §0`). The reactor internals — lifetime
 discipline, permit pools, `consume_io_tree`, poll deferral — are runtime-library guts `/int`
-neither owns nor needs to understand. (Historical note: `reactor.md` lived under `design/int/`
-until S97, when it was relocated here to stop mis-signalling `/int` ownership — see FIXME 0486.)
+neither owns nor needs to understand.
 
 The genuinely int-owned runtime surface is only the small `int_intrinsics()`-style externs
 that **physically live in `src/`** (e.g. the `discover-tests` host-promised extern, which must
@@ -34,18 +33,16 @@ This memory establishes one intrinsics-owned collection:
 
 | Collection | Purpose | Boundary |
 |---|---|---|
-| `intrinsics-current-designs` | Current intrinsics interior designs and retained live design evidence for runtime heap ownership, typed disposal, diagnostics, intrinsic registration and IO execution. | The six named current Markdown products directly under `design/intrinsics/`. |
+| `intrinsics-current-designs` | Current intrinsics interior designs for runtime heap ownership, node disposal, IO execution, intrinsic registration and diagnostics. | The four named current Markdown products directly under `design/intrinsics/`. |
 
 `intrinsics-current-designs` is established and retains live reference checking.
 
 | File | Purpose |
 |---|---|
-| `s122-typed-consume-closure.md` | **The current S122 intrinsics delta.** Reconciles the approved nine typed consume signatures and closed handle vocabulary against the delivered Sexp/ABI-10 disposal interior, same-crate owner seams, all direct consumers, ACT-0956's deterministic module evidence, and Q3's continuation-produced shared-`Bind` normal-completion correction. The generated runtime baseline is confirmed; integrated Phase-5 acceptance remains open. |
-| `s121-c5-intrinsics-visit.md` | Retained Sprint 121 visit record. Its `free_io_node`, three-state `Pure` ownership, cancellation join, exhaustive IO/Sexp disposal and `SexpAnnotated` work are delivered. Its typed-funnel plan is superseded by the S122 record; all consumer migrations and the generated baseline are delivered, while integrated Phase-5 acceptance remains open. |
-| `reactor.md` | The slice-2 effect reactor + async-trampoline interior — reactor loop, `HostCtx`/waker C-ABI, `EffectPoll`, the two-pool `Par` join, the token-capacity permit pool, launch/supervisor/admission, the combinator runtime + cancellation drop-paths. **§0 demarcates the thin `/int` host-client seam**; everything else is runtime-library interior. Relocated from `design/int/` at S97 (FIXME 0486). |
-| `intrinsics-table.md` | The published `intrinsics_table()` Import-catalog design (BC §4b invariant 11). **Landed**; its as-built correction is at the head (the catalog shipped as a `pub fn`, not the `pub static` the body target-states, per the S76 seam-3 `!Sync` ruling — read every `INTRINSICS_TABLE` as `intrinsics_table()`). §6a is this crate's half of the backend import roster and why `vec-len` joins neither half. |
-| `rc-inc-entry-point.md` | The `rc_inc` blessed inc entry point (BC §4b invariant 3, the atomic-RC discipline). |
-| `diagnostic-modes.md` | Implemented M1/M2/M3 and RC/alloc seam diagnostics; the closed test-only fault-plant protocol (§7, **landed S118 W2a** — all eight detection triplets, the e2e M3 cell, and the fail-on-revert records; FIXME 0848 has no source work left, and §9a's 0859 detector-as-oracle protocol is **retired unexecuted** by the 2026-09-01 user disposition) including the lane-scoped arming invariant and the precheck-ordering prerequisite; the 0850 + ruling-7 convergence batch (§9); the 0859 oracle cross-reference (§9a). Carries the two S118 W2b design rulings: §7.5's `header_size_plausible` predicate (FIXME 0879 — the alignment clause is retracted; it false-positived on ragged `HeapString` sizes) and §7.1's plant config-error timing (FIXME 0881 — the contract is state-and-action precedence, not wall-order). |
+| `ownership-and-disposal.md` | How this crate holds, mints and releases counted heap references: the `Owned`/`Borrowed` vocabulary and its executably-enumerated trusted base, `rc_inc` as the blessed inc entry point, the structural discharge mechanism and the two family tag tables, `free_io_node`, the `Pure` payload witness and the `Effect` thunk's teardown discharge, the trampoline's fresh-`Bind` ownership rule, and result-handoff disposal authority. Evidence and open acceptance are in §8. |
+| `reactor.md` | The effect reactor + async-trampoline interior — reactor loop, `HostCtx`/waker C-ABI, `EffectPoll`, the two-pool `Par` join, the token-capacity permit pool, launch/supervisor/admission, the combinator runtime, the cancellation drop-paths and the rayon→reactor bridge join. **§0 demarcates the thin `/int` host-client seam**; everything else is runtime-library interior. |
+| `intrinsics-table.md` | The published `intrinsics_table()` Import catalog (BC §4b invariant 11): the entry shape, the consumer contract at the three resolution points, the emitted-call name agreement, and this crate's half of the backend import roster (§6) including why `vec-len` joins neither half. The row inventory lives in source, pinned by the closed-set guard. |
+| `diagnostic-modes.md` | The implemented M1/M2/M3 modes and RC/alloc seam asserts, the closed test-only fault-plant protocol (§7) with its lane-scoped arming invariant and precheck ordering, and the landed single-owner convergence (§9). Carries the §7.5 `header_size_plausible` predicate and §7.1's plant config-error timing rule. |
 
 ## Cross-references
 
@@ -53,10 +50,9 @@ This memory establishes one intrinsics-owned collection:
 - `design/runtime/s119-typed-consume-funnel.md` — the **cross-pair** typed
   handle contract (`Owned`/`Borrowed`, the derived shim fact, the counted
   trusted base). Homed in `design/runtime/` for the same reason its S117/S118
-  siblings are: it spans the pair. The current intrinsics delivery and remaining
-  cross-pair tails are reconciled at its head; crate-specific consumer visits
-  consume that contract without redefining it. Its retained implementation
-  sequence is `s121-c5-intrinsics-visit.md` §6.
+  siblings are: it spans the pair. The intrinsics interior that implements it is
+  `ownership-and-disposal.md`; crate-specific consumer visits consume that
+  contract without redefining it.
 - `design/runtime/s118-structural-embedding-ownership.md` — the **runtime-pair**
   consume-owner contract (FIXME 0835). It is homed in `design/runtime/` (the
   `s117-primitives-integrity.md` precedent) because it spans the pair: the

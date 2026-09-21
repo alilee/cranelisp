@@ -12,13 +12,19 @@
 //! combinators compile their own arguments as IO sub-trees, so they must never
 //! enter the value-sparking pre-pass.
 
-use super::is_io_combinator_call;
+use super::IoCombinator;
 use cranelisp_types::{ResolvedCall, Symbol};
 
 fn builtin(name: &str) -> ResolvedCall {
     ResolvedCall::BuiltinFn {
         name: Symbol::from(name),
     }
+}
+
+/// The spark exclusion's reading of the shared classification
+/// (`compile_apply`): excluded iff the carrier is one of the four.
+fn is_io_combinator_call(resolved_call: Option<&ResolvedCall>) -> bool {
+    IoCombinator::of_call(resolved_call).is_some()
 }
 
 #[test]

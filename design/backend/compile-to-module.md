@@ -1337,7 +1337,7 @@ The `<C, L>` parameters propagate generically — the backend can be called with
 
 #### 17.1.1 Return shape — Decision 35 / Layer 2 Option B (landed Wave 3b)
 
-Per the [`Code` enum and backend generic-blindness decision](../arch/decisions/0035-code-enum-integration-layer.md) (CP1 arbitration), Sprint 58 binds **Layer 2 Option B**: the backend stays generic-blind on `Code` storage; the integration layer constructs `Code::Jit { jit, ptr }` from raw outputs. As landed in Wave 3b, the backend returns the per-symbol code pointers `*const u8` directly inside `CompilationResult`, and finalises definitions internally so the pointers are valid before the function returns. The backend does NOT name `Code` at all.
+Per the [`Code` enum decision index (35)](../arch/decisions/README.md) (CP1 arbitration), Sprint 58 binds **Layer 2 Option B**: the backend stays generic-blind on `Code` storage; the integration layer constructs `Code::Jit { jit, ptr }` from raw outputs. As landed in Wave 3b, the backend returns the per-symbol code pointers `*const u8` directly inside `CompilationResult`, and finalises definitions internally so the pointers are valid before the function returns. The backend does NOT name `Code` at all.
 
 **`CompilationResult` shape** (Wave 3b):
 
@@ -1419,7 +1419,7 @@ For the cache `.o` path (nice worker), the same `compile_to_module` call passes 
 - Backend never wraps the `JITModule` in `Arc<Jit>` (the caller owns the `M` instance and constructs the `Arc` after `compile_to_module` returns).
 - `CompilationResult` carries no `Arc<Jit>` field and no return tuple — the `Arc` retention root lives at the integration layer (per-entry on `Code::Jit`).
 
-(Cross-references: the [`Code` enum and backend generic-blindness decision](../arch/decisions/0035-code-enum-integration-layer.md) records the Layer 2 Option B rationale; `design/int/symbol-table-generics.md` documents the integration-layer call-site choices; `crates/cranelisp-backend/src/lib.rs` tests `compile_to_module_returns_code_ptrs_after_finalize` and `compile_to_module_object_mode_empty_code_ptrs` (lines 3084 and 3144) are the regression-guards for the JIT-populated and object-empty invariants.)
+(Cross-references: the [`Code` enum decision index (35)](../arch/decisions/README.md) records the Layer 2 Option B rationale; `design/int/symbol-table-generics.md` documents the integration-layer call-site choices; `crates/cranelisp-backend/src/lib.rs` tests `compile_to_module_returns_code_ptrs_after_finalize` and `compile_to_module_object_mode_empty_code_ptrs` (lines 3084 and 3144) are the regression-guards for the JIT-populated and object-empty invariants.)
 
 ### 17.2 Backend-internal helper signatures
 

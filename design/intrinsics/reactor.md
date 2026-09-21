@@ -1,122 +1,46 @@
-# The slice-2 effect reactor — interior design (`cranelisp-intrinsics`-hosted runtime library)
+# The effect reactor and async trampoline — interior design
 
-> **Location + ownership (S97 doc-tidy; FIXME 0486 partial action).** This is the interior
-> design of the **backend-emitted IO/RC runtime library** — the reactor, async trampoline,
-> `consume_io_tree`, the token-capacity pool, and the `HostCtx`/waker C-ABI. It lives in the
-> `cranelisp-intrinsics` crate (BC §4b) and is *emitted into* by `cranelisp-backend`; it is
-> **NOT** an `/int` orchestration concern. The doc was relocated from `design/int/` to
-> `design/intrinsics/` because its old placement mis-signalled `/int` ownership of the
-> runtime internals. **`/int`'s only contact is the thin host-client seam** — it constructs
-> the reactor once via the single C-ABI entry `cranelisp_run_io` and drives `block_on_reactor`
-> for `--run`/REPL; it never reaches into `consume_io_tree`, the permit map, or reactor
-> lifetime discipline. That seam is demarcated in §0 below and pointed to from
-> `design/int/CLAUDE.md`. Canonical ownership: `design/arch/bounded-contexts.md` §4b
-> (intrinsics = backend-emitted runtime) + §6 (int = host-client).
+**Owner**: `/design` (intrinsics). **Implements**:
+`crates/cranelisp-intrinsics/src/{reactor.rs,strand.rs,io.rs}`.
 
-> **S97 v9 LAYER — the host `ctx`-vtable handle model (RATIFIED 2026-06-30; supersedes
-> FIXME 0482's descriptor cut).** Scheduling state — `(token, capacity)` — **never rides on
-> a value**. It flows through a **trampoline-owned `ctx` vtable** the platform's poll-fns call
-> (the host-owned-reactor `HostCtx`, §2.3, *generalized* from "register interest" to
-> "register interest + acquire/release a token permit + retire a token"). The host owns the
-> §8.1 permit map + a per-effect held-permit ledger keyed by the in-flight effect's identity,
-> and owns **release** (fired on `Ready`/cancel, never re-entering the poll-fn). This is the
-> authoritative int statement: the new **§7** (rewritten to the ctx-vtable model). **The prior
-> §7 — the descriptor cut (split on a baked `role @ node+32`, stamp a produced handle's header
-> at `value+24` from a `desc_out @ node+40`, read a consumed handle's header before polling) —
-> is RETIRED in full** (it hit the Wave-2 DLL-mint blocker: an opaque zero-field `Connection`
-> minted in the DLL as a 24-byte object had no room for a 16-byte header slot at `value+24`).
-> Under the new model there is **NO** trampoline stamp/read, **NO** runtime `role` branch,
-> **NO** `desc_out`, **NO** baked node scheduling offsets, **NO** `ResourceDesc`. §7 also
-> **supersedes** §2.9's "Offsets read" rows AND §2.9's *trampoline-side pre-poll acquire* — the
-> acquire moves into the platform poll-fn (`ctx.acquire`); the `EffectPoll`'s `Option<Permit>`
-> becomes the host's identity-keyed ledger + a release-guard (the §8.1 permit-map mechanism +
-> the §2.9/§2.16/§2.17 RAII lifecycle are otherwise unchanged). §8 makes the 0479
-> idle-server-watchdog call; §9 confirms the 0475 empty-`select` approach. §8.2 (within-token
-> source ordering) **dissolves with the trampoline's order-restoring net** — its home moves to
-> the **inference** (E2/E3), `effect-concurrency.md §8.2`; see §7.7. The 0478 single-step
-> launch-arm E2 hardening (co-located, **decoupled** — sound under v8+v9) is
-> `bind-chain-analysis.md §3.7`. The cut lands as ONE atomic cross-surface change-set; this doc
-> is the **int/host** half (backend half: `design/backend/io-trampoline.md §17`, pure
-> subtraction; platform half: `design/platform/poll-leaf-authoring.md §2/§3/§4`). Canonical
-> model: `effect-concurrency.md §4.1.1`; ABI cascade: `platform-interface.md §6.8.0b`.
+This is the interior of the **backend-emitted IO/RC runtime library**: the mio
+reactor loop, the async trampoline, the `HostCtx`/waker C-ABI, the
+token-capacity permit pool, the two-pool `Par` join, launch/supervisor/admission,
+the combinator runtime and its cancellation drop-paths. It lives in
+`cranelisp-intrinsics` (BC §4b) and is *emitted into* by `cranelisp-backend`; it
+is not an `/int` orchestration concern. **`/int`'s only contact is the thin
+host-client seam of §0** — it constructs the reactor once through the single
+C-ABI entry `cranelisp_run_io` and drives `block_on_reactor` for `--run`/REPL,
+never reaching into the teardown walk, the permit map or reactor lifetime
+discipline.
 
-**Owner**: `/design` (int). **Status**: S96 DESIGN REFRESH (Chunk C — slice 7) —
-*the explicit control surface + the cancellation=drop completion of the A→C contract*:
-the **combinator runtime** (`race`/`select` over the branch futures on the one reactor
-thread; the winner resolves, **the losers are dropped = cancelled**, §2.15) + the
-**trampoline-frame cancellation drop-guard** (frees a dropped branch's unconsumed
-sub-tree, §2.15.1); the **two A3-review drop-path completions** now in-scope — finding #3
-(`EffectPoll`-owned `ReactorInterest` RAII handle whose drop ACTIVELY deregisters
-fd/timer interest, §2.16) + finding #4 (`Drop for AcquirePermit` removes its stale FIFO
-waker by identity, §2.17); **`sleep`** (the runtime timer poll leaf) + **`timeout` =
-`race io (sleep d)`** (§2.18); and **cancel-on-disconnect** (`race` the handler against a
-disconnect-watch leaf) + **graceful shutdown** (drain-or-`clear` the supervisor, §2.19).
-The unifying invariant: **cancellation = future-drop, and every drop path — permit (§2.9),
-fd/timer interest (§2.16), FIFO waker (§2.17), unconsumed sub-tree (§2.15.1) —
-releases/deregisters cleanly** so cancellation at volume neither leaks nor lost-wakes. All
-on the **single-ABI, single-trampoline, lazy-reactor** post-cutover runtime (no feature
-gate; no byte-identical-off invariant — the off-state is gone). **Prior layer**: S96
-DESIGN REFRESH (Chunk B — slice 5 +
-slice 4) — *the fan-out / control-flow layer on the Chunk-A substrate*: **launch-and-
-continue** (the detached-launch node, §2.11), the **supervisor** (a `JoinSet`-equivalent
-that owns each detached strand, catches its outcome, applies the §10 500/log/drop policy —
-never re-raising into a nonexistent parent, never aborting the server, §2.12), and
-**backpressure / admission budget** (`effective permits = min(capacity, degree)` on the
-§2.8 token-permit map **plus** one **global** reactor-thread admission `Semaphore` bounding
-total in-flight detached strands, §2.13). Both slices **co-land** (gate (b): the supervisor
-is co-requisite with launch-and-continue, and detached fan-out MUST be bounded by admission
-or it is a memory-exhaustion hazard — §14 step 4). All built on the **unchanged** Chunk-A
-substrate: the §2.8 permit map, the error-ferry, the §7 wakeable bridge, and the §2.9 RAII
-`Permit` — **gates (b) and (d) confirmed to HOLD post-cutover** (§2.14). **Prior layer**:
-S96 Chunk A — *light up the poll-shape carrier*: the **acquire-around-poll lifecycle + RAII
-`Permit` drop-guard** (§2.9). S95 proved the token-capacity `Semaphore` pool on
-the BLOCKING carrier and reserved the poll-node `(token, capacity)` slots at the
-sentinel; S96 lights up the poll carrier — the capacity permit now wraps the full
-`EffectPoll` establish→`Pending`→…→`Ready` arc, **owned by the `EffectPoll`
-future** so it releases on `Ready` AND on future-drop (the named **A→C contract**:
-acquire-around-poll BUILDS the drop-release path; Chunk C cancellation EXERCISES
-it). All `concurrency`-gated, byte-identical-off. **Prior layer**: S95 DESIGN REFRESH — *complete the IO
-transition* (slices 3 + 6). The S94 substrate (real poll-shape effect-node await
-through `cranelisp_run_io`) is AS-BUILT; S95 adds, all `concurrency`-gated and
-byte-identical-off: the **host token-capacity `Semaphore` pool** (§2.8 — `(token,
-capacity)` **dynamic on the IO node**, platform-supplied at the effect site via
-`effect_on_resource_with_capacity`, keyed `HashMap<token, Semaphore>`; capacity-1 =
-today's `SerialGroup`, capacity-N = the bounded pool, token-0 = no-acquire, with
-first-writer-wins reconciliation + within-token capacity-1 ordering carried on purpose);
-and the **two-pool join** (§2.6 refresh — the async `Par` arm partitions by node tag,
-admission wraps **both** partitions, and the rayon CPU pool + reactor I/O pool run
-concurrently across a **wakeable** rayon→reactor bridge). **Carrier re-blessed by /arch**
-(`effect-concurrency.md` §8.1/§8.2): capacity rides dynamic on the node — **no
-`DefKind.cardinality` field, no loader lift, no `cranelisp-types` edge touch** (this
-supersedes the earlier static-field gate-(b) plan). `/dev` implements in Phase 5. **Prior layer**: S94 DESIGN REFRESH —
-slice-2 completion (real effect-node await), the S93 substrate AS-BUILT, per the
-R1-ratified backend↔intrinsics poll-shape Effect-node seam
-(`design/arch/effect-concurrency.md` Appendix B §"the ratified backend↔intrinsics
-poll-shape Effect-node seam" + §13 "S94 R1"). This doc is refreshed to the S95 design
-target. **Subordinate to**:
-`design/arch/effect-concurrency.md` Appendix B (the implementable plan — canonical,
-`/arch`-owned),
-`design/arch/bounded-contexts.md` §6 (int reactor policy + impl-location) / §4b
-(intrinsics) / §5 (platform), `design/arch/platform-interface.md` §6.8 (ABI-v7
-substrate). **Implements**: `crates/cranelisp-intrinsics/src/{reactor.rs,strand.rs,io.rs}`.
+The reactor must live here rather than in `src/`: a `--link`'d program does not
+contain the compiler binary at runtime, so `--run`/REPL and `--link` reach the
+same reactor through the same entry. Int owns construction-for-REPL/`--run`,
+policy and the dev sink only (BC §6).
 
-This is the **per-crate interior** elaboration the arch plan (Appendix B) does not
-author: *how* the slice-2 reactor + async-trampoline twin are built, and — crucially
-— **how far the as-built actually reaches** (§4). It is the `/dev` implementation
-reference. It does not re-litigate the substrate choice, the one await boundary, the
-demo leaf, or the spill marker — those are settled in Appendix B; this doc elaborates
-the interior beneath them and pins the as-built boundary so a future reader does not
-over-assume.
+**Current substrate.** One ABI, one trampoline, one lazy-initialised reactor.
+The former `concurrency` / `concurrency-runtime` features are retired: the
+reactor, mio and futures are unconditional, and a pure-blocking program drains
+synchronously through the one async trampoline while constructing no mio `Poll`.
+Lean-default is a runtime property, not a `#[cfg]` split. Scheduling state —
+`(token, capacity)` — never rides on a value; it flows through the
+trampoline-owned `ctx` vtable the platform's poll-fns call (§7), and the host
+owns the §8.1 permit map, the per-effect held-permit ledger and release.
 
-> **Reactor location: `cranelisp-intrinsics`, NOT `src/`.** The C-ABI entry
-> `cranelisp_run_io` and the whole reactor live in `cranelisp-intrinsics`. A
-> `--link`'d program does **not** contain `src/` at runtime (int is the compiler
-> binary), so the reactor must live in the trampoline crate to serve `--run`/REPL now
-> **and** `--link` concurrency later. int owns only **construction-for-REPL/--run,
-> policy, and feature-gating** — the same split as `io_observer` (int registers the
-> sink + drives the dev surface; the runtime mechanism is intrinsics-owned). See BC §6.
+**Subordinate to**: `design/arch/effect-concurrency.md` Appendix B (the canonical
+`/arch`-owned plan), `design/arch/bounded-contexts.md` §4b/§5/§6,
+`design/arch/platform-interface.md`. **Siblings**:
+`design/backend/io-trampoline.md` (the emitted half),
+`design/platform/poll-leaf-authoring.md` (the leaf half),
+[`ownership-and-disposal.md`](ownership-and-disposal.md) (heap ownership, node
+teardown and result-handoff disposal authority).
+
+This document elaborates the interior the arch plan does not author, and §4 pins
+how far the as-built reaches so a reader does not over-assume.
 
 ---
+
 
 ## 0. The `/int` host-client seam (what int owns; everything else here is runtime-library interior)
 
@@ -178,7 +102,7 @@ the deployment invariant: feature-off is the production default; the reactor is 
 
 ---
 
-## 2. The reactor interior (`reactor.rs`, gated `concurrency-runtime`)
+## 2. The reactor interior (`reactor.rs`)
 
 ### 2.1 The mio reactor loop
 
@@ -1511,9 +1435,79 @@ proves it does **not** flip the band-A heap-corruption guards. The state-closure
 the residual UAF is a **different object**. Bug #2 is a **`/backend` codegen defect**: a
 borrowed-`Var` **two-live-vec** RC miscount on the launched strand (a double-dec that frees the
 vec early, `ring2-rc.md §5.5` path) — **not** the state-closure and **not** an arg-lifetime gap.
-Tracked as **FIXME 0494** (`target: /backend`, `cranelisp-backend`); `0486`'s runtime half is
-**DONE** and `0486` stays open only carrying the pointer to 0494. The arch "no backend change for
-Level-1" premise held for the *keep-alive*; the *bug-#2 fix* is backend codegen, separately.
+The arch "no backend change for Level-1" premise held for the *keep-alive*; the bug-#2 fix was
+backend codegen, separately.
+
+---
+
+### 2.21 The rayon→reactor bridge join (worker-owned lease)
+
+A blocking branch's lifetime is acknowledged by the **worker**, not by the
+awaiting future, because a cancelled `Select` loser drops that future while the
+worker is still walking the caller tree. Dropping the receiver must not license
+teardown of a tree the worker still reads.
+
+The owner already exists: the caller-tree reference held across
+`cranelisp_run_io` → `drive_io` → `block_on_reactor`. The bridge join keeps that
+owner live until every bridge child acknowledges exit. It does **not** increment
+a branch, move a branch out of the `Select` carrier, or add a side table of heap
+owners.
+
+- `BridgeJoinState` is created once beside the executor waker in
+  `block_on_reactor`, owns an atomic live count and a clone of the cross-thread
+  `mio::Waker`, and rides `ReactorEnv` to every blocking spawn.
+- Each spawn creates one `BridgeTicket` (a cancellation flag plus the shared
+  join state). `WorkerBridgeLease` is the ticket's **only** strong owner and
+  moves into the rayon closure. After admission the branch future holds only a
+  weak reference beside its `oneshot` receiver and its acquired `Permit`, so it
+  can request cancellation but can never retain a completed worker or become a
+  second tree owner.
+- Normal receipt disarms the cancellation guard and releases the permit at the
+  existing point after the error ferry. Dropping it while armed marks the ticket
+  cancelled (Release) and releases the permit immediately; it does **not**
+  release the worker lease. Cancellation before admission has no ticket and
+  keeps `AcquirePermit`'s existing stale-waiter removal path (§2.17).
+- `WorkerBridgeLease::drop` decrements the live count (AcqRel), treats an old
+  zero as a located invariant failure, and wakes through the bridge waker — so a
+  worker unwind or a panic while handing the closure to rayon cannot strand a
+  positive count. The executor reads the live count with Acquire for its
+  armedness (§2.6), backstop (§8.3) and return decisions.
+
+The synchronous trampoline takes a borrowed cancellation probe from the lease
+and checks it before dispatching each node and immediately before invoking a
+continuation, threading the **same** probe through nested sync `Par` work rather
+than minting child tickets for lexically nested rayon joins. A call already
+entered may return — it cannot be pre-empted — but its value is disposed through
+the branch's carried result authority
+([trampoline ownership transitions](ownership-and-disposal.md#7-trampoline-ownership-transitions)) and the worker
+starts no later IO node or continuation. On a cancelled path the worker disposes
+the value, then clears and suppresses its runtime error: cancellation is not a
+fault.
+
+The required order is: cancel loser → mark cancelled → release reactor resources
+→ worker stops at its next trampoline boundary → produced result disposed and
+its error suppressed → lease drops and wakes → executor observes zero joins →
+caller-tree teardown. **`block_on_reactor` may return a completed top result only
+when the supervisor is empty and the bridge join is empty**; only then may
+`cranelisp_run_io` consume the caller tree. If accounting disagrees, retain
+rather than tear down.
+
+This is one mechanism, not a counter plus a retention pool: the same join state
+drives armedness, the `OneShot` hold-off, normal completion, cancellation
+retention and the return gate. Its live size is `O(in-flight blocking bridges)`,
+and cancellation cannot grow it because a marked worker begins no new node.
+Poll-only losers allocate no lease and keep their prompt drop path. A blocking
+foreign call is not pre-emptible and stays deliberately uncapped (§2.6), so the
+guarantee is structural rather than a wall-clock bound. The worker→reactor
+release/acquire edge also orders a worker's last read of a branch node — a
+`Pure` force's mint, an `Effect` force's borrowed thunk call — before root
+teardown discharges that node
+([`ownership-and-disposal.md`](ownership-and-disposal.md) §6.1–§6.2).
+
+The lifecycle observer is ordered, not timed — `Spawned → CancelRequested →
+WorkerExited → RootTeardown` — and its capability proof plants the former owner
+placement by releasing the lease at branch-future cancellation, which must trip
+the teardown-before-worker-exit assertion.
 
 ---
 
@@ -1663,279 +1657,58 @@ unaffected — it is the orthogonal routing axis, not the capacity carrier.)
 
 ---
 
-## 5. What later slices (≥3) add — forward-looking, NOT designed here
+## 5. Known limits beyond the current combinator surface
 
-> **Done in slice-2 completion (S94):** *real effect-node await* — `declare_platform!`
-> poll-fn emission + the backend poll-construction arm + the real async Effect arm in
-> `run_io_trampoline_inner_async` — per the R1-ratified seam (§2.5, §2.7, §4).
->
-> **Done in S95 (this refresh), no longer "later slices":** the **token-capacity
-> `Semaphore` pool** (slice 3 — §2.8; carrier = `(token, capacity)` dynamic on the node,
-> no loader lift, per the re-blessed §8.1 seam) and the **blocking/CPU two-pool routing**
-> (slice 6 — §2.6). Both are designed above; `/dev` implements in Phase 5. **Demo-scope
-> caveat:** S95 proves capacity-N (sizing, parking, first-writer-wins) on the **blocking
-> carrier**; live **poll-shape capacity-N + the acquire-around-poll lifecycle** was the
-> deferred half (poll nodes reserved the slots at sentinel capacity 1 in S95).
->
-> **Done in S96 (Chunk A, item 3) — §2.9:** the **acquire-around-poll lifecycle + RAII
-> `Permit` drop-guard** lights up the poll carrier. The permit is acquired at leaf
-> establishment (live `(token, capacity)` baked at offset 32/40), owned by the
-> `EffectPoll` future, wraps the establish→`Pending`→…→`Ready` arc, and releases on
-> `Ready` (eager `Option::take`) AND on future-drop (the cancellation path) — the named
-> A→C contract Chunk C cancellation exercises. `/dev` implements in Phase 5.
->
-> **Done in S96 (Chunk B — slices 5 + 4) — §2.11/§2.12/§2.13/§2.14:** **launch-and-
-> continue** (the detached-launch `IO_TAG_LAUNCH` node — fire-and-forget, no join point,
-> yields `Pure Unit` at once, §2.11), the **supervisor** (a single-threaded
-> `FuturesUnordered` `JoinSet`-equivalent that owns each detached strand, `catch_unwind` +
-> the reused `take_runtime_error` capture, applies the §10 log/drop policy, never re-raises,
-> never aborts the drive, §2.12), and **backpressure** (`min(capacity, degree)` on the §2.8
-> pool + a **global** admission `Semaphore` on a reserved token bounding total in-flight
-> detached strands, §2.13). Both reuse the unchanged Chunk-A substrate; gates (b)/(d)
-> confirmed to hold post-cutover (§2.14). `/dev` implements in Phase 5.
->
-> **Done in S96 (Chunk C — slice 7) — §2.15/§2.16/§2.17/§2.18/§2.19:** the **combinator
-> runtime** (`race`/`select` over the branch futures on the one reactor thread, winner
-> resolves, **losers dropped = cancelled**, §2.15) + the **trampoline-frame cancellation
-> drop-guard** (frees a dropped branch's unconsumed sub-tree, §2.15.1); the **two A3-review
-> drop-path completions** — finding #3 (`EffectPoll`-owned `ReactorInterest` RAII handle whose
-> drop actively deregisters fd/timer interest, §2.16) + finding #4 (`Drop for AcquirePermit`
-> removes its stale FIFO waker by identity, §2.17); **`sleep`** (the runtime timer poll leaf)
-> + **`timeout` = `race io (sleep d)`** (mostly stdlib, §2.18); and the **cancel-on-disconnect**
-> (`race` the handler against a disconnect-watch leaf) + **graceful shutdown** (drain-or-`clear`
-> the supervisor) hooks (§2.19). The unifying invariant: **cancellation = future-drop**, and
-> every drop path (permit §2.9, fd/timer interest §2.16, FIFO waker §2.17, sub-tree §2.15.1)
-> releases/deregisters cleanly — the Chunk-C completion of the A→C contract. `/dev` implements
-> in Phase 5.
+Cancellation, the combinator runtime and the A→C drop-release contract are
+designed above (§2.15–§2.19). One limitation remains an arch-track item:
 
-Cancellation is no longer a forward-looking item — it is designed above (§2.15–§2.19). What
-remains beyond this sprint's combinator surface stays an arch-track item:
+- **Nested launch + nested combinators under volume.** A launched strand that
+  itself launches, or a `race` whose branch launches detached strands, trips the
+  supervisor's single-borrow `drive()` re-entry guard (§2.12 note). The
+  acceptance surface shapes race/timeout/cancel from the top serve loop, not
+  from inside a launched strand. Active nested-fan-out support opens with
+  `/arch`.
 
-- **Nested launch + nested combinators under volume** — a launched strand that itself launches,
-  or a `race` whose branch launches detached strands, currently trips the supervisor's
-  single-borrow `drive()` re-entry guard (§2.12 note). Active nested-fan-out support is a
-  later-slice concern (the Chunk-C acceptance shapes race/timeout/cancel from the top serve loop,
-  not from inside a launched strand). Coordinate with /arch when it opens.
+## 6. Host-construction sharability — divergence-proofing
 
-### 5.1 /dev Chunk-B intrinsics implements, in this order
+**Two host-built values sit at the platform/host boundary, with opposite
+divergence exposure; the design must not conflate them.**
 
-1. **Strand events** (`strand.rs`) — add the `#[non_exhaustive]` variants `StrandLaunched
-   { strand, parent }`, `StrandCompleted { strand }`, `StrandFailed { strand, message }`,
-   `GlobalBudgetParked`/`GlobalBudgetAcquired`/`GlobalBudgetReleased { strand }`. Zero-behaviour
-   first; gives /qa the assertion surface. (§3)
-2. **`degree` on the §2.8 pool** (`reactor.rs`) — `TokenPool` gains a construction-time `degree`;
-   slot sizing becomes `permits = min(node_capacity, degree).max(1)`. The smallest, most
-   isolated change; unit-test `min(capacity, degree)` before anything fans out. (§2.13 part 1)
-3. **The global admission `Semaphore`** (`reactor.rs`) — reserve `GLOBAL_BUDGET_TOKEN`,
-   pre-size its slot to the global degree at `block_on_reactor` construction, add a
-   `ReactorEnv::acquire_global(strand)` helper over the existing `acquire`. (§2.13 part 2)
-4. **The supervisor** (`reactor.rs`) — `Supervisor { strands: RefCell<FuturesUnordered<…>>,
-   policy }`, constructed single-sited in `block_on_reactor` alongside the pool, threaded through
-   `ReactorEnv`; the `supervised` wrapper (`catch_unwind` + `take_runtime_error` capture +
-   `apply_policy` + `consume_io_tree` + global-`Permit` drop); extend the `block_on_reactor`
-   drive loop to drain the supervisor + count a non-empty supervisor as **armed** in the §8
-   armed-ness deadlock detector (NOT a hold-off of the `OneShot` wall-clock backstop, which holds
-   off only on `pending_bridges > 0` — §8.3). (§2.12)
-5. **The `IO_TAG_LAUNCH` trampoline arm** (`io.rs`, `run_io_trampoline_inner_async`) — read the
-   launched sub-tree field, acquire the global-budget permit (park if exhausted), mint the child
-   strand, `supervisor.spawn(sub_tree, strand, permit)`, yield `Pure Unit`. **Co-requisite seam:
-   the `IO_TAG_LAUNCH` const + node bake + independence detection are /design backend's** —
-   coordinate before this lands. (§2.11)
-6. **RC ownership transfer of the launched sub-tree** — confirm the launch node releases its hold
-   and the supervised strand `consume_io_tree`s it exactly once (no double-free / no leak); the
-   one new RC subtlety. Coordinate with /design backend on the node's owned-field shape. (§2.11)
+- **The reactor `HostCtx` / waker vtable is divergence-proof by construction.**
+  The mio loop, `make_host_ctx`, `make_cabi_waker` and `block_on_reactor` live in
+  `cranelisp-intrinsics`, behind the single C-ABI entry `cranelisp_run_io` that
+  every mode links (§0, §4). There is exactly one construction site, reached by
+  `--run`/REPL and `--link` alike. The token pool (§2.8), the supervisor
+  (§2.12), the global admission budget (§2.13) and the bridge join (§2.21) are
+  constructed single-sited beside it and threaded through `ReactorEnv`; they are
+  host-internal values reached through the trampoline, not through the platform
+  poll-fn. **Int must never grow a parallel `HostCtx`, waker, pool, supervisor or
+  reactor builder** in `src/` or `cranelisp-exe-bundle`; `--link` concurrency
+  reaches all of it through the same entry, with no second mirror.
+- **The platform-DLL `HostCallbacks` is the hand-mirrored surface.** It carries
+  exactly `alloc` + `alloc_with_tag` and does not widen
+  (`design/arch/bounded-contexts.md` §4b). The reactor seam adds no host callback
+  at construction time: a poll-fn receives `HostCtx`/`Waker` at *poll* time
+  ([await boundary](reactor.md#25-the-one-await-boundary-effectpoll-s94-generic-over-the-node-seam)), and state construction is backend-built and host-internal. Consolidating
+  the two hand-written `HostCallbacks` sites is `/arch`'s call, and the reactor's
+  construction is explicitly out of its scope — the intrinsics hosting already
+  gives it the single-source property.
 
-**Coordination seams (named, not built here):** /design backend — the `IO_TAG_LAUNCH` tag const
-+ node bake + launch-shape independence detection + per-resource `global_budget` node-read (if
-baked); /design int src/ — the reactor-construction knobs (`degree`, global budget, the
-`SupervisorPolicy` config); /design platform — the web serve-loop's "500-on-dropped-connection"
-response mapping that reads `StrandFailed`. /spec (FIXME 0447 first half) — the §10.12/§12.5
-launch-and-continue + supervisor-policy user-facing surface (NOT authored here).
+Principles: 7 (single source of truth) — one construction site per host-built
+value; 3 (dependency flows toward stability) — a shared builder's home is the
+lowest crate that can name the pointers; 8 (no mode divergence) — modes build
+the same host values by calling the same code.
 
-### 5.2 /dev Chunk-C intrinsics implements, in this order
+## 7. The host `ctx`-vtable handle model: acquire / retire + trampoline-owned release
 
-The order is dependency-first and smallest-blast-radius-first: the two drop-path completions
-(findings #3/#4) are self-contained `reactor.rs` changes unit-testable *before* any combinator
-exists; `sleep` reuses the existing poll path; the combinator runtime + frame-guard land last
-(they consume all of the above). Each step is `/dev` → `/review` per the per-crate D/D/R cycle.
-
-1. **Finding #4 — `Drop for AcquirePermit`** (`reactor.rs`, §2.17). Give the slot's FIFO waiter
-   identity (`VecDeque<(u64, Waker)>` + a `next_waiter: Cell<u64>` on `TokenPool`); add
-   `parked_id: Option<u64>` to `AcquirePermit` (allocate on first park, replace-not-duplicate on
-   re-park, clear on acquire); add `impl Drop for AcquirePermit` doing `waiters.retain(by id)`.
-   The smallest, most isolated change — unit-test "drop-while-parked frees the next live waiter"
-   (no lost-wakeup) + "source order preserved at capacity 1" *before* any combinator. Co-covers
-   the global-budget `AcquirePermit`.
-2. **Finding #3 — `ReactorInterest` active deregistration** (`reactor.rs`, §2.16). Add `RegId` +
-   `next_reg` + `current_registrant` scratch; tag `fd_waiters`/`timer_waiters` entries with the
-   registrant; add `Reactor::deregister(reg)`; add the `ReactorInterest { reactor, reg }` RAII
-   struct; bracket the `poll_fn` call in `EffectPoll::poll` to set/clear `current_registrant`; add
-   the `_interest: ReactorInterest` field to `EffectPoll` (minted in `EffectPoll::new`, `reg`
-   allocated in `await_poll_node`). Unit-test "dropping a `Pending` `EffectPoll` that armed fd
-   interest removes its `fd_waiters` entry + mio-deregisters" (extend the §2B drop-release unit to
-   a real-fd fixture, not the noop-host). Subsumes the §2.14 supervisor-panic-path leak.
-3. **`StrandCancelled` event** (`strand.rs`, §3) — the `#[non_exhaustive]` variant + the `reason`
-   enum (`RaceLost`/`TimedOut`/`Disconnected`/`Shutdown`). Zero-behaviour first; gives /qa the
-   cancellation assertion surface.
-4. **`sleep` timer poll leaf** (`reactor.rs`/`io.rs`, §2.18) — the intrinsics timer poll-fn
-   (register_timer + Pending → write Unit + Ready). **Co-requisite seam: how `(sleep d)` resolves
-   to this runtime poll-fn (a well-known symbol, not a GOT platform slot) + the `(0,1)`-leading
-   `IO_TAG_EFFECT_POLL` bake is /design backend's** — coordinate before this lands. Unit-test a
-   bare `sleep` resumes at its deadline.
-5. **The trampoline-frame cancellation drop-guard** (`io.rs`, §2.15.1) — move the loop's
-   `current` + `cont_stack` into a `TrampolineFrame` RAII whose `Drop` `consume_io_tree`s the
-   unconsumed pointers when the future is dropped before `Step::Finish`, disarmed on normal
-   finish. Unit-test "dropping a mid-flight trampoline future frees its sub-tree (no leak)".
-   **Co-requisite seam: the per-branch root ownership + the cancel-time `consume_io_tree`
-   RC-balance against the backend's emitted RC is /design backend's** (`io-trampoline.md`).
-6. **The `IO_TAG_RACE`/`IO_TAG_SELECT` trampoline arms** (`io.rs`, `run_io_trampoline_inner_async`,
-   §2.15) — read+move-out the branch sub-trees, mint a child strand each, build one frame-guarded
-   branch future per sub-tree, race them (`futures::future::select` / `FuturesUnordered::next`),
-   return the winner, drop+`StrandCancelled` the losers. **Co-requisite seam: the
-   `IO_TAG_RACE`/`IO_TAG_SELECT` consts + node bake + the combinator-application lowering (and
-   whether new `Expr`/`MonoExpr` marker variants are warranted, the `LaunchContinue`/FIXME-0466
-   precedent) are /design backend's** — coordinate before this lands. Steps 1+2+5 are the
-   release/teardown paths this step exercises; land them green first.
-7. **Graceful-shutdown drive hook** (`reactor.rs`, §2.19) — the shutdown signal in `ReactorEnv`,
-   the drive-boundary drain-to-empty (graceful) vs `supervisor.clear()` (hard) policy, the
-   `StrandCancelled { reason: Shutdown }` emit on clear. **Co-requisite seam: the shutdown-signal
-   wiring + the policy knob is /design int src/ (reactor-construction) + /design platform (serve
-   loop).** `timeout` (§2.18) + cancel-on-disconnect (§2.19) are stdlib/platform compositions over
-   steps 4+6 — no further intrinsics arm.
-
-**Coordination seams (named, not built here):** /design backend — the `IO_TAG_RACE`/`IO_TAG_SELECT`
-tag consts + node bake + combinator-application lowering + the per-branch owned-field + cancel-time
-`consume_io_tree` RC-balance contract + the `sleep` runtime-poll-fn resolution; /design int src/ —
-the shutdown-policy + graceful-vs-hard reactor-construction knob; /design platform — the web serve
-loop's `race`-against-disconnect wrap + the `until-disconnect` poll leaf; /stdlib + /spec (FIXME
-0447 second half) — the `timeout`/`race`/`select` `.cl` surface + the §12 typing/semantics of the
-in-language combinators + structured cancellation. **No public-api / ABI change** (SPRINT.md
-"Slice 7: NO ABI bump"; the tags are in-process consts).
-
----
-
-## 6. Host-construction sharability (FIXME 0419, R4) — divergence-proofing
-
-**The S94 wiring must not re-create the DEF-6 two-mirrored-sites divergence class.**
-FIXME 0419 (`target: /arch`, kept open + decoupled from the since-retired 0407 per R4) is **off the S94
-critical path** — only the `--run`/REPL host-construction site is active this sprint;
-`--link` concurrency is a later slice. But the reactor *freshly re-creates the hazard*
-the DEF-6 heap corruption came from (two hand-mirrored host-construction sites), so the
-S94 wiring is designed here so a later `--link` site can share **one** builder **by
-construction**. This section is the int-side commitment; the actual shared-builder
-introduction + its home/ABI surface is `/arch`'s call (0419) — int does not author it,
-int wires S94 so it slots in without a rewrite.
-
-### 6.1 Two host-construction surfaces — keep them on opposite trajectories
-
-There are two distinct host-built values at the platform/host boundary; they have
-**opposite** divergence exposure, and the design must not conflate them:
-
-- **The reactor `HostCtx` / `Waker` / waker-vtable — already divergence-proof by
-  construction.** The reactor (the mio loop + `make_host_ctx` + `make_cabi_waker` +
-  `block_on_reactor`) lives in **`cranelisp-intrinsics`**, behind the single C-ABI
-  entry `cranelisp_run_io` that **both** `--run`/REPL and `--link` link (BC §6; §4 of
-  this doc; the `io_observer` precedent). There is exactly ONE construction site for
-  the `HostCtx` vtable and the C-ABI waker — `make_host_ctx(reactor_ptr)` — reached by
-  every mode through `cranelisp_run_io`. **This is the shape 0419 wants, achieved for
-  free by the intrinsics-hosting decision**: a future `--link` program drives its
-  effects through the *same* `cranelisp_run_io` → `block_on_reactor` → `make_host_ctx`,
-  so no second reactor-host-construction site is ever hand-written. S94 must **preserve
-  this** — the reactor host-construction stays in intrinsics; int never grows a parallel
-  `HostCtx`/waker builder in `src/` or in `cranelisp-exe-bundle`.
-- **The platform-DLL `HostCallbacks` (`alloc` + `alloc_with_tag`) — the LIVE DEF-6
-  hazard, hand-mirrored at two sites.** `src/platform.rs` (`load_platform_dll`, the
-  `--run`/REPL/JIT site) and `crates/cranelisp-exe-bundle/src/lib.rs`
-  (`cranelisp_init_platform`, the `--link` startup-stub site) each construct a
-  `HostCallbacks { alloc: heap_alloc_payload, alloc_with_tag: cranelisp_alloc_with_tag }`
-  **by hand**, agreeing only by manual mirroring + a 10-line cross-file comment. DEF-6
-  was exactly the window where they did NOT agree (one wired `heap_alloc`
-  base-returning, the other `heap_alloc_payload` payload-returning — heap corruption).
-  This is the 0419 target.
-
-### 6.2 The int-side S94 commitment
-
-1. **Reactor host-construction stays single-sited in intrinsics.** S94 adds no
-   `HostCtx`/`Waker`/reactor builder to `src/` or `cranelisp-exe-bundle`. The dev-sink
-   surface (the OPTIONAL `/strand` dump, §3) and the feature-gating are int's only
-   reactor-adjacent code; neither constructs host-callback values. This keeps the
-   reactor's host-construction divergence-proof-by-hosting — the property 0419 seeks,
-   already held, must not be eroded by pulling reactor construction up into int.
-   **S95 preserves this for the token pool.** The token-capacity `Semaphore` pool
-   (§2.8) is constructed **single-sited in `block_on_reactor`** alongside the `Reactor`
-   and `HostCtx` — int grows no parallel pool builder in `src/` or `cranelisp-exe-bundle`.
-   It is a host-internal value (not a `HostCallbacks` field — it is reached through the
-   trampoline, not the platform poll-fn at construction), so it adds nothing to the
-   hand-mirrored callbacks and inherits the same single-source property by hosting;
-   `--link` concurrency reaches it through the same `cranelisp_run_io` → `block_on_reactor`
-   entry with no new mirror. **S96 Chunk B preserves this for the supervisor + the global
-   admission budget too.** The `Supervisor` (§2.12) and the global-budget slot (§2.13) are
-   **also** constructed single-sited in `block_on_reactor` alongside the `Reactor`,
-   `HostCtx`, and `TokenPool`, and threaded through `ReactorEnv` — both host-internal
-   (reached through the trampoline, not the platform poll-fn), so neither widens
-   `HostCallbacks` nor grows a parallel int-side builder. The `SupervisorPolicy` *value* (a
-   reactor-construction config from int `src/`) crosses in as a plain argument to
-   `block_on_reactor`, not as a host-callback — it adds no mirror.
-
-2. **Do NOT widen the hand-mirrored `HostCallbacks` for the reactor.** The R1-ratified
-   seam deliberately adds **no** new host-callback the platform poll-fn calls back
-   through at *construction* time: the poll-fn receives `HostCtx`/`Waker` **at poll
-   time** (in `EffectPoll::poll`), not through `HostCallbacks` at DLL-load time (§2.5,
-   R1 decisions 2+3). State construction is **backend-built, host-internal** — no
-   `make_state` export, no new `HostCallbacks` field. So S94 keeps `HostCallbacks` at
-   its current two fields and does **not** multiply the 2-site hand-mirror. (The former
-   FIXME 0407's 3-field `HostCallbacks` widening — the closure-callback-into-cranelisp
-   capability — was **retired** this sprint by the closure-boundary ruling: poll-in/wake-out
-   is the complete platform-effect boundary, so that widening will never happen at all
-   (`effect-concurrency.md §12.1`). The reactor side likewise adds no new field.)
-
-3. **When `--link` concurrency lands (a later slice), it routes through the existing
-   single entry — no new mirror.** Because the reactor lives in intrinsics and is
-   reached via `cranelisp_run_io`, the `--link` startup stub
-   (`cranelisp-exe-bundle`) gains **no** reactor-construction code — it continues to
-   only build the platform `HostCallbacks` (the value 0419 consolidates). So the
-   *only* host-construction `cranelisp-exe-bundle` ever hand-writes is the one
-   `HostCallbacks` that 0419 will replace with a shared builder call. S94 leaves that
-   site shaped exactly like the `src/platform.rs` site (same two fields, same intrinsic
-   pointers) so 0419's "both sites call one builder" lands as a mechanical swap, not a
-   refactor that has to untangle reactor wiring first.
-
-### 6.3 Hand-off to `/arch` (0419) + open question
-
-- **0419 stays `/arch`-owned.** int does not introduce the shared `HostCallbacks`
-  builder (the lowest-crate `fn host_callbacks() -> HostCallbacks` both `src/platform.rs`
-  and `cranelisp-exe-bundle` call); `/arch` decides its home (candidate:
-  `cranelisp-intrinsics`, the lowest crate that can name both intrinsic pointers) and
-  ABI surface. int's commitment above keeps S94 compatible with that landing.
-- **Open question for `/arch`:** confirm that the reactor's `HostCtx`/waker
-  construction is **explicitly out of 0419's scope** (it is already single-sited in
-  intrinsics, not a hand-mirror) so 0419 stays narrowly the `HostCallbacks`
-  consolidation and does not accidentally pull the (already-sound) reactor construction
-  into a "host-construction builder" that would over-generalize. Cite: Principle 7
-  (single source of truth), Principle 1 (decoupling over convenience) — the
-  intrinsics-hosting already gives the reactor the single-source property; 0419's job is
-  to give `HostCallbacks` the same property, not to merge two differently-shaped values.
-
-Principle citations: **Principle 7 (single source of truth)** — one construction site
-per host-built value; **Principle 3 (dependency flows toward stability)** — the shared
-builder's home is the lowest crate that can name the pointers, never an upward
-dependency; **Principle 8 (no mode divergence)** — `--run`/REPL and `--link` build the
-same host values by calling the same code, not by hand-mirroring.
-
-## 7. ABI v9 — the host `ctx`-vtable handle model: acquire / retire + trampoline-owned release (S97)
-
-> **Status: `/design` (int) Phase-5 Wave-0 re-cascade — RATIFIED arch model. REWRITTEN; the
-> prior descriptor §7 is RETIRED in full (banner-superseded above + here).** Conforms to the
-> canonical model `effect-concurrency.md §4.1.1`, the ABI cascade `platform-interface.md
-> §6.8.0b`, `bounded-contexts.md §6`, the backend half `design/backend/io-trampoline.md §17`
-> (pure subtraction — delete `inject_poll_leading_pair`, no header slot, no `role`/`desc_out`
-> node fields), and the platform leaf-authoring half `design/platform/poll-leaf-authoring.md
-> §2/§3/§4`. **What the old §7 said and is now GONE:** the trampoline split on a baked
-> `role @ node+32`, forwarded a `desc_out @ node+40`, **stamped** a produced handle's header at
-> `value+24`, and **read** a consumed handle's header before polling. **None of that exists.**
-> There is **NO** trampoline stamp, **NO** value-header read, **NO** runtime `role` branch,
-> **NO** `desc_out` poll argument, **NO** baked node scheduling offsets, **NO** `ResourceDesc`
-> type. Lands in the ONE atomic v9 change-set (`ABI_VERSION` 8 → 9).
+The model conforms to `effect-concurrency.md` §4.1.1, `platform-interface.md`,
+`bounded-contexts.md` §6, the backend half `design/backend/io-trampoline.md`
+§17, and the platform leaf-authoring half
+`design/platform/poll-leaf-authoring.md` §2/§3/§4. It introduced the `ctx`
+vtable at `ABI_VERSION` 9 (currently 10). The trampoline is scheduling-blind:
+there is **no** trampoline stamp, **no** value-header read, **no** runtime
+`role` branch, **no** `desc_out` poll argument, **no** baked node scheduling
+offsets and **no** `ResourceDesc` type.
 
 ### 7.1 The model in one paragraph
 
@@ -2143,33 +1916,6 @@ dependency the inference respects). **The E1/E2/E3 predicate's int home is `bind
 inference here — `effect-concurrency.md §8.2` is authoritative.** The trampoline relies on the
 inference having already sequenced whatever must be ordered.
 
-### 7.8 What Phase-5 /dev + /qa build against (the int-layer implementables)
-
-- **/dev (intrinsics — the host ctx-vtable impl).** Extend `make_host_ctx`/`HostCtx` with the
-  `acquire` + `retire` fn-pointers (§7.2); implement `acquire` over the §8.1 permit map + the new
-  per-effect held-permit ledger (idempotent-by-identity, `token==0` fast path, `Parked` enqueues
-  the identity-tagged waker); implement `retire` (drop pool + wake waiters, idempotent). The
-  bodies reborrow `&mut Reactor` via the B1 raw-pointer provenance invariant (§2.3), running only
-  inside the poll-fn call on the reactor thread.
-- **/dev (intrinsics — release accounting).** Replace the `EffectPoll`'s `Option<Permit>` field
-  with the host's identity-keyed ledger + an `EffectPoll`-owned **release-guard** whose `Drop`
-  calls `release_all(effect)` + `deregister(effect)` (§7.3); eager `release_all(effect)` on
-  `Ready` before `TaskPoll::Ready`. Keep §2.17's identity-tagged waiter removal for a cancel
-  parked on `acquire`.
-- **/dev (intrinsics — `await_poll_node`).** Delete the v8/descriptor node reads (no `role`, no
-  `(token, capacity)`, no `desc_out`); construct the `EffectPoll` scheduling-blind (§7.5). The
-  poll-fn signature is the unchanged `poll(state, host, waker)`.
-- **/dev (src/ — loader).** `ABI_VERSION = 9`, refuse v8 manifests (`io-integration.md §I3`).
-- **/qa (unit + e2e).** A stub Produce leaf that mints a handle and drives `ctx.acquire`/`register`
-  on the fresh `r` ⇒ assert acquire/release balance; a Consume leaf over a pre-built handle ⇒
-  assert it acquires on the platform-projected token; the `read-line` singleton ⇒ assert
-  single-in-flight (the second `read-line` parks); a Retire leaf ⇒ `retire` drops the pool (a
-  later acquire on that token re-creates a fresh slot); a **cancelled** parked Consume ⇒ the host
-  releases its permit + deregisters its fd (no leak, no lost-wakeup, no poll-fn re-entry). The
-  **negative guard** is the absence of any trampoline value-header stamp/read and any node
-  `(token, capacity)`/`role`/`desc_out` read. The §7.5 `arg(0) = state + 8` marshaling pin guards
-  the platform's handle read.
-
 ### 7.9 Quality attributes touched
 
 - **Simplicity / complexity budget (Principle 6).** A **net subtraction** vs both v8 and the
@@ -2192,7 +1938,7 @@ inference having already sequenced whatever must be ordered.
   reactor + a stub poll-fn that drives the vtable, with no codegen path needed (the host impl is
   pure Rust); the cancel path is exercised by dropping a parked `EffectPoll` (§7.8).
 
-## 8. The idle-server watchdog — no-progress, not wall-clock (S97, FIXME 0479)
+## 8. The idle-server watchdog — no-progress, not wall-clock
 
 > **Status: `/design` (int) Phase-3 — the design CALL is made here for Phase-5 /dev + /qa.**
 > The driving FIXME: `block_on_reactor`'s 30s `MAX_TOTAL_BLOCK` wall-clock cap (§2.4) aborts a
@@ -2320,7 +2066,7 @@ to distinguish "armed-but-never-readies application hang" *per leaf* (Option a c
 descriptor flag is the documented escalation — a FIXME `target: /arch` to add it to
 `ConcurrencyDescriptor` — but it is **not needed now** and must not ride the v9 cut.
 
-### 8.3 What Phase-5 /dev + /qa build against
+### 8.3 What the watchdog implementation and its evidence must hold
 
 - **/dev (intrinsics):** add `reactor_is_armed()` (reading the five reactor-internal sources
   above), the `drive_mode` knob on `block_on_reactor` (default `OneShot`), and the
@@ -2344,7 +2090,7 @@ descriptor flag is the documented escalation — a FIXME `target: /arch` to add 
   (armed nothing) still aborts promptly; a one-shot armed-but-hung still hits the `OneShot`
   wall-clock backstop and exits cleanly (`process::exit(70)`, not a SIGABRT/coredump).
 
-## 9. Empty `(select [])` — recoverable runtime error (S97, FIXME 0475; confirm approach)
+## 9. Empty `(select [])` — recoverable runtime error
 
 > **Status: `/design` (int) Phase-3 — short approach confirmation. Mostly a /dev fix.**
 > `/spec` ruled (`spec/10-io.md §10.12.8`, `spec/12-runtime.md §12.4.4`): `(select [])` over
@@ -2381,53 +2127,25 @@ value or a hang — with `// spec: spec/10-io.md §10.12.8 (Empty select)`.
 
 ## 10. Cross-references
 
-- `sprints/SPRINT.md` — S95 scope (slices 3 + 6) + S96 Chunk A item 3 (poll-shape live
-  capacity + acquire-around-poll) + S96 **Chunk B** (slice 5 + slice 4) + the Phase-2
-  architecture review **gate (a)** (acquire-around-poll deadlock-freedom + the TWO structural
-  requirements: RAII `Permit` drop-guard / non-re-entry — the AUTHORITY for §2.9), **gate (b)**
-  (launch-and-continue lifetime + supervisor: reuse the capture, replace the re-raise; new
-  `JoinSet` machinery; co-land with backpressure — the AUTHORITY for §2.11/§2.12), **gate (c)**
-  (two-pool wakeable bridge), and **gate (d) / FIXME 0442** (degree + global budget mechanism —
-  the AUTHORITY for §2.13). The **Chunk-C-design-prerequisites box** (the two A3-review findings)
-  is the AUTHORITY for §2.14 + §2.16 (finding #3) + §2.17 (finding #4). **S96 Chunk C** (slice 7 —
-  `race`/`select`/`timeout` + structured cancellation; "NO ABI bump", the in-process tag consts)
-  is the AUTHORITY for §2.15/§2.18/§2.19. **Carrier re-blessed post-review** — see §8.1.
-- `design/arch/effect-concurrency.md` **§8.1 (the ratified slice-3 carrier — `(token,
-  capacity)` dynamic on the node, first-writer-wins reconciliation; the AUTHORITY for
-  §2.8 / §2.6 / §2.9)** + §8.2 (within-token ordering), **§5 (the descriptor: capacity vs
-  *degree*; the FIXME 0442 two-mechanisms-one-concept ruling — AUTHORITY for §2.13)**, §6
-  (launch-and-continue → spawn-don't-await + `JoinSet`; the host-runtime primitive map), §7 (the
-  two-pool model + the permanent wakeable bridge), **§9 (the control half — `race`/`select` +
-  structured cancellation; `timeout = race io (sleep d)`; "cancel = the consequence of losing a
-  race or exiting a scope (drop the future)"; the AUTHORITY for §2.15/§2.18/§2.19)**, **§10
-  (supervisor semantics — 500/log/drop, the honest first-error caveat; AUTHORITY for
-  §2.12)**, §11 (observability — supervisor drops vanish without the sink), **§14 (build
-  sequencing — slice 4+5 co-land, step 4)**, §16 (the reference workload — the accept loop),
-  Appendix B — the implementable plan (canonical).
-- `design/arch/bounded-contexts.md` §6 (int reactor policy + impl-location), §4b
-  (intrinsics hosting), §5 (platform C-ABI async leaf).
-- `design/arch/platform-interface.md` §6.8 — ABI layout contracts (`ConcurrencyDescriptor`,
-  `Poll`, `PollFn`, `HostCtx`, `Waker`, `WakerVTable`, `ConcurrentPlatformFn`); **§6.8.0b — ABI
-  v9** (the `ctx`-vtable handle model: `HostCtx.{acquire,retire}` + the `Acquire` enum +
-  `ConcurrencyDescriptor.role`; `PollFn`/`Poll` UNCHANGED; no `ResourceDesc`/`desc_out`/header
-  slot; AUTHORITY for §7).
-- **ABI v9 ctx-vtable handle model (S97; supersedes FIXME 0482) — the cross-surface cut this
-  doc's §7/§8/§9 are the int half of:** `design/arch/effect-concurrency.md §4.1.1` (the canonical
-  model: scheduling state never rides on values; the `ctx` vtable; the produce/consume/retire
-  roles + the full open/read/write/close trace; the singleton manifest-static token; E2
-  strengthened-not-changed) + **§8.1** (the permit-is-a-counter map — unchanged mechanism) +
-  **§8.2** (within-token ordering's home moves to the inference; the dissolved `SerialGroup` —
-  AUTHORITY for §7.7), `design/backend/io-trampoline.md §17` (the backend half — pure subtraction:
-  delete `inject_poll_leading_pair`; no header slot, no role/desc_out node fields; the §17.5
-  baked-offset contract RETIRED), `design/platform/poll-leaf-authoring.md` §3 (singleton stdin token) /
-  §4 (opaque `Connection` carrying `fd` in an ordinary field) / §2 (the ctx-vtable poll-fn
-  skeleton). FIXME **0479** (idle-server watchdog — §8) + **0475** (empty-`select` — §9) are the
-  /int §C drains; **0478** (single-step launch-arm E2 hardening, co-located but **decoupled** from
-  the model cut — sound under v8+v9) is `design/int/bind-chain-analysis.md §3.7`.
-- `design/int/io-integration.md §I3` — platform DLL load + `ABI_VERSION = 9` refusal of v8
-  manifests (the loader's v9 cutover note; /dev executes).
-- `design/arch/sequences/concurrency-scheduler.mmd` — reactor participant (intrinsics-hosted).
-- `crates/cranelisp-intrinsics/src/{reactor.rs,strand.rs,io.rs}` — the implementation;
-  `crates/cranelisp-intrinsics/Cargo.toml` — the feature gates.
-- `design/int/io-integration.md`, `design/int/observability.md` — the sync IO
-  trampoline + `io_observer` precedent this sink mirrors.
+- `design/arch/effect-concurrency.md` — the `/arch`-owned concurrency model:
+  §4.1.1 (scheduling state never rides on a value; the `ctx` vtable and the
+  produce/consume/retire roles), §8.1 (the permit-is-a-counter carrier), §8.2
+  (within-token ordering, whose home is the inference — §7.7), §9 (`race`/
+  `select` and structured cancellation), §10 (supervisor semantics), and
+  Appendix B (the canonical implementable plan).
+- `design/arch/bounded-contexts.md` §4b (intrinsics hosting), §5 (the platform
+  C-ABI async leaf), §6 (int reactor policy and implementation location).
+- `design/arch/platform-interface.md` §6.8 — the ABI layout contracts
+  (`ConcurrencyDescriptor`, `Poll`, `PollFn`, `HostCtx`, `Waker`, `WakerVTable`,
+  `ConcurrentPlatformFn`) and the `ctx`-vtable handle model implemented in [the host handle model](reactor.md#7-the-host-ctx-vtable-handle-model-acquire-retire-trampoline-owned-release).
+- `design/backend/io-trampoline.md` §17 — the emitted half.
+- `design/platform/poll-leaf-authoring.md` §2/§3/§4 — the poll-fn skeleton, the
+  singleton stdin token, and the opaque `Connection` leaf.
+- [`ownership-and-disposal.md`](ownership-and-disposal.md) — heap ownership, IO
+  node teardown, the node lifetime this reactor's bridge join orders before
+  teardown, and result-handoff disposal authority.
+- `design/int/io-integration.md`, `design/int/observability.md` — the host-client
+  side and the `io_observer` precedent the strand sink mirrors.
+- `design/arch/sequences/concurrency-scheduler.mmd` — the reactor participant.
+- `crates/cranelisp-intrinsics/src/{reactor.rs,strand.rs,io.rs}` — the
+  implementation.

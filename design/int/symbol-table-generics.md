@@ -1,8 +1,10 @@
 # Symbol-Table Generics Activation (Step 5c)
 
-Strategy doc for the call-site sweep that activates the `SymbolTable<C: CodeStore, L: LinkerStore>` parameterisation, places `Arc<Jit>` on `ModuleEntry::Def.code`, and dissolves `SharedState.kept_jits` for Jit retention. This closes G12 and completes Decision 31 Scenario 2 (per-redefinition JIT reclaim).
+Strategy doc for the call-site sweep that activates the `SymbolTable<C: CodeStore, L: LinkerStore>` parameterisation, places `Arc<Jit>` on `ModuleEntry::Def.code`, and dissolves `SharedState.kept_jits` for Jit retention.
 
-Spec anchor: `pipeline-v4.md` §9.1 (parameterised `SymbolTable`). Decisions 25 (compiled code on entry), 31 (one `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`), 32 (`CodeStore` / `LinkerStore` empty marker traits), 35 (`Code` enum location + Layer 2 Option B + `kept_jits` / `kept_linkers` dissolution).
+Governing decisions: 25 (compiled code on entry), 31 (one `JITModule` per compile batch; `Arc<Jit>` on `ModuleEntry::Def.code`), 32 (`CodeStore` / `LinkerStore` empty marker traits), 35 (`Code` enum location + Layer 2 Option B + `kept_jits` / `kept_linkers` dissolution). The parameterised `SymbolTable` itself lives in `cranelisp-types` and is arch-owned; `int.md` §5 states the int-side `Code` lifecycle.
+
+Decision 31 Scenario 2's per-redefinition reclaim is **not** what this sweep delivered in the end: every retaining publication path now moves the displaced owner into the session retention pool instead of reclaiming it, and the reclaim survives only on the two non-pooling paths. See `session-transaction.md` §6.1–§6.2 for the as-built position; the decision record itself is not re-ruled here.
 
 ## Wave 3b implementation outcome (Sprint 58)
 

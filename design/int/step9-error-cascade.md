@@ -1,8 +1,9 @@
-> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
-> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
-> current design intent. The durable design is `int.md` (master) plus the subsystem docs
-> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
-> current source or the master, the source and master win.
+> **REFERENCE LINEAGE.** A Sprint 45 implementation slice. §4.1 and §4.2 — cascade-error
+> construction and the user-visible chain — are cited by spec-traced tests, so those section
+> numbers are pinned; the rest is a dated migration narrative. Current error-formatting design
+> is `int.md` §9, and the master plus the subsystem docs indexed in
+> `design/int/CLAUDE.md` §"Document index" govern; where this record disagrees with the source
+> or the master, they win.
 
 # Step 9: Failed State and Error Cascade — Implementation Design
 

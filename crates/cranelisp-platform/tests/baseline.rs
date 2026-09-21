@@ -59,15 +59,15 @@ fn read_source(rel: &str) -> String {
 // T23 per `tests/plan/PLAN.md#platform-structural-and-crossing-evidence`.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
-    // (1) Source-side: ABI_VERSION must read `= 10;` after the Sprint 121
-    //     DLL-constructed Pure node gained its payload-glue witness word.
+    // (1) Source-side: ABI_VERSION must read `= 11;` after the Sprint 122
+    //     Effect thunk became repeatable and borrowed.
     let lib_rs = read_source("src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 10;"),
-        "expected `pub const ABI_VERSION: u32 = 10;` in \
-         crates/cranelisp-platform/src/lib.rs (Sprint 121: the Pure witness \
-         word bumps the ABI from 9 to 10). If you see this failure the source change \
-         was skipped or reverted."
+        lib_rs.contains("pub const ABI_VERSION: u32 = 11;"),
+        "expected `pub const ABI_VERSION: u32 = 11;` in \
+         crates/cranelisp-platform/src/lib.rs (Sprint 122: the repeatable \
+         Effect thunk bumps the ABI from 10 to 11). If you see this failure the \
+         source change was skipped or reverted."
     );
 
     // (2) Baseline-side: the `public-api.txt` baseline must enumerate the

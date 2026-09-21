@@ -28,60 +28,11 @@
 //! `DEALLOC_COUNT`. The three gates are independent and compose freely.
 
 use std::alloc::Layout;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use cranelisp_types::HeapHeader;
-
-#[derive(Default)]
-struct PureClaimObserver {
-    successful: HashMap<i64, u64>,
-    losses: usize,
-}
-
-static PURE_CLAIMS: LazyLock<Mutex<PureClaimObserver>> =
-    LazyLock::new(|| Mutex::new(PureClaimObserver::default()));
-
-/// Record a successful run-lane Pure payload transition while the diagnostic
-/// gate is armed. A second success for one live node is the old double-transfer
-/// fault; an ordinary losing `Claimed` observation does not call this function.
-pub(crate) fn record_pure_claim_success(ptr: i64, strand: crate::strand::StrandId) {
-    if !rc_check_release_enabled() {
-        return;
-    }
-    let mut claims = PURE_CLAIMS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(first) = claims.successful.insert(ptr, strand.get()) {
-        seam_hard_fail(&format!(
-            "Pure payload ownership transferred twice for ptr {ptr:#x}: first strand {first}, second strand {}",
-            strand.get()
-        ));
-    }
-}
-
-/// Classify the expected losing side of a Pure claim separately from a second
-/// successful transition, so the diagnostic cannot confuse refusal with the
-/// old double-transfer defect.
-pub(crate) fn record_pure_claim_lost(_ptr: i64, _strand: crate::strand::StrandId) {
-    if !rc_check_release_enabled() {
-        return;
-    }
-    let mut claims = PURE_CLAIMS.lock().unwrap_or_else(|e| e.into_inner());
-    claims.losses += 1;
-}
-
-/// Retire a live-node identity at its one deallocation seam. This keeps the
-/// observer correct when the allocator later reuses the same address.
-pub(crate) fn forget_pure_claim(ptr: i64) {
-    if !rc_check_release_enabled() {
-        return;
-    }
-    PURE_CLAIMS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .successful
-        .remove(&ptr);
-}
 
 // ---------------------------------------------------------------------------
 // Env gates (cached at process start; one bool load per query when off)

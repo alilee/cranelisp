@@ -141,6 +141,124 @@ fn platform_pure_int_unforced_discard_balances_without_disposer() {
     pair.assert_balanced("discarded DLL Pure Int");
 }
 
+// spec: spec/10-io.md §10.8.1 — one heap-payload `Pure`, bound once and forced
+// twice, hands its live String to each force and leaks nothing its fresh-node
+// twin does not (IOR-2; allocation:
+// `tests/plan/s122-evidence-delta.md` §"Reuse of an IO value — defect allocation").
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev
+// Attribution provisional (IOR-5); the cured reuse refusal lived at
+// `crates/cranelisp-intrinsics/src/io.rs::force_pure_node`.
+//
+// Exit 17 demands BOTH forced values carry the DLL string: a stale, empty or
+// released second payload scores 91, a bad first payload 92. The pair's one
+// axis is the inner `bind` operand — `p` (reuse) versus a second
+// `(pure-string)`. Both children end a `let` owning a heap binding in a `bind`,
+// the IOR-5 shape, so both strand their tree; the control strands two blocks
+// more, and the balance leg reads RED at −2 until IOR-5 is corrected.
+// `CRANELISP_RC_DEC_CHECK=1` arms the A1 seam checks on both children.
+#[test]
+fn platform_pure_string_reused_node_yields_payload_to_each_force_and_balances() {
+    let body = |second: &str| {
+        format!(
+            "(let [p (pure-string)]\n\
+               (bind p (fn [s]\n\
+                 (bind {second} (fn [t]\n\
+                   (Pure (if (str-eq s \"s121-platform-pure\")\n\
+                             (if (str-eq t \"s121-platform-pure\") 17 91)\n\
+                             92)))))))"
+        )
+    };
+    let pair = MarginalPair::new(
+        "reused DLL Pure String",
+        platform_pure_program(&body("(pure-string)")).env("CRANELISP_RC_DEC_CHECK", "1"),
+        platform_pure_program(&body("p")).env("CRANELISP_RC_DEC_CHECK", "1"),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(17), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(17), "{}", pair.report());
+    pair.assert_balanced("reused DLL Pure String");
+}
+
+// spec: spec/10-io.md §10.12.9 — a `bind` returned from a scope that owns the
+// `let`-bound forced platform `Pure` releases its whole tree: the bound operand
+// balances against its inline twin (IOR-5 trigger).
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev
+// Attribution provisional (tests/plan/s122-evidence-delta.md, IOR-5 intake).
+#[test]
+fn platform_pure_let_bound_bind_operand_balances() {
+    let continuation = "(fn [s] (Pure (if (str-eq s \"s121-platform-pure\") 17 99)))";
+    let pair = MarginalPair::new(
+        "let-bound bind operand",
+        platform_pure_program(&format!("(bind (pure-string) {continuation})")),
+        platform_pure_program(&format!("(let [p (pure-string)] (bind p {continuation}))")),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(17), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(17), "{}", pair.report());
+    pair.assert_balanced("let-bound bind operand");
+}
+
+// spec: spec/10-io.md §10.12.9 — an unused heap binding beside a `bind` result
+// does not strand that `bind` (IOR-5 mechanism control). RED supports the
+// protective-retain hypothesis; green refutes it and returns to `qa`.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev
+// Attribution provisional (tests/plan/s122-evidence-delta.md, IOR-5 intake).
+#[test]
+fn platform_pure_unused_heap_binding_beside_bind_balances() {
+    let result = "(bind (pure-int) (fn [_] (Pure 17)))";
+    let pair = MarginalPair::new(
+        "unused heap binding beside bind",
+        platform_pure_program(result),
+        platform_pure_program(&format!("(let [q (pure-int)] {result})")),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(17), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(17), "{}", pair.report());
+    pair.assert_balanced("unused heap binding beside bind");
+}
+
+// spec: spec/10-io.md §10.12.9 — discarding an unforced `Effect` releases its
+// node, thunk and the thunk's captures, and performs nothing (IOR-6).
+//
+// The capture MUST have a second, host-held owner that outlives the discard, so
+// the last (counted) release is the host's. `RcStats` reads the allocator
+// counters in `cranelisp-intrinsics`; a platform DLL's `CLOwned` drop frees
+// through `std::alloc::dealloc` and reaches neither counter, so a block whose
+// last owner is the DLL capture reads +1 whether the DLL frees it or strands it
+// (tests/plan/s122-evidence-delta.md §"IOR-6 — capture-release sentinel").
+// Here `s` stays live for the outer `str-len`, which is what makes the marginal
+// discriminate: a stranded capture pins the string's count at 1 past the host's
+// release (+1), and a doubled destruction frees it early, so the later `str-len`
+// and host release meet a freed block under the armed `CRANELISP_RC_DEC_CHECK`.
+// Exit 3 = `(str-len "p-e")`, so a lost or empty capture scores differently.
+#[test]
+fn platform_effect_unforced_discard_balances() {
+    let program = |n: &str| {
+        Child::new(&format!(
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (import [primitives [Pure add-i64 str-len]])\n\
+             (defn main [] (let [s \"p-e\" n {n}] (Pure (add-i64 n (str-len s)))))\n"
+        ))
+        .env("CRANELISP_RC_DEC_CHECK", "1")
+    };
+    let pair = MarginalPair::new(
+        "unforced Effect discard",
+        program("0"),
+        program("(let [_ (print s)] 0)"),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(3), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(3), "{}", pair.report());
+    assert_eq!(pair.subject().stdout, "", "{}", pair.report());
+    assert!(
+        pair.allocs() > 0,
+        "Effect workload must allocate: {}",
+        pair.report()
+    );
+    pair.assert_balanced("unforced Effect discard");
+}
+
 // =============================================================================
 // bind primitive — spec/10-io.md §10.3
 // =============================================================================
@@ -362,6 +480,86 @@ fn run_mode_main_returns_bind_exit_code() {
         .user("(defn main [] (bind (Pure 10) (fn [x] (Pure (add-i64 x 32)))))")
         .output()
         .assert_exit(42);
+}
+
+// IOR-1 / IOR-C — reuse of an IO value (spec/10-io.md §10.8.1: "forcing an IO
+// value does not consume it"). The two sources differ in exactly one token: the
+// continuation returns `p` (reuse) or `(Pure a)` (control). Allocation:
+// `tests/plan/s122-evidence-delta.md` §"Reuse of an IO value — defect allocation".
+// The heap-payload cell of that allocation (IOR-2) sits with the
+// `platform_pure_string_*` marginal pairs above, on their harness.
+
+// spec: spec/10-io.md §10.8.1 — a description is reusable: one `Pure` bound once
+// and forced twice in sequence yields its value each time.
+// defect: class=wrong-reject locus=crates/cranelisp-intrinsics/src/io.rs::force_pure_node found=S122 owner=/dev
+//
+// Pre-fix this exits 1 with `runtime panic: Pure node forced more than once`.
+// The refusal aborts the program, so exit 7 is unreachable while it stands and
+// discriminates it without matching on the message; 7 rather than 0 also
+// discriminates a correction that yields a stale or zero second value.
+#[test]
+fn run_mode_reused_pure_yields_its_value_on_each_force() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn main [] (let [p (Pure 7)] (bind p (fn [a] p))))")
+        .output()
+        .assert_exit(7);
+}
+
+// spec: spec/10-io.md §10.8.1 — control for the cell above: a continuation
+// returning a FRESH `Pure` forces two distinct nodes, so it must pass both
+// before and after the reuse correction. A red here is a harness, import or
+// exit-path fault posing as the defect or as its fix, not the defect.
+#[test]
+fn run_mode_fresh_pure_per_force_yields_its_value_control() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user("(defn main [] (let [p (Pure 7)] (bind p (fn [a] (Pure a)))))")
+        .output()
+        .assert_exit(7);
+}
+
+// IOR-4 — the `Effect` twin of IOR-1/IOR-C: one `print` node forced twice
+// (subject) versus a fresh `print` per force (control). Same allocation.
+fn effect_reuse_program(continuation_body: &str) -> String {
+    format!(
+        "(platform stdio)\n\
+         (import [platform.stdio [print]])\n\
+         (import [primitives [bind Pure]])\n\
+         (defn main [] (let [e (print \"p-e\")] (bind e (fn [_] {continuation_body}))))\n"
+    )
+}
+
+fn assert_effect_performed_twice(source: &str) {
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", source)
+        .run("main.cl")
+        .output();
+    assert_eq!(
+        (out.status.code(), out.stdout.lines().collect::<Vec<_>>()),
+        (Some(0), vec!["p-e", "p-e"]),
+        "expected exit 0 and stdout exactly two `p-e` lines\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/10-io.md §10.8.1 — a reused `Effect` performs its effect on each force.
+// defect: class=uaf locus=crates/cranelisp-platform/src/lib.rs::call_effect_thunk found=S122 owner=/dev
+// Attribution provisional (tests/plan/s122-evidence-delta.md); retag if refuted.
+#[test]
+fn run_mode_reused_effect_performs_its_effect_on_each_force() {
+    assert_effect_performed_twice(&effect_reuse_program("e"));
+}
+
+// spec: spec/10-io.md §10.8.1 — control: two distinct `Effect` nodes, green
+// before and after the correction.
+#[test]
+fn run_mode_fresh_effect_per_force_performs_its_effect_control() {
+    assert_effect_performed_twice(&effect_reuse_program("(print \"p-e\")"));
 }
 
 // spec: spec/10-io.md §10.6.1 (Exit Code) — a batch `main` returning `(IO Int)`

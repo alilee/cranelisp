@@ -50,7 +50,7 @@ impl LineColRange {
 /// - `context` set when producer captures inline source snippet (parse
 ///   errors always; typecheck/codegen typically defer to introspection).
 ///
-/// See `design/arch/legacy/decisions/0039-per-defn-source-on-introspection.md`
+/// See `design/arch/decisions/README.md (Decision 39)`
 /// for the operative rationale and `design/arch/bounded-contexts.md` §7
 /// for the producer-side population matrix.
 #[non_exhaustive]

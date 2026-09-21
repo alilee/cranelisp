@@ -4,7 +4,7 @@
 FIXME 0708 — Reading A-structural). Binding cross-crate contract for the S116
 implementation waves.** Archive trigger: the S116 flip wave lands + this
 contract folds into `crates/cranelisp-types/src/sexp.rs` rustdoc +
-`interfaces.md` §"Sexp" + BC §1/§7 + the frontend/int crate CLAUDE.md files.
+`interfaces.md` §"Sexp" + [BC 1](bounded-contexts.md#1-frontend-cratescranelisp-frontend) / [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) + the frontend/int crate CLAUDE.md files.
 
 Ruling (recorded `sprints/SPRINT.md` §Notes, 2026-07-21): `:Type <form>` parses
 to a NEW structural annotated node at READ time — one fold rule in the reader,
@@ -330,7 +330,7 @@ waves serial; ONE schema window (§6).
 
 - **W0 `/arch` (types)**: the §1 variant + exhaustive-match arms in
   `cranelisp-types` + `TAG_SEXP_ANNOTATED` + schema bump + `public-api.txt`
-  + rustdoc/`interfaces.md`/BC §1/§7 cascade. Dormant (no producer).
+  + rustdoc/`interfaces.md`/[BC 1](bounded-contexts.md#1-frontend-cratescranelisp-frontend) / [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) cascade. Dormant (no producer).
 - **W1 `/dev(frontend)`**: dormant consumers — ast_builder node-consumption
   path (scan-and-pair KEPT until flip), quasiquote/defmacro/synth arms; unit
   tests construct `Annotated` directly (Principle 5 — all pure functions).

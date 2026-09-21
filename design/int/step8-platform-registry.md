@@ -1,8 +1,9 @@
-> **HISTORICAL — superseded slice / working doc (triaged S110, FIXME 0607).** A
-> point-in-time implementation-slice narrative, retained for the audit trail only; NOT
-> current design intent. The durable design is `int.md` (master) plus the subsystem docs
-> indexed in `design/int/CLAUDE.md` §"Document index". Where this doc disagrees with the
-> current source or the master, the source and master win.
+> **REFERENCE LINEAGE.** A Sprint 45 implementation slice, retained because spec-traced
+> platform tests name it. The registry it introduced was deleted at S57 — read
+> `platform-registry-removal.md` for what replaced it, and `io-integration.md` for the current
+> host-side platform wiring. Current design is `int.md` (master) plus the subsystem docs
+> indexed in `design/int/CLAUDE.md` §"Document index"; where this record disagrees with the
+> source or the master, they win.
 
 # Step 8: Platform Registry
 

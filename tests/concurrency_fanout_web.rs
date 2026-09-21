@@ -434,7 +434,7 @@ fn e3_token0_discarded_subtree_not_launched_stays_source_ordered() {
 // Sprint 97 — 0479: idle-but-armed server `accept` survives (no wall-clock 30s cap).
 //
 // The wall-clock `MAX_TOTAL_BLOCK` 30s cap is replaced by a structural armed-ness
-// deadlock detector (`design/int/reactor.md §8`): an idle-but-armed `accept` (listener
+// deadlock detector (`design/intrinsics/reactor.md §8`): an idle-but-armed `accept` (listener
 // fd in `fd_waiters`) waits FOREVER (production-shaped); a genuinely-unarmed suspend
 // trips immediately. A host-side `drive_mode` knob keeps a `OneShot` (`--run`/REPL)
 // wall-clock backstop, DISABLED in `Server` mode.

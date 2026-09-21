@@ -386,7 +386,7 @@ where
         if !*LENIENT_DISABLED
             && !self.in_trace_body
             && !self.suppress_spark_gate
-            && !is_io_combinator_call(resolved_call)
+            && IoCombinator::of_call(resolved_call).is_none()
         {
             // Admission filter (lenient-eval.md §2.8.2 / §2.8.6): M-static (the
             // default) admits only recursive-SCC ∧ non-tail candidates via the
@@ -730,47 +730,48 @@ where
         // dec their own heap args; inline builtins operate on NeverHeap
         // operands. The caller never emits a post-call temporary dec.
 
-        // IO bind: intercept and compile inline.
-        // bind uses consuming semantics: it takes ownership of both args
-        // by storing them in the Bind node. For variables, inc to add
-        // the Bind node's reference. For temporaries, transfer ownership
-        // (temp starts at rc=1, Bind node inherits it — no inc/dec needed).
-        if op_name.as_ref() == "bind" {
-            let input_disposer = self.result_disposer_for_io_expr(&args[0], span)?;
-            let arg_vals = self.compile_consuming_arg_list(args)?;
-            self.in_tail_position = saved_tail;
-            return self.compile_bind_inline(&arg_vals, input_disposer, span);
-        }
-
-        // Race/select combinators (S96 Chunk C, slice 7): name-matched
-        // here exactly like `bind` (the inline-primitive precedent — NOT
-        // an inferred AST marker; `io-trampoline.md §16.2`). `select`
-        // takes one branch `Vec (IO a)` (consuming convention, so a
-        // temporary `[..]` literal transfers its rc and a `Var` is inc'd
-        // once); `race a b` builds the same node over a 2-element branch
-        // Vec from its two IO args (`compile_race` compiles the args
-        // itself via `compile_vec_lit`). Both produce the one
-        // `IO_TAG_SELECT` node (`io-trampoline.md §16.3/§16.4`).
-        if op_name.as_ref() == "select" {
-            let result_disposer = self.result_disposer_for_select_expr(&args[0], span)?;
-            let arg_vals = self.compile_consuming_arg_list(args)?;
-            self.in_tail_position = saved_tail;
-            return self.compile_select(&arg_vals, result_disposer, span);
-        }
-        if op_name.as_ref() == "race" {
-            self.in_tail_position = saved_tail;
-            return self.compile_race(args, span);
-        }
-
-        // `sleep` — the runtime timer poll leaf (S96 Chunk C4, slice 7;
-        // `reactor.md §2.18`). Name-matched here like `race`/`select`/`bind`
-        // (the inline-primitive precedent). `compile_sleep` builds an
-        // `IO_TAG_EFFECT_POLL` node whose `code_ptr` is the RUNTIME symbol
-        // `runtime/sleep_pollfn` (the new non-GOT runtime-symbol path —
-        // distinct from `compile_poll_effect`'s GOT-slot load).
-        if op_name.as_ref() == "sleep" {
-            self.in_tail_position = saved_tail;
-            return self.compile_sleep(args, span);
+        // The inline IO combinators ([`IoCombinator`]), intercepted and lowered
+        // here rather than dispatched. Each arm MINTS a new IO node at rc=1 and
+        // takes its operands under the consuming convention — a `Var` operand is
+        // retained to add the node's reference, a temporary transfers its rc — and
+        // never returns an operand. That is the same fact `value_provenance`
+        // reads off this classification to elide the protective return retain.
+        //
+        // The match is exhaustive by construction: a fifth combinator must decide
+        // its lowering here, and its freshness in the provenance arm, or neither
+        // compiles.
+        if let Some(combinator) = IoCombinator::from_builtin_name(op_name.as_ref()) {
+            return match combinator {
+                IoCombinator::Bind => {
+                    let input_disposer = self.result_disposer_for_io_expr(&args[0], span)?;
+                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    self.compile_bind_inline(&arg_vals, input_disposer, span)
+                }
+                // `select` takes one branch `Vec (IO a)` (a temporary `[..]`
+                // literal transfers its rc; a `Var` is inc'd once); `race a b`
+                // builds the same `IO_TAG_SELECT` node over a 2-element branch Vec
+                // it compiles itself via `compile_vec_lit`
+                // (`io-trampoline.md` §16.2/§16.3/§16.4).
+                IoCombinator::Select => {
+                    let result_disposer = self.result_disposer_for_select_expr(&args[0], span)?;
+                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    self.compile_select(&arg_vals, result_disposer, span)
+                }
+                IoCombinator::Race => {
+                    self.in_tail_position = saved_tail;
+                    self.compile_race(args, span)
+                }
+                // The runtime timer poll leaf (`reactor.md` §2.18): an
+                // `IO_TAG_EFFECT_POLL` node whose `code_ptr` is the runtime symbol
+                // `runtime/sleep_pollfn` — the non-GOT runtime-symbol path,
+                // distinct from `compile_poll_effect`'s GOT-slot load.
+                IoCombinator::Sleep => {
+                    self.in_tail_position = saved_tail;
+                    self.compile_sleep(args, span)
+                }
+            };
         }
 
         // Vec operations: intercept and compile inline.
@@ -1991,7 +1992,7 @@ where
     /// load prefix — Principle 7) and baked as the state-closure `code_ptr`; the
     /// effect's i64 args are marshaled as the closure's env captures; the
     /// trampoline supplies `HostCtx`/`Waker` and calls the poll-fn later
-    /// (`design/backend/io-trampoline.md §12`, `design/int/reactor.md §2.5`).
+    /// (`design/backend/io-trampoline.md §12`, `design/intrinsics/reactor.md §2.5`).
     ///
     /// Operand convention (`io-trampoline.md §14.2` / SPRINT.md S96 Phase-3):
     ///   `arg_vals = [ token, capacity, resource_handle(=leaf_0), leaf_1, ... ]`.
@@ -2162,7 +2163,7 @@ where
     }
 
     /// Compile a `(sleep d)` call — the runtime timer poll leaf (S96 Chunk C4,
-    /// slice 7; `design/int/reactor.md §2.18`). `sleep : Int -> IO Int` arms the
+    /// slice 7; `design/intrinsics/reactor.md §2.18`). `sleep : Int -> IO Int` arms the
     /// reactor's timer and resumes (with `0`) after `d` MILLISECONDS, reusing the
     /// **entire** `IO_TAG_EFFECT_POLL` / `EffectPoll` / acquire-around-poll /
     /// timer-`turn()` machinery — it is just another poll node.
@@ -2860,27 +2861,68 @@ fn is_vec_primitive(name: &str) -> bool {
     matches!(name, "vec-get" | "vec-set" | "vec-push" | "vec-len")
 }
 
-/// Check if a resolved call is one of the inline IO combinators that compile
-/// their OWN arguments as IO sub-trees (`bind` / `select` / `race` / `sleep`),
-/// rather than as ordinary values dispatched through the generic apply lowering.
+/// The four inline IO combinators: the CLOSED set of `BuiltinFn` carriers whose
+/// lowering compiles its own arguments as IO sub-trees and MINTS a new IO node
+/// at rc=1, rather than dispatching a value call through the generic apply path.
 ///
-/// These must be EXCLUDED from the lenient apply-argument spark pre-pass
-/// (`compile_apply`, lenient-eval.md §2.5). Their arguments are IO computations
-/// the trampoline runs (via the reactor / recursive trampolines), NOT values to
-/// force on the rayon spark pool — sparking them is semantically wrong. It is
-/// also a codegen-collision hazard: `compile_race` recompiles its arg IO sub-trees
-/// via `compile_vec_lit` WITHOUT consulting `sparked_args`, so a Phase-1 spark
-/// thunk and the recompiled inner lambda are emitted for the same source span,
-/// declaring the same `__lambda_<span>__` symbol with incompatible signatures
-/// (`{1 param}` thunk vs `{2 param}` closure). `select` shares the arm but takes a
-/// single `[..]` VecLit carrier (not a sparkable Apply), so it never tripped this —
-/// the guard makes the exclusion uniform across all four combinators.
-fn is_io_combinator_call(resolved_call: Option<&ResolvedCall>) -> bool {
-    matches!(
-        resolved_call,
-        Some(ResolvedCall::BuiltinFn { name })
-            if matches!(name.as_ref(), "bind" | "select" | "race" | "sleep")
-    )
+/// **This is the one classification of that fact** (Principle 07), and the enum
+/// IS the totality claim — adding a combinator whose lowering does not mint a
+/// node is a non-exhaustive-match compile error at every reader, never a silent
+/// claim at one of them. Three readers consume it:
+///
+/// 1. **The lenient apply-argument spark exclusion** (`compile_apply`,
+///    `lenient-eval.md` §2.5). These arguments are IO computations the
+///    trampoline runs, NOT values to force on the rayon spark pool — sparking
+///    them is semantically wrong. It is also a codegen-collision hazard:
+///    `compile_race` recompiles its arg IO sub-trees via `compile_vec_lit`
+///    WITHOUT consulting `sparked_args`, so a Phase-1 spark thunk and the
+///    recompiled inner lambda are emitted for the same source span, declaring
+///    the same `__lambda_<span>__` symbol with incompatible signatures
+///    (`{1 param}` thunk vs `{2 param}` closure). `select` takes a single `[..]`
+///    VecLit carrier (not a sparkable Apply) so it never tripped that, but the
+///    exclusion is uniform across all four.
+/// 2. **`compile_builtin_fn_call`'s interceptors**, matched exhaustively — the
+///    lowerings themselves.
+/// 3. **`fn_compiler::value_provenance_with_calls`'s `Apply` arm**, which maps
+///    every variant to `ValueProvenance::Fresh`. The minted node never returns
+///    an operand, so it cannot alias a scope binding; before S122 this was
+///    `OwnedTemporary` and `protect_return_value` emitted an unbalanced retain
+///    whenever the exiting frame owned a heap binding
+///    (`design/backend/s122-closure.md` §8, IOR-5).
+///
+/// Identity comes from the `BuiltinFn` CARRIER, never the callee's spelling
+/// (Principle 24): an `Apply` spelled `bind` that resolved to a user binding is
+/// not one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IoCombinator {
+    Bind,
+    Select,
+    Race,
+    Sleep,
+}
+
+impl IoCombinator {
+    /// Classify a `BuiltinFn` carrier's own name. Module-private: the question is
+    /// only ever asked of a name that arrived on that carrier, which is what
+    /// keeps this from becoming a name test.
+    fn from_builtin_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "bind" => Self::Bind,
+            "select" => Self::Select,
+            "race" => Self::Race,
+            "sleep" => Self::Sleep,
+            _ => return None,
+        })
+    }
+
+    /// Classify a resolved call. `None` for every other carrier and for an
+    /// unresolved (closure-value) call.
+    pub(crate) fn of_call(resolved_call: Option<&ResolvedCall>) -> Option<Self> {
+        match resolved_call {
+            Some(ResolvedCall::BuiltinFn { name }) => Self::from_builtin_name(name.as_ref()),
+            _ => None,
+        }
+    }
 }
 
 /// The byte payload baked for a platform fn-name handle (S81 / FIXME 0327, the
@@ -2943,6 +2985,9 @@ mod io_combinator_spark_tests;
 
 #[cfg(test)]
 mod sequence_io_ownership_tests;
+
+#[cfg(test)]
+mod io_combinator_freshness_tests;
 
 #[cfg(test)]
 mod spark_gate_codegen_tests;

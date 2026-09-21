@@ -368,15 +368,7 @@ disposition = "established"
 name = "architecture-decisions-drain"
 patterns = ["design/arch/decisions/*.md"]
 owner = "arch"
-purpose = "Existing decisions retained while their substance is folded into its canonical home."
-established_by = "design/arch/CLAUDE.md"
-disposition = "established"
-
-[[document_class]]
-name = "architecture-legacy-drain"
-patterns = ["design/arch/legacy/decisions/*.md"]
-owner = "arch"
-purpose = "Retained reference material awaiting its existing per-file promotion, archive or deletion disposition."
+purpose = "The decision-label index, and the five decision records that tests still cite by section."
 established_by = "design/arch/CLAUDE.md"
 disposition = "established"
 
@@ -398,41 +390,33 @@ disposition = "established"
 
 [[document_class]]
 name = "intrinsics-current-designs"
-patterns = ["design/intrinsics/diagnostic-modes.md", "design/intrinsics/intrinsics-table.md", "design/intrinsics/rc-inc-entry-point.md", "design/intrinsics/reactor.md", "design/intrinsics/s121-c5-intrinsics-visit.md", "design/intrinsics/s122-typed-consume-closure.md"]
+patterns = ["design/intrinsics/diagnostic-modes.md", "design/intrinsics/intrinsics-table.md", "design/intrinsics/reactor.md", "design/intrinsics/ownership-and-disposal.md"]
 owner = "design"
-purpose = "Current intrinsics interior designs and retained live design evidence for runtime heap ownership, typed disposal, diagnostics, intrinsic registration and IO execution."
+purpose = "Current intrinsics interior designs for runtime heap ownership, node disposal, IO execution, intrinsic registration and diagnostics."
 established_by = "design/intrinsics/CLAUDE.md"
 disposition = "established"
 
 [[document_class]]
 name = "frontend-designs"
-patterns = ["design/frontend/ast-builder.md", "design/frontend/binder-head-reject.md", "design/frontend/comment-preservation.md", "design/frontend/enforcement-matrices.md", "design/frontend/frontend.md", "design/frontend/macro-plan.md", "design/frontend/module-preamble.md", "design/frontend/modules.md", "design/frontend/quasiquote-fold.md", "design/frontend/reader.md", "design/frontend/s116-syntax-and-annotation.md", "design/frontend/s76-syntactic-only.md", "design/frontend/trait-impl-head-parse.md", "design/frontend/wave-3a-build-form.md"]
+patterns = ["design/frontend/ast-builder.md", "design/frontend/binder-head-reject.md", "design/frontend/defmacro-synthesis.md", "design/frontend/enforcement-matrices.md", "design/frontend/frontend.md", "design/frontend/module-preamble.md", "design/frontend/modules.md", "design/frontend/quasiquote-fold.md", "design/frontend/reader.md", "design/frontend/s116-syntax-and-annotation.md", "design/frontend/trait-impl-head-parse.md"]
 owner = "design"
-purpose = "Frontend interior designs and retained live design evidence for reading, syntactic validation, AST construction, module syntax and quasiquote desugaring."
+purpose = "Frontend interior designs."
 established_by = "design/frontend/CLAUDE.md"
 disposition = "established"
 
 [[document_class]]
 name = "int-current-designs"
-patterns = ["design/int/agent.md", "design/int/bind-chain-analysis.md", "design/int/cache-hit-loading.md", "design/int/concurrency-architecture.md", "design/int/cranelisp-toml.md", "design/int/expansion-qualification-scope.md", "design/int/impl-redefinition-hot-reload.md", "design/int/index-worker-isolation.md", "design/int/int.md", "design/int/io-integration.md", "design/int/macro-diagnostic-reanchoring.md", "design/int/macro-marshal-rc-protection.md", "design/int/macro-resolver-impl.md", "design/int/macro-turn-ownership.md", "design/int/multi-sig-introspection.md", "design/int/observability.md", "design/int/prelude-table-write-isolation.md", "design/int/private-submodule-import.md", "design/int/quote-shield.md", "design/int/repl-lifecycle.md", "design/int/result-owner.md", "design/int/s117-conformance-recovery.md", "design/int/s121-c6-visit.md", "design/int/s122-closure.md", "design/int/session-persistence.md", "design/int/session-transaction.md", "design/int/signature-body-prepass.md", "design/int/symbol-table-cache.md", "design/int/symbol-table-generics.md", "design/int/terminal-styling.md"]
+patterns = ["design/int/agent.md", "design/int/bind-chain-analysis.md", "design/int/cache-hit-loading.md", "design/int/concurrency-architecture.md", "design/int/cranelisp-toml.md", "design/int/expansion-qualification-scope.md", "design/int/impl-redefinition-hot-reload.md", "design/int/index-worker-isolation.md", "design/int/int.md", "design/int/io-integration.md", "design/int/macro-diagnostic-reanchoring.md", "design/int/macro-marshal-rc-protection.md", "design/int/macro-resolver-impl.md", "design/int/macro-turn-ownership.md", "design/int/multi-sig-introspection.md", "design/int/observability.md", "design/int/prelude-table-write-isolation.md", "design/int/private-submodule-import.md", "design/int/quote-shield.md", "design/int/repl-lifecycle.md", "design/int/result-owner.md", "design/int/s117-conformance-recovery.md", "design/int/s121-c6-visit.md", "design/int/s122-closure.md", "design/int/session-persistence.md", "design/int/session-transaction.md", "design/int/signature-body-prepass.md", "design/int/symbol-table-cache.md", "design/int/symbol-table-generics.md", "design/int/terminal-styling.md", "design/int/persistent-workers.md", "design/int/concurrency/README.md"]
 owner = "design"
-purpose = "Current Binary/int master, subsystem and active feature designs for pipeline orchestration, compiler-internal scheduling, REPL/session, persistence, macro execution, host integration and observability."
+purpose = "The master, subsystem and active feature designs for pipeline orchestration, compiler-internal scheduling, REPL/session, persistence, macro execution, host integration and observability."
 established_by = "design/int/CLAUDE.md"
 disposition = "established"
 
 [[document_class]]
 name = "int-reference-lineage"
-patterns = ["design/int/concurrency-audit.md", "design/int/concurrency-risks.md", "design/int/concurrency-test-strategy.md", "design/int/concurrency/README.md", "design/int/concurrent-workers.md", "design/int/heisenbug-race-closure.md", "design/int/persistent-workers.md"]
+patterns = ["design/int/cache-prelude-restoration-repro.md", "design/int/heisenbug-race-closure.md", "design/int/platform-registry-removal.md", "design/int/s102-defect-wave.md", "design/int/step8-platform-registry.md", "design/int/step9-error-cascade.md"]
 owner = "design"
-purpose = "Load-bearing concurrency and race-analysis records retained as precedent for current Binary/int design."
-established_by = "design/int/CLAUDE.md"
-disposition = "established"
-
-[[document_class]]
-name = "int-historical-records"
-patterns = ["design/int/cache-prelude-restoration-repro.md", "design/int/concurrency/archive/README.md", "design/int/platform-registry-removal.md", "design/int/s102-defect-wave.md", "design/int/step4-macro-blocking.md", "design/int/step5-lazy-discovery.md", "design/int/step7-repl-eval.md", "design/int/step8-platform-registry.md", "design/int/step9-error-cascade.md"]
-owner = "design"
-purpose = "Superseded Binary/int working, migration and slice records retained solely for the audit trail described by the S110 triage."
+purpose = "Retained race-analysis, defect-wave and migration records that live source or tests still cite as a contract of record or a diagnosis anchor. They are evidence, not current design intent."
 established_by = "design/int/CLAUDE.md"
 disposition = "established"
 
@@ -493,7 +477,7 @@ disposition = "established"
 
 [[document_class]]
 name = "qa-retained-evidence-records"
-patterns = ["tests/plan/s99-measurement.md", "tests/plan/s100-ownership-verification.md", "tests/plan/s101-coverage-postmortem.md", "tests/plan/coverage-audit-s101.md"]
+patterns = ["tests/plan/s99-measurement.md", "tests/plan/s100-ownership-verification.md", "tests/plan/s101-coverage-postmortem.md", "tests/plan/coverage-audit-s101.md", "tests/plan/s10[2-5]-*.md", "tests/plan/s109-*.md", "tests/plan/s11[1-9]-*.md", "tests/plan/s12[01]-*.md"]
 owner = "qa"
 purpose = "Dated QA measurement, lane-baseline and coverage-analysis records retained because current designs, test sources and harnesses cite them by section."
 established_by = "tests/CLAUDE.md"

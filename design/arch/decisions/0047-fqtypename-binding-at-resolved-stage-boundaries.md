@@ -1,7 +1,7 @@
 ---
 number: 0047
 title: FQTypeName is binding as the cross-crate boundary type for resolved-stage type identifiers
-status: pre-implementation
+status: operative (implemented S67; guarded by `tests/spec_fqtypename_boundary.rs`)
 filed: sprint 67 (Phase 3 Wave 0 — second user-challenge scope amendment)
 canonical_location: design/arch/interfaces.md §"Type System" (binding rule + exceptions); crates/cranelisp-types/src/newtype.rs (`FQTypeName`, `FQTraitName`); the retired `facades/types.md` migration plan is Git history
 amends: []

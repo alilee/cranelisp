@@ -2599,6 +2599,29 @@ fn value_provenance_with_calls(
             ) {
                 return Fresh;
             }
+            // The four inline IO combinators (`apply::IoCombinator` — the ONE
+            // classification, read from the carrier and shared with the spark
+            // exclusion and the lowerings themselves). Each lowering allocates a
+            // new IO node at rc=1 and takes its operands under the consuming
+            // convention; the node NEVER returns an operand, so its result cannot
+            // alias a scope binding. `Fresh`, not `TransferredCall`: the latter
+            // would claim a possible parameter alias that does not exist.
+            //
+            // Exhaustive, no wildcard — a fifth combinator whose lowering did not
+            // mint a node must be decided here rather than inherit this claim.
+            // Before S122 this fell through to `OwnedTemporary`, so
+            // `body_has_independent_result` was false and `protect_return_value`
+            // retained the new node whenever the frame owned a heap binding,
+            // stranding it and its whole owned subtree
+            // (`design/backend/s122-closure.md` §8, IOR-5).
+            if let Some(combinator) =
+                crate::compiler::apply::IoCombinator::of_call(resolved_call.as_deref())
+            {
+                use crate::compiler::apply::IoCombinator::{Bind, Race, Select, Sleep};
+                return match combinator {
+                    Bind | Select | Race | Sleep => Fresh,
+                };
+            }
             match callee.as_ref() {
                 MonoExpr::Var {
                     resolution: VarRef::Global(fq),

@@ -8,7 +8,7 @@
 // surrounding `Bind(Select, cont)` is built by the ordinary bind codegen.
 //
 // See `design/backend/io-trampoline.md §16` (the select node + bake + the
-// list-carrier RC contract) and `design/int/reactor.md §2.15` (the runtime race
+// list-carrier RC contract) and `design/intrinsics/reactor.md §2.15` (the runtime race
 // + cancellation = future-drop). `select` is the sole node primitive; `race`
 // builds the same node over a 2-element branch Vec (§16.3 — required as a backend
 // primitive, not stdlib sugar, because the free-standing tests import `race` from

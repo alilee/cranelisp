@@ -1,32 +1,24 @@
 # Session transaction — dependent recompilation + ABI-epoch slot versioning (R3 machinery, int half)
 
-> **Status: DESIGN (S101 Phase 3); implemented S101 Wave 4; amended S102 Phase 3; T1 full-cure
-> promoted to implementation-ready S103 Phase 3** (the §9.1.1 downgrade `stale:` section — interim
-> T1 cure, `repl/spec.md` §18.1.1 — and the §10 T1 full-cure end-of-turn mechanics + preconditions;
-> companion doc `design/int/s102-defect-wave.md`). **S103 Phase-3 amendment (FIXME 0507, /design
-> src/): the §10 T1 full-cure change-sets are now implementation-ready** — its S102-preconditions
-> (regen fidelity D1/D2, the 0489 prompt floor, D3/0487 env) landed at S102, so §10 T1 lists the
-> dependency-ordered change-sets, the F2 slot-refined trigger, the F5a macro-target handling, the
-> two coherent-stale pins to flip, and the F3 0491-exclusion resolution (macro-clause staleness).
-> Three deliberate as-built
-> divergences, upheld at change-set review (FIXME 0477, drained by this amendment), are
-> recorded in place: the §10 T1 module-grain downgrade, the §7.3 deleted-symbol leg
-> (recorded gap), and the §9.2 rendering seam (`broken_status_line`, not
-> `SymbolDescription`). This is the seam the S100 exit gate
-> deferred-with-pinned-interface (`design/arch/ownership-inference.md` §12): the dev-session
-> redefinition transaction of spine §5.3–§5.7, designed at implementation grain for `src/`.
-> The consuming interface is **pinned at `design/backend/ownership-codegen.md` §8.3's three
-> calls** (`compile_to_module` — existing; `compile_trap_stub` — new; `got().store_slot` /
-> `allocate_got_slot` — existing). This doc consumes that interface; it does not redesign it.
+> **Status: delivered** (S101–S103), with the amendments recorded in place. This is the
+> dev-session redefinition transaction of spine §5.3–§5.7 at implementation grain for `src/`.
+> Companion doc: `design/int/s102-defect-wave.md`. Master design: `design/int/int.md` (§8.6
+> cites this doc).
 >
-> Scope authority: spine §5 (R3 ruling, user-directed 2026-07-02). Acceptance authority:
-> `tests/plan/s100-ownership-verification.md` §2.1 (stage M) + §3.6 (lanes L-R1–L-R5) +
-> L-D1. Master design: `design/int/int.md` (§8.6 cites this doc).
+> **Authorities.** Scope: spine §5 (R3 ruling, user-directed 2026-07-02). Acceptance:
+> `tests/plan/s100-ownership-verification.md` §2.1 (stage M) + §3.6 (lanes L-R1–L-R5) + L-D1.
+> The consuming backend interface is **pinned at `design/backend/ownership-codegen.md` §8.3's
+> three calls** (`compile_to_module`, `compile_trap_stub`, `got().store_slot` /
+> `allocate_got_slot`). This doc consumes that interface; it does not redesign it.
 >
-> **Stage-M frame:** no ownership analysis exists yet. The ABI comparand is the **type scheme
-> only**; the machinery is designed as a general signature-coherence subsystem (it cures the
-> latent type-changing-redefinition hole that exists today — spine §5.2) with named seams
-> (§2.4, §3.5) where increment I's mode vectors slot in without restructuring.
+> **Stage-M frame.** No ownership analysis exists yet, so the ABI comparand is the **type
+> scheme only**. The machinery is designed as a general signature-coherence subsystem — it
+> cures the latent type-changing-redefinition hole spine §5.2 names — with seams (§2.4, §3.5)
+> where increment I's mode vectors slot in without restructuring.
+>
+> **Deliberate as-built divergences, recorded in place**: the §10 T1 module-grain downgrade,
+> the §7.3 deleted-symbol leg (a recorded gap, not landed machinery), and the §9.2 rendering
+> seam (`broken_status_line`, not `SymbolDescription`).
 
 > **S122 selected-closure amendment (approved 2026-09-09).** Section 10's
 > source-form driver replay is superseded by `design/int/s122-closure.md` §2.
@@ -197,11 +189,17 @@ names exactly the static callers, and NOT unrelated fns") is unsatisfiable at mo
 ### 3.2 Ruling — typecheck-side edge-extraction widening (FIXME 0470, load-bearing for S101)
 
 The edge set is enriched **where resolution knowledge lives — in typecheck** (filed as
-`design/arch/fixmes/0470-typecheck-callees-static-reference-edges.md`, `target:
-/typecheck`): record an edge for **every statically-resolved reference from a checked body
-to a module-resident callable `Def`** — both call-position applies and value-position `Var`
-references — into `call_graph_edges`, flowing through the existing
-`write_callees_to_module_entries` sink unchanged.
+FIXME 0470 against `/typecheck`, since resolved and drained): record an edge for **every
+statically-resolved reference from a checked body to a module-resident callable `Def`** —
+both call-position applies and value-position `Var` references — through typecheck's own
+edge sink.
+
+> **Record note (S122).** The sink symbols this section and §1 originally named
+> (`extract_call_graph_edges`, `write_callees_to_module_entries`) no longer exist under those
+> names; `callees` now reaches a `Def` through `cranelisp-types`' callable-arm settlement
+> (`canonical_callees`). The *rule* above is unchanged, but locate the current sink in source
+> before acting on the symbol names in §1's actor table. Re-anchoring §1 and §3 to the
+> settlement path is a `design` (int) next-touch item.
 
 - **Why not an int-side AST walk:** deriving edges in `src/` from the stored annotated
   `ast` would require re-implementing scope-aware name resolution (params/let shadowing,
@@ -525,19 +523,25 @@ supersession does, so Scenario 2's reclaim survives only on §6.1's two non-pool
 Retention is the safer superset; the narrower rule this section used to state was a record
 defect, not a source one.
 
-### 6.3 A latent as-built hazard this pool also cures (flag for `/dev`, in-sprint)
+### 6.3 The clear-by-`None` hazard this pool closed
 
-The Replace/reload paths clear compiled code by `*code = None`
-(`lifecycle.rs:1069–1076`; `process_form.rs:702–708`), and both carry comments claiming the
-`Arc<Jit>` handles "in `kept_jits`" keep the old pages alive — but `kept_jits` was dissolved
-in S58 (Decision 35; retention moved per-entry onto `Code::Jit`). Today `*code = None` drops
-what may be the **last** Arc and frees machine-code pages that in-flight frames or heap
-closures can still execute. Under this design the Replace path moves superseded `Code` into
-`retained_code` instead of `None`-ing it (§7.3) — the stale comments get corrected in the
-same change-set. *Landed S101* (`clear_module_codegen`, §7.3). A third displacement site
-of the same class — slotted prior replaced by a slot-less staged Def at the ordinary
-commit — was missed by the Wave-4 change-set and cured in Wave 5 (FIXME 0479; see §10 T1's
-residue paragraph).
+The pre-S101 Replace/reload paths cleared compiled code by `*code = None`, on comments
+claiming the `Arc<Jit>` handles "in `kept_jits`" kept the old pages alive — but `kept_jits`
+had been dissolved in S58 (Decision 35; retention moved per-entry onto `Code::Jit`), so that
+assignment dropped what could be the **last** Arc and freed machine-code pages that in-flight
+frames or heap closures could still execute.
+
+**No path clears code ahead of recompilation any more.** Compiled owners stay attached until
+staged publication replaces them, and the publication record hands each displaced owner to the
+commit gate, which pools it before releasing the module write guard (§7.3). A third
+displacement site of the same class — a slotted prior replaced by a slot-less staged Def at
+the ordinary commit — was missed by the Wave-4 change-set and cured in Wave 5 (FIXME 0479;
+see §10 T1's residue paragraph).
+
+Record note: `src/redefine.rs`'s `RetainedCode::frozen` rustdoc still lists a
+`process_form::clear_module_codegen` displace-to-pool site that no longer exists, and omits
+the compiled-publication and rejection-restore sites. That is a `dev` (int) rustdoc repair,
+not a mechanism gap.
 
 ---
 
@@ -581,22 +585,22 @@ observability/debug assertions, not as a gate.
 
 ### 7.3 The watcher/Replace path joins the same discipline
 
-The module-grain reload path (S35/S37 lineage: `try_pop_changes`' dependents scan,
-`lifecycle.rs:871–897` → `reload_module` → Replace commit) is redefinition too, and today it
-is ABI-unsound in exactly the spine-§5.2 way *plus* it opens a NULL window
-(`clear_module_codegen` zeroes every slot during recompilation, `process_form.rs:676–695` —
-a stale closure calling mid-window SIGSEGVs today). Changes:
+The module-grain reload path (S35/S37 lineage: the watcher's dependents scan →
+`session_v4::lifecycle::reload_module` → Replace commit) is redefinition too. Before S101 it
+was ABI-unsound in exactly the spine-§5.2 way *plus* it opened a NULL window: a
+clear-the-module step zeroed every slot during recompilation, so a stale closure calling
+mid-window segfaulted. It now joins this discipline on both counts:
 
-- **Stop zeroing slots.** Old pointers stay live until each symbol's new pointer lands
+- **No slot is zeroed.** Old pointers stay live until each symbol's new pointer lands
   (per-slot atomic swap) — the ABI-preserving members get gap-free late binding; nothing is
-  ever NULL. *Landed S101:* the reload path no longer zeroes; displaced `Code` reaches the
-  retention pool through the shared commit gate named in the next bullet (§6.1, §6.3), and
-  pool-less contexts — that gate with no session `SharedState` — keep the old drop.
+  ever NULL. Displaced `Code` reaches the retention pool through the shared commit gate named
+  in the next bullet (§6.1, §6.3). Pool-less contexts — that gate with no session
+  `SharedState` — keep the old drop.
 - **Per-symbol gate at Replace commit**: each recommitted symbol classifies against its
   prior entry — `AbiPreserving` reuses + patches; `AbiChanging` takes a fresh slot and
-  freezes the old one (prior `Code` → pool). *Landed S101:* the Replace path commits
-  through the same shared gate, `worker.rs::commit_staging_to_live` (§7.1) — one slot-policy
-  authority, both granularities.
+  freezes the old one (prior `Code` → pool). The Replace path commits through the same shared
+  gate, `worker.rs::commit_staging_to_live` (§7.1) — one slot-policy authority, both
+  granularities.
 - **Deleted symbols** (present before, absent in the new source): *designed* — entry
   removed, slot frozen, `Code` → pool (heap closures may still reference the deleted fn's
   old body). **As-built: NOT implemented — a recorded gap (FIXME 0477 item 2), not landed

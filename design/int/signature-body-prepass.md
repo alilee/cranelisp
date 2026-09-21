@@ -63,7 +63,7 @@ structural defect. FIXME 0425 names it precisely: the dependency
 **publish / readiness / block / resume** protocol is *one logical temporal
 invariant smeared across four files* — `src/scheduler.rs`, `src/worker.rs`,
 `src/process_form.rs`, `src/session_v4.rs` — with **no single owning subsystem**
-(`concurrency-architecture.md` §3.5 "Very High" risk; §3.6 "High" risk). The
+([historical concurrency analysis](https://github.com/alilee/cranelisp/blob/48d6e713a396e0e6ba3f4c0b19174144ad3676a6/design/int/concurrency-architecture.md), sections 3.5–3.6). The
 `concurrency-dependency-service.mmd` diagram asserts a clean invariant — "only
 the scheduler mutates readiness state; workers never read shared state directly"
 — but the as-built **achieves it by convention** (every call site must remember
@@ -569,7 +569,7 @@ likewise out of this design pass's scope.
 
 Cross-refs: `design/arch/bounded-contexts.md` §6 (boundary note);
 `design/arch/sequences/concurrency-dependency-service.mmd` (the blessed two-phase
-barrier); `design/int/concurrency-architecture.md` §3.5/§3.6 (the convention-spread
+barrier); [historical concurrency analysis](https://github.com/alilee/cranelisp/blob/48d6e713a396e0e6ba3f4c0b19174144ad3676a6/design/int/concurrency-architecture.md), sections 3.5–3.6 (the convention-spread
 protocol this retires); `design/int/heisenbug-race-closure.md` (the tactical
 lineage this supersedes); `design/arch/fixmes/0425-*.md`, `0426-*.md` (the gate
 FIXMEs); `tests/repl_persist_race.rs`, the retired failure ledger:2118 (the stress

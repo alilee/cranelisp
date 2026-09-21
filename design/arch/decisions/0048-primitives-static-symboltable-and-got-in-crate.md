@@ -1,7 +1,7 @@
 ---
 number: 0048
 title: `cranelisp-primitives` owns a statically-constructed `SymbolTable` AND its `Arc<GotTable>`; CompilerSession references the static at startup; from session-init onward primitives dispatch is functionally equivalent to any other module
-status: pre-implementation (S68)
+status: operative (implemented S68 as `cranelisp_primitives::PRIMITIVES_TABLE`; A2 reversed and the dependency ban made bidirectional S73)
 sprint_filed: 68
 filed_at: 2026-05-17
 amended: 2026-05-17 (S68 Phase 3) — A2 revised: `Code::Primitive` marker variant (per user direction, full word); new §"Structural invariant — backend dep-ban" added (per user direction — `cranelisp-backend` MUST NOT depend on `cranelisp-primitives`)
@@ -145,17 +145,17 @@ The following facades and design docs must update because of this Decision (S68 
 
 ## Status pointer
 
-This Decision is **active** through S68's implementation and lockdown. Once S68 closes with `PRIMITIVES_TABLE` published, the special-case branches deleted, and facades regenerated against the new shape, the Decision becomes vestigial (the commitment is embodied in `facades/primitives.md` + `facades/backend.md` + `facades/intrinsics.md` + `facades/int.md` + the source). At S68 close (Phase 7), `/arch` evaluates per `design/arch/CLAUDE.md` §"Decisions" whether to retire this Decision to `legacy/decisions/` or keep it as an environmental record of the primitives-vs-modules asymmetry resolution.
+Implemented at S68. The current contract is `bounded-contexts.md` §4a (invariants 3, 6 and 7) and §4b (invariants 9 and 11) with the `cranelisp-primitives` crate rustdoc. This record remains because tests cite its sections; see the [label index](README.md).
 
 ## Cross-references
 
-- `decisions/0023-uniform-codegen-mode-as-module-property.md` (legacy) — two-GOT model that this Decision instantiates for primitives
-- `decisions/0031-one-jitmodule-per-compile-batch.md` — the per-batch JIT lifecycle this Decision carves an exception from
-- `decisions/0035-code-enum-integration-layer.md` — the GOT-as-source-of-truth post-rollback statement this Decision aligns with
+- Decision 23 ([label index](README.md)) — two-GOT model that this Decision instantiates for primitives
+- Decision 31 ([label index](README.md)) — the per-batch JIT lifecycle this Decision carves an exception from
+- Decision 35 ([label index](README.md)) — the GOT-as-source-of-truth post-rollback statement this Decision aligns with
 - `decisions/0043-runtime-split-into-primitives-intrinsics.md` — the categorical distinction (modules vs. backend-emitted targets) that makes the asymmetry load-bearing
-- `decisions/0030-form-by-form-scheduler-mutual-imports.md` — `register_module_cached` flow carve-out for primitives
-- `fixmes/0210-arch-primitives-as-uniform-module-with-symboltable-and-got.md` — the primary FIXME this Decision resolves
-- `fixmes/0161-arch-post-s66-static-got-for-primitives.md` — superseded by this Decision
+- Decision 30 ([label index](README.md)) — `register_module_cached` flow carve-out for primitives
+- FIXME 0210 — the primary filing this Decision resolved (closed; Git history)
+- FIXME 0161 — superseded by this Decision (closed; Git history)
 - `principles/07-single-source-of-truth.md` — operative test for B1 rejection
 - `principles/08-no-interim-implementations.md` — the static-table shape is the **target** shape, not an interim
 - `principles/14-ffi-layout-discipline.md` — primitives are FFI; layout discipline applies

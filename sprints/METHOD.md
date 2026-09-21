@@ -17,7 +17,7 @@ Root `CLAUDE.md` §Roles is the declaration — which of the package's twelve ro
 - `cranelisp-frontend`
 - `cranelisp-typecheck`
 - `cranelisp-backend`
-- `cranelisp-primitives` + `cranelisp-intrinsics` — the **backend-emitted runtime library** (Decision-43 split of the former `cranelisp-runtime`). **Paired with backend, not with the binary**: `cranelisp-backend` depends on these crates and emits calls into them. The binary is only a *host-client* of the runtime (constructs `HostCtx`, drives `block_on_reactor`); the IO-runtime internals (reactor, `consume_io_tree`, RC) are not its concern.
+- `cranelisp-primitives` + `cranelisp-intrinsics` — the primitive declarations and backend-emitted runtime library. The binary is a host client; runtime internals (reactor, IO-tree disposal and RC) belong to intrinsics. [Bounded contexts](../design/arch/bounded-contexts.md) defines their boundaries and dependencies.
 - `cranelisp-platform` — consumer of the runtime, not its owner
 - `src/` — binary crate (pipeline, REPL, CLI, session), plus `crates/cranelisp-exe-bundle/`
 

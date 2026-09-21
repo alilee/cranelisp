@@ -9,7 +9,7 @@ C1→C3→C6 allocation inside the S121 one-visit reservations.
 
 **Archive trigger:** the C1/C3/C6 change-sets land, the 0798 discriminators
 flip, and the contract folds into `substitute_module_alias`'s rustdoc +
-`interfaces.md` §"Resolution" + BC §7; then this file moves to `archive/`.
+`interfaces.md` §"Resolution" + [BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types); then this file moves to `archive/`.
 
 ## 1. The defect, verified at HEAD (2026-09-01)
 

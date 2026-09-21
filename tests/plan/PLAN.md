@@ -15,6 +15,13 @@ designs. This plan allocates evidence, not language semantics or implementation.
   representation, lifecycle and failure states that a legal public program
   cannot construct or discriminate. Do not construct compiler internals in a
   public-process test to bridge an observation gap.
+- The process harness pipes all three standard streams and reads them after
+  exit. It therefore cannot observe the interactive-terminal line editor and
+  history, colour-on rendering (a non-terminal forces colour off and
+  [terminal styling](../../repl/spec/10-terminal-styling.md) defines no force
+  flag), or whether output arrived incrementally. Those observations are module
+  evidence or a stated manual check; the process tier pins the non-terminal
+  byte-identical path and the rendered result.
 - Assign the cheapest observation that separates the required result from a
   plausible wrong result. Add another layer only for a distinct residual risk.
   Shared [QA responsibilities](../../.agents/skills/qa/SKILL.md) and
@@ -175,6 +182,18 @@ reversed that, and [prelude scope](../spec_08_prelude_outer_scope.rs) now
 observes the poisoning outcome. Its one
 withheld observation, the §8.10.1 run-mode exit, is now asserted by
 `defn_before_import_resumes_correctly_after_dep_load` in module conformance.
+
+Six Sprint-106 to Sprint-120 working records were deleted in S122
+(`git show 48d6e713:tests/plan/`): the S106 burn-down and S107 rendering plans,
+the S110 gate attribution, the two Sprint-116 baseline and changed-test
+reconciliations and the S120 0917 provenance delta. No current source, test,
+design or filing cited them. Every filing the S106, S107 and S110 records
+planned against is closed, the agent-lane provenance race they attributed is
+stated in [test conventions](../CLAUDE.md#the-agent-lane---features-agent--isolated-target-dir),
+open filing 0917 carries its own subject, and the harness limits S106 and S107
+named are in §Strategy above. The Sprint-116 changed-test audit listed module
+tests without `// spec:` comments; that list was not re-measured here and is
+not a current finding.
 
 ### Mode canonicalisation — REPL is the canonical surface for language conformance
 
@@ -338,6 +357,31 @@ opens with what in it is standing and what is dated:
   completeness contract cited by the typecheck and save unit tiers.
 - [S101 coverage audit](coverage-audit-s101.md) — the named lanes and the
   drafting rules in §Traceability above.
+
+The S102–S121 records below are retained for the same reason: current source,
+tests, designs, the specification band or open filings cite them by section or
+row identifier. Each is a dated allocation, attribution or measurement, never
+current status; compare a RED, carry or count in one with current source before
+reuse. Retirement needs the citing owners to move their citations first.
+
+- Measurements: [S104 utilization](s104-utilization-measurement.md) and the S105
+  [attribution plan](s105-residual-attribution.md) and
+  [results](s105-attribution-results.md) — the counter definitions, discrimination
+  experiment and graded walls that backend and intrinsics source, the perf
+  harnesses and the performance backlog cite.
+- Attributions: the [S109 index-feed race](s109-attribution-index-feed-race.md),
+  the [S111 drop-glue under-key reachability record](s111-0633-adt-drop-glue-underkey.md)
+  and the [S111 Principle-24 register](s111-principle24-register.md).
+- Cut in S122 to their cited sections, original numbering kept and the removed
+  remainder named in each header: [S112](s112-0628-ic-wave.md),
+  [S114](s114-test-plan.md), [S115](s115-test-plan.md), [S117](s117-test-plan.md),
+  [S119](s119-test-plan.md), [S120](s120-evidence-delta.md) and
+  [S121](s121-test-plan.md).
+- Kept whole, because citations reach most sections:
+  [S102](s102-test-plan.md), [S103](s103-test-plan.md), the S113
+  [plan](s113-test-plan.md) and [risk assessment](s113-risk-assessment.md), the
+  [S115 instrumentation matrix](s115-instrumentation-matrix.md),
+  [S116](s116-test-plan.md) and [S118](s118-test-plan.md).
 
 The following compact closure records remain because other current records
 point to their specific evidence, which must not be lost during consolidation.

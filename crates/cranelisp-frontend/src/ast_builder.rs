@@ -371,7 +371,7 @@ pub(crate) fn head_is_top_level_form(head: &str) -> bool {
 /// call becomes a generic application and fails later with a confusing
 /// diagnostic.
 ///
-/// See `design/frontend/wave-3a-build-form.md` §2.3 for the detailed
+/// See `design/frontend/ast-builder.md` §2.3 for the detailed
 /// design.
 pub fn build_form(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
     // Desugar the reader-quote family (`quote`/`quasiquote`/`unquote`/

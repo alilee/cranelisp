@@ -24,7 +24,7 @@
 //! The function performs **no** symbol-table mutation and **no** I/O — it is a
 //! pure `&str -> Option<String>`, unit-testable from a source string with no
 //! session (frontend's syntactic-only posture;
-//! `design/frontend/s76-syntactic-only.md`; Principle 5 — testability is
+//! `design/frontend/frontend.md` §1; Principle 5 — testability is
 //! structural).
 
 /// Capture the leading comment-block module preamble per spec

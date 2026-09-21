@@ -6,7 +6,7 @@ inside each stream"). One visit, four ordered bundles.
 
 **Scope.** `crates/cranelisp-primitives/src` only. C5 is an ordered runtime
 pair; the `cranelisp-intrinsics` half — the handle vocabulary, the discharge
-walk, the IO teardown slice — is `design/intrinsics/s121-c5-intrinsics-visit.md`
+walk, the IO teardown slice — is `design/intrinsics/ownership-and-disposal.md`
 and is named here only where this crate consumes it or hands it something.
 
 **Authority.** Elaborates `design/arch/bounded-contexts.md` §4a and

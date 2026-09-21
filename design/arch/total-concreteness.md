@@ -29,13 +29,12 @@ file moves to `design/arch/archive/`.
 > (0934) is INCLUDED in S121, ruled below in §3.4. I-CONC/I-FRAME/I-EMIT
 > stand unchanged; the lifecycle machine is their representation.
 
-> **AMENDED 2026-09-01 (`/arch`, S121 Phase 3 R1): `Pure` force is
-> once-only per node.** The QA shared-node finding invalidates the earlier
-> plain-clear/lane-exclusive residual. The existing glue word is now the one
-> three-state atomic claim/transfer witness; duplicate force refuses before
-> payload access. No new tag, field, ownership mechanism or ABI bump beyond
-> the already-scheduled 9→10 is introduced. Canonical contract: §3.4;
-> safety-register row R20.
+> **AMENDED 2026-09-21 (`/arch`, S122 Phase 5; user ruling): IO values are
+> reusable descriptions of work.** Forcing a node never moves a field out of it:
+> a `Pure` force retains the payload, and an `Effect` node owns a repeatable
+> thunk that teardown discharges. This replaces the S121 once-only `Pure` claim,
+> whose refusal on legitimate reuse was a compiler defect. Canonical contract and
+> delivery status: §3.4; safety-register row R20.
 
 > **AMENDED 2026-07-28 (`/arch`, the design commission): I-ABI is re-ruled.**
 > The user's follow-on direction (R-25/R-27, preserved in
@@ -408,327 +407,194 @@ list in hand instead of discovering the list.
 
 ### 3.4 The IO existential (`Bind`): a representation question, and it dissolves
 
-The dispatcher asked for the honest read; here it is. The existential is real —
-`b` in `Bind { inner: IO b, cont: Fn [b] (IO a) }` is not recoverable from
-`IO a`, so monomorphising every *caller* still leaves a runtime teardown walk
-unable to name a nested `Pure b` payload's type. The S119 face-4 ruling
-(runtime-directed teardown) is correct and ships as planned, with its **named
-bounded residual**: an unrun `Bind` sub-tree's nested `Pure` payload is not
-discharged.
+The existential is real — `b` in `Bind { inner: IO b, cont: Fn [b] (IO a) }` is
+not recoverable from `IO a`, so monomorphising every caller still leaves a
+runtime teardown walk unable to name a nested `Pure b` payload's type. The cure
+is the architecture's standing pattern (closure `DROP_GLUE_PTR`, Decision 0011):
+**local self-description, stamped at the concrete construction site.** Under
+I-FRAME every site that constructs an IO node is concrete post-mono, so the
+existential becomes a representation fact — no type-system residual and no
+header type-word (R15 stands: one glue pointer on one runtime-owned node
+family). The `Bind` *entry*'s existential scheme survives as a
+checking/introspection artefact; compiled code and slots are where polymorphism
+ends.
 
-But the residual is not permanent, and the cure is the architecture's own
-standing pattern (closure `DROP_GLUE_PTR`, Decision 0011): **local
-self-description, stamped at the concrete construction site.** Under I-FRAME,
-*every* site that constructs an IO node is concrete post-mono — `(Pure x)`
-knows `x`'s concrete type; the backend's inline `bind` lowering knows the
-intermediate type at each call site. So:
+#### Layout and stamp (produce side) — delivered S121
 
-> **S121 tranche — the narrow sound shape RULED (`/arch`, 2026-09-01, S121
-> Phase 3; the user included 0934 with C7 owning the ABI bump + fixtures).**
-> The glue word goes on the **`Pure` node only, as a second (hidden) field**
-> — NOT a uniform IO-header word. `Pure` becomes the two-field allocation
-> `[header | tag@16 | payload@24 | payload_glue@32]`; every other IO node
-> is byte-identical. Narrower is sound because `Pure` is the only node whose
-> discharge needs a type-directed call: `Effect`'s thunk and `EffectPoll`'s
-> state-closure are Rust/closure-owned, `Bind`'s continuation carries its own
-> closure `DROP_GLUE_PTR` (Decision 0011), and `Par`/`Select`/`Launch`
-> children are IO nodes walked recursively. The payload stays at field 0, so
-> every existing read (`FIELD_0_OFFSET` in the trampoline, `consume_io_tree`,
-> `io_observer`) is untouched; pattern matching binds field 0 as today; the
-> hidden word is a backend-stamped slot on the closure-`DROP_GLUE_PTR`
-> precedent, never enumerated as a language-visible field (IO mints no
-> accessors).
->
-> **Stamp contract (produce side).** Every `Pure` construction site is
-> concrete post-mono (I-FRAME), and every such site is compiled code — the
-> runtime only *reads* `Pure` nodes (verified: `io.rs` extracts payloads,
-> allocates none). The word is stamped at construction: the canonical
-> `drop<T>` glue address for a heap-category payload type, or the sentinel
-> `0` for a scalar/non-heap payload (no discharge — which also closes the
-> wild-write-on-scalar hazard class by construction: the type is known at
-> the stamp site). No new release identity is minted — the word carries the
-> SAME canonical glue every other site calls (release-contract reject
-> criterion 5). The construction emitters are exactly the backend's: the
-> inline concrete `ConstrADT` lowering of `Pure`, and the minted
-> value-position ctor instance (the `compile_ctor_wrapper_body` promotion);
-> both stamp, and the C4 design enumerates them as a closed set.
->
-> **Discharge and once-only-force contract (consume side) — the word is the
-> one ownership state (`/arch` re-ruling, 2026-09-01, S121 Phase 3 R1).**
-> Field 1 is a three-state atomic word after construction/adoption:
->
-> | Bits | State | Meaning |
-> |---|---|---|
-> | `0` | `Scalar` | this `Pure` has a scalar/non-heap payload and owes no deep discharge |
-> | `1` | `Claimed` | this node has already been forced, or teardown has claimed its obligation |
-> | any other value | `Owned(glue)` | this node owns one heap-payload obligation, discharged through this canonical glue address |
->
-> `1` is reserved by the IO-node contract and is never a callable glue
-> address. The compiler emits only `0` or a canonical `drop<T>` address; the
-> platform emits only `0`, and the tag-directed backend adoption stamp replaces
-> it with `0` or that same canonical address. The supported targets cannot map
-> executable code at address `1`; a producer emitting `1` is a construction
-> defect, never a fourth state or a call target.
->
-> The run lane performs one atomic `swap(Claimed, AcqRel)` **before reading
-> field 0**. An old `Scalar` or `Owned(glue)` value wins the claim and may read
-> and transfer the payload; an old `Claimed` value is a duplicate force and
-> must not read, return, increment, decrement, or otherwise touch field 0. It
-> sets the existing runtime-error slot to **`Pure node forced more than once`**
-> (pointer/strand detail stays diagnostic, not stable user text), ferried through the
-> existing fork-join error slot when the loser is on a worker. This is the safe
-> failure direction: one winner at most, no fabricated result, no second
-> payload owner, and no call through the tombstone. Scalar `Pure`s obey the
-> same once-only force rule even though copying their bits would be memory-safe;
-> payload category must not change effect-node semantics.
->
-> Structural teardown uses the same state transition at `free_io_node`, the
-> sole field-discharge seam: `swap(Claimed, AcqRel)` returning `Owned(glue)`
-> calls that glue with the field-0 payload and then deallocates; `Scalar` or
-> `Claimed` calls nothing. `SpineTransferred` accepts only `Claimed`. Thus the
-> word remains the single ownership mechanism: force and teardown contend for
-> one obligation in one atomic modification order; neither a tag state, a
-> side-table claim, nor a second payload flag is added. (Corrected 2026-09-01:
-> the glue argument is field 0; calling through field 0 would execute the
-> payload as code.)
->
-> The claim is *required*, not defensive: lane exclusivity per node is
-> false in the live runtime. Decision 24 composes the lanes sequentially
-> over the SAME references — `cranelisp_run_io` forces the caller's tree
-> non-consumingly, then structurally consumes that same tree — and one
-> teardown walk covers both extracted `Pure`s (forced path, `Select`
-> winner, error-abort partial forcing) and unextracted ones (`Select`
-> losers, unrun `Bind` sub-trees) in the same tree. Only per-node state
-> discriminates; the witness is that state, and discharge-exactly-once
-> holds per *obligation* (witnessed), not per node (exclusive lanes).
->
-> **Publication (ordering/atomicity) — the complete rule (`/arch`,
-> 2026-09-01, verified against live `io.rs`/`drop.rs`).** Construction and
-> platform adoption initialise field 1 non-atomically only while the fresh
-> node is exclusively owned and unpublished. After publication, every read or
-> mutation of field 1 in intrinsics is through the aligned `AtomicI64` at
-> offset 32; both force and teardown use `swap(Claimed, AcqRel)`. The atomic
-> modification order linearises two forcing lanes: exactly one observes the
-> initial state, and every later claimant observes `Claimed`. Acquire also
-> observes the payload and stamp published with the node; Release publishes
-> the claim before any later RC release or joined teardown. The existing node
-> publication and lifetime edges remain required:
->
-> 1. **Same-strand program order.** The claim is sequenced before the
->    extractor's shallow dec (fresh path) and before the terminal
->    `consume_io_tree` of the caller's tree (a non-fresh node claimed on
->    the strand that later tears it down) — the common case.
-> 2. **The RC Release-dec/Acquire-fence pair.** Where the claiming strand
->    subsequently decs the node, the claim is sequenced before its
->    Release dec, and the teardown walk runs only behind the
->    zero-observing dec's Acquire fence (`free_io_node`'s stated
->    precondition) — the same argument that makes any drop-glue field
->    read sound.
-> 3. **The structured fork-join edge.** A `Par` worker that claims a
->    non-fresh `Pure` inside its branch never decs that node — the branch
->    is caller-owned and the root strand performs every non-fresh dec in
->    its own later teardown walk — so edge 2 does not apply there. The
->    publishing edge is the join the branch *result* already rides: the
->    worker→reactor `oneshot` bridge send/receive on the async path
->    (`run_blocking_branch`), and the rayon `collect` join on the
->    synchronous dispatcher (`dispatch_par_branches_with_trace`); nested
->    joins compose transitively, and the root's teardown is sequenced
->    after all its joins in program order. This demands nothing new of
->    the runtime: the same edge is what already publishes a worker's
->    fresh-node frees and RC decs to the root. The atomic word removes the
->    former clear-vs-clear data race; it does not license severing this join.
->
-> The rule's precondition is that the path's edge is intact; its remaining
-> pre-existing failure is named below. Backend-emitted
-> pattern reads of field 0 are non-transferring (ordinary ADT field
-> discipline, node retains ownership) and never touch the word.
->
-> **Constructability and evidence.** The source shape is not structurally
-> excluded: IO values are ordinary RC-managed values, and two `race`/`select`
-> or `Par` lanes can receive aliases. No affine type or unique-IO carrier exists.
-> The claim therefore stays always-on even if the smallest source spelling
-> proves awkward. C5 owns the atomic helper, the standard-error outcome, the
-> worker ferry, and cleanup of every already-produced winner value before the
-> error is surfaced. The diagnostic observer records successful run-lane
-> transitions, keyed by `(node pointer, strand id)`; a second successful clear
-> of the same pointer is the exact fault. Its planted positive must bypass or
-> revert the atomic claim so it proves the observer can catch the old two-clear
-> mechanism; two equal-but-distinct nodes, one ordinary force, and the unarmed
-> path are negative legs. The production shared-node row must prove one
-> successful claim, no duplicate-clear observation, loser refusal before the
-> payload read, and exact payload discharge. A unit plant using the same pointer
-> on two lanes must retain two counted node references; handing one counted
-> reference to two teardown owners is already forbidden by the RC/container
-> representation and is not a permitted way to construct the plant.
->
-> **Allocation and W3 order.** C5-intrinsics owns the state constant, atomic
-> claim helper, run-lane/teardown uses, standard-error and worker-ferry outcome,
-> cleanup and the observer/detection proof. It lands in **I0b**, in the same
-> change-set as the field-1 discharge: splitting claim from discharge would
-> temporarily reinterpret `1` as a callable pointer or restore the old double
-> transfer. The existing braided W3 order remains: I0a; stage C7 P0; complete C4
-> B5 against the widened layout; finish C7's ABI-10 fixtures; then C5 I0b lands
-> claim + discharge + R1 evidence before any integrated `Pure` fixture or IO
-> corpus is accepted. C4 does not revisit its tag-directed adoption stamp and
-> C7 does not revisit the layout: both already emit only the initial `0`/glue
-> states. `test` owns the language-level alias row; `qa` owns its acceptance
-> classification. If retained reservations cannot preserve this braid, W3 stays
-> blocked rather than executing an intermediate witness interpretation.
->
-> **Remaining named residual (pre-existing, neither created nor cured):**
-> *Severed join* — a cancelled `Select` loser with a rayon bridge in
-> flight detaches its worker: the dropped `run_blocking_branch` future
-> abandons the `oneshot`, `pending_bridges` carries no drop guard, and
-> `block_on_reactor`'s exit condition drains the supervisor but not
-> bridges — so the detached worker's branch walk (field reads today; reads
-> plus the claim under this contract) can race the root's
-> `consume_io_tree`, a use-after-free window that exists at HEAD
-> independent of the witness (`/arch` source finding, 2026-09-01).
-> Falsifier: a `select` whose losing branch holds an in-flight blocking
-> `Par` bridge at cancellation. It remains `qa` intake; its cure must restore
-> the join before this claim mechanism executes on the detached worker, not
-> weaken the witness or add another ownership channel.
->
-> **ABI + fixtures (C7).** The IO-node family is a `#[repr]`-class layout
-> contract governed by `cranelisp_platform::ABI_VERSION` (Principle 14; the
-> `IO_TAG_*` constants live there). The `Pure` size/layout change bumps
-> **`ABI_VERSION` 9→10**, executed in C7's visit together with the platform
-> test-fixture rebuilds — no new versioning mechanism is invented. Stale
-> cached objects constructing one-field `Pure` nodes are excluded by the one
-> S121 `CACHE_SCHEMA_VERSION` 24→25 window's wholesale invalidation
-> (the S121 lifecycle migration, retained in Git history): no acceptance cache baseline is captured
-> between the C1 bump and the C4 layout flip.
-> R1 changes the field's state predicate inside that same v10 window; it adds no
-> field, tag, public constant, glue identity, cache datum, or second ABI bump.
->
-> The face-4 residual guard (`/qa`'s failing-not-ignored leak cell) is the
-> acceptance instrument: it flips GREEN when the word lands, and its negative
-> partner (no double-discharge on the run lane) is the discriminating
-> control.
->
-> **The platform-return seam — the fourth stamp site (`/arch` ruling,
-> 2026-09-01, S121 Phase 3; discharges the C7 H2 handoff and closes C7 §4.2's
-> platform-edge residual at this seam).** The C7 finding is CONFIRMED at
-> source: the backend's platform fn-name stamp is selected by the *call
-> target's kind*, not the returned node's tag — `compile_direct_call` stamps
-> whenever the fetched entry is `DefKind::PlatformEffect`
-> (`crates/cranelisp-backend/src/compiler/apply.rs:1546-1549`) and performs an
-> unconditional 8-byte store at `HeapHeader::SIZE + IO_EFFECT_FN_NAME_OFFSET`
-> = base+40 (`apply.rs:39-40`, `:1636-1641`) — while `CLIO::pure` builds a
-> 32-byte node at v9 and a 40-byte node at v10
-> (`crates/cranelisp-platform/src/lib.rs:908-920`), so the store is **out of
-> bounds at both ABI versions** whenever a platform fn returns a `Pure` node.
-> Latent today — every in-tree platform fn returns `CLIO::effect*`, and the
-> load gate forces an `IO _` return (`src/platform.rs:584-613`, spec §8.11),
-> so the returned value is always an IO node and a tag read at base+16 is
-> always in-bounds — but `CLIO::pure` plus its `From` lifts are published
-> author surface, and the stamp comment's own premise ("the call returned an
-> `IO_TAG_EFFECT` node") is a narrowing that carries no check (P25).
->
-> **The authoritative lowering rule dispatches on the returned node's tag, at
-> the one existing chokepoint** — no second backend visit, and C7 §4.4's
-> platform-local footprint-absorber fallback is REJECTED (it removes the
-> symptom and preserves the mechanism):
->
-> ```
-> node = <GOT-indirect platform call>            # non-poll; the S6 poll arm returns earlier
-> tag  = load.i64 [node + 16]
-> tag == IO_TAG_EFFECT ⇒ store fn_name_ptr → [node + 40]   # in-bounds: Effect payload is 40 bytes
-> tag == IO_TAG_PURE   ⇒ store glue        → [node + 32]   # in-bounds at ABI ≥ 10 only
-> otherwise            ⇒ no write                          # degrades like the null fn-name → "<unknown>"; never a store
-> ```
->
-> The Effect arm's store is value-identical to today's for every existing
-> platform call; the only emission delta on live traffic is the guard itself.
-> The Pure arm is the **adoption stamp**: the DLL structurally cannot name a
-> glue address (`HostCallbacks` is permanently two fields, S98) and writes
-> the sentinel `0`; the backend — which knows `T` concretely from the entry's
-> `(Fn […] (IO T))` scheme (the §3.5 manifest-sig concreteness gate) —
-> overwrites it at the ABI crossing with the SAME canonical `drop<T>` every
-> release site calls (`DropGlueRegistry::request_if_owning`,
-> `func_addr`-materialised; `iconst 0` when the request declines; a residual
-> `T` is a located refusal, never a default — R18). This is construction-time
-> stamping from the host's viewpoint — the store lands before the node can be
-> forced or transferred, exactly as the fn-name stamp already documents. It
-> supplies only the initial `Scalar`/`Owned(glue)` state; after publication C5
-> alone atomically claims the word on the run and teardown lanes. It closes C7
-> §4.2's under-claiming residual for every node crossing
-> this seam (the F4 leak cell becomes a GREEN acceptance cell), and no
-> DLL-minted `Pure` survives elsewhere: `CLIO` does not implement `CLType`,
-> so a nested DLL `Pure` (`pure(pure(…))`) is unconstructable through the
-> facade.
->
-> **Allocation: C4, bundle B5, the same one backend visit.** The seam
-> (`apply.rs`) is inside C4's reserved surface, and C4 §11's module-test
-> reservation for `compiler/apply` already names the `Pure` stamp rows. The
-> ruling leaves no interior design freedom, so the C4 design visit is not
-> re-opened (the `trait-impl-cache-carrier.md` §9 precedent): `dev`(backend)
-> consumes this contract directly. C4 §6.3's closed stamp set gains this as
-> its **fourth sanctioned site** and §13 reject 10 reads accordingly (any
-> fifth site remains a reject). Offset authority: the arm composes base+32
-> from the types-owned field placement the construction emitter already uses
-> (`HeapAdt::FIELDS_START + 8` — field 1), because C7's `IO_PURE_GLUE_OFFSET`
-> lands later in the stream order.
->
-> **Offset detector packaging — zero crate revisit (`/arch` follow-up,
-> 2026-09-01).** The architectural crossing datum is the absolute byte offset
-> **32**. Each vocabulary carries an independent compile-time pin in the crate
-> that owns it: C4 B5 lands
-> `const _: () = assert!(PURE_GLUE_ABS_OFFSET == 32);` beside backend's sole
-> explicit-offset composition, and C7 P0 lands
-> `const _: () = assert!(HEAP_HEADER_SIZE + IO_PURE_GLUE_OFFSET == 32);`
-> beside the platform constant. A drift in either composition therefore fails
-> constant evaluation while compiling its owning crate. There is **no later
-> C7 edit to backend source**, no backend reservation for a joint assertion,
-> and no root integration assertion: the latter two would duplicate a
-> relationship already made structural by the independent pins and would add
-> a second owner or a cross-stream carve-out without detecting another
-> failure. C4 owns the backend pin; C7 owns the platform pin; neither owns the
-> other's expression.
->
-> QA's crossing evidence exercises rather than redefines this authority: the
-> C7 H3/F4 `Pure`-returning fixture pair compiles both owning crates, observes
-> the heap-payload adoption/discharge path and the scalar-zero path, and keeps
-> the no-double-discharge negative control. C4's existing CLIF rows continue
-> to pin the tag dispatch, stamp identity and absolute store location. Thus a
-> one-sided offset drift fails at compile time before the crossing can run,
-> while a correctly pinned but wrongly used offset fails the existing emission
-> or end-to-end evidence. Tag dispatch, stamp/claim ownership,
-> `ABI_VERSION` ownership and stream order are unchanged.
->
-> **Evidence (C4 tier).** Direct: a CLIF row over a seeded
-> `DefKind::PlatformEffect` entry pins the tag load, both stores and the
-> no-write fall-through, with two instantiations — `(IO String)` materialises
-> the SAME `drop<String>` `FuncId` the release path names (the discriminator
-> against a minted second identity) and `(IO Int)` stamps `0`. Arming /
-> negative: the stores are asserted **branch-dominated by the tag compare**
-> (control-flow walk, the `assert_threshold_guarded_rmws` idiom — reverting
-> to the unguarded store REDs the row), and a non-platform callee emits no
-> stamp block. Execution acceptance stays where C7/qa placed it (H3's F4
-> cell over a `Pure`-returning fixture fn, with the no-double-discharge
-> negative control) and gates on C5's walker and C7's rebuild; the fixture
-> is C7-surface work.
->
-> **Window discipline (named residual + falsifier).** The Pure arm's store
-> is in-bounds only against the two-field node. In the C4→C7 window it has
-> zero traffic (no in-tree platform fn returns `Pure` — verified at source
-> 2026-09-01; C7's design adds none before P0), and after C7 the ABI 9→10
-> refusal excludes v9 DLLs. Falsifier: a `Pure`-returning platform fn
-> landing before C7's P0 — `sprint` sequences that exclusion alongside the
-> standing C4→C5→C7 ordering constraints. Register row: R19
-> (`safety-invariants.md` §4).
+- The glue word is a hidden second field on the **`Pure` node only**:
+  `[header | tag@16 | payload@24 | payload_glue@32]`. Every other IO node keeps
+  its layout: `Effect`'s thunk and `EffectPoll`'s state closure are
+  Rust/closure-owned, `Bind`'s continuation carries its own `DROP_GLUE_PTR`, and
+  `Par`/`Select`/`Launch` children are IO nodes walked recursively. Pattern
+  matching binds field 0; IO mints no accessor for the hidden word.
+- The word is a **witness, written once before publication**: `0` (`Scalar`) —
+  the payload owes no discharge — or the canonical `drop<T>` address
+  (`Owned(glue)`), the same glue every other release site calls (release-contract
+  reject criterion 5). The type is known at the stamp site, which closes the
+  wild-write-on-scalar class by construction. `1` is reserved and emitted by
+  nothing; its decode and report are intrinsics interior
+  ([ownership and disposal §6.1](../intrinsics/ownership-and-disposal.md#61-the-pure-payload-witness--retain-on-force)).
+- Stamp authority is the backend's alone, over the closed set its design
+  enumerates ([C4 visit](../backend/s121-c4-visit.md)); the runtime allocates no
+  `Pure`. The platform writes only `0`, and the platform-return seam below
+  replaces it.
 
-This makes the existential a **representation fact with local self-description**
-— no type-system residual, no header type-word (R15 stands: this is one glue
-pointer on one runtime-owned node family, the closure precedent, not a general
-type word). It also survives layout specialisation by construction, because the
-stamp is minted where the concrete type is known. ABI note: an IO node layout
-change is version-gated (intrinsics/backend co-owned) and is why this is S121+,
-not S120.
+#### Ownership on force — IO values are reusable (user ruling, 2026-09-21)
 
-The `Bind` *entry*'s existential scheme survives indefinitely as a
-checking/introspection artefact — schemes may quantify; that was never the
-problem. Compiled code and slots are where polymorphism ends.
+`spec/10-io.md` §10.8.1 owns the language statement. The representation rule:
+**a force never moves a field out of a published node.** The node keeps every
+reference it owns until `free_io_node` discharges it at count zero, after the
+zero decrement and its Acquire fence; a force hands its consumer a *new*
+reference or a borrow. Two owners of one obligation therefore have no
+representation (Principle 20), and nothing arbitrates between force and
+teardown. Deleting the former once-only claim without the retain would restore a
+double discharge; choosing a move from the node's count or freshness is rejected
+(intrinsics invariant 5).
+
+| Node | Rule | Status (2026-09-21) |
+|---|---|---|
+| `Pure` | Force reads the witness; `Owned(glue)` ⇒ one `rc_inc` of the payload for the consumer. Teardown discharges `Owned(glue)` under both dispositions. Private to intrinsics: no layout, stamp, public-API or ABI effect | Implemented in the working tree; reviewed with no blocking finding; **not accepted**. Sequential reuse and heap balance pass (IOR-1/IOR-2); the reserved-word cells and their detection proof pass. QA accepted the correction evidence; integration remains pending |
+| `Effect` | The node owns a repeatable, thread-safe thunk. Force borrows it; teardown destroys it once under both dispositions. Changes `cranelisp-platform`'s public API and ABI — approved delta below | Producer and consumer implemented and reviewed; generated baseline matches the approval; **user confirmed the generated diff on 2026-09-21**. Sequential reuse (IOR-4) and module lifetime tests pass. The corrected composed unforced-capture fence passes and is proven to detect omitted teardown |
+| `Launch` | Force still moves the sub-tree out through a non-atomic `0` sentinel | **No correction is approved or scheduled.** A second force is unmeasured; a measured fault enters through `qa` |
+| `EffectPoll` | Node untouched; one state closure is re-entered | Re-entry unmeasured; no change approved |
+| `Bind`, `Par`, `Select` | No mutation on force | Inherit their leaves' behaviour |
+
+Cost of the `Pure` rule is derived, not measured (intrinsics design §6.1): one
+atomic increment per heap-payload force and one glue call at teardown, replacing
+an atomic exchange per force. Trigger for measurement: a `Pure`-dense regression
+attributable to this seam.
+
+#### `Effect` public API — approved by the user, ABI 11
+
+Producer `cranelisp-platform`, `impl<CL: CLType> CLIO<CL>` and crate root:
+
+```text
+- pub fn effect(f: impl FnOnce() -> CL + 'static) -> Self
++ pub fn effect(f: impl Fn() -> CL + Send + Sync + 'static) -> Self
+- pub fn effect_on_resource(token: i64, f: impl FnOnce() -> CL + 'static) -> Self
++ pub fn effect_on_resource(token: i64, f: impl Fn() -> CL + Send + Sync + 'static) -> Self
+- pub fn effect_on_resource_with_capacity(token: i64, capacity: i64, f: impl FnOnce() -> CL + 'static) -> Self
++ pub fn effect_on_resource_with_capacity(token: i64, capacity: i64, f: impl Fn() -> CL + Send + Sync + 'static) -> Self
+  pub unsafe fn call_effect_thunk(thunk_ptr: i64) -> EffectOutcome      // signature unchanged
++ pub unsafe fn drop_effect_thunk(thunk_ptr: i64)
+- pub const ABI_VERSION: u32 = 10;
++ pub const ABI_VERSION: u32 = 11;
+```
+
+- `call_effect_thunk` borrows: valid any number of times, from any thread,
+  concurrently, until discharge. `drop_effect_thunk` is valid exactly once,
+  with no force in progress or to follow. Both live in the platform crate so one
+  crate owns the boxed type (Principle 7); source rustdoc carries the caller
+  obligations.
+- `Send + Sync` is required, not defensive: token-0 `Par` branches run on rayon
+  workers and a token with capacity above one admits concurrent holders, so one
+  aliased node is called through `&self` from two threads and destroyed wherever
+  its count reaches zero. The bound makes an unsafe capture fail to compile in
+  the author's crate (Principle 20); a per-node lock would serialize effects the
+  platform declared concurrent.
+- Unchanged: the `CL: CLType` bound, `EffectOutcome`, `CLIO`, the 40-byte
+  `Effect` layout, every `IO_EFFECT_*` offset, re-exports, cache schema.
+  `ABI_VERSION` 11 is mandatory: a v10 `FnOnce` box cannot be called by
+  reference, and the load gate must refuse it before a force.
+- Author semantics: a captured `CLOwned` lives until the node is freed, and each
+  force runs the closure again. A closure that moves a capture into a consuming
+  call must clone per call; `Rc`/`RefCell`/`Cell` captures move to
+  `Arc`/`Mutex`/atomics.
+- **Conformance.** Independent review found the implemented surface equal to
+  this delta with no extra signature; the stored-thunk alias and the
+  capture-drop holder are private. The generated
+  `crates/cranelisp-platform/public-api.txt` diff is exactly the three
+  constructor lines plus the added `drop_effect_thunk(i64)` line; the
+  `ABI_VERSION` line carries no value and does not move. The user confirmed
+  that exact generated diff on 2026-09-21.
+- **Consumers.** `cranelisp-intrinsics`: the unchanged
+  `io_guard::force_effect_thunk_protected` call, and the new teardown edge from
+  the `Effect` row of `free_io_node_with_disposition` to `drop_effect_thunk`
+  ([design §6.2](../intrinsics/ownership-and-disposal.md#62-the-effect-thunk--borrowed-on-force-discharged-at-teardown)).
+  Its fixtures now build through `CLIO::effect*`. The workspace and in-tree
+  DLL build succeeds with the approved bounds. The `ABI_VERSION` literal pins
+  and adjacent-version rejection fixture follow ABI 11 and pass the final integrated run.
+
+#### Lifetime edges and residuals
+
+A lane forces only while it holds a counted reference, teardown runs behind the
+zero decrement's fence, and a `Par` worker's reads are ordered before the root's
+teardown by the join its result already rides. These residuals are separate, and
+none is cured by the rules above:
+
+- **Severed join** (pre-existing; `qa` intake). A cancelled `Select` loser with a
+  rayon bridge in flight detaches its worker: the dropped `run_blocking_branch`
+  future abandons the `oneshot`, `pending_bridges` has no drop guard, and
+  `block_on_reactor` drains the supervisor but not bridges. The detached
+  worker's walk — now including a borrowed thunk call — can race the root's
+  `consume_io_tree`: a use-after-free window. Falsifier: a `select` whose losing
+  branch holds an in-flight blocking `Par` bridge at cancellation. The cure
+  restores the join; it must not add an ownership channel.
+- **Capture-destructor trap** (new with node-owned thunks; consciously
+  unprotected). Teardown runs outside the signal guard, so a hardware trap
+  inside a capture destructor is not contained. Known captures are `i64`s and
+  `CLOwned` host references. Trigger: a platform capture owning a foreign
+  resource whose destructor can trap. A *panicking* capture destructor is
+  contained DLL-side; that containment across a real cdylib boundary is
+  asserted, and `design`(platform) and `qa` own its falsifier and
+  classification.
+- **Abort-path leak** (pre-existing; read at source, unmeasured; `qa` intake). A
+  runtime error or dispatch fault returns without releasing the fresh current
+  node and un-popped continuations. Retention changes only magnitude — a leaked
+  forced node now leaks its payload or thunk with it. Direction: leak, never a
+  second owner.
+The separate backend scope-result retain defect (IOR-5) is corrected in the
+working tree ([backend design §8](../backend/s122-closure.md)). The extra retain
+was observed before the change; both IOR-5 controls and IOR-2 now balance.
+
+#### Grades
+
+| Property | Grade |
+|---|---|
+| `Pure` force retains; teardown discharges once | **Measured** at the module tier: the retain cells were observed failing on a force without the mint. The public heap-reuse balance observation also passes (IOR-2) |
+| No store to a published `Pure` or `Effect` node | **Asserted, with a falsifier** — a source fact read once at review, not structural. Falsifier: any non-construction store to such a node's field in intrinsics. The one known post-publication writer is the `Launch` sentinel |
+| Reuse-safe thunk across threads | **Structural**: the `Fn + Send + Sync` bound, pinned by the executing baseline guard |
+| One thunk discharge; no force overlaps discharge | Discharge-once is **measured** by the red-first intrinsics lifetime cells, including the shared-reference negative leg. Non-overlap is **asserted**; falsifier: the severed join |
+| One `rc_inc` is the exact inverse of one `drop<T>` for every stamped payload category | **Asserted, with a falsifier** (source analysis; module cells cover the shallow and bare-nullary shapes only): a category whose glue is not count-gated |
+
+#### The platform-return seam — stamps are tag-licensed (R19)
+
+`compile_direct_call` is the one platform-call chokepoint. Its post-call stamp
+dispatches on the **returned node's tag**, never the call target's kind — a
+kind-keyed unconditional store is out of bounds whenever a platform fn returns
+`CLIO::pure`, which is published author surface:
+
+```
+node = <GOT-indirect platform call>            # non-poll; the poll arm returns earlier
+tag  = load.i64 [node + 16]
+tag == IO_TAG_EFFECT ⇒ store fn_name_ptr → [node + 40]
+tag == IO_TAG_PURE   ⇒ store glue        → [node + 32]   # in-bounds at ABI ≥ 10 only
+otherwise            ⇒ no write                          # degrades like a null fn-name
+```
+
+- The `Pure` arm is the **adoption stamp**: the DLL cannot name a glue address
+  (`HostCallbacks` is permanently two fields) and writes `0`; the backend knows
+  `T` from the entry's `(Fn […] (IO T))` scheme and overwrites it with the
+  canonical `drop<T>` (`DropGlueRegistry::request_if_owning`; `iconst 0` when
+  the request declines; a residual `T` is a located refusal — R18). The store
+  lands before the node can be forced or transferred. `CLIO` does not implement
+  `CLType`, so a nested DLL `Pure` is unconstructable through the facade.
+- The crossing datum is absolute byte offset **32**, pinned independently at
+  compile time in each owning crate: backend's
+  `const _: () = assert!(PURE_GLUE_ABS_OFFSET == 32);` and platform's
+  `const _: () = assert!(HEAP_HEADER_SIZE + IO_PURE_GLUE_OFFSET == 32);`. No
+  joint or root assertion is added: it would duplicate a relationship already
+  structural and give it a second owner.
+- Evidence: backend CLIF rows pin the tag load, both stores, the no-write
+  fall-through and that the stores are branch-dominated by the tag compare
+  (`(IO String)` materialises the same `drop<String>` `FuncId` the release path
+  names; `(IO Int)` stamps `0`); a non-platform callee emits no stamp block. The
+  `Pure`-returning platform fixture pair observes adoption, discharge and the
+  scalar path end-to-end with a no-double-discharge control.
+
+**ABI.** The IO-node family is a layout contract governed by
+`cranelisp_platform::ABI_VERSION` (Principle 14): 9→10 carried the `Pure`
+widening, 10→11 the `Effect` thunk contract.
 
 ### 3.5 PlatformEffect (row 7): keep the class concrete by construction
 

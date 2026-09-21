@@ -284,15 +284,17 @@ extern "C" fn main_dispatch_faults() -> i64 {
     0
 }
 
-/// A `main` returning an IO `Pure(42)` node base pointer. Layout
-/// `[header(16) | tag=PURE(8) | value(8)]`; the driver forces it via the IO
-/// trampoline and reduces to the inner value.
+/// A `main` returning an IO `Pure(42)` node base pointer. ABI-10 layout
+/// `[header(16) | tag=PURE(8) | value(8) | payload witness(8)]`; the driver
+/// forces it via the IO trampoline and reduces to the inner value. The witness
+/// is `0` (`Scalar`) — both the force and the teardown read it.
 extern "C" fn main_returns_io_pure() -> i64 {
-    let base = crate::alloc::alloc_with_rc(16);
+    let base = crate::alloc::alloc_with_rc(24);
     unsafe {
-        // tag at offset 16 = IO_TAG_PURE (0); value at offset 24.
+        // tag at offset 16 = IO_TAG_PURE (0); value at 24; witness at 32.
         *((base as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_PURE;
         *((base as isize + 24) as *mut i64) = 42;
+        *((base as isize + 32) as *mut i64) = 0;
     }
     base as i64
 }
@@ -300,12 +302,13 @@ extern "C" fn main_returns_io_pure() -> i64 {
 /// A `main` returning an IO `bind (Pure 1) (fn [_] <panic; sentinel 0>)`
 /// tree — the panic fires INSIDE the trampoline (during-IO case, FIXME 0401).
 extern "C" fn main_returns_io_bind_panic() -> i64 {
-    // Inner Pure(1).
+    // Inner Pure(1), ABI-10 with a `Scalar` (0) payload witness.
     let inner = {
-        let b = crate::alloc::alloc_with_rc(16);
+        let b = crate::alloc::alloc_with_rc(24);
         unsafe {
             *((b as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_PURE;
             *((b as isize + 24) as *mut i64) = 1;
+            *((b as isize + 32) as *mut i64) = 0;
         }
         b as i64
     };

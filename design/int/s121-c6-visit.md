@@ -56,7 +56,7 @@ int. Cross-module and whole-source macro atomicity are not requirements.
 - `design/runtime/s119-typed-consume-funnel.md` §3 — the `Owned`/`Borrowed`
   vocabulary, `from_abi`/`into_raw`, `is_nullary_tag`, and the `pub`
   `consume_sexp`/`consume_slist` signatures C6 discharges through.
-- `design/intrinsics/s121-c5-intrinsics-visit.md` §5 — the `TAG_SEXP_ANNOTATED`
+- [ownership/disposal 5](../intrinsics/ownership-and-disposal.md#5-the-sexp-family) — the `TAG_SEXP_ANNOTATED`
   arm of `consume_sexp` (C5 bundle I1), which is C6's Rule-4 precondition.
 - C2's published quote classifier (`quote_head`/`QuoteHead` beside `Sexp`),
   consumed by the scope-aware quote shield.
@@ -1342,5 +1342,5 @@ Each of the visit's load-bearing claims, and what would refute it:
   seed rider.
 - `design/runtime/s119-typed-consume-funnel.md` §3 — the typed handle
   vocabulary.
-- `design/intrinsics/s121-c5-intrinsics-visit.md` §5 — the `TAG_SEXP_ANNOTATED`
+- [ownership/disposal 5](../intrinsics/ownership-and-disposal.md#5-the-sexp-family) — the `TAG_SEXP_ANNOTATED`
   arm.

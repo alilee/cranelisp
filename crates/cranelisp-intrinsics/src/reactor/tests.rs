@@ -555,8 +555,8 @@ fn observe_root_teardown(
     }
 }
 
-// spec: spec/10-io.md §10.12.9 / design/intrinsics/s121-c5-intrinsics-visit.md
-// §9.3–§9.5 — cancelling an admitted blocking branch releases its permit
+// spec: spec/10-io.md §10.12.9 / design/intrinsics/reactor.md
+// §2.21 — cancelling an admitted blocking branch releases its permit
 // immediately, while the worker-owned lease keeps root teardown closed until
 // the worker acknowledges exit.
 #[test]
@@ -611,7 +611,7 @@ fn bridge_join_lifecycle_holds_root_until_cancelled_worker_exits() {
     );
 }
 
-// spec: design/intrinsics/s121-c5-intrinsics-visit.md §9.5 — capability
+// spec: design/intrinsics/reactor.md §2.21 — capability
 // proof for the lifecycle observer. Plant the former owner placement by dropping
 // the lease at branch-future cancellation instead of worker exit; the observer
 // must report the inverted WorkerExited/RootTeardown order.
@@ -733,28 +733,14 @@ fn composed_held_effect(
     entered: std::sync::mpsc::Sender<()>,
     release: std::sync::Arc<std::sync::Barrier>,
 ) -> i64 {
-    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
-        Box::new(Box::new(move || {
-            COMPOSED_WORKER_ENTERED.store(true, std::sync::atomic::Ordering::Release);
-            entered.send(()).expect("report worker entry");
-            let _ = join.waker.wake();
-            release.wait();
-            COMPOSED_WORKER_CALL_FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
-            cranelisp_platform::EffectOutcome {
-                value: 41,
-                fault_cause: std::ptr::null(),
-                fault_len: 0,
-            }
-        }));
-    let node = crate::alloc::alloc_with_rc(40) as i64;
-    unsafe {
-        crate::heap_access::write_i64(node, 16, cranelisp_platform::IO_TAG_EFFECT);
-        crate::heap_access::write_i64(node, 24, Box::into_raw(thunk) as i64);
-        crate::heap_access::write_i64(node, 32, 0);
-        crate::heap_access::write_i64(node, 40, 0);
-        crate::heap_access::write_i64(node, 48, 1);
-    }
-    node
+    crate::io::test_effect_node(0, 1, move || {
+        COMPOSED_WORKER_ENTERED.store(true, std::sync::atomic::Ordering::Release);
+        entered.send(()).expect("report worker entry");
+        let _ = join.waker.wake();
+        release.wait();
+        COMPOSED_WORKER_CALL_FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
+        41
+    })
 }
 
 fn composed_par_node(branches: &[i64]) -> i64 {
@@ -803,8 +789,8 @@ fn composed_select_node(branches: &[i64]) -> i64 {
     node
 }
 
-// spec: spec/10-io.md §10.12.9 / design/intrinsics/s121-c5-intrinsics-visit.md
-// §9.2–§9.5 — an actual blocking worker inside a Select loser's nested Par
+// spec: spec/10-io.md §10.12.9 / design/intrinsics/reactor.md
+// §2.21 — an actual blocking worker inside a Select loser's nested Par
 // keeps the root drive open after the winner has completed. The worker-entry
 // signal wakes the poll winner; the barrier then holds the entered call until
 // the test has observed the post-top-result return gate with one live lease.

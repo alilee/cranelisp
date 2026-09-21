@@ -134,7 +134,7 @@ pins the TTY gate + non-TTY fallback that keeps scripted/piped input working unc
 **Implementation crate — `rustyline` (`/arch` Phase-2 §1 ruling, S106).** The line editor MUST be
 backed by **`rustyline`**, adopted as a **default-build** dependency of the `cranelisp` binary
 (not feature-gated) — it is markedly lighter than reedline's crossterm/nu stack and far smaller
-than the agent feature's HTTP/async tree, and it already owns the §14.3/§1698
+than the agent feature's HTTP/async tree, and it already owns the §14.3
 `ExternalPrinter` notification-reinstatement path. This is a binary-crate dependency only: no
 crate-boundary surface, no `public-api.txt` change. [S106]
 
@@ -184,11 +184,11 @@ line read from the same single reader. The REPL threads **one** input abstractio
 (editor-backed) and a non-TTY impl (plain lines); the consent seam calls that abstraction, never a
 second reader. [S106]
 
-**Interaction with the §1698 notification-reinstatement note.** §14.3/§1698 already names
+**Interaction with the §14.3 notification-reinstatement note.** §14.3 already names
 rustyline's `ExternalPrinter` as the home for the "reinstate partial input after a notification"
 behaviour. The line editor is the natural owner of that behaviour: once the editor is wired in, a
 watcher/agent notification arriving mid-input SHOULD print on a new line and reinstate the partial
-input via `ExternalPrinter` (still a SHOULD/nice-to-have per §1698, not upgraded to a MUST here).
+input via `ExternalPrinter` (still a SHOULD/nice-to-have per §14.3, not upgraded to a MUST here).
 [S106]
 
 **Testability note (coverage gap, honest).** Interactive arrow-key behaviour is observable **only
