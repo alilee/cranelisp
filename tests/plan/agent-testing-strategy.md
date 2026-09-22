@@ -1,438 +1,337 @@
-# Agentic-REPL Track — Testing Strategy (S88 → S90)
+# REPL agent — assurance strategy
 
-Owned by `/qa`. Authored Sprint 88, Phase 3 (Step 3.3 — track-wide strategy).
-This is the **durable record Wave 3 (S88) / S89 / S90 build against.** It defines
-*how* the entire agentic-REPL track is tested — the four lanes, the deterministic
-stub `CompletionModel`, and the rung → lane mapping — so that every wave writes
-its tests against a fixed strategy rather than reinventing one per rung.
+Owner: `qa`. Established by [test ownership](../CLAUDE.md) and reached from
+[the test plan](PLAN.md#current-coverage-navigation). This document allocates
+evidence for the embedded REPL agent: which conditions are observed, at which
+layer, with what authority, and what each layer cannot show.
 
-**Scope.** The agentic-REPL track spans rungs 0–7 of the capability ladder
-(`sprints/SPRINT.md` §"Agentic capability ladder"): rungs 0–4 = the S88 read-only
-Advisor MVP, rungs 5–6 = S89 (agentic Phase 2), rung 7 = S90 (Phase 3). This doc
-covers all of them; the S88 Lane-A/B tests themselves are written in Wave 3 by
-`/qa` alongside the `/dev` build, **not** in this step.
+- **Required behaviour** is the [agent experience](../../repl/spec/17-embedded-agent.md),
+  [language awareness](../../repl/spec/17a-agent-language-awareness.md) and
+  [observability](../../repl/spec/17b-agent-observability.md) chapters, the agent
+  flags in [CLI invocation](../../repl/spec/00-cli-invocation.md) §0.6, and the
+  module preamble in [modules](../../spec/08-modules.md) §8.16.
+- **Mechanism** is the [agent design](../../design/int/agent.md); boundary and
+  feature rulings are [arch's](../../design/arch/repl-embedded-agent.md).
+- Those documents govern. Where a condition here is stricter than they are, or
+  contradicts them, repair the condition. A gap in one of them goes to its owner
+  through `sprint`.
+- Evidence policy, tiers, failing-test discipline, defect notation and
+  traceability are stated once in [the test plan](PLAN.md) and
+  [test conventions](../CLAUDE.md) and apply here unchanged.
+- Section numbers are cited by source and test comments. Retired numbers are
+  not reused.
 
-**Provenance.** Derives from:
-- `sprints/SPRINT.md` §"Agentic capability ladder" (rungs 0–7 + per-rung lane column)
-  and the §"Testing-strategy linchpin" note (R3-amended: `agent_turn` speaks rig's
-  `CompletionModel` *trait* directly).
-- `design/int/agent.md` (the implementable int design — §3.2 `agent_turn`, §3.4
-  `AgentState.model: Box<dyn rig::completion::CompletionModel>`, §4 pull-as-visible-
-  commands, §5 harvester, §6 the rig boundary, §7 primer, §9 reverse-query, §11
-  testability notes, §12 S89 seams).
-- `design/arch/repl-embedded-agent.md` §6 (primer + validator), §7 (architecture /
-  safety — feature gating, the "no private tools" principle), §9 (phasing).
-- The S88 `/qa` failing-test plan's agent-feature lane outline, which this doc
-  generalises into a track-wide strategy (retired; `git show 7e56a81c:tests/plan/`).
+## 1. The seam — a scripted `AgentModel`
 
-**Authority order.** This is a `/qa` test-strategy doc. Where it drifts from the
-ratified `repl-embedded-agent.md`, the `/arch` Phase-2 verdict, or `design/int/agent.md`,
-those win — file FIXME `target: /arch` (cross-crate type/interface) or `target: /design`
-(per-crate design gap). The spec anchors this doc cites are normative: `repl/spec.md §17`
-(agent experience, `/repl`-owned) and `spec/08-modules.md §8.16` (module preamble,
-`/spec`-owned).
+`agent_turn` dispatches through the project-owned, object-safe `AgentModel`
+membrane ([agent design](../../design/int/agent.md) §6.0, §11). Real providers
+reach rig's `CompletionModel` below the membrane; the
+[stub](../../src/agent/stub.rs) implements the membrane directly. A session
+whose model is the stub runs classification, request assembly, harvest, pulls,
+rendering, validation and the write gates with no network, no key and no
+model variance.
 
----
+That seam divides the evidence:
 
-## 1. The linchpin — a deterministic stub `AgentModel`
+- agent **logic** is deterministic acceptance evidence (Lanes A, B and D);
+- **model quality** is a diagnostic observation (Lane C) and gates nothing in
+  the language or the REPL.
 
-Everything CI-testable about the agent rests on one structural fact (Principle 5,
-`design/int/agent.md §1`, §6, §11): **`agent_turn` drives the object-safe `AgentModel`
-membrane (`src/agent/types.rs`), which is a project-owned TRAIT one layer ABOVE rig.**
-(0429 correction, 2026-06-22: as-built the stub implements `AgentModel`, NOT rig's
-`rig::completion::CompletionModel` directly — the membrane was introduced FIXME 0427;
-see `design/int/agent.md §6` + `src/CLAUDE.md`.) The agent loop holds the model behind
-this membrane (`AgentState.model`, `design/int/agent.md` §3.4) and calls its `complete` method
-directly. The real Anthropic / Ollama providers reach rig **below** the membrane
-(`RigModel<M: CompletionModel>`, `provider.rs`); a test stub implements the membrane
-directly. So a test constructs an `AgentState` whose `model` is a deterministic stub
-`AgentModel`, and the entire agent *logic* — classifier → request assembly → harvest →
-pull → render → feed-back → validator-repair — runs with **zero network, zero API key,
-zero non-determinism.** The rig wire-path BELOW the membrane (`provider.rs`/`request.rs`)
-is covered separately by a rig-trait-level mock (the 0429 step-1 deliverable).
+### 1.1 What the stub provides, and where it is reached
 
-This single seam is what makes the agent's *plumbing* a CI lane (Lane A) and confines
-its *model quality* to a separate, non-blocking eval lane (Lane C). The split is the
-whole strategy.
+1. **Scripted responses.** An ordered script, one response consumed per model
+   step: terminal prose, or tool calls that the agent synthesises into REPL
+   commands and runs. A script can return broken code first and corrected code
+   later, which is how the repair loop (§3.4) is driven.
+2. **A record of each request received.** Conditions on what the agent *sent*
+   are asserted over the assembled request, never over a model's answer.
+3. **No latency and no provider stream.** The membrane's default
+   `complete_streaming` delivers the stub's answer as one delta, so the
+   streaming renderer ([agent design](../../design/int/agent.md) §14A.3) runs in
+   Lane A. rig's delta stream (§6.2) is below the stub's reach.
 
-### 1.1 Stub shape — what the stub `AgentModel` must provide
+Two layers reach the stub:
 
-The stub is a test double implementing the object-safe **`AgentModel` membrane**
-(`src/agent/types.rs`) — NOT rig's `rig::completion::CompletionModel` directly (0429
-correction, 2026-06-22: the membrane was introduced FIXME 0427 because rig's trait is
-dyn-incompatible — associated types + `Clone` bound + async methods; the real providers
-reach rig BELOW the membrane via `RigModel<M: CompletionModel>` in `provider.rs`). Its
-required capabilities, in the vocabulary of `agent_turn`'s loop (`agent.md §3.2`):
+- **(a) Solution tier, preferred.** `CRANELISP_AGENT_PROVIDER=stub` with
+  `CRANELISP_AGENT_STUB_SCRIPT=<path>` selects the stub in the real
+  feature-enabled binary. `/context <path>` writes the same assembly the model
+  receives ([agent design](../../design/int/agent.md) §3.3,
+  [agent experience](../../repl/spec/17-embedded-agent.md) §17.11), so harvest
+  *selection* is observable through the process.
+- **(b) Module tier, `dev`-owned.** A request property that neither `/context`
+  nor session output exposes is asserted beside the implementation in
+  `src/agent/`, against the stub's captured request. `qa` names the conditions
+  (§3.2, §3.3); `dev` writes the tests.
 
-1. **Scripted turn responses.** The stub is constructed from an ordered script of
-   responses, one consumed per `completion()` call within a turn's model↔tool loop.
-   Each scripted response is one of:
-   - `Done(prose)` — terminal: the agent renders prose and breaks the loop.
-   - `ToolCalls(vec)` — the agent must synthesize each call as a REPL command, run it
-     through `process_commands`, and re-enter the loop with the results (`agent.md §3.2`,
-     §4). A scripted tool-call carries the command intent (e.g. "source of `foo`",
-     "info `Num`") that `pull::synthesize_command` turns into `/source foo` etc.
-   - For S89 validator tests (rung 5): a `Done(prose + proposed code)` whose code is
-     scripted **broken** on the first turn and **fixed** on a later turn, so the
-     stage→check→discard repair loop can be exercised deterministically.
-2. **An assertable record of the request it received.** The stub captures every
-   `CompletionRequest` passed to `completion()` so a test can assert *what the agent
-   sent*: the primer is present, the harvested slice contains exactly the expected
-   symbols/preambles, the transcript carries the prior turns, the tool-defs are exactly
-   the read-only allowlist, and (negatively) that irrelevant / aged-out symbols are
-   **absent**. This is how "agent knows the module" (rung 3) is verified deterministically
-   — the assertion is over the *assembled request*, not over the model's answer.
-3. **Optional latency / streaming behaviour = none.** The stub returns immediately and
-   need not stream; streaming is a rig-layer concern (`agent.md §6.2`) covered by the
-   real-provider eval lane, not the stub.
+A request property that neither layer can observe is a testability gap for
+`design` (int), not a reason for an internal-API helper in `tests/`
+([two tiers](PLAN.md#strategy--two-tiers-no-middle)).
 
-The stub lives wherever the agent lane's harness lives. Because the active test suite is
-**e2e-only with no middle integration tier** (`tests/CLAUDE.md §"Two tiers, no middle"`),
-the stub injection must be reachable **from the e2e surface** — i.e. the binary built
-`--features agent` must expose a test-only construction path that swaps the real provider
-for the stub. Two candidate mechanisms (a Wave-3 `/int` + `/qa` decision, recorded here
-as the open seam):
+**Limits of the seam.**
 
-- **(a) e2e via a test-stub provider selected by runtime config.** `agent/provider.rs`
-  (`agent.md §3.1`, §6.3) already selects the provider from runtime config. Add a
-  `#[cfg(feature="agent")]` *test* provider variant (e.g. `CRANELISP_AGENT_PROVIDER=stub`
-  + a script file path) that builds the stub `CompletionModel` from a scripted-response
-  fixture on disk. The e2e test writes the script fixture, sets the env, drives the binary
-  via `repl_capture`, and asserts the transcript. This keeps Lane A **e2e** (the sanctioned
-  tier) and tests the *real* dispatch/assembly/pull wiring in the *real* binary.
-- **(b) unit-tier stub in `src/` (owned by `/dev`).** If a behaviour cannot be expressed
-  e2e (e.g. asserting the exact `CompletionRequest` field contents — the request never
-  reaches stdout), it is a `#[cfg(test)]` unit test inside `src/agent/` constructing
-  `AgentState` with the stub directly and asserting against the captured request. Per
-  `tests/CLAUDE.md §"Two tiers, no middle"` + `qa.md §"Testing ownership"`, these unit
-  tests are **`/dev`-owned**, written alongside the implementation in the same wave —
-  `/qa` does **not** author them. `/qa` specifies *that* they are needed (request-content
-  assertions, harvest-ladder selection) via this strategy; `/dev` writes them.
+- The stub does not enforce tool-use / tool-result pairing; the debug assertion
+  in `assemble_request` is the guard ([agent design](../../design/int/agent.md)
+  §3.2).
+- The full-content trace fires only on the rig path (§28.2). A stub session
+  cannot observe trace content; the activity log has no such constraint (§11).
+- The rig wire path is module evidence in `src/agent/provider.rs` and
+  `src/agent/request.rs`.
 
-**Resolution rule (per `tests/CLAUDE.md`): prefer (a) e2e.** Request-content assertions
-that genuinely cannot surface through the binary's I/O are the legitimate (b) unit-tier
-cases — and the binary SHOULD expose enough (a transcript / `--agent-trace`-style echo of
-the assembled-request summary, an `/int` testability hook) that the *selection* of
-harvested symbols is observable e2e. If it is not, that is a **testability gap in the
-binary** → file `target: /int` per `tests/CLAUDE.md §"Two tiers, no middle"` rather than
-bridging with an internal-API helper. The stub-provider-by-config mechanism (a) is the
-preferred Wave-3 deliverable; it makes the bulk of Lane A genuine e2e.
+## 2. The lanes
 
----
+| Lane | Observes | Build and execution | Authority |
+|---|---|---|---|
+| **A** | Deterministic agent logic (§3) | `--features agent` with the stub, through the [isolated launcher](../CLAUDE.md#the-agent-lane---features-agent--isolated-target-dir) | Acceptance |
+| **B** | Feature-off behaviour and the default-build commands (§4) | default build, default suite | Acceptance |
+| **C** | Live-model task completion (§5) | `--features agent` with a real provider, run by hand under an approved budget | Diagnostic observer; its harness self-check is a maintenance check |
+| **D** | Composed session render (§6) | as Lane A | Acceptance |
 
-## 2. The four lanes
+- The default suite never compiles the agent feature; its time budget is
+  stated in [root testing guidance](../../CLAUDE.md#testing).
+- Feature-off cells are compiled only without the feature and feature-on cells
+  only with it. Neither run observes the other's conditions, so agent
+  acceptance needs the default suite **and** the launcher lane.
+- The launcher runs [agent behaviour](../agent.rs) only. The feature-gated
+  module tests in `src/agent/` run in neither the default suite nor the
+  launcher; they need their own feature-enabled invocation against the isolated
+  target directory.
 
-| Lane | What it tests | Build | In default CI suite? | Determinism |
-|---|---|---|---|---|
-| **A** | Deterministic plumbing — classifier, request-assembly/harvest, pull-wiring, validator repair, preamble round-trip | `--features agent` + stub `CompletionModel` | **Separate `--features agent` lane** (not the ~9s default) | Fully deterministic — no network/key |
-| **B** | Feature-off byte-identical guard | default (no `agent` feature) | **YES — default suite** | Fully deterministic |
-| **C** | Model-quality eval — grounding, answer cites real symbol, proposed `(defn …)` parses/typechecks | `--features agent` + **real** provider (Anthropic key OR local Ollama) | **NO — manual/scheduled, env-gated** | Non-deterministic (model output) |
-| **D** | Golden-transcript replay — full agent session as a replayable REPL script | `--features agent` + stub replaying scripted tool-calls | Runs in the `--features agent` lane (it is a Lane-A-family test) | Fully deterministic |
+## 3. Lane A — deterministic agent logic
 
-The default `cargo nextest run` (~9s, `tests/CLAUDE.md`) **stays agent-free**: only Lane B
-runs there. Lanes A and D run in a separate `--features agent` nextest invocation (a CI
-lane / `--features agent` profile). Lane C is never in any automated suite.
+Solution cells live in [agent behaviour](../agent.rs). Each traces to its
+requirement by `// spec:`; this document does not list cell names.
 
----
+### 3.1 Dispatch (rung 1)
 
-## 3. Lane A — deterministic plumbing (the bulk)
+The classifier routes on the parse result and never calls a model, so most of
+these conditions need no script. The rule is
+[agent experience](../../repl/spec/17-embedded-agent.md) §17.1: form count is the
+discriminator and symbol resolution is never consulted
+([agent design](../../design/int/agent.md) §2.2).
 
-The CI lane that proves the agent's *logic*. All tests `#[cfg(feature="agent")]`, in a
-dedicated file (`tests/agent.rs`, gated `#![cfg(feature = "agent")]` at the top so the
-whole file compiles out by default). E2e where the
-behaviour surfaces through the binary's I/O (preferred); the residual request-content
-assertions are `/dev`-owned unit tests in `src/agent/` (§1.1).
-
-### 3.1 Classifier routing (rung 1) — much needs NO backend at all
-
-The classifier (`classify_for_agent` / the read-loop arm, `agent.md §2`,
-`repl-embedded-agent.md §5.3`) routes purely on the *parse* result + a feature cut — it
-**never calls the model**. So most of this sub-lane needs no stub at all (just the
-`--features agent` build). The contract: "parses as a complete form or a slash command →
-REPL; unclosed → continuation; else (other parse error) → agent."
-
-| Test (behaviour) | Asserts (feature ON) | Spec |
-|---|---|---|
-| form → REPL | `(add-i64 1 2)` evals (`:primitives/Int 3`), NOT the agent | `repl/spec.md §17.1` |
-| slash → REPL | `/list` → the existing command, NOT the agent | `repl/spec.md §17.1` |
-| prose → agent | multi-word prose ("how do I define a function") → agent arm (two bare symbols = parse error → agent) | `repl/spec.md §17.1` |
-| unclosed paren → continuation | `(add-i64 1` → continuation (parens-balanced gate), NOT the agent | `repl/spec.md §17.1` |
-| `/ask` escape hatch | `/ask why` (a bare word that would otherwise self-doc) → agent | `repl/spec.md §17.1` |
-| **+neg: bare-atom self-doc preserved** | bare `add-i64` (no `/ask`) STILL self-documents per `repl/spec.md §4` — the agent does NOT intercept it | `repl/spec.md §17.9` (the §4 surface untouched) |
-
-The bare-atom-self-doc row is the load-bearing **negative** guard: it proves the agent is
-a *new destination for otherwise-rejected input*, not a re-router of the deterministic
-surface (`repl/spec.md §17.9`, the "deterministic REPL untouched" invariant).
-
-### 3.2 Request assembly / harvest (rungs 2–3)
-
-This is how "agent knows the language" (rung 2 — primer) and "agent knows the
-module/session" (rung 3 — harvest) are verified **deterministically**: given a constructed
-session state + a user message, assert the assembled `CompletionRequest` (captured by the
-stub, §1.1.2) contains the right content.
-
-**Primer (rung 2):** assert the always-on language primer (`agent.md §7`) is present in
-every request — core syntax/special-forms, the `:Type form` convention, the prelude
-surface, the few-shot idioms (incl. the constrained-`(defn [Num a] …)` idiom the
-acceptance walk-through needs, `agent.md §10`).
-
-**Harvest selection (rung 3) — positive:**
-
-| Test (behaviour) | Asserts |
+| Condition | Observation |
 |---|---|
-| current-module pin | the current module's full source is always in the request (the §5.4 pin, never dropped) |
-| mentioned symbols | a fn named in the message → its `/source` is harvested; a module named → its `module_preamble` + exports are harvested (`agent.md §5.2`) |
-| `module_preamble` read | the harvested module slice carries the preamble text read from `SymbolTable.module_preamble` (FIXME 0428 field) |
-| graceful degradation under budget | with a tiny budget, the push degrades per the §5.4 ladder — current-module-full-src survives at the floor, last-N-fns/modules drop first |
+| Exactly one form stays in the REPL | a call, a literal and a vector evaluate normally |
+| A slash command stays in the REPL | the ordinary command runs |
+| **neg:** a lone symbol never reaches the agent | a known symbol self-documents; an unbound symbol and a fully qualified symbol take the ordinary unbound display or introspection ([agent experience](../../repl/spec/17-embedded-agent.md) §17.9) |
+| An unclosed form continues | continuation prompt, no agent turn |
+| Prose reaches the agent | multi-word prose, prose containing a contraction, mixed known and unknown words, and a non-bracket parse error all reach the agent arm |
+| `/ask` forces the agent | a bare word that would otherwise self-document reaches the agent |
+| No reachable provider | the dormant notice renders and no request is sent ([agent design](../../design/int/agent.md) §2.3) |
 
-**Harvest selection — negative (+neg, the load-bearing precision guards):**
+The lone-symbol negative is the load-bearing row: the agent is a destination
+for input the REPL would otherwise reject, not a re-router of the deterministic
+surface.
 
-| Test (behaviour) | Asserts (ABSENCE) |
+### 3.2 Request assembly and harvest (rungs 2–3)
+
+"The agent knows the language" and "the agent knows the session" are conditions
+on the assembled request.
+
+**Primer.** Every request carries the primer, and the primer's idioms compile
+([agent design](../../design/int/agent.md) §7). The primer names the `/syntax`
+topics without their content (§22.4); symbols in scope reach the model through
+the harvest, not the primer (§23).
+
+**Harvest — positive.**
+
+| Condition | Observation |
 |---|---|
-| irrelevant symbols excluded | a defined-but-unmentioned, low-`seq` symbol is **NOT** in the request (the ranker is selective, not a dump — `agent.md §5.1`) |
-| aged-out symbols excluded | under budget pressure, an old (`seq`-stale) mention drops out of the window while a recent one stays (recency = max `seq`, `agent.md §5.2`) |
-| no cross-module leakage | a symbol from a module never mentioned and not the current module is absent |
+| Current-module pin | the pin ([agent design](../../design/int/agent.md) §5.2 block 1) is in every request and survives any budget (§5.4). The pin's admission set is an open `design` (int) question, so no condition fixes it |
+| Mentions | a function named in the user text contributes its recorded source; a named module contributes its preamble and public binding names (§5.2 blocks 4–5). Mentions come from the user text only (§3.3) |
+| In-scope block | every symbol in scope — current module, explicit imports, implicit prelude — appears at signature grain, fully qualified ([language awareness](../../repl/spec/17a-agent-language-awareness.md) §17.18.1) |
+| Recent errored turn | the newest failed REPL turn, input and diagnostic, is in the request and survives any budget ([agent design](../../design/int/agent.md) §5.5) |
+| Degradation | under a tight budget the blocks drop in the §5.4 order |
 
-The negative harvest guards are the rung-3 equivalent of the `/list`-doesn't-show-primitives
-discipline (`qa.md §"Negative coverage"`): "agent knows the module" is only proven if it
-also provably does **not** carry irrelevant context. `[Tested]` without these is a gap.
+**Harvest — negative.**
 
-### 3.3 Pull-as-visible-commands (rung 4)
-
-The keystone (`agent.md §4`, `repl-embedded-agent.md §4.4`, `repl/spec.md §17.2`): the
-stub returns a `ToolCalls` response → the agent synthesizes a REPL command string, runs it
-through the **same** `process_commands` path a keystroke uses, renders it as-if-typed, and
-feeds the result back into the next request.
-
-| Test (behaviour) | Lane / mechanism | Asserts |
-|---|---|---|
-| pull renders as typed command | stub returns "source of `foo`" tool-call | transcript shows `/source foo` echoed as if typed, with the command's normal output following |
-| pull dispatches through `process_commands` | a pull of a bad command | inherits cluster-atomic staging + normal command error (not an agent-internal one) |
-| result re-enters context | stub: turn 1 pulls `/source foo`, turn 2 is `Done` | the captured turn-2 request contains the `/source foo` result fed back |
-| **+neg: read-only allowlist enforced** | stub attempts a write (e.g. a `(defn …)` submission / `/sh`) | refused/unconstructable — renders "agent attempted a non-read command — refused", nothing enters the symbol table (`agent.md §4.2`, `repl/spec.md §17.3`) |
-
-The allowlist-refuses-writes row is the consent boundary (`repl-embedded-agent.md §7.4`,
-`repl/spec.md §17.3`): in read-only Advise mode the agent **cannot** synthesize a write
-because the allowlist excludes them — proven negatively. This is also the rung-4 MVP
-"proposed, not submitted" guard (`repl/spec.md §17.3.1`): a proposed `(defn …)` is **shown**
-in the agent frame, not routed to `eval`.
-
-### 3.4 Validator repair (rung 5, S89)
-
-The pre-flight validator + silent-repair (U5 = silent-repair-anything, `agent.md §12`,
-`repl-embedded-agent.md §6`). The stub returns **broken-then-fixed** code across turns;
-the test asserts the stage→check→discard repair loop (built on Decision 44 cluster-atomic
-staging — commit-on-Ok / discard-on-Err):
-
-| Test (behaviour) | Asserts |
+| Condition | Observation (absence) |
 |---|---|
-| broken generation repaired | stub turn 1 = code that fails frontend/typecheck on staging; the validator stages → checks → **discards** the broken stage and re-prompts; turn 2 = clean code that commits |
-| only-clean-reaches-session | after the loop, only the clean form is in the session; the broken intermediate never committed |
-| **+neg: user never sees a syntax error** | the broken intermediate is never rendered to the transcript — "the user structurally cannot see a syntax error" (the U5 silent-repair contract) |
+| Unmentioned bodies | a defined, unmentioned function contributes no body through the mention arm. Its name and signature still appear when in scope, so absence from the whole request is **not** the condition |
+| No cross-module leakage | a symbol from a module that is neither current, imported, prelude-provided nor mentioned is absent |
+| Budget never elides a name | an in-scope symbol is reduced in grain, never dropped ([language awareness](../../repl/spec/17a-agent-language-awareness.md) §17.18.2) |
 
-Written in S89 (rung 5 is S89). Drafted here so the S89 `/dev` triad has the acceptance
-criterion. The validator is typecheck-only dry-run, `pub(crate)`, int-internal, **no
-facade/interface delta** (`agent.md §12`, the `/arch` Phase-2 ruling).
+Without these negatives the positive rows prove only that the harvest is large.
+
+**Nothing is allocated on mention age or on a pull entering the next harvest.**
+The [architecture](../../design/arch/repl-embedded-agent.md) §4.4 withdraws the
+pull-to-harvest interlock: pull results already re-enter through the transcript.
+Its §4.3 retains recency as an optional int-owned heuristic. Neither warrants
+an evidence allocation unless its owner adopts new behavior.
+
+### 3.3 Pulls as private probes (rung 4)
+
+A tool call becomes a REPL command run through the same `process_commands` path
+a keystroke uses. A read pull is private
+([agent experience](../../repl/spec/17-embedded-agent.md) §17.2.1,
+[agent design](../../design/int/agent.md) §4.1): neither the command nor its
+result scrolls the session, the result reaches the model through the transcript
+with SGR stripped, and the pull is logged.
+
+| Condition | Observation |
+|---|---|
+| **neg:** a probe is not echoed | no agent-input prompt and no command line for the probe appears in session output |
+| Conclusions and definitions are still shown | framed prose and the definition echo appear; hiding probes hides nothing the user asked for |
+| A pull is an ordinary command | a bad pull returns the ordinary command error to the model, and its log row carries the error class ([observability](../../repl/spec/17b-agent-observability.md) §17.20) |
+| The result re-enters context | the next request carries the result on the transcript, paired after its tool-use turn (module tier) |
+| **neg:** the read allowlist holds | a tool outside the allowlist is refused at synthesis, the refusal returns to the model, nothing executes and nothing enters the symbol table ([agent design](../../design/int/agent.md) §4.2, [agent experience](../../repl/spec/17-embedded-agent.md) §17.3) |
+
+The allowlist is the read consent boundary. The three write tools are always
+offered and route only to their gates
+([agent design](../../design/int/agent.md) §15.1, §15.4, §17.2), so an
+unconfirmed write never reaches eval. A definition the agent merely proposes is
+shown as a definition echo and is not evaluated
+([agent experience](../../repl/spec/17-embedded-agent.md) §17.3.1).
+
+### 3.4 Validation, repair and the Build gate (rung 5)
+
+The validator is a staging dry run that never commits: the model's text takes
+the ordinary parse and expansion path, then `check_forms` against a staging
+table that is always dropped, so a parse, expansion or type error is one `Err`
+and any `Err` triggers repair ([agent design](../../design/int/agent.md) §16.1).
+The §17.14 citations below are to the
+[agent experience](../../repl/spec/17-embedded-agent.md).
+
+| Condition | Observation |
+|---|---|
+| A broken generation is repaired | script: broken code, then clean code; only the clean form is in the session afterwards |
+| **neg:** the user never sees the broken intermediate | it appears nowhere in session output (§17.14.3) |
+| The cap ends in one give-up | an exhausted repair budget renders the give-up wording once and leaves the transcript wire-valid (§17.14.4; [agent design](../../design/int/agent.md) §16.3, §16.4) |
+| **neg:** a declined submit changes nothing | the definition is absent after a decline (§17.14.2) |
+| `--yes` answers consent only | under `--yes` a broken generation is still repaired before submission (§17.14.6; [agent design](../../design/int/agent.md) §20.3) |
+| A malformed form does not crash the REPL | the session continues |
+
+Consent is injected through a `ConsentReader`, so accept and decline are
+scripted ([agent design](../../design/int/agent.md) §11).
 
 ### 3.5 Preamble edit + round-trip (rungs 0 and 6)
 
-**Rung 0 (S88 W1) — substrate:** module preambles round-trip byte-stably; 0423 green.
-This is the deterministic substrate for "knows intent" and ties directly to
-`spec/08-modules.md §8.16.5` (byte-stable round-trip) and the FIXME-0423 fix (the shared
-regen pretty-printer path — `agent.md §5.2`, `spec/08-modules.md §8.16.5`):
+**Substrate (rung 0).** Requirements: [modules](../../spec/08-modules.md)
+§8.16.4, §8.16.5 and §8.2.2.
 
-| Test (behaviour) | Mode | Asserts | Spec |
-|---|---|---|---|
-| preamble read | `/doc <module>` | prints the module's preamble text | `spec/08-modules.md §8.16.4`, `repl/spec.md §17.5.1` |
-| **+neg: absent preamble** | `/doc <module>` on a module with no preamble | clean "no preamble" message, NOT an error/empty crash | `repl/spec.md §17.5.1` |
-| unchanged preamble byte-stable | regen a module whose preamble is unchanged | leading comment block byte-identical before/after (no reflow/re-wrap/re-mark) | `spec/08-modules.md §8.16.5` |
-| 0423 lib-dir-relative write (rung-0 cousin) | `(mod test)` extraction | backing file at lib-dir-relative path; **+neg** no stray CWD-root file | `spec/08-modules.md §8.2.2` (`spec_08_modules.rs::inline_mod_test_extraction_writes_lib_dir_relative_not_cwd`) |
-
-**Rung 6 (S89) — Document mode:** the agent writes a module preamble; it round-trips; the
-next session's harvester reads it back. Ties to `spec/08-modules.md §8.16` (the preamble
-edit path) and the byte-stable round-trip (`§8.16.5`). The preamble write must also be
-lib-dir-relative (the same 0423 fix surface):
-
-| Test (behaviour) | Asserts |
+| Condition | Observation |
 |---|---|
-| preamble edit round-trips | the edit path writes the preamble; a subsequent `/doc <module>` reads it back; it persists across the module's backing-file regen |
-| harvester reads edited preamble | after a Document-mode edit, a new turn's harvest carries the new preamble text (rung 6 → rung 3 feedback: "memory is the code") |
+| Preamble read | `/doc <module>` prints the module's preamble ([agent experience](../../repl/spec/17-embedded-agent.md) §17.5.1) |
+| **neg:** absent preamble | `/doc <module>` on a module without one gives the no-preamble message, not an error |
+| Unchanged preamble is byte-stable | regenerating a module leaves its leading comment block byte-identical |
+| Inline-module extraction writes beside the library | backing file at the lib-dir-relative path, and no stray file at the working directory ([module conformance](../spec_08_modules.rs)) |
 
-### 3.6 Reverse-query commands (rung-4 corollary, LLM-free — also Lane B)
+The two `/doc <module>` rows have no solution cell. They are carried as an
+[unclassified lead](PLAN.md#active-allocation-and-unresolved-evidence) with
+their band state; nothing further is allocated here.
 
-`/refs` / `/tests-for` are **NOT gated** — LLM-free, default build (`agent.md §9`,
-`repl/spec.md §17.6`). They grow the REPL for everyone, so they ALSO get **default-lane
-(agent-free)** coverage (Lane B territory) — they are plain introspection commands. The
-agent reaches for them as pull-tools, but they stand alone. (The landed cells are the
-`refs_*` and `tests_for_*` tests in `tests/agent.rs`.) `/qa` may author these as soon as the
-commands land — they are the one Stage-B sub-deliverable testable ahead of the rest of the
-agent lane.
+**Document mode (rung 6).** The preamble and docstring write path is
+[agent design](../../design/int/agent.md) §17; the experience is
+[agent experience](../../repl/spec/17-embedded-agent.md) §17.15.
 
----
+| Condition | Observation |
+|---|---|
+| A preamble edit round-trips | the accepted edit is written, reads back, and survives backing-file regeneration byte-stably |
+| The harvest reads it back | a later turn's request carries the edited preamble |
+| **neg:** a declined edit changes nothing | the file and the read-back are unchanged (§17.15.2) |
+| `--yes` accepts the consultative gate | the edit lands without a prompt (§17.15.2a) |
+| A docstring survives restart | a recorded docstring is present, once, in the next session (§17.15.3) |
+| **neg:** no false "recorded" | a missing or non-function target is refused with its own reason and records nothing (§17.15.4) |
 
-## 4. Lane B — feature-off guard (the default suite)
+### 3.6 Default-build commands the agent pulls
 
-The one agent-named test family that belongs in the **agent-free default suite** because
-it pins the feature-OFF contract. The default `cargo nextest run` builds **without** the
-`agent` feature (no rig compiled, ~9s preserved — `agent.md §6.4`,
-`repl-embedded-agent.md §7.2`). Lane B proves that with the feature off the binary is
-**byte-identical to today** on every non-`/ask` input (`agent.md §2.2`, the `/arch`
-byte-identical-by-construction claim).
+`/refs`, `/tests-for`, `/syntax` and `/search` are LLM-free commands in every
+build ([agent design](../../design/int/agent.md) §1). Their own requirements
+carry their evidence in the default suite: reverse queries
+([agent experience](../../repl/spec/17-embedded-agent.md) §17.6) in
+[agent behaviour](../agent.rs), and search in [search](../search.rs).
+Only their allowlist membership is an agent condition (§3.3).
 
-| Test (behaviour) | Build | Asserts | Spec |
+### 3.7 Activity log and trace (rung 7)
+
+Requirements: [observability](../../repl/spec/17b-agent-observability.md)
+§17.20–§17.21.
+
+| Condition | Observation |
+|---|---|
+| The log is silent | session output is byte-identical with and without the log configured |
+| Records are stable JSONL | the documented keys, the turn correlation field joining a record to its exchange, the probe `question`, failure class, give-up cause and step accounting |
+| **neg:** no content in the log | records carry no prompt, source or response content |
+| An unwritable path degrades | the session continues and nothing leaks to stderr, for log and trace alike |
+| **neg:** absent on the default build | the environment variables create no file |
+
+Trace *content* is not observed in this lane (§1.1 limits). Log-driven tuning
+and spec retrieval are not built ([agent design](../../design/int/agent.md)
+§7), so nothing is allocated for them.
+
+## 4. Lane B — feature-off behaviour
+
+Feature-off is structural: `src/agent/` does not exist without the feature and
+the dependencies are optional ([agent design](../../design/int/agent.md) §1,
+§6.4). Lane B observes the resulting behaviour.
+
+| Condition | Observation |
+|---|---|
+| `/ask` and `/context` answer "not built in" | one notice; no crash, file or evaluation ([agent experience](../../repl/spec/17-embedded-agent.md) §17.1, §17.11) |
+| Dispatch is unchanged | a non-bracket parse error, a lone unbound symbol and multi-word prose each take the ordinary REPL outcome (§17.9) |
+| `--agent` and `--yes` are hard errors | usage hint on stderr, exit 1, and never `unknown flag` ([CLI invocation](../../repl/spec/00-cli-invocation.md) §0.6.1, §0.6.2) |
+| `--no-agent` is an accepted no-op | the session behaves as without it (§0.6.1) |
+| Log and trace are absent | §3.7's last row |
+
+Lane B does not measure build time or the dependency graph. Because its cells
+compile only without the feature, a build that enabled the feature by accident
+would drop them silently rather than fail them. No detector is allocated for
+that; the control is the Cargo feature structure.
+
+## 5. Lane C — live-model evaluation
+
+A real model is the only evidence of answer quality, and it is non-deterministic,
+costs money and needs a provider. It is therefore a diagnostic observer, never
+part of an automated suite and never a language or REPL acceptance gate.
+
+- Policy: [REPL-agent evaluation policy](agent-context-tuning.md).
+- Current corpus, launch rules, graders, result classes and report contents:
+  [runnable eval corpus and policy](s122-evidence-delta.md#runnable-eval-corpus-and-policy).
+- Runner usage: [REPL-agent evals](../CLAUDE.md#repl-agent-evals).
+
+The runner's stub self-check is evidence about the harness, not about a model.
+A live run needs a separately approved model, disclosure and budget. An eval
+result creates defect intake at most; a compiler or agent correction uses its
+ordinary spec-traced evidence.
+
+## 6. Lane D — composed session render
+
+The model half of a session is scripted and the REPL half is deterministic, so
+everything the user sees in an agent session is reproducible. What the user
+sees is the outcome — framed prose, un-guttered pretty-printed code, and
+proposed or landed definition echoes behind the agent-input prefix
+([agent design](../../design/int/agent.md) §3.5, §14.2) — and never probe traffic.
+
+One cell drives a probe step followed by a terminal answer and asserts the
+render rules together. It is not a byte comparison against a stored transcript.
+It guards what the seam cells cannot:
+
+- **Composition.** Framed prose, an un-guttered fence, hidden probes and clean
+  `--no-color` output hold in one session
+  ([agent experience](../../repl/spec/17-embedded-agent.md) §17.2, §17.2.1,
+  §17.13.3). Each rule can pass alone while the composition drifts.
+- **Continuity across steps.** The probe result reaches the next step only
+  through the transcript; it does not change the next harvest (§3.2).
+
+The process harness reads output after exit, so it cannot show that a streamed
+answer arrived incrementally ([harness limits](PLAN.md#strategy--two-tiers-no-middle));
+that the streamed and single-shot bytes are equal is observable, and is.
+
+## 7. Capability ladder — where each rung is evidenced
+
+Test and source comments number agent capabilities by rung. This table is the
+current definition of those numbers.
+
+| Rung | Capability | Lanes | Section |
 |---|---|---|---|
-| `/ask` prints "not built in" | default | `/ask why` → "agent not built in (rebuild with --features agent)" | `repl/spec.md §17.1`, `repl/spec.md §0.6` (`--agent` accepted-not-error) |
-| dispatch byte-identical | default | `(foo bar baz` (other parse error) → today's byte-identical parse-error display (the `Err(other)` fallback) | `repl/spec.md §17.9`, `repl/spec.md §17.1` |
-| `--agent` flag accepted, ignored | default | `--agent` on a feature-off binary is accepted, not an error; session behaves exactly as today | `repl/spec.md §0.6` |
-| `/refs` · `/tests-for` work agent-free | default | the reverse-query commands run in the default build (they are unconditional, `agent.md §9.3`) | `repl/spec.md §17.6` |
+| 0 | Module preambles and clean regeneration | A | §3.5 |
+| 1 | Talking to an agent: dispatch, framed reply, `/ask` | A, B | §3.1, §4 |
+| 2 | The agent knows the language: primer | A, C | §3.2, §5 |
+| 3 | The agent knows the session: harvest | A, C | §3.2, §5 |
+| 4 | REPL commands as read tools | A, D | §3.3, §3.6, §6 |
+| 5 | Submitting definitions: validator, repair, confirm gate, `--yes` | A | §3.4 |
+| 6 | Recording understanding: preamble and docstring edits | A | §3.5 |
+| 7 | Fluency and observability: `/syntax`, signature-grain harvest, `/search`, log and trace | A, B | §3.2, §3.6, §3.7 |
 
-Lane B is also a **build guard**: it proves the default workspace compiles and the suite
-passes *without rig as a dependency* — the dependency-discipline invariant
-(`agent.md §6.4`). A regression that accidentally pulled `rig-core` into the default build
-(e.g. a dev-dep enabling `agent`) breaks the ~9s budget and is caught here.
-
----
-
-## 5. Lane C — model-quality eval (separate, NOT CI-blocking)
-
-**Model quality is eval-lane, not unit-tested.** This is the deliberate boundary the stub
-draws: the stub proves the *plumbing* (Lane A); a *real model* is the only thing that can
-prove the *answer is good*, and a real model is non-deterministic, costs money/tokens, and
-needs a key or a running Ollama. So model quality lives in a separate, manual/scheduled
-lane that is **never in the default suite and never CI-blocking**.
-
-- **Providers (`agent.md §6.3`):**
-  - **Anthropic** — the default provider; needs an API key. (Per the `claude-api` /
-    `/anthropic` discipline, the concrete model-id is a runtime-config value looked up
-    against live Anthropic docs at run time, never hardcoded from memory.)
-  - **Local Ollama** — the offline / free / no-key escape hatch. **This makes Lane C
-    runnable offline, free, and deterministic-*enough* for a smoke lane** — a local model
-    gives reproducible-enough grounding checks without a paid key or network. It is also
-    the U6 privacy escape hatch and the `repl-embedded-agent.md §9` Phase-3 local-model
-    goal, available *now* via rig's Ollama `CompletionModel` impl.
-- **Gating:** behind `--features agent` AND a runtime presence check — the test is
-  `#[ignore = "needs CRANELISP_AGENT_KEY (or local Ollama)"]` when no provider is reachable
-  (the **one legitimate ignore** in the whole strategy — a backend-credential gate, not a
-  spec gap). Run via
-  `-- --ignored` on the eval-lane invocation.
-- **Scored grounding assertions (not exact-match):**
-  - the answer **cites the real symbol** harvested for the turn (e.g. `/ask "what does foo
-    do?"` mentions the actual `foo` body / its real arity, not a hallucinated one — rung 3
-    acceptance, `repl/spec.md §17`);
-  - a proposed `(defn …)` **parses** (rung 2 acceptance) and, where applicable,
-    **typechecks** against the session (rung 5/2 — the constrained-`Num` idiom);
-  - grounding-regression for rung 7 (telemetry-driven curation must not regress grounding).
-
-Lane C assertions are *scored* (substring/grounding checks with tolerance), never
-exact-string, because model output varies run to run. A Lane C failure is a **quality
-signal for human review**, not a red build.
-
----
-
-## 6. Lane D — golden-transcript replay
-
-The corollary of pull-as-visible-commands (`agent.md §4`, `repl/spec.md §17.2`, §15):
-**because every agent action is a visible REPL line, every agent session is a legible,
-replayable REPL script.** A recorded transcript + a stub replaying the same scripted
-tool-calls = a full-session regression test. This is a Lane-A-family test (deterministic,
-stub-driven, in the `--features agent` lane) but called out separately because it is a
-*whole-session* guard rather than a single-seam one.
-
-### 6.1 Record/replay shape
-
-- **The script fixture** (the stub's input): an ordered list of scripted model responses
-  (`Done` / `ToolCalls`, §1.1) — the model's half of a session. Stored as a fixture under
-  an agent fixtures directory (as proposed; the delivered corpus is `tests/fixtures/agent-evals/`; gitignored `.runs/` for outputs per
-  `tests/CLAUDE.md`).
-- **The golden transcript** (the expected output): the full rendered REPL transcript of a
-  session — user turns + the agent's framed prose + the agent-issued commands echoed
-  as-typed + their deterministic command output. Because the model half is scripted and the
-  REPL half is deterministic, the *entire transcript is reproducible byte-for-byte* (modulo
-  the agent prose, which is itself scripted in the stub).
-- **The replay test:** drive the binary (`--features agent`, stub provider via the §1.1(a)
-  config mechanism) with the recorded user inputs + the script fixture; capture the
-  transcript; diff against the golden. Any drift in dispatch, pull-rendering, command
-  output, or framing flips it red.
-
-### 6.2 What it guards that the seam-tests don't
-
-- **Pull/push interlock across turns** — a pull in turn 1 warms the harvest in turn 2
-  (`agent.md §4.1`); a whole-session replay catches a regression in that interlock that a
-  single-turn test misses.
-- **Transcript legibility / replayability** — `repl/spec.md §17.2`/§15: the session must
-  remain a script a human (or a re-run) can follow. The golden transcript IS that script;
-  the test proves it stays legible.
-- **Frame-vs-command rendering** — only prose is framed; commands + results use normal
-  REPL roles (`agent.md §3.5`, `repl/spec.md §17.2`). The golden pins the exact framing.
-
----
-
-## 7. Rung → lane mapping (cross-ref the SPRINT ladder)
-
-This reconciles `sprints/SPRINT.md` §"Agentic capability ladder" (the "Test lane" column)
-with the lanes defined here. Each rung's *primary* gating lane + any companion:
-
-| Rung | Capability | Sprint | Gating lane(s) | This doc |
-|---|---|---|---|---|
-| **0** | Module preambles + clean regen (0423) | S88 W1 | **A** (deterministic round-trip) | §3.5 |
-| **1** | Talk to an agent (prose→agent, round-trip, framed reply, `/ask`) | S88 W2–3 | **A** (classifier, no model) + **B** (feature-off) | §3.1, §4 |
-| **2** | Agent knows the language (always-on primer [+R5 spec-grep]) | S88 W3 | **A** (primer-assembly) + **C** (answer quality) | §3.2, §5 |
-| **3** | Agent knows the module/session (harvester) | S88 W3 | **A** (harvest selection **+neg**) + **C** | §3.2, §5 |
-| **4** | Agent uses REPL commands as tools (pull, read-only) | S88 W3 *(end MVP)* | **A** (tool-call→command wiring) + **D** (golden transcript) | §3.3, §3.6, §6 |
-| **5** | Agent submits forms (Build, confirm-gated, validator, U5 silent-repair) | **S89** | **A** (stage→check→discard repair loop) | §3.4 |
-| **6** | Agent records understanding (Document mode preamble edits) | **S89** | **A** (edit + round-trip) | §3.5 |
-| **7** | Self-tuning + reach (telemetry, semantic spec search, push-transparency, provider polish) | **S90** | **A** (telemetry capture) + **C** (grounding regression) | §3.2 (harvest evolution), §5 |
-
-Lane B (feature-off) underwrites **every** rung implicitly — at every S88/S89/S90 close,
-the default suite must stay agent-free and byte-identical. Lane B is the standing guard,
-not tied to one rung.
-
----
-
-## 8. Discipline — failing-not-ignored, spec-traced, durable
-
-- **S88 agent tests are failing-not-ignored where they pin un-built behaviour.** Per
-  `memory/feedback_failing_not_ignored.md` + `qa.md §"Failing-not-ignored discipline"`:
-  Lane-A tests for rungs that have not yet been built (in the active sprint's scope) are
-  written **failing, un-ignored** — including won't-compile failures when the
-  `classify_for_agent` / `agent_turn` / `/refs` API doesn't exist yet. That is a valid,
-  loud signal (standard TDD: write the test, watch it fail, `/dev` makes it pass). The
-  **one legitimate `#[ignore]`** in the whole strategy is the Lane-C backend-credential
-  gate (`#[ignore = "needs CRANELISP_AGENT_KEY (or local Ollama)"]`, §5) — a credential
-  gate, not a spec gap.
-- **Future-sprint rungs are PLAN rows, not written tests.** Rungs 5–6 (S89) and rung 7
-  (S90) get rows in this strategy with `[S89]`/`[S90]`; the
-  tests themselves are authored in the sprint that builds them (per the
-  `qa.md §"Failing-not-ignored"` table — "scheduled but not yet active → plan row, do not
-  write the test yet").
-- **`// spec:`-traced.** Every agent test carries a `// spec:` comment citing the normative
-  section — `repl/spec.md §17` (and its subsections §17.1/§17.2/§17.3/§17.5/§17.6/§17.9 as
-  appropriate) for the agent experience, and `spec/08-modules.md §8.16` (and §8.2.2 for the
-  0423 write-location) for the module preamble. The spec-link linter
-  (`tests/plan/spec_link_check.py`) verifies the cited anchors exist; run it before
-  committing any agent-lane tests.
-- **Repros join the suite for eternity.** Any defect a user-proxy (`/repl`, etc.) surfaces
-  while exercising the agent gets a narrow `/qa`-authored repro in `tests/agent.rs`
-  (Lane A) — failing, un-ignored, `// spec:`-traced, with a ledger row — per
-  `qa.md §"Repros join the suite"`. A FIXME alone is not closure for an agent defect
-  (`memory/feedback_no_fixme_with_failing_test.md`).
-- **This strategy is the durable record Wave 3 / S89 / S90 build against.** The S88
-  Lane-A/B tests are written in Wave 3 by `/qa` alongside the `/dev` build (not in this
-  step). S89 (rungs 5–6) and S90 (rung 7) build their Lane-A tests against §3.4/§3.5/§5
-  here. The plan asserts what SHOULD be tested; the test files are how it IS tested; drift
-  between them is a defect resolved before phase exit (`qa.md §"Plan vs tests"`).
-
----
-
-## 9. Open seams flagged to Wave 3 / `/int` / `/dev`
-
-- **Stub-injection mechanism (§1.1).** Prefer (a) stub-provider-by-config so Lane A is
-  genuine e2e. If request-content assertions (harvest selection +neg) cannot surface
-  through the binary's I/O, that is a binary testability gap → file `target: /int`
-  (a transcript / assembled-request echo hook) rather than bridging with an internal-API
-  helper (`tests/CLAUDE.md §"Two tiers, no middle"`). The residual request-content unit
-  tests are `/dev`-owned in `src/agent/`.
-- **`tests/agent.rs` + `tests/fixtures/agent/`** are new test artefacts; the
-  `--features agent` nextest lane + its `.runs/` gitignore entry are Wave-3 setup.
-- **rig trait shape** (the stub's `impl rig::completion::CompletionModel`) is a Phase-5
-  lookup against the pinned `rig-core` version (`agent.md §6.4`) — not pinned in this doc.
+Lane B underwrites every rung: the default build stays agent-free whatever the
+agent gains.

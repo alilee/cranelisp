@@ -3,17 +3,13 @@
 // Tests the LLM-free dispatch / reverse-query foundations of the agentic-REPL
 // track (design/int/agent.md, tests/plan/agent-testing-strategy.md):
 //
-//   - Lane B (feature-OFF guard, DEFAULT suite) — `/ask` → "agent not built
-//     in", prose → today's parse-error display, `--agent` accepted-no-op, the
-//     reverse-query commands run agent-free. These prove the feature-OFF binary
-//     is byte-identical to today on every non-`/ask` input (agent.md §2.2).
-//   - Lane A (feature-ON, `--features agent` lane) — the REFINED classifier
-//     routing through the binary: compound form / literal / bare KNOWN symbol →
-//     deterministic REPL; bare UNKNOWN symbol, multi-word prose, mixed
-//     known+unknown, genuine parse error → agent; `/ask` forces the agent; plus
-//     the §4 bare-known-symbol-self-doc negative guard. The classifier now
-//     RESOLVES bare symbols (not just parses), closing the U1 gap where prose
-//     parsed `Ok(N symbols)` and wrongly routed to the REPL.
+//   - Lane B (feature-OFF, default suite): `/ask` reports "agent not built in";
+//     `--agent` and `--yes` are rejected; `--no-agent` is an accepted no-op.
+//     Reverse queries remain available without the agent.
+//   - Lane A (feature-ON): the form-count classifier preserves deterministic
+//     REPL handling for single forms, including unknown symbols; multi-form
+//     prose routes to the agent. Unclosed forms continue collecting input.
+//     `/ask` is the explicit agent entry (repl/spec/17-embedded-agent.md §17.1).
 //   - `/refs` / `/tests-for` — functional + neg, in BOTH builds (LLM-free).
 //
 // The tests that assert feature-OFF behaviour are gated `#[cfg(not(feature =
@@ -3555,7 +3551,7 @@ fn agent_log_feature_off_byte_identical_reverify() {
 //     contract — RED where HEAD still emits to stderr on a truthy value, GUARD
 //     where they assert absence the fix must preserve.
 //
-// 5d TESTABILITY SEAMS OWED (design/int/agent.md §28.2 / §28.6, flagged to /dev):
+// 5d TESTABILITY SEAMS OWED (design/int/agent.md §28.2 item 2 / §11, flagged to /dev):
 //   (a) the §28.1 `Grain { Compact, Full }` formatter param on
 //       `format_request_trace`/`format_response_trace` — UNIT-testable directly
 //       (a >80-char form survives verbatim under `Full`), `src/agent/trace.rs`.

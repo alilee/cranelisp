@@ -993,24 +993,18 @@ fn check_forms_cross_call_multi_sig_dispatch_resolves_to_variant() {
     }
 }
 
-/// FIXME 0365 — the warning channel. When a synthesised field accessor
-/// (§5.2.6, FIXME 0351(a)) collides with a pre-existing NON-accessor
-/// binding, accessor synthesis records a `ShadowedName` warning and
-/// suppresses the accessor (the existing binding wins). Before FIXME 0365
-/// `check_forms` returned `Result<(), CheckError>` and DISCARDED its
-/// `CheckResult` — so the warning never reached the int caller and the REPL
-/// never rendered the `; warning:` line. This test pins the surfaced
-/// channel: `check_forms` now returns `Ok(Vec<Warning>)`, and the colliding
-/// accessor's `ShadowedName` diagnostic is reachable in that Vec carrying
-/// the collision message.
+/// A field accessor whose bare spelling is already a user binding coexists
+/// with it: the cluster checks clean with no warning, the user `v` keeps its
+/// binding, and the canonical `Box.v` is exposed under the same bare spelling
+/// as a further candidate (`design/typecheck/fixme-0365-field-accessor-dotted.md`
+/// §1.6.2).
 ///
 /// Fixture: pre-register `v` as a user `defn`, then submit the **product**
 /// type `(deftype Box [:Int v])` (single ctor, ctor-name == type-name) in
-/// the same cluster. Synthesising the `v` accessor finds the pre-existing
-/// `v` defn (a NON-accessor collision) and defers the diagnostic.
+/// the same cluster.
 ///
-/// spec: spec/05-data-types.md §5.2.6 — accessor/binding collision safe
-/// disposition (warn, suppress, keep existing binding).
+/// spec: spec/05-definitions.md §5.2.6, spec/08-modules.md §8.6.5 — a shared
+/// bare spelling is a candidate set resolved at each use.
 #[test]
 fn check_forms_preserves_binding_and_accessor_candidate() {
     use cranelisp_types::Type;
@@ -1094,9 +1088,11 @@ fn check_forms_preserves_binding_and_accessor_candidate() {
 }
 
 // =====================================================================
-// §8.6.4 definition-over-(import|export|prelude) rejection at the shared
-// `check_forms` Pass-1 seam (FIXME 0514). These pin the mode-uniform
-// rejection at the exact seam both REPL/Additive and batch/Replace call.
+// §8.6.4 module-scope candidate registration at the shared `check_forms`
+// seam. A local definition over an imported, exported or prelude-provided
+// spelling is accepted and joins that spelling's candidates; these pin the
+// mode-uniform acceptance at the seam both REPL/Additive and batch/Replace
+// call.
 // =====================================================================
 
 fn seed_module(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>, module: &str, name: &str) {
@@ -1141,8 +1137,8 @@ fn expose_import(
         .unwrap();
 }
 
-/// A `defn` over a name in scope via an explicit `(import …)` is rejected;
-/// the diagnostic names the symbol + the `module/name` FQ remedy.
+/// A `defn` over a name in scope via an explicit `(import …)` is accepted;
+/// the spelling then has two candidates (spec §8.6.4).
 #[test]
 fn def_over_import_candidate_is_allowed() {
     let modules = modules();
@@ -1169,9 +1165,8 @@ fn def_over_import_candidate_is_allowed() {
     assert_eq!(guard.name_candidates(&Symbol::from("measure")).len(), 2);
 }
 
-/// A `defn` over a name in scope via an explicit `(export …)` — a Public
-/// inner-scope Import edge (§8.4.0) — is rejected on the same terms; the
-/// message names it an export.
+/// A `defn` over a name in scope via an explicit `(export …)` is accepted on
+/// the same terms as an import (spec §8.6.4).
 #[test]
 fn def_over_export_candidate_is_allowed() {
     let modules = modules();
@@ -1195,9 +1190,8 @@ fn def_over_export_candidate_is_allowed() {
     .expect("a local definition may coexist with an exported candidate");
 }
 
-/// The no-exception ruling (2026-07-04): a `defn` over a PRELUDE-provided
-/// public name is the same compile-time error — the prelude (an implicit
-/// import) is checked exactly like an explicit import.
+/// A `defn` over a PRELUDE-provided public name is accepted exactly as over
+/// an explicit import — the prelude is an implicit import (spec §8.6.4).
 #[test]
 fn def_over_prelude_fallback_is_allowed() {
     let modules = modules();
@@ -1217,7 +1211,7 @@ fn def_over_prelude_fallback_is_allowed() {
 }
 
 /// A module redefining its OWN prior `Def` (home == current module) is an
-/// ordinary redefinition, NOT a collision — the seam must let it through.
+/// ordinary redefinition — the seam must let it through.
 #[test]
 fn own_redefinition_allowed_at_seam() {
     let modules = modules();
@@ -1247,8 +1241,7 @@ fn own_redefinition_allowed_at_seam() {
 }
 
 /// A fresh name that the prelude does NOT provide compiles cleanly even with
-/// the prelude-fallback bit ON — the seam fires only on an actual in-scope
-/// binding (the §8.8.3 not-loading / fresh-name case).
+/// the prelude-fallback bit ON (the §8.8.3 not-loading / fresh-name case).
 #[test]
 fn def_of_fresh_name_with_prelude_on_allowed() {
     let modules = modules();
@@ -1268,10 +1261,10 @@ fn def_of_fresh_name_with_prelude_on_allowed() {
 }
 
 /// MODE PARITY: `check_forms` has no mode parameter — REPL/Additive and
-/// batch/Replace call the IDENTICAL function, so the rejection is
+/// batch/Replace call the IDENTICAL function, so candidate registration is
 /// structurally mode-uniform. This pins that both `ctx` variants both
 /// sessions use — `Live` (Replace-analog) AND `Cluster`/staging
-/// (Additive-analog) — reject the same def-over-import binding set.
+/// (Additive-analog) — accept the same def-over-import binding.
 #[test]
 fn def_over_import_candidate_acceptance_is_mode_uniform() {
     // Live (Replace-analog).
@@ -1297,7 +1290,7 @@ fn def_over_import_candidate_acceptance_is_mode_uniform() {
         .expect("Live-mode def-over-import candidate must coexist");
     }
     // Cluster/staging (Additive-analog) — the import lives in live, the def
-    // stages; the union view sees the import; the seam rejects identically.
+    // stages; the union view sees the import; the seam accepts identically.
     {
         let modules = modules();
         seed_module(&modules, "util", "measure");

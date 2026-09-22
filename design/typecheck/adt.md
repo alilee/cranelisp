@@ -18,14 +18,14 @@ register_type_def(name, type_params, constructors, ...)
   6. register TypeDef entry   → symbol table
 ```
 
-> **Dotted `Type.Ctor` canonical keys (S109 bucket 2).** As of the dotted-ctor
-> capability, `register_constructors` stores a **sum** ctor's real got-slotted
-> `Def` under the canonical key `member_key(Type, Ctor)` (`Maybe.Some`) with the
-> bare ctor name as a poisoning `Import` alias — the exact mirror of the field
-> accessor's `Type.field` canonical/bare-alias storage. Same-named ctors across
-> in-scope types coexist; the dotted form disambiguates in value AND pattern
-> position. A **product** ctor keeps its single type-name key (the dual facet
-> below); its dotted form is degenerate. Full design:
+> **Dotted `Type.Ctor` canonical keys.** A **sum** constructor's one callable
+> binding is keyed `member_key(Type, Ctor)` (`Maybe.Some`), settled through the
+> lifecycle funnels; the bare constructor name is a `NameCandidate` reference to
+> it, as a field accessor's bare name is to `Type.field`. Same-named
+> constructors across in-scope types coexist as candidates selected at each use;
+> the dotted form is always valid in value and pattern position. A **product**
+> constructor keeps its single type-name key (the dual facet below); its dotted
+> form is degenerate. Full design:
 > **`design/typecheck/dotted-ctor-registration.md`**.
 
 > **Field-accessor synthesis is slot-gated (S119, FIXME 0924).**
@@ -39,9 +39,11 @@ register_type_def(name, type_params, constructors, ...)
 > becomes slot-less `Polymorphic`, and its instances are produced by **re-running
 > this synthesiser at concrete type arguments** (**A-MINT**) rather than by a body
 > re-check — the body is `Span::SYNTHETIC` and outside span-keyed carrier transport.
-> The bare accessor candidate, the §8.6.5 use-site contest and the impl-time
-> collision pre-flight are **untouched**: they key on the canonical entry, not its
-> lifecycle. The former **Rider 0867** widening is retired by the 2026-09-02
+> The bare accessor candidate and the §8.6.5 use-site contest are **untouched**:
+> they key on the canonical entry, not its lifecycle. The impl-time collision
+> pre-flight also survives as built, but spec §7.3.1 makes it obsolete; its
+> removal is pending defect intake ([accessor-design obligation](fixme-0365-field-accessor-dotted.md#21-unresolved-obligation--the-source-still-rejects-the-overlap),
+> `ACT-0983`). The former **Rider 0867** widening is retired by the 2026-09-02
 > language ruling: sum payload labels mint no accessors. Full lifecycle statement:
 > **`non-concrete-producer-obligations.md`**.
 
@@ -150,9 +152,11 @@ longer smuggle each other's data through a shared entry.
 Two questions, two homes; neither is restated here.
 
 - **What an accessor entry is, and how it is keyed.** The canonical `Type.field`
-  `Def` plus its bare `field` `Import` alias, the `Ambiguous` sentinel on a
-  contested bare name, and the impl-time collision rule:
-  `fixme-0365-field-accessor-dotted.md` §1.6.
+  binding, the bare `field` candidate reference to it, and selection among a
+  shared bare spelling's candidates at each use:
+  `fixme-0365-field-accessor-dotted.md` §1.6. [The trait requirement](../../spec/07-traits.md) permits an impl
+  method named like an accessor of its target; the rejection that source
+  still applies is obsolete ([accessor-design obligation](fixme-0365-field-accessor-dotted.md#21-unresolved-obligation--the-source-still-rejects-the-overlap), `ACT-0983`).
 - **Which fields get one.** Only product fields. A product is the lone
   same-name-constructor shape; its fields mint total accessors. A differently
   named constructor arm is a sum variant even when it is the only arm, and its

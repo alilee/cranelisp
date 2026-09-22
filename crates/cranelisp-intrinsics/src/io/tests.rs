@@ -1500,7 +1500,7 @@ mod poll_arm {
         node
     }
 
-    // spec: design/intrinsics/reactor.md §2.9 §1A — the trampoline reads the LIVE
+    // spec: design/intrinsics/reactor.md §2.9 — the blocking/sync Par paths read the LIVE
     // `(token, capacity)` off the `IO_TAG_EFFECT_POLL` node (the S95-reserved
     // slots, now carrying real values), using the SAME offsets the blocking
     // carrier and the backend agree on: token @ abs 32 (`read_resource_token` via

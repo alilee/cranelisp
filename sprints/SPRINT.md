@@ -1,9 +1,9 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
 **Status:** PHASE 5. The compiler corrections, bounded Haiku eval and IO reuse
-corrections have executing evidence; checkpoint `07f46769` is committed.
-Document consolidation continues: the last integrated check has 846 findings
-across 591 documents. Historical audit reports are retired to Git with open
+corrections have executing evidence; checkpoint `9c74e2eb` is committed.
+Document consolidation continues: the last integrated check has 630 findings
+across 592 documents. Historical audit reports are retired to Git with open
 points preserved in actions and existing filings. Current reservations appear
 at the end of this plan. No phase transition or publication is authorized.
 
@@ -436,7 +436,7 @@ No new typecheck design or per-seam mutation battery is required.
 
 ### Primitives construction decision
 
-The [primitives consumer design](../design/primitives/s122-typed-consume-consumers.md)
+The [primitives consumer design](../design/primitives/primitives.md#24-typed-abi-boundary)
 completes the source-backed construction/traversal/storage census, including
 bool/float producers and the existing error-return sentinel. Architecture's
 [exact proposed amendment](s122-primitives-allocation-proposal.md) covers one
@@ -1895,3 +1895,797 @@ redefinition reload seam; design records the unrealised rule and its current
 consumers in `design/int/int.md` §16.0. No withdrawal or implementation is
 authorised by this documentation correction. Current CLI guidance exists at
 `user/cli-reference.md`; the obsolete claim that `user/` is empty is retired.
+
+### Boundary-guide and specification-citation continuation
+
+Checkpoint `9c74e2eb` records the preceding verified batch. Phase5 continues:
+`arch` reserves the boundary-types and concrete-boundary guides plus its index;
+`qa` reserves only coverage annotation brackets in lexical, grammar and module
+specifications. Starting check: 846 findings across 591 documents.
+
+| Role | Provider / model / effort | Session | State |
+|---|---|---|---|
+| arch | Claude / Fable / high | `7f2ddc0c-0793-499d-aa6f-c89849f36b94` | completed; boundary-guide consolidation |
+| qa | Claude / Fable / high | `293c6c3d-4919-4445-8e87-400bb53f785d` | completed; annotation-only edits |
+| spec | Claude / Opus / high | `cfe4b422-bdf2-4f80-a49d-666b00126604` | completed; read-only authority assessment |
+
+QA corrected unsupported coverage grades; pending evidence now appears in
+`spec/01-lexical.md` §1.6 and `spec/08-modules.md` §8.1 and §8.11.3.
+File-to-module mapping and DLL search tier2/order require discriminating
+evidence. These are pending obligations, not scheduled implementation or
+approved carries. Anonymous-function shorthand is specified but rejected by
+the compiler; route its conformance gap to QA/test intake, not a unilateral
+removal from the language.
+
+**User decision pending, first:** `vec` is contradictory across the specification.
+Grammar §2.3.9/§2.9 calls it core/reserved; macros §9.10.10 makes it a prelude
+macro, as implemented. Recommendation: retain the library macro and bracket
+literal as core, correct the conflicting grammar, then have QA reassess the
+changed annotations. No normative edit before the ruling.
+
+After that decision, the spec owner requests confirmation of unspaced rest
+parameters: current lexical rules permit the spaced form, while source and
+stdlib also use the unspaced form. A nameless rest marker is already invalid.
+Present that separately; do not infer either answer from the cleanup approval.
+
+Independent review `351f97bd-a009-4900-8027-6d1fa06a3ccc` (Claude Fable high,
+exit0) found one required source-claim correction and two citation/status
+repairs. Applied: the result-root consumers already share the derivation;
+0898 remains an open filing requiring disposition. The signature fallback is
+explicitly interim under safety-register R17. Review found no lost current
+obligation and requires no re-review for these exact wording repairs.
+
+All role reservations for this batch are released. API contraction candidates
+are retained in ACT-0971; stale types-rustdoc leads join ACT-0966. Neither
+action approves an API change. Follow-up architecture cleanup is the overlapping
+total-concreteness and types-first reasoning records; 0789, 0798 and 0898 need
+owner disposition against their source. The first user decision remains `vec`.
+
+**Verified result:** 761 findings across 592 documents; 85 previous finding
+identities removed and zero introduced. Specification edits are annotation-only
+(byte-identical after stripping the coverage brackets). Rust edits are comment
+citations only. Diff and role-wiring checks pass; no runtime test rerun was
+needed. Continuation changes remain uncommitted after `9c74e2eb`.
+
+### Approved vec specification correction
+
+The user answered “agreed” after reviewing the consequences of retaining
+`vec` as a library macro: bracket literals stay core; parenthesised `vec`
+requires ordinary macro availability and is not reserved; neither form is a
+first-class function. This explicitly approves removing the core `vec` grammar
+alternative and reserved-word entry and identifying the library form accurately.
+`spec` owns the bounded correction, then `qa` reassesses affected annotations.
+The separate rest-parameter spelling decision remains unresolved.
+
+**Vec ruling applied.** Spec sessions `b3ae55fb-d3a3-4057-950d-d100ce63652e`
+and `7db12c7e-44bd-45c6-a5a5-0b4f248268c5` (Claude Opus high, exit0)
+corrected grammar §2.3.6, §2.3.9 and §2.9. The final wording preserves ordinary
+application to user-defined `vec` bindings as well as reference-macro invocation.
+QA `43718f31-09d8-402c-998f-7e79cc8a371a` (Claude Fable high) reassessed
+existing assertions: application is Tested+Neg; literal/reserved-word sections
+and their rollup remain partial. Pending focused evidence: absent `vec` binding
+rejects without a prelude; a user function named `vec` applies normally; the
+reference macro cannot be captured as a function value. No runtime change or
+new tests were part of this specification correction. These gaps remain open.
+
+The first decision is resolved. The next user question asks whether spaced
+and unspaced rest markers are both legal. No answer is inferred from the
+`vec` approval; the rest-marker specification remains unchanged.
+
+### Approved rest-marker spelling correction
+
+User: “this would make & a reserved character that must be excluded from
+symbols. allow both spellings.” Both spaced and unspaced rest-marker spellings
+are approved; ampersand is reserved and excluded from ordinary symbol
+characters. Nameless ampersand remains invalid. Spec records this ruling and
+QA reassesses affected evidence; no unrelated syntax or implementation change
+is implied.
+
+Rest ruling: spec `f35388f9-c339-41d5-b174-1997c7f87fed` (Claude Opus high)
+applied lexical/prose changes; QA `bf90a083-40a1-46d9-a5ab-1c98079262f3`
+(Claude Fable high) verified spelling equivalence and nameless-marker evidence.
+QA rejects the inference that the internal `Sexp::Symbol` carrier itself
+violates lexical reservation. No confirmed defect or implementation change is
+allocated on that basis. Identifier exclusion still lacks a committed negative
+for `foo&bar`; spelling equivalence needs no duplicate e2e evidence.
+
+One observable semantic question remains: quoted or macro-argument data
+currently represents `&name`/`& name` as a single `SexpSym` marker carrying
+`&name`. The lexical ruling does not decide this data representation. Ask
+whether to retain it or expose separate marker/name elements before reader
+changes. The spec owner’s inference of mandatory two-element representation
+is not an approved ruling. Scope the lexical prose precisely when this question
+is resolved; do not classify current behavior as a defect meanwhile.
+
+### Rest-marker representation decision resolved
+
+The user approved continuing with `SexpSym("&rest")` for now and requested
+a future action. ACT-0972 owns the structural rest-marker proposal. Both
+spellings remain one marker in quoted and macro-argument data; source
+identifier reservation is unchanged. No implementation change is authorised.
+Spec records the representation and scopes the identifier wording; QA updates
+the affected coverage claim, preserving genuine untested boundaries.
+
+Rest-marker closeout: spec `3874279a-c21b-4d14-ae36-c828b9e61bd5`
+(Claude Opus high) and QA `609f4cd3-3169-4c86-9b10-8cdb581a772f`
+(Claude Fable high) completed, exit0. Current carrier is explicitly documented;
+ACT-0972 holds the future design. Existing reader tests support the approved
+shape; identifier-exclusion and quote/macro transport coverage remain partial.
+No defect is established by the current encoding. The separate macro rest-target
+grammar and rest-position evidence questions remain pending assessment.
+Final document check: 761 findings across 593 documents, zero introduced;
+whitespace check passes. No compiler change or commit in this correction.
+
+### Concreteness, lenient-eval and remaining spec citation batch
+
+Phase5 continues from 761 findings. Arch reserves the two overlapping
+concreteness records and their canonical arch destinations; design (backend)
+reserves lenient-eval and its index; QA reserves coverage brackets in remaining
+spec files. No implementation, API change, commit or phase transition is
+authorised by this batch. The vec and rest-marker rulings stay settled.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| arch | Claude / Fable / high | `7bde1ab8-72fd-4125-a48b-d8fa2b3d24e7` | consolidation delivered; review correction below |
+| design (backend) | Claude / Opus / high | `5bb43093-49e4-4b40-97b1-f23b04aab284` | lenient-eval consolidated |
+| qa | Claude / Fable / high | `1ff2b61c-dc4c-4017-b1f2-4f2bb9e4bcc5` | annotation-only citation repair; five selected existing tests pass |
+| review (backend) | Claude / Fable / high | `a4cbc24d-9182-4623-ad12-508326823c90` | no required finding; advisory wording corrections |
+| review (arch) | Claude / Fable / high | `22944ca2-e446-4e7e-9c98-f59e137f51ef` | approval provenance and retained-prior claims require correction |
+| arch | Claude / Fable / high | `17f9a886-1252-40d6-b45c-eaa168c7f5ef` | corrected; finding-scoped review below |
+| dev (intrinsics) | Claude / Opus / high | `68d5c302-03d7-459c-8fed-d219b1bd4c39` | comments corrected; cargo check passes; no code change |
+
+ACT-0973 retains the source-read platform-scope suspicion for QA reproduction.
+QA's additional coverage limits remain explicit in the spec annotations: empty
+select non-catchability and non-entry platform declarations. No new language
+question is required for these unambiguous requirements.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| review (types architecture) | Claude / Fable / high | `d25e1f25-8a49-45e6-a1ea-2e33d1654e9d` | completed; remaining retirement wording corrected |
+| qa | Claude / Fable / high | `0bde639b-0289-4c06-9193-686d64963a68` | completed; no call-target consumer found; no defect established |
+
+Integrated document check: 704 findings across 593 documents; 57 finding
+identities removed and none introduced against the 761-finding baseline.
+The five consolidated architecture/backend documents fall from 63,569 to
+15,850 words against checkpoint `9c74e2eb`, including retirement of the
+superseded types-first commission. Open obligations remain in their canonical
+contracts and filings. All Rust changes since that checkpoint are comments.
+Whitespace check passes; NOTES.md is unchanged.
+
+Intrinsics verification: `cargo check -p cranelisp-intrinsics` passes.
+`cargo doc -p cranelisp-intrinsics --no-deps --document-private-items` succeeds
+with 13 warnings elsewhere in the crate's existing rustdoc; this is not a
+warning-free documentation build. Those references remain maintenance debt for
+the intrinsics documentation pass. No runtime implementation change was made.
+
+Concreteness approval provenance was checked against the checkpoint: the old
+empty-vec-module contraction ruling was scoped to the de-slot change-set.
+The module remains present; any removal still needs the repository's exact
+public-API user gate. The retained-prior interpretation follows the user clarification below.
+
+The finding-scoped review and QA census completed successfully. Review's
+remaining clause correction includes ABI-changing tombstone retirement; this
+is wording only and needs no further review. QA found no external prior reader
+and no call emission, GOT access or callable publication through a provisional
+scheme. The one-off source census discharges the requested investigation;
+assurance grades remain unchanged. Cache-writer reachability was not traced,
+and the retained-prior/non-concrete rebind branch has no dedicated test;
+QA allocates no new independent acceptance condition for either observation.
+The user's subsequent clarification is recorded below.
+
+### Concrete-signature slots and retained callers
+
+User: “only concrete signatures should have callable slots”, clarified by:
+“the retained prior isn't callable by any new callers though - it is retained
+to avoid stomping on existing callers, before we set up cascading recompiles.”
+A retained index must not be equated with a callable slot assigned to the
+unresolved replacement. The prior assessment inferred non-conformance from
+physical storage and a missing signature payload; that inference is
+withdrawn following the user's lifecycle clarification. No representation/API
+change is allocated on that basis.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| arch | Claude / Fable / high | `7ab31477-d98c-481e-9d65-2791f89bc191` | initial assessment superseded by the user's retained-caller clarification |
+| arch | Claude / Fable / high | `1fdc8ed1-b4a7-4f19-be06-e1b3f1afd01e` | completed; retained prior conforms; earlier non-conformance withdrawn |
+
+The canonical contract and R11 now distinguish retention for existing concrete
+callers from callability by new callers. No defect intake, representation
+proposal, API packet, tombstone decision or additional census is required by
+this clarification. Cascading-recompile implementation status was not assessed;
+the wording correction makes no claim that it is delivered.
+
+### Result/macro ownership and runtime documentation consolidation
+
+Phase5 continues from 704 findings. Three independent design reservations
+cover Binary/int result and macro ownership, intrinsics reactor and diagnostic
+modes, and primitives current design plus completed visit records. Each owner
+verifies current source, retains unresolved obligations, and retires spent
+history. Root integrates cross-owner citation remaps and checks the combined
+tree. No compiler implementation, API change or phase transition is allocated.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| design (int ownership) | Claude / Opus / high | `c120b207-3da2-4227-a436-06062f2b64d7` | complete; current ownership contracts consolidated; review below |
+| design (intrinsics runtime) | Claude / Opus / high | `6cc56e2b-7704-4032-85cc-5cb819c732d1` | complete; runtime contracts consolidated; arch reconciliation below |
+| design (primitives) | Claude / Opus / high | `06f57330-4f77-42bf-8b84-368a4954bd4a` | complete; two spent records retired into primitives master |
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| dev (primitives documentation) | Claude / Opus / high | `ffa454fc-44d7-4aec-ac8b-1b218f482428` | complete; comments only; fmt and cargo check pass |
+
+Primitives design consolidates 13,301 words into 3,036. Source comments,
+shared runtime design and active evidence links are remapped to the canonical
+typed ABI section. The source-read value-position String-wrapper concern is
+retained as QA intake ACT-0974; it is not a confirmed or attributed defect.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| review (int ownership) | Claude / Fable / high | `efb40737-5c22-4171-bf5a-8267915c8ce5` | one required runtime-error residue wording correction; result ownership sound |
+
+The int owner verified and absorbed 0927's Rule-0 enforcement: clause
+preparation clears the inferred summary and the named unit fence exists.
+The filing requested deletion when absorbed and is now retired. External
+references to the completed result-owner slice/acceptance sections are repaired;
+the S118 plan's own close-batch reference is made explicit. Other apparent
+completed filings await their owning disposition; they are not silently closed.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| arch (reactor contract) | Claude / Fable / high | `4ff8608d-bdd8-4ef5-a400-31de1e9733c7` | complete; eager form already permitted; shutdown surface question routed to spec |
+| design (int ownership correction) | Claude / Opus / high | `01c55402-0673-4b8e-a49e-4a68efb98d00` | complete; trap and runtime-error residue distinguished; ACT-0976 retains QA intake |
+| dev (intrinsics documentation) | Claude / Opus / high | `81a7277a-8897-4cd3-8b7e-540ca6b6e9b8` | complete; comments only; fmt and cargo check pass |
+
+ACT-0975 retains the synchronous Par-branch/poll reachability question as QA
+intake. Neither source-read intake in this batch is a confirmed defect.
+The int review preserves the prior distinction between source-delivered IO
+reuse and pending integrated acceptance; consolidation does not grant acceptance.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| review (intrinsics runtime) | Claude / Fable / high | `5f1d3afd-ce13-43d5-861b-42afc15644b0` | completed; optional strand edge and overbroad diagnostic claims corrected |
+| arch (platform record) | Claude / Fable / high | `0daf6379-0a45-48fa-9cd2-ab9d8cbc3833` | completed; eager state and optional lazy refinement recorded |
+| spec (shutdown assessment) | Claude / Opus / high | `ab05d505-7315-44ee-b78b-51991d699be6` | completed; cancellation of launched strands is the user decision |
+
+Arch found eager reactor construction already admitted by the governing
+platform-interface record; lazy construction is a workload-triggered
+refinement, not an unmet user requirement. Root applied the exact reactor
+handoff and corresponding comment references. Cancellation and shutdown
+requirements remain open. Spec assesses the missing program-visible shutdown
+surface; the architecture report does not itself approve language changes.
+Primitives source-backed origin/lifecycle terminology was corrected in its
+master design using the dev handoff; no code or baseline changed.
+
+The int correction follows the review's bounded wording repair: runtime errors
+are distinct from trap/panic forfeits, and no unsupported residue bound remains.
+ACT-0976 retains the risk/evidence intake. The correction changes no release
+behavior, so the coordinator checks the wording and references without replaying
+the review gate.
+
+Connected runtime comment corrections compile and format successfully.
+The combined private rustdoc build succeeds with 13 intrinsics warnings and
+2 primitives warnings (existing broken/private links); it is not warning-free.
+The global Rust diff still contains comments only, and NOTES.md remains unchanged.
+
+Remaining connected documentation work retains explicit owners: arch's older
+platform-interface coexistence narrative and stale public-API forecast need
+consolidation; docs must reconcile the graceful-shutdown guide claim and assess
+the undocumented drive-mode/backstop/degree settings; QA owns the two unfulfilled
+shutdown/disconnect coverage rows. These are not closed by the runtime rewrite.
+
+The intrinsics review's two required wording corrections are applied: the
+crate-private strand sink is not an existing binary API edge, and the
+single-reader/layout claims are scoped to the drop path actually guarded.
+The bridge detection proof, retain-on-accounting-disagreement direction and
+synchronous cancellation guard remain explicit. Source-comment advisories
+about eager construction and the backstop's four readiness sources are
+corrected from the review's source evidence. No further review is allocated
+for these exact wording repairs.
+
+The cancellation-scope decision is resolved by the user ruling below.
+Architecture retains the spec's Vec select input and Int timeout duration.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| docs (concurrency guide) | Claude / Opus / high | `3c343088-2928-42a9-b9d9-38c92d34fdfa` | completed; both unavailable patterns clearly marked; no future behavior chosen |
+
+This batch consolidates eight topic documents from 60,582 to 17,539 words,
+retiring three spent design records; guidance and architecture corrections are
+additional. The integrated checker has 630 findings across 592 documents:
+74 baseline finding identities removed, none introduced. Whitespace and role
+wiring checks pass. Source changes remain comments only. No commit or phase
+transition occurred.
+
+User ruling (2026-09-21): “ok agree - let's make coherent before adding more
+capability.” Launched work inherits the cancellation context of enclosing effect
+combinators such as race/timeout, not ordinary function-call lifetime or the
+scheduler's placement choice. Normal program completion continues draining.
+Reconcile spec, architecture, designs, guide and coverage claims before adding
+capability. No task handles/groups, global cancel primitive, platform signal
+leaf, drain-deadline shutdown policy or runtime implementation is allocated by
+this coherence pass.
+
+### Cancellation contract coherence
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| spec | Claude / Opus / high | `731347f0-c576-419d-98b5-234c5dd595a5` | complete; affected requirements captured and coverage invalidated |
+| qa | Claude / Fable / high | `434e5dcb-8036-42e8-bcbb-ebc7e1049752` | read-only assessment of cancellation/reference-pattern evidence |
+
+Spec owns the first writable pass; downstream technical and user-document
+alignment follows its canonical wording. QA's concurrent assessment changes
+no spec text and separates test execution from what assertions discriminate.
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| arch | Claude / Fable / high | `5fc6f9ea-8965-41c5-bf00-df66f9b62186` | align architecture and hand off runtime-design wording |
+| docs | Claude / Opus / high | `221def51-8e09-4c07-965d-02ed6a177f8a` | align guide with settled semantics and current implementation limits |
+
+Spec records cancellation contexts at effect execution, nested by explicit
+combinators. Ordinary calls, returns and inferred launch placement do not
+create or cancel contexts. Losing/timed-out contexts cancel their descendants;
+winning branches do not themselves trigger cancellation. The existing normal
+completion drain is preserved. This coherence work changes no runtime behavior.
+
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| test | Claude / Opus / high | `e333e305-cd0b-4ed1-beb3-0dff14eccfd3` | corrected two test names/traces; retired vacuous SIGTERM test and unused helper; two focused tests pass |
+| spec (appendix C) | Claude / Opus / high | `d52431d7-84e6-4769-9914-3a88db9f4366` | final summary alignment |
+
+Architecture and guide alignment are complete. Sprint applied arch's exact
+reactor wording handoff: the current supervisor lifetime is distinguished from
+the specified cancellation ownership; fault supervision and normal draining
+remain separate. No new runtime mechanism is chosen.
+
+QA's assessment invalidates shutdown/disconnect claims. The web survivor test
+now names server survival after an abandoned request; the direct-race test
+names cancellation and permit reuse. The SIGTERM test proved only process death
+and is retired. Partial direct-race observations have not been promoted into
+coverage of whole requirements covering launched descendants or reference
+patterns. Changed requirements remain uncovered.
+
+[ACT-0977](actions/ACT-0977-scoped-launched-work-cancellation-evidence.md)
+retains the next evidence and implementation work: a minimal launched-work
+cancellation reproduction and controls, then intrinsics design and realization.
+Normal-drain evidence needs an observable completion witness. Platform
+shutdown/disconnect leaves remain separate missing capabilities. REPL execution
+is unchanged; this pass introduces no cross-input background work contract.
+
+
+Coherence pass verified: two selected nextest cases pass (17 not selected);
+19/19 citations in the two changed test files resolve. Coverage reconciliation
+finds 831 live test citations with no missing files or test names; three cleared
+coverage markers remain uncovered following QA's assessment. Role wiring and
+whitespace checks pass. The document checker retains 630 findings across 593
+documents, with zero finding identities introduced or removed relative to the
+preceding 630-finding checkpoint; the additional document is ACT-0977.
+Appendix C now links the cancellation-context rule and includes launched work.
+The concurrency teaching example contains no obsolete scope-exit claim.
+Production behavior is unchanged. NOTES remains untouched, and neither it nor
+.agents is staged. No commit, phase transition or capability implementation is
+part of this pass.
+
+
+### Integration subsystems and platform-contract consolidation (2026-09-22)
+
+The user requested continued cleanup. Remain in Phase 5; cancellation capability
+stays in ACT-0977. Two disjoint documentation reservations consolidate current
+contracts and retire accumulated history against the canonical homes. No source,
+test, API, schema or behavior changes are allocated.
+
+| Role | Provider / model / effort | Session | Reservation and outcome |
+|---|---|---|---|
+| design (int) | Claude / Opus / high | `592f93c0-b976-4974-8495-8f4f7fce2f30` | complete: four current subsystem designs and local index updates |
+| arch | Claude / Fable / high | `5fb048ba-09e4-416e-9ee6-9cf90f43d420` | complete: current boundary contract, preserved live section references |
+
+Baseline: 630 document findings; the four integration documents contain 47,282
+words and the platform-interface document 17,866. Root integrates external
+mechanical handoffs and verifies the combined result. NOTES and the .agents
+Gitlink remain excluded.
+
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| spec | Claude / Opus / high | `7b345e8f-c2fb-4ada-bac2-4d6213a2da16` | assessed closure-callback conflict against S98 ruling; exact replacement supplied |
+| qa | Claude / Fable / high | `2775f537-568e-413c-ad70-504650addb1c` | complete: corrected evidence guidance, closed stale feeder record, classified three source-read leads |
+
+Five documents consolidated from 65,148 to 16,008 words. Current source facts
+replace completed migration plans; useful section identities and unresolved
+obligations remain. Sprint integrated the owners' mechanical cross-reference,
+output-budget and source-comment handoffs. Platform test-trace observations
+are retained in [ACT-0978](actions/ACT-0978-platform-test-trace-intake.md).
+
+User ruling 2026-09-22: “State the boundary and require rejection”. Applied
+spec's exact proposed replacement at `spec/10-io.md` §10.10.1: platform parameter
+and result types must not contain function types, and implementations must
+reject those declarations. The obsolete closure-invocation/RC callback promise
+is removed. Coverage is invalidated, not inferred from the architecture ruling.
+[ACT-0979](actions/ACT-0979-platform-function-type-rejection.md) retains QA
+allocation and possible defect intake. Runtime behavior is unchanged.
+
+
+Integrated outcome: 630 → 577 document findings (53 identities removed,
+zero introduced), across 597 documents. The five consolidated designs contain
+16,013 words after QA's primer wording correction, versus 65,148 before.
+The added documents are unresolved intake actions, not retained historical
+reports. Whitespace and role-wiring checks pass. All 831 spec-to-test citations
+resolve to existing tests. No behavior test was run for this documentation-only
+batch; Rust changes here are comments. Workspace formatting check reports
+existing differences in untouched `src/repl/format_type.rs`, `src/repl/mod.rs`
+and `tests/spec_04_expressions.rs`; no formatting sweep was applied.
+
+QA closed the stale agent feeder-design record and corrected private probes,
+form-count routing, the delivered membrane, request observation and Lane D's
+actual rendering evidence. It did not allocate tests merely because direct
+`free_vars_expr` coverage is absent; the existing binder-scoping risk and trigger
+remain in the scheduling design.
+
+New source-read leads remain unconfirmed:
+[ACT-0980](actions/ACT-0980-cache-restored-declaration-persistence-intake.md)
+prioritizes potential authored-source loss after warm-cache regeneration;
+[ACT-0981](actions/ACT-0981-multi-signature-io-scheduling-intake.md) follows with
+multi-signature automatic scheduling. Neither is closed or represented as a
+reproduced defect.
+
+Next coherent document batch: the agent architecture, REPL summaries and QA
+strategy still contain older surrounding claims. Reconcile architecture's
+unbuilt pull-to-harvest/seq-recency targets and echoed-read descriptions with
+private-probe requirements; align the spec's older echoed-read summaries with
+its explicit private-probe rule. Finish the QA strategy's S88 framing, stale
+suite timing, missing memory/role/ledger references and unbuilt spec-grep claims.
+Keep pin-admission versus disclosure as the already-open design/spec question.
+The platform ABI spec's incomplete ADT type list also needs spec assessment;
+it was not changed by the approved function-type rejection edit.
+
+No commit or phase transition. NOTES hash remains unchanged and .agents is
+unstaged. All four role dispatches in this batch completed successfully.
+
+
+### Agent architecture, summaries and assurance coherence (2026-09-22)
+
+User requested continuation in Phase 5. Three disjoint document reservations
+complete the prior batch's identified agent-document handoffs. No capability,
+source or test work is allocated; existing unresolved pin-admission/disclosure
+and defect intake remain separate.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| arch | Claude / Fable / high | `712d0749-e3e9-4009-a8f3-26895b0fed66` | complete: current architecture, distinct optional targets, historical duplication retired |
+| qa | Claude / Fable / high | `d5f36ec9-f57c-449e-b1e4-8325dd7cbf1d` | complete: current evidence authority and execution limits |
+| spec | Claude / Opus / high | `ab1b73b8-c9b7-48ae-a2ed-e6146ce978ad` | complete: summaries aligned with existing probe rule |
+
+Baseline: 577 findings, 597 documents. Sprint integrates mechanical external
+handoffs and verifies the combined tree. No commit or phase transition.
+
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| spec (follow-up) | Claude / Opus / high | `0d0d1698-7e60-4d0d-93d9-3dc207eeba6b` | complete: streaming/styling summaries and existing Document-edit echo sites aligned |
+
+Architecture now distinguishes delivered boundary intent, optional targets and
+unresolved questions. Pull results already return via the transcript, so arch
+withdraws the unrealised pull-to-harvest interlock; recency remains optional
+int-owned tuning. Existing pin/disclosure and ACT-0952 cache-write questions
+remain. No new behavior, API or requirement is introduced.
+
+Spec carried the existing private-probe rule into older summaries, worked
+examples, prompt-site descriptions and streaming/styling text. Sprint applied
+its mechanical language-awareness handoff for syntax/search pulls. Human
+commands still display results. Probe membership retains its existing dev
+discretion; neither that nor the shell-proposal prompt needs a new decision to
+complete this alignment. The latter remains unspecified; this pass selects
+no behavior for it.
+
+QA's strategy retains the four evidence lanes and existing obligations, but
+removes completed planning, duplicate shared procedure, outdated live-eval
+instructions and false feature-off detection claims. Architecture and QA
+strategy shrink from 17,269 to 7,080 words. The main spec gains clarity rather
+than being shortened (10,579 → 10,692 words). Mechanical external references,
+classifier comments, request-content commentary and local test guidance align.
+[ACT-0982](actions/ACT-0982-agent-module-evidence-routing.md) retains the
+feature-gated module-evidence execution question without adding a new gate.
+
+Integrated check before adding that action: 577 → 566 findings, 11 removed
+and none introduced. Whitespace and role wiring pass. No runtime tests were
+needed or run: executable code and test assertions are unchanged. NOTES
+hash is unchanged; .agents remains unstaged. No commit or phase transition.
+
+Final verification including ACT-0982: 566 findings across 598 documents;
+11 baseline identities removed, none introduced. All four dispatches closed.
+
+
+### Decision records and typechecker topic designs (2026-09-22)
+
+User requested continued Phase-5 documentation cleanup. Two independent
+reservations consolidate current contracts and retire spent implementation
+history; no source, test, API, schema or behavior changes are allocated.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| arch | Claude / Fable / high | `0dfbd0d5-5956-499a-b093-0f94fe15b56c` | complete: compact operative records with explicit retirement handoffs |
+| design (typecheck) | Claude / Opus / high | `55417728-1ee9-4ced-bd78-a191dde9e101` | complete: current accessor and signature-matching designs |
+
+Baseline: 566 findings, 598 documents; five target documents contain 21,209
+words. Sprint owns integration of exact mechanical external handoffs and the
+combined reference check. NOTES and .agents remain untouched.
+
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| design (typecheck siblings) | Claude / Opus / high | `0530c4ed-2ce7-417e-87b4-6268e0cb90fb` | complete: ADT/trait summaries distinguish approved overlap from obsolete rejection |
+| design (constructor finish) | Claude / Opus / high | `894c1780-312c-43fc-96c0-1c55ed9cfacf` | complete: constructor design consolidated onto canonical bindings and candidates |
+
+Six topic documents reduce from 25,594 to 7,022 words. The original five
+alone reduce from 21,209 to 5,003 words. Source-read corrections preserve
+operative rulings, algorithms, useful rationale and live citation subjects;
+completed inversion, rollout and facade-migration plans are retired into Git.
+Sibling ADT/trait descriptions and the backend's primitive-startup hook name
+are aligned. Source and test assertions are unchanged.
+
+[ACT-0983](actions/ACT-0983-accessor-impl-collision-intake.md) retains the
+obsolete accessor/impl rejection for QA reproduction; it is not closed by the
+document edit. [ACT-0984](actions/ACT-0984-trace-link-test-claim-intake.md)
+retains the trace-under-link rejection test's conflict with current authority.
+Neither source-read lead is represented as an executed reproduction.
+
+The three decision records remain compact citation anchors. Their Retirement
+tables name each remaining repoint and extraction: the Approach-B rationale
+belongs in interfaces, the primitive-construction rejections in bounded
+contexts. Deletion awaits those moves, source/test repoints and the obsolete
+trace-test disposition. Principle edits retain their existing sprint-close
+boundary. No source citation has been broken merely to delete a record.
+
+Remaining connected work: the non-concrete producer design still carries older
+alias/poison wording and an unqualified collision preflight; typecheck source
+comments also retain the old model. Constructor-pattern selection remains an
+existing approved-design implementation obligation, explicit in the current
+constructor design. Typecheck crate-root rustdoc's check_forms example has a
+stale parameter/result shape; no API change is proposed.
+
+Final integrated check: 566 → 522 findings across 600 documents, 44 baseline
+identities removed and zero introduced. Whitespace and role wiring pass.
+No builds or behavior tests were run for this prose-only batch. NOTES hash
+is unchanged; .agents remains unstaged. All four dispatches completed.
+No commit or phase transition.
+
+
+### Typechecker guidance and producer obligations (2026-09-22)
+
+User requested continued cleanup in Phase 5. Finish the connected typechecker
+memory/source-comment alignment and producer-design consolidation. No code,
+assertion, API, schema or behavior changes are allocated; ACT-0983 remains the
+separate obsolete-rejection intake. Dev holds the sole source-edit reservation.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| dev (typecheck) | Claude / Opus / high | `fe20e805-d37d-437c-a34c-bb462dbed4d4` | complete: crate memory and source documentation; rustdoc follow-up below |
+| design (typecheck) | Claude / Opus / high | `a4e9b379-2cf7-4e6f-895c-68f39f5d6897` | complete: corrected producer routes and explicit current residuals |
+
+Baseline: 522 findings, 600 documents. The two Markdown targets contain 6,548
+words; source documentation is additional. Root integrates external mechanical
+handoffs and runs the document check. NOTES and .agents remain untouched.
+
+
+| Role | Provider / model / effort | Session | Outcome |
+|---|---|---|---|
+| dev (typecheck rustdoc) | Claude / Opus / high | `0542de04-150c-4e06-a8c0-2f52fbcbd9e2` | complete: all 15 rustdoc warnings corrected against current source |
+
+The main dev pass corrected obsolete Alias/Ambiguous/poison descriptions,
+misleading test comments and the check_forms signature/return example. Root
+confirmed zero non-comment source diff lines. The API itself is unchanged.
+Root ran the scoped offline private-item rustdoc build successfully after the
+role could not run it; 15 warnings prompted the bounded follow-up above.
+
+The producer design corrected concrete-installation ownership, demand
+derivation and release-contract citations. It grew modestly to retain explicit
+residuals and distinguish required behavior from the obsolete as-built
+accessor/impl rejection. Sprint applied the supplied mechanical R18 register
+correction: strict-retry/refusal, not the retired typechecker census counter.
+Backend's separate category-census obligation remains as its owning design
+states it; no prior aggregate/Q3 acceptance is reopened.
+
+Source-read lead checked by sprint: the misleadingly named
+`tests/spec_08_name_shadowing.rs::def_over_import_repl_rejected` asserts
+ambiguity at use time after both candidates register. Its name alone does not
+establish a contradictory rejection assertion; no defect intake was created
+from that naming observation. Actual accessor/impl rejection remains ACT-0983.
+
+
+Final verification: 522 → 507 document findings across 600 documents;
+15 baseline identities removed, none introduced. The two Markdown targets
+shrink from 6,548 to 3,509 words (crate memory 4,234 → 1,097; producer design
+2,314 → 2,412). Runtime behavior, APIs and assertions are unchanged: root's
+final whole-crate source diff check again finds zero non-comment changes.
+
+`cargo doc -p cranelisp-typecheck --no-deps --document-private-items --offline`
+passes with zero warnings after the follow-up. Scoped formatting, whitespace
+and role-wiring checks pass. No runtime tests were needed or run. NOTES hash
+remains unchanged and .agents is unstaged. All three role dispatches closed;
+no commit or phase transition.
+
+Remaining typecheck documentation residue: plain-code ModuleEntry/DefKind
+wording in unrelated comments, stale test names/assertion message wording, and
+older program.rs/traits.rs paths in check-form-api, hkt and decomposition
+designs. These are not hidden by the clean rustdoc build: plain code spans and
+non-rustdoc comments are outside its link checks. ACT-0983 and the approved
+pattern-selection implementation obligation remain unchanged.
+
+
+### Typechecker design records, macro ownership and test discovery (2026-09-22)
+
+User requested continued Phase-5 cleanup. Two independent documentation
+reservations consolidate current designs and assess completed-record retirement,
+with useful content extracted into canonical homes before deletion. No source,
+test, spec, API, schema or behavior change is allocated.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| design (typecheck) | Claude / Opus / high | `511c3863-4a8b-4ac4-8288-7c24e9d964ac` | complete: extracted current contracts, retired both completed records, rewrote HKT |
+| arch | Claude / Fable / high | `d96c6803-f6bb-41af-9b27-55ce03ad1d30` | complete: current contracts reconciled; source/spec handoffs retained below |
+
+Baseline: 507 findings, 600 documents; five main targets contain 29,533 words.
+Related topic extraction/navigation is reserved to the same owner. Sprint
+integrates external mechanical remaps and verifies the resulting tree.
+NOTES and .agents remain untouched.
+
+
+Outcome: the check-form API and S87 traits-decomposition working records are
+retired; their pass contracts, visibility/cohesion rules and monomorphisation
+state channels live in the current typecheck master, traits and monomorphisation
+designs. HKT now states current design and open questions. Macro ownership and
+test discovery retain the adopted contracts rather than completed migration
+narratives. Architecture boundary and interface prose now correctly places both
+macro recognition calls and execution in the binary's expand loop.
+
+Sprint integrated the owners' exact external citation remaps, removed the two
+retired paths from collection membership, and disambiguated references with
+explicit paths or Markdown anchors. Historical checker-reconciliation evidence
+was left intact. Source integration touched 13 Rust files; comparison with the
+pre-integration snapshot finds zero non-comment deltas. Test names, bodies and
+assertions are unchanged.
+
+Verification: **507 → 472 findings**, 35 prior identities removed and zero new
+identities. The corpus remains 600 documents: two working records retired and
+two QA intake actions added. The five main targets fall from 29,533 to 6,990
+words; this is not the net extraction-inclusive measure. Including their four
+canonical typechecker destination/memory documents, the measured design set
+falls from **4,970 to 2,956 lines (41%)**. Small topic/navigation repairs in
+other arch carriers and the new intake records sit outside that measure.
+Whitespace and role wiring pass (11 dispatched roles, 26 principles, zero local
+wiring findings). No runtime tests were needed or run for documentation/comment
+changes. NOTES retains its recorded hash; nothing is staged and no commit or
+phase transition was made. Both provider dispatches closed successfully.
+
+New source-read intake, explicitly not executed defect evidence:
+
+- **ACT-0985** routes declaration forward-reference/test tension, result-only
+  higher-kinded constructor dispatch and primitive-spelling rejection to QA.
+  The current typecheck and HKT designs retain the underlying questions.
+- **ACT-0986** routes test-discovery eligibility differences, missing warning,
+  IO-versus-pure signature, unauthored sugar and stale linked-mode description
+  to QA and spec. It does not authorize changing a normative contract.
+
+Remaining owner handoffs for the next documentation batch:
+
+| Owner / surface | Outstanding work |
+|---|---|
+| dev, types | `crates/cranelisp-types/src/macro_expander.rs` still describes typecheck as callback consumer and cites a retired macro-recognition design. Arch supplies the replacement contract: implemented and called by the binary Pass-1 loop; recognition through `ResolutionScope::resolve_macro_head`; current authority is `design/arch/macro-expansion-ownership.md`. Public documentation only, no signature change. |
+| dev, frontend | `crates/cranelisp-frontend/src/lib.rs` still assigns recognition, expansion fixpoint and gap surfacing to typecheck. Reconcile with the current binary-owned loop contract. |
+| dev, int | `src/CLAUDE.md` test-discovery table and macro entry still use DefKind, the old session body location, and the incorrect shared-discovery-core claim. Source comments in bootstrap, exe and test_runner also retain the retired entry vocabulary. The corrected arch contract owns the replacement; preserve ACT-0986's as-built eligibility divergence. |
+| dev, backend | `crates/cranelisp-backend/src/jit.rs` retains PrimitiveExtern wording; the current test-discovery design records host-promised RustPrimitive publication. |
+| spec | `spec/08-modules.md` still describes mutual-import deadlock although bounded contexts records a diagnosed cycle. Assess and reconcile the implementation note without changing the governing prohibition on silent nontermination. Appendix A discovery discrepancies are ACT-0986. |
+| design, typecheck | Retire `program-decomposition.md` after extraction; reconcile inference's retired pipeline account and traits' obsolete name-freedom gate/loci. ACT-0983 retains the separate real accessor/impl rejection question. |
+| arch | `design/arch/macro-availability-model.md` still carries deliberation and superseded recognition ownership beyond its current ruling; this batch only repointed its incoming contract citations. |
+
+Role disclosure: design initially ran read-only status/diff despite its brief's
+no-git instruction, then stopped those operations. No Git mutation occurred.
+
+
+### Test-discovery requirement assessment (2026-09-22)
+
+Following the cleanup's ACT-0986 leads, a read-only spec pass checks existing
+user/spec authority before presenting any new decision. This remains Phase 5.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| spec | Claude / Opus / high | `25b7b7c9-1981-41b9-94db-c9e27c94316e` | complete: existing rulings recovered; IO-versus-pure and empty-vector scope require user arbitration; no tracked edits |
+
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| dev (types) | Claude / Opus / high | `97af6fa0-81e9-4a96-90fb-858b15231fc9` | complete: callback ownership, raw arguments, sequencing and error documentation corrected; comments only |
+
+
+Spec assessment recovered a genuine unresolved return-type choice: S76 ruling
+prose says a vector, while signature listings and the normative REPL spec say
+IO. Present that decision first. Empty-vector module scope follows separately:
+the implementation reads the session module whereas earlier sugar rationale
+baked in the caller module. No normative text was changed.
+
+The claimed missing sugar was disproved: `stdlib/testing/runner.cl` implements
+`discover-here`. Sprint corrected arch's as-built paragraph and ACT-0986 from
+the spec handoff after opening the macro. The primitive's advertised shorthand
+examples remain a separate spec correction. Friendly linked-mode refusal and
+mutual-import cycle diagnosis are already settled; their exact normative edits
+still return under the local edit gate. Warning and eligibility observations
+remain QA intake against settled requirements.
+
+Types dev completed the macro callback rustdoc correction. Runtime items and
+signatures are unchanged; the module now places invocation in the binary,
+records unexpanded arguments and fresh result spans, and removes obsolete gap
+sequencing. The scoped offline private-item rustdoc build passes. Root also
+validated all 29 changed test-to-design annotations from this batch.
+
+Retained source/contract mismatch from types dev: the binary maps a malformed
+returned macro value to MacroInvokeError::Aborted, although the Malformed
+variant documentation assigns malformed results to that variant; no matching
+clause produces Malformed. No mapping change was made. Arch owns reconciliation
+of that public error contract before any implementation change. Source-read
+loci are `src/expander.rs` invoke_clause and macro_error_to_invoke_error; this
+is not executed defect evidence. The dev report's suggestion of no observable
+impact is not acceptance evidence: Display uses different variant messages.
+
+The frontend and int macro-documentation handoffs above remain; only the types
+row is now discharged. No independent code review or runtime test was added
+for this comments-only repair. No API baseline changes, commit or phase advance.
+
+
+Final integrated checker remains 472 findings (35 removed, zero introduced).
+Both follow-up dispatches closed successfully; root independently confirms zero
+non-comment changes in the callback diff. Rustdoc exits successfully and the
+new callback links resolve, but it reports four warnings elsewhere in types:
+`resolve.rs` names retired BindingBody::Alias; `concrete.rs` has one redundant
+Type link; `mono_expr.rs` has two redundant Expr links. These remain a concrete
+next types-documentation repair, not a zero-warning claim. No runtime evidence
+is inferred from that build.
+
+
+### Discovery as notionally constant introspection (2026-09-22)
+
+User chose to treat introspection functions as notionally producing a constant
+in response to the pure-vector versus IO-vector decision. The approved delta
+is discovery's direct vector result, with no IO wrapper. This does not approve
+an introspection platform, freeze live state, or decide empty-vector module
+scope. Spec records the ruling; sprint integrates its mechanical design handoff.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| spec | Claude / Opus / high | `91f697b2-8b90-413e-8e55-1ff9de45cd82` | failed before edits: provider 529 overload; zero tool uses and provider tokens; retry follows |
+
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| spec retry | Claude / Opus / high | `e92a3882-b331-4f69-9245-f887e344155f` | failed before edits: provider 529 overload on retry; no model substitution |
+
+
+Both attempts to apply the settled ruling failed at the provider with HTTP 529
+Overloaded before any role tool use or edits. The normative files and design
+remain unchanged from the pre-dispatch snapshot. The approved user ruling is
+retained here and ACT-0986 marks the return-type question settled; the exact
+specification edit remains pending on the allocated Claude spec route. This is
+a provider outage, not a request for more user approval. No alternative model
+or coordinator-authored normative edit was substituted.
+
+
+User requested another attempt after the provider failures.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| spec retry 2 | Claude / Opus / high | `bdca3624-8cfe-45d5-a90d-5d3053f63f82` | complete: direct-vector requirement and rationale recorded; coverage invalidated for QA |
+
+
+The user-requested retry succeeded. REPL section 16.3 now requires the direct
+vector result and records notionally constant introspection; all three result
+type copies and the Appendix A function scheme drop IO. Existing freshness
+requirements are unchanged. Coverage is marked Uncovered S122; Appendix A
+preserves its former S77 provenance. ACT-0986 retains QA reassessment and the
+separate scope, warning, eligibility and stale-example obligations. The design's
+unresolved signature-divergence bullet now points to the settled normative home.
+No runtime, test, public-API or unrelated normative change was made.
+
+Verification: shared checker remains at 472 findings, with zero introduced
+identities; whitespace check passes. The spec dispatch closed successfully.
+NOTES retains its recorded hash. No runtime tests were needed for this prose
+change, and coverage reassessment remains with QA under ACT-0986. No commit or
+phase transition.

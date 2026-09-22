@@ -497,35 +497,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             span: body_span,
         };
 
-        // Per-type-qualified CANONICAL accessor key (`Box.v`) — the `Type.field`
-        // canonical field accessor (FIXME 0365 Item 1 / spec §8.5.2, INVERTED
-        // model §1.6). `Box.v` is ALWAYS the real, uniformly-Public compiled
-        // accessor `Def`; bare `field` (`v`) is a CONVENIENCE ALIAS onto it.
+        // The canonical accessor key `Type.field` (`Box.v`; spec §8.5.2).
         let qualified_key = member_key(&fqtn.name, accessor_name.as_ref());
 
-        // The CANONICAL accessor `Def` (`Box.v`) is minted UNCONDITIONALLY (in
-        // every arm — fresh, contested, or over a non-accessor bare binding): it
-        // is the real `DefKind::UserFn` with its own GOT slot + body, uniformly
-        // `Visibility::Public`, carrying the `self$accessor` marker so
-        // `committed_accessor_kind` recognises it. One compiled function per
-        // `(type, field)`, keyed `Type.field` (§1.6.1). Because it is always
-        // real, there is NO poison re-mint / reconstruction (the as-built's
-        // `remint_first_accessor_under_qualified_key` + poison-arm `Def`-minting
-        // are DELETED — net deletion, Principle 6).
-        // **W0.b totalization (`backend-keyed-consumer.md` §4 W0.b / §5).** The
-        // synthesised accessor is a codegen-reached `Concrete{slot}` UserFn whose
-        // body — `(match self [(Ctor …) field])` — legitimately fails strict
-        // `from_expr` (its nodes are `inferred_type: None`). Build its lenient
-        // `codegen_view` HERE and carry the pattern arm's `resolved_ctor`
-        // DIRECTLY: the synthetic pattern's `Span::SYNTHETIC` is outside the
-        // span-keyed sidecar transport, but the identity is in hand — it is the
-        // owner product ctor's canonical STORAGE key. For a product that key is
-        // the bare type name (`ctor.name == fqtn.name`; the dual-facet key
-        // `build_adt_entries` inserts the ctor `Def` under), which
-        // `ctor_meta_at` resolves to the same `Def` as the deleted
-        // `lookup_constructor` fallback (byte-identical CLIF — the W0.b golden
-        // class 02). This CLOSES the backend's `resolved_ctor: None` synthetic
-        // fallback (S19, deleted W3).
+        // The canonical accessor binding is minted unconditionally — whatever
+        // else shares the bare spelling — as an always-Public callable with
+        // `CallableOrigin::Accessor`, which `committed_accessor_kind`
+        // recognises (`fixme-0365-field-accessor-dotted.md` §1.6.1). A concrete
+        // type installs a concrete callable carrying its codegen view; a generic
+        // type installs a template carrying its synthesis recipe.
+        //
+        // The synthetic body `(match self [(Ctor …) field])` has no inferred
+        // types, so strict `from_expr` cannot build its view. Build it here with
+        // the pattern's constructor identity supplied directly: the synthetic
+        // span is outside the span-keyed sidecar, but the identity is known — the
+        // product constructor's storage key, which is the bare type name
+        // (`ctor.name == fqtn.name`). The backend reads the constructor from this
+        // identity and has no fallback for a pattern without one.
         let docstring = Some(format!(
             "Canonical field accessor `{}.{}` of type `{}`.",
             fqtn.name, accessor_name, fqtn.name
@@ -650,23 +638,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
-    /// Enumerate the **field-accessor names** owned by `fqtn` — the single
-    /// enumeration point for impl-time collision checking (FIXME 0365 Item 2)
-    /// and any future "list this type's accessors" introspection (Principle 7).
+    /// Enumerate the bare **field-accessor names** owned by `fqtn` (`Box.v` →
+    /// `v`), for the impl-time collision gate
+    /// `traits/impl_check.rs::check_impl_method_accessor_collisions`, its only
+    /// consumer.
     ///
-    /// The returned names are the BARE field names (`v`): a trait `impl` method
-    /// is written with the bare name, and §7.3.1 scopes the collision to that
-    /// bare name.
+    /// Both are superseded by spec §7.3.1 and are removed together once
+    /// `ACT-0983` intake completes
+    /// (`design/typecheck/fixme-0365-field-accessor-dotted.md` §2.1, §2.3).
     ///
-    /// **Inverted model (§1.6 / §2.3).** The CANONICAL field accessor of `fqtn`
-    /// is a real Public `Def` keyed `Type.field` (`Box.v`) in `fqtn.module` —
-    /// `committed_accessor_kind` classifies it `Concrete(fqtn)`. The field name
-    /// is the **terminal segment after the last `.`** of the canonical key
-    /// (`Box.v` → `v`). Because the canonical accessor is always a real binding,
-    /// the recognizer walk alone is complete. The enumeration
-    /// reads the **union view** (staging then live) via `for_each_in_module` so
-    /// a REPL `impl` colliding with a canonical accessor defined in an earlier
-    /// cluster is still detected (the FIXME-0366 cross-cluster footgun).
+    /// It walks the owning module's union view (staging then live) through
+    /// `for_each_in_module`, keeping entries `committed_accessor_kind`
+    /// classifies as accessors of `fqtn`, so an accessor from an earlier REPL
+    /// cluster counts.
     pub(crate) fn field_accessor_names_of(
         &self,
         _state: &CheckState,
@@ -699,13 +683,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// the SAME `check_forms` call that later sees the bare use. The REPL drives
     /// each form as its own cluster with a fresh `CheckState`, so by the time
     /// `(v …)` is checked the per-cluster owner map is empty. The candidate
-    /// references survive in the table. This helper re-derives display owners,
-    /// mirroring the
-    /// cross-cluster recognition `committed_accessor_kind` already does for the
-    /// FIXME-0366 impl-collision case: it walks the current module's union view
-    /// for every canonical `Type.field` accessor `Def` whose terminal field
-    /// segment equals `name` and reads each owner off the accessor's
-    /// `(Fn [Owner] _)` scheme. Returns the owners in first-defined order
+    /// references survive in the table. This helper re-derives display owners:
+    /// it walks the current module's union view for every canonical
+    /// `Type.member` binding whose terminal segment equals `name` and reads its
+    /// owner through `committed_member_owner`. It lists accessor and
+    /// constructor owners only, never a non-member candidate sharing the
+    /// spelling (`dotted-ctor-registration.md` §1.3). Returns the owners in first-defined order
     /// (symbol-table iteration is registration-ordered) so the rendered hint reads
     /// `Box.v or Cup.v`. Empty when `name` owns no synthesised accessor (caller
     /// then emits the bare ambiguity message with no qualified-accessor hint).
@@ -735,25 +718,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 }
 
 /// Classification of a COMMITTED symbol-table entry as a synthesised field
-/// accessor (FIXME 0366). Accessor identity is re-derived structurally from the
-/// durable entry so same-cluster and cross-cluster resolution use one source.
+/// accessor. Accessor identity is re-derived structurally from the durable
+/// entry so same-cluster and cross-cluster resolution use one source.
 pub(crate) enum CommittedAccessor {
-    /// A single concrete synthesised accessor; carries its owning product type
-    /// (read from the accessor's `(Fn [ADT] _)` scheme).
+    /// A synthesised accessor, concrete or template; carries its owning
+    /// product type (read from the accessor's `(Fn [ADT] _)` scheme).
     Concrete(FQTypeName),
     /// Not a synthesised accessor (a user `defn`, a ctor, an import, …).
     NotAccessor,
 }
 
 /// Recognise a committed entry as a synthesised field accessor and read its
-/// owning product type (FIXME 0366).
+/// owning product type.
 ///
-/// A synthesised accessor is registered (in `synthesise_one_accessor`) as a
-/// concrete `DefKind::UserFn` whose sole parameter is the `self$accessor`
-/// sentinel and whose scheme is `(Fn [ProductType] FieldType)`. The
-/// `self$accessor` param + the `Fn [ADT] _` scheme shape together uniquely mark
-/// an accessor and name its owning type — no user `(defn …)` mints that
-/// signature.
+/// `synthesise_one_accessor` registers each accessor with
+/// `CallableOrigin::Accessor` and the scheme `(Fn [ProductType] FieldType)`.
+/// The origin marks the accessor; the scheme's sole parameter names its owning
+/// type (`fixme-0365-field-accessor-dotted.md` §1.6.1).
 pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
     entry: &Binding<C>,
 ) -> CommittedAccessor {
@@ -777,12 +758,13 @@ pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
     }
 }
 
-/// The owning type of a canonical dotted MEMBER `Def` — either a synthesised
-/// field accessor (`Box.v`, owner read from its `(Fn [ADT] _)` scheme) OR a sum
-/// constructor (`Maybe.Some`, owner read directly from `DefKind::Constructor
-/// .type_name`) (S109, design §1.2/§3.1). The single "owning type of the member
-/// under this key" recognizer both the dotted resolver (`resolve_dotted_member
-/// _entry`) uses for both member kinds. Returns `None` for a non-member binding.
+/// The owning type of a canonical dotted member binding — either a synthesised
+/// field accessor (`Box.v`, owner read from its `(Fn [ADT] _)` scheme) or a sum
+/// constructor (`Maybe.Some`, owner read from `CallableOrigin::Ctor.type_name`)
+/// (`dotted-ctor-registration.md` §1.2, §3.1). It is the one recogniser the
+/// dotted resolver (`resolve_dotted_member_entry`) and
+/// `reconstruct_accessor_alternatives` use for both member kinds. Returns
+/// `None` for a non-member binding.
 pub(crate) fn committed_member_owner<C: cranelisp_types::CodeStore>(
     entry: &Binding<C>,
 ) -> Option<FQTypeName> {
@@ -888,16 +870,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .constructors
             .iter()
             .map(|ctor_sym| {
-                // **BR-2 (S109 blast radius, design §4.2).** Post the dotted-ctor
-                // keying change the bare key is a candidate exposure, so a raw
-                // canonical-binding probe no longer lands on the constructor
-                // and every ctor would default `internal: false` — silently
-                // admitting `IO`'s internal `Bind`/`Pure`/`Effect` into user
-                // exhaustiveness. Probe the CANONICAL `member_key(Type, Ctor)`
-                // first (where a sum ctor's real `Def` now lives), then fall back
-                // to a chain-follow of the bare name (covers a hand-seeded internal
-                // ctor like `Bind` that kept its bare storage key, and the product
-                // dual-facet at the type-name key).
+                // `dotted-ctor-registration.md` §4.2. A sum ctor's binding lives
+                // under the canonical `member_key(Type, Ctor)`; its bare spelling
+                // is only a candidate exposure. A bare-only probe would miss it,
+                // default `internal: false`, and require user matches on `IO` to
+                // cover the internal `Bind`. Probe the
+                // canonical key first, then the bare name, which serves the
+                // product dual-facet at the type-name key alone.
                 let internal = self
                     .probe_module_entry_owned(
                         &fq_type_name.module,

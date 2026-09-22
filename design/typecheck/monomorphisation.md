@@ -201,10 +201,9 @@ module as `home`. Three facts are load-bearing. Getting one wrong produces a spu
    implementation is recorded in the trait's defining module.
 
 The implementation-level statement, and the unit test that guards these facts, are in
-`crates/cranelisp-typecheck/CLAUDE.md` §"Cross-module monomorphisation of constrained
-fns".
+`crates/cranelisp-typecheck/CLAUDE.md` §"Cross-module monomorphisation".
 
-## 3.8 "Instantiate this symbol at these types" — `instantiate_demands`
+### 3.8 "Instantiate this symbol at these types" — `instantiate_demands`
 
 ### 3.8.1 The capability
 
@@ -287,6 +286,46 @@ type, cache-schema or ABI effect. Its approval and binding contract are in
   mint must carry equal fresh summaries on the entry and on its view, in live mode and in
   cluster mode. In cluster mode the instance and its summaries appear only in staging, and
   live keeps its keys and payloads.
+
+### 3.9 The instance engine's state channels
+
+`monomorphise_call` is a phase-delimited driver: look up the template, reconstruct the
+signature from the demand and check that its key equals the demand's key, verify
+constraints, recheck the body, record self-recursion dispatch, build the annotated
+instance, then build its codegen view and install it. The phase helpers' rustdoc
+states each phase's local contract. The driver threads four mutable channels through
+`CheckState`, and a helper extracted, merged or reordered without honouring them
+mis-monomorphises. The symptom is a spurious `no impl of trait T for type X`, a wrong
+ambiguity refusal on a valid program, or a crash one instantiation hop deeper.
+
+1. **`current_module`.** Constraint verification and the body recheck each switch it
+   to the defining module (§3.7), and each restores it before propagating its own
+   result. A phase that returns an error before restoring leaks the defining module
+   into its caller.
+2. **The check-run side state** — method resolutions, expression types, pending
+   auto-curry sites and pending overload resolutions. `recheck_body_for_mono` takes
+   them before the recheck, returns the instance's own resolutions and expression
+   types, and restores the enclosing state. Later phases read that returned harvest.
+   The codegen view is built from the same per-instance resolutions (the check-run
+   pairing rule in `design/arch/backend-keyed-consumer.md` §1.1.3). Re-reading
+   `state.method_resolutions` there reads the enclosing run's map: two instances of
+   one template would collide at a shared span, and a template checked in another run
+   would lose its pattern constructors.
+3. **`subst`.** The instance's signature and body settle on the live substitution,
+   which building the annotated instance then reads. Each recursive mint of an inner
+   hop saves and restores the substitution around its own call, inside the successor
+   helpers. Lifting that isolation into the driver lets one instantiation's
+   accumulator bindings leak into its siblings, which re-collapses the fold
+   accumulator (§5).
+4. **The recheck context** (`mono_recheck_self`). The driver installs the same-cluster
+   template set and, for a multi-signature clause, the concrete self-recursion
+   identity, and restores the previous context unconditionally so nested rechecks do
+   not inherit either fact (§11.3.4).
+
+Evidence: `crates/cranelisp-typecheck/src/traits/monomorphise/tests.rs` (distinct
+instances of one template, annotations on the instance AST, rechecked constructor
+values in the caller's module) and the cross-module, collector and multi-signature
+cells in §12.
 
 ---
 

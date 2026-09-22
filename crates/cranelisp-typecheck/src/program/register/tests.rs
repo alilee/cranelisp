@@ -1,8 +1,7 @@
 //! Per-submodule tests for `program/register.rs` — Pass-1 registration: a
 //! `TopLevel` becomes symbol-table signature / type-var / constrained-marker
-//! state, including the §8.6.4 name-freedom arms and the bound-param /
-//! trait-bound annotation legs. Split from the pooled `program/tests.rs`
-//! (FIXME 0722); the multi-sig overload family is a sibling.
+//! state, including §8.6.4 candidate registration and the bound-param /
+//! trait-bound annotation legs. The multi-sig overload family is a sibling.
 
 use super::*;
 
@@ -673,7 +672,7 @@ fn u2_nested_fn_written_var_corefers_enclosing_same_typeid() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md §check_form — single defn Register pass
+// spec: design/typecheck/typecheck.md §5.1 — single defn Register pass
 #[test]
 fn test_check_form_single_defn_register() {
     let mut tc = tc_with_prims();
@@ -713,7 +712,7 @@ fn test_check_form_single_defn_register() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md §check_form — TypeDef Register pass
+// spec: design/typecheck/typecheck.md §5.1 — TypeDef Register pass
 #[test]
 fn test_check_form_typedef_register() {
     let mut tc = tc_with_prims();
@@ -745,7 +744,7 @@ fn test_check_form_typedef_register() {
     }
 }
 
-// spec: design/typecheck/check-form-api.md §check_form — TraitDecl Register pass
+// spec: design/typecheck/typecheck.md §5.1 — TraitDecl Register pass
 #[test]
 fn test_check_form_trait_decl_register() {
     let mut tc = tc_with_prims();
@@ -764,7 +763,7 @@ fn test_check_form_trait_decl_register() {
     assert!(result.default_method_defns.is_empty());
 }
 
-// spec: design/typecheck/check-form-api.md §check_form — TraitImpl Register pass
+// spec: design/typecheck/typecheck.md §5.1 — TraitImpl Register pass
 #[test]
 fn test_check_form_trait_impl_register() {
     let mut tc = tc_with_prims();
@@ -832,7 +831,7 @@ fn test_check_form_trait_impl_register() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md §Invariant 1 — CheckBody before Register errors
+// spec: design/typecheck/typecheck.md §5.2 item 1 — CheckBody before Register errors
 #[test]
 fn test_check_form_check_body_before_register_errors() {
     let mut tc = tc_with_prims();
@@ -850,7 +849,7 @@ fn test_check_form_check_body_before_register_errors() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md §Invariant 1 — Register records body signature
+// spec: design/typecheck/typecheck.md §5.2 item 1 — Register records body signature
 #[test]
 fn test_check_form_register_records_body_signature() {
     let mut tc = tc_with_prims();
@@ -873,7 +872,7 @@ fn test_check_form_register_records_body_signature() {
     assert_eq!(registration.param_types.len(), 1, "inc has 1 parameter");
 }
 
-// spec: design/typecheck/check-form-api.md §Invariant 2 — TypeDef before defn using constructors
+// spec: design/typecheck/typecheck.md §5.2 item 2 — TypeDef before defn using constructors
 #[test]
 fn test_check_form_typedef_before_defn() {
     let mut tc = tc_with_prims();

@@ -1,10 +1,8 @@
 //! Ring 0 monomorphic primitive Rust shim fns — user-callable.
 //!
-//! Per Decision 43 + FIXME 0174 (`design/arch/fixmes/0174-...uniform-primitive-dispatch.md`) +
-//! `bounded-contexts.md` §3 (Backend) §"Non-goals / forbidden patterns": every
-//! Ring 0 primitive (`add-i64` … `not`) MUST be addressable as an ordinary
-//! `ModuleEntry::Def` in the synthetic `primitives` symbol table — with a
-//! `got_slot: Some(_)` and a code pointer registered in that slot. The standard
+//! Per Decision 43, every Ring 0 primitive (`add-i64` … `not`) MUST be addressable as an ordinary
+//! concrete callable in the synthetic `primitives` symbol table, with a GOT
+//! slot holding its generated extern wrapper. The standard
 //! GOT-indirect call codegen path resolves the call to the Def, reads the slot,
 //! emits `call_indirect`. The pre-D43 shape (backend name-matching `"add-i64"`
 //! and emitting inline IR as the ONLY emission path) is forbidden — it
@@ -222,20 +220,6 @@ pub(crate) fn shr(v: i64, amt: i64) -> i64 {
 pub(crate) fn popcount(x: i64) -> i64 {
     x.count_ones() as i64
 }
-
-// =============================================================================
-// JIT-registration table — RETIRED at S68 Wave 4.
-//
-// `ring0_jit_symbols()` is gone. The (kebab-case symbol name → raw fn ptr)
-// mapping is harvested from the declaration inventory (called from
-// `PRIMITIVES_TABLE`'s `LazyLock` initialiser) — Decision 0048 §"Shape"
-// places the canonical fn-ptr storage in the per-module `GotTable`, indexed
-// by `ModuleEntry::Def.got_slot`. Backend reaches primitives through the
-// standard GOT-indirect cross-module dispatch path (Decision 23 two-GOT
-// model + Decision 31 GOT-indirect dispatch), enforced structurally by the
-// `cranelisp-backend → cranelisp-primitives` dep-ban (Decision 0048
-// §"Structural invariant — backend dep-ban").
-// =============================================================================
 
 #[cfg(test)]
 mod tests;

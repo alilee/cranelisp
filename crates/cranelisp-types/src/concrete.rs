@@ -42,7 +42,7 @@ use crate::{FQTypeName, Type, TypeId};
 /// `done`-set and the codegen cache key.
 ///
 /// **Constructibility — sealing DECLINED (S119 ruling, register row R-5;
-/// `design/arch/concreteness-types-first.md` §3.7).** The variants stay `pub`
+/// `design/arch/concrete-boundary-type.md` §1.2).** The variants stay `pub`
 /// and directly constructible: exhaustive backend matching over the closed sum
 /// is a Principle-18 safety feature (a `_ =>` arm compelled by privatised
 /// variants would hide missed variants), and legitimate known-`Int` literal

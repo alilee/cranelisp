@@ -66,7 +66,7 @@ Confirm (or design) the three in tranche A: the ABI-crossing conversion pair as 
 named, documented part of the vocabulary; nullary-tag tolerance stated in the
 newtype's rustdoc; and `consume_sexp`/`consume_slist` remaining `pub` with typed
 signatures. If any is out of scope for tranche A, say so and int will state the
-gap in `macro-turn-ownership.md` §12 rather than work around it.
+gap in `macro-turn-ownership.md` rather than work around it.
 
 ## Context
 

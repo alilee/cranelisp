@@ -55,9 +55,9 @@ expansion.
   consumers that prepare macro clauses (typecheck and the binary).
 - Synthetic-span allocation for compiler-generated forms.
 
-**Out of scope.** Type inference (typecheck); macro recognition (typecheck, via
-the types resolution primitive); macro execution and module loading (binary);
-code generation (backend); language definition (`spec`).
+**Out of scope.** Type inference (typecheck); macro recognition and execution
+(binary, through the types resolution primitive and `MacroExpander`); module
+loading (binary); code generation (backend); language definition (`spec`).
 
 **What crosses the boundary.** Source text in; `Sexp`, AST values, `ParsedEntry`
 transients and extracted declarations — all types-owned — out. The frontend
@@ -77,8 +77,8 @@ recognition and execution live elsewhere.
    literal `super` after parsing; resolution uses the parsing module's own path.
 4. **Synthetic spans are unique** within a session (`next_synthetic_span` is
    monotonic).
-5. Retired — the expansion fixpoint bound is typecheck and binary territory
-   (§2 invariant 11).
+5. Retired — the expansion fixpoint bound is the binary's expand loop
+   (§2 invariant 11, §6).
 6. Retired — gap surfacing moved with recognition (§2 invariant 8).
 7. **Public error and DTO types stay `#[non_exhaustive]`.**
 8. **Form by form; a macro is defined before it is used.** There is no
@@ -117,7 +117,8 @@ at a time.
 - Monomorphisation from the program's roots, including demand replay.
 - Per-callable callee extraction and ownership summaries
   ([ownership inference](ownership-inference.md)).
-- Macro-head recognition within a form, through the types resolution primitive.
+- Checking a `defmacro`'s synthesised clause definitions as ordinary
+  definitions when the binary prepares a macro checkpoint.
 - Production of every codegen view and resolved identity backend consumes.
 
 **Out of scope.** AST construction (frontend); code generation (backend); macro
@@ -184,9 +185,12 @@ the unioned `View` read surface is types-owned because it has several.
     introspection is current-module only. The walk is the types-owned
     `ResolutionScope`; typecheck supplies the first-hop view. Writes go through
     the accessor only. This is the structural precondition of invariant 2.
-11. **Macro recognition uses the types primitive; execution and checkpoint
-    publication are the binary's.** `check_forms` receives fully expanded
-    non-macro forms (§6; [macro availability](macro-availability-model.md)).
+11. **Typecheck never sees a macro invocation.** Recognition, execution and
+    checkpoint publication are the binary's, over the types resolution
+    primitive and `MacroExpander`; `check_forms` receives fully expanded
+    non-macro forms and holds no expander (§6;
+    [macro availability](macro-availability-model.md),
+    [macro expansion ownership](macro-expansion-ownership.md)).
 12. **Concreteness is delivered here.** Cranelisp is rank-1 Hindley–Milner, so
     monomorphisation from the roots is complete: every callable backend compiles
     has a fully concrete scheme, and an unpinned type variable at a
@@ -753,8 +757,7 @@ newtypes; spans, errors and warnings; shared constants. Narrative companion:
   would be a parallel store. Contract:
   [symbol-table lifecycle](symbol-table-lifecycle.md). Executable identity:
   [uniform executable identity](s122-overload-reorder-publication.md).
-  Concreteness: [total concreteness](total-concreteness.md) and its
-  [retained reasoning](concreteness-types-first.md).
+  Concreteness: [total concreteness](total-concreteness.md).
 - **Plain fields under a table guard are the concurrency end state.** Every
   per-module write is serialized by the session map's guard; the GOT is the one
   genuinely concurrent surface and is atomic per slot. The session collection is

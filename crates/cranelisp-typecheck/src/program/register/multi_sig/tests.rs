@@ -375,7 +375,7 @@ fn test_multi_sig_call_site_resolution() {
 // 5. Edge cases from the design doc
 // 6. Negative tests (error cases)
 
-// spec: design/typecheck/check-form-api.md §DefnMulti — multi-sig Register
+// spec: design/typecheck/typecheck.md §5.1 — multi-sig Register
 #[test]
 fn test_check_form_defn_multi_register() {
     let mut tc = tc_with_prims();

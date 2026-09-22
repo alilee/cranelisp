@@ -353,8 +353,8 @@ dispatch identity or carries a provisional view.
 - `spec/03-types.md` §3.5.2 and `spec/05-definitions.md` §5.13.1 require all
   top-level signatures to register before all bodies are checked; §5.13.2 gives
   a `begin` cluster the same atomic treatment.
-- `spec/08-modules.md` §8.6.4 cross-references §5.13 for repeated
-  same-canonical-name forms, §5.1.2 for multiple variants, and committed REPL
+- `spec/08-modules.md` §8.6.4 cross-references `spec/05-definitions.md` §5.13 for repeated
+  same-canonical-name forms, `spec/05-definitions.md` §5.1.2 for multiple variants, and committed REPL
   redefinition for a later cluster.
 - `repl/spec.md` §§15.6 and 18 define replacement of an existing **committed
   live-session** symbol: the latest successful definition replaces the previous

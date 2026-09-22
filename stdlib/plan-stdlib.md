@@ -1829,7 +1829,7 @@ Stage B audit backlog / FIXME store, defer the rest into §26.4 with rationale.
 three curation invariants), §26 (this rollout design); `stdlib/CLAUDE.md`
 S86 state; `design/arch/fixmes/0402-spec-curated-overload-naming-reservation.md`
 (the binding naming reservation — must be RESOLVED in Stage A before §26.2
-authoring); `design/arch/test-discovery.md` §4.3/§4.5/§5/§6 (runner +
+authoring); [test runner](../design/arch/test-discovery.md#43-the-in-language-runner-over-discovered-pairs), [linked-mode boundary](../design/arch/test-discovery.md#45-what---link-users-see), [language constructs](../design/arch/test-discovery.md#5-the-language-constructs) and [implementation](../design/arch/test-discovery.md#6-the-implementation) (runner +
 dev-session scope + the fork-join ferry note); `testing/runner.cl §S82/S83`
 (the proven `(mod test)` + `super`-import template); `tests/spec_08_modules.rs`
 D3/D4 guards (the fixes that unblock the trait-module self-tests); S86 archive

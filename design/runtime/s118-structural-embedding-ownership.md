@@ -408,7 +408,7 @@ exercises through `sfold`.
   accounting), §4.5 (the attribution evidence table).
 - `design/intrinsics/diagnostic-modes.md` §5 (A1–A4 seam asserts), §7.1 (arming
   discipline), §7.5 (`seam_precheck`), §7.6 (child harness), §3 (M1/M2/M3) —
-  the detector kit §4.1 points.
+  the detector kit referenced by `design/runtime/s118-structural-embedding-ownership.md` §4.1.
 - `design/primitives/primitives.md` §4 invariant 13 — RE-1 in the primitives
   invariant table.
 - `design/backend/transitive-drop-glue.md` §7.2 — the falsification recipe that

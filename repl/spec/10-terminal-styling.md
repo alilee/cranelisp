@@ -46,10 +46,10 @@ This subsection is the **single normative authority** for the element → style-
 | R11 | WarnDetail | The warning message body. | yellow | `33` |
 | R12 | Header | A slash-command **category header** — `Fns:`, `Types:`, `Traits:`, `Special forms:`, etc. (the one styling role the layout-family lists carry). | bold | `1` |
 | R13 | Prompt / Banner | The prompt line (timing + module + `>`, §2.1) and the startup banner (§6.2). | dim | `2` |
-| R14 | AgentGutter | The agent prose frame `▌` gutter (§17.2). Only **prose** is guttered; agent-issued commands, their results, and agent-emitted ```lisp code blocks render un-guttered in their own roles (§17.2 item 3, §17.13.2, FIXME 0556). | bright magenta | `95` |
+| R14 | AgentGutter | The agent prose frame `▌` gutter (§17.2). Only **prose** is guttered; echoed agent-issued commands, their results, and agent-emitted ```lisp code blocks render un-guttered in their own roles (§17.2 item 3, §17.13.2, FIXME 0556). A probe is not rendered at all, so it takes no role here (§17.2.1). | bright magenta | `95` |
 | R15 | Name / Plain | **Everything else** — the non-prefix part of symbol names, constructor dot-names (`Color.Red`), `<closure>`, vec/list/bracket punctuation, whitespace, and layout padding. | default | — |
 
-**Composite — the `agent>` input prompt (§17.12).** The `agent>` glyph shown when the agent "types" a line is a composite of R13 (Prompt, dim) over the line with the `agent` token in the R14 bright-magenta colour — expressed as R13 + R14-family spans over the same line. It marks who issued each line (distinct from the dim human prompt §2.1 and the `▌` prose gutter) and degrades under colour-off to the plain token `agent>`. [S108]
+**Composite — the `agent>` input prompt (§17.12).** The `agent>` glyph shown when the agent "types" a line is a composite of R13 (Prompt, dim) over the line with the `agent` token in the R14 bright-magenta colour — expressed as R13 + R14-family spans over the same line. It marks who issued each echoed line (distinct from the dim human prompt §2.1 and the `▌` prose gutter); a probe is not echoed and carries no `agent>` line (§17.2.1). It degrades under colour-off to the plain token `agent>`. [S108]
 
 **Normative requirements.**
 

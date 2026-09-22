@@ -21,7 +21,7 @@ Primitive types follow the same import rules as other names in the `primitives` 
 
 ## 3.2 Compound Types [S10]
 
-### 3.2.1 Function Types [Tested crates/cranelisp-typecheck/src/resolve.rs::test_resolve_fn_type]
+### 3.2.1 Function Types [Tested crates/cranelisp-typecheck/src/resolve/tests.rs::test_resolve_fn_type]
 
 ```
 Fn([T1, T2, ..., Tn], R)
@@ -36,7 +36,7 @@ A function type describes a callable value taking parameters of types `T1` throu
 
 All functions are first-class values. At runtime, function values are represented as closures (see [Section 12](12-runtime.md)).
 
-### 3.2.2 Algebraic Data Types [Tested crates/cranelisp-typecheck/src/adt.rs::test_resolution_validates_registered_arity]
+### 3.2.2 Algebraic Data Types [Tested crates/cranelisp-typecheck/src/adt/tests.rs::test_resolution_validates_registered_arity]
 
 ```
 ADT(Name, [A1, A2, ..., An])
@@ -140,7 +140,7 @@ Pair(A, B)
 
 A test function is any zero-argument function whose name begins with `test-` and whose type is exactly `(Fn [] (Option String))`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason. Test discovery and execution are composed from ordinary library code over `discover-tests` and `catch-runtime-error` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture) and [repl/spec/16-test-discovery.md §16](../repl/spec/16-test-discovery.md#16-test-discovery-and-execution)); there is no dedicated test-result type.
 
-### 3.2.7 Vec Type [Tested crates/cranelisp-typecheck/src/resolve.rs::test_resolve_applied_builtin_vec_wrong_arity]
+### 3.2.7 Vec Type [Tested crates/cranelisp-typecheck/src/resolve/tests.rs::test_resolve_applied_builtin_vec_one_arg, crates/cranelisp-typecheck/src/resolve/tests.rs::test_resolve_applied_builtin_vec_wrong_arity]
 
 ```
 Vec(A)
@@ -816,7 +816,7 @@ unify(Int, Fn(..)):     ERROR "type mismatch"
 
 Unification is symmetric: `unify(A, B)` and `unify(B, A)` produce the same result.
 
-## 3.9 Type Annotations [Tested+Neg crates/cranelisp-frontend/src/reader.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, tests/spec_03_types::annotated_params_int, tests/spec_03_types::annotation_expression_standalone, tests/spec_03_types::annotation_expression_neg_not_variable_lookup]
+## 3.9 Type Annotations [Tested+Neg crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, tests/spec_03_types::annotated_params_int, tests/spec_03_types::annotation_expression_standalone, tests/spec_03_types::annotation_expression_neg_not_variable_lookup]
 
 The annotation form is **`:Type form`** — the `:Type` (or `:(Applied Type)`) introducer is a reader-macro-style prefix that **binds the immediately-following form**, in **all** positions, and is never a standalone atom or variable reference (e.g. `:(Option Int) None`, `:(Vec Int) []`). It is **not** written `(: Type form)`: a parenthesised bare-colon (or leading-`:Type`) list is an ordinary application, not an annotation. This is the syntax used both to annotate a value expression (see [§4.9](04-expressions.md#49-type-annotation)) and to pin an otherwise-ambiguous polymorphic form to a concrete type (see [§3.11](#311-ambiguous-types)). The remainder of this section covers annotations in parameter position.
 

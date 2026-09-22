@@ -1,994 +1,433 @@
-# Memory-safety diagnostic modes (tier-5) + RC/alloc seam asserts (tier-3)
+# Memory-safety diagnostic modes and RC/alloc seam checks
 
-Subordinate topic doc for `cranelisp-intrinsics`. Owner: `/design` (intrinsics);
-implementation is `/dev` (intrinsics), while subprocess and lane wiring is
-`/qa`/`test`.
+Owner: `/design` (intrinsics). Implements
+`crates/cranelisp-intrinsics/src/diagnostics.rs` and the hooks in
+`alloc.rs`, `rc.rs` and `drop.rs`.
 
-**Status: the modes, the A-row seam asserts, the fault-plant protocol (§7) and
-the §9 convergence batch are implemented.** All four detection-proof clauses are
-in committed source: the inert-unless-armed hook (`diagnostics::test_fault_event`)
-at the two production funnels in `alloc.rs`; the eight plant spellings; eight
-positive-detection triplets in `diagnostics/tests.rs`, each with a clean control
-and a detector-off negative leg; recorded fail-on-revert experiments, including
-two proving the §7.5 *ordering* is load-bearing independently of the checks; and
-the end-to-end M3 counter→atexit→abort cell with its clean control
-(`tests/intrinsics_m3_detection_s116.rs`). None is `#[ignore]`d.
+Everything here serves safety-register row **R8** (RC balance: every
+allocation has exactly one net free) in `design/arch/safety-invariants.md` §4.
+The three modes are R8's dynamic-lane mechanism (ladder tier 5); the seam
+checks are its asserted mechanism (tier 3, `safety-invariants.md` §2). `arch`
+owns the row, and R8's detector grades are `qa`'s.
 
-**Two honesty limits the source itself records must survive into any grade:** the
-M3 over-free row proves report polarity and atexit wiring, not a real
-double-free (the real double-free face remains the debug `LIVE_ALLOCS` assert),
-and A2/A3/A4's release face grades as header *plausibility*, not proof of
-basehood (§7.5).
+Scope: env-gated allocator behaviour and checks inside intrinsic bodies. There
+is no ABI, catalog, `cranelisp-types` surface or emitted-IR change. A change
+needing any of those goes to `arch`.
 
-**Outstanding, and not this crate's:** FIXME 0857's regrade of safety-register
-row R8 (arch-owned) and the repair of two dead citations in
-`tests/plan/s115-instrumentation-matrix.md` (qa-owned). This document’s [acceptance mapping](diagnostic-modes.md#77-acceptance-mapping) and [unit-scenario matrix](diagnostic-modes.md#10-unit-scenario-matrix) are the
-evidence index that regrade consumes. [Detector-as-oracle protocol](diagnostic-modes.md#9a-the-detector-as-oracle-protocol-retired-unexecuted) is
-retired unexecuted by the 2026-09-01 user disposition.
+Section numbers are stable: tests, the crate memory and sibling designs cite
+them.
 
-Register trace: everything here is the **R8 row** (RC balance — "every alloc
-exactly one net free; scope decs match incs") of `design/arch/safety-invariants.md`
-§4. The three diagnostic modes are R8's `dynamic-lane` mechanism (ladder
-**tier 5**); the seam asserts are R8's `asserted` mechanism (ladder **tier 3**,
-in-process-invariant-breach ⇒ always-on `assert!` sub-form). The palette maps
-1:1 onto the ladder — no parallel taxonomy (Principle 7).
+**Evidence status.** The modes, the A1–A4 release faces, the fault-plant
+protocol (§7) and its eight detection triplets are in source, none `#[ignore]`d.
+The end-to-end M3 cell and its clean control are in
+`tests/intrinsics_m3_detection_s116.rs`. **Two limits bound any grade:**
 
-`/arch` owns the register row itself; this doc is the intrinsics-side mechanism
-elaboration the row cites. Any change needing a register-row edit, a
-`cranelisp-types` surface, a backend→intrinsics extern-signature change or a
-catalog entry is out of scope here and files to `/arch`: the modes are
-intrinsics-internal, env-gated allocator behaviour with no ABI change.
+- the M3 over-free row proves report polarity and atexit wiring, not a real
+  double free (§7.2);
+- the A2/A3/A4 release faces prove header *plausibility*, not that a pointer is
+  a base (§7.5).
 
-**Subsection numbers §7.1–§7.4 are load-bearing** — the test plan and the
-committed e2e cells cite them; §7.5–§7.7 were appended rather than renumbered.
+**Open:** FIXME 0857 (`qa`) regrades R8 against this evidence, carrying both
+limits.
 
 ---
 
+## 1. Why allocator-seam modes
 
-## §1. Why tier 5 exists — the structural-blindness argument (grounded)
+Most of the suite cannot observe a use-after-free that does not change output,
+or a leak at all (`tests/plan/memory-safety-coverage.md` §5). Under `--run` and
+the REPL a prematurely freed block is usually still readable, so a wrong-
+lifetime program can pass by layout luck.
 
-`tests/plan/memory-safety-coverage.md` §5 quantifies it: ~97% of the suite
-cannot see a UAF that does not perturb output, >98% cannot see a leak, and the
-strongest deterministic UAF signal (`RC_DEC_CHECK`) is asserted nowhere. The
-0641 false-`Fresh` family is the canonical shape: because the ownership summary
-declared `Fresh`, the return-value protect (inc) is elided, so a param's RC is
-dec'd to zero at scope exit **while a returned alias still points at it** →
-premature free → UAF. Under `--link` glibc turns the corrupted heap into a
-deterministic SIGABRT; under `--run`/REPL the freed block is usually **still
-readable by layout luck**, so the read returns the plausibly-correct value and
-the test PASSES green. That false-green is exactly the blindness this track
-ends.
+The allocator seam is the one place every free flows through. The modes turn
+layout luck into a deterministic fault at the offending operation.
 
-The tier-5 modes convert layout-luck into determinism at the **allocator seam**
-— the one place every heap value's free flows through — so a memory-safety
-fault names itself at the faulting op instead of N crossings later (or never).
-They are detector *multipliers* for the tier-4 oracle lane (`safety_oracle_lane.rs`):
-the lane sets them as additional env faces (MS-P6), and a UAF that was
-`--link`-only becomes RED in every mode.
+**Quarantine is the keystone.** The stale-dec checks (`is_live` in the dec
+funnels and the JIT's `rc_dec_check`) are defeated by reuse: once
+`alloc_with_rc` hands the same address out again, a stale dec sees a live block.
+M1 never releases a freed block, so it can never be live again and the existing
+checks fire reliably. The modes serve as extra environment faces for the
+tier-4 oracle lane (`tests/safety_oracle_lane.rs`).
 
-### The load-bearing mechanism insight (why quarantine is the keystone)
+## 2. The seam
 
-The existing stale-dec assert (`rc::consume_shallow` and `drop::atomic_dec_rc`
-both `debug_assert!(alloc::is_live(ptr))`, and the JIT-inline `rc_dec_check`)
-is **defeated by reallocation**: `alloc_with_rc` clears `FREED_TRACKED` and
-re-populates `LIVE_ALLOCS` at the same address, so a stale dec *after* the block
-was reused sees `is_live == true` and passes silently. The premature-free UAF
-then corrupts a live, semantically-unrelated allocation — the worst face. **No-
-reuse quarantine (M1) withholds the freed block from the system allocator, so
-`is_live` stays `false` forever** and the already-present stale-dec asserts fire
-deterministically at the offending dec. Quarantine does not add a new check; it
-makes the checks the crate already has *reliable*. That is the Principle-18 move
-— enforce the invariant by representation (a freed block is never
-representable as live again) rather than by racing the allocator.
-
----
-
-## §2. Actors and functions (Principle 21 — before mechanism)
-
-The seam is narrow and already single-sourced:
-
-| Actor | Role at the seam |
+| Actor | Role |
 |---|---|
-| `alloc::alloc_with_rc` | the ONE alloc site; writes header, bumps `ALLOC_COUNT`/`BYTES_*`, records `LIVE_ALLOCS`, clears `FREED_TRACKED` |
-| `alloc::dealloc` | the ONE dealloc site; every free (shallow + every recursive drop-glue leaf) funnels here before `std::alloc::dealloc`; bumps `DEALLOC_COUNT`, removes `LIVE_ALLOCS`, records `FREED_TRACKED` |
-| `rc::consume_shallow` / `drop::atomic_dec_rc` | the TWO dec funnels; both already assert `is_live` + underflow before the atomic sub; `drop::consume_{slist,sexp,vec_with,io_tree,closure}` route through `atomic_dec_rc` (Principle 7 — no open-coded dec) |
-| `rc::rc_inc` | the ONE shallow inc funnel; **asserts nothing today** (the tier-3 gap, §5 A1) |
+| `alloc::alloc_with_rc` | the only allocation funnel: writes the header, bumps `ALLOC_COUNT` and the byte counters, and (debug) records `LIVE_ALLOCS` and clears `FREED_TRACKED` |
+| `alloc::dealloc` | the only free funnel, reached by every shallow and drop-glue free: bumps `DEALLOC_COUNT` and (debug) moves the address from `LIVE_ALLOCS` to `FREED_TRACKED` |
+| `rc::consume_shallow`, `drop::atomic_dec_rc` | the two decrement funnels; every `drop::consume_*` routes through `atomic_dec_rc` |
+| `rc::rc_inc` | the one shallow increment funnel |
 
-The missing function the modes add: *"when a block is freed, make a later
-touch of it deterministically wrong or fatal, and make the alloc/free ledger a
-hard invariant."* Every mode hooks one of the two existing funnels
-(`alloc_with_rc`, `alloc::dealloc`) plus the two atomic counters — nothing new
-is tracked (Principle 7; the counters and side-tables already exist for
-`RC_STATS`/FIXME-0494).
+Every mode hooks the two lifecycle funnels and the two always-on counters.
+Nothing new is tracked.
 
----
+## 3. The three diagnostic modes
 
-## §3. The three diagnostic modes (mode inventory)
+All three are off by default, read their environment once per process through a
+cached `LazyLock`, and live in Rust bodies, so every execution mode behaves the
+same.
 
-All three: default OFF; env read ONCE at process start (cached `LazyLock`);
-byte-identical-off (the env-unset path is the current code, unchanged); no
-emitted-IR change (these are Rust bodies inside `runtime/alloc`/`runtime/dealloc`,
-not codegen — the backend emits the same call it emits today). Composition in
-§4.
+### M1 — no-reuse quarantine
 
-### M1 — No-reuse-after-free quarantine
+- `dealloc` withholds the block from the system allocator instead of releasing
+  it. The block is logically freed — counted, removed from `LIVE_ALLOCS`,
+  recorded in `FREED_TRACKED` — but never handed out again.
+- **Retention.** Unbounded by default: probe programs are short-lived, and
+  keeping every block gives the strongest signal. `CRANELISP_QUARANTINE_MAX_BYTES`
+  caps retained bytes, releasing the oldest blocks FIFO. The cap is in bytes
+  because it must bound RSS; releasing the coldest blocks keeps recent-free
+  UAFs caught.
 
-**What:** on `alloc::dealloc`, instead of calling `std::alloc::dealloc(base,
-layout)`, push `(base, layout)` onto a process-global quarantine list and leave
-the bytes mapped. `DEALLOC_COUNT` still increments, `LIVE_ALLOCS.remove` still
-happens, `FREED_TRACKED` still records — the block is *logically* freed, just
-never *physically* reclaimed, so it can never be re-handed by `alloc_with_rc`.
+### M2 — scrub on free
 
-**Interaction with RC dec paths (dispatch item 1):** this is the keystone from
-§1 — the block's address is permanently out of `LIVE_ALLOCS`, so the stale-dec
-asserts in `consume_shallow`/`atomic_dec_rc`/`rc_dec_check` fire deterministically
-on any dec of a prematurely-freed pointer (the 0641/0633 faces), instead of
-silently succeeding against a reused chunk.
+- `dealloc` overwrites the whole allocation (header and payload,
+  `total_size` bytes, including a ragged tail) with the word
+  `0xDEAD2FEE_DEAD2FEE`.
+- The pattern is wrong under every reading: as an integer or tag it is a large
+  negative value; as a pointer it is non-canonical, so a dereference faults at
+  the use; as an RC word it trips the underflow checks and never looks like
+  `rc == 1`.
+- `FREED_TRACKED` captures the block's identity before the scrub. Composed with
+  M1, the allocator never overwrites the poison.
 
-**Retention policy:** default = **unbounded** (repro/lane-scoped — a test
-program is short-lived; the strongest signal keeps every freed block). A byte
-cap `CRANELISP_QUARANTINE_MAX_BYTES=N` bounds retention for long-running use:
-FIFO — once retained bytes exceed `N`, release the oldest quarantined blocks to
-the system allocator until back under `N`. Releasing the oldest reopens the
-reuse window for the *coldest* blocks only, so the recent-free UAF (the common
-case) stays caught. Bytes, not count, because the leak/UAF pressure is byte
-volume and the cap must bound RSS. When off, the list is never constructed
-(zero cost).
+### M3 — alloc/free parity
 
-### M2 — Scrub-freed-memory poisoning
+- At exit (one atexit handler, registered once), check
+  `ALLOC_COUNT == DEALLOC_COUNT` and, in debug builds, that `LIVE_ALLOCS` is
+  empty.
+- Leaks show as `allocs > deallocs`; this is the face M1 and M2 cannot see,
+  because a leaked block is never freed. An over-free shows as
+  `deallocs > allocs`.
+- On imbalance it prints the ledger, plus the surviving live blocks in debug,
+  then aborts non-zero. An imbalance is an in-process invariant breach: a
+  located hard failure, never a `Result`.
+- `CRANELISP_ALLOC_PARITY_DUMP` prints the ledger at exit and continues.
+  `CRANELISP_RC_STATS` only prints counts.
 
-**What:** on `alloc::dealloc`, immediately before release-or-quarantine,
-overwrite the whole allocation (header + payload, `total_size` bytes) with a
-poison pattern.
+## 4. Environment contract and composition
 
-**Pattern choice (Principle 20 — make a UAF read unrepresentable-as-plausible):**
-per-`i64`-word `0xDEAD2FEE_DEAD2FEE` ("dead to free"). It is chosen so a stale
-read is deterministically wrong in **every** interpretation:
-- as an `Int`/tag — a large negative value (`< NULLARY_TAG_THRESHOLD` is false
-  and the magnitude is never a plausible small result), so a 0641-family
-  `_repl_yields_correct_value` read returns garbage, not the expected int;
-- as a **pointer** — `0xDEAD2FEE...` is non-canonical on x86-64/aarch64, so a
-  UAF that dereferences a poisoned field faults immediately (SIGSEGV at the
-  use) rather than wandering;
-- as an **RC field** — a poisoned rc reads as a wild count, so a stale
-  inc/dec trips the `old_rc > 0` underflow assert (and never coincidentally
-  reaches the `old_rc == 1` free arm).
+| Variable | Effect |
+|---|---|
+| `CRANELISP_QUARANTINE_FREED` | M1 on |
+| `CRANELISP_QUARANTINE_MAX_BYTES` | M1 byte cap; read only under M1 |
+| `CRANELISP_SCRUB_FREED` | M2 on |
+| `CRANELISP_ALLOC_PARITY` | M3 hard check |
+| `CRANELISP_ALLOC_PARITY_DUMP` | M3 print-and-continue |
+| `CRANELISP_RC_DEC_CHECK` | release gate for the A1–A4 seam checks (§5), shared with the backend's codegen-time dec check |
 
-**Where it hooks:** the free seam (`alloc::dealloc`), after `FREED_TRACKED`
-captures the pre-poison `(total_size, payload_word@16)` for the stale-dec
-report (order matters — capture the identity *before* scrubbing). Scrub is most
-lethal composed with M1 (the allocator never overwrites the poison with freelist
-metadata); standalone it still poisons the instant-of-free-to-reuse window.
+- **Composition.** The gates are independent. Quarantine, scrub and parity
+  together are the strongest configuration. Order inside `dealloc` is fixed:
+  capture identity → scrub → quarantine or release → bump `DEALLOC_COUNT`.
+- **Off means no work.** With every variable unset, each funnel pays one cached
+  boolean load per gate: no quarantine list, no atexit handler, no write.
+- **Release-capable.** The modes read sizes from the header and use the
+  always-on counters, so they run in release builds. Only the enriched
+  `is_live`/`FREED_TRACKED` reporting is debug-only.
 
-**Cost when off:** one cached env-bool load per `dealloc`; no write.
+## 5. Seam checks A1–A5
 
-### M3 — Paired alloc/free hard-check
+Each seam has an always-on `debug_assert!` twin and a release face gated by
+`CRANELISP_RC_DEC_CHECK`. The release face is the shared precheck (§7.5),
+which runs first. Every seam keeps the nullary-tag guard ahead of both: a bare
+tag is not a heap pointer.
 
-**What:** promote the alloc/free ledger from advisory stats to a hard
-invariant. `ALLOC_COUNT`/`DEALLOC_COUNT` are already always-on atomics.
-- **At process exit** (atexit, registered once — the `RC_STATS` pattern):
-  assert `ALLOC_COUNT == DEALLOC_COUNT` and (debug builds) `LIVE_ALLOCS` empty.
-- **Double-free face:** already caught at `alloc::dealloc` (the
-  `LIVE_ALLOCS.remove(&addr).is_some()` debug_assert); M3 promotes it to the
-  hard-check family so it fires in the release-gated lane too, and the exit
-  ledger shows `DEALLOC_COUNT > ALLOC_COUNT`.
-- **Leak face:** `ALLOC_COUNT > DEALLOC_COUNT` at exit (this is what R2-class
-  leaks trip even when output is byte-identical — the face scrub/quarantine
-  *cannot* see, because a leaked block is never freed).
-
-**Report seam:** stderr dump at the exit hard-check, listing the imbalance and
-(debug) the surviving `LIVE_ALLOCS` addresses with their `(size, payload@16)`;
-mid-run inspection via `CRANELISP_ALLOC_PARITY_DUMP` (print-and-continue, no
-abort) for bisecting a long run. **Hard-fail semantics:** on imbalance at exit
-the process aborts non-zero *after* the dump — an imbalance is a compiler
-defect (in-process invariant breach), so it is a located hard-fail, never a
-laundered `Result` and never release UB (ladder §2.3). Distinct from
-`RC_STATS`, which only *prints* the counts.
-
----
-
-## §4. Env-var contract, composition, byte-identical-off
-
-Naming follows the existing `CRANELISP_*` allocator/RC family
-(`CRANELISP_RC_TRACE`, `_HEAP_SCAN`, `_RC_DEC_CHECK`, `_RC_STATS`,
-`_NONATOMIC_RC`):
-
-| Env var | Mode | Values |
-|---|---|---|
-| `CRANELISP_QUARANTINE_FREED` | M1 quarantine | set = on |
-| `CRANELISP_QUARANTINE_MAX_BYTES` | M1 retention cap | `N` bytes; unset = unbounded |
-| `CRANELISP_SCRUB_FREED` | M2 poison | set = on |
-| `CRANELISP_ALLOC_PARITY` | M3 hard-check | set = on (registers the atexit check) |
-| `CRANELISP_ALLOC_PARITY_DUMP` | M3 mid-run dump | set = print-and-continue |
-
-**Composition:** the three are independent boolean gates and **compose freely**
-— quarantine+scrub+parity is the intended strongest configuration and the
-default the lane runs. Ordering inside `dealloc` is fixed: capture
-`FREED_TRACKED` identity → (M2) scrub → (M1) quarantine-or-release → bump
-`DEALLOC_COUNT`. `MAX_BYTES` only reads under M1.
-
-**Default = all off, byte-identical-off (hard discipline, S99 precedent):** with
-every var unset, each `dealloc`/`alloc` runs exactly today's code (one cached
-env-bool load per mode, no branch taken). **No ABI change, no catalog entry, no
-`cranelisp-types` surface, no emitted IR** — the backend emits the same
-`runtime/alloc`/`runtime/dealloc`/inline-RC it emits now; the modes live entirely
-inside the intrinsic bodies (SPRINT revision 2; the `alloc.rs` metadata that
-detects double-frees today is the only state they touch). The modes therefore
-also work identically in all execution modes (`--run`/REPL/`--link`) — no
-mode-divergence surface.
-
-**Release-capability:** M1/M2/M3 do **not** require the `#[cfg(debug_assertions)]`
-side-tables — quarantine reads the size from the header, scrub reads
-`total_size` from the header, parity uses the always-on `ALLOC_COUNT`/
-`DEALLOC_COUNT`. They are env-gated in **both** profiles (the release lane can
-run them). The `is_live`/`FREED_TRACKED` *reporting* enrichment stays
-`#[cfg(debug_assertions)]` as today; the modes degrade gracefully to
-counter-only reporting in release.
-
----
-
-## §5. Tier-3 RC/alloc seam asserts (assert inventory)
-
-Each traces R8; sub-form = in-process-invariant-breach ⇒ always-on `assert!`
-(ladder §2.3). Pattern per the dispatch item 5: `debug_assert!` for the hot
-default + an **env-gated release check** (reuse the existing
-`CRANELISP_RC_DEC_CHECK` gate for the dec/inc liveness family, so release lanes
-opt in without a new flag).
-
-| # | Seam | Invariant asserted | Status today |
+| Row | Seam | Release face | Debug twin |
 |---|---|---|---|
-| A1 | `rc::rc_inc` | inc target is live + `rc > 0` (an inc of a freed/poisoned ptr is a defect) | **LANDED (S113; gate-hoisted S118 W2a)** — the `is_live` + `rc > 0` inc-half of FIXME 0494's dec-half check, running as a §7.5 precheck at the top of `rc_inc`. Proven by its detection triplet. *(This row read "GAP — no check today" until S121; it was stale from S113.)* |
-| A2 | `rc::consume_shallow` | dec target is live + `old_rc > 0` | present (`is_live` debug_assert + underflow); formalize the `RC_DEC_CHECK`-gated release variant |
-| A3 | `drop::atomic_dec_rc` | dec target is live + `old_rc > 0` | present; it is the funnel every recursive drop-glue leaf (`consume_{slist,sexp,vec_with,io_tree,closure}`) routes through — the 0633/0638 recursive-free seams inherit it |
-| A4 | `alloc::dealloc` | not a double-free (`LIVE_ALLOCS.remove` is `Some`) + header-integrity (`recorded == total_size`) | present (FIXME 0494); M3 promotes double-free to the hard-check family; add the `RC_DEC_CHECK`-gated release variant |
-| A5 | `alloc_with_rc` | header written correctly; `total_size >= HeapHeader::SIZE` | present (`scan_live_headers` under `HEAP_SCAN`); no change — noted for completeness |
+| A1 | `rc::rc_inc` | precheck: plausible header, `rc > 0` | `is_live` |
+| A2 | `rc::consume_shallow` | precheck, plus the post-RMW underflow gate | `is_live`, `old_rc > 0` |
+| A3 | `drop::atomic_dec_rc` | precheck, plus the post-RMW underflow gate | `is_live`, `old > 0` |
+| A4 | `alloc::dealloc` | `header_size_plausible(total_size)` before `Layout` construction | double-free (`LIVE_ALLOCS.remove`) and header-integrity checks |
+| A5 | `alloc::alloc_with_rc` | none | header scan under `CRANELISP_HEAP_SCAN` |
 
-A1 was the only genuinely-new assert at S113; A2–A4 release-gate existing
-debug-only checks so the release/`--link` lane earns the same signal. None
-require an interface change — all are internal to intrinsic bodies. `rc_inc`'s
-nullary-tag guard (`ptr < NULLARY_TAG_THRESHOLD`) is preserved ahead of the new
-check (a bare tag is not a heap pointer).
+- The post-RMW gates stay. The precheck covers the planted single-threaded
+  case; the post-RMW check covers a concurrent race.
+- Both faces emit the prefix `[CRANELISP RC/ALLOC SEAM VIOLATION]`.
 
-**S118 amendment (§7.5).** Two changes to this inventory, both intrinsics-
-internal and both prerequisites for the A-row detection proofs:
+## 6. What the modes detect
 
-1. **All four gated checks become PREchecks** — hoisted above their mutation
-   and above the always-on `debug_assert!` twins. A check that runs after the
-   RMW it guards cannot satisfy validation-before-mutation, and in the debug
-   profile it is never reached.
-2. **A2 gains the release face it lacked.** "dec target is live" has no
-   release-lane expression (`is_live` needs the debug side table), so the
-   shared `seam_precheck` adds a **header-plausibility** predicate: the alleged
-   base's `alloc_size` word must convert to `usize`, be `>= HeapHeader::SIZE`,
-   and form a valid `Layout::from_size_align(size, 8)`. This catches an
-   interior/non-base address (word@0 is a tag or field, far below the header
-   size) and a poisoned/quarantined base (word@0 is `0xDEAD2FEE…`, negative as
-   `i64`, so the `usize` conversion fails). It is a plausibility check, not a
-   proof of basehood — grade it there (§7.5). `alloc::dealloc`'s A4 predicate
-   widens the same way. *(Amended S118 W2b per FIXME 0879 — the original
-   wording said "8-aligned", which false-positives on every `HeapString`;
-   §7.5's ruling box carries the disposition.)*
+| Fault class | Deterministic face |
+|---|---|
+| Premature free with a live alias (the false-`Fresh` family) | M2 poison on the stale read; M1 keeps the block out of reuse; A2/A3 at the stale dec |
+| Wrong drop glue freeing the wrong sub-object | M2 on the stale read; M3 on the imbalance |
+| Double free | the A4 debug twin; M3 as `deallocs > allocs`; under M1 the second free hits a quarantined block |
+| Leak | M3 only |
+| Type confusion on a live, correctly counted block | none by construction — a static judgement or the differential oracle catches it |
 
----
+Detection rows are proven by the §7 triplets. Tests of mode internals are
+controls, not detection evidence.
 
-## §6. Acceptance — which REDs fire deterministically under the modes
+## 7. The test-only fault-plant protocol
 
-The W5a obligation (SPRINT W5-open): **re-run the 15-RED W5-family acceptance
-set under the modes BEFORE the W5b fix wave**, and the modes must make the
-free-class faults fire deterministically (or the RED is characterized as
-mode-invisible with the reason). `/qa`/`/testing` own the run (one-agent-one-
-test-run); this design states the expected outcome per class.
+A crate-private hook that plants one deterministic fault on a production
+allocation so each detector can be shown to fire. It is compiled into every
+build, so an end-to-end child exercises the real counter → atexit → report →
+abort path. It adds no `pub` item, catalog entry, exported symbol, Cargo
+feature, ABI, heap-layout or IR change.
 
-**Fire deterministically under quarantine+scrub (M1+M2), all modes:**
+### 7.1 Activation and the arming discipline
 
-- **0641 B-1/B-2/I-1/I-2** (`tests/false_fresh_provenance_residual.rs`, 8 REDs
-  = 4 vectors × {REPL-value, `--link`-heap}). The premature free of the aliased
-  param → M2 scrubs the block → the `_repl_yields_correct_value` read returns
-  poison (deterministically wrong, no longer layout-luck green); M1 keeps it
-  out of reuse so the `_link_does_not_corrupt_heap` face fires in JIT/`--run`
-  too, not only under glibc `--link`. The A2/A3 stale-dec asserts also fire at
-  the scope-exit dec of the freed alias.
-- **MS-P7 COW-set→project** (`safety_oracle_lane.rs::safety_lane_cow_set_read_link_corruption_red`).
-  Today `--link`-only (correct under `--run`); M1+M2 extend the deterministic
-  signal into `--run`/REPL — the projection-out read hits poison. (This also
-  supplies the discriminator MS-P7 records: whether the abort persists under
-  `CRANELISP_NO_OWNERSHIP=1` decides the ownership-independent-backend vs
-  elision half — the modes give a deterministic face in both toggle states.)
-- **0633 DG-R1a/b/c** (`tests/adt_drop_glue_underkey.rs`). Wrong glue frees the
-  wrong sub-object → M2 makes the subsequent stale read poison; M3's double-
-  free/parity face catches the free imbalance; MS-P4 (module-axis cell) rides
-  the same signal.
-- **0638 macro-alias double-free** (`tests/macro_expansion_interior_alias_double_free.rs`,
-  ×3 modes). Already fires the `alloc.rs:222` double-free debug_assert; M3
-  promotes it to the hard-check family (fires in release-gated + `--link`), and
-  M1 makes the second free hit a quarantined block (named, not a corrupted
-  reused chunk). Robust across all three modes.
+| Variable | Required value |
+|---|---|
+| `CRANELISP_TEST_FAULTS` | exactly `s116-detection-proof-v1`; anything else is fully off |
+| `CRANELISP_TEST_FAULT` | exactly one `FaultPlant` spelling |
 
-**Fires under paired-counter (M3) only:**
+- The arm string is the protocol version, not a sprint. Committed children pin
+  it; changing it silently disarms them.
+- `FaultPlant` is closed: `M1StaleReuse`, `M2StaleRead`, `M3Leak`,
+  `M3OverFree`, `A1ZeroRc`, `A2InteriorPointer`, `A3FreedPointer`,
+  `A4MalformedHeader`.
+- **Configuration errors.** With the arm set, a missing, empty, unknown or
+  multiple spelling aborts with `[CRANELISP TEST-FAULT CONFIG ERROR]`. The
+  parse is forced by the first hook call — the process's first allocation —
+  so **the guarantee is state-and-action precedence:** the child aborts before
+  any plant state exists and before any action applies. It is never a partial
+  plant. Literal pre-allocation timing would need a pre-`main` seam the crate
+  does not have, and is not required.
+- With the arm absent there is no state construction, allocation, counter
+  adjustment or failure. Plant variables never enable a detector; detector
+  variables never plant.
 
-- Any **leak** RED in the family (R2-class `rc-miscount`): scrub/quarantine are
-  blind to a leak (the block is never freed, so never scrubbed) — M3's exit
-  parity (`allocs > deallocs`) is the leak face.
+**Arming is lane-scoped by construction.** These rules are a structural
+invariant, enforced by `tests/detector_arming_discipline_guard.rs`:
 
-**Mode-invisible — characterized (not a modes failure):**
+- **Never suite-global.** No detector or plant variable is exported by the
+  shell, `.cargo/config.toml`, `.config/nextest.toml`, a build script or a
+  wrapper.
+- **Never `set_var` in a shared process.** Every gate is a process-lifetime
+  `LazyLock`, and the ledger and quarantine are process-global. A `set_var`
+  after first read is a no-op that looks armed, and an in-process toggle makes
+  results depend on scheduling.
+- **The only legal arming** is a spawned child `Command` with `.env_clear()` and
+  an enumerated allow-list (§7.6).
 
-- **Multi-arity §5.1.2 wrong-accepts** (String heap-ptr read as `Int`). These
-  are `wrong-accept` type-safety defects, **not** free-class: the heap block is
-  live and correctly counted; reading a live String pointer as an Int yields a
-  wrong value with **no allocator event**. The tier-5 allocator modes cannot
-  see them by construction; they are caught by the tier-1/2 static judgment and
-  the tier-4 differential oracle (behavioural divergence on/off), which is where
-  the W5b frame places them. Correctly out of W5a scope.
+Globally arming M3 would abort every still-red leak guard and make every RED
+read as "M3 fired". `review` rejects a change that arms a detector any other
+way.
 
-The S113 implementation landed the mechanisms, but not this section's required
-positive self-tests. S116 closes that evidence gap through the production-path
-injection contract in §7. Mechanism-internal tests remain useful unit controls,
-but cannot satisfy a detector row by themselves.
+### 7.2 One funnel hook, closed events and actions
 
----
+`alloc_with_rc` and `dealloc` call one hook, `test_fault_event(event) →
+FaultAction`, which returns `NoAction` when unarmed. The event and action sets
+are the protocol's entire surface.
 
-## §7. Test-only fault-plant protocol (S116 design, S118 implemented)
-
-**Status (S121, verified against HEAD): LANDED.** The protocol, the precheck
-hoist, the eight plants, the eight triplets and the two e2e cells are all in
-committed source (see the current-state box at the head of this document). The
-two M3 e2e cells that were RED for absence of mechanism are green.
-
-*The paragraph this replaces read: "Nothing of §7 exists in source at HEAD —
-`grep FaultPlant|test_fault crates/` is empty."* True at S118 Phase 3, false
-since S118 W2a; recorded so a reader who met the old sentence knows it moved
-rather than wondering which is current. The section below stays as the **design
-of record** for what landed — it is the contract `/review` checks the source
-against, and the four things the S116 text left to implementation invention are
-still where they were: the seam-check *ordering* prerequisite (§7.5) without
-which the four A rows are unprovable in the debug profile (and M1/M2's stale-RC
-legs lose their rejection), the hook's exact event/action closure (§7.2), the
-child-process harness shape (§7.6), and the per-row armed sets, faces, and
-UB-containment (§7.3).
-
-### 7.1 Boundary, activation, and the arming discipline
-
-The injection seam is **crate-private and diagnostic-test-only in purpose**, but
-is compiled into the executable so an e2e subprocess can prove the real
-counter→atexit→report→abort wiring. It adds no `pub` item, catalog entry,
-exported symbol, Cargo feature, ABI, heap-layout, or emitted-IR change.
-
-Activation requires both exact child-process values:
-
-| Variable | Required value | Purpose |
+| Event | Site | Legal actions |
 |---|---|---|
-| `CRANELISP_TEST_FAULTS` | `s116-detection-proof-v1` | explicit protocol arm; absent or any other value is fully off |
-| `CRANELISP_TEST_FAULT` | one closed `FaultPlant` spelling | selects exactly one plant |
+| `PostAlloc { base, total_size }` | after header, counters and tracking | `NoAction`, `CapturePlant` |
+| `PreFree { base, total_size }` | after the header read and its gated check, before debug tracking | `NoAction`, `SuppressFree` |
+| `PostFree { base, total_size, withheld }` | after the `DEALLOC_COUNT` bump | `NoAction`, `ExtraDischarge` |
 
-The arm string keeps its `s116-` spelling: it is the protocol version, not the
-sprint of landing, and the committed e2e children already pin it. Changing it
-would silently disarm those cells.
+- **`CapturePlant`** records the base and size in the one-shot plant slot and
+  touches no memory.
+- **`SuppressFree`** returns before tracking removal, scrub, quarantine and the
+  count. The block is genuinely leaked, so the ledger stays truthful. It fires
+  once.
+- **`ExtraDischarge`** bumps `DEALLOC_COUNT` once without touching memory. It
+  is the only UB-free route to `deallocs > allocs`, so the M3 over-free row
+  proves polarity and wiring only. The real double-free face is the A4 debug
+  twin.
 
-The private closed enum is `FaultPlant::{M1StaleReuse, M2StaleRead, M3Leak,
-M3OverFree, A1ZeroRc, A2InteriorPointer, A3FreedPointer,
-A4MalformedHeader}` — the eight spellings `tests/plan/s118-test-plan.md` §3.1
-names, unchanged. Parsing happens once per process. Unknown, empty, or
-multiple spellings are a hard test-configuration error **before any plant state
-exists and before any action is applied**; they never become a partial plant.
-(The parse is forced at the first `test_fault_event` call — the `PostAlloc` of
-the process's first allocation — so at most one allocation exists when the
-child aborts; see the ruling box below.) With the arm value absent there is no state
-construction, mutation, allocation, counter adjustment, or new failure. The
-ordinary M1/M2/M3/A-gate variables remain detector controls; test variables
-plant faults only and never silently enable the detector under test.
+The hook provides no counter setter, pointer write, callback or replacement
+allocator. RC plants enter through the ordinary `rc_inc`, `consume_shallow` and
+`atomic_dec_rc` entries; tests never call `seam_hard_fail` directly.
 
-> **Config-error timing — the contract is state-and-action, not wall-order
-> (S118 W2b ruling, FIXME 0881 accepted-and-amended).** The earlier wording
-> "a hard test-configuration error **before allocation**" over-claimed. As
-> implemented the parse lives in the `PLANT` `LazyLock`, forced at the first
-> `test_fault_event` call, which is the `PostAlloc` hook of the process's first
-> allocation: a mis-armed child aborts with one allocation already in
-> existence (header initialized, counters bumped) — but provably **before any
-> `PlantState` is constructed and before any action is applied**.
->
-> **That is the guarantee that carries the weight**, and it is the one
-> `unknown_empty_or_multiple_spellings_are_configuration_errors` pins. Never-a-
-> partial-plant is structural: one parse, one closed enum, hard failure ahead
-> of any state construction — nothing about it improves if the same failure
-> happens one allocation earlier. Literal pre-allocation timing would require a
-> startup seam the crate does not have (no `main`, no ctor) or a forced check
-> on the allocation hot path, buying a strictly weaker version of a guarantee
-> already held — Principle 6 (complexity has a budget) and Principle 8 (no
-> interim implementations: a pre-main seam invented to move one message's
-> timing). **Requiring the pre-allocation seam is REJECTED**; the observable
-> delta is bounded at one allocation in a fresh subprocess whose only purpose
-> is the plant, and the child aborts either way.
->
-> `/qa`'s 0857 regrade grades the config-error negative at this tier:
-> *state-and-action precedence*, not wall-clock pre-allocation. The `/dev`
-> comment at the static and `crates/cranelisp-intrinsics/CLAUDE.md`'s protocol
-> paragraph should name the first-hook-call timing so the code, the local
-> conventions and this design agree on the letter.
+**Selection is deterministic.** Rows needing a specific allocation (M1, M2,
+A1–A4) capture the first `PostAlloc` whose size matches
+`PLANT_MARKER_PAYLOAD`, a payload the compiler never emits. The two M3 rows
+fire on the first matching event, so the same spelling works in a unit child
+and in a compiler child.
 
-#### Arming is lane-scoped by construction (arch ruling 3; test plan §1)
+**Observation.** The single read-only `fault_observation()` reports the plant,
+whether it fired, the planted base and size, and quarantine-retained bytes. The
+M2 stale read goes through `heap_access::read_i64`.
 
-This is a **structural invariant of the protocol**, not a test-hygiene
-preference. State it here because `/qa`'s W1 static grep gate enforces exactly
-this and the design is what the gate cites:
-
-1. **Never suite-global.** No detector or plant variable
-   (`CRANELISP_QUARANTINE_FREED`, `_MAX_BYTES`, `CRANELISP_SCRUB_FREED`,
-   `CRANELISP_ALLOC_PARITY`, `_DUMP`, `CRANELISP_RC_DEC_CHECK`,
-   `CRANELISP_TEST_FAULTS`, `CRANELISP_TEST_FAULT`) is exported at suite scope
-   — not in the developer shell, not in `.cargo/config.toml`, not in
-   `.config/nextest.toml`, not in a build script or wrapper.
-2. **Never `set_var` in a shared process.** No test may call
-   `std::env::set_var` on any of them. Every gate is a `LazyLock` read once per
-   process, and the ledger + quarantine are process-global: an in-process
-   toggle is order-dependent under parallel nextest and produces a grade that
-   depends on test scheduling. A `LazyLock` already forced before the `set_var`
-   makes the toggle a no-op that *looks* armed — the worst outcome for a
-   detection proof.
-3. **The only legal arming** is a spawned child `Command` with `.env_clear()`
-   plus an explicit, enumerated allow-list (§7.6).
-4. **The failure this prevents**: a globally-armed M3 aborts every still-red
-   leak guard in the 28-RED baseline, so the whole Track-B acceptance
-   arithmetic evaporates and every RED reads as "M3 fired". Track B runs its
-   acceptance legs *with* detectors armed — per child, never per suite.
-
-`/review` rejects any change-set that arms a detector outside a child
-`.env`/`env_clear` construction. Existing per-child armed legs (the
-`ms_p8_conj_leak` parity leg, the M3 subprocess pair) are already compliant.
-
-### 7.2 One production funnel, closed event/action set
-
-`alloc_with_rc` and `dealloc` remain the only lifecycle funnels. They call one
-hook, `diagnostics::test_fault_event(event) -> FaultAction`, which returns
-`NoAction` whenever the arm variable is absent. Both the event and the action
-sets are **closed** — this is the whole API surface of the protocol, and
-enumerating it here is what stops `/dev` from inventing a general fault API
-(Principle 6):
-
-| Event | Site | Payload | Legal actions |
-|---|---|---|---|
-| `PostAlloc` | `alloc_with_rc`, after header init + counters + tracking, before `rc_trace`/return | `{ base, total_size }` | `NoAction`, `CapturePlant` |
-| `PreFree` | `dealloc`, immediately after the `total_size` header read, **before** the debug tracking block | `{ base, total_size }` | `NoAction`, `SuppressFree` |
-| `PostFree` | `dealloc`, after the `DEALLOC_COUNT` bump | `{ base, total_size, withheld }` | `NoAction`, `ExtraDischarge` |
-
-Action semantics, exhaustively:
-
-- **`CapturePlant`** — record `(base, total_size)` in the one-shot plant slot.
-  No memory is touched. This is how a fixture gets a *production-allocated*
-  identity to corrupt or observe.
-- **`SuppressFree`** — `dealloc` returns immediately: no `LIVE_ALLOCS`
-  removal, no scrub/quarantine, no `DEALLOC_COUNT` bump. The block is
-  **genuinely leaked**, so M3's ledger stays truthful and the report shows both
-  the count delta and the surviving live address. Fires at most once.
-- **`ExtraDischarge`** — bump `DEALLOC_COUNT` once more without touching
-  memory. Fires at most once. **Honesty note for the 0857 regrade:** this is
-  the only UB-free route to the `deallocs > allocs` polarity, so the M3
-  over-free row proves the *report polarity and atexit wiring*, not a real
-  double-free. The real double-free face remains the debug
-  `LIVE_ALLOCS.remove` assert (A4/§3). Grade it there, not higher.
-
-The hook must NOT provide counter setters, arbitrary pointer writes, callback
-registration, or a replacement allocator. RC plants enter through the ordinary
-`rc_inc` / `consume_shallow` / `drop::atomic_dec_rc` entry points; tests never
-call `seam_hard_fail` directly.
-
-**Plant selection is deterministic**, by row:
-
-- rows needing a *specific* allocation (M1, M2, A1–A4) select at `PostAlloc`
-  by an exact marker size: the child fixture calls
-  `alloc::alloc_with_rc(PLANT_MARKER_PAYLOAD)` for a payload size the compiler
-  never emits in that child, and `CapturePlant` fires on the first event whose
-  `total_size` matches. One deterministic identity, no address guessing;
-- rows that only need *an* allocation (M3 leak, M3 over-free) fire on the
-  first matching event. This is what lets the same two spellings work
-  identically in a Rust unit child and in the compiler-binary e2e child.
-
-**One read-only fixture observation**, `pub(crate)`, no setters:
-`fault_observation() -> FaultObservation { plant, fired, planted_base,
-planted_total_size, quarantine_retained_bytes }`. M2's stale read goes through
-`heap_access::read_i64` — the single mechanical read owner (§9). M1 requests
-subsequent same-layout blocks through `alloc_with_rc` and never instantiates
-`Quarantine` directly.
-
-**Report identity (pinned by a committed e2e).**
-`tests/intrinsics_m3_detection_s116.rs` asserts the child's stderr contains
-`M3Leak`, `alloc`, `dealloc`, and (`parity` | `imbalance`) — all lowercase,
-which today's `[ALLOC_PARITY] IMBALANCE …` report does not satisfy. When a
-plant is armed the atexit report therefore prepends one line of exactly this
-shape:
+**Report identity.** An armed ledger plant prepends exactly this line to the
+atexit report; the clean control prints no such line and never names the
+plant:
 
 ```
 [ALLOC_PARITY] test-fault plant M3Leak fired — injected alloc/dealloc parity imbalance
 ```
 
-The clean-control sibling must produce no such line, and must not print the
-plant spelling anywhere.
-
 ### 7.3 The eight plant triplets
 
-Each row is a child-process triplet: **positive** (plant + detector under
-test), **clean control** (detector, no plant), **negative control** (plant,
-detector under test off). Removing or bypassing a detector must make the
-committed *positive* fail rather than false-green — that is the fail-on-revert
-polarity `tests/plan/s118-test-plan.md` §3.1 makes a hard per-row acceptance
-input.
+Each row is a child-process triplet:
 
-Read the "armed" columns literally. Where a row arms M1 (and sometimes M2)
-*in addition to* the detector under test, those modes are **containment**, not
-the subject: they keep the negative control's un-rejected operation inside
-mapped, quarantined memory so no control ever obtains its polarity by executing
-UB (§7.4). A containment mode is never the detector whose absence the row
-claims to detect.
+- **positive** — plant plus the detector under test;
+- **clean control** — detector, no plant;
+- **negative control** — plant, detector off.
 
-| Row / plant | Detector under test | Armed (positive) | Positive observation | Armed (negative control) | Negative observation | Containment |
-|---|---|---|---|---|---|---|
-| `M1StaleReuse` | M1 quarantine | M1+M2+`RC_DEC_CHECK` | retained bytes > 0 and the planted base is withheld; across K=64 same-layout `alloc_with_rc` calls the base is never re-handed; a stale `rc_inc` on it is seam-rejected | M2+`RC_DEC_CHECK` (M1 OFF) | `quarantine_retained_bytes == 0`; the fixture performs **no** stale op | M1 absent ⇒ the freed block is reclaimed, so the negative control stops at the retention observation and never touches it |
-| `M2StaleRead` | M2 scrub | M1+M2+`RC_DEC_CHECK` | fixture writes a sentinel at payload@16, frees; `heap_access::read_i64(base, 16)` reads exactly `POISON_WORD`, and a stale RC op on the poisoned base is seam-rejected | M1+`RC_DEC_CHECK` (M2 OFF) | the same read returns the pre-free sentinel, and no poison-derived rejection occurs | M1 keeps the block mapped in both legs |
-| `M3Leak` | M3 parity | `ALLOC_PARITY` | atexit report naming the plant + leak face, non-zero abort; live set shows the surviving block | plant only (parity OFF) | no report line, normal exit (one block leaked, harmless) | a real leak is never UB |
-| `M3OverFree` | M3 parity | `ALLOC_PARITY` | atexit report with the `deallocs > allocs` face, non-zero abort | plant only (parity OFF) | no report line, normal exit | ledger-only; no memory is freed twice |
-| `A1ZeroRc` | A1 release face | `RC_DEC_CHECK` | seam prefix + `rc_inc` + `rc=0`, **before** the `fetch_add` | plant only (gate OFF) | seam prefix absent; rc returns to 1 and the fixture frees the block cleanly | block stays live throughout; `is_live` twin never fires |
-| `A2InteriorPointer` | A2 release face | `RC_DEC_CHECK` | seam prefix + `consume_shallow` + header-plausibility predicate, before the `fetch_sub` | plant only (gate OFF) | seam prefix absent | the debug `is_live` twin aborts the negative control before the RMW — expected, recorded, not the detector's observation |
-| `A3FreedPointer` | A3 release face | M1+M2+`RC_DEC_CHECK` | seam prefix + `atomic_dec_rc` + the poisoned-header predicate, before the `fetch_sub` | M1+M2 (gate OFF) | seam prefix absent | M1 keeps the quarantined base mapped; the `is_live` twin aborts the negative control |
-| `A4MalformedHeader` | A4 release face | M1 (uncapped) + `RC_DEC_CHECK` | fixture writes `8` into the planted header; `dealloc` emits the seam prefix + size predicate **before** `Layout` construction and disposal | M1 (uncapped), gate OFF | seam prefix absent | M1 uncapped ⇒ `dealloc` never reaches `std::alloc::dealloc`, so a wrong `Layout` is never used to free; **`CRANELISP_QUARANTINE_MAX_BYTES` must be unset in both legs** or a FIFO release would free with the corrupt layout |
+Removing or bypassing the detector must make the positive fail. Where a row
+also arms M1 or M2, those modes are **containment**, not the subject: they keep
+the negative control's unrejected operation inside mapped, quarantined memory,
+so no control gets its polarity by executing UB.
 
-Row notes:
+| Plant | Positive arms | Positive observes | Negative arms | Negative observes |
+|---|---|---|---|---|
+| `M1StaleReuse` | M1+M2+gate | the base is withheld and not re-handed across 64 same-layout allocations; a stale `rc_inc` is seam-rejected | M2+gate | zero retained bytes; the fixture performs no stale operation |
+| `M2StaleRead` | M1+M2+gate | payload@16 reads `POISON_WORD`; a stale RC op is seam-rejected | M1+gate | the pre-free sentinel; no poison-derived rejection |
+| `M3Leak` | parity | report naming the plant and leak face; surviving block listed; non-zero abort | plant only | no report line; normal exit |
+| `M3OverFree` | parity | `deallocs > allocs` face; non-zero abort | plant only | no report line; normal exit |
+| `A1ZeroRc` | gate | seam prefix at `rc_inc` with `rc=0`, before the `fetch_add` | plant only | no prefix; the block frees cleanly |
+| `A2InteriorPointer` | gate | seam prefix at `consume_shallow`, header predicate, before the `fetch_sub` | plant only | no prefix; the debug twin aborts first (expected) |
+| `A3FreedPointer` | M1+M2+gate | seam prefix at `atomic_dec_rc`, poisoned-header predicate | M1+M2 | no prefix; the debug twin aborts |
+| `A4MalformedHeader` | M1 (uncapped) + gate | header set to `8`; seam prefix before `Layout` construction | M1 (uncapped) | no prefix |
 
-- **Hook vs fixture, kept separate.** The hook only ever *observes and
-  records* (`CapturePlant`) or applies one of the two closed M3 ledger actions.
-  Every corruption — zeroing an RC (A1), forming an interior address (A2),
-  writing `8` into a header (A4), the pre-free sentinel (M2) — is a **fixture**
-  write through `heap_access::write_i64`, applied to the production-allocated
-  identity the hook recorded. That is what keeps the hook from becoming an
-  arbitrary-pointer-write API (Principle 6) while every plant still acts on a
-  real production allocation (Principle 5).
-- **The A rows are only implementable after §7.5's precheck hoist.** As built,
-  A2/A3/A4's positives are pre-empted by their debug twins and A1–A3's checks
-  run post-mutation. Land §7.5 first (implementation order, §10).
-- **M1's row proves retention and non-reuse**, which is the property §1 calls
-  the keystone; the stale-op leg is the consequence, and it borrows M2's poison
-  to make the rejection deterministic. Do not assert "the base *is* re-handed"
-  in the negative control — that would encode a system-allocator reuse
-  assumption. Assert the detector's own observable (retention) instead.
-- **Clean controls** (detector on, no plant) exist for all eight rows and are
-  the cheapest guard against a detector that fires on correct programs. For M3
-  this is the already-committed `m3_parity_clean_child_exits_normally_control`.
-- The A labels follow `tests/plan/s116-test-plan.md` §4's fault classes.
-  Existing source comments using the older function-oriented inventory are
-  reconciled in implementation so one label never means two plants.
-
-M3 additionally has root e2e cell `m3_parity_catches_injected_imbalance`,
-running the production compiler binary under this exact protocol and asserting
-the full atexit report and abnormal status. Its clean sibling runs the same
-minimal program with M3 on and no plant. Unit children own both M3 polarities;
-e2e proves composition, not a second mechanism.
+- **Hook and fixture stay separate.** The hook only captures or applies a
+  ledger action. Every corruption — zeroing an RC, forming an interior address,
+  writing `8` into a header, the pre-free sentinel — is a fixture write through
+  `heap_access::write_i64` on the captured production identity.
+- **M1 asserts retention, not reuse.** The negative control must not assert
+  that the base *is* re-handed; that would encode an allocator assumption.
+- **A4 needs M1 uncapped in both legs.** A FIFO release under a byte cap would
+  free the block with the corrupted layout.
+- **The A labels** follow the fault classes of the
+  [S116 detection-proof plan](../../tests/plan/s116-test-plan.md#4-track-c-positive-detection-proof).
+- **M3's end-to-end cell**, `m3_parity_catches_injected_imbalance`, runs the
+  compiler binary under this protocol. Its clean sibling is
+  `m3_parity_clean_child_exits_normally_control`.
 
 ### 7.4 Safety and concurrency constraints
 
-- At most one plant is armed and fires once via atomic compare/exchange.
-- A plant touches only a base/size captured from that production event;
-  range/lifecycle validation precedes any RC atomic or `Layout` construction
-  (this is what §7.5 delivers).
-- Retained blocks have one fixture owner and cleanup path. No test frees
-  reclaimed memory or relies on allocator address reuse.
-- **No control obtains its polarity by executing UB.** Every negative control
-  either arms a containment mode (§7.3) or stops before the unsafe follow-on.
-- The protocol is process-global because the allocator is; subprocess
-  isolation means rayon/reactor frees cannot miss a thread-local override.
-- Diagnostics include plant spelling and identity, not an unrelated address as
-  the sole oracle.
+- At most one plant is armed, and it fires once through an atomic
+  compare-exchange.
+- A plant touches only the base and size captured from its production event.
+  Validation precedes any RC atomic or `Layout` construction (§7.5).
+- Retained blocks have one fixture owner. No test frees reclaimed memory or
+  relies on allocator address reuse.
+- **No control obtains its polarity by executing UB.**
+- The protocol is process-global because the allocator is. Subprocess
+  isolation means rayon and reactor frees cannot miss a thread-local override.
+- Diagnostics name the plant and its identity.
 
-### 7.5 Mechanism prerequisite — seam checks are PREchecks (S118 refinement)
+### 7.5 Seam checks are prechecks
 
-**Load-bearing; without it the A-rows cannot be proven and §7.4's
-validation-before-mutation rule is unimplementable.**
+**Each gated check runs at the top of its seam, above the debug twin and above
+the mutation it guards.** Both orderings are load-bearing:
 
-As built, every env-gated release seam check runs *after* its mutation and
-*after* the always-on `debug_assert!` twin:
+- **Validation before mutation** (Principle 25): a check after the RMW is not a
+  check, and would let a negative control reach its polarity by executing the
+  mutation.
+- **Above the twin:** test children run the debug profile, where a twin that
+  fires first means the release face is never observed.
 
-| Seam | As-built order | Consequence |
-|---|---|---|
-| `rc::rc_inc` | `debug_assert!(is_live)` → `fetch_add` → gate `old_rc <= 0` | check is post-mutation |
-| `rc::consume_shallow` | `debug_assert!(is_live)` → `fetch_sub` → `debug_assert!(old_rc > 0)` → gate | debug twin aborts first |
-| `drop::atomic_dec_rc` | `debug_assert!(is_live)` → `fetch_sub` → `debug_assert!(old > 0)` → gate | debug twin aborts first |
-| `alloc::dealloc` | debug double-free + header-integrity asserts → gate `total_size < HeapHeader::SIZE` | debug twin aborts first |
+The triplets fail when only the order is reverted.
 
-Unit and e2e children run in the **debug profile**, where the `debug_assert!`
-twins are live. A plant that trips a twin never reaches the gate, so the
-positive assertion "the seam names itself" fails on a *working* detector — the
-row is unprovable as written. And a post-mutation check violates §7.4: the
-negative control's polarity would be obtained by executing the very mutation
-the detector exists to prevent.
+`seam_precheck(ptr, site)` is the single owner, called first in `rc_inc`,
+`consume_shallow` and `atomic_dec_rc`. When the gate is armed it reads the
+alleged base's two header words and rejects unless:
 
-**Ruling for this design: the env-gated seam checks move to the top of their
-seam, before the debug twins and before any mutation.** One shared owner in
-`diagnostics` (Principle 7):
+- **(a)** `header_size_plausible(alloc_size)`: the word converts to `usize`, is
+  at least `HeapHeader::SIZE`, and forms a valid
+  `Layout::from_size_align(size, 8)`; and
+- **(b)** `rc > 0`.
 
-- `seam_precheck(ptr, site) -> ()` — no-op unless `rc_check_release_enabled()`.
-  When armed: (a) read the alleged base's `alloc_size` word at offset 0 and
-  reject unless it **converts to `usize`, is `>= HeapHeader::SIZE`, and forms a
-  valid `Layout::from_size_align(size, 8)`** (the shared predicate
-  `diagnostics::header_size_plausible`); (b) read the RC word at offset 8
-  (relaxed) and reject unless `> 0`. Rejection is `seam_hard_fail` naming
-  `site`, the pointer, and which predicate failed. Called first in `rc_inc`,
-  `consume_shallow`, and `atomic_dec_rc`.
-- `alloc::dealloc` hoists its existing gated header check above the debug
-  block, and widens the predicate from `total_size < HeapHeader::SIZE` to the
-  same `header_size_plausible` negation, so a poisoned (M2-scrubbed) header
-  produces a located seam message instead of a `Layout` panic.
+`dealloc` applies predicate (a) to its `total_size` above its debug block, so a
+poisoned header produces a located message instead of a `Layout` panic.
 
-> **Predicate (a) — the alignment clause is RETRACTED (S118 W2b ruling, FIXME
-> 0879 accepted-and-amended).** The clause as first written ("`>=
-> HeapHeader::SIZE` **and** 8-aligned") false-positives on legitimate live
-> allocations: `HeapString`'s payload is `size_of::<i64>() + byte_len` **raw**
-> bytes (`heap_string.rs::payload_size`), so a 3-byte string's `alloc_size` is
-> `16 + 8 + 3 = 27` — a correct, deliberately ragged size the design's own
-> `scrub` already handles (`scrub_poisons_nonmultiple_of_8_tail`). Armed, the
-> literal clause would hard-fail at the first string `consume_shallow`/
-> `dealloc` in any real program, taking down the armed acceptance legs Track B
-> and 0859 depend on. **A detector that rejects correct programs is worse than
-> no detector**, and padding `HeapString` to buy the clause is a heap-layout
-> version bump, not a guard (`crates/cranelisp-intrinsics/CLAUDE.md` §"Heap
-> layout"; Principle 6) — rejected.
->
-> The Layout-validity form keeps **both faces the clause was motivated by**:
-> a poisoned base's word@0 is negative as `i64` so the `usize` conversion
-> rejects it, and an interior/non-base address's word@0 is a tag or field far
-> below `HeapHeader::SIZE`. It also delivers the clause's *stated* goal — "a
-> located seam message instead of a `Layout` panic" — which alignment alone
-> did not, since `Layout` validity, not alignment, is what the panic turns on.
->
-> **Residual weaker coverage, recorded honestly:** a wild or poisoned header
-> word that happens to be positive, `>= 16`, and Layout-valid is ACCEPTED by
-> (a) and must be caught by (b) (`rc > 0`) or not at all. Specifically, an
-> interior address whose word@0 is a plausible small positive value passes (a).
-> The alignment clause would have narrowed that band slightly and nothing
-> more; the grading language is unchanged — **plausibility, not proof of
-> basehood** — and `/qa`'s 0857 regrade grades against this form.
+- **No alignment clause.** A `HeapString`'s size is `16 + 8 + byte_len` raw
+  bytes (27 for `"abc"`), so requiring 8-alignment would reject every string
+  in an armed lane. Padding strings would be a heap-layout version change.
+- **Residual:** a wild word that is positive, at least 16 and Layout-valid
+  passes (a) and is caught by (b) or not at all. Grade the release face as
+  *plausibility, not proof of basehood*.
+- **Fault risk is signal.** A wholly wild pointer may fault at the header read
+  — a crash located at the offending seam, reachable only when armed.
+- **Off costs nothing new:** the cached gate load was already present.
 
-
-
-Properties:
-
-- **Byte-identical-off preserved.** Off = one cached bool load, already
-  present today; no new load, branch, or emitted IR.
-- **(a) is the release face of "the dec/inc target is a live allocation
-  base".** The `is_live` half needs `LIVE_ALLOCS` (debug-only), so the release
-  lane has never had one. The header-plausibility predicate is its honest
-  approximation: it catches an interior/non-base address whose word@0 is a tag
-  or field value far below the header size (A2), and it catches a
-  poisoned/quarantined base whose word@0 is `0xDEAD2FEE…` — negative as `i64`,
-  so it is not a size at all (A3). It is a **plausibility** check, not a
-  proof of basehood — `/qa`'s 0857 regrade must grade it at that tier and not
-  as "base-pointer validity proven".
-- **The existing post-RMW gates stay.** The precheck covers the planted,
-  single-threaded case; the post-RMW check keeps the concurrent-race window.
-  Both emit the same `[CRANELISP RC/ALLOC SEAM VIOLATION]` prefix.
-- **Fault risk is a signal, not a regression.** The precheck dereferences the
-  alleged base's first two words. A wholly wild pointer may fault at the read —
-  a located crash at the offending seam, strictly better than the silent RMW it
-  replaces, and reachable only with the gate armed.
-
-This is the second genuinely-new assert since S113 (A1 was the first); §5's A2
-row is amended by it. It is intrinsics-internal: no public item, no ABI, no
-catalog entry, no `cranelisp-types` surface — no `/arch` gate.
-
-#### Debug-twin discrimination (the rule the triplets assert against)
-
-In the debug profile each A-seam has two faces: the always-on `debug_assert!`
-twin (message: `panicked at …`) and the env-gated release check (message
-prefix: `[CRANELISP RC/ALLOC SEAM VIOLATION]`). The triplets prove the
-**release face** and discriminate by prefix:
-
-- **positive** asserts the seam prefix is PRESENT and names the plant + seam;
-- **negative control** asserts the seam prefix is ABSENT. The child may still
-  terminate abnormally via the debug twin — that is the UB containment doing
-  its job, recorded as the row's expected negative-control failure mode, never
-  mistaken for the detector's observation.
+**Discrimination.** Positives assert the seam prefix is present and names the
+plant and seam. Negative controls assert the prefix is absent; the child may
+still terminate through the debug twin (`panicked at …`), which is the
+containment working, not the detector.
 
 ### 7.6 Child-process harness shape
 
-Every proof runs in a **fresh subprocess**; nothing toggles a gate in a shared
-process (§7.1). Two child kinds, one construction discipline:
+Every proof runs in a fresh subprocess.
 
-- **Unit children** (rows M1, M2, M3 over-free, A1–A4) re-exec the crate's own
-  test binary via `std::env::current_exe()`, selecting the child body by test
-  name. The child body is an **ordinary non-`#[ignore]`d `#[test]`** that
-  returns immediately when the arm variable is absent. Two consequences worth
-  the choice: the normal suite runs every child body unarmed on every run,
-  which *is* acceptance item 4 (unarmed byte-inertness) executing continuously;
-  and no spec-bearing assertion hides behind `#[ignore]` (root `CLAUDE.md`
-  §Testing). The parent test — the committed assertion — is the one that spawns.
-- **Compiler children** (M3 leak, and the M3 clean control) spawn the built
-  `cranelisp` binary on a minimal program, as
-  `tests/intrinsics_m3_detection_s116.rs` already does.
+- **Unit children** (M1, M2, M3 over-free, A1–A4) re-exec the crate's test
+  binary through `std::env::current_exe()`, selecting the child by test name.
+  Each child body is an ordinary, non-ignored `#[test]` that returns
+  immediately when unarmed, so every suite run executes unarmed inertness. The
+  parent test spawns the child and makes the assertion.
+- **Compiler children** (M3 leak and its clean control) run the built
+  `cranelisp` binary on a minimal program.
 
-Both kinds: `.env_clear()`, then an explicitly enumerated allow-list at the
-call site — the absolute program path, `CRANELISP_LIB`,
-`CRANELISP_PLATFORM_PATH` (compiler children), any loader path the child
-genuinely needs, and the named detector/plant variables. Unique temp directory,
-`--no-cache` for compiler children, capture of stdout/stderr/status. A
-developer's ambient `CRANELISP_*` diagnostics are never inherited.
+Both use `.env_clear()` plus an enumerated allow-list at the call site: the
+absolute program path, `CRANELISP_LIB` and `CRANELISP_PLATFORM_PATH` for
+compiler children, any loader path genuinely needed, and the named detector and
+plant variables. Each gets a unique temporary directory, and compiler children
+run with `--no-cache`. They capture stdout, stderr and status, and inherit no
+ambient `CRANELISP_*` setting.
 
 ### 7.7 Acceptance mapping
 
-`tests/plan/s118-test-plan.md` §3.1 states four per-row requirements; this
-design satisfies them as follows, and `/dev`'s change-set is the evidence:
+`tests/plan/s118-test-plan.md` §3.1 sets four per-row requirements:
 
-| Test-plan requirement | Where this design meets it |
+| Requirement | Met by |
 |---|---|
-| 1. triplet at the production funnel; no bypass, no direct `Quarantine` instantiation | §7.2 event table + the `pub(crate)` read-only observation; §7.3 armed columns |
-| 2. fail-on-revert demonstrated and **recorded per row** | §7.3's negative-control column IS the recorded polarity; `/dev` records the revert demonstration per row in the change-set, `/review` verifies the record. The precheck hoist (§7.5) is what makes the positive observable at all, so a revert of it is itself a detected regression |
-| 3. subprocess isolation per §7.1 | §7.6 harness shape (`env_clear` + enumerated allow-list, unique tempdir, `--no-cache`, exact arm string, exactly one plant spelling) |
-| 4. unarmed byte-inertness, unit-pinned | §7.6's non-ignored child bodies run unarmed on every suite run; plus an explicit `diagnostics` unit row (§10) asserting no state construction, counter adjustment, or allocation when the arm variable is absent |
+| Triplet at the production funnel; no bypass | the §7.2 hook and read-only observation; the §7.3 arms |
+| Fail-on-revert, recorded per row | the §7.3 negative controls and the row comments in `diagnostics/tests.rs`; reverting the §7.5 order alone fails the A rows |
+| Subprocess isolation | §7.1 and §7.6 |
+| Unarmed inertness, unit-pinned | the non-ignored child bodies (§7.6) and the unarmed protocol row (§10) |
 
-Principle 5 (Testability is structural) requires the production-funnel hook.
-Principles 18 (Enforce invariants structurally) and 25 (Narrowing carries its
-check) require validation-before-mutation and both polarities — §7.5's precheck
-hoist is where P25 actually bites: a narrowing whose check runs *after* the
-narrowed operation is not a check. Principle 6 (Complexity has a budget)
-rejects a general fault API; the closed three-event / three-action set in §7.2
-is the budget. Principle 7 (Single source of truth) keeps existing funnels,
-counters, and the one `seam_precheck` owner authoritative. Principle 4
-(Parallel development first-class) is what §7.1's arming invariant protects:
-suite-global arming makes one lane's diagnostics everyone's failure.
+Governing principles: 5 (testability is structural), 6 (a closed three-event,
+three-action surface rather than a general fault API), 7 (one precheck owner),
+18 and 25 (validation before mutation), and 4 (arming stays per-lane).
 
----
+## 8. Cost and concurrency
 
-## §8. Quality attributes
+- **Unarmed:** one cached boolean or closed-enum load per gate. No allocation,
+  lock, counter write, IR or ABI change.
+- **Armed:** lane-only. The quarantine list is a `Mutex` with the same
+  contention profile as `LIVE_ALLOCS`; the plant slot is a one-shot
+  compare-exchange; the precheck adds two header loads.
+- The IVar spark's SeqCst RC is untouched.
+- **The arming discipline (§7.1) is a concurrency invariant:** a `LazyLock`
+  gate and a process-global ledger cannot be re-armed safely inside a
+  parallel-nextest process.
 
-Assessed this sprint (`/design` stewardship — untouched attributes are named as
-such, the confirmation being the stewardship):
+## 9. Layout and access ownership
 
-- **Simplicity (Principle 6):** three env gates over the two existing funnels +
-  two existing counters, one closed three-event/three-action hook, and one
-  shared `seam_precheck`. S118 adds exactly one new predicate
-  (header-plausibility, §7.5) and one shared precheck owner — no new module, no
-  new state, no new gate variable. Off = today's code.
-- **Maintainability:** the S118 blast radius is bounded to `diagnostics.rs` +
-  the four seam call sites + `drop.rs`'s constant/reader deletions. §9's
-  convergence *reduces* the maintained surface (three duplicate constants, one
-  duplicate reader, two public fns). The one place a future change-set can
-  quietly break the proofs is the precheck ordering — hence §7.5 states it as
-  an ordering contract, not a code comment.
-- **Observability:** the whole point — a free-class fault names its seam at the
-  faulting op (poison read / stale-dec rejection / parity dump) instead of N
-  crossings later or never. S118 adds the plant-identity line so a report says
-  *which* injected fault produced it (§7.2).
-- **Testability (Principle 5):** the seam is already single-sourced. The closed
-  protocol proves production paths in isolated children; mechanism-internal
-  helper tests are controls, not detection evidence. §7.6's non-ignored,
-  no-op-when-unarmed child bodies make byte-inertness a continuously-executed
-  property rather than a claim.
-- **Concurrency:** the quarantine list and counters are process-global; the
-  list uses a `Mutex` modelled on the existing `LIVE_ALLOCS`/`FREED_TRACKED`
-  ones, same contention profile, lane-only. The plant slot is a one-shot
-  compare/exchange. The IVar spark SeqCst-atomic RC (BC §4b invariant 3) is
-  untouched. **The arming invariant (§7.1) is a concurrency invariant**: a
-  `LazyLock` gate plus a process-global ledger cannot be safely re-armed
-  in-process under parallel nextest.
-- **Performance:** diagnostic modes retain their cached-gate cost. The fault
-  hook's unarmed path is one cached closed-enum read and `NoAction`; the
-  precheck's unarmed path is the cached bool load already present. No
-  allocation, lock, counter write, or IR/ABI change when off. Armed is
-  test-only use; the precheck's two extra loads are gate-only.
-- **Untouched this design:** the reactor, IO, and trace subsystems — no change
-  in S118; `reactor.md` and `intrinsics-table.md` are unaffected.
+The modes and plants read and write heap words, so they depend on one owner
+for each fact:
 
----
+- **`heap_access::{read_i64, write_i64}`** is the raw-access owner the modes,
+  the plants and `drop.rs` use. `drop.rs` keeps no private reader
+  (`crates/cranelisp-intrinsics/src/drop/tests.rs` guards it).
+- **`vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`** is the Vec
+  layout authority; `drop.rs` imports it rather than copying it (same guard).
+- **`drop.rs`** owns the ADT field offsets and `CLOSURE_DROP_GLUE_OFFSET`,
+  derived from `HeapHeader::SIZE`; `ivar.rs` imports the closure offset.
+- **There is no counter-reset seam.** `reset_counts` and `bytes_peak` are gone,
+  because a reset would erase M3's only evidence. The counters are
+  process-lifetime (bounded-context §4b, invariant 8). `alloc/tests.rs` guards
+  their absence.
 
-## §9. The single-owner convergence and the subtractive API change (landed)
+## 10. Unit-scenario matrix
 
-Arch ruling 6 verified at HEAD that S117 W5 converged only the buffer-lifecycle
-half of 0850. Ruling 7 attaches the owed S116 ruling-5 API removal to the same
-change-set. Both are **behaviour-invariant with zero public-API delta except
-the named subtraction**, which is why they ride together: one change-set, one
-invariance pin, one baseline regeneration.
-
-### 9.1 R1 — `drop.rs` raw-read convergence (0850, first half)
-
-`heap_access::{read_i64, write_i64}` is the single mechanical owner of
-`*(base + off)` (`crates/cranelisp-intrinsics/CLAUDE.md` §"Heap layout" says so
-already; the source contradicts it). At HEAD `drop.rs:62-69` carries a private
-`read_i64(base: i64, offset: usize)` — the same operation with a `usize`
-offset instead of `heap_access`'s `isize`.
-
-- Delete the private reader. Its thirteen call sites (`drop.rs:140, 141, 177,
-  178, 284, 287, 291, 409, 412, 419, 468, 470, 521`) take
-  `heap_access::read_i64`, adapting `usize` → `isize` at the call by making the
-  offset constants `isize` (preferred — the adaptation then happens once, at
-  the constant, not thirteen times) or by an `as isize` at each site.
-- `TAG_OFFSET`/`FIELD0_OFFSET`/`FIELD1_OFFSET` stay in `drop.rs` (they are ADT
-  field geometry, not Vec layout) but derive from `HeapHeader::SIZE` rather
-  than restating `16`: `const TAG_OFFSET: isize = HeapHeader::SIZE as isize;`
-  and the two field offsets as `TAG_OFFSET + 8`/`+ 16`. Removes the third
-  magic-number copy of the header size in this file at zero behavioural cost.
-
-### 9.2 R2 — Vec layout-authority convergence (0850, second half)
-
-`vec_runtime` is the single owner of Vec layout constants (already blessed and
-locked by `const _: () = assert!(…)`, FIXME 0245). `drop.rs:207-210` copies
-them under different names.
-
-- Delete `VEC_LEN_OFFSET`/`VEC_CAP_OFFSET`/`VEC_DATA_PTR_OFFSET`; use
-  `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`.
-- `consume_vec_with` (`drop.rs:236-238`) open-codes three raw reads through
-  `base.add(OFFSET)`; route all three through `heap_access::read_i64` with the
-  imported constants. The data pointer reads as an `i64` and casts to
-  `*mut i64` at the use, as elsewhere in the crate.
-- No new `pub(crate)` typed reader is required by this convergence; if one is
-  introduced it belongs in `vec_runtime` beside the constants, never in
-  `drop.rs`.
-
-This separates **layout authority** (`vec_runtime`, `HeapHeader`) from
-**mechanical access** (`heap_access`) without duplicating either (Principle 7).
-The recurrence history matters: this is the third-sprint recurrence of S87 F3 —
-the guidance was true in `CLAUDE.md` and false in source for three sprints, so
-the fix is to make the guidance true, never to weaken it (Principle 19 sibling:
-no module privileged by name — `drop.rs` is not exempt from the owner it cites).
-
-### 9.3 R3 — adjacent duplication, bounded
-
-`CLOSURE_DROP_GLUE_OFFSET = 24` exists twice inside this crate (`drop.rs:507`
-as `usize`, `ivar.rs:567` as `isize`) — same constant, same backend-emitted
-closure layout (Decision 11), two copies. It is adjacent to 0850's class but
-outside arch ruling 6's literal scope. Disposition: fold it in **only if** it
-lands in the same change-set with a demonstrably zero behaviour delta —
-`drop.rs` (the drop-glue module, the closure-teardown authority) declares the
-single `pub(crate) const` and `ivar.rs` imports it. If it does not fold
-cleanly, `/dev` files a FIXME rather than carrying a silent third copy.
-
-### 9.4 R4 — the subtractive API change (arch ruling 7, S116 ruling 5)
-
-Approved in S116, unlanded, still `pub` at `alloc.rs:86` (`bytes_peak`) and
-`alloc.rs:121` (`reset_counts`), still in the baseline
-(`public-api.txt:7, :15`). Retaining `reset_counts()` can zero the counters
-that are M3's *only* evidence, so it is a live hazard to the instrument this
-sprint is proving. Both have zero repository consumers.
-
-In the same change-set:
-
-- delete `reset_counts()` and `bytes_peak()`; no guarded replacement is
-  authorized absent a concrete consumer;
-- clean the rustdoc that cites them — `alloc.rs:63-80`, where four *surviving*
-  accessors (`alloc_count`, `dealloc_count`, `bytes_allocated`,
-  `bytes_current`) each describe themselves "since the last `reset_counts`".
-  After removal the correct statement is **monotonic process-lifetime
-  evidence** (`bytes_current` is live-bytes, not monotonic — state it as
-  process-lifetime, no reset seam). This rustdoc edit is the substantive half:
-  a dangling `[`reset_counts`]` intra-doc link is a rustdoc error, and a
-  "since the last reset" claim with no reset is exactly the doc-memory rot the
-  S115 audit's RI-3 recorded;
-- regenerate `crates/cranelisp-intrinsics/public-api.txt` via the canonical
-  `cargo public-api --omit blanket-impls,auto-derived-impls -p
-  cranelisp-intrinsics` — a subtractive-only two-line diff, riding side by side
-  with the source change (`design/arch/CLAUDE.md` §"Baseline-diff discipline");
-- grep-zero `reset_counts`/`bytes_peak` across the crate's `src/` + rustdoc.
-
-No cache-schema, heap-layout, C-ABI, or intrinsic-catalog change. **Cross-crate
-residue:** [intrinsics bounded context](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics), invariant 8 was amended with
-this change and now records the absent reset seam as load-bearing.
-
-### 9.5 R5 — record integrity (carried from S116, unchanged)
-
-The flat catalog carries no prose/test-name count. Its guard is
-`name_set_is_exactly_expected`; `EXPECTED_NAMES.len()` is the only numeric
-authority. All live reactor citations under the crate point to
-[`reactor.md`](reactor.md) in this directory, never to its retired `design/int/`
-path. The
-mechanical correction spans source, Cargo, and test `// spec:`/`// design:`
-citations and ends with a grep-zero check.
-
-### 9.6 Invariance pin
-
-`/qa` pins R1–R3's behaviour-invariance as: **every baseline RED stays
-byte-identically RED in this change-set**, and every currently-GREEN drop/Vec/
-ADT cell stays green (`tests/plan/s118-test-plan.md` §3.2). A RED that *flips*
-here is mis-attributed evidence that reopens attribution, not a win — the
-convergence deletes duplicate spellings of the same reads; it cannot fix an
-ownership defect. Unit-tier pins are the `heap_access`/`vec_runtime` rows of
-§10, including the grep-zero "no local reader or offset copy in `drop.rs`".
-
-## §9a. The detector-as-oracle protocol — retired unexecuted
-
-**Closed record. No obligation on this crate, now or on a trigger.**
-
-This section defined the intrinsics half of FIXME 0859 as a *use protocol*, not
-an artifact: the existing env-gated detector surface (M1/M2/M3 plus the
-RC/parity counters) used as an oracle over isolated single-declaration mutations
-in `ownership_facts.rs` (`ProjectionOf(0) → Fresh`, applied singly, restored
-after each experiment) in fresh subprocesses. Three constraints bound it —
-the §7 fault-plant protocol was explicitly **not** the instrument and no plant
-spelling, hook event, seam, carrier or observation surface was to be added for
-it; the oracle could not run before §7's detection proofs landed (the 0768 rule:
-an unproven detector cannot serve as an oracle); and the experiment protocol was
-`/qa`'s.
-
-It never ran, and it never will. `/qa` returned disposition 2 at S119 — the
-S117 survey was bounded-complete and its structural finding stands: at the
-current language boundary, materialisation erases every production RC
-distinction for projected provenance, so no declaration-sensitive witness can
-exist without manufacturing an observation surface, which the FIXME itself ruled
-out. The user accepted that on **2026-09-01**: R-2 closes on the existing
-evidence — typecheck transfer units distinguishing Projection provenance, the
-direct inline-body guards, and the nine committed production witnesses in
-`tests/s117_ownership_witnesses.rs` — **with a named revival trigger**, which
-fires when projection provenance becomes emission-live (ownership inference
-increment II's uniqueness/reuse tokens, or option-2 re-staging elision into
-`--release` under the differential lane).
-
-Consequences, stated so nothing is left looking scheduled:
-
-- **Nothing was ever built here for 0859**, and source confirms it: no 0859
-  reference exists anywhere in `crates/cranelisp-intrinsics/` or the `tests/` sources.
-- **The revival trigger's home is `tests/plan/PLAN.md`, and it is `/qa`'s.** If
-  it fires, the obligation returns as a plan row of *that* sprint and is
-  redesigned against whatever the emission surface then is — not by reviving
-  this protocol, whose premise (no production consumer of the distinction) is
-  what the trigger's firing would falsify.
-- The sibling conditional in `tests/plan/s118-test-plan.md` §3.5 describes the
-  same retired experiment and is `/qa`'s to retire.
-
----
-
-## §10. Unit-scenario matrix
-
-`/dev` owns every row below (`#[cfg(test)]` beside its seam, per the crate's
-externalized-`tests.rs` convention). The subprocess/e2e row is `/testing`'s.
-
-| Submodule | Normal / positive | Complexity / edge | Negative / detector |
+| Submodule | Positive | Edge | Negative or detector |
 |---|---|---|---|
-| `diagnostics` (protocol) | arm absent ⇒ `NoAction`, zero state construction, zero counter adjustment, zero allocation (acceptance item 4) | exact arm string + exactly one spelling parses and fires **once**; marker-size selection picks the intended allocation | unknown / empty / multiple spellings are a hard config error **before any plant state exists and before any action is applied** (first-hook-call timing — §7.1 ruling box, FIXME 0881), never a partial plant; wrong arm string is fully off |
-| `diagnostics` (precheck) | armed gate passes a well-formed live base, **including a ragged `HeapString` size** (the FIXME-0879 false-positive fence) | `alloc_size` exactly `HeapHeader::SIZE`; smallest and largest legal sizes; a non-multiple-of-8 legal size is ACCEPTED | poisoned header word (negative as `i64`) rejected; `alloc_size < HeapHeader::SIZE` rejected; Layout-invalid magnitude rejected; `rc == 0` and `rc < 0` rejected; **rejection precedes mutation** (the RC word is unchanged after a rejected call) |
-| `diagnostics` (modes) | clean M1/M2/M3 children exit normally | odd-byte scrub tail; quarantine cap 0 / exact / over, FIFO release order | both M3 report polarities (`allocs > deallocs`, `deallocs > allocs`); plant-identity line present when armed, **absent** when clean |
-| `alloc` | normal alloc/dealloc; counters monotonic across the process | header-integrity and double-free twins still fire in debug | M1 `M1StaleReuse`, M2 `M2StaleRead`, both M3 faces, A4 rejection **before** `Layout` construction |
-| `rc` | nullary tag no-ops; live inc/dec unchanged | RC 1→0 free transition; non-atomic-RC diagnostic composition | A1 `A1ZeroRc`, A2 `A2InteriorPointer`; no mutation before rejection |
-| `drop` | every `consume_*` behaviourally unchanged after §9 convergence | Vec zero len / zero cap; heap elements; recursive SList/Sexp/IO protocol | A3 `A3FreedPointer` through the validated precheck path |
-| `heap_access` / `vec_runtime` | round-trip through the shared accessor; typed Vec reads at LEN/CAP/DATA_PTR | largest field offset; the data-pointer field; `isize` offset adaptation | M2's stale read goes through the shared accessor; **grep-zero: no local reader and no offset copy in `drop.rs`** |
-| `catalog` / facade | exact expected name set; the four surviving counter accessors | missing / duplicate / unexpected name guards | count-bearing prose grep-zero; `reset_counts`/`bytes_peak` absent from src, rustdoc, and baseline |
-| subprocess / e2e (`/testing`) | clean M3 compiler child exits normally | `env_clear` + enumerated allow-list; unique tempdir; `--no-cache` | M3 leak child reports **then** aborts non-zero; parity-off child has no report line |
+| `diagnostics` protocol | unarmed ⇒ `NoAction`, no state, no count change, no allocation | exact arm plus one spelling fires once; marker size selects the intended allocation | unknown, empty or multiple spelling is a configuration error before any plant state or action; a wrong arm string is fully off |
+| `diagnostics` precheck | a well-formed live base passes, including a ragged `HeapString` size | size exactly `HeapHeader::SIZE`; smallest and largest legal sizes; non-multiple-of-8 accepted | poisoned word, undersized, Layout-invalid, `rc == 0` and `rc < 0` rejected; the RC word is unchanged after a rejection |
+| `diagnostics` modes | clean M1/M2/M3 children exit normally | odd-byte scrub tail; quarantine cap 0, exact and over, FIFO release order | both M3 polarities; the plant line present when armed, absent when clean |
+| `alloc` | normal cycle; counters monotonic | header-integrity and double-free twins fire in debug | `M1StaleReuse`, `M2StaleRead`, both M3 plants; A4 rejection before `Layout` |
+| `rc` | nullary tags no-op; live inc and dec unchanged | the 1 → 0 transition; non-atomic RC composition | `A1ZeroRc`, `A2InteriorPointer`; no mutation before rejection |
+| `drop` | every `consume_*` unchanged | Vec with zero length or capacity; heap elements; recursive `SList`/`Sexp`/IO walks | `A3FreedPointer` through the precheck |
+| `heap_access`, `vec_runtime` | accessor round trip; typed Vec field reads | largest field offset; the data pointer | the M2 stale read uses the shared accessor |
+| catalog and facade | exact expected name set; surviving counter accessors | missing, duplicate or unexpected names | `reset_counts` and `bytes_peak` absent |
+| end-to-end (`test`) | the clean M3 compiler child exits normally | `env_clear` plus allow-list; unique temporary directory; `--no-cache` | the leak child reports, then aborts non-zero; with parity off there is no report |
 
-## §11. Cross-references
+## 11. Cross-references
 
 - [`ownership-and-disposal.md`](ownership-and-disposal.md) §6 — IO-node
   teardown, whose unknown-tag and reserved-witness arms report under this
-  document's `RC_DEC_CHECK` gate.
-- `design/arch/safety-invariants.md` §2 (ladder tiers 3/5), §4 R8 — the owning
-  register row (arch-owned; FIXME `target: /arch` to change it).
-- `design/runtime/s118-structural-embedding-ownership.md` §4.1 — the FIXME-0835
-  detector-pointing plan. It is the first consumer of this design's kit as an
-  *investigative* instrument rather than a self-proof: D1 (`RC_DEC_CHECK` +
-  §7.5 precheck), D2 (M1), D3 (M2 + precheck, discriminating by **seam name**),
-  D4 (M3). Its §6.5 obligation is that the 0835 fix leaves the armed lane
-  unperturbed.
-- `tests/plan/memory-safety-coverage.md` §1 (oracle lane the modes feed), §5
-  (the blindness quantification), §6 (increment sequencing).
-- `tests/plan/s113-test-plan.md` MS-P4/MS-P6/MS-P7 — the lane rows the modes
-  ride; the acceptance run.
-- `tests/plan/s116-test-plan.md` §4/§6 — the A-label fault classes; positive
-  proof and owner acceptance.
-- `tests/plan/s118-test-plan.md` §1 (arming discipline + the static gate), §3.1
-  (the eight rows + four acceptance requirements), §3.2 (0850 invariance pin),
-  §3.3 (subtractive baseline cells), §3.4 (0857 regrade sequencing), §3.5
-  (0859 conditional) — the acceptance contract this design is written against.
-- `sprints/SPRINT.md` §Architecture review — rulings 2 (0859 oracle, no new
-  seam), 3 (lane-scoped arming), 6 (0850 target verified at HEAD), 7 (the
-  subtractive API change rides the 0850 change-set).
-- `crates/cranelisp-intrinsics/src/{alloc,rc,drop,diagnostics,heap_access,
-  vec_runtime}.rs` — the seams; the crate `lib.rs` `//!` is the
-  `/arch`-approved facade (unchanged apart from §9.4's subtraction).
-- `crates/cranelisp-intrinsics/CLAUDE.md` §"Debug hooks" / §"Heap layout" —
-  `/dev`-owned; the heap-layout paragraph already declares `heap_access` the
-  single owner, which §9 makes true in source.
-- `tests/intrinsics_m3_detection_s116.rs` — the two committed M3 e2e cells
-  whose assertions pin the arm string and the report identity (§7.2).
-
-## Outstanding
-
-- `/arch` — regrade safety-register row **R8** against the landed evidence
-  (FIXME 0857), carrying the two honesty limits above; both are recorded in
-  source, not inferred.
-- `/qa` — 0857's citation repair in
-  `tests/plan/s115-instrumentation-matrix.md`.
-- `/review` (intrinsics) — reject bypass tests, UB-dependent controls,
-  open-ended fault APIs, nonzero unarmed behaviour, any detector armed outside a
-  child `.env`/`env_clear`, and any instrument landed without its detection
-  proof in the same change-set.
+  document's `CRANELISP_RC_DEC_CHECK` gate.
+- `design/arch/safety-invariants.md` §2 (ladder tiers), §4 R8 (the owning row).
+- `design/runtime/s118-structural-embedding-ownership.md` §4.1 — the first use
+  of these detectors as an investigative instrument.
+- `tests/plan/memory-safety-coverage.md` — the oracle lane and the blindness
+  measurement.
+- The [S116 fault classes](../../tests/plan/s116-test-plan.md#4-track-c-positive-detection-proof),
+  the [S118 arming gate](../../tests/plan/s118-test-plan.md#1-certification-split-and-detector-arming-discipline-ruling-3-structural)
+  and the [S118 triplet acceptance](../../tests/plan/s118-test-plan.md#31-eight-detector-rows-plant-triplets-0848).
+- `crates/cranelisp-intrinsics/CLAUDE.md` §"Debug hooks" — the environment
+  variable reference for contributors.

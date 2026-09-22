@@ -222,7 +222,8 @@ pub(crate) mod strand;
 // the token/global admission pools + the hand-written demo leaves
 // (`design/arch/effect-concurrency.md` App. B). UNCONDITIONAL under the
 // single-trampoline cutover (§6.8.0a): the reactor IS the runtime, always linked.
-// A pure-blocking program constructs no mio `Poll` at runtime (lazy init).
+// Every drive constructs its mio `Poll` eagerly, including for a pure-blocking
+// program (`Reactor::new`).
 // **`pub(crate)`** (A4c #2): the entire reactor surface is host-internal — reached
 // only through `io::cranelisp_run_io` / the trampoline, with no cross-crate Rust
 // consumer (verified: zero `reactor::`/`EffectPoll`/`Reactor`/`join_io_leaves`

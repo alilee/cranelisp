@@ -2,7 +2,7 @@
 
 **Status:** DESIGN (S110 Phase 3), pre-implementation. Subordinate to
 `traits.md` (§6 constrained polymorphism / §7 dispatch) and `monomorphisation.md`
-(the §3.11.1 ambiguity backstop). A **coordinated typecheck+int** change-set:
+(the ambiguity backstop (`monomorphisation.md` §4)). A **coordinated typecheck+int** change-set:
 this note designs the **typecheck-side signal**; the cross-crate **carrier** (how
 the signal reaches int's entry/eval seam) is **ratified as (A)** (FIXME 0611
 resolved — the typecheck-local `CheckResult.unresolved_dispatch` field; see §5).

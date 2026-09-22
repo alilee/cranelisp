@@ -198,7 +198,7 @@ fn split_empty_string_returns_one_owned_empty_element() {
     drop_glue::consume_vec_of_string(result);
 }
 
-// spec: design/primitives/s122-typed-consume-consumers.md §3 — the private
+// spec: design/primitives/primitives.md §2.4 — the private
 // caller prepares raw Vec capacity before transferring fresh children to the
 // existing guarded receiver; empty and nonempty handoffs both balance.
 #[test]

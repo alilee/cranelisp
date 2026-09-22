@@ -453,7 +453,7 @@ pub extern "C" fn catch_runtime_error(thunk_closure: i64) -> i64 {
             // A panic crossed the bracket. If it crossed an actively-tracing
             // `(trace …)` body, the trace guard would otherwise stay stuck and
             // the next same-thread trace would spuriously raise "nested trace"
-            // (test-discovery.md §5 scope item 5 / 0258 NOTE-2). Both are
+            // (test-discovery.md §5 "Trace-guard cleanup" / 0258 NOTE-2). Both are
             // intrinsics-owned thread-locals, so the cleanup is in-crate.
             crate::trace::clear_trace_guard_on_panic();
             let msg_ptr = crate::heap_string::alloc_string(msg.as_bytes()) as i64;

@@ -638,10 +638,10 @@ fn resolved_target_fn_value_mono_rewrite_carries_mangled_carrier() {
 // spec: design/arch/backend-keyed-consumer.md §1.1.2
 // ---------------------------------------------------------------------
 
-// Member-aliased BARE ctor: `(Some 3)` where `Some` is a bare Import alias
-// of the canonical `member_key(Maybe, Some)` = `Maybe.Some`. The bare Var
-// must carry `test/Maybe.Some` (terminal storage key), NOT `test/Some`
-// (the written alias `resolved.fq` composed pre-flip).
+// BARE ctor: `(Some 3)` where `Some` is a name candidate onto the canonical
+// `member_key(Maybe, Some)` = `Maybe.Some`. The bare Var must carry
+// `test/Maybe.Some` (terminal storage key), NOT `test/Some` (the written
+// spelling).
 #[test]
 fn resolved_target_bare_ctor_carrier_is_canonical_member_key() {
     let mut tc = tc_with_prims();

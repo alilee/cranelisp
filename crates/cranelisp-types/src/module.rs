@@ -388,7 +388,7 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// reactivated without further generics churn.
     ///
     /// See Decision 32 (`LinkerStore` trait shape), Decision 35 (`Code`
-    /// enum + `L = ()` rationale), `interfaces.md` §"Symbol Table" for
+    /// enum + `L = ()` rationale), `interfaces.md` §"Symbol table and binding tree" for
     /// the field-shape contract.
     #[serde(skip)]
     pub linker: Option<L>,
@@ -1057,7 +1057,7 @@ impl std::fmt::Display for GotExhausted {
 
 impl std::error::Error for GotExhausted {}
 
-// --- Callable-slot witness (S119 types-first slice; concreteness-types-first.md §3) ---
+// --- Callable-slot witness (S119 types-first slice; design/arch/total-concreteness.md §2) ---
 
 /// A GOT slot index paired, at mint, with the concreteness check of the scheme
 /// it serves — the witness half of the `slot ⇒ is_concrete()` invariant
@@ -1077,14 +1077,14 @@ impl std::error::Error for GotExhausted {}
 /// (`#[serde(transparent)]` — the wire shape is the bare index, byte-identical
 /// to the `usize` it replaces). The cache-load loop therefore re-checks every
 /// restored slot-carrying entry: a restored slot whose scheme fails
-/// `is_concrete()` is a diagnosed `CacheStale` recompile
-/// (`concreteness-types-first.md` §3.6, the `GotSlotOutOfRange` precedent),
+/// `is_concrete()` is refused by `validate_lifecycle` as
+/// `LifecycleError::NonConcreteSlot` (`design/arch/total-concreteness.md` §2),
 /// never a trusted witness. Clone/copy can likewise move a slot beside a
 /// different scheme in-process; the standing falsifier for that residual is
 /// the NC-1 universal sweep (tier 5 of the §3.2 ladder).
 ///
 /// **Rejected relocation — slot inside `MonoDefnVariant` (`codegen_view`),
-/// ruled 2026-07-27** (`design/arch/concreteness-types-first.md` §3.10). The
+/// ruled 2026-07-27** (`design/arch/symbol-table-lifecycle.md` §8). The
 /// slot witnesses *scheme* concreteness for the whole slotted population —
 /// including `Realization::ExternShim` primitives and platform-effect entries
 /// whose bodies are Rust/DLL code that can never carry a view — and its
@@ -1094,8 +1094,7 @@ impl std::error::Error for GotExhausted {}
 /// scheme; the view carries no slot.
 ///
 /// **Rejected relocation — a `symbol → slot` register owned by/beside
-/// `GotTable`, ruled 2026-07-27** (`concreteness-types-first.md` §3.11
-/// ruling 1). A side map would single-home the *binding* while splitting the
+/// `GotTable`, ruled 2026-07-27** (`design/arch/symbol-table-lifecycle.md` §8). A side map would single-home the *binding* while splitting the
 /// *capability* from its determinant: the programme's invariant is
 /// slotted ⟺ concrete, and the concreteness determinant is the kind
 /// discriminator the slot sits beside (Principle 20, S84 — "is it concrete"
@@ -4939,11 +4938,7 @@ pub struct ExportSpec {
 /// **Standing target narrow (S69 Submission 21; re-affirmed S119, FIXME
 /// 0919).** `name: String → name: ModuleName` per the newtype rule
 /// (`design/arch/CLAUDE.md` §"String Newtypes"). **Trigger:** rides the
-/// first change-set that touches the field's construction sites — the S120
-/// concreteness wash's int step (`src/platform.rs` manifest-order mint,
-/// `concreteness-types-first.md` §4 step 5) or any earlier
-/// `/dev`(frontend) change-set touching
-/// `module_extract.rs::parse_platform`. The retired-shape fields
+/// first change-set that touches the field's construction sites. The retired-shape fields
 /// `manifest_path` and `alias` are NOT introduced — `manifest_path` is
 /// resolved data (belongs elsewhere); `alias` is excluded by spec §2.2.9
 /// grammar.

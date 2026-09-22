@@ -4,7 +4,7 @@ This section defines the syntactic grammar of Cranelisp -- how S-expression tree
 
 Throughout this section, EBNF non-terminals in `UPPER_CASE` refer to lexical tokens from Section 1. Non-terminals in `lower_case` are syntactic grammar rules defined here. The notation `(...)` denotes a parenthesized list form, `[...]` denotes a bracket form.
 
-## 2.1 Program Structure [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_repl_expression]
+## 2.1 Program Structure [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_repl_expression]
 
 A Cranelisp program is a sequence of top-level forms:
 
@@ -55,7 +55,7 @@ top_level    = defn_form
 
 Note: `const`, `const-`, `def`, and `def-` are library macros defined in the prelude. They are not primitive syntactic forms and are not described here. See [Section 9.10](09-macros.md#910-example-prelude-macros) for their definition and expansion.
 
-### 2.2.1 `defn` -- Function Definition [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_defn]
+### 2.2.1 `defn` -- Function Definition [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_defn]
 
 ```ebnf
 defn_form    = '(' defn_kw name docstring? single_sig ')'
@@ -360,7 +360,7 @@ The macro body receives its arguments as `Sexp` values and MUST return a value o
   `(if ~cond ~then ~else))
 ```
 
-**Rest parameters**: The `&` symbol before the last parameter captures all remaining arguments as an `(SList Sexp)`.
+**Rest parameters**: The `&` marker (§1.4.8) before the last parameter captures all remaining arguments as an `(SList Sexp)`.
 
 ```clojure
 (defmacro my-add [& args]
@@ -441,7 +441,7 @@ The `import` form brings names from other modules into the current scope. The bo
 
 See [§8.3](08-modules.md#83-import) for full import semantics including renames (§8.3.5) and accessibility-after-import (§8.3.11).
 
-### 2.2.8 `export` -- Module Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific]
+### 2.2.8 `export` -- Module Export [Tested crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_specific]
 
 ```ebnf
 export_form  = '(' 'export' '[' export_spec+ ']' ')'
@@ -480,7 +480,7 @@ The `platform` form declares which platform DLL provides IO operations for the p
 
 `platform` is processed during the module loading phase. It is NOT an AST node.
 
-## 2.3 Expression Forms [Tested]
+## 2.3 Expression Forms [S122 — partial: §2.3.9 is partially evidenced and §2.3.10 carries no test annotation; the other children are annotated]
 
 ```ebnf
 expr         = literal
@@ -494,7 +494,7 @@ expr         = literal
              | apply_expr
 ```
 
-### 2.3.1 Literals [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_integer_literal]
+### 2.3.1 Literals [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_integer_literal]
 
 ```ebnf
 literal      = INTEGER
@@ -512,7 +512,7 @@ true          ; Bool
 "hello"       ; String
 ```
 
-### 2.3.2 Variable Reference [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_variable]
+### 2.3.2 Variable Reference [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_variable]
 
 ```ebnf
 var_ref      = SYMBOL
@@ -527,7 +527,7 @@ Option.Some   ; constructor reference
 math/sin      ; qualified reference
 ```
 
-### 2.3.3 `let` -- Local Bindings [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_let]
+### 2.3.3 `let` -- Local Bindings [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_let]
 
 ```ebnf
 let_expr     = '(' 'let' '[' binding+ ']' expr ')'
@@ -553,7 +553,7 @@ Binding values MAY include type annotations:
   x)
 ```
 
-### 2.3.4 `if` -- Conditional [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_if]
+### 2.3.4 `if` -- Conditional [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_if]
 
 ```ebnf
 if_expr      = '(' 'if' expr expr expr ')'
@@ -567,7 +567,7 @@ The `if` form evaluates a condition, then evaluates exactly one of the two branc
   "non-positive")
 ```
 
-### 2.3.5 `fn` -- Lambda Expression [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_lambda]
+### 2.3.5 `fn` -- Lambda Expression [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_lambda]
 
 ```ebnf
 fn_expr      = '(' 'fn' param_list expr ')'
@@ -584,7 +584,7 @@ The `fn` form creates an anonymous function (lambda). The parameter list uses th
   (fn [x] (+ x n)))      ; closure capturing n
 ```
 
-### 2.3.6 Function Application [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_apply]
+### 2.3.6 Function Application [Tested+Neg crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_apply, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_vec_parses_as_call, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_12_runtime.rs::apply_arg_dual_panic_first_error_wins, tests/spec_04_expressions.rs::auto_curry_two_param_partial_apply, tests/spec_04_expressions.rs::auto_curry_too_many_args_error_neg]
 
 ```ebnf
 apply_expr   = '(' expr expr* ')'
@@ -592,7 +592,7 @@ apply_expr   = '(' expr expr* ')'
 
 A parenthesized list whose head is not a special-form keyword is a function application. The first element (callee) MUST evaluate to a function. The remaining elements are arguments. Arguments are evaluated left to right.
 
-If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`, `trace`), the form is parsed as the corresponding special form instead.
+If the callee is a keyword (`let`, `if`, `fn`, `match`, `trace`), the form is parsed as the corresponding special form instead.
 
 ```clojure
 (inc 5)                       ; named function call
@@ -608,7 +608,7 @@ If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`, `trace`), the for
   (inc 5))                    ; -> 6
 ```
 
-### 2.3.7 `match` -- Pattern Matching [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_match]
+### 2.3.7 `match` -- Pattern Matching [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_match]
 
 ```ebnf
 match_expr   = '(' 'match' expr '[' match_arm+ ']' ')'
@@ -631,7 +631,7 @@ The arms bracket MUST contain an even number of elements (alternating patterns a
    Blue "blue"])
 ```
 
-### 2.3.8 Type Annotation [Tested+Neg crates/cranelisp-frontend/src/reader.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_type_mismatch_is_unify_error, tests/spec_08_modules.rs::annotation_unknown_type_is_error, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_08_modules.rs::annotation_in_paren_unify_precedes_not_a_function]
+### 2.3.8 Type Annotation [Tested+Neg crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/spec_08_modules.rs::annotation_binds_top_level_following_form, tests/spec_08_modules.rs::annotation_type_mismatch_is_unify_error, tests/spec_08_modules.rs::annotation_unknown_type_is_error, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_08_modules.rs::annotation_in_paren_unify_precedes_not_a_function]
 
 ```ebnf
 annotate_expr = annotation expr
@@ -677,22 +677,20 @@ The annotation is checked at compile time -- the expression's inferred type MUST
 | `(:Int 42)` | not-a-function (Int not callable) | the list is the application of the annotated element `(:Int 42)`; the annotation unifies (`Int` ✓) first, then the application fails because an `Int` value is not callable |
 | `(:Float 42)` | unify error preceding the not-a-function error | the annotation's unify check (`Int` vs `Float`) is performed during typechecking before the application's not-a-function check |
 
-### 2.3.9 Vec Literal [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_vec_parses_as_call]
+### 2.3.9 Vec Literal [S122 — partial: crates/cranelisp-frontend/src/ast_builder/tests.rs::test_vec_lit_integers and crates/cranelisp-frontend/src/ast_builder/tests.rs::test_vec_lit_empty evidence the bracket-only literal, crates/cranelisp-typecheck/src/infer/tests.rs::test_infer_vec_lit_type_mismatch the same-element-type rejection, tests/spec_04_expressions.rs::vec_literal_empty the pinned empty literal, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_vec_parses_as_call that `(vec ...)` is no core form, and tests/spec_11_stdlib.rs::macro_vec_elements the prelude macro route; `(vec ...)` rejected where no `vec` macro is available, a user binding named `vec` accepted, and the not-first-class rule are unevidenced]
 
 ```ebnf
 vec_lit      = '[' expr* ']'
-             | '(' 'vec' expr* ')'
 ```
 
 A bracket form in expression position is a Vec literal — a **variadic special form** recognised by the reader/typechecker, **not** a `Fn` and not an overloaded function. It accepts any number of element forms; it cannot be referenced as a value, partially applied, or used as an application callee. All elements MUST have the same type. An empty bracket `[]` is the zero-element case, typed `(Vec a)` with `a` unconstrained (its element type is inferred from context). An unpinned `[]` reaching code generation is the [§3.11](03-types.md#311-ambiguous-types) ambiguity case (a type error, fixed by `:(Vec Int) []`); see [§4.10](04-expressions.md#410-vec-literal).
 
-The `(vec ...)` form is an alternative syntax with identical semantics.
+`vec` is an ordinary library name, not core syntax and not reserved. A parenthesised `(vec ...)` form is an ordinary list form whose head is resolved by normal name resolution ([§8.6](08-modules.md#86-name-resolution)), including macro resolution ([§9.3](09-macros.md#93-macro-expansion)): where `vec` resolves to a `vec` macro — through the prelude, an import, or a qualified reference ([§9.3.6](09-macros.md#936-qualified-macro-references)) — the form is that macro's invocation; where it resolves to another binding, such as a user-defined function, the form applies that binding. The reference prelude's `vec` macro expands to a bracket literal ([§9.10.10](09-macros.md#91010-vec)). Neither the bracket literal nor the `vec` macro is a first-class function.
 
 ```clojure
 [1 2 3]                       ; Vec of Int
 ["a" "b" "c"]                 ; Vec of String
 []                            ; empty Vec (type inferred)
-(vec 1 2 3)                   ; same as [1 2 3]
 ```
 
 ### 2.3.10 `trace` -- Execution Trace [S20]
@@ -856,7 +854,7 @@ A symbol in pattern position is interpreted as follows:
 
 There is no nested pattern matching -- constructor patterns bind field values to variables but do not recursively match on those fields.
 
-## 2.6 Visibility [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_defn_private]
+## 2.6 Visibility [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_defn_private]
 
 Definitions may be public (visible to importing modules) or private (visible only within the defining module). The visibility is indicated by a `-` suffix on the definition keyword:
 
@@ -881,7 +879,7 @@ Library macros such as `const`/`const-` and `def`/`def-` follow `defmacro` visib
 
 By default (without the `-` suffix), all definitions are public. Private definitions MUST NOT be accessible to importing modules through `import` or `export`.
 
-## 2.7 Docstrings [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_defn_with_docstring]
+## 2.7 Docstrings [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_defn_with_docstring]
 
 An optional docstring (a string literal) MAY appear between the name and the parameter list or body of a definition. Docstrings are preserved by the implementation and are available for introspection.
 
@@ -979,7 +977,7 @@ Where `COLON_PREFIX` is a colon-prefixed symbol from the lexical grammar (e.g., 
 
 The colon serves as the annotation introducer — a `^`-style reader macro binding the following type form (§2.3.8), so **whitespace between the colon and that form is permitted** (`: Int` ≡ `:Int`). A colon followed (with or without intervening whitespace) by an uppercase-led name is a named type annotation; by a lowercase-led name, a type variable or trait constraint; by a parenthesized form, a compound type annotation. The bound form MUST be a type expression (§2.4). [S114] The introducer and its two halves are read as **one** form (`annotated_form`, §1.8) — the fold is a reader rule, so the `annotation` non-terminal above never stands alone in a read tree. [S115]
 
-## 2.9 Reserved Words [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_reject_trace_defn_name]
+## 2.9 Reserved Words [S122 — partial: crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_trace_defn_name, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_trace_let_binder, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_trace_fn_param, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_trace_match_pattern_var, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_trace_constructor_pattern_binding, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_trace_defmacro_name, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_trace_defmacro_param and crates/cranelisp-frontend/src/ast_builder/tests.rs::test_constructor_name_unaffected evidence the `trace` binding rejection with its control; that `vec` is outside the reserved set (bindable) and that the other reserved words cannot be shadowed are unevidenced]
 
 The following names are **reserved words** — they are recognised directly by the parser and AST builder (and, for the special forms below, the typechecker) and have dedicated syntax. They are not ordinary identifiers, are always available with no import and no module path, and **cannot be shadowed**:
 
@@ -988,7 +986,7 @@ reserved_word = 'defn' | 'defn-' | 'deftype' | 'deftype-'
               | 'deftrait' | 'deftrait-' | 'impl'
               | 'defmacro' | 'defmacro-'
               | 'mod' | 'mod-' | 'import' | 'export' | 'platform'
-              | 'let' | 'if' | 'fn' | 'match' | 'vec' | 'trace'
+              | 'let' | 'if' | 'fn' | 'match' | 'trace'
 ```
 
 `trace` is a member of this list: it is a **root special form** (§2.3.10), recognised before any name lookup, always available with no import and no module path (there is no `primitives/trace`).

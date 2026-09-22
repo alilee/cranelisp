@@ -261,8 +261,9 @@ provider the REPL behaves exactly as before (see "Fallback" below). [S107]
 **What streams — the terminal `Done` prose only (Phase-2 de-risk constraint).** Streaming applies to
 the agent's **terminal answer** — the prose the turn ends on (the model's final `Done` response, the
 one that produced the dead-prompt pause). **Tool-call turns are NOT streamed this sprint**: when the
-agent reaches for a read (§17.2, §17.12) the pull command and its result render as today
-(unframed, after the tool runs). This is an explicit, **non-foreclosed** seam — a deliberate S107
+agent reaches for a read, a probe renders nothing in the session (§17.2.1), and a read that is not a
+probe renders its `agent>` command line and result as today (unframed, after the tool runs; §17.12
+site 1). This is an explicit, **non-foreclosed** seam — a deliberate S107
 non-goal, not an architectural limit — and the streaming design MUST leave it reachable later
 (streamed tool-call delta assembly is the fiddly part deferred). [S107]
 

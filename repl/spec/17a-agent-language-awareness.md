@@ -69,22 +69,10 @@ read off disk, the same category as `/help` or `/list`. Accordingly:
 
 `/syntax` is in the agent's **read-only pull allowlist** (§17.3) — the agent issues
 `/syntax <topic>` to ground itself on a syntax point it does not know, exactly as it pulls
-`/source` or `/info`. When the agent pulls it, the issued command line carries the
-**`agent>` agent-input prompt** (§17.12) and its result renders **unframed** below — the
-same who-typed-what honesty as every other agent pull (§17.12 site 1). Illustratively
-(colour elided):
-
-```
-user> /ask how do I write a higher-kinded type?
-▌ Let me check the exact syntax.
-agent> /syntax hkt
-<the hkt topic's dense, plain-text content as authored>
-▌ So you'd write it like this: ...
-```
-
-The `agent>` line is agent-issued input; the content beneath it is the deterministic
-`/syntax` output; the `▌` lines are the agent's prose — three honestly-marked origins
-(§17.12). [S90]
+`/source` or `/info`. A pull issued to check syntax is a private probe under
+§17.2.1: its command and result do not appear in the user session. The agent
+shows its conclusions and any resulting code. A human-issued `/syntax` command
+still displays the topic's dense, plain-text content. [S90] [S109]
 
 **It is LLM-free.** `/syntax` is a static curated asset; it works **with the agent absent
 or feature-off** — a human types `/syntax match` in a default (non-`agent`) build and gets
@@ -503,10 +491,10 @@ notice. [Tested src/repl_input.rs::piped_input_is_not_interactive_so_completion_
 `/search` is both a **human REPL command** (typed at the prompt to find a library function
 before importing) and an **agent read-only pull-tool** (§17.3) — the agent issues `/search …`
 to discover a reachable search-eligible symbol it needs, exactly as it pulls `/syntax` or
-`/exports`, through the **same ordinary tools-as-visible-REPL-commands pull** every other command
-uses (R11);
-there is no agent-specific search path. When the agent pulls it, the issued line carries the
-**`agent>` prompt** (§17.12) and the result renders **unframed** below. The command is a
+`/exports`, through the same ordinary REPL command surface (R11);
+there is no agent-specific search path. A pull issued to discover a symbol is a
+private probe (§17.2.1): its command and result are not echoed into the session.
+The agent shows the conclusions and proposed code. The command is a
 **normal default-build facility** (the index is deterministic and built by the nice workers;
 the command works with the agent absent — §17.19 preamble, R9). The natural agent workflow the
 dual use enables: *search → find the symbol + its import form → propose the import (and the

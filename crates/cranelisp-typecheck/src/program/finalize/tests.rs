@@ -251,7 +251,7 @@ fn ambiguous_form_message_names_clause_and_param() {
     assert!(!plain.contains("__"), "no synthetic binder leak: {plain}");
 }
 
-// spec: design/typecheck/check-form-api.md — check() via check_form produces identical CheckResult
+// spec: design/typecheck/typecheck.md §5 — check() via check_form produces identical CheckResult
 #[test]
 fn test_check_form_identity_simple_defn() {
     // Run a simple defn program through check() and verify the result matches expectations.
@@ -298,7 +298,7 @@ fn test_check_form_identity_simple_defn() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md — typedef + defn identity
+// spec: design/typecheck/typecheck.md §5 — typedef + defn identity
 #[test]
 fn test_check_form_identity_typedef_plus_defn() {
     let mut tc = tc_with_prims();
@@ -339,7 +339,7 @@ fn test_check_form_identity_typedef_plus_defn() {
     assert!(any_typed);
 }
 
-// spec: design/typecheck/check-form-api.md — forward reference identity
+// spec: design/typecheck/typecheck.md §5 — forward reference identity
 #[test]
 fn test_check_form_identity_forward_reference() {
     let mut tc = tc_with_prims();
@@ -380,7 +380,7 @@ fn test_check_form_identity_forward_reference() {
     assert!(any_typed);
 }
 
-// spec: design/typecheck/check-form-api.md — constrained fn identity
+// spec: design/typecheck/typecheck.md §5 — constrained fn identity
 #[test]
 fn test_check_form_identity_constrained_fn() {
     let mut tc = tc_with_prims();
@@ -416,7 +416,7 @@ fn test_check_form_identity_constrained_fn() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md — expression-only identity
+// spec: design/typecheck/typecheck.md §5 — expression-only identity
 #[test]
 fn test_check_form_identity_expr() {
     let mut tc = tc_with_prims();
@@ -443,7 +443,7 @@ fn test_check_form_identity_expr() {
     assert!(any_typed, "expr_types should contain the literal's type");
 }
 
-// spec: design/typecheck/check-form-api.md — multi-sig defn identity
+// spec: design/typecheck/typecheck.md §5 — multi-sig defn identity
 #[test]
 fn test_check_form_identity_multi_sig() {
     let mut tc = tc_with_prims();
@@ -521,7 +521,7 @@ fn test_check_form_identity_multi_sig() {
 
 // ---- Category 2: Per-Form Basics ----
 
-// spec: design/typecheck/check-form-api.md — accumulator merge grows with each form
+// spec: design/typecheck/typecheck.md §5 — accumulator merge grows with each form
 #[test]
 fn test_check_form_accumulator_merge() {
     let mut tc = tc_with_prims();
@@ -570,7 +570,7 @@ fn test_check_form_accumulator_merge() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md — finalize resolves pending and produces complete result
+// spec: design/typecheck/typecheck.md §5 — finalize resolves pending and produces complete result
 #[test]
 fn test_check_form_finalize_produces_complete_result() {
     let mut tc = tc_with_prims();
@@ -615,7 +615,7 @@ fn test_check_form_finalize_produces_complete_result() {
 
 // ---- Category 5: Edge Cases ----
 
-// spec: design/typecheck/check-form-api.md §Constrained polymorphism — detection
+// spec: design/typecheck/traits.md §6 "Detection" — detection
 #[test]
 fn test_check_form_constrained_fn_detection() {
     let mut tc = tc_with_prims();

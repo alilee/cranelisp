@@ -25,11 +25,11 @@ run time — the reactor, async trampoline, `consume_io_tree`, permit pools, RC/
 lifetime-across-suspension — is a runtime-library implementation detail encapsulated in
 **`cranelisp-intrinsics`** (`design/intrinsics/reactor.md`), which `cranelisp-backend` emits
 calls into (`design/arch/bounded-contexts.md` §4b). `/int`'s only contact with that runtime is the **thin host-client seam**
-(`design/intrinsics/reactor.md` §0): it constructs the reactor once through the single C-ABI entry
-`cranelisp_run_io`, drives `block_on_reactor` for `--run`/REPL, propagates the loader ABI
-refusal, and reads the optional `/strand` dev sink. It never reaches into reactor internals.
-`bind-chain-analysis.md` — the *compile-time* IO-scheduling pass — stays here; its finer
-ownership is the open question in FIXME 0486.
+(`design/intrinsics/reactor.md` §0): it drives IO through the single C-ABI entry `cranelisp_run_io` for `--run`/REPL
+and propagates the loader ABI refusal. Reactor construction and execution remain
+inside intrinsics. It never reaches into reactor internals.
+`bind-chain-analysis.md` — the *compile-time* IO-scheduling pass — is int's: it is a
+pipeline transform, while execution of the nodes it emits is the runtime library's.
 
 ## Document index
 
@@ -62,11 +62,13 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification, slot versioning, the retention pool and persistence. Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
 | `session-persistence.md`, `symbol-table-cache.md`, `cache-hit-loading.md` | Save/regenerate, the cached symbol table, and cache-hit module loading; `cache-hit-loading.md` §0 is the restoration-parity rule. |
 | `io-integration.md` | Host-side IO forcing and platform-DLL load wiring. |
+| `result-owner.md` | The one program-result owner across REPL, `--run`, cache-hit and linked startup: observe, then release exactly once through canonical type glue. |
+| `macro-turn-ownership.md` | The macro-clause invocation protocol: the declared all-Owned clause ABI, single-owner argument transfer by ABI crossing, and exactly-once result discharge through `consume_sexp`. |
 | `bind-chain-analysis.md` | The compile-time automatic-IO-scheduling pass (`spec/10-io.md` §10.12), including how it reads a platform function's scheduling class (`design/int/bind-chain-analysis.md` §4). |
 | `observability.md` | The trace and event sinks. |
 | `macro-resolver-impl.md`, `cranelisp-toml.md`, `repl-lifecycle.md` | Macro resolution, project configuration, REPL lifecycle and project-root resolution. |
-| `agent.md` | The embedded-agent and `/search` index design — large and active. |
-| `terminal-styling.md` | The `styled::render` role-span seam. |
+| `agent.md` | The embedded agent (dispatch, turn loop, harvest, write gates, rendering, log and trace), `/refs`, `/tests-for`, `/syntax` and the interim `/search` index. Section numbers are pinned by live source. |
+| `terminal-styling.md` | The layered styling interior below the `styled::render` role-span seam, and the pretty-printer layout. |
 | `concurrency/` | As-built structural, protocol and lifecycle diagrams for the scheduling axis. |
 
 ### Active feature designs
@@ -74,8 +76,6 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | Doc | Subject |
 |---|---|
 | `s117-conformance-recovery.md` | The prepared-turn transaction (prepare → whole-batch codegen → publish, one cadence for eval and worker), its presentation readers, and the source-ordered macro checkpoint (§1.1.2/§2.1). |
-| `macro-turn-ownership.md` | The delivered macro-turn ownership protocol: single-owner marshalling, transfer by ABI crossing, exactly-once discharge through `consume_sexp`, the `MacroClauseAbi` declaration. |
-| `result-owner.md` | The one program-result owner across REPL / `--run` / cache-hit / linked startup — observe-then-release, exact-once, type-directed. |
 | `index-worker-isolation.md` | The index-feed isolation contract (background half). |
 | `prelude-table-write-isolation.md` | The foreground public-write chokepoint, including candidate-batch validation before table or GOT publication (foreground half). |
 | `quote-shield.md` | `expand_scoped` holds quoted data out of Pass-1 macro expansion. |
@@ -83,7 +83,6 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `expansion-qualification-scope.md` | `qualify_expanded_sexp` is scope-aware, skipping value-level binder slots. |
 | `impl-redefinition-hot-reload.md` | A same-type re-impl hot-reloads through the existing `commit_staging_to_live` → `commit_slotted_def` GOT-patch path; no impl-specific parallel path. |
 | `multi-sig-introspection.md` | Multi-signature introspection, with the D1 constraint-display read-follow (§2.4). |
-| `macro-marshal-rc-protection.md` | The 0638 diagnosis and its negative-control-twin argument. **§2's mechanism is superseded by `macro-turn-ownership.md` Rule 2** — read it as evidence, not as current mechanism. |
 | `private-submodule-import.md`, `symbol-table-generics.md` | Private submodule imports; generics in the session symbol table. |
 
 ### Reference lineage

@@ -94,7 +94,7 @@ user's approval before implementation and rides its source change-set under
 |---|---|
 | `form.rs` | The public entry functions (§2). |
 | `program/` | The cluster pipeline (§5): `register` (Pass 1, including `register/multi_sig`), `body` (Pass 2), `finalize` (post-passes, harvest windows, ambiguity, publication), `mono_collect` (call-site demand collection), `callees` (the callee harvest), `support` (the concrete codegen-view builder). Its cut is recorded in `program-decomposition.md`. |
-| `traits/` | `registry` (trait declarations), `impl_check` (impl registration, HKT impl methods, method minting), `dispatch` (method resolution and impl lookup at the trait's home), `monomorphise` (the instance spine), `type_resolve` (trait and HKT signature wrappers over `resolve`). Its cut is recorded in `s87-traits-decomposition.md`. |
+| `traits/` | `registry` (trait declarations), `impl_check` (impl registration, HKT impl methods, method minting), `dispatch` (method resolution, dispatch-argument selection and impl lookup at the trait's home), `monomorphise` (the instance engine, `monomorphisation.md` §3.9), `type_resolve` (impl-target, declaration-identity, occurrence and constructor-variable predicates; the trait and HKT signature wrappers over `resolve` are `TypeCheckEnv` methods in `checker.rs`). `mod traits` is private and nothing in it is re-exported publicly; a helper shared between its submodules is `pub(super)`, and `pub(crate)` only when a caller outside `traits/` exists. |
 | `ownership/` | The ownership-inference pass: `classify`, `transfer`, `fixpoint`, `confinement`, `uniqueness`, `publish`, `sites`, `trace` (`design/typecheck/ownership-inference.md` §1.3). |
 | `checker.rs` | `TypeCheckEnv`, `CheckState`, cross-module lookup and the scope-resolution seam (§3.3). |
 | `infer.rs` | Algorithm W per expression variant, with `infer_var` as the reference-resolution chokepoint. |
@@ -121,13 +121,15 @@ assessments remain in Git.
 
 Short-name resolution is current-module-only, with per-symbol chain-follow
 through `Import`/`Reexport` entries — never a universe scan (Principle 17;
-`crates/cranelisp-typecheck/CLAUDE.md` §"Module-locality").
-`resolve_terminal_entry_and_home` and `chain_follow_to_home` are the navigation
-primitives, staging-aware through `probe_module_entry_owned`. Every bare-name
-reference resolves through the one scope seam (`TypeCheckEnv::scope_resolve` /
-`scope_resolve_in`), and every definition's name-freedom check through
-`reject_def_over_binding`; the prelude participates only as the fallback those
-seams already apply.
+`crates/cranelisp-typecheck/CLAUDE.md` §"Name resolution").
+`resolve_terminal_entry_and_home` is the navigation primitive, staging-aware
+through `probe_module_entry_owned`. Every bare-name reference resolves through the
+one scope seam: `TypeCheckEnv::scope_resolve` / `scope_resolve_in` for a single
+terminal, or `scope_resolve_candidates` when the use site selects among
+same-spelling canonical candidates (`use-site-candidate-selection.md`).
+Registration rejects nothing for sharing a spelling with an import, export,
+prelude binding or derived member (`spec/08-modules.md` §8.6.4); the prelude participates only as
+the fallback those seams apply.
 
 A centralised lookup index is not planned: it would be a bookkeeping change with
 no measured performance need.
@@ -169,12 +171,56 @@ no measured performance need.
    ambiguity backstop, the two post-settlement monomorphisation harvest windows
    (`monomorphisation.md` §3.3), and final publication: each body's AST and
    complete callee set are published together, once
-   (`crates/cranelisp-typecheck/CLAUDE.md` §"`Def.callees` completeness
-   contract"). The ownership pass then runs over the published concrete bodies
+   (`crates/cranelisp-typecheck/CLAUDE.md` §"`callees` completeness"). The
+   ownership pass then runs over the published concrete bodies
    (`design/typecheck/ownership-inference.md` §1.2).
 
 All writes go through `SymbolTableAccess`. `int` commits the staging table only
 when the whole cluster succeeds.
+
+### 5.1 Per-form dispatch
+
+`check_forms` drives the crate-private per-form entry `program::check_form` once per
+form per pass, merges each `FormCheckResult` into one `ModuleCheckAccumulator`, then
+calls `finalize_check_result`. None of these is public; `check_forms` is the entry.
+
+| Form | Pass 1 (`Register`) | Pass 2 (`CheckBody`) |
+|---|---|---|
+| Type definition | Register the type and its constructors (`adt.md`). | Nothing. |
+| Trait declaration | Register the declaration and its methods (`traits.md` §2). | Nothing. |
+| Trait impl | Register the impl and check its written method bodies (`traits.md` §3); return the generated default methods. | Nothing. |
+| Single-signature definition | Record the body's registration (fresh parameter and return variables) in the body ledger. | Check the body against that registration. An impl method already checked in Pass 1 is skipped. |
+| Multi-signature definition | Register one entry per clause (`monomorphisation.md` §11). | Check each clause body; overload settlement happens in finalize. |
+
+A REPL expression reaches typecheck already wrapped as a zero-parameter definition
+named `__expr` and is checked like any definition; it is a monomorphisation root
+(`monomorphisation.md` §3.2). The test-only driver (`program/test_driver.rs`)
+performs the same wrapping for in-crate tests.
+
+### 5.2 Pass invariants
+
+1. **Every registration precedes every body check.** Checking a body whose
+   definition was never registered is an error, not an implicit registration.
+   This is what lets a body call a definition later in the cluster (spec §3.5.2).
+2. **Pass 1 is one sweep in form order.** Each form registers when it is reached;
+   there is no hidden sort by form kind. Default methods produced by impls are
+   registered after the sweep and their bodies are checked after the Pass-2 sweep.
+   A body may refer to any definition in the cluster. A declaration-level reference
+   to a type declared later in the cluster is a different matter; see the open item
+   in §11.
+3. **One `CheckState` per cluster.** All bodies share one substitution, so a call
+   in one body constrains the callee's registration variables. Each Pass-2 body
+   starts from the trait constraints Pass 1 left, and definitions already
+   generalised are re-settled before each body (`monomorphisation.md` §5.1).
+4. **Settlement follows all bodies.** A body's scheme may be generalised and
+   written back as soon as its check ends, so later siblings instantiate it
+   (`monomorphisation.md` §5.1); that writeback neither settles nor publishes.
+   Final generalisation, overload settlement and monomorphisation run in finalize,
+   after every body has been checked, so a body's expression types are provisional
+   until then. Nothing is published before finalize (§5 step 3).
+5. **One accumulator per cluster, owned by one call.** The accumulator is created
+   before Pass 1 and consumed by finalize. It is never shared across threads; each
+   `int` worker owns its call's `CheckState` and accumulator (§7.1).
 
 ---
 
@@ -353,8 +399,8 @@ patterns infer by unification with nominal constructor resolution, and
 exhaustiveness is checked in `adt.rs` (`adt.md`). Explicit type parameters and
 field types are enforced by frontend before typecheck (`spec/05-definitions.md`
 §5.2.4); typecheck adds no declaration-shape reject and owns only named-type
-resolution. Product types generate accessors named canonically `Type.field`,
-with bare `field` as an import alias that is ambiguous when two types share it
+resolution. Product types generate accessors named canonically `Type.field`;
+bare `field` is a candidate for that spelling, selected at each use
 (`fixme-0365-field-accessor-dotted.md`); sum payload labels generate none.
 
 ### 9.6 Multi-signature definitions and auto-curry
@@ -415,9 +461,12 @@ never walks alias segments or spells an alias key itself, fixtures included
 | IO typing | `io-types.md` | Current |
 | Importable-symbol signature match | `signature-match.md` | Current |
 | Ownership inference | `ownership-inference.md` | Current; governed by `design/arch/ownership-inference.md` |
-| `program/` and `traits/` module cuts | `program-decomposition.md`, `s87-traits-decomposition.md` | Current precedents |
-| Per-form pass algorithm | `check-form-api.md` | Retained for test anchors; its signature is superseded by §6 |
+| `program/` module cut | `program-decomposition.md` | Completed migration plan; retirement pending (`design/typecheck/typecheck.md` §11) |
 | `render_type` byte table | `s87-fq-walk-consolidation.md` | Historical; held for §2.4 test anchors |
+
+The per-form pass contract is §5.1–§5.2 and the `traits/` cut is §3.1; the retired
+`check-form-api.md` and `s87-traits-decomposition.md` redirect through
+`design/typecheck/CLAUDE.md` §"Redirections".
 
 Deleted records and where their content now lives are listed in
 `design/typecheck/CLAUDE.md` §"Redirections".
@@ -426,8 +475,14 @@ Deleted records and where their content now lives are listed in
 
 ## 11. Open design items
 
-- **Fold `check-form-api.md`.** Its surviving pass account belongs in
-  `inference.md`; the document retires once the `// spec:` anchors in
-  `program/register/tests.rs` and `program/finalize/tests.rs` re-point there
-  (a `dev` edit to module tests).
 - **Principle 26 classification of the remaining producer surface** (§9.7).
+- **Declaration-level forward reference within a cluster.** Spec §5.13.1 and
+  §8.10.4 let non-macro definitions, including impls, reference types declared
+  later in the cluster. Pass 1 registers in form order (§5.2 item 2), and
+  `tests/spec_09_macros.rs::macro_expanded_begin_impl_neg_before_deftype_is_rejected`
+  requires an impl expanded before its `deftype` to be rejected, citing spec §9.6
+  and §8.2. The spec text and that test disagree, and this design takes neither
+  side. `spec` owns the reconciliation and `qa` the intake; typecheck's design
+  follows the ruling. (Source-read and test-read lead; not executed here.)
+- **Retire `program-decomposition.md`.** Like the retired S87 plan, it is a
+  completed migration plan. Its durable module cut belongs in `design/typecheck/typecheck.md` §3.1.

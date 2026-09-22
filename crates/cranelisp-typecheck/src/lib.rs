@@ -39,7 +39,8 @@
 //!     ctx: &mut SymbolTableAccess<'_, C, L>,
 //!     symbol_tables: &SymbolTables<C, L>,
 //!     module_aliases: &ModuleAliases,
-//! ) -> Result<(), CheckError>;
+//!     prelude_fallback: &PreludeFallback,
+//! ) -> Result<CheckResult, CheckError>;
 //! ```
 //!
 //! - `parsed` — the full cluster's `ParsedEntry` list, produced by
@@ -68,14 +69,18 @@
 //!   §8.6.6 qualified-name resolution may substitute an import/export alias
 //!   for a `module_path` prefix. Typecheck **follows** aliases; it never
 //!   populates them (see BC §2 invariant 8).
+//! - `prelude_fallback` — the session's per-module [`PreludeFallback`] bits.
+//!   A module whose bit is on resolves bare names with the implicit
+//!   `(import [prelude [*]])` fallback; an absent bit is off.
 //!
 //! ## Return contract
 //!
-//! - `Ok(())` — Pass 1 staged signature shells, Pass 2 staged
+//! - `Ok(CheckResult)` — Pass 1 staged signature shells, Pass 2 staged
 //!   body-checked entries that superseded the shells; per-symbol Pass-2
-//!   side products landed on staging `ModuleEntry::Def` fields (BC §2
-//!   invariant 3a). The orchestrator commits the whole staging table
-//!   atomically into live on cluster completion.
+//!   side products landed on the staged bindings (BC §2 invariant 3a). The
+//!   returned [`CheckResult`] carries only cluster-scope results (below).
+//!   The orchestrator commits the whole staging table atomically into live
+//!   on cluster completion.
 //! - `Err(CheckError::Gap(ResolutionGap::SymbolTypechecked(fq)))` — an FQ
 //!   value reference can't resolve (its module isn't yet typechecked). The
 //!   orchestrator catches, loads + typechecks `fq.module`, then **retries
@@ -103,8 +108,8 @@
 //! **Cluster atomicity.** [`check_forms`] is the unit of typecheck
 //! atomicity. A cluster is one form (a non-`begin` REPL input), the
 //! contents of `(begin form₁ … formN)` (an explicit REPL cluster), or a
-//! file's non-structural forms (batch). See `facades/int.md`
-//! §"`process_cluster`" for the orchestrator side.
+//! file's non-structural forms (batch). See `design/arch/interfaces.md`
+//! §"`check_forms`" and `design/int/int.md` §6.2 for the orchestrator side.
 //!
 //! # Cluster-check scaffolding — exposed for tests / fine-grained callers
 //!
@@ -159,11 +164,13 @@
 //!
 //! # Result + error types
 //!
-//! - [`CheckResult`] — pared to the two cross-cluster items the
-//!   orchestrator surfaces to the REPL display layer: `display:
-//!   Option<DisplayInfo>` (last-form display info) + `warnings:
-//!   Vec<Warning>` (cluster-scope warnings). Per-symbol Pass-2 side
-//!   products land on staging `ModuleEntry::Def` fields, NOT here
+//! - [`CheckResult`] — the cluster-scope results the orchestrator consumes:
+//!   `display: Option<DisplayInfo>` (last-form REPL display info),
+//!   `warnings: Vec<Warning>` (non-fatal diagnostics) and
+//!   `unresolved_dispatch: Vec<UnresolvedDispatchSite>` (return-polymorphic
+//!   dispatch sites still unresolved at finalize, empty for every valid
+//!   program; `int` applies them at the entry/eval boundary it owns).
+//!   Per-symbol Pass-2 side products land on the staged bindings, not here
 //!   (BC §2 invariant 3a).
 //! - [`CheckError`] — `Gap(ResolutionGap)` (recoverable cross-module
 //!   dependency) or `TypeError { message, location: ErrorLocation }`

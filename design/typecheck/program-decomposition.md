@@ -1,6 +1,6 @@
 # `program.rs` decomposition — S109 hygiene (FIXME 0580, R-4)
 
-Owner: `/design` (typecheck). Status: **design SIGN-OFF — `/dev` executes the move in Phase 5.** Subordinate to `design/typecheck/typecheck.md` (master); the direct precedent is `design/typecheck/s87-traits-decomposition.md` (the `traits.rs` → `traits/` cut). Where this doc and the master disagree, the master wins.
+Owner: `/design` (typecheck). Status: **design SIGN-OFF — `/dev` executes the move in Phase 5.** Subordinate to `design/typecheck/typecheck.md` (master); the direct precedent is `design/typecheck/typecheck.md` §3.1 (the `traits/` cut). Where this doc and the master disagree, the master wins.
 
 This is the `/design` sign-off on the **module cut** for the former 3,962-line
 `program` monolith, accepted from the S108 audit R-4
@@ -14,7 +14,7 @@ The done criterion (audit R-4): *no `program.rs` submodule exceeds ~1,200 lines;
 
 ## 0. The load-bearing fact that de-risks the whole move
 
-**`program.rs` is entirely crate-private. `lib.rs:227` declares `mod program;` — never `pub mod`, never `pub use program::…`.** So, exactly as for `traits.rs` (`s87-traits-decomposition.md §0`), splitting it into `program/register.rs`, `program/body.rs`, etc. is a **pure intra-crate move**:
+**`program.rs` is entirely crate-private. `lib.rs:227` declares `mod program;` — never `pub mod`, never `pub use program::…`.** Splitting it into `program/register.rs`, `program/body.rs`, etc. is a **pure intra-crate move**:
 
 1. `lib.rs` keeps the single private `mod program;` line; `program.rs` becomes `program/mod.rs`, the new module root declaring `mod register; mod body; …`.
 2. **Every method is on `impl<C, L> TypeCheckEnv<'_, C, L>`**, and Rust allows inherent-impl blocks for one type to be spread across any number of submodules — moving a method to a sibling file needs **no visibility change**; it keeps its `pub(crate)`/private and stays callable from `checker.rs`/`form.rs`/`infer.rs` exactly as before. (Confirm: the impl header at `program.rs:753` is re-opened verbatim in each sibling that hosts methods.)
@@ -51,7 +51,7 @@ The FIXME names the seam set: **register / body / finalize / mono-collect**. Rea
 
 ## 2. The phase-numbered god functions — split IN-PLACE first (the S87 lesson)
 
-The R-4 done criterion is two-fold: **file cut** (§1) AND **"phase drivers are named sub-functions within budget."** Three functions are over the ~100-line convention and are the genuine-untangle risk (not the mechanical move). Per the s87 precedent (`s87-traits-decomposition.md §2/§4.1`), **split these in-place in `program.rs` and run the suite green BEFORE the file move** — this isolates the untangle risk from the move risk so a red suite unambiguously fingers one or the other. Do NOT combine them in one change-set.
+The R-4 done criterion is two-fold: **file cut** (§1) AND **"phase drivers are named sub-functions within budget."** Three functions are over the ~100-line convention and are the genuine-untangle risk (not the mechanical move). **Split these in-place in `program.rs` and run the suite green BEFORE the file move** — this isolates the untangle risk from the move risk so a red suite unambiguously fingers one or the other. Do NOT combine them in one change-set.
 
 ### 2.1 `finalize_check_result_inner` (~188 effective lines, `:2016–2383`) — the standout
 
@@ -96,7 +96,7 @@ Distribution (by the `// spec:` banners surveyed in the current `program/tests.r
 
 1. **The header count and line ranges are STALE.** `program/tests.rs` is now **10,576 lines / 213 tests** (7,505 / 141 at design time — +40%, audit `cranelisp-typecheck-s114.md` §2.2c). The distribution table's parenthetical line-range anchors (`:227–475`, `:304–878`, etc.) no longer map. `/dev` **re-surveys the current file's `// spec:` banners** (the distribution *logic* — a test's home = the production submodule it exercises — is unchanged; only the line anchors rot).
 2. **A `program/support/tests.rs` home is not in the table.** The current tree carries `program/support.rs` (607 LOC) and `program/mod.rs` in addition to the five distribution rows (register/body/finalize/mono_collect/callees). `/dev` assesses whether the +72 new tests introduced a `support`-exercising category (and whether `mod.rs` warrants one); add the row if the banner survey finds support-homed tests. The five-row table is the floor, not necessarily complete for the grown file.
-3. **`finalize.rs` re-budget rides the same FIXME (0722, audit R-3).** `finalize.rs` is 1,517 LOC (§3.2 of `typecheck.md`); the §11.8.10 three-window seams are the function-level cut. Cut per-submodule so no `program/` submodule exceeds ~1,200.
+3. **`finalize.rs` re-budget rides the same FIXME (0722, audit R-3).** `finalize.rs` is 1,517 LOC (§3.2 of `typecheck.md`); the `monomorphisation.md` §11.8.10 three-window seams are the function-level cut. Cut per-submodule so no `program/` submodule exceeds ~1,200.
 
 The citation-update list (CLAUDE.md `cross_module_imported_constrained_fn_monomorphises_in_defining_scope` → `mono_collect::tests::`; `callees_*` → `callees::tests::`; `tests/plan/s101-coverage-postmortem.md §2.1`) is **still current** (verified against source S115) — those remain the only external references to the `program::tests::` paths.
 
@@ -104,7 +104,7 @@ The citation-update list (CLAUDE.md `cross_module_imported_constrained_fn_monomo
 
 ## 4. Migration order + hazard list for `/dev`
 
-**Stage conservatively. One change-set per stage, suite green between each. Do NOT batch.** (The s87 staging discipline, `s87-traits-decomposition.md §4`.)
+**Stage conservatively. One change-set per stage, suite green between each. Do NOT batch.**
 
 | Stage | Action | Why this order | Gate |
 |---|---|---|---|
@@ -145,7 +145,7 @@ If capacity allows only one stage, **Stage A only** (the function-budget win on 
 | **Performance** | Unchanged — same call graph, same `state.subst` operations; private-method extraction is zero-cost (inlines at the same depth). |
 | **Testability** (P5) | Improved — the finalize phase helpers (§2.1 P1/P3/P5) become independently exercisable seams, and the per-submodule test split (§3) attributes a failure to one production unit (METHOD §2.2). |
 
-Principles cited: **6** (complexity budget — the split carries no new complexity, and phasing the finalize driver removes a cognitive-load hotspot), **7** (single source of truth — `callees.rs` co-locates the 0472 harvest discipline; `support.rs` the child-enumeration source), **18** (enforce invariants structurally — minimal free-fn visibility is the `public-api.txt` guard), the s87 precedent (`s87-traits-decomposition.md`) as the in-context template.
+Principles cited: **6** (complexity budget — the split carries no new complexity, and phasing the finalize driver removes a cognitive-load hotspot), **7** (single source of truth — `callees.rs` co-locates the 0472 harvest discipline; `support.rs` the child-enumeration source), **18** (enforce invariants structurally — minimal free-fn visibility is the `public-api.txt` guard).
 
 ---
 

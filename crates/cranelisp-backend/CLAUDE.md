@@ -271,7 +271,7 @@ Gotchas the next reader will hit:
   `defn`-shaped frames I-CT does not cover: synthetic **field accessors** of a
   generic/undeclared-field product (`Box.v`'s `self: ADT(user/Box, [Var(0)])` —
   `concrete-boundary-type.md` §3.1.1 pairs the ctor *and accessor* signature
-  paths; §4.1 named only the ctor half) and **generic trait-method instances**
+  paths; `design/backend/transitive-drop-glue.md` §4.1 named only the ctor half) and **generic trait-method instances**
   (`Functor.fmap$primitives/Option`'s `Fn([Var(9)], Var(8))` parameter). Those
   leak today. Do not re-run the narrowing on its own — the experiment is done and
   the census is in the function's rustdoc; the class needs one ruling.

@@ -104,10 +104,11 @@ the consuming dec sequences (those stay per-module by design).
   field's own drop glue IS the fd/timer active-deregistration path (the
   cancellation leak fix, Principle 18). Adding a manual `Drop` double-frees.
 - **Reactor + `mio`/`futures` are UNCONDITIONAL** (the `concurrency-runtime`
-  feature was retired S96, `platform-interface.md` §6.8.0a). Lean-default is a
-  RUNTIME property — a pure-blocking program constructs no `mio::Poll` (lazy
-  init per drive) — never a `#[cfg]` split. `reactor` and `strand` are
-  `pub(crate)`: no cross-crate consumer yet (the `/strand` int dump is deferred).
+  feature was retired S96, `platform-interface.md` §6.8.0a); never reintroduce a
+  `#[cfg]` split. Every drive constructs its `mio::Poll` eagerly, including for a
+  pure-blocking program. Lazy construction is a workload-triggered refinement
+  (`design/arch/effect-concurrency.md` §6). `reactor` and `strand` are `pub(crate)`:
+  no cross-crate consumer, and no `/strand` reader exists outside in-crate tests.
 
 ## Debug hooks
 

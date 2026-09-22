@@ -1,507 +1,294 @@
-# Dotted `Type.Ctor` constructor capability — canonical-key registration + one member resolver
+# Constructors — canonical `Type.Ctor` and the bare spelling
 
-**Sprint 109 bucket 2 design (S109 Phase 3, `/design` typecheck).** Subordinate
-to `design/typecheck/adt.md` (constructor registration + the product dual-facet)
-and the exact sibling of `design/typecheck/fixme-0365-field-accessor-dotted.md`
-(the *field-accessor* inverted-model). This doc designs the **constructor** half
-of the same inverted member model: same-named constructors across in-scope types
-(`Maybe.Some`/`Option.Some`, `Network.Address`/`Customer.Address`) coexist,
-disambiguated by the dotted canonical form in **value AND pattern position**,
-exactly as same-named fields already coexist.
+Owner: `design` narrow-deployed to `cranelisp-typecheck`. Subordinate to
+[`typecheck.md`](typecheck.md) and [`adt.md`](adt.md); the constructor sibling
+of [`fixme-0365-field-accessor-dotted.md`](fixme-0365-field-accessor-dotted.md).
+Reader: anyone changing how typecheck registers, resolves, selects or
+exhaustiveness-checks constructors.
 
-Binding inputs:
+Required behaviour is in `spec/08-modules.md` §8.5.2 (canonical constructor
+name; product dual-facet corner) and §8.6.5 (shared bare constructor names),
+and `spec/06-pattern-matching.md` §6.2.1, §6.2.2, §6.2.4 and the §6.2 EBNF
+(dotted constructor patterns). Neighbouring authorities this design uses
+without restating:
 
-- **Spec (landed):** `spec/08-modules.md §8.5.2` ("Constructor members are the
-  CANONICAL constructor name" + "Product dual-facet corner"), `§8.6.5`
-  ("Duplicate constructor names contest the bare ALIAS"); `spec/06-pattern-matching.md
-  §6.2.1/§6.2.2/§6.2.4` + the §6.2 EBNF (dotted constructor patterns).
-- **Arch (binding):** `design/arch/dotted-ctor-canonical-keys.md` — Obligation A
-  (`type_ctor_names` walk to canonical keys), Obligation B (`CACHE_SCHEMA_VERSION`
-  16→17), the `member_key` sweep, the read-side delegations. This design conforms
-  to it.
-- **Machinery to mirror:** `crates/cranelisp-typecheck/src/adt.rs`
-  `synthesise_one_accessor` (canonical-key + bare-alias + `Ambiguous`-poison) and
-  `committed_accessor_kind`; `checker.rs::resolve_dotted_field_accessor`;
-  `cranelisp_types::member_key` (landed, commit `9c69b203`).
+| Subject | Authority |
+|---|---|
+| The constructor storage-key grammar, every writer and every cross-crate reader | [`design/arch/dotted-ctor-canonical-keys.md`](../arch/dotted-ctor-canonical-keys.md) §1–§3, §10 |
+| `SymbolEntry`, `Binding`, `NameCandidate`, settlement funnels | `design/arch/symbol-table-lifecycle.md` §3, §4, §5.8, §5.9 |
+| Selecting one declaration from a bare spelling's candidates, value and pattern | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §5, §7, §9 |
+| Concrete versus template constructors and their re-synthesis | [`non-concrete-producer-obligations.md`](non-concrete-producer-obligations.md) |
+| Constructor schemes, the product dual facet, internal constructors | [`adt.md`](adt.md) §"Constructor Scheme Generation", §"Product Type Handling"; [`io-types.md`](io-types.md) §1 |
 
-The mechanism is **arch-ruled** (SPRINT.md Phase 2): the field inverted-model
-mirror — the ctor callable under the canonical `Type.Ctor` key plus a poisoning
-bare alias — **NOT** a resolver-only bare-key probe (staging resolve-only first is
-a forbidden Principle-8 interim). The S121 C1 representation is binding:
-`design/arch/symbol-table-lifecycle.md` §§3–5. `build_adt_entries` now produces a
-slotless `AdtCallableSpec` recipe for the callable row and `Binding` values for
-the type/alias rows; the typecheck registration site must submit each callable
-recipe through the `SymbolTable` settlement funnels. The canonical-key rule is
-unchanged, but no caller constructs a `Def` or allocates its slot directly.
+Section numbers are cited from source and sibling designs; retired numbers are
+not reused, so gaps are deliberate. The file name predates the subject name
+and is kept because it is cited.
 
-**C1 facade handoff requiring `/arch`.** `AdtEntrySpec::Binding` currently carries
-`Binding<()>`, while typecheck writes a generic `SymbolTable<C, L>` whose
-`install_binding` takes `Binding<C>`; the only conversion is crate-private. C3
-must not unwrap and re-wrap that published semantic value merely to cross the
-boundary. The C1 facade must make the returned non-callable binding installable
-unchanged before this registration site can consume the complete recipe set.
+## 0. Model
 
----
-
-## 0. The unifying insight — key one slotless recipe, then settle it
-
-The field-accessor path synthesises a scheme and body per field. The constructor
-path is simpler: `build_adt_entries` already derives the constructor's
-`AdtCallableSpec` — scheme, parameter names, `CallableOrigin::Ctor` metadata and
-`SynthSpec` recipe — without a slot. The typecheck writer keys that recipe at
-`member_key(Type, Ctor)` and submits it to exactly one born-settled funnel:
-
-- a concrete scheme becomes `Life::Concrete` through `install_concrete`, with a
-  `Realization::Body` derived from the recipe;
-- a non-concrete scheme becomes slotless `Life::Template` through
-  `install_template`, carrying `TemplateBody::Synth` for later re-synthesis.
-
-The bare constructor name is a `BindingBody::Alias` to the canonical binding;
-a contest becomes `BindingBody::Ambiguous`. `CallableOrigin::Ctor.type_name`
-directly identifies the owner in either lifecycle state. This is the constructor
-half of the same canonical-member model as field accessors, without exposing a
-slot-mint decision to typecheck.
-
-The S109 sections below retain terms such as “canonical ctor entry” when
-describing the keying and resolver behaviour. Under the C1 representation that
-means `BindingBody::Decl(Decl::Callable(Callable { origin:
-CallableOrigin::Ctor { .. }, .. }))`; any older instruction to construct a
-`ModuleEntry::Def`, a `DefKind::Constructor`, or a GOT slot directly is
-superseded by the recipe-and-funnel rule above.
-
----
+- A **sum or enum constructor** has exactly one declaration: the canonical
+  callable binding keyed `member_key(Type, Ctor)` (`Maybe.Some`) in the type's
+  home module, carrying `CallableOrigin::Ctor` (owning type, tag, internal
+  flag).
+- The bare spelling (`Some`) is a `NameCandidate` reference to that binding,
+  carrying the `deftype`'s visibility. It is not a second callable, adds no
+  slot and no compiled function.
+- Same-named constructors of different types coexist as distinct candidates
+  of one spelling. No sentinel is installed, no declaration is refused, and the
+  dotted form is always valid.
+- A **product constructor** keeps its single type-name key with the type
+  facet on its origin; it has no dotted key and no bare exposure (§2).
+- Value and pattern positions reach the canonical binding through one member
+  resolver (§3), so they agree by construction.
 
 ## 1. Registration — `adt.rs::register_type_def_with_ctor_infos`
 
-### 1.1 The canonical key + bare alias (sum ctors)
+### 1.1 The canonical key and the bare candidate (sum constructors)
 
-`register_type_def_with_ctor_infos` resolves the field types and passes slotless
-`AdtCtorSpec`s to `build_adt_entries`. For a **sum/enum ctor**, the builder
-returns the callable recipe under the canonical key followed by a bare
-`AdtEntrySpec::Binding` alias. The caller consumes those ordered results as
-follows:
+The registration site builds slotless `AdtCtorSpec`s and calls the shared
+types builder `build_adt_entries`, which returns ordered `(key, AdtEntrySpec)`
+pairs already keyed by the one `member_key` grammar. The site stays thin:
 
-1. **Canonical key.** `build_adt_entries` derives the key through the ONE
-   `member_key` helper and returns `AdtEntrySpec::Callable` there. Submit the
-   recipe through `install_concrete` or `install_template` according to scheme
-   concreteness. Tag, field count, internal marker, scheme, parameters and
-   visibility are preserved on `Callable`; only `Life::Concrete` with a
-   `Realization::Body` is `defined_symbols()`-visible.
+1. **Non-callable binding** (the type record) → installed unchanged through
+   `install_binding`.
+2. **Callable recipe** at the canonical key → submitted to exactly one
+   settlement funnel by scheme concreteness: `install_concrete` with a
+   `Realization::Body` built from the recipe, or slotless `install_template`
+   carrying `TemplateBody::Synth` for re-synthesis. An existing template is
+   kept; an existing concrete or broken entry is retired through
+   `retire_abi_changing` before re-settlement. No caller constructs a slot.
+3. **Bare exposure** → for a sum constructor only, `expose_candidate(Ctor,
+   <home>/Type.Ctor, visibility)`.
 
-2. **Bare alias + collision.** Probe the current bare ctor name (union view,
-   staging-then-live):
-   - **absent** → install the returned `BindingBody::Alias { source: FQSymbol {
-     module: fqtn.module, symbol: canonical_key } }` (deftype visibility — §2.4).
-     Bare `Some` now resolves via chain-follow to `Maybe.Some`.
-   - **present and its terminal is a `CallableOrigin::Ctor` owned by a DIFFERENT
-     `FQTypeName`** (§8.6.5 distinct-terminal) → replace the bare key with
-     `BindingBody::Ambiguous`. Bare `Some` is poisoned; `Maybe.Some` and
-     `Option.Some` (the canonical callables) stay valid. Record both owners for the
-     alternatives hint (see §1.3).
-   - **present and its terminal is a `CallableOrigin::Ctor` owned by the SAME
-     `FQTypeName`** (a redefinition of this one deftype — the REPL re-run case) →
-     re-install the bare alias afresh; NOT a cross-type contest.
-   - **present as a non-ctor binding** (a user `defn`, an import of an unrelated
-     symbol) → do NOT clobber it; the canonical `Maybe.Some` is still minted and
-     reachable (mirrors the accessor `NonAccessor` arm, `adt.rs:689`). Constructors
-     are uppercase, so this is rare; §8.6.4 governs a genuine definition-over-a-name
-     conflict at the `deftype` register seam, not here.
+What `expose_candidate` guarantees (types-owned, lifecycle §3):
 
-### 1.2 The committed-member recognizer — read `type_name` directly, follow bare aliases
+- re-registering the same `deftype` (a REPL re-run) re-exposes the same source,
+  which deduplicates, with public dominating private;
+- another type's constructor of the same spelling is a distinct source and
+  remains a second candidate;
+- an unrelated binding or import already at the bare spelling is not replaced;
+  the canonical constructor is still minted and reachable, and the spelling's
+  candidates are resolved at each use.
 
-The accessor path needed `committed_accessor_kind` because a synthesised
-accessor's owner is inferred from its marker and scheme. **A ctor needs no such
-inference**: `CallableOrigin::Ctor.type_name` is the owning `FQTypeName`. The
-recognizer is a direct callable projection:
+Minting the canonical binding unconditionally is the load-bearing choice: the
+dotted handle exists and is identical however contested the bare spelling
+becomes. Do not re-propose a bare-keyed constructor with a secondary dotted
+alias, or a registration-time poison of the bare spelling; the first leaves a
+contested constructor without a stable handle, and the second decides at
+registration a question only the use site can answer.
 
-```
-committed_ctor_owner(binding) -> Option<FQTypeName>:
-  match &binding.callable()?.origin:
-    CallableOrigin::Ctor { type_name, .. } => Some(type_name)
-    _ => None
-```
+### 1.2 The committed-member recogniser
 
-with the same **bare-alias follow** the accessor path uses: when the probed bare
-binding is `BindingBody::Alias { source }` whose `source.module == fqtn.module`,
-follow one edge to the canonical callable and read *its* `type_name`. This is
-what distinguishes "bare `Some` already aliases
-`Maybe.Some`" (a cross-type contest against `Option`) from "bare `Some` is free."
+`adt::committed_member_owner` answers "which type owns the member under this
+key" for both member kinds:
 
-**Recommendation (Principle 7, `/dev`'s call on exact factoring):** generalize
-`committed_accessor_kind` into a member recognizer that answers "owning type of the
-member under this key" for **both** accessors and ctors (an accessor's owner comes
-from the `Fn[ADT]` scheme; a ctor's from `type_name`), so the bare-alias poison
-logic is one shared shape rather than two mirrors. The `Ambiguous` sentinel arm is
-already common. If the mirror is cheaper to land, a parallel `committed_ctor_owner`
-is acceptable — but the **resolver** (§3) MUST be shared (the arch directive), not
-the registration collision classifier.
+- a constructor's owner is read directly from `CallableOrigin::Ctor.type_name`;
+- an accessor's owner is read from its `(Fn [ADT] _)` scheme through
+  `committed_accessor_kind`.
 
-### 1.3 Ambiguity diagnostic alternatives (cross-cluster)
+It is the one recogniser the dotted resolver (§3.1) and alternative
+reconstruction use, so same-cluster and cross-cluster reads agree.
 
-Reuse the accessor bookkeeping: `state.accessor_owning_types` and
-`reconstruct_accessor_alternatives` map a contested bare member name → its owning
-`FQTypeName`s by walking the module's union view for canonical `Type.member`
-callables whose terminal segment equals the bare name. That walk keys off
-`committed_accessor_kind` today; extended to recognize ctor callables (§1.2) it
-yields `Maybe`/`Option` for a contested bare `Some`, so the
-poison diagnostic reads *"ambiguous bare name `Some`; use `Maybe.Some` or
-`Option.Some`"* — including the cross-cluster (REPL) case where the first owner was
-committed in a now-discarded prior cluster. **Recommendation:** rename these to
-member-neutral names (`member_owning_types`, `reconstruct_member_alternatives`) as
-part of the generalization; not load-bearing for correctness.
+### 1.3 Diagnostic alternatives
 
-### 1.4 What genuinely differs from the accessor path (summary for `/dev`)
+An unsettled bare constructor use reports every surviving canonical
+alternative (`Maybe.Some`, `Option.Some`), never iteration order as
+precedence. The surviving identities on the pending use are the source of that
+list ([`use-site-candidate-selection.md`](use-site-candidate-selection.md) §9).
+As built, the pattern path's final ambiguity branch still reconstructs owners
+from the table through `reconstruct_accessor_alternatives`, which recognises
+constructors through §1.2 but cannot list a surviving non-member candidate
+(§8).
 
-- Reuse the slotless constructor recipe; the caller chooses its **key** and
-  lifecycle funnel, then adds a bare **alias**.
-- Owner is read from `type_name`, not inferred from a param marker.
-- Bare alias is **Public** (deftype visibility), not Private-for-listing (§2.4).
-- No poison re-mint helper (ctors never had one).
+### 1.4 What differs from the accessor path
 
----
+- The builder already produces the constructor recipe; there is no
+  per-constructor body synthesis in typecheck.
+- The owner is read from `type_name`, not inferred from a scheme.
+- The bare candidate carries the `deftype`'s visibility, like an accessor's.
+- Constructors have no impl-time interaction; accessors' is
+  `fixme-0365-field-accessor-dotted.md` §2.
 
-## 2. Product dual-facet corner (spec §8.5.2 "Product dual-facet corner")
+## 2. Product dual-facet corner (spec §8.5.2)
 
-A **product** ctor has type-name == ctor-name (`(deftype Point [:Int x :Int y])`);
-its callable's `CallableOrigin::Ctor` carries `type_def: Some(..)` and is the
-surviving single binding under the type-name key `Point` (the S79 dual facet,
-`adt.md §"Product Type Handling"`,
-`crates/cranelisp-typecheck/CLAUDE.md §"Product-ctor dual facet"`). The canonical
-dotted form `member_key("Point","Point") = "Point.Point"` is **degenerate**.
+A product constructor has type name equal to constructor name
+(`(deftype Point [:Int x :Int y])`). The builder returns its callable recipe
+at the type-name key `Point`, with the completed `TypeDefInfo` carried on
+`CallableOrigin::Ctor { type_def: Some(..) }`; the registration site retires
+any provisional type-only binding first, so the facet is never
+double-registered.
 
-**Registration ruling (settling the arch note's deferral to `/design`):** a product
-ctor keeps its **single key at the type name** and is **NOT** re-keyed and gets
-**NO** bare alias and **NO** poison. `build_adt_entries` expresses the split:
+- No `Point.Point` key is minted and no bare candidate is exposed; the bare
+  name is the canonical key.
+- Splitting the product into a dotted canonical plus a bare exposure would
+  break `type_def_view_of`'s "entry as a type" read.
+- Two product types cannot share a constructor name without sharing a type
+  name, which is a §8.6.4 definition conflict, not a §8.6.5 candidate set.
+- The degenerate `Point.Point` does not resolve: the resolver probes a key
+  that does not exist (§3.1).
 
-- product → return the callable recipe at `Point`; typecheck submits it through
-  the matching lifecycle funnel. The callable origin already carries the type
-  facet (`type_def: Some`); splitting it into a
-  `Point.Point` canonical + `Point` alias would break `type_def_view_of`'s "entry as
-  a type" read and double-register the facet. No dotted form is minted; no bare alias
-  (the bare name *is* the canonical single key).
-- sum/enum → the §1.1 canonical-key + bare-alias path.
+## 3. The one member resolver — value and pattern position
 
-**Why no spurious poison.** Two distinct product types cannot share a ctor name
-without sharing a *type* name (ctor-name == type-name for products), which is a
-§8.6.4 type-name collision governed at the `deftype` register seam, not §8.6.5
-alias-poison. So the product arm never contests a bare alias — there is none. The
-degenerate `Point.Point` reference simply does not resolve (the resolver §3 probes
-`member_key("Point","Point")`, finds no such key, returns `None`); `Point` (bare,
-the canonical single key) is the reference, matching spec ("reached by its type
-name, never a dotted form").
+### 3.1 Shared core — `checker.rs::resolve_dotted_member_entry`
 
----
+One private core, `dotted_member_identity`, resolves a dotted `Type.member`
+spelling to its storage identity and terminal binding:
 
-## 3. The one member resolver — value AND pattern position (arch: "one codepath")
+1. accept exactly one `.`, both sides non-empty, and no `/` (a `/` form is
+   module qualification);
+2. resolve the head through ordinary scope resolution to a type
+   (`type_def_view_of`);
+3. probe `member_key(Type, member)` in the **type's home module**, staging over
+   live;
+4. accept only when `committed_member_owner` names that exact type.
 
-Today two ctor-resolution seams exist and neither probes the canonical ctor key:
+Rooting the probe in the home module is what makes the dotted form work across
+modules. `resolve_dotted_member_entry` projects the binding;
+`resolve_dotted_member_fq` projects the storage identity recorded as
+`VarRef::Global`.
 
-- **Value position** — `checker.rs::lookup` (`:1200`) calls
-  `resolve_dotted_field_accessor` (`:1404`), which resolves head→`fqtn`, probes
-  `member_key(fqtn.name, member)`, but **accepts only accessors**
-  (`committed_accessor_kind == Concrete(fqtn)`). For `Color.Red` it returns `None`,
-  falls through the `/`-split, and dies "undefined variable: Color.Red" — the
-  committed RED `dotted_constructor_in_value_position_resolves`.
-- **Pattern position + auto-curry guard** — `infer.rs::check_constructor_pattern`
-  (`:970`) and `try_auto_curry` (`:657`) call
-  `checker.rs::resolve_constructor_entry` (`:1593`), which handles `/`-qualified
-  and bare, but has **no dotted `Type.Ctor` arm**: a dotted `Maybe.Some` with no
-  `/` routes to `resolve_entry_in_current_module`, which finds the canonical key
-  only when the type is *same-module* (literal-key hit) and **misses for imported
-  types** (the canonical key lives in the type's home, not the current module).
+### 3.2 Value position
 
-### 3.1 Shared core — `resolve_dotted_member_entry`
+`checker.rs::lookup` calls `resolve_dotted_member`, which projects the
+terminal callable's scheme; `lookup` instantiates it as for any value.
+`Color.Red : Color`; `Maybe.Some : (Fn [a] (Maybe a))`. First-class use needs
+no branch: the canonical binding is an ordinary callable whose lifecycle state
+is carried by `Life`, not inferred by the resolver. The internal-constructor
+and constrained-value guards in `infer_var` reach the same terminal and read
+`internal` from its origin.
 
-Extract the value resolver's head→fqtn→`member_key` core into ONE helper that
-returns the terminal entry (both seams consume it — the arch "one member-resolution
-codepath" requirement):
+### 3.3 Pattern position and the auto-curry guard
 
-```
-resolve_dotted_member_entry(state, name) -> Option<Binding<C>>:
-  // exactly one '.', both sides non-empty, no '/' (that is the qualified path's) —
-  // the existing guard in resolve_dotted_field_accessor (:1409-1419)
-  split name at first '.' into (type_part, member_part)
-  fqtn = type_def_view_of(scope_resolve(state, type_part)?.entry)?.name   // head → owner
-  entry = probe_module_entry_owned(fqtn.module, member_key(fqtn.name, member_part))?
-  // accept only a member OWNED BY THIS EXACT type (accessor of fqtn OR ctor of fqtn)
-  if owner_of_member(entry) == Some(fqtn) { Some(entry) } else { None }
-```
+`checker.rs::resolve_constructor_entry` takes a dotted spelling (`.` and no
+`/`) through `resolve_dotted_member_entry` before its bare and `/`-qualified
+arms. `check_constructor_pattern` and `try_auto_curry` consume it, so
+`(Maybe.Some x)` and nullary `Maybe.None` reach the same canonical callable as
+value position, for same-module and imported types. `instantiate_ctor`
+instantiates from the origin's type and tag and returns the storage identity
+recorded in `MethodResolutions.pattern_ctors`.
 
-`owner_of_member` is the generalized recognizer of §1.2 (accessor via
-`committed_accessor_kind`, ctor via `type_name`). Rooting the member probe in
-`fqtn.module` is what makes the dotted form work **cross-module** — the head
-resolves through the type import to its home, and the canonical member key lives
-there.
+A **bare** constructor pattern with several candidates is selected by the
+scrutinee type ([`dotted-ctor-canonical-keys.md`](../arch/dotted-ctor-canonical-keys.md)
+§7) through the pending-pattern lifecycle of
+[`use-site-candidate-selection.md`](use-site-candidate-selection.md) §7.
 
-### 3.2 Value position — generalize `resolve_dotted_field_accessor`
+### 3.4 Frontend — no change
 
-`resolve_dotted_field_accessor` becomes `resolve_dotted_member`: call
-`resolve_dotted_member_entry`, then project the terminal `Callable.scheme`.
-A ctor scheme (`(Fn [a] (Maybe a))` for data, `(Maybe a)` for nullary) returns
-unchanged; `lookup` instantiates it with fresh vars exactly as for the accessor.
-`Color.Red` now types as `Color`; `Maybe.Some` as `(Fn [a] (Maybe a))`.
-First-classness follows from the canonical callable binding; whether it is a
-template or a concrete codegen target is carried by `Life`, not inferred by the
-resolver. No new value-position branch — the same `lookup` seam, one generalized
-helper. **This flips the committed RED.**
+`ast_builder.rs::build_pattern` keeps `Pattern::Constructor.name` unsplit: a
+parenthesised `(Maybe.Some x)` and a bare uppercase-initial `Maybe.None` both
+become constructor patterns carrying the dotted name (§6.2.4). The capability
+is entirely typecheck resolution.
 
-The `infer_var` pre-checks (`is_internal_constructor`, constrained/overloaded
-value-use guards, `infer.rs:265–309`) already resolve through
-`resolve_constructor_entry`/`resolve_entry_in_current_module`, which gain the dotted
-arm (§3.3) — a dotted `Maybe.Some` reads `internal: false` off the canonical ctor
-callable's `CallableOrigin::Ctor` and is admitted (not rejected). Internal ctors
-(`Bind`) are never written dotted by users, so the dotted internal-ctor path is
-vacuously correct.
+## 4. Exhaustiveness — `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module`
 
-### 3.3 Pattern position + auto-curry guard — add the dotted arm to `resolve_constructor_entry`
+`TypeDefInfo.constructors` keeps bare display names, so two readers there must
+account for canonical keying.
 
-`resolve_constructor_entry` (`checker.rs:1593`) gains a **dotted arm before** the
-bare/`/`-split dispatch: when `name` contains `.` and no `/`, return
-`resolve_dotted_member_entry(state, name)` (the caller already filters the returned
-binding to `CallableOrigin::Ctor`). This is the SAME core the value seam uses — one
-codepath. It makes `(Maybe.Some x)` and dotted nullary `Maybe.None` resolve to the
-canonical ctor callable for both same-module and imported types (the current
-`resolve_entry_in_current_module` literal-key hit worked only same-module).
+### 4.1 Covered-constructor normalisation
 
-`check_constructor_pattern` (`infer.rs:1009`) then reads `type_name`/`tag` off the
-resolved `CallableOrigin::Ctor` and instantiates via `instantiate_ctor` exactly as
-for a bare or `/`-qualified ctor — no pattern-specific change beyond the resolver
-arm. The `instantiate_ctor` helper (`infer.rs:137`) is tag-and-`TypeDefInfo`-driven
-and unaffected by keying. **Value and pattern agree by construction — both reach
-the identical canonical callable through the shared core** (spec §6.2.1 "mirrors
-value position exactly").
+Covered pattern names reduce to their terminal segment after both separators —
+the `/` module prefix, then the `.` type prefix — before comparison with the
+declared names. Without the `.` step a total match written with dotted arms is
+reported non-exhaustive.
 
-### 3.4 Frontend — dotted `Pattern::Constructor` is ALREADY produced (confirmed, no change)
+### 4.2 Internal-constructor probe
 
-The parser lands `Pattern::Constructor.name` **unsplit**, in both pattern shapes —
-verified in `crates/cranelisp-frontend/src/ast_builder.rs::build_pattern` (`:1437`):
+Each declared constructor's `internal` flag is read from the canonical
+`member_key(Type, Ctor)` binding first, then from the bare key for the product
+facet (the only bare fallback `dotted-ctor-canonical-keys.md` §1 admits). A
+bare-only probe would miss every sum constructor, default `internal: false`,
+and force user matches on `IO` to cover `Bind`/`Pure`/`Effect`.
 
-- **Parenthesized data pattern** `(Maybe.Some x)` → `children[0]` symbol `"Maybe.Some"`
-  becomes `Pattern::Constructor { name: SymbolRef { module: None, name: "Maybe.Some" },
-  bindings: [x] }` (`:1474`).
-- **Bare nullary dotted** `Maybe.None` → `is_uppercase_start("Maybe.None")` is `true`
-  (leading `M`), so it is classified `Pattern::Constructor { name: SymbolRef { module:
-  None, name: "Maybe.None" }, bindings: [] }` (`:1442`), NOT `Pattern::Var` — exactly
-  §6.2.4 ("a dotted symbol in head position is always a constructor pattern").
+Exhaustiveness runs after every constructor site in the match has settled and
+must not consume the as-written bare names
+([`use-site-candidate-selection.md`](use-site-candidate-selection.md) §7).
 
-So `check_constructor_pattern`'s `ctor_sym` = `"Maybe.None"`/`"Maybe.Some"` (the `.`
-stays in `.name`) flows to the dotted arm (§3.3) with **zero frontend change** — the
-capability is entirely pattern-*resolution* work in typecheck, matching SPRINT.md's
-"frontend lands `Pattern::Constructor.name` unsplit; ~nil reader work."
+## 5. Storage keys across crates
 
----
+`cranelisp_types::type_ctor_names` returns storage keys, and the key meaning is
+part of the cache contract
+([`dotted-ctor-canonical-keys.md`](../arch/dotted-ctor-canonical-keys.md) §2).
+Typecheck's part is to register through the [shared builder](#11-the-canonical-key-and-the-bare-candidate-sum-constructors) so its keys
+match every other writer's; it adds no key mapping of its own.
 
-## 4. Exhaustiveness — REQUIRED same-change-set fixes (blast radius, confirmed)
+## 6. Keying changes reach every crate's readers
 
-`check_exhaustiveness_in_module` (`adt.rs:915`) is a **hard** coupling that breaks
-silently without two edits landing in the SAME change-set as registration:
+A constructor keying change's blast radius is **every crate's raw probe of a
+constructor key**, not the owning crate's. The S109 landing scoped its audit to
+typecheck and regressed in the backend and binary readers it had marked
+unaffected. Find readers by the storage key they probe, across the workspace,
+and change them in the same change-set as the writers
+([Principle 8](../arch/principles.md)). The current reader inventory is
+[`dotted-ctor-canonical-keys.md`](../arch/dotted-ctor-canonical-keys.md) §3;
+it is not duplicated here.
 
-1. **Covered-ctor normalization (`adt.rs:964–970`).** The `covered` set strips a
-   `/` prefix (`macros/SCons` → `SCons`) but NOT a `.`: a dotted-covered
-   `Maybe.Some` would compare as `"Maybe.Some"` against the bare `"Some"` in
-   `all_ctors` → **false non-exhaustive**. Extend the normalizer to take the
-   terminal segment after BOTH separators:
-   `s.rsplit('/').next().unwrap_or(s)` then `.rsplit('.').next()`. (A `match` over a
-   dotted `Maybe.Some` pattern is otherwise reported non-exhaustive even when total.)
+Typecheck's own readers and their disposition:
 
-2. **Internal-flag probe (`adt.rs:940–950`).** `all_ctors` is built from
-   `type_def.constructors` (bare names — arch note §2: `TypeDefInfo.constructors`
-   keeps bare display names), and per-ctor `internal` is read by
-   `probe_module_entry_owned(&fq_type_name.module, ctor_sym)` matching a terminal
-   constructor callable. Post-change the bare key is a `BindingBody::Alias` (or
-   `BindingBody::Ambiguous`), so a raw terminal-only probe misses → every ctor
-   defaults `internal: false`. Benign for user ADTs, but **breaks IO-style
-   types with `internal` ctors** (`Bind`/`Pure`/`Effect`): they would stop being
-   excluded and user `match`es on `IO` would be forced to cover them. Fix: chain-follow
-   the bare name to its terminal before reading `internal` — replace the raw
-   `probe_module_entry_owned` with `resolve_terminal_entry_and_home(&fq_type_name.module,
-   ctor_sym)` (or probe `member_key(&fq_type_name.name, ctor_sym)` directly). Robust
-   whether the ctor is canonically-keyed (bare alias → canonical callable) or
-   bare-seeded (internal primitives, if seeded outside
-   `register_type_def_with_ctor_infos`).
-
-Both are inside `adt.rs`, in the exhaustiveness helper, one change-set with
-registration — no new type, no cache impact beyond Obligation B.
-
----
-
-## 5. Obligations A + B coordination (arch-binding, SAME change-set)
-
-Per `design/arch/dotted-ctor-canonical-keys.md`, these land in the SAME `/dev`
-change-set as the `register_type_def_with_ctor_infos` keying change (Principle 8 — no interim
-state where reader and writer disagree on the key grammar):
-
-- **Obligation A — `type_ctor_names` walks to canonical keys** (`cranelisp-types`,
-  `heap.rs:269`, `/arch`/`/dev`-types coordination). Its three consumers use the
-  returned `Vec<Symbol>` as storage keys (`table.get(key)`) to reach each ctor's
-  callable binding. Sum arm returns `member_key(&fqtn.name, c)` per bare `c` in
-  `TypeDefInfo.constructors`; product-facet arm returns the surviving type-name key.
-  The mapping happens in the ONE reader; consumers unchanged. **Landing either the
-  keying change or this walk alone breaks the `get(returned)` round-trip.**
-- **Obligation B — `CACHE_SCHEMA_VERSION` 16→17** (`cranelisp-backend/src/cache/mod.rs`).
-  The serde shape is unchanged but the **meaning** of a ctor callable's storage key
-  changes (bare → canonical) — a `.meta.json` content-meaning change per the cache
-  contract (`crates/cranelisp-types/CLAUDE.md §"The serde shape IS the cache
-  contract"`). Bump in the same change-set; owned by the Phase-5 registration wave.
-
-Read-side delegations riding along (decoupled — any order, but this is the wave that
-motivates them):
-
-- `member_key` sweep — the new ctor registration site, `checker.rs::resolve_dotted_field_accessor`'s
-  `format!` (`:1434`), `adt.rs`'s accessor `format!` (`:599`), and the diagnostic
-  hint at `infer.rs:235` all call `member_key` (kills 4 hand-rolled `format!("{}.{}")`).
-- `type_def_view_of` (`checker.rs:91`) reduces to `entry.type_def_info()` (the 0573
-  read-side cure; not itself keying-coupled, but same-vicinity cleanup).
-
----
-
-## 6. Blast radius — everything that keys on bare ctor names (CORRECTED to the landed coordinate model)
-
-> **This §6 was empirically wrong** (FIXME 0582, filed by `/arch`). Its original
-> table scoped the audit to **typecheck** consumers of bare ctor keys and marked
-> the int/backend rows "unaffected / covered-by-construction". The W1.1a landing
-> attempt measured **73 regressions** — the "unaffected" rows were the failures.
-> The **cross-crate authority is `design/arch/dotted-ctor-canonical-keys.md`**
-> (the W1.1a COORDINATE re-ruling, user-ruled P5): §3 (reader inventory), §1
-> (uniform writers), §10 (DC-11 sidecar cure). This §6 is the typecheck-surface
-> census pointing at that authority for the int/backend rows; where they overlap,
-> the arch note wins.
-
-**The audit lesson (record it, it is the durable takeaway).** A symbol-table
-**keying change's blast radius is every crate's raw `table.get` probe, not the
-owning crate's**. The failure was the §6 audit *method* — grepping typecheck —
-not any individual row. A bare→canonical key flip is a cross-crate contract:
-every reader that probes a ctor callable by bare key or follows aliases only one hop
-must be found and widened in the **same change-set** as the writers, or the
-readers and writers disagree on one name grammar (the Principle-8 "no landing
-where they disagree" violation).
-
-**Writer inventory — the uniformity the first landing missed (arch note §1).**
-Keying is **uniform across every constructor writer**, not just `adt.rs`. All
-writers produce the canonical `member_key(Type, Ctor)` callable recipe plus a
-same-module bare `BindingBody::Alias` (a **product** ctor keeps its single
-type-name key, no dotted key, no alias). The callable recipe is always settled
-through the C1 funnels:
-
-| Writer | Site |
+| Site | Disposition |
 |---|---|
-| User `deftype` | `cranelisp-typecheck/src/adt.rs::register_type_def_with_ctor_infos` — consumes `build_adt_entries` output and routes each callable recipe through the C1 settlement funnels |
-| Typecheck fixture seeds | `cranelisp-typecheck/src/builtins.rs::register_{slist,sexp}_type` (via `register_type_def_with_ctor_infos`) — the fixture MUST mirror the live `bootstrap.rs` shape it stands in for |
-| Int session seeds | `src/bootstrap.rs::register_synth_adt` — `Option`, `Result`, `IO` (`Pure`/`Effect`), `Trace`, the `macros` `SList`/`Sexp` families (`Pair` is product, unchanged) |
-| The hand-appended `IO.Bind` | `src/bootstrap.rs::register_io_type` — canonical `IO.Bind` + bare alias like every sum ctor; `internal: true` rides `CallableOrigin::Ctor` |
+| `defined_symbols()` / emission | Only a canonical `Life::Concrete` callable with a body is emitted; the bare candidate adds none, and a template emits nothing. |
+| Dotted value and pattern resolution | §3. |
+| Bare value and pattern selection | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §5, §7. |
+| Exhaustiveness | §4. |
+| `instantiate_ctor` | Tag-indexed on `TypeDefInfo`; records the storage identity it resolved into `pattern_ctors` (arch §10). |
+| `public_symbols()` → listing, glob export and harvest | Bindings only: `Maybe.Some` is the one listed entry and bare `Some` a candidate reached through `public_name_candidates` (lifecycle §3, §5.8; accessor sibling §1.6.5). Rendering is `repl/spec.md`'s. |
+| Mono collection and `callees` | Constructors are not monomorphised, and dotted member references record no `callees` edge. |
 
-A seeded/user keying split is exactly the "100 such decisions would be chaos"
-the user ruled out — no writer may keep bare-keyed sum-ctor callables.
+## 7. Public surface and quality attributes
 
-**The cross-crate census** (each row: handled here, or the cross-crate row the
-original table got wrong / omitted — see arch note §3 for the fix mechanism):
+- **No feature-specific crossing type.** Typecheck consumes the published
+  `AdtEntrySpec`, lifecycle vocabulary, settlement funnels and
+  `expose_candidate` unchanged; the member resolver and recogniser are
+  crate-private. Constructors add no `public-api.txt` line.
+- **Single source of truth (Principle 7).** One `member_key` grammar, one
+  shared builder, one member resolver for value and pattern, one recogniser;
+  the canonical callable is the sole scheme and metadata source.
+- **Structural invariant (Principle 18).** "`Maybe.Some` names exactly one
+  thing" holds by construction: the canonical binding is always minted and
+  public, and contest is confined to the bare spelling's candidate set.
+- **Evidence.** The dotted, contested and product cases are module tests in
+  `adt/tests.rs` and the checker and inference test modules;
+  `tests/spec_08_modules.rs` and `tests/spec_06_pattern_matching.rs` carry
+  end-to-end cases. Coverage status is the spec-side annotation band, which
+  `qa` maintains.
 
-| Site | Reads bare ctor how | Disposition |
-|---|---|---|
-| **`defined_symbols()` / codegen emission** | ctor callable under bare key → compiled | **Handled by construction.** Only a canonical `Life::Concrete { realization: Realization::Body, .. }` callable is `defined_symbols()`-visible; the bare alias adds no compiled fn and `Life::Template` is slotless/non-emitting. Ctor emitted once under `Maybe.Some`. |
-| **Backend tag dispatch — pattern position** (`match_codegen.rs::compile_constructor_pattern`) | ~~metadata rides the `Def`, dotted and bare reach the identical `Def`/GOT slot~~ | **WAS WRONG — the row that broke.** Backend `CompileContext::lookup_constructor` (`context.rs:146`) followed the import chain **exactly ONE hop** and its global fallback probed **bare keys**, so an imported bare ctor (`user.Nil → home.Nil-alias → home."List.Nil"`, 2 hops) MISSED → `unknown constructor: Nil` — the **root of the entire prelude cascade** (~30 regressions via `collections.list.test`). **Cure (LANDED, arch §10 DC-11):** typecheck records the canonical **storage key** in `MethodResolutions.pattern_ctors`, transported to codegen on a new `MonoMatchArm.resolved_ctor: Option<FQSymbol>` (populated via a **required** `MonoExpr::from_expr` `pattern_ctors` param — unforgettable, P18). Pattern codegen now does a **direct keyed read** `CompileContext::ctor_meta_at(&FQSymbol)` and **hard-errors** on a miss — no context-free re-resolution, no DashMap-order global fallback (the run-to-run wrong-tag nondeterminism class). `CACHE_SCHEMA_VERSION` 17→18. `lookup_constructor` is no longer called from pattern position. |
-| **Backend ctor-as-value — nullary tag path** (`lookup_constructor` value position) | tag path misses on the 2-hop chain, falls through to fn-as-value closure wrap | **WAS WRONG — the silent class.** A cross-module bare nullary ctor value missed the tag path and compiled as a **fn-value closure** (CLIF-verified) → runtime "match failed", **silent wrong value**. **Cure (LANDED):** `lookup_constructor` collapsed onto the ONE backend resolution driver (`resolution.rs::resolve_driven`, multi-hop + alias-substitution + global fallback) with a ctor-extracting closure, and the driver's qualified/global arms made canonical-key-aware. Do NOT widen the one-hop copy in place (the P7 two-resolvers-one-name defect). |
-| **Int value display** (`src/display.rs::ctor_field_types` :521) | raw `table.get(bare_ctor)` for `Def{scheme}` → alias → `None` | **WAS MISSING.** Data ctors rendered with **fields dropped** (`(Cons 2 …)` shows `List.Cons`; the `display_*` class). **Cure (LANDED):** probe `member_key(fqtn.name, ctor)` **canonical-first**, bare fallback for the product facet. |
-| **Int member-glob import** (`src/imports.rs::collect_member_glob`) | scans `public_symbols()` for `Def{Constructor}` matching the parent type | **WAS MISSING.** Post-change it collects the CANONICAL (dotted) names, but bare aliases are `Import` edges and are **skipped**, so a member-glob importer loses bare ctor references. **Cure:** for each matched canonical member also install the bare-alias edge (mirroring the home module's binding shape; §8.6.5 ambiguity handling at the importer unchanged). |
-| **SEEDED constructor writers** (`src/bootstrap.rs::register_synth_adt` + `IO.Bind`; `builtins.rs` fixture) | keep bare keys → seeded/user keying split | **WAS MISSING.** A seeded-vs-user split is a third keying. **Cure (LANDED):** every writer mints canonical + alias uniformly (writer inventory above). |
-| **`match` exhaustiveness** | `type_def.constructors` (bare) vs covered patterns; per-ctor `internal` probe | **§4 — two REQUIRED edits, same change-set.** |
-| **`instantiate_ctor`** (`infer.rs:137`) | `info.constructors[tag]`, tag-indexed on `TypeDefInfo` | **Unaffected** — bare-name list, tag-driven; no key probe. Note the sidecar single-mint point IS `instantiate_ctor` (arch §10.1): it probes canonical-then-bare and records **whichever key HIT** into `pattern_ctors`. |
-| **`type_ctor_names` + backend heap classifiers** (`value_layout`, `is_mixed_adt`, `classify_adt`) | `type_ctor_names` → `table.get(key)` | **Obligation A** (§5) — walk returns canonical keys; soundness-coupled (`value_layout`), so must land together. |
-| **Sparkability ctor-exclusion** (`let_if.rs::collect_module_constructors` vs `sparkability.rs::is_worth_sparking`) | storage keys vs source-written callee names | **Heuristic-only** (arch §10.4). Sum-ctor calls silently dropped from the exclusion set (spark-heuristic noise, not correctness). **Cure (LANDED):** both sides go through the ONE grammar `cranelisp_types::bare_member_name`. |
-| **Mono collection** | mono keys on *fn* names / mangled variants | **Unaffected** — ctors are not monomorphised (concrete-per-instantiation via `ConstrADT`); `callees` explicitly does not record dotted member refs (typecheck CLAUDE.md). |
-| **`public_symbols()` → `/list`/`/exports`/glob-import/agent harvest/`/search`** | surfaces Public entries | **Behaviourally preserved, DISPLAY flagged.** Canonical `Maybe.Some` (Public) + bare `Some` alias (Public, §2.4) both surface; bare-import reach (`(import [m [Some]])`) preserved. `/list` would show BOTH (double-count) — a REPL-experience call, **flag to `/repl`** (FIXME 0438 / `fixme-0365 §1.6.5`; E4 unified-display seam, bucket 6 / 0572). Not a typecheck correctness item. |
-| **`instantiate_ctor` / `is_internal_constructor`** dotted input | strips `/` prefix, not `.` | Dotted `Maybe.Some` resolves through the `resolve_constructor_entry` arm (§3.3); `is_internal_constructor` reads `internal: false` off the terminal `CallableOrigin::Ctor` — admitted, not rejected. **Unaffected** (internal ctors never written dotted). |
+## 8. Unresolved obligations
 
-**Sites that silently break without the coordinate edits:** the two backend
-resolvers (pattern position → `unknown constructor` cascade; nullary value → the
-silent wrong-value class), int value display (fields dropped), member-glob
-(lost bare refs), the seeded-writer split, exhaustiveness (§4), and the
-`type_ctor_names`/`value_layout` heap classifiers (§5, Obligation A —
-soundness-coupled, a UAF class). The landing is ONE `/dev` deployment, two
-commits: **reader-widening (behaviour-invariant)** then **writer-flip + cache
-bump + RED flips** (arch note §4).
-
----
-
-## 7. Public-API + quality attributes
-
-- **No feature-specific crossing type.** Typecheck consumes C1's published
-  `AdtEntrySpec`, callable lifecycle vocabulary and settlement funnels. The
-  resolver generalization and dotted `resolve_constructor_entry` arm remain
-  `pub(crate)`/private. C1 must first close the `Binding<()>` → `Binding<C>`
-  installation mismatch recorded above; this design does not license a local
-  wrapper or a second binding representation.
-- **Simplicity (P6).** The ctor path is *simpler* than the accessor mirror it
-  copies — no synthesis, no poison re-mint helper, owner read directly from
-  `type_name`. Recommend collapsing the accessor + ctor collision classifiers into
-  one member recognizer (§1.2) rather than growing a second mirror.
-- **Single source of truth (P7).** One `member_key` mint point; one shared
-  `resolve_dotted_member_entry` for value + pattern; the canonical `Callable` is
-  the sole scheme/metadata source; the bare alias is a pure `BindingBody::Alias`
-  edge (one compiled ctor per type, no duplicate slot).
-- **Enforce invariants structurally (P18).** "`Maybe.Some` names exactly one thing"
-  is structural — the canonical ctor callable is unconditionally the real entry;
-  ambiguity is confined to the bare alias and never touches the canonical form (no
-  cross-module cliff — the canonical callable is uniformly Public, so `m/Maybe.Some`
-  resolves in every case, contested or not).
-- **Testability (P5).** Value: read the inferred type of a resolved dotted ctor
-  (`Color.Red : Color`; `Maybe.Some : (Fn [a] (Maybe a))`). Pattern: `(Maybe.Some
-  x)` binds and type-checks; bare `(Some x)` with two owners is a resolution error
-  listing `Maybe.Some`/`Option.Some`. Poison: assert the bare key becomes
-  `Ambiguous` and both canonical callables stay valid. Product: `Point.Point` does not
-  resolve; `Point` does; no spurious poison. All with `TestFixture`, no full
-  pipeline. (Tests are `/dev`'s per the mandatory unit-per-fix; the committed RED
-  `dotted_constructor_in_value_position_resolves` + `/testing`'s same-named-ctor twin
-  — value + pattern — are the e2e acceptance.)
-
----
-
-## 8. Under-specification / dependencies to raise (no guessing)
-
-The landed spec and the arch note are **sufficient** for the typecheck
-implementation — no `target: /spec` or `target: /arch` FIXME is warranted from this
-design pass. The product corner (§2), the value/pattern agreement (§3), and the
-alias-poison direction (§8.6.5 not §8.6.4) are all explicit in the landed §8.5.2 /
-§8.6.5 / §6.2. The one potential cross-crate dependency (frontend pattern
-classification, §3.4) is **confirmed already satisfied** — no frontend change. One
-coordination item to record for Phase 4 (a dependency, not a gap):
-
-1. **`/repl` — `/list`/`/exports`/`/search` display of the bare alias (§6 display
-   row).** The canonical + bare-alias double-listing is a REPL-experience call to
-   mirror the accessor listing ruling (FIXME 0438) under the E4 unified-display seam
-   (bucket 6 / 0572). Recorded here so `/repl`'s bucket-6 dispatch picks it up; no
-   typecheck action.
-
----
+- **Pattern selection is not yet the approved lifecycle.**
+  `infer.rs::check_constructor_pattern` still tries a direct
+  determined-scrutinee probe before collecting pending candidates, and its
+  final ambiguity branch counts raw candidates and builds its hint through
+  `reconstruct_accessor_alternatives`. The approved target and its source gap
+  are [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §2,
+  §7 and §9; implementation is `dev`'s under that design, with no further
+  design decision owed here.
+- **Stale rationale in source.** Comments and rustdoc on the constructor path
+  still describe superseded shapes: `Ambiguous` and "poison" in
+  `check_constructor_pattern`, a bare-keyed seeded `Bind` in the §4.2 probe
+  comment, and `Def`/`DefKind::Constructor` in `committed_member_owner` and
+  `resolve_constructor_entry`. Repair is `dev`'s.
 
 ## 9. Cross-references
 
-- `spec/08-modules.md §8.5.2` (canonical constructor + product dual-facet corner),
-  `§8.6.5` (duplicate ctor names contest the bare alias); `spec/06-pattern-matching.md
-  §6.2.1/§6.2.2/§6.2.4` + §6.2 EBNF (dotted constructor patterns).
-- `design/arch/dotted-ctor-canonical-keys.md` — Obligations A + B, `member_key`
-  sweep, read-side delegations.
-- `design/typecheck/fixme-0365-field-accessor-dotted.md` — the field-accessor
-  inverted-model this mirrors (§0/§1.6 = the accessor canonical-key + bare-alias
-  precedent; §1.6.5 = the listing ruling `/repl` mirrors for ctors).
-- `design/typecheck/adt.md` §"Product Type Handling", §"Constructor Scheme
-  Generation" — the ctor recipe this keys; the dual-facet the product corner
-  (§2) preserves.
-- `crates/cranelisp-typecheck/src/adt.rs` —
-  `register_type_def_with_ctor_infos` (the keying, recipe-consumption and product
-  gate), `synthesise_one_accessor` (`:450`, the mirror),
-  `committed_accessor_kind`/`CommittedAccessor` (`:818`/`:798`, the recognizer to
-  generalize), `accessor_owning_types`/`reconstruct_accessor_alternatives`
-  (`:629`/`:769`, the alternatives bookkeeping), `check_exhaustiveness_in_module`
-  (`:915`, the §4 edits).
-- `crates/cranelisp-typecheck/src/checker.rs` — `lookup` (`:1200`),
-  `resolve_dotted_field_accessor` (`:1404`, generalize to `resolve_dotted_member`),
-  `resolve_constructor_entry` (`:1593`, add the dotted arm),
-  `resolve_terminal_entry_and_home` (`:1675`, the exhaustiveness internal-flag
-  chain-follow), `type_def_view_of` (`:91`).
-- `crates/cranelisp-typecheck/src/infer.rs` — `check_constructor_pattern` (`:970`),
-  `try_auto_curry` (`:657`), `instantiate_ctor` (`:137`), `infer_var` guards
-  (`:265`).
-- `cranelisp_types::member_key` (`resolve.rs:825`), `CallableOrigin::Ctor`
-  (`lifecycle.rs`), `type_ctor_names` (`heap.rs:269`, Obligation A),
-  `CACHE_SCHEMA_VERSION` (`cranelisp-backend/src/cache/mod.rs`, Obligation B).
+- Source: `crates/cranelisp-typecheck/src/adt.rs`
+  (`register_type_def_with_ctor_infos`, `committed_member_owner`,
+  `check_exhaustiveness_in_module`); `checker.rs` (`lookup`,
+  `resolve_dotted_member_entry`, `resolve_constructor_entry`,
+  `type_def_view_of`); `infer.rs` (`check_constructor_pattern`,
+  `try_auto_curry`, `instantiate_ctor`);
+  `crates/cranelisp-types/src/adt_build.rs` (`build_adt_entries`).
+- Designs: the authority table at the top.
+
+## Former section numbers
+
+| Former | Now |
+|---|---|
+| Header "binding inputs", C1 facade handoff | Authority table; the handoff closed when `AdtEntrySpec<C>` became generic over the code store, and the binding installs unchanged (§1.1) |
+| §0 "unifying insight" and the C1 terminology note | §0 and §1.1 |
+| §1.1 bare alias and collision arms | §1.1 — alias and registration-time poison retired for candidate exposure |
+| §1.2 recognizer recommendation | §1.2, as built |
+| §1.3 accessor-owner bookkeeping and rename | §1.3 and §8 |
+| §4 items 1–2 | §4.1–§4.2 |
+| §5 Obligations A and B | §5; authority is arch §2 |
+| §6 cross-crate census and writer inventory | §6; inventory is arch §1 and §3 |
+| §8 Phase-4 `/repl` coordination item | Retired: listing is settled by construction (§6) |

@@ -333,7 +333,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Check a single function definition body.
     ///
     /// `written_var_scope` is the definition's Pass-1 written-type-var scope
-    /// (name → flexible `TypeId`, spec §3.3.1 [S109]); it is installed as the
+    /// (name → flexible `TypeId`, spec §3.3.1; S109); it is installed as the
     /// active `state.written_var_scope` for the duration of this body so a
     /// body/nested-`fn` `:a` CO-REFERS to the param's var (§3.3.1 co-reference,
     /// the 0588 seam). A bare written var is otherwise an ORDINARY FLEXIBLE

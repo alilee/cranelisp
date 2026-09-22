@@ -28,7 +28,7 @@ spec does not say:
   macro. `spec/02-grammar.md` §2.7 similarly shows an illustrative `unless`
   expanding to `(if ~cond 0 ~body)`. Both are docstring/grammar illustrations,
   not the library contract.
-- **§9.10 "Example Prelude Macros"** enumerates `const`, `def`, `list`, `do`,
+- `spec/09-macros.md` **§9.10 "Example Prelude Macros"** enumerates `const`, `def`, `list`, `do`,
   `bind!`, `->`, `->>`, `cond`, `case`, `vec`, `str` — **`when`/`unless` are
   absent** — yet its `[Tested …]` annotation cites
   `tests/spec_11_stdlib::macro_when_true`. The coverage claim points at a

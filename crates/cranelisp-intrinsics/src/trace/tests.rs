@@ -386,7 +386,7 @@ fn empty_trace_yields_faithful_placeholder_not_a_defect() {
 }
 
 // spec: spec/04-expressions.md §4.12.5 — panic-unwind trace-guard cleanup
-// (0258 NOTE-2 / test-discovery.md §5 item 5). Simulate a panic crossing an
+// (0258 NOTE-2 / test-discovery.md §5 "Trace-guard cleanup"). Simulate a panic crossing an
 // actively-tracing body: role held + TRACE_BODY_RUNNING set. The cleanup
 // must clear the flag AND release the role so the next trace starts clean.
 #[test]

@@ -482,7 +482,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// the scan yields `Option<Option<usize>>` which is `.flatten()`ed:
     /// "method absent from every visible decl" (outer `None`) is DISTINCT from
     /// "method present but `hkt_param_index: None`" (inner `None`) — the HKT
-    /// dispatch path relies on this distinction (§3.3).
+    /// dispatch path relies on this distinction (`design/typecheck/traits.md` §1.6).
     fn find_hkt_param_index_in_registry(
         &self,
         state: &CheckState,
@@ -510,7 +510,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// caller decides the not-found default — `Self::find_hkt_param_index_in_registry`
     /// reads an `Option<usize>` field (so it sees `Option<Option<usize>>` and
     /// distinguishes absent from field-`None`); `Self::method_self_in_return`
-    /// reads a `bool` and defaults not-found to `false` (§3.3). The single
+    /// reads a `bool` and defaults not-found to `false` (`design/typecheck/traits.md` §1.6). The single
     /// I-1 public-head filter lives here (one chokepoint, Principle 7).
     fn find_trait_method_decl<R>(
         &self,

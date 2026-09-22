@@ -355,9 +355,9 @@ fn run_tests_empty_module_reports_no_tests() {
 //
 // Two properties this exercises beyond construction:
 //   - explicit `(Vec String)` module argument — the no-arg `(discover-tests)`
-//     form is STDLIB-MACRO sugar (test-discovery.md §150), and tests are
+//     form is STDLIB-MACRO sugar (test-discovery.md §2 "One extern taking (Vec String)"), and tests are
 //     stdlib-free (CLAUDE.md), so the bare extern is called with `["user"]`.
-//   - q-eligibility (test-discovery.md §162): a `test-*` fn is discovered only
+//   - q-eligibility (test-discovery.md §2 "Eligibility"): a `test-*` fn is discovered only
 //     if its type is EXACTLY `(Fn [] (Option String))`. A bare `(defn test-x
 //     [] None)` infers the polymorphic `(Fn [] (Option a))` and is correctly
 //     excluded; `(if true None (Some "..."))` forces `(Option String)`.

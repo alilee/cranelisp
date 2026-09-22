@@ -194,7 +194,7 @@ where
         // is built every IVar it depends on has already been created and recorded
         // in `sparked_name_to_ivar`.
         // Per-binding-vector state, indexed by BINDING POSITION
-        // (`design/backend/binding-scope.md` §3.4) and read through the one
+        // (`design/backend/binding-scope.md` §"Binding environment") and read through the one
         // shared resolver `binder_before`. Keying it by name let a non-sparked
         // rebinding leave the displaced binder's IVar visible to a later
         // binding's dependency resolution, which then read the wrong value.

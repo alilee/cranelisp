@@ -182,18 +182,18 @@ pub enum StrandEvent {
     },
     /// A strand was **cancelled** — the cancellation counterpart to
     /// [`StrandEvent::StrandFailed`] (slice 7, §2.15 step 5 / §2.18 / §2.19). A
-    /// branch future was dropped because it **lost a race**, **timed out**, or was
-    /// **cleared by graceful shutdown**. Cancellation is the *consequence* of
+    /// branch future was dropped because it **lost a race** (including a derived
+    /// `timeout`). Cancellation is the *consequence* of
     /// losing a race or exiting a scope (§9 — there is no `cancel` primitive), so
     /// this event is the only trace a dropped (cancelled) strand leaves in the
     /// `/strand` dump (the cancellation half of §11 point 2). The drop itself runs
     /// the four §2.15 release paths (permit, fd/timer interest, FIFO waker,
     /// unconsumed sub-tree); this event records *that* it happened and *why*.
     ///
-    /// `#[allow(dead_code)]`: the production constructor is the C3 combinator
-    /// runtime (`run_io_trampoline`'s race/select loser-drop) + the C4 shutdown
-    /// hook; until those land its only constructor is the in-crate tests (the
-    /// event plumbing lands with the C2 foundations, ahead of its emitters).
+    /// The production emitter is `io::run_select_node`'s loser-drop, always with
+    /// [`CancelReason::RaceLost`]. `Supervisor::clear` drops strands at drive end
+    /// without emitting this event (graceful shutdown is open,
+    /// `design/intrinsics/reactor.md` §2.19).
     #[allow(dead_code)]
     StrandCancelled {
         /// The strand that was cancelled.
@@ -207,18 +207,17 @@ pub enum StrandEvent {
 ///
 /// `#[non_exhaustive]` so the later kinds (`Timeout`, `Disconnect` — both reduce to
 /// a race-loser drop, §2.18/§2.19) join without breaking consumers.
-/// `#[allow(dead_code)]`: see [`StrandEvent::StrandCancelled`] — no production
-/// constructor until the C3/C4 combinator + shutdown emitters land.
+/// `#[allow(dead_code)]`: [`CancelReason::Shutdown`] has no production
+/// constructor (see [`StrandEvent::StrandCancelled`]).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum CancelReason {
     /// The strand lost a `race` / `select` (or a derived `timeout`) — the §2.15
-    /// loser-drop. Also covers cancel-on-disconnect (the handler loses the race to
-    /// the disconnect-watch leaf, §2.19).
+    /// loser-drop. Cancel-on-disconnect is designed to reduce to this reason, but no
+    /// platform supplies a disconnect-watch leaf yet (§2.19).
     RaceLost,
-    /// The strand was cleared by graceful/hard shutdown (`Supervisor::clear`,
-    /// §2.19).
+    /// Reserved for graceful shutdown (§2.19, open); nothing emits it.
     Shutdown,
 }
 

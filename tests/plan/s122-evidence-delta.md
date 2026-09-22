@@ -367,7 +367,7 @@ This assessment reuses the existing stocktake and source observations; it create
 | Shared document-checking pilot | GO at the Phase-3 design/evidence-allocation boundary: D7 and host/adapter choices are approved, the shared checker contract and bounded evidence allocation are reviewed. Shared mechanism/project declaration work, read-only validation in both repositories, Cranelisp adoption and repairs remain pending under Phase-5 reservations and subsequent closure gates. Magic edits/upstream publication need subsequent approval; no blanket residual baseline migration. |
 | Record retirements and baseline formatting | Ready for source/evidence reconciliation within owning streams; generated API contraction still returns for user confirmation. |
 
-The reviewed design carriers are [Binary/int](../../design/int/s122-closure.md), [intrinsics](../../design/intrinsics/ownership-and-disposal.md), [primitives](../../design/primitives/s122-typed-consume-consumers.md), [backend](../../design/backend/s122-closure.md), and the existing [auto-curry evidence design](../../design/typecheck/auto-curry.md). D1 and D8 are approved with implementation and executing evidence pending. D7 shared document-checking pilot scope, host ownership and checked-in adapter choices are approved; the shared checker design and evidence allocation are adequate. Phase 4 was authorized on 2026-09-10; Phase 5 was authorized on 2026-09-10, and subsequent Magic edits/upstream publication remain separately gated. D6 is a future live-evaluation configuration/budget gate and does not block runner design or implementation planning. No additional compiler contract decision is inferred from owner/copilot execution policy.
+The reviewed design carriers are [Binary/int](../../design/int/s122-closure.md), [intrinsics](../../design/intrinsics/ownership-and-disposal.md), [primitives](../../design/primitives/primitives.md#24-typed-abi-boundary), [backend](../../design/backend/s122-closure.md), and the existing [auto-curry evidence design](../../design/typecheck/auto-curry.md). D1 and D8 are approved with implementation and executing evidence pending. D7 shared document-checking pilot scope, host ownership and checked-in adapter choices are approved; the shared checker design and evidence allocation are adequate. Phase 4 was authorized on 2026-09-10; Phase 5 was authorized on 2026-09-10, and subsequent Magic edits/upstream publication remain separately gated. D6 is a future live-evaluation configuration/budget gate and does not block runner design or implementation planning. No additional compiler contract decision is inferred from owner/copilot execution policy.
 
 At stream closure, inspect the actual change, dev unit evidence, independent test evidence, review findings and exact API confirmation. At composition closure, run the fresh default suite and isolated agent lane in their required environments, then the authorized live eval baseline. Report known/environment/provider limits separately. Broaden testing only for a changed condition or unresolved composition risk. Update PLAN/spec traceability once actual evidence establishes coverage; this assessment does not confer Tested status.
 
@@ -603,7 +603,7 @@ No new public test or source/build work was performed by QA.
 
 ## 0932/0936 current realization-roster evidence handoff
 
-QA read both live filings, `design/arch/concreteness-types-first.md` §1.3, the
+QA read both live filings, `design/arch/total-concreteness.md` §3.3, the
 S119 NC-R row, current lifecycle and actual bootstrap source. The authoritative
 ruling retains an executing closed production uniform-body roster observation
 to expose an undeclared additional representation dependency. That obligation
@@ -1270,20 +1270,21 @@ Residual intake, classified. None gates the corrected harvest seam.
 | Intake | Class | Allocation |
 |---|---|---|
 | Explicit-import in-scope feeder reads `all_symbols()` (bindings only) | Observed and corrected; evidence adequate (see the lookup-correction adequacy below). At intake: suspected defect, unobserved. §17.18.1 requires explicitly imported symbols in the block; the mechanism matches the one observed in feeder 3; the harvest e2e covers own definitions and the implicit prelude only, so the provenance twin is missing. | `test`: one explicit-import twin of `harvest_in_scope_shows_name_sig_docstring` with the same assertions. RED is the reproduction and goes to `dev` (`src/`) with a module unit on the same candidate path; GREEN refutes the intake and the twin stays as coverage. |
-| Context exports arm uses `public_symbols()` while `/exports` resolves candidates and filters internals | Same consumer family; advisory model context; no requirement fixes the grain and no wrong outcome is reproduced. | No observation now. `design` (int) decides convergence on the `/exports` producer; if adopted, one twin cell (context export names equal `/exports`) accompanies it. |
-| Pin narrower than "full current-module source" (types, traits, impls, file-loaded definitions absent) | Authority and realization disagree; not a defect until the owner chooses which moves. | `design` (int) decision, raised through `sprint`; `qa` allocates after it. |
+| Context exports arm uses `public_symbols()` while `/exports` resolves candidates and filters internals | Same consumer family; advisory model context; no requirement fixes the grain and no wrong outcome is reproduced. | No observation now. `design/int/agent.md` §5.2 records the divergence as an open design question. `design` (int) decides convergence on the `/exports` producer; if adopted, one twin cell (context export names equal `/exports`) accompanies it. |
+| Pin narrower than "full current-module source" (types, traits, impls, file-loaded definitions absent) | Authority and realization disagree; not a defect until the owner chooses which moves. | `design/int/agent.md` §5.2 now states the delivered admission rule and records the narrower pin as an open design question; `repl/spec/17-embedded-agent.md` §17.8.1 describes disclosure of the full current-module source. The decision remains `design` (int)'s, with `spec` if the disclosure wording moves, raised through `sprint`; `qa` allocates after it. |
 | `prelude_implicit_names` holds the prelude table guard across a second `symbol_tables` read | Latent safety residual in a shape FIXME 0666 already retired in harvest; present before this change and not widened; reached by `/imports` and every context dump. | `dev` (`src/`): collect-then-resolve, the constructive repair. No detector or stress cell. Delivered for this function; review found it correct. |
-| `src/CLAUDE.md` and `format.rs` said `/doc` follows the import chain through the identity helper `resolve_entry_for_display`, since removed (final section); stale `defined_symbols()` mentions in `design/int/agent.md` and `harvest.rs` comments | Stale records. `/doc` on a re-exported primitive and on a constructor is observed working. | The `src/CLAUDE.md` and `format.rs` `/doc` claims are repaired with the `/imports` guard correction, and review confirmed the new text against source. The `design/int/agent.md` and `harvest.rs` mentions stay with their owners' next edit; no evidence. |
+| `src/CLAUDE.md` and `format.rs` said `/doc` follows the import chain through the identity helper `resolve_entry_for_display`, since removed (final section); stale `defined_symbols()` mentions in `design/int/agent.md` and `harvest.rs` comments | Stale records. `/doc` on a re-exported primitive and on a constructor is observed working. | The `src/CLAUDE.md` and `format.rs` `/doc` claims are repaired with the `/imports` guard correction, and review confirmed the new text against source. The `defined_symbols()` mentions are gone: a search of `design/int/agent.md` and `src/agent/` finds none. No evidence. |
 
 - Review A1 and A2 are mechanical comment repairs with root. A3 is accepted:
   the cap unit guards the Haiku ceiling only and is not a general budget guard;
   ACT-0960 stays deferred.
-- Review R1: pin admission of `Overloaded` and `Macro` moves toward
-  `design/int/agent.md` §5.2 #1 ("pinned in full"), affects advisory context
+- Review R1: pin admission of `Overloaded` and `Macro` affects advisory context
   only and has no reproduced wrong outcome. No observation is allocated.
-  `design` (int) restates the §5.2 admission rule against the live symbol-table
-  API; `qa` reconsiders an observation only if that restatement excludes a
-  class the pin now admits.
+  `design/int/agent.md` §5.2 block 1 now states the admission rule as callables,
+  overload groups and macros that are not internal listing entries. Read at its
+  seam, `harvest.rs::push_module_full_source` admits exactly those declaration
+  kinds with the same internal-listing filter, so the restatement excludes no
+  class the pin admits and no observation is reconsidered.
 - The agent feature lane is outside the default suite, so default-suite green
   does not cover it. S122 agent acceptance needs the lane green, or each RED
   traced to an owned filing. The set-doc and harvest defects both entered as
@@ -1322,7 +1323,7 @@ Review findings, classified. None gates the agent lane.
 | A3: the units report overstates the import-only control | Report wording; the test is unchanged. | Root integrates the wording QA supplied with this judgment; the limit is stated above. |
 | A4: one spelling with two foreign sources renders once | Advisory model context; no requirement fixes the grain. | None. |
 | A5: the resolve, internal-listing and special-form filter sequence repeats at four sites | Corrected with A2. The resolve and internal-listing pair has one site, `listable_definition`, with three consumers; special-form exclusion stays with the two callers that apply it, because `/imports` categories never did. | Delivered with A2. |
-| A6: `design/int/agent.md` §23.1 feeder list contradicts the delivered feeder 2 | Stale record under the stale-records row. | `design` (int), in progress. |
+| A6: `design/int/agent.md` §23.1 feeder list contradicted the delivered feeder 2 | Stale record under the stale-records row. Repaired: §23.1 feeder 2 now states name candidates from another source module, resolved with `resolve_to_definition` and filtered as feeder 1, which matches `explicit_import_sources` and `listable_definition` as read. | Closed by `design` (int). No evidence. |
 | A7: typographic apostrophe in the `push_in_scope_block` rustdoc | Nit. | Root, mechanical. |
 
 ### `/imports` guard correction — adequacy

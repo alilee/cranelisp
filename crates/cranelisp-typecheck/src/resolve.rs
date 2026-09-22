@@ -2,13 +2,14 @@
 //!
 //! All resolution returns Result, never panics (addresses audit HIGH-4).
 //!
-//! Resolution matches directly on the terminal [`ModuleEntry`] reached by the
-//! injected `resolve_terminal` closure — no intermediate snapshot map. The
-//! closure (built by the caller, which owns the symbol table) performs the
-//! current-module lookup + import chain-follow and hands back the terminal
-//! entry; this module reads everything it needs off that entry: ADT
-//! `FQTypeName` and arity from `TypeDef`, the bare `Type` variant from
-//! `IntrinsicType`. Keeping resolve.rs on the boundary type `ModuleEntry`
+//! Resolution matches directly on the terminal [`Binding`] candidates returned
+//! by the injected `resolve_candidates` closure — no intermediate snapshot map.
+//! The closure (built by the caller, which owns the symbol table) performs the
+//! scoped candidate resolution and hands back each terminal binding with its
+//! canonical [`FQSymbol`]; this module keeps the type-namespace candidates,
+//! requires exactly one, and reads everything it needs off that binding: ADT
+//! `FQTypeName` and arity from its `TypeDefInfo`, the bare `Type` variant from
+//! `TypeRecord::Intrinsic`. Keeping resolve.rs on the boundary type `Binding`
 //! (rather than the checker's internals) preserves its decoupling.
 
 use std::collections::HashMap;
@@ -109,9 +110,10 @@ fn intrinsic_scalar(name: &TypeRef) -> Option<Type> {
 /// same name — anywhere in the same resolution (`[:a x :a y]`, `:(Box a)`) —
 /// resolves to the SAME `TypeId`.
 ///
-/// `ctx.resolve_terminal` resolves a [`TypeRef`] to its terminal [`ModuleEntry`]
-/// via the caller's symbol table (current-module lookup + import chain-follow),
-/// returning `None` when the name is not reachable.
+/// `ctx.resolve_candidates` resolves a [`TypeRef`] to its terminal [`Binding`]
+/// candidates via the caller's symbol table; a name with no type-namespace
+/// candidate is `TypeNotFound`, and more than one distinct candidate is
+/// `Ambiguous`.
 ///
 /// This is the SOLE `TypeExpr -> Type` walk in the crate (FIXME 0590 §5): the
 /// former four mirror resolvers — trait-method sigs, HKT trait sigs, HKT impl
@@ -119,7 +121,7 @@ fn intrinsic_scalar(name: &TypeRef) -> Option<Type> {
 /// [`TypeExprCtx`] that varies only in head-binding *data*.
 ///
 /// `ctx.mint_free_var` controls what happens when a `TypeVar` name misses
-/// `var_map` (spec §3.3, [S109]):
+/// `var_map` (spec §3.3; S109):
 ///
 /// - **`Some(alloc)` — annotation AND trait/HKT-sig contexts** (`defn`/`fn`
 ///   parameter, a value annotation `:a form`, a type var nested in an applied
@@ -289,7 +291,7 @@ fn resolve_type_var<C: CodeStore>(
     })
 }
 
-/// Resolve a named type by matching its terminal `ModuleEntry`.
+/// Resolve a named type by matching its terminal type-namespace `Binding`.
 ///
 /// The reserved intrinsic scalars (`Int`/`Bool`/`Float`/`String`) short-circuit
 /// via [`intrinsic_scalar`] (FIXME 0590 §3). Otherwise a `TypeDef` (sum/enum)

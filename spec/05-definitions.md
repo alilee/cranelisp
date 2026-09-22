@@ -328,7 +328,7 @@ A nullary constructor sharing the name of some *other* type is unaffected; the r
 
 > **Implementation note (non-normative).** The definition-position and arm-shape rejects in this subsection are not yet live. The implementation at S115 **accepts** `(deftype Flag (Flag))`, `(deftype Color (Red) Green Blue)`, `(deftype (Maybe a) (Nothing) (Just [:a val]))`, `(deftype Flag Flag)`, the documented same-name `(deftype Flag (Flag "a documented nullary"))`, and the empty-arm-field-list `(deftype Something (Unit []))` / `(deftype Flag (Flag []))`; it already rejects `(deftype Flag ())` (`empty constructor`), `(deftype Unit)` (`deftype missing constructors`), and the standalone truncated `(deftype None "…")` (`deftype missing constructors`), and already accepts `(deftype Unit [])`. Enforcement of the new rejects is scheduled for **S116**. In pattern position the implementation likewise accepts `(Red)` / `(None)` today; in value position `(None)` / `(Unit)` are already rejected (a non-`Fn` value is not callable — a type error). Until the definition/pattern enforcement lands, a program using a now-illegal form will compile — that is a known implementation gap, not a licence.
 
-### 5.2.3 Enum (All Nullary) [Tested crates/cranelisp-typecheck/src/adt.rs::test_register_enum_type, tests/repl_introspection.rs::deftype_display_enum, tests/spec_05_definitions.rs::deftype_enum_construct_and_match, tests/examples.rs::every_example_runs_with_documented_exit]
+### 5.2.3 Enum (All Nullary) [Tested crates/cranelisp-typecheck/src/adt/tests.rs::test_register_enum_type, tests/repl_introspection.rs::deftype_display_enum, tests/spec_05_definitions.rs::deftype_enum_construct_and_match, tests/examples.rs::every_example_runs_with_documented_exit]
 
 An enum is a sum type where all constructors are nullary.
 
@@ -976,7 +976,7 @@ definitions publish together (§9.12.1).
 
 **Why explicit clustering?** This aligns Cranelisp with statically-typed REPL precedent. ML-family languages (OCaml, SML, F#) require explicit `let rec ... and ...` syntax for mutual recursion at any scope; Haskell-family languages (Haskell, Elm, PureScript) do automatic dependency analysis at module scope but treat each REPL input as a separate eval (with explicit grouping syntax such as `:{ ... :}` for multi-form input). Cranelisp matches Haskell-family at file scope (automatic via two-pass per §5.13.1) and ML-family at REPL scope (explicit `begin` cluster).
 
-### 5.13.3 Module-Phase Declarations [Tested tests/spec_08_modules::import_below_use_still_available_before_definitions, crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
+### 5.13.3 Module-Phase Declarations [Tested tests/spec_08_modules::import_below_use_still_available_before_definitions, crates/cranelisp-frontend/src/module_extract/tests.rs::test_mixed_forms]
 
 `mod`, `import`, `export`, and `platform` are extracted before any other processing. Their position in the source file relative to other definitions does not matter, though by convention they appear at the top.
 

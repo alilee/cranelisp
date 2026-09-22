@@ -167,8 +167,8 @@ impl CompilerSession {
     /// verbatim `Error: {e}` diagnostic — with the identical strings the user
     /// saw (Principle 7: this is NOT a second transcript store; it reuses the
     /// display boundary's own output). A no-op when the agent is unconfigured
-    /// (`self.agent == None`) — feature-on-without-`--agent` records nothing
-    /// until the agent is enabled; feature-off this method does not exist and
+    /// (`self.agent == None`). An installed dormant agent still records turns;
+    /// feature-off this method does not exist and
     /// the read-loop call site is absent, so the loop is byte-identical (§5.5(4)).
     pub fn record_repl_turn(&mut self, input: &str, outcome: crate::agent::types::ReplTurnOutcome) {
         if let Some(agent) = self.agent.as_mut() {
@@ -665,12 +665,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Wave-3 request-assembly / harvest — the `/dev`-owned request-content unit
-    // tests (tests/plan/agent-testing-strategy.md §1.1(b), §3.2). These assert
-    // WHAT the agent sent (the request the stub captured): the primer is always
-    // present; the harvest carries the right slice; the transcript carries prior
-    // turns; the tools are exactly the read-only allowlist. They run unit-tier
-    // because the assembled `CompletionRequest` never surfaces through stdout.
+    // Request-content module evidence: primer, harvested context, transcript
+    // and offered tools (tests/plan/agent-testing-strategy.md §1.1(b), §3.2).
+    // StubModel captures the neutral AgentRequest directly.
     // -----------------------------------------------------------------------
 
     use crate::agent::stub::StubModel;

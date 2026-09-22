@@ -537,7 +537,7 @@ fn layout_lookup_follows_cross_module_fields_without_table_storage() {
 // ---------------------------------------------------------------------------
 // `ctor_field_types_at` — the instantiation-substituting projection (S119
 // types-first slice; register rows R-6/R-16;
-// design/arch/concreteness-types-first.md §3.5).
+// design/arch/total-concreteness.md §2.1).
 // ---------------------------------------------------------------------------
 
 /// A GENERIC constructor `Def`: scheme `∀vars. field_tys… -> ADT(type, vars)`.
@@ -571,7 +571,7 @@ fn generic_ctor_entry(
     }
 }
 
-// spec: design/arch/concreteness-types-first.md §3.5 — substitution instantiates
+// spec: design/arch/total-concreteness.md §2.1 — substitution instantiates
 // the generic field type at the supplied concrete args.
 #[test]
 fn ctor_field_types_at_substitutes_generic_field() {
@@ -585,7 +585,7 @@ fn ctor_field_types_at_substitutes_generic_field() {
     assert_eq!(got, vec![ConcreteType::Int]);
 }
 
-// spec: design/arch/concreteness-types-first.md §3.5 — a concrete ctor projects
+// spec: design/arch/total-concreteness.md §2.1 — a concrete ctor projects
 // its declared field types verbatim at the empty instantiation.
 #[test]
 fn ctor_field_types_at_concrete_ctor_projects_verbatim() {
@@ -597,7 +597,7 @@ fn ctor_field_types_at_concrete_ctor_projects_verbatim() {
     assert_eq!(got, vec![ConcreteType::Int, ConcreteType::String]);
 }
 
-// spec: design/arch/concreteness-types-first.md §3.5 — a nullary ctor has zero
+// spec: design/arch/total-concreteness.md §2.1 — a nullary ctor has zero
 // fields at any well-formed instantiation.
 #[test]
 fn ctor_field_types_at_nullary_is_empty() {
@@ -607,7 +607,7 @@ fn ctor_field_types_at_nullary_is_empty() {
     assert!(got.is_empty());
 }
 
-// spec: design/arch/concreteness-types-first.md §3.5 — ONE residual field
+// spec: design/arch/total-concreteness.md §2.1 — ONE residual field
 // refuses the whole ctor (the model-site spelling; never fabricates). The
 // IO.Bind existential shape: a field var NOT bound by the result params.
 #[test]
@@ -627,7 +627,7 @@ fn ctor_field_types_at_refuses_residual_field() {
     );
 }
 
-// spec: design/arch/concreteness-types-first.md §3.5 — caller-side bugs are
+// spec: design/arch/total-concreteness.md §2.1 — caller-side bugs are
 // distinct from refusals: wrong key / non-ctor / wrong arity.
 #[test]
 fn ctor_field_types_at_caller_bug_arms() {
@@ -653,7 +653,7 @@ fn ctor_field_types_at_caller_bug_arms() {
     );
 }
 
-// spec: design/arch/concreteness-types-first.md §3.5 — an already-concrete
+// spec: design/arch/total-concreteness.md §2.1 — an already-concrete
 // result param must agree with the supplied instantiation argument.
 #[test]
 fn ctor_field_types_at_instantiation_mismatch() {

@@ -445,7 +445,7 @@ fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
 }
 
 // spec: design/arch/concrete-boundary-type.md §2.5 (Cache-schemes-without-
-//       codegen) + §4-B (FIXME 0387) — a generic-only cached module has NO
+//       codegen) — a generic-only cached module has NO
 //       `.o` to load. It enters inmem_done=true and produces NO Level-4
 //       JitCodegen work (nothing to mmap), so wait_inmem_complete passes
 //       immediately without a worker ever touching a (non-existent) object.

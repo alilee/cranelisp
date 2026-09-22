@@ -312,7 +312,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Normalize: the effective impl target is the bare constructor, so
             // every downstream method-check/mangle site sees the impl type in
             // slot 2 exactly as it did for the pre-S112 `(impl Functor Option)`
-            // form. MIRROR (M1): `src/eval.rs::impl_echo_type_name` performs the
+            // form. MIRROR (M1): `src/session_v4/types.rs::impl_echo_type_name` performs the
             // reciprocal derivation on the DISPLAY side — it echoes the pairing's
             // constructor ARGUMENT (`Option`), not the pairing head (`Functor`),
             // so the introspection echo names the same type this normalization
@@ -369,12 +369,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             impl_
         };
 
-        // Impl-time field-accessor collision check (spec §7.3.1, FIXME 0365
-        // Item 2). A trait `impl` whose method name equals an existing
-        // field-accessor name of the target type MUST be rejected at impl time,
-        // BEFORE the impl registers or any body is checked (Principle 18 — the
-        // colliding impl never enters the symbol table). Run it among the
-        // name-level checks, alongside `check_impl_methods_present`.
+        // Impl-time field-accessor collision gate — superseded by spec §7.3.1
+        // and retained as built pending ACT-0983 (see the function's rustdoc).
         self.check_impl_method_accessor_collisions(state, impl_)?;
 
         // Check all required methods are present (that don't have defaults)
@@ -590,25 +586,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
-    /// Reject a trait `impl` whose method name collides with an existing
-    /// field-accessor name of the impl target type (spec §7.3.1, FIXME 0365
-    /// Item 2).
+    /// Reject a trait `impl` whose method name equals a field-accessor name of
+    /// the impl target type.
     ///
-    /// Constructors are uppercase and accessors / trait methods are lowercase
-    /// (§1.4), so the only possible same-name collision is accessor-vs-method —
-    /// exactly the case this gate covers. It runs as a name-level pre-flight,
-    /// BEFORE the impl registers or any body is checked, so a colliding impl
-    /// never produces a `TraitImpl` entry or a mangled method `Def` (Principle
-    /// 18 — the invariant "`Box.v` names exactly one thing" is structural, not a
-    /// downstream lookup-time disambiguation). The first collision found is
-    /// sufficient to reject.
+    /// **Superseded behaviour, retained as built.** Spec §7.3.1 permits this
+    /// overlap: the accessor `Box.v` and the method `HasV.v` stay distinct and
+    /// both project the bare spelling `v`
+    /// (`design/typecheck/fixme-0365-field-accessor-dotted.md` §2). Removing
+    /// this gate and `field_accessor_names_of` awaits defect intake under
+    /// `sprints/actions/ACT-0983-accessor-impl-collision-intake.md` (design
+    /// §2.1); until then its behaviour and tests are unchanged.
     ///
-    /// The target's field-accessor names come from `field_accessor_names_of`
-    /// (the single recognizer-based enumeration, Principle 7), which reads the
-    /// union view (staging + live) so a REPL `impl` colliding with an accessor
-    /// defined in an earlier cluster is also rejected (§2.6). A primitive /
-    /// non-ADT target has no field accessors, so the collision set is empty and
-    /// the check trivially passes.
+    /// As built, it runs as a name-level pre-flight before the impl registers
+    /// or any body is checked, so a colliding impl produces no `TraitImpl`
+    /// entry. The accessor names come from `field_accessor_names_of`, which
+    /// reads the union view (staging + live), so an accessor from an earlier
+    /// REPL cluster also counts. A primitive / non-ADT target has no field
+    /// accessors, so the check trivially passes.
     fn check_impl_method_accessor_collisions(
         &self,
         state: &CheckState,

@@ -4,7 +4,7 @@ target: /design
 filed_by: /arch
 filed_at: 2026-07-28
 sprint_filed: 119
-refers_to: design/arch/total-concreteness.md §3.1/§5.2;
+refers_to: design/arch/total-concreteness.md §3.1;
   design/typecheck/non-concrete-producer-obligations.md §2 (P-1, P-2, A-MINT
   — the machinery this extends);
   design/backend/non-concrete-release-contract.md §2.5 (the template body is
@@ -25,8 +25,8 @@ status: open
 
 The original `refers_to` targets were checked before disposition. The proposed
 `DefKind::Constructor`/`CtorState` migration below is superseded, not outstanding
-source work: `concreteness-types-first.md`'s opening S121 disposition explicitly
-replaces it with the unified lifecycle in `symbol-table-lifecycle.md`.
+source work: the unified lifecycle is canonical in
+`design/arch/symbol-table-lifecycle.md`.
 The old module.rs constructor rustdoc and named backend wrapper helpers are no
 longer the authoritative source locations for the proposed mechanism.
 
@@ -59,7 +59,7 @@ an instruction to repeat the delivered wash.
 promotion. S120 scope — do NOT interleave with S119 Phase 5.**
 
 > **AMENDED 2026-07-28.** The types-side representation is now PINNED by
-> `design/arch/concreteness-types-first.md` §3: the slot retirement is
+> [historical types-first design](https://github.com/alilee/cranelisp/blob/9c74e2eb/design/arch/concreteness-types-first.md), section 3: the slot retirement is
 > `DefKind::Constructor { state: CtorState { Template | Concrete { got_slot:
 > CallableSlot } }, .. }` with the ONE fallible witness mint
 > (`SymbolTable::mint_callable_slot`) — design item 1 below builds against

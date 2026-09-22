@@ -80,14 +80,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         decl: &TraitDecl,
     ) -> Result<(), CranelispError> {
-        // Same-module idempotency probe (S108 Wave-G convergence §3.3/§4.2).
-        // This is the ONE legitimate fallback-less probe — a RAW current-module
-        // table probe (`probe_module_entry_owned`: no chain-follow, no prelude
-        // hop) that answers same-module IDENTITY, **not** name-freedom. The
-        // name-freedom question (is this trait name already in scope via an
-        // import/export or the prelude?) is the §8.6.4 seam, which ran FIRST at
-        // the `check_form_register` `TraitDecl` arm; by the time control reaches
-        // here the trait name is either free or the module's OWN prior decl.
+        // Same-module idempotency probe. A RAW current-module table probe
+        // (`probe_module_entry_owned`: no chain-follow, no prelude hop) answers
+        // same-module IDENTITY — does THIS module already declare this trait?
+        // It is not a scope question: an imported or prelude-provided spelling
+        // of the same name is a distinct candidate (spec §8.6.4).
         //
         // The cluster orchestration retries a module's typecheck FROM THE TOP
         // with no saved resume index when a declared submodule must be loaded

@@ -371,7 +371,7 @@ and [`repl/spec/18-redefinition.md` §18.7](../repl/spec/18-redefinition.md#187-
 
 There are three forms of trait implementation, presented below.
 
-### 7.3.1 Concrete Implementation [Tested tests/spec_07_traits::user_trait_simple, crates/cranelisp-typecheck/src/traits/tests.rs::test_register_trait_impl, tests/spec_05_definitions::deftrait_impl_and_dispatch]
+### 7.3.1 Concrete Implementation [Tested tests/spec_07_traits::user_trait_simple, crates/cranelisp-typecheck/src/traits/impl_check/tests.rs::test_register_trait_impl, tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
 The simplest form targets a specific concrete type.
 

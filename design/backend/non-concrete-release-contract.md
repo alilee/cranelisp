@@ -10,7 +10,7 @@ visit's delivered bundles are recorded here as current mechanism and its open
 bundles as §7. Source was re-verified on 2026-09-21.
 
 **Architecture inputs, cited rather than restated:**
-[concrete-boundary-type.md](../arch/concrete-boundary-type.md) §3.1 (the
+[concrete-boundary-type.md](../arch/concrete-boundary-type.md) §3.1.1 (the
 signature-driven codegen target);
 [total-concreteness.md](../arch/total-concreteness.md) §3.2 (the `vec-len`
 de-slot), §3.4 (the `Pure` ownership witness, the reusable-IO ownership rule on

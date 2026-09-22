@@ -1,4 +1,4 @@
-# 1. Lexical Structure [Tested]
+# 1. Lexical Structure [S122 — rollup of children: §1.4 and §1.6 are partial]
 
 This section defines the lexical grammar of Cranelisp — the rules for converting source text into tokens.
 
@@ -14,7 +14,7 @@ Whitespace separates tokens but is otherwise insignificant. The following are wh
 - Tab (U+0009)
 - Newline (U+000A)
 - Carriage return (U+000D)
-- Comma (U+002C) — commas are whitespace, following Clojure convention [Tested crates/cranelisp-frontend/src/reader.rs::test_commas_are_whitespace]
+- Comma (U+002C) — commas are whitespace, following Clojure convention [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_commas_are_whitespace]
 
 ```ebnf
 ws        = (ws_char | comment)*
@@ -22,7 +22,7 @@ ws_char   = ' ' | '\t' | '\n' | '\r' | ','
 comment   = ';' [^ '\n']* ('\n' | EOF)
 ```
 
-Line comments begin with `;` and extend to the end of the line (or end of input). [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_with_comment]
+Line comments begin with `;` and extend to the end of the line (or end of input). [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_with_comment]
 
 ```clojure
 ; this is a comment
@@ -34,7 +34,7 @@ Line comments begin with `;` and extend to the end of the line (or end of input)
 
 ## 1.3 Literals [Tested]
 
-### 1.3.1 Integer Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_integer_literal]
+### 1.3.1 Integer Literals [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_integer_literal]
 
 ```ebnf
 integer   = '+' digit+
@@ -53,7 +53,7 @@ Integer literals represent signed 64-bit integers. The range is -2^63 to 2^63 - 
 
 Note: The parser attempts integer before operator, so `-3` is parsed as the integer negative three, not the operator `-` followed by `3`.
 
-### 1.3.2 Float Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_float_literal]
+### 1.3.2 Float Literals [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_float_literal]
 
 ```ebnf
 float     = '-'? digit+ '.' digit+
@@ -69,16 +69,16 @@ Float literals represent IEEE 754 double-precision (64-bit) floating-point numbe
 
 Note: The parser attempts float before integer, so `3.14` is parsed as a float, not the integer `3` followed by `.14`.
 
-### 1.3.3 Boolean Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_true]
+### 1.3.3 Boolean Literals [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_true]
 
 ```ebnf
 boolean   = 'true' !symbol_char
           | 'false' !symbol_char
 ```
 
-The keywords `true` and `false` are boolean literals. They MUST NOT be followed by a symbol character — `trueness` is a symbol, not a boolean. [Tested crates/cranelisp-frontend/src/reader.rs::test_true_prefix_is_symbol]
+The keywords `true` and `false` are boolean literals. They MUST NOT be followed by a symbol character — `trueness` is a symbol, not a boolean. [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_true_prefix_is_symbol]
 
-### 1.3.4 String Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_string]
+### 1.3.4 String Literals [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_string]
 
 ```ebnf
 string    = '"' string_char* '"'
@@ -93,10 +93,10 @@ String literals are enclosed in double quotes. The following escape sequences ar
 
 | Escape | Character |
 |---|---|
-| `\n` | Newline (U+000A) [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_string_escapes] |
+| `\n` | Newline (U+000A) [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_string_escapes] |
 | `\t` | Tab (U+0009) |
 | `\\` | Backslash |
-| `\"` | Double quote [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_string_escaped_quote] |
+| `\"` | Double quote [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_string_escaped_quote] |
 
 ```clojure
 "hello"           ; simple string
@@ -107,9 +107,9 @@ String literals are enclosed in double quotes. The following escape sequences ar
 
 > **Note (leading-string roles).** A bare string literal is lexically a single token wherever it appears; its *role* is positional. As the leading form of a definition it is a docstring (§5.12); elsewhere it is an ordinary string value. The lexer does not distinguish these — the position does. (The **module preamble** (§8.16) is *not* a leading string literal — it is the contiguous leading `;;` comment block at the head of a file; see the comment note in §1.2.)
 
-## 1.4 Symbols [Tested]
+## 1.4 Symbols [S122 — rollup of children: §1.4.8 is partial; §1.4.1–§1.4.7 are covered as annotated]
 
-### 1.4.1 Simple Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_simple_symbol, Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_arrow, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_arrow_minimal, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_le, tests/spec_05_definitions.rs::defn_name_with_arrow_in_symbol_parses]
+### 1.4.1 Simple Symbols [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_simple_symbol, Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_arrow, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_arrow_minimal, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_le, tests/spec_05_definitions.rs::defn_name_with_arrow_in_symbol_parses]
 
 ```ebnf
 symbol         = symbol_start (symbol_char | interior_op_run)*
@@ -144,7 +144,7 @@ foo ->        ; TWO tokens — symbol `foo` then the trailing operator `->`
 
 A token whose FIRST character is an operator character is an operator symbol (§1.4.2), never a simple symbol — interior absorption applies only after a `symbol_start` has begun the token.
 
-### 1.4.2 Operator Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_operator_plus, Tested crates/cranelisp-frontend/src/reader/tests.rs::test_symbol_then_standalone_arrow_not_merged, crates/cranelisp-frontend/src/reader/tests.rs::test_threading_arrow_head_still_standalone]
+### 1.4.2 Operator Symbols [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_operator_plus, Tested crates/cranelisp-frontend/src/reader/tests.rs::test_symbol_then_standalone_arrow_not_merged, crates/cranelisp-frontend/src/reader/tests.rs::test_threading_arrow_head_still_standalone]
 
 ```ebnf
 operator_symbol = operator_char+ !digit
@@ -165,7 +165,7 @@ An operator run is a *standalone* operator symbol whenever it is not interior to
 
 Note: Operators are ordinary symbols — they have no special syntactic status. They are trait methods resolved through the same dispatch as any other function.
 
-### 1.4.3 Qualified Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_qualified_symbol]
+### 1.4.3 Qualified Symbols [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_qualified_symbol]
 
 ```ebnf
 qualified_symbol = module_path '/' local_name
@@ -189,7 +189,7 @@ option/Option.Some ; dotted name in module 'option'
 
 Module aliases (from aliased imports per §8.3.4 and module mounts on export per §8.4.4) substitute **within `module_path`** — i.e., on dot-separated segments to the left of the single `/`. There is no two-slash notation: writing `A/str/foo` to mean "module `A`'s `str` alias, name `foo`" is a syntax error. The correct form is `A.str/foo`, where `str` is a segment of `module_path` that the resolver replaces via `A`'s alias table during resolution (see §8.6.6).
 
-### 1.4.4 Dotted Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_dotted_symbol]
+### 1.4.4 Dotted Symbols [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_dotted_symbol]
 
 ```ebnf
 dotted_symbol = symbol_start symbol_char* '.' (symbol_char+ | operator_char+)
@@ -210,7 +210,7 @@ colon_prefix = ':' symbol_start symbol_char*
 colon_bare   = ':' !symbol_char
 ```
 
-Colon-prefixed symbols are used for type annotations. A bare colon `:` (not immediately followed by a symbol character) is the same annotation introducer whose type form follows either parenthesised (`:(Fn [a] a)`) or separated from the colon by whitespace (`: Int`, see the S114 note below). [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_bare_colon]
+Colon-prefixed symbols are used for type annotations. A bare colon `:` (not immediately followed by a symbol character) is the same annotation introducer whose type form follows either parenthesised (`:(Fn [a] a)`) or separated from the colon by whitespace (`: Int`, see the S114 note below). [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_compound_type_annotation, crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_handles_compound_spaced_quoted_and_full_span_forms]
 
 ```clojure
 :Int              ; type annotation
@@ -245,7 +245,7 @@ Colon-prefixed symbols are used for type annotations. A bare colon `:` (not imme
 >
 > The annotation is never carried as out-of-band metadata: an annotation **asserts** a type (§2.3.8), so it must be visible in the tree that macros and the type checker both see; a side-channel that could be silently dropped was explicitly rejected. Implementation contract: `design/arch/annotated-sexp-node.md`.
 
-### 1.4.6 Gensym Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_gensym_shorthand]
+### 1.4.6 Gensym Symbols [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_gensym_shorthand]
 
 ```ebnf
 gensym_symbol = symbol_start symbol_char* '#'
@@ -257,7 +257,7 @@ Symbols ending in `#` are auto-gensym symbols, used inside quasiquote templates 
 `(let [x# 42] x#)  ; both x# expand to the same unique name
 ```
 
-### 1.4.7 Percent Parameters [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_percent_param_bare]
+### 1.4.7 Percent Parameters [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_percent_param_bare — token reading and bare-`%` normalisation only; use inside `#(…)` is pending with the §1.6 `#(body)` row]
 
 ```ebnf
 percent_param = '%' ('1'-'9')?
@@ -265,15 +265,21 @@ percent_param = '%' ('1'-'9')?
 
 Percent parameters (`%`, `%1`-`%9`) are used inside anonymous function shorthand `#(...)` to refer to positional arguments. Bare `%` is equivalent to `%1`.
 
-### 1.4.8 Ampersand [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_ampersand]
+### 1.4.8 Ampersand [S122 — partial: both spellings reading as the one rest-marker symbol `&rest` are covered by crates/cranelisp-frontend/src/reader/tests.rs::test_parse_ampersand, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_ampersand_with_space, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_ampersand_in_bracket; the nameless-`&` error is covered at top level only by crates/cranelisp-frontend/src/reader/tests.rs::test_parse_ampersand_needs_name; the exclusion of `&` from identifiers written in source, and the `(SexpSym "&rest")` value in quoted data and macro arguments, have no committed evidence]
 
 ```ebnf
-ampersand = '&' !symbol_char
+ampersand = '&' ws symbol    (* one rest-marker form; ws may be empty *)
 ```
 
-A standalone `&` (not followed by a symbol character) is used in macro parameter lists for variadic arguments.
+The ampersand `&` is a reserved character. It is not a symbol character: no identifier written in source (§1.4.1–§1.4.6) contains `&`.
 
-## 1.5 Delimiters [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_bracket]
+`&` introduces a **rest marker**, which marks the rest parameter in macro parameter lists (§9.2.2). The rest parameter's name, a simple symbol (§1.4.1), follows the `&` either immediately or after whitespace, so `&rest` and `& rest` are equivalent spellings. Either spelling reads as **one** form, not an `&` followed by a separate name: a symbol whose name is `&` immediately followed by the parameter name. `[x & rest]` and `[x &rest]` each read as a bracket of two forms, `x` and the rest marker `&rest`.
+
+The rest marker is read the same way wherever it occurs, including inside quoted data and macro arguments; as a `Sexp` value it is `(SexpSym "&rest")` (§9.1.2). This symbol name is the marker's payload, produced by the reader from a reserved `&` and a name; it does not make `&` legal in identifiers written in source.
+
+A `&` with no parameter name after it is an error.
+
+## 1.5 Delimiters [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_bracket]
 
 ```ebnf
 open_paren    = '('
@@ -284,7 +290,7 @@ close_bracket = ']'
 
 Parentheses delimit lists (function calls, special forms). Square brackets delimit parameter lists, binding lists, match arms, field definitions, and vector literals.
 
-## 1.6 Reader Macros [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_quote]
+## 1.6 Reader Macros [S122 — rollup of children: the `#(body)` row is pending; the quote, quasiquote, unquote and unquote-splicing rows are covered]
 
 ```ebnf
 quote            = "'" form
@@ -296,11 +302,11 @@ anon_fn          = '#(' ws form* ws ')'
 
 Reader macros are syntactic sugar processed during parsing:
 
-- `'form` expands to `(quote form)` — produces an `Sexp` value at runtime [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_quote]
-- `` `form `` expands to `(quasiquote form)` [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_quasiquote]
-- `~form` expands to `(unquote form)` [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_unquote]
-- `~@form` expands to `(unquote-splicing form)` [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_unquote_splicing]
-- `#(body)` expands to `(fn [%1 %2 ... %N] (body))` — anonymous function shorthand [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_anon_fn]
+- `'form` expands to `(quote form)` — produces an `Sexp` value at runtime [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_quote]
+- `` `form `` expands to `(quasiquote form)` [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_quasiquote]
+- `~form` expands to `(unquote form)` [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_unquote]
+- `~@form` expands to `(unquote-splicing form)` [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_unquote_splicing]
+- `#(body)` expands to `(fn [%1 %2 ... %N] (body))` — anonymous function shorthand [S122 — reader recognition only: crates/cranelisp-frontend/src/reader/tests.rs::test_parse_anon_fn reads `#(…)` as `(anon-fn (…))`; the expansion to a `fn` form is unevidenced and crates/cranelisp-frontend/src/ast_builder/tests.rs::test_reject_anon_fn pins the form as rejected "not yet supported"]
 
 The `quote` form converts its argument to an `Sexp` value. `'foo` produces `(SexpSym "foo")`, `'42` produces `(SexpInt 42)`, `'(+ 1 2)` produces `(SexpList ...)`.
 
@@ -308,12 +314,12 @@ The anonymous function `#(...)` scans the body for `%`, `%1`-`%9` references, no
 
 Note: Quote (`'`) MUST be tried before quasiquote (`` ` ``). Unquote-splicing (`~@`) MUST be tried before unquote (`~`). Anonymous function (`#(`) MUST be tried before list (`(`). These orderings resolve ambiguity for overlapping prefixes.
 
-## 1.7 Token Precedence [Tested crates/cranelisp-frontend/src/reader.rs::test_negative_three_standalone]
+## 1.7 Token Precedence [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_negative_three_standalone]
 
 When multiple token rules could match at a given position, the parser MUST try them in the following order:
 
 1. Float literal (before integer, to capture the decimal point)
-2. Integer literal (before operator, so `-3` is an integer) [Tested crates/cranelisp-frontend/src/reader.rs::test_negative_three_standalone]
+2. Integer literal (before operator, so `-3` is an integer) [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_negative_three_standalone]
 3. Boolean literal
 4. String literal
 5. Colon-prefixed symbol
@@ -328,7 +334,7 @@ When multiple token rules could match at a given position, the parser MUST try t
 
 This ordering ensures that longer matches take priority and that ambiguous cases like `-3` (integer, not operator) and `true` (boolean, not symbol) are resolved correctly.
 
-## 1.8 Forms [Tested+Neg crates/cranelisp-frontend/src/reader.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, crates/cranelisp-frontend/src/reader.rs::annotation_fold_handles_compound_spaced_quoted_and_full_span_forms, crates/cranelisp-frontend/src/reader.rs::test_parse_multiple_forms]
+## 1.8 Forms [Tested+Neg crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_is_recursive_and_stacks, crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_rejects_dangling_delimiters_at_introducer, crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_handles_compound_spaced_quoted_and_full_span_forms, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_multiple_forms]
 
 A **form** is the basic unit of Cranelisp syntax:
 
@@ -353,4 +359,4 @@ atom    = float | integer | boolean | string
 program = ws form* ws
 ```
 
-A program is a sequence of zero or more forms separated by whitespace. Each form is either an atom (literal or symbol), a parenthesized list, a bracketed list, an annotated form, or a reader macro expansion. **`colon_prefix`/`colon_bare` are no longer `atom` alternatives [S115]** — a colon introducer only ever occurs as the head of an `annotated_form` (§1.4.5, the 2026-07-21 read-time-fold ruling), so "an annotation introducer is never a standalone atom" is a property of this grammar rather than a rule checked afterwards. In `annotated_form` the first `form` is the annotation half (required to be a type expression, §2.4, checked after reading) and the second is the annotated subject. [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_multiple_forms]
+A program is a sequence of zero or more forms separated by whitespace. Each form is either an atom (literal or symbol), a parenthesized list, a bracketed list, an annotated form, or a reader macro expansion. **`colon_prefix`/`colon_bare` are no longer `atom` alternatives [S115]** — a colon introducer only ever occurs as the head of an `annotated_form` (§1.4.5, the 2026-07-21 read-time-fold ruling), so "an annotation introducer is never a standalone atom" is a property of this grammar rather than a rule checked afterwards. In `annotated_form` the first `form` is the annotation half (required to be a type expression, §2.4, checked after reading) and the second is the annotated subject. [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_multiple_forms]

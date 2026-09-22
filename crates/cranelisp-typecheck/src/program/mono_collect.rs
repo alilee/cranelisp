@@ -1121,8 +1121,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
     }
 
-    /// Like [`collect_constrained_calls`] but excludes calls a constrained fn
-    /// makes to ITSELF (FIXME 0349).
+    /// Like the `#[cfg(test)]` `collect_constrained_calls` walk, but excludes
+    /// calls a constrained fn makes to ITSELF (FIXME 0349).
     ///
     /// A constrained/polymorphic defn's self-recursion is the generic definition,
     /// not a concrete monomorphisation site — its argument types are the defn's

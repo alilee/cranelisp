@@ -402,7 +402,7 @@ pub(crate) use body_ledger::BodyLedger;
 ///
 /// One accumulator per module. Created before Pass 1, consumed by
 /// `finalize_check_result()`. No concurrent access — a single worker
-/// processes one module's forms sequentially (Invariant 5).
+/// processes one module's forms sequentially (`design/typecheck/typecheck.md` §5.2 item 5).
 /// The ledger is the authoritative cross-pass owner of source bodies. Active
 /// resolution and expression facts remain on `CheckState` through settlement,
 /// then the final sweep moves them here once for annotation and publication.
@@ -473,7 +473,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// ## Invariants
     /// - All signatures must be registered (Pass 1) before any body is checked (Pass 2).
-    /// - Source order within Pass 1 must respect: TypeDef < TraitDecl < TraitImpl < Defn.
+    /// - Pass 1 is one sweep in form order (`design/typecheck/typecheck.md` §5.2 item 2).
     /// - One `ModuleCheckAccumulator` per module, no concurrent access.
     ///
     /// The caller owns the `CheckState` and passes it in. Multiple workers

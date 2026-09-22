@@ -961,8 +961,8 @@ program                 trampoline (host)                 platform poll-fn
                      RELEASE close permit (on Ready)
 ```
 
-If the `(read conn)` future is **cancelled** while Pending (race loser / timeout /
-scope exit), the host drops it: it deregisters the fd-waiter from the interest table
+If the `(read conn)` future is **cancelled** while Pending (its cancellation
+context is cancelled — §9), the host drops it: it deregisters the fd-waiter from the interest table
 and releases the read permit it holds — **without ever re-entering the poll-fn**.
 Because the held permit and the registration are both host-tracked (keyed by the
 effect's identity), cancel cleanup needs nothing from the handle and nothing from the
@@ -1125,27 +1125,33 @@ The combinators and the inferred dispatch map directly onto host-runtime primiti
 So the work is not "build a fiber runtime"; it is **use the async runtime, provide the
 inference (§4), and map the descriptors (§5) onto runtime primitives.**
 
-**Runtime naming and gating — UPDATED (S96 SCOPE PIVOT EXTENDED, user-directed).**
-The host runtime is a hand-written single-threaded executor over a `mio` reactor
-(NOT tokio in the as-built; the App. B substrate). It is **NO LONGER feature-gated**:
-the S96 full-streamline cutover (`platform-interface.md` §6.8.0 + §6.8.0a) retires
-both the `concurrency` and `concurrency-runtime` features and collapses the former
-two `#[cfg]`-selected trampolines (sync off-build + async on-build) into ONE async
-trampoline — **the reactor IS the runtime.** The "pure / non-concurrent binaries
-must not pay for the reactor" goal is preserved, but as a **RUNTIME property via lazy
-reactor init**, not a `#[cfg]` split: the executor drives the top future on the
-calling thread, and the mio `Poll` (epoll_create) + bridge waker (eventfd) are
-constructed only on the first `Pending` (first poll-leaf fd/timer registration or
-first `Par` blocking-bridge spawn). A program that performs no concurrent effects
-(`(print "hello")`) drains synchronously through the one trampoline and constructs no
-`Poll` — honouring the "empty prelude works" principle as a behaviour rather than a
-build mode. `mio`/`futures`/`rayon` are unconditionally linked (accepted: no users,
-no out-of-tree DLLs); Phase-H binary size is addressed by the lazy construction, not
-by a link-time gate. The feature-off "byte-identical"/"reactor-free" invariant is
-retired and replaced by the runtime assertion *"a pure-blocking program builds no
-mio `Poll`."* See `platform-interface.md` §6.8.0a for the feasibility verdict +
-sequencing; the `Reactor` lazy-singleton implementation detail is `/design` int's
-(`design/intrinsics/reactor.md` — change specified there, not authored here).
+**Runtime naming and gating.** The host runtime is a hand-written single-threaded
+executor over a `mio` reactor (not tokio; Appendix B substrate). It is not
+feature-gated: there is one ABI and one async trampoline in every mode, and
+`mio`/`futures`/`rayon` are unconditionally linked (`platform-interface.md` §6.8.0 +
+§6.8.0a). **The reactor is the runtime.**
+
+**What a program without concurrent effects pays.** Each top-level drive constructs
+its reactor eagerly: one `mio::Poll` (`epoll_create`) and one bridge waker (an
+eventfd). A pure-blocking tree (`Pure`/`Bind`/blocking `Effect`) returns `Ready` on
+the executor's first poll, so the drive returns before the reactor is ever turned: it
+blocks in no `mio::poll` and spawns no thread. The two construction syscalls are the
+whole runtime cost. This is the eager-cheap form, admitted as permanently valid by
+`platform-interface.md` §6.8.0a: a performance position, not a correctness interim. The
+no-turn property follows from the drive loop's order (the completion return precedes
+the first turn); no executing check measures it. Its falsifier is a pure-blocking tree
+whose first poll returns `Pending`. Binary size is a link-time cost that construction
+timing does not change.
+
+**Lazy construction is a potential refinement, not an obligation.** Deferring the
+`Poll` and waker to the first `Pending` would save those two syscalls per drive.
+*Trigger:* a measured per-drive construction cost that matters to a delivered
+workload. *Precondition:* every source of `Pending` must force construction before it
+parks, as specified in `platform-interface.md` §6.8.0a. This includes the capacity
+park, whose permit-release wake also travels through the bridge waker
+(`design/arch/effect-concurrency.md` §8).
+A lazy form that leaves that path unforced can lose a wake. The refinement's interior belongs to `design` for intrinsics
+(`design/intrinsics/reactor.md` §1, §5).
 
 **Level-2 (the state-machine transform) is DEFERRED — trigger named, not defaulted (S98,
 FIXME 0486 closed).** The reified-IO-as-data choice above makes lifetime-across-suspension a
@@ -1370,19 +1376,41 @@ node. They are emphatically:
 **`race`/`select` + structured cancellation**. Everything else is derived:
 
 - `timeout d io = race io (sleep d)` — derivable in stdlib.
-- `cancel` is **not** a standalone user combinator — it is the *consequence* of losing a
-  race or exiting a scope (drop the future).
+- `cancel` is **not** a standalone user combinator — it is the *consequence* of a
+  cancellation context being cancelled (below). The runtime act is dropping the future.
 
 Indicative signatures:
 
 ```
 race    : IO a -> IO a -> IO a
-timeout : Duration -> IO a -> IO (Option a)
-select  : List (IO a) -> IO a
+timeout : Int -> IO a -> IO (Option a)
+select  : Vec (IO a) -> IO a
 ```
 
 These map directly onto the host runtime (§6): `race`/`select` → `select!`, `timeout` →
 runtime timeout, cancellation → drop.
+
+**Cancellation ownership.** `spec/10-io.md` §10.12.9 owns the rule; the architecture
+commits to these consequences of it:
+
+- **The context is fixed at execution and established only by the combinators.** The
+  top-level effect runs in the root context; each `race`/`select` branch and each
+  `timeout`-wrapped effect runs in a nested one. Where an `IO` value was constructed,
+  function call and return, and `bind!`/`do` sequencing establish and cancel nothing.
+- **Ownership is scheduling-independent.** Cancelling a context reaches every in-flight
+  effect executing within it — inline, on a worker, or as a detached strand launched
+  within it (§10.12.7 item 5) — and every nested context. The detached/inline choice of
+  §4 changes timing and fault containment, never the owning context.
+- **Ordinary completion cancels nothing and drains.** A winning branch, or a `timeout`
+  that returns `Some`, leaves the strands it launched running in the enclosing
+  context. When the top-level effect completes normally the drive returns only after
+  every outstanding strand has finished (§10.12.7 item 6). No drain deadline exists.
+- **Fault supervision is a separate concern.** The supervisor (§10) decides where a
+  detached strand's fault goes. It does not decide when a strand is cancelled, and a
+  cancellation is not a fault (`spec/12-runtime.md` §12.7.9).
+- **No cancellation primitive is needed.** Every pattern in `spec/10-io.md` §10.12.10 is a `race` or
+  `timeout` composition, so the rule adds no `cancel` function, handle, task group,
+  global-cancel node or shutdown-specific runtime trigger.
 
 This layer is **separable but committed.** Separable is an architectural property, not a
 delivery one: the combinator layer is purely additive — the inferred half does not
@@ -1396,6 +1424,35 @@ open-internet environment* at all. This layer is exactly how the §1 control voc
 ("the vocabulary for an uncooperative environment at the I/O boundary") is spoken. The
 explicit control half is a **committed peer** of the inferred half — that is the whole
 "throughput is free; control is explicit" thesis (§1).
+
+**Who owns each half of the two open reference patterns.** `spec/10-io.md` §10.12.10
+requires cancel-on-disconnect and graceful shutdown; both are undelivered (Appendix B
+limits). The seam divides the same way for both:
+
+- **Detecting the event is a platform effect.** A disconnect watch or a shutdown signal
+  reaches the program as an ordinary poll-shape effect (§10.12.10; §12.1). It adds no
+  host callback, no binary-side trigger and no reactor construction knob: a signal is
+  not a construction-time fact, and a `--link`ed program contains no binary to own a
+  trigger (Principle 11).
+- **Cancelling is the runtime's.** Platforms never see cancellation. Intrinsics owns the
+  act: drop the strand, release through the race-loser path, emit `StrandCancelled`.
+- **Cancel-on-disconnect lacks its platform leaf.** `race` already cancels the losing
+  handler; no platform supplies the disconnect-watch effect.
+- **Graceful shutdown is the `race` of the server's work against the platform's
+  shutdown-signal effect** (§10.12.10). It lacks that platform leaf, and it depends on
+  the ownership gap below for the handlers launched within the raced work. A strand
+  launched outside that `race` is not reached by it and drains on normal completion.
+
+Both platform leaves are pending and unscheduled; nothing here promises them.
+
+**Implementation gap — detached strands are not owned by their context.** Every launch
+spawns into the one per-drive supervisor, with no link to the `race`/`select` branch
+it executes in. Cancelling a branch therefore drops the branch's inline and worker
+effects and leaves the strands it launched running to completion, contrary to
+§10.12.7 item 5. Drain on normal completion is what the drive loop already does; `qa`
+has not yet allocated evidence for it. The realization of per-context ownership is an
+intrinsics interior question for `design`, inside this rule and with no public-API,
+ABI, schema or language change; no mechanism is selected here.
 
 ## 10. Supervisor semantics — co-requisite of launch-and-continue
 
@@ -1413,6 +1470,9 @@ fire-and-forget effect has no join point. The per-effect-kind default: **500 + l
 drop-that-request** — NOT a silent strand, NOT a whole-server abort. It maps to
 `JoinSet` + catching the spawned handler's outcome. It is a scheduler-/platform-declared
 default, so it stays out of the pure language.
+
+Supervision governs faults only. A strand's cancellation is decided by its cancellation
+context (§9), not by the supervisor, and a cancelled strand is not routed to the policy.
 
 **One honest caveat.** The `Par` path's "first error" among simultaneously-panicking
 branches is **non-deterministic** (HashMap grouping order), not strict source-order; the
@@ -1493,9 +1553,9 @@ toolchain and without rebuilding it.** It is **not** for language independence
 search path containing the binary (cdylib for REPL/`--run`, rlib for `--link`) +
 bundled `.cl` modules (types, effect signatures, docstrings) + the existing exports.
 The loader still: find dir → dlopen/link → read manifest → build SymbolTable → load
-`.cl` types. Bundling cranelisp modules with the platform is preserved. (The
+`.cl` types. Bundling cranelisp modules with the platform is preserved. (See §13 below: the
 three-exports / GOT / manifest / schema+layout-hash model of `platform-interface.md`
-carries forward; §13.)
+carries forward.)
 
 **The boundary stays C-ABI.** C-ABI is the only contract stable across separate
 compilation — Rust has no stable ABI. Async does **not** force a Rust-ABI boundary,
@@ -1602,7 +1662,7 @@ authoritative statement is `platform-interface.md` §6.8.0–§6.8.0b:
 - scheduling state flows through the trampoline-owned `ctx` vtable (§4.1.1), never
   through user values;
 - no cargo feature selects the runtime: the reactor is always linked and is
-  constructed lazily, so a program of blocking effects builds no reactor.
+  constructed eagerly per top-level drive (§6); a program of blocking effects never turns it.
 
 The numeric `ABI_VERSION` and its per-version layout changes are recorded in
 `crates/cranelisp-platform/src/lib.rs` rustdoc.
@@ -1703,7 +1763,8 @@ rayon-side increment (§7 de-risking), guarded by `tests/concurrency_spark.rs`.
 - **Specification** — `spec/10-io.md` §10.12 owns the user-visible semantics of
   inferred concurrency, capacity, admission degree, launch, the combinators and
   cancellation; `spec/12-runtime.md` §12.7.2 owns the runtime-error surface.
-- **`platform-interface.md`** — §6.8.0–§6.8.0b, the cascade of §13.
+- **Platform boundary** — [the platform contract](platform-interface.md) records
+  the boundary cascade.
 
 **Candidate principle, not adopted.** *"Confine mutable-state concurrency to the
 interpreter; platforms are thin stateless effect vocabularies."* The S94 floor
@@ -1819,14 +1880,14 @@ list states only what exists.
 
 | Capability | Where it lives |
 |---|---|
-| Single async trampoline over a lazily constructed reactor; a tree of blocking effects drains without constructing one | `cranelisp-intrinsics` `io.rs`, `reactor.rs`; `design/intrinsics/reactor.md` |
+| Single async trampoline over a reactor constructed eagerly per top-level drive; a tree of blocking effects drains without turning it (§6) | `cranelisp-intrinsics` `io.rs`, `reactor.rs`; `design/intrinsics/reactor.md` |
 | Concurrency descriptor and poll ABI as core, ungated types in one manifest | `cranelisp-types` `scheduling.rs`; `cranelisp-platform` `lib.rs`; `platform-interface.md` §6.8.0–§6.8.0b |
 | Poll-shape effect nodes (the seam below), launch and select nodes | backend `compiler/control_flow/`; `design/backend/io-trampoline.md` |
 | Token-capacity pool, capacity carried on the node (§8.1) | `reactor.rs` `TokenPool` |
 | Two-pool routing: blocking branches on rayon, poll-shape branches on the reactor (§7) | `io.rs` `Par` arm |
 | Backpressure: the program `degree` throttle, which also sizes the global admission budget for detached strands (§5) | `reactor.rs` (`CRANELISP_DEGREE`) |
 | Launch-and-continue with the supervisor (§10) | `reactor.rs`; `spec/10-io.md` §10.12.7 |
-| Cancellation and the `race`/`select`/`timeout` combinators ([cancellation policy](effect-concurrency.md#9-the-control-half-the-combinators)) | `spec/10-io.md` §10.12.8–§10.12.9; `tests/concurrency_v9_select.rs` |
+| The `race`/`select`/`timeout` combinators and cancellation of a branch's own inline and worker effects; launched strands are the limit below ([cancellation policy](effect-concurrency.md#9-the-control-half-the-combinators)) | `spec/10-io.md` §10.12.8–§10.12.9; `tests/concurrency_v9_select.rs` |
 | Strand identity and the strand event stream ([strand identity](effect-concurrency.md#11-observability-instrumenting-concurrency-written-by-nobody)) | `cranelisp-intrinsics` `strand.rs` |
 | Fork-join error-slot ferry — a worker's runtime error is stashed on the IVar or `Par` join and re-raised join-side, first error wins; the substrate of the supervisor policy (§10) | `cranelisp-intrinsics` `ivar.rs`, `io.rs`, `panic.rs` |
 | Scheduling state on the trampoline-owned `ctx` vtable, never on values (§4.1.1) | `platform-interface.md` §6.8.0b |
@@ -1834,6 +1895,14 @@ list states only what exists.
 
 ### Limits of the delivered implementation
 
+- **Two §10.12.10 reference patterns are undelivered** (§9 states the seam).
+  Cancel-on-disconnect has its runtime half and no platform disconnect-watch effect.
+  Graceful shutdown is a `race` against a shutdown-signal effect that no platform
+  supplies; `CancelReason::Shutdown` has no producer. Per-request timeout is delivered
+  for the wrapped effect itself.
+- **Detached strands escape their cancellation context** (§9 implementation gap).
+  Cancelling a `race`/`select` branch or a `timeout`-wrapped effect does not cancel the
+  strands launched within it, contrary to `spec/10-io.md` §10.12.7 item 5.
 - **No developer-facing strand inspector.** The strand sink is an in-memory buffer
   read by intrinsics unit tests. A `/strand` REPL surface is unscheduled.
 - **`ConcurrencyDescriptor.global_budget` is reserved and unread.** The admission

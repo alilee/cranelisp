@@ -30,8 +30,9 @@
 //!
 //! # The toggle
 //!
-//! When `CRANELISP_NO_OWNERSHIP` is set, [`crate::checker::TypeCheckEnv::pass5_ownership`]
-//! returns at entry and emits NOTHING (§13.5) — no summaries, no site facts, no
+//! When `CRANELISP_NO_OWNERSHIP` is set
+//! ([`cranelisp_types::ownership_analysis_off`]), the pass-5 driver
+//! [`run_pass5`] returns at entry and emits NOTHING (§13.5) — no summaries, no site facts, no
 //! value-use marks. The `.meta.json` payloads are then field-identical to a
 //! pre-pass5 compile (serde: absent optional fields serialize away).
 //!

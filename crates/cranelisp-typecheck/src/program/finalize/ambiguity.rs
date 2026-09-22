@@ -279,7 +279,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// predicate that gates the GOT-slot at the typecheck slot gate, and the same
     /// verdict the backend `ConcreteType` boundary encodes (no `Var` admissible).
     /// The two sides agree by construction (Principle 7; FIXME 0386,
-    /// `design/arch/concrete-boundary-type.md` §1.4 / §3.1). Under full
+    /// `design/arch/concrete-boundary-type.md` §1.4). Under full
     /// monomorphisation-from-roots a genuinely free var in a codegen-reaching
     /// position means NO root pins it → ambiguous (§3.11.1); the §4.4
     /// `allowed_vars` filter in [`Self::find_ambiguous_value_position`] excludes

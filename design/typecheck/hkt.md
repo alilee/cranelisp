@@ -1,684 +1,270 @@
-# Higher-Kinded Types (HKT)
+# Higher-kinded traits — typecheck interior
 
-Solution design for higher-kinded type support in the Cranelisp typechecker. Covers trait declarations with constructor variables, TyConApp unification, HKT impl registration, dispatch, and the boundary with codegen.
+**Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
+**Subordinate to:** [`typecheck.md`](typecheck.md) §9.1; the trait subsystem is
+[`traits.md`](traits.md).
+**Required behaviour:** `spec/03-types.md` §3.7 and `spec/07-traits.md` §7.2,
+§7.3–§7.3.6 and §7.12.1.
+**Neighbours:** slot-1 trait resolution and impl enrolment are
+[`qualified-trait-impl.md`](qualified-trait-impl.md); the parser carrier for the
+echoed head is `design/frontend/trait-impl-head-parse.md`; `Type` and `apply`
+belong to `cranelisp-types` (`arch`).
 
-Spec references: `spec/03-types.md` SS3.7, `spec/05-definitions.md` SS5.3.2 and SS5.4.4, `spec/07-traits.md` SS7.2.
+A higher-kinded trait abstracts over a type constructor: in
+`(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))`, `f` ranges over
+constructors such as `Option`. This document states how typecheck represents,
+registers, checks, implements and dispatches such traits.
 
-## 1. Problem Statement
+---
 
-Cranelisp needs to support traits that abstract over type constructors (kind `* -> *`) rather than concrete types (kind `*`). The canonical example is `Functor`:
+## 1. Representation
 
-```clojure
-(deftrait (Functor f)
-  (fmap [(Fn [a] b) (f a)] (f b)))
-```
+- A constructor application `(f a)` in a higher-kinded signature is
+  `Type::TyConApp(f_id, [a])`. `f_id` is an ordinary `TypeId`, in the same
+  namespace as `Type::Var`.
+- A constructor variable binds to a **bare** constructor, `ADT(name, [])`, never to
+  an applied type. `cranelisp_types::apply` rewrites a bound head:
+  `TyConApp(f, args)` with `f ↦ ADT(name, _)` becomes `ADT(name, args)`, and with
+  `f ↦ Var(g)` becomes `TyConApp(g, args)`.
+- `free_vars` includes the head id, so the ordinary occurs check sees a
+  constructor variable wherever it appears.
+- There is no kind annotation. A constructor variable's arity is its usage-derived
+  arity ([declaration kind](#51-kind-derivation-at-declaration-consumers-read-type_params), item 4). A trait has at most one constructor variable (spec §7.12.1);
+  code indexes `type_params[0]` on that basis.
 
-Here `f` ranges over type constructors like `Option` and `List`, and `(f a)` means "apply the constructor `f` to type argument `a`".
+## 2. Unification
 
-### What is already in place
+`unify_with_rigid` adds two arms:
 
-1. **`Type::TyConApp(TypeId, Vec<Type>)`** exists in `crates/cranelisp-types/src/types.rs` and is handled by all utility functions: `apply`, `free_vars`, `contains_var`, `max_type_var_id`, `collect_var_ids_ordered`, the shared `render_type(ty, PrimitiveNaming, VarNaming)` renderer, and `Display`.
+| Pair | Rule |
+|---|---|
+| `TyConApp(f, as)` ~ `ADT(n, bs)` (either order) | Arities must match; bind `f ↦ ADT(n, [])`; unify `as` with `bs` pairwise. |
+| `TyConApp(f, as)` ~ `TyConApp(g, bs)` | Arities must match; if `f ≠ g` bind `f ↦ Var(g)`; unify pairwise. |
 
-2. **AST support**: `TraitDecl.type_params: Vec<Symbol>` carries the constructor variable names. `TraitMethodSig.hkt_param_index: Option<usize>` records which method parameter carries the constructor for dispatch. Both are already defined in `crates/cranelisp-types/src/ast.rs`.
+An arity mismatch is a type error. Both head binds go through `unify_var`, not a raw
+bind, so a rigid variable that reached head position is a skolem-escape error rather
+than a silent binding (`inference.md` §"Written type variables").
 
-3. **Tests**: Two ignored tests exist in `tests/ring2.rs`: `hkt_trait_declaration` and `hkt_impl_bare_constructor`. A third test (`hkt_functor_basic`) is referenced in the sprint plan but does not yet exist as a test function.
+## 3. Resolution of signature types
 
-### What is missing
+Higher-kinded signatures resolve through the one `TypeExpr → Type` resolver
+(`type-expr-resolver-convergence.md`), selected by its constructor-variable context:
 
-The typecheck crate (`crates/cranelisp-typecheck/`) has zero references to `TyConApp`. The following subsystems need HKT awareness:
-
-- **Trait registration** (`traits.rs`): `register_trait_decl` must detect HKT traits and produce `TyConApp` in method schemes.
-- **Unification** (`unify.rs`): needs `TyConApp` vs `ADT` and `TyConApp` vs `TyConApp` rules.
-- **Impl registration** (`traits.rs`): `register_trait_impl` must handle bare constructor targets and validate arity.
-- **Method resolution** (`traits.rs`): `try_resolve_trait_method` must use `hkt_param_index` for dispatch instead of always using the first argument.
-- **Substitution for TyConApp** (`unify.rs`): `substitute_vars` must map constructor variable IDs through the instantiation mapping while preserving the `TyConApp` wrapper.
-
-## 2. Sketch Comparison
-
-The sketch has a working HKT implementation in `sketch/src/typechecker/traits.rs`, `sketch/src/typechecker/unification.rs`, and `sketch/src/typechecker/mono.rs`. The reimplementation follows the same overall approach with minor structural differences.
-
-### How the sketch handles it
-
-**Trait registration** (`register_hkt_trait`):
-- Detects HKT via `!decl.type_params.is_empty()`.
-- Allocates fresh `TypeId` for each constructor param (the "con_var_map").
-- Calls `find_hkt_param_index` to scan method params for the first one using a constructor variable in `Applied` position. Stores result in `method.hkt_param_index`.
-- Resolves method signatures via `resolve_type_expr_hkt`, which produces `TyConApp(con_id, args)` for constructor variable applications and regular `ADT`/`Var` for everything else.
-- Registers each method with a `Scheme` whose `constraints` map includes the constructor variable IDs.
-
-**Unification** (`unify`):
-- `TyConApp(f, args1)` vs `ADT(name, args2)`: binds `f -> ADT(name, [])` (the bare constructor), then unifies args pairwise. Requires `args1.len() == args2.len()`.
-- `TyConApp(f1, args1)` vs `TyConApp(f2, args2)`: binds `f1 -> Var(f2)`, then unifies args pairwise.
-- Occurs check: `TyConApp(con_id, args)` reports occurrence if `id == con_id` or `id` occurs in any arg.
-
-**Impl validation** (`validate_impl`):
-- If the trait has `type_params`, computes expected arity via `con_var_arity` (scans method signatures for `Applied` uses of the constructor name).
-- Validates the impl target's type parameter count matches the expected arity.
-- Rejects primitives as HKT impl targets.
-
-**Method resolution** (`hkt_param_idx_for_method`):
-- Walks all module `TraitDecl` entries to find a method's `hkt_param_index`.
-- `infer_apply` uses this index instead of 0 to pick the dispatch argument.
-
-**Mono** (`collect_var_mapping`, `apply_with`):
-- `TyConApp(id, sa)` vs `ADT(_, ca)`: maps the constructor ID to the full concrete ADT.
-- `apply_with` on `TyConApp(id, args)`: looks up the mapping; if found, reconstructs as `ADT(name, resolved_args)`.
-
-### Divergences from the sketch
-
-| Aspect | Sketch | Reimplementation |
+| Context | `(f a)` with `f` a constructor variable | Bare `f` |
 |---|---|---|
-| Registration path | `register_hkt_trait` is a separate method called from `register_trait` | Same approach -- separate method is cleanest |
-| Type expression resolver | `resolve_type_expr_hkt` is a distinct method from the normal `resolve_type_expr` | Same -- HKT context needs con_var_map parameter |
-| hkt_param_index storage | Mutates the `TraitDecl` in `CompiledModule` after initial insertion | Same -- set during registration, stored on `TraitMethodSig` |
-| Unification borrow splitting | Sketch uses `&mut self` on TypeChecker | Reimplementation uses free-function `unify(&mut Subst, ...)` -- extend this function |
-| Substitution | Sketch's `substitute_vars` handles `TyConApp` ID remapping | Reimplementation's `apply` already handles TyConApp args but does NOT remap the constructor ID -- this must be added |
+| Declaration (`ConVars::Decl`) | `TyConApp(f_id, [a'])` | `Var(f_id)` |
+| Impl method check (`ConVars::Impl`) | `ADT(target, [a'])` | — |
 
-**Rationale for following the sketch**: The sketch's approach is clean and well-tested. The key insight -- that `TyConApp` binds its constructor variable to a bare `ADT(name, [])` during unification -- is sound and simple. No reason to diverge on the algorithm.
+The trait-side wrappers (`resolve_hkt_sig_type_expr`, `resolve_hkt_impl_type_expr`)
+only build that context. An unknown type name in a signature is a source error, as in
+any other signature.
 
-## 3. Unification Rules for TyConApp
+## 4. Declaration registration
 
-Three new match arms in `unify()` (`crates/cranelisp-typecheck/src/unify.rs`):
+`register_trait_decl` derives the kind from the declaration head (§5.1) and routes a
+higher-kinded declaration to `register_hkt_trait`:
 
-### 3.1 TyConApp vs ADT
+1. A higher-kinded method with a default body is rejected (spec §7.1.5; the
+   method-tail classification is `s116-method-signature-resolution.md`).
+2. A parenthesized head whose constructor variable is never applied is rejected
+   ([declaration kind](#51-kind-derivation-at-declaration-consumers-read-type_params), item 1).
+3. Each constructor variable gets a fresh `TypeId`.
+4. Each method records `hkt_param_index`: the first parameter whose type applies a
+   constructor variable (`spec/03-types.md` §3.7.6). The result is written once onto the stored
+   `TraitMethodSig`; every consumer reads it.
+5. Each method scheme quantifies the constructor ids and the method's ordinary
+   variables, and constrains each constructor id to the trait's `FQTraitName`.
+6. Methods install through the trait-method funnel with the trait's visibility; the
+   `TraitDecl` binding carries `type_params` and the indexed methods.
 
-```
-TyConApp(f_id, [A1, ..., An])  ~  ADT(name, [B1, ..., Bn])
-```
-
-1. Check `n == m` (arity match).
-2. Bind `f_id -> ADT(name, [])` (the bare constructor).
-3. For each `i`, unify `Ai` with `Bi`.
-
-This works symmetrically: `ADT` on left and `TyConApp` on right uses the same logic.
-
-```rust
-(Type::TyConApp(f_id, args1), Type::ADT(name, args2))
-| (Type::ADT(name, args2), Type::TyConApp(f_id, args1)) => {
-    if args1.len() != args2.len() {
-        return Err(/* arity mismatch */);
-    }
-    // Bind constructor variable to bare ADT constructor
-    bind_var(subst, *f_id, &Type::ADT(name.clone(), vec![]))?;
-    for (a1, a2) in args1.iter().zip(args2.iter()) {
-        unify(subst, a1, a2)?;
-    }
-    Ok(())
-}
-```
-
-### 3.2 TyConApp vs TyConApp
-
-```
-TyConApp(f1, [A1, ..., An])  ~  TyConApp(f2, [B1, ..., Bn])
-```
-
-1. Check arity match.
-2. If `f1 != f2`, bind `f1 -> Var(f2)`.
-3. Unify args pairwise.
-
-```rust
-(Type::TyConApp(f1, args1), Type::TyConApp(f2, args2)) => {
-    if args1.len() != args2.len() {
-        return Err(/* arity mismatch */);
-    }
-    if f1 != f2 {
-        bind_var(subst, *f1, &Type::Var(*f2))?;
-    }
-    for (a1, a2) in args1.iter().zip(args2.iter()) {
-        unify(subst, a1, a2)?;
-    }
-    Ok(())
-}
-```
-
-### 3.3 Occurs check
-
-The existing `occurs_check` uses `free_vars`, which already collects `TyConApp` arg vars. However, the constructor ID itself (`TyConApp(id, _)`) must also be treated as a variable for occurs-check purposes. Verify that `free_vars` includes TyConApp's constructor ID.
-
-Looking at the current `free_vars` implementation: it collects vars from `TyConApp(_, args)` args but does NOT include the constructor ID itself. This is correct because `free_vars` collects `Var` occurrences, and the constructor ID is not a `Var` -- it is bound separately via `bind_var`. The occurs check in `bind_var` calls `free_vars` on the resolved type, which will detect if `id` appears as a `Var(id)` anywhere. Since TyConApp's constructor ID is bound via `bind_var(subst, f_id, ...)`, the standard occurs check works: if the target type contains `Var(f_id)`, the binding would be circular.
-
-However, there is a subtle case: if `f_id` appears as the constructor ID in a nested `TyConApp(f_id, ...)` inside the type being bound. The current `free_vars` does not catch this. We need to either:
-
-1. Add the constructor ID to `free_vars` for `TyConApp`, or
-2. Add a separate `occurs_in_tycon` check.
-
-**Decision**: Follow the sketch -- the sketch's `occurs` function explicitly checks `id == *con_id` for `TyConApp(con_id, args)`. We should add TyConApp constructor ID awareness to occurs checking. The cleanest approach: modify `occurs_check` in `unify.rs` to use a custom recursive check rather than `free_vars`, matching the sketch's dedicated `occurs` function.
-
-## 4. HKT Trait Declaration Handling
-
-When `register_trait_decl` is called with a `TraitDecl` where `type_params` is non-empty, the HKT path activates.
-
-### 4.1 Detection
-
-```rust
-if !decl.type_params.is_empty() {
-    return self.register_hkt_trait(decl);
-}
-```
-
-### 4.2 Constructor variable allocation
-
-For each name in `decl.type_params`, allocate a fresh `TypeId`. Store in a `con_var_map: HashMap<Symbol, TypeId>`.
-
-### 4.3 HKT param index computation
-
-For each method, scan its parameter `TypeExpr` list for the first parameter that uses a constructor variable in `TypeExpr::Applied` position. Store the index in `method.hkt_param_index`.
-
-Algorithm (`find_hkt_param_index`):
-1. For each param at index `i`, recursively check if it contains `TypeExpr::Applied(name, _)` where `name` is in `decl.type_params`.
-2. Return the first such `i`.
-3. Fallback: 0 (should not happen for well-formed HKT traits).
-
-### 4.4 Type expression resolution in HKT context
-
-A separate method `resolve_type_expr_hkt` takes the `con_var_map` and a mutable `type_var_map` (for regular type vars). It mirrors the normal `resolve_type_expr` but produces `TyConApp` for constructor applications:
-
-| TypeExpr | Normal resolution | HKT resolution |
-|---|---|---|
-| `Applied("f", [a])` where `f` in con_var_map | N/A | `TyConApp(f_id, [resolve(a)])` |
-| `Applied("Option", [a])` | `ADT("Option", [resolve(a)])` | Same |
-| `TypeVar("a")` not in con_var_map | `Var(fresh)` | Same |
-| `TypeVar("f")` in con_var_map | N/A | `Var(f_id)` (bare constructor ref -- unusual) |
-| `SelfType` | `Var(type_var_id)` | Error (HKT traits do not use `self`) |
-| `Named("Int")` | `Type::Int` | Same |
-| `FnType(ps, r)` | `Fn(ps', r')` | `Fn(resolve_hkt(ps), resolve_hkt(r))` |
-
-### 4.5 Method scheme construction
-
-Each method gets a `Scheme` with:
-- `vars`: all constructor var IDs + all regular type var IDs (sorted, deduped)
-- `constraints`: constructor var IDs mapped to `[trait_name]`
-- `ty`: `Type::Fn(param_tys, ret_ty)` where param/ret types contain `TyConApp` nodes
-
-Example for `fmap`:
-```
-Scheme {
-    vars: [f_id, a_id, b_id],
-    constraints: { f_id: ["Functor"] },
-    ty: Fn(
-        [Fn([Var(a_id)], Var(b_id)), TyConApp(f_id, [Var(a_id)])],
-        TyConApp(f_id, [Var(b_id)])
-    )
-}
-```
-
-### 4.6 Storing hkt_param_index
-
-After computing `hkt_param_index` for each method, update the `TraitDecl` stored in `CompiledModule` so downstream consumers (method resolution, backend) can access it.
-
-## 5. HKT Trait Implementation Handling
-
-> **S112 SETTLED-MODEL RECONCILIATION (leg b, FIXMEs 0628+0639; /arch A2).** §5.1
-> and §5.4 below are rewritten to the S111-settled spec (`spec/07-traits.md`
-> §7.1.1/§7.2.1/§7.3.4–§7.3.6, commits `c9f05b64`/`b37d77e6`). Two model changes
-> supersede the prior text: (1) **kind is derived ONCE at declaration
-> registration**, and a parenthesized head whose con_var is **never applied** is
-> **rejected at `deftrait` as malformed** (§7.2.1) — it is *not* "still kind
-> `* -> *`" as the old §5.1 claimed; (2) the **impl form** echoes the declared head
-> in slot 1 and names a **trait-constructor pairing** `(Trait Constructor)` in slot 2
-> (§7.3.4), and the kind-check is the ONE §7.3.5 Case-3 seam — no second "is this a
-> trait or a type-constructor?" classifier. The former "reject the bare-con_var
-> impl-on-primitive at impl time" framing (old §5.4) is superseded: that shape is now
-> a *declaration*-time reject.
+## 5. Implementation registration
 
 ### 5.1 Kind derivation at declaration; consumers read `type_params`
 
-**Kind is a property of the DECLARATION, derived ONCE at trait registration, and
-recorded on `TraitDeclInfo.type_params`.** Three declaration shapes, three kinds
-(spec §7.1/§7.2.1):
+Kind is a property of the declaration, derived once at registration and recorded on
+`TraitDeclInfo.type_params` (spec §7.1, §7.2.1):
 
-| `deftrait` head | con_var applied `(f a)` anywhere? | kind | `type_params` |
+| `deftrait` head | Constructor variable applied somewhere? | Kind | `type_params` |
 |---|---|---|---|
-| bare `Name` (+ `self`) | — (no con_var) | `*` (conventional) | **empty** |
-| `(Name f)`, `f` applied ≥ once | yes | `* -> *` (higher-kinded) | `["f"]` |
-| `(Name f)`, `f` never applied | no | **malformed — rejected at `deftrait`** | (never registers) |
+| bare `Name` (methods use `self`) | no variable | `*` (conventional) | empty |
+| `(Name f)` | yes | `* -> *` (higher-kinded) | `[f]` |
+| `(Name f)` | never | malformed — rejected at `deftrait` | never registers |
 
-1. **The malformed case is rejected at DECLARATION time, not at impl.** A
-   parenthesized head whose con_var is never applied in any method signature
-   (`(deftrait (Zeroable a) (zed [] :a))`, `a` bare-only) is malformed per §7.2.1
-   ("A parenthesized head whose variable is never applied is malformed … there is
-   no kind-`*` trait with a head type variable; conventional traits use the bare
-   head and `self`"). `register_trait_decl` MUST reject it with a diagnostic that
-   names the fix — *"trait `Zeroable`'s type parameter `a` is never applied
-   `(a …)`; a trait that returns the implementing type uses the bare head and
-   `self`: `(deftrait Zeroable (zed [] self))`."* This subsumes the old §5.4
-   "bare-con_var impl-on-primitive leak": the `(impl Zeroable Int)` question never
-   arises because the *declaration* is already rejected.
+1. **The never-applied head is rejected at the declaration.** The diagnostic names
+   the fix: a trait that returns the implementing type uses the bare head and
+   `self`. Because such a trait never registers, no impl of it, no unresolved-var
+   display and no codegen leak can follow from it.
+2. **Non-empty `type_params` ⟺ higher-kinded, exactly.** Impl validation (§5.4)
+   and dispatch (§6) read `type_params`; neither re-scans
+   method signatures to rediscover kind (Principle 24). A second, usage-derived kind
+   test is the mistake this rule exists to prevent: two such tests diverged once, and
+   a never-applied head then registered as a conventional trait.
+3. **Routing depends on `type_params` alone.** Every declaration that passes item 1
+   with non-empty `type_params` goes through `register_hkt_trait`.
+4. **Expected constructor arity** is the argument count of the constructor
+   variable's first applied occurrence, in parameters then result (`con_var_arity`).
+   Item 1 guarantees one exists for every registered higher-kinded trait.
 
-2. **`type_params` non-empty ⟺ HKT is then EXACT.** Because the malformed
-   never-applied case is rejected at declaration, any trait that successfully
-   registers with non-empty `type_params` is genuinely higher-kinded. Every
-   downstream consumer (impl-target validation §5.4, dispatch §6, the REPL
-   trait-classification display) reads `TraitDeclInfo.type_params` — non-empty ⟺
-   HKT — and **never re-scans method-body usage** (Principle 24 "Resolve once":
-   the two divergent usage-derived kind derivations at `registry.rs:117–126` and
-   `impl_check.rs:39–92` collapse onto this single declaration-time fact).
+### 5.2 Self type for a higher-kinded impl method
 
-3. **`register_trait_decl` guard fix (roots the `:a 7` display defect, FIXME 0628
-   body).** The current guard (`registry.rs:117–124`) routes to `register_hkt_trait`
-   only when `!type_params.is_empty()` **AND** a method uses the con_var applied —
-   the usage scan. A bare-con_var trait therefore registered via the *regular*
-   `register_trait_method` path, so `(unwrap 7)` displayed `:a 7` instead of
-   `:primitives/Int 7`. Fix: drop the usage scan; register via `register_hkt_trait`
-   whenever `!decl.type_params.is_empty()` — matching the (now sole) declaration-
-   derived kind. The declaration-time malformed reject (step 1) runs first, so
-   `register_hkt_trait` only ever sees a genuinely-HKT (applied-con_var) decl.
+For `(impl (Functor f) (Functor Option) …)` the effective target is the bare
+constructor `Option` (§5.4 step 4). Each method body is checked with:
 
-4. **Expected constructor arity** is the con_var's usage-derived arity (§7.2.1):
-   the number of args in its first `Applied` occurrence (`con_var_arity`). For a
-   genuinely-HKT trait this is always `Some(n≥1)` (step 1 guarantees at least one
-   applied use). It is used to kind-check a matching-arity ADT target (§5.4 Case 2).
+- signature types resolved in the impl context, so `(f a)` becomes `(Option a)`;
+- a concrete self type `ADT(Option, [fresh…])`, one fresh variable per
+  expected-arity position;
+- the result wrapped with the impl's conformance context on error.
 
-### 5.4 The settled impl form + the §7.3.5 Case-3 kind-check seam (leg b)
+### 5.3 Pre-unification of the dispatch parameter
 
-The impl form and its kind-check are settled (spec §7.3–§7.3.6). `register_trait_impl`
-consumes the new frontend carrier and interprets slot 2 at **one** seam.
+Before the body is checked, the parameter at `hkt_param_index` is unified with the
+concrete self type. This fixes the parameter's constructor and leaves its element
+types as fresh variables for the body to settle.
 
-**The impl form (spec §7.3, §7.3.4).** `(impl impl_head impl_target method_def+)`:
+### 5.4 The impl form and the §7.3.5 Case-3 kind-check seam
 
-- **Conventional trait** — slot 1 is the bare trait name (as declared, §7.1); slot 2
-  is a **type**: `(impl Display Int …)`, `(impl Display (Option Int) …)`,
-  `(impl Display (Option :Display a) …)`.
-- **Higher-kinded trait** — slot 1 **echoes the parenthesized head verbatim**
-  `(Functor f)`; slot 2 is a **trait-constructor pairing** `(Functor Option)` — the
-  trait applied to the constructor it is implemented *about*:
-  `(impl (Functor f) (Functor Option) …)`.
+**The form (spec §7.3, §7.3.4).** `(impl impl_head impl_target method_def+)`:
 
-**Frontend carrier (/arch A1 pinned diff, landed b0).** The b0 `parse_impl` change
-admits the echoed head at slot 1 and records the written head shape on
-`TraitImpl.head_con_var: Option<Symbol>` (`#[serde(default)]`): `Some("f")` for an
-HK head `(Functor f)`, `None` for a bare conventional head. Slot 2 continues to ride
-the existing `target: TypeExpr` — for the HK case it parses as
-`Applied("Functor", [Named("Option")])` (the pairing), kind-interpreted here at the
-ONE §7.3.5 Case-3 seam. **No second classifier.**
+- a conventional trait writes the bare trait name in slot 1 and a type in slot 2:
+  `(impl Display (Option :Display a) …)`;
+- a higher-kinded trait echoes the declared head in slot 1 and writes a
+  trait-constructor pairing in slot 2: `(impl (Functor f) (Functor Option) …)`.
 
-**The Case-3 seam (spec §7.3.5) — one deterministic path in `register_trait_impl`:**
+The parser records the written slot-1 shape on `TraitImpl.head_con_var` (`Some(f)`
+for a parenthesized head, `None` for a bare one). Slot 2 stays a `TypeExpr`; a pairing
+arrives as `Applied(Functor, [Named(Option)])`. The parser classifies nothing
+(`design/frontend/trait-impl-head-parse.md`).
 
-1. **Resolve the trait by name** from slot 1 (`impl_.trait_name.name`) — the existing
-   `resolve_trait_decl` scope-resolve, prelude-fallback-aware (`impl_check.rs:30`).
-2. **The trait's DECLARATION is authoritative on its kind** — read
-   `TraitDeclInfo.type_params`: non-empty ⟺ HK (§5.1); this is the sole kind source.
-3. **Slot-1 echo validation — shape AND con_var spelling.** Slot 1 MUST echo the
-   declared head **verbatim** (§7.3, "Slot 1 is fixed, not inferable": for a higher-
-   kinded impl slot 1 "reproduces the `deftrait` head **verbatim as declared** — the
-   same constructor-variable spelling `(Functor f)`; it is neither renamed nor
-   omitted"). This is **two** bits, and BOTH are validated **here** against the
-   declaration read at step 2 — checking only the shape bit is a fidelity gap, because
-   a parenthesized head with the *wrong* con_var spelling still carries `Some(_)`:
-   - **Shape.** An HK trait requires `head_con_var: Some(_)` (a parenthesized echoed
-     head); a conventional trait requires `head_con_var: None` (a bare name). A shape
-     mismatch is rejected — *"trait `Functor` is higher-kinded; its impl head must echo
-     the declared form `(Functor f)`"* / *"trait `Display` is a conventional (kind-`*`)
-     trait; its impl head is the bare name `Display`."*
-   - **Spelling (HK only).** When the trait is HK and the shape bit passes, the symbol
-     inside `head_con_var: Some(name)` MUST equal the declaration's con_var —
-     `TraitDeclInfo.type_params[0]` (§9.2: a single con_var). `(impl (Functor g) …)`
-     against `(deftrait (Functor f) …)` passes the shape check (`Some(_)`) but its
-     spelling `g` ≠ the declared `f`, so it is rejected **here** with a **located**
-     diagnostic (on the impl form's slot 1 — the same span the shape-mismatch diagnostic
-     uses) that names **both** spellings and the expected form — *"impl head `(Functor g)`
-     does not echo trait `Functor`'s declared head `(Functor f)`: the constructor variable
-     is spelled `g` but was declared `f`; reproduce the declared head verbatim as
-     `(Functor f)`."* (Conventional traits carry no binder to vary, so there is no spelling
-     bit to check for them — the shape check `head_con_var: None` is total.)
-4. **Slot-2 interpretation strictly per the known kind** — no "is slot-2 a trait or a
-   type-constructor?" classifier (§7.3.5 Case 3 forbids it as pure redundancy):
-   - **Conventional (Case 1):** slot 2 (`target`) MUST be kind `*` (a type). When
-     the target head resolves to a known type constructor, it MUST be applied to
-     **exactly** its declared arity — the well-kinded set is `provided ==
-     td.type_params.len()`. **Two rejections** flank it (the existing `>` guard
-     GENERALISES to `!=`), each with a distinct §7.3.5 diagnostic:
-     - **Under-applied / bare (pre-existing).** `(impl Display Option)`, `Option :
-       * -> *` applied to 0 args (`provided < arity`) → *"`Option` is a constructor,
-       not a type; apply it: `(Option a)`."* **The fix suggestion is arity-aware
-       (M2).** The template emits one fresh type-var per declared parameter, drawn
-       from `td.type_params.len()`: arity 1 → `(Option a)`; arity 2
-       (`Pair : * -> * -> *`) → `(Pair a b)`; arity 3 → `(Tri a b c)`. The prior
-       hard-coded single-var template (`(Pear a)` / `(Pear Int)`) is itself
-       ill-kinded for a 2-param constructor (`(Pair a)` under-applies `Pair`) —
-       replace it with the arity-driven var list; do not hard-code one or two args.
-     - **Over-applied (I1, NEW).** `(impl Display (Option Int Int))`, `Option`
-       applied to 2 args though its arity is 1 (`provided > arity`) → *"`Option`
-       takes 1 type parameter but is applied to 2 here; apply it to exactly its
-       arity: `(Option a)`."* (The fix suggestion is likewise arity-aware.) **Care —
-       the poly-applied positive stays admissible:** `(impl Display (Option a))`,
-       `(Option Int)`, and the inline-constrained `(Option :Display a)` all supply
-       exactly one type-arg (`provided == arity == 1`, §7.3.3/§7.3.6), so `!=` never
-       fires on them. Only a genuine arity surplus is rejected.
-   - **Higher-kinded (Case 2):** slot 2 is the pairing `(Trait Constructor)`, parsed
-     `Applied(pairing_head, [Constructor])`. **The pairing head is validated FIRST
-     (B1, NEW — the 4th rejection), and only then does the kind-check land on
-     `Constructor`,** which MUST be a **bare constructor whose arity matches** the
-     con_var's usage-derived kind (§5.1 step 4). **Four rejections**, each with the
-     correct §7.3.5 diagnostic:
-     - **Pairing-head mismatch (B1, NEW — the 4th rejection).** The pairing head MUST
-       name the **same trait slot 1 resolves to** (spec §7.3 EBNF: `hkt_target =
-       '(' trait_name con_target ')'` — the pairing head *is* the trait; §7.3.5
-       Case-3 Consequence: "a higher-kinded pairing whose head isn't the trait name
-       fails as a bad pairing"). **Comparison point.** The seam has ALREADY resolved
-       slot-1's trait (into `decl`, `impl_check.rs:30`; its home-qualified identity
-       is minted at `impl_check.rs:238–241` as `fq_trait_name: FQTraitName`). The
-       pairing head is resolved as a `trait_name` reference **exactly as any §8.5
-       trait reference is** — the **WRITTEN qualifier participates in the resolve**.
-       The `Applied(pairing_head, [Constructor])` head carries a `pairing_head.module`
-       (the written qualifier, `Some` for `fmt/Functor`, `None` for a bare `Functor`);
-       that qualifier MUST be threaded into `resolve_trait_decl` / `resolve_trait`
-       (scope-resolve with prelude fallback), NOT dropped. **Review finding R-1: the
-       current `impl_check.rs` pairing-head handling bare-resolves the head *name* and
-       ignores `pairing_head.module`** — that discards the §8.5 qualifier and is the
-       seam /dev must fix. Once resolved, the head's `FQTraitName` is compared for
-       **equality** against slot-1's — a comparison against slot-1's **RESOLVED** trait,
-       never its written spelling (see the qualified-spelling note below, now settled).
-       Concretely, at the `impl_check.rs` pairing-head resolution seam:
-       - a **qualified** spelling resolves **qualified** — `(nosuchmod/Functor Option)`
-         resolves `nosuchmod/Functor` and, finding no such module/trait, **rejects as
-         unresolvable** (the "does not resolve to any trait" arm);
-       - an **aliased or differently-imported** spelling that nonetheless **resolves to
-         slot-1's trait** (the qualified/bare-same-trait case, `(impl (fmt/Functor f)
-         (Functor Option) …)` and its mirror) **ACCEPTS** — resolved identity, not
-         spelling, governs (§7.3.5 *Pairing-head identity*).
+**One deterministic path in `register_trait_impl`.** There is no second
+"is slot 2 a trait or a constructor?" classifier; spec §7.3.5 Case 3 forbids it, and
+the declared kind already answers it.
 
-       A pairing head that resolves to a **different
-       trait**, OR **does not resolve to any trait** (nonexistent/unresolvable name,
-       including a bad qualifier), fails — both collapse to "FQ ≠ slot-1's FQ / no FQ."
-       The diagnostic is **located** (on the
-       impl form's slot-2 span, or `impl_.span` where a finer pairing-head span is
-       unavailable — the same span the sibling Case-2 rejections use) and names what
-       was written and what was expected, §7.3.5 family style: *"impl of trait
-       `Functor` (slot 1) pairs slot 2 with head `NotFunctor`: a trait-constructor
-       pairing's head must name the trait being implemented — write `(Functor
-       Option)`, not `(NotFunctor Option)`."* (The seam MAY refine to *"`NotFunctor`
-       does not name a trait"* when the head fails to resolve versus *"`NotFunctor`
-       is a different trait"* when it resolves elsewhere; a single unified
-       written-vs-expected form is sufficient.) This closes the
-       `impl_check.rs:98` `Applied(_pairing_head, args)` head-**discard** the /review
-       B1 probe exercised (`(impl (Functor f) (NotFunctor Option) …)` silently
-       accepted + dispatched). *(Structuring note for /dev: `fq_trait_name` is
-       currently minted below the seam at `:238–241`; hoist slot-1's FQ above the
-       Case-3 seam, or resolve the pairing head inline against `decl` — either
-       satisfies Principle 24 "resolve once"; that choice is /dev's.)*
-     - primitive → *"`Int` is not a type constructor"* (§7.2.3);
-     - fully-applied type (`(Functor (Option Int))`) → *"kind-mismatch: slot 2 names
-       the bare constructor `Option`, not an applied type"*;
-     - wrong arity (`(Functor Pair)`, `Pair : * -> * -> *`) → *"`Pair` has 2 type
-       parameters; trait `Functor` expects a constructor of arity 1."*
+1. **Resolve slot 1 as a trait reference** to its canonical identity
+   (`qualified-trait-impl.md`).
+2. **Read the kind from the declaration:** `type_params` non-empty ⟺
+   higher-kinded ([declaration kind](#51-kind-derivation-at-declaration-consumers-read-type_params)).
+3. **Validate the slot-1 echo — shape and spelling.** Both bits are checked here,
+   against the declaration from step 2, at the impl form's location:
+   - *Shape.* A higher-kinded trait needs `head_con_var: Some(_)`; a conventional
+     trait needs `None`. Each mismatch names the form the declaration requires.
+   - *Spelling (higher-kinded only).* The written variable must equal the declared
+     one, `type_params[0]`. `(impl (Functor g) …)` against `(deftrait (Functor f) …)`
+     passes the shape bit, so checking shape alone would accept it. The diagnostic
+     names both spellings and the verbatim head to write.
 
-**Qualified-spelling of the pairing head (B1 sub-question — RULED: RESOLVED identity,
-user 2026-07-18, TB-25).** When slot 1 and the pairing head differ in *spelling* yet
-resolve to the SAME trait — `(impl (fmt/Functor f) (Functor Option) …)` (slot 1
-module-qualified, pairing head bare but import/prelude-resolving to `fmt.Functor`), or
-the mirror — the pairing is **admissible**: the B1 comparison is FQ-identity, not
-written spelling. This is now normative — `spec/07-traits.md` §7.3.5 *Pairing-head
-identity* (scribed 2026-07-18, "[settled 2026-07-18, user ruling — TB-25]"): the head
-"is well-formed **iff it resolves to the same trait that slot 1 resolves to** — the
-match is by **resolved identity, not written spelling**. A **qualified** head …, an
-**imported bare** name, and **two different import paths** that all name the one
-`Functor` trait are equally valid." The spec grounds it three ways:
+   The constructor variable is a **binder**, so it is matched by spelling. Trait
+   names are **references**, matched by resolved identity (step 4, Case 2).
+4. **Interpret slot 2 strictly by the known kind.**
+   - **Conventional (Case 1).** Slot 2 is a type. When its head resolves to a type
+     constructor, it must be applied to exactly that constructor's declared arity.
+     Two rejections flank the well-kinded set:
+     - *under-applied or bare* (`(impl Display Option)`): the constructor is not a
+       type;
+     - *over-applied* (`(impl Display (Option Int Int))`): it takes fewer
+       parameters than supplied.
 
-1. **§7.3 EBNF** — both slot-1's head and the pairing head are the SAME nonterminal
-   `trait_name` (`impl_head = … '(' trait_name con_var ')'`; `hkt_target = '(' trait_name
-   con_target ')'`), so both resolve under the same §8.5.1/§8.6 rules.
-2. **§7.3.5 Case-3 step 1** — "Resolve the trait **by name** — from slot 1": slot-1's
-   trait name is a resolved REFERENCE (exactly what `impl_check.rs:30` does), never a
-   spelling. The parallel treatment resolves the pairing head's `trait_name` and compares
-   resolved identities.
-3. **§8.5.1** — a `trait_name` may be qualified or bare, and two spellings name the same
-   trait precisely when they resolve to the same FQ.
+     **M2 — arity-aware fix suggestion.** Both diagnostics suggest the constructor
+     applied to one fresh variable per declared parameter: `(Option a)`,
+     `(Pair a b)`, `(Tri a b c)`. A fixed one-variable template is itself ill-kinded
+     for a multi-parameter constructor.
 
-The verbatim-echo requirement of §7.3 ("Slot 1 is fixed, not inferable … the same
-constructor-variable spelling `(Functor f)`") is grounded explicitly in the **con_var
-binder** `f` — a fresh binder, checkable only by spelling — NOT the trait name, a
-reference checkable by resolution; it therefore does not extend to the pairing head's
-qualification. The internal precedent is slot 1 itself (§5.4 step 3): its trait name is
-already resolved while only its con_var is spelling-matched — "trait-names resolve,
-binders spell-match."
+     **Care — the poly-applied positive stays admissible.** `(Option a)`,
+     `(Option Int)` and `(Option :Display a)` each supply exactly one argument to an
+     arity-1 constructor, so the arity test never fires on them (spec §7.3.3,
+     §7.3.6). Only a genuine shortfall or surplus is rejected; do not tighten the
+     test into "no type variables in slot 2".
+   - **Higher-kinded (Case 2).** Slot 2 must be `(Trait Constructor)`. The pairing
+     head is validated first, then the constructor:
+     1. *Pairing head.* It is resolved as a trait reference, with its written
+        qualifier, through the same resolution as slot 1, and its canonical identity
+        must equal slot 1's. A qualified or differently imported spelling of the
+        same trait is accepted; a different trait or an unresolvable name is
+        rejected with a diagnostic naming what was written and the pairing to write
+        (spec §7.3.5 *Pairing-head identity*).
+     2. *Applied type* (`(Functor (Option Int))`): slot 2 must name the bare
+        constructor.
+     3. *Primitive* (`(Functor Int)`): not a type constructor (`spec/07-traits.md` §7.2.3).
+     4. *Wrong arity* (`(Functor Pair)` for an arity-1 variable): the constructor's
+        declared parameter count must equal the expected arity ([declaration kind](#51-kind-derivation-at-declaration-consumers-read-type_params), item 4).
 
-> **RULED (TB-25, user 2026-07-18).** The one cell where the two readings once
-> diverged — the qualified/bare-same-trait pairing — is **settled toward
-> resolved-identity**, scribed at `spec/07-traits.md` §7.3.5 *Pairing-head identity*
-> and §7.3.4. The contrast with slot 1's con_var is now spec-explicit: the con_var
-> `f` is a **binder** (echo matched by spelling), the pairing head is a **reference**
-> (satisfied by anything resolving to slot-1's trait). /dev implements the full cell:
-> the qualified/bare-same-trait pairing **ACCEPTS**; a *different* or *unresolvable*
-> head **rejects** — one resolve-then-FQ-compare path (R-1 seam above), no
-> spelling-match branch.
+     On success the effective target becomes `Named(Constructor)`. Every downstream
+     step — method presence, default generation, method checking and the `$Type`
+     suffix — then sees the bare constructor, exactly as for a conventional target.
+     `src/session_v4/types.rs::impl_echo_type_name` performs the reciprocal extraction for the
+     REPL's impl echo; the two must keep reading the constructor out of the pairing.
 
-**Consequence (§7.3.5 "the two forms never collide for the same trait").** Because slot
-2 is interpreted in the single mode the trait's declared kind dictates, `(Functor Option)`
-(a trait-constructor pairing) and `(Option a)` (a type application) never contend — the
-surface parallelism is resolved *before* slot 2 is inspected. This is Principle 24
-("Resolve once") applied to the impl gate: the two former usage-derived kind derivations
-(`registry.rs:117–126`, `impl_check.rs:39–92`) both collapse onto the one declaration
-fact read at step 2.
+**Distinct reasons stay distinct.** A conventional method that never mentions the
+implementing type is rejected by the occurrence rule (spec §7.1.1, `design/typecheck/traits.md` §2);
+a higher-kinded impl on a primitive is rejected by the kind check (`spec/07-traits.md` §7.2.3).
+Neither diagnostic may stand in for the other.
 
-**Where the old §5.4 defect went.** The prior "bare-con_var impl-on-primitive silently
-accepted → backend `undefined function` leak" is closed by construction: that shape
-(`(deftrait (Zeroable a) (zed [] :a))`, `a` never applied) is now rejected at the
-`deftrait` (§5.1 step 1), so the impl never registers and no codegen leak can arise. A
-**genuinely** HK trait (`Functor`, `f` applied) impl'd on a primitive is rejected at this
-Case-2 seam with the clean §7.2.3 diagnostic. The two rejections carry **distinct
-reasons** and must not be conflated (§7.1.1 occurrence rule vs §7.2.3 kind-check): a
-no-occurrence method is *"nothing to dispatch on"*; a primitive HK target is *"not a type
-constructor."*
+## 6. Method resolution
 
-**Diagnostic-uniqueness note (matrix input for /qa).** The 0628 repro's THREE symptoms
-(silent-accept + codegen leak; `:a 7` display; accepted `(unwrap 7)`) all trace to the
-single declaration-time reject + the `register_hkt_trait` guard fix (§5.1 step 3) — once a
-bare-con_var trait cannot register, none of the three states is reachable. The §7.3.5
-rejection matrix `/qa` owns: slot-1 echo {`None`, `Some`-matching-spelling,
-`Some`-mismatched-spelling} × trait-declared-kind {conv, HK} ×
-slot-2 {type, conv-over-applied, bad-applied, pairing-correct, pairing-head-mismatch,
-pairing-primitive, pairing-wrong-arity} — the declaration-reject row, the
-echo-shape-mismatch row, and the echo-spelling-mismatch row (`(impl (Functor g) …)` vs
-declared `(Functor f)`, step 3 "Spelling") are the S112-b2 new rows; the **W5.1**
-remediation adds two more: **B1 pairing-head-mismatch** (`(impl (Functor f)
-(NotFunctor Option) …)` — head names a different/nonexistent trait, resolved-identity
-compare against slot-1's FQ; a positive twin `(impl (fmt/Functor f) (Functor Option) …)`
-must stay admissible per the qualified-spelling note) and **I1 conventional-over-applied**
-(`(impl Display (Option Int Int))` — `provided > arity`; poly-applied positive twin
-`(impl Display (Option a))` stays admissible). The diagnostic MUST name the new form.
-Class: `check-gate-leak` (S108 0571 D1 sibling).
+- Dispatch selects the argument at the method's `hkt_param_index`, read from the
+  trait declaration at the trait's home. A method whose declaration is not reachable
+  that way falls back to the shared bulk trait-declaration scan
+  (`traits/dispatch.rs::find_trait_method_decl`), whose not-found result stays
+  distinct from a present method with no index. Conventional methods default to
+  index 0.
+- The selected argument must have a concrete nominal head (`concrete_type_name`); a
+  still-open variable defers the call (`traits.md` §7).
+- A higher-kinded method symbol carries the constructor's home-qualified head only,
+  `Functor.fmap$<home>/Option`, through the one mangler shared with impl
+  definition (`traits.md` §3.1).
 
-**Fixture migration constraint (not designed here; /dev + /testing).** The ~24 typecheck
-unit fixtures and ~7 e2e that model the old `(X a)`-head-as-`*`-kind-parametric mismodel
-migrate to the settled form. Two grades (from the resolved FIXME 0639): **dispatch-only**
-fixtures move to the bare head + empty `type_params`; **constraint-carrying** fixtures
-(`register_num_trait_inline`, `register_num_for_int`, the inline `Double` decl) REQUIRE
-`SelfType` methods (not merely empty `type_params`) so the `Num self` constraint rides
-`self` for constrained-fn detection. The mechanics were prototyped + green-verified in
-S111 CS-4 and reverted with the gate; git history is the reference. The e2e that REGRESS
-under the naive gate (and so must migrate to the `self` / bare-head form, /testing):
-`spec_05_definitions::deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch`,
-`spec_07_traits::trait_deftrait_impl_in_child_module_imported_dispatch_from_parent`,
-`spec_07_traits::impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected`
-(message drift), `repl_introspection::bare_user_trait_lookup_impl_section_lists_type_not_others`,
-`repl_introspection::impl_form_display_result_is_exactly_impl_trait_for_type`.
+## 7. Monomorphisation interaction
 
-**Scope + cross-crate.** Typecheck-side: the `register_trait_decl` declaration-reject +
-guard fix (`registry.rs`), and the `register_trait_impl` Case-3 seam (`impl_check.rs`)
-consuming `TraitImpl.head_con_var`. The `head_con_var` field + the b0 `parse_impl` change
-are **/arch + /dev(frontend)** — not designed here. The `CACHE_SCHEMA_VERSION` 20→21 bump
-(pinned to b2, /arch A4) covers the `TraitDeclInfo.type_params` meaning change (a never-
-applied `(X a)` no longer registers, so a stale schema-20 cache could resurrect a now-
-rejected trait via cache-hit typecheck bypass).
-
-### 5.2 Self-type construction for HKT impls
-
-For non-HKT impls, the self-type for method checking is either `Type::Int` (primitives) or `Type::ADT("Option", [Var(a)])` (parameterized). For HKT impls, the self-type used during method body inference must be the fully applied form.
-
-Given `(impl Functor Option ...)`:
-- The constructor is `Option` with 1 type param.
-- The self-type for checking `fmap`'s body is `ADT("Option", [Var(fresh_a)])`.
-- The `Var(fresh_a)` corresponds to the constructor's applied arg.
-
-During impl method type checking:
-- The trait's constructor variable `f` should be pre-unified with `ADT("Option", [])` (the bare constructor).
-- When the method's parameter type `TyConApp(f, [Var(a)])` is applied with this substitution, it becomes `ADT("Option", [Var(a)])` -- the concrete applied type.
-
-### 5.3 Pre-unification of dispatch parameter
-
-For the dispatch parameter (identified by `hkt_param_index`), pre-unify the method param type with the concrete self-type. This is how the sketch does it:
-
-```rust
-let param_idx = self.hkt_param_idx_for_method(&defn.name);
-if let Some(target_param) = param_tys.get(param_idx) {
-    self.unify(target_param, self_type, defn.span)?;
-}
-```
-
-This triggers the TyConApp-vs-ADT unification rule, binding the constructor variable to the bare ADT constructor and the inner type vars to fresh vars.
-
-## 6. Method Resolution for HKT
-
-### 6.1 Dispatch parameter selection
-
-Currently `try_resolve_trait_method` always uses `arg_types[0]` for dispatch. For HKT methods, it must use the argument at `hkt_param_index`.
-
-Change:
-```rust
-// Before: always first arg
-let dispatch_arg = arg_types.first();
-
-// After: use hkt_param_index if available
-let param_idx = self.hkt_param_idx_for_method(callee_name);
-let dispatch_arg = arg_types.get(param_idx);
-```
-
-### 6.2 Extracting the constructor name
-
-Given the dispatch argument type (after substitution), extract the ADT name:
-- `ADT("Option", [...])` -> `"Option"` (bare constructor name)
-- `Var(_)` -> defer (type not yet resolved)
-- `TyConApp(_, _)` -> should not happen at resolution time (means constructor variable was not yet resolved)
-
-The existing `concrete_type_name` function handles `ADT` already, which is all that's needed -- by the time `try_resolve_trait_method` runs, the dispatch arg should be a concrete ADT, not a TyConApp.
-
-### 6.3 Mangling
-
-HKT method mangled names use the bare constructor: `Functor.fmap$Option`, not `Functor.fmap$Option$Int`. This is per spec SS7.4.1.
-
-### 6.4 hkt_param_idx_for_method
-
-A helper that walks trait declarations in all modules to find a method's `hkt_param_index`. Must handle mangled names: `"Functor.fmap$Option"` -> extract base `"fmap"` -> look up.
-
-```rust
-pub(crate) fn hkt_param_idx_for_method(&self, name: &str) -> usize {
-    // Direct lookup
-    if let Some(idx) = self.find_hkt_param_index_in_modules(name) {
-        return idx;
-    }
-    // Mangled: "Trait.method$Type" -> "method"
-    if let Some(dollar_pos) = name.find('$') {
-        let prefix = &name[..dollar_pos];
-        let base = prefix.rfind('.').map_or(prefix, |dot| &prefix[dot + 1..]);
-        if let Some(idx) = self.find_hkt_param_index_in_modules(base) {
-            return idx;
-        }
-    }
-    0 // default: first param (normal traits)
-}
-```
-
-## 7. Monomorphisation Interaction
-
-Per spec SS3.7.6: **HKT methods are NOT constrained polymorphic functions**. They dispatch through the trait resolution mechanism, not through monomorphisation. At every call site, the concrete type constructor is known.
-
-This means:
-- `fmap` should NOT be registered as a constrained function in `detect_constrained_fns`.
-- Resolution of `(fmap inc (Some 5))` goes through `try_resolve_trait_method`, which finds the impl for `Option` and returns `Functor.fmap$Option`.
-- The backend compiles `Functor.fmap$Option` as a regular function -- no specialisation needed.
-
-**However**, the monomorphisation module (`mono.rs`) does need TyConApp awareness in its `collect_var_mapping` and `apply_with` helpers. These are used for polymorphic ADT trait impls (e.g., `impl Display (Option :Display a)`) which can co-exist with HKT. The sketch's approach:
-- `collect_var_mapping(TyConApp(id, sa), ADT(_, ca))`: maps `id` to the full concrete ADT.
-- `apply_with(TyConApp(id, args))`: looks up the ID in the local mapping; if found as `ADT(name, _)`, reconstructs as `ADT(name, resolved_args)`.
-
-The reimplementation should add these cases to the mono module when it exists.
+- A trait-method call resolves by trait dispatch at its concrete call site
+  (`spec/03-types.md` §3.7.6); the method itself is not a monomorphisation template.
+- `Type::is_concrete` is false for every `TyConApp`, so no constructor application
+  can reach a concrete callable or a codegen view (`monomorphisation.md` §1). A
+  residual one is refused by the ambiguity backstop (`monomorphisation.md` §4).
 
 ## 8. Invariants
 
-1. **TyConApp is inference-only**: By the time `CheckResult` is returned to codegen, ALL `TyConApp` nodes must be resolved to concrete `ADT` types. The backend never sees `TyConApp`. This is enforced by `Type::contains_var()` assertions (which already handle TyConApp args) and should also check that no `TyConApp` nodes remain as a separate assertion.
+| Invariant | Grade |
+|---|---|
+| `TyConApp` never reaches codegen. | Structural: the lifecycle's concreteness predicate rejects it at settlement. |
+| Kind has one source, `type_params`. | Asserted with a named falsifier: a new consumer that inspects method signatures to decide kind. Evidence: the §7.2.1 and §7.3.5 rejection cells in `tests/spec_07_traits.rs`. |
+| `hkt_param_index` is computed once, at declaration. | Asserted with a named falsifier: a dispatch or impl site recomputing it from signatures. |
+| A head bind cannot capture a rigid variable. | Structural at the unification seam (`unify_var`). |
 
-2. **Constructor IDs are type variable IDs**: A `TyConApp(f_id, ...)` uses the same `TypeId` namespace as `Var(id)`. The constructor ID is bound in the substitution just like any type variable. The key difference is what it binds TO: a bare `ADT(name, [])` rather than a fully applied type.
+## 9. Edge cases
 
-3. **Arity is implicit**: There is no kind system. Arity is determined by usage in method signatures and validated at impl registration time. A constructor variable used as `(f a)` has arity 1; as `(f a b)`, arity 2.
+- **Nullary constructors.** `(deftype Color Red Green Blue)` has arity 0 and is
+  rejected as a higher-kinded target by the Case 2 arity check.
+- **Nested application.** `(f (g a))` unifies recursively; single-variable traits do
+  not produce it, and the rules need no special case.
+- **Bare constructor variable beside an applied use.** In a declaration that applies
+  `f` somewhere, a bare `f` elsewhere resolves to `Var(f_id)`. Spec §7.2.1 rejects
+  only the never-applied head; it does not address mixed use.
+- **REPL.** Registration, impl checking and dispatch follow the batch path; the
+  indexed `TraitDecl` persists in the module table.
 
-4. **hkt_param_index is set once**: Computed during trait registration and stored on `TraitMethodSig`. All downstream consumers read this field rather than recomputing.
+## 10. Open leads
 
-5. **No default methods on HKT traits**: Per spec SS7.1.3, this is checked at parse time (frontend responsibility, not typecheck).
+These are source-read leads, not executed reproductions. `qa` owns their intake.
 
-6. **HKT methods use trait dispatch, not monomorphisation**: The `Functor` constraint on `f` is resolved via `ImplRegistry`, not via `ConstrainedFn` machinery.
+| Lead | Observation | Owner of the next step |
+|---|---|---|
+| Result-only constructor variable | `find_hkt_param_index` falls back to index 0 when no parameter applies the variable, so a method such as `(pure [:a x] (f a))` would dispatch on its first argument's type. Spec §3.7.6 defines dispatch only by the first parameter that applies the constructor. | `spec` to state whether such a method is admissible; `qa` intake |
+| Primitive test by spelling | The Case 2 primitive rejection compares the constructor's written name with `Int`, `Bool`, `String` and `Float` rather than its resolved identity. | `qa` intake |
 
-## 9. Edge Cases
+---
 
-### 9.1 Nullary constructors as HKT targets
+## Former section numbers
 
-Enum types like `(deftype Color Red Green Blue)` have 0 type parameters. They are valid types but invalid HKT impl targets because Functor expects arity 1. The arity validation in SS5.1 catches this.
+The S122 rewrite removed the delivery plan; §5.1–§5.4 keep their numbers and cited
+sub-anchors (§5.4 step 3, M2, Case 1 "Care").
 
-### 9.2 Multiple constructor variables
-
-The spec supports single-constructor HKT only (SS7.12.1: "No multi-parameter type classes"). `decl.type_params` will have at most one element for now. The implementation should handle `Vec<Symbol>` generically for future extension but can assume length 1 for Sprint 24.
-
-### 9.3 Nested TyConApp
-
-A type like `TyConApp(f, [TyConApp(g, [Var(a)])])` would represent `(f (g a))` -- a doubly-nested constructor application. This does not arise from single-parameter HKT traits but the unification rules handle it correctly (recursive unification resolves inner TyConApp first).
-
-### 9.4 Constructor variable in non-Applied position
-
-If a method signature uses the constructor variable name as a bare `TypeVar` (not in `Applied` position), e.g., `(deftrait (Bad f) (m [f] f))`, this treats `f` as a regular type variable. The `resolve_type_expr_hkt` method produces `Var(f_id)` for this case. This is arguably a spec violation (constructor variables should appear in applied position) but the sketch allows it silently. We follow the sketch for now.
-
-### 9.5 REPL incremental compilation
-
-HKT trait registration in the REPL follows the same path as batch. The `hkt_param_index` is stored on the `TraitDecl` in `CompiledModule`, which persists across REPL evaluations. Method resolution uses the stored index. No special REPL handling needed.
-
-## 10. Changes Required
-
-### 10.1 `crates/cranelisp-typecheck/src/unify.rs`
-
-- Add two match arms to `unify`: TyConApp-vs-ADT and TyConApp-vs-TyConApp (see SS3).
-- Add TyConApp constructor ID awareness to occurs checking (either modify `occurs_check` to use a direct recursive function, or extend `free_vars` in the types crate).
-
-### 10.2 `crates/cranelisp-typecheck/src/traits.rs`
-
-- Add `register_hkt_trait` method (called from `register_trait_decl` when `type_params` is non-empty).
-- Add `resolve_type_expr_hkt` method.
-- Add `find_hkt_param_index`, `type_expr_uses_con_var`, `con_var_arity`, `find_applied_arity` helpers.
-- Add `hkt_param_idx_for_method` and `find_hkt_param_index_in_modules` helpers.
-- Modify `try_resolve_trait_method` to use `hkt_param_idx_for_method` for dispatch parameter selection.
-- Modify `register_trait_impl` to validate arity for HKT traits and reject primitive targets.
-
-### 10.3 `crates/cranelisp-typecheck/src/checker.rs`
-
-- Add `instantiate_constrained` awareness: when instantiating an HKT method scheme, the constructor variable ID must be remapped in TyConApp nodes, not just in Var nodes. Currently `apply` in the types crate handles TyConApp args but does NOT remap the constructor ID. Either:
-  - (a) Extend `apply` to check if a TyConApp's constructor ID is in the substitution and, if so, restructure the type, OR
-  - (b) Add a separate `substitute_tycon_vars` pass after instantiation.
-
-  **Decision**: Option (a) -- extend `apply` in `crates/cranelisp-types/src/types.rs`. When `apply` encounters `TyConApp(id, args)` and `subst[id]` exists:
-  - If `subst[id] = ADT(name, [])`: return `ADT(name, applied_args)`.
-  - If `subst[id] = Var(other_id)`: return `TyConApp(other_id, applied_args)`.
-  - Otherwise: return `TyConApp(id, applied_args)` (no remapping).
-
-  This is the most impactful change because it makes TyConApp resolution automatic via the standard substitution mechanism.
-
-### 10.4 `crates/cranelisp-types/src/types.rs`
-
-- Modify `apply` to remap TyConApp constructor IDs through the substitution (see SS10.3).
-- Verify `free_vars` behavior for TyConApp constructor IDs. Currently it does NOT include the constructor ID. For occurs-check correctness when using `bind_var`, the constructor ID must be treated as a free variable. Add it to `collect_free_vars`.
-
-### 10.5 No backend changes
-
-TyConApp is fully resolved before codegen. The backend never sees it. No changes to `crates/cranelisp-codegen/`.
-
-## 11. Implementation Order
-
-1. **types.rs**: Extend `apply` to remap TyConApp constructor IDs. Add constructor ID to `free_vars`.
-2. **unify.rs**: Add TyConApp unification rules. Add TyConApp-aware occurs check.
-3. **traits.rs**: Add `register_hkt_trait` and all supporting helpers.
-4. **traits.rs**: Modify `try_resolve_trait_method` to use `hkt_param_idx_for_method`.
-5. **traits.rs**: Modify `register_trait_impl` for HKT arity validation.
-6. **End-to-end test**: Un-ignore `hkt_trait_declaration` and `hkt_impl_bare_constructor`. Write `hkt_functor_basic`.
-
-## Next skills
-
-- `/qa` -- write `hkt_functor_basic` test; un-ignore the two existing HKT tests once implementation lands.
-- `/arch` -- review this design doc for architectural coherence (especially the `apply` change in types.rs, which is a cross-crate change).
+| Former | Now |
+|---|---|
+| §1 Problem statement; §2 Sketch comparison | §1 and the introduction; the sketch comparison is in Git history |
+| §3.1–§3.3 Unification rules and occurs check | §2 and §1 |
+| §4.1–§4.6 Declaration handling | §3 and §4 |
+| §5.1–§5.4 | unchanged |
+| §6.1–§6.4 Method resolution | §6 |
+| §7 Monomorphisation interaction | §7 |
+| §8 Invariants | §8 (the "no default methods" item is §4 step 1: typecheck rejects it, not the frontend) |
+| §9.1–§9.5 Edge cases | §9 (§9.2 single variable → §1) |
+| §10 Changes required; §11 Implementation order | removed (landed; Git history) |

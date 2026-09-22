@@ -44,11 +44,11 @@ fn make_ctor(name: &str) -> ConstructorDef {
     }
 }
 
-/// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
-/// following the S109 same-module bare→canonical candidate one hop. A
-/// sum ctor's real `Def` is keyed `Type.Ctor` (`member_key`) with the bare
-/// name exposed as a candidate; a product ctor keeps its bare type-name key
-/// directly). Type-agnostic — follows the alias edge without knowing the type.
+/// Test helper: resolve a constructor by its BARE name to its terminal
+/// binding, following a sole same-module name candidate one hop. A sum ctor's
+/// binding is keyed `Type.Ctor` (`member_key`) with the bare name exposed as a
+/// candidate; a product ctor keeps its bare type-name key directly.
+/// Type-agnostic — follows the candidate without knowing the type.
 fn ctor_entry<'t>(table: &'t cranelisp_types::SymbolTable, name: &str) -> Option<&'t Binding> {
     if let Some(entry) = table.get(name) {
         return Some(entry);
@@ -359,10 +359,11 @@ fn product_int_field(type_name: &str, field: &str) -> ConstructorDef {
     }
 }
 
-// spec: 05-definitions §5.2.6 — Generated Accessors (INVERTED model §1.6.1).
-// A product field synthesises a free accessor fn `field :: (Fn [ProductType]
-// FieldType)`, born concrete (UserFn with a GOT slot), registered under the
-// CANONICAL key `Type.field` (`Box.v`); bare `field` is its Import alias.
+// spec: 05-definitions §5.2.6 — Generated Accessors
+// (`fixme-0365-field-accessor-dotted.md` §1.6.1). A product field synthesises
+// an accessor typed `(Fn [ProductType] FieldType)`, installed concrete under
+// the canonical key `Type.field` (`Box.v`); bare `field` is a name candidate
+// onto it.
 #[test]
 fn product_field_synthesises_concrete_accessor() {
     let mut tc = tf_with_scalar_imports();
@@ -376,8 +377,8 @@ fn product_field_synthesises_concrete_accessor() {
     )
     .unwrap();
 
-    // Canonical `Box.v` is a concrete UserFn accessor with a GOT slot; bare
-    // `v` exposes it as its sole candidate.
+    // Canonical `Box.v` is a concrete accessor callable; bare `v` exposes it
+    // as its sole candidate.
     assert!(
         is_candidate(&tc.symbol_table(), "v"),
         "bare `v` must expose Box.v as its sole candidate"
@@ -471,13 +472,12 @@ fn accessor_candidate_coexists_with_nonaccessor_binding() {
 }
 
 // spec: 05-definitions §5.2.6 "Duplicate field names in the same scope" +
-// 08-modules §8.6.5 bare-name ambiguity (user ruling S83 W2) — two product
-// types with the same field name POISON the bare accessor: it becomes
-// ambiguous (`ModuleEntry::Ambiguous`), NOT an argument-type-dispatched
-// overload and NOT a silently-picked winner. The second deftype is not
-// rejected as a duplicate definition; the colliding field's value stays
-// reachable via `match`. The owning types are recorded as the qualified
-// alternatives the ambiguity error lists.
+// 08-modules §8.6.5 — two product types with the same field name leave the
+// bare spelling with two candidates, NOT a silently-picked winner; a use
+// that context does not settle is ambiguous. The second deftype is not
+// rejected as a duplicate definition, and both canonical accessors stay
+// reachable. The owning types are recorded as the qualified alternatives the
+// ambiguity error lists.
 #[test]
 fn cross_type_duplicate_field_poisons_bare_accessor() {
     let mut tc = tf_with_scalar_imports();
@@ -596,9 +596,9 @@ fn new_cluster(tc: &mut TestFixture) {
 
 // spec: 05-definitions §5.2.6 + 08-modules §8.6.5 (FIXME 0366) — at the REPL
 // each input is its own cluster, so a duplicate field-name accessor defined
-// in a LATER cluster must still POISON the bare name (ambiguous), re-deriving
-// the collision from the COMMITTED live accessor entry — NOT silently
-// first-wins. This pins the typecheck seam the e2e
+// in a LATER cluster must still leave the bare name with both candidates,
+// re-deriving the earlier owner from the COMMITTED live accessor entry — NOT
+// silently first-wins. This pins the typecheck seam the e2e
 // `repl_cross_cluster_duplicate_field_accessor_is_ambiguous` exercises.
 #[test]
 fn cross_cluster_duplicate_field_poisons_bare_accessor() {
@@ -613,8 +613,8 @@ fn cross_cluster_duplicate_field_poisons_bare_accessor() {
         Span::SYNTHETIC,
     )
     .unwrap();
-    // Inverted model: bare `v` is the Import alias; canonical `Box.v` is the
-    // concrete accessor `Def`.
+    // Bare `v` is a name candidate; canonical `Box.v` is the concrete
+    // accessor binding.
     assert!(
         is_candidate(&tc.symbol_table(), "v"),
         "single-type bare `v` exposes one candidate after cluster 1"
@@ -625,12 +625,11 @@ fn cross_cluster_duplicate_field_poisons_bare_accessor() {
     );
 
     // Cluster boundary: fresh per-`CheckState` accessor tracking; the live
-    // `Box.v` canonical accessor + `v` alias from cluster 1 stay committed.
+    // `Box.v` canonical accessor + `v` candidate from cluster 1 stay committed.
     new_cluster(&mut tc);
 
-    // Cluster 2: `Cup` with the SAME field name `v`. The set-only classifier
-    // would mis-read this as a non-accessor collision (suppress-and-first-
-    // wins); the committed-live re-derivation poisons it instead.
+    // Cluster 2: `Cup` with the SAME field name `v`. The earlier accessor is
+    // visible only in the committed live table, not in this cluster's state.
     tc.register_type_def_self(
         &TypeName::from("Cup"),
         &None,
@@ -641,8 +640,8 @@ fn cross_cluster_duplicate_field_poisons_bare_accessor() {
     )
     .unwrap();
 
-    // `v` is POISONED (`Ambiguous`), exactly as in the single-cluster
-    // (`--run`/`--link`) path — NOT first-wins-suppressed.
+    // `v` keeps both candidates, exactly as in the single-cluster
+    // (`--run`/`--link`) path — neither owner wins by order.
     assert!(
         is_ambiguous(&tc.symbol_table(), "v"),
         "cross-cluster duplicate-field accessor `v` must retain both candidates"
@@ -687,7 +686,7 @@ fn cross_cluster_bare_field_ambiguity_message_lists_canonical_alternatives() {
         Span::SYNTHETIC,
     )
     .unwrap();
-    // Cluster 2: `Cup` with the SAME field `v` → poisons bare `v`.
+    // Cluster 2: `Cup` with the SAME field `v` → bare `v` has two candidates.
     new_cluster(&mut tc);
     tc.register_type_def_self(
         &TypeName::from("Cup"),
@@ -740,7 +739,7 @@ fn cross_cluster_bare_field_ambiguity_message_lists_canonical_alternatives() {
 
 // spec: 05-definitions §5.2.6 (S91 Phase 6) — unit-level reconstruction seam:
 // `reconstruct_accessor_alternatives` re-derives the owning types of a
-// poisoned bare field name from the durable symbol table when the per-cluster
+// multi-candidate bare field name from the durable symbol table when the per-cluster
 // `accessor_owning_types` map is empty (the cross-cluster REPL case).
 #[test]
 fn reconstruct_accessor_alternatives_reads_owners_from_table() {
@@ -785,7 +784,7 @@ fn reconstruct_accessor_alternatives_reads_owners_from_table() {
 // spec: 05-definitions §5.2.6 (FIXME 0366) — NEGATIVE: a SINGLE product
 // type's accessor synthesised in its own cluster, with no duplicate field
 // name across types, must remain a normal concrete accessor across cluster
-// boundaries (the legitimate case must not be wrongly poisoned).
+// boundaries (the legitimate case must not gain a spurious candidate).
 #[test]
 fn cross_cluster_single_type_accessor_not_poisoned() {
     let mut tc = tf_with_scalar_imports();
@@ -809,9 +808,8 @@ fn cross_cluster_single_type_accessor_not_poisoned() {
         Span::SYNTHETIC,
     )
     .unwrap();
-    // Inverted model: distinct bare fields `v`/`w` each stay a clean Import
-    // ALIAS (no spurious poison) onto their canonical accessors `Box.v` /
-    // `Cup.w` (the real concrete `Def`s).
+    // Distinct bare fields `v`/`w` each keep a single candidate onto their
+    // canonical concrete accessors `Box.v` / `Cup.w`.
     for (bare, canonical) in [("v", "Box.v"), ("w", "Cup.w")] {
         assert!(
             is_candidate(&tc.symbol_table(), bare),
@@ -829,8 +827,8 @@ fn cross_cluster_single_type_accessor_not_poisoned() {
 
 // spec: 05-definitions §5.2.6 (FIXME 0366) — NEGATIVE: re-running the SAME
 // deftype in a later cluster (a redefinition, NOT two distinct types sharing
-// a field name) must NOT poison its accessor — the committed accessor's
-// owning type equals the type being re-synthesised, so it overwrites afresh.
+// a field name) must NOT add a second candidate — re-exposing the same
+// canonical source deduplicates, and the accessor is re-synthesised in place.
 #[test]
 fn cross_cluster_same_type_redefinition_not_poisoned() {
     let mut tc = tf_with_scalar_imports();
@@ -854,9 +852,9 @@ fn cross_cluster_same_type_redefinition_not_poisoned() {
         Span::SYNTHETIC,
     )
     .unwrap();
-    // Inverted model: bare `v` stays a clean Import alias (NOT poisoned) — a
-    // same-type redefinition is not a cross-type duplicate-field collision;
-    // the canonical `Box.v` is re-minted and bare `v` re-aliased to it.
+    // A same-type redefinition is not a cross-type duplicate field: the
+    // canonical `Box.v` is re-synthesised and bare `v` keeps its single
+    // candidate.
     assert!(
         is_candidate(&tc.symbol_table(), "v"),
         "`v` after a same-type Box redefinition must stay a single candidate"
@@ -898,7 +896,7 @@ fn register_poly_box(tc: &mut TestFixture) {
 
 // spec: 08-modules §8.5.2 — `Box.v` types as `(Fn [Box] Int)` for a
 // monomorphic product. Each per-type dotted accessor has a distinct
-// denotation even when the bare `v` is poisoned by a duplicate field name.
+// denotation even when the bare `v` has several candidates.
 #[test]
 fn dotted_accessor_types_fn_of_type_monomorphic() {
     let mut tc = tf_with_scalar_imports();
@@ -926,10 +924,10 @@ fn dotted_accessor_types_fn_of_type_monomorphic() {
     }
 }
 
-// spec: 08-modules §8.5.2 (INVERTED model §1.6.2) — when two types share a
-// field name, ambiguity lives in the BARE ALIAS: bare `v` becomes the
-// `Ambiguous` sentinel (error on use), while the canonical `Box.v` / `Cup.v`
-// accessors keep working unchanged (they were always real — no cliff).
+// spec: 08-modules §8.5.2 (`fixme-0365-field-accessor-dotted.md` §1.6.2) —
+// when two types share a field name, bare `v` has two candidates and an
+// unsettled use is an error, while the canonical `Box.v` / `Cup.v` accessors
+// resolve unchanged.
 #[test]
 fn dotted_accessor_disambiguates_poisoned_bare_field() {
     let mut tc = tf_with_scalar_imports();
@@ -965,17 +963,17 @@ fn dotted_accessor_disambiguates_poisoned_bare_field() {
     )
     .unwrap();
 
-    // Bare `v` is the Ambiguous sentinel (ambiguity lives in the alias).
+    // Bare `v` has two candidates.
     assert!(is_ambiguous(&tc.symbol_table(), "v"));
-    // Using bare `v` is a resolution error (ambiguous).
+    // A bare use with no settling context is an ambiguity error.
     let mut bare = Expr::var(Symbol::from("v"), Span::SYNTHETIC);
     assert!(
         tc.infer_expr_for_test(&mut bare).is_err(),
         "contested bare `v` must be a resolution error (ambiguous alias)"
     );
 
-    // But the canonical Box.v : (Fn [Box] Int), Cup.v : (Fn [Cup] Bool) —
-    // both still resolve (no cliff; they were always real).
+    // The canonical Box.v : (Fn [Box] Int), Cup.v : (Fn [Cup] Bool) both
+    // still resolve.
     let mut box_v = Expr::var(Symbol::from("Box.v"), Span::SYNTHETIC);
     match tc.infer_expr_for_test(&mut box_v).unwrap() {
         Type::Fn(p, r) => {
@@ -1274,10 +1272,10 @@ fn dotted_accessor_is_first_class_applied() {
     assert_eq!(ty, Type::Int, "(Box.v (Box 7)) must type as Int");
 }
 
-// spec: 08-modules §8.5.2 (FIXME 0365 Item 1, INVERTED model §1.6.1/§1.6.5)
-// — the CANONICAL `Box.v` is the real Public compiled `Def`; bare `v` is the
-// `Import` ALIAS onto it. Exactly one compiled function per (type, field) —
-// the bare alias adds NO `defined_symbols()` entry / no second GOT slot.
+// spec: 08-modules §8.5.2 (`fixme-0365-field-accessor-dotted.md` §1.6.1,
+// §1.6.5) — the canonical `Box.v` is the Public compiled accessor; bare `v` is
+// a name candidate onto it. Exactly one compiled function per (type, field) —
+// the bare candidate adds NO codegen target and no second GOT slot.
 #[test]
 fn canonical_dotted_is_the_def_bare_is_the_alias() {
     let mut tc = tf_with_scalar_imports();
@@ -1293,7 +1291,7 @@ fn canonical_dotted_is_the_def_bare_is_the_alias() {
     .unwrap();
     let after = tc.symbol_table().codegen_targets().count();
 
-    // Canonical `Box.v` is the real, uniformly-Public accessor `Def`.
+    // Canonical `Box.v` is the concrete, Public accessor callable.
     match tc.symbol_table().get("Box.v") {
         Some(entry) if is_concrete_callable(Some(entry)) => {
             assert!(
@@ -1313,7 +1311,7 @@ fn canonical_dotted_is_the_def_bare_is_the_alias() {
         }
         other => panic!("Box.v must be the canonical accessor Def, got {other:?}"),
     }
-    // Bare `v` is the Import ALIAS onto the canonical key (NOT a Def).
+    // Bare `v` is a name candidate onto the canonical key, not a binding.
     assert!(
         is_candidate(&tc.symbol_table(), "v"),
         "bare `v` MUST expose only Box.v (not be a compiled Def), \
@@ -1321,9 +1319,8 @@ fn canonical_dotted_is_the_def_bare_is_the_alias() {
         tc.symbol_table().name_candidates(&Symbol::from("v"))
     );
     // The deftype adds the product ctor `Box` + the canonical accessor
-    // `Box.v` as codegen targets — delta 2. The bare `v` alias adds ZERO (it
-    // is an Import, excluded from `defined_symbols()`) — exactly one compiled
-    // function per (type, field).
+    // `Box.v` as codegen targets — delta 2. The bare `v` candidate adds ZERO
+    // — exactly one compiled function per (type, field).
     assert_eq!(
         after - before,
         2,
@@ -1333,8 +1330,9 @@ fn canonical_dotted_is_the_def_bare_is_the_alias() {
     );
 }
 
-// spec: 08-modules §8.5.2 (INVERTED model §1.6.2) — bare `v` resolves (via
-// the alias) to the canonical `Box.v` when exactly one type owns the field.
+// spec: 08-modules §8.5.2 (`fixme-0365-field-accessor-dotted.md` §1.6.2) —
+// bare `v` resolves through its sole candidate to the canonical `Box.v` when
+// exactly one type owns the field.
 #[test]
 fn bare_alias_resolves_to_canonical_when_unique() {
     let mut tc = tf_with_scalar_imports();
@@ -1385,10 +1383,11 @@ fn dotted_accessor_nonfield_member_is_undefined() {
 }
 
 // =====================================================================
-// FIXME 0365 Item 2 — impl-time field-accessor collision check
-// (spec §7.3.1). A trait `impl` whose method name equals an existing
-// field-accessor name of the target type is rejected at impl time,
-// before the impl enters the symbol table.
+// Impl-time field-accessor collision gate, AS BUILT. A trait `impl` whose
+// method name equals a field-accessor name of the target type is rejected
+// before the impl enters the symbol table. Spec §7.3.1 now permits the
+// overlap; these cases assert the superseded rejection and are replaced
+// after ACT-0983 intake (`fixme-0365-field-accessor-dotted.md` §2.1).
 // =====================================================================
 
 fn collide_trait_decl(method: &str) -> cranelisp_types::TraitDecl {
@@ -1736,8 +1735,9 @@ fn impl_method_colliding_cross_cluster_rejected() {
     assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
 }
 
-// spec: 07-traits §7.3.1 (§2.6 poisoned case) — NEGATIVE: when bare `v` is
-// poisoned by a cross-type duplicate field (`Box`/`Cup`), the field name `v`
+// spec: 07-traits §7.3.1 — NEGATIVE (as built; superseded by §7.3.1, intake
+// ACT-0983): when bare `v` has candidates from a cross-type duplicate field
+// (`Box`/`Cup`), the field name `v`
 // is still recognised as a field accessor of `Box`, so an impl method `v`
 // for `Box` is rejected (the qualified `Box.v` accessor + the owner map both
 // contribute the bare name).
@@ -1762,7 +1762,7 @@ fn impl_method_colliding_with_poisoned_accessor_rejected() {
         Span::SYNTHETIC,
     )
     .unwrap();
-    // Bare `v` is poisoned now.
+    // Bare `v` has two candidates now.
     assert!(is_ambiguous(&tc.symbol_table(), "v"));
     tc.register_trait_decl_self(&collide_trait_decl("v"))
         .unwrap();

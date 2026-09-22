@@ -825,7 +825,7 @@ impl MonoExpr {
     /// on a fully-concrete body (every `node_ty` succeeds; carriers identical).
     ///
     /// **STAGED RETIREMENT (S119 ruling, register row R-11 / FIXME 0913;
-    /// `design/arch/concreteness-types-first.md` §3.8).** The
+    /// `design/arch/concrete-boundary-type.md` §3.1.1).** The
     /// `unwrap_or(ConcreteType::Int)` below is the types-crate fabrication
     /// site the concreteness programme closes: (1) S119 CS-3 replaces the
     /// fabricating default for the populations typecheck owns, with a

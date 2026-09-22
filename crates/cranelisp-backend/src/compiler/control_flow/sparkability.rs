@@ -181,7 +181,7 @@ pub(crate) fn find_sparkable_bindings_with(
 ) -> Vec<usize> {
     // Positions of earlier bindings that were themselves admitted as sparks —
     // the dependency-on-sparked carve-out tests membership here. POSITIONS, not
-    // names (`design/backend/binding-scope.md` §3.4): a non-sparked rebinding of
+    // names (`design/backend/binding-scope.md` §"Binding environment"): a non-sparked rebinding of
     // a sparked name displaces it by construction, so the carve-out answers
     // about the binder the dependency actually denotes.
     let mut sparked: HashSet<usize> = HashSet::new();
@@ -217,7 +217,7 @@ pub(crate) fn find_sparkable_bindings_with(
 /// binding vector?
 ///
 /// THE shared resolver for per-binding-vector lenient state
-/// (`design/backend/binding-scope.md` §3.4). `let` bindings are sequential, so
+/// (`design/backend/binding-scope.md` §"Binding environment"). `let` bindings are sequential, so
 /// the answer is the LATEST binder at a position `< i` bearing the name; `None`
 /// means the name is free in the vector (an enclosing binding, a capture or a
 /// global). Reading the per-vector state through this one function is what makes

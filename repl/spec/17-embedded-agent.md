@@ -7,7 +7,7 @@ This section is **additive and behaviorally feature-gated.** It specifies the us
 The agent extends the self-documentation principle (§4) into a conversational partner, but it does **not** replace, alter, or contend with the deterministic surface. Three invariants hold unconditionally:
 
 - **The deterministic REPL is untouched.** Any **single form** (a bare atom, a fully-qualified symbol, or a compound form) and any slash command routes exactly as §1–§16 specify, whether or not the agent is enabled (§17.1) — a single symbol is always introspected (§4), never sent to the agent. The agent is a new destination for **multi-form / unparseable prose** (a line that parses to ≥2 forms, or a genuine parse error, §17.1) — and for the explicit `/ask` door — nothing more.
-- **Everything the agent does is a visible REPL line.** The agent has no private capability surface: its reads, its proposed writes, and its shell proposals all appear as ordinary REPL commands and ordinary REPL output (§17.2). The session remains a legible, replayable script (§15).
+- **Everything the agent changes is a visible REPL line.** The agent has no private capability surface: it acts only through ordinary REPL commands, and its proposed writes and shell proposals appear as ordinary REPL commands and ordinary REPL output (§17.2). Its read probes are private reasoning, recorded in the log and trace sinks rather than echoed (§17.2.1); the user sees their conclusions. The session remains a legible, replayable script (§15).
 - **Deterministic output and model output are unmistakable.** The agent's *prose* is rendered in a distinct reserved visual frame (§17.2); the deterministic `:Type value` format and the `;`-comment drawer remain exclusively the deterministic REPL's (§1, §4).
 
 ### 17.1 Agent Dispatch — The Classifier From the User's POV [S88]
@@ -51,20 +51,20 @@ When the agent takes a turn, its output has two kinds, rendered differently so t
 
 1. **Agent prose** — the model's natural-language explanation, reasoning, or proposal text. This MUST be rendered in a **distinct reserved visual frame** (§10.3 "Agent prose frame" role): a left gutter marker (`▌`) prefixing each prose line, with the gutter in bright magenta when colour is enabled. The frame MUST degrade gracefully: under `--no-color`, `NO_COLOR`, or a non-TTY (§10.1), the gutter marker MUST still be emitted as a plain-text prefix (so the prose remains visually distinguishable in piped output and the showcase), but with no SGR codes. The prose frame is the **only** place the agent's own words appear; it MUST NOT use the `:Type value` format or the `;`-comment drawer (those belong to the deterministic REPL). [S88]
 
-2. **Agent-issued commands and their results** — when the agent reads (`/source foo`, `/info bar`, `/refs baz`) or proposes a write or shell command (§17.7), the command line and its output render in **NORMAL deterministic REPL style** (§1, §3, §10) — exactly as if the user had typed them. They ARE normal REPL output (`design/arch/repl-embedded-agent.md` §4.4). The command appears echoed as a REPL line (so the user watches the agent reach for the introspection vocabulary and learns it by observation), and its result uses the result's normal role (cyan type prefix, dim comment drawer, the `/list` layout, etc.). These MUST NOT be wrapped in the prose frame. [S88]
+2. **Agent-issued commands and their results** — when the agent proposes a write or shell command (§17.7), the command line and its output render in **NORMAL deterministic REPL style** (§1, §3, §10) — exactly as if the user had typed them. They ARE normal REPL output (`design/arch/repl-embedded-agent.md` §4.4). The command appears echoed as a REPL line, and its result uses the result's normal role (cyan type prefix, dim comment drawer, the `/list` layout, etc.). These MUST NOT be wrapped in the prose frame. A read the agent issues to check something (`/source foo`, `/info bar`, `/refs baz`) is a **probe** and is not echoed at all (§17.2.1). [S88] [S109]
 
 3. **Agent-emitted code — copy-clean, un-guttered (`▌`-free) [S107].** A pretty-printed ```lisp / ```cranelisp fenced form that the agent **shows as part of its answer** (§17.13.2 — the agent *displaying* code, distinct from an agent-issued `/source` pull) MUST render with **no per-line `▌` gutter on any code line**. This is the FIXME 0556 resolution: the gutter is emitted as literal line-leading text, so a multi-line selection over guttered code drags `▌ ` into the clipboard on every line and the example cannot be copied and re-run verbatim. Every code line a user would select MUST therefore be gutter-free. Concretely: the code block's bytes MUST be **exactly** what the deterministic pretty-printer produces for that form — byte-identical (colour-off) to `/sexp`/`/source` output for the same form (§3.11, §17.13.2) — with nothing prepended to any line. The surrounding **prose** lines keep their `▌` gutter (item 1), so the code block is set off from the conversation by the gutter boundary itself: the gutter's presence still marks "the agent is talking," and its **absence** marks "this is copyable code." The implementation MAY additionally caption the block with a single guttered marker line above it, but the code lines themselves MUST carry no gutter. The **"keep the gutter but expose an un-guttered copy elsewhere"** alternative is explicitly **rejected** (Phase-2 durability constraint) — this is a render-side structural split of code vs prose, not a second copy channel. [S107]
 
 The contract: **the agent's prose is framed with the `▌` gutter; agent-emitted code and everything the agent does deterministically are un-guttered and byte-clean to copy.** This makes the deterministic-vs-model boundary unmistakable in every rendering mode while keeping every copyable line paste-ready. [S107]
 
-A turn therefore reads on screen as an interleaving of framed prose, un-guttered pretty-printed code blocks, and unframed deterministic REPL lines — e.g. a prose sentence, then a gutter-free ```lisp block the agent is showing, then an echoed `/source` line and its normal output, then more prose, then a proposed `(defn …)` shown (not submitted) as a normal definition echo. The whole interleaving is part of the replayable transcript (§15). [S107]
+A turn therefore reads on screen as an interleaving of framed prose, un-guttered pretty-printed code blocks, and unframed deterministic REPL lines — e.g. a prose sentence, then a gutter-free ```lisp block the agent is showing, then more prose summarising what its probes established (the probes themselves do not appear, §17.2.1), then a proposed `(defn …)` shown (not submitted) as a normal definition echo. The whole interleaving is part of the replayable transcript (§15). [S107]
 
 **Guards this touches (for `/qa`).** Revising the code-line framing changes the bytes `render_agent_prose` emits for any fixture containing a ```lisp fence: the non-TTY byte-identical golden for agent output (the `--no-color` no-literal-escape transcript, §17.13.3) and the design-side §14.6 leaf-styling guard (`design/int/agent.md` §14.6) MUST be re-baselined to the un-guttered code shape when this lands. The change is agent-feature-gated (`#[cfg(feature = "agent")]`); the default REPL render path is untouched. [S107]
 
 #### 17.2.1 The Probe Channel — The Agent's Self-Checks Are Private Reasoning, Not the User Session [S109]
 
-§17.2 item 2 renders an agent-issued read as a normal echoed REPL line, on the premise that the
-user learns the introspection vocabulary by watching the agent reach for it. In practice a
+Echoing each agent-issued read as a normal REPL line assumed that the user learns the
+introspection vocabulary by watching the agent reach for it. In practice a
 build-a-function turn issues **many** self-directed probes — *does `fn` take multi-arity?* (§17.17;
 0575), *do multi-arity `defn` clauses share inference?* (0576), *what is this symbol's type?* — and
 echoing each `agent> /type …` command and its result **line after line** floods the user's session
@@ -86,8 +86,8 @@ on its own consent path, §17.3.) [S109]
 `agent> {command}` echo followed by its result. Probe traffic routes to the **private working
 channel** — it is recorded in the §17.20 activity log (with the F1 `question` and F2 `error_class`
 fields) and the §17.21 full-content trace, the tuning substrate — and is **not** rendered inline in
-the transcript. This **revises §17.2 item 2 for the probe subclass**: the "watch every pull echo"
-behaviour is replaced, because the flooding it caused defeated the very readability it was meant to
+the transcript. §17.2 item 2 therefore covers only the agent's non-probe commands: the "watch every
+pull echo" behaviour does not apply, because the flooding it caused defeated the very readability it was meant to
 serve. The user learns the vocabulary from the agent's **conclusions**, not from watching it grind. [S109]
 
 **What the user DOES see (MUST).** The user session carries the **outcome**, not the search for it:
@@ -108,8 +108,8 @@ is not a screen surface at all — it is the log/trace sinks (§17.20/§17.21), 
 (§17.20.1). [S109]
 
 This is agent-feature-gated; feature-off there is no agent and no probe traffic. The change is a
-render/experience change only — the agent still auto-runs its reads (§17.3 Reads row is unchanged:
-reads need no consent); it just stops **echoing** its self-checks into the user's view. [S109]
+render/experience change only — the agent still auto-runs its reads (§17.3 Reads row: reads need
+no consent); it does not **echo** its self-checks into the user's view. [S109]
 
 ### 17.3 Consent Model [S88]
 
@@ -117,7 +117,7 @@ The agent's actions are gated by **what they touch**, not by which "mode" the us
 
 | Action class | Consent | S88 MVP | Notes |
 |---|---|---|---|
-| **Reads** (`/source`, `/info`, `/doc`, `/refs`, `/exports`, spec lookups, …) | **Auto-run-and-show** — no confirmation | **Yes** | The default is "auto-approve reads only." Reads are side-effect-free introspection; they run and their output appears as normal REPL lines (§17.2). |
+| **Reads** (`/source`, `/info`, `/doc`, `/refs`, `/exports`, spec lookups, …) | **Auto-run** — no confirmation | **Yes** | The default is "auto-approve reads only." Reads are side-effect-free introspection; they run without confirmation, and a read issued as a probe is private — the user sees the conclusions, not the pulls (§17.2.1). |
 | **Build writes** (submit a `defn`/`deftype` into the session) | **Confirm-and-show** — the exact line is shown and the user approves before it is submitted | **No (S89)** | In the MVP the agent **proposes** code: the `(defn …)` is *shown* as a normal definition echo but **not submitted** (§17.3.1). The confirm-each-submission flow lands in Phase 2. |
 | **Document writes** (set/replace a docstring or a module preamble, §17.5) | **Consultative** — the agent asks ("shall I record that as `solver`'s preamble?") before writing | **No (S89)** | The read of a preamble is an auto-run read (above); *writing* one is consultative and is Phase 2. |
 | **Shell** (`/sh …`) | **Confirm-and-show** — the agent proposes the exact command; the user approves | **No (S89)** | The agent has no direct shell tool; shell is reachable only by proposing a `/sh` line the user must approve (§17.7). |
@@ -347,7 +347,7 @@ Configuration determines **where** data goes, so it is bound to the privacy disc
 
 ### 17.12 Agent-Input Prompt — Who Typed What [S89]
 
-§17.2 establishes that an agent turn interleaves **framed prose** (`▌` gutter) with **unframed deterministic REPL lines** (the agent's reads, proposals, and — in S89 — its writes, all rendered as if the user had typed them). That unframed-equals-keystroke contract created an honesty gap surfaced in live S88 use: when the agent **issues a line itself** — a pulled read command (`/source foo`), or (S89) a submitted form — the line renders with **no prompt prefix at all**, so a reader scanning the replayable transcript (§15) cannot tell whether the agent typed it or the user did. This subsection closes that gap with a distinct **agent-input prompt**. [S89]
+§17.2 establishes that an agent turn interleaves **framed prose** (`▌` gutter) with **unframed deterministic REPL lines** (the agent's proposals and — in S89 — its writes, all rendered as if the user had typed them; its probes are not rendered, §17.2.1). That unframed-equals-keystroke contract created an honesty gap surfaced in live S88 use: when the agent **issues a line itself** — a pulled read command (`/source foo`), or (S89) a submitted form — the line renders with **no prompt prefix at all**, so a reader scanning the replayable transcript (§15) cannot tell whether the agent typed it or the user did. This subsection closes that gap with a distinct **agent-input prompt**. [S89]
 
 **The agent-input prompt glyph.** Every line the agent "types" — i.e. a line the *agent originated* and the REPL is echoing as an issued command — MUST be prefixed with a distinct **agent-input prompt**: the token `agent>` (the agent analogue of the human `user>` prompt, §2.1). The prompt:
 
@@ -355,22 +355,23 @@ Configuration determines **where** data goes, so it is bound to the privacy disc
 - is **distinct from the `▌` prose gutter** (§17.2) — a pulled command is the agent *acting*, not the agent *speaking*; the `agent>` prompt marks issued input, the `▌` gutter marks prose. The two never share a glyph. [S89]
 - is styled per the new §10.3 "Agent-input prompt" role (dim, with the `agent` token in bright magenta to tie it visually to the agent's magenta prose frame), and **degrades under `--no-color`, `NO_COLOR`, or a non-TTY** (§10.1) to the **plain-text token `agent>`** with no SGR codes — so piped output and the showcase still read honestly. [S89]
 
-**Where the agent-input prompt appears (the two agent-echo sites).** The `agent>` prompt prefixes exactly the lines the agent issues as input:
+**Where the agent-input prompt appears (the agent-echo sites).** The `agent>` prompt prefixes exactly the lines the agent issues as input. The sites the spec names are:
 
-1. **Pulled read commands** (§17.2) — when the agent reaches for `/source`, `/info`, `/refs`, `/sig`, … the echoed command line carries `agent>`; its **result** below it renders in normal deterministic style (cyan type prefix, dim drawer, the `/list` layout — §1, §3) exactly as today, *unprefixed and unframed*. Only the issued command line gets the `agent>` prompt; the result is the REPL's own output. [S89]
+1. **Pulled read commands that are not probes** (§17.2) — an echoed agent-issued read command line carries `agent>`; its **result** below it renders in normal deterministic style (cyan type prefix, dim drawer, the `/list` layout — §1, §3), *unprefixed and unframed*. Only the issued command line gets the `agent>` prompt; the result is the REPL's own output. A probe (§17.2.1) — a `/source`, `/info`, `/refs`, `/sig`, … pull the agent issues to check something — is not echoed, so it carries no `agent>` line and no result. [S89] [S109]
 2. **Build-submit echoes** (§17.14) — when the agent submits a form past the confirm-gate, the submitted definition line is echoed with `agent>` so the transcript shows the agent issued it (then the normal `:Type name` definition result follows, unprefixed). [S89]
+3. **Document-edit proposal echoes** (§17.15) — the proposed preamble or docstring text shown before it is recorded carries `agent>`, as §17.15.1 and §17.15.2a require. [S89]
 
 Illustratively (colour elided):
 
 ```
-user> /ask how does grid-get work?
-▌ Let me look at its definition.
-agent> /source grid-get
-:(Fn [primitives/Vec primitives/Int] primitives/Int) solver/grid-get  ; defn - Read a cell
-▌ It indexes the flat grid vector by row-major offset. ...
+user> /ask add a function that doubles an Int
+▌ Here is a definition; I'll submit it if you agree.
+agent> (defn double "Multiply by 2" [x] (* x 2))
+submit this definition? [y/N] y
+:(Fn [primitives/Int] primitives/Int) user/double ; defn - Multiply by 2
 ```
 
-The `agent>` line is agent-issued input; the `:(Fn …)` line beneath it is the deterministic REPL's normal `/source` output; the `▌` lines are the agent's prose. Three visually-distinct origins, each honestly marked. [S89]
+The `agent>` line is agent-issued input; the `:(Fn …)` line beneath it is the deterministic REPL's normal definition result (§1.3); the `▌` lines are the agent's prose. Three visually-distinct origins, each honestly marked. Any probe the agent ran before proposing appears nowhere in the session (§17.2.1). [S89]
 
 **Feature-off / dormant.** The agent-input prompt exists only when the agent is live (it only ever prefixes agent-issued lines, which only exist when the agent takes a turn). Feature-off or dormant, no agent line is ever issued, so the prompt never appears — the deterministic REPL is byte-identical (§17.1, §17.9). [S89]
 
@@ -393,7 +394,7 @@ This is a **bounded** terminal formatter for the markdown the model emits — no
 
 #### 17.13.2 Fenced Lisp Renders via the Pretty-Printer [S89]
 
-When the model's prose contains a fenced code block whose info-string is `lisp` (or `cranelisp`) — `` ```lisp … ``` `` — the block's body MUST be rendered through the **deterministic S-expression pretty-printer** (the same printer `/source` and `/sexp` use, §3.1, §3.11, §10) — syntax-highlighted, indented, and (for `let`/`match`) pair-aligned per §3.11 — **not** emitted as a raw fence. It is part of the agent's *answer* — the agent *showing* code — distinct from an agent-issued `/source` pull, which is the agent *running a command* and renders unframed with the `agent>` prompt (§17.12). A fence with a **non-Lisp** info-string (e.g. `` ```sh ``) is left as a literal block (markdown-formatted, not pretty-printed). [S89]
+When the model's prose contains a fenced code block whose info-string is `lisp` (or `cranelisp`) — `` ```lisp … ``` `` — the block's body MUST be rendered through the **deterministic S-expression pretty-printer** (the same printer `/source` and `/sexp` use, §3.1, §3.11, §10) — syntax-highlighted, indented, and (for `let`/`match`) pair-aligned per §3.11 — **not** emitted as a raw fence. It is part of the agent's *answer* — the agent *showing* code — distinct from an agent-issued `/source` pull, which is a private probe and is not rendered (§17.2.1). A fence with a **non-Lisp** info-string (e.g. `` ```sh ``) is left as a literal block (markdown-formatted, not pretty-printed). [S89]
 
 **Copy-clean, un-guttered [S107].** Per §17.2 item 3 (FIXME 0556), the pretty-printed code block MUST render with **no per-line `▌` gutter** — the surrounding prose stays guttered, but every code line the user might select-and-copy is gutter-free, and the block's bytes are **byte-identical (colour-off) to `pretty_print_str` / `/sexp` output for the same form**. (Before S107 this block was routed through the prose frame and carried the gutter on every line, polluting copy-paste — the defect 0556 fixes.) The pretty-printed fence MUST honour the colour mode: syntax-highlighted when colour is enabled, plain indented text under `--no-color`/non-TTY — degrading via the **same** global colour gate as every other styled output (§10.1, §10.7), never a separate one. [S89] [S107]
 
@@ -409,7 +410,7 @@ In live S88 use, agent output sometimes emitted ANSI colour codes as **literal t
 
 ### 17.14 Build Mode — The Confirm-Gated Submit UX [S89]
 
-S88's read-only MVP **proposed** code — shown, never submitted (§17.3.1). S89 promotes the agent to **propose-then-submit-on-confirm**: the agent MAY submit a form into the live session, but **only past a confirm-gate the user controls**. This realizes the §17.3 "Build writes → confirm-and-show" row, which S88 specified as the target and left unimplemented. The read-only-by-default floor (§17.3) is **extended, not replaced**: a write is reachable **only** past the confirm-gate; reads stay auto-run-and-show; non-read, non-submit tools (e.g. `/sh`, §17.7) stay refused. [S89]
+S88's read-only MVP **proposed** code — shown, never submitted (§17.3.1). S89 promotes the agent to **propose-then-submit-on-confirm**: the agent MAY submit a form into the live session, but **only past a confirm-gate the user controls**. This realizes the §17.3 "Build writes → confirm-and-show" row, which S88 specified as the target and left unimplemented. The read-only-by-default floor (§17.3) is **extended, not replaced**: a write is reachable **only** past the confirm-gate; reads stay auto-run (§17.3, §17.2.1); non-read, non-submit tools (e.g. `/sh`, §17.7) stay refused. [S89]
 
 #### 17.14.1 The Confirm-Gate Experience [S89]
 

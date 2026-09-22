@@ -48,3 +48,16 @@ Two recommendations remain, **undisposed — not approved work**:
   longer than a line in the public rustdoc and an unchanged baseline.
 - Item 2: every citation in the crate memory and crate source resolves;
   symbol names preferred over line numbers.
+
+## Additional source-verified leads from the boundary-guide cleanup
+
+The S122 architecture read found stale scaffold status in `concrete.rs` and
+`mono_expr.rs`, retired decision-index citations in `module.rs`, an obsolete
+exact-diff reference in `ownership.rs`, and a completed raw-slot wording task
+in `lib.rs`. Recheck those comments when this rustdoc pass is dispositioned;
+these leads do not approve the separate API contraction in ACT-0971.
+
+The concreteness review also found `Life::HostPromised` rustdoc in
+`lifecycle.rs` calling the host symbol concrete although the pinned four-member
+roster has polymorphic schemes. Reconcile this claim against the current
+I-EMIT status in `design/arch/total-concreteness.md` §3.3.

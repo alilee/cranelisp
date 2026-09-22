@@ -1,83 +1,47 @@
-//! `MacroExpander` — the callback boundary by which `cranelisp-typecheck`
-//! executes a single JIT-compiled macro invocation without depending on the
-//! integration layer.
+//! `MacroExpander` — the execution half of macro expansion: run one compiled
+//! macro invocation and return its output form.
 //!
-//! ## Why this trait exists
+//! Expansion is split into two jobs (`design/arch/macro-expansion-ownership.md`
+//! §1). *Recognition* — is this head a macro, and which canonical `FQSymbol`?
+//! — is the resolution query [`ResolutionScope::resolve_macro_head`].
+//! *Execution* needs the compiled clause, runtime marshalling and signal
+//! protection, which only the binary may reach; it sits behind this trait.
 //!
-//! Macro *recognition* (walk a form, find a macro head, look up its entry) is
-//! pure structural + symbol-table work — it belongs in typecheck, which
-//! already walks every cluster form and resolves every head symbol
-//! (`design/arch/bounded-contexts.md` §2). Macro *execution* (marshal the
-//! argument `Sexp`s into runtime ADT values, transmute the JIT'd clause's GOT
-//! address to `extern "C" fn(i64) -> i64`, call it under
-//! `sigsetjmp`/`siglongjmp` signal protection, unmarshal the result) needs the
-//! allocator, the runtime panic slot, and `libc` — capabilities that live in
-//! the integration layer (`src/expander.rs` + `src/marshal.rs`) and that
-//! neither `cranelisp-typecheck` nor `cranelisp-frontend` may depend on
-//! (Principle 3 — the dependency graph flows toward stability; typecheck
-//! depends only on `cranelisp-types`).
+//! The binary both implements the trait and calls it. Its Pass-1 expansion
+//! loop recognises each head, invokes the expander, re-expands the result to
+//! fixpoint and only then hands fully expanded, macro-free forms to
+//! typecheck. Typecheck holds no expander and never sees a macro invocation.
+//! The trait lives in this crate as the named boundary contract; it adds no
+//! dependency edge (Principle 03 — Dependency flows toward stability).
 //!
-//! A direct `typecheck → int` call is forbidden (int depends on typecheck;
-//! the reverse edge is a cycle). So execution is **injected**: `int` — the
-//! orchestrator that already calls `check_forms` — supplies an implementor of
-//! this trait, and typecheck calls back through it for each macro invocation
-//! it recognises. The trait lives here in `cranelisp-types` because it crosses
-//! the typecheck ↔ int boundary, and only boundary contracts live in this
-//! crate (Principle 15). `int` implements it over its existing invocation core
-//! (`src/expander.rs::invoke_clause` + `src/marshal.rs`); typecheck holds a
-//! `&dyn MacroExpander` for the duration of a `check_forms` call.
+//! The result is a raw [`Sexp`], not a classified form: the caller must
+//! re-walk it anyway because it may contain further macro calls at any depth.
 //!
-//! Replaces the REJECTED `cranelisp-marshal` bridge-crate option from
-//! FIXME 0175 (user-arbitrated, S76 Phase 2). A new crate would have had to
-//! re-export the allocator + signal machinery across a types-stable surface;
-//! the callback achieves the same separation with no new crate and no
-//! dependency widening of frontend or typecheck.
-//!
-//! ## Contract
-//!
-//! - The expander receives the macro's fully-qualified identity, the
-//!   already-expanded argument `Sexp`s (children of the call form, head
-//!   excluded), and the call-site `Span`.
-//! - It guarantees the clause is in memory before it is called: the
-//!   orchestrator's `handle_gap` discipline (priority-boost + `wait_for_inmem`)
-//!   runs before `check_forms` is (re)entered, so by the time typecheck calls
-//!   back, the GOT slot for the matched clause is populated. The expander
-//!   panics (never silently misbehaves) if asked to invoke a macro whose code
-//!   is absent — that is an orchestrator-sequencing bug, not a user error.
-//! - It returns the macro's output `Sexp` with **freshly-allocated unique
-//!   synthetic spans** on every node (span-rewrite is part of the invocation
-//!   core), so downstream span-keyed maps do not collide.
-//! - It is `Send + Sync`: multiple typecheck workers may call back
-//!   concurrently with disjoint inputs (the invocation core installs
-//!   per-call thread-local signal state).
-//!
-//! The result is a **raw `Sexp`**, deliberately not a richer classified
-//! product: typecheck re-walks the returned tree itself (nested-macro
-//! fixpoint + structural-form re-classification). See
-//! `design/typecheck/macro-recognition.md` §"Structural-form re-entry" for why
-//! the raw-`Sexp` return is correct and a classified return would invert the
-//! boundary.
+//! [`ResolutionScope::resolve_macro_head`]: crate::ResolutionScope::resolve_macro_head
 
 use crate::{FQSymbol, Sexp, Span};
 
-/// The error a macro invocation can surface back to typecheck.
+/// Why a macro invocation produced no output form.
 ///
-/// `#[non_exhaustive]` so the integration layer may add carrier detail
-/// (e.g., a captured backtrace) without breaking the typecheck consumer.
+/// Every variant carries the macro's identity, a human-readable diagnostic and
+/// the call span; `Display` renders all three. Callers report the error rather
+/// than branch on the variant. `#[non_exhaustive]` so the implementor may add
+/// failure classes without breaking consumers.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum MacroInvokeError {
-    /// The macro body panicked, raised a hardware trap (SIGFPE/SIGILL/SIGBUS),
-    /// or set the runtime error slot during execution. The message is the
-    /// human-readable diagnostic the integration layer recovered; the `span`
-    /// is the call site.
+    /// The invocation could not run to completion: the macro has no executable
+    /// clause, or the clause panicked, raised a hardware trap
+    /// (SIGFPE/SIGILL/SIGBUS) or set the runtime error slot. `span` is the
+    /// call span passed to [`MacroExpander::invoke`].
     Aborted {
         fq: FQSymbol,
         message: String,
         span: Span,
     },
-    /// The macro returned a value that is not a well-formed `Sexp` ADT
-    /// (e.g., a non-heap-pointer where a constructor was expected).
+    /// The call or its result does not fit the macro: no clause matches the
+    /// arguments, or the clause returned a value that is not a well-formed
+    /// `Sexp`. `span` is the call span passed to [`MacroExpander::invoke`].
     Malformed {
         fq: FQSymbol,
         message: String,
@@ -105,32 +69,35 @@ impl std::error::Error for MacroInvokeError {}
 
 /// Injected capability: execute one JIT-compiled macro invocation.
 ///
-/// Implemented by the integration layer (`int`) over its invocation core;
-/// held by `cranelisp-typecheck` as `&dyn MacroExpander` for the duration of a
-/// `check_forms` call. See the module-level rustdoc for the boundary rationale
-/// and `design/typecheck/macro-recognition.md` for the typecheck-side
-/// algorithm.
+/// Implemented by the binary over the committed session tables and called by
+/// its own Pass-1 expansion loop; see the module documentation for the split.
 ///
-/// `Send + Sync` supertraits: concurrent typecheck workers may invoke macros
-/// in parallel (Decision 38 — per-symbol parallelism); the implementor's
-/// invocation core is responsible for per-call signal-handler isolation.
+/// `Send + Sync`: expansion workers may invoke concurrently; the implementor
+/// isolates per-call signal state.
 pub trait MacroExpander: Send + Sync {
-    /// Invoke the macro clause matching `args` and return its output form.
+    /// Invoke the clause of macro `fq` that matches `args` and return its
+    /// output form.
     ///
     /// # Parameters
-    /// - `fq` — the macro's fully-qualified identity (used for clause lookup,
-    ///   GOT dispatch, and error attribution).
-    /// - `args` — the already-expanded argument `Sexp`s (the call form's
-    ///   children with the head removed). The implementor selects the matching
-    ///   clause by arity/pattern, marshals these to runtime ADT values, and
-    ///   passes them to the JIT'd clause.
-    /// - `call_span` — the source span of the macro call, for span attribution
-    ///   in errors and (via the implementor) the synthetic-span seed.
+    /// - `fq` — the macro's canonical identity, as returned by
+    ///   `ResolutionScope::resolve_macro_head`. The implementor reads the
+    ///   declaration stored at exactly this key.
+    /// - `args` — the call form's argument `Sexp`s, head excluded, passed to
+    ///   the clause as given. The implementor does not expand them; the Pass-1
+    ///   caller passes them unexpanded and re-expands the result.
+    /// - `call_span` — the span every error is attributed to. Inside a nested
+    ///   expansion the caller passes the original user call's span.
     ///
     /// # Returns
-    /// The macro's output `Sexp` with unique synthetic spans on every node, or
-    /// a [`MacroInvokeError`] if the body aborted or returned a malformed
-    /// value.
+    /// The output `Sexp`, every node carrying a fresh, unique synthetic span
+    /// so span-keyed maps downstream cannot collide.
+    ///
+    /// # Errors
+    /// A [`MacroInvokeError`] when no clause matches or the invocation fails.
+    /// The caller invokes only macros whose clauses have been published (the
+    /// macro availability model); asked for one with no executable clause,
+    /// the implementor returns [`MacroInvokeError::Aborted`] and never calls
+    /// absent code.
     fn invoke(
         &self,
         fq: &FQSymbol,

@@ -12,7 +12,7 @@ The project is one Rust workspace: eight library crates and the compiler binary.
 
 A linear story first; concurrency next.
 
-The **frontend** turns source text into an AST. It reads source into S-expressions, desugars quotation, and builds a tree of structured nodes. It does not expand macros: typecheck recognises macro heads and the integration layer executes them before the expanded forms are checked. The frontend is purely structural: every form downstream of it is a value defined in `cranelisp-types`, regardless of whether it originated from a file, the REPL, or another macro.
+The **frontend** turns source text into an AST. It reads source into S-expressions, desugars quotation, and builds a tree of structured nodes. It does not expand macros: the integration layer recognises macro heads through the shared resolution query and executes them before the expanded forms are checked. The frontend is purely structural: every form downstream of it is a value defined in `cranelisp-types`, regardless of whether it originated from a file, the REPL, or another macro.
 
 **Typecheck** infers types over that AST. It writes results in two places: directly back onto AST nodes — each node carries its inferred type and resolution choices — and into a per-module *symbol table*, the single store for a module's compilation state. The symbol table is the typecheck product. There is no separate "check result" passed alongside it.
 

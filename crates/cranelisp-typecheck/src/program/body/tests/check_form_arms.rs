@@ -1,11 +1,11 @@
 //! `program/body.rs` sub-topic — the per-form `check_form(CheckBody)` arms and
 //! their two-pass interaction with Pass-1 registration (forward/mutual
 //! reference, shared substitution across forms, accumulated warnings, error
-//! propagation) — `design/typecheck/check-form-api.md`.
+//! propagation) — `design/typecheck/typecheck.md` §5.1.
 
 use super::*;
 
-// spec: design/typecheck/check-form-api.md §check_form — single defn CheckBody pass
+// spec: design/typecheck/typecheck.md §5.1 — single defn CheckBody pass
 #[test]
 fn test_check_form_single_defn_check_body() {
     let mut tc = tc_with_prims();
@@ -50,7 +50,7 @@ fn test_check_form_single_defn_check_body() {
     assert!(body_result.constrained_fn.is_none());
 }
 
-// spec: design/typecheck/check-form-api.md §check_form — TypeDef CheckBody is no-op
+// spec: design/typecheck/typecheck.md §5.1 — TypeDef CheckBody is no-op
 #[test]
 fn test_check_form_typedef_check_body_noop() {
     let mut tc = tc_with_prims();
@@ -71,7 +71,7 @@ fn test_check_form_typedef_check_body_noop() {
     assert!(result.mono_defns.is_empty());
 }
 
-// spec: design/typecheck/check-form-api.md §check_form — TraitDecl CheckBody is no-op
+// spec: design/typecheck/typecheck.md §5.1 — TraitDecl CheckBody is no-op
 #[test]
 fn test_check_form_trait_decl_check_body_noop() {
     let mut tc = tc_with_prims();
@@ -94,7 +94,7 @@ fn test_check_form_trait_decl_check_body_noop() {
     assert!(tc.state.expr_types.is_empty());
 }
 
-// spec: design/typecheck/check-form-api.md §check_form — Expr wrapped as __expr
+// spec: design/typecheck/typecheck.md §5.1 — Expr wrapped as __expr
 #[test]
 fn test_check_form_expr_register_and_check() {
     let mut tc = tc_with_prims();
@@ -148,7 +148,7 @@ fn test_check_form_expr_register_and_check() {
 
 // ---- Category 3: Two-Pass Correctness ----
 
-// spec: design/typecheck/check-form-api.md §Invariant 1 — forward reference resolves via two-pass
+// spec: design/typecheck/typecheck.md §5.2 item 1 — forward reference resolves via two-pass
 #[test]
 fn test_check_form_two_pass_mutual_reference() {
     let mut tc = tc_with_prims();
@@ -226,7 +226,7 @@ fn test_check_form_two_pass_mutual_reference() {
     }
 }
 
-// spec: design/typecheck/check-form-api.md §Invariant 2 — TraitDecl before TraitImpl
+// spec: design/typecheck/typecheck.md §5.2 item 2 — TraitDecl before TraitImpl
 #[test]
 fn test_check_form_trait_decl_before_impl() {
     let mut tc = tc_with_prims();
@@ -281,7 +281,7 @@ fn test_check_form_trait_decl_before_impl() {
 
 // ---- Category 4: Multi-Form Programs ----
 
-// spec: design/typecheck/check-form-api.md §Invariant 3 — shared substitution
+// spec: design/typecheck/typecheck.md §5.2 item 3 — shared substitution
 #[test]
 fn test_check_form_multi_defn_shared_substitution() {
     let mut tc = tc_with_prims();
@@ -376,7 +376,7 @@ fn test_check_form_multi_defn_shared_substitution() {
     }
 }
 
-// spec: design/typecheck/check-form-api.md — expr_types fully resolved after finalize
+// spec: design/typecheck/typecheck.md §5 — expr_types fully resolved after finalize
 #[test]
 fn test_check_form_expr_types_no_unresolved_vars() {
     let mut tc = tc_with_prims();
@@ -454,7 +454,7 @@ fn test_check_form_expr_types_no_unresolved_vars() {
     }
 }
 
-// spec: design/typecheck/check-form-api.md — warnings accumulated across forms
+// spec: design/typecheck/typecheck.md §5 — warnings accumulated across forms
 #[test]
 fn test_check_form_warnings_accumulated() {
     // This tests that the merge mechanism for warnings works.
@@ -482,7 +482,7 @@ fn test_check_form_warnings_accumulated() {
 
 // ---- Negative Tests ----
 
-// spec: design/typecheck/check-form-api.md — type error propagates from CheckBody
+// spec: design/typecheck/typecheck.md §5 — type error propagates from CheckBody
 #[test]
 fn test_check_form_type_error_propagates() {
     let mut tc = tc_with_prims();
@@ -526,7 +526,7 @@ fn test_check_form_type_error_propagates() {
     );
 }
 
-// spec: design/typecheck/check-form-api.md — unknown trait in TraitImpl errors
+// spec: design/typecheck/typecheck.md §5 — unknown trait in TraitImpl errors
 #[test]
 fn test_check_form_trait_impl_unknown_trait_error() {
     let mut tc = tc_with_prims();

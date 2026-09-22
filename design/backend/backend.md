@@ -227,7 +227,7 @@ interior facts worth stating once here:
 | Carrier + RC sweep evidence | `s115-carrier-and-rc-sweep.md` | Measured carrier-state and RC evidence that cannot be re-derived from source, plus the mangle-injectivity census. |
 | Failed-member attribution | `s117-failed-member-attribution.md` | The attribution seam and its negative design list. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
-| Lenient evaluation | `lenient-eval.md` | Spark admission and the allocation/RC-density axis. |
+| Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry. Open depth/contention work is in `design/arch/backlog/performance.md`. |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 8. Cross-references

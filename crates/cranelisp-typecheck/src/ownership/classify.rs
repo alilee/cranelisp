@@ -10,11 +10,13 @@
 //!
 //! # The §2.1 classification (Principle 19 — no module privileged by name)
 //!
-//! A call site is classified from its `resolved_call` first, falling back to a
-//! chain-follow of the callee `Var`'s terminal [`DefKind`](cranelisp_types::DefKind)
-//! for the `resolved_call == None` case. The classifier reads
-//! [`PrimitiveBody`](cranelisp_types::PrimitiveBody) representationally
-//! (inline vs extern) — it never matches a primitive by name (0476).
+//! A call site is classified from its `resolved_call` first, falling back, for
+//! the `resolved_call == None` case, to the callee `Var`'s [`TerminalKind`]
+//! from the caller-supplied resolver. The real resolver derives that kind from
+//! the terminal binding's [`CallableOrigin`](cranelisp_types::CallableOrigin)
+//! and [`Life`](cranelisp_types::Life): a `CallableOrigin::RustPrimitive`
+//! (inline, concrete or host-promised) is a declared leaf. No primitive is
+//! matched by name (0476).
 
 use std::cell::RefCell;
 use std::collections::HashMap;

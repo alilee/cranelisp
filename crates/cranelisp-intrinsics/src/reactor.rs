@@ -14,10 +14,11 @@
 //! lives here and cannot depend on int (`int → intrinsics`, never the inverse);
 //! and decisively a `--link`'d program does not contain `src/` at runtime, so a
 //! reactor in int could never drive a linked program's effects. Hosting it here
-//! (runtime-feature-gated, linkable into `--link` output) serves `--run`/REPL now
-//! and is the only placement that can serve `--link` concurrency later. This
-//! mirrors the `io_observer` split: int owns the *policy* (the dev sink,
-//! construction parameters); intrinsics hosts the *mechanism*.
+//! (unconditionally compiled, linkable into `--link` output) serves `--run`,
+//! REPL and `--link` from one placement. Int passes no construction
+//! parameters: [`block_on_reactor`] reads the drive mode, backstop and degree
+//! from `CRANELISP_*` environment variables and always uses
+//! `SupervisorPolicy::default()`.
 //!
 //! ## The pieces
 //!
@@ -43,9 +44,9 @@
 //!
 //! Single-ABI cutover (S96, `platform-interface.md` §6.8.0a): the reactor + its
 //! `mio`/`futures` deps are **unconditional** in every build (the former
-//! `concurrency-runtime` feature is retired). Lean-default is preserved as a
-//! RUNTIME property — a pure-blocking program constructs no mio `Poll` (the
-//! reactor is lazily initialised per drive), not via a `#[cfg]` split.
+//! `concurrency-runtime` feature is retired). Each drive constructs its reactor eagerly; a pure-blocking program finishes
+//! before the reactor turns. Construction timing is a performance refinement
+//! (`design/arch/effect-concurrency.md` §6), not a `#[cfg]` split.
 
 use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
@@ -302,15 +303,11 @@ pub struct Reactor {
 impl Reactor {
     /// Build a fresh reactor (one `mio::Poll`).
     ///
-    /// Single-trampoline cutover, Stage-2 (`design/arch/platform-interface.md`
-    /// §6.8.0a): this is the **eager-cheap** reactor — `epoll_create` + one eventfd
-    /// per top-level drive (~2 syscalls), constructed unconditionally. It is the
-    /// blessed fallback (a permanently-valid behaviour, NOT an interim). A
-    /// pure-blocking program drives to `Ready` on the first poll and never calls
-    /// `turn()`, so it pays only these two syscalls and never blocks the `Poll`.
-    /// The truly-lazy `Poll` (construct nothing for a pure-blocking program) is the
-    /// follow-up refinement deferred here for its capacity-park-release lost-wake
-    /// soundness obligation.
+    /// Constructed **eagerly** on every top-level drive: `epoll_create` + one
+    /// eventfd (~2 syscalls), including for a pure-blocking program, which drives
+    /// to `Ready` on the first poll and never calls `turn()`. Lazy construction is a
+    /// workload-triggered refinement (`design/arch/effect-concurrency.md` §6);
+    /// it must preserve the capacity-park-release wake path.
     pub fn new() -> std::io::Result<Self> {
         let poll = mio::Poll::new()?;
         // The cross-thread wakeup on the reserved token (slice 6 — the wakeable
@@ -719,10 +716,8 @@ fn make_host_ctx(reactor_ptr: *mut Reactor) -> HostCtx {
 // ===========================================================================
 
 /// The reactor-registration handle an [`EffectPoll`] OWNS (finding #3, §2.16): a
-/// RAII binding of the *reactor interest's* lifetime to the future, exactly as
-/// `Option<Permit>` binds the *permit's* (§2.9). Its `Drop` actively deregisters
-/// every fd/timer interest this leaf armed — the active-deregistration that the
-/// §2.9 Chunk-A permit-only path deferred to Chunk C. **No hand-written
+/// RAII binding of the *reactor interest's* lifetime to the future. Its `Drop`
+/// actively deregisters every fd/timer interest this leaf armed. **No hand-written
 /// `Drop for EffectPoll`**: this field's own drop glue IS the deregistration path
 /// (the structural minimum — Principle 18).
 ///
@@ -861,9 +856,8 @@ const RESULT_SLOT_OFFSET: isize = 0;
 /// `ReactorInterest` (pointer + scalar) — so it polls through a plain `&mut`. The
 /// lifetime ties the borrowed `HostCtx` to the future.
 ///
-/// **v9 ctx-vtable release (`reactor.md §7.3`).** The future no longer OWNS an
-/// `Option<Permit>` it acquired up-front — under the ctx-vtable model the *platform
-/// poll-fn* acquires its token permit itself via `ctx.acquire`, and the host tracks
+/// **Permit release (`reactor.md §7.3`).** The future owns no permit: the
+/// *platform poll-fn* acquires its token permit itself via `ctx.acquire`, and the host tracks
 /// every held permit by this effect's identity (`reg`) in its per-effect ledger
 /// ([`Reactor::held`]). Release is **trampoline-owned**, keyed by `reg`, fired on
 /// exactly one of two mutually-exclusive paths:
@@ -899,7 +893,7 @@ pub struct EffectPoll<'h> {
     /// The RAII reactor-registration handle (finding #3, §2.16). Underscore-prefixed
     /// because it is **drop-only** — the future never reads it; its `Drop` actively
     /// deregisters this leaf's reactor interest when the future drops (the
-    /// cancellation leak fix), paralleling the `Option<Permit>` drop-release.
+    /// cancellation leak fix), paralleling the keyed permit release.
     _interest: ReactorInterest,
     /// The runtime-owned keep-alive ref on this reactor-deferred effect's
     /// state-closure (`bounded-contexts.md §4b` invariant 15; FIXME 0486). Holds an
@@ -974,8 +968,8 @@ impl<'h> EffectPoll<'h> {
         strand: StrandId,
         state_closure: i64,
     ) -> Self {
-        // Mint this leaf's registrant tag from the reactor (finding #3, §2.16),
-        // alongside the §2.9 permit acquire. The reactor is the `host.host` raw
+        // Mint this leaf's registrant tag from the reactor (finding #3, §2.16); the
+        // same tag keys this leaf's held permits (§7.3). The reactor is the `host.host` raw
         // `*mut Reactor` handle (B1). A no-reactor fixture `HostCtx` (the
         // permit-lifecycle unit tests) carries a NULL `host`, so there is no reactor
         // to tag against — `reg = 0`, an inert interest whose drop is a no-op.
@@ -1143,8 +1137,10 @@ struct TokenSlot {
 /// resource token's. Pre-sized (via the pool's `degree`) at construction.
 pub(crate) const GLOBAL_BUDGET_TOKEN: u64 = u64::MAX;
 
-/// The host-owned token-capacity pool: `token → TokenSlot`. Keyed on the
-/// **node-read** `(token, capacity)` (`io::read_resource_token` / `read_capacity`).
+/// The host-owned token-capacity pool: `token → TokenSlot`. Acquirers supply
+/// `(token, capacity)` from two sources: a blocking `Par` branch reads it off its
+/// node (`io::read_resource_token` / `read_capacity`); a poll leaf's platform
+/// poll-fn passes it through `ctx.acquire` ([`Reactor::acquire_permit`]).
 /// Constructed single-sited in [`block_on_reactor`] alongside the [`Reactor`]
 /// (§6.2 — divergence-proof by the intrinsics-hosting argument; int grows no
 /// parallel pool builder).
@@ -1568,9 +1564,8 @@ impl<'h> Supervisor<'h> {
     ///
     /// The `RefCell` borrow is held only for the synchronous `poll_next` calls.
     /// (A *nested* launch — a launched strand that itself launches — would re-enter
-    /// `spawn`'s `borrow_mut` here and panic; not reachable by the Chunk-B
-    /// acceptance shapes, which launch only from the top accept loop. Active
-    /// support for nested launch is a Chunk-C concern.)
+    /// `spawn`'s `borrow_mut` here and panic. Nested launch is unsupported; see
+    /// `design/intrinsics/reactor.md` §5.)
     pub(crate) fn drive(&self, cx: &mut Context<'_>) {
         loop {
             let mut strands = self.strands.borrow_mut();
@@ -1868,8 +1863,8 @@ const MAX_TURN_BLOCK: Duration = Duration::from_secs(5);
 /// legitimately-idle armed `accept` loop runs indefinitely.
 ///
 /// **This is NOT a cap on total drive time.** It measures only time during which
-/// NO blocking branch is in flight (`pending_bridges == 0`) and the supervisor is
-/// empty. A legitimately slow blocking I/O branch on rayon (the wakeable bridge)
+/// NO blocking branch is in flight (`pending_bridges == 0`), even if supervised
+/// strands remain. A legitimately slow blocking I/O branch on rayon (the wakeable bridge)
 /// holds the no-progress deadline off for as long as the branch runs, so blocking
 /// I/O is **uncapped by design** — matching the feature-off sync stepper.
 const MAX_TOTAL_BLOCK: Duration = Duration::from_secs(30);
@@ -1890,7 +1885,7 @@ pub(crate) enum DriveMode {
 }
 
 /// The structural armed-ness predicate (`reactor.md §8.2`): the reactor is *armed*
-/// (legitimately waiting, can be woken) when any of the five readiness sources is
+/// (legitimately waiting, can be woken) when any of the four readiness sources is
 /// live. A `Pending` top future with NONE of these armed is a true deadlock — no
 /// event can ever wake it — and trips the detector immediately (no wall-clock wait).
 /// This generalizes the piecemeal `pending_bridges`/supervisor exemptions into one

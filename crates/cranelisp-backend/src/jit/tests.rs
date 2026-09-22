@@ -679,7 +679,7 @@ fn jit_new_follows_import_edge_for_platform_effect() {
     );
 }
 
-// spec: design/arch/test-discovery.md §6 "Backend — `Jit::define_symbol`";
+// spec: design/arch/test-discovery.md §6 "Backend — one host-promised call arm; `Jit::define_symbol`";
 //       BC §3 invariant 8 — a host-promised extern (`discover-tests`) whose
 //       body is neither codegen-emitted, bundled, nor catalogued is settled
 //       at finalize via `define_symbol`. The lookup-fn the constructor

@@ -455,7 +455,7 @@ consent read cannot consume grader forms.
 No Binary/int production change is selected. Logs remain best-effort; the
 harness validates their presence and parseability before using log-derived
 metrics. No new logger or provider is introduced. The present provider request
-can ask for up to 65,536 output tokens. If the approved live-run budget requires
+can ask for up to 64,000 output tokens. If the approved live-run budget requires
 a lower or configurable request cap, that exact configuration is the trigger
 for a small follow-up design in this still-open Binary/int stream. Until then,
 changing the client would be speculative.

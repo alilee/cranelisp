@@ -199,13 +199,11 @@ pub fn synthesize_command(call: &ToolCallRequest) -> Result<String, String> {
 }
 
 impl CompilerSession {
-    /// Run a single model tool-call as a visible REPL command (§4.1).
+    /// Run a single model read tool-call as a private probe (design/int/agent.md §4.1).
     ///
-    /// Synthesizes the command (allowlist-gated), runs it through the SAME
-    /// `process_commands` path a keystroke uses, renders it as-if-typed to
-    /// `stdout`, and returns the `ToolCallResult` to feed back to the model. A
-    /// refused (non-read) command renders the refusal and feeds it back as the
-    /// result — nothing is executed.
+    /// Synthesizes an allowlisted command and returns its probe result to the
+    /// model without rendering it to the user. A refused non-read command
+    /// returns a refusal without executing it.
     pub(crate) fn run_pull(
         &mut self,
         call: &ToolCallRequest,

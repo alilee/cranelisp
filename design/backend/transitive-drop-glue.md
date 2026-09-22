@@ -957,9 +957,9 @@ captures while leaving compiler-synthesised environments behind.
   (ruling 9's carrier is landed and unchanged) and §4.1's ruling needs none:
   it is frame-local backend emission, no types edit, no schema delta.
   **One correction is owed upstream and is filed as FIXME 0902:**
-  `concrete-boundary-type.md` §3.1.1 point 2 (restated in BC §3 invariant 9)
+  `concrete-boundary-type.md` §3.1.1 (as it then read) (restated in `design/arch/bounded-contexts.md` §3, invariant 9)
   says the ctor/accessor signature path's `ConcreteType::from_type` "must
-  succeed" and that a failure is a compiler-bug `expect`. §4.1 shows the ctor
+  succeed" and that a failure is a compiler-bug `expect`. `design/backend/transitive-drop-glue.md` §4.1 shows the ctor
   *template* — which is not an instance and is never monomorphised — legitimately
   fails it, and the as-built has diverged from that prescription since S84
   (`signature_heap_category` maps the `Err` to `Mixed`).

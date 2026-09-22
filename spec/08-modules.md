@@ -2,7 +2,7 @@
 
 This section defines the module system of Cranelisp -- how source files map to modules, how names are imported and exported across module boundaries, and how name resolution operates in the presence of multiple modules.
 
-## 8.1 File-to-Module Mapping [Tested crates/cranelisp-frontend/src/module_extract.rs::test_module_path_preserved]
+## 8.1 File-to-Module Mapping [S122 — no discriminating evidence traced here: crates/cranelisp-frontend/src/module_extract/tests.rs::test_module_path_preserved only shows extraction returns the module path it was given; the file-path to module-name derivation of §8.1.1 is untraced, and nested-child identity is evidenced under §8.2.5]
 
 Each `.cl` source file defines exactly one module. The module's identity is derived from the file's path relative to the project root or library directory.
 
@@ -85,7 +85,7 @@ For example, if `app.cl` contains `(mod handler)`, the implementation resolves t
 
 Sibling files (e.g., `handler.cl` in the same directory as `app.cl`) are NOT considered. A sibling file is a peer module, not a submodule. Allowing sibling fallback would create ambiguity: the same file could be both `app.handler` (via `mod`) and root module `handler` (via the search path in §8.11.2), violating §8.1's principle that file path determines module identity. To reference a peer module, use `import` with the module's own name (e.g., `(import [handler [...]])`), not `mod`.
 
-### 8.2.6 Placement [Tested crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
+### 8.2.6 Placement [Tested crates/cranelisp-frontend/src/module_extract/tests.rs::test_mixed_forms]
 
 `mod` declarations MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. A `mod` form encountered in any other position (inside a function body, let binding, etc.) is an error.
 
@@ -141,7 +141,7 @@ name         = symbol                            ; bare import — local name = 
 member_glob  = symbol '.*'                       ; e.g. Display.*
 ```
 
-### 8.3.1 Specific Name Import [Tested+Neg crates/cranelisp-frontend/src/module_extract.rs::test_import_specific_names, tests/spec_08_modules::import_of_non_existent_name_errors_neg]
+### 8.3.1 Specific Name Import [Tested+Neg crates/cranelisp-frontend/src/module_extract/tests.rs::test_import_specific_names, tests/spec_08_modules::import_of_non_existent_name_errors_neg]
 
 ```clojure
 (import [core.option [Some None]])
@@ -329,7 +329,7 @@ The same rules apply symmetrically when consumers import from a renamed re-expor
 
 See §8.6.4 for candidate registration and structural route conflicts, and §8.6.5 for use-site selection.
 
-## 8.4 Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract.rs::test_export_glob]
+## 8.4 Export [Tested crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_glob]
 
 The `export` special form brings names from other modules into the current module's scope as bare (unqualified) symbols **and** marks them public — part of the current module's public API (re-exposed to downstream consumers).
 
@@ -841,7 +841,7 @@ The `macros` module contains the `Sexp` and `SList` algebraic data types used by
 
 The `macros` module is NOT implicitly imported. The macro expander and `quote-sexp` primitive emit qualified references (`macros/SexpSym`, `macros/SCons`, etc.), so quasiquote-based macros work without importing the module. Modules that directly reference Sexp constructors (e.g., for pattern matching on macro arguments) MUST import or use qualified references eg. `(import [macros [*]])`.
 
-### 8.9.3 Platform Modules [Tested+Neg src/platform.rs::platform_fn_non_io_return_is_rejected]
+### 8.9.3 Platform Modules [Tested+Neg src/platform/tests.rs::platform_fn_io_return_accepted, src/platform/tests.rs::platform_fn_non_io_return_is_rejected]
 
 Platform modules are loaded from dynamic libraries (DLLs) via the `platform` special form:
 
@@ -938,7 +938,7 @@ Inside `parent`, `(import [child [f]])` resolves `child` to the submodule `paren
 
 The standard library is not a special language feature beyond this search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through the module search order — there is no distinction at the language level between "standard library" modules and user modules.
 
-### 8.11.3 Platform DLL Resolution Search Order [Tested tests/wave3_g8.rs]
+### 8.11.3 Platform DLL Resolution Search Order [S122 — partial: src/platform/tests.rs::test_resolve_platform_path_local, src/platform/tests.rs::test_resolve_platform_path_extra_dir, src/platform/tests.rs::test_resolve_platform_path_local_priority and src/platform/tests.rs::test_resolve_platform_path_not_found evidence tier 1, tier 3 with the Cargo filename, tier 1 over tier 3, and not-found; tier 2 (lib directories) and its ordering against tiers 1 and 3 are unevidenced]
 
 When resolving a platform name to a DLL (§8.9.3), the implementation MUST search in this order:
 
@@ -1003,7 +1003,7 @@ These directories are searched after project root and lib directories (§8.11.3,
 
 There is no language-level requirement for the standard library structure.
 
-## 8.12 Macro Interaction [Tested crates/cranelisp-frontend/src/module_extract.rs::test_passthrough]
+## 8.12 Macro Interaction [Tested crates/cranelisp-frontend/src/module_extract/tests.rs::test_passthrough, tests/spec_09_macros.rs::cross_module_macro_calls_helper_in_other_module]
 
 ### 8.12.1 Pre-Expansion Processing
 

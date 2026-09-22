@@ -141,7 +141,7 @@ thread-caching-alloc = ["dep:mimalloc"]
 # Sprint 88 Phase 5 (agentic-REPL track, Wave 3 — Advisor MVP core): the
 # embedded agent. OFF by default — in NO default feature set, enabled by no
 # dev-dependency, so `cargo build` / `cargo nextest run` never compile it and
-# the ~9s default suite stays agent-free (design/int/agent.md §6.4). All of
+# the default suite stays agent-free (design/int/agent.md §6.4). All of
 # `src/agent/` is `#[cfg(feature = "agent")]`. The `agent` feature pulls in the
 # `rig-core` LLM client (`rig::completion::CompletionModel` is the
 # provider-agnostic boundary, R3-amended) and a current-thread `tokio` runtime

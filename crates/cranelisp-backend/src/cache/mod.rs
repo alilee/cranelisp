@@ -170,7 +170,7 @@ pub mod serialize;
 /// **S84 bump 7 → 8 (concrete-boundary arc Phase 3 threading, `codegen_view`
 /// lands).** `ModuleEntry::Def` gained the additive `codegen_view:
 /// Option<MonoDefnVariant>` field — the concrete-boundary codegen view the
-/// backend consumes (`design/arch/concrete-boundary-type.md` §2.4 / §4 Phase 3,
+/// backend consumes (`design/arch/concrete-boundary-type.md` §2.4 / §3.0,
 /// threading option (a)). It is a `#[serde(default)]` participant in the cached
 /// `.meta.json` symbol-table shape (it carries no pointer/`C` state), so its
 /// addition changes the serialized `ModuleEntry::Def` surface. The bump rejects
@@ -373,7 +373,7 @@ pub mod serialize;
 /// was corrected, so pre-fix caches must not be trusted. Per the S111 0621
 /// precedent both ride ONE bump; no second invalidation event this sprint.
 /// **23 → 24 (S119 types-first concreteness window — the ONE S119 bump;
-/// `design/arch/concreteness-types-first.md` §3.6 +
+/// `design/arch/total-concreteness.md` §2 +
 /// `design/arch/trait-impl-cache-carrier.md` §6).** Taken by the `/arch`
 /// types change-set; downstream S119 waves RIDE it (the S111 0621 precedent)
 /// rather than taking their own. Covered by this single invalidation event:

@@ -112,7 +112,7 @@ gate to admit them is not I-CT-licensed either. Verbatim from the refusals:
    the same "compiled once per declaration, signature-driven" shape §4.1 argues
    for the ctor — and `concrete-boundary-type.md` §3.1.1 pairs the **ctor and
    accessor** signature paths in one sentence (FIXME 0902 quotes exactly that).
-   §4.1 named only the ctor half.
+   `design/backend/transitive-drop-glue.md` §4.1 named only the ctor half.
 
 2. **Generic trait-method instances.**
 

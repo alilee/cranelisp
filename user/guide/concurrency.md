@@ -259,13 +259,19 @@ The worked teaching example is
 ## Structured cancellation — a consequence, not a primitive
 
 There is **no `cancel` primitive**. Cancellation happens *structurally*, as the
-consequence of three situations:
+consequence of the combinators above abandoning work:
 
 - **losing a `race` / `select`** — the slower branches are cancelled when the winner
   completes;
-- **a `timeout` firing** — the bounded work is cancelled when the deadline wins;
-- **a scope exiting** — outstanding work owned by a scope is cancelled when the scope
-  ends.
+- **a `timeout` firing** — the bounded work is cancelled when the deadline wins.
+
+Each `race` / `select` branch, and the work a `timeout` wraps, runs in its own
+**cancellation context**, nested inside the context where the combinator runs.
+Cancelling a context cancels everything running inside it, including any contexts
+nested within it. Nothing else creates or cancels a context. Returning from a function,
+finishing a `do` / `bind!` step, or the runtime choosing to run work concurrently
+cancels nothing. A branch that *wins* also cancels nothing: the winner simply
+finishes.
 
 A cancelled computation's effects **do not complete**: its future is dropped, its
 remaining side effects never run, and its resources are released. This is
@@ -300,19 +306,43 @@ standard-library `timeout` helper.)
 normative cancellation semantics are
 [`spec/10-io.md §10.12.9`](../../spec/10-io.md).
 
+### Launched work and cancellation
+
+A handler the runtime launches without waiting for it (see
+[The server with no `spawn`](#the-server-with-no-spawn)) belongs to the
+cancellation context it was launched in. Under the language rules:
+
+- If that context is cancelled — for example because the `race` branch containing
+  the launch lost — the launched handlers are cancelled with it.
+- If the launching function returns, or the branch containing the launch wins or
+  finishes, the launched handlers keep running.
+- When the program's top-level effect finishes normally, the program waits for every
+  launched handler to finish before it exits.
+
+The rules are [`spec/10-io.md §10.12.7`](../../spec/10-io.md) items 5 and 6.
+**The current compiler does not yet apply the first rule.** See
+[Honest scope](#honest-scope--current-limitations).
+
 ### Reference patterns
 
-These compositions are the vocabulary for an uncooperative I/O boundary (work that
-overruns, callers that vanish, load that floods):
+The spec names three reference patterns for an uncooperative I/O boundary: work that
+overruns, callers that vanish, and a server told to stop. Only the first can be
+written today.
 
-- **Per-request timeout** — `(timeout d work)` bounds each request's handler in time
-  and cancels it cleanly when it overruns.
-- **Cancel-on-disconnect** — `race` the handler against a disconnect-watch branch; if
-  the client vanishes first, the handler is cancelled.
-- **Graceful shutdown** — stop accepting new work and let outstanding work drain (or
-  cancel it on a deadline) when a scope exits.
+- **Per-request timeout** (available) — `(timeout d work)` bounds each request's
+  handler in time and cancels it cleanly when it overruns.
+- **Cancel-on-disconnect** (not yet available) — the design is to `race` the handler
+  against an effect that completes when the client disconnects. `race` already
+  cancels the losing branch, but no platform provides that disconnect effect yet.
+- **Graceful shutdown** (not yet available) — the design is to `race` the server's
+  work against an effect that completes when the process is told to stop. When the
+  signal wins, the server's work is cancelled, together with the handlers launched
+  inside it; they are not abandoned mid-effect or left to run to completion. No
+  platform provides that shutdown-signal effect yet, and the compiler does not yet
+  cancel launched handlers with their context. See
+  [Honest scope](#honest-scope--current-limitations).
 
-The reference patterns are specified in
+The observable contract of all three is specified in
 [`spec/10-io.md §10.12.10`](../../spec/10-io.md).
 
 ---
@@ -328,6 +358,20 @@ state them plainly rather than imply production-unattended readiness.
   will **not exit on its own** — it is waiting for the next connection. Run it under
   a process manager, or drive it from a test harness that kills it on completion (as
   `tests/exemplar_web.rs` does), rather than expecting it to return.
+- **No disconnect or shutdown-signal effect yet.** No platform yet provides an effect
+  that completes when a client disconnects or when the process receives a shutdown
+  signal. Until one does, a program cannot race a handler against a disconnect, and
+  it cannot react to a shutdown request. An external kill (for example `SIGTERM` from
+  a process manager) ends the process without running any cancellation.
+- **Launched handlers are not yet cancelled with their context.** The language
+  specifies that a handler launched inside a `race` branch or a `timeout` is
+  cancelled when that branch loses or the deadline fires (see
+  [Launched work and cancellation](#launched-work-and-cancellation)). The current
+  compiler does not do this yet. Cancelling a `serve` loop, for example because it
+  lost a `race`, stops new accepts, but handlers it already launched keep running to
+  completion. Do not rely on `race` or `timeout` to stop launched work. The
+  program's own awaited work inside a losing branch is cancelled as described
+  above.
 
 ## See also
 

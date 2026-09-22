@@ -184,17 +184,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
         let ctor_sym = info.constructors[tag].clone();
-        // Look up the ctor's scheme via its `Def` in the type's defining module,
-        // recording the STORAGE key that HIT as the sidecar identity (§10.1).
-        // **S109 dotted-ctor keying.** `TypeDefInfo.constructors` carries the bare
-        // display name, but a sum ctor's real got-slotted `Def` now lives under
-        // the canonical `member_key(Type, Ctor)` key (`Maybe.Some`) — the bare key
-        // is a poison-able `Import` alias (or `Ambiguous` under contest). Probe the
-        // canonical key first, falling back to the bare key for the product
-        // dual-facet (kept at the type-name key) and for hand-seeded internal ctors
-        // (`Bind`) that retain their bare storage key. The returned `FQSymbol.symbol`
-        // is whichever key resolved — the backend reads its `Def` by DIRECT keyed
-        // lookup, never re-resolving the bare name context-free (§10.3, DC-11 cure).
+        // Look up the ctor's scheme via its binding in the type's defining module,
+        // recording the STORAGE key that hit as the sidecar identity
+        // (`design/arch/dotted-ctor-canonical-keys.md` §10.1).
+        // `TypeDefInfo.constructors` carries bare display names, but a sum ctor's
+        // binding lives under the canonical `member_key(Type, Ctor)` key
+        // (`Maybe.Some`); its bare spelling is only a candidate exposure. Probe the
+        // canonical key first, then the bare key, which serves the product
+        // dual-facet alone (arch §1). The backend reads the recorded key directly,
+        // never re-resolving the bare name (arch §10.3).
         let canonical = cranelisp_types::member_key(&type_name.name, ctor_sym.as_ref());
         let (storage_key, scheme) = self
             .probe_module_entry_owned(&type_name.module, canonical.as_ref())
@@ -295,13 +293,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // not-found error. Always write (Some or None) to match the prior
         // clear-on-attempt / set-on-miss side-slot semantics.
         state.pending_gap = gap;
-        // A bare name that resolves to a poisoned (ambiguous) symbol-table entry
-        // is a compile-time error listing the qualified alternatives (spec
-        // §8.6.5; for field accessors §5.2.6). The `Ambiguous` sentinel yields
-        // no scheme, so without this check it would mis-report as "undefined
-        // variable". Cross-type duplicate field-name accessors record their
-        // owning types in `accessor_owning_types`; surface them as `Type.member`
-        // alternatives.
+        // A bare spelling that still has several candidates here yields no
+        // scheme; report it as ambiguous, listing canonical `Type.member`
+        // alternatives, rather than as "undefined variable" (spec §8.6.5; field
+        // accessors §5.2.6).
         if scheme.is_none()
             && self
                 .scope_resolve_candidates(state, name, span)
@@ -311,10 +306,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // as each accessor was synthesised in this `check_forms` call.
             // Cross-cluster (the REPL drives each form as its own cluster with a
             // FRESH `CheckState`), the map is empty by the time the bare use is
-            // checked — the poisoning `deftype`s ran in now-discarded prior
-            // clusters. Re-derive the owners structurally from the durable symbol
-            // table so BOTH paths list the canonical alternatives (§5.2.6 gives
-            // the REPL no exemption).
+            // checked — the contributing `deftype`s ran in earlier clusters.
+            // Re-derive the owners structurally from the durable symbol table so
+            // both paths list the canonical alternatives (§5.2.6 gives the REPL
+            // no exemption).
             let owners: Vec<cranelisp_types::FQTypeName> =
                 match state.accessor_owning_types.get(name) {
                     Some(tys) if !tys.is_empty() => tys.clone(),
@@ -1871,10 +1866,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
         }
 
-        // **Scrutinee-directed disambiguation (S109 W1, spec §6.2.1 / design §7 /
-        // DC-11).** A BARE ctor name that did NOT resolve to a `Def` above is
-        // either contested (`Ambiguous`) or absent-in-local-scope (an imported
-        // type whose ctors were not brought in). Resolve it against the
+        // **Scrutinee-directed disambiguation (spec §6.2.1; arch
+        // `dotted-ctor-canonical-keys.md` §7).** A BARE ctor name that did NOT
+        // resolve to a single constructor above either has several candidates or
+        // is absent from local scope (an imported type whose ctors were not
+        // brought in). Resolve it against the
         // scrutinee's type when that type is a DETERMINED ADT: probe the canonical
         // `member_key(scrutinee_type, bare)` in the scrutinee type's home module
         // and accept iff the terminal is a ctor of that exact type. The
@@ -1941,10 +1937,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 return Ok(());
             }
 
-            // The scrutinee did not disambiguate. A CONTESTED (`Ambiguous`) bare
-            // name is then a compile-time error listing the canonical
-            // alternatives (spec §6.2.1 "poison only when the scrutinee type
-            // cannot disambiguate").
+            // The scrutinee did not disambiguate. A bare name that still has
+            // several candidates is then a compile-time error listing the
+            // canonical alternatives (spec §6.2.1). The approved target derives
+            // this list from the surviving candidates
+            // (`design/typecheck/use-site-candidate-selection.md` §9); this
+            // branch still reconstructs it from the table
+            // (`design/typecheck/dotted-ctor-registration.md` §8).
             if self
                 .scope_resolve_candidates(state, name.as_ref(), span)
                 .is_ok_and(|candidates| candidates.len() > 1)

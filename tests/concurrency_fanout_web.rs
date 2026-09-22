@@ -1,7 +1,7 @@
 //! Sprint 96 — effect-concurrency C-fanout wave: the marquee "server with no
 //! `spawn`" headline e2e (concurrent per-connection fan-out) + the web 500-mapping
-//! + the now-un-deferred cancel-on-disconnect / graceful-shutdown web rows, PLUS
-//! the launch-eligibility negative matrix (E1/E2/E3) observable face.
+//! + a server-survives-an-abandoned-connection liveness fence, PLUS the
+//! launch-eligibility negative matrix (E1/E2/E3) observable face.
 //!
 //! Plan: retired S96 QA plan, Chunk C §C5b/§C5c
 //! (`git show 7e56a81c:tests/plan/sprint-96.md`) + the C-fanout rows from
@@ -10,30 +10,17 @@
 //! sub-tree launch; eligibility predicate E1/E2/E3 at `effect-concurrency.md`
 //! §4.1). Spec of record:
 //!   - `spec/10-io.md` §10.12.7  (Launch-and-Continue — the fan-out, E1/E2/E3)
-//!   - `spec/10-io.md` §10.12.10 (Reference Control Patterns — cancel-on-disconnect,
-//!                                graceful shutdown)
 //!   - `spec/12-runtime.md` §12.7.9 (Supervised Detached Strands — 500/log/drop)
 //!
-//! ## Posture (Wave-C1 = QA-first, RED-first / co-landing)
+//! ## Fixture
 //!
-//! **The web rows depend on the C-fanout /int + /port wave** (0470): /int extends
-//! `bind_chain_analysis` to launch a discarded, locally-token-disjoint bind
-//! SUB-TREE (E1/E2/E3); /port inlines the connection handler into the serve loop
-//! down to platform leaves so the launch fires. Until then the serve loop runs
-//! SERIALLY (`handle-conn` is a user fn `classify_expr` treats as `Sequential`).
-//!
-//! The rows are authored RED-first against a **port-parametrized poll-shape fan-out
-//! web fixture** (the Gap-G4 fixture, co-landing with the /port C-fanout rewrite —
-//! a port-configurable `main.cl` reading `CRANELISP_PORT`). On HEAD the fixture is
-//! ABSENT, so the server child fails to start ⇒ the readiness probe surfaces the
-//! early exit as a fast, loud RED (NOT a 20 s hang). The fixture is referenced by
-//! path; an absent fixture is a clean runtime-RED, NOT a workspace-build break
-//! (these tests shell out to the binary), per the Chunk-A/B deferred-web precedent.
-//!
-//! Each web row's dependency is marked:
-//!   - **C-fanout** — needs only the /int sub-tree launch + /port inline fixture.
-//!   - **C3 + C-fanout** — ALSO needs Chunk-C cancellation (cancel-on-disconnect /
-//!     graceful shutdown cancel outstanding detached handler strands).
+//! The web rows run a **port-parametrized poll-shape fan-out web fixture**
+//! (`tests/fixtures/web_fanout/main.cl`, reading `CRANELISP_PORT`). Its handler is
+//! `read → sleep → send` with no `race`, no disconnect effect and no shutdown-signal
+//! effect, and the platforms ship neither leaf. **No row in this file evidences the
+//! `spec/10-io.md` §10.12.10 cancel-on-disconnect or graceful-shutdown patterns**;
+//! both are uncovered until a platform supplies those effects. The synthetic
+//! cancellation evidence lives in `tests/concurrency_cancellation.rs`.
 //!
 //! ## Port isolation
 //!
@@ -62,9 +49,8 @@ use helpers::e2e::{CrOutput, Cranelisp};
 // server is exactly the case it does not model, so we manage a raw `Child`.
 // =============================================================================
 
-/// The co-landing port-parametrized poll-shape fan-out web fixture (Gap G4).
-/// Authored WITH the /port C-fanout serve-loop rewrite (inline handler → platform
-/// leaves, port read from `CRANELISP_PORT`). Absent on HEAD ⇒ the spawn fails fast.
+/// The port-parametrized poll-shape fan-out web fixture (Gap G4): inline handler →
+/// platform leaves, port read from `CRANELISP_PORT`.
 const FANOUT_FIXTURE: &str = "tests/fixtures/web_fanout/main.cl";
 
 /// A deliberately-slow handler route in the fixture (≈ this many ms per request) —
@@ -93,20 +79,6 @@ struct ServerGuard {
     child: Child,
 }
 
-impl ServerGuard {
-    /// Send SIGTERM (graceful-shutdown signal) to the child; return whether it was
-    /// delivered. Used by the graceful-shutdown row.
-    fn signal_term(&self) -> bool {
-        // Best-effort: `kill -TERM <pid>` (portable enough for the Linux CI lane).
-        Command::new("kill")
-            .arg("-TERM")
-            .arg(self.child.id().to_string())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-}
-
 impl Drop for ServerGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -115,9 +87,9 @@ impl Drop for ServerGuard {
 }
 
 /// Spawn `--run <fixture>` with the port + platform + stdlib env, then poll the
-/// port until it accepts a connection. Surfaces an early child exit (e.g. the
-/// fixture is ABSENT on HEAD ⇒ file-not-found ⇒ fast exit) as a loud panic rather
-/// than spinning to the readiness deadline.
+/// port until it accepts a connection. Surfaces an early child exit (e.g. a
+/// compile error or a missing fixture) as a loud panic rather than spinning to the
+/// readiness deadline.
 fn spawn_server(fixture_rel: &str, port: u16) -> ServerGuard {
     let root = workspace_root();
     let binary = root.join("target").join("debug").join("cranelisp");
@@ -146,10 +118,8 @@ fn spawn_server(fixture_rel: &str, port: u16) -> ServerGuard {
     loop {
         if let Ok(Some(status)) = guard.child.try_wait() {
             panic!(
-                "fan-out web server exited before listening (status {status:?}). \
-                 The port-parametrized poll-shape fan-out fixture `{fixture_rel}` is \
-                 a co-landing C-fanout deliverable (/port + /int 0470); it is absent \
-                 on HEAD ⇒ this row is RED-first until that wave lands."
+                "fan-out web server exited before listening (status {status:?}) \
+                 running fixture `{fixture_rel}`."
             );
         }
         if TcpStream::connect_timeout(
@@ -288,94 +258,42 @@ fn web_handler_fault_yields_500_for_that_request_server_lives() {
 }
 
 // =============================================================================
-// §C5b — cancel-on-disconnect (a §10.12.10 reference pattern).
+// Server survives an abandoned connection (liveness fence).
 // =============================================================================
 
-// spec: spec/10-io.md §10.12.10 — a client that disconnects mid-request has its
-// per-connection handler CANCELLED (`race handler (await-disconnect conn)`): the
-// in-flight handler poll is dropped, its resources released (§10.12.9), and the
-// server keeps serving subsequent requests. Dependency: C3 + C-fanout (needs the
-// concurrent per-connection fan-out — a detached handler strand to cancel — AND
-// Chunk-C cancellation). RED-first: the fixture is absent on HEAD.
+// spec: spec/12-runtime.md §12.7.9 — liveness fence: after a client writes a slow
+// request and closes without reading the response, a later GET on a fresh
+// connection still gets a non-empty response — the abandoned connection did not
+// kill or wedge the accept loop (item 1, "the server keeps accepting"). This does
+// NOT observe what happened to the abandoned handler: ran to completion, faulted
+// sending to the closed peer under supervision, or was cancelled are all
+// indistinguishable here, and no permit is contended. It is not evidence for the
+// §10.12.10 cancel-on-disconnect pattern (the fixture has no disconnect effect).
 #[test]
-fn web_handler_cancelled_on_client_disconnect() {
+fn web_server_keeps_serving_after_client_abandons_slow_request() {
     let port = free_port();
     let server = spawn_server(FANOUT_FIXTURE, port);
 
-    // Open a slow request and ABANDON it mid-flight (drop the connection without
-    // reading the response) — the client disconnect should cancel the handler.
+    // Open a slow request and abandon it: close the connection without reading the
+    // response.
     {
         let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect");
         let req = format!("GET {SLOW_ROUTE} HTTP/1.0\r\n\r\n");
         s.write_all(req.as_bytes()).expect("write slow request");
         s.flush().ok();
-        // Drop `s` here without reading the response — simulate a disconnect.
+        // `s` drops here without reading the response.
     }
-    // Give the server a moment to observe the disconnect + cancel the handler.
+    // Let the abandoned request's handler reach its send (the slow route is ≈100ms).
     std::thread::sleep(Duration::from_millis(200));
 
-    // The server must keep serving (the cancelled handler freed its resources; the
-    // disconnect did not wedge the accept loop).
     let ok_resp = http_request(port, "GET", OK_ROUTE);
     assert!(
         !ok_resp.is_empty(),
-        "after a client disconnect mid-request the server must keep serving (the \
-         handler is cancelled, its permit + reactor interest released, §10.12.10); \
+        "after a client abandoned a slow request the server must keep serving \
+         (the accept loop must survive the closed connection, §12.7.9 item 1); \
          subsequent GET got an empty response"
     );
     drop(server);
-}
-
-// =============================================================================
-// §C5c — graceful shutdown (a §10.12.10 reference pattern).
-// =============================================================================
-
-// spec: spec/10-io.md §10.12.10 — on a shutdown signal (SIGTERM) the server cancels
-// its outstanding detached handler strands (their in-flight polls dropped, resources
-// released, §10.12.9), drains, and EXITS CLEANLY (no hang, no leaked strand) within
-// a bounded time. Dependency: C3 + C-fanout (needs >= 1 outstanding CONCURRENT
-// handler strand to cancel — only exists under the fan-out — AND Chunk-C
-// cancellation). RED-first: the fixture is absent on HEAD.
-#[test]
-fn web_server_graceful_shutdown_cancels_outstanding_handler_strands() {
-    let port = free_port();
-    let mut server = spawn_server(FANOUT_FIXTURE, port);
-
-    // Start a slow request so there is an outstanding handler strand in flight, then
-    // signal graceful shutdown.
-    let slow = std::thread::spawn(move || {
-        let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).ok()?;
-        s.set_read_timeout(Some(Duration::from_secs(5))).ok();
-        let _ = s.write_all(format!("GET {SLOW_ROUTE} HTTP/1.0\r\n\r\n").as_bytes());
-        let mut buf = String::new();
-        let _ = s.read_to_string(&mut buf);
-        Some(buf)
-    });
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(
-        server.signal_term(),
-        "could not deliver SIGTERM to the server child (graceful-shutdown probe)"
-    );
-
-    // The server must exit cleanly within a bound (cancelling outstanding strands,
-    // not hanging on them).
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match server.child.try_wait() {
-            Ok(Some(_status)) => break, // exited
-            Ok(None) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "graceful shutdown must CANCEL outstanding handler strands and \
-                     EXIT cleanly within 10s (§10.12.10); the server is still running \
-                     — looks like it hung on an outstanding strand (no cancellation)"
-                );
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => panic!("try_wait failed: {e}"),
-        }
-    }
-    let _ = slow.join();
 }
 
 // =============================================================================

@@ -11,7 +11,7 @@
 //! ## Submodule layout (S87 Wave 5e decomposition)
 //!
 //! The former monolithic `traits.rs` is split into six cohesive concern
-//! clusters (`design/typecheck/s87-traits-decomposition.md` §1). All items
+//! clusters (`design/typecheck/typecheck.md` §3.1). All items
 //! remain crate-private — `lib.rs` declares `mod traits;` (never `pub`), so
 //! nothing here crosses the crate boundary (`public-api.txt` byte-identical).
 //!

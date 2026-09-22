@@ -32,13 +32,12 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | [Macro expansion ownership](macro-expansion-ownership.md) | Frontend, typecheck and integration responsibilities. |
 | [Ownership inference](ownership-inference.md) | Interprocedural ownership queries and their consumers. |
 | [Safety invariants](safety-invariants.md) | Maintained invariant register and enforcement limits. |
-| [Total concreteness](total-concreteness.md) | Approved invariants and retained rationale. |
-| [Types-first concreteness reasoning](concreteness-types-first.md) | Retained design reasoning and forty-row dispositions. |
+| [Total concreteness](total-concreteness.md) | End-of-typecheck concreteness invariants, the uniform-realization roster and the IO-node ownership contract. |
 | [Trait-implementation persistence](trait-impl-cache-carrier.md) | Writer records, discovery shells and restoration. |
 | [Platform interface](platform-interface.md) | DLL authoring, generated schemas and host boundary. |
 | [Effect concurrency](effect-concurrency.md) | Ratified, delivered language-level concurrency architecture and its implementation limits. |
 | [Introspection ownership](d1-introspection-repl-only.md) | REPL-only collection boundary. |
-| [Embedded REPL agent](repl-embedded-agent.md) | Ratified architecture and staged capability scope. |
+| [Embedded REPL agent](repl-embedded-agent.md) | Agent and `/search` boundary, invariants, unbuilt targets and open questions. |
 | [REPL styling](repl-styling-seam.md) | Shared formatter and styling contract. |
 | [Display protocol](display-protocol.md) | Type-directed rendering design and its implementation gates. |
 | [Execution tracing](tracing.md) | Trace-node, backend and intrinsics responsibilities. |

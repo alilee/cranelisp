@@ -1,518 +1,170 @@
 # cranelisp-typecheck — local conventions
 
-The voice of the code: API gotchas, data-structure invariants, debugging hooks
-for the inference engine, traits, monomorphisation, and module-locality
-resolution. Owned by `/dev` when narrow-deployed to this crate.
+Entry guidance for `dev` narrow-deployed to this crate: constraints a locally
+reasonable edit would break, and where their canonical account lives. The
+crate design is [`design/typecheck/typecheck.md`](../../design/typecheck/typecheck.md)
+(document map §10); the public contract is the crate-root rustdoc in
+`src/lib.rs`.
 
-## Written type variables — the settled model (spec §3.3.1–§3.3.5 [S109 W6.3])
+## Written type variables
 
-**One line:** a **bare** written type var (`:a`, or one nested in `:(Box a)`)
-is an ORDINARY FLEXIBLE inference variable carrying a display NAME — it relates
-same-named occurrences and documents, and the body MAY pin it to a concrete
-type (never an error). Rigidity lives ONLY on the **constraint** path: a
-constraint `:C x` at a **parameter** position is held abstract over `C` for the
-body-check, so the body narrowing it to a concrete type is a skolem escape.
+Required behaviour: `spec/03-types.md` §3.3.1–§3.3.5. Canonical design:
+[`inference.md`](../../design/typecheck/inference.md) §"Written type
+variables".
 
-> W6.3 (this model) REVERSES the rigid-BARE half of W6.2 (`b2bfb760`) while
-> KEEPING lexical co-reference. Do NOT re-add rigidity to the bare path.
+- A **bare** written var (`:a`) is a flexible inference variable with a display
+  name. `written_var_scope` threads only lexical co-reference; nested `fn`
+  closures share the enclosing frame. Do not add rigidity to the bare path.
+- `BodyFrame.rigid_vars` holds only parameter vars that already carry an
+  asserted constraint (`:C x`) at Pass-2 entry. A bare param that accrues a
+  constraint from body use stays flexible.
+- `unify::unify_with_rigid` is the one unification seam (the free `unify` is
+  `#[cfg(test)]`). A rigid var must not bind to a concrete type; two rigid vars
+  merge.
+- A value annotation naming a trait (`:Num2 5`) is a satisfaction check only:
+  it neither unifies nor disambiguates return-type dispatch. A concrete
+  non-nominal type (`Fn`) implements nothing and is rejected.
+- There is no eager "polymorphic value escapes" check; rank-1 polymorphic
+  returns are legitimate. Multi-type use and rank-2 fail in unification;
+  a result-only var is caught by the §3.11 ambiguity gate.
+- `resolve::resolve_type_expr` is the sole `TypeExpr -> Type` walk, driven by
+  `TypeExprCtx`. Extend the context; do not add a local mint-on-miss resolver.
+  A `/`-qualified name never mints a type var.
 
-The pieces:
+## Codegen views
 
-1. **`written_var_scope` (name → `TypeId`) threads LEXICAL CO-REFERENCE only.**
-   Pass 1 stores it with the exact source occurrence in the private body
-   ledger. Pass 2 installs it in that occurrence's `BodyFrame`, and nested `fn`
-   closures share the active frame (`infer_lambda` never resets it — §3.3.1
-   co-reference, 0588). Every occurrence of one bare name within a definition
-   resolves to the same var (`[:a x :a y]` ties x/y; a body `:a` co-refers to a
-   param `:a`; an inner `(fn [:a y] …)` co-refers to the enclosing `a`). This is
-   all a bare written var carries—a name, never rigidity. A bare var is
-   otherwise flexible: the body may pin it (rows 2/4/11), and two bare vars tied
-   by the body merge (C-1).
+Canonical: `program/support.rs::build_concrete_codegen_view` rustdoc and
+[`non-concrete-producer-obligations.md`](../../design/typecheck/non-concrete-producer-obligations.md).
 
-2. **`BodyFrame.rigid_vars` holds ONLY asserted-constraint param vars.** `check_defn_body`
-   seeds it, per body, from the param `Type::Var`s that ALREADY carry a
-   constraint at Pass-2 entry — i.e. `resolve_bound_param` recorded the
-   assertion (`:C x`) into `state.active_constraints` during Pass-1. A BARE `:a`
-   param that merely ACCRUES a constraint from body use (row 7) is NOT seeded
-   (its var has no constraint until body inference runs, after the seeding), so
-   it stays flexible—inferred-not-asserted. The frame also owns the recursion
-   name/frame pair, candidate-pending work and exact user-function references;
-   the shared wrapper restores the whole frame and lexical depth on every exit.
+- Concrete source bodies get their view through that one helper; only a
+  `Life::Concrete` callable gets one. Synthesised constructor and accessor
+  bodies build theirs at the synthesis site; templates carry none.
+- The helper returns `Result<Option<MonoDefnVariant>, _>` and its two
+  `ViewBuildError` arms differ deliberately. `NotConcrete` gets bounded
+  defaulting then a located ambiguity error. `Unresolved` (a real-span
+  `Var`/`Apply` with no recorded verdict) **propagates**. Never `.ok()` it:
+  swallowing it ships an unresolved body to the backend, where it resurfaces
+  as an unlocated codegen error.
 
-3. **`unify::unify_with_rigid(subst, rigid, t1, t2)` + `unify_var`** are the ONE
-   unification seam (the free 3-arg `unify` is a test-only helper). Asymmetry:
-   a flexible var MAY bind to a rigid one (use-acquisition); a rigid var MUST
-   NOT unify with a **concrete type** (skolem escape — row 6); two rigid vars
-   **MERGE** (both stay abstract — `(defn assert-eq [:Eq a :Eq b] (= a b))` is a
-   constraint-polymorphic scheme, NOT an error — the W6.2 distinct-rigid-escape
-   rule is REMOVED). `self.unify` always threads `state.rigid_vars`.
+## `callees` completeness
 
-4. **`infer_annotate` — value-position annotations (§3.3.3).** A bare/concrete
-   annotation (`:a "hello"`, `:Int (zed)`) is a FLEXIBLE unify (the value's type
-   unifies with the annotation — pins freely / resolves dispatch). A single bare
-   name that resolves as a TRAIT (`:Num2 5`) is a **satisfaction check** ONLY:
-   accepted **iff** the expr's type implements the trait, changing nothing (no
-   unify, no held-abstract). It does NOT disambiguate return-type dispatch. The
-   check discriminates THREE cases on the resolved expr type (0597, MUST (c)'s
-   "iff"): NOMINAL concrete → `has_impl_in_home`; CONCRETE but non-nominal (a
-   `Fn` type — implements NOTHING, impls are keyed by type name) → **REJECT**
-   (`concrete_type_name` = `None` must NOT silently accept a concrete type);
-   still a `Type::Var` → leave the residual for the §3.11 gate. The trait's home
-   is resolved honouring a QUALIFIED module ref (`:fmt/Display`) directly,
-   mirroring `resolve_bound_param` (the two entrances to a constraint resolve
-   identically).
+Canonical: [`checked-body-publication.md`](../../design/typecheck/checked-body-publication.md)
+and `design/int/session-transaction.md` §3.2.
 
-5. **Rank-1 poly-returns are legitimate — NO eager poly-as-value check (§3.3.4/
-   §3.10, W6.3 ruling).** A `defn` body that DEFINES a rank-1 polymorphic
-   function value — returned (`(defn mk [] (fn [:b y] y))`), let-stored-and-
-   returned (`(defn mk3 [] (let [g (fn [:b y] y)] g))`), passed uninstantiated,
-   or applied in place — is a legitimate syntactic value. The written `:b` is
-   IRRELEVANT: `mk`/`weird` are the SAME thing as their unwritten twins
-   `mkid`/`constf`, and ALL are accepted. The former eager
-   `lambda_written_vars` free-var escape check (`check_defn_body`, added
-   `c3008d1f`, refined `750471ac`/0596) OVER-REJECTED the written forms while
-   their unwritten twins compiled — it was **removed at S109 W6.3** (the
-   `CheckState::lambda_written_vars` field is gone; do NOT re-add it). The
-   genuine restrictions live ELSEWHERE and stay:
-   - **Multi-type USE of one poly instance** (`(let [f (mkid)] (f "x") (f 5))`)
-     → the value restriction / **unification** (a type conflict). NOT an eager
-     check.
-   - **Rank-2** (a poly value passed as an argument and used at two types,
-     `(defn apply2 [f] … (f "x") … (f 5))`) → **unification**. NOT an eager
-     check.
-   - **Result-only var held unresolved** (`(defn g [] (constf 5))`) → the
-     **§3.11 ambiguity gate** ("pin the type"; the R16 result-var
-     monomorphisation family). NOT an eager check.
-   `resolve_annotation_type_expr_in_module` returns just the `Type` now (the
-   minted-id list that fed the removed check is gone); a nested `fn`'s own
-   written param mints a flexible id like any annotation, with no post-hoc
-   escape flagging.
+- A checked body's `callees` names every statically resolved user-function
+  reference, call and value position alike. It is harvested by the one
+  `program/callees.rs::harvest_callees` projection from the resolution delta
+  plus `BodyFrame.user_fn_refs`.
+- A new body-check seam uses the shared `BodyFrame` wrapper and routes through
+  `harvest_callees` before publication. Do not publish a body and mutate its
+  callees afterward; missing edges silently starve the session transaction's
+  affected-set closure.
+- Self-edges, non-`UserFn` kinds, dotted member references and mono-instance
+  rechecks record no edge.
+- Changing what `callees` records changes `.meta.json` meaning: bump
+  `CACHE_SCHEMA_VERSION` in the same change-set.
 
-**Minting stays in `resolve::resolve_type_expr`** (rigidity is applied by the
-caller, not the resolver). A `/`-qualified name never mints (F2/0589 — a type
-var is a BARE lowercase identifier); the in-crate `!contains('/')` guard is the
-backstop. **FIXME 0590 is CLOSED (S110): the four mirror `TypeExpr -> Type`
-resolvers converged.** `crate::resolve::resolve_type_expr` is now the SOLE
-`TypeExpr -> Type` walk in the crate (`resolve.rs` §5), driven by a
-`TypeExprCtx` head-resolution context; the trait-sig / HKT-sig / HKT-impl
-callers reach it through the thin wrappers `resolve_trait_sig_type_expr` /
-`resolve_hkt_sig_type_expr` / `resolve_hkt_impl_type_expr` on `TypeCheckEnv`
-(`checker.rs`), and `form.rs::check_type_expr`'s pre-walk is gone. The former
-never-error `Named` fabrication arms were DELETED with the mirrors — an unknown
-type name in a signature is a source error, resolved against the symbol table
-exactly as a `defn`/`deftype` field ref is. Do NOT re-introduce a local
-mint-on-miss at a new call site; extend `TypeExprCtx` instead.
+## Name resolution
 
-**Not yet landed (reported to `/sprint` as a coordinated seam):** the §3.11
-ambiguity gate for an UNRESOLVED return-type-polymorphic dispatch (`(zed)` with
-no context — rows 16/17). It cannot be caught by a "result type non-concrete"
-check (a dispatch resolved on its args, `(add2 3 4)`, is non-concrete-typed yet
-computable — a false positive); it needs a "dispatch selected NO impl" signal,
-and the `--run`/`--link` entry (`main`) leg additionally needs the int
-entry-validation seam (typecheck carries no entry designation, Principle 19).
+Canonical: spec §8.6; [`use-site-candidate-selection.md`](../../design/typecheck/use-site-candidate-selection.md);
+`design/arch/symbol-table-lifecycle.md` §3, §5.8–§5.9.
 
-## Concrete-boundary `codegen_view` population (S84 Phase-3, FIXME 0392)
+- The prelude is an implicit `(import [prelude [*]])`. Its fallback is a
+  resolution mechanism, not an outer scope. It is decided once per module
+  (`PreludeFallback`) and applied inside `cranelisp_types::ResolutionScope`.
+- Route every bare-name reference through `scope_resolve` / `scope_resolve_in`
+  (one terminal, rejecting a multi-candidate spelling) or
+  `scope_resolve_candidates` (the full candidate set, for selection). Do not
+  re-thread `prelude_fallback_target` at a new call site or add a name-key
+  shortcut to primitives.
+- A local definition, import, export, prelude binding or derived member may
+  share a spelling with distinct canonical identities; the spelling then
+  denotes a candidate set resolved at each use (spec §8.6.4–§8.6.5). Nothing
+  is rejected, shadowed or chosen by declaration order at registration.
+- The raw current-module `probe_module_entry_owned` answers same-module
+  identity (idempotent re-registration, REPL redefinition), never scope.
+- An internal constructor (`IO`'s `Bind`) is rejected by its `internal: true`
+  flag on `CallableOrigin::Ctor`, read through the fallback — not by
+  visibility. It is Public, so the public-only filter must not hide it.
+- A bare `/` or `//` is a value name, not a qualified reference. The
+  non-empty-parts guard lives in `cranelisp-types`; file against `arch`
+  rather than short-circuiting it here.
 
-Every codegen-bound `ModuleEntry::Def` carries a `codegen_view:
-Option<MonoDefnVariant>` — the concrete-boundary `MonoExpr` body view the backend
-will consume (`design/arch/concrete-boundary-type.md` §3.0). It is populated at
-the symbol-table registration sites, NOT a side `Vec` (the transitional
-`CheckState.mono_variants` was retired — the entry is the single source of truth,
-Principle 7):
+## Members: accessors and constructors
 
-- **Mono instances** — built at the `monomorphise_call` seam (`traits/monomorphise.rs::monomorphise_call`,
-  `MonoExpr::from_expr` over the subst-resolved instance body) and set via
-  `builder.codegen_view(..)` at `register_mono_entry`. **Hard-errors** on a
-  non-concrete body (a minted mono instance MUST be concrete post-Phase-4-A) —
-  the §3.11.1 ambiguity message.
-- **Ordinary concrete defns** — single-sig (`program/body.rs`
-  `check_form_body_single_defn`, next to the `ast` writeback), multi-sig mangled
-  variants (`program/register/multi_sig.rs::register_mangled_variants`),
-  trait-impl methods (`traits/impl_check.rs::check_impl_method`), test-fn mono
-  roots (`program/register.rs::register_test_fn_mono_roots`), and the finalize
-  post-mono rebuild (`program/finalize.rs::finalize_annotations_and_publish`).
-  All route through the shared `program::build_concrete_codegen_view(name,
-  variant, pattern_ctors, var_refs, apply_refs)` helper (`program/support.rs`).
-  Only a callable in `Life::Concrete` gets a view — guard on the lifecycle
-  before calling the helper.
+Canonical: [`fixme-0365-field-accessor-dotted.md`](../../design/typecheck/fixme-0365-field-accessor-dotted.md)
+(accessors), [`dotted-ctor-registration.md`](../../design/typecheck/dotted-ctor-registration.md)
+and `design/arch/dotted-ctor-canonical-keys.md` (constructors).
 
-> **The helper is NOT "best-effort `Option`" — that contract was FALSIFIED by the
-> S114 carrier flip, and the distinction is safety-relevant.** Its signature is
-> `Result<Option<MonoDefnVariant>, CranelispError>`, and the two
-> `ViewBuildError` arms are deliberately asymmetric:
->
-> - **`NotConcrete`** (a residual `Type::Var` / unresolved HKT head / an
->   un-annotated node) — clone the checked variant, default only eligible
->   residual positions below a preserved type constructor, and retry strict
->   `from_expr`. A residual root, a variable present in a declared parameter
->   type, or a constrained variable is not defaulted. If non-concreteness
->   remains, return the existing located ambiguity error.
-> - **`Unresolved { span, name }`** (a real-span `Var`/`Apply` for which
->   typecheck recorded NO typed verdict — no `VarRef`, no `ApplyRef`) —
->   **PROPAGATES** as a LOCATED typecheck-phase error. It is the phase-boundary
->   gate the carrier exists for; the lenient walk would seam-assert on the very
->   same miss. Callers thread `?`.
->
-> **Conflating the two re-opens the check-gate-leak class one level up**: swallow
-> `Unresolved` into the lenient fallback and a body with no recorded resolution
-> ships to the backend, where the miss resurfaces as a raw codegen error with no
-> source location. When adding a caller, propagate — never `.ok()` — the `Err`.
+- Each product field and each sum constructor has exactly one binding, keyed
+  `Type.member` in the type's home module. The bare spelling is a
+  `NameCandidate` onto it, not a second binding. No sentinel, alias or
+  poisoned entry exists.
+- A product constructor keeps its type-name key and carries the type facet
+  on `CallableOrigin::Ctor { type_def: Some(..) }`. Read an entry as a type
+  only through `checker::type_def_view_of`. Constructors do not auto-curry.
+- `checker.rs::resolve_dotted_member_entry` is the one member resolver for
+  value and pattern positions; `adt::committed_member_owner` is the one
+  owner recogniser.
+- A constructor-key change reaches every crate's raw key probe, not just this
+  one; audit readers workspace-wide (`dotted-ctor-canonical-keys.md` §3).
+- **Known divergences:**
+  - `traits/impl_check.rs::check_impl_method_accessor_collisions` still
+    rejects an impl method named like a field accessor, which
+    `spec/07-traits.md` §7.3.1 permits. It and its tests stay until `qa`
+    intake under [`ACT-0983`](../../sprints/actions/ACT-0983-accessor-impl-collision-intake.md).
+  - Pattern-position selection in `infer.rs::check_constructor_pattern` is not
+    yet the approved lifecycle (`dotted-ctor-registration.md`
+    §"Unresolved obligations").
 
-**Constructor/template distinction.** Synthetic constructor and accessor bodies
-are populated directly at their synthesis seams; polymorphic constructors and
-accessors are `Life::Template` and carry no codegen view. This helper handles
-codegen-bound concrete source bodies only: they must produce a strict view,
-either immediately or after the bounded defaulting step above. There is no
-lenient concrete-body rebuild path.
+## Cross-module monomorphisation
 
-## `Def.callees` completeness contract (S101, FIXME 0470 + 0472)
+Canonical: [`monomorphisation.md`](../../design/typecheck/monomorphisation.md) §3.7.
 
-A checked entry's `callees` names **every statically-resolved user-fn
-reference** in its body — call-position AND value-position (HOF arg, returned,
-stored, curried, nested-lambda), same-module and imported alike — recorded
-uniformly as `Vec<FQSymbol>` (value vs call edges indistinguishable to
-consumers; `design/int/session-transaction.md` §3.2). The feed is two-channel:
+A constrained function called from another module is monomorphised into the
+caller's module as an ordinary concrete binding. Get any of these wrong and
+the symptom is a spurious `no impl of trait T for type X`:
 
-- the body's `ResolvedCall` delta—trait methods, signature dispatch and
-  auto-curry;
-- `BodyFrame.user_fn_refs`—recorded at the `infer_var` chokepoint by
-  `checker::record_reference_target` (the S110 W0.1 "resolve once" consolidation;
-  the former `record_user_fn_ref` was deleted — `infer_var` now resolves each
-  name ONCE via `resolve_ref_target`, writes the TYPED carrier
-  `MethodResolutions.var_refs` (a `VarRef::Global`/`VarRef::Local` verdict — the
-  S114 carrier flip renamed the former `resolved_targets`; its Apply-side sibling
-  is `apply_refs: ApplyRef`), and derives the
-  `callees` edge as a `UserFn`-filtered projection of that resolution) for every
-  successfully-typed `Var` whose name is NOT locally shadowed and resolves
-  (chain-follow to home, prelude-fallback-aware, `lookup`-mirroring qualified
-  candidate order) to a `DefKind::UserFn` `Def`.
+1. The body recheck switches `state.current_module` to the defining module.
+2. Constraint verification maps through the instantiation's original→fresh
+   var mapping, never raw scheme var ids.
+3. Impl lookup roots at the trait's home (`traits/dispatch.rs::has_impl_in_home`).
+   `has_impl_with_state` is test-only; it re-resolves the bare trait name in
+   the caller's scope.
 
-Both channels are combined by the one shared `harvest_callees` projection at
-every body-check seam:
+## Ownership inference seams
 
-- **Pass-2 top-level bodies:** the exact checked ledger record owns its AST and
-  initial callees. Final annotation unions late resolution edges and passes the
-  canonical vector with that body through one checked-settlement call.
-- **Pass-1 impl/default/HKT bodies:** `finalize_impl_method_writeback` harvests
-  while retaining the module used for body checking, then passes the canonical
-  vector through its one local checked-settlement call. A cross-module default
-  therefore attributes local signature dispatch to the trait home, not the
-  impl writer.
+Canonical: [`ownership-inference.md`](../../design/typecheck/ownership-inference.md).
 
-When adding a body-check seam, use the shared `BodyFrame` wrapper and route its
-returned exact references plus the resolution delta through `harvest_callees`.
-Do not publish a body and mutate its callees afterward; a seam that skips the
-atomic payload silently starves the S101 transaction's reverse index.
-
-`CheckState.method_resolutions` remains the sole active resolution record
-through deterministic post-passes. The final sweep moves the complete
-`MethodResolutions`—resolved calls, pattern constructors, variable references
-and apply references—once into `ModuleCheckAccumulator`; no per-form split
-transport is authoritative.
-
-Dispositions: **self-edges are skipped** (the recursion name is a local
-binding in `check_defn_body`, so the shadow gate filters it); non-`UserFn`
-kinds (primitives, constructors, macros, overloaded bases) record no edge —
-their redefinition falls back to module grain (session-transaction §10 T1);
-dotted `Type.member` accessor references are un-recorded residue (T1 covers
-deftype redefinition); **mono-instance bodies (`recheck_body_for_mono`) are a
-deliberate exclusion** — the constrained TEMPLATE's entry carries the complete
-edge set from its own defn-form check, the call-site recorder gives the
-caller→template edge, and mono instances are re-minted whenever their minting
-caller re-typechecks, so the reverse closure is preserved through the template
-chain. Consumers: `save.rs::dependency_sort` (emission order; filters
-self-edges, Kahn's + alphabetical cycle fallback) and the S101 R3
-transaction's reverse index — **silently dropping edges starves its
-affected-set closure**. Changing what `callees` records is a `.meta.json`
-meaning change: bump `CACHE_SCHEMA_VERSION` in the same change-set (the 0472
-seam cure landed inside the S101 v10→v11 window — no re-bump). Guarded by
-`program::callees::tests::callees_*` (S115 FIXME 0722 moved these out of the
-pooled `program::tests::`; `tests/plan/s101-coverage-postmortem.md` §2.1 still
-cites the old path — FIXME 0771 to `/qa`).
-
-## Bare-name resolution & the prelude fallback (S108 Wave-G convergence)
-
-The prelude is **just an implicit `(import [prelude [*]])`** — a
-prelude-provided name is in a module's scope on identical terms to an explicit
-import (spec §8.6.1–§8.6.5, §8.8.1). Whether the implementation materialises
-prelude bindings into each table or consults the prelude on an inner miss is a
-**resolution-mechanism detail with ZERO semantic weight — there is no "outer
-scope" as a language concept**. Design/rustdoc/CLAUDE.md under this ruling say
-"the prelude **fallback**" (a mechanism), never "the outer scope" as a scoping
-level with its own rules.
-
-**Exactly two semantic operations exist, and BOTH consult the prelude:**
-
-1. **resolve-a-reference** — `cranelisp_types::ResolutionScope::resolve`. The
-   fallback is **intrinsic to the scope**, decided ONCE at scope construction
-   (from the `PreludeFallback` role bit), never at a call site. There is no
-   public fallback-less resolution entry point and no per-call fallback flag
-   (Principles 18/20 — the forgettable decision is unrepresentable). Typecheck
-   constructs the scope at the ONE seam `TypeCheckEnv::scope_resolve` (current
-   module) / `scope_resolve_in` (arbitrary root); every bare-name resolution
-   routes through it. The I-1 public-only filter (a private prelude binding must
-   NOT leak / shadow) and the qualified-name-never-retries guard are intrinsic
-   to `ResolutionScope::resolve`.
-2. **may-this-name-be-defined** — the §8.6.4 seam
-   `cranelisp_types::reject_def_over_binding(scope, name, span)`, derived from
-   the SAME resolve walk (typecheck's `reject_def_over_binding` is a 3-line
-   adapter constructing the scope). A binding **consults the prelude to REJECT**:
-   a definition over ANY name in scope — explicit import, export, or
-   prelude-provided — is a §8.6.4 compile-time conflict, **never a shadow**
-   (`home == current_module` ⇒ the module's own prior def ⇒ redefinition
-   allowed; otherwise reject). This is the correction of the former
-   spec-inverted rule of thumb ("pick the non-fallback variant to decide whether
-   a name is *free*", "a user `(deftrait Display …)` may legitimately SHADOW a
-   prelude-globbed one") — a name is NOT free merely because the prelude
-   provides it (§8.6.4); that rule of thumb produced the S14 deftrait
-   silent-accept. Every definition form routes through this ONE seam:
-   `defn`/`deftype` at the `program/register.rs::check_form_register` arms, `deftrait`
-   (trait name + each method name) at the `TraitDecl` arm, `defmacro` in int.
-
-**The ONE legitimate fallback-less probe** is the *idempotent re-registration
-check* — "does THIS module already carry this exact declaration?" (retry-from-top
-re-submission, S86 D3; REPL own-redefinition). That is a raw current-module
-`probe_module_entry_owned` probe, named as a probe: it answers same-module
-IDENTITY, **not** name-freedom, and must never be reachable under a name that
-reads like reference resolution. `registry::register_trait_decl`'s duplicate
-check is exactly this probe (the §8.6.4 name-freedom question already ran at the
-`TraitDecl` arm seam before it).
-
-- **`PreludeFallback`** = `DashMap<ModuleFullPath, bool>` on
-  `TypeCheckEnv.prelude_fallback` (absence-is-OFF, §2.7.1), read ONLY at the two
-  scope constructors via `prelude_fallback_target(current_module) ->
-  Option<prelude_path>` (ON **and** `current_module != prelude`), plus the bulk
-  trait-method-declaring scan `find_trait_method_decl` (an enumeration reader,
-  not the resolve walk). The former per-site prelude-fallback resolver family
-  (the six bare-name chokepoints of the S78 census) is retired — collapsed onto
-  the single scope resolve.
-- **`is_internal_constructor_check_with_state`** — the internal-ctor reject gate
-  (used by `infer.rs` value position + `check_constructor_pattern`). After the
-  current-module gate misses, it re-resolves via the fallback-aware
-  `resolve_entry_scoped` (now a projection over `scope_resolve`) and
-  reads `internal` off the **terminal** `DefKind::Constructor`. **GOTCHA**:
-  `Bind`/`Pure`/`Effect` are registered `Visibility::Public` in `primitives` —
-  the I-1 public filter must NOT hide `Bind`. What rejects `Bind` is its
-  `internal: true` Constructor discriminator, reached *through* the fallback,
-  NOT its visibility.
-
-Rule of thumb when adding a new bare-name path: route it through
-`scope_resolve` / `scope_resolve_in` (reference) or `reject_def_over_binding`
-(definition) — never re-thread `prelude_fallback_target` at a new call site, and
-never add a name-key shortcut to primitives (primitives reach user code only
-*via* prelude's `(export [primitives [*]])` re-export, chain-followed through the
-fallback — the structural-not-skip guarantee).
-
-- **GOTCHA — bare punctuation operators and the `/`-split (FIXME 0328/0331).** The
-  shared `cranelisp_types::ResolutionScope::resolve` primitive (the sole public
-  resolution entry point since S108 Wave-G — the free `resolve`/`resolve_with_fallback`
-  are now private internals) treats a `module/symbol` reference by splitting on `/`
-  (`split_qualified`). The division
-  operator `/` (and `//`) is a legitimate BARE value name (Principle 16). The split
-  is guarded to require BOTH module and symbol parts non-empty, so a standalone `/`,
-  `//`, leading `/bar`, or trailing `foo/` is a literal bare name — NOT qualified.
-  `canonical_symbol` carries the same non-empty-remainder guard so a bare `/`'s
-  `Resolved.fq.symbol` is `/`, not empty. If you ever see a trait operator whose name
-  contains `/` mis-resolving as `undefined variable: /`, the `/`-split lost the guard.
-  (The fix lives in `cranelisp-types::resolve`, `/arch`-owned — file a FIXME, don't
-  add a checker-side literal-lookup short-circuit that re-fragments the chokepoints.)
-
-## Cross-module monomorphisation of constrained fns
-
-A constrained (trait-bound) fn defined in an imported module and called
-cross-module is monomorphised by `pass4_monomorphise`
-(`program/mono_collect.rs::collect_imported_constrained_calls`) →
-`monomorphise_call` (`traits/monomorphise.rs`). The mono variant (`cmp$Int+Int`) is an ordinary concrete
-`UserFn` `Def` registered in the **caller's** module with its own GOT slot — the
-backend's existing concrete-mono codegen path wires it; **no backend special-case**.
-
-The mono path threads `home: Option<&ModuleFullPath>` (the DEFINING module) into
-`get_constrained_fn`, `recheck_body_for_mono`, `resolve_inner_constrained_calls`,
-and `verify_constraints`. Three scoping facts are load-bearing — get any one wrong
-and the call mis-typechecks (symptom: a spurious `no impl of trait T for type X`):
-
-1. **Body re-check switches `state.current_module` to `home`** so the body's bare
-   references resolve in the defining module's import context, not the caller's.
-2. **Constraint verification resolves through the instantiation map**
-   (`instantiate_and_resolve`'s original→fresh `var_mapping`), **not the raw
-   scheme var_ids** — cross-module the original var_ids are stale and may COLLIDE
-   with a caller var.
-3. **Impl lookup for verification roots at the TRAIT'S HOME**
-   (`traits/dispatch.rs::has_impl_in_home`, reached from
-   `traits/monomorphise.rs::verify_mono_constraints`) — Decision 45 writes every
-   `TraitImpl` entry into the trait's defining module, so the coherence question
-   is answered by one keyed scan THERE. **`has_impl_with_state` is NOT the live
-   verification path** — its only remaining caller is the test fixture
-   (`checker/test_support.rs`); it re-resolves the BARE trait name in the
-   caller's scope and therefore wrong-rejects a method-only import (§7.11.2(e)).
-   Do not reach for it in production code.
-
-The full rationale, the var-collision walkthrough, and the sketch/backend
-comparison now live in **`design/typecheck/monomorphisation.md` §3.7
-"Cross-module body-recheck scoping"**. Guarded by
-`program::mono_collect::tests::cross_module_imported_constrained_fn_monomorphises_in_defining_scope`
-(S115 FIXME 0722 moved it out of the pooled `program::tests::`).
-
-## Product-ctor dual facet
-
-A **single-ctor product** type (`(deftype Rectangle [:Int w :Int h])`) has
-type-name == ctor-name, so type and ctor collide on one symbol-table key. The
-surviving entry is the **got-slotted ctor `Def`** (like a sum ctor) carrying a
-**type facet**: `DefKind::Constructor { type_def: Some(Box<TypeDefInfo>), .. }`;
-a **sum/enum** registers a separate `ModuleEntry::TypeDef` with `type_def: None`
-ctors. The product ctor's scheme lives on its own `Def.scheme`, its field names
-on `Def.param_names`. Full design in **`design/typecheck/adt.md` §"Product Type
-Handling"**.
-
-Code-site invariants:
-
-- **`checker::type_def_view_of(&ModuleEntry) -> Option<&TypeDefInfo>`** is the
-  single "entry as a type" reader (`Some` for `TypeDef` OR a product ctor's
-  `type_def: Some(td)`). Every site needing an entry *as a type* routes through
-  it — `ModuleReadView::lookup_type_def`, `resolve_type`,
-  `concrete_type_for_impl_target`, AND `resolve.rs::resolve_named`/`resolve_applied`
-  (the source-annotation `TypeExpr::Named`/`Applied` resolvers). Do NOT re-pattern
-  `TypeDef` directly when a product type must also answer; use the accessor.
-- **Product ctors do NOT auto-curry.** `infer.rs::try_auto_curry` guards at its
-  top: when the `Expr::Var` callee resolves to a `DefKind::Constructor` Def (via
-  `resolve_constructor_entry`), it returns an arity `TypeError` rather than
-  currying (spec §5.2.7). Sum ctors hit the same guard; over-application is
-  rejected by the normal arity check.
-- **`adt.rs::register_type_def_with_ctor_infos`** computes `is_product`
-  (`ctors.len()==1 && ctor-name==type-name`) and registers either a separate
-  `TypeDef` (sum/enum) OR the facet on the lone ctor `Def` (product) — never
-  both. `register_constructors` takes `product_type_def: Option<&...>` and the
-  deftype docstring (product ctor falls back to it, having no `TypeDef`).
-- **Ctor → parent-type** lookups and **pattern-ctor resolution** (`infer.rs`)
-  read the `Def { kind: Constructor }.type_name` arm for products too — no
-  product special-case.
-
-## Module-locality (Principle 17)
-
-Short-name lookup is current-module-only, with per-symbol chain-follow on
-`Import`/`Reexport` entries (`source.module` references). No closure walk, no
-universe scan. `resolve_terminal_entry_and_home` / `chain_follow_to_home` are
-the navigation primitives; staging-aware via `probe_module_entry_owned`
-(FIXME 0179 — staging shadows live when `module_path == staging.module`).
-
-## The two order/settlement seams (S115 W4b — 0772, 0775)
-
-Two seams in this crate were order- or default-sensitive in ways the suite could
-not see. Both cures are structural; both have a measured detection proof.
-
-**`ownership/transfer.rs::join_origin` is COMMUTATIVE (0772, P24).** The join's
-result — variant, param reach, projection flag, and may-alias link set — does not
-depend on which operand is `a`. The pre-fix arm read the joined variant off `a`
-alone (`match a { Conditional => …, other => other }`), which both dropped the
-§17.2 row-4 union it had just computed AND published a hard `AliasOf` claim from
-a may-alias operand — but only when the `Conditional` happened to be the SECOND
-operand. `MonoExpr::If` joins its arms in source order, so the memory-safety
-verdict depended on which `If` arm the programmer wrote the COW producer in
-(`--link` exit 134 in one order, clean in the other, same runtime path). The
-lattice rule now stated plainly: `Unconditional ⊑ Conditional`, the join takes
-the ⊤-ward variant of the two operands, and the link sets UNION — always, both
-orders.
-
-> Section numbers below are `design/typecheck/ownership-inference.md`, which
-> carries the narrative, measurements and alternatives; this note carries only
-> what a narrow-deployed `dev` must not break.
->
-> **The param-reach axis is a SET of parameter INDICES** (§3.3, §3.4).
-> `Origin::Conditional` holds every parameter the value may reach, sorted;
-> `Origin::Unconditional` holds the one parameter it IS. The join is set UNION
-> and nothing else, so commutativity, associativity and idempotence are
-> structural. **Do not reintroduce a representative** — keeping the lowest-index
-> reaching param and discarding the rest is the pre-S121 rule, and it is both
-> F-1 and F-2 (§19.1). The set collapses at ONE boundary only,
-> `origin_to_result_mode`: none ⇒ `Fresh`, one ⇒ the per-index claim, two or
-> more ⇒ `ResultMode::MayAliasAny`.
->
-> **The reach is resolved at the MINT, never re-derived from a name** (§20.2,
-> §20.3). `bindings` is a flat save/restore map, so resolving an origin's root
-> SYMBOL at read time answers whatever that name denotes there, and the shadowing
-> shape is macro-generated (stdlib `case`/`cond` expand to `(let [a a] …)`).
-> **Do not add a site that maps a binding name to a parameter index**; carry the
-> index the origin already holds — that is what makes an unconditional origin
-> reaching no parameter structurally unrepresentable.
->
-> An ordinary USE still widens through an alias and not through an unconditional
-> PROJECTION (`Origin::params_widened_by_use` — the rc-free read path a bare
-> accessor exists for). A CAPTURE widens through both.
->
-> **`bind_pattern`'s `shadow` flag gates the symbol-keyed provenance fact ONLY,
-> never the reach** (§13.6(d), §20.5(i)). The arm's bindings still INHERIT the
-> scrutinee's carried parameter index (§20.3); minting `Origin::Fresh` for them
-> instead is the F-2 narrowing. What consumers read is the fact's PRESENCE, not
-> its symbol — the comment at `ownership/transfer.rs::bind_pattern` names the
-> current consumer set and the falsifier for that reading.
->
-> Pinned by the subject/control pairs in `transfer/tests.rs`
-> (`shadowing_binder_must_not_narrow_the_returned_parameter`,
-> `shadowing_binder_must_not_permute_the_obligation`,
-> `captured_projection_widens_its_parameter_under_a_shadowed_root`,
-> `shadowing_pattern_binder_must_not_erase_the_scrutinee_reach` against
-> `renamed_pattern_binder_projects_the_scrutinee_parameter`) and end-to-end by
-> `tests/shadowed_param_reach_stale_rc_dec.rs`.
-
-**When you touch a join/merge/fold seam here, extend the property cells
-(`transfer/tests.rs::join_lattice_*`), not just the example cells.** Those are
-seam-level algebraic-property cells over the `Origin` lattice with no program
-involved; the pre-existing `msp7_chained_*` cells are program-SHAPE cells over
-one hand-built tree and are structurally incapable of failing on an order
-asymmetry, which is exactly why 0772 passed review-by-suite.
-
-**`mono_collect.rs::resolve_auto_curry` takes a REQUIRED `AutoCurryDrain`
-(0775, P18).** There is no defaulting wrapper and no short convenience name: the
-drain runs at six non-equivalent seams and `Final` — "this seam is settled,
-nothing is held back" — is the dangerous polarity, so it must never be what a new
-seam gets for free. The seam census lives in that function's own rustdoc (two
-`Deferrable` per-form body seams; four `Final` recheck-scoped/settled seams).
-Detection is honest-but-thin: only `body.rs:88` has a unit cell that reddens on a
-flip — see FIXME 0779 (`target: /qa`) for the measured five-of-six gap, and do
-not read the census table as an instrument.
+- `ownership/transfer.rs::join_origin` is commutative: the parameter reach is a
+  sorted set of parameter indices and the join is union. Do not reintroduce a
+  representative parameter; it made memory-safety verdicts depend on `if` arm
+  order.
+- Reach is resolved at the mint, never re-derived from a binding name;
+  macro-generated `(let [a a] …)` shadowing makes names unreliable.
+  `bind_pattern`'s `shadow` flag gates only the symbol-keyed provenance fact,
+  never the reach.
+- When touching a join, merge or fold seam, extend the algebraic property
+  cells (`src/ownership/transfer/tests.rs`, `join_lattice_*`), not only
+  example cells.
+- `mono_collect.rs::resolve_auto_curry` takes a required `AutoCurryDrain`.
+  `Final` is the dangerous polarity; never give a new seam a default. Its seam
+  census is in the function's rustdoc.
 
 ## Testing
 
-### Test homes in `program/` (S115 FIXME 0722)
+- Unit tests live in-crate, driven by `TestFixture` (`checker/test_support.rs`).
+  `TestFixture::new()` seeds a synthetic world from `cranelisp-types` only (no
+  `cranelisp-primitives`). Seed the prelude-fallback bit directly
+  (`tf.prelude_fallback.insert(module, true)`).
+- Registering a type with typed fields in a bare module needs the field types
+  in scope there; prefer nullary constructors for prelude-resident test ADTs.
+- Each `program/` production submodule has a sibling test file
+  (`program/<unit>/tests.rs`); put a test in the home of the unit it
+  exercises. Shared fixtures and the common type re-exports live once in
+  `program/test_support.rs`, so a test file needs only:
 
-The pooled 10,576-line `program/tests.rs` is GONE. Each production submodule
-carries its own sibling test file, so a RED attributes to ONE production unit by
-file (METHOD §2.2 / Principle 23; `design/typecheck/program-decomposition.md` §3):
-
-| Production unit | Test home |
-|---|---|
-| `program/register.rs` | `program/register/tests.rs` |
-| `program/register/multi_sig.rs` | `program/register/multi_sig/tests.rs` |
-| `program/body.rs` | `program/body/tests.rs` (+ `tests/annotation.rs`, `tests/check_form_arms.rs`) |
-| `program/finalize.rs` | `program/finalize/tests.rs` |
-| `program/finalize/ambiguity.rs` | `program/finalize/ambiguity/tests.rs` |
-| `program/mono_collect.rs` | `program/mono_collect/tests.rs` (+ `tests/batch.rs`, `tests/carriers.rs`, `tests/multi_sig.rs`) |
-| `program/callees.rs` | `program/callees/tests.rs` |
-| `program/support.rs` | `program/support/tests.rs` |
-
-Everything shared by more than one of those files lives ONCE in
-`program/test_support.rs` (`#[cfg(test)]`), which also **re-exports** the common
-`cranelisp_types` surface. So a test file needs exactly two glob imports and no
-per-file import churn:
-
-```rust
-use super::*;                             // its own production module
-use crate::program::test_support::*;      // fixtures + the type re-exports
-```
-
-(A nested `tests/<topic>.rs` needs only `use super::*` — the parent test module's
-globs reach it.) When you add a test, put it in the home of the production
-submodule it exercises; when you add a shared fixture, put it in
-`test_support.rs`, never a second copy.
-
-### General
-
-Unit tests live in-crate (`#[cfg(test)]`), driven by `TestFixture`
-(`checker/test_support.rs`). `TestFixture::new()` seeds the full synthetic world
-(`FixtureBuilder::full()` — special forms, builtin type names, macros Sexp/SList,
-the `IO` ADT with `Pure`/`Effect`/`Bind`-internal, Ring 0/1/3 primitives) built
-on `cranelisp-types` only (no `cranelisp-primitives` dep). Seed the
-`prelude_fallback` bit directly (`tf.prelude_fallback.insert(module, true)`) to
-exercise the prelude fallback. Registering a type def with typed fields in a
-bare module needs the field types reachable there — use **nullary** ctors in
-prelude-resident test ADTs to avoid an `Int`-not-in-scope setup failure.
+  ```rust
+  use super::*;
+  use crate::program::test_support::*;
+  ```

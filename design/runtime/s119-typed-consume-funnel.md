@@ -22,7 +22,7 @@
 > produced-value adoption sites, six parent-lifetime child-borrow projections,
 > and four owner-to-raw storage exits. It adds no handle operation or public
 > delta. The primitives and backend consumers are delivered. The exact primitives interior and guard names
-> are in `design/primitives/s122-typed-consume-consumers.md` §3/§6.
+> are in `design/primitives/primitives.md` §2.4.
 >
 > Two old measurements below are historical inputs rather than the S122
 > before-state: the syntactic declaration census is now **150**, not 136, after
@@ -866,8 +866,7 @@ concerned, the moment projection provenance becomes emission-live (ownership
 inference increment II's uniqueness/reuse tokens, or option-2 re-staging elision
 into `--release` under the differential lane). Recording the trigger in
 `tests/plan/PLAN.md` and deleting the FIXME are `/qa`'s; no source work remains
-in either crate, and the conditional detector-oracle protocol
-(`design/intrinsics/diagnostic-modes.md` §9a) is retired unexecuted.
+in either crate, and the conditional detector-oracle protocol is retired unexecuted.
 
 **10.5 D8 types storage transfer; eventual disposer identity remains prose.**
 `StoredField::Owned`, `alloc_adt_3`'s owned fields, and
@@ -917,7 +916,7 @@ this tranche's.
   `Borrowed::to_owned` becomes its only typed caller
 - `design/intrinsics/diagnostic-modes.md` §7.5 — the precheck-hoist precedent for §5 leg 3
 - `crates/cranelisp-platform/src/lib.rs` — the `CLOwned<T>` family (tranche-D naming alignment)
-- FIXME 0768 (detection proofs), FIXME 0859 (§10.4), FIXME 0885 (assert the rule, not the point)
+- FIXME 0768 (detection proofs), FIXME 0859 (disposition 10.4 in `design/runtime/s119-typed-consume-funnel.md`), FIXME 0885 (assert the rule, not the point)
 
 ## 13. Next skills
 

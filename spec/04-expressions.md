@@ -495,7 +495,7 @@ Multi-signature functions support auto-currying. When fewer arguments are suppli
 (let [f (add 10)] (f 5))       ; => 15, curries the 2-arg variant
 ```
 
-## 4.8 Match Expression [Tested crates/cranelisp-backend/src/lib.rs::test_compile_match_with_fields]
+## 4.8 Match Expression [Tested crates/cranelisp-backend/src/compiler/match_codegen.rs::test_compile_match_with_fields]
 
 ```clojure
 (match scrutinee [pattern1 body1 pattern2 body2 ...])
@@ -727,7 +727,7 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [Tested crates/cranelisp-intrinsics/src/trace_format.rs::descriptor_int]
+### 4.12.2 Semantics [Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; call-tree recording is evidenced under §4.12.3 and §4.12.4]
 
 Evaluation proceeds as follows:
 

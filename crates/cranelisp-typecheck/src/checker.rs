@@ -76,16 +76,15 @@ pub type PreludeFallback = dashmap::DashMap<ModuleFullPath, bool>;
 /// re-export edges to canonical primitive entries, Decision 0048).
 pub(crate) const PRELUDE_MODULE: &str = "prelude";
 
-/// The **type-def view** of a resolved `ModuleEntry` — the single reader that
-/// replaces the retired `ModuleEntry::TypeDef.constructor_scheme` smuggling
-/// field (S79 Option 3a, FIXME 0319).
+/// The **type-def view** of a resolved binding — the single "entry as a type"
+/// reader.
 ///
 /// A type name resolves to one of two shapes:
-/// - a `ModuleEntry::TypeDef` — the **sum/enum** case, type name distinct from
-///   every ctor name; or
-/// - a `ModuleEntry::Def { kind: DefKind::Constructor { type_def: Some(td), .. } }`
-///   — the **single-ctor product** case, where the got-slotted ctor `Def` IS
-///   its own type and carries the type facet (type-name == ctor-name).
+/// - a `Decl::Type(TypeRecord::Defined { .. })` binding — the **sum/enum**
+///   case, type name distinct from every ctor name; or
+/// - a constructor callable whose `CallableOrigin::Ctor { type_def: Some(td), .. }`
+///   carries the type facet — the **single-ctor product** case, where the
+///   constructor binding is its own type (type-name == ctor-name).
 ///
 /// This accessor yields `Some(&TypeDefInfo)` for either shape, so every site
 /// that needs an entry *as a type* (resolution, arity validation, exhaustiveness,
@@ -281,11 +280,12 @@ pub struct CheckState {
     /// resolves. The template map also supports ordinary same-cluster nested
     /// mono hops while their declarations remain unpublished. Stack-saved/restored.
     pub(crate) mono_recheck_self: Option<MonoRecheckContext>,
-    /// Per field-accessor name → the owning product types whose accessor
-    /// generation registered (or poisoned) that name. A single entry means a
-    /// normal first-class accessor; two-or-more means the bare name is poisoned
-    /// (§5.2.6) and these are the qualified alternatives (`Box.v`, `Cup.v`)
-    /// listed in the ambiguity error when bare `v` is used.
+    /// Per bare field spelling → the product types whose accessors were
+    /// synthesised under it in this cluster. When a bare use of the spelling
+    /// stays ambiguous, these supply the canonical alternatives (`Box.v`,
+    /// `Cup.v`) listed in the error (spec §5.2.6). A later REPL cluster, with a
+    /// fresh `CheckState`, re-derives them through
+    /// `reconstruct_accessor_alternatives`.
     pub(crate) accessor_owning_types: HashMap<Symbol, Vec<cranelisp_types::FQTypeName>>,
     /// The currently active module path for this check.
     pub(crate) current_module: ModuleFullPath,
@@ -1497,12 +1497,11 @@ where
             return (Some(scheme), None);
         }
 
-        // Try the dotted `Type.member` form (FIXME 0365 / spec §8.5.2). `Box.v`
-        // resolves the field accessor `v` of `Box`; `Maybe.Some` resolves the
-        // constructor `Some` of `Maybe` (S109) — both directly and
-        // unconditionally, bypassing the (possibly poisoned) bare-name lookup.
-        // The member is an ordinary concrete `Def`; typing it is plain
-        // value-position scheme instantiation (the read here returns its
+        // Try the dotted `Type.member` form (spec §8.5.2). `Box.v` resolves the
+        // field accessor `v` of `Box`; `Maybe.Some` resolves the constructor
+        // `Some` of `Maybe` — both directly, whatever candidates the bare
+        // spelling has. The member is an ordinary callable binding; typing it is
+        // plain value-position scheme instantiation (the read here returns its
         // `Scheme`; the caller instantiates with fresh vars).
         if let Some(scheme) = self.resolve_dotted_member(state, name) {
             return (Some(scheme), None);
@@ -1749,30 +1748,26 @@ where
         crate::candidate_selection::is_value_candidate(&resolved.entry).then_some(resolved)
     }
 
-    /// Resolve a dotted `Type.member` field-accessor reference to its accessor
-    /// `Scheme` (FIXME 0365 Item 1 / spec §8.5.2, INVERTED model §1.6).
+    /// Resolve a dotted `Type.member` reference — a field accessor (`Box.v`) or
+    /// a sum constructor (`Maybe.Some`) — to its `Scheme` (spec §8.5.2;
+    /// `design/typecheck/fixme-0365-field-accessor-dotted.md` §1.1).
     ///
-    /// `Box.v` is the **canonical** field accessor of type `Box` — a real,
-    /// uniformly-Public `Def` keyed `Type.field` in `Box`'s home module. It
-    /// resolves directly and unconditionally (no ambiguity ever): `Box.v` always
-    /// names exactly the `Box`-`v` accessor, even when the bare alias `v` is
-    /// contested (the bare `v` is the convenience alias whose ambiguity is the
-    /// resolution concern, never the canonical dotted form). The split is on the
-    /// FIRST `.`: the head (`Box`) is a type name in bare scope, the tail (`v`)
-    /// the field.
+    /// `Box.v` is the canonical, always-Public accessor binding keyed
+    /// `Type.field` in `Box`'s home module. It resolves directly and never
+    /// ambiguously, whatever candidates the bare spelling `v` has. The split is
+    /// on the FIRST `.`: the head (`Box`) is a type name in bare scope, the tail
+    /// (`v`) the member.
     ///
-    /// The read is the canonical accessor `Def.scheme` (Principle 7 — the
-    /// `Def.scheme` is the single source of the accessor's type;
-    /// `committed_accessor_kind` is the single "is this an accessor of this
-    /// type" judgment). The caller (`lookup`) instantiates the returned scheme
-    /// with fresh vars, so the dotted form is an ordinary first-class callable
-    /// typed `(Fn [Type] FieldType)` — no special value-position handling. (The
-    /// bare alias `v` resolves via the ordinary `Import`-chain-follow path in
-    /// `lookup_in_current_module`, not here.)
+    /// The read is the canonical binding's scheme, the single source of the
+    /// member's type; `adt::committed_member_owner` is the single judgment of
+    /// which type owns the member. The caller (`lookup`) instantiates the
+    /// returned scheme with fresh vars, so the dotted form is an ordinary
+    /// first-class callable. A bare `v` reaches the same binding through
+    /// ordinary scope resolution and use-site candidate selection, not here.
     ///
     /// Returns `None` when `name` is not a `Type.member` form, the head does not
-    /// name a type in scope, or `member` is not a field accessor of that type
-    /// (the caller then proceeds to the `/`-split / undefined-variable path).
+    /// name a type in scope, or `member` is not a member of that type (the
+    /// caller then proceeds to the `/`-split / undefined-variable path).
     fn resolve_dotted_member(&self, state: &CheckState, name: &str) -> Option<Scheme> {
         let entry = self.resolve_dotted_member_entry(state, name)?;
         self.extract_scheme_from_entry_owned(&entry)
@@ -1973,45 +1968,45 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<Binding<C>> {
-        // Terminal-entry projection over the single scope resolve (S108 Wave-G).
-        // The same-cluster same-module member-alias hop (bare ctor/field-accessor
-        // → canonical `Type.member`) is handled at the resolution PRIMITIVE
-        // (`cranelisp_types::resolve::chain_follow_committed`, staging-view hop,
-        // W1 commit 1 / `dotted-ctor-canonical-keys.md` §3.5), not here.
+        // Terminal-entry projection over the single scope resolve. The
+        // same-cluster, same-module hop from a bare ctor/field-accessor
+        // candidate to its canonical `Type.member` binding is a property of the
+        // types resolver (`dotted-ctor-canonical-keys.md` §3, reader 5), not
+        // this crate.
         self.scope_resolve(state, name, Span::default())
             .ok()
             .map(|resolved| resolved.entry)
     }
 
     /// Resolve a **constructor reference** in a pattern to its terminal
-    /// `ModuleEntry`, dispatching on whether the name is bare or
-    /// module-qualified.
+    /// binding, dispatching on whether the name is dotted, bare or
+    /// module-qualified. The caller keeps the result only when it is a
+    /// `CallableOrigin::Ctor` callable.
     ///
+    /// - **Dotted** (`Maybe.Some`): the member core shared with value position
+    ///   ([`Self::resolve_dotted_member_entry`]).
     /// - **Bare** (`SCons`): rooted at `state.current_module` with the
-    ///   implicit-prelude fallback (Principle 17 + S78 §2) — exactly
-    ///   [`Self::resolve_entry_scoped`].
+    ///   implicit-prelude fallback (Principle 17) —
+    ///   [`Self::resolve_entry_scoped`]. A spelling with several candidates
+    ///   resolves to none here; the caller then selects among them.
     /// - **Qualified** (`macros/SCons`): an FQ reference that bypasses import
     ///   scope (spec §8.6.6) and roots directly in the named module via
     ///   [`Self::resolve_entry_in_module`]. Quasiquote macros lower their
     ///   templates into qualified `macros/SCons`/`macros/SNil` patterns, so this
-    ///   arm is load-bearing for every macro. The prior `lookup_constructor_scheme`
-    ///   product-fallback leg (which performed this `/`-split before reading the
-    ///   scheme) was retired with S79 Option 3a; the split lives here now so a
-    ///   qualified SUM ctor still resolves through its `Def { Constructor }`
-    ///   entry. No product special-case — a single-ctor product type's ctor
-    ///   `Def` carries `type_name`/`tag` identically.
+    ///   arm is load-bearing for every macro.
+    ///
+    /// No product special-case: a product constructor's binding carries
+    /// `type_name`/`tag` on its `CallableOrigin::Ctor` like a sum
+    /// constructor's.
     pub(crate) fn resolve_constructor_entry(
         &self,
         state: &CheckState,
         name: &str,
     ) -> Option<Binding<C>> {
-        // **Dotted `Type.Ctor` (S109, design §3.3).** A dotted head (`.` and no
-        // `/`) is a canonical constructor reference — resolve it through the SAME
-        // member core the value seam uses, so value and pattern agree by
-        // construction. `(Maybe.Some x)` and dotted nullary `Maybe.Nil` resolve
-        // to the canonical ctor `Def` for both same-module and imported types
-        // (the current-module literal-key hit worked only same-module). The caller
-        // filters the returned entry to `DefKind::Constructor`.
+        // **Dotted `Type.Ctor` (`dotted-ctor-registration.md` §3.3).** A dotted
+        // head (`.` and no `/`) is a canonical constructor reference — resolve it
+        // through the SAME member core the value seam uses, so value and pattern
+        // agree by construction, for same-module and imported types alike.
         if name.contains('.') && !name.contains('/') {
             return self.resolve_dotted_member_entry(state, name);
         }
@@ -2130,7 +2125,7 @@ where
     /// (the false-`Fresh` half of the §3.7 root). Routing all five
     /// `ownership/fixpoint.rs` probes through this ONE helper makes `vec-set`'s
     /// `MayAliasOf(0)` reachable from a prelude-fallback module. Home = the
-    /// terminal storage module ([`Resolved::storage_fq`](cranelisp_types::Resolved::storage_fq)`.module`),
+    /// terminal storage module ([`Resolved::canonical`](cranelisp_types::Resolved::canonical)`.module`),
     /// keeping identity discipline uniform with the 0620/0621 flip. A resolve
     /// error (not-found, private-prelude-filtered, qualified-unknown) maps to
     /// `None` — the same graceful miss the raw helper returns.
@@ -2487,9 +2482,10 @@ where
         traits
     }
 
-    /// State-rooted variant of [`Self::get_impls_for_type`]. Reserved for
-    /// future internal callers (`/repl` and session-layer REPL formatters
-    /// currently use the public default-rooted variant).
+    /// State-rooted variant of [`Self::get_impls_for_type_in_module`], rooted
+    /// at `state.current_module`. Reserved for future internal callers; the
+    /// REPL formatter enumerates impls through
+    /// [`cranelisp_types::get_impls_for_type_chain`] instead.
     #[allow(dead_code)]
     pub(crate) fn get_impls_for_type_with_state(
         &self,
@@ -2755,8 +2751,8 @@ where
         types
     }
 
-    /// State-rooted variant of [`Self::get_implementing_types`]. Reserved
-    /// for future internal callers.
+    /// State-rooted variant of [`Self::get_implementing_types_in_module`],
+    /// rooted at `state.current_module`. Reserved for future internal callers.
     #[allow(dead_code)]
     pub(crate) fn get_implementing_types_with_state(
         &self,
@@ -2842,9 +2838,9 @@ where
     ///
     /// Replaces the deleted `known_type_names*` snapshot builders + the
     /// `resolve.rs` free-function-over-map convention. Resolution matches
-    /// directly on the terminal [`ModuleEntry`] reached by per-name
-    /// chain-follow (`resolve_terminal_entry_and_home`) — no intermediate map
-    /// is materialised. Bare references resolve in `module_path`; qualified
+    /// directly on the terminal [`Binding`] candidates returned by scoped
+    /// candidate resolution (`scope_resolve_candidates_in`) — no intermediate
+    /// map is materialised. Bare references resolve in `module_path`; qualified
     /// `module/Name` references (`TypeRef.module = Some(m)`) resolve in `m`.
     ///
     /// Per Principle 17 — resolution is import-scoped to the calling module's
@@ -2879,7 +2875,7 @@ where
     /// Resolve an **annotation** type expression (`defn`/`fn` parameter, a value
     /// annotation `:a form`, or a type var nested in an applied annotation
     /// `:(Box a)`) to its [`Type`], **minting a fresh type variable** for each
-    /// free lowercase type-var name the source author writes (spec §3.3 [S109]).
+    /// free lowercase type-var name the source author writes (spec §3.3; S109).
     ///
     /// The minted var is bound in `var_map`, so repeated names within one
     /// resolution — and across the whole definition when the caller threads ONE

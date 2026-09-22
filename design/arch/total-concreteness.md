@@ -1,409 +1,202 @@
-# Total concreteness at the end of typecheck — the re-ruling and its route
+# Total concreteness at the end of typecheck
 
-**Status:** NORMATIVE RULING (`/arch`, S119, 2026-07-28) — user-directed re-ruling.
-**Supersedes in scope:** the S119 step-back ruling's *end-state* claim
-(commit `f5d30808`: "the invariant is kind-partitioned, one licence per producer
-class"). The kind-partitioned statement survives ONLY as the **transitional**
-description of HEAD during S119; it is no longer the target architecture.
-**Governs:** `design/arch/bounded-contexts.md` §7 (slot invariant),
-`design/arch/safety-invariants.md` §4 R11, the S120+ producer work this document
-stages, and the NC-1 assertion form (`tests/plan/s119-test-plan.md` §3.7 — `/qa`
-re-routes per FIXME 0930).
-**Does NOT supersede:** `design/backend/non-concrete-release-contract.md` faces
-1–5 or `design/typecheck/non-concrete-producer-obligations.md` P-1/A-MINT/L-1..3
-— every S119 obligation is a strict step toward this target and ships as
-planned (§5).
-**Archive trigger:** the S120 tranche and the S121 Bind tranche (this document’s sections 5.2 and 5.3)
-land; the invariant statements fold into BC §7 + `module.rs` rustdoc + R11; this
-file moves to `design/arch/archive/`.
+**Owner:** `arch`. **Status:** current contract. The invariants in §2 are user-directed
+(2026-07-28, clarified 2026-09-21; §0 quotes them) and ruled by `arch`, which authored the clause wording.
+They are delivered except where a section names an open obligation. §3.4 is the
+canonical IO-node ownership contract, including the 2026-09-21 reuse ruling. The S119 census,
+the staged S120/S121 route, the superseded I-ABI clause and the forty-row requirements
+cross-check are in Git history (the S119 types-first design commission was retired into this
+document at S122).
 
-> **AMENDED 2026-09-01 (`/arch`, S121 Phase 3): the route's vehicle changed;
-> the invariants did not.** The user adopted the unified symbol-lifecycle
-> target (`symbol-table-lifecycle.md`, disposition 2026-09-01), so the
-> "S120 tranche" staging in §5.2 is superseded as a schedule: the per-kind
-> `CtorState` flip does not land first — the ctor template-slot retirement
-> ([constructor retirement](total-concreteness.md#31-constructors-rows-12-monomorphise-per-instantiation-the-template-slot-retires), FIXME 0931), the `vec-len` de-slot (§3.2, 0932), and the platform
-> `Type::Var` refusal (§3.5, 0933) all land as arms of the ONE S121 C1-led
-> lifecycle wash (`Life::Template`/`Concrete`, the §5.5/§5.6 population
-> installs, the manifest-order mint). §5.3's Bind payload-glue tranche
-> (0934) is INCLUDED in S121, ruled below in §3.4. I-CONC/I-FRAME/I-EMIT
-> stand unchanged; the lifecycle machine is their representation.
+Neighbouring contracts, not restated here:
 
-> **AMENDED 2026-09-21 (`/arch`, S122 Phase 5; user ruling): IO values are
-> reusable descriptions of work.** Forcing a node never moves a field out of it:
-> a `Pure` force retains the payload, and an `Effect` node owns a repeatable
-> thunk that teardown discharges. This replaces the S121 once-only `Pure` claim,
-> whose refusal on legitimate reuse was a compiler defect. Canonical contract and
-> delivery status: §3.4; safety-register row R20.
+- [Concrete codegen boundary](concrete-boundary-type.md) — `ConcreteType`, `MonoExpr`, the
+  ambiguity verdict, and the signature-path residuals.
+- [Symbol-table lifecycle](symbol-table-lifecycle.md) — the callable states and slot claims
+  that represent §2.
+- [Safety invariants](safety-invariants.md) — rows R11, R17–R20 grade what this document
+  states.
 
-> **AMENDED 2026-07-28 (`/arch`, the design commission): I-ABI is re-ruled.**
-> The user's follow-on direction (R-25/R-27, preserved in
-> `design/arch/concreteness-types-first.md` §6 — "typecheck must emit fully
-> concrete-typed syntax tree including calls to primitives … I don't think we
-> should tolerate any slotted-and-polymorphic") overrides §2's I-ABI clause:
-> the four-member roster does NOT survive as a typecheck-boundary licence.
-> The replacement clause **I-EMIT** — no polymorphic callable is referenced by
-> the emitted tree; per-member dispositions (`bind`/`race`/`select` re-kind to
-> the inline model; `catch-runtime-error` gets per-instantiation concrete
-> facades over its one uniform body); the roster survives only as the
-> backend-interior **realization roster** — is ruled in
-> `design/arch/concreteness-types-first.md` §1, which also carries the
-> `cranelisp-types` representation design (`CallableSlot` witness mint,
-> `CtorState`), the wash plan, and the 40-row register cross-check. §2's
-> I-CONC and I-FRAME stand unchanged; read §2's I-ABI text and §3.3 as the
-> superseded record.
+Section numbers are stable because designs, source and tests cite them. Retired numbers
+(§1, §4–§6) are not reused.
 
----
+## 0. The ruling
 
-## 0. The user's ruling, verbatim, and what it binds
-
-> "I disagree with arch — we need concrete types at the end of typecheck. we
-> need to eliminate edge cases that seem to need polymorphism. In the future
-> when we have more sophisticated storage layouts, there will be no chances for
-> generic functions."
+> **User, 2026-07-28:** "we need concrete types at the end of typecheck. we need to
+> eliminate edge cases that seem to need polymorphism. In the future when we have more
+> sophisticated storage layouts, there will be no chances for generic functions."
 >
-> "we may also need to handle monomorphisation of polymorphic
-> primitives/intrinsics if there are any."
+> "typecheck must emit fully concrete-typed syntax tree including calls to primitives … I
+> don't think we should tolerate any slotted-and-polymorphic."
 
-The user arbitrates direction; this document rules the route. The direction is
-accepted without dissent, for a reason the S119 census itself supplies: every
-licence the step-back ruling granted to a non-concrete slot holder is a property
-of the **uniform i64 tag-or-pointer representation**, not of the entry kind.
-`design/arch/release-llvm-backend.md` §6/§8 (M5 escape-to-stack, M6 Perceus
-reuse, the S83 §12.1 per-type-representation relaxation, Copy-flattening per
-`ownership-inference.md` R5) schedules the demolition of exactly that uniformity.
-A licence that dies with the representation is not an invariant; keeping it as
-one guarantees a silent wrong-body failure at the moment layouts specialise —
-`(Vec Int)` flat vs `(Vec String)` pointer-array is the textbook case, and it is
-on the roadmap. The kind-partition also kept three licences where the two
-unsanctioned S84→S119 mints demonstrated what licence-shadow costs. The user's
-route deletes the shadow instead of documenting it.
-
----
-
-## 1. The corrected census (read at source, 2026-07-28)
-
-This corrects a **factual error in `f5d30808` and in `/qa`'s follow-up
-`fdea7e29`**: both name `bind : ∀a b.…` and `catch-runtime-error : ∀a.…` as
-*polymorphic slotted primitives*. **They are not slotted.** Both are
-`DefKind::PrimitiveExtern` — slot-less, dispatched by ABI name as a
-`Linkage::Import` (FIXME 0360, S83 Path 1; `src/bootstrap.rs:884-905`,
-`:1129-1160`) — and `callable_got_slot()` answers `None` for them structurally
-(`crates/cranelisp-types/src/module.rs:1446-1471`, the `PrimitiveExtern` arm of
-the fall-through). A universal `slot ⇒ is_concrete()` sweep does **not** RED on
-them. The entries it does RED on are below.
-
-Every polymorphic (non-`is_concrete()`) callable at HEAD, with slot status:
-
-| # | Entry | Kind | Scheme | Slotted? | Where |
-|---|---|---|---|---|---|
-| 1 | every generic-ADT constructor — user `deftype (T a…)` ctors + the bootstrap seeds `Option.Some`, `Result.Ok`/`Err`, `Pair.MkPair`, `SList.SNil`/`SCons`, `IO.Pure`/`Effect` | `Constructor` | `∀a…. Fn(fields…, T a…)` | **YES — mandatory** | `adt.rs` mint; `src/bootstrap.rs::register_synth_adt` |
-| 2 | `IO.Bind` | `Constructor` | `∀a b. Fn([IO b, Fn [b] (IO a)], IO a)` — the **existential** (`b` not recoverable from the result type) | **YES** | `src/bootstrap.rs:760-830` |
-| 3 | `vec-len` | `Primitive { body: Extern }` | `∀a. Fn([Vec a], Int)` | **YES** — the ONE slotted polymorphic primitive | `crates/cranelisp-primitives/src/declarations.rs:660-671` |
-| 4 | `vec-get`, `vec-set`, `vec-push` | `Primitive { body: Inline }` | `∀a.…` | **NO — slot-less by construction** (unit-pinned, `primitives/src/tests.rs:75-99`); emitted inline at each concrete call site; value-position via the backend's span-keyed `__wrap_…__` closure wrappers over the same inline lowering *(corrected 2026-09-01: the `__inlwrap_{bare}_{sig}__` per-concrete-sig family originally cited here never existed in source — §3.2)* | `declarations.rs:672-704` |
-| 5 | `bind`, `race`, `select`, `catch-runtime-error` | `PrimitiveExtern` | `∀a[,b].…` | **NO — slot-less, by-name** | `src/bootstrap.rs` (876, 925-943, 1129-1160) |
-| 6 | the two S119-censused hand-mints: synthetic accessors (F1), residual trait-impl methods (F2) | `UserFn { Concrete }` | non-concrete | **YES — the defects** | `adt.rs:618-637`; `impl_check.rs:1043,1078-1090` |
-| 7 | `PlatformEffect` | — | all concrete at HEAD (`type_vars: vec![]` hard-coded, all shipped manifest sigs concrete) — but a lowercase manifest sig leaf parses to `TypeExpr::TypeVar` and would smuggle a `Type::Var` through `parse_and_check_platform_type_sig` unrefused | n/a (state unoccupied) | `src/platform.rs:360-430` |
-
-Not in the census, verified: multi-sig `$Var` clauses register `Polymorphic`
-slot-less (`program/finalize.rs:696`); `Overloaded` base entries, macro parents
-and `discover-tests` carry no slot; `macros/Sexp` ctors are concrete;
-`sconcat`/`quote-sexp`/Trace accessors are concrete `PrimitiveExtern`. The
-intrinsics archive (`intrinsics_table()`) backs exactly **one** polymorphic
-language callable: `catch-runtime-error`. `bind`/`race`/`select` have no archive
-body — the backend intercepts them by name at the `BuiltinFn` apply arm and
-lowers IO-node construction inline at the (concrete) call site.
-
-**Consequence of the correction:** the population a universal slot sweep REDs on
-at HEAD is rows 1, 2, 3, 6 — generic ctors, `Bind`, `vec-len`, and the two
-hand-mints. Not `bind`, not `catch-runtime-error`. `/qa`'s NC-1 kind-partition
-table was built on the wrong counterexamples (FIXME 0930).
-
----
-
-## 2. The target invariant — stated once, no kind licences
-
-Three clauses; each is assertable on its own.
-
-> **I-CONC (the table).** For every `ModuleEntry` in every symbol table:
-> `callable_got_slot().is_some() ⇒ scheme.ty.is_concrete()`.
-> Universal, kind-free, whole-table. The S84 biconditional restored **as
-> stated** — a def has a GOT slot ⟺ its type is fully concrete — with the
-> reverse direction enforced behaviourally as today (a missed reachable
-> instance is a loud missing-slot failure, never a silent fallback).
-
-> **I-FRAME (the codegen domain).** Every frame the backend compiles, and every
-> call, construction, or release site it emits, carries only concrete types.
-> `defined_symbols()` admits no entry whose scheme fails `is_concrete()` —
-> non-concrete entries are monomorphisation **sources** (templates), excluded
-> exactly as `Polymorphic`/`Constrained` already are. Codegen never sees a
-> `Type::Var`, at any seam, for any kind.
-
-> **I-ABI (the boundary residual, closed and pinned). — SUPERSEDED 2026-07-28
-> by I-EMIT (`concreteness-types-first.md` §1); retained as the record the
-> re-ruling amends.** The only polymorphic
-> callables that survive are **hand-written runtime bodies dispatched by ABI
-> name** — never compiled by codegen, never slotted, never a codegen frame.
-> The roster is closed and enumerated (at HEAD: `bind`, `race`, `select`,
-> `catch-runtime-error`); a pinned unit cell enumerates it, so a new
-> polymorphic import REDs until it is declared with its representation
-> dependencies. Value-position use of a roster member or of an inline
-> primitive always goes through a per-instantiation concrete wrapper
-> (the value-position wrapper family / the mono mint) — the *dispatched*
-> surface is concrete even when the *body* is shared. *(Corrected 2026-09-01,
-> within this retained superseded record: the wrapper family this text named
-> as `__inlwrap` was never a source name; the live family is the span-keyed
-> `__wrap_…__` closure wrapper — §3.2.)*
-
-Under I-CONC + I-FRAME the compiled-code domain reaches **zero polymorphism** —
-no licences, no partition table, one predicate. I-ABI is the honest boundary:
-a hand-written Rust body is below the type system and cannot be "made concrete"
-by typecheck; it can only be (a) kept behind a uniform value ABI it explicitly
-declares, or (b) split per layout class when the ABI stops being uniform. Every
-language with native code has this seam (OCaml/GHC uniform-representation
-externs); what the target adds is that the seam is **four entries, enumerated,
-slot-less, and declared** — so when layouts specialise, the entire re-visit
-surface is a pinned list, not an archaeology project.
-
-**Why this is assertable where the S84 statement was not.** The S84 defect was
-an unstated exception; the S119 partition stated the exceptions but kept three
-licence classes to check by three different instruments. Under this target the
-slot predicate has **no** exception: rows 1–3 of §1 stop holding slots, row 6
-stops existing (P-1), row 7 is refused at mint. The lesson from `f5d30808`
-survives with its conclusion inverted at the fork: *an invariant stated
-universally with an unstated exception is unassertable — state the exception or
-eliminate it*. S119 chose "state"; this ruling chooses "eliminate", and the one
-genuine boundary (I-ABI) is stated as its own closed invariant rather than as an
-exception to I-CONC.
-
----
-
-## 3. The route, per census row
-
-### 3.1 Constructors (rows 1–2): monomorphise per instantiation; the template slot retires
-
-**Target.** A generic ctor's canonical entry (`Type.Ctor` member key) remains as
-the **declaration-side template** — scheme, tag, `field_count`, `type_def`
-facet, docstring, pattern/display/introspection identity — and **loses its
-mandatory slot** when its scheme is non-concrete. It is excluded from
-`defined_symbols()` like every other template. Concrete-ADT ctors (`Tally`)
-keep their slot and are byte-identical to today. Demanded uses are served
-concretely:
-
-- **Direct construction** (`(Bx 5)`) is already inline emission at a concrete
-  `MonoExpr::ConstrADT` site — no entry, no slot, no change.
-- **Value-position use** (`(map Some xs)`) already mints an inline-constructing
-  wrapper at the concrete type (`compile_data_constructor_as_value` +
-  `compile_ctor_wrapper_body`, `fn_as_value/`). The S120 change is to make that
-  wrapper the **instantiation-keyed ctor instance** under the ONE canonical
-  mangler (`build_mangled_name` — P-2 of
-  `non-concrete-producer-obligations.md` applies verbatim), minted from the
-  mono worklist exactly as A-MINT re-runs the accessor synthesiser. A ctor
-  instance is a pure function of `(fqtn, ctor, concrete type args)`; its
-  `debug_assert!` is `is_concrete()` on the minted scheme.
-
-**Why this is cheap — the measured fact that makes it so.** The release
-contract §2.5 measured that the polymorphic ctor template's compiled body is a
-**compiled-but-uncalled artifact on every path probed** — the value path mints a
-wrapper, the direct path lowers inline. The template body and its slot are
-already close to dead weight; census A counted 2,216 template-frame release
-admissions per suite run for frames that exist only to be never called. Retiring
-them is a deletion, not a build-out.
-
-**Relation to face 1 / I-CT′ (the S119 sequencing question, answered).** Face 1
-(delete the template's wild inc/dec pair under I-CT′) ships in S119 **as
-planned**: it closes a live memory-unsafety (~89% of the censused class) with a
-backend-only change and needs no producer. When the S120 ctor tranche lands,
-template bodies stop being compiled at all, and face 1's deletion site vanishes
-with them — face 1 is *subsumed, not contradicted*. I-CT′ itself survives as the
-statement of why a ctor **instance** body also owes zero RC ops (Decision-24
-transfer into the box holds at concrete types too), and — importantly — a
-monomorphised ctor body is exactly what specialised layouts require: the frame
-that stores fields must know their sizes, and after this tranche it does.
-
-**Costs.**
-
-- *Code size / compile time:* one tiny straight-line body per **value-position**
-  instantiation actually demanded (the wrapper population that already exists
-  today), minus one compiled template body per generic ctor declaration. Net
-  expected ≈ zero or negative. MEASURE-C1: wrapper-mint count across the corpus
-  before/after.
-- *GOT pressure (`GotExhausted`, 1024 slots/module/session):* templates stop
-  allocating one slot per generic ctor declaration; instances allocate only for
-  value-position demand, which **already allocates wrapper slots today**. Net
-  expected negative. The `primitives` module (home of `Option`/`Result`/`Pair`/
-  `SList`/`IO`, all cross-module mono targets per FIXME 0355 home-keying) is the
-  one table to watch; MEASURE-C2 records its slot high-water mark.
-- *Cache/schema:* `DefKind::Constructor.got_slot: usize` (mandatory) becomes
-  state-carried (absent on non-concrete templates) — a **serde shape change ⇒
-  one `CACHE_SCHEMA_VERSION` bump**, shared with whatever S120 window `/sprint`
-  designates. Note the S120 witness-mint item was ruled "no bump"; the ctor
-  tranche forces the window, so the two land in the SAME window.
-- *`Bind` specifically:* its slot retires with the class. `Bind` is internal;
-  no user value-position use exists, and the existential means no concrete
-  instance can be demanded — which is correct, because nothing may call it as a
-  value. Its teardown story is §3.4.
-
-### 3.2 The Vec family (rows 3–4): one de-slot; three already-model members
-
-The addendum's instinct is right that the Vec family is the canonical
-layout-exposure case — and the source shows the compiler already holds the
-answer: **inline primitives are concrete-per-use by construction.** `vec-get`/
-`vec-set`/`vec-push` have no shared compiled body: their "body" is emitted at
-each call site from the site's concrete `MonoExpr` types (element category
-drives the RC arm today; element size/stride would drive it under specialised
-layouts), and value-position use goes through the backend's span-keyed `__wrap_…__`
-closure wrappers over the same inline lowering (§3.2's mechanism
-correction). They are **not a residual** — they are the model the rest of the
-family converges to, and they survive layout specialisation by construction
-because every emission point knows the concrete element type.
-
-`vec-len` is the outlier: the one slotted polymorphic primitive in the system,
-`user_extern` with a hand-written body (`vec::vec_len`). Two legal spellings for
-S120, `/design`(backend + runtime pair) chooses:
-
-- **(a) Reclassify Inline** — a length-word load is a trivial inline emission,
-  same shape as `vec-get` minus the element op. Deletes the extern body's
-  language-facing role entirely. Preferred if the emission is genuinely
-  element-independent under the current header contract.
-- **(b) Reclassify `PrimitiveExtern`** — slot-less by-name, joining the I-ABI
-  roster with a declared dependency ("Vec `LEN` field at fixed offset for every
-  element type").
-
-Either way `vec-len` stops holding a slot and I-CONC has no `Primitive`
-exception. Note the honest layout point the addendum asked for: `vec-len` is
-the one family member whose *body* may legitimately survive layout
-specialisation (a common length-word is a layout-contract choice); `vec-get`/
-`set`/`push` cannot — and they already don't share a body. The family's exposure
-is therefore already discharged except for one entry.
-
-> **SETTLED + GATE RULED (`/arch`, 2026-09-01, S121 Phase 3 — consumes the C5
-> primitives design, `design/primitives/s121-c5-primitives-visit.md` §3, and
-> answers its §3.8 gate / H1).**
+> **User, 2026-09-21, on I-CONC's domain:** "I think it is stronger - only concrete
+> signatures should have callable slots."
 >
-> **Spelling (a) — `user_inline` today, `Life::Inline` under the lifecycle —
-> is the ruling**, on that design's four source-backed §3.1 grounds: the
-> applied path has been inline since S102 (`apply.rs:626-643`; the slot is
-> already dead there); the closed three-variant `PrimitiveDecl` set is the
-> crate's structural control and spelling (b) would widen it for one row; a
-> by-name polymorphic extern is the only row shape that could present a bare
-> `Type::Var` to the ABI-kind derivation; and spelling (b) grows the
-> uniform-realization roster against the FIXME 0936 trajectory while
-> preserving the Fact-A non-consuming-body anomaly. The only in-machine
-> alternative under the adopted lifecycle —
-> `Life::Template { body: UniformRust }`, the spelling-(b) analogue — is
-> rejected on the same grounds.
->
-> **Mechanism correction (the `__inlwrap` record — discharges C5 H5(a)).**
-> Value-position use of an inline primitive does **not** ride a
-> per-concrete-sig `__inlwrap` wrapper family: **no `inlwrap` symbol has ever
-> existed in source** (the S102 wrapper-identity naming ruling was never
-> realized). The live mechanism is the backend's span-keyed, unit-local
-> closure wrapper `__wrap_{name}_{disc}{start}_{end}__`
-> (`fn_as_value.rs:154-162`), routed to the inline arm by the kind-keyed
-> `is_inline_primitive_at` test (`context.rs:244-255`) and delegating the
-> wrapper *body* to `vec_codegen.rs::emit_vec_query_into` (`:1113-1213`) — a
-> `(name, arity)` match with `vec-get`/`vec-set`/`vec-push` arms and a
-> located-`CodegenError` fall-through. It has **no `("vec-len", 1)` arm**, so
-> the de-slot needs exactly one backend edit, fully shaped at C5 §3.4
-> (length-word load + the same rc-checked release the `vec-get` arm performs
-> + return).
->
-> **The gate: the arm is C4's, landed DORMANT before the flip.** Neither of
-> C5 §3.8's two routes is taken as offered. The `("vec-len", 1)` arm is
-> allocated to **C4's already-reserved backend visit** (its §11 reservation
-> is the whole `crates/cranelisp-backend/src/` tree, with a
-> `compiler/vec_codegen` module-test row already standing), landed **dormant**
-> in C4's implementation wave: both `emit_vec_query_into` call sites
-> (`fn_as_value.rs:591-596` value position, `:709-736` auto-curry) are gated
-> on `is_inline_primitive_at`, which reads the entry's *kind* — so while
-> `vec-len` remains `user_extern` the arm is unreachable and value position
-> keeps the working GOT/extern path. C5 §3.8's "cannot be split" atomicity
-> claim holds only in the flip-before-arm direction; arm-before-flip is safe
-> at every intermediate state, and is the repository's standing dormant→flip
-> template. Consequences: C5-primitives makes **zero backend edits** (its §9
-> reject 9 tightens to "any backend edit"), the same source area is visited
-> once, and no dispensation or C4 re-open is needed.
->
-> **Historical S121 ordering (the original lifecycle stream plan is in Git):**
-> C4's wave lands the dormant arm → C5's wave flips the declaration
-> (`user_extern` → `user_inline`, P0) which makes the arm live → C5's P1
-> typed-funnel slice then excludes `vec_len` (already removed). The flip is a
-> **precondition of C5's born-settled install conversion**: under the adopted
-> lifecycle the settlement funnel refuses a slot mint against a polymorphic
-> scheme, so "defer P0, keep `vec-len` `user_extern`" is not an available
-> S121 end-state — the only genuine fallback axis is *where the arm lands*,
-> not *whether* the de-slot happens.
->
-> **Acceptance evidence.** C4 (dormant arm): a `compiler/vec_codegen` unit
-> row exercising the `("vec-len", 1)` emission directly, in the same
-> change-set (the arm is otherwise landed-with-zero-consumers); dormancy
-> proven by the golden-CLIF corpus staying byte-identical and the two
-> `tests/vec_query_value_use.rs` `vec-len` cells (`:326`, `:341`) staying
-> green via the GOT path. C5 (flip): the same two e2e cells stay green now
-> through the inline arm (the acceptance cells, `qa`-owned per C5 H4); the
-> projection fixture's one-line diff; the whole-table
-> no-slot-with-`type_vars` negative; NC-1's `vec-len` expected-RED retires;
-> applied-path golden rows unmoved (C5 §3.3).
->
-> **If the C4 allocation proves unsound at wave planning** (e.g. C4's wave is
-> already closed when this ruling is consumed), the fallback is C5 §3.8
-> route 1 — a scoped dispensation to `dev`(runtime pair) for that one arm,
-> atomic with the flip in P0's change-set. Route 2 (re-open C4's design)
-> remains disproportionate and is not authorized.
->
-> **Public-surface ruling (C5 §10 sign-off).** Deleting
-> `crates/cranelisp-primitives/src/vec.rs` with the flip removes exactly one
-> baseline line — `pub mod cranelisp_primitives::vec` — an item-free module
-> name (`vec_len` is `pub(crate)`), with zero workspace consumers outside the
-> crate (only comment references in `cranelisp-intrinsics`, C5-intrinsics'
-> own surface). **Approved as a contraction**: the crate is
-> workspace-internal, so the only compatibility requirement is the standing
-> one — regenerate `public-api.txt` via the canonical command in the same P0
-> change-set, diff included beside the source change
-> (`design/arch/CLAUDE.md` §Baseline-diff discipline). No shim, no
-> deprecation window.
->
-> The two secondary `vec-len` declaration-site records move in their own
-> already-reserved streams, not in a new visit (C5 H6): the
-> `cranelisp-types/src/module.rs:2638` "one polymorphic `Primitive{Extern}`"
-> rustdoc in C1's wash, and the independent scheme seed at
-> `cranelisp-typecheck/src/builtins.rs:1157-1167` in C3's. The `qa`
-> attribution of the `Mode`-keyed wrapper-adaptation ownership defect (C5
-> §2.3 / H4) is **not** decided here and this gate does not depend on its
-> repair — the flip removes `vec-len` from that population without touching
-> `emit_d24_adaptation`.
+> "the retained prior isn't callable by any new callers though - it is retained to avoid
+> stomping on existing callers, before we set up cascading recompiles."
 
-### 3.3 The by-name imports (row 5): the I-ABI roster, pinned — SUPERSEDED 2026-07-28
+- Every licence once granted to a non-concrete slot holder was a property of the uniform
+  `i64` tag-or-pointer representation, not of the entry kind. Layout specialisation
+  ([release-backend proposal](release-llvm-backend.md)) removes that uniformity, so a licence
+  of that kind fails silently — a wrong shared body — exactly when layouts diverge.
+- When sanctioned exceptions falsify an invariant's universal statement, eliminate the
+  exceptions; do not partition the invariant. A kind-partitioned statement was tried at S119
+  and replaced: its predecessor, stated universally with unstated exceptions, was asserted
+  nowhere, and two unsanctioned mints hid behind it for thirty-five sprints.
 
-> This subsection's treatment ("minting per-type wrapper symbols that call the
-> same body would add names without adding soundness") is **overruled in
-> direction by the user** (R-25/R-27): typecheck emits concrete calls for
-> every member; the name IS where the type closes. The ruled dispositions —
-> `bind`/`race`/`select` re-kinded inline, `catch-runtime-error` behind
-> per-instantiation concrete facades, the roster demoted to the
-> backend-interior realization contract, NC-R's re-label — are
-> `concreteness-types-first.md` §1. The text below stands as the superseded
-> record only.
+## 2. The invariants
 
-`bind`, `race`, `select` — backend-intercepted by name, lowering **inline IO
-node construction at concrete call sites**; no shared compiled body exists for
-the construction half. What is shared is the runtime's trampoline/teardown
-machinery, which is tag-directed (self-describing nodes). `catch-runtime-error`
-— one hand-written C-ABI body (`cranelisp-intrinsics::panic`), passing the
-thunk's result word through opaquely and wrapping it in a heap `Result`.
+- **I-CONC (the table).** For every callable in every symbol table, only a concrete
+  signature has a callable GOT slot. Universal and kind-free. The reverse direction is behavioural:
+  a missed reachable instance is a missing-slot failure, never a fallback through a template.
+- **I-FRAME (the codegen domain).** Every frame the backend compiles, and every call,
+  construction or release site it emits, carries only concrete types. A non-concrete callable
+  is a monomorphisation source and is never a codegen target.
+- **I-EMIT (the emitted tree).** The tree typecheck emits references no polymorphic callable.
+  Each call site's dispatch identity resolves to a slotted concrete entry, an inline lowering
+  driven by the site's own concrete types, or a per-instantiation concrete instance of a
+  hand-written runtime body. Polymorphism survives only below the tree, as a backend-interior
+  realization choice (§3.3). I-EMIT replaced the earlier I-ABI roster licence on the user's
+  direction quoted above.
 
-These cannot be monomorphised by typecheck (there is nothing of ours to
-compile), and minting per-type wrapper symbols that call the same body would add
-names without adding soundness. The target treatment is I-ABI: slot-less
-(already true), never compiled (already true), **enumerated and declared** (new,
-S120): a pinned unit cell asserts the roster membership exactly, and each
-member's entry in the roster names the representation facts it assumes (uniform
-value word; IO node tag discipline; closure `DROP_GLUE_PTR`; `Result` Ok/Err
-tag order). When the layout regime changes, the roster is the re-visit list;
-any member whose assumption breaks either gains a boxed-uniform convention at
-the seam or splits per layout class — a decision that sprint takes with the
-list in hand instead of discovering the list.
+How each is held (verified at source, 2026-09-21):
+
+- I-CONC is represented by the lifecycle: `Life::Concrete` and `Life::Broken` carry the
+  `CallableSlot` their arm is settled on; `Life::Template`, inline primitives and
+  host-promised externs have none; `Life::Declared` may retain a displaced prior, which
+  is not callable (next bullet) (`crates/cranelisp-types/src/lifecycle.rs`). The slot's field
+  is private, and every settlement and install funnel converts the scheme through
+  `ConcreteType::from_type` before it claims a slot, refusing with
+  `SlotMintError::NotConcrete`.
+- **Retained prior — `Life::Declared { prior }` conforms.** Physical retention of a slot
+  index is not assignment of a callable slot to the provisional signature (§0, 2026-09-21).
+  - Semantic ownership. The retained index stays the displaced concrete signature's slot. Its
+    GOT cell keeps serving already-compiled callers under that signature's ABI; retention
+    exists so a redefinition does not stomp on them. The provisional scheme has no callable
+    slot: `Binding::callable_got_slot` and `is_callable_target` exclude `Declared`, so no new
+    call site can target it, and publication refuses a `Declared` arm (pin:
+    `crates/cranelisp-types/src/module/tests.rs::redeclaration_rebinds_the_same_slot`).
+  - Exits. Concrete settlement reuses the index only through `CallableSlot::rebind`, which
+    refuses a non-concrete scheme; template settlement and `retire_abi_changing` tombstone
+    it. The index is never reissued (pin:
+    `crates/cranelisp-types/src/module/tests.rs::concrete_to_template_conserves_and_never_reissues_prior_slot`).
+    A tombstone is the same case: an index retained for existing callers, callable under no
+    new signature.
+  - Representation witness. `CallableSlot` is a bare index and the table holding the
+    `Declared` arm does not record the displaced signature. That is an absent witness, not a
+    non-conforming owner: I-CONC does not require it, and no reader needs it there. Every
+    production staging table is seeded empty (`src/worker.rs`,
+    `src/session_v4/index_worker.rs`), so the live table keeps the displaced arm intact until
+    publication, where integration's `PreserveAbi`/`ChangeAbi` decision compares old and new.
+  - Grade. Structural for every reader that uses the two accessors. Asserted, with a
+    falsifier, for the rest: `prior` and `CallableSlot::index` are public, and the falsifier
+    is a read of `prior` outside the types lifecycle funnels that reaches slot emission or a
+    GOT load. QA's one-off static census (2026-09-21) found none.
+- Clone and serde bypass the funnels. `SymbolTable::validate_lifecycle` re-checks every arm —
+  `LifecycleError::NonConcreteSlot` for a slotted non-concrete scheme and `ConcreteTemplate`
+  for the converse — and the cache loader calls it
+  (`crates/cranelisp-backend/src/cache/serialize.rs`), so a stale or corrupt sidecar is a
+  diagnosed recompile. Pin:
+  `crates/cranelisp-types/src/module/tests.rs::load_validation_rejects_nonconcrete_and_out_of_range_claims`.
+- I-FRAME's projection is `SymbolTable::codegen_targets()`; the body half is the
+  [concrete codegen boundary](concrete-boundary-type.md).
+- Rejected representations, retained because each is a plausible future shortcut: the slot
+  inside the codegen view, a `symbol → slot` register beside the GOT, an entry-level split of
+  the declaration union, and distinct index types for host and platform slots. The reasons
+  live on `CallableSlot`'s rustdoc (`crates/cranelisp-types/src/module.rs`) and in
+  [symbol-table lifecycle](symbol-table-lifecycle.md) §4.3 and §8.
+
+### 2.1 Constructor field types at an instantiation
+
+`cranelisp_types::ctor_field_types_at` is the only legal derivation of a constructor's field
+types at a concrete instantiation for category and glue purposes.
+
+- It substitutes the instantiation's arguments into the declared field types and converts
+  each through `ConcreteType::from_type`. An already-concrete constructor projects unchanged
+  and a nullary constructor has zero fields.
+- One residual field refuses the whole constructor (`CtorFieldsAtError::NotConcrete`). It
+  never fabricates: there is no default arm.
+- A caller bug — a key that is not a constructor, a parameter-arity mismatch, an
+  instantiation mismatch — is a typed error distinct from the refusal.
+- Pins: `crates/cranelisp-types/src/heap/value_layout_tests.rs`. Source rustdoc owns the
+  exact signature.
+- Open: the backend's declaration-scheme walk in
+  `crates/cranelisp-backend/src/compiler/context.rs` still fills a missing field type with
+  `Type::Int`; safety-register rows R17 and R18 and FIXME 0929 own its retirement onto this
+  projection.
+
+## 3. Populations
+
+### 3.1 Constructors
+
+- A generic constructor's canonical entry is a declaration-side template: scheme, tag, field
+  count, type facet, docstring and pattern/display identity, with no slot. A concrete-ADT
+  constructor is slotted. Source ADTs split in `crates/cranelisp-typecheck/src/adt.rs` and
+  bootstrap seeds in `src/bootstrap.rs::register_synth_adt`.
+- Direct construction lowers inline at a concrete site. Value-position use and accessors are
+  served by per-instantiation instances minted through the one canonical mangler.
+- `IO.Bind` is a template. Its scheme is existential (`b` in
+  `Bind { inner: IO b, cont: Fn [b] (IO a) }` is not recoverable from `IO a`), it is internal,
+  and no concrete instance can be demanded as a value. Its teardown is §3.4.
+- A constructor instance body owes zero RC operations: fields transfer into the box at
+  concrete types as they did in the template.
+- Open: FIXME 0931 stays open for one bounded evidence disposition — reconciling the retained
+  NC-1 and constructor-partition evidence and MEASURE-C1 (wrapper-mint count) and MEASURE-C2
+  (`primitives` module slot high-water mark) against the delivered lifecycle. Its
+  implementation instructions are superseded.
+
+### 3.2 The Vec family
+
+- `vec-len`, `vec-get`, `vec-set` and `vec-push` are inline primitives
+  (`crates/cranelisp-primitives/src/declarations.rs`): slot-less, with no shared compiled
+  body. Each call site is emitted from its own concrete element type, so the family survives
+  layout specialisation by construction.
+- Value-position use rides the backend's span-keyed, unit-local `__wrap_{name}_…__` closure
+  wrapper over the same inline lowering, with one `(name, arity)` arm per member. No
+  per-signature `__inlwrap` family has ever existed in source; do not cite one.
+- `vec-len` was the last slotted polymorphic primitive. It was ruled inline (2026-09-01)
+  rather than a by-name extern because the closed primitive-declaration set is the crate's
+  structural control, a by-name polymorphic extern is the one row shape that can present a
+  bare variable to ABI-kind derivation, and the alternative grows the §3.3 roster.
+- `pub mod cranelisp_primitives::vec` remains on the primitives baseline as an item-free
+  module. No approval to remove it is in force:
+  - `arch` ruled its deletion a contraction (2026-09-01) scoped to the `vec-len` de-slot
+    change-set. That change-set landed without the deletion, so the ruling's condition has
+    passed, and an `arch` ruling never satisfied the user gate.
+  - Removal is an inter-crate public-API change under root `CLAUDE.md` §Inter-crate
+    public-API user gate. Before implementation `arch` presents the exact delta: one baseline
+    line (`pub mod cranelisp_primitives::vec`), no Rust importer, and the e2e guard
+    `tests/facade_pif_rows.rs` that asserts the line's presence, which `test` revises in the
+    same change-set. After implementation the generated `public-api.txt` diff returns to the
+    user.
+  - The contraction needs no shim or deprecation window.
+
+### 3.3 The uniform-realization roster
+
+- A hand-written runtime body is below the type system: typecheck cannot make it concrete. It
+  is kept behind a uniform value ABI that it declares, or split per layout class when that ABI
+  stops being uniform.
+- The roster is the closed set of generic, slot-less, host-promised bodies:
+  `primitives/bind`, `primitives/race`, `primitives/select` and
+  `primitives/catch-runtime-error`. It is a backend-interior realization contract, not an
+  exception to any typecheck invariant. A new or reclassified member fails the pin until it is
+  declared with its representation dependencies (uniform value word; IO-node tag discipline;
+  closure `DROP_GLUE_PTR`; `Result` Ok/Err tag order). Pin:
+  `src/bootstrap.rs::bootstrap_generic_uniform_body_roster_is_closed`.
+- `bind`, `race` and `select` have no body anywhere: the backend intercepts them by name and
+  lowers IO-node construction inline at the concrete call site. `catch-runtime-error` has one
+  C-ABI body in `cranelisp-intrinsics`.
+- **Open — I-EMIT is not yet delivered for these four.** Each is still a polymorphic entry
+  that the emitted tree references by name. The ratified dispositions are:
+  - `bind`, `race`, `select` re-kind to the inline-primitive model. Precondition MEASURE-RK:
+    a census of their value-position uses; any hit needs its wrapper-body arm before the
+    re-kind, landed dormant as the `vec-len` arm was.
+  - `catch-runtime-error` gains per-instantiation concrete instances named by the canonical
+    mangler, each realised today as an alias onto the one body. The instance name is where
+    the type closes; a layout change then alters realization per instance with no tree change.
+  - No filing carries this work. `sprint` schedules it or records an owned deferral.
+- The `TemplateBody::UniformRust` and `Realization::FacadeOf` carriers exist for that end
+  state; their presence is not evidence of a production roster.
 
 ### 3.4 The IO existential (`Bind`): a representation question, and it dissolves
 
@@ -543,6 +336,7 @@ none is cured by the rules above:
   node and un-popped continuations. Retention changes only magnitude — a leaked
   forced node now leaks its payload or thunk with it. Direction: leak, never a
   second owner.
+
 The separate backend scope-result retain defect (IOR-5) is corrected in the
 working tree ([backend design §8](../backend/s122-closure.md)). The extra retain
 was observed before the change; both IOR-5 controls and IOR-2 now balance.
@@ -596,101 +390,14 @@ otherwise            ⇒ no write                          # degrades like a nul
 `cranelisp_platform::ABI_VERSION` (Principle 14): 9→10 carried the `Pure`
 widening, 10→11 the `Effect` thunk contract.
 
-### 3.5 PlatformEffect (row 7): keep the class concrete by construction
 
-One mint-side gate, S120, `/design`(int): `parse_and_check_platform_type_sig`
-refuses a manifest sig whose parsed type contains any `Type::Var` (today a
-lowercase leaf silently becomes one). A platform fn is a C-ABI body; a
-polymorphic platform sig is a declared contract nothing can check and a
-smuggling route into an otherwise-concrete class. Refusal message names the
-offending leaf. This closes row 7's unoccupied-but-open state permanently.
+### 3.5 Platform effects
 
----
-
-## 4. What `/qa` builds to — NC-1 reverts to the universal predicate
-
-The kind-partition table (`fdea7e29`) is superseded, and its premise examples
-were factually wrong (§1). NC-1's corrected form:
-
-> **NC-1 (universal):** walk every entry in every table:
-> `callable_got_slot().is_some() ⇒ scheme.ty.is_concrete()`. One predicate, no
-> partitions. At HEAD this REDs on: (a) the two `UserFn` hand-mints — open
-> defect, flips with CS-1/P-1 (S119); (b) every generic-ADT ctor template incl.
-> `Bind` — **intentional RED against the S120 ctor tranche** (FIXME 0931);
-> (c) `vec-len` — **intentional RED against the S121 de-slot** (FIXME 0932;
-> settled + gated at §3.2 — the RED retires at C5's declaration flip).
-> Each RED traces to its open item per the failing-not-ignored convention; a
-> RED outside (a)–(c) is a genuine regression. Partner cell: the I-ABI roster
-> pin (§3.3) — slot-less polymorphic imports are enumerated exactly.
-
-This is a cleaner instrument than the partition table: the partition's three
-per-kind instruments collapse into one predicate plus one roster enumeration,
-and "someone simplified the table back to a universal quantifier" stops being a
-failure mode because the universal quantifier is now the ruled form. `/qa` may
-choose to land NC-1 with populations (b)/(c) expressed as a pinned expected-RED
-allow-list (each entry citing 0931/0932) so the cell itself stays a sharp
-regression instrument during the one-to-two-sprint window — that spelling is
-`/qa`'s.
-
-NC-5 (the declaration-channel `CtorMeta` sweep) is **unchanged** — it guards a
-channel NC-1 structurally cannot see, and the ctor tranche makes its flip
-criterion *reachable* (category/glue queries move to concrete instantiations;
-the R17 census's ctor partition drains).
-
----
-
-## 5. Sequencing
-
-### 5.1 S119 — ships exactly as planned
-
-No landed S119 ruling is invalidated as *S119 work*. P-1/CS-1..3, A-MINT, the
-F2 mono trigger, L-1..3 defaulting, faces 1–5, 0917, the 0923 intrinsics split:
-every one is a strict step toward §2 (they all move population toward
-concreteness or delete fabrications). Phase 5 dispatches unchanged. The only
-S119-window corrections are documentary: the `f5d30808` texts' factual error and
-end-state claim (amended in this change-set: BC §7, `interfaces.md`,
-`module.rs` rustdoc, R11), and `/qa`'s NC-1 form (FIXME 0930, before `/testing`
-authors the cell).
-
-### 5.2 The structural tranche — superseded as a schedule (see the 2026-09-01
-amendment box): items 1–6 land as arms of the S121 C1-led unified-lifecycle
-wash, not as a standalone S120 per-kind flip
-
-1. **Ctor monomorphisation + template slot retirement** (§3.1) — FIXME 0931,
-   `/design`(typecheck) with backend adjacency; ONE schema window shared with:
-2. **The types-owned witness mint + R6 load-boundary re-check** (already ruled
-   in `f5d30808`, unchanged — it becomes the crate-boundary form of the now
-   *universal* gate: with the Constructor exception gone, the fallible
-   `Concrete{slot}` constructor and the ctor-instance mint enforce the same
-   single predicate).
-3. **`vec-len` de-slot** (§3.2) — FIXME 0932; design settled (the S121 C5
-   primitives visit + the §3.2 gate ruling): C4 lands the dormant backend arm,
-   C5 flips the declaration.
-4. **Platform sig `Type::Var` refusal** (§3.5) — FIXME 0933, `/design`(int).
-5. **I-ABI roster pin cell** (§3.3) — with 0932's change-set.
-6. **NC-1 universal flip** (§4) — FIXME 0930, `/qa`.
-
-### 5.3 S121 — the Bind payload-glue word (§3.4, ruled) — FIXME 0934; retires
-the face-4 bounded residual; C4 stamps + C5 discharges + C7 bumps
-`ABI_VERSION` 9→10 and rebuilds fixtures.
-
----
-
-## 6. Register and principle consequences
-
-- **R11** (`safety-invariants.md` §4): invariant cell restated to §2's
-  I-CONC/I-FRAME/I-ABI with the staged populations; the kind-partition text
-  demoted to the transitional record; the `bind`/`catch-runtime-error` factual
-  error corrected. Done in this change-set.
-- **R17/R18:** mechanisms unchanged. Note added to R17: the S120 ctor tranche
-  is what makes the census's ctor partition drain to zero reachable.
-- **Phase-7 candidate (amends the one recorded in `f5d30808`):** Principle 20's
-  refinement is NOT "kind-partitioned scope" — it is: *when an invariant's
-  universal statement is falsified by sanctioned exceptions, prefer eliminating
-  the exceptions to partitioning the invariant; a partition is a transitional
-  record, not an end state. State-or-eliminate, and eliminate when the
-  exception is representation-contingent.* The unassertability lesson survives
-  verbatim.
-- **The I-ABI roster** is the durable manifestation of "declared contract":
-  R3/R16 keep their per-member instruments; the roster adds the closed-world
-  enumeration those instruments quantify over.
+- A platform function is a C-ABI body, so a polymorphic platform signature is a declared
+  contract nothing can check. The class is concrete by construction:
+  `SymbolTable::install_platform` converts the manifest scheme before it claims the
+  descriptor-order slot, and `src/platform.rs` reports a refusal as a module error naming the
+  platform function. The error carries `Span::SYNTHETIC`, not a source location.
+- Open: FIXME 0933 also asked for a parse-side refusal naming the offending lowercase leaf.
+  The structural gate is delivered; the filing's disposition against source is
+  `design`(int)'s.

@@ -81,20 +81,32 @@ pub struct ActiveConstraints { constraints: HashMap<TypeId, Vec<FQTraitName>> }
 
 Held on `CheckState.active_constraints` (`checker.rs:145`). Tracks trait constraints on type variables **during** inference: populated when a constrained scheme is instantiated (`instantiate_constrained`, `monomorphise.rs:22` → `active_constraints.add(fresh_var, trait)`), consulted during `generalize` (`checker.rs:1900`) to propagate constraints onto the generalized scheme. Idempotent adds (duplicate `(TypeId, FQTraitName)` ignored). Snapshotted/restored across passes (`form.rs:284`, `program.rs:2426`); reset only by the test-only `clear_transient_state`. It accumulates across a compilation unit and is NOT cleared between top-level forms — `generalize` resolves constraints through the substitution so a constraint recorded on one variable correctly attaches to the variable it was unified with (§6 Invariant 7).
 
-### 1.6 The `traits/` module layout (S87 Wave-5e decomposition)
+### 1.6 The `traits/` module layout
 
-The former monolithic `traits.rs` is five cohesive production submodules under a hub (`design/typecheck/s87-traits-decomposition.md` §1). All items are crate-private (`lib.rs` declares `mod traits;` — never `pub`; `public-api.txt` byte-identical):
+The cut and its visibility rule are in [`typecheck.md` §3.1](typecheck.md#31-module-map).
+Each submodule owns one concern:
 
-| Submodule | LOC | Concern |
-|---|--:|---|
-| `traits/mod.rs` | 89 | hub: submodule decls, crate-internal re-exports, `mangle_trait_method` |
-| `traits/registry.rs` | 552 | **write-side**: `TraitDecl` → symbol-table state; `ActiveConstraints`; `register_trait_decl`, `register_hkt_trait`, `register_trait_method`, `build_method_type` |
-| `traits/impl_check.rs` | 1,355 | impl recording (`register_trait_impl`, `:94`) + method-body checking (`check_impl_method`, `check_impl_method_with_sig`, default generation) |
-| `traits/dispatch.rs` | 555 | **read-side**: `try_resolve_trait_method`, `primitive_for_trait_method`, HKT/return-type dispatch helpers |
-| `traits/monomorphise.rs` | 1,326 | the monomorphisation engine + mangling primitives (`monomorphise_call`, `recheck_body_for_mono`, `build_mangled_name`, `concrete_type_name`) |
-| `traits/type_resolve.rs` | 292 | `TypeExpr → Type` resolution free functions |
+| Submodule | Concern |
+|---|---|
+| `traits/mod.rs` | hub: submodule declarations, crate-internal re-exports, `mangle_trait_method` (§3.1) |
+| `traits/registry.rs` | write side: a declaration becomes symbol-table state; `ActiveConstraints` |
+| `traits/impl_check.rs` | impl recording and method-body checking, including HKT impl methods and default generation |
+| `traits/dispatch.rs` | read side: which impl a call resolves to, including dispatch-argument selection for HKT and nullary return-type dispatch |
+| `traits/monomorphise.rs` | the instance engine (`monomorphisation.md` §3.9) and `concrete_type_name` |
+| `traits/type_resolve.rs` | impl-target, declaration-identity, occurrence and constructor-variable predicates |
 
-`traits/test_helpers.rs` (381, test-only) + a sibling `{mod}/tests.rs` per production submodule carry the test surface. (Counts measured 2026-09-01; `impl_check.rs` has grown ~50% since the S87 cut. Maintainability watch-items live in `typecheck.md` §3.2, not here.)
+Two cohesion rules keep future edits from scattering related logic:
+
+- A dispatch-argument-selection helper lives in `dispatch.rs` beside
+  `try_resolve_trait_method`, its caller.
+- The bulk trait-declaration scan `find_trait_method_decl` is the one place that
+  applies the prelude fallback and its public-head filter to a method-name search.
+  It answers "which visible trait declares this method", not a name resolution, so
+  it is not folded into the scope resolver. Its result keeps "method absent"
+  distinct from "method present with no HKT index".
+
+`traits/test_helpers.rs` and a sibling `tests.rs` per submodule carry the test
+surface; maintainability watch items are in `typecheck.md` §3.2.
 
 ## 2. Trait Declaration (`deftrait`)
 
@@ -255,7 +267,7 @@ and 26).
 
 1. **Trait lookup + target resolution.** Chain-follow the trait reference to its `TraitDecl` (error if unknown); resolve the impl target to its `FQTypeName` (`concrete_type_for_impl_target`, ADT-arity-checked).
 2. **Required-method check** (`check_impl_methods_present`, `impl_check.rs:581`): every method without a `default_body` MUST be provided; defaulted methods may be omitted.
-3. **Field-accessor collision check (spec §7.3.1, FIXME 0365).** An impl method whose name equals an existing field-accessor name of the target type is rejected at impl time (see `design/typecheck/fixme-0365-field-accessor-dotted.md` §2 — the check runs alongside `check_impl_methods_present`, before the impl entry is written).
+3. **Field-accessor overlap — no required check.** Spec §7.3.1 permits an impl method whose name equals a field-accessor name of the target type; the method and the accessor stay distinct canonical declarations (`design/typecheck/fixme-0365-field-accessor-dotted.md` §2). As built, `check_impl_method_accessor_collisions` still rejects such an impl here, before the impl entry is written. That rejection is obsolete; its defect intake is `ACT-0983` and its removal is §2.1 of the same document.
 4. **Default-method generation** (`generate_default_methods`): for each omitted defaulted method, mint a mangled `Defn` (§3.1) whose body is built by `build_default_body`.
 5. **Impl entry write — two carriers, one derivation, one transaction.** Stage `ModuleEntry::TraitImpl { trait_name, impl_type, impl_module, methods, visibility: Public }` under the `trait_impl_key` storage key in the **trait's defining module** (Decision 45 as amended, §1.3), retaining the prior entry so the method-check transaction can restore it; and in the **writer's own** table stage the `WrittenTraitImpl` persistence record from the *same* resolved values, under the same retain-prior/rollback discipline. See below.
 6. **Method-body type-checking** (`check_impl_method` / `check_impl_method_with_sig`): resolve the concrete `Self` type, seed a `var_map` `{ trait_type_param → concrete_self }`, resolve each signature param/return through `resolve_trait_type_expr`, and check the body against those concrete types (`check_defn_body_with_types`). The mangled-name `Def` writeback (with its `codegen_view`, `callees`, `ast`) runs through the shared `finalize_impl_method_writeback` tail (the single/HKT paths converge there).
@@ -652,36 +664,25 @@ The typechecker emits `ResolvedCall::TraitMethod` for *all* trait-method calls; 
 
 ## 8. Monomorphisation
 
-Full engine design: `design/typecheck/monomorphisation.md`. Locus: the **collection/driver** lives in `program.rs` (Pass 4), the **per-call engine** in `traits/monomorphise.rs`.
+`monomorphisation.md` is the subsystem design; this section records only what the
+trait subsystem contributes to it.
 
-### Collection (Pass 4, `program.rs`)
-
-`pass4_monomorphise(state, defns, constrained_fn_names) -> Result<Vec<MonoDefn>>` (`program.rs:3367`):
-
-1. `collect_constrained_calls` (`program.rs:3858`) walks non-constrained bodies for `Apply` nodes whose callee is a known constrained function → `(fn_name, arg_spans, call_span)` triples (plus `collect_imported_constrained_calls` for cross-module callees, and the parametric-call collectors).
-2. Resolve argument types from the resolved `expr_types`.
-3. Deduplicate on the mangled key `fn_name$Type1+Type2+…` — one `MonoDefn` per unique specialization.
-4. `monomorphise_call` per unique specialization.
-5. Record `ResolvedCall::SigDispatch { mangled_name }` per call site.
-
-### The engine — `monomorphise_call` (`traits/monomorphise.rs:83`)
-
-`monomorphise_call(state, fn_name, arg_types, call_span, home: Option<&ModuleFullPath>) -> Result<Option<MonoDefn>>` is a 7-phase sequential driver (phase boundaries + state-channel invariants: `s87-traits-decomposition.md` §2). Sketch: look up the `ConstrainedFn` (module `home` for imported callees); instantiate + unify params to concrete; verify each constraint has an impl (rooted in `home`); pin the call-site return; re-check the body with concrete types under the `home` module switch (`recheck_body_for_mono`), harvesting per-mono resolutions/expr-types; record self-recursion dispatch; build the annotated mono `Defn` and its concrete-boundary codegen view (`MonoExpr::from_expr` — the §3.11.1 ambiguity error on a non-concrete body); register the mono entry.
-
-**Cross-module scoping (load-bearing).** The `home` (defining) module threads into `get_constrained_fn`, `recheck_body_for_mono`, `resolve_inner_constrained_calls`, and `verify_constraints`. Three facts, any wrong ⇒ spurious `no impl of trait T for type X`: (1) body re-check switches `state.current_module` to `home`; (2) constraint verification resolves through the instantiation `var_mapping`, not raw scheme var-ids (cross-module the raw ids may collide with a caller var); (3) impl lookup for verification roots in `home` too. Full walkthrough: `monomorphisation.md` §3.7.
-
-### `MonoDefn` — the codegen-view carrier (shape change vs the retired model)
-
-```rust
-// cranelisp-types::check — check.rs:156
-pub struct MonoDefn { pub defn: Defn }
-```
-
-> **Delta from the old design.** The pre-S84 `MonoDefn` carried its own `resolutions: MethodResolutions` + `expr_types: HashMap<Span, Type>` side maps. Those were **dropped**: a minted mono instance is registered as an ordinary concrete `ModuleEntry::Def` in the **caller's** module (its own GOT slot), and its per-specialization body view rides the entry's **`codegen_view: Option<MonoDefnVariant>`** (the concrete-boundary `MonoExpr` body, `crates/cranelisp-typecheck/CLAUDE.md §"Concrete-boundary codegen_view"`), not a side `Vec`. The backend's existing concrete-mono codegen path wires it — no backend special-case. `MonoDefnVariant` (the codegen-view type, `mono_expr.rs:477`) is distinct from `MonoDefn`.
-
-### REPL path
-
-The REPL monomorphises on demand: scan the symbol table for constrained-fn names, `collect_constrained_calls` on the expression, resolve arg types from `expr_types` (subst-applied), `monomorphise_call` per site. Runs for both expression and defn REPL inputs.
+- **Collection and driver.** `program/mono_collect.rs::pass4_monomorphise` runs in
+  the settlement windows of `monomorphisation.md` §3.3 and derives one complete
+  `MonoDemand` per use; instance identity is the demand's `InstanceLink`
+  (`monomorphisation.md` §3.5), not a trait-side mangled key.
+- **Engine.** `traits/monomorphise.rs::monomorphise_call` instantiates one template
+  from a demand. Its phases and the state channels they preserve are
+  `monomorphisation.md` §3.9; a non-concrete instance body is refused by the
+  ambiguity backstop (`monomorphisation.md` §4).
+- **Cross-module scoping.** An imported template is rechecked in its defining
+  module, verified through the instantiation's variable map, and impl lookup roots at
+  the trait's home (`monomorphisation.md` §3.7).
+- **Output.** An instance is an ordinary concrete entry in the caller's module whose
+  codegen view rides the entry; `MonoDefn` is a plain `Defn` wrapper
+  (`monomorphisation.md` §3.6).
+- **REPL.** REPL input takes the same `check_forms` path; there is no separate REPL
+  monomorphisation pass.
 
 ## 9. Multi-Signature Functions
 
@@ -756,6 +757,6 @@ The ring axis (which structured earlier trait work) was **retired as a schedulin
 - `design/typecheck/signature-match.md` — multi-sig match predicates.
 - `design/typecheck/qualified-trait-impl.md` — Sprint-117 canonical
   conventional/HKT impl-reference resolution and enrollment.
-- `design/typecheck/s87-traits-decomposition.md` — the `traits/` module cut + `monomorphise_call` phase boundaries.
-- `design/typecheck/fixme-0365-field-accessor-dotted.md` §2 — the impl-time field-accessor collision check (§3 step 3).
-- Sources: `crates/cranelisp-typecheck/src/traits/{mod,registry,impl_check,dispatch,monomorphise,type_resolve}.rs`; `checker.rs` (`TypeCheckEnv`, `CheckState`, `method_to_trait_*`, `has_impl_*`, `generalize`); `program.rs` (§8.6.4 seam arms, `pass4_monomorphise`); `cranelisp-types::module` (`ModuleEntry::TraitDecl`/`TraitImpl`, `Def.trait_origin`); `cranelisp-types::check` (`Scheme`, `ConstrainedFn`, `MonoDefn`).
+- `design/typecheck/hkt.md` — higher-kinded declarations, the impl kind-check seam and HKT dispatch.
+- `design/typecheck/fixme-0365-field-accessor-dotted.md` §2 — impl methods sharing a field-accessor spelling, and the obsolete as-built rejection described in this document’s registration pipeline.
+- Sources: `crates/cranelisp-typecheck/src/traits/{mod,registry,impl_check,dispatch,monomorphise,type_resolve}.rs`; `checker.rs` (`TypeCheckEnv`, `CheckState`, `method_to_trait_*`, `has_impl_*`, `generalize`); `program/register.rs` (Pass-1 registration arms); `program/mono_collect.rs` (`pass4_monomorphise`); `cranelisp-types::module` (`ModuleEntry::TraitDecl`/`TraitImpl`, `Def.trait_origin`); `cranelisp-types::check` (`Scheme`, `ConstrainedFn`, `MonoDefn`).

@@ -728,7 +728,7 @@ fn density_facts_absent_admits_like_pre_b4() {
     );
 }
 
-// ===== The positional-spark matrix (`design/backend/binding-scope.md` §3.4) ====
+// ===== The positional-spark matrix (`design/backend/binding-scope.md` §"Binding environment") ====
 //
 // Per-binding-vector lenient state is indexed by BINDING POSITION and read
 // through the one shared resolver [`super::binder_before`], so a rebinding

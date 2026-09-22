@@ -20,7 +20,7 @@ The layout tables and diagrams in §12.1.1–§12.1.5 below document the **curre
 
 Scalar values are NOT heap-allocated. They require no memory management.
 
-### 12.1.2 String [Tested crates/cranelisp-intrinsics/src/heap_string.rs::test_alloc_string_empty]
+### 12.1.2 String [Tested crates/cranelisp-intrinsics/src/heap_string/tests.rs::test_alloc_string_empty]
 
 Strings are heap-allocated, immutable, UTF-8 byte sequences. The layout from the returned pointer is:
 
@@ -124,7 +124,7 @@ mapped in [PLAN.md, S122 W3c reconciliation](../tests/plan/PLAN.md#s122--w3c-tra
 tests/adt_wrapped_supersede_leak_0720::adt_wrapped_supersede_residue_does_not_scale_with_n,
 tests/capture_drop_glue_strands_nested_heap_0760::nested_adt_chain_past_glue_depth_limit_does_not_leak]
 
-### 12.3.2 Implementation Freedom [Tested crates/cranelisp-intrinsics/src/alloc.rs::test_live_allocs_tracking]
+### 12.3.2 Implementation Freedom [Tested crates/cranelisp-intrinsics/src/alloc/tests.rs::test_live_allocs_tracking]
 
 The implementation MAY use any memory management strategy:
 
@@ -166,7 +166,7 @@ A runtime error (§12.7) raised while evaluating any binding or argument — whe
 
 This propagation rule, and the sequential-equivalence guarantee it preserves, govern **structured joins only** — computations the enclosing expression awaits. A **detached strand** (a launched-and-not-joined effect, [§10.12.7](10-io.md#10127-launch-and-continue-detached-effects)) is deliberately outside both: it has no join point, so its fault does not ferry anywhere and the first-error-wins rule does not reach it, and it is not part of the sequential-equivalence guarantee (its result is discarded, so the value the program computes is unchanged, but its timing overlaps the continuation and its fault is contained by the supervisor rather than aborting the program — see §10.12.7 and §12.7.9). A **cancelled effect** (a `race`/`select` loser, a `timeout`'d effect — §12.4.4) is likewise outside both: it is abandoned before completion, so it produces no value to join and no completion side-effect, and it is not part of the sequential-equivalence guarantee. The first-error-wins propagation, the detached-strand carve-out, and the cancellation carve-out are the three boundaries of the structured-join guarantee. [S77 — defect repro S76; S92 — apply-arg extension; S96 — detached-strand + cancellation carve-outs]
 
-### 12.4.4 Structured Control Combinators and Cancellation [S96]
+### 12.4.4 Structured Control Combinators and Cancellation [Uncovered S122]
 
 The explicit-control combinators — `race`, `select`, and the derived `timeout` ([§10.12.8](10-io.md#10128-structured-control-combinators--race--select--timeout)) — and the **structured cancellation** they rest on ([§10.12.9](10-io.md#10129-structured-cancellation)) are part of the language's IO model. This subsection pins their **typing** and **runtime semantics**; §10.12.8–§10.12.10 state the user-observable contract.
 
@@ -185,7 +185,7 @@ timeout : forall a.   Int -> IO a -> IO (Option a)
 
 **Construction is pure; the composed effect runs at the trampoline.** Applying a combinator builds an IO node and runs nothing — consistent with the laziness of `IO` everywhere (§10.3). The concurrent composition executes only when the resulting `IO` is sequenced into the program's effect (via `bind!` / `do`) and reaches the trampoline, which interprets the node by running the branches concurrently on the same execution substrate as `Par` (§10.12.5, §10.12.6) and resolving to the winner. The mechanism is implementation-internal and not prescribed (§10.12.5): a conforming implementation maps `race`/`select` onto its substrate's first-completion primitive and `timeout` onto a timer raced against the effect.
 
-**Cancellation is the consequence of an effect ceasing to be awaited — not a user primitive.** There is no `cancel` function and no user-installable cancellation handler (consistent with §12.7's "no user-exposed panic/try-catch mechanism"). An effect is cancelled exactly when it loses a `race`/`select`, when its `timeout` timer fires first, or when its enclosing scope exits before it completes. The runtime realises cancellation by **dropping the in-flight effect's future**; that drop is what discharges the §10.12.9 obligations:
+**Cancellation follows the program's effect structure — it is not a user primitive.** There is no `cancel` function and no user-installable cancellation handler (consistent with §12.7's "no user-exposed panic/try-catch mechanism"). An in-flight effect is cancelled exactly when the cancellation context it executes in is cancelled ([§10.12.9](10-io.md#10129-structured-cancellation)): because its `race`/`select` branch loses, because its `timeout` timer fires first, or because an enclosing context is cancelled. This includes every detached strand launched within that context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), independent of whether the runtime ran a given eligible effect detached, inline or on a worker. Function return and normal completion cancel nothing. The runtime realises cancellation by **dropping the in-flight effect's future**; that drop is what discharges the §10.12.9 obligations:
 
 1. **Resource release on drop.** Dropping a cancelled effect's future MUST release every resource it held: an acquired resource-capacity **permit** (§10.12.4.1) returns to its token pool, and any registered reactor interest (an fd-readiness wait, a timer) is deregistered. This is the runtime obligation underneath §10.12.9 item 1 — a permit freed by cancellation MUST become claimable by an effect parked on that token, and a cancelled effect parked *awaiting* a permit MUST be removed from the pool's wait queue so it cannot strand a later release. Cancellation under volume (a long-running server cancelling per-request work) MUST NOT leak permits or reactor registrations.
 2. **No completion side-effect; no fault.** A dropped effect does not run to its completion side-effect (§10.12.9 item 2) and raises no runtime panic into the cancelling context (it is not routed through the §12.4.3 fork-join ferry, nor to the supervisor of §12.7.9 — §10.12.9 item 3). Side-effects already performed before the drop point are **not** rolled back.
@@ -231,7 +231,7 @@ The following are compile-time errors:
 - Parse errors (malformed syntax) [Tested tests/repl_negative::parse_error_stray_close]
 - Type errors (unification failure, arity mismatch) [Tested tests/repl_negative::type_error_arg_mismatch]
 - Unbound variable references [Tested tests/repl_negative::unbound_bare_symbol_error]
-- Ambiguous name resolution [Tested crates/cranelisp-typecheck/src/checker.rs::test_import_ambiguity]
+- Ambiguous name resolution [Tested tests/spec_06_pattern_matching::contested_bare_pattern_indeterminate_scrutinee_poisoned_neg]
 - Macro expansion errors (non-Sexp return type, expansion limit exceeded) [Tested tests/spec_09_macros::macro_body_non_sexp_int_rejected_neg, tests/spec_09_macros::neg_macro_expansion_depth_limit_exceeded]
 
 ### 12.7.2 Runtime Panics [Tested]
@@ -388,7 +388,7 @@ The supervisor is a **scheduler-/platform-declared policy**, not a pure-language
 2. **The fault is handled by a declared policy, not silently discarded.** The reference workload's default policy for a request handler is **respond 500 + log + drop that request**: the faulting request receives its error response (the 500), and the failure is recorded — a supervised drop does NOT vanish, it surfaces through the dev-facing strand/log sink of the observability stream (see [§10.12.6](10-io.md#10126-execution-substrate-and-slice-delivery-informative) and [§4.12](04-expressions.md#412-trace-expression)). Only that one request is abandoned. [S96]
 3. **Both extremes are non-conforming.** The supervisor MUST NOT abort the whole program on a detached fault (the structured-join behavior — wrong for fire-and-forget), and it MUST NOT swallow the failure without trace (which would make supervised drops unobservable by construction). [S96]
 
-This contract is **observational and mechanism-neutral**: it constrains what a program and its operator observe — that the server lives, that the faulting request gets an error response, and that the drop is recorded — not how the runtime owns, polls, or schedules the detached strand.
+This contract is **observational and mechanism-neutral**: it constrains what a program and its operator observe — that the server lives, that the faulting request gets an error response, and that the drop is recorded — not how the runtime owns, polls, or schedules the detached strand. Supervision governs faults only: when a detached strand is cancelled is fixed by its cancellation context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), not by the supervisor, and a cancelled strand is not a fault (§10.12.9 item 3).
 
 **Honest caveat (carried from §12.4.3).** The structured fork-join's first-error-wins ordering does **not** apply across detached strands. Each supervised strand fails and is handled independently; there is no defined ordering relating faults in distinct detached strands.
 

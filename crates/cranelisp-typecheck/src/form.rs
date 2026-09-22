@@ -66,21 +66,19 @@ use crate::result::{CheckError, CheckResult};
 /// `ctx.current_symbol_table()`, which serves a staging-first union `View`
 /// in cluster mode so intra-cluster forward references resolve. The
 /// `symbol_tables` parameter is the shared-borrow universe of modules used
-/// for cross-module FQ resolution.
+/// for cross-module FQ resolution. `prelude_fallback` supplies each module's
+/// implicit-prelude fallback bit.
 ///
 /// Returns `Ok(check_result)` on success — the staging (or live) table carries
-/// registered entries with Pass 2 annotations on `ModuleEntry::Def` fields, and
-/// the returned [`CheckResult`] carries the cluster's non-fatal diagnostics
-/// (`warnings` — the **warning channel**, FIXME 0365) plus the
-/// `unresolved_dispatch` carrier (0611: return-poly dispatch sites still
-/// unresolved at finalize, EMPTY for every valid program — int applies it at
-/// the entry/eval-result boundary). The §5.2.6 accessor/binding collision guard
-/// records a [`WarningKind::ShadowedName`] diagnostic during accessor
-/// synthesis; the int caller threads the returned warnings onto
-/// `ProcessedCluster.warnings` so the REPL can render them as `; warning:
-/// <message>` lines. (`Warning` is a `cranelisp-types` boundary type;
-/// `CheckResult`/`UnresolvedDispatchSite` are typecheck-owned single-consumer
-/// types — the channel is purely additive at the typecheck edge.)
+/// registered entries with their Pass 2 annotations, and the returned
+/// [`CheckResult`] carries the cluster's non-fatal `warnings` (the int caller
+/// threads them to the REPL's `; warning:` lines) plus the
+/// `unresolved_dispatch` carrier (return-polymorphic dispatch sites still
+/// unresolved at finalize, empty for every valid program; int applies it at
+/// the entry/eval-result boundary). A field accessor sharing its bare spelling
+/// with another binding is not a warning: both remain candidates of that
+/// spelling, selected at each use
+/// (`design/typecheck/fixme-0365-field-accessor-dotted.md` §1.6.2).
 /// Returns `Err(CheckError::Gap(_))` when an FQ reference cannot be resolved
 /// (orchestrator retries the whole `check_forms` call with the same
 /// `parsed` list). Returns `Err(CheckError::TypeError { .. })` for
@@ -90,8 +88,6 @@ use crate::result::{CheckError, CheckResult};
 /// Cluster atomicity: the live table is byte-identical to its pre-cluster
 /// state across any `Err` return. On `Ok`, the orchestrator drains staging
 /// into live atomically.
-///
-/// [`WarningKind::ShadowedName`]: cranelisp_types::WarningKind::ShadowedName
 pub fn check_forms<C, L>(
     parsed: Vec<ParsedEntry>,
     ctx: &mut SymbolTableAccess<'_, C, L>,

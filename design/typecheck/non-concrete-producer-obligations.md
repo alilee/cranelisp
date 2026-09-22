@@ -1,18 +1,27 @@
 # Non-concrete producer obligations — typecheck's half of the release contract
 
-**Status:** current design, verified against source on 2026-09-21. The work it specified
-has landed; filings 0924, 0913 and 0935 are retired.
+**Status:** current design, verified against source on 2026-09-22.
 **Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
+**Reader:** anyone changing how this crate settles callables, mints generic
+instances or builds a concrete frame's codegen view.
 **Subordinate to:** [`typecheck.md`](typecheck.md) §9.3 / §9.4; extends
 [monomorphisation](monomorphisation.md) §1–§3 and [`adt.md`](adt.md) §"Product Type
 Handling".
-**Governed by:**
-- the unified symbol-table lifecycle, `design/arch/symbol-table-lifecycle.md` §§3–7 — the
-  representation, its enforcement and its residual limits;
-- [the non-concrete release contract](../backend/non-concrete-release-contract.md), rules
-  R-2 and R-3 and §5.2 / §5.4.
 
-Where this document and either disagrees, they govern.
+**Governed by** — where this document and either disagrees, they govern:
+
+- [the symbol-table lifecycle](../arch/symbol-table-lifecycle.md) §4–§7: the
+  representation, its enforcement and its residual limits;
+- [the non-concrete release contract](../backend/non-concrete-release-contract.md)
+  §3.1–§3.3 (rules R-1 to R-3), §4 (faces 2, 3 and 5 are this crate's) and §7.5.
+
+Neighbouring designs this document uses without restating:
+
+| Subject | Authority |
+|---|---|
+| Accessor names, the bare candidate and the impl-method overlap | [`fixme-0365-field-accessor-dotted.md`](fixme-0365-field-accessor-dotted.md) |
+| Constructor names and the bare candidate | [`dotted-ctor-registration.md`](dotted-ctor-registration.md) |
+| Selecting one declaration from a bare spelling's candidates | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) |
 
 **R-2, no fabricated concreteness:** no producer in this crate hands a downstream gate a
 type, category or lifecycle state more concrete than the value actually is. This is
@@ -30,16 +39,16 @@ Values meet it by a narrowly licensed defaulting step that carries its own check
 
 ## 1. The producer populations
 
-Five producers once handed downstream something more concrete than they had. Each now
-has a single route:
+Five producers can hand downstream something more concrete than they have. Each has a
+single route, and the middle column is the fabrication that route must not reintroduce:
 
-| Population | Former fabrication | Current route |
+| Population | Fabrication to avoid | Route |
 |---|---|---|
 | ADT constructors | a slot for a generic ADT's constructor | concrete ADT ⇒ `Life::Concrete`; generic ADT ⇒ `Life::Template { body: Synth(..) }` (`crates/cranelisp-typecheck/src/adt.rs`) |
 | Product field accessors | a concrete, slotted state over `∀a. (Fn [(Bx a)] a)` | the same split, and a template instance minted by re-synthesis (§2.3) |
 | Trait-implementation methods | a `mono` scheme over a type still carrying variables, then a slot | the method scheme is generalised, then settled as a `Parametric` or `Constrained` template when non-concrete (`crates/cranelisp-typecheck/src/traits/impl_check.rs`) |
 | Monomorphised instances | a slot minted without a concreteness gate | the demand's concrete signature installed through the funnel ([monomorphisation](monomorphisation.md) §3) |
-| Codegen views of concrete bodies | a node whose real type was not concrete presented as `Int` | eligible residual parameters defaulted on a clone, then a strict retry (§3) |
+| Codegen views of concrete bodies | a node whose real type is not concrete presented as `Int` | eligible residual parameters defaulted on a clone, then a strict retry (§3) |
 
 The first four are one defect at the frame level. The last is the same defect at the
 value level.
@@ -50,21 +59,22 @@ value level.
 
 ### 2.1 P-1 — the gate is the funnel
 
-> **P-1.** `Life::Concrete { slot, … }` is constructed only by the lifecycle's
-> `settle_concrete`. It checks `Type::is_concrete()`, accepts the realisation, and mints or
-> rebinds the slot in one act. A non-concrete callable is `Life::Template`, which has no
-> field for a slot or a view. This crate's obligation is consumption: every population
-> settles through the funnel, and none mints a slot or a concrete state itself.
+> **P-1.** `Life::Concrete { slot, … }` is constructed only inside the types-owned
+> settlement and installation operations. Each checks concreteness and pairs the
+> scheme, slot and realization in one act (lifecycle §1, §4.4). A non-concrete callable
+> is `Life::Template`, which has no field for a slot or a view. This crate's obligation
+> is consumption: every population settles through those operations, and none mints a
+> slot or a concrete state itself.
 
 - This is [monomorphisation](monomorphisation.md) §1, enforced at the table boundary
   rather than by caller convention.
-- It exists because a convention decays. The invariant was once graded "unconstructable"
-  on the strength of one inspected function, while two other sites quietly violated it
-  (root `CLAUDE.md` §Assurance, row R11). A later census then found two more.
+- It is structural because a convention decays: the invariant was once graded
+  "unconstructable" on one inspected function while other sites violated it (root
+  `CLAUDE.md` §Assurance, row R11).
 - [Lifecycle enforcement](../arch/symbol-table-lifecycle.md#6-enforcement) prevents
   ordinary consumers from bypassing settlement.
   [Residual responsibilities](../arch/symbol-table-lifecycle.md#7-residual-responsibilities)
-  keep the clone/serde and copied-claim limits, and their load and publication
+  keep the clone/serde and copied-claim limits and their load and publication
   validation. That qualified boundary is the end state.
 
 ### 2.2 P-2 — one instance identity
@@ -75,9 +85,9 @@ value level.
 > once, at registration, from the authored owner and the complete concrete function
 > signature. It is never re-composed at a probe site.
 
-`mangle_trait_method` survives unchanged as the **template** name, the key that trait
-discovery and dispatch use. Only the call is redirected: the site's
-`ApplyRef::Dispatch` is rewritten to the instance.
+`mangle_trait_method` remains the **template** name, the key that trait discovery and
+dispatch use. Only the call is redirected: the site's `ApplyRef::Dispatch` is rewritten
+to the instance.
 
 | Role | Symbol | `Life` |
 |---|---|---|
@@ -102,8 +112,8 @@ discovery and dispatch use. Only the call is redirected: the site's
 > (`TemplateBody::Synth`), and `monomorphise_synth` derives the instance. It is keyed by
 > the canonical identity, never rechecks a body, and never consults a span-keyed sidecar.
 
-Rechecking would be wrong here, as it is right for an authored implementation method.
-An accessor body:
+Rechecking is right for an authored implementation method and wrong here. An accessor
+body:
 
 - is entirely `Span::SYNTHETIC`, so span-keyed carriers cannot be transported for it;
 - has its constructor identity supplied at synthesis, so rechecking would re-derive a
@@ -111,10 +121,10 @@ An accessor body:
 - is derived from the field list, so re-checking a derivation to recover its inputs is a
   second derivation (Principles 7 and 26).
 
-The accessor's canonical `Type.field` symbol and its bare candidate still exist; they are
-a template rather than a compiled body. So the bare-alias import edge, the `Ambiguous`
-poison, the cross-cluster accessor-kind classification and the §8.6.5 contest rules are
-unaffected. They read the entry, not its lifecycle state.
+A-MINT decides only the lifecycle state of the canonical `Type.field` binding. The bare
+candidate, import exposures, use-site candidate selection and the committed-accessor
+recogniser read the entry, not its state; they are
+[the accessor design](fixme-0365-field-accessor-dotted.md) §1.6's.
 
 ### 2.4 Implementation methods follow the ordinary path
 
@@ -129,12 +139,13 @@ unaffected. They read the entry, not its lifecycle state.
 
 ### 2.5 Demands carry the storage identity
 
-- Every collector builds its demand through one constructor,
-  `program/mono_collect.rs::mono_demand_from_spans`. The template field is the
-  carrier-read canonical storage identity (`resolved.canonical`), not a composed or
-  written spelling.
-- So a bare-alias import of a generic function, or of an accessor, reaches the terminal
-  entry by construction, and a written spelling cannot be demanded.
+- Every demand is derived by one core, `derive_mono_demand`. The call-site collectors
+  reach it through `program/mono_collect.rs::mono_demand_from_spans`, passing the
+  carrier-read canonical storage identity (`resolved.canonical`, or the dispatch
+  target), never a composed or written spelling.
+- So a use of a generic function or accessor through an import or a bare candidate
+  reaches the canonical entry by construction, and a written spelling cannot be
+  demanded.
 - A demand that finds no instance fails loudly downstream, because the template has no
   slot to fall through to.
 
@@ -143,13 +154,15 @@ unaffected. They read the entry, not its lifecycle state.
 1. No new `cranelisp-types` item and no second lifecycle vocabulary. A need the lifecycle
    lacks is a filing to `arch`.
 2. No second key grammar, and in particular no widened `mangle_trait_method`.
-3. No accessor body recheck. A body that really was checked is never routed through the
-   synthetic view builder, whose synthetic-span assertion exists to catch that.
+3. No accessor body recheck. A checked body is never routed through the synthetic view
+   builder, whose always-on synthetic-span assertion exists to catch that.
 4. A concrete product's constructor and accessor, and a concrete implementation method,
    keep their slot, body and view. A golden CLIF difference outside generic frames is a
    finding.
-5. The §8.6.5 bare-alias contest and the implementation-time collision pre-flight read the
-   canonical entry and are untouched.
+5. Name exposure stays independent of lifecycle state. A settlement change adds no
+   name-level rule and no registration-time check on a bare spelling. The impl-time
+   accessor-collision gate still in source is not part of this design: the required
+   design has none, and its removal is tracked in the accessor design's §2.1.
 
 ---
 
@@ -188,7 +201,7 @@ unaffected. They read the entry, not its lifecycle state.
 > fabrication of another kind.
 
 The default is `Int`, a declared never-heap type, reached only inside
-`default_residual_parameters`. There is no inline `unwrap_or` default anywhere.
+`default_residual_parameters`. No other site supplies an inline default.
 
 ### 3.3 The mechanism and its self-check
 
@@ -230,37 +243,37 @@ reaches this seam.
 
 ## 4. The product/sum accessor boundary
 
-- A product has one constructor, named like its type. A differently named constructor is
-  a sum variant even when it is the only arm.
-- A product mints a total canonical `Type.field` accessor and a bare candidate. A
-  monomorphic product settles them `Concrete`, and a polymorphic product settles them
-  `Template`.
-- Sum payload labels are positional metadata. They mint no dotted or bare accessor, and a
-  positional `match` extracts the payload. A-MINT therefore applies to polymorphic
-  products only.
-- Declarations are explicit (spec §5.2.4). A bare head is monomorphic, a parenthesised
-  head is the complete parameter list, and every field has a written type. The frontend
-  rejects missing field types and undeclared type variables before typecheck sees them
+- Only a product mints accessors, and A-MINT therefore applies to polymorphic products
+  only. The product/sum boundary itself is
+  [the accessor design](fixme-0365-field-accessor-dotted.md) §1.6.7's.
+- A monomorphic product settles its canonical accessor `Concrete`; a polymorphic product
+  settles it `Template`. The bare candidate carries no state of its own.
+- Declarations are explicit (spec §5.2.4), and the frontend rejects missing field types
+  and undeclared type variables before typecheck sees them
   (`design/frontend/s116-syntax-and-annotation.md` §3.1). Typecheck adds no compensating
   shape check.
-- What typecheck owns: a written field type naming a concrete type that does not resolve
-  is its own located resolution error. It also owns making a valid generic declaration such as `(deftype (B a) (Mk [:a v]))`
-  construct, match and, for a product, access at every concrete instantiation.
+- Typecheck owns two things here:
+  - a written field type naming a concrete type that does not resolve is its own
+    located resolution error;
+  - a valid generic declaration such as `(deftype (B a) (Mk [:a v]))` constructs,
+    matches and, for a product, is accessible at every concrete instantiation.
 
 ---
 
 ## 5. Observations
 
-- **The backend owns the release criterion.** Its category-licence instrument, partitioned
-  by callable origin, is the release contract's measure (§5.1 there).
-- **Typecheck keeps one keyed observation.** It is for the ownership pass's conservative
-  seed: `ownership/fixpoint.rs::residual_param_frames`
-  ([ownership inference](ownership-inference.md) §10.3). It explains which frames took the
-  conservative path and is not a zero-count gate.
+- **The backend owns the release criterion.** Its category census, partitioned by
+  callable origin, is the release contract's measure
+  ([§7.3 there](../backend/non-concrete-release-contract.md)). That census is open
+  backend work; until it is armed and reads zero, this crate's producer routes are
+  graded by their structure (§2) and the self-check (§3.3), not by a measured count.
+- **Typecheck keeps one keyed observation:** the ownership pass's set of
+  residual-parameter frames, which took its conservative seed
+  ([ownership inference](ownership-inference.md) §10.3). It explains which frames took
+  the conservative path and is not a zero-count gate.
 - **The codegen-view refusal carries no counter.** It is already a located compile error.
-  An aggregate counter on the same branch recorded no frame or reason, and had no reset or
-  reader. It could neither prove the arm empty nor change its safe disposition, so it was
-  retired.
+  An aggregate counter on the same branch could neither prove the arm empty nor change
+  its safe disposition, so none exists.
 - **The fabrication census.** Other `ConcreteType::from_type` discard-and-substitute arms
   belong to their owning contexts. The residual grade on register row R18 is `arch`'s
   (`design/arch/safety-invariants.md`).
@@ -279,11 +292,14 @@ reaches this seam.
 - `ownership::fixpoint::tests::a_residual_parameter_frame_publishes_nothing_and_stays_in_the_keyed_set`
   — the ownership observation.
 
+Coverage status is the spec-side annotation band, which `qa` maintains.
+
 **Residuals:**
 
 | Item | Owner and trigger |
 |---|---|
-| `MonoExpr::lenient_from_expr` has no production caller. Typecheck no longer calls it, and its remaining callers are backend test support (`crates/cranelisp-backend/src/test_support.rs`) | `arch` (a `cranelisp-types` public item). Deletion needs its own complete consumer case; this refusal path neither licenses nor blocks it |
+| The backend fallback arms that faces 2 and 3 once relied on are still in source | `design`/`dev` (backend), release contract §7.4, gated on its §7.2 and §7.3 |
+| `MonoExpr::lenient_from_expr` has no production caller. Its callers are test support: backend `crates/cranelisp-backend/src/test_support.rs` and Binary/int test modules | `arch` (a `cranelisp-types` public item). Deletion needs its own complete consumer case; this design neither licenses nor blocks it |
 | Distinct-instantiation code size | A performance characteristic, not a correctness gate. The expected multiplier for accessors is near one |
 
 ## Former section numbers

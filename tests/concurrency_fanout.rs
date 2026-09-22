@@ -19,8 +19,8 @@
 //!
 //! The single-ABI / single-trampoline cutover (S96, `Cargo.toml` §6.8.0a) RETIRED
 //! the `concurrency` / `concurrency-runtime` features: the host reactor is now
-//! UNCONDITIONAL (lazy-init — a pure-blocking program constructs no `mio` Poll at
-//! runtime). So there is ONE collapsed test lane — `cargo nextest run` — and this
+//! UNCONDITIONAL (a pure-blocking program constructs the reactor but never turns
+//! it). So there is ONE collapsed test lane — `cargo nextest run` — and this
 //! file is **un-gated** (no `#![cfg(feature = …)]`); it runs in the default lane.
 //!
 //! ## Posture (Wave-B1 = QA-first, the synthetic RED-first acceptance rows)

@@ -1804,7 +1804,7 @@ mod tests {
         }
     }
 
-    // spec: design/arch/concreteness-types-first.md §1.3 — enumerate the
+    // spec: design/arch/total-concreteness.md §3.3 — enumerate the
     // production bootstrap's complete generic uniform-body roster through the
     // lifecycle carriers that actually mount it.
     #[test]

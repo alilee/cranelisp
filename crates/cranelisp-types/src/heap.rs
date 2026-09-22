@@ -360,7 +360,7 @@ fn ctor_field_concrete_types<C: CodeStore>(binding: &Binding<C>) -> Option<Vec<C
 
 // ---------------------------------------------------------------------------
 // The substituting ctor-field projection (S119 types-first slice; register
-// rows R-6/R-16; `design/arch/concreteness-types-first.md` §3.5).
+// rows R-6/R-16; `design/arch/total-concreteness.md` §2.1).
 // ---------------------------------------------------------------------------
 
 /// Why [`ctor_field_types_at`] could not produce the instantiated field types.
@@ -419,7 +419,7 @@ impl std::error::Error for CtorFieldsAtError {}
 /// the whole ctor ([`CtorFieldsAtError::NotConcrete`]). **Never fabricates**:
 /// there is no default arm, no `unwrap_or(Int)` — this is the only legal
 /// derivation of instantiated ctor-field types for category/glue purposes
-/// (`concreteness-types-first.md` §3.5; the backend's hand-rolled `scheme.ty`
+/// (`design/arch/total-concreteness.md` §2.1; the backend's hand-rolled `scheme.ty`
 /// walk with its `unwrap_or(Type::Int)` launder retires onto this in the S120
 /// backend wash, closing register row R-13).
 ///

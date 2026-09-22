@@ -225,12 +225,11 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
 /// [`run_io_trampoline`] is RETAINED as the rayon-worker per-branch driver (the
 /// blocking-`Par` partition), NOT as a second top-level trampoline.
 ///
-/// Stage-2 status (`design/arch/platform-interface.md` §6.8.0a): the reactor is
-/// currently built **eager-cheap** ([`crate::reactor::Reactor::new`] = 2 syscalls
-/// per drive: `epoll_create` + an eventfd) — the blessed fallback, a permanently
-/// valid behaviour, not an interim. The truly-lazy `Poll` (a pure-blocking program
-/// constructs NO mio `Poll`) is the follow-up refinement; its lost-wake soundness
-/// on the capacity-park-release path needs the careful treatment deferred here.
+/// Every drive constructs its reactor **eagerly**
+/// ([`crate::reactor::Reactor::new`] = 2 syscalls: `epoll_create` + an eventfd),
+/// including for a pure-blocking program. Lazy construction is a workload-triggered
+/// refinement (`design/arch/effect-concurrency.md` §6); it must preserve the
+/// capacity-park-release wake path.
 pub(crate) fn drive_io(io_ptr: i64) -> i64 {
     // Same `TrampolineEnter`/`TrampolineExit` bookend as `run_io_trampoline`
     // (Principle 7 — the IO trace stays identical for the synchronous node kinds;
@@ -257,8 +256,8 @@ pub(crate) fn drive_io(io_ptr: i64) -> i64 {
     result
 }
 
-/// The cancellation drop-guard for the async trampoline loop (§2.15.1) — the one
-/// genuinely-new RC piece Chunk C introduces. It OWNS the loop's in-flight,
+/// The cancellation drop-guard for the async trampoline loop (§2.15.1). It OWNS
+/// the loop's in-flight,
 /// **trampoline-produced** manual-RC pointers: the live `current` node + the
 /// un-popped `cont_stack` continuations. On a **drop-before-`Step::Finish`** (a
 /// cancelled branch — a race loser, a shutdown-cleared strand: the future is
@@ -267,16 +266,11 @@ pub(crate) fn drive_io(io_ptr: i64) -> i64 {
 /// `Option`-take / "consumed exactly once" discipline §2.9 uses for the permit
 /// (Principle 20).
 ///
-/// **Scope (C2 foundations).** The guard frees only the frame's references to
-/// **fresh** (continuation-produced) in-flight pointers. Other structural owners
-/// may retain their own references. The **non-fresh** root of a moved-out branch
-/// sub-tree (the
-/// race/select loser's own tree, transferred by the C3 move-out) is freed by its
-/// owner, NOT here — that per-branch root ownership + the `consume_io_tree` balance
-/// of a partially-stepped non-fresh tree is the **/design-backend-coordinated seam
-/// C3 pins** (§2.15.1: "not a settled mechanism" until the move-out contract is
-/// fixed). C2 lands the guard + the fresh-portion release; C3 wires the non-fresh
-/// root into it alongside the `IO_TAG_SELECT` node bake.
+/// **Scope.** The guard frees only the frame's references to **fresh**
+/// (continuation-produced) in-flight pointers. Other structural owners may retain
+/// their own references. A **non-fresh** root is never freed here: a race/select
+/// branch is not moved out of its `IO_TAG_SELECT` node, so the node's owner
+/// reclaims every branch through `consume_io_tree`.
 struct TrampolineFrame {
     /// The live node the loop is positioned on (mirrors the loop's `current`).
     current: i64,
@@ -378,12 +372,9 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                         return TrampolineOutcome::Stopped;
                     }
                 },
-                // S94 R1 — the real async Effect arm: a poll-shape effect node
-                // suspends/resumes on the reactor via `EffectPoll`. S96 (§2.9):
-                // `await_poll_node` is the single admission gate — it reads the
-                // live `(token, capacity)`, acquires the permit, and hands it to
-                // the `EffectPoll` (which owns it across the arc), so it needs the
-                // full `ReactorEnv` (pool + host), not just `env.host`.
+                // A poll-shape effect node suspends/resumes on the reactor via
+                // `EffectPoll`. Admission is the platform poll-fn's `ctx.acquire`
+                // (`reactor.md` §7), not a read of the node.
                 t if t == IO_TAG_EFFECT_POLL => ProducedValue::with_disposer(
                     await_poll_node(current, env, strand).await,
                     edge_disposer,
@@ -486,24 +477,16 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
     })
 }
 
-/// Await a single `IO_TAG_EFFECT_POLL` node on the reactor — the **single
-/// admission gate** for the poll carrier (§2.9 acquire-around-poll). Reads the
-/// **live** `(token, capacity)` off the node (token @ abs 32 via
-/// [`read_resource_token`]; capacity @ abs 40 via [`read_capacity`] /
-/// `POLL_CAPACITY_ABS_OFFSET`), **acquires** the token's permit BEFORE the leaf
-/// establishes (`token == 0` ⇒ an inert no-op permit — unrestricted overlap),
-/// then reads the state-closure (field-0), bakes an [`crate::reactor::EffectPoll`]
-/// over the GOT-loaded poll-fn (`closure + 16`) and the env base (`closure + 32`)
-/// **owning that permit**, and `.await`s it. The poll-fn writes its result into
-/// the env's reserved result slot (env offset 0), which `EffectPoll` reads on
-/// `Ready` (the generic env-offset read); the `EffectPoll` releases the permit on
-/// `Ready` (eager) or on drop (the cancellation path) — the A→C contract.
+/// Await a single `IO_TAG_EFFECT_POLL` node on the reactor. Reads only the
+/// state-closure (field 0), bakes an [`crate::reactor::EffectPoll`] over the
+/// GOT-loaded poll-fn (`closure + 16`) and the env base (`closure + 32`), and
+/// `.await`s it. The poll-fn writes its result into the env's reserved result
+/// slot (env offset 0), which `EffectPoll` reads on `Ready`.
 ///
-/// This is where S96 moved the admission gate **down** from the S95 branch-level
-/// no-op acquire in [`run_poll_partition`]: the permit must live on the future
-/// whose drop releases it. A poll leaf reached any way (a top-level poll effect,
-/// a poll leaf mid-`Bind`-chain, or a `Par` poll branch) acquires here exactly
-/// once — there is no double-acquire (`run_poll_partition` no longer acquires).
+/// Admission is not taken here: the platform poll-fn calls `ctx.acquire` for the
+/// token it projects from its handle, and the reactor releases every permit held
+/// by this leaf on `Ready` or on cancel-drop (`reactor.md` §2.9, §7). The node's
+/// token and capacity slots are not read.
 async fn await_poll_node(
     node: i64,
     env: &crate::reactor::ReactorEnv<'_>,
@@ -762,20 +745,18 @@ async fn run_select_node(
 /// a worker thread). Original binding indices ride along so results re-merge in
 /// source/binding order — the same buffer shape the sync `run_par_node` produces.
 ///
-/// **Both partitions run concurrently** (`futures::join!`) and **both wrap the
-/// §2.8 admission gate**: each branch acquires its node-read `(token, capacity)`
-/// permit before dispatch and releases on completion (`token == 0` ⇒ no acquire).
-/// The blocking partition is how capacity-N is realized this sprint — a blocking
-/// branch is admitted on the reactor thread, then `rayon::spawn`'d across a
-/// **wakeable rayon→reactor bridge** (a `futures` `oneshot` woken via the
-/// executor's mio-backed waker — never `block_on(rayon_join)` on the reactor
-/// thread, the load-bearing Principle-8 constraint that keeps the blocking branch
-/// from starving the reactor). The dispatcher's bespoke `SerialGroup`
-/// token-grouping **dissolves into** this uniform per-branch permit-acquire (arch
-/// §8); the rayon-spawn + worker→join error-ferry plumbing is what carries over.
-/// Poll branches read the sentinel token 0 this sprint (poll-shape capacity-N is
-/// S96), so their acquire is an inert no-op — admission still wraps both
-/// partitions structurally.
+/// **Both partitions run concurrently** (`futures::join!`). Admission differs by
+/// partition (§2.8):
+///
+/// - a **blocking** branch acquires its node-read `(token, capacity)` permit on
+///   the reactor thread (`token == 0` ⇒ inert permit), then is `rayon::spawn`'d
+///   across a **wakeable rayon→reactor bridge** (a `futures` `oneshot` woken via
+///   the executor's mio-backed waker — never `block_on(rayon_join)` on the
+///   reactor thread, the Principle-8 constraint that keeps the blocking branch
+///   from starving the reactor); this per-branch permit replaces the synchronous
+///   dispatcher's `SerialGroup` token-grouping on this path;
+/// - a **poll** branch takes no branch-level permit; its leaf's platform poll-fn
+///   acquires through `ctx.acquire` (see [`await_poll_node`]).
 async fn run_par_node_async(
     parent_ptr: i64,
     env: &crate::reactor::ReactorEnv<'_>,
@@ -1034,13 +1015,9 @@ fn ready_handoff_test_barrier(branch: i64) {
 /// the reactor via the async trampoline. `join_all` so distinct-token poll leaves
 /// overlap on the ONE reactor thread (≈max not sum).
 ///
-/// **S96 (§2.9): the admission gate moved DOWN onto the leaf.** S95 placed a
-/// branch-level no-op acquire here (sentinel token 0). S96 removes it — the single
-/// admission gate is now [`await_poll_node`] at the leaf's establishment, where it
-/// reads the LIVE `(token, capacity)` and hands the resulting `Permit` to the
-/// `EffectPoll` that structurally owns it (the A→C drop-release contract requires
-/// the permit live on the future whose drop releases it). Acquiring here too would
-/// double-acquire, so this partition no longer touches the pool.
+/// This partition takes no permit: the leaf's platform poll-fn acquires through
+/// `ctx.acquire` and the reactor releases on `Ready` or cancel-drop
+/// ([`await_poll_node`]). A branch-level acquire here would double-admit.
 async fn run_poll_partition(
     branches: Vec<(usize, ParBranch)>,
     env: &crate::reactor::ReactorEnv<'_>,
@@ -1587,9 +1564,9 @@ fn call_continuation(cont_ptr: i64, val: i64, cont_is_fresh: bool) -> i64 {
 /// Read the resource token from an IO node — tag-agnostic over the two effect
 /// kinds (§2.6 / §13.4): BOTH `IO_TAG_EFFECT` (blocking) and `IO_TAG_EFFECT_POLL`
 /// (poll-shape) store the token at FIELD_1_OFFSET (abs offset 32). Non-effect
-/// nodes (Pure, Bind, Par) return 0 (unrestricted). **S96**: the poll node now
-/// carries a LIVE token here (the backend bakes it at offset 32; `await_poll_node`
-/// reads it to gate the acquire-around-poll permit) — no longer the S95 sentinel.
+/// nodes (Pure, Bind, Par) return 0 (unrestricted). Production callers are the Par
+/// admission paths (`run_blocking_branch`, `dispatch_par_branches_with_trace`);
+/// a poll leaf's own admission does not read this slot ([`await_poll_node`]).
 fn read_resource_token(io_ptr: i64) -> i64 {
     let tag = unsafe { crate::heap_access::read_i64(io_ptr, TAG_OFFSET) };
     // Both effect tags carry the token at FIELD_1 (§2.6 / §13.4).
@@ -1616,10 +1593,9 @@ const POLL_CAPACITY_ABS_OFFSET: isize = FIELD_1_OFFSET + 8; // 32 + 8 = 40
 /// Read the token-pool `capacity` from an IO node — **tag-branched** (§2.6 /
 /// §13.4): `IO_TAG_EFFECT` (blocking) reads payload offset 32 (abs 48);
 /// `IO_TAG_EFFECT_POLL` (poll-shape) reads `field_offset(2)` (abs 40). Non-effect
-/// nodes default to capacity 1 (they carry no pool). **S96**: the poll node now
-/// carries a LIVE capacity here (the backend bakes it at offset 40;
-/// `await_poll_node` reads it to size the token's `Semaphore`) — no longer the S95
-/// sentinel 1.
+/// nodes default to capacity 1 (they carry no pool). The production caller is
+/// `run_blocking_branch`; a poll leaf's own admission does not read this slot
+/// ([`await_poll_node`]).
 fn read_capacity(io_ptr: i64) -> i64 {
     let tag = unsafe { crate::heap_access::read_i64(io_ptr, TAG_OFFSET) };
     if tag == IO_TAG_EFFECT {

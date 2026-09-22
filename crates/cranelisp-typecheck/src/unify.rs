@@ -11,7 +11,7 @@ use cranelisp_types::{
 };
 
 /// Unify two types honouring the **constraint-abstract (rigid) type-variable**
-/// asymmetry (spec §3.3.2 [S109] W6.3).
+/// asymmetry (spec §3.3.2; S109 W6.3).
 ///
 /// `rigid` is the set of `TypeId`s held ABSTRACT for the definition body being
 /// checked — under W6.3 these are ONLY the ASSERTED-constraint parameter vars
@@ -169,7 +169,7 @@ pub fn unify_with_rigid(
 
 /// Unify a type variable `id` (already substitution-resolved to an unbound
 /// `Var`) with `other` (already substitution-resolved), honouring the
-/// constraint-abstract asymmetry (spec §3.3.2 [S109] W6.3).
+/// constraint-abstract asymmetry (spec §3.3.2; S109 W6.3).
 ///
 /// - If `id` is FLEXIBLE (not in `rigid`): ordinary [`bind_var`] — binds `id` to
 ///   `other`. When `other` is itself a rigid var, this binds the flexible side to

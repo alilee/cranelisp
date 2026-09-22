@@ -49,15 +49,10 @@ fn primitives_table_is_non_empty_with_expected_minimum() {
 
 #[test]
 fn every_entry_is_a_callable_target() {
-    // FIXME-0476 consumption (S102 CS-B1-be): the invariant is
-    // *callability*, not slot-presence. Every primitives-table entry is a
-    // dispatchable call target — either slot-dispatched (`Extern`) or
-    // inline-dispatched (`Inline`). Post-cure the vec trio carries
-    // `PrimitiveBody::Inline` with NO slot, so the old
-    // `callable_got_slot().is_some()` assertion no longer holds for every
-    // entry; `is_callable_target()` is the right predicate (it covers both
-    // arms). This is the exact stop-predicate the backend's resolution
-    // walks now use.
+    // The invariant is *callability*, not slot-presence: every entry is a
+    // call target, either slot-dispatched (extern) or directly lowered
+    // (`Life::Inline`, no slot). `is_callable_target()` covers both and is
+    // the stop-predicate the backend's resolution walks use.
     for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
         assert!(
             entry.is_callable_target(),
@@ -68,11 +63,9 @@ fn every_entry_is_a_callable_target() {
 
 #[test]
 fn vec_query_family_is_inline_and_has_no_slot() {
-    // FIXME-0476 consumption (S102 CS-B1-be): the representation cure. The
-    // four inline-only vec ops carry `Life::Inline` and answer
-    // `callable_got_slot() == None` **by construction** — no
-    // allocated-but-NULL phantom slot is ever constructed (the third
-    // phantom-slot instance is now unrepresentable, Principle 20).
+    // The four Vec query ops carry `Life::Inline` and answer
+    // `callable_got_slot() == None` by construction: no allocated-but-NULL
+    // phantom slot is representable (Principle 20).
     for name in ["vec-get", "vec-set", "vec-push", "vec-len"] {
         let entry = PRIMITIVES_TABLE
             .get(name)
@@ -96,12 +89,10 @@ fn vec_query_family_is_inline_and_has_no_slot() {
 
 #[test]
 fn every_entry_is_def_kind_primitive() {
-    // Decision 0048 (A2 reversed, FIXME 0244, 2026-05-31) — primitive-ness
-    // is read from `kind: DefKind::Primitive` (the canonical fact), NOT
-    // from `code`. Every entry carries the payload-free `DefKind::Primitive`
-    // unit variant, and `code: None` (the `ModuleEntry::def(..).build()`
-    // builder default; there is no `Code::Primitive` marker). The GOT
-    // remains the single source of truth for the `*const u8` (Decision 35).
+    // Primitive-ness is the callable's `CallableOrigin::RustPrimitive`, and
+    // each entry is either `Life::Inline` or a concrete `ExternShim`
+    // realization; no primitive carries compiled code. The GOT remains the
+    // single source of truth for an extern's address (Decision 35).
     for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
         let callable = entry.callable().expect("primitive must be callable");
         assert!(
@@ -126,7 +117,7 @@ fn got_slots_hold_extern_ptrs_for_harvested_shims() {
     // slot must hold the matching fn pointer.
     let shims = extern_shims();
     for (name, entry) in PRIMITIVES_TABLE.all_symbols() {
-        // Inline-dispatched primitives (the vec trio, FIXME 0476) carry no
+        // Inline primitives (the Vec query family) carry no
         // slot and no shim by construction — skip them; only slot-carrying
         // Extern entries have a GOT address to check.
         let Some(slot) = entry.callable_got_slot() else {
@@ -174,20 +165,18 @@ fn assert_content_row(name: &str, expected_ty: &cranelisp_types::Type, expected_
         expected_params,
         "param_names mismatch for {name}"
     );
-    // The entry is a dispatchable callable target — either slot-dispatched
-    // (`Extern`) or inline-dispatched (`Inline`, the vec trio; FIXME 0476).
-    // `is_callable_target()` covers both arms (the old
-    // `callable_got_slot().is_some()` excluded the slot-less inline trio).
+    // The entry is a callable target, either slot-dispatched (extern) or
+    // directly lowered (`Life::Inline`, the Vec query family).
     assert!(
         entry.is_callable_target(),
         "entry {name} not a callable target"
     );
-    // kind is the primitive discriminator.
+    // origin is the primitive discriminator.
     assert!(
         matches!(callable.origin, CallableOrigin::RustPrimitive),
         "entry {name} kind != Primitive"
     );
-    // jit_name IS the symbol-table key (S69 Submission 36) — pinned by the
+    // The primitive name is the symbol-table key — pinned by the
     // successful `.get(name)` lookup above.
 }
 
@@ -401,7 +390,7 @@ fn behavioural_ring0_bitwise_unary() {
 #[test]
 fn registration_parity_bitwise_ops() {
     // spec: appendix-a-builtins §A.3 — each new bitwise primitive registers
-    // identically to `add-i64`: a `DefKind::Primitive` entry with a
+    // identically to `add-i64`: a `RustPrimitive` entry with a
     // populated GOT slot and the right `(Fn …)` scheme. Mirrors the
     // `content_harness_*` / `add-i64` assertions above.
     use cranelisp_types::Type;
@@ -480,11 +469,10 @@ fn static_slab_slots_populated_after_force() {
 }
 
 // -----------------------------------------------------------------------
-// Docstring harness (FIXME 0308) — every primitive's `ModuleEntry::Def`
-// carries a non-empty `docstring` (the §A.5 MUST Description text), wired
-// via `.docstring(prim.docstring)` in `insert_primitive_entry` /
-// `insert_vec_query_entries`. `int` reads it through the symbol table for
-// the `; classification - docstring` REPL suffix.
+// Docstring harness — every primitive's table entry carries a non-empty
+// `docstring` (the §A.5 MUST Description text) projected from its
+// declaration row. `int` reads it through the symbol table for the
+// `; classification - docstring` REPL suffix.
 // -----------------------------------------------------------------------
 
 #[test]
@@ -509,9 +497,8 @@ fn every_primitive_has_a_docstring() {
 #[test]
 fn docstring_spot_check_pins_expected_text() {
     // spec: appendix-a-builtins §A.5 — pin that the wiring carries the
-    // RIGHT string, not just any non-empty string. `add-i64` flows from
-    // `ring0_primitives()` (operator.rs); `vec-len` flows from the
-    // `insert_vec_query_entries` hand-built rows (lib.rs).
+    // RIGHT string, not just any non-empty string. `add-i64` is an extern
+    // row and `vec-len` an inline row of the declaration inventory.
     let expect = |name: &str, want: &str| {
         let entry = PRIMITIVES_TABLE
             .get(name)
@@ -539,12 +526,10 @@ fn extern_shims_harvest_covers_full_inventory() {
     // `PRIMITIVES_TABLE` itself):
     //
     // - `neq-i64` / `neq-f64` / `neq-bool` — reachable through trait-method
-    //   resolution (`Eq.!=`) over SCALAR args, not surfaced as entries in the
-    //   typecheck-side `ring0_primitives()` table. (`neq-string` — the heap-arg
-    //   member — moved OUT of this harvest-only set: FIXME 0510 registered it
-    //   as a real `ring1` `DefKind::Primitive` entry so it carries the declared
-    //   `Borrowed` facts symmetric with `str-eq`; it now satisfies the
-    //   `PRIMITIVES_TABLE.get(name).is_some()` leg.)
+    //   resolution (`Eq.!=`) over SCALAR args and have no table entry.
+    //   (`neq-string`, the heap-arg member, is a real table entry so it
+    //   carries the declared `Borrowed` facts symmetric with `str-eq`; it
+    //   satisfies the `PRIMITIVES_TABLE.get(name).is_some()` leg.)
     // - `sconcat` — registered in the synthetic `macros` module per
     //   `spec/09-macros.md`, not in `primitives`.
     for name in extern_shims().keys() {
@@ -560,13 +545,12 @@ fn extern_shims_harvest_covers_full_inventory() {
     );
 }
 
-// ---- CS-B: declared ownership fact-table population (S102) ----
+// ---- Declared ownership facts ----
 
 // spec: design/typecheck/ownership-inference.md §13.4 — the completeness
-// contract: every `DefKind::Primitive` entry with a heap-typed parameter in
-// its scheme carries a declared summary at construction (the S101 cat-1
-// "convention-populated field" lesson applied at birth). No heap leaf may
-// silently default to `None`.
+// contract: every primitive entry with a heap-typed parameter in its scheme
+// carries a declared summary at construction. No heap leaf may silently
+// default to `None`.
 #[test]
 fn every_heap_param_primitive_carries_a_declared_summary() {
     use cranelisp_types::Type;
@@ -657,9 +641,9 @@ fn built_table_entries_carry_the_expected_declared_facts() {
 }
 
 // spec: design/typecheck/ownership-inference.md §13.4 — the named scope cut:
-// `DefKind::PrimitiveExtern` carries no summary at all (slot-less by-name
-// dispatch, pinned Decision-24 boundary). Structural — the variant has no
-// `mode_summary` field, so the accessor reads `None`.
+// a host-promised extern (slot-less by-name dispatch, pinned Decision-24
+// boundary) carries no summary at all. Structural — `Life::HostPromised` has
+// no `mode_summary` field, so the accessor reads `None`.
 #[test]
 fn primitive_extern_carries_no_summary() {
     use cranelisp_types::{ModuleFullPath, Scheme, Symbol, SymbolTable, Type, Visibility};

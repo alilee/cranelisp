@@ -96,7 +96,7 @@ fn expected(entries: &[(&str, usize)]) -> BTreeMap<String, usize> {
         .collect()
 }
 
-// spec: design/primitives/s122-typed-consume-consumers.md §6 — every raw
+// spec: design/primitives/primitives.md §2.4 — every raw
 // adoption, retained-child projection and storage exit belongs to an exact
 // approved function/site. The census is recursive and excludes test sources.
 #[test]

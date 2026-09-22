@@ -44,30 +44,17 @@ world or rollback remains. Pre-codegen clause descriptors are distinct from exec
 non-null entry pointer is inseparable from a required `Code` owner and ABI
 witness. `def` remains a stdlib macro and DF-3 is not included.
 
-**Sprint 116 result-owner refinement, refreshed Sprint 118.** `result-owner.md`
-is the active subordinate design for R15/FIXME 0745. A clean generated result
-remains owned as `(i64, Type)` through its last observation and is then released
-exactly once through backend's module-qualified per-concrete drop glue. Fresh JIT
-consumes `CompilationArtifacts.drop_glues`; cache-hit resolves the same canonical
-symbol through `Linker::get_symbol`; linked startup relocates and calls it after
-exit-code conversion. The JIT/linker code owner remains live through the call. No
-JIT-only, IO-only, display-owned, shallow, or type-erased releaser is part of int.
-
-The S118 refresh reconciles that design against the S117 as-built: the
-fresh-JIT artifact routing **already landed** as
-`SharedState.fresh_jit_drop_glues`, a `(module, ConcreteType) → {artifact, owner}`
-map written pair-atomically by the two publish gates (`worker::
-publish_prepared_turn` and the macro-clause turn's `publish`) in the S118
-as-built. S121 converges macro checkpoints onto the ordinary prepared
-publication and deletes the parallel macro writer. Result ownership continues
-to consume routing rather than build it and attaches at the two *execution*
-seams — never inside the prepared transaction. The former `worker::
-inline_jit_codegen_for_names` seam the S116 text named is production-dead.
-Disposition of a result is decided once, by backend's own
-`HeapCategory::classify`, before any keyed lookup — int grows no second
-heap-type predicate. `result-owner.md` §8 is the serial implementation order;
-§9 the four-cell flip set plus QA's armed-detector acceptance leg; §11 the
-ordering constraint against FIXME 0863 (arch ruling 11: 0745 first).
+**Program-result ownership.** `result-owner.md` is the contract (R15). A clean
+result stays owned as `(i64, Type)` through its last observation and is then
+released exactly once through backend's module-qualified per-concrete drop
+glue, keyed on the producer's codegen type and classified by backend's own
+`HeapCategory::classify`. Fresh JIT reads the `{artifact, owner}` pair the
+ordinary prepared publication writes to `SharedState.fresh_jit_drop_glues`;
+cache-hit resolves the same canonical symbol through the entry's `Linker`;
+linked startup relocates and calls it after exit-code conversion. The owner
+attaches at the execution seams, never inside the prepared transaction, and
+holds the code owner through the call. No JIT-only, IO-only, display-owned,
+shallow or type-erased releaser is part of int.
 
 This document elaborates *within* the bounded context fixed by
 `design/arch/bounded-contexts.md` §6. The current public crate source and its
@@ -181,7 +168,7 @@ The two structural facts that dominate the tree today:
 | Cache orchestration | `cache.rs`; `cache_writer.rs` (background `.o`/`.meta` emit) |
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
-| Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` transform (wired live S84; `bind-chain-analysis.md`) |
+| Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` / `LaunchContinue` transform (`bind-chain-analysis.md`) |
 | Observability sinks | `observability.rs` (+ `observability/tests.rs`) scheduler/worker event log; `io_trace.rs`; `got_trace.rs`; `sched_dump.rs` — all env-var-gated ring buffers. |
 | Embedded agent | `src/agent/` (fully `#[cfg(feature = "agent")]`; `agent.md`) |
 | `Code` carrier + aliases | `code.rs` — `SessionSymbolTable`/`SessionModuleEntry` aliases; `Code` is re-exported from `cranelisp-backend` (Decision 41) |
@@ -557,7 +544,7 @@ turn and every body-bearing concrete target still lacking code — synthesised c
 accessors and monomorphic instances — so a constructor used as a value has a populated GOT
 slot.
 
-**Macro-turn heap ownership** — the marshal/invoke boundary inside Pass-1 expansion (`src/expander.rs::invoke_clause` + `src/marshal.rs`) has its own ownership protocol, ruled S119: `design/int/macro-turn-ownership.md`. In one line: the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, nothing is retained, nothing is released by int), and the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. No marshal handle outlives its invocation frame, which keeps the protocol orthogonal to both the immediate macro publication checkpoint and its source-continuation retry.
+**Macro-turn heap ownership** — the marshal/invoke boundary inside Pass-1 expansion (`src/expander.rs::invoke_clause` + `src/marshal.rs`) follows `design/int/macro-turn-ownership.md`. The clause ABI is pinned all-Owned at clause preparation; the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, retained or released by int); the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. A trapped or panicking invocation forfeits its one transferred argument tree. On a clause-reported runtime error, int discards the returned word without release; no bound is claimed for that residue (Rules 3–4). No marshal handle outlives its invocation frame, which keeps the protocol orthogonal to both the immediate macro publication checkpoint and its source-continuation retry.
 
 ### 6.3 Gap production
 
@@ -991,11 +978,10 @@ The fourth sink (introspection) is a per-key store, not a ring; it serves slash 
 | Performance (P6) | Per-symbol JIT (Decisions 31 + 41) is the chosen target — long-lived per-worker JIT (Decision 28) was retracted because it coalesces batches and defeats reclaim. Persistent worker pool (Decision 27) avoids per-module thread spawn cost. Cache-hit-via-`LoadObject` skips codegen entirely on cache-hit. Production batch zero-overhead introspection (`shared.introspection == None`) and zero-overhead observer ring buffers (no observer registered → relaxed load + null-check branch). |
 | Testability (P5) | `process_form` is a free function over `&SharedState` — testable with a synthetic SharedState. The scheduler's wait/notify primitives are unit-testable in isolation. `Introspection` populate paths are conditional on a single discriminator — easy to assert in integration tests. The observer contracts are unit-testable: register a captured-events observer; assert events fired in the expected order. |
 
-Sprint 116 touches maintainability, performance, and testability at the typed
-result exit: one owner state machine accepts three keyed code-housing adapters;
-scalar results stay call-free; observe-before-release and exact-once behavior are
-unit-testable with recorded callbacks. It does not change compiler-internal
-concurrency or the observability sink architecture (`result-owner.md` §7).
+At the typed result exit, one owner state machine accepts three keyed
+code-housing adapters; scalar results stay call-free; observe-before-release and
+exact-once behaviour are unit-testable with recorded callbacks
+(`result-owner.md` §7).
 
 ### 12.1 Standing review rejects
 
@@ -1051,6 +1037,9 @@ carries the rule; this list is the review checklist.
 17. **Dependent recompilation on an ordinary redefinition** — re-typechecking,
     recompiling, breaking or trap-patching a dependent where §18 requires
     rejection (`session-transaction.md` §0).
+18. **A second program-result releaser or an unguarded release target** — a
+    release key re-derived from the observed type, a raw glue address without
+    its `Code` owner, or an `IO` branch in a formatter (`result-owner.md` §7).
 
 ---
 
@@ -1169,12 +1158,6 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   whether the rule is still owed or retires with that machinery is an
   authority question for `arch` and the user, not a wording fix.
 
-**S116 typed-context exit:** FIXME 0745 remains open for implementation. Its
-design question is settled by `result-owner.md`: int owns the successful result
-through final display/exit conversion and releases it once through the approved
-backend glue identity while retaining code lifetime. No further intrinsics ABI,
-heap-header, cache-schema, or private release mechanism is required.
-
 **S64-era FIXMEs (0098/0099/0100/0103/0104/0108) have all CLOSED** (W-Macro, the trace relocation, the platform-interface landing, the display absorb, and the cluster-atomic restructure resolved them — verified against source S81). The current int FIXME backlog (S81 "clean & green", Phase 3 design):
 
 **S81 Wave 9a — light int items:**
@@ -1203,13 +1186,9 @@ These are tracked in `design/arch/fixmes/NNNN-*.md`; this section mirrors them f
 Four design-bearing items + three riders, each with a subordinate doc or a
 dev-direct disposition:
 
-- **FIXME 0638** (macro-alias double-free ×5, MUST ship) — `macro-marshal-rc-protection.md`.
-  Root cause: `src/marshal.rs` / `invoke_clause` protect only the **top-level**
-  marshalled arg cell while the marshaller **retains the whole tree** and the
-  consuming clause tears it down / consumes interiors **deeply**. Fix: deep,
-  recursive protection of the entire marshalled tree (make the marshaller's RC
-  count its actual retention). §4 names the RC_TRACE discriminator `/dev` runs
-  FIRST to confirm sufficiency (the function-call twin is the negative control).
+- **FIXME 0638** (macro-alias double-free ×5) — the current cure is the
+  single-owner transfer in `macro-turn-ownership.md` Rules 1–3; Rule 2 records
+  why it does not reopen the defect, and the five pins guard it.
 - **FIXME 0670** (int qualifies a value binder) — `expansion-qualification-scope.md`.
   `qualify_expanded_sexp` becomes scope-aware, skipping the value-level binder
   slots (defn/fn params, let names, match var-patterns) by sharing the expander's

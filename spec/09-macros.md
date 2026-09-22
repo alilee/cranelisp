@@ -46,12 +46,14 @@ Each variant represents one kind of S-expression:
 | `SexpFloat` | Float literal | `3.14` |
 | `SexpBool` | Boolean literal | `true` |
 | `SexpStr` | String literal | `"hello"` |
-| `SexpSym` | Symbol (identifiers, operators, keywords) | `foo`, `+`, `defn` |
+| `SexpSym` | Symbol (identifiers, operators, keywords) and the rest marker (§1.4.8) | `foo`, `+`, `defn`, `&rest` |
 | `SexpList` | Parenthesized list `(...)` | `(+ 1 2)` |
 | `SexpBracket` | Bracketed list `[...]` | `[x y z]` |
 | `SexpAnnotated` | Annotated form — the read-time `:Type <form>` fold (§1.4.5) | `:Int 5` [S115] |
 
 Payload labels are prefixed with `s` (e.g., `sval`, `sname`, `sitems`) for clear runtime-layout and documentation identities. They belong to sum-constructor arms and therefore generate no callable accessors (§5.2.6); repeated labels such as `sval` and `sitems` do not create module-scope collisions.
+
+**Rest markers are one `SexpSym`.** A rest marker (§1.4.8) is a single `Sexp` value whose `sname` is `&` immediately followed by the parameter name. Both source spellings produce the same value: `&rest` and `& rest` each marshal to `(SexpSym "&rest")`, never to an `&` element followed by a separate name element. This holds wherever the marker occurs, including quoted data and macro arguments: `'[x & rest]` is a bracket of two elements, `(SexpSym "x")` and `(SexpSym "&rest")`. [S122 — no committed evidence of the marshalled value: crates/cranelisp-frontend/src/reader/tests.rs::test_parse_ampersand_in_bracket pins the two-form read result for unquoted source only; nothing observes `(SexpSym "&rest")` in quoted data or a macro argument]
 
 **`SexpAnnotated` — what the annotation halves hold. [S115]** `stype` is the annotation half **with the colon stripped**: `:Int 5` marshals to `(SexpAnnotated (SexpSym "Int") (SexpInt 5))`, and `:(Fn [a] a) f` to `(SexpAnnotated (SexpList …) (SexpSym "f"))`. The half is an ordinary `Sexp`, not a distinguished type value — macros quote, unquote, and destructure it like any other form; that it must denote a type expression (§2.4) is checked when the annotated form is built into an expression, not when it is read or marshalled. `sform` is the annotated subject. Stacked annotations nest (`:A :B x` → `SexpAnnotated` whose `sform` is another `SexpAnnotated`).
 
@@ -102,7 +104,7 @@ The `defmacro` form defines a named compile-time macro. The `defmacro-` variant 
 
 Each parameter receives a value of type `Sexp`. When the macro is invoked as `(name arg1 arg2 arg3)`, each argument S-expression is passed as a separate `Sexp` value to the corresponding parameter.
 
-The `& rest` syntax captures all remaining arguments as a single value of type `(SList Sexp)`. The `&` MUST appear before exactly one parameter name in the parameter list, and that parameter MUST be the last.
+The `& rest` syntax captures all remaining arguments as a single value of type `(SList Sexp)`. The `&` MUST appear before exactly one parameter name in the parameter list, and that parameter MUST be the last. The name MAY follow the `&` after whitespace or immediately: `& rest` and `&rest` are equivalent (§1.4.8). [Tested crates/cranelisp-frontend/src/defmacro/tests.rs::parse_rest_param, crates/cranelisp-frontend/src/defmacro/tests.rs::parse_rest_param_with_space, tests/spec_09_macros::repl_defmacro_rest_splice — rest capture and the equivalence of the two spellings only; the "exactly one" and "MUST be the last" constraints have no committed evidence]
 
 **Annotated arguments are ONE argument. [S115]** Because `:Type <form>` folds at read time (§1.4.5), an annotation in a macro-call argument list is **not** a separate argument: the annotation and the form it binds arrive as a **single** `SexpAnnotated` value. Argument counts therefore match what the user wrote — `(def x :Int 5)` is a **two**-argument call to `def` (`x`, and the annotated `5`), and it MUST NOT be reported as a three-argument arity failure. Two obligations follow for macro authors:
 
@@ -303,7 +305,7 @@ Qualified macro references are **not** constrained by source order within the re
 
 **Same-spelled macro candidates. [Uncovered S121]** Imports, re-exports, and module-local declarations MAY expose several canonical declarations under one bare spelling (§8.6.4). Macro expansion occurs before HM inference, so later value-type information MUST NOT select among candidates at a macro call head. If compile-time syntactic resolution does not leave exactly one macro declaration — including when a same-spelled function remains a possible ordinary call — the bare call is ambiguous and MUST use the macro's canonical `module/macro-name`. The macro declaration introduced by `defmacro` is not a value outside invocation position and is eliminated by syntactic context under §8.6.5. Compiler-generated clause bindings are not language-namespace candidates at all (§9.2.6).
 
-## 9.4 Quasiquote [Tested+Neg tests/spec_09_macros::quasiquote_with_unquote, crates/cranelisp-frontend/src/quasiquote.rs::quote_and_quasiquote_preserve_annotated_node_shape, crates/cranelisp-frontend/src/quasiquote.rs::annotation_half_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote.rs::annotation_subject_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote.rs::unquote_is_processed_in_both_annotated_halves]
+## 9.4 Quasiquote [Tested+Neg tests/spec_09_macros::quasiquote_with_unquote, crates/cranelisp-frontend/src/quasiquote/tests.rs::quote_and_quasiquote_preserve_annotated_node_shape, crates/cranelisp-frontend/src/quasiquote/tests.rs::annotation_half_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote/tests.rs::annotation_subject_splice_is_rejected_in_quasiquote, crates/cranelisp-frontend/src/quasiquote/tests.rs::unquote_is_processed_in_both_annotated_halves]
 
 Quasiquote is reader syntax for template-based S-expression construction. It avoids the verbosity of manually calling `Sexp` constructors.
 

@@ -421,7 +421,7 @@ displacement; typed-context exits; both analysis toggles; REPL/`--run`/
 | Match eliminator (ctor/var × inline/let-bound × payload) | committed cells #1–#10 + 4 green controls | nothing to author; flip at W3 |
 | Capture/curry teardown | cells #11–#12 + green capture controls | `/dev` unit matrix per `transitive-drop-glue.md` §7 (capture/environment glue row); **W3: 0796 exclusion removal** — `/testing` removes the `curried_partial_application` entry from `tests/gen_ownership_flows.rs::balance_exclusion` IN the S4 flipping change-set, and the harness must then run clean over that position for every owning type under both toggles. The removal IS the 0796 acceptance (`transitive-drop-glue.md` §7.4): a fix that flips #11–#13 while the exclusion stays is incomplete |
 | TCO displacement predicate | cells #5/#8/#9, #19–#20, `adt_wrapped_supersede_leak_0720` greens | `/dev` unit cells for the §6 predicate table (transfer vs replacement polarity, borrowed-alias rejection) |
-| Typed-context exits (run/REPL/link; scalar/heap/nested/`Pure`) | cells #15–#18 + `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | `/dev`(int/exe-bundle) unit matrix per `result-owner.md` §6 **including the §5 error-path negative rows** (`/qa` verifies at Phase 6, with the §9.2 armed legs); no new e2e owed. **Flip rider (`result-owner.md` §9.1):** cell #15's `// defect:` line still reads `locus=…rc_emission.rs::protect_return_value` (`tests/adt_drop_glue_underkey.rs:258`) — both mechanisms at that locus are falsified; `/testing` re-locuses it onto the int result-value lifetime seam IN the flipping change-set (I3), or the `locus=` hotspot analysis keeps mis-attributing this defect to backend |
+| Typed-context exits (run/REPL/link; scalar/heap/nested/`Pure`) | cells #15–#18 + `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | `/dev`(int/exe-bundle) unit matrix per `result-owner.md` §6 **including the §5 error-path negative rows** (`/qa` verifies at Phase 6, with the recorded S118 armed legs); no new e2e owed. **S118 flip rider:** cell #15's `// defect:` line still reads `locus=…rc_emission.rs::protect_return_value` (`tests/adt_drop_glue_underkey.rs:258`) — both mechanisms at that locus are falsified; `/testing` re-locuses it onto the int result-value lifetime seam IN the flipping change-set (I3), or the `locus=` hotspot analysis keeps mis-attributing this defect to backend |
 | Eliminator axis in the generative harness | MISSING (FIXME 0830) | §4.2 — W1 |
 | Mixed-arm whole-match approximation tripwire | MISSING (FIXME 0726) | §4.2 — W1 |
 
@@ -1149,7 +1149,7 @@ recurrence is caught by the suite instead of by a Phase-6 replay.
   typecheck). FIXME retargeted `/design`(typecheck), S119; the
   `result-owner.md` §1.1.1 scope sentence is corrected in the same window
   (the `/design`(int) side of that correction is named in the FIXME).
-- **Durable record now:** the marginal cell (§11.8.6 item 4). Per FIXME 0914,
+- **Durable record now:** the marginal cell (`tests/plan/s118-test-plan.md` §11.8.6, item 4). Per FIXME 0914,
   the instrument is the child's exit allocator counters
   (`CRANELISP_ALLOC_PARITY_DUMP`), never `/mem` deltas — `/mem`'s window
   closes before the result release and is itself the subject of 0914.

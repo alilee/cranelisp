@@ -800,10 +800,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 ),
             )
             .unwrap_or_else(|e| unreachable!("IO fixture must reinstall: {e}"));
-        // **Uniform canonical keying (S109 W1):** mirror the LIVE `bootstrap.rs`
-        // shape — the real `Bind` `Def` under `IO.Bind` (`member_key`), the bare
-        // `Bind` an `Import` alias onto it (this fixture stands in for the int
-        // seeds, so it must not keep a bare-keyed sum-ctor `Def`).
+        // Mirror the live `bootstrap.rs` shape: the `Bind` binding under
+        // `IO.Bind` (`member_key`), with bare `Bind` a candidate exposure onto
+        // it. This fixture stands in for the binary's seeds, so it must not
+        // store a sum ctor under its bare name
+        // (`design/arch/dotted-ctor-canonical-keys.md` §1).
         let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
         primitives_table
             .install_template(
@@ -1264,10 +1265,10 @@ mod tests {
             .expect("primitives module should exist")
     }
 
-    /// Test helper: resolve a constructor by its BARE name to the terminal `Def`,
-    /// following the S109 same-module bare→canonical `Import` alias one hop (a
-    /// sum ctor's real `Def` is keyed `Type.Ctor` via `member_key`, the bare name
-    /// a name candidate). Type-agnostic.
+    /// Test helper: resolve a constructor by its BARE name to its terminal
+    /// binding, following a sole same-module name candidate one hop (a sum
+    /// ctor's binding is keyed `Type.Ctor` via `member_key`; the bare name is a
+    /// candidate). Type-agnostic.
     fn ctor_entry<'t>(table: &'t cranelisp_types::SymbolTable, name: &str) -> Option<&'t Binding> {
         if let Some(entry) = table.get(name) {
             return Some(entry);

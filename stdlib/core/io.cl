@@ -29,7 +29,7 @@
   (bind io-val (fn [x] (Pure (f x)))))
 
 ;; timeout — the derived per-request control combinator (S96 Chunk C4, slice 7;
-;; spec §10.12.8, design/int/reactor.md §2.18). `timeout : Int -> IO a -> IO (Option a)`.
+;; spec §10.12.8, design/intrinsics/reactor.md §2.18). `timeout : Int -> IO a -> IO (Option a)`.
 ;; Runs `io` against a `d`-MILLISECOND timer (the `sleep` runtime leaf): `(Some v)` if
 ;; `io` completes first (value `v`), `None` if the timer fires first — in which case
 ;; `io` LOSES the race and is **cancelled** (its future is dropped, releasing its
@@ -37,7 +37,7 @@
 ;; primitive: it composes the `race` primitive (§10.12.8) with the `sleep` runtime
 ;; leaf, mapping each arm into `Option` so the homogeneous-`race` arms agree on
 ;; `IO (Option a)`. `timeout` adds NO cancellation plumbing — it inherits the four
-;; race-loser drop-release paths from `race` (reactor.md §2.18: "per-request timeout
+;; race-loser drop-release paths from `race` (design/intrinsics/reactor.md §2.18: "per-request timeout
 ;; is one stdlib line over the `race` primitive").
 ;; The winner-arm passes the bare `Some` constructor as `map-io`'s `f`: an ADT
 ;; constructor is a first-class fn-value (ctor-as-value fixed, 0712 — S114 Phase 6).

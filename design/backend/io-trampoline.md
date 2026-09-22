@@ -1521,7 +1521,7 @@ they are listed in `design/intrinsics/reactor.md §2.10` and are not backend-uni
 - **Concurrency-safety (Principle 1).** The backend emits **no concurrency primitive** — it
   constructs a value (the `Launch` node) and a null-guarded drop path. All spawn/supervise/global-
   budget/strand-consume lives in the reactor (`design/intrinsics/reactor.md`). The one new RC subtlety
-  (sub-tree move-out) is modeled by representation (the `0` sentinel = "moved", §15.5) so "consumed
+  (sub-tree move-out) is modeled by representation (the `0` sentinel = "moved", `design/backend/io-trampoline.md` §15.5) so "consumed
   exactly once" is structural, not a flag to keep in sync.
 - **Testability (Principle 5).** The arm emits an inspectable node shape (tag + one field + a
   null-guarded dec), unit-testable at the CLIF seam without a running reactor; the detach/supervise
@@ -1536,7 +1536,7 @@ environment at the I/O boundary": per-request timeout, cancel-on-disconnect, gra
 shutdown. The runtime side — poll all branches, first-ready wins, **cancel (drop) the
 losers** — is the intrinsics agent's design (`design/intrinsics/reactor.md`, the combinator
 trampoline arm + the A→C RAII-`Permit` drop-guard it exercises); this section is the
-**backend counterpart**: the new IO node tag, its construction bake (modeled on the §15
+**backend counterpart**: the new IO node tag, its construction bake (modeled on the `design/backend/io-trampoline.md` §15
 launch node), how race/select are recognized and lowered (the `bind` inline-primitive
 precedent — **not** an analysis marker), the result threading, and the RC discipline of the
 N branches (the winner kept, the losers cancelled=dropped).
@@ -1794,7 +1794,7 @@ and **drops the loser futures** (cancellation = drop → RAII `Permit` release +
 interest deregistration, §16.5). The backend's contribution to the partition is the
 guarantee that each branch sub-tree carries the **correct leaf tags** (which the existing
 effect arms already emit) — "partition by tag" is the trampoline's *classification* of each
-branch's reachable effect leaf, an `io.rs`/`reactor.md` detail (the §13.5 boundary item),
+branch's reachable effect leaf, an `io.rs`/`reactor.md` detail (the boundary item in `design/backend/io-trampoline.md` §13.5),
 not a backend concern.
 
 ### 16.9 Unit-test seams for `/dev` (backend tier)
@@ -2098,7 +2098,7 @@ resource-handle ADT (e.g. web/Connection):
 
 `RESOURCE_DESC_OFFSET = HeapAdt::FIELDS_START = 24` is the **single fixed offset** the
 trampoline reads with **no per-ADT "token is field N" knowledge** (the property the arch
-ruling requires; `interfaces.md` §"Resource descriptor"). For a resource-handle ADT the
+ruling requires; `design/arch/interfaces.md` §"Resource scheduling — the `ctx` vtable handle model"). For a resource-handle ADT the
 logical fields shift to `FIELDS_START + 16 = 40`; field-access codegen for these types uses
 `40` (only these types — every other ADT is unchanged at `24`). **web `Connection` is empty
 (`deftype Connection []`)**, so it has **zero** logical fields → a 40-byte object

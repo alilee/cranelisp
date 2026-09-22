@@ -51,17 +51,19 @@ user> /run-all-tests
 2 passed, 1 failed in 5.67ms
 ```
 
-### 16.3 The Primitives
+### 16.3 The Primitives [Uncovered S122]
 
 `discover-tests` and `catch-runtime-error` are ordinary `primitives`-module symbols — imported (or FQ-referenced) like any other primitive, not special forms and not always-in-scope root names.
 
 **`discover-tests`** — discovery primitive:
 
 ```
-discover-tests              :: (IO (Vec (Pair String (Fn [] (Option String)))))   ; current module
-discover-tests "mod.path"   :: (IO (Vec (Pair String (Fn [] (Option String)))))   ; named module (String arg)
-discover-tests ["a" "b"]    :: (IO (Vec (Pair String (Fn [] (Option String)))))   ; union over a Vec of module paths
+discover-tests              :: (Vec (Pair String (Fn [] (Option String))))   ; current module
+discover-tests "mod.path"   :: (Vec (Pair String (Fn [] (Option String))))   ; named module (String arg)
+discover-tests ["a" "b"]    :: (Vec (Pair String (Fn [] (Option String))))   ; union over a Vec of module paths
 ```
+
+The result MUST be the vector itself, not an `IO` action: discovery is pure-typed, and its result is treated notionally as a constant. Introspection is deliberately not modelled as an effect, so that test discovery does not require an introspective platform. The freshness requirement below still applies.
 
 Returns one `(Pair name callable)` per eligible `test-*` function:
 

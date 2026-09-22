@@ -1,898 +1,559 @@
-# Embedding an LLM Agent in the REPL — Exploratory Architectural Design
+# Embedded REPL Agent — Architecture
 
-**Status:** RATIFIED (U1–U6, user 2026-06-21 — §10) + IN DELIVERY. **Phase 1 (Advisor MVP, rungs 0–4) SHIPPED + live-validated S88** (`sprints/archive/sprint-88.md`). **Phase 2 (Build + Document + pre-flight validator, rungs 5–6) SHIPPED + live-validated S89** (`sprints/archive/sprint-89.md`). **S90 (fluency — reach half of rung 7: `/syntax` cheat-sheet, sig-grain harvest, importable-symbol search, silent greppable log) is APPROVE-WITH-REVISIONS — see §11** (the durable record of the S90 Phase-2 `/arch` review; verdict transcribed into `sprints/SPRINT.md` by `/sprint`). The implementable int-side plan is `design/int/agent.md`; the REPL experience is `repl/spec.md §17`; the module-preamble form is spec §8.16. This doc remains the master architectural reference; §§ below describe the full target, with phasing in §9 and the S90 fluency-phase review in §11.
-**Owner:** `/arch` (crate/feature boundary). Cross-skill: `/repl` (experience), `/int` (dispatch + session wiring), `/spec` (spec-retrieval + module-preamble packaging).
-**Provenance:** Authored by `/arch` (S86) against the user's vision and refined through an `/arch`↔user design conversation. Greenfield — no prior LLM-as-feature design exists; the only adjacent concept is `/learn` (FIXME 0052), a scripted tutorial, not an LLM. First-principles + this codebase; the sketch has no REPL-agent precedent.
+**Owner:** `arch`. **Reader:** anyone changing how the embedded LLM agent, or the
+default-build commands that grew out of it, meets the rest of the compiler.
+
+**Status.** Ratified by the user (U1–U6, §10) and delivered, except the targets
+listed in §9. Open questions are §12. This document states the boundary, the
+invariants that hold it, and the rationale a contributor needs to avoid undoing
+them. It does not describe mechanism or experience:
+
+| Subject | Authority |
+|---|---|
+| Required user-visible behaviour | `repl/spec/17-embedded-agent.md`, `repl/spec/17a-agent-language-awareness.md`, `repl/spec/17b-agent-observability.md` |
+| Module-preamble language form | `spec/08-modules.md` §8.16 |
+| Mechanism inside the binary | `design/int/agent.md`, `design/int/index-worker-isolation.md` |
+| Scheme-match predicates | `design/typecheck/signature-match.md` |
+| Evidence strategy | `tests/plan/agent-testing-strategy.md` |
+
+Section numbers are cited from the specification, designs, source and tests.
+Retired numbers are not reused, so gaps are deliberate.
 
 ---
 
-## §1. Vision, goals, non-goals
+## §1. Purpose and non-goals
 
-### 1.1 Vision
-The REPL is already self-documenting: every symbol/expression/special-form typed at the prompt yields useful `:Type value` feedback (root `CLAUDE.md` §"Design Principles"; `repl/spec.md` §4). The embedded agent extends that principle into a **development partner** that lives inside the live session.
+### 1.1 Purpose
 
-The agent's range spans from whiteboard reasoning to compilable code in one breath — illustrated by the kinds of things a user asks it: *"how can I decompose this requirement into modules?"* (architecture advice) … *"write a data structure with an O(1) lookup for a cache of this record"* (concrete, typed code synthesis). It must be fluent across that whole span, always grounded.
+The REPL is self-documenting: every symbol or form typed at the prompt yields
+`:Type value` feedback (root `CLAUDE.md` §Design Principles). The agent extends
+that into a development partner inside the live session, fluent from
+architecture advice to typed, compilable code.
 
-### 1.2 Goals — two tiers
-- **Tier 1 — the grounded advisor (core starting point).** Super-powered over four substrates: **errors** (type/runtime/link → explanation + fix), **platforms** (what's available, their effects/schema), and **modules** — both **stdlib** and **project** (exports, sigs, docs). Retrieval + grounding; the MVP, and it stands alone.
-- **Tier 2 — the development partner (the actual product).** Help the user **architect → design → build → test** *their* vision. This is the same skill decomposition this compiler project runs on itself (`/arch`, `/design`, `/dev`, `/qa`) — the embedded agent gives the Cranelisp user's project that same skilled-collaborator lifecycle. **Put this at the top of the goals: the agent brings the project's own development discipline inside the user's REPL.**
-- **G-ground** Grounded, not hallucinated. Cranelisp is a *private* language — the model has zero prior knowledge of it (§6), so grounding (project state + spec + an always-on language primer) is mandatory, not optional.
-- **G-legible** Every action the agent takes is a visible REPL command/input, echoed as if typed (§4.4) — the session stays a legible, replayable script.
-- **G-light** Feature-gated, off by default; the REPL works fully without it (§7). Cf. the optional-prelude principle.
+### 1.2 Goals
+
+- **Tier 1 — grounded advisor.** Answers over errors, platforms, and stdlib and
+  project modules by retrieval from live session state. It stands alone.
+- **Tier 2 — development partner.** Helps the user architect, design, build and
+  test their own project.
+- **G-ground.** Cranelisp is a private language with no presence in any model's
+  training data. Grounding (session state plus an always-on primer) is
+  mandatory, not an optimisation (§6).
+- **G-legible.** Every conclusion and every state-changing action is visible in
+  the session; a write shows the exact text it commits. The agent's read probes
+  are private and recorded in the log and trace (§4.4).
+- **G-light.** Feature-gated and off by default; the REPL is complete without
+  it (§7.2).
 
 ### 1.3 Non-goals
-- **NG1** Not a replacement for the deterministic REPL. `(…)`/`[…]`/`/…` always route to the existing machinery, untouched (§5). Additive only.
-- **NG2** Not required for the language to work. An LLM-free build is a first-class default.
-- **NG3** Not a silent autopilot. Code writes are confirmation-gated; understanding writes are consultative (§2, §7).
-- **NG4** Not part of the release tier. Orthogonal to `--release` (Phase H); a *dev-session* capability (like introspection — see the "Introspection is REPL-only" memory) that never ships in a `--link`/`--release` artifact.
-- **NG5** Not a normative change to the deterministic REPL spec, beyond one additive dispatch section + the module-preamble prerequisite (§3.4, §10).
+
+- **NG1** Not a replacement for the deterministic REPL. The agent is additive;
+  single forms and slash commands route as they always have (§5.3).
+- **NG2** Not required for the language. An LLM-free build is the default.
+- **NG3** Not a silent autopilot. Writes are gated (§2, §7.4).
+- **NG4** Not part of any shipped artifact. The agent, its log and its trace
+  are dev-session facilities, like introspection
+  (`design/arch/d1-introspection-repl-only.md`); none reaches a `--link` or
+  `--release` output.
+- **NG5** Not a normative change to the deterministic REPL beyond the additive
+  agent sections and the module-preamble form.
 
 ---
 
-## §2. The three modes
+## §2. Modes are cut by consent
 
-The agent is not a waterfall of lifecycle phases the user switches between. The modes that earn their keep are cut by **what the agent touches and the consent that touch requires** — the agent slides between them fluidly inside one conversation (Build and Document usually pair):
+The modes are distinguished by what the agent touches and the consent that
+touch needs. The agent moves between them inside one conversation; there is no
+mode switch and no separate "architect" subsystem.
 
-| Mode | Touches | Consent | Notes |
-|---|---|---|---|
-| **Advise** | reads only (errors, platforms, modules, spec, the project's own docs) | autonomous, no confirmation | most turns live here |
-| **Build** | writes *code* — defns/types via `submit_repl_input` | **confirm each submission** | the "build my vision" hands |
-| **Document** | writes *understanding* — docstrings + module preambles | **consultative** ("shall I record that as `solver`'s preamble?") | how accumulated intent becomes durable (§3) |
+| Mode | Touches | Consent |
+|---|---|---|
+| **Advise** | reads only | none |
+| **Build** | code, through the ordinary eval path | confirm each submission |
+| **Document** | docstrings and module preambles | consultative question |
 
-"Architect" and "design" are *Advise* turns that happen to produce structure and signatures; they become durable only when promoted into code (Build) and docs (Document). There is no separate "architect subsystem" — there is reasoning (Advise) that lands in the two write modes.
-
----
-
-## §3. Memory architecture
-
-The agent's persistent memory is **mostly the project's own docstrings and module preambles** — not a private store. The self-documenting principle, turned inward on the agent.
-
-### 3.1 Primary store — docstrings + module preambles (in the `.cl` code)
-Authoritative, version-controlled, human-readable, *shared* (humans edit them too), and already retrievable through the existing `/doc`/`/info`/exports surface the agent uses as tools. The agent's understanding can't bit-rot in a hidden place because it lives where humans look. The agent maintains it in **Document** mode (consultative). Virtuous loop: the agent reads its memory via the same introspection it advises with, and grows its memory by improving the docs — so memory-maintenance and documentation are the *same* activity, and the human benefits directly.
-
-### 3.2 Secondary store — a small persistent sidecar (the residual)
-Cross-cutting intent that has no natural docstring home: the overall vision, "why X over Y," open questions. **Small by design.** (Exactly the `memory/` + design-doc split this compiler project runs on; the user's project gets the same.) The only part that needs explicit serialization + reconciliation across sessions.
-
-**The line** (keep the sidecar tiny): *anything that describes a specific named thing goes on that thing (docstring/preamble); only genuinely cross-cutting, no-single-home intent goes to the sidecar.* This pushes the agent to attach understanding to the code it's about.
-
-### 3.3 Derived index — a pure cache, not a store
-A reconstructible read-index over the docstrings/preambles + symbol tables for fast retrieval. **Never the source of truth** — blow it away and it rebuilds from the files/session. Because the read path harvests fresh from live structures each turn (§4.1), this index is an *optimization*, not a necessity, and it has **no cache-invalidation problem**: the symbol table is the truth.
-
-### 3.4 Prerequisite: module preambles must be first-class
-Docstrings already are (`PrimitiveDef.docstring`, `/doc`, defn docstrings). Module-level documentation — a preamble block the agent can read and rewrite — may not be a first-class, addressable, editable concept today. **Making it one is load-bearing** for this memory model: a normative module-preamble form + `/doc <module>` to read it + an edit path. A small `/spec` + `/repl` item to confirm/build before the rest leans on it.
+Architecture and design advice are Advise turns; they become durable only when
+promoted into code (Build) or documentation (Document).
 
 ---
 
-## §4. Context — harvest, don't fetch
+## §3. Memory
 
-### 4.1 The embedded advantage
-An external assistant peers through a keyhole (grep/LSP/file reads) and pays a round-trip per fact. This agent is **in-process**: the symbol tables and the introspection dictionary are live structures in the same address space. Baseline context is therefore **harvested** — assembled fresh from live memory every turn at ~zero cost — not retrieved. That's where the "omniscient" feel comes from: the agent is never ignorant of, or stale about, the user's own code, because it reads the same tables the compiler just wrote. (Docstrings/preambles live on those same entries, so one harvest pass surfaces both current state *and* accumulated understanding.)
+### 3.1 Primary store — docstrings and module preambles
 
-### 4.2 The problem flips: from retrieval to selection under budget
-Omniscient ≠ dump everything. A real project has thousands of symbols; you can't prepend the table, and irrelevant entries dilute attention as badly as missing ones. **Token budget is the governing design principle.** So the centerpiece module is a continuous, in-process **context harvester + relevance ranker**; the omniscient feel is engineered by always selecting the *right* slice, cheaply, from signals that are also in-process and free (cursor module, symbols named/referenced in the message, the last error + its implicated symbols, recently-defined entries via the symbol table's `seq`, the import-graph neighborhood, the transcript).
+The agent's durable memory is the project's own documentation, in the `.cl`
+source: authoritative, version-controlled, shared with human readers, and
+already readable through `/doc`, `/info` and the export surface. The agent
+reads it with the introspection it advises with and grows it in Document mode,
+so maintaining memory and improving documentation are one activity. `AgentState`
+is never serialised.
 
-### 4.3 The push/pull balance
-**Push the shape of everything; pull the bodies.**
+### 3.2 Secondary store — a small sidecar (unbuilt, §9)
 
-- **Push (harvested map, every turn, ambient).** Default heuristics (tuning knobs, not architecture):
-  - module **preambles + export surface** for the **last ~6 modules mentioned**,
-  - **full src of the last ~10 fns mentioned**,
-  - **full src of the current module** (pinned).
-  Recency ("mentioned") = appeared in the transcript or surfaced by a command, ordered by the symbol table's `seq`. The budget enforces a **graceful-degradation ladder**: current-module full-src → preamble+exports+mentioned-fns → preamble+exports only.
-- **Pull (depth on demand, enacted).** Full source, full docstring, a spec section, CLIF/disasm — for the few things a reasoning step actually bites on.
+Cross-cutting intent with no single named home: the overall vision, "why X over
+Y", open questions. **The line (U3):** anything that describes a named thing
+goes on that thing; only intent with no home goes to the sidecar. The rule
+exists to keep the sidecar small.
 
-### 4.4 Tool calls ARE visible REPL commands (the keystone)
-A pull is the agent **issuing a REPL command on the user's behalf**: ask for source → answered by `/source foo` → rendered in the transcript *as if the user typed it*. Consequences:
-- **No separate tool registry** — the agent's pull-surface *is* `dispatch_command`; a pull synthesizes a command string and runs it through the same `process_commands` path a keystroke uses.
-- **Visibility is uniform; only consent differs** — reads auto-run-and-show; writes (submit a defn, `/sh`) confirm-and-show. Everything the agent does is on screen as a REPL line.
-- **It's a teaching surface** — the user *watches* the agent reach for `/source`/`/info`/`/refs` and learns the vocabulary by observation.
-- **Pulls warm the push** — once pulled, `foo` is "mentioned" and enters the harvest window next turn. Push and pull interlock.
+### 3.3 Derived indices are caches
 
-**Principle: the agent has no private tools — its entire capability surface is the REPL command set.**
+Any read index over tables, docstrings or `.meta` files is reconstructible and
+never a source of truth. The `/search` index is the one built instance (§11.2).
 
-**Corollary — the agent grows the REPL for everyone.** When the agent needs something the command set lacks (e.g. "find the tests that reference this symbol"), that need is also a human's: it becomes a command (`/refs <sym>`, `/tests-for <sym>`, `/callers <fn>`, `/uses <type>`) serving both. The agent is a **forcing function for the REPL's introspection vocabulary.** *Implementation note:* today's introspection is **forward** (name → sig/doc/source); these are **reverse** queries we don't have. In a REPL the full ASTs are already in memory, so the cheap MVP is an **on-demand scan** over the in-memory bodies — no maintained reverse index, no invalidation in a mutating session; promote to an index only if scan latency bites.
+### 3.4 Module preambles are first-class
 
-### 4.5 Self-tuning telemetry
-Treat the push as a **cache**; the goal is **max hit-rate under the token budget**; every pull is a miss. Log misses, and **split** them:
-- **Compensatory pull** — the target was *close* to scope (same module; a direct callee/caller of an in-window fn; a symbol that aged out). The heuristic should have included it. **This is the tuning signal** — its distribution names which categories to promote into the push defaults.
-- **Legit deep-dive** — something the push could never anticipate. The healthy push/pull split working; not a miss to fix.
+The memory model depends on a module-level documentation block that can be
+addressed, read and rewritten. That form is `spec/08-modules.md` §8.16, carried
+by `SymbolTable.module_preamble` (`design/frontend/module-preamble.md`) and
+regenerated byte-stably.
 
-The same "instrument compensation" loop applies to generation (§6.3). Measure compensation → curate what's pushed → fewer compensations.
+---
+
+## §4. Context
+
+### 4.1 Harvested, not fetched
+
+The agent runs in-process. Symbol tables and introspection are live structures
+in its address space, so baseline context is assembled from them on every turn.
+The harvester keeps no copy store and therefore has nothing to invalidate. One
+pass surfaces current state and the documentation attached to it.
+
+### 4.2 The problem is selection under budget
+
+A real project has thousands of symbols. Irrelevant context dilutes attention
+as badly as missing context, so the harvest selects a slice under a token
+budget. The budget and the selection heuristics are tuning values owned by
+`design/int/agent.md` §5, not architecture.
+
+### 4.3 Push the shape of everything; pull the bodies
+
+- **Push** — sent every turn, ambient: the current module (pinned), recent REPL
+  turns, every in-scope symbol at signature grain, and the functions and
+  modules the user's text mentions. The delivered blocks and their degradation
+  ladder are `design/int/agent.md` §5.2, §5.4 and §23.
+- **Pull** — depth on demand: full source, a docstring, a cheat-sheet topic, a
+  search.
+- **Budget pressure degrades grain, never presence**
+  (`repl/spec/17a-agent-language-awareness.md` §17.18.2). A model that sees a
+  truncated list infers absence.
+
+**Unrealised selection signals.** Earlier text of this section named further
+signals: a mention window ordered by the symbol table's `seq`, mentions
+surfaced by commands as well as by user text, the last error's implicated
+symbols, and the import-graph neighbourhood. No requirement fixes any of them
+and the delivered harvest uses none except the recent-errored-turn ring
+(`design/int/agent.md` §5.5). They are candidate heuristics, not commitments:
+`design` (int) adopts one when the log shows compensatory pulls it would have
+prevented (`design/arch/repl-embedded-agent.md` §4.5). The source-disclosure wording that quotes this section is
+§12 Q2.
+
+### 4.4 The agent's capability surface is the REPL command set
+
+- **No private tool registry.** A pull synthesises a command string and runs it
+  through `process_commands`, the path a keystroke uses. The read allowlist is
+  data and is the read consent boundary (`design/int/agent.md` §4.2).
+- **Reads are private probes.** A probe runs against a throwaway sink. Neither
+  the command nor its result scrolls the user session; both go to the activity
+  log and the trace (`repl/spec/17-embedded-agent.md` §17.2.1). Echoing every
+  read, the original design, flooded sessions with the agent's search and
+  buried the answer. The user learns the vocabulary from the agent's
+  conclusions.
+- **Writes are visible and gated.** A proposed or submitted definition renders
+  as an ordinary definition echo, and the exact text is shown even under
+  `--yes` (§7.4).
+- **Pull results return through the transcript**, which is sent whole
+  (`design/int/agent.md` §3.2, §3.3). A pulled body therefore stays in context
+  for the rest of the session without the harvest re-admitting it. The earlier
+  "pulls warm the push" interlock is withdrawn as redundant; its re-entry
+  trigger is §12 Q1.
+
+**Corollary — the agent grows the REPL for everyone.** When the agent needs a
+query the command set lacks, a human needs it too, so it becomes a default-build
+command. `/refs`, `/tests-for`, `/syntax` and `/search` arrived this way. They
+are LLM-free and unconditional; only their allowlist row is feature-gated. A
+reverse query is an on-demand scan over live state and is promoted to an index
+only on measured latency (`design/int/agent.md` §9.2).
+
+### 4.5 Compensation telemetry
+
+Treat the push as a cache whose hit rate is maximised under the budget. Every
+pull is a miss; every validator repair is a generation miss. The activity log
+records both (`repl/spec/17b-agent-observability.md` §17.20). The
+classification that turns the log into a tuning signal is by hand today and its
+automation is unbuilt (`design/arch/repl-embedded-agent.md` §9):
+
+- **Compensatory pull** — the target was near scope (same module, a direct
+  callee, an in-scope symbol degraded to name only). The push should have
+  carried it.
+- **Legitimate deep-dive** — nothing could have anticipated it. Not a miss to
+  fix.
 
 ### 4.6 Honest bound
-The agent is omniscient about **code + docs + spec** — not about *unstated* intent. The only intent it has is what's been captured (docstrings/preambles/sidecar). State this plainly; it's the engine of the loop: every **Document** edit converts mind→harvestable-substrate, so omniscience *grows as you work*.
 
-### 4.7 Open: push transparency
-Pull is enacted-and-visible; push is ambient-and-silent. Should the push be *partially surfaced* — a collapsed, expandable header like `⊙ in scope: solver (full), grid·html (api), +10 fns` — so the user can see/audit/**prune/extend** what the agent reasons over? Costs screen space; buys legible, steerable omniscience. **RATIFIED (U4, §10): ambient for the MVP, prunable header in Phase 3** — the harvest stays silent through Phase 1–2; the header rides Phase 3 once telemetry informs what to surface (§9 Phase 3).
+The agent knows code, documentation and its primer. It does not know unstated
+intent. Every Document edit converts intent into harvestable substrate, which
+is how its knowledge grows.
+
+### 4.7 Push transparency (unbuilt, §9)
+
+The push is ambient and silent (U4). `/context` is the delivered audit surface
+(`repl/spec/17-embedded-agent.md` §17.11). A collapsed, prunable in-session
+header showing what is in scope was ratified as a later target and is deferred
+(`repl/spec/17b-agent-observability.md` §17.20.3c).
 
 ---
 
-## §5. The dispatch model
+## §5. Dispatch
 
-### 5.1 The current seam
-The read loop (`src/main.rs:240-306`): accumulate lines; a line is **complete** when it starts with `/` (slash, single-line — `main.rs:251`) OR `parens_balanced(&buffer)`; else continuation. On complete, `process_commands` (`src/repl.rs:419`) sorts: blank/comment → `Nothing`; slash → dispatch; bare special-form → `Final`; else → `Compile` → `eval`. Bare atoms/literals (`3`, `+`, `foo`) flow to `eval`'s bare-symbol introspection gate (`eval.rs:447`) — the §4 self-documenting behavior.
+### 5.3 The classifier
 
-### 5.2 The bare-atom tension
-The naive "slash + bracket → REPL, else → agent" rule **breaks self-documentation**: `+`, `foo`, `42` match neither slash nor bracket and would route to the agent, regressing the heavily-tested `repl/spec.md` §4 contract.
+`repl/spec/17-embedded-agent.md` §17.1 is normative; `design/int/agent.md` §2.2
+is the mechanism. The architecture fixes three properties:
 
-### 5.3 Recommendation — route by "parses as a complete form, or a slash command"
-```
-classify(line, buffer_state):
-  starts with '/'                 -> ReplSlash      (unchanged)
-  blank / comment-only            -> ReplNothing    (unchanged)
-  try parse(buffer):
-    Ok(complete sexp(s))          -> ReplForm        (atoms, literals, lists, vectors — the §4 surface)
-    Err(unclosed '(' or '[')      -> Continuation    (unchanged: parens_balanced gate)
-    Err(other parse error)        -> Agent           (not Cranelisp -> natural language)
-  feature off                     -> Err(other) falls back to today's parse-error display
-  agent dormant / --agent OFF     -> Agent arms fall back to today's deterministic display  (§7.4 invariant)
-```
-**Zero regression** (anything the reader accepts routes deterministically); the brackets rule is a strict subset of "parses as a form." The discriminator is the reader the REPL already trusts (`cranelisp_frontend::parse`, `eval.rs:78`), called one step earlier to *decide routing*.
-
-**The active ⇒ route / dormant ⇒ today's-display invariant (S89 ruling, `/arch` 2026-06-22).** The `Classify::Agent` arms — bare-unbound and `Err(other parse error)` — fire only when the agent is **runtime-active** (compiled `--features agent` AND `--agent` not OFF AND a provider is reachable). When the agent is compiled-in but **dormant** (`self.agent == None`: no model/key, or `--agent` OFF / `--no-agent`), the `Classify::Agent` arms fall back to *today's deterministic display* — the bare-unbound case reaches `eval.rs`'s unbound-symbol introspection; the parse-error case surfaces the `format_error` diagnostic — i.e. the dormant feature-ON build behaves byte-identically to the feature-OFF build for these two inputs. **This is a refinement WITHIN the ratified U1 contract, not a reversal.** U1's whole purpose is routing to a *working* agent; routing to a dormant one that can only print the U6 "not configured" notice is strictly worse UX than the parse-error / undefined-name diagnostic the user gets today. The S88 ratification already pins feature-OFF as byte-identical (§7.5); extending byte-identity to *dormant* feature-ON is the conservative reading of "route only to a live agent." The guard belongs on the **route decision** (gate `Classify::Agent` on agent-active in `main.rs`, alongside the existing `#[cfg(feature="agent")]`), NOT solely inside `agent_turn` — a dormant `agent_turn` that prints the U6 notice on a *classifier-diverted* input is the defect; the U6 dormant notice remains correct only for the **explicit** `/ask` door (§5.3), where the user has named the agent deliberately. Invariant: **agent ACTIVE ⇒ route per U1; agent dormant/off ⇒ today's deterministic display; `/ask` when dormant ⇒ U6 notice (explicit door, unchanged).**
-
-**The one ambiguity** — a bare single word ("hello", "why") parses as a symbol and would route to introspection. Resolve with a minimal escape hatch: **`/ask <text>`** (and/or a reserved leading `\`) forces agent routing. Multi-word prose is never a single valid sexp (two bare symbols = parse error), so real sentences route to the agent with no sigil. With the feature off, `/ask` prints "agent not built in."
+- **The discriminator is the reader the REPL already trusts**, consulted one
+  step before evaluation. Exactly one form routes to the deterministic REPL
+  whether or not its symbols resolve. Zero or several forms, or a parse error
+  on a balanced buffer, is prose. `/ask` is the explicit door.
+- **Routing never consults symbol resolution.** The original U1 rule sent a
+  lone unbound or fully qualified symbol to the agent instead of the
+  self-documentation surface, and made one line route differently as the
+  session grew. Neither that rule nor "every `Ok` parse is code" may return.
+- **Active ⇒ route; dormant or off ⇒ today's deterministic display.** The guard
+  sits on the route decision, not inside `agent_turn`. A dormant agent that
+  receives classifier-diverted input could only print a "not configured"
+  notice, which is worse than the diagnostic the user would otherwise get. The
+  dormant notice is correct only for explicit `/ask`.
 
 ### 5.4 Cadence
-The agent turn slots inside the existing REPL cadence (`overview.md`) as a new branch: it may spin a model↔tool sub-loop (synchronous to the user's Enter, like a normal eval); its `submit`/pull re-enter the compilation cadence through the same `eval`/`process_commands` handoff a keystroke would; the watcher polls at prompt boundaries (after the turn resolves). Ctrl-C interrupts back to the prompt; because mutation is confirmation-gated and staged (§6.2), an interrupt leaves the session consistent.
+
+An agent turn is a branch of the REPL cadence
+(`design/arch/bounded-contexts.md` §6.1). It is synchronous to the user's Enter,
+may loop model↔tool, and re-enters compilation only through the handoff a
+keystroke uses. Interrupting a turn leaves the session consistent because
+writes are staged and gated.
 
 ---
 
-## §6. Novel-language correctness — primer + validator
+## §6. Novel-language correctness — primer and validator
 
-Cranelisp is private; the model has **zero** of it in training. Without supplementation it will emit code with syntax errors — and an error *from the assistant* breaks flow worse than one from the user. Two layers, the second of which the embedded setting makes nearly free:
+### 6.1 Layer 1 — the primer
 
-### 6.1 Layer 1 — supplement the prior (push, always)
-A compact, curated **language primer + canonical few-shot idioms** (a defn, a deftype, a match, a trait impl, a module-with-preamble) is **always in context** — syntax, special forms, the `:Type` convention, the prelude surface. Distinct from the (large, retrieved) spec: the primer is the distilled *always-needed* essentials, because every generation needs syntax. Curate it; tune it from §6.3.
+A curated primer of core syntax, special forms, the `:Type` convention and
+few-shot idioms is always in context, because every generation needs syntax.
+Its idioms must compile. Static language facts belong in the primer and the
+`/syntax` cheat-sheet; session-dependent facts (what is in scope, the prelude
+surface actually loaded) belong in the harvest, never the primer.
 
-### 6.2 Layer 2 — the validator role (the embedded killer move)
-The in-process compiler is also the agent's **pre-flight validator**. Before generated code is shown as the answer, run it through the **real frontend + typechecker**; on failure, feed the *actual compiler error* back and retry — **silently, invisible to the user.** This is not new machinery: it is the existing **cluster-atomic staging** (commit-on-Ok / discard-on-Err). The agent stages; only clean code reaches the live session and the screen. The user **structurally cannot** see a syntax error from the agent — the primer lowers the retry rate, the gate guarantees the floor.
+### 6.2 Layer 2 — the in-process compiler as pre-flight validator
 
-**So the in-process compiler has three roles for the agent: read (harvest, §4), write (commands/submit, §4.4), and validate (pre-flight).** The validator role is what an external assistant can't cheaply have, and it turns "novel language" from a flow-breaker into a non-event.
+Before generated code is shown or submitted it runs through the real frontend
+and typechecker on throwaway staging. On failure the compiler error returns to
+the model and the attempt repeats, bounded, invisibly. This is the existing
+cluster-atomic staging with the commit omitted, not new machinery. The
+in-process compiler thus has three roles for the agent: **read** (harvest),
+**write** (the gated eval path) and **validate**. An external assistant cannot
+cheaply have the third.
 
-### 6.3 Telemetry closes the loop
-Pre-submission failure categories are the tuning signal for the primer, exactly as compensatory pulls tune the harvest (§4.5). One discipline: **instrument every place the agent had to compensate (a pull, or a fail-and-retry), and let the distribution drive what's curated into the push.**
+### 6.4 Validator policy — silent-repair anything (U5)
 
-### 6.4 Validator policy — RATIFIED: silent-repair anything (U5)
-Syntax has a clean answer — **always silent-repair, never break flow.** Type errors are ambiguous: some are the agent fumbling a signature (hide + repair); others are a real design signal the user should see. The fork was: silent-repair *anything* that doesn't compile, or **parse errors only** + **surface type errors as a collaboration moment** (the original lean).
-
-**RATIFIED (user, 2026-06-21; `sprints/archive/sprint-88.md` §"U1–U6 ratification gate"): SILENT-REPAIR ANYTHING.** The user OVERRODE the original "surface type errors" lean: **both** parse AND type failures are hidden-and-repaired; the user **structurally cannot** see an agent compile failure (max flow over collaboration-on-type-errors). This decides the validator's policy for the Phase-2 implementation (§9 Phase 2). **No interface consequence:** the validator is a typecheck-only dry-run over the existing staging (stage → check → discard, silent — §7.5), and silent-repair-anything means it simply discards on *any* `Err` (parse or type) and re-prompts the model with the captured compiler error — which is exactly what the existing `check_forms` discard-on-Err arm already does (Decision 44). "Repair anything" needs *less* machinery than "surface type errors" would have (no error-classification branch, no surfacing path). `pub(crate)`, int-internal, no facade/`cranelisp-types` delta.
-
----
-
-## §7. Architecture, backend, safety
-
-### 7.1 Where it plugs in
-A feature-gated **`src/agent/`** module, `pub(crate)`, sibling to `repl.rs`/`eval.rs`. The §5.3 classifier gains an `Agent(text)` arm calling `session.agent_turn(...)`. `agent_turn` runs the model↔tool loop; reads call the existing `handle_*` directly; writes + pulls go back through `self.process_commands`/`self.eval` — the *same* path `main.rs` uses, inheriting cluster-atomic staging, error recovery (`repl/spec.md` §5.2), and backing-file regeneration. The agent holds the REPL-cadence `&mut CompilerSession` handle, not a new state window; it reads live state through the existing introspection surface (the `handle_*` battery in `src/repl/commands.rs`, `get_introspection`, the symbol-table accessors).
-
-### 7.2 Feature gating (mirror the release-backend precedent)
-```toml
-# src/ binary crate Cargo.toml
-[dependencies]
-<llm-client> = { version = "...", optional = true }
-[features]
-agent = ["dep:<llm-client>"]   # OFF by default
-```
-`agent` in no crate's `default`; no dev-dependency enables it; `cargo build`/`cargo nextest run` never compile the client → the default build + ~9s suite stay agent-free. The published binary MAY ship `--features agent`; agent tests run in a separate lane behind `#[cfg(feature="agent")]`.
-
-### 7.3 LLM backend
-Default to an **API backend** (best capability/latency), configurable, behind a **pluggable backend trait** so a local-model/alternate-provider backend drops in without touching the agent loop. **Opt-in twice** — compiled in (flag) AND enabled at runtime (config/key present); absent a key the agent is dormant and `/ask` says so. The artifact carries only a small HTTP client (the service is hit at runtime), not a build-time toolchain.
-
-### 7.4 Safety & boundaries
-
-**Dormant ⇒ today's deterministic display (S89 ruling, `/arch` 2026-06-22 — the classifier active-state guard).** "Opt-in twice" (§7.3) means the agent is **dormant** when compiled-in but lacking a runtime provider/key, or with `--agent` OFF. Dormancy MUST gate the §5.3 classifier's `Classify::Agent` route, not just the body of `agent_turn`: when the agent is dormant or `--agent` is OFF, the classifier's two divert arms (bare-unbound symbol; non-paren parse error) **fall back to today's deterministic diagnostic** (the same display the feature-OFF build produces — §7.5), rather than diverting to a dormant `agent_turn` that can only print the U6 "not configured" notice. The U6 dormant notice is correct **only** for the *explicit* `/ask` door (the user named the agent deliberately); it is a regression on the *classifier-diverted* path, where today's undefined-name / parse-error diagnostic is strictly better UX. Invariant: **agent ACTIVE ⇒ route per U1; agent dormant/off ⇒ today's deterministic display; explicit `/ask` while dormant ⇒ U6 notice.** This is a refinement within the ratified U1 contract (route only to a *live* agent), not a U1-semantics change — `/dev` implements directly (the guard is the agent-active condition added to the `Classify::Agent` route gate in `main.rs`, beside the existing `#[cfg(feature="agent")]`); `pub(crate)`, int-internal, zero public-API / cross-crate impact. See §5.3 for the classifier pseudocode carrying this arm.
-
-- **Deterministic vs. model output unmistakable.** The deterministic REPL owns the `:Type value` format and `;`-drawer; the agent uses a distinct reserved visual frame (reusing `src/style.rs` with its own role so `--no-color`/`NO_COLOR` degrade). Agent-issued commands + their results render in normal REPL style (they *are* normal output, §4.4); only the agent's prose is framed.
-- **Consent.** Reads auto-run-and-show; **Build** writes confirm-and-show (exact line shown); **Document** writes are consultative. Default "auto-approve reads only."
-- **Transcript transparency.** Everything the agent does is a visible REPL line → the session stays a legible, replayable script (preserves the §15 persistence model + reproducibility).
-- **Privacy / offline.** Opt-in twice; a one-time first-use notice (what is sent: the message, harvested signatures/excerpts; to where: the configured endpoint); a local-model escape hatch. The agent's view is bounded by the introspection surface + spec, not the host filesystem (no raw file-read tool; spec is the embedded curated `spec/`).
-- **`/sh`.** No direct shell tool. Shell is reachable only via `submit_repl_input("/sh …")` — confirmation-gated, so the agent *proposes* and the user approves the exact command.
-
-#### `--yes` autonomous-submit flag (S89, scope item 3a) — RULING: policy knob, not a boundary change
-
-A REPL-only CLI flag `--yes` (companion to `--agent`/`--no-agent`, `repl/spec.md §0.6.1`) makes the agent's write-consent gates **auto-accept** — the Build-mode form-submit confirm and the Document-mode consultative preamble/docstring edit — so the agent acts without the per-action `[y/N]` prompt.
-
-**It is a policy knob (human-in-the-loop → trust mode), NOT a structural-floor change.** It auto-*answers* the gate; it does not relocate, widen, or remove it. The R3 structural floor — *read-only-by-default is the floor; the write arm is reachable only past the confirm-gate, re-entering through the same `process_commands`/`eval` cluster-atomic staging path (commit-on-Ok / discard-on-Err)* — is unchanged. Writes remain structurally unconstructable except through that one gated path; `--yes` only sets the gate's answer to "accept" instead of prompting. The read-only pull allowlist is untouched (`--yes` answers only the gate that already guards writes; reads were never gated). No new write path, no parallel submit, no new state window.
-
-**Validation-floor invariant (non-negotiable).** `--yes` bypasses **consent, not validation.** The pre-flight validator (the typecheck-only dry-run over staging, stage→check→discard, silent-repair-anything — U5, §6.2/§6.4) still runs on every submission; only compiling code ever reaches the live session. "Skip confirm" and "skip check" are **distinct concerns at distinct seams** — the confirm-gate is the consent seam; `validate_forms_dry_run`'s discard-on-Err arm is the correctness seam — and `--yes` touches only the former. An implementation that conflated them (treating `--yes` as "skip the dry-run") would be a defect; this is called out as a **Phase-5 `/dev` guard + `/qa` test obligation**: a `--yes`-on test must prove a deliberately-broken generation is still silently repaired (never submitted raw), exactly as with `--yes` off — the validator's behaviour is invariant under the flag.
-
-**Design-point recommendations** (scope item 3a a/b/c):
-- **(a) Blanket vs Build-only — RECOMMEND blanket.** One `--yes` covers all agent write-consent gates (Build submit + Document edits), per the universal `-y` convention. Both gates are the same consent seam answered the same way; splitting them adds surface for no boundary-meaningful distinction (Document writes are *consultative* but still gated, and are no more dangerous than Build — both pass the validator / round-trip byte-stably). One flag, one mental model.
-- **(b) First-use notice — RECOMMEND yes, one-time.** `--yes` is an autonomy escalation (the agent now writes without per-action assent), parallel to the S88 U6 opt-in-twice + first-use disclosure. A one-time first-use notice on the first auto-accepted write — naming that the agent will now submit/edit without prompting, and that the pre-flight validator still gates correctness — is warranted. **Wording is `/repl`-owned** (`repl/spec.md §17`, the agent-experience home; sibling to the U6 disclosure). `/arch` rules only that the escalation *warrants* a notice; `/repl` authors the text.
-- **(c) Naming — `/arch` defers to `/repl`.** `--yes` (with `-y` short form) follows the universal convention and is the recommended default, but the user-facing flag name is an experience surface — `/repl` owns it in `repl/spec.md §0.6.1` alongside `--agent`/`--no-agent`.
-
-**Public-API / boundary impact: ZERO.** `--yes` is an int-internal `pub(crate)` CLI flag parsed in `src/`, threaded as a bool into the existing consent-gate decision. No `cranelisp-types` change, no facade delta (int's library facade is retired; its contract is the CLI `//!` narrative + `repl/spec.md` + the e2e suite), no `public-api.txt` movement, no new cross-crate edge. It is `#[cfg(feature="agent")]`-gated and a no-op on default builds, exactly like `--agent` (§7.2). Feature-off byte-identity is preserved by construction.
-
-### 7.5 Grafting & facade impact
-int's *library* facade was retired (`facades/int.md` → BC §6; a binary has no `public-api.txt` boundary — its conformance gate is the e2e suite). int's contract is therefore the **CLI narrative** (`src/main.rs` `//!`), the **REPL experience** (`repl/spec.md`), and the **e2e suite**. "Without breaking the facade" = don't disturb that deterministic contract.
-
-The graft is neat because the agent is a new **consumer** at three existing seams + one new sibling module — nothing rewired:
-- **Dispatch** (`src/main.rs`): one new `Agent(text)` classifier arm (§5.3); existing arms untouched.
-- **Commands** (`src/repl.rs`): one new `/ask` `ReplCommand` variant; pulls reuse `dispatch_command` + the existing `String`-returning `handle_*` unchanged — the agent *consumes* the command surface, doesn't modify it.
-- **Eval/validate** (`src/eval.rs`): writes + the pre-flight validator reuse the existing `eval`/cluster-atomic staging; no new eval entry.
-- **Module:** `src/agent/` is another sibling in int's established session decomposition (the `eval.rs`/`repl.rs`/`process_form.rs` `impl CompilerSession`-over-`pub(crate)`-fields pattern). Fits exactly.
-
-All four cuts are `#[cfg(feature="agent")]`. **Feature-off ⇒ the binary is byte-identical to today** — no LLM dep in the build graph; the dispatch path unchanged (the `Err(other parse error)` case falls back to today's diagnostic) — so the REPL/CLI contract and the e2e suite are preserved **by construction** (same discipline as §7.2: `agent` in no `default`, no dev-dep enables it).
-
-**Zero new cross-crate edges.** The agent is fully contained in the int bounded context: it reads int's own symbol tables/introspection and reuses int's *existing* inward calls to frontend/typecheck/backend (harvest, validate). No other crate's `public-api.txt`/facade moves.
-
-Where it is *not* free (the honest list):
-- **`repl/spec.md` gains an additive agent section** (+ `/ask`, the agent-output frame, the `--agent` row) — the only deterministic-contract change, additive + behaviorally gated.
-- **Module preambles first-class** (§3.4) — the one genuinely new language/REPL concept, not just plumbing (the prerequisite; `/spec`+`/repl`).
-- **One new internal seam:** a *typecheck-only dry-run* over the existing staging (stage→check→discard, silent, no commit/print) for the validator's repair loop — distinct from the existing stage→check→commit→print. `pub(crate)`, internal to int; not a facade change.
-- **Additive surface:** the reverse-query commands (`/refs`/`/tests-for`) + modest `pub(crate)` field widening per the existing sibling-module pattern.
-
-The rule that keeps it neat: **the `#[cfg(feature="agent")]` cuts live AT the seams (three of them) — bolted on, not woven through.** Feature-off is provably the original REPL.
+Parse and type failures are both hidden and repaired; on exhaustion the agent
+gives up honestly and never submits or shows broken code. The user chose this
+over surfacing type errors as a collaboration moment: flow over collaboration.
+It also needs less machinery, because there is no error-classification branch.
 
 ---
 
-## §8. Relationship to existing concepts
-- **`/learn` (FIXME 0052)** — a *scripted* tutorial; the agent complements and could eventually subsume it (a conversational tutor grounded in the spec is a strictly more flexible `/learn`). Keep separate initially (the tutorial is deterministic + offline; the agent is neither). No coupling in the MVP.
-- **Self-documenting surface** — the agent *leans on* it (harvest, tools) rather than duplicating it; and via **Document** mode it *feeds* it.
-- **Spec impact** — `repl/spec.md` §1–§16 unchanged except (1) a new agent-dispatch section (+ `/ask` + the agent-output frame + an `--agent`/`--no-agent` §0.6 row), and (2) the **module-preamble** first-class concept (§3.4). Both additive; `/repl`-owned, with a `/spec` consult for the preamble form.
+## §7. Boundary, gating and safety
+
+### 7.1 Where it lives
+
+`src/agent/` is a feature-gated, `pub(crate)` sibling inside the Binary/int
+context. The agent is a **REPL-cadence consumer of the existing surface, not a
+new state window**: it holds the read loop's `&mut CompilerSession`, reads
+through the existing introspection and symbol-table accessors, and writes only
+through `process_commands` and `eval`. It inherits cluster-atomic staging,
+error recovery and backing-file regeneration, and has no second eval entry.
+
+### 7.2 Feature gating
+
+The `agent` Cargo feature is in no default set and no dev-dependency enables
+it. Default builds and the default suite never compile the LLM client; agent
+tests run in their own feature lane. All cuts sit at seams (classifier arm,
+`/ask` body, allowlist rows, the module), so **feature-off is structurally the
+original REPL**. `/ask`, `/context` and `--yes` keep their parser entries and
+answer "not built in" or no-op.
+
+### 7.3 Backend
+
+Providers sit behind the int-private `AgentModel` membrane
+(`design/int/agent.md` §6.0), so a provider change never reaches the turn loop.
+**Opt-in twice:** compiled in, and enabled at run time with a reachable
+provider. A local, key-free provider keeps zero-transmission operation
+available. The artifact carries an HTTP client, not a toolchain.
+
+### 7.4 Safety
+
+- **Dormancy** gates routing as §5.3 states.
+- **Model output is unmistakable.** Agent prose renders in its reserved frame
+  through the one styling seam (`design/arch/repl-styling-seam.md`);
+  definitions render as ordinary deterministic echoes; probes do not render.
+- **Read-only is the floor.** A write is reachable only past its gate. The read
+  allowlist excludes writes, and a read that would reach eval fails closed.
+- **Privacy.** Opt-in twice, plus a one-time first-use disclosure that names
+  source excerpts and the endpoint (U6;
+  `repl/spec/17-embedded-agent.md` §17.8.1). The agent's view is bounded by the
+  introspection surface; it has no file-read tool.
+- **Shell.** There is no shell tool. A shell command can only be proposed for
+  the user to run (`repl/spec/17-embedded-agent.md` §17.7).
+
+**`--yes` is a policy knob, not a boundary change.** It auto-answers the
+existing write gates. It relocates, widens and removes nothing.
+
+- **Validation floor.** `--yes` bypasses consent, never validation. The consent
+  gate and the validator's discard-on-error arm are distinct seams, and the
+  flag reaches only the first. Threading it into validation is a defect
+  (`design/int/agent.md` §20.3).
+- **(a) Blanket.** One flag covers the Build and Document gates: the same seam,
+  answered the same way.
+- **(b) First-use notice.** Autonomy escalation warrants a one-time notice;
+  `spec` owns the wording (`repl/spec/17-embedded-agent.md` §17.16).
+- **(c) Naming.** The flag name is an experience surface owned by `spec`
+  (`repl/spec/00-cli-invocation.md`).
+
+### 7.5 Facade impact
+
+The binary has no library facade; its contract is the CLI narrative, the REPL
+specification and the e2e suite. The agent adds **no cross-crate edge and no
+public-API movement**. The only crate-boundary consequences of this track are
+the two typecheck predicates of §11.8 and the additive
+`SymbolTable.module_preamble` field, both delivered.
 
 ---
 
-## §9. Phasing
-- **Phase 1 — Advisor MVP.** Feature-gated `src/agent/`; §5.3 classifier + `/ask`; API backend (opt-in twice); harvested push (§4.3 heuristics) + pull-as-visible-commands (§4.4); **Advise** mode (read-only) + the always-on **language primer** (§6.1); spec retrieval (grep over embedded `spec/`); telemetry skeleton (§4.5). No writes yet (proposes code, doesn't submit). Acceptance: ask "how do I define a constrained function over Num?" → a spec-grounded, session-aware answer with a proposed `(defn …)` shown.
-- **Phase 2 — Build + Document + validator (S89, rungs 5–6).** The agent's first **write** path. Build mode: the read-only pull allowlist (§4.2/Phase-1) is **extended with a confirm-gated write arm** — a submitted form goes back through `process_commands`/`eval` (the *same* cluster-atomic staging path `main.rs` uses, commit-on-Ok / discard-on-Err, §7.1), **no new eval entry** (§7.5); writes remain structurally unconstructable without passing the gate (consent is the allowlist + the confirm, exactly as Phase-1 read-only was structural by allowlist-exclusion). The **pre-flight validator + silent-repair-anything** (§6.2, U5 ratified §6.4): before generated code is shown or submitted, run it through the real frontend + typechecker on staging via the **typecheck-only dry-run seam** (stage → check → discard, silent — §7.5; `pub(crate)`, int-internal, no facade delta), repairing on *any* failure. **Document** mode: consultative docstring/preamble edits, reusing the S88 first-class module-preamble substrate (`SymbolTable.module_preamble` + `capture_module_preamble` + the byte-stable regen path — no new `cranelisp-types` change; cache schema already v9). Acceptance: the agent defines a user-approved function that *always at least parses*, a deliberately-broken generation is silently repaired and never shown, and a preamble the agent writes round-trips byte-stably and is read back by next session's harvester. **Zero new cross-crate edges; zero `public-api.txt` baselines move** (agent additions stay `pub(crate)`, int-private, behind `#[cfg(feature="agent")]`).
-- **Phase 3 — Self-tuning + reach.** Compensation telemetry drives push/primer curation (§4.5/§6.3); reverse-query commands (`/refs`/`/tests-for`); semantic spec search (precompute-and-ship index); pluggable local-model backend; optional push-transparency header (§4.7). 
+## §8. Related concepts
 
-**Scheduling.** Its own track — **not gated by and not gating Phase H**. A dev-session feature; never ships in `--link`/`--release` (NG4). `/sprint` schedules it independently.
-
----
-
-## §10. Sign-off — U1–U6 RATIFIED (user, 2026-06-21)
-
-All six sign-offs are ratified; the durable record is `sprints/archive/sprint-88.md` §"U1–U6 ratification gate". Summary:
-
-- **U1 — Dispatch.** **ADOPT + REFINED** — `/ask` is the explicit door; else parse → unclosed = continuation, parse-error = agent, `Ok` compound = REPL, bare atoms resolve (all-known → REPL §4; any unbound → agent). Symbol-resolution-aware (the bare-prose-parses-Ok reality gap), not the literal bracket rule. Feature-off byte-identical. (§5.3; `design/int/agent.md §2.2`.)
-- **U2 — Module preambles first-class** (§3.4). **ADOPT** — landed S88: additive `SymbolTable.module_preamble: Option<String>` field (FIXME 0428, BC §7), `CACHE_SCHEMA_VERSION` 8→9, the `;;`-leading-comment-block form (spec §8.16), `capture_module_preamble` + byte-stable regen. Phase-2 Document mode reuses this substrate with **no further interface change**.
-- **U3 — Memory line** (§3.2). **ADOPT** — named-thing → on the thing; only no-home intent → tiny sidecar (sidecar is Phase-3+).
-- **U4 — Push transparency** (§4.7). **AMBIENT for MVP; prunable header in Phase 3** — the harvest is ambient/silent in Phase 1–2; the header rides Phase 3 over the same harvest map (§9 Phase 3).
-- **U5 — Validator policy** (§6.4). **SILENT-REPAIR ANYTHING** (user override of the original "surface type errors" lean) — parse AND type failures hidden-and-repaired; the user structurally cannot see an agent compile failure. Lands in Phase 2 (S89). No interface consequence (§6.4, §7.5).
-- **U6 — Backend + privacy** (§7.3/§7.4). **OPT-IN-TWICE + first-use notice** — dormant unless built `--features agent` AND a reachable provider; one-time disclosure names **source excerpts** (not just signatures) + endpoint.
-
-### Cross-skill handoffs / Next skills
-*(Filed as `design/arch/fixmes/NNNN-*.md` when scheduled by `/sprint`. The Phase-1 MVP handoffs landed in S88; the Phase-2 design-lock handoffs (write-allowlist arm, validator dry-run seam) are S89.)*
-- **`/repl`** — the experience: agent-dispatch section + `/ask` + agent-output frame + `--agent` row; **module-preamble** form + `/doc <module>` (§3.4); the reverse-query commands (§4.4).
-- **`/int`** — dispatch + session wiring: the §5.3 classifier, `src/agent/` + feature gate (§7.1/§7.2), the `agent_turn` loop, the validator-on-staging path (§6.2), the harvester/relevance-ranker (§4.2/§4.3), telemetry (§4.5).
-- **`/spec`** — the module-preamble normative form (§3.4); spec-retrieval/embedding packaging if it touches `spec/` layout.
-- **`/arch`** — the `agent` feature boundary/discipline; the ruling that the agent is a REPL-cadence consumer of the existing surface (not a new state window); the three-roles-of-the-in-process-compiler framing (read/write/validate).
-- **`/qa`** — agent-feature tests behind `#[cfg(feature="agent")]` (separate lane): classifier routing, pull-as-command wiring, the validator repair loop, echo-as-typed reproducibility. Default suite stays agent-free.
+- **`/learn`** (`design/arch/fixmes/0052-docs-learn-system-repl-feature.md`) is
+  a scripted, deterministic, offline tutorial. It stays separate from the
+  agent, which is neither deterministic nor offline.
+- **Self-documentation.** The agent consumes that surface and, through Document
+  mode, feeds it.
 
 ---
 
-## §11. S90 Phase-2 review — the fluency phase (reach half of rung 7)
+## §9. Unbuilt targets
 
-**Status:** APPROVE-WITH-REVISIONS (`/arch` Phase-2, 2026-06-23) — **Pillar-3 REDESIGNED at
-Phase-3 (user, 2026-06-23): nice-worker background indexer + two indices + `/search` default-build
-session facility; §11.1–§11.5 + R3/R4/R6 re-pinned, R9–R12 added** (see the REDESIGN BOX in §11.1).
-**REFINED at S91 Phase-3 (user design review, 2026-06-25): read-or-produce-`.meta`, one-artifact
-indexer + eager-from-REPL-startup + abandon-on-flush — §11.1/§11.1a/§11.1b/§11.2 refined,
-R13–R18 added** (see the REFINEMENT BOX in §11.1).
-Verdict transcribed into `sprints/SPRINT.md` by `/sprint`; this section is the durable
-architectural record.
+None of these is scheduled, and none is a requirement until `spec` records one.
+The track neither gates nor is gated by Phase H (NG4).
 
-S90 delivers the **"reach"/fluency half of rung 7** as four pillars. Pillars 1, 2, 4 ride the
-existing `agent` feature gate; **Pillar 3 is a non-agent-gated default-build session facility**
-(the redesign — §11.1 / R9). All four are **REPL-cadence consumers of the existing int surface**
-(§7.1 / BC §6.3) — no pillar opens a new state window, and the **zero-new-cross-crate-edge**
-(§7.5) invariant holds for all four. The **byte-identical-feature-OFF** (§7.5) invariant holds
-for Pillars 1, 2, 4 (all `#[cfg(feature="agent")]`); **Pillar 3 is REDESIGNED (user, 2026-06-23)
-as a NON-agent-gated default-build session facility** — `/search` is an ordinary REPL command and
-the importable-symbol indexer rides the *nice workers* that already run in every session, so the
-feature-OFF invariant is **scoped to 1/2/4** and Pillar 3 instead carries its own
-**default-build-behaviour-stable** invariant (the indexer must not change object-codegen behaviour
-or the default REPL contract — §11.1). The pillars:
-
-1. **`/syntax` topic cheat-sheet** — a curated, verified-compiling, topic-keyed
-   core-language reference; a REPL command (human) that is also an agent pull-tool; the
-   primer cross-references the topic *names*. This is the primer-appropriate kind of
-   grounding (core syntax, derived from spec); prelude/stdlib idioms stay harvest-sourced
-   per the `agent-prelude-awareness-via-harvest-not-primer` ruling. Mechanically it is a
-   new read-only `/syntax` command (additive to the §4.2 allowlist) + a static asset; no
-   new machinery.
-2. **Harvest at signature grain** — the harvester (§4.1/§5) surfaces in-scope prelude +
-   imported symbols at **name + type signature + docstring** grain each turn. This is the
-   user-directed way to keep prelude+imports in context (harvest, NOT primer). It reads the
-   same live symbol tables `harvest_context` already reads (`src/agent/harvest.rs`); the
-   only change is the *grain* (add signature + docstring to the export-surface arm). Pure
-   read enrichment of an existing harvest arm — Principle 7 (the symbol table is the
-   source of truth), no copy-store.
-
-> **REDESIGN BOX (user, 2026-06-23).** §11.1–§11.5 below SUPERSEDE the original
-> Phase-2 pinning. The original model — an eval-thread, lazy-on-first-search, `agent`-gated
-> indexer that was a sibling of `validate_forms_dry_run`, serving ONE shared DTO — is
-> **retracted**. The target is: **a background task of the nice workers** (the threads that
-> already do background object-file codegen), **eager** burn-down once reachable modules are
-> discovered, **two purpose-built lookup indices**, and a **default-build, non-agent-gated
-> `/search` REPL command** (the agent reaches it through the ordinary tools-as-visible-REPL-commands
-> pull, exactly like `/syntax`/`/list`). Reachable modules = **lib-search-path ∪ project-root**.
-> What CARRIES from the original pinning: 0432 is pulled in (§11.3), zero-residue holds (§11.1),
-> Pillar 3 stays **design-only this sprint** (§11.5). What CHANGES: execution model (eval-thread→nice-worker),
-> trigger (lazy→eager), index shape (one DTO→two indices), gating (agent→default facility),
-> match (exact-only→exact-OR-partial in both indices), and the containment story (§11.3 — the
-> nice-worker loop does NOT today inherit a `catch_unwind`; see the correction there).
-
-### §11.1 Pillar 3 — importable-symbol search: the nice-worker background indexer
-
-> **REFINEMENT BOX (user design review, S91 Phase-3, 2026-06-25).** §11.1's burn-down model is
-> refined from **in-memory typecheck-and-discard, zero-residue, rebuild-the-whole-index-every-
-> triggered-session** to **read-or-produce-`.meta`, one-artifact**. The S90 framing said the
-> indexer *writes nothing* and **re-typechecks** lib-path ∪ project-root on every trigger; a
-> design review surfaced two real problems: (1) a triggered first-`/search` re-typechecked the
-> *entire* world even when valid `.meta.json` caches already existed for those modules — a
-> needless N-module typecheck; (2) a module the indexer typechecked-and-discarded, when later
-> `/import`'d, **re-typechecked from scratch** (the index entry was a throwaway hint). Both
-> dissolve once the indexer **reads from / produces the existing `.meta` cache** instead of an
-> ephemeral discard. What CHANGES: the per-module step becomes **skip-if-claimed → read-`.meta`-
-> if-valid → else-typecheck-and-**write**-`.meta`**, and the two indices are **read-derived from
-> `.meta` files** (rebuildable by a cheap `.meta`-scan), so cross-run persistence IS the existing
-> `.meta` cache (R13–R16 below). **Two follow-up user corrections** then pinned the trigger
-> (R17 — eager-from-REPL-startup) and nice-worker flush handling (R18 — abandon-not-drain); both
-> are folded into §11.1a / §11.1a-flush below. What CARRIES: nice-worker home (R4), eager
-> burn-down (now eager-from-REPL-startup per R17 — see §11.1a),
-> two indices (R3), exact-OR-partial match (R6), default-build facility (R9), CF.2 containment
-> (R2-b), separate-worklist-no-`.o`-entanglement (§11.1 coupling), and — **restated, not dropped**
-> — the isolation invariant: **no session-state residue** (the four `SharedState` maps stay
-> byte-unchanged). The S90 phrase "the indexer writes nothing" is the part that is **superseded** —
-> see the restated invariant in "No session-state residue (the `.meta` write is benign)" below.
-
-Pillar 3 answers `/search <symbol>|<scheme>` over symbols that are **reachable but not yet
-imported** — reachable = **lib-search-path modules ∪ project-root modules** (user
-clarification 1). `/search` is a **normal user-facing REPL command** (a session facility,
-NOT agent-gated — user clarification 2); the agent reaches it through the ordinary
-pull/tools-as-visible-REPL-commands mechanism (§4.4), exactly like `/syntax`/`/list`/`/exports`.
-
-**Execution model — a background task of the nice workers; read-or-produce-`.meta` burn-down.**
-The indexer rides `src/session_v4/nice_worker.rs::nice_worker_loop` — the low-OS-priority
-threads that already do background `.o` codegen on `TypecheckDone` modules. The flow:
-
-1. **Discovery.** Once reachable modules are enumerated (lib-search-path walk ∪ project-root
-   walk — the same file-resolution rules `import` uses, `pipeline::resolve_module_file`; no
-   new search semantics), the reachable set is the indexer's worklist.
-2. **Read-or-produce-`.meta` burn-down.** The nice workers **drain the worklist**, and for
-   **each reachable module** take exactly one of three branches (the refinement's center):
-   - **already claimed / registered / in-flight** (present in the scheduler's `ModuleState`
-     registry in any pool state — a normal/priority/object-codegen module the real path owns)
-     → **SKIP.** If it is in-scope it is covered by Pillar 2; otherwise the indexer picks it
-     up later from the `.meta` the real path writes (the real path's Phase-1 writer is
-     typecheck-driven and decoupled from `.o` — `nice_worker.rs` `write_module_meta`, FIXME
-     0387 — so a real-typechecked module always has a `.meta` to read).
-   - **`.meta` present and valid** (the existing `cache::load_meta` schema+`BUILD_ID` gate +
-     int's existing `is_cache_valid` source-content gate) → **read the `SymbolTable` from the
-     `.meta`, populate the two index entries from it, NO typecheck.**
-   - **no `.meta` (or stale)** → typecheck on the nice worker against **throwaway staging**
-     (the `validate_forms_dry_run` substrate — build staging + `SymbolTableAccess::cluster(...)`
-     + `check_forms`, never `register_module`), then **write `.meta` via the existing Phase-1
-     writer** (`cache::write_meta` — **no `.o`, no `register_module`, no
-     `notify_object_codegen_complete`**), then populate the index entries from staging.
-3. **Serve.** `/search` reads the two indices (built or building); a search is a pure index
-   lookup, never a typecheck. The indices are **read-derived from the `.meta` files** —
-   rebuildable by scanning `.meta` (cheap), so still in-memory, **no new serialized index, no
-   `CACHE_SCHEMA_VERSION` bump** (R16). Cross-run persistence IS the `.meta` cache.
-
-**Why the nice workers (not the eval thread).** This is the *better* home the original
-eval-thread/lazy model missed: (a) the work is **exactly the nice workers' shape** — low-priority
-background typecheck-and-record over a module worklist, the same threads already burning down
-object codegen; (b) it is **off the eval thread**, so `/search` (and the agent's pull of it) is
-a non-blocking index read, never a synchronous typecheck stall on the user's Enter; (c) idle
-nice workers absorb the cost (object codegen and indexing share the same below-normal-priority
-thread budget). The refinement **lowers** the burn-down's cost: it re-typechecks only genuine
-cache-misses (no `.meta`), reading hits straight off the existing `.meta` cache — so a warm
-project pays a `.meta`-scan, not an N-module re-typecheck (see §11.1a trigger).
-
-**No session-state residue (the `.meta` write is benign) — RESTATED invariant (R13).** The S90
-"the indexer writes nothing" framing is superseded. The refined indexer **MAY write a
-`.meta.json`** for a reachable-uncached module it typechecks — through the **existing Phase-1
-writer** (`cache::write_meta`), producing a file **byte-identical to what the real
-object-codegen path's Phase-1 writer produces** for the same module (the writer is already
-typecheck-driven and `.o`-decoupled, FIXME 0387). The invariant that **holds unchanged** is
-*session-state* isolation: the four `SharedState` maps — `symbol_tables`, `module_aliases`,
-`prelude_fallback`, `introspection` — **never gain an entry** for an indexed-but-unimported
-module (the indexer still never calls `register_module` / `notify_typecheck_done` /
-`record_compiled` / `append_o_path` / `notify_object_codegen_complete`). The two indices are
-**derived read-caches** (§3.3 — never the source of truth; blow them away and they rebuild from
-the `.meta` files), int-private `pub(crate)` structures on `SharedState`. The `.meta` write is a
-**benign, content-hash-/build-id-invalidated cache artifact** on the same footing as any cache
-file: a later source edit makes it stale (caught by the existing `CacheStale` / `is_cache_valid`
-gates) and a real recompile overwrites it. It is NOT a new state window and changes no
-deterministic REPL/`--run`/`--link` behaviour (a `.meta` the indexer writes is one the next real
-typecheck of that module would have written identically). **The +neg isolation test obligation
-is the four-`SharedState`-map assertion** (mirroring `validate_dry_run_discards_does_not_commit`,
-`src/agent/pull.rs:1088`) — assert **no `SharedState` entry**, NOT "no disk write." A produced
-`.meta` is expected and benign; asserting its absence would contradict the refined model.
-
-**§11.1a — eager-from-REPL-startup; REPL-only is an EXPLICIT invariant (RULING, S91 Phase-3
-revision — R17; SUPERSEDES the prior eager-but-TRIGGERED ruling).** The burn-down is **enqueued
-eagerly at REPL start-up** — there is **no** first-`/search`/first-agent-activation trigger. The
-single gate is **"REPL mode at startup"**: in REPL mode the `IndexModule` worklist is enumerated
-and enqueued at session start; in **`--run` / `--link` / `--release` mode the worklist is NEVER
-enumerated** (no REPL, no `/search`, nothing to serve). This makes the REPL-only property an
-**explicit, single-gated invariant** — not the emergent-from-trigger property it was under the
-prior ruling (resolving the earlier emergent-vs-explicit point): one mode check at startup, not a
-trigger that *happened* to imply REPL-only.
-
-**Override of the S90 Principle-6 "don't tax sessions that never search" rationale (recorded, not
-silently dropped).** The prior §11.1a ruling armed the burn-down only on first `/search` / agent
-activation, reasoning (Principle 6) that a session which never searches should pay no indexing
-cost. **That rationale is SUPERSEDED.** The user's correction: on a real site the burn-down takes
-**seconds-to-minutes**; triggering at first `/search` makes the *first search pay the full
-latency* (the worst possible time — the user is blocked, waiting on a result). Eager-from-startup
-instead **warms the index while the user does other things**, so it is ready (or nearly so) by the
-first search. The Principle-6 concern (don't waste work) is addressed by *prioritization*, not by
-*deferral* — see the yield-to-codegen ruling next.
-
-**Prioritization — the index worklist YIELDS to object codegen (preserves the R9
-default-build-behaviour-stable invariant).** The nice workers drain the `IndexModule` worklist
-**behind / yielding to the object-codegen worklist** — object-codegen work (`take_object_codegen`)
-is claimed first; the indexer fills **idle** nice-worker capacity only. Eager, but non-competing:
-warming the search index **never delays** making the loaded / prelude modules fast (object codegen
-always wins the thread). This is the mechanism that keeps the R9 invariant "the indexer must not
-perturb object-codegen behaviour" — eager-from-startup is safe *because* the index work is
-strictly lower-priority than the `.o` lifecycle, not because it is deferred. (The exact claim
-ordering — e.g. `take_object_codegen` attempted before a peer `take_index_module` — is
-`/design (src/)`'s detail; the architectural ruling is the **yield-to-codegen priority**.)
-
-**§11.1a-flush — the index worklist is NEVER part of a correctness-gating flush;
-abandon-on-flush / abandon-on-shutdown (RULING, S91 Phase-3 — R18).** Because the eager burn-down
-is REPL-only throwaway work (R17) and never serves a `--link`/`--run`/`--release` artifact, it is
-**abandoned, not drained**, at both nice-worker flush points. Neither flush waits on the index
-worklist:
-
-1. **Pre-`--link` hot-flush / priority-promotion** (`src/session_v4/nice_worker.rs:70` — "Check
-   for priority promotion (hot flush before --link)"). The promotion exists so all `.o`s exist
-   before linking; it is **object-codegen-scoped by construction** and **MUST NOT drain or block
-   on the index worklist** (the link needs no index — the index is a REPL search aid, never a
-   build input). A promoted nice worker **prefers object codegen and defers/abandons index work**
-   — the flush-time face of the R17 "index yields to object codegen" prioritization. Any
-   in-progress `IndexModule` task may be left incomplete; the link is unaffected.
-2. **Shutdown join** (`src/worker_pool.rs:74-86` — `WorkerPool::shutdown` joins all `nice_handles`
-   after the shutdown signal; verified: a nice worker observes shutdown via `take_object_codegen()`
-   returning `None` at the loop top and exits). The index burn-down is **abandon-on-shutdown**: the
-   loop checks the shutdown flag **between `IndexModule` tasks** and exits promptly — it **never**
-   "finishes the whole burn-down before exiting." Because `.meta` writes are **atomic**
-   (`crates/cranelisp-backend/src/cache/object.rs` `atomic_write` — temp-file-then-rename, verified),
-   an abandoned mid-burn leaves at worst some reachable modules **unindexed** (re-derived next
-   session from the `.meta` cache + the miss-typecheck path) and **never a corrupt `.meta`** (a
-   half-written file never replaces a good one).
-
-**Invariant: the index worklist is never on a correctness-gating path.** It is abandon-on-flush
-(promotion) and abandon-on-shutdown (join), never drained-to-completion; promotion prefers object
-codegen. (The exact shutdown-flag check placement + the promotion's claim preference are
-`/design (src/)`'s; the architectural ruling is the abandon-not-drain invariant.)
-
-**Cost LOWERED by the read-or-produce-`.meta` refinement (unchanged).** The burn-down
-re-typechecks **only genuine cache-misses** (reachable modules with no valid `.meta`); modules
-with a valid `.meta` are **read off the existing cache** (a deserialise, not a typecheck), and
-modules the real path owns are **skipped**. So a warm project (most `.meta`s present) pays a
-`.meta`-scan + a few miss-typechecks rather than an N-module re-typecheck — the design review's
-problem (1). A `/search` that lands **before** the burn-down completes serves partial results + an
-"indexing N modules…" note (a `/repl` UX detail) — **more relevant now** than under the trigger
-model, since an early search on a big site may catch the eager-from-startup burn-down mid-flight.
-**The `/import`-re-typecheck problem (2) is also dissolved:** a found symbol the user later
-`/import`s is a **`.meta` cache-hit** (the indexer wrote the `.meta` on its miss-typecheck, or
-read an existing one) — the live import path loads it from cache rather than re-typechecking from
-scratch.
-
-**Session-state residue invariant — see "No session-state residue (the `.meta` write is
-benign)" in §11.1 above (R13).** The refinement supersedes the S90 "writes nothing" phrasing:
-the indexer writes a benign `.meta` cache artifact for miss-typechecked modules, but the four
-`SharedState` maps stay byte-unchanged (the +neg guard, restated as the SharedState-map
-assertion). A found symbol, once `/import`'d, loads its `.meta` from cache (problem 2 above) —
-the index entry was a search hint; the `.meta` is the durable typecheck result.
-
-**Cross-context / coupling (RULING on the coordinator's edges question; refined for the `.meta`
-read+write).** The nice workers live in `src/` (the binary), so there is **no new crate edge** —
-the indexer reuses the existing int→typecheck `check_forms` inward call, the existing
-`pipeline::resolve_module_file` discovery, **and the existing int→backend cache API** that int
-already depends on (`cranelisp_backend::cache` — `cache_writer.rs` already consumes it). The
-refined indexer both **reads** `.meta` (`cache::load_meta` → `SymbolTable`, plus `module_cache_path`
-to locate it; `CacheStale` discriminates schema/build-id staleness) and **writes** `.meta`
-(`cache::write_meta`) through that **already-public** backend cache edge. **No new `public-api.txt`
-movement results** (RULING, R14): `write_meta`, `load_meta`, `deserialise_meta`,
-`module_cache_path`, `CacheStale`, and `CACHE_SCHEMA_VERSION` are **already on
-`cranelisp-backend`'s public surface** (verified against `crates/cranelisp-backend/public-api.txt`
-— the serialize-module entries), int already imports from `cranelisp_backend::cache`, and the
-indexer's reuse is an **additive use of an existing edge**, not a new pub item. If a future
-implementation finds it needs a backend cache item that is currently `pub(crate)` (it should not —
-the read/write/validate trio is fully public), that would be a `target: /arch` filing with the
-baseline-diff obligation at that time; **no such item is anticipated**.
-
-**One new internal coupling, bounded:** the indexer reads the scheduler's reachable-module
-discovery and adds a *second kind of nice-worker work* (index-a-reachable-module) beside the
-existing object-codegen work. This MUST stay **cleanly separated from the object-codegen path** —
-the object-codegen path operates on `TypecheckDone`-registered modules (`take_object_codegen`);
-the indexer operates on reachable-but-**un**registered modules and must NOT route them through
-`notify_typecheck_done`/`record_compiled`/`append_o_path`/`notify_object_codegen_complete`/
-`register_module` (it writes only the `.meta` via `write_meta`, registers no module). Recommended
-shape: a distinct nice-worker work variant (an `IndexModule(path)` peer to the object-codegen
-claim) so the two never entangle — the indexer's burn-down is a separate worklist drained by the
-same threads, not a hook spliced into `compile_module_object`. (Naming the work-variant + the
-scheduler claim is a `/design (src/)` detail; the architectural ruling is: **separate worklist,
-shared threads, no entanglement with the `.o` lifecycle**.)
-
-**§11.1b — worklist↔claim coordination (RULING on the refinement's race question, R15).** The
-indexer must never double-typecheck a module the real path owns, nor race the priority/normal/
-object-codegen path on a module in flight. The coordination mechanism is **a module-state check
-before claiming an `IndexModule` task**, grounded in the scheduler's existing per-module registry
-(`ModuleState` keyed by `ModuleFullPath`, carrying `pool` + the claim flags `object_working` /
-`inmem_claimed` / `eval_owned`). The invariant (architectural; exact claim/notify naming is
-`/design (src/)`'s):
-
-- **A module present in the scheduler registry in ANY pool state is owned by the real path → the
-  indexer SKIPS it.** It is either in-scope (covered by Pillar 2) or it will be picked up from
-  the `.meta` the real path's typecheck-driven Phase-1 writer produces (FIXME 0387 — `.meta` is
-  written whenever a module typechecks, regardless of `.o`). The real path always wins.
-- **A reachable module ABSENT from the registry is the indexer's domain** — it reads the `.meta`
-  if valid, else typechecks-and-writes-`.meta` (§11.1 step 2), never registering it.
-- **Late-arriving real `.meta`s** (a module typechecked-for-real but not in the indexer's in-scope
-  set — e.g. a transitive dependency the real path loaded) appear in `/search` because the
-  indexer **reads them from their written `.meta`**: either via the startup `.meta`-scan, or
-  via a re-scan / a notify hook the implementation may add so a `.meta` written after the
-  burn-down still surfaces. The mechanism (re-scan vs notify) is `/design (src/)`'s; the ruling
-  is the invariant: **no module is both index-typechecked and real-typechecked concurrently — the
-  real path always wins, and the indexer consumes the real path's `.meta` rather than duplicating
-  its typecheck.**
-
-### §11.2 Two indices (the lookup structures) + Pillar-2 reconciliation
-
-**Ruling — Pillar 3 builds TWO purpose-built lookup indices (user-specified), distinct from
-Pillar 2's harvest record.**
-
-- **Index A: `symbol → modulepath`** — name lookup (`/search <symbol>`, exact OR partial
-  name; partial = substring).
-- **Index B: `scheme → (symbol, modulepath)`** — type lookup (`/search <scheme>`, exact OR
-  partial scheme — §11.4).
-
-These are **Pillar-3 importable-symbol lookup structures**, populated by the nice-worker
-burn-down. **Pillar 2 (in-scope harvest, §11 intro item 2) is now cleanly SEPARATE** — it is
-NOT a third feeder of a shared DTO (the original §11.2 "one DTO, two feeders" is retracted).
-Pillar 2 surfaces in-scope prelude+imports at sig grain by reading the **live symbol tables**
-directly into the **harvest text block** (`harvest_context`, `src/agent/harvest.rs`) — it
-needs no index at all (the in-scope symbols are already typechecked and already in
-`symbol_tables`; the harvester just reads name+sig+docstring off them each turn). So:
-**Pillar 2 = a live-table read into harvest text; Pillar 3 = two in-memory lookup indices
-read-derived from the `.meta` cache over reachable modules** (each module's `.meta` either
-read-if-valid or produced-by-a-miss-typecheck — §11.1 refinement). They share neither a
-structure nor a feeder — the original "shared record shape" coupling was an artifact of the
-retracted lazy-eval-thread model. (If `/search` and the harvester both want to *format* a
-`{name, sig, module}` line the same way, that is a trivial shared formatter, not a shared
-index — a `/design (src/)` detail, not an architectural coupling.) The indices themselves are
-**not serialized** — they are rebuildable by re-scanning the `.meta` files (R16); the `.meta`
-cache is the persistence layer, not a second serialized index.
-
-### §11.3 Pillar 3 robustness blocker — FIXME 0432 (index-time typecheck PANIC) — re-pinned
-
-**Ruling — 0432 IS STILL pulled into S90 as a Pillar-3 prerequisite; the containment story is
-re-pinned for the nice-worker model.** The reasoning is unchanged in substance and the
-nice-worker model does NOT eliminate it:
-
-- Pillar 3's burn-down runs the **real typechecker** (`check_forms` → monomorphiser) over
-  **arbitrary reachable lib-path ∪ project-root modules**. FIXME 0432 Face B is a monomorphiser
-  `debug_assert!` (`crates/cranelisp-typecheck/src/traits/monomorphise.rs:1016`) that fires on
-  an unannotated multi-clause `defn` + self-call — a common, valid-looking shape a third-party
-  library can easily contain. Debug builds (the dev session) have `debug_assert!` **live**.
-- **CORRECTION to the coordinator's "containment is inherited" claim (verified against current
-  code, 2026-06-23): it is NOT inherited.** The coordinator asserted the nice-worker loop
-  already wraps typecheck in `catch_unwind` (`worker.rs:1483`). **That `catch_unwind` is in the
-  PRIORITY-worker loop (`priority_worker_loop_shared`, `src/worker.rs:1483`), NOT the
-  nice-worker loop.** `nice_worker_loop` (`src/session_v4/nice_worker.rs:65`) runs
-  `compile_module_object` **bare — no `catch_unwind`** (verified: grep finds zero `catch_unwind`
-  in `nice_worker.rs`). A panic on a nice worker today silently kills that background thread
-  (degrading object-codegen capability invisibly). So if the indexer rides the nice workers, a
-  0432 panic during index-time typecheck **silently kills a nice-worker thread** — a *different*
-  failure than the eval-thread crash, but still a robustness defect (lost background capacity,
-  no diagnostic).
-
-**Two-layer containment, both still required (re-pinned for the nice-worker home):**
-
-1. **Fix 0432 Face B at root (`/typecheck`).** Unchanged — surface the unannotated-self-call
-   ambiguity as a **clean type error** (§3.11 / `s84-concrete-types-ambiguity-ruling` — a
-   residual `Var` reaching the mangler is a type error, never a `debug_assert!` panic). The
-   durable fix. `/qa` owns the repro (0432 `target: /qa → typecheck`).
-2. **The nice-worker index-time typecheck MUST run inside a `catch_unwind`** — a *new* catch
-   added to the nice-worker indexer path (it is **NOT inherited** — see the correction above),
-   mirroring the priority-worker `worker.rs:1483` pattern: convert a caught unwind to a logged
-   per-module index failure, drop the throwaway staging, **skip that module's index entries**,
-   and continue the burn-down (never kill the worker thread). **Plus** the S89 **eval-thread
-   validator** still gets its own `catch_unwind` this sprint (it runs on the eval thread, is
-   unaffected by the Pillar-3 home change, and still needs hardening against a model-proposed
-   0432 form — the exact hazard the FIXME flags). So layer (b) is now **two catches at two
-   homes**: CF.1 the eval-thread validator catch (S89-validator hardening, lands this sprint);
-   CF.2 the nice-worker indexer catch (lands with Pillar-3 implementation). Confirming the
-   coordinator's belief in the validator half (CF.1 = yes), and CORRECTING the indexer half
-   (CF.2 is a NEW catch, not inherited).
-
-### §11.4 Type-signature match semantics — exact OR partial in BOTH indices (re-pinned)
-
-**Interface is `/arch`'s; the algorithm is `/typecheck`'s.** The user now wants **exact OR
-partial** match in BOTH indices (superseding the original exact-only MVP):
-
-- **Partial NAME (Index A)** — substring match on the symbol name. Trivial, int-side, no
-  typecheck involvement. MVP-ready.
-- **Partial SCHEME (Index B)** — the harder half. The index stores each symbol's
-  `cranelisp-types` scheme (existing boundary type, no new DTO). Two predicates are needed,
-  both `/typecheck`-owned (type equivalence is typecheck's semantics — Principle 17): the
-  existing `signature_matches_exact(&Type, &Type) -> bool` (alpha-equivalence) **plus a new
-  `_partial` sibling** `signature_matches_partial(query: &Type, candidate: &Type) -> bool`.
-  **MVP definition of "partial scheme match" (RULING): STRUCTURAL-CONTAINS** — the query
-  type-shape appears as a sub-structure of the candidate's scheme, up to alpha-renaming of
-  type vars (e.g. query `(Vec Int)` matches candidate `(Fn [(Vec Int)] Bool)`; query `Int`
-  matches any scheme mentioning `Int`). This is **weaker than full Hoogle subsumption** (no
-  unifier, no directional var-instantiation, no ranking) — it is a containment walk over the
-  type tree, which `/typecheck` can implement as a sibling of `signature_matches_exact` without
-  invoking inference. **Full unification/subsumption** (query `(Fn [Int] ?)` *subsuming*
-  `(Fn [Int] Bool)` with hole-instantiation + ranking) stays a **`/typecheck`-owned later
-  upgrade**, not MVP. Coordinate the `_partial` predicate with `/design (cranelisp-typecheck)`
-  (`signature-match.md §6` — the `signature_matches_exact` predicate gains the `_partial`
-  sibling; both export from `cranelisp-typecheck` per the §11.8 export ruling — one additive
-  `public-api.txt` line *each*, at Pillar-3 implementation time). **`/spec` consult flagged:**
-  if the partial-scheme query needs a *pattern syntax* (a hole/wildcard token like `?` or `_`
-  in `(Fn [Int] ?)`), that token's surface is a `/spec` question — but the STRUCTURAL-CONTAINS
-  MVP needs **no** wildcard token (the query is a plain type expression that must appear as a
-  sub-tree), so the `/spec` consult is only triggered if a later sprint adds wildcard holes.
-
-### §11.5 Pillar 3 sizing — DESIGN-THIS-SPRINT, IMPLEMENT-NEXT (unchanged)
-
-**Ruling: SPLIT is UNCHANGED — Pillars 1, 2, 4 ship fully in S90; Pillar 3 is designed this
-sprint and implemented next.** The redesign does not alter the sizing call — if anything it
-reinforces it: Pillar 3 now carries (a) a nice-worker discovery + burn-down worklist
-(new background-work integration, the §11.1 coupling), (b) two indices + a new `_partial`
-scheme predicate (§11.4), (c) two `catch_unwind` homes (§11.3 CF.1+CF.2), and (d) the 0432
-root fix gate. That is materially more surface than 1/2/4 combined, and shipping the indexer
-half-hardened (without CF.2) would be a Principle-8 interim implementation that silently kills
-nice-worker threads. The **design** (this re-pinned §11.1–§11.4) lands in S90; the
-**implementation** lands once 0432's root fix is in (same sprint if the typecheck fire
-completes early enough; otherwise next). **Note (default-build scope):** because Pillar 3 is
-now a non-agent facility, its design-only-this-sprint status means S90 also does NOT yet add
-the nice-worker indexer to the default build — so the default-build-behaviour-stable invariant
-(§11 intro) is trivially satisfied this sprint (nothing implemented); it becomes load-bearing
-at Pillar-3 *implementation* time (the indexer must not perturb object-codegen behaviour —
-the §11.1 separate-worklist ruling is how).
-
-### §11.6 Pillar 4 — silent greppable agent log
-
-**Ruling — a SIBLING sink to `trace.rs`, not an extension of it; zero public-API /
-`cranelisp-types` impact.** `src/agent/trace.rs` is an **ephemeral stdout/stderr** wire-debug
-trace (env-gated, `eprintln!`, formatting-only, no persistence — verified `src/agent/trace.rs`).
-Pillar 4 is a **persistent, structured, file-backed JSONL** insight log with stable keys
-(event type, symbol, error class, repair-iteration count, module). The two have different
-lifetime, sink, and consumer; folding the persistent log into the ephemeral trace would
-overload one module with two unrelated contracts (Principle 6 — keep concerns separate).
-Add `src/agent/log.rs` (or `telemetry.rs` — the §8 [R5] skeleton slot the int doc already
-reserves) as a new feature-gated sibling that *consumes* the same in-memory event vocabulary
-the agent loop already produces (the repair iterations + triggering errors already flow
-through `pull.rs`; the pulls through `run_pull`; submits/give-ups through `run_submit`). It
-appends one JSON object per event. **Impact: ZERO** — `pub(crate)`, int-private, fully
-`#[cfg(feature="agent")]`, off the default build path (byte-identical feature-OFF), no
-facade/`cranelisp-types`/`public-api.txt` movement, no cache bump. **Log file location** is
-a `/repl`-owned experience detail (env-configurable path, sibling to `CRANELISP_AGENT_TRACE`
-in `repl/spec.md §17.10`); `/arch` rules only that it is a dev-session artifact (NG4 — never
-in a `--link`/`--release` artifact) and writes silently (nothing extra in the REPL).
-
-### §11.7 `/syntax` ownership split
-
-- **Content** (the cheat-sheet topics + verified-compiling examples) — authored by `/docs`
-  (the verified-compiling discipline + token-dense curation is `/docs`' craft), **validated
-  by `/spec`** for accuracy against the normative spec (no normative *change* expected — it
-  is a *projection* of spec, not new language surface). The asset is a static
-  `include_str!` companion in `src/agent/` (sibling to `primer.txt`).
-- **Command UX** (`/syntax` bare = list topics; `/syntax <topic>` = dense content; the
-  agent-pull rendering) — `/repl` (`repl/spec.md §17`).
-- **Tool-wiring** (the `/syntax` `ReplCommand` variant + dispatch + the §4.2 allowlist row +
-  the primer topic-name cross-reference) — `/dev (src/)`.
-
-### §11.8 Public-API / `cranelisp-types` impact (all four pillars) — re-pinned for the redesign
-
-**S90 (design-only Pillar 3): ZERO across all four pillars.** No baseline moves, no
-`cranelisp-types` change, no `CACHE_SCHEMA_VERSION` bump *this sprint* — Pillars 1/2/4 are
-int-private `#[cfg(feature="agent")]` (byte-identical feature-OFF), and Pillar 3 is
-**design-only** (nothing implements). The `cranelisp-types` `Type` boundary is **reused, not
-changed** — both match predicates take `&Type`.
-
-**At Pillar-3 IMPLEMENTATION time (next sprint): TWO additive `cranelisp-typecheck/public-api.txt`
-lines** — `signature_matches_exact(&Type, &Type) -> bool` AND its `_partial` sibling
-`signature_matches_partial(&Type, &Type) -> bool` (§11.4). Both are narrow free functions
-(Principle 2), no new DTO (the `Type` boundary already exists), and they are **legitimate edge
-evolutions** named + dispositioned in the same change-set per the baseline-diff discipline.
-
-**The S91-P3 read-or-produce-`.meta` refinement adds ZERO further baseline movement (R14).** The
-indexer's `.meta` read+write reuses the **already-public** `cranelisp_backend::cache` surface int
-already depends on (`write_meta`/`load_meta`/`deserialise_meta`/`module_cache_path`/`CacheStale`/
-`CACHE_SCHEMA_VERSION` — verified present in `crates/cranelisp-backend/public-api.txt`); it is an
-additive use of an existing edge, not a new pub item, so **no `cranelisp-backend` baseline line
-moves** and **no `CACHE_SCHEMA_VERSION` bump** (the two indices are not serialized — R16). The only
-implementation-time baseline movement remains the two `cranelisp-typecheck` predicate lines above.
-**`cranelisp-types` itself is untouched**; the export is from `cranelisp-typecheck` (type
-equivalence is its semantics — Principle 17). The other non-int obligation is the **`/typecheck`
-0432 root fix** (§11.3) — a behaviour fix inside an existing crate, not an edge change.
-**Feature-gating note (the redesign's one real change):** Pillar 3 is **no longer
-`agent`-gated** — `/search` + the nice-worker indexer are default-build (the nice workers run
-in every session). So Pillar 3 is **not** covered by the byte-identical-feature-OFF invariant;
-it carries the **default-build-behaviour-stable** invariant instead (the indexer must not
-perturb object-codegen behaviour or the default REPL contract — §11.1 separate-worklist ruling).
-Pillars 1, 2, 4 stay agent-gated + feature-OFF-byte-identical. (If a later sprint adds a
-wildcard-hole query syntax — §11.4 — that token's surface is a `/spec` consult, not now.)
-
-**Pillar-3 exact-shape match predicate — export ruling (`/arch`, S90 Phase-3, 2026-06-23).**
-The exact-shape match (R6 MVP) is `pub fn signature_matches_exact(&Type, &Type) -> bool` — pure
-alpha-equivalence, no `CheckState` (`design/typecheck/signature-match.md §6`). **Ruling: export it
-from `cranelisp-typecheck` (the design's Option A), NOT inline it int-side (Option B).** Type
-equivalence is typecheck's semantics — even pure alpha-equivalence over `Type` — so its home is the
-type-owning crate (Principle 17 module locality + Principle 7 single source of truth). Inlining
-int-side would hand-roll a second equivalence judgment that must track typecheck's `Type`
-representation and var-binding rules in lockstep; a future `Type` variant would silently diverge it
-with no compile error. The cost is **one additive `public-api.txt` line in `cranelisp-typecheck`** —
-a narrow `fn(&Type, &Type) -> bool` (Principle 2 narrow interfaces), the narrowest possible export,
-no new DTO (reuses the existing `Type` boundary). **Per the §11.4 redesign this predicate is now
-JOINED by a `_partial` sibling** `signature_matches_partial(&Type, &Type) -> bool` (the
-structural-contains MVP) — **both** export from `cranelisp-typecheck`, **two** additive
-`public-api.txt` lines at Pillar-3 *implementation* time (next sprint), named + dispositioned in
-the same change-set per the baseline-diff discipline. **It does NOT contradict §11.8's S90
-"zero impact" claim, which is scoped to S90 — where Pillar 3 is design-only and nothing
-implements.** This is the §11.4 / R6 anticipated case ("a future match predicate is a
-`target: /arch` filing at that implementation time"), pre-approved here so
-`/design (cranelisp-typecheck)` can pin Option A + the `_partial` sibling now in
-`signature-match.md §6`. (Recorded as R8 below.)
-
-### §11.9 Revisions to scope (R1..Rn) — R1–R8 re-pinned for the redesign + R9–R12 new
-
-**Redesign supersedes R3/R4/R6 (the eval-thread/lazy/one-DTO/exact-only rulings); R1/R2/R5/R7/R8
-carry with edits.**
-
-- **R1 (binding, unchanged):** Pillar 3 ships **split — design-this-sprint, implement-next** (gated
-  on the 0432 fix). Pillars 1, 2, 4 ship fully in S90 regardless (§11.5).
-- **R2 (binding, RE-PINNED):** **FIXME 0432 stays pulled into S90.** Two-layer containment:
-  (a) `/typecheck` root-fixes Face B to a clean type error (§3.11 / `s84-concrete-types-ambiguity-ruling`);
-  (b) **TWO `catch_unwind` homes** — **CF.1** the S89 eval-thread validator catch (lands this sprint,
-  retroactive validator hardening) AND **CF.2** the **nice-worker indexer catch** (lands with Pillar-3
-  impl). **CORRECTION:** CF.2 is a **NEW** catch — the nice-worker loop does NOT today inherit
-  `worker.rs:1483`'s catch (that is the *priority*-worker loop; `nice_worker_loop` runs bare). Pillar 3
-  does not ship without CF.2 (§11.3).
-- **R3 (binding, SUPERSEDED → re-pinned):** ~~One shared DTO, two feeders.~~ Pillar 3 builds **TWO
-  purpose-built lookup indices** — Index A `symbol → modulepath`, Index B `scheme → (symbol, modulepath)`.
-  **Pillar 2 is cleanly SEPARATE** — a live-table read into the harvest text block, no shared index
-  (§11.2).
-- **R4 (binding, SUPERSEDED → re-pinned → REFINED S91-P3 by R13 + R17):** ~~Eval-thread, lazy, sibling of
-  `validate_forms_dry_run`.~~ The indexer is a **background task of the NICE WORKERS**
-  (`nice_worker_loop`), **eager burn-down** over the reachable worklist (lib-search-path ∪
-  project-root), **enqueued eagerly at REPL start-up** (R17 — SUPERSEDES the prior
-  "TRIGGERED by first `/search`/agent activation"; the worklist is never enumerated in
-  `--run`/`--link`/`--release` — §11.1a). **REFINED (R13, S91 Phase-3):** the per-module step is no
-  longer "always typecheck-and-discard" — it is **skip-if-real-path-owns → read-`.meta`-if-valid →
-  else typecheck-and-**write**-`.meta`** (read-or-produce-`.meta`, one artifact). It still reuses the
-  `validate_forms_dry_run` *discard substrate* (staging + `check_forms`, never `register_module`) on
-  the miss-typecheck branch. **Session-state residue stays structural-zero** (the four `SharedState`
-  maps unchanged; +neg test mirrors `validate_dry_run_discards_does_not_commit`) — but the indexer
-  **MAY write a benign `.meta`** (R13). Separate nice-worker worklist, no entanglement with the
-  `.o`-codegen lifecycle (§11.1 coupling ruling).
-- **R5 (binding, unchanged):** Pillar 4 is a **new `#[cfg(feature="agent")]` sibling sink** (`log.rs` /
-  the reserved `telemetry.rs` slot), NOT an extension of `trace.rs` (§11.6).
-- **R6 (binding, SUPERSEDED → re-pinned):** ~~MVP = name + exact-shape only.~~ Match is **exact OR
-  partial in BOTH indices** (user). Partial **name** = substring (int-side, trivial). Partial **scheme**
-  = **STRUCTURAL-CONTAINS** (the query type appears as a sub-tree of a candidate scheme, up to var
-  alpha-renaming) — a new `/typecheck`-owned `signature_matches_partial(&Type, &Type) -> bool` sibling
-  of `_exact`, NO unifier. **Full Hoogle subsumption** (hole-instantiation + ranking) stays a later
-  `/typecheck` upgrade. The structural-contains MVP needs **no wildcard token**, so the `/spec` consult
-  (query-pattern syntax) is only triggered if a later sprint adds holes (§11.4).
-- **R7 (binding, unchanged):** `/syntax` content = `/docs` (`/spec` validates), UX = `/repl`, wiring =
-  `/dev (src/)`; static `include_str!` asset, NOT primer-baked idioms; prelude/stdlib harvest-sourced
-  (§11.7).
-- **R8 (binding, RE-PINNED):** Pillar-3 match predicates **export from `cranelisp-typecheck` (Option A)**,
-  not inlined int-side — type equivalence is typecheck's semantics (Principle 17 + 7). Now **TWO**
-  additive `cranelisp-typecheck/public-api.txt` lines (`signature_matches_exact` + `signature_matches_partial`)
-  at Pillar-3 *implementation* time, per the baseline-diff discipline; does NOT move §11.8's S90
-  "zero impact" claim (Pillar 3 is design-only in S90). See §11.8 (the export ruling).
-- **R9 (binding, NEW):** **Pillar 3 is a NON-agent-gated default-build session facility.** `/search` is
-  an ordinary REPL command; the nice-worker indexer runs in every session (the nice workers already do).
-  The byte-identical-feature-OFF invariant is **scoped to Pillars 1/2/4**; Pillar 3 carries a
-  **default-build-behaviour-stable** invariant instead — the indexer must not perturb object-codegen
-  behaviour or the default REPL contract (§11 intro; §11.1 separate-worklist ruling).
-- **R10 (binding, NEW):** **Reachable = lib-search-path modules ∪ project-root modules** (not lib-path
-  only). Discovery uses the same file-resolution rules as `import` (`pipeline::resolve_module_file`); no
-  new search semantics (§11.1).
-- **R11 (binding, NEW):** **The agent reaches `/search` through the ordinary tools-as-visible-REPL-commands
-  pull** (§4.4), exactly like `/syntax`/`/list`/`/exports` — it is NOT a bespoke agent capability. (`/search`
-  joins the read-only pull allowlist `src/agent/pull.rs`.)
-- **R12 (binding, NEW):** **Command name is `/search`** (was `/lib-search`) — `/repl` updates
-  `repl/spec.md §17.19` (the rename + the session-facility framing + the "indexing N modules…" partial-result
-  note).
-
-**S91 Phase-3 design-refinement rulings (R13–R18) — the read-or-produce-`.meta`, one-artifact model + eager-from-REPL-startup + abandon-on-flush.**
-
-- **R13 (binding, NEW — residue relaxation):** The S90 "indexer writes nothing / structural zero
-  residue" invariant is **relaxed to *no session-state residue*.** The refined indexer **MAY write a
-  `.meta.json`** for a reachable-uncached module it typechecks — via the **existing Phase-1 writer**
-  (`cache::write_meta`; **no `.o`, no `register_module`, no `notify_object_codegen_complete`, no
-  `symbol_tables`/`module_aliases`/`prelude_fallback`/`introspection` entry**), producing a file
-  **byte-identical** to what the real object-codegen path's typecheck-driven, `.o`-decoupled Phase-1
-  writer produces (FIXME 0387). The *session-state* isolation invariant is **unchanged** — the four
-  `SharedState` maps stay byte-unchanged. **No Principle violation:** the `.meta` is a benign,
-  content-hash-/build-id-invalidated cache artifact (Principle 7 holds — the symbol table / source is
-  the truth, `.meta` is a derived cache; Principle 6 — the write *lowers* cost by avoiding re-typecheck).
-  **+neg test obligation reworded:** assert **no `SharedState` entry** (the four-map assertion mirroring
-  `validate_dry_run_discards_does_not_commit`), **NOT** "no disk write" — a produced `.meta` is expected
-  and benign (§11.1 "No session-state residue").
-
-- **R14 (binding, NEW — indexer↔cache coupling, zero new edge):** The indexer **reads** `.meta`
-  (`cache::load_meta`/`module_cache_path`/`deserialise_meta`/`CacheStale`) and **writes** `.meta`
-  (`cache::write_meta`) through the **existing** `cranelisp_backend::cache` edge int already depends on
-  (`cache_writer.rs`). **Zero NEW cross-crate edge** (int→backend cache pre-exists) and **zero
-  `public-api.txt` movement** beyond the two already-dispositioned `cranelisp-typecheck` predicate lines
-  (R8) — verified: `write_meta`/`load_meta`/`deserialise_meta`/`module_cache_path`/`CacheStale`/
-  `CACHE_SCHEMA_VERSION` are **already public** on `cranelisp-backend` (`crates/cranelisp-backend/public-api.txt`).
-  No new pub item at the backend edge is required; if a future impl found one needed (it should not), that
-  is a `target: /arch` filing with the baseline-diff obligation at that time.
-
-- **R15 (binding, NEW — worklist↔claim coordination):** The `IndexModule` worklist coordinates with the
-  existing claims by a **module-state check before claiming** (the scheduler's `ModuleState` registry —
-  `pool` + `object_working`/`inmem_claimed`/`eval_owned`). **A module present in the registry in any pool
-  state → SKIP (the real path owns it; the indexer reads its `.meta` later).** A reachable module absent
-  from the registry → the indexer's domain. **Late-arriving real `.meta`s** (real-typechecked but
-  out-of-scope modules) surface in `/search` because the indexer reads them from their written `.meta`
-  (re-scan or notify hook — `/design (src/)`'s choice). Invariant: **no module is both index-typechecked
-  and real-typechecked concurrently; the real path always wins** (§11.1b).
-
-- **R16 (binding, NEW — cross-run persistence):** The two indices stay **in-memory**, rebuilt by a
-  `.meta`-scan, with **no new serialized index and no `CACHE_SCHEMA_VERSION` bump.** The `.meta` cache IS
-  the cross-run persistence — the indices are derived read-caches (§3.3) over the `.meta` files.
-
-- **R17 (binding, NEW — eager-from-REPL-startup; SUPERSEDES the prior "eager-but-TRIGGERED" §11.1a
-  ruling):** The burn-down is **enqueued eagerly at REPL start-up** — no first-`/search`/first-agent
-  trigger. Single gate = **"REPL mode at startup"**: in REPL mode the `IndexModule` worklist is
-  enumerated + enqueued at session start; in **`--run`/`--link`/`--release` the worklist is NEVER
-  enumerated**. This makes REPL-only an **explicit single-gated invariant** (not the emergent-from-trigger
-  property the prior ruling implied). **Override recorded:** the S90 Principle-6 "don't tax sessions that
-  never search" rationale is **SUPERSEDED** — on a real site the burn-down is seconds-to-minutes, so a
-  first-`/search` trigger would make the *first search pay the full latency* (worst time); eager-from-startup
-  warms the index while the user works. The Principle-6 concern (don't waste work / don't perturb the
-  default REPL) is addressed by **prioritization, not deferral**: the index worklist is drained **behind /
-  yielding to the object-codegen worklist** (object codegen claims the thread first; the indexer fills idle
-  nice-worker capacity), which is the mechanism that preserves the R9 default-build-behaviour-stable
-  invariant ("must not perturb object-codegen behaviour"). The partial-results "indexing N modules…" UX
-  (§11.1a / `repl/spec.md §17.19`) is retained and is **more relevant** now (an early search may catch the
-  startup burn-down mid-flight). Claim-ordering detail is `/design (src/)`'s; the ruling is: eager-from-REPL-
-  startup, batch/release never, explicit REPL-only gate, index-yields-to-codegen priority.
-
-- **R18 (binding, NEW — nice-worker flush handling; abandon-not-drain):** The index worklist is
-  **NEVER part of a correctness-gating flush** — it is **abandon-on-flush / abandon-on-shutdown**, never
-  drained-to-completion. At the **pre-`--link` hot-flush / priority-promotion** (`nice_worker.rs:70`) the
-  promotion is **object-codegen-scoped by construction** and MUST NOT drain or block on the index worklist
-  (the link needs no index); a promoted nice worker **prefers object codegen and defers/abandons index
-  work** (the flush-time face of R17's yield-to-codegen). At **shutdown join** (`worker_pool.rs:74-86`) the
-  burn-down checks the shutdown flag **between `IndexModule` tasks** and exits promptly — never "finish the
-  whole burn-down first." **Atomic `.meta` writes** (`crates/cranelisp-backend/src/cache/object.rs`
-  `atomic_write`) mean an abandoned mid-burn leaves at worst some modules unindexed (re-derived next
-  session) and **never a corrupt `.meta`**. Shutdown-flag check placement + promotion claim preference are
-  `/design (src/)`'s; the architectural ruling is the **abandon-not-drain invariant** (the index is never on
-  a correctness path — it is a REPL search aid, never a build input, §11.1a-flush).
+| Target | Origin | State |
+|---|---|---|
+| Sidecar store for homeless intent | §3.2, U3 | Unbuilt. Needs a serialisation and reconciliation design first. |
+| Prunable push-transparency header | §4.7, U4 | Deferred in `repl/spec/17b-agent-observability.md` §17.20.3c. |
+| Automated compensation loop (classify pulls and repairs; curate push and primer) | `design/arch/repl-embedded-agent.md` §4.5 | Signal is recorded; classification and curation are manual. |
+| Spec retrieval pull (grep, later semantic search, over an embedded `spec/`) | former Phase 1 and Phase 3 | Unbuilt (`design/int/agent.md` §7). The primer, `/syntax` and the harvest carry grounding. See §12 Q3. |
+| Confirm-gated shell proposal arm | `design/arch/repl-embedded-agent.md` §7.4 | Specified in `repl/spec/17-embedded-agent.md` §17.7; `design/int/agent.md` §4.2 and §15.1 define no such arm. |
+| Further reverse queries (`/callers`, `/uses`) | `design/arch/repl-embedded-agent.md` §4.4 (corollary) | Added when a need appears. |
+| Complete semantic `/search` index, including macros | `design/arch/repl-embedded-agent.md` §11.1 | `sprints/actions/ACT-0952-complete-semantic-search-indexing.md`. |
+| Subsumption-style scheme queries with holes and ranking | `design/arch/repl-embedded-agent.md` §11.4 | Typecheck-owned upgrade; a hole token is a `spec` question first. |
+| Project-level agent configuration and further providers | `design/arch/repl-embedded-agent.md` §7.3 | `sprints/actions/ACT-0960-agent-configuration-and-model-comparison.md`. |
 
 ---
 
-### Key file/line citations
-- Dispatch seam: `src/main.rs:240-306`; `src/repl.rs:419/428/433/450`.
-- **Nice-worker indexer home (Pillar-3 REDESIGN):** `src/session_v4/nice_worker.rs:65`
-  (`nice_worker_loop` — the background-codegen threads; **NO `catch_unwind`** — CF.2 is a NEW catch);
-  `src/session_v4/nice_worker.rs:121` (`compile_module_object` — the existing `.o` path the indexer
-  worklist must stay separate from); `take_object_codegen` / `notify_object_codegen_complete`
-  (`src/scheduler.rs` — the existing `TypecheckDone`-module claim the indexer must NOT route through).
-- **Discard substrate the indexer reuses (NOT the execution home):** `src/worker.rs:308`
-  (`validate_forms_dry_run` — staging + `check_forms`, never commits); `src/agent/pull.rs:1088`
-  (`validate_dry_run_discards_does_not_commit` — the zero-residue guard shape the +neg test mirrors).
-- **0432 panic site + containment:** `crates/cranelisp-typecheck/src/traits/monomorphise.rs:1016`
-  (`debug_assert!` — live in debug builds); `src/worker.rs:1483` (the **priority**-worker `catch_unwind`
-  pattern CF.1 + CF.2 mirror — NOT inherited by the nice-worker loop).
-- **Eval-thread validator (CF.1 home):** `src/agent/pull.rs:668` (`validate_one_form`, eval-thread, no
-  `catch_unwind` today).
-- **Match predicate home:** `design/typecheck/signature-match.md §6` (`signature_matches_exact` +
-  the new `_partial` sibling — both export from `cranelisp-typecheck`).
-- **Harvest sig-grain (Pillar 2, now index-free):** `src/agent/harvest.rs` (`harvest_context`).
-- **Pillar-4 sibling-sink reference:** `src/agent/trace.rs` (ephemeral, env-gated — the contrast).
-- Tools-as-strings (pull surface): `src/repl/commands.rs` `handle_*` (all return `String`).
-- Eval/validate re-entry: `src/eval.rs:72/78`; `:447` (the bare-atom self-documentation gate §5.3 must preserve); cluster-atomic staging (commit-on-Ok/discard-on-Err) — the validator substrate (§6.2).
-- Self-documentation contract not to regress: `repl/spec.md` §4.
-- Feature-gating precedent: `design/arch/release-llvm-backend.md` §5.
-- Cadence/window model: `design/arch/overview.md`.
-- `/learn`: `design/arch/fixmes/0052-*.md`.
+## §10. Ratified decisions (user, 2026-06-21)
+
+| | Decision | Current statement |
+|---|---|---|
+| U1 | Dispatch: `/ask` is the explicit door; other input is classified; feature-off is byte-identical | §5.3. The resolution-aware refinement was replaced by the form-count rule (user, 2026-07-12; `repl/spec/17-embedded-agent.md` §17.1). |
+| U2 | Module preambles are first-class | `design/arch/repl-embedded-agent.md` §3.4 |
+| U3 | Memory line: named thing → on the thing; homeless intent → small sidecar | `design/arch/repl-embedded-agent.md` §3.1, `design/arch/repl-embedded-agent.md` §3.2 |
+| U4 | Push is ambient; a prunable header comes later | §4.7 |
+| U5 | Validator silently repairs anything | §6.4 |
+| U6 | Opt-in twice, with a first-use disclosure naming source excerpts and the endpoint | §7.3, §7.4 |
+
+---
+
+## §11. Language awareness and importable-symbol search
+
+Four additions made the agent fluent in a language it was never trained on:
+
+1. **`/syntax` cheat-sheet** — a default-build command that is also an agent
+   pull; the primer names its topics and not their content (§11.7).
+2. **Harvest at signature grain** — every in-scope prelude and imported symbol
+   as name, signature and docstring, read from live tables each turn. Prelude
+   awareness comes from the harvest, never the primer (§6.1).
+3. **`/search`** — importable-symbol search (§11.1–§11.4).
+4. **Activity log** (§11.6).
+
+Items 2 and 4 and the agent's allowlist rows are `agent`-gated and keep
+feature-off identity. `/syntax` and `/search` are default-build session
+facilities and instead carry the **default-build-behaviour-stable** invariant:
+they must not change object-codegen behaviour or the deterministic REPL
+contract.
+
+### §11.1 `/search` — the background indexer boundary
+
+`/search` answers over symbols that are reachable but not imported. Reachable
+means lib-search-path modules ∪ project-root modules, discovered with the file
+rules `import` uses; there are no second search semantics. It is an ordinary
+REPL command, and the agent reaches it through the ordinary pull (§4.4).
+Mechanism: `design/int/agent.md` §25. Isolation contract:
+`design/int/index-worker-isolation.md`.
+
+- **Home.** Index work runs on the nice workers, off the eval thread, so a
+  search is an index read and never a typecheck stall on the user's Enter.
+- **Separate worklist, shared threads.** Index work never enters the
+  object-codegen claim or the `.o` lifecycle and never registers a module.
+- **No session-state residue.** The `SharedState` maps `symbol_tables`,
+  `module_aliases`, `prelude_fallback` and `introspection` never gain an entry
+  for an indexed but unimported module. Evidence asserts those maps, not the
+  absence of a disk write.
+- **Read `.meta` before typechecking.** A module the real path owns is skipped;
+  a valid `.meta` is read without typechecking; otherwise the module is
+  typechecked once on a private substrate. A warm project therefore pays a
+  `.meta` scan, not a re-typecheck of every reachable module.
+- **The cache is foreground-read state.** The S91 ruling let the last branch
+  write a `.meta` so that a later import is a cache hit, on the premise that
+  the file equals what a real typecheck writes. The built indexer still does
+  this for macro-free modules. The premise does not hold wherever the index
+  typecheck is incomplete (`design/int/index-worker-isolation.md` §3.3), and an
+  index-written `.meta` reaches the foreground compile as a cache hit. The
+  write is therefore a tolerated interim, not a commitment: ACT-0952 forbids
+  the successor index from publishing cache artifacts until it runs the
+  complete compiler protocol, has race evidence, and the user approves
+  separately (§12 Q4). Retiring the current write needs no architecture
+  change.
+
+### §11.1a Arming, priority and abandonment
+
+- **REPL-only by one explicit gate.** The worklist is enumerated at REPL
+  start-up. `--run`, `--link` and release builds never enumerate it.
+- **Eager, not triggered.** On a real site the burn-down takes seconds to
+  minutes. A first-search trigger would charge that latency at the moment the
+  user is blocked waiting. The cost concern behind the earlier trigger model
+  (Principle 06, Complexity has a budget) is met by priority instead of
+  deferral: object codegen always claims a nice worker first and index work
+  fills only idle capacity.
+- **Abandon, never drain.** Index work is never on a correctness-gating path.
+  Link promotion drains object codegen only; shutdown is checked between index
+  tasks. `.meta` writes are atomic, so abandonment leaves modules unindexed,
+  never a corrupt artifact.
+- A search that lands before the burn-down completes serves partial results
+  with a not-ready note (`repl/spec/17a-agent-language-awareness.md` §17.19.3).
+
+### §11.1b Worklist and claim coordination
+
+No module is index-typechecked and real-typechecked concurrently; the real path
+always wins. A module present in the scheduler registry in any pool state
+belongs to the real path, and the indexer reads that path's table or `.meta`.
+Only a reachable module absent from the registry is the indexer's to typecheck.
+
+### §11.2 The index is a derived read cache, separate from the harvest
+
+The index supports lookup by name and by scheme. It is in memory, never
+serialised, and rebuildable from `.meta` files, so the `.meta` cache is the
+cross-run persistence and no cache-schema change arises. The in-scope harvest
+shares no structure or feeder with it: in-scope symbols are already typechecked
+in live tables and need no index. The physical row shape is
+`design/int/agent.md` §25.3.
+
+### §11.3 Containment of typechecks over unvetted input
+
+Index-time and validator typechecks run the real typechecker over input nobody
+has compiled: an arbitrary library module, or a model's proposal. Debug builds
+keep `debug_assert!` live. Two layers are both required:
+
+- **(a)** A panic reachable from valid-looking source is a typecheck defect and
+  is fixed at root as an ordinary type error.
+- **(b)** Each such typecheck runs inside its own `catch_unwind`: the
+  eval-thread validator's and the index worker's (`design/int/agent.md` §24.2,
+  §25.4). Containment is not inherited from the priority-worker loop. A caught
+  panic becomes a repair attempt or a per-module skip, never a lost thread or a
+  crashed REPL.
+
+### §11.4 Match semantics — interface is `arch`'s, algorithm is typecheck's
+
+Name match is exact or substring and is int-side. Scheme match calls two
+typecheck-owned predicates over the existing `Type` boundary:
+`signature_matches_exact` (alpha-equivalence) and `signature_matches_partial`
+(**structural containment**: the query type occurs as a sub-tree of the
+candidate, up to alpha-renaming, with no unifier and no inference). Full
+subsumption with holes and ranking is §9.
+
+### §11.6 Activity log — a sibling sink
+
+The persistent JSONL activity log and the full-content trace have different
+payloads and consumers, so they are sibling sinks over one event vocabulary
+with a shared append helper, not one module with two contracts. Both are
+int-private, `agent`-gated, silent in the session and dev-session artifacts
+(NG4). Location and schema: `repl/spec/17b-agent-observability.md` §17.20,
+§17.21.
+
+### §11.7 `/syntax` ownership
+
+Content is authored by `docs` and checked by `spec` as a projection of the
+language specification, not new surface. Command experience is `spec`'s
+(`repl/spec/17a-agent-language-awareness.md` §17.17). Wiring is `dev` (`src/`).
+
+### §11.8 Public-API impact
+
+- The predicates of §11.4 export from `cranelisp-typecheck`, not int. Type
+  equivalence is typecheck's semantics
+  ([Principle 17](principles/17-module-locality-in-typecheck.md),
+  [Principle 07](principles/07-single-source-of-truth.md)); an int-side copy
+  would diverge silently at the next `Type` variant. Both are in
+  `crates/cranelisp-typecheck/public-api.txt`.
+- The indexer's `.meta` read and write reuse the `cranelisp_backend::cache`
+  surface int already consumes. There is no new edge, no new public item and
+  no `CACHE_SCHEMA_VERSION` change.
+- `cranelisp-types` is untouched by §11.
+- No API delta from this track is pending. Any future one takes the root
+  inter-crate public-API user gate.
+
+### §11.9 Ruling labels
+
+Source, tests and designs cite the S90 and S91 rulings as R-labels. Each
+resolves to its current statement:
+
+| Label | Subject | Current statement |
+|---|---|---|
+| R1 | `/search` designed one sprint, built the next | Discharged; no standing content |
+| R2 | 0432 root fix plus two containment catches | §11.3 |
+| R3 | Index separate from the harvest; lookup by name and by scheme | §11.2 |
+| R4, R9, R10, R11, R13 | Nice-worker home; default-build facility; reachable set; ordinary pull; no session-state residue | §11.1 |
+| R5 | Log is a sibling sink | §11.6 |
+| R6 | Exact or partial match; structural containment | §11.4 |
+| R7 | `/syntax` ownership | §11.7 |
+| R8, R14 | Predicate export; cache-edge reuse | §11.8 |
+| R12 | Command name `/search` | `repl/spec/17a-agent-language-awareness.md` §17.19 |
+| R15 | Claim coordination | `design/arch/repl-embedded-agent.md` §11.1b |
+| R16 | In-memory index; `.meta` is the persistence | `design/arch/repl-embedded-agent.md` §11.2 |
+| R17, R18 | Eager at REPL start-up; abandon, never drain | `design/arch/repl-embedded-agent.md` §11.1a |
+
+---
+
+## §12. Unresolved questions
+
+- **Q1 — Transcript budget.** The transcript is sent whole. If it ever gains a
+  budget, a body pulled early can leave context, and harvest re-admission of
+  pulled symbols (§4.4) becomes worth reconsidering. Trigger: a `design` (int)
+  proposal to truncate the transcript. Owner: `design` (int), with `arch` if
+  the push contract changes.
+- **Q2 — Disclosure wording against the delivered pin.**
+  `repl/spec/17-embedded-agent.md` §17.8.1 words the transmitted context from
+  the earlier `design/arch/repl-embedded-agent.md` §4.3 (the earlier text): the full source of the current module and of roughly
+  the last ten mentioned functions. The delivered pin admits callables,
+  overload groups and macros only (`design/int/agent.md` §5.2). The disclosure
+  over-states, which is the safe direction for privacy. `design` (int) decides
+  whether the pin widens; `spec` realigns the wording if it does not. No
+  architecture constraint depends on the outcome.
+- **Q3 — Spec retrieval.** The ratified plan grounded answers in retrieved
+  specification text. Nothing delivers it, and the primer, `/syntax` and the
+  harvest have carried grounding since. Whether it remains a target is
+  undecided. It would add an embedded `spec/` asset and an allowlist row, and
+  no crate edge. Evidence that would decide it: recurring `question` log
+  entries (`repl/spec/17b-agent-observability.md` §17.20.3c) answerable only
+  from specification prose.
+- **Q4 — Index-written cache artifacts.** Whether background index work may
+  ever publish `.meta` for foreground reuse (`design/arch/repl-embedded-agent.md` §11.1). Owner: `design` (int)
+  under `sprints/actions/ACT-0952-complete-semantic-search-indexing.md`; a
+  cache-write stage needs the user's separate approval there.

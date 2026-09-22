@@ -13,7 +13,6 @@
 //! this Phase by `/spec`):
 //!   - `spec/10-io.md`     §10.12.8  (Structured Control Combinators — race/select/timeout)
 //!   - `spec/10-io.md`     §10.12.9  (Structured Cancellation)
-//!   - `spec/10-io.md`     §10.12.10 (Reference Control Patterns — graceful shutdown)
 //!   - `spec/10-io.md`     §10.12.4.1 (Resource Capacity — Token Pools; permit release)
 //!   - `spec/12-runtime.md` §12.4.4  (Structured Control Combinators and Cancellation)
 //!
@@ -650,21 +649,19 @@ fn volume_cancel_while_awaiting_permit_next_live_waiter_proceeds() {
 }
 
 // =============================================================================
-// §C5a — synthetic graceful-shutdown core (no fan-out; the deferrable-independent
-// acceptance). A shutdown trigger (modelled as a `race` of an in-flight effect
-// against a short-deadline "shutdown signal") CANCELS the outstanding in-flight
-// effect: its completion side-effect does NOT occur AND its resource releases (a
-// trailing same-token effect proceeds — permit freed). The synthetic core of
-// "shutdown cancels an outstanding strand" — no web/HTTP, no fan-out.
+// §C5a (retired S96 plan label) — direct race-branch cancellation: a logging
+// effect loses a race and is cancelled — its completion side-effect does NOT occur
+// AND its permit releases (a trailing same-token effect proceeds). The cancelled
+// work is a DIRECT race branch; no detached strand is launched, so this is not
+// evidence for the §10.12.10 graceful-shutdown pattern.
 // =============================================================================
 
-// spec: spec/10-io.md §10.12.10 — the graceful-shutdown reference pattern via the
-// combinator surface: a long-running effect (poll-log LONG "io" on capacity-1 token
-// 7) raced against a SHORT "shutdown signal" (poll-read on token 88) is CANCELLED
-// when the signal fires — "io" MUST NOT appear (§10.12.9 item 2) AND token 7's
+// spec: spec/10-io.md §10.12.9 — a long-running logging effect (poll-log SLOW "io" on
+// capacity-1 token 7) raced against a SHORT effect (poll-read on token 88) is
+// CANCELLED when the short branch wins — "io" MUST NOT appear (item 2) AND token 7's
 // permit frees so a trailing same-token read proceeds (item 1). Two-sided wall-clock.
 #[test]
-fn shutdown_cancels_outstanding_inflight_effect_releasing_resources() {
+fn race_loser_logging_effect_cancelled_permit_reused_by_trailing_effect() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read} {log}]])\n\
@@ -684,15 +681,14 @@ fn shutdown_cancels_outstanding_inflight_effect_releasing_resources() {
     out.assert_exit(D_MS as i32);
     assert!(
         !stdout.contains("io"),
-        "graceful shutdown must CANCEL the outstanding effect before its completion \
-         side-effect — \"io\" MUST NOT appear (spec/10-io.md §10.12.10 / §10.12.9 \
-         item 2); got stdout={stdout:?}",
+        "the losing race branch must be CANCELLED before its completion side-effect \
+         — \"io\" MUST NOT appear (spec/10-io.md §10.12.9 item 2); got stdout={stdout:?}",
     );
 
     let ms = best_elapsed_ms(&prog);
     assert!(
         ms < SLOW as u128,
-        "shutdown must cancel + free the outstanding effect's permit so the trailing \
+        "the cancelled race loser must free its permit so the trailing \
          same-token effect proceeds (≈{}ms, < SLOW {SLOW}ms); measured {ms}ms — the \
          effect ran to completion or its permit leaked",
         FAST + D_MS,

@@ -14,15 +14,16 @@
 //! [`HeapString::DATA_OFFSET`] (whose const rustdoc is the canonical
 //! statement). `split`/`join` do not know the Vec representation: they cross
 //! through the purpose-specific owned-construction and scoped-read operations
-//! in [`cranelisp_intrinsics::vec_runtime`]. The alloc/rc/drop helpers in
-//! `cranelisp-intrinsics::{alloc, rc, drop}` carry the consuming-convention
-//! plumbing (Decision 24).
+//! in [`cranelisp_intrinsics::vec_runtime`].
 //!
 //! ## Consuming convention (Decision 24)
 //!
-//! Every extern fn here MUST consume its heap-typed arguments (dec any heap
-//! arg it does not return). Internal Rust callers may handle ownership
-//! differently; the extern boundary is fixed for codegen uniformity.
+//! The generated extern wrappers consume every heap argument they do not
+//! return. The bodies here state that by type: a consumed argument arrives as
+//! `Owned` and is discharged exactly once through the intrinsics consume
+//! funnel (`rc::consume_shallow`, `drop::consume_*`); `string-identity`, the
+//! one retained argument, arrives as `Borrowed` (design
+//! `design/primitives/primitives.md` §2.4).
 
 use cranelisp_intrinsics::handle::{Borrowed, Owned};
 use cranelisp_intrinsics::heap_string::{HeapString, alloc_string};
@@ -209,9 +210,8 @@ pub(crate) fn str_split(s: Owned, sep: Owned) -> Owned {
 
 /// Join a Vec of strings with a separator. Separator is the first argument.
 ///
-/// Decision 24: consuming convention — dec separator via `consume_shallow`
-/// and the Vec via `consume_vec_of_string` (walks element Strings + frees
-/// the Vec struct + data buffer).
+/// Decision 24: consumes the separator and the Vec-of-Strings (elements, Vec
+/// header and data buffer) once each, after the result is allocated.
 pub(crate) fn str_join(sep: Owned, vec: Owned) -> Owned {
     let sep_str = unsafe { read_str(sep.as_borrowed()) };
 

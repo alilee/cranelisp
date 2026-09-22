@@ -315,8 +315,8 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             is_runtime: true,
         },
         // Vec COW backend-emitted-call targets (internal, not user-callable via
-        // the primitives module — `vec-len` is user-callable and rides the GOT
-        // via PRIMITIVES_TABLE, not this catalog).
+        // the primitives module). The user-callable Vec queries such as `vec-len`
+        // are inline primitives with no GOT slot and no entry in this catalog.
         IntrinsicEntry {
             name: "vec-set-copy",
             ptr: crate::vec_runtime::vec_set_copy as *const u8,

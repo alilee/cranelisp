@@ -253,7 +253,7 @@ tracker until then. Rows scribed to `design/arch/annotated-sexp-node.md` §8:
 - **§1.8 form grammar** (`spec/01-lexical.md`) — `annotated_form` added as a
   `form` alternative; `colon_prefix`/`colon_bare` **removed from `atom`**, so
   the standalone-atom invariant is a grammar property.
-- **§2.3.8** (`spec/02-grammar.md`) — `annotate_expr` is built FROM the
+- `spec/02-grammar.md` **§2.3.8** — `annotate_expr` is built FROM the
   read-time node; position-independence is structural and the position
   enumeration is illustrative; the one-child parenthesized-annotation rule
   re-grounded on the read-time fold; stacked-annotation chaining stated.

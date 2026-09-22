@@ -1,5 +1,5 @@
 //! Macro expansion: the int-side **execution** half of the two-jobs split
-//! (`design/arch/macro-expansion-ownership.md` §2.3).
+//! (`design/arch/macro-expansion-ownership.md` §1 "Binary").
 //!
 //! Per the S76 W-Macro LOCKED decision (`macro-availability-model.md` §0.7),
 //! macro **recognition** is a `cranelisp-types` query
@@ -1887,7 +1887,7 @@ mod tests {
         assert!(r.is_none());
     }
 
-    // spec: macro-expansion-ownership.md §2.3 — JitMacroExpander surfaces a clear
+    // spec: macro-expansion-ownership.md §1 "Binary" / §2 — JitMacroExpander surfaces a clear
     // Aborted diagnostic when a recognized macro's clause code is not in memory
     // (an orchestrator-sequencing condition), rather than misbehaving silently.
     #[test]
