@@ -1653,7 +1653,7 @@ fn persist_startup_failed_source_retained_until_same_name_repair_neg() {
 // `ReplCommand::Reset` arm cleared `failed_forms`, so regeneration after
 // `/reset` omitted the failed source. Reset-free control: session 1 of
 // persist_startup_failed_source_retained_until_same_name_repair_neg.
-// defect: class=release-path-bypass locus=src/repl/mod.rs::dispatch_command (the `ReplCommand::Reset` arm) found=S122 owner=/dev
+// defect: class=release-path-bypass locus=src/repl/mod.rs::dispatch_command (the `ReplCommand::Reset` arm) found=S122 owner=/dev fixed=S122/9d4f18f5
 #[test]
 fn persist_startup_failed_source_survives_reset_then_other_definition() {
     let out = seeded_broken_session()

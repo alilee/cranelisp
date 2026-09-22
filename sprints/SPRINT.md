@@ -3254,3 +3254,17 @@ reset leads and the uncovered interactive failing-definition persistence cell
 remain in the current QA delta, with no invented policy or claimed coverage.
 Final document check: 382 findings, no introduced identities; whitespace
 and role wiring pass. NOTES unchanged. No commit or phase transition.
+
+
+### Checkpoint and CLI evidence continuation (2026-09-22)
+
+User requested checkpoint commit and continuation. Checkpoint `9d4f18f5`
+contains document consolidation, approved CLI/persistence requirements, and
+the independently reviewed reset-retention correction with its evidence.
+85 files changed; NOTES and the independently dirty .agents Gitlink excluded.
+The regression trace now records that actual fixing SHA. A small follow-up
+commit carries this provenance, since a commit cannot contain its own hash.
+
+Continue in Phase5 with the existing QA CLI allocation: first src parser
+unit evidence, then the public CLI/IO exit and output-path cells. One source
+writer and test runner at a time; no new CLI semantics or phase advancement.
