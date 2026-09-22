@@ -2324,57 +2324,73 @@ Limits and dispositions:
   citing cells A/B/C as applicable; no paired `[S122 — … RED …]` tag is
   needed because cell C is GREEN.
 
-## CLI and IO exit-code evidence — one deferred allocation (2026-09-22)
+## CLI and IO exit-code evidence — executed (2026-09-22)
 
-Approved prose changes: [CLI](../../repl/spec/00-cli-invocation.md) §0.2 now
-requires `main : (Fn [] (IO _))` (`[Uncovered S122 — was
-tests/repl_persist_race::repl_dep_load_no_race_with_persistent_workers]`),
-[IO](../../spec/10-io.md) §10.6.1 requires exit 0 for every non-`Int` inner
-type (`[Uncovered S122 — was tests/spec_10_io.rs::batch_main_pure_int_return_is_rejected (Tested+Neg)]`),
-and [runtime](../../spec/12-runtime.md) §12.6 keeps `[Tested+Neg]` on the same
-rejection cell. No runtime change occurred. Existing observations, by clause:
+Provenance. Baseline `a7ec1f7d`; the working tree adds test-only lines to
+`src/main.rs` (`#[cfg_attr(test, derive(Debug, PartialEq))]` on `ParsedFlags`,
+a `flags_of` helper and three units) and cells in `tests/spec_10_io.rs` and
+`tests/link.rs`. The diff was read line by line: no production parser, runtime
+or harness line changed. Authorities: [CLI](../../repl/spec/00-cli-invocation.md)
+§0.2, §0.2.1.1, §0.3, §0.5, §0.5.3; [IO](../../spec/10-io.md) §10.6.1;
+[runtime](../../spec/12-runtime.md) §12.6. The independent review of this
+delta (`.local/s122-cli-review-result.md`) was not available at this
+assessment; the coordinator composes it, and a surviving finding re-opens the
+affected row below.
 
-| Clause | Existing cells | Gap |
-|---|---|---|
-| Non-`IO` `main` rejected in `--run` and `--link`, naming `main` and `IO` | `spec_10_io::batch_main_pure_int_return_is_rejected`, `batch_main_bool_return_is_rejected`, `link.rs` ~l.159 | none |
-| `IO Int` inner value is the exit code (`--run`) | `spec_10_io::run_mode_main_returns_{pure_exit_code,pure_nonzero,bind_exit_code,int_exit_code}`, `spec_12_runtime::main_returning_int_produces_int_exit_code`, `build_confidence::smoke_run_*` | none |
-| `IO Int` inner value is the exit code (`--link`) | `link::link_hello_produces_executable_with_main_exit_code`, `build_confidence::smoke_link_then_run_executable_matches_run_exit` | none |
-| Non-`Int` inner type exits 0 (`--run`) | `spec_12_runtime::main_returning_non_int_produces_zero_exit_code` (`IO Bool`) | no heap-typed inner result |
-| Non-`Int` inner type exits 0 (`--link`) | none; `link::link_main_returning_io_pure_zero_exits_zero_or_errors_clearly` is `Pure 0` with an either/or shape | the only mechanism-bearing gap: the [result-owner rule](../../src/CLAUDE.md#program-result-ownership--srcresult_ownerrs) states that an unconditional narrowing would exit a non-`Int` linked `main` with the low 32 bits of a heap pointer; `startup_result_exit` is unit-pinned only |
-| Missing `main` → stderr names `main`, exit 1 | `spec_05_definitions::multi_arity_call_from_main_batch_no_main_neg` (verify its assertion names `main` and the status) | confirm, do not duplicate |
+Executed runs (logs under `.local/`). Binary units:
+`cargo nextest run -p cranelisp --bin cranelisp` 14 run, 14 passed
+(`s122-cli-unit-dev-nextest.log`). Detection proof: the same command with two
+faults planted in `parse_arg_flags` — the `"-o" | "--output"` arm split so
+`--output` no longer sets the override, and the positional captured only at
+`argv[1]` — 11 passed and the three new units failed on their intended
+assertions (`s122-cli-unit-dev-mutation.log`); both faults were reverted
+before the green run. Public cells: focused filter over `spec_10_io` and
+`link` 12 run, 12 passed (`s122-cli-public-test-nextest.log`); both binaries
+92 run, 92 passed (`s122-cli-public-test-binaries.log`). No full-suite run;
+it belongs to the integration gate. Every public cell was GREEN on first
+execution against the unchanged product: they are acceptance cells with no
+RED leg, and none is claimed.
 
-Deferred single allocation to `test`, one visit, `tests/spec_10_io.rs` beside
-the exit-code cells: `(defn main [] (Pure "s"))` and `(defn main [] (Pure true))`
-under `run_through_all_modes`-style `--run` and `link_then_run`, each
-asserting exit 0, process completion and no output on stdout. The `String`
-cell is the discriminator for the pointer-narrowing wrong outcome; `Bool`
-extends the existing run-only cell to linked execution. Retire the either/or
-shape of `link_main_returning_io_pure_zero_exits_zero_or_errors_clearly` to a
-plain exit-0 assertion in the same visit (its "errors clearly" arm predates IO-main
-enforcement). Restore §10.6.1 and §0.2 to `[Tested+Neg …]` naming the `String`
-linked cell and the rejection cell after the run is observed; §12.6's tag
-stands. No test dispatch or execution is authorized by this record.
-
-### CLI option ordering, `--output` alias and link-only output path — allocation (2026-09-22)
-
-Approved prose: [CLI](../../repl/spec/00-cli-invocation.md) §0.5 (target
-before, after or between options; option values adjacent), §0.5.3 (the two
-orders MUST be equivalent), §0.2.1.1 `--output` alias `[S122]` and link-only
-output path `[S122]`. Source read, not executed: `src/main.rs::parse_arg_flags`
-is one position-free loop — the `_` arm captures the single positional
-wherever it appears and rejects a second (`unexpected argument`), value-taking
-options consume `args[i + 1]`, and `"-o" | "--output"` is one arm writing one
-`output_override` field; `parse_args` (l.813–817) rejects an output path
-without `--link` with an error, the usage hint and exit 1.
-
-| Claim / class | Existing evidence | Residual wrong outcome | Allocation |
+| Condition | Cell | Result | Class and detection |
 |---|---|---|---|
-| Ordering A — target between options, and value adjacency | Every harness `--run`/`--link` spawn is `<mode> <target> <flags…>` (`tests/helpers/e2e.rs` l.412–444), and `tests/intrinsics_m3_detection_s116.rs` l.90 spawns `--run user.cl --no-cache`; none traces to §0.5. | A future positional-first or value-lookahead change makes `<target> --run` (§0.5.3's documented form) an `unexpected argument`; no tier observes that order today. | `dev` (src): one unit over `parse_arg_flags` asserting equal `ParsedFlags` for `[t, --run]`, `[--run, t]`, `[--run, t, --no-cache]` and `[--link, -o, p, t]` vs `[--link, t, --output, p]`. Pure function; the `process::exit` arms are excluded. `test`: retrace one existing option-first process cell to §0.5.3 as the executing twin; no target-first subprocess cell unless the unit cannot be placed. |
-| Alias A — `--output` ≡ `-o` | None for either spelling as a `cranelisp` argument (`tests/link.rs` l.103 covers only the default path; the suite's only `-o` is `/usr/bin/time`'s). | The arm is split and one spelling stops setting the override; separately, the override itself has never been observed end-to-end, so `-o`/`--output` writing to the default location would pass today. | The unit above proves both spellings produce the same flags. `test`: one `link.rs` cell `--link <file> --output <tmp>/custom`, asserting the artifact exists at `custom`, the default `<stem>` beside the source is absent (negative), and the produced binary runs. Long form only; the short form is discharged by the single arm. |
-| Link-only A+Neg — output path rejected without `--link` | None; sibling pattern `tests/link.rs` l.245 (`--no-cache` with `--link`). | `--run -o p` silently accepted, or accepted in REPL and the session starts. | `test`: one `--run <file> -o <tmp>/x` cell — exit 1, stderr carries an error line and `usage:`, no artifact written. Use `expects_exit_without_reading_stdin` if authored REPL-side instead; one mode suffices because the gate is the single `!action_link` predicate. The message's short-form-only wording is not spec-pinned. |
+| Non-`Int` inner result exits 0 with empty stdout, `--run` and linked (§10.6.1, §0.2, §12.6) | `tests/spec_10_io.rs::main_returning_io_string_exits_zero_run_and_linked`, `…::main_returning_io_bool_exits_zero_run_and_linked` | GREEN first run | Acceptance. `(Pure "s")` discriminates by construction an exit status narrowed from the result word (the string pointer's low bits); asserts `(Some(0), "")` for `--run` and for the linked executable spawned directly. Detection argued from the assertion, not observed. |
+| `Pure 0` main with prelude-supplied `Pure` links and exits 0 (§10.6.1) | `tests/link.rs::link_main_returning_io_pure_zero_with_prelude_exits_zero` (renamed from `…_exits_zero_or_errors_clearly`) | GREEN | Acceptance. The either/or arm is retired; strict `assert_exit(0)`. |
+| `--output <path>` writes the artifact there, default `<stem>` absent, the executable runs (§0.2.1.1) | `tests/link.rs::link_output_long_form_writes_named_path_not_default` | GREEN first run | Acceptance +Neg. Exit 23 from `main` proves the file at `out/custom` is the compiled program; `hello` absent is the negative. The short form is discharged by the single parser arm: unit `src/main.rs::tests::output_long_form_equals_short_form_in_any_position`, RED observed under the split-arm fault. |
+| Output path without `--link` rejected: exit 1, `error` and `usage:` on stderr, no artifact (§0.2.1.1, §0.3) | `tests/link.rs::run_with_output_path_is_rejected_with_usage_and_no_artifact` | GREEN first run | Acceptance +Neg. Exit 1 rather than `main`'s 23 shows the program did not run; neither `x` nor `hello` is written. `--run` only; the gate is the single `!action_link` predicate in `parse_args`. |
+| Target before or after the mode flag is equivalent (§0.5.3) | unit `src/main.rs::tests::target_before_or_after_mode_flag_parses_identically`; process twin `tests/spec_10_io.rs::run_mode_main_returns_pure_exit_code` (`--run user.cl`, exit 42) | 14/14; GREEN | Unit RED observed under the `argv[1]`-only fault. The twin observes the options-first order only: every harness spawn is `<mode> <target> <flags…>` (`tests/helpers/e2e.rs::materialise`), so no committed process cell exercises `<target> --run`. |
+| Target between options; an option value stays adjacent (§0.5) | unit `src/main.rs::tests::target_between_options_keeps_option_values_adjacent` | 14/14 | Unit RED observed under the `argv[1]`-only fault (`--priority-workers 3 t --run` ≡ `--run t --priority-workers 3`). Unit-only. |
 
-Restore after the run is observed: §0.5.3 `[Tested tests/<file>::<order twin>]`
-(unit-backed equivalence stated in the tag's prose), §0.2.1.1 alias and
-link-only paragraphs `[Tested+Neg tests/link.rs::<cell>]`. §0.3's usage-hint
-clause is discharged by the link-only cell's `usage:` assertion. No dispatch
-or execution now; the three cells join the deferred `test` CLI visit above.
+Limits, explicit:
+
+- REPL-mode rejection of an output path is not observed; the link-only cell
+  runs `--run`. Accepted on the single-predicate argument; a REPL cell joins
+  the next `test` CLI visit only if the gate gains a second predicate.
+- Target-first and between-option orders have parser-unit evidence only. The
+  residual — a stage after `parse_arg_flags` that depends on argument order —
+  has no carrier: `parse_args` consumes the order-free `ParsedFlags`.
+  Reasoning-graded, stated in the §0.5 and §0.5.3 tags.
+- §0.3: the link-only cell is the only committed cell asserting `usage:` for
+  a CLI argument error; unknown flags, `--run` with `--link`, and the hint's
+  positional-target content have no committed evidence. The §0.3 tag states
+  this.
+- §0.2's missing-`main`, missing-source-file and warnings-to-stderr clauses
+  have no committed cell: `spec_05_definitions::multi_arity_call_from_main_batch_no_main_neg`
+  asserts the *absence* of the no-`main` error when `main` is defined, not the
+  missing-`main` path. Pre-existing gap, not opened by this delta; the §0.2
+  tag names it.
+- Observation, not a defect: the `USAGE` string and the link-only error name
+  only `-o <path>`. No requirement pins the alias in the hint, and
+  `user/cli-reference.md` documents both spellings. No filing.
+- Pre-existing and outside this delta: the `// spec:` at `tests/spec_10_io.rs`
+  for the IO-reuse cells cites a plan anchor that is not a `spec/10-io.md`
+  heading (`spec_link_check` MIS-CITED). `test` owns the retarget.
+
+Annotation bands restored by QA (2026-09-22): §10.6.1 and §0.2
+`[Tested+Neg …]` naming the `String` and `Bool` linked cells, the `Int` exit
+cells and the rejection cell (§0.2 retains the former run-mode parity cite and
+names its uncovered clauses); §12.6 extended with the `String` cell; §0.2.1.1
+alias and link-only paragraphs `[Tested+Neg …]`; §0.5.3 and §0.3 `[Tested …]`
+with limits; §0.5's ordering sentence cites its unit. After restoration
+`spec_coverage_reconcile --mode check` reports no cleared CLI/IO row and 0 dead
+citations. References outside the QA surface were scanned for the renamed link
+cell and the restored tags: none require a change.

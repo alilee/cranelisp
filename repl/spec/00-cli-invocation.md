@@ -30,7 +30,7 @@ When invoked with no arguments, the binary MUST start the interactive REPL with 
 
 When invoked with a positional target (e.g. `cranelisp mymod`, `cranelisp dir/mymod`), the REPL MUST resolve the project root and entry module per §0.5 and start the REPL in that context. [R4 S52]
 
-### 0.2 Run Mode (`--run`) [Uncovered S122 — was tests/repl_persist_race::repl_dep_load_no_race_with_persistent_workers]
+### 0.2 Run Mode (`--run`) [Tested+Neg tests/spec_10_io.rs::main_returning_io_string_exits_zero_run_and_linked, tests/spec_10_io.rs::run_mode_main_returns_pure_exit_code, tests/spec_10_io.rs::batch_main_pure_int_return_is_rejected, tests/repl_persist_race::repl_dep_load_no_race_with_persistent_workers — result handling (an `Int` inner value is the exit code, a non-`Int` inner value exits 0, a non-`IO` `main` fails compilation with a non-zero status naming `main` and `IO`) and REPL/`--run` parity of compile-and-call; the missing-`main`, missing-source-file and warnings-to-stderr clauses have no committed evidence]
 
 `cranelisp --run [target]` MUST compile the module graph rooted at the resolved entry module, then call `main` in the entry module. The binary MUST NOT print any output itself — all output is produced by IO effects within the program. [R4 S52]
 
@@ -87,11 +87,11 @@ path is used verbatim (relative paths resolved against cwd). [S106]
 
 **`--output <path>` long form:** `--output <path>` is the long form of `-o <path>`. The two
 spellings are equivalent: every requirement on `-o <path>` applies identically to
-`--output <path>`. [S122]
+`--output <path>`. [Tested+Neg tests/link.rs::link_output_long_form_writes_named_path_not_default — the long form writes the artifact at the given path, verbatim against cwd, and the default `<stem>` is not written; short-form equivalence is unit-pinned at src/main.rs::tests::output_long_form_equals_short_form_in_any_position]
 
-**Link-only output path (MUST) [S122]:** `-o <path>` is accepted only together with `--link`,
+**Link-only output path (MUST):** `-o <path>` is accepted only together with `--link`,
 the only mode that produces an artifact. In REPL or `--run` mode, the binary MUST print an error
-and the usage hint to stderr and exit with status code 1 (§0.3). [S122]
+and the usage hint to stderr and exit with status code 1 (§0.3). [Tested+Neg tests/link.rs::run_with_output_path_is_rejected_with_usage_and_no_artifact — `--run` mode: exit 1, `error` and `usage:` on stderr, no artifact written; REPL mode is not observed]
 
 **Collision-diagnostic floor (MUST) [S106]:** if the resolved
 output path is an **existing directory**, the binary MUST emit a clear cranelisp diagnostic
@@ -100,7 +100,7 @@ different output`) and exit with status code 1, **rather than** surfacing a raw 
 error. This floor holds independently of the name/location rule above — a directory collision must
 never reach the user as an opaque toolchain error. [S106]
 
-### 0.3 Error Handling
+### 0.3 Error Handling [Tested tests/link.rs::run_with_output_path_is_rejected_with_usage_and_no_artifact — usage hint to stderr and exit 1 for one invalid-argument class (an output path without `--link`); unknown flags, `--run` with `--link`, and the hint's positional-target content have no committed evidence]
 
 Invalid arguments (e.g., unknown flags, `--run` and `--link` together) MUST print a usage hint to stderr and exit with status code 1. The usage hint MUST show the supported invocation form including the positional target syntax.
 
@@ -118,7 +118,7 @@ When added, they MUST follow standard CLI conventions (GNU-style long flags, std
 
 ### 0.5 Positional Target Resolution [R4 S52]
 
-All invocation modes accept an optional positional `[target]` argument that specifies the **project root** and **entry module**. The target may appear before, after or between options. An option that takes a value keeps that value immediately after it.
+All invocation modes accept an optional positional `[target]` argument that specifies the **project root** and **entry module**. The target may appear before, after or between options. An option that takes a value keeps that value immediately after it. [Tested src/main.rs::tests::target_between_options_keeps_option_values_adjacent — parser unit only; no process-level cell spawns the target-first or between-options order]
 
 #### 0.5.1 Resolution Rules
 
@@ -144,7 +144,7 @@ A target "has a directory component" when it contains at least one `/` separator
 
 A bare name like `mymod` does NOT have a directory component, even if a directory named `mymod` exists. The directory-existence check (rule 3) is a separate, lower-priority rule, and rule 3 only fires when there is no same-named `.cl` file beside the directory (the file wins on ambiguity — see §0.5.1 rule 4 and §0.5.5).
 
-#### 0.5.3 Interaction with `--run` and `--link`
+#### 0.5.3 Interaction with `--run` and `--link` [Tested tests/spec_10_io.rs::run_mode_main_returns_pure_exit_code — the options-first order `--run <target>` as a process; the target-first equivalence is unit-pinned at src/main.rs::tests::target_before_or_after_mode_flag_parses_identically for `--run` and `--link`, with no process-level target-first cell]
 
 The `--run` and `--link` flags are boolean modifiers — they do not take parameters. The positional target is always resolved via §0.5.1 regardless of which mode flag is present. The target may appear before or after the flags: `cranelisp dir/mymod --run` and `cranelisp --run dir/mymod` MUST be equivalent.
 

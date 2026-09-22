@@ -67,33 +67,18 @@ fn link_main_returning_zero_exits_zero() {
 }
 
 // spec: design/backend/executable-generation.md §7 — main :: () -> IO _.
-//   Either: (a) an IO main returning `Pure 0` exits with 0 (trampoline
-//   fires and Pure unwraps), or (b) the build fails with a clear
-//   error mentioning `main` / `IO` / `type` (graceful failure path).
+// spec: spec/10-io.md §10.6.1 — an IO main returning `Pure 0`, with `Pure`
+//   supplied by a prelude rather than an explicit import, links and exits 0.
 //
 // (carry: legacy/sprint23.rs::link_main_returns_io)
 #[test]
-fn link_main_returning_io_pure_zero_exits_zero_or_errors_clearly() {
-    // Use the test fixtures prelude which defines IO type for the
-    // typechecker. The legacy variant uses CRANELISP_LIB env ovrride.
-    let out = Cranelisp::new()
+fn link_main_returning_io_pure_zero_with_prelude_exits_zero() {
+    Cranelisp::new()
         .link_then_run("io_main.cl")
         .file("io_main.cl", "(defn main [] (Pure 0))")
         .with_prelude(e2e::PreludeVariant::TestStandard)
-        .output();
-
-    // Pass shape: linker succeeded, exe ran, exit 0.
-    if let Some(0) = out.status.code() {
-        return;
-    }
-    // Else: must be a clear failure mentioning main or IO or type.
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        combined.contains("main") || combined.contains("IO") || combined.contains("type"),
-        "IO main failure should mention main/IO/type: stdout={:?} stderr={:?}",
-        out.stdout,
-        out.stderr
-    );
+        .output()
+        .assert_exit(0);
 }
 
 // =============================================================================
@@ -123,6 +108,77 @@ fn link_default_output_is_entry_stem_no_extension() {
          tmpdir={}, stdout={:?}",
         out.tmpdir.display(),
         out.stdout
+    );
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.2.1.1 — `--output <path>` (the long
+// form of `-o`) writes the executable at that path, verbatim relative to cwd, and
+// the default `<stem>` beside the source is not written. The short form shares
+// the parser arm (`src/main.rs::tests::output_long_form_equals_short_form_in_any_position`).
+#[test]
+fn link_output_long_form_writes_named_path_not_default() {
+    let out = Cranelisp::new()
+        .link("hello.cl")
+        .file(
+            "hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+        )
+        .file("out/.keep", "")
+        .cli_flag("--output")
+        .cli_flag("out/custom")
+        .output()
+        .assert_ok();
+
+    assert!(
+        out.tmp_exists("out/custom"),
+        "--output out/custom must write the artifact there; stdout={:?} stderr={:?}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.tmp_exists("hello"),
+        "--output must replace the default artifact path, but `hello` was written"
+    );
+    let status = std::process::Command::new(out.tmpdir.join("out/custom"))
+        .stdin(std::process::Stdio::null())
+        .status()
+        .expect("spawn the --output executable");
+    assert_eq!(
+        status.code(),
+        Some(23),
+        "the --output executable must run main"
+    );
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.2.1.1 — [neg] an output path is
+// link-only: with `--run` the binary prints an error and the usage hint to stderr,
+// exits 1 and writes no artifact. §0.3's usage-hint clause is observed here too.
+#[test]
+fn run_with_output_path_is_rejected_with_usage_and_no_artifact() {
+    let out = Cranelisp::new()
+        .run("hello.cl")
+        .file(
+            "hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+        )
+        .cli_flag("-o")
+        .cli_flag("x")
+        .output();
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--run with -o must exit 1 (not run main's 23); stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("error") && out.stderr.contains("usage:"),
+        "stderr must carry an error and the usage hint:\n{}",
+        out.stderr
+    );
+    assert!(
+        !out.tmp_exists("x") && !out.tmp_exists("hello"),
+        "a rejected invocation must write no artifact"
     );
 }
 

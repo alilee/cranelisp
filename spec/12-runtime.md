@@ -211,7 +211,7 @@ Implementation-defined: Whether mutual recursion, lambda self-recursion, or cons
 
 **Interaction with launch-and-continue.** A tail-recursive loop that **launches** an effect and then recurses — the canonical accept loop `(do (handle-conn conn) (serve listener))`, where `handle-conn` is launched-and-not-joined ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects)) and the `serve` self-call is in tail position — is still a self-recursive tail call and MUST be optimized into a loop. Detaching an effect does **not** push a frame: the loop runs in constant stack space regardless of how many handlers it launches. Consequently an unbounded accept loop launching unbounded handlers does not grow the stack; the bound on outstanding work is the in-flight admission **degree** ([§10.12.4.2](10-io.md#101242-admission-degree--program-chosen-throttle)), not the stack depth. [S96]
 
-## 12.6 Entry Point [Tested+Neg tests/spec_10_io.rs::batch_main_pure_int_return_is_rejected]
+## 12.6 Entry Point [Tested+Neg tests/spec_10_io.rs::batch_main_pure_int_return_is_rejected, tests/spec_10_io.rs::main_returning_io_string_exits_zero_run_and_linked]
 
 In batch mode, a program MUST define a function named `main` with no parameters that returns `IO _` (IO of any type). Execution begins by calling `main` and the program's exit code is the integer value inside the resulting `IO Int` (or 0 for non-integer IO results).
 

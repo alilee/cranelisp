@@ -101,6 +101,7 @@ struct LaunchSpec {
 /// The raw flags recognised by the argument parse loop, before resolution into a
 /// [`LaunchSpec`]. Grouped so the flag loop is a helper under the param budget.
 #[derive(Default)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct ParsedFlags {
     no_color: bool,
     no_cache: bool,
@@ -1165,5 +1166,54 @@ mod tests {
             !is_rule3,
             "a bare missing-name target is NOT a rule-3 trigger"
         );
+    }
+
+    /// Parse `args` as the binary would, with a leading program name.
+    fn flags_of(args: &[&str]) -> ParsedFlags {
+        let argv: Vec<String> = std::iter::once("cranelisp")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect();
+        parse_arg_flags(&argv)
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.3 — target before or after the mode flag is equivalent
+    #[test]
+    fn target_before_or_after_mode_flag_parses_identically() {
+        for mode in ["--run", "--link"] {
+            let target_first = flags_of(&["dir/mymod", mode]);
+            let target_last = flags_of(&[mode, "dir/mymod"]);
+            assert_eq!(target_first, target_last, "mode {mode}");
+            assert_eq!(target_first.target.as_deref(), Some("dir/mymod"));
+        }
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5 — target between options; a value stays adjacent to its option
+    #[test]
+    fn target_between_options_keeps_option_values_adjacent() {
+        let between = flags_of(&["--run", "t", "--no-cache"]);
+        assert_eq!(between, flags_of(&["--run", "--no-cache", "t"]));
+        assert_eq!(between, flags_of(&["t", "--run", "--no-cache"]));
+        assert!(between.action_run && between.no_cache);
+
+        // The value after a value-taking option is that option's value, never
+        // the positional target, whichever side of it the target sits on.
+        let workers_first = flags_of(&["--priority-workers", "3", "t", "--run"]);
+        assert_eq!(
+            workers_first,
+            flags_of(&["--run", "t", "--priority-workers", "3"])
+        );
+        assert_eq!(workers_first.priority_workers, Some(3));
+        assert_eq!(workers_first.target.as_deref(), Some("t"));
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.2.1.1 — `--output <path>` is equivalent to `-o <path>`
+    #[test]
+    fn output_long_form_equals_short_form_in_any_position() {
+        let short = flags_of(&["--link", "-o", "out/p", "t"]);
+        let long = flags_of(&["--link", "t", "--output", "out/p"]);
+        assert_eq!(short, long);
+        assert_eq!(short.output_override, Some(PathBuf::from("out/p")));
+        assert_eq!(short.target.as_deref(), Some("t"));
     }
 }

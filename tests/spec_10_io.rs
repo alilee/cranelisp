@@ -449,6 +449,9 @@ fn repl_bind_pure_lambda_no_double_free() {
 // path explicitly.
 
 // spec: spec/10-io.md §10.6.1 (Exit Code) — main returning Pure: exit code = inner Int
+// spec: repl/spec/00-cli-invocation.md §0.5.3 — the options-first order
+// `--run <target>` executes the target. The target-first order's equivalence is
+// unit-pinned at `src/main.rs::tests::target_before_or_after_mode_flag_parses_identically`.
 #[test]
 fn run_mode_main_returns_pure_exit_code() {
     Cranelisp::new()
@@ -572,6 +575,59 @@ fn run_mode_main_returns_int_exit_code() {
         .user("(defn main [] (Pure 7))")
         .output()
         .assert_exit(7);
+}
+
+/// Asserts that `main` returning `(Pure <value>)` exits 0 and writes nothing to
+/// stdout, under `--run` and when the executable produced by `--link` is run.
+/// The linked executable is spawned directly so the compiler's `; Linking:`
+/// progress line does not mix into its stdout.
+fn assert_non_int_main_exits_zero_silently(value: &str) {
+    let source = format!("(import [primitives [Pure]])\n(defn main [] (Pure {value}))");
+
+    let run = Cranelisp::new().run("user.cl").user(&source).output();
+    assert_eq!(
+        (run.status.code(), run.stdout.as_str()),
+        (Some(0), ""),
+        "--run: `(Pure {value})` main must exit 0 with empty stdout\nstderr:\n{}",
+        run.stderr
+    );
+
+    let link = Cranelisp::new()
+        .link("user.cl")
+        .user(&source)
+        .output()
+        .assert_ok();
+    let exe = link.tmpdir.join("user");
+    let ran = std::process::Command::new(&exe)
+        .current_dir(&link.tmpdir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap_or_else(|e| panic!("spawn linked {}: {e}", exe.display()));
+    assert_eq!(
+        (
+            ran.status.code(),
+            String::from_utf8_lossy(&ran.stdout).as_ref()
+        ),
+        (Some(0), ""),
+        "--link: `(Pure {value})` executable must exit 0 with empty stdout\nstderr:\n{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+}
+
+// spec: spec/10-io.md §10.6.1 (Exit Code) — a non-`Int` inner type exits 0.
+// spec: repl/spec/00-cli-invocation.md §0.2 — `main : (Fn [] (IO _))`; exit 0 for
+// every non-`Int` inner result, `--run` and linked alike.
+// A heap-typed result discriminates an exit status narrowed from the result
+// word, which would be the low bits of the string's pointer.
+#[test]
+fn main_returning_io_string_exits_zero_run_and_linked() {
+    assert_non_int_main_exits_zero_silently("\"s\"");
+}
+
+// spec: spec/10-io.md §10.6.1 (Exit Code) — `IO Bool` exits 0, `--run` and linked.
+#[test]
+fn main_returning_io_bool_exits_zero_run_and_linked() {
+    assert_non_int_main_exits_zero_silently("true");
 }
 
 // =============================================================================

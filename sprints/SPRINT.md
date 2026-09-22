@@ -3268,3 +3268,49 @@ commit carries this provenance, since a commit cannot contain its own hash.
 Continue in Phase5 with the existing QA CLI allocation: first src parser
 unit evidence, then the public CLI/IO exit and output-path cells. One source
 writer and test runner at a time; no new CLI semantics or phase advancement.
+
+Dev (Claude / Opus / high), session
+`3400b7df-e8b7-494a-9db6-3716d9550059`, owns parser module evidence in
+src/main.rs under the settled CLI requirements. This is evidence-only; a
+failed observation is returned rather than silently changing parser behavior.
+
+Parser evidence completed: 14/14 binary units pass, including three new
+ordering/adjacency/alias cells. Dev reported two temporary parser fault plants
+that made all three new units fail as intended, then restored the parser and
+reran green. Final source diff is test-only derives/helper/cases, no production
+parser change. Independent review will inspect the complete CLI evidence delta.
+Test (Claude / Opus / high), session
+`2dcab1c4-6161-4060-8f8d-60980244db46`, owns the subsequent public CLI/IO
+exit/output-path cells and the sole test run; no concurrent source writer.
+
+Public CLI evidence completed:12/12 focused cells and92/92 across both touched
+binaries pass. Non-Int String/Bool IO results exit0 in run and linked execution;
+the output override creates the requested artifact (default absent), and output
+without link fails with status1/usage and no artifact. The legacy either/or
+pure-zero cell is now strict. No product behavior changed.
+Review (Claude / Fable / high), session
+`3aa598ef-c061-48fd-bcb1-4b51dbe6e4b0`, owns the independent CLI evidence
+inspection; QA (Claude / Fable / high), session
+`713fbc31-853e-4ac2-8d20-10a1249887e2`, owns coverage reconciliation and
+current evidence records. Originally-green public evidence is not described
+as red-to-green defect evidence.
+
+CLI evidence wave complete: independent review has no blocking/required finding;
+QA deems allocated conditions adequate and restored their coverage annotations.
+Production behavior unchanged.14/14 binary units and92/92 public tests pass;
+temporary parser fault plants were reverted before final green. No full-suite
+claim. Final document check remains382 with zero introduced identities.
+
+Remaining observations retained for the next targeted intake: pre-existing
+mis-cited spec trace in tests/spec_10_io.rs near line144; missing-main/file and
+warnings-to-stderr CLI coverage, unknown-flag and conflicting-mode coverage;
+Bool run-half duplicates an existing runtime-spec cell (accepted redundancy).
+Review also identified a pre-existing harness lead: link_then_run returns the
+compiler's success status if the derived executable path is absent, potentially
+masking a missing-artifact failure in assert_exit(0) callers. The new direct
+artifact cells discriminate existence; assess the helper separately before
+claiming a defect or changing its semantics. These observations do not reopen
+the accepted CLI conditions and are not a phase transition.
+
+Checkpoint remains9d4f18f5 plus fixing-SHA trace commita7ec1f7d. The continued
+CLI evidence/annotations are uncommitted. NOTES unchanged; .agents excluded.
