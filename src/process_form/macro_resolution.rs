@@ -831,7 +831,7 @@ mod tests {
     // FIXME 0670 — the expansion-seam qualify pass is scope-aware.
     //
     // Live-defect demonstration (the RED→GREEN unit flip that replaces the
-    // evaporated e2e flip, `tests/plan/s114-test-plan.md` §4.3): the fixture's
+    // evaporated e2e flip, `design/int/expansion-qualification-scope.md` §3): the fixture's
     // `defining_modules`/table state is constructed so the incidental
     // "available in the current module" skip-guard does NOT fire — the binder
     // name `name` is present in a DEFINING module but absent from the current

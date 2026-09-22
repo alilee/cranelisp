@@ -6,7 +6,7 @@
 // (`vec-query`/generic-value-use SIGSEGV, 0476) once made a bare ctor used as a
 // first-class value crash; the S114 carrier/GOT-slot work fixed it. /qa verified
 // all three shapes GREEN at HEAD `9fda5f40`, both `--run` and `--link`
-// (s114-test-plan §12 item 3). These guards pin that fix so a regression reddens
+// (S114 plan in Git at 7b1220c7, §12 item 3). These guards pin that fix so a regression reddens
 // here. The composed map-io cell is the named gate for /stdlib's io.cl bare-`Some`
 // `timeout` simplification and the /docs concurrency.md ctor rough-edge retirement.
 //

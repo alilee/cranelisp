@@ -1182,8 +1182,8 @@ type variable reached a codegen position` (`class=carrier-loss`, owner
 
 Both stay two-function (annotating the seed or the ADT field to force the
 back-flow would be fighting the language — un-idiomatic for a showcase).
-**RULED A DEFECT (/qa, S114 §12; durable record
-`tests/plan/s114-test-plan.md`).** Inference is REQUIRED here: spec §5.1.2 holds
+**RULED A DEFECT (/qa, S114; regression
+`tests/mc_x4_consume_at_distance_0719.rs`).** Inference is REQUIRED here: spec §5.1.2 holds
 a multi-sig `defn` type-checks identically to the same logic written as separate
 mutually-recursive functions — since the two-function form ships, the collapse
 of the SAME logic must too, and annotating to pin it would be "fighting the

@@ -1,5 +1,4 @@
-// qualified_binder_expansion_0670.rs — Track C 0670 chain cells (s114-test-plan
-// §4.3; F8 three waves, strict order: int fix → frontend value-level reject
+// qualified_binder_expansion_0670.rs — Track C 0670 chain cells (design/int/expansion-qualification-scope.md; F8 three waves, strict order: int fix → frontend value-level reject
 // re-lands → these cells).
 //
 // 0670: the int macro-expansion qualification pass (`qualify_expanded_sexp`,

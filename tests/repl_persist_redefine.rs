@@ -176,22 +176,8 @@ fn rejected_generic_change_persists_and_restarts_with_prior_source() {
     drop(second);
 }
 
-// =============================================================================
-// FIXME 0489 (S101 Phase 6a, /repl) — restart with a broken backing file
-// exits(1) BEFORE the first prompt, locking the user out of the §18.6
-// in-REPL repair path (the only recovery is hand-editing user.cl). Per
-// repl/spec.md §18.8 "The restart MUST reach a prompt" ([S102]-tagged MUST):
-// the session MUST start, display the load error per §5.1 NAMING the broken
-// symbol, enter the §14.4 error-blocked state, and accept a definition turn
-// as the repair. Resolver: /int.
-// =============================================================================
-
-// spec: repl/spec.md §18.8 — the restart MUST reach a prompt; the load error
-// names the broken symbol; a definition turn at the prompt is accepted as
-// the repair. RED on HEAD (FIXME 0489): session 2 exits 1 with
-// `user.cl:1:1: error: module error at 0..0: module 'user' failed: type
-// error …` — no banner, no prompt, broken symbol `k` never named, repair
-// turn never read.
+// spec: repl/spec/15-session-persistence.md §15.6 — a rejected redefinition
+// MUST NOT change regenerated source; §15.2 — restart resumes coherent prior state.
 #[test]
 fn rejected_change_does_not_write_an_incoherent_backing_file() {
     // Session 1: the incompatible change is rejected before publication and

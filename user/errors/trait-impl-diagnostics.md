@@ -269,7 +269,7 @@ Error: type error at 19..41: type mismatch: expected primitives/String, got prim
 method, or change the trait. This is also the message a **re-`impl`** hits when
 the new bodies do not conform — and there the rejection is load-bearing: the
 previous implementation stays installed and dispatching (see
-[live development — redefining an impl](../guide/live-development.md#a-rejected-re-impl-changes-nothing)).
+[live development — redefining an impl](../guide/live-development.md#other-definitions)).
 
 ### A re-`impl` that omits a required method
 

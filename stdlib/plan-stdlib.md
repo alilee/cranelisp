@@ -522,7 +522,7 @@ io.monad            [pure do]
 
 **Final total: ~37 names.** Comparable to Rust's prelude. Everything else — Map, Set, Seq, Pair, Either, function combinators, string operations, formatting, testing — requires explicit `(import ...)`.
 
-Primitives re-exported through prelude: `bind`, `vec-len`, `vec-get`, `vec-set`, `vec-push`, `parse-int`, `str-concat`, `str-eq`.
+The prelude re-exports no raw primitives beyond the four scalar types; see §1.5.
 
 ---
 

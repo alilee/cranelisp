@@ -48,7 +48,7 @@ fn impl_confirmation_stamps_canonical_home_not_asking_module() {
     );
 }
 
-// PS-D1 twin (s114-test-plan §4.1) — the asking-module ≠ canonical-home composition
+// PS-D1 twin (S114 plan in Git at 7b1220c7, §4.1) — the asking-module ≠ canonical-home composition
 // on the OTHER axis: the committed pin above covers TYPE-home ≠ asking (`Foo`=user,
 // `Int`=primitives). This twin covers TRAIT-home ≠ asking: a trait `Show` imported
 // from a FOREIGN module `tlib`, impl'd for a USER-local type `Widget`. The

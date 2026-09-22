@@ -417,10 +417,10 @@ fn is_operator_name(name: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// Is `src` a pure DEFINITION (or structural) turn — the §14.4/§18.8 error-
+/// Is `src` a pure DEFINITION (or structural) turn — the §14.4/§15.2.3 error-
 /// blocking carve-out? While a module is error-blocked, expression turns are
 /// refused with the §14.4 message but definition turns MUST be accepted:
-/// they are the repair path (repl/spec.md §18.8). Pure over the text; every
+/// they are the repair path (repl/spec/15-session-persistence.md §15.2.3). Pure over the text; every
 /// top-level form must be a defining or structural special form — any
 /// expression member (including inside a mixed input), an empty input, or a
 /// parse failure classifies as NOT-a-definition-turn (refused; the parse
@@ -486,7 +486,7 @@ impl CompilerSession {
 
         // Error blocking (§14.4): refuse eval when modules have errors —
         // EXCEPT definition turns, which are always accepted while
-        // error-blocked (they are the repair; repl/spec.md §18.8's explicit
+        // error-blocked (they are the repair; repl/spec/15-session-persistence.md §15.2.3's explicit
         // carve-out — a successful definition clears its failed form via
         // `clear_repaired_failed_form`).
         if !self.error_modules.is_empty() && !is_repair_definition_turn(trimmed) {
@@ -614,12 +614,12 @@ impl CompilerSession {
                 if let Some(ref mut w) = self.watcher {
                     w.clear_all();
                 }
-                self.error_modules.clear();
-                // S102 W5R M-1: the retained degraded-startup failed forms go
-                // with the error block (a non-empty failed set implies
-                // `error_modules` membership; clearing one without the other
-                // leaves regen re-appending stale broken text).
-                self.failed_forms.clear();
+                // Startup-failed source and its error block leave together,
+                // only on repair (repl/spec/15-session-persistence.md
+                // §15.2.3); `/reset` is not a repair.
+                let failed_forms = &self.failed_forms;
+                self.error_modules
+                    .retain(|module| failed_forms.contains_key(module));
                 CommandResult::Final("command not yet available in v4 REPL".to_string())
             }
         }
@@ -1311,7 +1311,7 @@ mod repair_definition_turn_tests {
 
     use super::is_repair_definition_turn;
 
-    // spec: repl/spec.md §18.8 — a definition turn at the prompt MUST be
+    // spec: repl/spec/15-session-persistence.md §15.2.3 — a definition turn at the prompt MUST be
     // accepted while the entry module is error-blocked (it is the repair);
     // §14.4 — expression evaluation is refused.
     #[test]

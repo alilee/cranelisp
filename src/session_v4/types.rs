@@ -636,7 +636,7 @@ pub struct Introspection {
 }
 
 /// One backing-file form that failed the degraded form-by-form startup load
-/// (`repl/spec.md` §18.8 restart floor; FIXME 0489,
+/// (`repl/spec/15-session-persistence.md` §15.2.3 restart floor; FIXME 0489,
 /// `design/int/s102-defect-wave.md` §5.2). Retained on
 /// `CompilerSession.failed_forms` so that:
 ///
@@ -647,10 +647,8 @@ pub struct Introspection {
 ///      the symbol is repaired or the user removes it externally — ordinary
 ///      regen rebuilds the file from the live table, which the failed forms
 ///      never entered, so a regen that ignored them would silently DROP the
-///      broken definition from the user's file (the §18.8 silent-drop MUST
-///      NOT; the §15.4.7 authorship invariant applied to forms that never
-///      compiled: authored text is the authority, compile success is not a
-///      persistence gate);
+///      broken definition from the user's file (`repl/spec/15-session-persistence.md`
+///      §15.2.3 failed-source retention);
 ///  (c) the §14.4 expression gate knows when the module is repaired (the set
 ///      empties → the module leaves `error_modules`).
 #[derive(Debug, Clone)]

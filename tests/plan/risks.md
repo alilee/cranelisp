@@ -1,464 +1,103 @@
-# QA Risk Review
-
-## S113 risk read (2026-07-19, /qa — the W0 GLOBAL ranking is `plan/s113-risk-assessment.md`; this is the compact register form)
-
-The S113 W0 assessment (user-directed, risk-first) ranks **memory-safety
-soundness as the sprint's — and the project's — top correctness risk**: the
-only family combining silent-corruption severity, structurally-zero suite
-detection of unknown members (~97% blind, `RC_DEC_CHECK` asserted nowhere,
-oracle ≈0.6%), and 4+ confirmed-reachable live mechanisms (0641 ×8 RED incl.
-ownership-independent wrong-value faces, 0633 ×3 RED + an unguarded
-module-axis cell, 0638 uncommitted deterministic corruption, entry-`main`
-teardown leak, latent 0637) — with the only working detector (adversarial
-review) demonstrably one-layer-deep. Recommended W5 depth: build tiers 4
-(oracle lane, FIRST), 5 (quarantine/scrub/counter diagnostic modes), 3
-(RC/alloc seam asserts), and 1–2 (the §3 origin-lattice/rule-table frame
-gating the 0641 fix, + the paired backend B-2/I-2 consume fix); DEFER the
-generative harness v1 to S114. Full grounds + the honest counterweights in
-`s113-risk-assessment.md`; the user rules at the gate.
-
-Sprint-execution risks (beyond the ranking):
-
-| # | Risk | Severity | Why silent | Guard (s113 plan rows) |
-|---|---|---|---|---|
-| S113-1 | **Fence-inversion miss** — a test pinning the OLD unary "no impl" reject survives W1 and either blocks W2 (spurious RED) or, worse, is "fixed" by weakening the accept | MEDIUM-HIGH | An old-behavior pin looks like legitimate coverage | F-D2-2 flip + F-D2-3 sweep-with-table in W1, before W2 opens; F-D2-8 over-inversion fence |
-| S113-2 | **R1-variant mis-verdict via Pin-4 entanglement** — the prelude-`+` R1 variant needs BOTH the R1 fix and the carrier-loss fix; judging the R1 fix by that pin alone mis-attributes a "failed fix" | MEDIUM | The non-flip looks like the R1 fix not working | MC-E1 binding sequencing (carrier family first; check the twin's carrier face before re-attributing); the doubled `user/user/` prefix pinned separately if it survives |
-| S113-3 | **Binder-flip corpus breakage** — 8 forms' silent-accepts become rejects; a fixture/demo/example using a qualified head goes red mid-wave | MEDIUM | The accept was silent, so nothing marks its users | §1.3 corpus sweep GATES W3; fixes ship atomically with the rejects |
-| S113-4 | **W5 gate leakage** — reliability build work starting ahead of the user depth ruling (the P8 shape the track was reshaped to avoid), or conversely the defect fences stalling on the gate | MEDIUM | Schedule pressure makes both directions look reasonable | §2 probe slice DETACHABLE; §1 explicitly ungated; W4 R7 asserts ride ungated (arch revision 7) |
-| S113-5 | **Oracle-lane false confidence** — the lane lands but its seed corpus omits the shapes that fail, certifying green over the wrong space | MEDIUM | A green lane looks like coverage regardless of corpus | MS-P2 acceptance: the committed 0641 B-1 RED must go RED UNDER the lane on day one (the live counterexample proves the lane sees the class) |
-| S113-6 | **RT-4 fix pinned to the two repros, not the model** — regen "fixed" for the pinned impl shape while another persisted kind (HKT impl, defmacro) still drops | MEDIUM-HIGH | Data loss observable only at reload | PS-RT4 persisted-kind × restore matrix rooted in the D45-as-amended model; conventional/HKT twin |
-| S113-7 | **Module-locality blindness in the dispatch machinery** (W2a addendum) — carriers/mangles derived against the CALLER's module instead of the resolved base's home; imported multi-sig base fails even on the direct path (finding 8, never a green cell); the "resolve once then throw the home away" class hit 3 W2a instances (FIXME 0653 → /arch, S114 sweep) | MEDIUM-HIGH | No cross-module cell existed, so the suite could not see it; the caller-module substitution looks correct in every single-module test | s113 plan MC-X2 (pin + home-keyed fix note + base-locality axis on MC-X1) + MC-A1 (import-shape × foreign-sig-type axis on F-D2); S114 sweep row cites 0653 |
-
-## S112 risk read (2026-07-18, /qa — shapes the depth of `plan/s112-0628-ic-wave.md`; the USER-MANDATED quality-risk assessment is §8 there)
-
-S112 is pure implementation against settled spec, but both legs rewrite
-high-blast-radius typecheck seams (the finalize ambiguity/mangle pipeline; the
-trait registration/impl gate), and the wave RETIRES a family of rejection
-guards — so the profile is dominated by *wrong-accept inversions the suite is
-structurally weakest at* and *persisted-state reinterpretation*.
-
-| # | Risk | Severity | Why silent | Guard (s112 plan rows) |
-|---|---|---|---|---|
-| S112-1 | **Wrong-accept inversion at the collapsed scan** — deleting `ClauseIndependence` leaves the post-drain ValueScan as the ONLY §3.11 guard for multi-sig; a mis-computed per-clause `allowed_vars` classifies a genuinely-unpinned param as admissibly-polymorphic and publishes a free-var scheme (the S110/S111 `wrong-accept` class; downstream face can be a non-output-perturbing wrong-type read the suite is ~97% blind to) | HIGH | The accept looks like the intended liberalisation; the unsafe read may not perturb output | Boundary pinned from BOTH sides at closest shapes (MS-2/UW-5/UW-6 admissible vs MS-7 twin unpinned); memory observables retained through the unwind (UW-3/UW-4) |
-| S112-2 | **Leg-(a) persisted-state hole in the 0644 no-bump rationale** — the B-2 wrong-accept family (lf1/lf2/rp15/rp19) WAS accepted by the old compiler and persisted bogus `$Var` `Concrete` entries; a schema-20 cache can contain multi-sig state the new model reinterprets, resurrected via cache-hit typecheck bypass on unchanged source | HIGH | Cache hit bypasses typecheck — no fresh-compile test can see it | §7.4 position: leg (a) rides the 20→21 window (recommendation to /arch); AG-1 stale-cache wholesale refusal (+ leg-(a) fixture if /arch keeps no-bump) |
-| S112-3 | **Mangle/dispatch split-brain** — entry-name vs `SigDispatch` name from two mangle derivations (pre- vs post-drain) → `undefined function` (loud) or dispatch to a stale `$Var` entry (silent wrong code) | MEDIUM-HIGH | The stale-entry arm produces plausible values | AG-3 `.meta.json` byte-identity ×2 cold builds; units u2/u3 (one `mangle_sig` source, no surviving `$Var` Concrete); AG-5 before/after corpus run |
-| S112-4 | **Trait-gate re-land regressing the green HKT corpus** — the S111 CS-4 naive gate regressed 5 e2e and was reverted; the A2 re-land is not verbatim | MEDIUM | A silently-narrowed migrated fixture keeps the suite green while coverage shrinks | §9 per-asset preservation table + `/review` mapping criterion; TB must-holds; AG-5 |
-| S112-5 | **Newly-reachable shapes × ownership blindness (S113 carry)** — no new ownership mechanism, but poly/constrained/back-flow-pinned shapes now reach the ownership walk + RC insertion; a false-`Fresh`/RC-miscount on a NEW shape with a non-output-perturbing face is invisible until the S113 oracle lane | MEDIUM (accepted by scope ruling) | The named ~97% blindness | Cheap fences only, no S113 pull-forward: MS-1b `--link` sustained-repetition on rp4; CP-1b serial RC-trace balance on constrained dispatch |
-| S112-6 | **Mode divergence on new diagnostics** — every new rejection class is a fresh REPL/`--run`/`--link` split opportunity (standing dual-path rule) | MEDIUM | Suites habitually sample one mode per rejection | AG-2: one mode-uniformity guard PER CLASS (extract-and-compare diagnostic core) |
-| S112-7 | **Traceability drop during the unwind** — retiring/rewriting rejection assets orphans spec rows or silently loses negative facets (no-panic, session-alive, `<invalid:` absence, diagnostic-quality) | MEDIUM | A deleted assertion fails nothing | §2 preserved-facet column (binding); §9 band audit + `spec_coverage_reconcile.py` at Phase 6 |
-
-Depth allocation: conversions (§2) and boundary twins first — they are
-simultaneously the QA-first REDs and the fences; then the b2 rejection matrix;
-AG gates ride their change-sets.
-
-### S112 Phase-5 addendum (2026-07-18, /qa batch — two families the sprint surfaced)
-
-| # | Risk | Severity | Why silent | Guard |
-|---|---|---|---|---|
-| S112-8 | **Shadowing-blind call-head resolution** — a let-bound name shadowing a top-level callee is bypassed at ≥2 distinct seams (single-sig resolution: runtime HANG on `(defn s1 [x] (let [s1 (fn [y] y)] (s1 x)))`; multi-sig overload gate `infer.rs:605`: defers to the outer base even when shadowed). No shadowing × callee-kind matrix ever existed | MEDIUM-HIGH | The wrong resolution usually still computes SOMETHING (or hangs only on self-named shapes); nothing asserts the local binding won | s112 plan §11 rulings 4–5 (pinned repros directed; provisional /dev typecheck, `wrong-scope-lookup`); §12 axis: {let-shadowed} × {single-sig, multi-sig base} × {call, value-ref} |
-| S112-9 | **Per-carrier producer misses under the keyed-consumer architecture** — each typecheck→backend carrier (6 at the B1 seam alone) × each reaching context (direct call, minted mono body, return-type-dispatch site) is a potential never-written cell; the loud consumer miss is the DESIGNED face, but each miss is a spec-valid program failing at codegen (R2; leg (c) is the same family's next cell) | MEDIUM-HIGH | A missing carrier only fires when its exact context is reached; suites biased to direct calls never mint the context | `carrier-loss` vocabulary (recurrence counting); s112 plan §11 ruling 1 (P26 derive-at-mint fix shape); §12: carrier × reaching-context sweep is the S113 candidate if leg (c) confirms a second producer miss |
-
-## S111 risk read (2026-07-17, /qa — shapes the depth of the S111 plan in `PLAN.md` §"Sprint 111")
-
-S111 pairs an emission-affecting schema-window centrepiece (the §3.7 vec-COW
-ownership root) with byte-identical refactors (R4/R5), a language-surface fix
-with a data-corruption hazard (quasiquote fold vs int shield), and a
-release-phase UB closure (GOT). The profile is dominated by *partial landings
-of coordinated change-sets* and *fix-polarity inversions*.
-
-| # | Risk | Severity | Why silent | Guard (PLAN §S111 rows) |
-|---|---|---|---|---|
-| S111-1 | **Schema-20 window discipline** — two persisted-meaning changes (truthful COW facts; 0621 `callees` → storage keys) must sit inside the ONE commit window that bumps `CACHE_SCHEMA_VERSION`; a cache written between two separate bumps carries schema-20 with alias edges, and the reverse-index consumer (when it goes live) silently misses affected-set closures — the 0472 starvation class | HIGH | No error at write OR read time; the failure fires in a future sprint's session-transaction machinery | CW-S1 (stale-cache invalidated wholesale) + CW-S2 rider units + CW-S4 one-window `/review` criterion |
-| S111-2 | **RC fix-polarity inversion** (S110-8 successor) — curing the vec-COW under-count (UAF) by widening flips it into an over-count (leak) that the flipped-GREEN value-correctness repros cannot see; conversely the conservative copy-arm residual could silently WIDEN | HIGH | A leak is invisible to value assertions; a widened residual looks like "still no UAF" | The three `vec_cow_value_use_leak.rs` must-holds + CW-F2 pinning the residual at EXACTLY one count per call (any widening fails loudly) |
-| S111-3 | **Partial landing of the 3-layer root** — facts (a2) without reachability (a3) leaves declared facts silently dead in production (the exact §3.7 gap); a1 without a2 has no producer; the suite stays green either way because the default is conservative | HIGH | Conservatism masks absence — nothing miscomputes, performance/RC behaviour just silently stays wrong-class | CW-F3a/CW-F3b twin fence (prelude-fallback leg RED until a3); CC-R1..R5 per-site three-path units; ONE-change-set is the arch ruling `/review` enforces |
-| S111-4 | **Quasiquote fold-without-shield** — post-fold, int's Pass-1 macro expander rewrites macro-call-shaped lists INSIDE quoted literals before the desugar sees them: `(defn f [] '(m x))` silently corrupts quoted DATA (wrong value, no error) | HIGH | The corruption only fires when a quoted list head collides with a registered macro name — rare in tests, common in macro-writing code (the exact derive.cl audience) | QQ-I1/I2/I5 negatives authored BEFORE the wave; arch ordering: shield lands ≤ fold |
-| S111-5 | **GOT fallible-refactor caller miss** — one of the 10 enumerated `allocate_got_slot` callers keeps an `unwrap`/`unreachable!` arm and exhaustion is a panic (or, pre-refactor, silent UB) on exactly that path | MEDIUM-HIGH | Exhaustion needs >1024 slots in one module — unreachable in the suite's natural fixtures | GE-1/GE-2 boundary units + GE-3 caller pins + the `/review` 10-caller sweep (GE-4 e2e if cheap) |
-| S111-6 | **P24 sweep mis-classification** — an identity-scan waved through as "enumeration" launders a real divergence surface into the register as legit; the sweep's value inverts | MEDIUM | A wrong verdict looks identical to a right one unless grounds are stated and checkable | Register discipline (P24-1: grounds per row, acid-test verbatim); pre-seeded rows carry their evidence; findings must land as failing tests or FIXMEs (P24-4) |
-| S111-7 | **Golden-attribution muddying** — interleaving the byte-identical R4/R5 refactors with the emission-affecting ownership wave makes CLIF diffs unattributable; a real emission drift hides inside the expected re-baseline | MEDIUM | The re-baseline "explains" every diff | §H gates + arch wave-order constraint 1 (R2 → R4/R5 byte-identical → ownership wave, re-baseline last act) |
-| S111-8 | **0604 environment-bound repro** — the foreground write fires 16/16 in one environment and 0/175 in another; a fix validated only where it never fired is the S98 false-green class | HIGH | Symptom absence in the wrong environment proves nothing | IR-1 locate-first (deterministic repro or located-seam attribution BEFORE any patch) + IR-2 sweep-with-fix + twins must-hold |
-| S111-9 | **0590 R1 fix regressing the S110 duty-split** — the finer discriminator re-touches `AmbiguityScanPhase` ordering; B1/B2 (wrong-reject AND wrong-accept) are one mis-ordering away in each direction | MEDIUM-HIGH | B2-class wrong-accepts codegen with never-scanned bodies — no error anywhere | OA-2 must-hold set (B1/B2 guards + RD-3 + rows 13–15 + VP-3/4/5) run at the fix |
-
-Depth allocation: fences and pre-wave guards first (KC-N1..N6, QQ-I1/I2/I5,
-CW-F3a probe, CW-F2), per the S108 Inc2 rule — arch-pre-flagged boundaries
-and revert-class fences before happy paths.
-
-## S110 risk read (2026-07-15, /qa — shapes the depth of the S110 plan in `PLAN.md` §"Sprint 110")
-
-Most of S110 is behaviour-invariant plumbing (0583 waves, R-2 wiring,
-0606/0608 decomposition) — the risk profile is therefore dominated by *silent
-semantic drift under an invariance claim* and by *guards that structurally
-cannot be e2e*. Each row names the loud-failure conversion.
-
-| # | Risk | Severity | Why silent | Guard (PLAN §S110 rows) |
-|---|---|---|---|---|
-| S110-1 | **W0/W0.b invariance drift** — the producer change-set touches every mono view and relocates the lenient builder into `cranelisp-types`; a placeholder-semantics difference in the typecheck-built lenient view changes codegen for ctor/accessor/`f$Var`/template/`__expr`/macro-clause bodies | HIGH | The suite exercises behaviour, not IR; a drift that happens to compute the same values on covered inputs ships | KC-W0-1 (suite-green, zero new REDs) + KC-W0-2 (CLIF byte-identity across the six lenient entry classes) + KC-W0-4/5 totalization unit pins |
-| S110-2 | **Cache schema 18→19 skew** — a stale `.meta`/`codegen_view` deserialises `None` carriers; pre-W1 they ride unread (invisible), post-W1 they hard-fail at a distant seam with a carrier-miss error that looks like a compiler bug | HIGH | No error at read time; the failure fires one wave later, far from the cause | KC-W0-3 warm-cache + stale-cache-invalidated-not-misread negative; bump rides the W0 change-set (definition of done) |
-| S110-3 | **The soft-fallback hybrid** — one keyed-read-else-`resolve_driven` arm silently masks every producer gap, voids Principle 24, and reintroduces the arbitrary-order scan as a shadow path | HIGH | By construction: the fallback makes every miss look green | Rev-2 = per-wave `/review` REJECT criterion (PLAN §A.2 structural); KC-N1..N6 loud-miss unit family proves the hard-fail is real; W3 grep gate (KC-W3-1) is the end-state pin |
-| S110-4 | **W1 harness red** — the backend unit suite's fixtures don't populate sidecars; W1's hard-miss flips the whole backend unit tier RED mid-wave, and the "fix" pressure invites a soft fallback (risk S110-3) | MEDIUM-HIGH (schedule + integrity) | Discovered mid-wave, exactly when the fallback temptation is highest | KC-W0-6 — fixture-sidecar population pinned as a W0 obligation, backend unit tier green at W0 AND W1 close |
-| S110-5 | **0590 tightening blast radius** — deleting the never-error `Named` fabrication converts silent fabrication into loud errors; a program (test/stdlib/example/exemplar) that leaned on fabrication breaks at the flip; conversely an over-broad mint would swallow unknown types | MEDIUM-HIGH | The fabrication *accidentally works* today — nothing marks its consumers | TX blast-radius scout before the flip; direct HKT-declaration resolver unit + TX-6 make the tightening deliberate; TX-8/TX-9 (FV-13/FV-14) fence over-broadening. TX-5 was reclassified in S116 as the distinct method-tail boundary. |
-| S110-6 | **0604 false-green fix** — a scheduling-perturbation patch quiets the phantom under the tested interleaving (the S61→S93 treadmill + the verify-fix-not-symptom lesson); ALSO: the corrected attribution (cache channel) is itself a hypothesis — patching before the sweep locates the writer risks fixing the wrong seam | HIGH | Scheduling-dependent (16/16 in one env, 0/140 in another); symptom absence proves nothing | IF-1 locate-FIRST trace sweep (gate on the fix, with the explicit re-scope arm) + IF-2 write-seam unit + IF-3 ≥25× sweep landing WITH the fix + IF-5 structural grep |
-| S110-7 | **R16/R17 false-positive regression** — the S109 revert class: any drift of the new gate back toward surface-type concreteness re-flags arg-directed dispatch (`(add2 3 4)` computes but displays unpinned) and blocks valid programs | HIGH | The false positive fires only on dispatch shapes with residual display vars — easy to miss, catastrophic to users | RD-3 explicit value-position fence (authored FIRST) + RD-4/RD-5 must-holds + the §D unit enumeration grounding the signal in dispatch OUTCOME |
-| S110-8 | **vec-assoc RC-fix polarity inversion** — fixing the premature free (under-count) by unconditionally inc-ing the param-aliased return converts the defect into a leak (over-count), which the flipped-GREEN repro cannot see | MEDIUM | A leak is invisible to value-correctness assertions | VA-4 — the opposite-polarity sibling `vec_cow_value_use_leak.rs` named as a must-hold fence; VA-3 unit enumeration includes the identity-fn no-over-count control |
-| S110-9 | **0609 deletion on an empirical leg** — the shim-unreachable verdict's private-member leg is empirically probed, not structurally proven (the real-span visibility raise seam was not located); a future `ResolveError` variant or probe-order edit could re-open the phantom shape with the shim gone | LOW-MEDIUM | The phantom shape reports a misleading-but-plausible diagnostic — nobody files it | PLAN §I pins D-1 (three diagnostic e2e must-holds) + D-2 (gap-selection unit) + D-3 (recommended structural closure: propagate the abs hard error, making the child gap unproducible) |
-| S110-10 | **Gate blindness continuation (S109-8)** — until SG-1 lands, stdlib-breaking regressions still ship invisibly; and SG-1 scoped top-level-only would MISS nested modules (`num.bits` — the 0604 blast radius itself) | HIGH (gate gap) | Nothing in the suite imports the stdlib surface | SG-1 with the RECURSIVE public-module enumeration (PLAN §E refinement 1); SG-2 build-interleave infra fix in the same wave. **P5-S1 outcome: gate landed and CAUGHT `derive` (real layered defect, FIXMEs 0613/0614, both closed; attribution [S110 attribution at the checkpoint](https://github.com/alilee/cranelisp/blob/48d6e713a396e0e6ba3f4c0b19174144ad3676a6/tests/plan/s110-attribution-sg1-sg2.md)); stays RED tracing to both** |
-| S110-11 | **Agent-lane binary provenance race (SG-2, attributed)** — the harness hardcodes `target/debug/cranelisp`; any `--features agent` cargo invocation rebuilds that SAME path, so an interleaved agent-lane build swaps the binary mid-default-suite and feature-OFF guards exec a feature-ON binary | MEDIUM (dev-workflow; single-profile runs safe) | Fails only when two differently-featured cargo invocations overlap — looks "flaky" (forbidden disposition; it is deterministic in binary provenance) | FIXME 0615 (`/testing`, W-GATE lane): agent-lane `CARGO_TARGET_DIR=target/agent` isolation + lane-aware harness binary resolution; acceptance = agent family 3× consecutive full-suite passes + deliberate dual-build clobber check. Separate root from 0604 — do not fold |
-
-Depth allocation: fences and pre-wave guards first (RD-3, KC-W0-6, TX scout,
-KC-W0-2 capture), per the S108 Inc2 rule — arch-pre-flagged boundaries and
-revert-class fences before happy paths.
-
-## S109 risk read (2026-07-13, /qa — shapes the depth of the S109 plan in `PLAN.md` §"Sprint 109")
-
-The highest-silent-failure changes in the S109 scope, ranked. Each names the
-guard that converts the silent failure into a loud one.
-
-| # | Risk | Severity | Why silent | Guard (PLAN §S109 rows) |
-|---|---|---|---|---|
-| S109-1 | **In-flight auto-load race** (§8.5.4 edge 7): a member probe against a present-but-non-terminal module misclassifies as "has no member" only under ≥2 priority workers with an unlucky interleaving | HIGH | Nondeterministic — any single run (and most CI runs) passes; the failure surfaces in user sessions under load. Forbidden dispositions apply: one intermittent RED = a real bug | C1-e2e repeated-run sweep (≥25 iterations) + the FOUR enumerated C1-unit arms (deterministic fail-on-revert); the cure (unconditional member-absent gap) is pinned at both the int and typecheck seams |
-| S109-2 | **Exhaustiveness blast radius** of the dotted-ctor keying (design §4): (a) covered-set normalizer misses the `.`-strip → FALSE non-exhaustive on dotted-covered matches; (b) internal-flag probe stops chain-following → IO `Bind`/`Pure`/`Effect` leak into user exhaustiveness | HIGH | (a) blocks valid code with a plausible-looking diagnostic; (b) changes which programs compile with no error at the change site — both fail at a DISTANT seam from the registration edit | BR-1 + BR-2 fail-on-revert guards, authored FIRST, landing in the SAME change-set as registration |
-| S109-3 | **Cache schema 16→17 skew**: the ctor `Def` storage-key MEANING changes; a stale `.meta.json` (bare keys) read by the canonical-key resolver/`type_ctor_names` silently misses ctors and mis-classifies heap categories — a UAF class (`value_layout` is soundness-coupled) | HIGH | No error at read time — resolution just misses; heap misclassification corrupts later | DC-9 warm-cache row + stale-cache invalidation neg; the bump is part of the registration change-set's definition of done (Obligation B) |
-| S109-4 | **0573 product-deftype persistence** — product defs dropped from the backing `.cl` | MEDIUM-HIGH | Data loss observable only at reload, possibly sessions later | The §E shape×persistence matrix (product rows RED; sum rows pinned; no-double-emit neg) |
-| S109-5 | **0570 two-seam privacy**: `/dev` could fix the import gate while the `/search` index still surfaces private-submodule symbols (or vice versa) — one rule, two enforcement seams | MEDIUM | Each seam looks fixed in isolation; the conformance gap is only visible to whichever surface wasn't probed | MV-1 (search) + MV-2 (import, existing) as a PAIR, with the MV-3 public control |
-| S109-6 | **Observability log grain**: content leaking into the §17.20 JSONL (form text, error messages, prose) is a one-way door — it defeats the greppable-index grain and is hard to walk back once consumers mine it | LOW-MEDIUM | Nothing fails; the file just thickens | OB-8 no-content negative; feature-off absence family |
-
-Ranked depth allocation: rows guarding S109-1/-2/-3 are authored FIRST
-(arch-pre-flagged boundaries + spec MUSTs before happy paths, per the S108
-Inc2 rule recorded in `tests/CLAUDE.md` §"QA-first targeting").
-
-### S109 Phase-6 addendum (2026-07-15, /qa attribution dispatch)
-
-| # | Risk | Severity | Why silent | Guard |
-|---|---|---|---|---|
-| S109-7 | **Racy background stdlib file-index feed** — `index_worker.rs` branch (c) typechecks THROUGH the live tables (mutate-then-undo, R13-by-cleanup); a concurrent mis-attributed write injected a phantom `bit-and → primitives/bit-and` into the live `prelude` table, spuriously firing the (correct) §8.6.5 poison and making `num.bits` unimportable. Same feed behind the #4 `/search` leak (surfacing fixed `fff94fa7`; WRITE-race persists) | HIGH | Scheduling-dependent (16/16 in one environment, 0/140 in another) — most CI runs pass; fires in user sessions. Poison-consumer is spec-correct, so the failure masquerades as a legitimate ambiguity error | Attribution record `s109-attribution-index-feed-race.md`; FIXME 0604 (`/dev` src/int, S110 fix + ≥25-iteration fail-on-revert sweep in the fixing change-set); GREEN twins `super_import_wrapper_over_specific_prelude_compiles_clean` and `super_import_wrapper_collides_when_prelude_globs_primitive_neg` in `tests/spec_08_prelude_outer_scope.rs` pin the two poles |
-| S109-8 | **Stdlib-compile CI blindness** — stdlib self-tests are not in `cargo nextest` (Stdlib-separation is correct for `tests/`, but no paired conformance gate exists), so a compiler regression that breaks stdlib compilation/importability ships with zero signal (27 `num.bits` self-tests were failing invisibly) | HIGH (gate gap) | Nothing in the suite imports the stdlib module surface; the failure lives outside every test binary | FIXME 0605 (`/testing`, S110): stdlib-compile smoke gate via `use_workspace_stdlib_for_stdlib_conformance_only()`, enumerating every top-level stdlib module; self-test execution gate as sized follow-on |
-
----
-
-Historical baseline risk assessment below (ring-era; surviving load-bearing
-risks: RC non-locality, batch/REPL parity, performance-regression
-invisibility, error-message quality, Risk 11 FFI corruption).
-
-Risk assessment for quality assurance in the Cranelisp reimplementation. Based on analysis of:
-- 591 prototype tests (502 integration + 57 RC + 14 trace + 9 run-tests + 9 platform)
-- 10 ignored tests, 2 known-issue-documenting tests
-- 16 spec sections, architecture docs, KNOWN_ISSUES.md
-- The 7-crate architecture and ring model
-
-## Risk Summary
-
-| # | Risk | Severity | Ring | Mitigation |
-|---|---|---|---|---|
-| 1 | RC correctness is non-local | **HIGH** | 1–4 | Dedicated RC test harness from Ring 1; every later ring re-runs RC suite |
-| 2 | Batch/REPL parity gap | **HIGH** | 0–4 | Single `compile_unit()` is architectural; /qa validates with dual-mode tests |
-| 3 | Test catalog portability | **MEDIUM-HIGH** | 0–4 | ~90% of 591 tests are spec-validation; ~10% are implementation-specific |
-| 4 | Macro pipeline testability gap | **MEDIUM-HIGH** | 3 | No macros until Ring 3; /qa must test Rings 0–2 without prelude macros |
-| 5 | Module system combinatorial explosion | **MEDIUM** | 2 | 35 module tests cover basics; cross-module trait/constrained-poly under-tested |
-| 6 | `process::exit(1)` kills test harness | **MEDIUM** | 0+ | Redesign panic handler; 10 ignored tests depend on it |
-| 7 | E2E transcript tests are brittle | **MEDIUM** | 4 | Only 4 E2E pairs; output format changes break them |
-| 8 | Performance regression invisible | **MEDIUM** | 0–4 | No perf baselines yet; prototype runs ~2min for 978 tests |
-| 9 | REPL slash command coverage thin | **LOW-MEDIUM** | 4 | 8 of 16 commands tested; rest deferred to /repl experience suite |
-| 10 | Error message quality untested | **LOW-MEDIUM** | 0–4 | Only ~20 error tests; no golden-master error output tests |
-| 11 | Slow-accumulating FFI/platform-ABI memory corruption | **HIGH** | (post-ring) | Sustained-repetition crossings + link-then-RUN-under-load + checking allocator (ASAN/heap-header debug-assert) + JIT/link callback parity. DEF-6 root cause. |
-
-## Detailed Analysis
-
-### Risk 1: RC Correctness is Non-Local (HIGH)
-
-Reference counting interacts with every language feature. The prototype's 57 RC tests cover phases 2D–2F and step 11, but every new feature added in Rings 2–4 (traits, modules, macros, IO) can introduce RC bugs. The prototype discovered this the hard way — closures, ADT drop glue, vec COW, and match scrutinee dec were each separate debugging campaigns.
-
-**Impact**: Memory leaks or use-after-free in any ring. RC bugs are silent (no immediate crash) and accumulate.
-
-**Mitigation**:
-- Ring 1 establishes the RC test harness with `CRANELISP_RC_TRACE=1` validation.
-- Every subsequent ring adds RC-aware tests for its features (e.g., Ring 2 must test trait dispatch with heap-typed args).
-- The RC test suite runs serially (`--test-threads=1`) and is never skipped.
-- `/backend` owns RC correctness; `/qa` validates it via black-box allocation tracking.
-
-### Risk 2: Batch/REPL Parity Gap (HIGH)
-
-The prototype's worst structural debt was dual batch/REPL pipelines. The architecture addresses this with `compile_unit()` + `CompileMode`, but parity requires active validation. The prototype had 116+ REPL-specific tests because the REPL diverged from batch.
-
-**Impact**: A feature works in batch but fails in the REPL (or vice versa). Users experience this as "it works in a file but not at the prompt."
-
-**Mitigation**:
-- Every integration test that validates language behavior runs in *both* batch and REPL modes.
-- `/qa` maintains a `compile_and_eval()` helper that tests both paths and asserts identical results.
-- Ring 0 wires the batch pipeline first; REPL mode is validated as soon as the pipeline exists.
-- The `CompileMode::Interactive` path gets its own test coverage from Ring 0.
-
-### Risk 3: Test Catalog Portability (MEDIUM-HIGH)
-
-Of the 591 prototype tests, approximately 90% validate observable language behavior (spec-validation — directly portable). Approximately 10% test internal implementation details.
-
-**Impact**: Implementation-specific tests can't be ported 1:1; some will need rewriting against the new API.
-
-**Breakdown by portability**:
-- **Directly portable** (~530): tests that compile source, run, and check output. Same source, same expected value.
-- **Needs adaptation** (~40): tests that use prototype-specific types (`FnSlot`, `GotReference`, `CompiledModule`, `ReplSession`) or internal APIs.
-- **Rewrite** (~20): tests tightly coupled to prototype internals (cache file structure, GOT layout, JIT details).
-
-**Mitigation**:
-- Portable tests are ported verbatim into `tests/` for each ring.
-- Adaptation tests are rewritten against the new API when the relevant ring is implemented.
-- No test is silently dropped — every prototype test gets a disposition.
-
-### Risk 4: Macro Pipeline Testability Gap (MEDIUM-HIGH)
-
-Rings 0–2 have no macros. The prototype's `compile_and_run()` helper loads the prelude (macros included). The reimplementation's Rings 0–2 must use `compile_and_run_simple()` equivalents.
-
-**Impact**: Tests that use prelude macros (`list`, `vec`, `do`, `bind!`, `cond`, `case`, `->`, `->>`, `str`, `derive`, `const`, `def`) cannot run until Ring 3.
-
-**Affected tests**: ~180 of 591 use macros (everything calling `compile_and_run` or `compile_and_run_with_macros`, plus all example file tests, all IO tests, all stdlib tests).
-
-**Mitigation**:
-- Ring 0–2 tests use only `compile_and_run_simple()` (no macros).
-- The test catalog explicitly marks each test with its ring eligibility.
-- Ring 3 unblocks the macro-dependent tests; Ring 4 unblocks IO-dependent tests.
-- `/qa` maintains a "blocked tests" tracking list that shrinks as rings complete.
-
-### Risk 5: Module System Combinatorial Explosion (MEDIUM)
-
-The prototype has 35 module tests covering imports, visibility, exports, ambiguity, and qualified names. But cross-module interactions with traits, constrained polymorphism, and macros are under-tested. The prototype's KNOWN_ISSUES lists 12 module system limitations.
-
-**Impact**: Module bugs surface late (Ring 2+) and are hard to diagnose because they involve interactions between the type system, symbol tables, and codegen GOT.
-
-**Mitigation**:
-- Ring 2 adds cross-module trait dispatch tests (not just import/export mechanics).
-- Ring 2 adds cross-module constrained polymorphism tests (specialization in defining vs calling module).
-- `/qa` works with `/typecheck` to define module-aware type inference tests.
-- The 12 known module limitations each get a test that documents the behavior, with FIXME for those targeted for fixing in the reimplementation.
-
-### Risk 6: `process::exit(1)` Kills Test Harness (MEDIUM)
-
-10 integration tests are `#[ignore]` because `cranelisp_panic` calls `process::exit(1)`, which kills the entire test harness. These cover checked arithmetic overflow, vec out-of-bounds, and match exhaustiveness failure.
-
-**Impact**: Panic-path tests can only run in isolation (`--test-threads=1 --ignored`). CI cannot catch regressions in these paths during normal test runs.
-
-**Mitigation**:
-- The reimplementation's `cranelisp_panic` should use `longjmp`/catch mechanism or return an error code rather than `process::exit(1)`.
-- `/backend` + `/runtime` design this in Ring 0.
-- If the redesign works, all 10 ignored tests become normal tests.
-- If the redesign is deferred, `/qa` ensures these tests run in a separate CI step.
-
-### Risk 7: E2E Transcript Tests are Brittle (MEDIUM)
-
-Only 4 E2E transcript pairs exist (`basic_exprs`, `defn_and_call`, `reader_shortcuts`, `slash_help`). These compare exact output text.
-
-**Impact**: E2E tests break on formatting changes, creating false negatives. Or they pass despite semantic regressions if the output accidentally matches.
-
-**Mitigation**:
-- E2E tests are Ring 4 (last); formatting stabilizes before they run.
-- `/qa` writes E2E tests that match semantic content rather than exact byte-for-byte comparison where possible.
-- `/repl` owns the experience test harness, which provides richer assertions than simple transcript comparison.
-
-### Risk 8: Performance Regression Invisible (MEDIUM)
-
-The prototype runs 978 tests in ~2 minutes. No performance baselines exist for individual operations.
-
-**Impact**: The reimplementation could be 5x slower and no test would fail. Users notice at the REPL.
-
-**Mitigation**:
-- Ring 0 establishes performance baselines: reader throughput, inference time, codegen time, JIT execution.
-- `/repl` defines performance targets (REPL startup <500ms, expression evaluation <100ms).
-- Ring 4 adds benchmark tests comparing against prototype baselines.
-- Use `criterion` or similar for repeatable benchmarks.
-
-### Risk 9: REPL Slash Command Coverage Thin (LOW-MEDIUM)
-
-8 of 16 slash commands are tested (`/sig`, `/info`, `/type`, `/list`). Untested: `/doc`, `/source`, `/sexp`, `/ast`, `/clif`, `/disasm`, `/time`, `/mem`, `/expand`, `/mod`, `/reload`.
-
-**Mitigation**: `/repl` owns the experience test suite covering all 16 commands. `/qa` adds basic smoke tests in Ring 4.
-
-### Risk 10: Error Message Quality Untested (LOW-MEDIUM)
-
-Only ~20 dedicated error tests exist. No golden-master tests for error formatting.
-
-**Mitigation**: Each ring adds error tests for its features. Error message testing uses substring matching, not exact comparison.
-
-### Risk 11: Slow-Accumulating FFI/Platform-ABI Memory Corruption (HIGH)
-
-The platform/FFI ADT-marshaling boundary is a C-ABI seam between the host
-process and platform DLLs. When the two sides disagree on a pointer-base or
-layout contract — a payload pointer where a base pointer is expected, a
-header-size offset omitted, a struct field reordered — each crossing
-overruns adjacent heap metadata by a *fixed small amount*. The damage is
-**invisible below a threshold and catastrophic above it**: a few bytes per
-crossing accumulate silently until enough chunk headers are clobbered to
-trip the allocator's consistency check (glibc `double free or corruption`,
-`corrupted size vs. prev_size`, SIGABRT / exit 134). This is a distinct
-failure class from RC miscounts (Risks 1) — RC bugs leak or double-free a
-*correctly-located* object; this class corrupts the *metadata around*
-correctly-RC'd objects, so every RC-driven free hits `rc=0` cleanly right up
-to the abort.
-
-**Instance (DEF-6, root-caused S86)**: the `--link` host wiring
-(`crates/cranelisp-exe-bundle/src/lib.rs`) handed platforms a **base
-pointer** where the contract requires a **payload pointer** — `alloc`
-returned `base` instead of `base + HEAP_HEADER_SIZE` (16 bytes). Every
-host↔platform-DLL ADT crossing overran the previous chunk's heap metadata by
-16 bytes. Invisible below ~40 crossings; glibc-aborts at ~40+. The
-`--run`/JIT path (`src/platform.rs`) used the correct `heap_alloc_payload`,
-so the bug was **`--link`-ONLY** — a divergence between two separately
-hand-rolled host-callback wirings. See the ledger S86 DEF-6 entry for the
-full bisection (the retired failure ledger, `git show a25ce2c8:tests/plan/`).
-
-**Impact**: A platform/FFI program that passes every conformance test and
-links cleanly aborts in production once a server loop, batch job, or any
-sustained workload crosses the corruption threshold. Catastrophic, mode-
-specific (`--link` only here), and undetectable by the existing suite.
-
-**Why the 2808-green suite missed it — four detection gaps to record:**
-
-1. **Per-call-correctness, never sustained-repetition.** Every platform test
-   asserts a *handful* of crossings return correct values; none loops past
-   the ~40-crossing corruption threshold. Slow accumulators are invisible to
-   per-call assertions — they need sustained-repetition coverage.
-2. **Link-success guarded, run-the-binary-under-load NOT.** The DEF-5 guard
-   asserted the binary *links*; nothing *ran* it under load. "Builds/links ≠
-   runs," and "runs once ≠ runs N times."
-3. **No checking allocator.** A few-bytes-per-crossing overrun under the
-   normal system allocator is silent until the threshold. ASAN/valgrind, or a
-   heap-header-integrity debug-assert fired on each crossing, would have
-   caught it on the *first* crossing.
-4. **JIT-vs-link host-callback divergence.** The `--run` (JIT,
-   `src/platform.rs`) and `--link` (`cranelisp-exe-bundle`) paths hand-roll
-   the host callbacks SEPARATELY; they diverged (one correct, one off-by-16).
-   This is a Principle-8/11 mode-divergence risk distinct from the S85
-   program-driver unification — S85 unified the *driver*, not the
-   *host-callback wiring*.
-
-**Mitigation / diagnostic requirements** (obligations on compiler skills +
-`/qa`, per `tests/CLAUDE.md §Diagnostic Requirements`):
-
-- **Sustained-repetition coverage for the platform/FFI marshaling boundary.**
-  Every host↔DLL ADT crossing kind (construct/produce AND consume) gets a
-  test that drives ≥N crossings — N well above the observed ~40 threshold;
-  use 200–2000 — and asserts no abort (exit 0). A handful of crossings is not
-  coverage for an accumulator. First such guard is now committed:
+# QA risk register
+
+Owner: QA. This register names the solution risks QA carries as standing
+concerns, the control that currently answers each, and the residual that
+remains. It is read when allocating evidence or judging whether a control
+earns its cost. Sprint-scoped risk reads are dated allocations and live in
+Git; the [safety-invariant register](../../design/arch/safety-invariants.md)
+owns invariant grades and the [memory-safety strategy](memory-safety-coverage.md)
+owns lane mechanics. Each entry is judged under the shared
+[risk-weighted control standard](../../.agents/skills/quality-standards/SKILL.md):
+a retained control names the credible failure it discriminates and its cost;
+a historical gate is not a current requirement.
+
+The per-sprint reads S109–S118 and the ring-era baseline (Risks 1–10 and the
+prototype spec-coverage table) are retired to Git
+(`git show 7b1220c7:tests/plan/risks.md`); the S113 global ranking that the
+S113 read summarised is the S113 risk assessment at Git revision `7b1220c7`.
+Their standing rules live where a reader needs them: relational coverage axes
+(carrier × reaching context, shadowing × callee kind, storage model × persisted
+kind, module locality) in [PLAN](PLAN.md#standing-coverage-audit--definition-variants);
+suite-count and leak-scaling conventions in [PLAN](PLAN.md#traceability-and-authoring);
+mode uniformity, defect classes and the failing-test discipline in the
+[tests memory](../CLAUDE.md); the spec-change annotation-clearing rule in the
+[delivery method](../../sprints/METHOD.md#22-phase-notes); the differential
+oracle, capability-fence and adversarial-authorship rules in the strategy.
+Rankings, counts and wave statuses in those reads describe their sprint, not
+the current tree.
+
+## Memory-safety signal blindness (standing since S111)
+
+- **Credible failure.** A leak, use-after-free or elided safety operation that
+  does not perturb printed output passes every output-asserting test. A UAF
+  often returns plausible values under REPL and `--run` and is deterministic
+  only under `--link` (glibc abort), `CRANELISP_RC_DEC_CHECK`, or the
+  analysis-off differential oracle.
+- **Current control.** The nextest-visible oracle lane and `SafetyMatrix`
+  combinator (`tests/safety_oracle_lane.rs`, `tests/helpers/e2e.rs`), graded
+  `gated` with a live catch in register row R9; the tier-5 diagnostic modes of
+  row R8; the ownership-flow generator (`tests/gen_ownership_flows.rs`) with
+  its own capability fences per strategy §4.1; refute-instructed review on
+  safety surfaces (strategy §3).
+- **Residual.** Coverage is bounded by the lane's cells and the generator's
+  actual types, positions and modes. The suite-wide reach quantification in
+  strategy §5 is an S111 measurement and no later re-grade is recorded there;
+  reuse it as a dated figure, not a current share. The strategy names the
+  retirement condition: the class becomes mechanically RED at the gate rather
+  than found incidentally.
+
+## Risk 11 — slow-accumulating FFI/platform-ABI heap corruption (standing since S86)
+
+- **Credible failure.** A host↔platform-DLL marshalling contract mismatch
+  (payload versus base pointer, omitted header offset, reordered field)
+  overruns adjacent heap metadata by a fixed few bytes per crossing. It is
+  invisible below a crossing threshold and a glibc abort above it, and it is
+  distinct from an RC miscount: every RC-driven free still hits `rc = 0`
+  cleanly on a correctly located object. The instance is DEF-6 (S86, `--link`
+  only), class `marshal-overrun` in the [defect vocabulary](../CLAUDE.md#defect-repro-notation--defect).
+- **Current controls.** Constructive: both hosts build their callbacks
+  through one builder, `cranelisp_intrinsics::host_callbacks()`
+  (`src/platform.rs`, `crates/cranelisp-exe-bundle/src/lib.rs`), so the
+  JIT/link wiring divergence that produced DEF-6 has no second source.
+  Measured: the sustained-repetition, link-then-run guard
   `tests/link.rs::link_repeated_platform_adt_marshal_does_not_corrupt_heap`
-  (200× `(Rectangle 3 4)` → platform `area`; generic shapes fixture, no
-  exemplar coupling; RED until the off-by-16 is fixed).
-- **Link-then-RUN-under-load guards for every platform/`--link` capability**,
-  not link-success-only. The `--link` binary must be executed, and executed
-  *repeatedly* / under load, not merely produced. Pair every "it links" guard
-  with an "it runs N times without aborting" guard.
-- **Checking-allocator / heap-header-integrity debug-asserts in the platform
-  marshaling path.** A `debug_assert!` that an allocated chunk's header is
-  intact after each construct/consume crossing (fires in debug test runs,
-  compiled out in release) turns a threshold-delayed abort into a first-
-  crossing failure at the exact seam. PLUS a CI recommendation to run the
-  platform/`--link` e2e tests under ASAN or valgrind so a fresh overrun is
-  caught immediately rather than after N iterations.
-- **JIT/link host-callback parity.** The `--run` (JIT) and `--link` host
-  callbacks must SHARE the wiring — one source of truth for `alloc`,
-  RC-header, and tag callbacks — OR a parity test must assert the two paths
-  install byte-identical callbacks, so they cannot diverge again. This is the
-  root enabler of DEF-6 and is flagged as an **`/arch`/structural follow-up**:
-  the two hand-rolled wirings (`src/platform.rs` vs
-  `crates/cranelisp-exe-bundle/src/lib.rs`) are a standing Principle-8/11
-  mode-divergence hazard until unified.
+  (200 crossings, well above the observed ~40 threshold); the
+  [tests memory](../CLAUDE.md#diagnostic-env-vars--assertions) states the
+  sustained-repetition and run-under-load rules for every marshalling
+  boundary. Diagnostic: the intrinsics allocator's dealloc-time
+  header-integrity check (`crates/cranelisp-intrinsics/src/alloc.rs`,
+  debug builds) and the release-gated A4 header pre-check.
+- **Residual.** No checking-allocator (ASan/valgrind) lane exists; the
+  strategy defers a `--link`-with-ASan lane to a provisioned toolchain lane
+  (§2.2) and no current risk earns building one sooner. A per-crossing
+  header assertion at the marshal seam itself was not verified at source in
+  the S122 read; the dealloc-time check is the located detector.
 
-## Spec Coverage Gaps
+## Standing coverage lenses from risk (S118 origin)
 
-| Spec Section | Tests | Coverage Assessment |
-|---|---|---|
-| 01-lexical | ~6 | **Thin** — reader shortcuts, whitespace, comments lightly tested |
-| 02-grammar | ~7 | **Thin** — parser edge cases (nested brackets, operator precedence) |
-| 03-types | ~55 | **Good** — ADTs, type annotations, polymorphism well covered |
-| 04-expressions | ~45 | **Good** — let, if, lambda, closure, curry covered |
-| 05-definitions | ~15 | **Adequate** — multi-sig covered; defn- visibility needs more |
-| 06-pattern-matching | ~20 | **Good** — exhaustiveness, wildcards, var patterns |
-| 07-traits | ~45 | **Good** — default methods, derive, HKT, ambiguity |
-| 08-modules | ~35 | **Adequate** — import/export/visibility; cross-module interactions thin |
-| 09-macros | ~35 | **Good** — quasiquote, multi-clause, bracket destructuring |
-| 10-io | ~12 | **Adequate** — pure/bind/do covered; par-bind! light |
-| 11-stdlib | ~40 | **Good** — list, vec, seq, map/reduce/filter |
-| 12-runtime | ~280 | **Heavy** — RC, cache, REPL, trace dominate; lenient eval good |
-
-Priority gaps to address:
-1. **01-lexical** and **02-grammar**: need more parser edge case tests (Ring 0)
-2. **08-modules**: need cross-module trait and constrained-poly tests (Ring 2)
-3. **Error paths**: need systematic error message tests per ring
-4. **10-io**: par-bind! and platform interaction tests (Ring 4)
-
-## Standing risk — memory-safety signal blindness (S111, permanent until retired by gate reach)
-
-The default e2e mode (run → assert output) is structurally blind to the
-memory-safety failure modes: a leak is invisible without RC accounting; a
-UAF often returns plausible garbage in `--run`/REPL and is deterministic
-only under `--link` (SIGABRT), `CRANELISP_RC_DEC_CHECK`, or the
-conservative all-Owned differential oracle. Quantified at S111: oracle
-reach ≈0.6% of the suite, `--link` faces ≈3%, `RC_DEC_CHECK` asserted
-nowhere, unit tier (≈2,670 tests) executes no JIT code at all. Every S111
-memory-safety defect (0633/0640 drop-glue keys, multi-arity wrong-accept
-vectors, 0641 false-`Fresh` family, 0638) was found incidentally, never by
-the suite. Managed by the standing strategy
-`tests/plan/memory-safety-coverage.md` (differential-oracle nextest gate +
-generative harness + adversarial authorship + the "elided-safety-op" audit
-category). Risk retires only as the gate's reach makes the class
-mechanically RED; re-grade the §5 exposure table each sprint the lane
-grows.
-
-## S117 risk read — conformance, recovery, and truthful ownership facts
-
-| Risk | Grade | Detection / mitigation |
-|---|---|---|
-| One syntactic `TraitRef` is interpreted as spelling in one producer and canonical identity in another | Important | The scribed `trait_ref` rule makes QT-1/QT-2 failing-first ready. Keep qualified-reference × declaration-binder controls; never broaden bare-only `trait_binder` while fixing canonical impl identity. |
-| Macro output receives a private registration path and diverges again by definition kind | Important | Literal/expanded twins through the shared Pass-2/3 path; 0800 remains separate from 0816 absent mechanism evidence. |
-| A stdlib `def` macro usability question is mistaken for core-language semantics | Important, ownership/process | Route function-valued behavior to `/stdlib`; `/repl` describes the selected API truthfully. QA tests the choice after design and never labels `def` a special form. Faces 1–2 remain independently testable presentation defects. |
-| A failed codegen transaction permanently poisons a long-lived REPL session | Blocker for REPL release | Failure → literal, definition/call, same-name repair sequence inside one public v4 session; separately assert failing-unit identity. |
-| Type rendering has sparse variant coverage despite a broad `[Tested]` band | Important | Named-type variant × output-surface matrix; constrained-variable negative explicitly removes the concrete-`Int` false proxy. |
-| `/info` trait/type inverse views diverge or duplicate after re-impl | Important | Pair-identity twins with first/rejected/re-impl transitions and local/imported ordering. |
-| Primitive ownership tests restate declarations and remain green when declarations lie | Blocker for R-2 acceptance | Production CLIF plus public behavior for all four nontrivial classes; mandatory false-table-only mutation demonstration. Stop at stable CLIF exposure if absent—do not add blocked instrumentation. |
-| Historical `[Tested]` survives a changed requirement | Important, process integrity | S115 backfill in `s117-test-plan.md` §6; restore only after narrow runtime evidence and two-sided reconciliation. |
-| Non-normative byte-backed text design accidentally creates present-tense coverage obligations | Low but scope-sensitive | No Sprint-117 spec annotation or implementation test; future matrix is advisory only. |
-
-## Standing register entries added S118 (permanent lenses, not sprint-scoped)
-
-- **Eliminator/consumer axis (from FIXME 0831, actioned S118).** For every
-  construct that CONSUMES a value it owns while handing a projection onward —
-  `match` (ctor and var patterns), field accessors, `vec-get` on a temporary
-  container, destructuring `let` if it lands — the coverage question is a
+- **Eliminator/consumer axis.** For every construct that consumes a value it
+  owns while handing a projection onward — `match` on constructor and
+  variable patterns, field accessors, `vec-get` on a temporary container,
+  destructuring `let` — the coverage question is a
   `{provenance: fresh | let-bound | borrowed param} × {projection escapes:
   yes | no} × {payload: scalar | heap}` matrix, both polarities, asserting
-  **absolute** `allocs == deallocs` (the differential face is structurally
-  blind to this toggle-independent class) with a `--link` face (double-free
-  polarity is `--link`-visible only). Risk framing by origin alone (return,
-  capture, container, loop-carry) misses the eliminator — the 0810/0782
-  Blocker lineage is the evidence. The harness eliminator rows
-  (`gen_ownership_flows`) are the mechanical fence.
-  **S118 W1 amendment (the tail-loop lesson, from the 0830 close-out):** an
-  eliminator row is only evidence for the tail-jump release seam when the
-  eliminator SHARES THE LOOP FRAME — a match wrapped in its own function
-  and driven by a repeater never reaches the seam (both of 0830's proposed
-  minimum rows measured GREEN at HEAD `e15ff20f` while 0810 was live; only
-  `matched_in_tail_loop`, match-as-loop-body, goes RED). For loop-coupled
-  seams the matrix carries a fourth factor:
-  `{eliminator in own frame | eliminator IS the loop body}` — a green
-  eliminator row in the wrong frame is vacuous, not coverage.
-- **Arm-order / operand-order twins for join-shaped seams (from FIXME 0778,
-  actioned S118).** Any join/merge/fold operation (`If` arms, `Match` arm
-  sequence, element-fold accumulation, lattice joins) takes order-swapped
-  twin cells — same contract, orders swapped, SAME assertion — plus, at the
-  seam itself, algebraic property cells over the operand lattice
-  (commutativity; union preservation) rather than example cells over one
-  syntax tree. A shape cell fixes the order and cannot fail on an order
-  asymmetry (the 0772 lesson). New join-shaped seams are instrumented at
-  birth; `/qa` checks this at every Phase-3 plan for in-scope joins.
-
-## S118 risk read — instrumented ownership closure (2026-07-25, /qa; shapes `s118-test-plan.md`)
-
-| Risk | Grade | Detection / mitigation |
-|---|---|---|
-| A detector env var leaks to suite scope; a globally-armed M3 aborts every still-red leak guard | Blocker for the baseline contract | Arch ruling 3 made structural: arming only via child `.env`/`env_clear`; W1 static grep gate; `/review` reject (plan §1). |
-| Detector "proofs" that bypass the production funnel or obtain polarity by executing UB | Blocker for Track A acceptance | §7.1/§7.3 triplet contract: production-funnel plants only, validation-before-mutation, recorded fail-on-revert per row; a test instantiating internal state directly does not count. |
-| A baseline RED flips without its owning fix (layout perturbation posing as a cure) | Blocker, S98 class | Name-for-name exit reconciliation traces every flip to its mechanism change-set; 0850's behavior-invariant change-set explicitly requires REDs stay byte-identically RED; armed acceptance legs on each fix wave. |
-| Partial consumer migration leaves canonical glue + legacy inline emitter coexisting | Blocker, arch ruling 10 | Structural fence cell (grep-zero depth constant + emitter) must flip in the SAME wave as the behavior cells; `/review` REJECT otherwise. |
-| Expected consequents (`conj`, exemplar residue) are patched or re-thresholded instead of verified | Important | Plan §4.4: residual RED after the migration is a NEW attribution routed to `/qa`; the ≤1400 bound is immutable this sprint. |
-| A second schema delta rides a non-0869 change-set | Blocker, arch ruling 1 | Close-gate check: exactly one 23→24 window, only with the 0869 implementation; otherwise zero deltas. |
-| The M3 clean-control cell's coupling (0848-only vs 0745-coupled) mis-reconciles the exit arithmetic | Important | Plan §2.2 obligates W1 to color the two low-confidence cells from the captured baseline log before any flip accounting. |
-| Load-dependent closure claimed from symptom absence under armed perturbation | Blocker for Track C | §5 protocol: D1 gates D2/D3; closure needs demonstrated mechanism + fail-on-revert + ≥3 captured green runs; "flaky"/absence dispositions banned. |
-| 0859 witness graduates from an unproven oracle | Important | Ruling 2 sequencing: experiments begin only after the eight triplets land; emission-inert outcome returns to the user as disposition 2, never overridden with test-only facts. |
-| Track E fixture consolidation silently weakens integration assertions | Important | Plan §7 preservation checklist: before/after assertion inventory, zero weakenings, schema isolation retained. |
-| Ambient prelude-load residue (1143/session, macro-expansion executions — plan §2.5) is re-attributed by symptom instead of by the probe evidence, or its cells (#10/#19/#20/#21/#23) are counted as flippable from Tracks A/B/W4 | Blocker for the exit arithmetic | Ruled 2026-07-25 (plan §2.5): the 0835 runtime-pair seam via discriminating probes (macro-free stdlib subset = 0; first residual with the first expansion; linear in count and sexp size). Both flip branches recorded; W2b acceptance MUST re-run the P4 probe; surviving residual = NEW attribution + user scope decision, never a silent carry. |
-| Intended-RED guards silently pass under interleaved multi-binary runs, corrupting the intended-RED arithmetic (0694 family, INVERSE polarity — first named cell: `cache::cache_restores_sibling_written_trait_impls_for_dispatch`, W1 2026-07-25, passed once in a 4-binary run, reproducibly RED alone and in re-runs) | Important, Track C input | The 0694 counting convention now covers both polarities: certification reports stable-exact counts + a named flap set for should-be-GREEN failures AND should-be-RED passes. W5 characterization (D1→D3) owns the mechanism; wave gates verify intended REDs per-binary (focused runs), never only from an interleaved full-run scalar. |
+  absolute `allocs == deallocs` with a `--link` face: the differential face is
+  blind to this toggle-independent class and the double-free polarity is
+  `--link`-visible only. Framing risk by origin alone (return, capture,
+  container, loop-carry) misses the eliminator. For a loop-coupled release
+  seam the matrix carries a fourth factor,
+  `{eliminator in its own frame | eliminator is the loop body}`: an
+  eliminator wrapped in its own function and driven by a repeater never
+  reaches the tail-jump seam, so a green row in the wrong frame is vacuous.
+  The generator's eliminator rows (`tests/gen_ownership_flows.rs`) are the
+  mechanical fence; `tests/match_owned_temporary_scrutinee_0810.rs` pins the
+  cells the generator cannot yet reach.
+- **Arm-order and operand-order twins for join-shaped seams.** Any
+  join/merge/fold operation — `if` arms, `match` arm sequence, element-fold
+  accumulation, lattice joins — takes order-swapped twin cells (same
+  contract, orders swapped, same assertion) plus, at the seam, algebraic
+  property cells over the operand lattice (commutativity, union
+  preservation) rather than example cells over one syntax tree; a shape cell
+  fixes the order and cannot fail on an order asymmetry. The model cells are
+  `join_lattice_*` in `crates/cranelisp-typecheck/src/ownership/transfer/tests.rs`.
+  QA checks new join-shaped seams for this at every Phase-3 plan.

@@ -9,7 +9,7 @@
 // what the constructor must GUARANTEE across the flip; they are GREEN today (the
 // current behaviour already handles them) and MUST STAY GREEN through the carrier
 // change-set — they fence the flip against over-gating legal locals or losing a
-// positive resolution. s114-test-plan §3.2 (CA-2, CA-3, CA-4).
+// positive resolution. S114 allocation (CA-2, CA-3, CA-4).
 //
 // The "retired empty-maps-for-all-local-bodies license" (carrier doc §5.2) means
 // every local now takes the `VarRef::Local` path end-to-end; CA-2/CA-3 guard that

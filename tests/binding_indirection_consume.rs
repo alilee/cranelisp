@@ -168,7 +168,7 @@ fn b2_match_cow_var_pattern_toggle_off_neg() {
 // in that its forwarded value is a non-heap Int), isolating the consume seam as
 // the RC-accounting site, not the match logic. → 7.
 //
-// NOTE (/testing finding, verified 2026-07-20; s114-test-plan §2 BI-T): a bare
+// NOTE (/testing finding, verified 2026-07-20; design/backend/binding-indirection-consume.md §5/§8 BI-T): a bare
 // match forwarding a HEAP value — `(match [7 8 9] [r r])` — is itself RED today
 // (returns garbage, both inline AND across a fn return): the whole heap-forward-
 // through-match family is broken, so no heap bare-match green twin exists. The
@@ -186,7 +186,7 @@ fn bare_match_forward_scalar_green() {
 
 // ---- BI-H-heap — the INLINE / single-match heap-forward face (RED ×2) ------------
 //
-// s114-test-plan §2 (BI-H-heap row, /qa item-4 completion). The committed family
+// design/backend/binding-indirection-consume.md §5/§8 (BI-H-heap row, /qa item-4 completion). The committed family
 // rows cover the NESTED (F, B-cow) and COW/toggle faces; the MINIMAL single bare
 // match forwarding a FRESH heap vec had no committed row despite being RED. This is
 // the pre-W4 rider closing that gap. GREEN twin: `bare_match_forward_scalar_green`

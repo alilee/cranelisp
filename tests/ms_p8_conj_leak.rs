@@ -5,7 +5,7 @@
 // solver). The superseded/temporary Vec on the persistent-op RC path is never dec'd
 // to zero — a LEAK (bounded, non-corrupting: QUARANTINE+SCRUB clean ⇒ no UAF).
 //
-// SEAM (FIXME 0688, /qa 2026-07-20 — RC_TRACE-discriminated; s114-test-plan §2.1):
+// SEAM (FIXME 0688, /qa 2026-07-20 — RC_TRACE-discriminated; S114 plan in Git at 7b1220c7, §2.1):
 // verdict (a) BACKEND — the missing release is at the TCO tail-jump slot
 // overwrite. `main::go`'s recur arm incs the old `v` (arg-pass), calls `conj`,
 // then `jump block1(...)` overwriting the param slot with the fresh box and

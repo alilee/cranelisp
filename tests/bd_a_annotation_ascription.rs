@@ -171,7 +171,7 @@ fn trait_method_sig_trailing_form_rejected_neg() {
 }
 
 // =============================================================================
-// M1 matrix spot cells (s114-test-plan §5.1; enforcement-matrices.md §1). The nine
+// M1 matrix spot cells (enforcement-matrices.md §1). The nine
 // CORRECT operand positions route their body through `build_one_expr_at` today:
 // these born-green fences pin the ascribed-ACCEPT and trailing-REJECT columns at
 // the spot positions that had no committed pin, so the one-seam fix (`build_body_to_end`)

@@ -11,7 +11,7 @@ refers_to: spec §1.4.5 / §2.3.8 (`:`-annotation reader macro) vs macro-argumen
 status: open
 ---
 
-## /qa S114 Phase-6b disposition (2026-07-20 — durable record: tests/plan/s114-test-plan.md §12 item 1)
+## /qa S114 Phase-6b disposition (2026-07-20 — historical record in Git at 7b1220c7)
 
 **Reproduced free-standing at HEAD `9fda5f40`** (no stdlib): `(defmacro mydef
 ([name value] \`(defn ~name [] ~value)))` + `(mydef x :primitives/Int 5)` →
@@ -34,7 +34,7 @@ argument; and a sexp-level fold changes what every macro observably receives
 + a located diagnostic naming the annotation-in-macro-arg situation). Under
 EITHER ruling the current internal-sounding `returned malformed sexp … N
 argument(s)` message is nonconforming — the polarity-safe pin is specified in
-plan §12 item 1; /repl's diagnostic request is satisfied by both outcomes.
+[QA active allocation](../../../tests/plan/PLAN.md#active-allocation-and-unresolved-evidence); /repl's diagnostic request is satisfied by both outcomes.
 S115 scope input (not a trivial fix).
 
 # `:Type` annotation does not bind the following form in macro-argument position
@@ -202,7 +202,7 @@ plainly why it cannot (the self-documenting-REPL principle: no valid-looking
 construct produces an opaque error). Reading A makes the form **succeed**; Reading B
 requires the message be **replaced** by a located diagnostic that names the
 annotation-in-macro-argument situation. /repl's request is satisfied either way; the
-polarity-safe pin is `tests/plan/s114-test-plan.md` §12 item 1.
+polarity-safe pin is [QA active allocation](../../../tests/plan/PLAN.md#active-allocation-and-unresolved-evidence).
 
 ### /spec's neutral consistency note (analysis, not a ruling)
 

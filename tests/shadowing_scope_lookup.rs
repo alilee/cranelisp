@@ -241,7 +241,7 @@ fn let_shadowed_multi_sig_base_value_ref_resolves_to_local_not_overload() {
     );
 }
 
-// PS-SH1 completion NEW #1 (s114-test-plan §3.5) — the multi-sig-base value-ref
+// PS-SH1 completion NEW #1 (S114 allocation) — the multi-sig-base value-ref
 // RETURNED position (distinct from the HOF-arg position above). A `let` shadows a
 // multi-sig base `h` with a local closure and RETURNS the shadowed name as a value;
 // the caller then applies it. The value-ref MUST resolve to the LOCAL closure
@@ -273,7 +273,7 @@ fn let_shadowed_multi_sig_base_value_ref_returned_resolves_to_local_not_overload
     );
 }
 
-// PS-SH1 completion NEW #2 (s114-test-plan §3.5) — the multi-sig-base value-ref
+// PS-SH1 completion NEW #2 (S114 allocation) — the multi-sig-base value-ref
 // STORED-IN-CONTAINER position (a third value-ref position: the shadowed name is
 // placed in a vec, projected out, then applied). MUST resolve to the LOCAL closure
 // → `((vec-get (g) 0) 5)` = 100. Same seam as NEW #1, different value-ref position

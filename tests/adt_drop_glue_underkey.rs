@@ -234,7 +234,7 @@ fn entry_main_heap_let_teardown_balances_r2() {
     );
 }
 
-// PIN-NOW (s114-test-plan §11 item 4) — the TOGGLE-OFF entry-return `Pure` leak, the
+// PIN-NOW (design/arch/fixmes/0745-entry-payload-leak-misattributed-to-protect-return-value.md) — the TOGGLE-OFF entry-return `Pure` leak, the
 // F-R1 family sibling under the conservative all-Owned lowering
 // (`CRANELISP_NO_OWNERSHIP=1`). The W4 F-R1 suppression is licensed at the
 // entry-`main` single-consumer contract but does NOT reach the toggle-off lowering,

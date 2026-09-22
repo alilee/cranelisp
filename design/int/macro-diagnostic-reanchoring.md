@@ -50,7 +50,7 @@ So the reject on the synthesized `(defn fmt/x-def …)` head points at a span th
 maps to **no source byte**, and for `def` (which mangles `~impl-name = fmt/x-def`)
 names the mangled synthesized head, not the written `fmt/x`. Native forms are
 unaffected (a directly-written `(defn fmt/foo …)` keeps its real reader span).
-Spec `05-definitions.md` §5 + `tests/plan/s113-test-plan.md` BD-M2/M3 carry a hard
+Spec `spec/05-definitions.md` §5 carries a hard
 MUST: the diagnostic span MUST point at the **user's written form**.
 
 ## 2. The seam — re-anchor at the `build_form`/`build_forms` drive site
@@ -230,4 +230,4 @@ e2e/provenance-through-expansion assertion (BD-M2/M3) is `/qa`+`/testing`'s.
 - `src/marshal.rs:62` + `src/expander.rs` `rewrite_spans_unique` — the
   synthetic-span sources (§1).
 - `design/arch/fixmes/0650-*.md` — the `/arch` ruling this designs against.
-- `tests/plan/s113-test-plan.md` BD-M2/M3 — the durable-trigger e2e.
+- `tests/spec_05_definitions.rs::macro_route_qualified_head_reject_span_at_written_form` — the written-form diagnostic e2e.

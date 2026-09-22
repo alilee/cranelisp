@@ -4,7 +4,7 @@ target: /qa
 filed_by: /port
 filed_at: 2026-07-21
 sprint_filed: 115
-refers_to: tests/plan/s114-test-plan.md §6 (0720 verdict) — an attribution ratified
+refers_to: tests/adt_wrapped_supersede_leak_0720.rs — an attribution ratified
   by a reduced repro that was never re-measured against the signal it explained
 status: open
 ---
@@ -50,8 +50,8 @@ per-iteration slope and a total is a hypothesis, not evidence; it is confirmed
 only by the residual going away, or by an ablation that removes the mechanism
 from the application and shows the predicted drop.
 
-Concretely for the S115 close: the 0720 line in `tests/plan/s114-test-plan.md`
-§6 should be corrected in place (the verdict's *repro* stands; its *attribution
-of the exemplar residue* is falsified), and any S115 record that reads "0720
-fixed → exemplar leak resolved" re-worded. /port corrects the exemplar-side
+The S114 plan is retired to Git; [QA evidence retention](../../../tests/plan/PLAN.md#evidence-currency-and-retention)
+records that the verdict's *repro* stands while its *attribution of the exemplar
+residue* is falsified. Any S115 record that reads "0720 fixed → exemplar leak
+resolved" still requires correction. /port corrects the exemplar-side
 records (`exemplar/CLAUDE.md`, `plan-exemplar.md`) in Phase 6b.

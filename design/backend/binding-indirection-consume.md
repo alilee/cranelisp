@@ -9,9 +9,9 @@ for the consume-position × operand-provenance matrix, converting to serial per-
 mechanism") + §4 R14 row; `design/backend/ownership-codegen.md` §13 (the RC-emission
 machinery this contract extends — read the §13.7 SUPERSEDED banner FIRST: this
 contract is the *separate, orthogonal* family the R14 producer ruling explicitly
-does NOT cover). Consumes the `/qa` disposition in `tests/plan/s114-test-plan.md`
-§1 (FIXME 0669: the I-1 capture face is re-attributed here) + §2 (the acceptance
-rows). Subordinate to `design/backend/backend.md` (§8 indexes this doc).
+does NOT cover). Consumes the `/qa` re-attribution comment in
+`tests/false_fresh_provenance_residual.rs` (FIXME 0669: I-1 capture) and the
+acceptance cells in `tests/binding_indirection_consume.rs`. Subordinate to `design/backend/backend.md` (§8 indexes this doc).
 
 **Boundary (F4 — binding):** this contract handles the analysis-INDEPENDENT
 binding-indirection family (fails under `CRANELISP_NO_OWNERSHIP=1`). It does **NOT**
@@ -151,7 +151,7 @@ Call args already do this via `moded_arg_rc`.
   closure holds an independent reference; `v`'s single scope-dec leaves the captured
   reference live. This is structurally cell G's let-bind alias with **closure capture
   as the consume position** instead of the vec-lit store — an already-enumerated
-  position in this contract (`s114-test-plan.md` §1).
+  position in this contract (see `tests/false_fresh_provenance_residual.rs`).
 
 **Rule R3 — forwarding-suppresses-dec.** At every temp-dec cleanup position — {match
 scrutinee-dec, let-value cleanup} — when the value is FORWARDED OUT of the construct
@@ -230,9 +230,10 @@ rather than a new defect.
 
 ## 5. Dev-wave work items (the contract → serial per-site change-sets)
 
-Each item lands with its `§13.5`-style branch/provenance unit matrix (the `/dev` unit
-tier `/qa` audits) + its `s114-test-plan.md` §2 acceptance cell(s), failing-first. The
-`/dev` root-cause obligation (the §13.3 "twice-burned" discipline) holds: confirm the
+Each item lands with its branch/provenance unit matrix from
+[ownership codegen §13.5](ownership-codegen.md#135-unit-scenario-spaces)
+and its `tests/binding_indirection_consume.rs` acceptance cells, failing-first.
+The `/dev` root-cause obligation in [ownership codegen §13.3](ownership-codegen.md#133-wrapper-and-cow-contracts) holds: confirm the
 imbalance's seam against `CRANELISP_RC_TRACE`/`RC_STATS`/`CODEGEN_DUMP` (+
 `MALLOC_PERTURB_`, asserting the RESULT not balance) BEFORE landing each.
 
@@ -245,7 +246,7 @@ imbalance's seam against `CRANELISP_RC_TRACE`/`RC_STATS`/`CODEGEN_DUMP` (+
 | **W-B4** | **R3** forwarding-suppresses-dec at the match scrutinee-dec seam (`compile_var_pattern_arm`) | F, B ×2, C-off | BI-F, BI-B-cow ×2, BI-C-off; unit: forwarded-alias scrutinee ⇒ no dec; a genuine-temp scrutinee ⇒ dec (cell H twin stays GREEN) |
 | **W-B5 (retired)** | the planned collapse of the three fn-return patches onto one provenance contract. **Retired:** the three finders answer different questions and stay separate ([s122-closure.md](s122-closure.md) §5.1; [s115-carrier-and-rc-sweep.md](s115-carrier-and-rc-sweep.md) §6) | — | no source change |
 
-**Must-hold fences through every item** (`s114-test-plan.md` §2): A/E ×2, cell-H
+**Must-hold fences through every item** (`tests/binding_indirection_consume.rs`): A/E ×2, cell-H
 bare-match, `ownership_reuse::l_c3_*` ×2 (escape-gated reuse — untouched by this
 contract), the CLIF golden lane, `vec_lifecycle`, the B-2 analysis-ON twins
 (`match_scrutinee_cow_var_pattern_*` stay GREEN). W-B1..B4 order matters (the classifier
@@ -307,7 +308,7 @@ release the caller's tree, non-consuming driver"). So the single dec that should
 **(a) backend**; rc=1-at-return with no `consume_io_tree` dec of the leaf ⇒ **(b) intrinsics**.
 The characterization (single fixed residual at the result boundary) fits either. **Attribution
 is filed to `/qa` (FIXME below) so Phase-4 wave assignment does not pre-commit the leak to
-backend before this discriminator runs** — the `s114-test-plan.md` §2 owner line
+backend before this discriminator runs** — the S114 plan owner line (Git `7b1220c7`)
 ("backend main-epilogue / int IO-trampoline result-dec seam") predates the intrinsics-seam
 evidence.
 
@@ -376,16 +377,15 @@ W-B5 is retired.
 **F-R1 / MS-P8:** wave-UNASSIGNED until their §6 discriminators run — the evidence decides
 backend-vs-intrinsics before Phase-4 places them. `/qa` adjudicates from the FIXME.
 
-**MS-P7** is not this contract's (evidence-gated `--link` divergence, `s114-test-plan.md`
-§3.6); named here only to exclude it.
+**MS-P7** is not this contract's (evidence-gated `--link` divergence, `tests/safety_oracle_lane.rs`); named here only to exclude it.
 
 ---
 
 ## 8. Testability + acceptance
 
-The authoritative acceptance rows are `tests/plan/s114-test-plan.md` §2 (the family matrix)
+The acceptance cells are in `tests/binding_indirection_consume.rs`
 — this doc does not restate them. The `/dev` unit tier is the per-item branch/provenance
-matrices (§5) at seam × class grain (`§13.5` template, Principle 23). The twin discipline is
+matrices (§5) at seam × class grain ([ownership codegen §13.5](ownership-codegen.md#135-unit-scenario-spaces), Principle 23). The twin discipline is
 binding: every RED names its GREEN twin in-file (cell H for the match rows; cell E for the
 alias rows). The `[oracle]` graduation (family through `assert_safety_matrix` where the lane
 supports the toggle axis) is `/qa`/`/testing`'s; this contract's cells are toggle-pair cells

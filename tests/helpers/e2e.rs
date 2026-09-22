@@ -1599,7 +1599,7 @@ impl Cranelisp {
 }
 
 // =============================================================================
-// Safety-matrix combinator (MS-P1, tests/plan/s113-test-plan.md §2).
+// Safety-matrix combinator (MS-P1, tests/plan/memory-safety-coverage.md §1).
 //
 // One PROGRAM (a `user.cl` body plus optional sibling modules) is exercised
 // through the memory-safety DIFFERENTIAL-ORACLE matrix. The frame: every

@@ -1,4 +1,4 @@
-// fn_as_value_carrier_loss.rs — S114 W7 PIN-NOW (s114-test-plan §11 item 5).
+// fn_as_value_carrier_loss.rs — S114 W7 PIN-NOW (design/backend/s115-carrier-and-rc-sweep.md §1.3).
 //
 // The fn-as-value GOT-slot carrier-loss defect: partially applying a trait operator
 // whose impl IS present mints a fn-as-value wrapper for the operator, and the seam

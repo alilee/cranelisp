@@ -19,7 +19,7 @@
 // /design(typecheck) `traits.md §7.0.1` threads the method's home). Until then the
 // accept cells are RED. Every RED here flips at W2.
 //
-// Family map (tests/plan/s113-test-plan.md §1.1):
+// Family map:
 //   F-D2-1  nullary_return_dispatch_method_only_import_no_codegen_leak  (RED→W2)
 //   F-D2-2  unary_arg_dispatch_method_only_import_accepts_and_dispatches (RED→W2, INVERTED)
 //   F-D2-4  nullary_return_dispatch_trait_imported_runs_green_fence      (GREEN)

@@ -71,4 +71,4 @@ with different jobs.
 | `prelude.cl` | re-export of the `primitives` names examples use (no definitions) | — (name surface) |
 | `operators.cl` | `Num` (`+ - * /`), `Eq` (`= !=`), `Ord` (`< > <= >=`) with `Int`/`Float`/`Bool`/`String` impls | `15-traits.cl` |
 
-The build-out is sequenced in `examples/plan-examples.md` §2d.
+The build-out is sequenced in [the examples plan](../plan-examples.md#3-the-examples-local-library).

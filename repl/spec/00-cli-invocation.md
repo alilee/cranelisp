@@ -7,18 +7,18 @@ The `cranelisp` binary supports the following invocation modes:
 The general invocation form is:
 
 ```
-cranelisp [target] [--run | --link] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent]
+cranelisp [--run | --link] [-o <path> | --output <path>] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [target]
 ```
 
-The optional positional `[target]` specifies the project root and entry module (see §0.5). The mode flags (`--run`, `--link`) and the modifier flags (`--no-color`, `--no-cache`, `--agent`, `--no-agent`) are boolean modifiers and take no parameter; `--priority-workers` and `--nice-workers` each take a numeric argument `N`. Flags modify the behaviour applied to the resolved entry module.
+The optional positional `[target]` specifies the project root and entry module (see §0.5). Invocations in this section show options before the target; §0.5 governs where the target may appear. The mode flags (`--run`, `--link`) and the modifier flags (`--no-color`, `--no-cache`, `--agent`, `--no-agent`) are boolean modifiers and take no parameter; `--priority-workers` and `--nice-workers` each take a numeric argument `N`. `-o <path>` and its long form `--output <path>` take a path argument (§0.2.1.1). Flags modify the behaviour applied to the resolved entry module.
 
 The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`, `--nice-workers`, `--agent`, `--no-agent`) are detailed in §0.6. The agent flags (`--agent`/`--no-agent`) are REPL-only and behaviorally gated on the embedded-agent feature; see §0.6.1 and §17.
 
 | Mode | Invocation | Description | Status |
 |---|---|---|---|
 | REPL | `cranelisp [target]` | Interactive REPL (default when no mode flag) | [Tested] |
-| Run | `cranelisp [target] --run` | Compile and execute `main`, then exit | [Tested] |
-| Link | `cranelisp [target] --link` | Compile and produce linkable object file | [Tested] |
+| Run | `cranelisp --run [target]` | Compile and execute `main`, then exit | [Tested] |
+| Link | `cranelisp --link [target]` | Compile and produce linkable object file | [Tested] |
 | Version | `cranelisp --version` | Print version string and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
 | Help | `cranelisp --help` | Print usage summary and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
 
@@ -30,27 +30,16 @@ When invoked with no arguments, the binary MUST start the interactive REPL with 
 
 When invoked with a positional target (e.g. `cranelisp mymod`, `cranelisp dir/mymod`), the REPL MUST resolve the project root and entry module per §0.5 and start the REPL in that context. [R4 S52]
 
-### 0.2 Run Mode (`--run`) [Tested+Neg tests/repl_persist_race::repl_dep_load_no_race_with_persistent_workers]
+### 0.2 Run Mode (`--run`) [Uncovered S122 — was tests/repl_persist_race::repl_dep_load_no_race_with_persistent_workers]
 
-`cranelisp [target] --run` MUST compile the module graph rooted at the resolved entry module, then call `main` in the entry module. The binary MUST NOT print any output itself — all output is produced by IO effects within the program. [R4 S52]
+`cranelisp --run [target]` MUST compile the module graph rooted at the resolved entry module, then call `main` in the entry module. The binary MUST NOT print any output itself — all output is produced by IO effects within the program. [R4 S52]
 
 **Entry point resolution:**
 
 1. The entry module MUST define a zero-argument function named `main`.
 2. If `main` is not defined in the entry module, the binary MUST print an error to stderr and exit with status code 1. The error message MUST mention that `main` is required.
 
-**Result handling by return type:**
-
-| `main` return type | Behavior |
-|---|---|
-| `IO _` | Execute through the IO trampoline (side effects happen). The inner type determines the exit code per the exit code rules below. |
-| `Int` | Use the value as the process exit code. |
-| Any other type | Exit with status code 0. No output. |
-
-**Exit code rules:**
-
-- If the inner result type (after IO unwrapping) is `Int`, the value is used as the process exit code.
-- For all other types, exit code is 0.
+**Result handling.** `main` MUST have type `(Fn [] (IO _))` (`spec/10-io.md` §10.6). A `main` of any other type, including a bare `Int`, is a compilation failure (see below). `main` executes through the IO trampoline, so its side effects happen. If the inner result type is `Int`, that value is the process exit code; for any other inner type the exit code is 0.
 
 **Warnings** MUST be printed to stderr. On compilation failure, the error MUST be printed to stderr and the process MUST exit with a non-zero status code.
 
@@ -58,7 +47,7 @@ If the resolved entry module source file does not exist, the binary MUST print a
 
 ### 0.2.1 Link Mode (`--link`) [R4 S52]
 
-`cranelisp [target] --link` MUST compile the module graph rooted at the resolved entry module and produce a linked, standalone **executable**. It MUST NOT execute any code and MUST NOT produce output to stdout (beyond the `; Linking: …` progress line). [R4 S52]
+`cranelisp --link [target]` MUST compile the module graph rooted at the resolved entry module and produce a linked, standalone **executable**. It MUST NOT execute any code and MUST NOT produce output to stdout (beyond the `; Linking: …` progress line). [R4 S52]
 
 > **Object-file → standalone-executable wording (SETTLED [S106], FIXME 0550).** The pre-S106 text
 > said `--link` produces "a linkable **object file**", but the implementation (and
@@ -80,7 +69,7 @@ directory. One rule covers both the file-target and directory-project cases:
 - **File target** (`examples/hello.cl`, or bare `mymod` resolving to `mymod.cl`): the entry module's
   source is `examples/hello.cl` / `mymod.cl`, so the artifact is `examples/hello` / `mymod` — the
   stem, beside the source. [S106]
-- **Directory-project target** (§0.5.1 rule 3 — `cranelisp myproject --link`, where `myproject/`
+- **Directory-project target** (§0.5.1 rule 3 — `cranelisp --link myproject`, where `myproject/`
   exists and no `myproject.cl` beside it, entry module `user`): the entry module's source is
   `myproject/user.cl`, so the artifact is `myproject/user` — the stem, beside the source. **Not**
   `myproject/myproject`, **not** `./user`. [S106]
@@ -95,6 +84,14 @@ suffix (Windows), the platform suffix applies: `myproject/user.exe`, `examples/h
 explicitly, overriding the derivation above. This is the standard CLI escape hatch (`cc -o`,
 `rustc -o`) for a user who wants the artifact somewhere specific. When `-o` is given, the resolved
 path is used verbatim (relative paths resolved against cwd). [S106]
+
+**`--output <path>` long form:** `--output <path>` is the long form of `-o <path>`. The two
+spellings are equivalent: every requirement on `-o <path>` applies identically to
+`--output <path>`. [S122]
+
+**Link-only output path (MUST) [S122]:** `-o <path>` is accepted only together with `--link`,
+the only mode that produces an artifact. In REPL or `--run` mode, the binary MUST print an error
+and the usage hint to stderr and exit with status code 1 (§0.3). [S122]
 
 **Collision-diagnostic floor (MUST) [S106]:** if the resolved
 output path is an **existing directory**, the binary MUST emit a clear cranelisp diagnostic
@@ -121,7 +118,7 @@ When added, they MUST follow standard CLI conventions (GNU-style long flags, std
 
 ### 0.5 Positional Target Resolution [R4 S52]
 
-All invocation modes accept an optional positional `[target]` argument that specifies the **project root** and **entry module**. The target MUST be the last argument on the command line, after all flags.
+All invocation modes accept an optional positional `[target]` argument that specifies the **project root** and **entry module**. The target may appear before, after or between options. An option that takes a value keeps that value immediately after it.
 
 #### 0.5.1 Resolution Rules
 
@@ -165,9 +162,9 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
 | `cranelisp ./mymod` | cwd | `mymod` | Explicit cwd via `./` |
 | `cranelisp ../other/app` | `../other/` | `app` | Relative parent path |
 | `cranelisp --run` | cwd | `user` | Run mode, default target |
-| `cranelisp mymod --run` | cwd | `mymod` | Run mode with target |
-| `cranelisp dir/mymod --run` | `dir/` | `mymod` | Run mode with path |
-| `cranelisp dir/mymod --link` | `dir/` | `mymod` | Link mode with path |
+| `cranelisp --run mymod` | cwd | `mymod` | Run mode with target |
+| `cranelisp --run dir/mymod` | `dir/` | `mymod` | Run mode with path |
+| `cranelisp --link dir/mymod` | `dir/` | `mymod` | Link mode with path |
 
 #### 0.5.5 Error Handling [R4 S52]
 

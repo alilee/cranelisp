@@ -252,7 +252,7 @@ new type. No new `cranelisp-types` staging primitive is required; no `/arch` FIX
 
 **Status: DESIGN (S113 Phase 3, `/design`(src/)).** The W4 rider for FIXME 0604
 per `/arch` revision 7 (`safety-invariants.md` R7 / §6 task 4) + `/qa`'s
-`s113-test-plan.md` PS-R7. The register row R7 is **`/arch`-owned**
+PS-R7 allocation (S113 plan in Git at `7b1220c7`). The register row R7 is **`/arch`-owned**
 (`safety-invariants.md`); this section designs only the **int-side mechanism** —
 the live-table insertion-seam asserts — per the SPRINT Q1-revision-1 ownership
 split. **Ungated by the W0 depth decision** (it is the user's "assertion density"

@@ -1147,7 +1147,7 @@ fn persist_bare_expr_not_written_to_backing_neg() {
     );
 }
 
-// spec: repl/spec.md §18.8 — after persisting a session that evaluated a bare
+// spec: repl/spec/15-session-persistence.md §15.7 — after persisting a session that evaluated a bare
 // expression, re-running the project MUST load cleanly with no re-materialised dead
 // top-level expression (no double-eval, no error). RED on HEAD (FIXME 0549).
 #[test]
@@ -1530,5 +1530,154 @@ fn prelude_trait_impl_survives_restart() {
     assert!(
         !c.contains("no impl of trait"),
         "session 2 MUST NOT report `no impl of trait`; got:\n{c}"
+    );
+}
+
+// =============================================================================
+// Startup load failure: prompt, error block, repair and failed-source retention
+// (repl/spec/15-session-persistence.md §15.2.3, with the §15.1 and
+// repl/spec/18-redefinition.md §18.8 retention exceptions)
+// =============================================================================
+
+const STARTUP_GOOD: &str = "(defn good [:Int x] (add-i64 x 10))";
+const STARTUP_BROKEN: &str = "(defn broken [] (undefined-name 1))";
+
+fn seeded_broken_session() -> Cranelisp {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(&format!("{STARTUP_GOOD}\n{STARTUP_BROKEN}\n"))
+}
+
+/// Piped-REPL stdout split at each prompt: index 0 is startup output,
+/// index N is the response to the Nth input turn.
+fn turns(stdout: &str) -> Vec<&str> {
+    stdout.split("user>").collect()
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2.3 — a backing file that fails
+// to compile at startup is reported and the REPL still reaches a prompt; while
+// blocked an ordinary expression is refused; a definition repairing the broken
+// name is accepted and clears the block.
+#[test]
+fn persist_startup_load_failure_reaches_prompt_blocks_then_repairs() {
+    let out = seeded_broken_session()
+        .stdin("(good 1)\n(defn broken [] 2)\n(broken)\n(good 1)\n")
+        .output()
+        .assert_ok();
+    let all = format!("{}{}", out.stdout, out.stderr);
+    // Implementation-specific report text (lifecycle.rs render_startup_error_report);
+    // §15.2.3 requires a report, not this wording. A format change updates this line.
+    assert!(
+        all.contains("[errors: user.cl]"),
+        "startup MUST report the load error; got:\n{all}"
+    );
+    let t = turns(&out.stdout);
+    assert!(
+        t.len() >= 5,
+        "expected a prompt before each of 4 turns; stdout:\n{}",
+        out.stdout
+    );
+    // "has errors" is the implementation's refusal line, not spec-pinned wording.
+    assert!(
+        t[1].contains("has errors") && !t[1].contains(":primitives/Int"),
+        "turn 1 `(good 1)` MUST be refused while blocked; stdout:\n{}",
+        out.stdout
+    );
+    for (n, needle) in [(3, ":primitives/Int 2"), (4, ":primitives/Int 11")] {
+        assert!(
+            t[n].contains(needle),
+            "turn {n} after the repair MUST yield {needle}; stdout:\n{}",
+            out.stdout
+        );
+    }
+    for n in 2..=4 {
+        assert!(
+            !t[n].contains("has errors"),
+            "turn {n}: the block MUST clear once the definition repairs it; stdout:\n{}",
+            out.stdout
+        );
+    }
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2.3 — startup-failed source is
+// retained verbatim through a regeneration triggered by a different name, and
+// released once a successful same-name definition replaces it (§15.1, §18.8).
+#[test]
+fn persist_startup_failed_source_retained_until_same_name_repair_neg() {
+    let first = seeded_broken_session()
+        .stdin("(defn other [] 3)\n")
+        .output()
+        .assert_ok();
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.contains("defn other") && saved.contains("defn good"),
+        "the different-name definition MUST regenerate the file; user.cl:\n{saved}"
+    );
+    assert_eq!(
+        saved.matches(STARTUP_BROKEN).count(),
+        1,
+        "a different-name definition MUST NOT drop (or duplicate) the failed \
+         source; user.cl:\n{saved}"
+    );
+
+    let second = first
+        .run_again()
+        .repl()
+        .stdin("(defn broken [] 2)\n")
+        .output()
+        .assert_ok();
+    let repaired = second.read_tmp("user.cl");
+    assert!(
+        !repaired.contains("undefined-name") && repaired.matches("defn broken").count() == 1,
+        "the same-name repair MUST replace the failed source exactly once; \
+         user.cl:\n{repaired}"
+    );
+
+    let third = second
+        .run_again()
+        .repl()
+        .stdin("(broken)\n")
+        .output()
+        .assert_ok();
+    let all = format!("{}{}", third.stdout, third.stderr);
+    assert!(
+        third.stdout.contains(":primitives/Int 2") && !all.contains("[errors:"),
+        "the repaired file MUST restore cleanly; got:\n{all}"
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2.3 — every later regeneration
+// keeps startup-failed source until a successful definition replaces it;
+// `/reset` is not such a definition. Was RED when authored (S122): the
+// `ReplCommand::Reset` arm cleared `failed_forms`, so regeneration after
+// `/reset` omitted the failed source. Reset-free control: session 1 of
+// persist_startup_failed_source_retained_until_same_name_repair_neg.
+// defect: class=release-path-bypass locus=src/repl/mod.rs::dispatch_command (the `ReplCommand::Reset` arm) found=S122 owner=/dev
+#[test]
+fn persist_startup_failed_source_survives_reset_then_other_definition() {
+    let out = seeded_broken_session()
+        .stdin("/reset\n(defn other [] 3)\n")
+        .output()
+        .assert_ok();
+    // Implementation-specific `/reset` reply (src/repl/mod.rs); it proves turn 1
+    // reached the reset handler, not spec-pinned wording. A reply change updates this line.
+    assert!(
+        turns(&out.stdout)
+            .get(1)
+            .is_some_and(|t| t.contains("command not yet available")),
+        "turn 1 `/reset` MUST reach the reset handler; stdout:\n{}",
+        out.stdout
+    );
+    let saved = out.read_tmp("user.cl");
+    assert!(
+        saved.contains("defn other"),
+        "the definition after /reset MUST regenerate the file; user.cl:\n{saved}"
+    );
+    assert_eq!(
+        saved.matches(STARTUP_BROKEN).count(),
+        1,
+        "regeneration after /reset MUST retain the unrepaired failed source; \
+         user.cl:\n{saved}"
     );
 }

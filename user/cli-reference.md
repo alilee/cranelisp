@@ -3,13 +3,17 @@
 The `cranelisp` binary has one job: take an entry module and either run it, link
 it into a standalone executable, or open an interactive REPL on it. This page is
 the practical reference for the command line. The normative contract lives in
-[`repl/spec.md §0`](../repl/spec.md) — this page re-presents it for everyday use.
+[`repl/spec/00-cli-invocation.md` §0](../repl/spec/00-cli-invocation.md) — this
+page re-presents it for everyday use.
 
 ## Synopsis
 
 ```
-cranelisp [target] [--run | --link [-o <path>]] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--no-agent]
+cranelisp [--run | --link] [-o <path> | --output <path>] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--no-agent] [target]
 ```
+
+This synopsis shows the default build’s options before the target. An agent-capable build prints
+`[--agent | --no-agent] [--yes]` in place of `[--no-agent]`.
 
 - `[target]` is an optional positional argument naming the entry module / project
   root. With no target, the REPL opens on the `user` module in the current
@@ -17,15 +21,18 @@ cranelisp [target] [--run | --link [-o <path>]] [--no-color] [--no-cache] [--pri
 - The mode flags `--run` and `--link` are **mutually exclusive** — passing both is
   an error.
 - With no mode flag, `cranelisp` starts the **REPL**.
-- The target may appear before or after the flags: `cranelisp app --run` and
-  `cranelisp --run app` are equivalent.
+- The target may appear before, after or between options: `cranelisp app --run` and
+  `cranelisp --run app` are equivalent. Keep an option’s value immediately after
+  that option, as in `--priority-workers 4`.
+- `-o <path>` (long form `--output <path>`) is accepted only together with `--link`; with any other mode it is
+  an error.
 - An agent-capable build additionally accepts `--agent` and `--yes` (or `-y`).
   A binary built without that feature rejects both flags and does not advertise
   them in its usage line.
 
 > **Note:** there is no working `--help` or `--version` yet. Passing them today
 > reports `unknown flag` and prints the usage line. They are specified as Future
-> in [`repl/spec.md §0.4`](../repl/spec.md).
+> in [`repl/spec/00-cli-invocation.md` §0.4](../repl/spec/00-cli-invocation.md).
 
 ## Modes
 
@@ -45,8 +52,9 @@ The REPL is self-documenting: every symbol and expression you enter responds wit
 its type and value in `:Type value` notation, and slash commands (`/sig`, `/doc`,
 `/list`, `/run-tests`, …) introspect the session. The full REPL experience —
 display formats, commands, error presentation, cache and file-watch behaviour — is
-specified in [`repl/spec.md`](../repl/spec.md); the slash-command catalogue is in
-[`repl/spec.md §3`](../repl/spec.md).
+specified in the [REPL specification](../repl/spec/index.md); the slash-command
+catalogue is
+[`repl/spec/03-slash-commands.md` §3](../repl/spec/03-slash-commands.md).
 
 #### Recall language syntax — `/syntax`
 
@@ -95,21 +103,22 @@ If nothing matches you get a plain `no importable symbols matched '<query>'` not
 never an error. The library index builds in the background, so a `/search` issued
 the moment the REPL starts may report partial results with an `indexing N modules…`
 note — repeat the search a moment later for the fuller set. The full contract is in
-[`repl/spec.md §17.19`](../repl/spec.md).
+[`repl/spec/17a-agent-language-awareness.md` §17.19](../repl/spec/17a-agent-language-awareness.md).
 
 **Artifact:** none on disk beyond the regenerated entry-module source file; the
 session is interactive.
 
 ### Run (`--run`)
 
-`cranelisp [target] --run`
+`cranelisp --run [target]`
 
 Compiles the module graph rooted at the entry module, then calls the entry module's
 zero-argument `main` function and exits. The binary prints nothing itself — all
 output comes from IO effects inside your program.
 
-- `main` must be defined in the entry module and must be an `IO` action; a non-`IO`
-  `main` is rejected before execution.
+- `main` must be defined in the entry module as a zero-argument function
+  returning `IO _`; any other `main` is rejected before execution. `--link`
+  applies the same check.
 - **Exit code:** if `main`'s result (after unwrapping `IO`) is an `Int`, that value
   becomes the process exit code; any other result yields exit code `0`. A
   compilation error prints to stderr and exits non-zero. The **linked executable
@@ -119,12 +128,19 @@ output comes from IO effects inside your program.
 
 ### Link (`--link`)
 
-`cranelisp [target] --link [-o <path>]`
+`cranelisp --link [-o <path> | --output <path>] [target]`
 
 Compiles the module graph and produces a **standalone executable** from the object
 output. It does not execute any code and writes nothing to stdout (beyond a
-`; Linking: …` progress line). Linux/aarch64 ELF standalone executables are
-supported.
+`; Linking: …` progress line). Standalone executables can be produced on aarch64
+Linux and aarch64 macOS hosts; on any other host `--link` reports that
+executable generation is unsupported.
+
+A program that calls the test-discovery builtin `discover-tests` cannot be
+linked. `--link` refuses it before invoking the system linker, naming the
+referencing function and suggesting `--run` or the REPL's `/run-tests` instead.
+Test discovery is available in the REPL and under `--run`; see
+[`repl/spec/16-test-discovery.md`](../repl/spec/16-test-discovery.md).
 
 #### Where the executable is written
 
@@ -132,30 +148,27 @@ By default the executable is named after the **entry module's source-file stem**
 written **beside that source file** — not into the current directory, and not after
 the project-directory name. One rule covers both target shapes:
 
-- **File target** — `cranelisp examples/hello.cl --link` (or bare `cranelisp mymod
-  --link`, which resolves to `mymod.cl`) writes `examples/hello` (respectively
+- **File target** — `cranelisp --link demo/hello.cl` (or bare `cranelisp --link
+  mymod`, which resolves to `mymod.cl`) writes `demo/hello` (respectively
   `mymod`), beside the source.
-- **Directory-project target** — `cranelisp myproject --link` (where `myproject/`
+- **Directory-project target** — `cranelisp --link myproject` (where `myproject/`
   exists with no `myproject.cl` beside it, so the entry module is `user`) writes
-  `myproject/user`, beside `myproject/user.cl`. **Not** `myproject/myproject`, and
-  **not** `./user`.
-
-On a platform with an executable suffix (Windows) the suffix is added:
-`examples/hello.exe`, `myproject/user.exe`.
+  `myproject/user`, beside `myproject/user.cl` — not `myproject/myproject`, and
+  not a `user` file in the current directory.
 
 Because the artifact lands next to its source rather than in the current directory,
-the common `entry.cl` + `entry/`-submodule layout links cleanly: `cranelisp app
---link` writes `app` beside `app.cl`, never colliding with the `app/` submodule
+the common `entry.cl` + `entry/`-submodule layout links cleanly: `cranelisp --link
+app` writes `app` beside `app.cl`, never colliding with the `app/` submodule
 directory in the current directory.
 
-#### Choosing the output path — `-o <path>`
+#### Choosing the output path — `-o <path>` / `--output <path>`
 
-Pass `-o <path>` to set the output path explicitly, overriding the derivation above
+Pass `-o <path>` (or its long form `--output <path>`) to set the output path explicitly, overriding the derivation above
 (the standard `cc -o` / `rustc -o` escape hatch). The resolved path is used verbatim;
 a relative path is resolved against the current directory.
 
 ```
-cranelisp myproject --link -o build/myapp
+cranelisp --link -o build/myapp myproject
 ```
 
 #### Output-path collision with a directory
@@ -174,7 +187,7 @@ its executable next to a sibling `user/` directory. Choose a different path with
 
 The output-artifact name, location, the `-o` override, and the collision-diagnostic
 floor are normatively specified in
-[`repl/spec.md §0.2.1.1`](../repl/spec.md).
+[`repl/spec/00-cli-invocation.md` §0.2.1.1](../repl/spec/00-cli-invocation.md).
 
 **Artifact:** a linked standalone executable, named after the entry module's source
 stem and written beside that source (or at the `-o` path).
@@ -182,15 +195,13 @@ stem and written beside that source (or at the `-o` path).
 #### Exit code of the linked executable
 
 Running the produced executable applies exactly the same rule as `--run`: an `Int`
-result becomes the process exit code, **any other result exits `0`**. The two modes
-agree by construction — a program whose `main` yields, say, a `String` exits `0`
-under both. (Before Sprint 118 the linked stub truncated a heap result to the low 32
-bits of its pointer, so `--run` and the linked binary could disagree; that is fixed.)
+result becomes the process exit code, **any other result exits `0`**. A program
+whose `main` yields, say, a `String` exits `0` under both.
 
 ## Options
 
-All options are boolean modifiers or take a single numeric argument; none change
-which mode is selected except `--run` / `--link` above.
+These options do not select a mode. They are boolean modifiers or take a single
+numeric argument.
 
 | Option | Effect | Default |
 |---|---|---|
@@ -198,9 +209,9 @@ which mode is selected except `--run` / `--link` above.
 | `--no-cache` | Bypass the on-disk module cache (recompile from source). **Error if combined with `--link`.** | cache on |
 | `--priority-workers N` | Number of priority compilation workers. `N` must be numeric (non-numeric is an error). | `1` |
 | `--nice-workers N` | Number of background ("nice") compilation workers. `N` must be numeric. | `1` |
-| `--agent` | On an agent-capable binary, request the embedded agent for a REPL session. It still needs a configured provider at runtime; in `--run`/`--link` it is accepted but has no effect. A feature-off binary rejects this flag. See [`repl/spec.md §0.6.1`](../repl/spec.md). | agent off |
+| `--agent` | On an agent-capable binary, request the embedded agent for a REPL session. It still needs a configured provider at runtime; in `--run`/`--link` it is accepted but has no effect. A feature-off binary rejects this flag. See [`repl/spec/00-cli-invocation.md` §0.6.1](../repl/spec/00-cli-invocation.md). | agent off |
 | `--no-agent` | Force the embedded agent off; it wins when paired with `--agent`. It is accepted in both build variants and is a no-op in a feature-off binary. | — |
-| `--yes` (short: `-y`) | On an agent-capable binary, auto-answer the agent's write-consent prompts. It does not enable the agent and is inactive in `--run`/`--link`; a feature-off binary rejects it. See [`repl/spec.md §0.6.2`](../repl/spec.md). | off |
+| `--yes` (short: `-y`) | On an agent-capable binary, auto-answer the agent's write-consent prompts. It does not enable the agent and is inactive in `--run`/`--link`; a feature-off binary rejects it. See [`repl/spec/00-cli-invocation.md` §0.6.2](../repl/spec/00-cli-invocation.md). | off |
 
 Notes:
 
@@ -210,7 +221,8 @@ Notes:
   line and exits with status `1`.
 - On an agent-capable build, the agent flags are REPL-session knobs: in
   `--run`/`--link` they are accepted and do nothing. The embedded agent experience
-  itself is specified in [`repl/spec.md §17`](../repl/spec.md).
+  itself is specified in
+  [`repl/spec/17-embedded-agent.md` §17](../repl/spec/17-embedded-agent.md).
 
 ## Choosing what to compile (the target)
 
@@ -225,15 +237,15 @@ Resolution applies these rules in order:
 1. **No target** → project root is the current directory, entry module is `user`.
    This is what plain `cranelisp` does.
 2. **Target contains a `/`** → the directory part is the project root and the final
-   component is the entry module. `cranelisp dir/app` runs `app` with project root
-   `dir/`. Use `./app` to force "the `app` module in the current directory" rather
-   than letting rule 3 or 4 decide.
+   component is the entry module. `cranelisp dir/app` runs the `app` module with
+   project root `dir/`. Prefix a bare name with `./` to force "this module in the
+   current directory" rather than letting rule 3 or 4 decide.
 3. **Target is an existing directory** (no `/`, and there is *no* same-named
    `<target>.cl` file beside it) → that directory is the project root and the entry
    module is `user`. `cranelisp myproject` (where `myproject/` exists and there is no
    `myproject.cl`) opens `myproject/user.cl`.
 4. **Bare name** → project root is the current directory and the entry module is the
-   name. `cranelisp app` opens `./app.cl`.
+   name. `cranelisp app` opens `app.cl` in the current directory.
 
 ### Worked example: a `.cl` file vs a same-named directory
 
@@ -256,7 +268,7 @@ is why a project whose entry declares submodules still compiles with a bare
 
 The full resolution rules, the directory-component detection edge cases, and the
 ambiguity/error handling are normatively specified in
-[`repl/spec.md §0.5`](../repl/spec.md).
+[`repl/spec/00-cli-invocation.md` §0.5](../repl/spec/00-cli-invocation.md).
 
 ## Where Cranelisp looks for libraries (`Cranelisp.toml`)
 
@@ -269,14 +281,16 @@ Understanding how that path is built matters as soon as you reach for `stdlib/`.
 The resolved lib-directory set is the **union** of every source below; no source
 replaces or suppresses another. A directory listed anywhere is searched.
 
-1. A directory passed programmatically / via a CLI lib-dir flag.
-2. The `CRANELISP_LIB` environment variable — a colon-separated list of directories.
-3. A `Cranelisp.toml` `lib-dirs` entry in the project root.
-4. The default `{project-root}/stdlib/`, if that directory exists.
+1. The `CRANELISP_LIB` environment variable — a colon-separated list of directories.
+2. A `Cranelisp.toml` `lib-dirs` entry in the project root.
+3. The default `{project-root}/stdlib/`, if that directory exists.
+
+The `cranelisp` command line has no lib-directory flag; set `CRANELISP_LIB` or
+`Cranelisp.toml` instead.
 
 When the same module name resolves in more than one of these, the **first match
-wins**, in the order above (command line → `CRANELISP_LIB` → `Cranelisp.toml` →
-`{project-root}/stdlib/` last). Note `CRANELISP_LIB` is searched **before**
+wins**, in the order above (`CRANELISP_LIB` → `Cranelisp.toml` →
+`{project-root}/stdlib/` last). `CRANELISP_LIB` is searched **before**
 `Cranelisp.toml` — environment over config file, matching Cargo's precedence.
 
 The key consequence: **a `Cranelisp.toml` can only add paths, never turn one off.**
@@ -328,7 +342,7 @@ Three things to know about the scaffold:
   config is a convenience, never a requirement.
 
 The trigger, mode, notice, and safety guarantees are specified in
-[`repl/spec.md §0.5.7`](../repl/spec.md).
+[`repl/spec/00-cli-invocation.md` §0.5.7](../repl/spec/00-cli-invocation.md).
 
 ## Environment variables
 
@@ -350,8 +364,9 @@ that parallelism is semantically invisible, neither variable changes what a prog
 computes — only how it is scheduled. They apply identically in **REPL, `--run`, and
 `--link`** modes, and each is read **once per process**. Their normative home — exact
 effect, defaults, and scope — is
-[`repl/spec.md §0.7`](../repl/spec.md) (Execution Environment Variables); the rows
-above re-present that contract for everyday use.
+[`repl/spec/00-cli-invocation.md` §0.7](../repl/spec/00-cli-invocation.md)
+(Execution Environment Variables); the rows above re-present that contract for
+everyday use.
 
 ### Memory-safety diagnostics (developer tools)
 
@@ -378,9 +393,11 @@ configuration, and `CRANELISP_RC_DEC_CHECK=1` adds the point-of-fault report. Th
 
 ## Cross-links
 
-- **REPL experience** — display formats, prompts, exit conditions, and the CLI
-  modes normatively: [`repl/spec.md §0`](../repl/spec.md). Slash commands:
-  [`repl/spec.md §3`](../repl/spec.md).
+- **REPL experience** — display formats, prompts and exit conditions: the
+  [REPL specification](../repl/spec/index.md). CLI modes:
+  [`repl/spec/00-cli-invocation.md` §0](../repl/spec/00-cli-invocation.md).
+  Slash commands:
+  [`repl/spec/03-slash-commands.md` §3](../repl/spec/03-slash-commands.md).
 - **Language** — semantics, types, special forms: [`spec/`](../spec/).
 - **Project layout / modules** — project root, entry file, submodule directories:
   [`spec/08-modules.md §8.11`](../spec/08-modules.md).

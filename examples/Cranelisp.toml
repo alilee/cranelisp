@@ -26,8 +26,5 @@
 # breaks free-standing runs (a different `prelude` wins). Run the examples
 # with NO `CRANELISP_LIB` set, from this directory, exactly as
 # `tests/examples.rs` does.
-#
-# See also: design/stdlib/examples-run-path.md (sprint 60 Workstream F
-# decision record).
 
 lib-dirs = ["./lib"]

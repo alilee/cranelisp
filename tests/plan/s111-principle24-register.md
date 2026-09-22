@@ -189,7 +189,8 @@ the enumerated set (rows 1–6 all cured; the Fix-A conditional row remains
 fenced with its I-3 tripwire). First clean interval for the class; the S114
 0653 sweep confirms compiler-wide.
 
-**MC-X3 dual-path audit additions (2026-07-19, `s113-test-plan.md` §3.5 —
+**MC-X3 dual-path audit additions (2026-07-19, the S113 plan §3.5, retired to
+Git as the S113 test plan at revision `7b1220c7` —
 the user-directed qualified-own-module audit).** New sweep rows:
 
 | # | Site | Verdict | Notes |
@@ -199,7 +200,8 @@ the user-directed qualified-own-module audit).** New sweep rows:
 | 9 | `cranelisp_types::resolve.rs::resolve_qualified` (:694) resolves via committed `symbol_tables` only — the qualified leg never received the S109 AN-5 first-hop-VIEW (staging∪live) arm the unqualified path has | staging-visibility asymmetry (the MC-X3 root seam; not a name-compare, but the same one-chain-two-behaviors family) | Supporting fix (types crate, /arch approval) per §3.5; the S114 0653 sweep verifies no OTHER committed-only reads sit on the qualified leg |
 
 Cross-references: FIXME 0653 (P24 corollary; the S114 sweep row cites this
-table as its seed register); `s113-test-plan.md` §6 recurring-class record
+table as its seed register); the S113 plan §6 recurring-class record (same
+Git revision)
 (the three W2a instances: D2 dispatch rooting, `verify_constraints`,
 dispatch-type resolution — those were fixed at the resolve-once seam in W2a
 and are subsumed by rows 2–6's cures); MC-X2 (`current_module` carrier-keying

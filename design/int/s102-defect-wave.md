@@ -14,8 +14,7 @@
 > §8.3 regeneration, §8.6 transaction).
 >
 > Normative UX inputs: `repl/spec.md` §18.1.1 (downgrade report — /repl landed the
-> wording this phase), §18.5 (trap presentation), §18.8 (restart floor), §14.4
-> (error-blocked state), §15.4 (regeneration invariants, authorship fidelity), §3.6
+> wording this phase), §18.5 (trap presentation), [startup load failure, section 15.2.3](../../repl/spec/15-session-persistence.md) (restart floor), [error-blocked state, section 14.4](../../repl/spec/14-file-watching.md), §15.4 (regeneration invariants, authorship fidelity), §3.6
 > (/info source). Where /repl or /spec work is still in flight (0484 precedence,
 > 0492 arbitration), the design is conditional and says so.
 
@@ -86,7 +85,7 @@ binds to it). No cross-crate change; no `cranelisp-types` change.
 > F5a macro-target handling + the F3 macro-clause resolution now live in
 > `session-transaction.md §10 T1` (the authoritative home). The §5.2 `error_modules` framing
 > below is corrected per 0507 addendum 5: the §14.4 gate WAS wired in `process_commands`; the
-> Wave-5 change was the §18.8 definition carve-out (`is_repair_definition_turn`).
+> Wave-5 change was the [startup load failure, section 15.2.3](../../repl/spec/15-session-persistence.md) definition carve-out (`is_repair_definition_turn`).
 
 **VERDICT (as of S102): OUT of S102 — defer to S103, with the print as shipped mitigation.**
 Mechanics are designed (session-transaction.md §10 T1 amendment: end-of-turn reload
@@ -307,10 +306,10 @@ exit-1 contract):
    user removes it externally. This is the §4.2 authorship invariant applied to
    forms that never compiled: authored text is the authority, compile success is not
    a persistence gate.
-4. **Error-blocked state** (§14.4 as amended by §18.8): the entry joins
+4. **Error-blocked state** (§14.4 as amended by [startup load failure, section 15.2.3](../../repl/spec/15-session-persistence.md)): the entry joins
    `error_modules`; while the failed-form set is non-empty, **expression turns are
    refused** with the §14.4 message but **definition turns are always accepted** (they
-   are the repair — §18.8's explicit carve-out). A successful definition turn removes
+   are the repair — [startup load failure, section 15.2.3](../../repl/spec/15-session-persistence.md)'s explicit carve-out). A successful definition turn removes
    its symbol from the failed set; when the set empties, the entry leaves
    `error_modules` and the next regen writes a green backing file. (Today
    `error_modules` gates nothing — its doc-comment claims eval blocking that was never

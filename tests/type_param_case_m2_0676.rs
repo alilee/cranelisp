@@ -1,4 +1,4 @@
-// type_param_case_m2_0676.rs — M2-TP1 / M2-TP2 (S114, s114-test-plan §5.1).
+// type_param_case_m2_0676.rs — M2-TP1 / M2-TP2 (S114, design/frontend/enforcement-matrices.md §2).
 //
 // The M2 head-parser case matrix, type-parameter axis (/qa disposition item 3,
 // spec-mandated reject). Spec §2.2.2: "Type parameters MUST be lowercase symbols"

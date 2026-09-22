@@ -11,7 +11,7 @@ The REPL MUST persist interactive definitions to disk by maintaining a backing `
 
 The regenerated source file MUST be valid, parseable Cranelisp source — loading it through the normal module graph pipeline MUST reproduce the same session state. [R4 S52]
 
-Definitions that fail to compile MUST NOT trigger regeneration — the backing file reflects only the last successfully compiled state. [R4 S52]
+A definition entered in the session that fails to compile MUST NOT trigger regeneration and is never written. The backing file reflects the last successfully compiled state, plus any startup-failed source retained under §15.2.3. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_failed_import_not_written_to_backing_neg, tests/repl_persist::persist_expression_only_session_leaves_hand_authored_user_cl_untouched — the failed-definition variant itself is not exercised; nearest cells are the failed structural form and the expression-only control]
 
 ### 15.2 Session Restore [Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
 
@@ -27,7 +27,7 @@ The backing `.cl` file is **authoritative for restoration only** — it establis
 2. **Redefinition wins.** Any definition entered in the session **replaces** a restored definition of the same name (§15.6) — just-entered source always governs. On-disk authority never overrides live input. [S113]
 3. **Input is session input, not a fresh program.** Both interactive typing and **piped stdin** (`cranelisp < script.cl` run in a directory with a persisted `user.cl`) are evaluated **against the restored definitions**. A script that references a name it does not itself (re)define resolves that name to the **previous session's** binding — the input augments a resumed session, it does not start a clean one. This is the correct behaviour, but it is a **sharp edge** for anyone applying the `--run` mental model (a self-contained program) to a piped REPL session: the same script piped into an empty directory versus a directory carrying prior state can produce different results. Fresh-program semantics are `cranelisp --run script.cl` (§0.2) or a REPL launched in an **empty** working directory. [S113]
 
-(Ruling record: `tests/plan/s113-test-plan.md` PS-C1 — the discriminator run settled that redefinition wins; the compiler behaves as designed. A companion note lives in the user guide's getting-started material.) [S113]
+(Ruling record: PS-C1 in the S113 test plan at revision `7b1220c7` — the discriminator run settled that redefinition wins; the compiler behaves as designed. A companion note lives in the user guide's getting-started material.) [S113]
 
 #### 15.2.2 Startup Restore Notice [S113]
 
@@ -58,7 +58,21 @@ never as a headline. [S114]
 
 **Verification is split by tier.** Because the positive face is unauthorable in the non-TTY e2e harness, coverage divides: (a) the **decision** — `startup_restore_notice` returning the Some/None line with the correct singular-aware count and empty/absent suppression — is a **unit-tier** obligation (already unit-pinned in `src/session_v4/lifecycle.rs`); (b) the **non-emission in non-TTY mode** is the e2e-observable face, asserted by the mode-parity/output-equivalence goldens (a piped restart is byte-identical to a fresh one). The positive interactive face is confirmed by TTY session transcript, not a non-TTY golden. [S114]
 
-**Implementation handoff (`/dev`, src/):** this notice is REPL boot-time runtime output — it requires `src/` code (the startup restore path), not a `repl/` config change. `/repl` specifies the wording, count semantics, empty-suppression rule, and the TTY gate above; `/dev` implements it at the session-restore seam behind the same `is_terminal()` gate the search-index notice uses. **Count source (`/dev`, Minor — FIXME 0707):** the count MUST be taken from the session's own restore record (the definitions that actually restored), **not** by re-reading and re-parsing the backing file — under degraded startup (§14.4–§14.5) a re-parse over-counts by including definitions that failed to restore, contradicting "restored definitions." [S113/S114]
+**Implementation handoff (`/dev`, src/):** this notice is REPL boot-time runtime output — it requires `src/` code (the startup restore path), not a `repl/` config change. `/repl` specifies the wording, count semantics, empty-suppression rule, and the TTY gate above; `/dev` implements it at the session-restore seam behind the same `is_terminal()` gate the search-index notice uses. **Count source (`/dev`, Minor — FIXME 0707):** the count MUST be taken from the session's own restore record (the definitions that actually restored), **not** by re-reading and re-parsing the backing file — after a startup load failure (§15.2.3) a re-parse over-counts by including definitions that failed to restore, contradicting "restored definitions." [S113/S114]
+
+#### 15.2.3 Startup Load Failure [Tested+Neg tests/repl_persist::persist_startup_load_failure_reaches_prompt_blocks_then_repairs, tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition — one module, non-TTY; report/refusal wording not spec-pinned]
+
+If the persisted source (the backing `.cl` file, §15.1) fails to compile at startup, the REPL MUST report the load error and still reach a prompt.
+
+The affected module MUST then enter an error-blocked state:
+
+- ordinary expressions are refused;
+- definition updates are accepted, so the user can repair the module at the prompt; and
+- a successful repair clears the error-blocked state.
+
+Each persisted definition that failed to compile at startup MUST keep its source text, verbatim, in every later regeneration of the backing file (§15.1) until a successful definition replaces it. A successful turn that defines a different name therefore MUST NOT remove the failed definition's source from the backing file. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition]
+
+Error blocking caused by a watched file changing during a session is specified separately (§14.4–§14.6).
 
 ### 15.3 Unified Development Model [R4 S52]
 

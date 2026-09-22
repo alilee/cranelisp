@@ -1,5 +1,5 @@
 // trait_method_noimpl_swallow_siblings.rs — F-D2-11 / F-D2-12 (S114 W3 disposition,
-// s114-test-plan §3.8; the two surviving `try_resolve_trait_method` no-impl swallow
+// S114 allocation; the two surviving `try_resolve_trait_method` no-impl swallow
 // siblings from the W2 review Important-3).
 //
 // Both sites repeat the exact shape whose CALL-position instance was the F-D2-10

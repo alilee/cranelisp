@@ -51,7 +51,9 @@ resolve the REPL policy, distinguish local discovery from the broader run,
 and define module inclusion and library treatment. QA allocates evidence for
 capability parity between normal execution modes, explicit harness availability,
 omitted intended modules and unintended inclusions. Implementation and
-documentation follow the approved scope.
+documentation follow the approved scope. Include a reader-facing test-discovery
+guide once the REPL policy is settled; retain any still-applicable cache/private
+test-child limitation from filing0868 without claiming an unverified workaround.
 
 Source verification: sprint read `discover_tests_extern`,
 `discover_eligible_tests`, `handle_run_all_tests`, and the library runner before

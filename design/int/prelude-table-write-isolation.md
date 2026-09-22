@@ -3,8 +3,7 @@
 > Subordinate topic doc, cited from `design/int/int.md`. Owned by `/design`(int).
 > Authored S114 Phase 3 to satisfy the FIXME 0604 routing ("/design(int) records
 > the isolation contract") and `/qa`'s S114 plan of record
-> (`tests/plan/s114-test-plan.md` §4.2). SPRINT.md §Scope-C — **SHIPS this sprint**
-> (user approved Phase 1). Companion to `index-worker-isolation.md` (the
+> (S114 §4.2, retained in Git at `7b1220c7`). Companion to `index-worker-isolation.md` (the
 > *background* index-feed half, S110); this doc is the *foreground*
 > concurrent-compile half established by the S110 re-scope.
 >
@@ -365,5 +364,4 @@ The delivered structural evidence retained by
 - `design/arch/safety-invariants.md` §2 (trust-boundary diagnosed-error tier) +
   R7 register row — the assertion tier the promotion targets.
 - `design/arch/prelude-import-convergence.md` §3.4 — the writer-census seed.
-- `tests/plan/s114-test-plan.md` §4.2 + `tests/spec_08_prelude_outer_scope.rs` —
-  the acceptance frame + the two GREEN twins.
+- `tests/spec_08_prelude_outer_scope.rs` — the two acceptance twins.

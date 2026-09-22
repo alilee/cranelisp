@@ -64,6 +64,18 @@ separates delivered wiring from unresolved document conformance.
   [safety-register](../../design/arch/safety-invariants.md) row touched in
   scope carries its own cited detection proof under that register's
   requirement; this plan does not duplicate it.
+- A suite-state count at a gate states the stable failing set exactly and
+  lists any run-dependent guard separately by name. A run-dependent guard is
+  a defect signal to attribute under the
+  [failing-test discipline](../CLAUDE.md#failing-test-discipline-migrated-from-the-retired-ledger),
+  never a member of the exact count;
+  [suite-count provenance 0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md)
+  is the open record of the last such guard.
+- A leak attribution separates a program-independent residual from the leak
+  by scaling the workload: a delta invariant under N is residual, a delta
+  that scales with N is the leak. Measure it as a marginal pair under
+  [allocator balance](../CLAUDE.md#allocator-balance-is-measured-marginally-never-absolutely),
+  never against a threshold.
 - A wall-clock witness asserts a structural inequality between regimes that
   are wide apart (overlapped, waved, serial), never a tuned threshold. Repeat
   only the leg that machine contention can falsify: contention slows a run and
@@ -98,6 +110,26 @@ positive behavior, applicable refusals and existing observations. Distinguish
 an unknown cell from a demonstrated gap, and record structural equivalence
 where a shared mechanism makes another observation redundant. No Cartesian
 matrix is required merely because axes can be named.
+
+- Axes are relations as well as forms. Name the relational axis a mechanism
+  resolves over — for example call topology, carrier × reaching context,
+  shadowing × callee kind, storage model × persisted kind — and give each
+  axis one equivalence twin: the same invariant satisfied two ways under one
+  assertion, so a variant that grows its own codepath diverges the pair and
+  the failing twin names the site.
+- Where a mechanism resolves through module structure (dispatch, carriers,
+  mangling, constraint verification), carry {local, imported, foreign
+  signature type} as an axis with the local cell as the twin. A cell whose
+  fixture imports every type the signature mentions into the calling module
+  never asks the foreign-type question.
+- For a strategy-bearing fix, name the negative-space module cells from the
+  design's claim before the fix lands; a unit test authored from the diff
+  validates the fix's model of itself.
+- The frontend operand-position × {bare, ascribed, trailing}, head-parser
+  × {arm, case} and binder-position × {qualified, dotted} matrices are drawn
+  in [enforcement matrices](../../design/frontend/enforcement-matrices.md)
+  and [binder-head reject](../../design/frontend/binder-head-reject.md);
+  re-audit them when a new expression-position or head parser appears.
 
 The standing lens is the S108 direction reconciled in S122. Filing0944's
 universal absence claim was disproved by existing variant matrices; its current
@@ -254,6 +286,12 @@ active allocation cites them; they are not fresh source censuses.
 - Other open compiler findings retain their own records in the
   [sprint inventory](../../sprints/s122-candidate-inventory.md) and active
   allocation. This rewrite closes none of them.
+- The [annotation-in-macro-argument fork 0708](../../design/arch/fixmes/0708-annotation-not-folded-in-macro-argument-position.md)
+  awaits a `spec` ruling. Its polarity-safe pin is allocated to `test` after
+  or with that ruling: the filing's free-standing repro (a two-parameter
+  `defmacro` invoked with a `:`-annotated second argument, no stdlib) asserts
+  that stdout does not contain `returned malformed sexp`. RED today, GREEN
+  under either ruling; the positive assertion is sharpened after the ruling.
 - Historical unfiled limits remain explicitly unclassified. Each keeps its
   exact provenance so its substance is recoverable without re-derivation:
   - the S108 all-green multi-form display note — the
@@ -321,7 +359,34 @@ active allocation cites them; they are not fresh source censuses.
     the ferry cells in [runtime behavior](../spec_12_runtime.rs) trace to those
     sections. This is a band reconciliation, not a missing test: the next
     observation is whether each cell still validates its paragraph as now
-    written, including the negative direction, before any tag changes.
+    written, including the negative direction, before any tag changes;
+  - the [session-persistence authority rows](../../repl/spec/15-session-persistence.md)
+    §15.2.1 (restoration governs, redefinition wins, piped input is session
+    input) and §15.2.2 (startup restore notice) carry `[S113]` with no
+    traced solution test. The S113 discriminator that settled §15.2.1 —
+    session 1 defines `(defn f [] 1)` and exits; session 2 in the same
+    directory pipes `(defn f [] 2)` then `(f)` and must print `2` — was run
+    once and never committed, and the S114 notice cell (present on restore,
+    absent in a fresh directory) is not evidenced by name in
+    [persistence](../repl_persist.rs). The §15.2.3 startup-recovery and
+    retention rows are allocated, not leads:
+    [S122 evidence](s122-evidence-delta.md#startup-recovery-and-failed-source-retention--evidence-delta-2026-09-22);
+  - the S117 module matrices allocated to `dev` and never verified
+    (`git show 7b1220c7:tests/plan/s117-test-plan.md` §5). A bounded name
+    search on 2026-09-22 located the transaction-state cell
+    (`src/worker/tests.rs::ordinary_replacement_compile_failure_restores_prior_instance_and_session_state`,
+    now owned by the S122 Q2/D1 allocation) and the `/info` view cells
+    (the impls_for_type_in_view test family in `src/repl/format_type.rs`), and found no module
+    matrix by name for typecheck trait-reference resolution
+    ({bare imported, FQ same trait, FQ same-spelled foreign, nonexistent
+    module} × {method mint, default synthesis, forced re-impl enrollment}),
+    for the macro-expanded top-level registrar sequence, or for type-render
+    variants. The e2e twins in [trait conformance](../spec_07_traits.rs),
+    [macro conformance](../spec_09_macros.rs) and
+    [introspection](../repl_introspection.rs) are the acceptance evidence at
+    those seams; a module matrix is owed only if `dev` names a private branch
+    they cannot reach. The R-2 matrices that row also named are retired with
+    0859 above.
 
   They are not newly allocated defects. Before relying on any, compare current
   specification and evidence; no new test, API or optimization is authorized
@@ -375,12 +440,36 @@ reuse. Retirement needs the citing owners to move their citations first.
 - Cut in S122 to their cited sections, original numbering kept and the removed
   remainder named in each header: [S102](s102-test-plan.md),
   [S103](s103-test-plan.md), [S112](s112-0628-ic-wave.md),
-  [S114](s114-test-plan.md), [S115](s115-test-plan.md), [S117](s117-test-plan.md),
-  [S119](s119-test-plan.md) and [S121](s121-test-plan.md).
-- Kept whole, because citations reach most sections: the S113
-  [plan](s113-test-plan.md) and [risk assessment](s113-risk-assessment.md), the
+  [S115](s115-test-plan.md), [S119](s119-test-plan.md) and
+  [S121](s121-test-plan.md). [S117](s117-test-plan.md) holds only its §3.3
+  failed-turn rows for ACT-0958 and retires with that action; its §3 e2e rows
+  are in the suite under their planned names, its §6 S115 band reconciliation
+  has no surviving `[Uncovered S115 …]` subject, and its §5 module-matrix
+  allocation is dispositioned in the unclassified leads above.
+- Kept whole, because citations reach most sections: the
   [S115 instrumentation matrix](s115-instrumentation-matrix.md),
   [S116](s116-test-plan.md) and [S118](s118-test-plan.md).
+- The Sprint-113 and Sprint-114 working plans and the S113 global risk
+  assessment were deleted in S122
+  (`git show 7b1220c7:tests/plan/`). Every row they allocated is a committed
+  test under its planned family, a design that now states the mechanism
+  ([binding-indirection consume](../../design/backend/binding-indirection-consume.md),
+  [expansion qualification](../../design/int/expansion-qualification-scope.md),
+  [prelude-table write isolation](../../design/int/prelude-table-write-isolation.md),
+  [enforcement matrices](../../design/frontend/enforcement-matrices.md)), or
+  an open filing carrying its own subject (0694, 0708, 0745, 0811, 0857).
+  Their standing rules are in §Standing coverage audit and §Traceability;
+  their two unlanded observations are the 0708 pin and the §15.2 persistence
+  rows in §Active allocation. Their attributions, wave rulings and counts
+  are dated S113/S114 and do not describe current status; the 0720 exemplar
+  attribution in the S114 plan was later falsified by re-measurement
+  ([0811](../../design/arch/fixmes/0811-attribution-closed-on-the-repro-never-re-measured-at-source.md)),
+  while its reduced repro stands in
+  [ADT-wrapped supersede](../adt_wrapped_supersede_leak_0720.rs). The S113
+  assessment's ranking and depth recommendation were consumed by the
+  user-ruled W5 frame and tier grades in the
+  [safety-invariant register](../../design/arch/safety-invariants.md); the
+  [risk register](risks.md) keeps only its standing classes.
 - The S120 shared-role evidence delta and the S80 link-prerequisite e2e
   architecture plan are retired to Git (the
   [last S120 revision](https://github.com/alilee/cranelisp/blob/57253cf2/tests/plan/s120-evidence-delta.md)

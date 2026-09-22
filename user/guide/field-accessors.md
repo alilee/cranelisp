@@ -39,68 +39,74 @@ user> (x (Point 3 4))
 So `(x p)` and `(Point.x p)` are the same call. Use the bare form for readability;
 reach for the qualified form when you need it.
 
-## Gotcha — bare names are ambiguous when two types share a field
+## When two types share a field name
 
-The bare alias only works when **exactly one** in-scope type owns a field of that
-name. The moment two types share a field name, the bare name has no single target:
+Two product types may use the same field name:
 
 ```clojure
-(deftype Box [:Int  v])
-(deftype Cup [:Bool v])
+(deftype Box [:Int v])
+(deftype Cup [:Int v])
 ```
 
-Now bare `v` is ambiguous — does it mean `Box.v` or `Cup.v`? Cranelisp rejects the
-bare use rather than guessing:
+Their canonical accessors `Box.v` and `Cup.v` are distinct functions, and each
+always works. Bare `v` now has two candidates, and Cranelisp picks one from the
+types at each use. Here the argument decides:
 
 ```
-user> (v (Box 7))
-error: ... v
+user> (v (Box 5))
+:primitives/Int 5
+user> (v (Cup 9))
+:primitives/Int 9
 ```
 
-The fix is always the same: **use the qualified `Type.field` form.** The canonical
-accessors are never ambiguous — each names exactly one function — so they keep
-working regardless of how many types share the field name:
+When nothing at the use site narrows the choice to one candidate, the bare name is
+ambiguous. Passing bare `v` as a value with no expected type is one example. The
+compiler reports an ambiguity error that lists both canonical names, and never
+picks one by declaration or import order. **Use the qualified `Type.field` form**
+to say which one you mean:
 
 ```
-user> (Box.v (Box 7))
-:primitives/Int 7
-user> (Cup.v (Cup true))
-:primitives/Bool true
+user> (Box.v (Box 5))
+:primitives/Int 5
+user> (Cup.v (Cup 9))
+:primitives/Int 9
 ```
 
-So the rule of thumb: bare `field` is the convenient form; `Type.field` is the form
-that *always* works. If a bare field name ever stops resolving because another type
-introduced the same field, qualify it.
+The rule of thumb: bare `field` is the convenient form, and `Type.field` is the
+form that *always* works. The precise selection rules are in the specification
+(see below).
 
-(The field also stays reachable through `match` pattern destructuring, which is never
-affected by bare-name contention.)
+## Only product fields get accessors
 
-> **Known limitation — field lists written on a named constructor arm.**
-> Accessors are currently minted only from the **`deftype`-level** field list —
-> the spelling used by every example above, `(deftype Point [:Int x :Int y])`,
-> including the polymorphic form `(deftype (Pair a b) [:a fst :b snd])`, which
-> does mint `Pair.fst` and bare `fst`. A field list written inside a **named
-> constructor arm** mints nothing:
->
-> ```
-> user> (deftype Trio (MkTrio [:primitives/Int t1 :primitives/Int t2]))
-> user> (t1 (MkTrio 1 2))
-> Error: type error at 1..3: undefined variable: t1
-> user> (Trio.t1 (MkTrio 1 2))
-> Error: type error at 1..8: undefined variable: Trio.t1
-> ```
->
-> This covers every sum type and every product whose constructor name differs
-> from the type name. Pattern matching still extracts the fields, and is the
-> workaround. This is compiler defect
-> [FIXME 0867](../../design/arch/fixmes/0867-polymorphic-product-bare-field-alias-missing.md)
-> (the type parameter is not the cause — that framing was measured false in
-> Sprint 118), not a different accessor rule; the examples above describe the
-> intended language behavior.
+Accessors come from **product** types. A product has a single constructor with the
+same name as the type. You can write its fields at the `deftype` level, as every
+example above does, or in an arm named after the type. Either spelling mints
+`Pair.fst`, `Pair.snd` and their bare forms:
+
+```clojure
+(deftype (Pair a b) [:a fst :b snd])
+; or, equivalently
+(deftype (Pair a b) (Pair [:a fst :b snd]))
+```
+
+A constructor arm with **any other name** makes a sum type, even when it is the
+only arm. The labels in a sum arm document its positional payloads and mint no
+accessor, bare or dotted. A sum value might hold a different variant at runtime,
+so a total accessor cannot exist. Extract the payload with `match`:
+
+```
+user> (deftype Trio (MkTrio [:primitives/Int t1 :primitives/Int t2]))
+user> (match (MkTrio 1 2) [(MkTrio a _) a])
+:primitives/Int 1
+```
+
+Here `t1` and `Trio.t1` are undefined names.
 
 ## See also
 
 - [`spec/05-definitions.md §5.2.6`](../../spec/05-definitions.md) — generated
-  accessors, total vs partial accessors, the bare-alias rule.
+  accessors, the product-only rule, and bare names shared between types.
+- [`spec/08-modules.md §8.6.5`](../../spec/08-modules.md) — how a bare name with
+  several candidates is resolved at each use.
 - [`spec/08-modules.md §8.5.2`](../../spec/08-modules.md) — dotted names; the
   canonical `Type.field` accessor as a member of the type.

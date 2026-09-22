@@ -11,7 +11,7 @@
 //! normalisation, which could let a SIGSEGV pose as a legitimate
 //! mod-256 exit code) as a single table-driven test.
 //!
-//! Per `examples/README.md` rule (cited inline in the legacy file):
+//! Per `examples/CLAUDE.md` rule (cited inline in the legacy file):
 //! a non-zero `main` Int return is the program's exit code, and the
 //! integer is the sum of in-program sub-test pass counts. The exit
 //! checksum is therefore the regression-guard surface — if compilation
@@ -27,8 +27,7 @@
 //! shape applies here too).
 //!
 //! FIXME(/spec): the "non-zero exit = sub-test pass count" convention is
-//! documented only in `examples/plan-examples.md` (an /examples plan
-//! doc), not in any spec/*.md file. The convention is a project-level
+//! documented in `examples/CLAUDE.md` (training guidance), not in any spec/*.md file. The convention is a project-level
 //! testing pattern, not a language-level normative requirement.
 
 use std::os::unix::process::ExitStatusExt;

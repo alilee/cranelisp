@@ -170,7 +170,7 @@ these streams, not separate ticket-shaped waves.
 | Intrinsics | 0835, 0848, 0857, 0928, 0934, ACT-0956 |
 | Primitives | 0859, 0932, 0936 |
 | Platform | 0870, 0871, 0873, 0874 |
-| Language-facing closure | 0815, 0821, 0823, 0841 |
+| Language-facing closure | 0815, 0841 (0821/0823 closed: examples-local library ruling established) |
 | Delivery / evidence records | 0761, 0764, 0765, 0766, 0771, 0783, 0811, 0938, 0939, 0940, 0941, 0942, 0943, 0944, ACT-0947, ACT-0950, ACT-0955, ACT-0957 |
 | Explicit UX scope choices | 0050, 0052, 0463, ACT-0951, ACT-0952, ACT-0953 |
 
@@ -2806,3 +2806,451 @@ discovery uplift. REPL harness policy and the detailed test-mode contract remain
 open. ACT-0986 now distinguishes this future direction from current behavior
 and from the unapproved proposed wording. No normative spec or runtime change
 in this step, and no claim that --test is implemented.
+
+
+### Checkpoint and historical QA plan consolidation (2026-09-22)
+
+User authorized checkpoint and continuation. Commit `7b1220c7` records the
+completed documentation consolidation and discovery rulings (43 files). NOTES
+and the .agents Gitlink were excluded. Whitespace and role wiring passed; Rust
+diffs were verified comment-only. The document-check baseline is 468 findings.
+
+QA on Claude / Fable / high, session
+`fb16cf9b-28aa-4952-83f8-f2f68a38de1b`, is assessing the S113/S114 retained test
+plans as one batch, preserving current obligations and reducing dated standing
+material. No runtime changes, new testing campaign or phase transition.
+
+A disjoint design (stdlib) pass on Claude / Opus / high, session
+`fbccf05e-80b0-41ec-a8d4-f082ddc0f8bf`, assesses the S60 examples-run-path
+remediation document against current authority and source. Its writable surface
+is design/stdlib only; QA owns tests/plan. Both passes must preserve unresolved
+obligations and supply cross-owner extraction/reference handoffs.
+
+The stdlib design pass completed: the S60 examples-run-path record is retired
+(3,639 words removed, no extraction needed). Its raw-primitive re-export policy
+was superseded by the existing S86 curated-surface authority; current example
+prelude exports and the subprocess regression harness carry the live facts.
+Sprint integrated supplied reference repairs, removed the empty design
+collection declaration, and aligned one stale prelude-export sentence with its
+owning current policy. Source/config edits are comments only. Interim checker:
+468 → 453 findings, 15 identities removed and none introduced.
+
+QA completed the S113/S114 disposition and retired both plans. Current
+assurance rules and unlanded annotation-diagnostic/persistence observations
+were extracted into the existing QA plan; permanent tests and open filings
+remain. The R8 build-variant question is explicitly retained in filing0857.
+The disproved exemplar leak attribution remains recorded as such; filing0811
+is not closed. No historical RED or source-read observation is presented as
+a freshly executed result.
+
+Sprint integrated the role's source-comment, design, filing and exemplar
+reference map. The session-persistence spec edit changes only its historical
+ruling citation, not normative behavior. Both provider dispatches closed
+successfully. Across the seven measured carriers (the three retired documents
+and all four QA extraction/reference destinations), 34,530 → 13,126 words:
+21,404 removed, 62%. Other citation repairs add no replacement historical
+document. Checker 468 → 429: 39 identities removed, zero introduced. Whitespace
+and role wiring pass; all Rust and Cranelisp source deltas are comments.
+No runtime tests were needed or run. NOTES hash is unchanged. The completed
+batch after checkpoint 7b1220c7 is uncommitted; .agents remains excluded.
+No phase transition.
+
+
+### Risk records and user-documentation cleanup (2026-09-22)
+
+User authorized continuation within Phase 5; baseline 429 checker findings.
+Two disjoint document passes preserve the preceding uncommitted batch:
+
+| Role | Provider / model / effort | Session | Scope |
+|---|---|---|---|
+| qa | Claude / Fable / high | `e5f773c3-0451-40d6-9d29-af34014ca5ea` | S113 risk assessment and accumulated risk register; existing QA extraction destinations |
+| docs | Claude / Opus / high | `5afc0626-b018-485f-aa0c-3990c9b1c79a` | Completed S117 documentation plan and CLI-reference currentness |
+
+Runtime behavior and normative language are unchanged by scope. The future
+--test mode remains deferred under ACT-0988; current documentation must not
+advertise it as delivered. NOTES and .agents remain protected.
+
+A third disjoint pass reserves src/CLAUDE.md only to dev (binary),
+Claude / Opus / high, session `b48ece35-aea0-4b3f-8283-aeebbd3695f8`. It repairs
+current contributor guidance and stale references against source/design; no
+source-code changes are authorized.
+
+Docs completed the initial pass: retired the completed S117 plan after checking
+canonical guide homes; repaired CLI references and source-confirmed claims.
+Same-sprint spec follow-ups remain: CLI main-result table conflicts with the
+IO-main requirement; target-last wording conflicts with any-position flags;
+source accepts an undocumented --output alias. These are not silently ruled by
+the guide repair. The linked discovery wording remains held under ACT-0988.
+
+A bounded docs follow-up (Claude / Opus / high), session
+`82842de8-740c-49e6-a569-c50ac01e7cb3`, repairs the accessor guide under the
+already-settled product-only rule, assesses the 0868 discovery caveat's reader
+home, and corrects one getting-started citation. No new semantics authorized.
+
+Dev completed the binary-guidance pass: repaired stale helper/source and split
+REPL-spec references, replaced the copied dependency inventory with canonical
+authority pointers, and retained operational constraints. Root repaired one
+checker misreading of a generic section-reference phrase. Remaining owner work:
+arch verify/dispose quote-head filing0789; dev reconcile stale forced-enrollment
+rustdoc; JIT naming examples and owner-scoped-key statement remain explicitly
+unverified. These are source-read leads, not closed implementation issues.
+
+Spec (Claude / Opus / high), session
+`20c0acd5-b8ab-4ecd-88ed-73489356e6d0`, assesses the CLI contradictions and
+startup-recovery citation read-only, to prepare the next exact user decision.
+No normative changes are authorized by this assessment.
+
+QA retired the S113 risk assessment and rewrote risks.md around four current
+risk classes; dated rankings/counts and sprint gates remain in Git. Current
+control homes and unmeasured residuals are retained. Root integrated the
+filing0694 counting-convention citation and corrected the historical Git
+reference syntax. No defect closures or new safety grades. Remaining QA work:
+exposure re-grade when the strategy's measurement is next relied on; reconcile
+the tests-memory per-crossing assert claim with the located dealloc-time check;
+check DEF-6 guard comment currency at its next execution; preserve0857's
+build-variant question. S117 plan section6 is the next historical candidate.
+
+The docs follow-up corrected product-only accessor guidance and type-directed
+bare accessor selection under existing S121 authority, and repaired the
+getting-started link. Filing0868 remains open with its permanent cache guard;
+no unevidenced workaround was added to the guide. A test-discovery reader guide
+needs sequencing with ACT-0988's REPL policy. The accessor/impl test conflict
+is already routed in ACT-0983, not a new language decision. Constructors-guide
+candidate-selection prose needs the next docs pass.
+
+Spec completed its read-only assessment. Next approval: CLI section0.2 must
+require main of type (Fn [] (IO _)), replacing its obsolete pure-result rows
+while retaining inner-Int exit-code handling and zero for other inner types.
+The governing language sections10.6/12.6 and S80 enforcement ruling already
+require IO-main; no runtime change is proposed. Subsequent questions, one at a
+time: target position (target-last contradicts section0.5.3/0.6); whether to
+formalize the delivered --output alias and synchronize the synopsis; restoring
+the startup-recovery obligation lost in the S121 section18 rewrite; reconciling
+section10.6.1's implementation-defined non-Int exit with section12.6's zero.
+None is silently settled. Startup recovery's old test trace remains an evidence
+handoff after its normative home is decided.
+
+Final integrated verification for this batch: 429 → 401 document findings,
+28 identities removed and none introduced. Across ten measured carriers
+(including all QA extraction destinations and edited user/source guidance),
+31,622 → 21,330 words, 10,292 removed. Whitespace and role wiring pass. All five
+Claude dispatches closed successfully. Source inspection and existing test
+assertions informed prose; no runtime tests were run or newly claimed.
+Changes remain uncommitted; NOTES and .agents are untouched. Phase 5 continues.
+
+
+### CLI IO-main correction (2026-09-22)
+
+The user approved correcting CLI section0.2 to require main of type
+(Fn [] (IO _)), rejecting pure results while retaining the existing inner-Int
+exit-code rule and zero for other inner types. This changes prose only; the
+compiler and existing rejection assertions already enforce the IO-main rule.
+Spec dispatched on Claude / Opus / high, session
+`8d25fb47-adea-4084-8d63-8d5263ad1c83`, limited to that approved delta.
+Other CLI/startup questions and ACT-0988 remain separate.
+
+Spec completed the approved CLI section0.2 correction. The old pure-result
+rows are replaced by IO-main handling; compilation-error behavior and inner
+result exit codes are unchanged. Coverage was invalidated for QA reassessment,
+preserving the former citation. Existing Int/Bool rejection and IO execution
+tests are candidate evidence; no new runtime run or coverage grade is claimed.
+Whitespace passes; document findings remain 401 with zero introduced identities.
+No commit or phase transition.
+
+
+### CLI option ordering (2026-09-22)
+
+The user approved retaining options before or after the target, with an
+option's value immediately following that option, and showing options first
+in documentation examples. Explicit equivalence examples may show both orders.
+The mentioned -- separator/program-argument forwarding remains a separate
+unapproved feature; it is not introduced here.
+
+Spec on Claude / Opus / high, session
+`5c51bf98-9d28-4ea3-875b-69dc9f604c94`, applies the approved target-order
+correction and presentation changes. No runtime change or phase transition.
+
+Spec completed: section0.5 now permits the target before, after or between
+options and keeps option values adjacent. Ordinary spec/CLI-guide examples
+show options first; explicit equivalence examples retain both orders. The
+guide synopsis is identified as presentation rather than an exact USAGE quote.
+QA needs to assess the newly explicit between-options and value-adjacency
+claims; no runtime test result is claimed. Whitespace passes; checker findings
+remain 401 with zero introduced identities. No source change, commit or
+phase transition.
+
+
+### CLI output alias (2026-09-22)
+
+User approved documenting --output as the supported long form of -o, with
+QA to verify equivalence. Spec on Claude / Opus / high, session
+`fc30f4d6-c77c-438e-ba91-de8bffd6962d`, records this within CLI section0 and
+supplies guide propagation. No compiler change. Other pending CLI/startup
+questions remain separate.
+
+Spec completed the alias correction: --output takes the same path argument
+and inherits all -o requirements; the synopsis and user CLI reference show
+both spellings. The parser uses one match arm and one output_override field
+for both; this is source confirmation, not executed equivalence evidence.
+The new claim remains S122 pending QA evidence allocation, batched with the
+other CLI corrections. No source or test change.
+
+Spec found another missing normative statement: the implementation rejects
+-o/--output without --link, but the CLI spec does not explicitly require that
+rejection. No new failure requirement was added under the alias approval; the
+link-only/error-status question remains for the user. The short-form-only
+USAGE/error strings are not changed by this documentation work.
+
+Verification: whitespace passes; document findings remain 401 with zero
+introduced identities. No runtime tests, commit or phase transition.
+
+
+### Output options apply to artifact-producing modes (2026-09-22)
+
+User approved the link-only restriction for current output flags, qualifying
+that they are relevant to link and release. Source/spec confirm no --release
+flag is delivered today. Spec (Claude / Opus / high), session
+`1798a572-8f73-436d-9c5d-0ef31635bb79`, records current -o/--output rejection
+without --link (error and usage on stderr, exit1). ROADMAP's release sequence
+retains the approved future applicability to release artifacts. No release-mode
+implementation or test-harness change is authorized by this correction.
+
+Spec completed the link-only output-path requirement, tagged S122 pending
+QA evidence. The alias inherits the same restriction. The CLI guide already
+matches. Whitespace passes; document findings stay at 401, zero introduced.
+No runtime change or test execution; no commit or phase transition.
+
+
+### Startup recovery and constructor guidance (2026-09-22)
+
+User approved restoring startup recovery: saved-source compile failure reports
+the error and reaches a prompt; the affected module blocks ordinary expressions
+while accepting definition repairs; successful repair clears that state.
+Spec on Claude / Opus / high, session
+`58e9aae8-2610-4211-8afa-aa9b4478b099`, restores the canonical persistence
+requirement and supplies citation/evidence handoffs. Runtime behavior is not
+changed by this approval. An independent docs pass corrects the constructor
+guide's overbroad ambiguity claim under existing S121 authority.
+
+Docs (Claude / Opus / high), session
+`0a9984a8-41da-49d9-9d92-a1d8a3e13235`, owns the constructor-guide repair.
+Sprint source-read found that the old startup18.8 trace now heads
+rejected_change_does_not_write_an_incoherent_backing_file: its fixture rejects
+an incompatible change before saving, then restarts coherent source. It is
+not evidence for broken-source startup recovery; QA must assess separately
+before any trace is repointed or coverage credited.
+
+Both role dispatches completed successfully. Persistence section15.2.3 now
+contains the approved startup recovery requirement, explicitly marked uncovered.
+Sprint integrated the spec handoff's startup-only source/design citations;
+current redefinition citations and claims beyond the ruling were left intact.
+The constructor guide now describes selection at each use, including selection
+of bare patterns by a known scrutinee type, under existing S121 authority.
+
+Evidence handoffs remain open for QA/test: broken-source startup needs a
+pre-seeded backing-file recovery journey; the old coherent-restart test must
+be traced to its actual redefinition/persistence assertions. Constructor value
+selection by context lacks identified solution evidence, and the old test
+comment claiming value constructors always poison needs correction. No new
+coverage is credited from source inspection or committed fixtures alone.
+
+Spec also identified residual startup claims requiring authority reconciliation:
+symbol naming in load reports, preservation of failed forms during regeneration,
+cache poisoning, reset behavior and the watcher restart-clears-state wording.
+These are not restored by implication. Check existing authored-source preservation
+requirements before treating failed-form retention as a missing obligation.
+The implementation's all-module expression gate is broader than the affected-module
+wording; the ruling does not settle that scope.
+
+Verification: document findings 401 → 397 (four removed, zero introduced);
+whitespace and role wiring pass. Rust changes remain comment-only. NOTES hash
+is unchanged. No runtime tests, commit or phase transition. Next queued normative
+question is the non-integer IO exit result: IO section10.6.1 still permits
+implementation-defined behavior whereas runtime section12.6 and CLI section0.2
+require zero. Await the user's exact ruling before changing that clause.
+
+
+### Non-integer IO exit status (2026-09-22)
+
+User approved requiring zero for non-integer IO results consistently across
+the IO, runtime and CLI specs. Spec (Claude / Opus / high), session
+`625769d4-6492-40b8-aca1-4218e3b48a89`, owns the section10.6.1 correction
+and coverage invalidation. The same pass assesses existing authority for
+failed-form preservation after broken-source startup; additional normative
+changes are not authorized. No runtime change or phase transition.
+
+Spec completed successfully: non-Int IO normal completion now MUST exit zero;
+IO Int behavior is unchanged. The former coverage set is retained in the
+uncovered annotation pending QA reassessment, including the parent summary.
+Runtime and CLI prose agree. No runtime tests were run.
+
+The startup assessment found no current obligation specifically preserving
+failed persisted forms across later regeneration. Section15.4 item7 is rationale,
+and round-trip of live session state does not include forms that never loaded.
+The next user question is retention of failed-form source until successful
+replacement. The role's proposed original-position requirement is not included
+in that question: the current implementation appends retained failed forms, so
+ordering needs a separate assessment rather than being folded into retention.
+
+
+### Failed saved-source preservation (2026-09-22)
+
+User approved explicitly preserving the verbatim source of saved definitions
+that fail at startup across later regeneration, until successfully replaced.
+The explanatory example was a broken definition disappearing when another
+successful definition triggers saving. Spec (Claude / Opus / high), session
+`bcd46a3b-3642-4af2-b2b3-689144e6571b`, owns the persistence requirement
+and its citation/evidence handoff. Ordering, diagnostic naming and cache policy
+are not part of this ruling.
+
+Both spec passes completed, including the consequential conformance pass
+(Claude / Opus / high, session `0d8b7dd6-370f-4dd9-8b0f-e265d35d5038`).
+Persistence section15.2.3 now explicitly retains failed definitions verbatim;
+section15.1 and redefinition section18.8 account for that exception to successful
+source. Changed coverage is marked uncovered with former covering sets retained.
+Sprint integrated the precise no-silent-drop and repair-direction source
+comment remaps; claims about diagnostic naming, ordering, cache and reset were
+not assigned coverage by association.
+
+QA/test handoff: assess a broken-file startup followed by an unrelated successful
+definition and readback of retained source, plus same-name successful replacement.
+Existing helper tests do not establish that complete persistence journey.
+Also assess reset clearing failed_forms followed by regeneration against the
+approved retention obligation; the absence of a reset-specific requirement
+does not by itself establish compatibility with the new general obligation.
+Docs should check the live-development guide's successful-definition wording
+for any implication about failed backing-file source. These remain open.
+
+Whitespace and role wiring pass; Rust changes are comment-only. NOTES remains
+unchanged. No runtime tests, commit or phase transition.
+Final document check: 397 → 397 findings; 0 removed, zero introduced.
+
+
+### Learning-plan and QA consolidation batch (2026-09-22)
+
+Continuing authorized Phase5 document cleanup, with disjoint owners:
+- training, Claude / Opus / high, session
+  `6d8ac738-ce80-4d98-b451-70157b5f2506`: examples plan and local guidance.
+- qa, Claude / Fable / high, session
+  `3f8cca5a-2b17-450d-92fb-f267a4fe464a`: remaining S117 plan consolidation
+  and a cohesive allocation for recent persistence/CLI requirement evidence.
+- docs, Claude / Opus / high, session
+  `f38a5491-f9bb-417a-a4de-db5fd746b6a9`: live-development guide alignment
+  with approved startup recovery and failed-source preservation.
+
+The examples plan alone contains 16,099 words before this batch. Success means
+useful teaching design and unresolved findings remain discoverable while dated
+delivery narration and duplicated facts are retired, not merely relocated.
+No runtime code change, test execution, commit or phase transition dispatched.
+
+Training and docs completed. Examples plan/guidance: 16,469 → 3,476 words
+(13,000 removed; 79%). The learning gaps, library candidates and prerequisite
+checks remain current in the plan; exit expectations remain in tests/examples.rs.
+Docs aligned saved-source recovery and retention, and sprint remapped four
+obsolete impl-guide anchors. QA's first pass completed; its reset disposition
+returned for finding-scoped reassessment against the general retention rule,
+with report formatting kept separate from required load-error reporting.
+QA follow-up (Claude / Fable / high), session
+`c7d19784-f9c5-4e2a-a06d-f8f450a19e21`, owns that correction and the compact
+remaining CLI option evidence handoff.
+
+Arch (Claude / Fable / high), session
+`267e1c7f-7beb-4dbc-8f23-8f74dd6d3675`, retired answered filing0821 and
+supplied the exact still-unapplied root amendment from the approved S115
+examples-local library ruling. Sprint applied that clause verbatim in substance
+(link instead of a bare path), verified the filing's retirement condition,
+and retired0823. Tests retain their existing helper-placement rule.
+No new scope boundary was decided.
+
+QA correction completed: /reset's public dispatch can clear failed-source
+retention without replacement; classify as suspected failure pending a narrow
+public reproduction, not as exempt because reset lacks its own specification.
+Cell C joins startup/repair cells A/B. Only an observed RED requiring a policy
+exception returns to the user. Required error reporting is distinguished from
+implementation-specific report spelling. Current unit traces are acknowledged
+without claiming end-to-end coverage. CLI ordering, output alias and link-only
+rejection now have a compact allocation alongside the IO exit cells.
+
+S117 historical plan reduced from 1,534 to 285 words, retaining only the four
+failed-turn assertion rows cited by ACT-0958. Unlocated module matrices remain
+a qualified lead in PLAN; no completion is inferred. New persistence and CLI
+evidence allocations explain the growth in the current evidence delta. Sprint
+retired the obsolete0489 banner over the coherent-restart test and remapped
+the bare-expression persistence trace; test behavior is unchanged. Other
+unit-risk trace corrections remain with dev.
+
+All four initial role passes and QA correction are complete. Source/test edits
+remain comments only; no runtime tests or new coverage claims. NOTES hash
+is unchanged; whitespace and role wiring pass. No commit or phase transition.
+Final integrated check: 397 → 382 findings, 15 removed and zero introduced.
+Final examples plan/guidance total: 3,472 words (16,469 before; 79% reduction).
+
+
+### Persistence evidence execution (2026-09-22)
+
+User continued after the allocated evidence was presented. Test (Claude / Opus /
+high), session `8d6ae0f0-8f2b-4cf2-83f2-3ec3e1f568cc`, owns the focused
+public persistence cells A/B/C from the current QA delta and the only foreground
+nextest run. No concurrent source writer or test runner. Existing dirty work
+is preserved. Compiler corrections, reset exceptions, CLI tests and phase
+advancement are not part of this dispatch. A reproduced defect remains a
+minimal failing unignored test for QA attribution.
+
+Test completed: the three allocated persistence cells ran 2 GREEN / 1 RED;
+the focused two-binary regression run completed 42/43 PASS, with only the
+new reset-retention cell failing. Logs: local s122-persistence-run1/run2.
+Both normal recovery and unrelated-save retention/same-name replacement pass.
+Reset then unrelated definition regenerates a file holding good and other
+but no broken definition; the matched no-reset control retains it once.
+The failing cell is retained unignored. Compiler source is unchanged.
+
+QA (Claude / Fable / high), session
+`251acdc9-d489-418f-8af2-8f722e3d4574`, assesses the executed evidence and
+reset defect intake. No whole-retention coverage restoration while the
+reset counterexample remains. The fmt discrepancy reported by test is
+pre-existing outside this delta; no concurrent source writer was dispatched.
+
+QA intake completed: A/B are adequate originally-green observations; C is a
+confirmed Binary/int reset-induced authored-source loss with a matched control.
+QA says policy input is needed only to change current authority (abandonment).
+Sprint therefore proceeds under the user's existing retention ruling; no
+exception is proposed, and no repeat approval is needed.
+Dev (Claude / Opus / high), session
+`23fcd2ed-44c8-435a-a7a1-e7db50c8a4cd`, owns the narrow Reset correction and
+its coupled module guard, using the independent public RED unchanged. No new
+reset feature or cross-crate API is authorized. QA's defect-class vocabulary
+gap remains for disposition during final evidence assessment.
+
+Dev completed the reset-retention correction. The failed_forms clear is removed;
+error_modules retains modules carrying failed source. The existing watcher
+clearing and response remain outside this correction. The replacement unit
+failed before the fix then passed; the unchanged public C flips RED→GREEN.
+Foreground checks: persistence43/43, related integration285/285, module107/107.
+No full-suite claim; unrelated formatting discrepancies remain outside the delta.
+
+Review (Claude / Fable / high), session
+`0f95e6b7-7b08-48fa-8de5-9f537ba70c60`, independently inspects the Binary/int
+change. QA (Claude / Fable / high), session
+`7444c0dd-1407-488e-8e92-9fb9b78a63a0`, owns final evidence/annotation
+reconciliation and defect taxonomy, with review judgment composed at integration.
+Dev's watcher-only reset and lost-watch observations remain unverified leads,
+not proved defects or a full-reset feature commitment.
+
+Review completed with no required implementation findings; its two required
+record repairs are covered by QA's closure and the test handoff. QA accepts
+the narrow correction, restored appropriate coverage with evidence limits,
+and ratified release-path-bypass for the defect taxonomy. No new reset policy
+was decided and no repeated retention approval was sought.
+Test (Claude / Opus / high), session
+`25a64982-ecdc-4e5b-9ad2-84855cce6a00`, completes the single dispatch-witness
+assertion and exact defect trace. Only that cell is rerun; the broader green
+evidence stands. At checkpoint commit, add the actual fixing SHA to its
+optional fixed= field; no commit has been requested yet.
+
+Final test handoff completed: reset dispatch witness added, its focused cell
+passes1/1. Defect trace and past-tense framing are now integrated; no other
+assertions changed. Review's required record findings are closed. Watcher-only
+reset leads and the uncovered interactive failing-definition persistence cell
+remain in the current QA delta, with no invented policy or claimed coverage.
+Final document check: 382 findings, no introduced identities; whitespace
+and role wiring pass. NOTES unchanged. No commit or phase transition.

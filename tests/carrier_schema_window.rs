@@ -1,5 +1,5 @@
 // carrier_schema_window.rs — Track A, the ONE schema window (21→22) cells
-// (s114-test-plan §3.3; S111 0621 cache-invalidation precedent).
+// (S114 plan in Git at 7b1220c7, §3.3; S111 0621 cache-invalidation precedent).
 //
 // Two bump-worthy changes coordinate into ONE `CACHE_SCHEMA_VERSION` invalidation
 // event this sprint: the typed-carrier reshape (serde-visible on persisted

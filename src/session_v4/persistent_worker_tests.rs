@@ -691,7 +691,7 @@ fn strip_cfg_test_regions(content: &str) -> Vec<(usize, String)> {
     live
 }
 
-// spec: repl/spec.md §18.8 — S102 W5R B-1 (data-loss Blocker). A successful
+// spec: repl/spec/15-session-persistence.md §15.2.3 — S102 W5R B-1 (data-loss Blocker). A successful
 // reload makes the new file content the authority: the reloaded module's
 // retained degraded-startup `failed_forms` MUST be dropped (and the §14.4
 // error block lifted) so the next regen does not re-append stale broken
@@ -708,7 +708,7 @@ fn reload_success_drops_failed_forms_and_error_block() {
     let module = ModuleFullPath::from("repairme");
 
     // Simulate degraded-startup residue: a broken FailedForm retained for
-    // the module + the module error-blocked (the §18.8 state).
+    // the module + the module error-blocked (the §15.2.3 state).
     s.failed_forms.insert(
         module.clone(),
         vec![FailedForm {
@@ -740,21 +740,23 @@ fn reload_success_drops_failed_forms_and_error_block() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// spec: repl/spec.md §18.8 — S102 W5R M-1. `/reset` clears `error_modules`
-// but MUST also clear `failed_forms` (invariant: a non-empty failed set
-// implies membership in `error_modules`; clearing one without the other
-// leaves regen re-appending stale broken text with the eval gate open).
+// spec: repl/spec/15-session-persistence.md §15.2.3 — startup-failed source
+// stays in every later regeneration until a successful definition replaces
+// it, and its module stays error-blocked until that repair. `/reset` is not a
+// repair: it MUST leave both the failed set and its `error_modules`
+// membership in place (a non-empty failed set implies membership).
 #[test]
-fn reset_command_clears_failed_forms_with_error_modules() {
+fn reset_command_retains_failed_forms_and_their_error_block() {
     let (mut s, root) = test_session(1);
 
     let module = ModuleFullPath::from("user");
+    let broken_text = "(defn broken [] nope)";
     s.failed_forms.insert(
         module.clone(),
         vec![FailedForm {
             symbol: Some("broken".into()),
             error: "type error".to_string(),
-            text: "(defn broken [] nope)".to_string(),
+            text: broken_text.to_string(),
         }],
     );
     s.error_modules.insert(module.clone());
@@ -762,11 +764,19 @@ fn reset_command_clears_failed_forms_with_error_modules() {
     let mut out: Vec<u8> = Vec::new();
     let _ = s.dispatch_command(crate::repl::ReplCommand::Reset, &mut out);
 
-    assert!(s.error_modules.is_empty(), "/reset clears the error block");
+    let retained: Vec<&str> = s
+        .failed_forms
+        .get(&module)
+        .map(|forms| forms.iter().map(|f| f.text.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        retained,
+        vec![broken_text],
+        "/reset MUST NOT discard unrepaired startup-failed source"
+    );
     assert!(
-        s.failed_forms.is_empty(),
-        "/reset MUST clear failed_forms with error_modules — \
-             a dangling failed set keeps re-appending stale text on regen"
+        s.error_modules.contains(&module),
+        "/reset MUST NOT lift the error block of a module holding failed source"
     );
 
     s.shutdown();

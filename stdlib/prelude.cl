@@ -103,6 +103,3 @@
 ;; / §8.8.1): FQ `primitives/<name>` stays reachable regardless of imports;
 ;; the empty prelude remains valid; nothing here is load-bearing. Raw
 ;; primitives reach via `(import [primitives [name]])` or `primitives/name`.
-;;
-;; See design/stdlib/examples-run-path.md for the original re-export
-;; rationale (now superseded by the curated surface).

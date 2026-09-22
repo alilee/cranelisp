@@ -314,13 +314,6 @@ purpose = "Shared primitives/intrinsics ownership and ABI contracts with their r
 established_by = "design/CLAUDE.md"
 disposition = "established"
 
-[[document_class]]
-name = "stdlib-designs"
-patterns = ["design/stdlib/*.md"]
-owner = "design"
-purpose = "Standard-library interior design records."
-established_by = "design/CLAUDE.md"
-disposition = "established"
 
 [[document_class]]
 name = "architecture-filings"

@@ -79,7 +79,7 @@ The fix (the curry-the-local-closure-value arm) is designed in §3.
 
 ### 1.3 Repro B — fn-as-value `'='` face (impl-present trait operator)
 
-Source (`TestStandard`, `--run`), `s114-test-plan.md` §11 item 5 / test
+Source (`TestStandard`, `--run`), test
 `fn_as_value_carrier_loss::trait_operator_partial_app_impl_present_has_got_carrier`:
 ```clojure
 (defn g [x] (= x))
@@ -149,8 +149,9 @@ evidence, not a win/regression.
 
 ## 2. The RC-release sweep — ONE change-set, three faces (deliverable 2)
 
-Per `s114-test-plan.md` §11 item 4 / §11.1 item 2 (entry-payload leak) + §12
-item 6 (0720 ADT-wrapped supersede), `/qa` scopes these as ONE backend sweep
+Per `tests/adt_drop_glue_underkey.rs` and
+`design/arch/fixmes/0745-entry-payload-leak-misattributed-to-protect-return-value.md`
+(entry-payload leak), plus `tests/adt_wrapped_supersede_leak_0720.rs`, `/qa` scopes these as ONE backend sweep
 (shared oracle-lane criticality: both poison a future `allocs==deallocs` cell).
 Faces and seams:
 

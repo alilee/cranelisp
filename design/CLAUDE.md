@@ -25,7 +25,6 @@ The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retire
 | `int/` | `/design` (int) | Binary/integration layer — pipeline orchestration, REPL session, CLI, `--link` |
 | `review/` | `/review` | Review checklists, ring-completion reports, code-quality standards |
 | `runtime/` | `/design` (runtime-pair contract; one nominated crate pass owns each edit) | Shared `cranelisp-primitives` ↔ `cranelisp-intrinsics` ownership/ABI contracts. A sprint reserves each shared file to one crate pass so both sides do not rewrite it. |
-| `stdlib/` | `/design` (stdlib) | Stdlib interior design records; `/dev` (stdlib) owns source under repository `stdlib/` |
 
 ## Governing memories and document collections
 
@@ -34,14 +33,13 @@ The existing context memories are [arch](arch/CLAUDE.md),
 [backend](backend/CLAUDE.md), [intrinsics](intrinsics/CLAUDE.md),
 [platform](platform/CLAUDE.md), [int](int/CLAUDE.md), and
 [review](review/CLAUDE.md). They establish their local products and collections.
-This memory directly governs the primitives, runtime and stdlib design
+This memory directly governs the primitives and runtime design
 collections below, which have no separate local memory.
 
 | Collection | Purpose | Boundary |
 |---|---|---|
 | `primitives-designs` | Primitives interior designs and implementation dispositions. | `primitives/*.md`; owned by `/design` (primitives). |
 | `runtime-pair-designs` | Shared primitives/intrinsics ownership and ABI contracts with their retained design evidence. | `runtime/*.md`; one nominated `/design` writer per file. |
-| `stdlib-designs` | Standard-library interior design records. | `stdlib/*.md`; owned by `/design` (stdlib). |
 
 These are maintained design collections, not historical-reference exemptions.
 Individual status continues to distinguish adopted contracts, proposals and

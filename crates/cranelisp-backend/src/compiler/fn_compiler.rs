@@ -1640,7 +1640,7 @@ where
         Ok(())
     }
 
-    /// MS-P8 (FIXME 0688 verdict a; `s114-test-plan.md` §2.1) — the PARAM sibling
+    /// MS-P8 (FIXME 0688 verdict a; `tests/ms_p8_conj_leak.rs` seam comment) — the PARAM sibling
     /// of [`FnCompiler::flush_let_scopes_before_tail_jump`]. On a tail self-call
     /// the loop header OVERWRITES each param slot (scope frame `[0]`) with the new
     /// argument value; a heap-typed param whose slot is superseded by a FRESH,

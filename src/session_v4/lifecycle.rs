@@ -1344,7 +1344,7 @@ impl CompilerSession {
         let file_path = self.backing_file_path_for(module);
         let source = std::fs::read_to_string(&file_path).ok()?;
         // FIXME 0707: count from the RESTORE RECORD, not a bare re-parse. Under a
-        // degraded startup (§18.8) the backing file re-emits the FAILED forms too
+        // degraded startup (§15.2.3) the backing file re-emits the FAILED forms too
         // (`append_failed_forms`), so a bare re-parse over-counts them as
         // "restored". Subtract the module's persisted-definition FAILED forms —
         // the count of definitions the session actually restored (§15.2.2).
@@ -1425,7 +1425,7 @@ impl CompilerSession {
         let source =
             crate::save::generate_module_source(&st, self.shared.introspection.as_ref(), &module);
 
-        // S102 CS-0489 (§18.8 no-silent-drop): re-emit the retained
+        // S102 CS-0489 (§15.2.3 no-silent-drop): re-emit the retained
         // failed-form verbatim texts — the degraded startup load's broken
         // definitions never entered the live table, so a regen built from
         // the table alone would silently drop them from the user's file.
@@ -2032,11 +2032,11 @@ impl CompilerSession {
     }
 
     // -----------------------------------------------------------------------
-    // Degraded startup load (S102 CS-0489; repl/spec.md §18.8 restart floor;
+    // Degraded startup load (S102 CS-0489; repl/spec/15-session-persistence.md §15.2.3 restart floor;
     // design/int/s102-defect-wave.md §5.2)
     // -----------------------------------------------------------------------
 
-    /// Recover from an entry-module startup failure in REPL mode: the §18.8
+    /// Recover from an entry-module startup failure in REPL mode: the §15.2.3
     /// floor — "the restart MUST reach a prompt". Batch-cluster atomicity is
     /// what turns one broken defn into a wholesale lockout; the REPL's own
     /// per-form semantics are the natural degraded mode.
@@ -2170,7 +2170,7 @@ impl CompilerSession {
     }
 
     /// Remove a genuinely (re)defined symbol from its module's failed-form
-    /// set (§18.8: a successful definition turn IS the repair). When the set
+    /// set (§15.2.3: a successful definition turn IS the repair). When the set
     /// empties, the module leaves `error_modules` — the §14.4 gate reopens
     /// and the next regen writes a green backing file. Bare-symbol lookups
     /// and expression turns never clear anything.
@@ -2667,7 +2667,7 @@ pub(crate) fn render_startup_error_report(file_name: &str, failed: &[FailedForm]
 }
 
 /// Append the retained failed-form verbatim texts to a regenerated module
-/// source (§18.8 no-silent-drop: the failed forms never entered the live
+/// source (§15.2.3 no-silent-drop: the failed forms never entered the live
 /// table, so a regen built from the table alone would drop them from the
 /// user's file). Re-emitted until each form's symbol is repaired or the user
 /// removes it externally.
@@ -2952,7 +2952,7 @@ mod degraded_startup_tests {
         );
     }
 
-    // spec: repl/spec.md §18.8 — regen MUST NOT silently drop a broken
+    // spec: repl/spec/15-session-persistence.md §15.2.3 — regen MUST NOT silently drop a broken
     // definition: retained failed-form texts are re-emitted VERBATIM after
     // the generated source; an empty failed set leaves the source untouched.
     #[test]

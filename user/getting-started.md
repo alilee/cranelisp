@@ -200,8 +200,8 @@ serial" floor holds unconditionally only for compute-bound work; for allocation-
 work, measure against a serial baseline (`CRANELISP_NO_LENIENT=1`) before relying on it.
 You can cap or disable the parallelism with environment variables; see
 [`cli-reference.md`](cli-reference.md#environment-variables). The floor, its scope, and
-the known contention limit are documented in
-[`design/arch/effect-concurrency.md §3.1`](../design/arch/effect-concurrency.md).
+the known contention limit are documented in the
+[floor-scope section of the effect-concurrency design](../design/arch/effect-concurrency.md#31-floor-scope--contention-is-the-boundary-not-compute-s94-port-finding).
 
 This is all semantically invisible: a parallel run computes exactly what a sequential
 left-to-right run would. The effect and evaluation semantics are specified normatively

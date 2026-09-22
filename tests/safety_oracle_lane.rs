@@ -1,5 +1,5 @@
 // safety_oracle_lane.rs — the memory-safety differential-oracle lane (MS-P2/P4/P5,
-// tests/plan/s113-test-plan.md §2; user-approved W5 depth, W0 gate CONFIRMED
+// tests/plan/memory-safety-coverage.md §1; user-approved W5 depth, W0 gate CONFIRMED
 // memory-safety as the top correctness risk).
 //
 // The lane drives memory-safety probes through the `assert_safety_matrix`
@@ -112,7 +112,7 @@ const WHOLE_VALUE_NESTED_TRANSFER_PROG: &str = "(defn f [v] (vec-set (vec-set v 
 // aborted. The mode axis was only the DETECTOR, never the cause. The fix landed in
 // the /dev(typecheck) ownership analysis (§3.7 `MayAliasOf` projection-out — the
 // vec-set result released as an arg-temp). The `_red` suffix on the fn name is
-// retained for the plan's flip-record citation (s114-test-plan §3.6/§11).
+// retained for the plan's flip-record citation (S114 plan in Git at 7b1220c7, §3.6/§11).
 // spec: spec/12-runtime.md §12.1 — a COW `vec-set` result read by the caller returns
 // the set value and is memory-safe in all modes.
 // defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::MayAliasOf projection-out — COW vec-set result released as an arg-temp; shared-IR double-dec (--run tolerated in-process, --link aborted); §3.7 gap, 0641-adjacent; fixed S114 W7 found=S113 owner=/dev

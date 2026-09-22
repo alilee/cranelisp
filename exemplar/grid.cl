@@ -65,7 +65,7 @@
 ;; `Grid`/`SolveResult` keep their carrier types explicit and polymorphic;
 ;; annotating the seed or the ADT field to force the back-flow would be
 ;; fighting the language — un-idiomatic for a showcase. RULED A DEFECT (/qa,
-;; S114 §12; durable record `tests/plan/s114-test-plan.md`): inference is
+;; S114; regression `tests/mc_x4_consume_at_distance_0719.rs`): inference is
 ;; REQUIRED here per spec §5.1.2 — a multi-sig `defn` type-checks identically to
 ;; the same logic written as separate mutually-recursive functions, so since the
 ;; two-function form ships, the collapse of the SAME logic must too (annotating

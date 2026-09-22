@@ -18,8 +18,7 @@
 ;; `examples/`, `resolve_prelude` scans the lib dirs, finds this file,
 ;; and loads it as the implicit prelude.
 ;;
-;; The 30 primitive names mirror the enumeration in
-;; design/stdlib/examples-run-path.md §1.3. They coexist with any
+;; The 30 primitive names coexist with any
 ;; operator/trait forms an example defines inline (e.g. 15-traits.cl
 ;; and 19-threading.cl declare their own Num/Eq/Ord traits; they don't
 ;; rely on this prelude for them).

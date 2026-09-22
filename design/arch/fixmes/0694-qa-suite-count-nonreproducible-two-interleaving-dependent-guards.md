@@ -59,7 +59,8 @@ warranted.
 
 ## /qa S114 pre-W7 disposition (2026-07-20 — RE-SCOPED; stays open through the Phase-7 verification)
 
-Record: `tests/plan/s114-test-plan.md` §11 item 2.
+Record: S114 §11 item 2 in the S114 test plan at revision `7b1220c7`.
+Current counting convention: [QA traceability](../../../tests/plan/PLAN.md#traceability-and-authoring).
 
 1. **The macro_clause `_link` face is CLOSED BY FIX.** W5 C2 (`58ac8e46`,
    0638 deep protect-on-build) fixed the underlying double-free; all 5 pins
@@ -280,7 +281,7 @@ prior member was a should-be-GREEN test failing under load — and it is a
 named-cell instance, stronger evidence than the count-level arithmetic this
 FIXME was filed on.
 
-Consequences (recorded in `tests/plan/risks.md` §S118 risk read):
+Consequences (see [QA traceability and authoring](../../../tests/plan/PLAN.md#traceability-and-authoring)):
 
 - the counting convention widens: certification reports stable-exact counts
   PLUS a named flap set covering BOTH polarities (should-be-GREEN failures

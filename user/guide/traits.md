@@ -191,7 +191,7 @@ and [§7.3](../../spec/07-traits.md#73-trait-implementation).
 An impl MUST provide every method the trait declares, except those with a
 [default body](#default-methods--a-body-instead-of-a-return-type).
 Re-entering an `impl` for the same (trait, type) pair **replaces** it — see
-[live development](live-development.md#redefining-an-impl).
+[live development](live-development.md#other-definitions).
 A method's name may not collide with an existing **field accessor** of the target
 type — see [spec §7.3.1](../../spec/07-traits.md#731-concrete-implementation).
 
@@ -461,7 +461,7 @@ user> /info Box
 answers “which traits does this type implement?” They are inverse views of the
 same live pair. Local implementations appear before imported ones, and
 re-entering the impl replaces its row rather than adding an edit-history row.
-See the [live-development guide](live-development.md#redefining-an-impl) for
+See the [live-development guide](live-development.md#other-definitions) for
 replacement behavior.
 
 ## Importing trait methods — a method reference is enough
@@ -531,5 +531,5 @@ ones; the rule is [spec §5](../../spec/05-definitions.md)'s binder-positions ta
   — every rejection message this guide points at, with its remedy.
 - [Functions](functions.md) — multi-arity `defn` and dispatch, which trait
   methods build on.
-- [Live development](live-development.md#redefining-an-impl) — what happens when
+- [Live development](live-development.md#other-definitions) — what happens when
   you re-enter an `impl` in a running session.

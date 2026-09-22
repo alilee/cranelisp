@@ -360,7 +360,7 @@ replaced by unit-only coverage?
 The m1_quarantine retirement is compliant on all three prongs (intrinsics
 unit seam carries the verification; sibling quarantine faces fence the
 wiring; tombstone recorded in the retiring change-set). The W7 MS-P6 COW
-capability re-plant (s114-test-plan §8 rider; landed `7c2d5168` as
+capability re-plant (the S114 W7 rider; landed `7c2d5168` as
 `safety_lane_detects_falsified_clean_expectation_capability_green`) is the
 worked example of the compliant alternative: re-plant on a SYNTHETIC fault
 when one is constructible at the e2e tier. A retirement claiming prong-2

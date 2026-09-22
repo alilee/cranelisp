@@ -17,3 +17,14 @@ Accepted audit recommendation R-7, `/qa` portion. R8 cites line 55 of `ms_p6_mod
 ## Proposed resolution
 
 Remove or repair the dead citation, grade each mode at its actually proven tier, and promote grades only after FIXME 0848 lands fail-on-revert detection evidence.
+
+
+## Retained build-variant question
+
+The S113 plan retirement retains its R8 A2–A4 build-variant question here.
+State the debug/release scope of A1–A4 when regrading: the S122 QA source read
+found LIVE_ALLOCS guarded by debug_assertions, while the register describes
+environment-gated seam checks. That read did not establish whether every seam
+asserts in release builds. This is an evidence question, not a new grade or
+a claim of executed failure. Provenance: S113 plan section 2.2(ii), Git revision
+`7b1220c7`; QA session `fb16cf9b-28aa-4952-83f8-f2f68a38de1b`.

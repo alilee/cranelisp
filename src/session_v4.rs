@@ -393,13 +393,13 @@ pub struct CompilerSession {
 
     // -- REPL-specific state (pipeline-v4.md §6) --
     /// Modules that failed reload (file watcher) or the degraded startup load
-    /// (§18.8). While non-empty, expression evaluation is refused with the
+    /// (§15.2.3). While non-empty, expression evaluation is refused with the
     /// §14.4 message — but DEFINITION turns are always accepted (they are the
     /// repair; the `process_commands` carve-out).
     pub error_modules: HashSet<ModuleFullPath>,
 
     /// Failed-form registry for the degraded form-by-form startup load
-    /// (repl/spec.md §18.8 restart floor; FIXME 0489). Keyed by module. While
+    /// (repl/spec/15-session-persistence.md §15.2.3 restart floor; FIXME 0489). Keyed by module. While
     /// a module's set is non-empty it sits in `error_modules`, and
     /// `regenerate_backing_file` re-emits each failed form's verbatim text so
     /// regen never silently drops a broken definition from the user's file.

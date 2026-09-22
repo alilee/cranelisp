@@ -307,7 +307,7 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
     // extract declarations) then enqueue for typechecking. Workers wake
     // and do expand+typecheck+codegen.
     //
-    // S102 CS-0489 (repl/spec.md §18.8): the startup outcome is CAUGHT, not
+    // S102 CS-0489 (repl/spec/15-session-persistence.md §15.2.3): the startup outcome is CAUGHT, not
     // `?`-propagated — REPL mode degrades a broken backing file to a
     // form-by-form entry load and still reaches a prompt (the repair path);
     // `--run`/`--link` keep the exit-1 contract (the `startup?` re-raise in
@@ -549,7 +549,7 @@ fn repl_prologue(
     #[cfg(not(feature = "agent"))]
     let _ = (agent_enabled, auto_accept);
 
-    // Wait for entry module (prelude) to be ready. §18.8 restart
+    // Wait for entry module (prelude) to be ready. §15.2.3 restart
     // floor (S102 CS-0489): an entry-restore failure MUST NOT
     // prevent the REPL from starting — catch it and degrade to the
     // form-by-form entry load (green forms commit; failed forms are

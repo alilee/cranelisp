@@ -53,36 +53,33 @@ user> (Some 5)
 So `(Some 5)` and `(Maybe.Some 5)` are the same call. Use the bare form for
 readability; reach for the qualified form when you need it.
 
-## Gotcha — bare names are ambiguous when two types share a constructor
+## When two types share a constructor name
 
-The bare alias only works when **exactly one** in-scope type owns a constructor of
-that name. The moment two in-scope types share a constructor name, the bare name
-has no single target:
+Two in-scope types may each own a constructor with the same name. This is
+**permitted** and is not a name collision:
 
 ```clojure
 (deftype (Maybe a)  None (Some [:a v]))
 (deftype (Choice a) None (Some [:a v]))
 ```
 
-Now bare `Some` is ambiguous — does it mean `Maybe.Some` or `Choice.Some`?
-Cranelisp rejects the bare use rather than guessing, and the error names the
-canonical alternatives:
+Each `Some` is a derived member of a distinct type, so each keeps its own
+canonical name. `Maybe.Some` and `Choice.Some` name one constructor each and
+always work. The bare spelling `Some` now has two candidates, and so does
+`None`.
 
-```
-user> (Some 5)
-Error: type error at 1..5: ambiguous bare name 'Some' — use a qualified member (Choice.Some or Maybe.Some)
-```
+The compiler decides each bare use on its own, using only the type information
+the program already gives it. It never picks by declaration order or import
+order. A use that type information narrows to one candidate resolves to that
+candidate. A use it cannot narrow is an **ambiguity error**, and the error lists
+the canonical alternatives, such as `Maybe.Some` and `Choice.Some`.
 
-The same happens to the nullary `None`, since both types own one:
+### Constructing a value: qualify it
 
-```
-user> None
-Error: type error at 0..4: ambiguous bare name 'None' — use a qualified member (Choice.None or Maybe.None)
-```
-
-The fix is always the same: **use the qualified `Type.Ctor` form.** The canonical
-constructors are never ambiguous — each names exactly one constructor — so they
-keep working regardless of how many types share the name:
+Suppose nothing around a bare construction fixes its type. For example, a bare
+`(Some 7)` is used as the scrutinee of a `match` whose patterns are also bare.
+That construction is ambiguous, because `7` fits either type. Write the
+constructor you mean:
 
 ```
 user> (Maybe.Some 5)
@@ -91,43 +88,45 @@ user> (Choice.Some 5)
 :(user/Choice primitives/Int) (Choice.Some 5)
 ```
 
-Bringing two types that share a constructor name into scope is **permitted** — it
-is not a name collision. Neither `Some` is a standalone definition; each is a
-derived member of a distinct type, so the two types coexist happily and only the
-bare alias is poisoned.
+The nullary constructors work the same way: write `Maybe.None` or `Choice.None`.
 
-## It holds in pattern position too
+### Matching: the scrutinee's type selects the pattern
 
-The dotted form works in `match` patterns exactly as it does in value position.
-When a scrutinee could belong to either of two same-named-constructor types, the
-dotted pattern says which one you mean:
+In a `match`, a bare constructor pattern resolves against the type of the value
+being matched. When that type is known, the bare patterns read as naturally as
+in unambiguous code, even though `Choice` also owns `Some` and `None`:
+
+```
+user> (match (Maybe.Some 7) [(Some x) x None 0])
+:primitives/Int 7
+```
+
+Here the scrutinee is a `Maybe`, so `(Some x)` means `Maybe.Some` and `None`
+means `Maybe.None`.
+
+When the scrutinee's type is not known, the bare pattern is ambiguous. In the
+function below, the parameter `m` has no annotation and nothing else constrains
+it:
 
 ```clojure
-(defn unwrap [:(Maybe Int) m]
-  (match m
-    [(Maybe.Some x) x
-     Maybe.None     0]))
+(defn f [m] (match m [(Some x) x None 0]))   ; ambiguous: Maybe.Some or Choice.Some?
 ```
 
-```
-user> (unwrap (Maybe.Some 7))
-:primitives/Int 7
-user> (unwrap Maybe.None)
-:primitives/Int 0
-```
+Use a dotted pattern to say which type you mean. A data-constructor pattern is
+parenthesised with its field bindings (`(Maybe.Some x)`). A nullary pattern is
+the bare dotted name (`Maybe.None`). The dotted pattern always resolves,
+whatever the scrutinee:
 
-A data-constructor pattern is parenthesised with its field bindings
-(`(Maybe.Some x)`); a nullary pattern is the bare dotted name (`Maybe.None`). Both
-sit inside the `match`'s square-bracketed arm list. In unambiguous code the bare
-pattern (`(Some x)`, `None`) is resolved against the scrutinee's type and reads
-just as well — reach for the dotted pattern when two same-named constructors are
-in scope.
+```clojure
+(defn f [m] (match m [(Maybe.Some x) x Maybe.None 0]))
+```
 
 ## Rule of thumb
 
-Bare `Ctor` is the convenient form; `Type.Ctor` is the form that *always* works,
-in both value and pattern position. If a bare constructor name ever stops
-resolving because another type introduced the same name, qualify it.
+Bare `Ctor` is the convenient form. `Type.Ctor` always works, in both value and
+pattern position. When another type shares a constructor name, a `match` on a
+value whose type is known can keep its bare patterns. Qualify a construction,
+or a pattern whose scrutinee type is not known.
 
 ## See also
 
@@ -136,7 +135,10 @@ resolving because another type introduced the same name, qualify it.
 - [`spec/08-modules.md §8.5.2`](../../spec/08-modules.md) — dotted names; the
   canonical `Type.Ctor` constructor as a member of the type, always valid wherever
   the type is in bare scope.
-- [`spec/08-modules.md §8.6.5`](../../spec/08-modules.md) — how two same-named
-  constructors coexist (alias-poison) and how the dotted form disambiguates.
+- [`spec/06-pattern-matching.md §6.2.1`](../../spec/06-pattern-matching.md) —
+  constructor patterns, including how the scrutinee type selects a contested
+  bare pattern.
+- [`spec/08-modules.md §8.6.5`](../../spec/08-modules.md) — how a bare name with
+  several candidates resolves at each use, and when it is ambiguous.
 - [`field-accessors.md`](field-accessors.md) — the same canonical-vs-alias story
   for field accessors.

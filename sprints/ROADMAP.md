@@ -88,6 +88,12 @@ compiler work. Release optimizations must respect the settled concurrency and
 ownership models; their contracts live in the architecture documents linked
 below. The dated track sequence is preserved in the closed sprint records.
 
+When `--release` is introduced, it must support `-o` / `--output` for selecting
+the produced artifact path, as link mode does (user direction, 2026-09-22).
+Output-path options belong to link/release artifact production, not ordinary
+run or REPL execution. This is a release-work requirement, not a delivered CLI
+mode.
+
 ### Effect-concurrency track — delivery sequence (ratified S92)
 
 The [effect-concurrency contract](../design/arch/effect-concurrency.md) owns

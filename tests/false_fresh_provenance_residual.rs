@@ -201,7 +201,7 @@ fn match_scrutinee_cow_var_pattern_link_does_not_corrupt_heap() {
 // `((mk [1 2 3]))` reads `(vec-get [1 2 3] 1)` = 2. Fails toggle-off too
 // (independent capture-accounting factor); deterministic face: `--link`.
 //
-// RE-ATTRIBUTION (FIXME 0669 verdict, /qa 2026-07-20; s114-test-plan §1): this
+// RE-ATTRIBUTION (FIXME 0669 verdict, /qa 2026-07-20; design/backend/binding-indirection-consume.md §4): this
 // capture face JOINS the 0668 backend consume-seam family. It crashes under
 // `CRANELISP_NO_OWNERSHIP=1` too, and post-R14 toggle-off consults no
 // `transfer.rs` fact — a crash that survives analysis-off cannot be owned by the

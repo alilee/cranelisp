@@ -64,10 +64,27 @@ visibility is rejected; choose a new name or restart with revised source.
 
 ## Persistence and failed turns
 
-Only successful changes are retained. A rejected redefinition never replaces
-the live definition or its persisted source, so restarting does not resurrect a
-broken or half-published state. The REPL can continue with unrelated work after
-the diagnostic.
+The REPL saves your definitions to the module's backing file (`user.cl` for the
+default entry module) after each successful definition. A rejected redefinition
+never replaces the live definition or its saved source, and the REPL continues
+with unrelated work after the diagnostic. Reload and restart compile the saved
+source as it stands; they do not replay your edit history
+([`repl/spec.md §18.8`](../../repl/spec/18-redefinition.md#188-persistence-and-reload)).
+
+### When saved source fails at startup
+
+If the saved source no longer compiles when the REPL starts, the REPL reports
+the load error and still reaches a prompt. Until you repair the module:
+
+- expressions are refused;
+- definitions are accepted, so you can redefine the broken definition at the
+  prompt; and
+- the broken definition's source stays in the backing file verbatim — even when
+  you successfully define a different name — until a successful definition
+  replaces it.
+
+A successful repair clears the block. The requirement is
+[`repl/spec.md §15.2.3`](../../repl/spec/15-session-persistence.md#1523-startup-load-failure).
 
 ## The `def` macro's current boundary
 

@@ -2168,3 +2168,213 @@ reports.
     e2e: a well-formed program cannot reach either arm. Fixture reachability is
     unexecuted; if the harness refuses earlier, `dev` reports the seam that
     fired. Carried by ACT-0968.
+
+## Startup recovery and failed-source retention — evidence delta (2026-09-22)
+
+Authority: [session persistence](../../repl/spec/15-session-persistence.md)
+§15.2.3 (restored by user ruling), §15.1's retention exception and the
+[redefinition](../../repl/spec/18-redefinition.md) §18.8 exception clause;
+their bands are restored below. The `dev`-owned unit cells that trace to
+§15.2.3 (`src/session_v4/lifecycle.rs::append_failed_forms_reemits_verbatim_and_is_noop_when_empty`,
+`src/session_v4/persistent_worker_tests.rs::reload_success_drops_failed_forms_and_error_block`
+and `…::reset_command_retains_failed_forms_and_their_error_block`) neither
+drive a real startup nor read the regenerated file back. Three `test`-owned
+solution cells sit at the end of `tests/repl_persist.rs`
+(executed evidence below): fresh tmpdir, `PreludeVariant::PrimitivesOnly`,
+backing file seeded with `.user(…)` before the REPL starts. Refusal and report
+are asserted by substring (neither text is spec-pinned) and every value by its
+exact envelope.
+
+| Condition / class | Plausible wrong outcome | Lowest discriminating observation |
+|---|---|---|
+| R1 A — a persisted file with one good definition and one definition referencing an undefined name reaches a `user>` prompt and reports the load error. §15.2.3 requires that a report exists; it prescribes neither the report's format nor that it names the file or symbol. | Exit before the prompt (the closed 0489 lockout), or a silent load with no report. | Cell A, session 1: seeded broken file, `assert_ok`, prompt present, report present. Detect the report by the substring the implementation emits today (`[errors: user.cl]`, `src/session_v4/lifecycle.rs::render_startup_error_report`) and mark that substring implementation-specific in the cell: a format change updates the cell, it is not a spec violation. |
+| R2 A+Neg — while blocked, an ordinary expression is refused; the good definition's value is not produced for that turn. | The expression evaluates; the block is decorative. | Cell A: `(good 1)` before repair yields a refusal line and no `:primitives/Int` envelope for that turn. |
+| R3 A — a definition turn redefining the broken name is accepted and clears the block; the repaired name and the good name then evaluate. | The definition is refused, or the block outlives the repair. | Cell A, same session: `(defn broken [] 2)`, then `(broken)` → `:primitives/Int 2`, `(good 1)` → its value, no further refusal. |
+| R4 A+Neg — after a broken-file restart, a successful definition of a *different* name regenerates the backing file with the broken form's text still present verbatim. | The user's example: the broken definition disappears on the next save. | Cell B, session 1: `(defn other [] 3)` then EOF; `read_tmp("user.cl")` contains the seeded broken form text exactly once and `defn other`. |
+| R5 A (control for R4) — a successful same-name definition replaces the broken text. | Retention never releases; both texts persist, or the file holds the old text. | Cell B, session 2 in the same directory: `(defn broken [] 2)` then EOF; the file holds the new body once and the broken text not at all; a session 3 `(broken)` → `2` without any error report. |
+
+Existing evidence to extend: `persist_defn_survives_restart_via_user_cl`
+(restart shape), `persist_failed_import_not_written_to_backing_neg` (the §15.1
+never-written rule for interactive failures, unchanged). Module evidence stays
+dev-owned and is not re-allocated: `src/repl/mod.rs::definition_and_structural_turns_pass_the_carve_out`
+(carve-out decision), the append_failed_forms tests in `src/session_v4/lifecycle.rs`
+(verbatim re-emission) and `persistent_worker_tests::reload_success_drops_failed_forms_and_error_block`
+(§14.6 reload authority, mixed with §15.2.3). The no-silent-drop and
+repair-direction traces already cite §15.2.3 (`lifecycle.rs:1428, 2955`,
+`persistent_worker_tests.rs:694`, `main.rs:310`, `eval.rs:205`). Distinct from
+the requirement, and kept `dev`-owned as implementation-specific module risk
+with no spec trace: the load report's exact layout and symbol naming
+(`render_startup_error_report_names_symbols_and_errors`), which form heads
+yield a repairable symbol (`defined_symbol_of_form_*`), and retained-form
+ordering (`append_failed_forms_multiple_forms_each_own_block_in_order`). Those
+three cells and the `defined_symbol_of_form_*` cells still cite the retired
+`repl/spec.md §18.8` path; `dev` retargets them to the internal invariant, not
+to §15.2.3, in its next `src/` visit.
+
+### Executed evidence, intake and correction (2026-09-22)
+
+Provenance. Discovery binary: HEAD `7b1220c7` plus a working tree whose `src/`
+and `crates/` edits were comment-only citation retargets (diff inspected line
+by line), so its production logic was HEAD's. Focused run `7da18da1` — 3 run,
+2 passed, 1 failed (`.local/s122-persistence-run1.log`); both persistence
+binaries — 43 run (`repl_persist` 37 = 34 pre-existing + 3 new;
+`repl_persist_redefine` 6), 42 passed, 1 failed
+(`.local/s122-persistence-run2.log`). Corrected binary: the same tree plus the
+two-file Binary/int change in `src/repl/mod.rs` (`Reset` arm) and
+`src/session_v4/persistent_worker_tests.rs`; `.local/s122-reset-dev-result.md`.
+No full-suite run in either state; the full run belongs to the integration
+gate. The independent fresh-context review of the change
+(`.local/s122-reset-review-result.md`) reports no blocking or required
+finding against the correction; its two required items are the `test`
+comment handoff and a citation repair made in this record.
+
+| Cell (`tests/repl_persist.rs`) | Conditions | Result | Class and detection |
+|---|---|---|---|
+| A `persist_startup_load_failure_reaches_prompt_blocks_then_repairs` | R1, R2, R3 | GREEN on first execution; GREEN after the correction | Acceptance. Discriminates by construction: ≥5 prompt-split segments, refusal and no `:primitives/Int` envelope on turn 1, exact envelopes on turns 3–4, no refusal on turns 2–4. No RED leg exists — the behaviour predates the cell (S102 CS-0489) — and none is fabricated; detection of each wrong outcome is argued from the assertion, not observed. |
+| B `persist_startup_failed_source_retained_until_same_name_repair_neg` | R4, R5 | GREEN on first execution; GREEN after the correction | Acceptance. The R4 assertion form (`matches(STARTUP_BROKEN).count() == 1` over the same seed) is **observed** to detect dropped failed source: cell C fired it on the discovery binary (`left: 0, right: 1`). R5's release, no-duplicate and clean-restart assertions have no observed RED leg. |
+| C `persist_startup_failed_source_survives_reset_then_other_definition` | §15.2.3 "every later regeneration", across `/reset` | **RED → GREEN**: RED on the discovery binary (runs above), GREEN unchanged on the corrected binary (`.local/s122-reset-dev-green-e2e.log`, 43/43) | Acceptance of the retention clause and the repro of the defect below. Observed failure, not setup: exit 0, file regenerated (`defn other` present), seeded broken text absent. The cell was not edited between the two runs. |
+
+Cell C defect, attribution and correction. Trigger confirmed by control: cell
+B session 1 has the same seed, prelude, defining turn and EOF without the
+`/reset` turn and retains the text once. Mechanism observed at its own seam:
+the pre-correction unit (replaced in place by
+`reset_command_retains_failed_forms_and_their_error_block`) executed
+`dispatch_command(ReplCommand::Reset)` and asserted `failed_forms` empty
+afterwards (`self.failed_forms.clear()` in the `Reset` arm);
+`regenerate_backing_file` appends retained text only from that map
+(`src/session_v4/lifecycle.rs:1435–1436`), and the failed forms never enter the
+live table, so nothing else carries them. The refuter — a correction leaving
+`failed_forms` intact across `Reset` with cell C still RED — did not fire: the
+correction removes only that clear and narrows `error_modules.clear()` to
+`retain(|m| failed_forms.contains_key(m))`, and cell C flipped GREEN with no
+edit. Owner Binary/int (`dev`, `src/`). Module evidence: the replacement unit
+`reset_command_retains_failed_forms_and_their_error_block` observed RED for the
+intended reason on the pre-correction arm (`left: []`, `right:
+["(defn broken [] nope)"]`, `.local/s122-reset-dev-red.log`) and GREEN after
+(`.local/s122-reset-dev-green-unit.log`, 7/7 with the reload/carve-out/append
+siblings). Regression observation: `repl_watch`, `repl_redefinition`,
+`repl_introspection`, `cache` 285/285 and the `repl::`/`persistent_worker`/
+`lifecycle` units 107/107 (`.local/s122-reset-dev-regression.log`,
+`…-unit-modules.log`). Detection credit for cell C rests on this recorded
+RED→GREEN pair; no post-green mutation is allocated.
+
+Authority. Cell C is a defect under existing authority, and no ruling was
+made: §15.2.3 binds every later regeneration until a successful definition
+replaces the failed one, `/reset` is not a definition and has no clause in
+`repl/spec/03-slash-commands.md` or elsewhere, and the user's retention ruling
+carries no `/reset` exception. `/help`'s "Clear all state and reload prelude"
+and [reset design](../../design/int/repl-lifecycle.md#2-reset-command) describe an unimplemented full reset and
+are not requirement authority. The coupled face — the same arm lifting the
+error block without the repair named by [startup recovery](../../repl/spec/15-session-persistence.md) — is now retained for modules
+holding failed source and is pinned by the replacement unit only, and that
+unit's membership assertion has no observed RED leg (its `failed_forms`
+assertion fires first on the old arm) — reasoning-graded, recorded as such.
+No e2e cell asserts it and none is allocated: the unit observes the exact
+seam, and the public consequence is the retained text cell C already reads
+back. One cheap strengthening is allocated to `test` with the comment
+re-word: cell C asserts on its turn-1 segment that the `/reset` turn was
+dispatched (the implementation's reply substring, marked
+implementation-specific like the report/refusal substrings), so the guard
+cannot go vacuous and pass on cell B's strength if `/reset` ever stops
+dispatching.
+
+`// defect:` class. `release-path-bypass` is added to the controlled
+vocabulary in `tests/CLAUDE.md`: retained state whose release the spec ties to
+one named condition, discarded by an unrelated lifecycle action. The exact
+test-side line for cell C is in `.local/s122-reset-qa-close-result.md`;
+`test` applies it and re-words the cell's comment to past tense.
+
+Limits and dispositions:
+
+- `tests/repl_persist_redefine.rs::rejected_change_does_not_write_an_incoherent_backing_file`
+  validates a *coherent* restart (session 1's redefinition is rejected, so the
+  file never breaks); its FIXME 0489 banner is retired and its trace points to
+  §15.6 and §15.2. Its `does_not_contain("has errors")` is a real negative
+  (the live refusal line). It is not §15.2.3 evidence and must not be cited as
+  such.
+- The implementation refuses expressions for every module while any module is
+  blocked; §15.2.3 speaks of the affected module. All cells use one module,
+  so they do not decide that scope. Naming the broken symbol in the report and
+  retained-form ordering are unspecified and are not asserted beyond R1's
+  file-naming report line. Cells run in non-TTY piped mode only. Cell C does
+  not exercise `/reset` followed by a same-name repair.
+- §15.1's last paragraph: no cell enters a compile-failing *definition* at the
+  prompt and reads the file back; its band cites the failed-structural-form
+  negative (`persist_failed_import_not_written_to_backing_neg`), the
+  expression-only control and cell B, with that limit stated in the tag. One
+  cell in the next `test` persistence visit closes it; not dispatched here.
+- Leads from `dev`, unverified and not attributed as defects: (1) `/reset`
+  still clears §14.4 watcher-driven error-set members that hold no failed
+  source, while §14.4 item 4 and §14.6 name a successful recompile as the
+  exit — the `release-path-bypass` sibling face, on a carrier no cell reads;
+  (2) `/reset` still runs `watcher.clear_all()`, so after `/reset` an external
+  edit that would repair a watched file may go undetected and the §14.6 exit
+  works only at the prompt — and the authorities disagree
+  (`design/int/repl-lifecycle.md` says the watcher continues across reset;
+  `src/watch.rs` justifies `clear_all` by an arch item), so this one is a
+  design inconsistency before it is a product defect; (3) a command that
+  replies "not yet available"
+  mutates state. Each needs a discriminating public observation before
+  attribution; none is a condition of this correction, and none authorizes a
+  full `/reset` feature. They route to `qa` intake with `design`/`spec` as
+  the eventual owners.
+- Annotation bands restored by QA (2026-09-22): §15.1 heading (prior cover
+  re-judged valid for the unchanged clauses), §15.1 last paragraph, §15.2.3
+  heading and retention paragraph, §18.8 exception clause — all `[Tested+Neg …]`
+  citing cells A/B/C as applicable; no paired `[S122 — … RED …]` tag is
+  needed because cell C is GREEN.
+
+## CLI and IO exit-code evidence — one deferred allocation (2026-09-22)
+
+Approved prose changes: [CLI](../../repl/spec/00-cli-invocation.md) §0.2 now
+requires `main : (Fn [] (IO _))` (`[Uncovered S122 — was
+tests/repl_persist_race::repl_dep_load_no_race_with_persistent_workers]`),
+[IO](../../spec/10-io.md) §10.6.1 requires exit 0 for every non-`Int` inner
+type (`[Uncovered S122 — was tests/spec_10_io.rs::batch_main_pure_int_return_is_rejected (Tested+Neg)]`),
+and [runtime](../../spec/12-runtime.md) §12.6 keeps `[Tested+Neg]` on the same
+rejection cell. No runtime change occurred. Existing observations, by clause:
+
+| Clause | Existing cells | Gap |
+|---|---|---|
+| Non-`IO` `main` rejected in `--run` and `--link`, naming `main` and `IO` | `spec_10_io::batch_main_pure_int_return_is_rejected`, `batch_main_bool_return_is_rejected`, `link.rs` ~l.159 | none |
+| `IO Int` inner value is the exit code (`--run`) | `spec_10_io::run_mode_main_returns_{pure_exit_code,pure_nonzero,bind_exit_code,int_exit_code}`, `spec_12_runtime::main_returning_int_produces_int_exit_code`, `build_confidence::smoke_run_*` | none |
+| `IO Int` inner value is the exit code (`--link`) | `link::link_hello_produces_executable_with_main_exit_code`, `build_confidence::smoke_link_then_run_executable_matches_run_exit` | none |
+| Non-`Int` inner type exits 0 (`--run`) | `spec_12_runtime::main_returning_non_int_produces_zero_exit_code` (`IO Bool`) | no heap-typed inner result |
+| Non-`Int` inner type exits 0 (`--link`) | none; `link::link_main_returning_io_pure_zero_exits_zero_or_errors_clearly` is `Pure 0` with an either/or shape | the only mechanism-bearing gap: the [result-owner rule](../../src/CLAUDE.md#program-result-ownership--srcresult_ownerrs) states that an unconditional narrowing would exit a non-`Int` linked `main` with the low 32 bits of a heap pointer; `startup_result_exit` is unit-pinned only |
+| Missing `main` → stderr names `main`, exit 1 | `spec_05_definitions::multi_arity_call_from_main_batch_no_main_neg` (verify its assertion names `main` and the status) | confirm, do not duplicate |
+
+Deferred single allocation to `test`, one visit, `tests/spec_10_io.rs` beside
+the exit-code cells: `(defn main [] (Pure "s"))` and `(defn main [] (Pure true))`
+under `run_through_all_modes`-style `--run` and `link_then_run`, each
+asserting exit 0, process completion and no output on stdout. The `String`
+cell is the discriminator for the pointer-narrowing wrong outcome; `Bool`
+extends the existing run-only cell to linked execution. Retire the either/or
+shape of `link_main_returning_io_pure_zero_exits_zero_or_errors_clearly` to a
+plain exit-0 assertion in the same visit (its "errors clearly" arm predates IO-main
+enforcement). Restore §10.6.1 and §0.2 to `[Tested+Neg …]` naming the `String`
+linked cell and the rejection cell after the run is observed; §12.6's tag
+stands. No test dispatch or execution is authorized by this record.
+
+### CLI option ordering, `--output` alias and link-only output path — allocation (2026-09-22)
+
+Approved prose: [CLI](../../repl/spec/00-cli-invocation.md) §0.5 (target
+before, after or between options; option values adjacent), §0.5.3 (the two
+orders MUST be equivalent), §0.2.1.1 `--output` alias `[S122]` and link-only
+output path `[S122]`. Source read, not executed: `src/main.rs::parse_arg_flags`
+is one position-free loop — the `_` arm captures the single positional
+wherever it appears and rejects a second (`unexpected argument`), value-taking
+options consume `args[i + 1]`, and `"-o" | "--output"` is one arm writing one
+`output_override` field; `parse_args` (l.813–817) rejects an output path
+without `--link` with an error, the usage hint and exit 1.
+
+| Claim / class | Existing evidence | Residual wrong outcome | Allocation |
+|---|---|---|---|
+| Ordering A — target between options, and value adjacency | Every harness `--run`/`--link` spawn is `<mode> <target> <flags…>` (`tests/helpers/e2e.rs` l.412–444), and `tests/intrinsics_m3_detection_s116.rs` l.90 spawns `--run user.cl --no-cache`; none traces to §0.5. | A future positional-first or value-lookahead change makes `<target> --run` (§0.5.3's documented form) an `unexpected argument`; no tier observes that order today. | `dev` (src): one unit over `parse_arg_flags` asserting equal `ParsedFlags` for `[t, --run]`, `[--run, t]`, `[--run, t, --no-cache]` and `[--link, -o, p, t]` vs `[--link, t, --output, p]`. Pure function; the `process::exit` arms are excluded. `test`: retrace one existing option-first process cell to §0.5.3 as the executing twin; no target-first subprocess cell unless the unit cannot be placed. |
+| Alias A — `--output` ≡ `-o` | None for either spelling as a `cranelisp` argument (`tests/link.rs` l.103 covers only the default path; the suite's only `-o` is `/usr/bin/time`'s). | The arm is split and one spelling stops setting the override; separately, the override itself has never been observed end-to-end, so `-o`/`--output` writing to the default location would pass today. | The unit above proves both spellings produce the same flags. `test`: one `link.rs` cell `--link <file> --output <tmp>/custom`, asserting the artifact exists at `custom`, the default `<stem>` beside the source is absent (negative), and the produced binary runs. Long form only; the short form is discharged by the single arm. |
+| Link-only A+Neg — output path rejected without `--link` | None; sibling pattern `tests/link.rs` l.245 (`--no-cache` with `--link`). | `--run -o p` silently accepted, or accepted in REPL and the session starts. | `test`: one `--run <file> -o <tmp>/x` cell — exit 1, stderr carries an error line and `usage:`, no artifact written. Use `expects_exit_without_reading_stdin` if authored REPL-side instead; one mode suffices because the gate is the single `!action_link` predicate. The message's short-form-only wording is not spec-pinned. |
+
+Restore after the run is observed: §0.5.3 `[Tested tests/<file>::<order twin>]`
+(unit-backed equivalence stated in the tag's prose), §0.2.1.1 alias and
+link-only paragraphs `[Tested+Neg tests/link.rs::<cell>]`. §0.3's usage-hint
+clause is discharged by the link-only cell's `usage:` assertion. No dispatch
+or execution now; the three cells join the deferred `test` CLI visit above.

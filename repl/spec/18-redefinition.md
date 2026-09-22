@@ -294,8 +294,9 @@ current impl for the pair, not its replacement history.
 ### 18.8 Persistence and Reload [Uncovered S121]
 
 The backing file contains only the latest **successful** source for each
-definition or declaration under §15.6. A rejected redefinition is never
-written. Reload and restart compile that current authored source; they do not
+definition or declaration under §15.6, plus startup-failed source retained
+under §15.2.3 until a successful definition replaces it. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition] A
+rejected redefinition is never written. Reload and restart compile that current authored source; they do not
 replay the interactive edit history and do not restore obsolete callable
 generations, broken-symbol state, cascade reports, or trap stubs.
 

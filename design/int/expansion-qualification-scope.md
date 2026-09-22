@@ -222,7 +222,7 @@ The consequent chain is three waves, strict order (SPRINT.md F8):
    produces one.
 3. **`/testing` cells (wave 3)**: the IQ-P1..P3 positives (collision + macro
    compiles) + the IQ-N1..N4 value-level qualified-binder negatives
-   (`tests/plan/s114-test-plan.md` §4.3).
+   (`tests/qualified_binder_expansion_0670.rs`).
 
 **Sequencing is load-bearing.** If the frontend reject re-landed **before** the
 int fix, it would reject int's mis-qualified binders and break valid programs
@@ -252,6 +252,6 @@ logical wave over two `/dev` deployments (the `quote-shield.md` / 0613 precedent
 - `design/arch/fixmes/0670-*.md` — the `/arch` path-1 ruling this designs against.
 - `design/arch/bounded-contexts.md` §6 — where `/arch` records the durable
   "expansion qualifies references only, never binders" invariant.
-- `tests/plan/s114-test-plan.md` §4.3 (IQ-P1..P3 / IQ-N1..N4) — the e2e chain.
+- `tests/qualified_binder_expansion_0670.rs` (IQ-P1..P3 / IQ-N1..N4) — the e2e chain.
 - `spec/05-definitions.md` §5 — the value-level binder-position table (bare where
   written); FIXME 0683 corrected §5's reader-reject wording (accuracy).

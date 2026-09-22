@@ -1,4 +1,4 @@
-// ra_annotation_qualifier_0682.rs — Track D RA cells (s114-test-plan §5.2;
+// ra_annotation_qualifier_0682.rs — Track D RA cells (S114;
 // design/frontend/enforcement-matrices.md §3; user ruling 2026-07-20).
 //
 // `:` is a `^`-style reader macro — whitespace between `:` and its form ALLOWED
