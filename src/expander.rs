@@ -1,9 +1,9 @@
 //! Macro expansion: the int-side **execution** half of the two-jobs split
 //! (`design/arch/macro-expansion-ownership.md` §1 "Binary").
 //!
-//! Per the S76 W-Macro LOCKED decision (`macro-availability-model.md` §0.7),
+//! Per the S76 W-Macro LOCKED decision (`macro-availability-model.md` §5),
 //! macro **recognition** is a `cranelisp-types` query
-//! (`cranelisp_types::resolve_macro_head` over a caller-chosen [`View`]) and
+//! (`cranelisp_types::ResolutionScope::resolve_macro_head` over a caller-chosen [`View`]) and
 //! macro **execution** is int's capability. This module provides:
 //!
 //! - [`JitMacroExpander`] — the int implementation of
@@ -13,18 +13,11 @@
 //! - The invocation core (`find_matching_clause`, `invoke_clause`,
 //!   `invoke_jit_protected`, `rewrite_spans`) that the impl wraps.
 //!
-//! ## Status (S76 W-Macro, fire B)
-//!
-//! Recognition is now the LOCKED `cranelisp_types::resolve_macro_head` query
-//! (via [`recognize_macro_head`]); execution is the single
-//! [`JitMacroExpander`] boundary impl. The in-place walk
-//! ([`expand_sexp_recursive`]) survives as the live driver (the orchestrator's
-//! Pass-1 three-pass loop with just-in-time dependency compilation is the
-//! target shape — `macro-availability-model.md` §0.4 — but the as-built live
-//! path is the worker-loop walk, not the dead `cluster::process_cluster`
-//! scaffold). The walk's [`MacroResolver`] now does recognition + on-demand
-//! clause compilation only; **all execution flows through `JitMacroExpander`**,
-//! so there is exactly one executor (no `MacroEntry`-based parallel path).
+//! The binary's `process_form::process_cluster_once` drives
+//! [`expand_sexp_recursive`] before typechecking. Workers enter through
+//! `cluster::process_cluster`; eval and redefinition use the shared core.
+//! [`MacroResolver`] recognises heads and compiles clauses on demand;
+//! every invocation goes through [`JitMacroExpander`].
 //!
 //! [`View`]: cranelisp_types::View
 
@@ -76,7 +69,7 @@ pub(crate) struct ExecutableMacroClause {
 /// **execution** half of the macro two-jobs split.
 ///
 /// Recognition (is this head a macro? which `FQSymbol`?) is done by the
-/// orchestrator via `cranelisp_types::resolve_macro_head` over a committed
+/// orchestrator via `cranelisp_types::ResolutionScope::resolve_macro_head` over a committed
 /// [`View`]; the orchestrator then calls [`MacroExpander::invoke`] with the
 /// recognized macro's `fq`, the call's argument `Sexp`s, and the call span.
 /// This impl:
@@ -295,7 +288,7 @@ fn macro_error_to_invoke_error(fq: &FQSymbol, span: Span, e: CranelispError) -> 
 
 /// Construct a committed first-hop [`View`] over the live current-module table,
 /// for the orchestrator's Pass-1 recognition call to
-/// `cranelisp_types::resolve_macro_head`. Returns `None` when the current
+/// `cranelisp_types::ResolutionScope::resolve_macro_head`. Returns `None` when the current
 /// module has no table yet (no macros are recognizable from an absent module).
 ///
 /// This is the int-side glue for the locked recognition mechanism: the caller
@@ -345,7 +338,7 @@ pub(crate) fn committed_scope<'a>(
 }
 
 /// Recognize a macro head from the committed tables, per the LOCKED decision
-/// (`macro-availability-model.md` §0.7): a `cranelisp_types::resolve_macro_head`
+/// (`macro-availability-model.md` §5): a `cranelisp_types::ResolutionScope::resolve_macro_head`
 /// query over a `View::single(live)` first-hop. Returns the macro's `FQSymbol`
 /// when `name` resolves to a `DefKind::Macro` entry, `Ok(None)` for a non-macro
 /// or forward (pre-`defmacro`) reference, `Err` only for hard resolution
@@ -432,7 +425,7 @@ pub(crate) fn recognize_macro_head(
 /// (`expand_sexp_recursive`).
 ///
 /// **Recognition** uses the LOCKED types primitive
-/// (`cranelisp_types::resolve_macro_head`, `macro-availability-model.md` §0.7)
+/// (`cranelisp_types::ResolutionScope::resolve_macro_head`, `macro-availability-model.md` §5)
 /// — each impl's `recognize` is a thin caller of `recognize_macro_head`. The
 /// `&mut self` receiver lets an impl additionally **ensure the clause code is
 /// in memory** as a side effect of recognition (the worker's
@@ -1838,7 +1831,7 @@ mod tests {
         );
     }
 
-    // spec: macro-availability-model.md §0.7 — recognition is the types primitive
+    // spec: macro-availability-model.md §5 — recognition is the types primitive
     // (`resolve_macro_head` over a committed View::single(live)).
     #[test]
     fn recognize_macro_head_finds_local_macro() {
@@ -1853,7 +1846,7 @@ mod tests {
         assert_eq!(fq.module, ModuleFullPath::from("user"));
     }
 
-    // spec: macro-availability-model.md §0.2 — a forward (pre-defmacro) reference
+    // spec: macro-availability-model.md §1 — a forward (pre-defmacro) reference
     // is NOT a macro head: Ok(None), flows on as an ordinary reference.
     #[test]
     fn recognize_macro_head_forward_reference_is_none() {
@@ -1873,7 +1866,7 @@ mod tests {
         assert!(r.is_none(), "an undefined name is not a macro head");
     }
 
-    // spec: macro-availability-model.md §0.7 — recognition over an absent
+    // spec: macro-availability-model.md §5 — recognition over an absent
     // current module yields Ok(None) (no macros recognizable from nothing).
     #[test]
     fn recognize_macro_head_absent_module_is_none() {
@@ -2001,7 +1994,7 @@ mod tests {
         );
     }
 
-    // spec: macro-availability-model.md §0.7 — a name resolving to a non-macro
+    // spec: macro-availability-model.md §5 — a name resolving to a non-macro
     // entry is not a macro head (the head flows on as an ordinary call).
     #[test]
     fn recognize_non_macro_entry_is_none() {

@@ -922,8 +922,8 @@ fn generate_fns_and_macros(
 ) -> String {
     // Partition into macros and non-macro fns. Macros MUST be emitted BEFORE
     // the functions that use them (S77 W-MacroTrait, FIXME 0299): defmacro-
-    // before-use is normative (`macro-availability-model.md` §0.2), and the
-    // regenerated file must be round-trip-safe (§0.3 — a cached REPL restart
+    // before-use is normative (`macro-availability-model.md` §1), and the
+    // regenerated file must be round-trip-safe (§2 — a cached REPL restart
     // recompiles the regenerated `user.cl` under the SAME availability rules
     // the live session used). The callee-list `dependency_sort` does NOT model
     // the macro-use edge (a macro call is not a `callees()` entry), so without

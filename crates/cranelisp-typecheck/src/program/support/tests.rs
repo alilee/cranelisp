@@ -18,7 +18,7 @@ fn macro_clause_defn_name_is_recognised() {
 
 #[test]
 fn undefined_var_in_macro_clause_gets_dependency_diagnostic() {
-    // §0.8: a same-module non-macro reference inside a macro clause body
+    // §6: a same-module non-macro reference inside a macro clause body
     // must surface a clear diagnostic naming the symbol AND the
     // dependency-module rule — not the bare "undefined variable".
     let err = CranelispError::TypeError {
@@ -31,7 +31,7 @@ fn undefined_var_in_macro_clause_gets_dependency_diagnostic() {
     };
     // Offending symbol name is preserved (callers substring-match on it).
     assert!(message.contains("helper"), "message: {message}");
-    // The §0.8 dependency-module direction is present.
+    // The §6 dependency-module direction is present.
     assert!(
         message.contains("same-module") || message.contains("dependency"),
         "message: {message}"

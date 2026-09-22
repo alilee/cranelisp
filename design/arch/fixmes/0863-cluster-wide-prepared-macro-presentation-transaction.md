@@ -125,7 +125,7 @@ is likewise historical wherever it requires the superseded global transaction.
 
 ## Context
 
-Binary bounded context §6 and `design/arch/macro-availability-model.md` §0 are
+Binary bounded context §6 and `design/arch/macro-availability-model.md` are
 the current architecture authority. The integration owner must reconcile the
 interior Sprint 117/121 documents and remove the temporary global machinery;
 this FIXME does not prescribe that interior refactor and does not reopen the

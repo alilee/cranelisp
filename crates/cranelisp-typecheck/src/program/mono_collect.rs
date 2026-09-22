@@ -440,7 +440,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Collect the Pass-4 monomorphisation work list from every defn body
-    /// (`program-decomposition.md` §2.2): local constrained calls, imported
+    /// (`design/typecheck/monomorphisation.md` §3.1): local constrained calls, imported
     /// constrained/parametric calls, local pure-parametric hops, and
     /// polymorphic fn-value arguments. Returns `(call_sites, fn_value_arg_sites)`.
     pub(super) fn collect_mono_call_sites(
@@ -607,7 +607,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Drive monomorphisation over the collected call sites
-    /// (`program-decomposition.md` §2.2): re-derive each site's concrete arg
+    /// (`design/typecheck/monomorphisation.md` §3.1): re-derive each site's concrete arg
     /// types from the final `resolved_expr_types`, dedup by the canonical
     /// mangled name, mint the mono instance via `monomorphise_call`, and record
     /// the `SigDispatch`. Threads `seen` / `mono_defns` shared with the fn-value
@@ -692,7 +692,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Drive monomorphisation of polymorphic fn-value arguments
-    /// (`program-decomposition.md` §2.2, FIXME 0374 Tier 2): mint each site's
+    /// (`design/typecheck/monomorphisation.md` §3.1, FIXME 0374 Tier 2): mint each site's
     /// concrete mono instance and collect the `(enclosing, arg_span, mangled)`
     /// rewrites the driver applies to the stored ASTs. Shares `seen` /
     /// `mono_defns` with the call-site pass.

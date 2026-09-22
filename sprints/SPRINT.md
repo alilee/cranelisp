@@ -2689,3 +2689,120 @@ identities; whitespace check passes. The spec dispatch closed successfully.
 NOTES retains its recorded hash. No runtime tests were needed for this prose
 change, and coverage reassessment remains with QA under ACT-0986. No commit or
 phase transition.
+
+
+### Checkpoint and remaining pipeline/macro guidance (2026-09-22)
+
+User authorized checkpoint and continuation. Commit `7134cb28` records the
+completed cleanup and settled language rulings; NOTES and the .agents Gitlink
+were excluded. Whitespace and role wiring passed before the commit. New work
+continues within Phase 5, with a 472-finding baseline.
+
+| Role | Provider / model / effort | Session | Reservation and status |
+|---|---|---|---|
+| design (typecheck) | Claude / Opus / high | `772de8bd-8e98-42f5-8b52-93ff7c889a39` | complete: plan retired; inference and traits current; canonical extraction and open findings retained |
+| arch | Claude / Fable / high | `3f081cc3-4c2b-46e9-aa93-035a871836c9` | complete: current availability contract; obsolete deliberation retired; references integrated |
+
+The separate discovery empty-vector module-scope question has been presented
+to the user while these independent documentation passes proceed. No answer
+is assumed and no dependent normative edit is authorized yet.
+
+
+Outcome: program-decomposition is retired after extraction into the typecheck
+master; inference and traits now describe the current state, registration,
+resolution and pipeline. Macro availability retains the adopted source-order
+checkpoint contract and concise rejected-alternative rationale, with ordinary
+S76 deliberation left in Git. The measured six-document set, including canonical
+typecheck extraction destinations, falls from 30,163 to 11,237 words (63%).
+Unchanged monomorphisation is not counted in that reduction.
+
+Sprint integrated the roles' external reference maps, removed retired collection
+membership, and replaced ambiguous section shorthand with exact links. It also
+applied the prior source-guidance handoffs: host-promised RustPrimitive naming,
+the actual separate discovery scans, binary-owned macro expansion, the current
+resolution-query spelling, and stale scaffold/test-header prose. Current callers
+were read before updating the no-gap helper's comment: only REPL /type calls it.
+All Rust deltas since the checkpoint are comments; no executable changes.
+
+The sequence source and generated SVG now cite macro availability section 5.
+The default Puppeteer browser was x86-only; snap Chromium could not access the
+system-installed CLI HTML. Rendering succeeded using the installed CLI copied
+into ignored target space with its existing dependencies and native Chromium;
+no installation or repository tooling change. XML text comparison finds exactly
+one label difference, the intended section reference.
+
+Verification: 472 → 468 shared-document findings, four identities removed and
+none introduced. Whitespace and role wiring pass. The scoped frontend/typecheck/
+backend private-item rustdoc build succeeds. It reports one frontend warning in
+ast_builder.rs and 17 backend warnings across apply, fn_as_value, utilization,
+literals, context and fn_compiler; all are outside this batch's edited source
+files. These unresolved rustdoc references are retained for the owning dev
+passes, separately from the shared Markdown checker. Typecheck has no warning.
+No runtime tests were needed or run. Both Claude dispatches closed successfully.
+
+ACT-0987 routes the two newly retained typecheck source-read leads to QA: bare-name
+primitive dispatch identity and impl-method constraint rigidity. No failure is
+claimed executed. The dead default-body fallback's design disposition remains
+in traits open items for a later narrow dev pass. Existing ACT-0983/0985 obligations
+remain open. The discovery module-scope question is still awaiting user ruling;
+sprint clarified that the older text concerned caller-module macro sugar, not
+an explicit empty-vector primitive rule, and described explicit-empty semantics
+as another option. No dependent spec or behavior change was made.
+
+The checkpoint was already committed; subsequent work in this batch remains
+uncommitted. NOTES and the .agents Gitlink remain excluded and unchanged by this
+work. No phase transition.
+
+
+### Discovery scope ruling and deferred uplift (2026-09-22)
+
+The user approved retaining current empty-vector discovery: session current
+module only, without expanding through imports. This settles the earlier
+module-scope question. Broader project regression discovery is explicitly
+deferred to a future sprint in
+[ACT-0988](actions/ACT-0988-project-regression-discovery.md); no future scope or
+API is selected. ACT-0986 retains evidence reassessment and its other unresolved
+contract discrepancies.
+
+Spec dispatched on Claude / Opus / high, session
+`ef914af9-dd24-45e6-b0bc-2ee62a270ea7`, to record the approved scope in the
+canonical requirements. No runtime change, commit, or phase transition.
+
+Spec completed successfully. REPL section 16.3 and Appendix A now state the
+approved session-module scope; sprint integrated the supplied mechanical
+design wording. Existing Uncovered S122 annotations remain for QA reassessment.
+Whitespace passes; the shared document checker remains at 468 findings with
+zero introduced or removed identities. No runtime tests were needed for this
+prose-only change. NOTES and the .agents Gitlink were not touched.
+
+
+### Discovery primitive call shapes (2026-09-22)
+
+The user explicitly approved correcting the primitive signature and runner
+examples to vector arguments and documenting the library's optional
+`discover-here` macro separately. No compiler or library behavior change.
+Spec dispatched on Claude / Opus / high, session
+`c8974fd3-244f-48d1-8cc9-67f32b966fe0`, within Phase 5. The remaining linked-mode
+prose correction is separate from this approval.
+
+Spec completed successfully; signature, discovery calls and optional macro
+prose corrected in REPL section 16 and Appendix A. Sprint integrated the exact
+design handoff and updated ACT-0986 with remaining example syntax/import and
+parse-only test attribution leads. These are source-read findings, not executed
+failures. Existing uncovered evidence status remains; runtime tests were not
+run for this documentation-only change. Whitespace passes; shared checker
+findings stay at 468 with zero introduced or removed identities. No commit,
+phase transition, NOTES change or .agents Gitlink change.
+
+
+### Normal execution capability parity and future test mode (2026-09-22)
+
+The user confirmed that ordinary --run and release execution should expose the
+same language capabilities; execution and optimization strategies may differ.
+The proposed discovery --link prose correction is held. The direction toward
+an explicit --test harness is retained in
+[ACT-0988](actions/ACT-0988-project-regression-discovery.md) with the deferred
+discovery uplift. REPL harness policy and the detailed test-mode contract remain
+open. ACT-0986 now distinguishes this future direction from current behavior
+and from the unapproved proposed wording. No normative spec or runtime change
+in this step, and no claim that --test is implemented.

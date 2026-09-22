@@ -131,7 +131,7 @@ reader ── '/`/~/~@ lowered to (quote …)/(quasiquote …)/…
 
 There is **no defmacro pre-pass**: a macro is available only to forms after its
 own `defmacro`, in source order (BC §1 invariant 8;
-`design/arch/macro-availability-model.md` §0.2).
+[macro availability rule](../arch/macro-availability-model.md#1-the-rule)).
 
 Four interior judgments elaborate this chain, each in its own document:
 
@@ -227,7 +227,7 @@ on it landing, and no obligation schedules it.
 
 - `design/arch/bounded-contexts.md` §1 — the bounded-context statement and invariants.
 - `design/arch/interfaces.md` §"Reader Output" — the `Sexp` carrier, `Sexp::Annotated`, and the `QuoteHead`/`quote_head` classifier.
-- `design/arch/macro-availability-model.md` §0, `design/arch/macro-expansion-ownership.md` — the recognition/execution split the frontend sits outside.
+- `design/arch/macro-availability-model.md`, `design/arch/macro-expansion-ownership.md` — the recognition/execution split the frontend sits outside.
 - `design/int/int.md` §6.2 — the cluster orchestration that drives `build_form`/`build_forms`.
 - `design/arch/principles.md` — Principles 2, 3, 5, 6, 7, 15, 16, 18.
 - `crates/cranelisp-frontend/CLAUDE.md` — the crate-local conventions and seam map (`dev`-owned).

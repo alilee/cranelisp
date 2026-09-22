@@ -208,7 +208,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Phase 3 (finalize): re-resolve deferred trait calls with the final
-    /// substitution across every defn body (`program-decomposition.md` §2.1 P1).
+    /// substitution across every defn body (`design/typecheck/monomorphisation.md` §3.3 step 1).
     /// Per-defn resolution already ran in `check_form_body`, but cross-defn
     /// substitution refinement (e.g. constrained fns pinned by call sites) may
     /// enable additional resolutions. Updates the side maps for backward
@@ -252,7 +252,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Pass 3 (finalize): the complete set of constrained/parametric fn names to
-    /// monomorphise (`program-decomposition.md` §2.1 P3) — the per-cluster
+    /// monomorphise (`design/typecheck/traits.md` §6 "Detection") — the per-cluster
     /// `detect_constrained_fns` result, the accumulator carry (prior REPL evals),
     /// plus (Additive strategy only) a live-table scan for cross-call
     /// constrained / polymorphic-with-ast fns.
@@ -566,8 +566,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Phase 5 (finalize) tail — the AST re-annotation / re-key / publish pass
-    /// extracted from `finalize_check_result_inner` (`program-decomposition.md`
-    /// §2.1 P5). Reads the now-settled side maps + subst; the callee writeback
+    /// extracted from `finalize_check_result_inner` (`design/typecheck/monomorphisation.md`
+    /// §3.3 step 9). Reads the now-settled side maps + subst; the callee writeback
     /// is the 0472 seam and the per-`Concrete{slot}` `codegen_view` rebuild is
     /// the post-mono view (§10.2 pattern-ctor sidecar threaded through).
     pub(super) fn finalize_annotations_and_publish(

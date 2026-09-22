@@ -3,7 +3,7 @@
 **Status: LANDED** (authored S117 Track A; as-built confirmed against source
 2026-09-01, S121 C3). This document is subordinate to `typecheck.md` and
 `traits.md`; it elaborates the conventional and higher-kinded `impl` registration
-seam only. §§1–6 describe the delivered shape in the present tense; §7 records the
+seam only. §§1–6 describe the delivered shape in the present tense; this document’s section 7 records the
 as-built confirmation and FIXME 0794's disposition.
 
 ## 1. Requirement and boundary

@@ -1543,7 +1543,7 @@ fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_stat
     session.shutdown();
 }
 
-// spec: design/arch/macro-availability-model.md §0 (FIXME 0299) — the
+// spec: design/arch/macro-availability-model.md (FIXME 0299) — the
 // cache-restore Linker must resolve binary-exported primitive externs that
 // the synthetic `macros` module references (e.g. `sconcat`). The fresh JIT
 // resolves these via the host's exported symbols; `dlsym_host_symbol` is

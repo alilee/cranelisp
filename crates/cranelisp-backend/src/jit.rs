@@ -146,7 +146,7 @@ pub struct Jit {
     /// inserts post-construction. So when an unresolved `Linkage::Import`
     /// relocation against `name` is settled at `finalize`, the lookup returns
     /// the host-promised pointer. The motivating member is the
-    /// `DefKind::PrimitiveExtern` `discover-tests` body, promised by int at
+    /// host-promised `RustPrimitive` `discover-tests` body, promised by int at
     /// session init (test-discovery.md §6; BC §3 invariant 8).
     ///
     /// Pointers are stored as `usize` (not `*const u8`) so the map and the
@@ -344,7 +344,7 @@ impl Jit {
     /// the documented escape hatch for host-promised symbols whose body is
     /// neither codegen-emitted, bundled (`cranelisp-primitives`), nor
     /// catalogued (`cranelisp_intrinsics::intrinsics_table()`). The motivating
-    /// member is `discover-tests` (a `DefKind::PrimitiveExtern` whose body
+    /// member is `discover-tests` (a host-promised `RustPrimitive` whose body
     /// reads int's live session state — Principle 18 / Decision 0048 keep that
     /// body out of `cranelisp-intrinsics`); int calls this at session init.
     ///

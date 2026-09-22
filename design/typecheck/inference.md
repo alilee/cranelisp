@@ -1,310 +1,211 @@
-# Inference Engine
+# Inference — typecheck interior
 
-Solution design for the Cranelisp type inference engine. Covers Algorithm W implementation, unification, substitution strategy, and per-ring evolution.
+Owner: `design` narrow-deployed to typecheck. Subordinate to
+[`typecheck.md`](typecheck.md); where they disagree the master wins. The pass
+structure that drives inference (register, body check, finalize) is
+[`typecheck.md` §5](typecheck.md#5-pipeline-inside-check_forms) and is not
+restated here. Required behaviour is `spec/03-types.md`.
 
-## Architecture
+This document owns Algorithm W as the crate realises it: the substitution,
+unification, generalisation and instantiation, written type variables, and the
+per-expression type record.
 
-The typechecker is structured as a single `TypeChecker` struct with `impl` blocks split across multiple modules using Rust's borrow-splitting pattern. Hot-path functions (`unify`, `fresh_var`) take explicit `&mut Subst` / `&mut TypeId` parameters to avoid `&mut self` conflicts.
+---
 
-### Module Layout
+## 1. State and seams
 
-| Module | Responsibility |
-|--------|---------------|
-| `checker.rs` | `TypeChecker` struct definition, scope ops, fresh var generation, unification delegation |
-| `infer.rs` | Expression type inference: one helper method per `Expr` variant |
-| `program.rs` | Two-pass batch checking (`check_program`) and REPL input checking (`check_repl_input`) |
-| `unify.rs` | Unification algorithm with occurs check |
-| `scheme.rs` | Scheme instantiation (`instantiate`) and generalization (`generalize`) |
-| `scope.rs` | Lexical scope stack for local bindings |
-| `resolve.rs` | `TypeExpr` -> `Type` resolution (annotations, type expressions) |
-| `adt.rs` | ADT registration, constructor schemes, exhaustiveness checking |
-| `builtins.rs` | Ring 0 primitive type scheme registration |
+- **One substitution per cluster.** `CheckState.subst` is shared by every body
+  in the cluster, so a call in one body constrains the callee's registration
+  variables (`typecheck.md` §5.2 item 3). There is no per-body substitution.
+- **Fresh variables** come from the environment's atomic counter. The counter is
+  monotonic and a failed cluster's ids are abandoned, never reused
+  (`typecheck.md` §7.4).
+- **One helper per expression variant.** `infer_expr` dispatches to a helper per
+  `Expr` variant; `infer_var` is the reference-resolution chokepoint
+  (`typecheck.md` §3.1).
+- **One unification seam.** `unify::unify_with_rigid` (§2). `TypeCheckEnv::unify`
+  threads the current body's rigid set and re-spans an error that carries
+  `Span::SYNTHETIC` to the caller's span. `unify`, `bind_var` and `fresh_var` are
+  free functions over `&mut Subst` / the counter so inference can hold the
+  substitution and mint variables in one step without a `&mut self` borrow
+  conflict.
+- **Per-body state is one frame.** `CheckState.body_frame` (`BodyFrame`) holds the
+  rigid set, the written-variable scope, the recursion binding and the body's
+  deferred name and pattern uses. `check_defn_body` and
+  `check_defn_body_with_types` swap a fresh frame in and restore the previous one
+  at a single point on every exit, success or error. `infer_lambda` and
+  `infer_annotate` take the shared written-variable scope and reinstall it on
+  every exit. A frame or scope leaked by an error path would be installed for the
+  next form; restoring on both paths keeps that structural rather than dependent
+  on the whole call aborting.
 
-### Key Design Decisions
-
-**Borrow-splitting over method chaining**: Free functions for `unify` and `fresh_var` take `&mut Subst` / `&mut TypeId` rather than `&mut self`. This avoids borrow conflicts when inference needs both substitution and fresh variable generation simultaneously. The `TypeChecker` methods are thin wrappers.
-
-**Per-variant infer helpers**: `infer_expr` dispatches to `infer_int_lit`, `infer_var`, `infer_lambda`, etc. Each helper is 10-40 lines, independently testable. This addresses the sketch audit finding HIGH-1 (monolithic `infer_expr`).
-
-**Single substitution**: One global `Subst` (HashMap<TypeId, Type>) for the entire compilation unit. No separate "local" substitutions. This matches standard Algorithm W.
-
-## Two-Pass Pipeline
-
-Batch mode (`check_program`) uses two passes:
-
-1. **Pass 1 — Registration**: Register type definitions (`TypeDef`), then register function signatures with fresh type variables. Functions are added to the symbol table with monomorphic schemes containing fresh vars.
-
-2. **Pass 2 — Checking**: Check each function body. Bind parameters to the fresh vars from Pass 1, infer the body type, unify with the return type var. After all bodies are checked, generalize each function's type and update the symbol table.
-
-This supports forward references: function `f` can call function `g` defined later in the same program, because `g`'s signature (with fresh vars) is registered before any bodies are checked.
-
-### REPL Mode
-
-`check_repl_input` handles one definition or expression at a time. For definitions, it does registration + body checking + generalization in a single step (no forward references across REPL inputs). The REPL supports snapshot/restore for error recovery.
-
-### Cross-Defn Generalization Timing (FIXME 0344)
-
-The two-pass shape above has a generalization-timing hazard for **a defn that calls a sibling defn in the same cluster**. Pass 1 registers every signature as `mono(fn_type)` — a *monomorphic* scheme whose param/ret vars are bare fresh vars (`type_vars` empty). Pass 2 checks each body in **source order**, but the per-defn generalized scheme is only written back to the symbol table in `finalize_check_result_inner` Phase 2 (`program.rs` ~line 1102), **after all bodies are checked**.
-
-Consequence: while body B of `caller` is checked, a call to `callee` resolves through `infer_var` → `instantiate` against `callee`'s *still-monomorphic* entry. Because `type_vars` is empty, `instantiate_scheme` returns the entry's `Type::Fn(...)` **verbatim — no fresh copy**. The call's argument types therefore unify *directly into `callee`'s own fresh param vars in the shared global `Subst`*. Those same vars are then unified again by `callee`'s own body (including its recursion) and by every other caller. All such constraints land on one set of vars — they collapse.
-
-This is the textbook behaviour of monomorphic let-rec-group inference: **sound but over-restrictive**. It only manifests when a callee threads a type variable that *should be independently instantiable per call* and that variable is constrained differently across call sites. The fold shape is the canonical trigger: `vec-reduce-loop`'s accumulator `b` is constrained to `Int` by `vec-reduce`'s `(... 0 ...)` call and to `(Vec a)` by any other caller, while `b` is also `f`'s return slot — so `b`, `a`, and `Vec` fuse. `vec-map`/`vec-filter` escape because their loop's accumulator is pinned to `(Vec a)` *at its initial-call argument* (literal `[]`), so every caller already agrees on the type — there is no independently-instantiable accumulator to collapse.
-
-**Design ruling — generalize-before-cross-defn-use, NOT polymorphic recursion.** The fix is to give cross-defn call sites a *generalized* (instantiable) view of the callee. It is **NOT** to make a function's self-reference polymorphic — `check_defn_body` binds the recursion name `mono(fn_type)` (line 1947) and that is **correct and must stay**: polymorphic recursion is undecidable in HM, and the spec's `let`/`fn` polymorphism (spec §3.5.3 / §5) generalizes at the *binding group* boundary, not within a body. The correct seam is to **generalize each defn immediately after its body is checked (in `check_form_body_single_defn`, after line 832 where `trial_scheme` is already computed) and write the generalized scheme back to the symbol-table entry**, so a later-source sibling that calls it instantiates a fresh copy. The same writeback must also cover the *caller-before-callee* source order: a caller checked before its callee's body still sees the monomorphic entry, so the durable correctness guarantee is "generalize the binding group as a unit and re-expose generalized schemes to any cross-defn reference." The minimal implementation is the per-defn post-body writeback (it fixes the common callee-before-caller order and the fold repro); the complete implementation generalizes the strongly-connected-component group and instantiates non-self references. The unit test pins the *observable* contract (correct inferred scheme + a green call), leaving the implementation free to choose the minimal-vs-complete mechanism so long as the scheme is right.
-
-## Written type variables (spec §3.3.1–§3.3.5, shipped model S109 W6.3)
-
-A source author may **write** a type variable in a parameter or return annotation
-(`(defn id [:a x] x)`, `:a "hello"`, `:(Box a)`). The engine's treatment of a
-written var is fixed by spec §3.3.1–§3.3.5; this section records how that model
-is realized in the inference engine and — as important — **what it is not**, so a
-future reader does not re-introduce the discarded intermediate models.
-
-### Design evolution — three states, only the last shipped
-
-The model went through three states within S109; **only W6.3 is the engine's
-behaviour**, and the two earlier states must not be transcribed back into the
-design:
-
-- **W6 (`e401cce9`)** — a written free var minted a *fresh quantified* var
-  (flexible-mint). SUPERSEDED.
-- **W6.2 (`b2bfb760`)** — a written var was a **rigid skolem EVERYWHERE**, bare
-  vars included, with a `suppress_rigid_annotations` flag guarding re-checks and
-  an eager `lambda_written_vars` poly-as-value escape check. SUPERSEDED — the
-  flag and the eager check are both **deleted from the source**; do not describe
-  them as live.
-- **W6.3 / W6.3.1 (`c3008d1f`, `750471ac`, `eb6c94e6`)** — the SHIPPED hybrid.
-
-### The shipped hybrid (W6.3)
-
-A written type var is treated on one of two paths, chosen by *what* is written:
-
-1. **Bare var = an ordinary FLEXIBLE inference var carrying a display name.**
-   `:a` (standing alone or nested in `:(Box a)`) is exactly an inference-generated
-   var that survives generalization, plus a name. The name does two things and no
-   more (§3.3.1): it **relates same-named occurrences** (lexical co-reference) and
-   it **documents** the displayed scheme. It carries **no rigidity and no checking
-   obligation** — the body MAY narrow it to a concrete type, and that is **never an
-   error** (spec §3.3.5 rows 2, 4, 11; `(defn f [:a x] :a "hello")` is
-   `(Fn [String] String)`). Two bare vars tied by the body simply **merge**.
-
-2. **Constraint at a parameter position = held abstract (rigid).** `:C x` where
-   `C` names a trait is a checkable claim (§3.3.2). At a quantified position the
-   var is **held abstract over `C`** for the body-check; the body narrowing it to
-   a concrete type is a **skolem escape** and is rejected (row 6). Rigidity lives
-   **only** on this constraint path.
-
-The one asymmetry between the two paths (a bare `:a` narrowed to `Int` is fine,
-row 2; a `:Num x` narrowed to `Int` is an error, row 6) is the whole reason the
-hybrid exists: a *caller* relies on the constraint, not on the name.
-
-### Realization in the engine
-
-- **`written_var_scope: Option<HashMap<Symbol, TypeId>>` threads LEXICAL
-  CO-REFERENCE only** (`CheckState`, `checker.rs`). It is built in Pass-1
-  (`register_defn_signature` → the accumulator's per-defn `defn_var_scopes`),
-  installed for the body in `check_defn_body` (`program/body.rs`), and **shared —
-  never reset — into nested `fn` closures** by `infer_lambda` (`infer.rs`), so a
-  body `:a` co-refers with a param `:a` and an inner `(fn [:a y] …)` co-refers
-  with the enclosing `a` (§3.3.1, row 8; FIXME 0588). This scope is *all* a bare
-  var carries — a name, never rigidity.
-
-- **`rigid_vars: HashSet<TypeId>` holds ONLY asserted-constraint param vars.**
-  `check_defn_body` seeds it, per body, from the param `Type::Var`s that **already
-  carry a constraint at Pass-2 entry** — i.e. `resolve_bound_param` recorded the
-  assertion `:C x` into `state.active_constraints` during Pass-1. A **bare** `:a`
-  param that merely *accrues* a `Num` constraint from body use (row 7) is **not**
-  seeded: its var has no constraint until body inference runs (after seeding), so
-  it stays **flexible** — the inferred-not-asserted distinction that separates row
-  7 (accepted, `Num`-polymorphic) from row 6 (rejected, skolem escape). The set is
-  scoped to the owning body and torn down on return (save/clear/restore in
-  `program/body.rs` and `traits/impl_check.rs`).
-
-- **`unify::unify_with_rigid(subst, rigid, t1, t2)` + `unify_var` are the ONE
-  unification seam** (`unify.rs`; `self.unify` at `checker.rs` always threads
-  `state.rigid_vars`; the free 3-arg `unify` is a test-only helper). The asymmetry
-  is realized entirely in `unify_var`:
-  - a **flexible** var MAY bind to a rigid one — *use-acquisition*, sound;
-  - a **rigid** var MUST NOT unify with a **concrete type** — *skolem escape*,
-    rejected (row 6);
-  - **two rigid vars MERGE** (both stay abstract) — `(defn assert-eq [:Eq a :Eq b]
-    (= a b))` is a constraint-polymorphic scheme, **not** an error. (The W6.2
-    distinct-rigid-escape rule was removed.)
-
-- **Rigidity is TRANSIENT inference state.** `rigid_vars` and `written_var_scope`
-  live on `CheckState`, are per-body, and are **never serialized** — a var is
-  rigid only for the duration of one body-check. **No `cranelisp-types` type
-  carries rigidity**; there is no schema or cache impact from the model.
-
-#### Structural hardening of the rigid-model invariants (FIXME 0595, S111)
-
-Two places where the rigid model's invariants hold **by convention rather than
-structurally** (Principle 18). Neither is live-reachable today (`/review` verified
-against current construction sites + error flow), so both are *hardening*, not defect
-fixes; they ride the typecheck adjacent-carries track opportunistically (0595 item (1)
-is two call edits). Design intent:
-
-1. **The `TyConApp` head-binds must route through `unify_var`.** `unify_with_rigid`'s
-   two `TyConApp` arms call `bind_var` **directly** on the head id — `unify.rs:112`
-   (`TyConApp(f,_)` vs bare-ADT: `bind_var(subst, f_id, ADT(name,[]))`) and `:134`
-   (`TyConApp(f1,_)` vs `TyConApp(f2,_)`: `bind_var(subst, f1, Var(f2))`) — bypassing
-   the rigid guard on the convention "HKT constructor variables are never written
-   skolems". True today (`Type::TyConApp` is built only in HKT trait-sig resolution,
-   whose ids are never in `rigid_vars`; the canonical annotation resolver cannot
-   produce a lowercase applied head). But `cranelisp_types::apply` rewrites a head id
-   along the substitution and `unify_var`'s rigid arm binds flexible vars TO rigid ids,
-   so a kind-confused sig (no kind checker prevents a var used both as head and in
-   plain position) could smuggle a rigid id into head position, after which `:112`/`:134`
-   bind it silently — a skolem **acquire** in the unsound direction. **Fix:** route both
-   head-binds through `unify_var` (closes the gap for two call edits); a
-   `debug_assert!(!rigid.contains(&f_id))` at each arm is the acceptable minimal
-   alternative.
-
-2. **Rigid-state teardown must be Ok-path-only-symmetric.** `check_defn_body`
-   (`program.rs` ~`:3311`→`:3335`), `infer_annotate`, and `infer_lambda` install
-   `rigid_vars` / `written_var_scope` and restore them only **past the `?`s** — an
-   inference error leaves the state polluted. Benign today (every Pass-2 error aborts
-   the whole `check_forms` call and `CheckState` is function-local, so leaked state
-   dies with the abort), but `traits/impl_check.rs::check_defn_body_with_types` already
-   does the closure-capture save/restore correctly, and the asymmetry is a trap for any
-   future continue-after-form-error mode. **Fix:** match the `impl_check` discipline —
-   a closure or RAII guard that restores on **both** exit paths — at the other three
-   sites, making the invariant structural (Principle 18) rather than convention.
-
-No `cranelisp-types` edit, no schema impact; typecheck-internal. Each fix lands with its
-unit pin (`/dev`).
-
-### Rank-1 polymorphic returns — no eager check (§3.3.4/§3.10)
-
-A `defn` whose body **defines a rank-1 polymorphic function value** — returned
-(`(defn mk [] (fn [:b y] y))`), let-stored-and-returned, passed uninstantiated, or
-applied in place — is a legitimate value. The written `:b` is irrelevant: the
-written form is the **same thing** as its unwritten twin, and both are accepted
-(§3.3.4 MUST (f), row 10). The former eager `lambda_written_vars` free-var escape
-check (added `c3008d1f`, refined `750471ac`) over-rejected the written forms while
-their unwritten twins compiled; it was **removed at W6.3** and the
-`CheckState::lambda_written_vars` field is **gone** — do not re-add it, and
-`resolve_annotation_type_expr_in_module` returns just the `Type` (the minted-id
-list that fed the removed check is gone).
-
-The genuine rank-2 / value-restriction limits are enforced **elsewhere by the
-type system, not by an eager gate**:
-
-- a single poly instance used at two types (`(let [f (mkid)] (f "x") (f 5))`) →
-  the value restriction / **unification** (rows 18);
-- a poly value passed and used at two types inside a callee → **unification**
-  (rank-2 argument, row 19);
-- a result-only var held unresolved at a codegen-reaching use (`(zed)` with no
-  context, row 16) → the **§3.11 ambiguity gate** (the R16 result-var
-  monomorphisation family). Not yet landed as a check — reported to `/sprint` as a
-  coordinated seam (needs a "dispatch selected NO impl" signal; the `main` entry
-  leg additionally needs the int entry-validation seam, Principle 19).
-
-### Value-position annotations (§3.3.3)
-
-`infer_annotate` handles annotations on a concrete expression. A bare/concrete
-annotation (`:a "hello"`, `:Int (zed)`) is a **flexible unify** — the value's type
-unifies with the annotation (pins freely / resolves return-type dispatch). A bare
-name that resolves as a **trait** (`:Num 5`) is a **satisfaction check only**
-(MUST (c)): accepted **iff** the expr's type implements the trait, changing
-nothing — it does not disambiguate return-type dispatch. The check discriminates
-three cases on the resolved expr type (FIXME 0597): a **nominal concrete** type →
-`has_impl_in_home`; a **concrete but non-nominal** type (a `Fn` — implements
-nothing, impls are keyed by type name; `concrete_type_name == None`) → **reject**;
-still a `Type::Var` → leave the residual for the §3.11 gate.
-
-### Open design note — constraint-path rigidity in trait-impl method bodies
-
-**(Narrow residual from FIXME 0593; fenced, no live unsoundness — fold into the
-S110 FIXME-0590 resolver-convergence round.)** 0593's original worry — that a bare
-written-var ascription in an impl-method body would "silently acquire" flexibly —
-is **obsoleted by W6.3**: a bare var *is* flexible by design, and a body pinning it
-is the intended semantics (§3.3.5 row 4), the same in an ordinary defn body and an
-impl-method body (no per-variant divergence). The flag the concern hinged on
-(`suppress_rigid_annotations`) no longer exists.
-
-`check_defn_body_with_types` (`traits/impl_check.rs`) — the shared helper for
-trait-impl method bodies **and** the monomorphise re-check — receives
-already-concrete `param_types` and **clears** `rigid_vars` / `written_var_scope`
-for the body, so a body-only written var mints a plain flexible var with no
-co-reference and no rigidity. The only residual question is narrow: whether a
-constraint on a **non-`Self`** type variable carried by a trait-method signature
-should be **held abstract (rigid)** inside the impl-method body (an MUST (b) /
-§3.3.2 obligation the current concrete-param path does not seed). It is fenced
-today by a parse gap — body annotations do not parse inside impl-method defn
-bodies (`(impl Doubler Int (defn twice [n] :a "hello"))` → `parse error:
-annotation missing expression`, a FIXME-0591-class position gap). The trigger that
-would make it live is the parse-gap closure; resolve the constraint-in-impl-body
-question and add the impl-method-body row to the §L matrix (`/qa`) at that point.
-
-## Unification
-
-Standard Algorithm W unification with occurs check:
+## 2. Unification
 
 ```
-unify(Var(a), t)  = if a in fv(t) then OccursCheckError else subst[a] = t
-unify(t, Var(a))  = unify(Var(a), t)
-unify(Int, Int)   = ok
-unify(Fn(ps1, r1), Fn(ps2, r2)) = unify each (p1, p2), then unify(r1, r2)
-unify(ADT(n1, as1), ADT(n2, as2)) = if n1 == n2 then unify each (a1, a2)
-unify(_, _)       = TypeError
+unify(Var(a), t)        = unify_var(a, t)                    ;; symmetric
+unify(Int, Int)         = ok                                 ;; likewise the other scalars
+unify(Fn(ps1, r1), Fn(ps2, r2))
+                        = arity equal; unify each (p1, p2); unify(r1, r2)
+unify(ADT(n, as1), ADT(n, as2))
+                        = unify each (a1, a2)                ;; nominal: same FQ name
+unify(TyConApp(f, as1), ADT(n, as2))
+                        = arity equal; unify_var(f, ADT(n, [])); unify each arg
+unify(TyConApp(f1, as1), TyConApp(f2, as2))
+                        = arity equal; if f1 != f2 then unify_var(f1, Var(f2)); unify each arg
+unify(_, _)             = TypeError (rendered through render_type, typecheck.md §8.3)
 ```
 
-The substitution is applied transitively: looking up `Var(a)` follows the chain until a non-var type is found.
+`unify_var` carries the rigid-variable asymmetry (§4.2):
 
-## Scheme Operations
+- a flexible variable binds to anything, including a rigid variable, subject to the
+  occurs check;
+- a rigid variable must not bind to a concrete type: that is a skolem escape and is
+  rejected;
+- two rigid variables merge, and both stay abstract.
 
-**Instantiation**: Replace quantified type variables with fresh variables. Each call to `instantiate` produces a fresh copy, enabling polymorphic use.
+Both `TyConApp` head binds go through `unify_var`, not a raw `bind_var`. HKT
+constructor variables are never written skolems, but `apply` can rewrite a head
+id along the substitution; routing the head through the rigid guard makes a
+kind-confused signature a located error rather than a silent acquire.
 
-**Generalization**: Collect free variables in a type that do NOT appear free in the environment, and quantify over them. Uses the current substitution to resolve the type before collecting.
+Lookup follows the substitution transitively until it reaches a non-variable.
 
-```
-generalize(env, ty) =
-  let resolved = apply(subst, ty)
-  let env_fv = free_vars_in_env(env)
-  let ty_fv = free_vars(resolved) - env_fv
-  Scheme { vars: ty_fv, ty: resolved }
-```
+## 3. Generalisation and instantiation
 
-## Expression Type Recording
+- **Instantiation** replaces each quantified variable with a fresh one, so every
+  reference gets its own copy. A scheme with no quantified variables is returned
+  unchanged, so a reference to a sibling whose generalised scheme has not yet been
+  written back unifies into that sibling's registration variables. This is
+  ordinary monomorphic binding-group behaviour: sound, sometimes over-restrictive.
+- **Generalisation** applies the substitution, quantifies the variables not free in
+  the environment, and lifts trait constraints from `active_constraints` onto the
+  quantified variables they resolve to ([`traits.md` §6](traits.md#6-constrained-polymorphism)).
+- **Writeback order.** A body's unconstrained scheme is written back as soon as its
+  check ends, so a later sibling instantiates a fresh copy (`typecheck.md` §5.2
+  item 4). A caller checked before its callee can still generalise too early; the
+  compensation and the linear cures are the generalisation-ordering debt in
+  [`monomorphisation.md` §5.1](monomorphisation.md#51-generalisation-ordering-debt).
+- **Recursion is monomorphic.** A definition's own name is bound to its
+  monomorphic function type inside its body (`spec/03-types.md` §3.10). Considered: making the
+  self-reference polymorphic to relieve the over-restriction above. Rejected:
+  polymorphic recursion is undecidable in HM, and the spec generalises at the
+  binding-group boundary. Any generalisation-order fix acts on cross-definition
+  references, never on self-reference.
 
-Every `infer_*` method calls `record_expr_type(span, ty)` to associate the inferred type with the expression's source span. The `expr_types` map is resolved through the substitution in `build_check_result` / `build_repl_result` before being returned to the caller.
+## 4. Written type variables
 
-The backend relies on `expr_types` for heap classification (via `HeapCategory::classify`). Missing entries would cause silent codegen bugs.
+Required behaviour is `spec/03-types.md` §3.3.1–§3.3.5. A written variable takes
+one of two paths, chosen by what is written.
 
-### Polymorphic Type Variables in expr_types
+### 4.1 A bare variable is flexible and named
 
-In Ring 0-1, `expr_types` may contain `Type::Var` entries for expressions inside polymorphic function bodies. For example, `(defn id [x] x)` records `x` with `Type::Var(N)` — this is correct because `x` has a universally quantified type. The invariant that all `Var` entries must be resolved activates in Ring 2 when monomorphisation produces specialized function bodies with fully concrete types.
+`:a`, alone or nested as in `:(Box a)`, is an ordinary inference variable that
+carries a display name. The name relates same-named occurrences and documents
+the displayed scheme. It carries no rigidity and no checking obligation: the body
+may narrow it to a concrete type (`(defn f [:a x] :a "hello")` is
+`(Fn [String] String)`), and two bare variables tied by the body merge.
 
-## Per-Ring Evolution
+### 4.2 A constraint at a parameter position is rigid
 
-### Ring 0 (Core)
+`:C x`, where `C` names a trait, is a checkable claim (§3.3.2). The variable is
+held abstract over `C` for the body check; narrowing it to a concrete type is a
+skolem escape. Rigidity exists only on this path, because a caller relies on the
+constraint and not on the name.
 
-- Int, Bool, Float literals and arithmetic
-- If/else with branch unification
-- Let bindings with sequential scope
-- Lambda (non-capturing) and function application
-- Pattern matching on nullary ADT constructors
-- Forward references via two-pass pipeline
+### 4.3 Realisation
 
-### Ring 1 (Heap) — Current
+- **Co-reference.** The written-variable scope is built at registration
+  (`register_defn_signature`; the scope rides the body's registration in the
+  body ledger, `checked-body-publication.md`), installed for the body by `check_defn_body`, and shared without reset into nested
+  `fn` bodies by `infer_lambda`. A body `:a` therefore co-refers with a parameter
+  `:a`, and an inner `(fn [:a y] …)` co-refers with the enclosing `a`.
+- **Rigid seeding.** `check_defn_body` seeds the rigid set from parameter
+  variables that already carry a constraint at body-check entry, which
+  `resolve_bound_param` recorded from a written `:C x`. A bare parameter that only
+  acquires a constraint from body use is not seeded, so it stays flexible: an
+  inferred constraint is not an asserted one.
+- **Transient.** Rigidity and the written-variable scope live on the body frame for
+  one body check and are never serialised. No `cranelisp-types` type carries
+  rigidity.
+- **Explicit-type bodies.** `check_defn_body_with_types`, used for impl-method
+  bodies and monomorphisation rechecks, receives concrete parameter types and
+  installs an empty frame: no co-reference and no rigidity (see §6).
 
-- String literal inference (`Type::String`)
-- Full polymorphic ADT registration with data constructor fields
-- Constructor pattern matching with field bindings
-- `TypeExpr::Applied` resolution with arity validation
-- `WarningKind` enum for typed warnings (M-3)
-- `#[must_use]` on public API functions (M-5)
+Considered and rejected, so neither is reintroduced:
 
-### Ring 2 (Abstraction) — Planned
+- minting a fresh quantified variable for each written variable, which loses
+  co-reference;
+- treating every written variable as rigid, with a flag to suppress rigidity on
+  rechecks and an eager escape check on lambdas. This rejected bodies that the
+  spec admits and was deleted from the source.
 
-- Trait declarations and implementations
-- Constrained polymorphism (monomorphisation)
-- Multi-signature functions
-- `debug_assert!` for Type::Var-free expr_types (post-monomorphisation)
+### 4.4 Rank-1 polymorphic values need no eager check
 
-### Ring 3 (Meta) — Planned
+A body that defines a rank-1 polymorphic function value, whether returned,
+let-bound, passed or applied in place, is legitimate, and the written form is the
+same as its unwritten twin (§3.3.4). No check is added for it. The genuine limits
+are enforced elsewhere:
 
-- Module system integration
-- Import resolution
-- Cross-module type checking
+- one polymorphic instance used at two types, and a polymorphic argument used at
+  two types inside a callee, are unification failures;
+- a result-only variable left unresolved at a codegen-reaching use is refused by
+  the ambiguity backstop ([`monomorphisation.md` §4](monomorphisation.md#4-the-ambiguity-backstop)).
+
+### 4.5 Value-position annotations
+
+`infer_annotate` handles `:T expr` (§3.3.3):
+
+- a variable or concrete type annotation unifies with the expression's type,
+  flexibly. It can pin a type or select a return-type dispatch;
+- a bare name that resolves to a trait (`:Num 5`) is a satisfaction check only and
+  changes nothing. A nominal concrete type must have an impl; a concrete
+  non-nominal type such as a function is rejected, because impls are keyed by
+  type name; a still-variable type is left for the ambiguity backstop.
+
+## 5. Expression types
+
+Every inference helper records its node's type through `record_expr_type` into
+`CheckState.expr_types`, keyed by span. Finalize drains the map into the
+accumulator, resolves it through the final substitution and writes it onto the
+AST ([`ast-annotation.md` §2–§3](ast-annotation.md#2-carriers-while-a-cluster-is-checked)).
+
+### 5.1 Polymorphic type variables in expr_types
+
+A template body legitimately records `Type::Var` entries: `(defn id [x] x)` types
+`x` as a variable. Concrete bodies reach codegen only as monomorphised instances
+([`monomorphisation.md` §1](monomorphisation.md#1-the-invariant-only-concrete-callables-are-realised)).
+A residual variable in a concrete view is refused by the ambiguity backstop
+unless the defaulting licence applies ([`non-concrete-producer-obligations.md`
+§3.2](non-concrete-producer-obligations.md)).
+
+## 6. Open item — constraint rigidity in impl-method bodies
+
+`check_defn_body_with_types` installs an empty frame, so a constraint on a
+non-`Self` type variable of a trait-method signature is not held abstract inside
+an impl-method body. Whether spec §3.3.2 requires it to be held abstract there is
+unsettled.
+
+The parse gap that used to keep the question unreachable has closed:
+`build_impl_method` now accepts a `:Type body` ascription (the frontend's
+`build_body_to_end`). No test covers the cell. The question belongs to `spec`
+and the evidence to `qa`; this design will follow the ruling. This is a
+source-read lead that has not been executed.
+
+---
+
+## Former section names
+
+| Former heading | Now |
+|---|---|
+| Architecture; Module Layout; Key Design Decisions | §1 and `typecheck.md` §3.1 |
+| Two-Pass Pipeline; REPL Mode | `typecheck.md` §5. The REPL takes the same `check_forms` path |
+| Cross-Defn Generalization Timing (FIXME 0344) | §3 and `monomorphisation.md` §5.1 |
+| Written type variables, including the shipped hybrid and realisation | §4 |
+| Structural hardening of the rigid-model invariants (FIXME 0595) | §1 (frame restore) and §2 (head binds). Both are landed |
+| Rank-1 polymorphic returns | §4.4 |
+| Value-position annotations | §4.5 |
+| Open design note — constraint-path rigidity in trait-impl method bodies | §6 |
+| Unification | §2 |
+| Scheme Operations | §3 |
+| Expression Type Recording; Polymorphic Type Variables in expr_types | §5, §5.1 |
+| Per-Ring Evolution | Removed; Git history |

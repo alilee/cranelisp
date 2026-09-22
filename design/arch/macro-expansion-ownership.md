@@ -4,7 +4,7 @@
 amendment 2026-09-03). Owner `arch`. This document states which context owns
 each half of macro expansion and why the split is shaped as it is. *When* a
 macro is available and the source-ordered checkpoint sequencing are the
-[macro availability model](macro-availability-model.md) §0; the binary's
+[macro availability model](macro-availability-model.md); the binary's
 expansion-loop interior is
 [macro resolver implementation](../int/macro-resolver-impl.md) and
 [quote shield](../int/quote-shield.md); the boundary type is
@@ -34,7 +34,7 @@ loop. Only when no macro head remains does one `check_forms` call receive the
 fully expanded non-macro `ParsedEntry` list. Each direct or expansion-produced
 `defmacro` is prepared, checked, compiled and published as one module-local
 checkpoint inside the same loop, before later forms expand
-([availability model](macro-availability-model.md) §0.4, §0.7).
+([availability model](macro-availability-model.md) §3, §5).
 
 ### Per-context obligations
 
@@ -92,7 +92,7 @@ the binary constructs and consumes itself.
 The first S76 design pass left open whether the `Sexp` walk should run inside
 `check_forms` (typecheck re-classifying structural results against its staging)
 or in the binary before it. The user locked the second shape on 2026-06-03
-([availability model](macro-availability-model.md) §0.5, §0.7). The reasons
+([availability model](macro-availability-model.md) §4, §5). The reasons
 still bind:
 
 - **No frontend dependency in typecheck.** Rebuilding an expansion result into
@@ -110,7 +110,7 @@ still bind:
   uncompiled same-module helper) that the S76 concrete trace found rather than
   patching it with a pre-invocation callee compile; the dead
   `block_for_macro_codegen` path was deleted, not wired
-  ([availability model](macro-availability-model.md) §0.3).
+  ([availability model](macro-availability-model.md) §2).
 - **One walk.** The frontend's structural-walk skeleton was deleted rather than
   kept private: two implementations of the same walk in two crates is a
   Principle 7 drift source. The bare-name "probe every module" lookup it

@@ -68,18 +68,20 @@ contributor would otherwise be tempted to undo it.
   and marshals `Ok`/`Err`. The language name is `catch-runtime-error`; the
   intrinsics-internal Rust slot reader keeps its name `take_runtime_error`
   (two-layer naming, §6).
-- **Scope — no-arg means the current module.** All-modules running is the
+- **Scope — an empty vector means the session's current module.** All-modules running is the
   `/run-all-tests` case or an explicit module list.
-- **One extern taking `(Vec String)`.** The no-arg and single-`String` shapes
-  are stdlib sugar normalising to it, not overloads: the multi-signature
-  machinery serves typed in-language bodies monomorphised per call site; a
-  host-promised extern with one body and one return type does not fit
-  (Principle 6). *As built:* `stdlib/testing/runner.cl` provides the variadic
-  `discover-here` macro under a different name. Its no-argument form emits
+- **One extern taking `(Vec String)`.** Calls pass the vector:
+  `(discover-tests [])` for the session's current module,
+  `(discover-tests ["user.math"])` for a named module. There is no
+  no-argument or single-`String` shape of the primitive and no overloads: the
+  multi-signature machinery serves typed in-language bodies monomorphised per
+  call site; a host-promised extern with one body and one return type does not
+  fit (Principle 6). `stdlib/testing/runner.cl` provides the optional variadic
+  `discover-here` macro: its no-argument form emits
   `(primitives/discover-tests [])`; named arguments become a vector of paths.
-  The extern interprets an empty vector using the session's current module.
-  That ambient lookup differs from the earlier caller-module literal account;
-  its required meaning remains for user arbitration through spec.
+  The empty vector means the session's current module, not the caller's
+  lexical module, and discovery does not extend scope through imports; see
+  [REPL module scope](../../repl/spec/16-test-discovery.md#163-the-primitives-uncovered-s122).
 - **Eligibility — prefix AND exact signature.** A `test-*` fn contributes a pair
   only if its scheme is exactly `(Fn [] (Option String))`. A mis-typed `test-*`
   is excluded, and warned at discovery time, so a silently skipped test cannot
@@ -254,7 +256,7 @@ discover-tests :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String))))
 ```
 
 One `(Pair name callable)` per eligible test across the named modules, sorted by
-name; an empty `Vec` means the current module.
+name; an empty `Vec` means the session's current module.
 
 - **`name`** — the fully-qualified `"module/test-name"` as a `String`.
 - **`callable`** — a `(Fn [] (Option String))` value whose body performs a

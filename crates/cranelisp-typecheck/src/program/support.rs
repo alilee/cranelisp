@@ -545,11 +545,11 @@ pub(super) fn is_macro_clause_defn_name(name: &str) -> bool {
     name.starts_with("__macro_") && name.contains("_clause_")
 }
 
-/// Enrich a bare "undefined variable" body-resolution error into the §0.8
+/// Enrich a bare "undefined variable" body-resolution error into the §6
 /// macro-availability diagnostic when the failing resolution happened inside a
 /// `defmacro` clause body.
 ///
-/// Per `design/arch/macro-availability-model.md` §0.8 (DECISION LOCKED
+/// Per `design/arch/macro-availability-model.md` §6 (DECISION LOCKED
 /// 2026-06-03): a macro's expansion may reference only dependency-module
 /// definitions and macros — NOT same-module non-macro definitions. When a
 /// clause body references such a name, the pass-ordered three-pass model leaves

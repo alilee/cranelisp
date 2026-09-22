@@ -37,7 +37,7 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
 
     fn recognize(&mut self, name: &str, span: Span) -> Result<Option<FQSymbol>, CranelispError> {
         // RECOGNITION via the LOCKED types primitive (committed `View`,
-        // `macro-availability-model.md` §0.7) — same path as the live
+        // `macro-availability-model.md` §5) — same path as the live
         // compile-time recognition; no second chain-walk copy. Read-only:
         // no on-demand compilation. If the macro's clauses are not already in
         // memory, the executor (`JitMacroExpander::invoke`) surfaces a clear

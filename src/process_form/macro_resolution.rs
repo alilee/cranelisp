@@ -27,12 +27,12 @@ use super::macro_clause::{MacroCheckpoint, MacroClauseEnv, compile_macro_checkpo
 /// Recognition driver for the live in-place expansion walk
 /// (`expand_sexp_recursive`).
 ///
-/// `recognize` calls the LOCKED `cranelisp_types::resolve_macro_head` primitive
+/// `recognize` calls the LOCKED `cranelisp_types::ResolutionScope::resolve_macro_head` primitive
 /// (via `expander::recognize_macro_head`) to recognize a macro head, then
 /// ensures the recognized macro's clause code is in memory (on-demand inline
 /// compile via `compile_macro_with_state`). Execution is NOT this resolver's
 /// job — the walk runs the single `JitMacroExpander` over the returned `FQSymbol`
-/// (S76 W-Macro, fire B; `macro-availability-model.md` §0.7).
+/// (S76 W-Macro, fire B; `macro-availability-model.md` §5).
 ///
 /// Holds `&CheckState` (mut, for on-demand compilation) + the committed
 /// symbol-table set + module aliases (for `resolve_macro_head`).
@@ -110,8 +110,8 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         }
 
         // Step 1: RECOGNITION via the LOCKED types primitive
-        // (`cranelisp_types::resolve_macro_head` over a committed `View`,
-        // `macro-availability-model.md` §0.7). Zero int→typecheck dependency;
+        // (`cranelisp_types::ResolutionScope::resolve_macro_head` over a committed `View`,
+        // `macro-availability-model.md` §5). Zero int→typecheck dependency;
         // handles imports/reexports/aliases/visibility uniformly. A non-macro
         // or forward reference yields `Ok(None)` (head flows on as an ordinary
         // call per the locked defmacro-before-use rule).
@@ -187,7 +187,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
 
 /// Read a macro's clause metadata + docstring from its **already-resolved**
 /// canonical entry. `fq` addresses the home module + canonical symbol that
-/// `cranelisp_types::resolve_macro_head` chain-followed to (imports/aliases/
+/// `cranelisp_types::ResolutionScope::resolve_macro_head` chain-followed to (imports/aliases/
 /// visibility already applied) — so this is a single direct lookup, no
 /// chain-walk. Returns `None` when the entry is absent or not a `DefKind::Macro`
 /// (a forward reference or a non-macro shadowing the name).
@@ -777,9 +777,9 @@ pub(super) fn compile_macro_if_needed(
 ) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
     // S76 W-Macro (fire B): the dead `block_for_macro_codegen` dep-walk
     // (`collect_transitive_uncompiled_deps` + the notify-loop) is DELETED, not
-    // wired (`macro-availability-model.md` §0.7). The locked decision FORBIDS a
+    // wired (`macro-availability-model.md` §5). The locked decision FORBIDS a
     // macro clause from calling a same-module non-macro definition at expansion
-    // time (round-trip safety, §0.3), so a clause's callees are dependency
+    // time (round-trip safety, §2), so a clause's callees are dependency
     // functions (compiled before, by ordinary module compilation) or same-module
     // macros (compiled in source order) — there is no same-module-`defn`-callee
     // with an empty GOT slot to pre-compile here.

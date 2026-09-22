@@ -47,8 +47,8 @@ the judgments that hold it, not the migration that produced it.
 
 The frontend is **purely syntactic**: text → `Sexp` → AST. It does no macro
 recognition and no macro execution — recognition is
-`cranelisp_types::resolve_macro_head`, driven by typecheck and int; execution is
-int's. Quasiquote desugaring is the whole of its macro-adjacent role. The reader
+`cranelisp_types::ResolutionScope::resolve_macro_head`, driven by the binary;
+execution is the binary's. Quasiquote desugaring is the whole of its macro-adjacent role. The reader
 is a **hand-written recursive-descent** parser; there is no parser-generator
 grammar.
 

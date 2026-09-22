@@ -245,12 +245,8 @@ pub(crate) fn check_program_compat(
 
 /// Run `check_program_compat` and reject a surviving gap as a hard error.
 ///
-/// Used by call sites that do NOT participate in the FQ-auto-load orchestration
-/// (macro-clause compilation, cache-load typecheck, `/type` introspection,
-/// the zero-caller `cluster::process_cluster` scaffold). These paths preserve
-/// the pre-FIXME-0268 behaviour: a `CheckError::Gap` (now surfaced as
-/// `Ok(Some(gap))`) becomes a `TypeError`. Only `finalize_module` and the
-/// Pass-2 expand loop act on a gap by loading the named module and retrying.
+/// Used by `/type` introspection, which does not load dependencies and retry.
+/// An unresolved `CheckError::Gap` is translated into a `TypeError`.
 pub(crate) fn check_program_compat_no_gap(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,

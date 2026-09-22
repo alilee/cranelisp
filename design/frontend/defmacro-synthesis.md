@@ -99,12 +99,12 @@ cannot drift apart.
   frontend hands back an `Sexp` and stops.
 - **Macro availability.** A macro is available only to forms after its own
   `defmacro`, in source order. That is the architecture's rule
-  ([macro availability decision](../arch/macro-availability-model.md#0-the-locked-decision-user-approved-2026-06-03).2), and the frontend neither
+  ([macro availability decision](../arch/macro-availability-model.md#1-the-rule)), and the frontend neither
   enforces nor depends on it.
 
 ## Cross-references
 
 - `spec/09-macros.md` — the `defmacro` form, the `Sexp`/`SList` ADTs, and the quasiquote rules.
-- [macro availability decision](../arch/macro-availability-model.md#0-the-locked-decision-user-approved-2026-06-03), `design/arch/macro-expansion-ownership.md` — where recognition and execution live.
+- [macro availability decision](../arch/macro-availability-model.md), `design/arch/macro-expansion-ownership.md` — where recognition and execution live.
 - `design/frontend/quasiquote-fold.md` — the sibling synthetic surface and the desugar contract.
 - `design/frontend/binder-head-reject.md` — the macro-name binder reject.

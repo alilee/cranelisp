@@ -18,8 +18,7 @@ the §3.3 rule. Everything else here is history.
 > (`program.rs:NNN`, `infer.rs:NNN`, `save.rs:NNN`, …) are evidence frozen at
 > S101 HEAD. The S109 FIXME-0580 decomposition split the typecheck `program`
 > module, then a single file, into the submodules under
-> `crates/cranelisp-typecheck/src/program/` (per
-> `design/typecheck/program-decomposition.md`). Do not
+> `crates/cranelisp-typecheck/src/program/` (`design/typecheck/typecheck.md` §3.1). Do not
 > chase the relocation here — this is a historical post-mortem; current seams
 > are named in the live design docs and source.
 

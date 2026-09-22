@@ -8,8 +8,8 @@
 //! purely structural: it does not know types, code, or semantics — only
 //! shape. Post-S76 (the W-Macro re-architecture) the frontend performs
 //! **no macro recognition and no macro execution**: recognition is a
-//! `cranelisp-types` query (`resolve_macro_head`) driven by typecheck +
-//! int; execution is int's, behind `cranelisp_types::MacroExpander`.
+//! `cranelisp-types` query (`ResolutionScope::resolve_macro_head`) driven by
+//! the binary; execution is the binary's, behind `cranelisp_types::MacroExpander`.
 //! The frontend's only remaining macro-adjacent role is quasiquote
 //! desugaring, which is syntactic.
 //! This narrows the contract the rest of the pipeline depends on: every
@@ -271,9 +271,9 @@
 //!    `cranelisp-primitives`, or `cranelisp-intrinsics`. Post-S76
 //!    W-Macro the frontend also performs no macro *recognition* or
 //!    *execution* — it neither looks up macro entries nor calls JIT'd
-//!    clause code. Recognition → typecheck (via the `cranelisp-types`
-//!    `resolve_macro_head` primitive); execution → int (behind
-//!    `cranelisp_types::MacroExpander`). That split is exactly what
+//!    clause code. The binary drives recognition through the types query
+//!    `ResolutionScope::resolve_macro_head` and executes macros behind
+//!    `cranelisp_types::MacroExpander`. That split is exactly what
 //!    removed the former FIXME 0175 inconsistency — the frontend dep
 //!    rule and the (former) `expand` contract no longer conflict
 //!    because frontend no longer owns the conflicting capability.
@@ -285,14 +285,11 @@
 //! 4. **Synthetic spans are unique.** [`next_synthetic_span`] issues
 //!    monotonically increasing spans for compiler-generated forms. No
 //!    two synthetic spans collide within a session.
-//! 5. *(Retired S76 W-Macro — the re-entrant-`expand` invariant moved
-//!    to typecheck; the macro-expansion fixpoint + its depth bound are
-//!    now typecheck's loop invariant. See `bounded-contexts.md` §2.)*
-//! 6. *(Retired S76 W-Macro — the "`expand` surfaces `Gap` instead of
-//!    blocking" invariant moved to typecheck, which surfaces the
-//!    in-mem-macro need via `CheckError::Gap(ResolutionGap::MacroInMem)`
-//!    and stays equally `Sess`/scheduler-free per Principle 3. See
-//!    `bounded-contexts.md` §2.)*
+//! 5. *(Retired frontend expansion invariant: the binary's expand loop
+//!    owns the macro fixpoint and depth bound. See
+//!    `design/arch/macro-expansion-ownership.md`.)*
+//! 6. *(Retired frontend gap invariant: the binary's expand loop owns
+//!    expansion-time dependency orchestration; frontend remains syntactic.)*
 //! 7. **`#[non_exhaustive]` DTOs.** Frontend's public DTO types remain
 //!    `#[non_exhaustive]` so adding variants/fields is non-breaking.
 //!    ([`ExtractedDeclarations`] is the one such DTO; `ExpansionError`
@@ -301,7 +298,7 @@
 //! 8. **Form-by-form, not pre-pass; defmacro-before-use.** There is NO
 //!    defmacro pre-pass extraction. A macro must be defined before it is
 //!    used, in source order (defmacro-before-use is normative —
-//!    `design/arch/macro-availability-model.md` §0.2). The frontend
+//!    `design/arch/macro-availability-model.md` §1). The frontend
 //!    itself does no macro recognition or expansion (those moved to
 //!    typecheck + int); this invariant records the availability *model*
 //!    the frontend's form-by-form output must be consistent with.
@@ -331,7 +328,7 @@
 //! - `design/arch/bounded-contexts.md` §1 — Frontend BC statement (canonical)
 //! - `design/arch/bounded-contexts.md` §7 — Cross-crate types (the substrate)
 //! - `design/arch/principles.md` — Principles 2, 13, 15, 17, 18
-//! - `design/arch/macro-availability-model.md` §0 — defmacro-before-use; three-pass model (LOCKED)
+//! - `design/arch/macro-availability-model.md` — defmacro-before-use; three-pass model (LOCKED)
 //! - `design/arch/macro-expansion-ownership.md` — the W-Macro recognition→typecheck / execution→int split
 //! - `design/frontend/frontend.md` §1 — the purely-syntactic role
 //! - `design/frontend/ast-builder.md` §2 — the per-form boundary

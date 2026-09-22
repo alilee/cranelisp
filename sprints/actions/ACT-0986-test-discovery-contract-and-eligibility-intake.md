@@ -33,13 +33,28 @@ design. They were not exercised during documentation cleanup:
   No IO implementation change is required by this ruling.
 - Spec assessment corrected the initial sugar observation: the reference
   library supplies `discover-here` in `stdlib/testing/runner.cl`. The primitive
-  itself takes a vector; REPL spec examples wrongly present the convenience
-  forms as primitive calls. The empty-vector current-module meaning also needs
-  arbitration: the implementation uses the session module, while earlier
-  rationale described a caller-module literal. Keep these issues distinct.
+  itself takes a vector. The user approved correcting the spec signature and
+  runner calls to vectors and documenting the optional macro separately; those
+  corrections are applied. The user settled empty-vector scope on 2026-09-22:
+  retain the session current module, without recursive import traversal. QA
+  reassesses evidence for scope and the corrected call shapes.
+  Broader project regression discovery is deferred in
+  [ACT-0988](ACT-0988-project-regression-discovery.md).
 - Appendix A still describes unresolved-symbol failure under --link; the
   design and existing link tests describe an earlier named compile-time refusal.
-  Reconcile that stale implementation description through spec.
+  The proposed normative correction was held when the user chose future
+  capability parity between normal run and release execution, with an explicit
+  test-harness mode. Coordinate this requirement through
+  [ACT-0988](ACT-0988-project-regression-discovery.md); do not treat the proposed
+  wording permitting discovery in ordinary --run as approved.
+
+- The spec call-shape pass found additional problems in the programmatic-use
+  example: match-arm grouping and nested constructor patterns differ from the
+  current grammar, and helper imports are incomplete. Assess a runnable example
+  against settled syntax; keep this distinct from discovery behavior changes.
+  The frontend parse-only test `test_discover_tests_no_arg_builds_as_apply`
+  also needs its requirement attribution checked: parsing an application is
+  separate from accepting its arity during typechecking.
 
 ## Completion evidence
 
@@ -57,7 +72,9 @@ both discovery scans, the slash-command handler and Appendix A before filing.
 Spec session `25b7b7c9-1981-41b9-94db-c9e27c94316e` recovered conflicting S76
 return-type authority. The user subsequently chose notionally constant
 introspection and the direct vector result (2026-09-22). The return-type
-question is settled; the remaining module-scope question is separate.
+question is settled. The subsequent user ruling also settles empty-vector
+module scope as the session current module; evidence reassessment remains open.
 Warning and exact eligibility requirements are settled. Early linked-mode
 refusal was the anticipated replacement for an explicitly interim unresolved
-symbol failure; its stale prose needs correction under the normative edit gate.
+symbol failure. The proposed replacement prose remains unapproved; the later
+mode-parity ruling and deferred harness work are recorded in ACT-0988.

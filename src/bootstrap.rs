@@ -32,8 +32,8 @@
 //!    codegen in backend; see `tracing.md` §2.2 + FIXME 0242 §S76-addendum (4)).
 //!    The `trace` *form* metadata is at root `""` (step 1), not here.
 //! 8. test-discovery primitives in `primitives`: `discover-tests`
-//!    (`DefKind::PrimitiveExtern`, body promised by int at session init) +
-//!    `catch-runtime-error` (`DefKind::PrimitiveExtern` post-S83-reshape —
+//!    (host-promised `RustPrimitive`, body promised by int at session init) +
+//!    `catch-runtime-error` (host-promised `RustPrimitive` post-S83-reshape —
 //!    ABI-name `Linkage::Import`, slot-less; body in
 //!    `cranelisp-intrinsics::panic`; FIXME 0360). `TestResult`/`run-test` RETIRED
 //!    (test-discovery.md, fourth convergence).
@@ -269,7 +269,7 @@ fn register_synth_adt(
     Ok(())
 }
 
-/// Insert a slot-less `DefKind::PrimitiveExtern` `Def` entry into `module`.
+/// Insert a slot-less host-promised `RustPrimitive` `Def` entry into `module`.
 fn insert_primitive(
     module: &mut SessionSymbolTable,
     name: &str,
@@ -278,7 +278,7 @@ fn insert_primitive(
     docstring: &str,
 ) -> Result<(), CranelispError> {
     // These synthetic-module callables (`sconcat`, `quote-sexp`, the Trace field
-    // accessors) are seeded slot-less as `DefKind::PrimitiveExtern` — the variant
+    // accessors) are seeded slot-less as host-promised `RustPrimitive` — the variant
     // for callees whose body lives outside `cranelisp-primitives` and that
     // dispatch BY-NAME as a `Linkage::Import`, never GOT-indirect (FIXME 0360,
     // ruled S83 /arch Path 1). The backend's builtin-dispatch funnel
@@ -286,7 +286,7 @@ fn insert_primitive(
     // falls through to `compile_extern_call` (a by-name `Linkage::Import` the
     // catalog resolves identically in JIT, cache-hit, and `--link`). typecheck's
     // classifier (`infer.rs::resolve_primitive_jit_name`) now accepts
-    // `DefKind::PrimitiveExtern` as `BuiltinFn`, so these lower correctly in all
+    // host-promised `RustPrimitive` as `BuiltinFn`, so these lower correctly in all
     // three modes (`--run`/REPL/`--link`) with no GOT slot to populate. The
     // interim `Primitive { got_slot }` + dlsym cascade (which broke `--link` —
     // the synthetic `macros` module has no emitted `__cranelisp_got_macros`) is
@@ -1011,7 +1011,7 @@ fn register_bind_primitive(
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
         .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `bind`"))?;
-    // `bind` is a slot-less `DefKind::PrimitiveExtern` (FIXME 0360, ruled S83
+    // `bind` is a slot-less host-promised `RustPrimitive` (FIXME 0360, ruled S83
     // /arch Path 1). It is intercepted inline by backend *by name*
     // (`apply.rs:153`, `op_name == "bind"`) BEFORE any GOT path is reached, so it
     // never touches the GOT and needs no slot. typecheck's classifier
@@ -1033,7 +1033,7 @@ fn register_bind_primitive(
 //
 // The user-facing control combinators (S96 Chunk C, slice 7; spec §10.12.8,
 // design `io-trampoline.md §16` / `reactor.md §2.15`). Like `bind`, both are
-// slot-less `DefKind::PrimitiveExtern` entries: typecheck's classifier
+// slot-less host-promised `RustPrimitive` entries: typecheck's classifier
 // (`resolve_primitive_jit_name`) accepts `PrimitiveExtern` as
 // `ResolvedCall::BuiltinFn { name }`, and the backend name-matches `race`/`select`
 // at its `BuiltinFn` apply-dispatch arm (`apply.rs`, the `bind` precedent) — NO
@@ -1094,7 +1094,7 @@ fn register_combinators(
     // sleep : Int -> IO Int — the runtime timer poll leaf (S96 Chunk C4, slice 7;
     // spec §10.12.8, `reactor.md §2.18`). `(sleep d)` arms the reactor's timer and
     // resumes (with `0`) after `d` MILLISECONDS. Like `race`/`select`/`bind` it is a
-    // slot-less `DefKind::PrimitiveExtern` name-matched at the backend's `BuiltinFn`
+    // slot-less host-promised `RustPrimitive` name-matched at the backend's `BuiltinFn`
     // apply arm (`compile_sleep`, the non-GOT runtime-symbol `code_ptr` path) — it
     // never touches the GOT. Monomorphic (no type vars): the result inner type is
     // `Int` (the language has no `Unit` type; `0` is the discarded result). It is the
@@ -1205,8 +1205,8 @@ fn register_trace_type(
 // --- Step 8: test-discovery primitives (primitives) ---
 //
 // test-discovery.md (fourth convergence, SETTLED): `TestResult`/`run-test`
-// RETIRE; `discover-tests` becomes a `DefKind::PrimitiveExtern` returning
-// fn-value pairs; `catch-runtime-error` is a standalone `DefKind::PrimitiveExtern`
+// RETIRE; `discover-tests` becomes a host-promised `RustPrimitive` returning
+// fn-value pairs; `catch-runtime-error` is a standalone host-promised `RustPrimitive`
 // combinator (S83 reshape, FIXME 0360 — slot-less ABI-name dispatch) backed by
 // the `cranelisp-intrinsics::panic` C-ABI export.
 
@@ -1232,7 +1232,7 @@ fn register_test_infrastructure(
 
     // discover-tests :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String)))))
     //
-    // DefKind::PrimitiveExtern — body promised by int at session init via
+    // Host-promised RustPrimitive — body promised by int at session init via
     // `Jit::define_symbol("discover-tests", discover_tests_extern)`. No GOT
     // slot, no code; backend lowers a call as Linkage::Import against the key.
     // The no-arg and single-String shapes are stdlib-macro sugar normalising
@@ -1584,7 +1584,7 @@ mod tests {
     }
 
     // S96 Chunk C, slice 7 — `race`/`select` are seeded as slot-less
-    // `DefKind::PrimitiveExtern` entries in `primitives` (so typecheck resolves
+    // host-promised `RustPrimitive` entries in `primitives` (so typecheck resolves
     // them to `BuiltinFn` and the backend name-matches them, the `bind` precedent),
     // public, with their §10.12.8 schemes. `timeout` is deliberately NOT seeded (a
     // C4 stdlib derivation). RED on revert: without `register_combinators` the
@@ -1787,7 +1787,7 @@ mod tests {
                 // S83 Wave-1 reshape (FIXME 0360): `catch-runtime-error` is
                 // dispatched by ABI name as a `Linkage::Import` (body
                 // `cranelisp_intrinsics::panic`), never GOT-indirect. It is
-                // therefore a SLOT-LESS `DefKind::PrimitiveExtern`, not a
+                // therefore a SLOT-LESS host-promised `RustPrimitive`, not a
                 // slot-bearing `DefKind::Primitive` (which post-reshape would
                 // lower the call through an unpopulated GOT slot → SIGSEGV).
                 assert!(matches!(callable.arm.life, Life::HostPromised));

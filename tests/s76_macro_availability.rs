@@ -1,24 +1,19 @@
 // s76_macro_availability.rs — the LOCKED macro-availability model (S76 W-Macro).
 //
-// Authored at S76 Phase 5 Stage 1 (QA-first) per `sprints/SPRINT.md` W-Macro
-// + `design/arch/macro-availability-model.md §0` (DECISION LOCKED 2026-06-03).
-// These are FAILING-NOT-IGNORED until the three-pass implementation lands in
-// `/dev (typecheck + int + frontend)`. Per
-// `memory/feedback_failing_not_ignored.md` they are NOT `#[ignore]`'d — a
-// failing/compile-failing test is the loud signal that scopes the impl.
+// Regression coverage for `design/arch/macro-availability-model.md`.
 //
-// The LOCKED model (macro-availability-model.md §0.1–§0.4):
+// The LOCKED model (macro-availability-model.md §1–§3):
 //   1. A macro's EXPANSION may reference only (a) DEPENDENCY-module definitions
 //      (typechecked before the defining module) and (b) MACROS (same-module
 //      macros included — the compile-time layer).
 //   2. A same-module NON-MACRO definition (defn/def/const/deftype-ctor/trait
 //      method) is NOT available at expansion → a clause that calls one is a
-//      REJECTED PROGRAM (clear diagnostic), not a defect to fix (§0.8).
+//      REJECTED PROGRAM (clear diagnostic), not a defect to fix (§6).
 //   3. defmacro-before-use is NORMATIVE: a use textually before its `defmacro`
-//      is a plain unresolved reference, not a macro call (§0.2).
+//      is a plain unresolved reference, not a macro call (§1).
 //   4. FQ macro references (`mod/macro`) work, lazy-loading the dependency
 //      (§9.3.6, folded into Pass 1).
-//   5. REPL ≡ batch by construction (round-trip safety, §0.3).
+//   5. REPL ≡ batch by construction (round-trip safety, §2).
 //
 // Spec anchors (the `[R4 S76 — tested-by /qa S76]` tags /spec placed):
 //   spec/09-macros.md §9.3.4 (availability + def order), §9.3.6 (FQ refs),
@@ -259,7 +254,7 @@ fn fq_macro_reference_expands_without_import() {
 
 // =============================================================================
 // §9.12 — a macro that GENERATES top-level defns / defmacros (structural-form
-// re-entry, macro-availability-model.md §0.4 "recursively"). The expansion
+// re-entry, macro-availability-model.md §3 "recursively"). The expansion
 // result re-enters classification in the same cluster.
 // =============================================================================
 
@@ -326,7 +321,7 @@ fn generated_macro_checkpoint_is_not_replayed_after_later_dependency_gap_neg() {
 }
 
 // =============================================================================
-// §5.13.2 — REPL ≡ batch macro availability (round-trip safety, §0.3).
+// §5.13.2 — REPL ≡ batch macro availability (round-trip safety, §2).
 // The SAME program produces the SAME macro-availability outcome in REPL and
 // `--run`. defmacro-before-use holds identically; the rejected same-module
 // helper is rejected identically.
@@ -357,7 +352,7 @@ fn repl_begin_cluster_forward_macro_use_is_unresolved_neg() {
 
 // spec: spec/05-definitions.md §5.13.2 — a macro using an EARLIER same-module
 // macro (compile-time layer) works in the REPL — macros may reference
-// same-module macros (§0.1 (b)). Positive parity companion.
+// same-module macros (§1 (b)). Positive parity companion.
 #[test]
 fn repl_macro_uses_earlier_macro_works() {
     repl_prims(
@@ -376,7 +371,7 @@ fn repl_macro_uses_earlier_macro_works() {
 //
 // Verified against the coverage above (2026-07-12): this file pins macros
 // defined in a DEPENDENCY module (`mac`) reached via import / FQ ref, but NOT a
-// macro provided by the implicit prelude. The prelude is a dependency (§0.1
+// macro provided by the implicit prelude. The prelude is a dependency (§1
 // (a)); a prelude-defined macro MUST expand bare in a consuming module exactly
 // as an explicitly-imported one. Twin over the macro's provenance.
 // =============================================================================

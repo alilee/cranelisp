@@ -3,7 +3,7 @@
 //!
 //! The 10,576-line pooled `program/tests.rs` was cut into per-production-submodule
 //! sibling files so a RED attributes to ONE production unit by file (METHOD §2.2 /
-//! Principle 23, the `design/typecheck/program-decomposition.md` §3 distribution).
+//! Principle 23; `crates/cranelisp-typecheck/CLAUDE.md` §"Testing").
 //! Everything shared by more than one of those files — the world builders, the AST
 //! constructors, the annotated-tree walkers, the assertion helpers — lives HERE,
 //! once (Principle 7). It also RE-EXPORTS the common `cranelisp_types` surface, so

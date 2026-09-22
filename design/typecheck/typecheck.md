@@ -38,7 +38,7 @@ In scope:
   higher-kinded traits, constrained polymorphism and monomorphisation.
 - ADT typing: constructor schemes, exhaustiveness, type-parameter instantiation
   and accessor synthesis.
-- Per-symbol callee extraction onto `ModuleEntry::Def.callees` (the call graph
+- Per-symbol callee extraction onto each callable's `callees` (the call graph
   typecheck produces for redefinition and emission order).
 - Interprocedural ownership inference over the monomorphised call graph
   (`ownership-inference.md`, governed by `design/arch/ownership-inference.md`).
@@ -93,7 +93,7 @@ user's approval before implementation and rides its source change-set under
 | Unit | Responsibility |
 |---|---|
 | `form.rs` | The public entry functions (§2). |
-| `program/` | The cluster pipeline (§5): `register` (Pass 1, including `register/multi_sig`), `body` (Pass 2), `finalize` (post-passes, harvest windows, ambiguity, publication), `mono_collect` (call-site demand collection), `callees` (the callee harvest), `support` (the concrete codegen-view builder). Its cut is recorded in `program-decomposition.md`. |
+| `program/` | The cluster pipeline (§5): `register` (Pass 1, including `register/multi_sig`), `body` (Pass 2), `finalize` (post-passes, harvest windows, ambiguity, publication), `mono_collect` (call-site demand collection), `callees` (the callee harvest), `support` (the concrete codegen-view builder), and the `#[cfg(test)]` `test_driver` and `test_support`. `mod program` is private and nothing in it is `pub`; a helper shared between its submodules is `pub(super)`, and `pub(crate)` only when a caller outside `program/` exists. |
 | `traits/` | `registry` (trait declarations), `impl_check` (impl registration, HKT impl methods, method minting), `dispatch` (method resolution, dispatch-argument selection and impl lookup at the trait's home), `monomorphise` (the instance engine, `monomorphisation.md` §3.9), `type_resolve` (impl-target, declaration-identity, occurrence and constructor-variable predicates; the trait and HKT signature wrappers over `resolve` are `TypeCheckEnv` methods in `checker.rs`). `mod traits` is private and nothing in it is re-exported publicly; a helper shared between its submodules is `pub(super)`, and `pub(crate)` only when a caller outside `traits/` exists. |
 | `ownership/` | The ownership-inference pass: `classify`, `transfer`, `fixpoint`, `confinement`, `uniqueness`, `publish`, `sites`, `trace` (`design/typecheck/ownership-inference.md` §1.3). |
 | `checker.rs` | `TypeCheckEnv`, `CheckState`, cross-module lookup and the scope-resolution seam (§3.3). |
@@ -187,8 +187,8 @@ calls `finalize_check_result`. None of these is public; `check_forms` is the ent
 | Form | Pass 1 (`Register`) | Pass 2 (`CheckBody`) |
 |---|---|---|
 | Type definition | Register the type and its constructors (`adt.md`). | Nothing. |
-| Trait declaration | Register the declaration and its methods (`traits.md` §2). | Nothing. |
-| Trait impl | Register the impl and check its written method bodies (`traits.md` §3); return the generated default methods. | Nothing. |
+| Trait declaration | Register the declaration and its methods ([trait declaration](traits.md#2-trait-declaration)). | Nothing. |
+| Trait impl | Register the impl and check its written method bodies ([trait implementation](traits.md#3-trait-implementation)); return the generated default methods. | Nothing. |
 | Single-signature definition | Record the body's registration (fresh parameter and return variables) in the body ledger. | Check the body against that registration. An impl method already checked in Pass 1 is skipped. |
 | Multi-signature definition | Register one entry per clause (`monomorphisation.md` §11). | Check each clause body; overload settlement happens in finalize. |
 
@@ -356,7 +356,7 @@ do not add a local type printer.
 - `impl$` storage keys are minted only by `trait_impl_key`. The written-impl
   record is built from the values the impl shell is built from, inside
   `register_trait_impl`'s transaction, and upserts per `(type, trait)`
-  (`traits.md` §3.0.1; `design/arch/trait-impl-cache-carrier.md`).
+  ([trait implementation](traits.md#3-trait-implementation).0.1; `design/arch/trait-impl-cache-carrier.md`).
 
 `traits.md` carries the subsystem; `hkt.md` the constructor-variable path.
 
@@ -389,7 +389,7 @@ No non-concrete type reaches codegen under any reachable instantiation:
   (`monomorphisation.md` §3.8).
 
 `CheckResult` carries no instance list: instances are ordinary concrete
-`ModuleEntry::Def`s published through staging, and `MonoDefn` is a plain
+callable bindings published through staging, and `MonoDefn` is a plain
 `Defn` wrapper.
 
 ### 9.4 ADT typing
@@ -461,15 +461,11 @@ never walks alias segments or spells an alias key itself, fixtures included
 | IO typing | `io-types.md` | Current |
 | Importable-symbol signature match | `signature-match.md` | Current |
 | Ownership inference | `ownership-inference.md` | Current; governed by `design/arch/ownership-inference.md` |
-| `program/` module cut | `program-decomposition.md` | Completed migration plan; retirement pending (`design/typecheck/typecheck.md` §11) |
 | `render_type` byte table | `s87-fq-walk-consolidation.md` | Historical; held for §2.4 test anchors |
 
-The per-form pass contract is §5.1–§5.2 and the `traits/` cut is §3.1; the retired
-`check-form-api.md` and `s87-traits-decomposition.md` redirect through
-`design/typecheck/CLAUDE.md` §"Redirections".
-
-Deleted records and where their content now lives are listed in
-`design/typecheck/CLAUDE.md` §"Redirections".
+The `program/` and `traits/` cuts are §3.1 and the finalize ordering is
+`monomorphisation.md` §3.3. Deleted records and where their content now lives
+are listed in `design/typecheck/CLAUDE.md` §"Redirections".
 
 ---
 
@@ -484,5 +480,5 @@ Deleted records and where their content now lives are listed in
   and §8.2. The spec text and that test disagree, and this design takes neither
   side. `spec` owns the reconciliation and `qa` the intake; typecheck's design
   follows the ruling. (Source-read and test-read lead; not executed here.)
-- **Retire `program-decomposition.md`.** Like the retired S87 plan, it is a
-  completed migration plan. Its durable module cut belongs in `design/typecheck/typecheck.md` §3.1.
+- Subject-level open items are in their subject documents: [trait open items](traits.md#11-open-items) and
+  `inference.md` §6, for example.

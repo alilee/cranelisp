@@ -1,7 +1,8 @@
 # Return-type-poly ambiguity — the unresolved-dispatch signal (R16/R17)
 
 **Status:** DESIGN (S110 Phase 3), pre-implementation. Subordinate to
-`traits.md` (§6 constrained polymorphism / §7 dispatch) and `monomorphisation.md`
+[constrained polymorphism](traits.md#6-constrained-polymorphism) and
+[method dispatch](traits.md#7-method-resolution) and `monomorphisation.md`
 (the ambiguity backstop (`monomorphisation.md` §4)). A **coordinated typecheck+int** change-set:
 this note designs the **typecheck-side signal**; the cross-crate **carrier** (how
 the signal reaches int's entry/eval seam) is **ratified as (A)** (FIXME 0611

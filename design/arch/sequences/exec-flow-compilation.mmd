@@ -109,7 +109,7 @@ sequenceDiagram
                         create participant Expander as MacroExpander impl<br/>cranelisp_types::MacroExpander (int-owned)<br/>src::expander invocation core + src::marshal
                         PW ->> Expander: MacroExpander::invoke(fq: &FQSymbol, args: &[Sexp], call_span: Span) -> Result[Sexp, MacroInvokeError]
                         Note over PW, Expander: int marshals args to runtime ADT (src::marshal), transmutes the GOT'd clause to extern "C" fn(i64)->i64, calls it under sigsetjmp/siglongjmp signal protection, unmarshals + rewrites spans (fresh synthetic spans).
-                        Expander -->> PW: Ok(Sexp) — expanded result. int build_forms it and re-enters the loop — nested-macro fixpoint plus structural-form re-entry (def to begin-defn-defmacro) per macro-availability-model.md section 0.7.
+                        Expander -->> PW: Ok(Sexp) — expanded result. int build_forms it and re-enters the loop — nested-macro fixpoint plus structural-form re-entry (def to begin-defn-defmacro) per macro-availability-model.md section 5.
                     end
                 end
 

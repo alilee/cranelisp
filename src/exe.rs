@@ -645,7 +645,7 @@ pub fn first_dispatch_within(
 }
 
 /// Friendly compile-time rejection of a `--link` build that references a
-/// **dev-session-only** `DefKind::PrimitiveExtern` (today: `discover-tests`).
+/// **dev-session-only** host-promised `RustPrimitive` (today: `discover-tests`).
 ///
 /// FIXME 0406 (→/int), test-discovery.md §4.5. `discover-tests` is host-promised
 /// only in a live session (int's `Jit::define_symbol`, REPL/`--run`). Under AOT
@@ -1894,7 +1894,7 @@ mod tests {
     }
 
     // spec: design/arch/test-discovery.md §4.5 — the gate confirms the structural
-    // `DefKind::PrimitiveExtern` discriminator, NOT a bare name match: a user
+    // host-promised `RustPrimitive` discriminator, NOT a bare name match: a user
     // symbol that merely shares the name `discover-tests` (an ordinary UserFn) is
     // NOT a dev-session extern and must NOT be rejected.
     #[test]

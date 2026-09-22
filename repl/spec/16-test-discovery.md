@@ -58,10 +58,14 @@ user> /run-all-tests
 **`discover-tests`** — discovery primitive:
 
 ```
-discover-tests              :: (Vec (Pair String (Fn [] (Option String))))   ; current module
-discover-tests "mod.path"   :: (Vec (Pair String (Fn [] (Option String))))   ; named module (String arg)
-discover-tests ["a" "b"]    :: (Vec (Pair String (Fn [] (Option String))))   ; union over a Vec of module paths
+discover-tests :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String)))))
+
+(discover-tests [])              ; the session's current module
+(discover-tests ["user.math"])   ; a named module
+(discover-tests ["a" "b"])       ; union over the named modules
 ```
+
+The primitive takes exactly one argument, an ordinary `(Vec String)` value of module-path strings — not a bare module path.
 
 The result MUST be the vector itself, not an `IO` action: discovery is pure-typed, and its result is treated notionally as a constant. Introspection is deliberately not modelled as an effect, so that test discovery does not require an introspective platform. The freshness requirement below still applies.
 
@@ -72,7 +76,9 @@ Returns one `(Pair name callable)` per eligible `test-*` function:
 
 **Freshness.** The callables are late-bound GOT-slot wrappers. Calling `discover-tests` again re-scans live state: a `test-*` defined after a previous call is included on the next call, and a redefined test runs its new body. Selection and reporting compose over these values and stay fresh by construction — freshness lives in the returned values, not in expansion timing. (This is why discovery returns callables, not a `(Vec String)` of names threaded through a macro runner, which would freeze the test set at the macro's expansion time. The macro-runner approach is retired.)
 
-The three call shapes are one underlying extern taking `(Vec String)`; the no-arg form (current module) and single-`String` form are stdlib-macro sugar normalising to the `Vec` form. The module argument is an ordinary value — a `String` or a `(Vec String)`, not a bare module path.
+**Module scope.** Discovery searches only the modules its `(Vec String)` argument names. An empty vector means the session's current module, not the module lexically containing the discovery call: a helper defined in one module that calls `(discover-tests [])` discovers the tests of whichever module is current when it runs. Discovery does not extend its scope through imports; a module imported by a searched module is searched only if it is itself named.
+
+**Library convenience (non-normative).** The reference standard library's `testing.runner` module provides optional sugar over the vector form, the `discover-here` macro: `(discover-here)` expands to `(primitives/discover-tests [])`, and `(discover-here "user.math")` or `(discover-here "a" "b")` collects the individual module arguments into the vector. `discover-here` is library code, not a shape of the primitive; a program that does not use it calls `discover-tests` with a vector.
 
 `Pair` and `Result` are seeded as primitives bootstrap types (alongside `Option`), so both are available to discovery results and to `catch-runtime-error`.
 
@@ -123,13 +129,13 @@ The in-language runner is ordinary code — no macro. `discover-tests` returns `
 
 ;; Run every test in the current module.
 (defn run-all []
-  (map run-one (discover-tests)))
+  (map run-one (discover-tests [])))
 
 ;; Run only the tests whose name contains a substring — selection is in-language,
 ;; over the SAME pairs, and stays fresh because the callables are late-bound.
 (defn run-matching [substr]
   (map run-one
-       (filter (fn [p] (match p [(Pair nm _) (contains? nm substr)])) (discover-tests))))
+       (filter (fn [p] (match p [(Pair nm _) (contains? nm substr)])) (discover-tests []))))
 ```
 
 `catch-runtime-error` is usable by any code, not just tests:

@@ -395,7 +395,7 @@ mod discover_tests_extern_tests;
 /// callable is a late-bound wrapper closure (see `discovered_test_wrapper`).
 ///
 /// Registered as `discover-tests` via `Jit::define_symbol` in
-/// `worker::build_session_jit` (`DefKind::PrimitiveExtern`, test-discovery.md §6).
+/// `worker::build_session_jit` (host-promised `RustPrimitive`, test-discovery.md §6).
 pub(crate) extern "C" fn discover_tests_extern(modules_vec: i64) -> i64 {
     TEST_RUNNER.with(|c| {
         let state_ptr = c.get();

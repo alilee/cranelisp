@@ -194,7 +194,7 @@ the declared kind already answers it.
      REPL's impl echo; the two must keep reading the constructor out of the pairing.
 
 **Distinct reasons stay distinct.** A conventional method that never mentions the
-implementing type is rejected by the occurrence rule (spec §7.1.1, `design/typecheck/traits.md` §2);
+implementing type is rejected by the occurrence rule (spec §7.1.1, [trait declaration](traits.md#2-trait-declaration));
 a higher-kinded impl on a primitive is rejected by the kind check (`spec/07-traits.md` §7.2.3).
 Neither diagnostic may stand in for the other.
 
@@ -207,7 +207,7 @@ Neither diagnostic may stand in for the other.
   distinct from a present method with no index. Conventional methods default to
   index 0.
 - The selected argument must have a concrete nominal head (`concrete_type_name`); a
-  still-open variable defers the call (`traits.md` §7).
+  still-open variable defers the call ([method resolution](traits.md#7-method-resolution)).
 - A higher-kinded method symbol carries the constructor's home-qualified head only,
   `Functor.fmap$<home>/Option`, through the one mangler shared with impl
   definition (`traits.md` §3.1).
