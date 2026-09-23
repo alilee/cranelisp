@@ -107,9 +107,41 @@ reads the typed view ([Concrete codegen boundary](#concrete-codegen-boundary)).
 
 - `Type`, `Scheme`, `Subst` and `TypeId` are typecheck's resolved type vocabulary.
 - `render_type`, configured by `PrimitiveNaming` and `VarNaming`, is the single `Type`-to-text
-  walk. Every renderer in the workspace delegates to it.
+  walk. Every renderer in the workspace delegates to it ([Type rendering](#type-rendering)).
 - `Type::is_concrete` is the one concreteness verdict
   ([Concrete codegen boundary](#concrete-codegen-boundary)).
+
+### Type rendering
+
+`render_type(ty, PrimitiveNaming, VarNaming)` (`crates/cranelisp-types/src/types.rs`) is the
+one structural walk; the two enums are output conventions, not separate renderers. `Display`
+for `Type` is `Bare` + `Numbered`; typecheck diagnostics are `Qualified` + `Numbered`; the
+binary's REPL and value display is `Qualified` + `Lettered` over a `type_var_names` map, with
+the `:Trait var` constraint decoration layered in `src/display.rs` and deliberately outside
+this crate. The cells below are the byte-for-byte contract that
+`crates/cranelisp-types/src/types/tests.rs` pins; a rendering change edits this table and
+those tests together.
+
+| Variant | `PrimitiveNaming::Bare` | `PrimitiveNaming::Qualified` |
+|---|---|---|
+| `Int`, `Bool`, `String`, `Float` | `Int`, … | `primitives/Int`, … |
+
+| Variant | `VarNaming::Numbered` | `VarNaming::Lettered(m)` |
+|---|---|---|
+| `Var(id)` | `t{id}` | `m[id]`, or `t{id}` when absent |
+| `TyConApp(id, [])` | `(TyCon t{id})` | `{head}` — bare, no parens |
+| `TyConApp(id, args)` | `(TyCon t{id} {a…})` | `({head} {a…})` |
+
+| Variant | Both conventions (arguments recurse with the same configuration) |
+|---|---|
+| `Fn(params, ret)` | `(Fn [{p…}] {ret})`; empty params render `(Fn [] {ret})` |
+| `ADT(fqtn, [])` | `{fqtn}` (`module/Name`) |
+| `ADT(fqtn, args)` | `({fqtn} {a…})` |
+
+`{head}` is `m[id]` with the same `t{id}` fallback. `TyConApp` is the one variant whose shape
+follows `VarNaming` rather than `PrimitiveNaming`: `Numbered` always emits the `TyCon` prefix
+and parentheses, `Lettered` never does. A shared arm that only substituted the head name would
+regress one path or the other, which is why the walk branches on the discriminant.
 
 **Resolved-stage type identity is module-qualified (Decision 47).**
 

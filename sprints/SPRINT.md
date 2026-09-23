@@ -3314,3 +3314,95 @@ the accepted CLI conditions and are not a phase transition.
 
 Checkpoint remains9d4f18f5 plus fixing-SHA trace commita7ec1f7d. The continued
 CLI evidence/annotations are uncommitted. NOTES unchanged; .agents excluded.
+
+
+### Checkpoint2fee9bb2 and rendering/typecheck cleanup (2026-09-22)
+
+User requested checkpoint and continuation. Committed CLI evidence and
+annotations as2fee9bb2 (8files); NOTES and .agents excluded. ContinuePhase5:
+- qa, Claude/Fable/high, session `ac4588ca-84aa-4520-beef-70bc5d8a3a00`: bounded
+  link_then_run missing-artifact risk and minimal evidence allocation.
+- arch, Claude/Fable/high, session `3183cd27-736d-47ef-837a-2bb5fdb6b054`:
+  historical type-rendering consolidation and display protocol/current homes.
+- design, Claude/Opus/high, session `94919811-1a82-4ac1-97f9-b8d98d6b50d3`:
+  typecheck checked-body-publication design/current master, disjoint from arch.
+No source writer or runtime test run dispatched yet; docs ownership disjoint.
+Retain unresolved findings, retire ordinary history, measure destination-inclusive
+standing burden. No API/semantic change or phase transition authorized.
+
+Design/arch passes completed. Checked-body design+master:8,730→5,976 words
+(2,754 removed); rendering record+display protocol+interface destination:
+9,918→5,521 (4,397 removed). Combined role-owned net reduction7,151 words,
+before small integration remaps. The S87 record is retired; the rendering
+byte table now lives in interfaces.md. Display protocol remains clearly
+unimplemented, with its settled rulings and implementation obligation retained.
+Body-ledger identity prose now matches source; default-method re-settlement
+remains an open design concern, not a proved observable defect.
+
+Sprint integrated three types-test anchors, the crate entry citation, four
+body-design test anchors and the S121 QA-plan citation; removed the obsolete
+historical collection and master row; updated0050's stale no-design defer
+reason without scheduling implementation. Arch had staged the deletion despite
+its no-Git brief; sprint unstaged that path, preserving the intended retirement.
+The display spec's aspirational forcing/choice wording remains an unresolved
+spec handoff; no unapproved normative edit was made.
+
+QA allocated H1/H2 maintenance checks for link_then_run, including the concrete
+nested-file artifact-path mismatch; compiler behavior is not implicated.
+Test (Claude/Opus/high), session `03773f8f-4dd4-4250-a3c2-6c82ace7efa9`,
+will reproduce both before correcting the harness. Source comments were
+remapped before this sole source/test writer began. No phase transition.
+
+Continuation recovered 2026-09-24: test completed both harness reproductions
+RED before correction, then 25/25 link and 98/98 runtime-spec cells GREEN.
+No compiler behavior changed. The final rendering/body document check is
+382→363 findings, 19 removed and zero introduced identities; NOTES unchanged.
+The interrupted QA/review dispatches (ec194691 / ead176df) left no reports.
+Fresh Claude/Fable/high runs complete their outstanding scopes:
+- QA `643b659e-5689-43e9-8826-5a3501951d65`: helper contract and evidence adequacy.
+- Review `e11f651e-4fa1-46e6-b655-c7672f10ad35`: independent harness inspection.
+- Arch `9c8c8b63-67c6-4abe-aa11-477b4ae5e998`: next cohesive documentation batch,
+  backend-keyed-consumer and safety-invariants; source read-only, preserve open
+  obligations and report canonical-home handoffs.
+No new checkpoint or phase transition.
+
+Harness independent review completed with no blocking or required finding.
+Advisories retained: directory-project targets are not modelled by link_then_run
+(they fail loudly; no current caller); H2 matches Display text rather than the
+new error variant; the tuple's unused bool predates this correction. These do
+not invalidate H1/H2 or justify broadening this instrument repair. QA's helper
+contract follow-on is in progress.
+
+QA closure completed: allocated instrument evidence adequate, helper reference
+and current evidence delta updated. No coverage-band changes or full-suite
+claim. QA checked documents before/after:363 findings, unchanged.
+Spec (Claude/Opus/high), session `a7cbba46-6721-4538-b101-4f147926d77c`,
+verifies dated authority for the stale aspirational display paragraph before
+reconciliation; retain current generic ADT norm and unimplemented MAY status.
+
+Display spec reconciled only its aspirational paragraph against the explicit
+S106 user ruling (archive sprint-106, 2026-07-10; committed design52389dfa):
+no forcing, compiler-internal recognition, no annotation surface. MAY status
+and normative generic ADT display remain. Sprint removed the now-resolved
+design handoff and refreshed0050's obsolete role/source/design-status prose;
+implementation remains unscheduled, promotion remains subject to spec authority.
+
+Backend identity/safety cleanup complete:17,277→6,779 words (10,498 removed),
+no content shifted to another file; all21 safety-register rows retained. Current
+carrier shapes and landed mechanisms verified against source; open obligations
+remain in their rows. R12's grade is explicitly not re-established.
+Arch's exact remap applied to two incoming citations that incorrectly bound
+§10 to backend-keyed-consumer; the actual home is dotted-ctor-canonical-keys.
+The Principle24 edit repairs that citation only under the approved document
+integrity work; no principle statement or membership changed (Phase7 revisions
+remain out of scope).
+Remaining owner work:0637 source-verified disposition (backend design); R12
+grade and R18(8) severity (integration design); R11 I-EMIT scheduling; Principle25
+register-range prose at close. Optional source-comment remaps and all safety
+residuals remain recorded in the standing documents and arch's handoff. Next
+cohesive cleanup candidate:typed-resolution-carrier and its incoming citations.
+
+Final integrated document check:382→345 findings, 37 removed and zero
+introduced identities. Diff whitespace clean; NOTES hash unchanged. Harness
+25/25 +98/98 passes and independent review/QA remain the completed evidence.
+Work since checkpoint2fee9bb2 is uncommitted; .agents remains excluded.

@@ -104,7 +104,7 @@ remains HOLD until it passes.** Source inspection confirms the review findings
 against `crates/cranelisp-typecheck/src/program/mod.rs::BodyLedger`, `program/callees.rs`,
 `traits/impl_check.rs::finalize_impl_method_writeback`, and
 `program/body.rs::check_defn_body`. The authority is the approved
-`design/typecheck/checked-body-publication.md` §§2.3–7 and §§11.2–11.6,
+[checked-body publication, sections 2–7](../../design/typecheck/checked-body-publication.md#2-placement),
 `spec/04-expressions.md`'s lexical-shadow rule, and `spec/05-definitions.md`
 §5.1.1. No public API, schema, ABI, crate edge, or new language rule is needed.
 

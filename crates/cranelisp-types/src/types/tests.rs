@@ -292,7 +292,7 @@ fn test_format_type_display_polymorphic_adt() {
 
 #[test]
 fn render_type_primitive_naming_axis() {
-    // spec: design/typecheck/s87-fq-walk-consolidation.md §2.4 — primitive axis.
+    // spec: design/arch/interfaces.md §"Type rendering" — primitive axis.
     for (ty, bare, fq) in [
         (Type::Int, "Int", "primitives/Int"),
         (Type::Bool, "Bool", "primitives/Bool"),
@@ -312,7 +312,7 @@ fn render_type_primitive_naming_axis() {
 
 #[test]
 fn render_type_var_naming_axis() {
-    // spec: design/typecheck/s87-fq-walk-consolidation.md §2.4 — Var axis.
+    // spec: design/arch/interfaces.md §"Type rendering" — Var axis.
     let ty = Type::Var(7);
     assert_eq!(
         render_type(&ty, PrimitiveNaming::Bare, VarNaming::Numbered),
@@ -334,10 +334,10 @@ fn render_type_var_naming_axis() {
 
 #[test]
 fn render_type_tyconapp_four_cells() {
-    // spec: design/typecheck/s87-fq-walk-consolidation.md §2.4 — the TyConApp
+    // spec: design/arch/interfaces.md §"Type rendering" — the TyConApp
     // two-shape coupling. Numbered always wraps `(TyCon t{id} …)` incl. empty;
     // Lettered emits bare head, no `TyCon`, no empty parens. (No integration
-    // test reliably hits the empty-args `(TyCon t{id})` shape — §4.3.)
+    // test reliably hits the empty-args `(TyCon t{id})` shape.)
     let empty_args = Type::TyConApp(3, vec![]);
     let with_args = Type::TyConApp(3, vec![Type::Int]);
 

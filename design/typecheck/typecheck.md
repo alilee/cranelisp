@@ -461,7 +461,6 @@ never walks alias segments or spells an alias key itself, fixtures included
 | IO typing | `io-types.md` | Current |
 | Importable-symbol signature match | `signature-match.md` | Current |
 | Ownership inference | `ownership-inference.md` | Current; governed by `design/arch/ownership-inference.md` |
-| `render_type` byte table | `s87-fq-walk-consolidation.md` | Historical; held for §2.4 test anchors |
 
 The `program/` and `traits/` cuts are §3.1 and the finalize ordering is
 `monomorphisation.md` §3.3. Deleted records and where their content now lives
@@ -480,5 +479,6 @@ are listed in `design/typecheck/CLAUDE.md` §"Redirections".
   and §8.2. The spec text and that test disagree, and this design takes neither
   side. `spec` owns the reconciliation and `qa` the intake; typecheck's design
   follows the ruling. (Source-read and test-read lead; not executed here.)
-- Subject-level open items are in their subject documents: [trait open items](traits.md#11-open-items) and
-  `inference.md` §6, for example.
+- Subject-level open items are in their subject documents: [trait open items](traits.md#11-open-items),
+  `inference.md` §6 and [checked-body open items](checked-body-publication.md#10-open-items),
+  for example.

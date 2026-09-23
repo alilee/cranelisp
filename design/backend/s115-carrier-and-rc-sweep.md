@@ -11,7 +11,7 @@ records that the W-B5 patch-collapse is retired (the 0747 disposition).
 **Governing authority:** `design/arch/safety-invariants.md` §4 register rows R4
 (keyed-identity injectivity) + R6 (persisted-index trust boundary) — re-audited
 this Phase 2, SCHEDULED S115; `design/arch/backend-keyed-consumer.md`
-§1.2/§10 (the wrapper-emission keyed-read seam) + `typed-resolution-carrier.md`
+§1.2 and `design/arch/dotted-ctor-canonical-keys.md` §10 (the wrapper-emission keyed-read seam) + `typed-resolution-carrier.md`
 §4 (the closed `VarRef`/`ApplyRef` sums); `design/backend/ownership-codegen.md`
 §13.7 + `binding-indirection-consume.md` (the consume family this sweep sits
 beside). Subordinate to `backend.md` (§8 indexes this doc).

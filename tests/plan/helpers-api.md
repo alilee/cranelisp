@@ -35,8 +35,16 @@ pub enum CrError {
     StdinWriteFailed(io::Error),
     /// Fixture source path is missing or unreadable.
     FixtureMissing(PathBuf),
+    /// `link_then_run`: the compiler exited successfully but the executable
+    /// §0.2.1.1 places beside the source was not produced, so nothing ran.
+    LinkedExecutableMissing(PathBuf),
 }
 ```
+
+`LinkedExecutableMissing` is what makes `link_then_run` fail closed: a
+compiler exit 0 with no artifact at the derived path is a harness error, never
+a `CrOutput` whose exit 0 a caller could mistake for the program's. Guarded by
+`tests/link.rs::link_then_run_without_expected_artifact_is_a_harness_error`.
 
 ### `Cranelisp` — the builder
 
@@ -57,6 +65,11 @@ impl Cranelisp {
     /// Link via `--link <file>` only — produces an executable, does not run it.
     pub fn link(self, file: &str) -> Self;
     /// Link via `--link <file>` and then exec the produced binary.
+    ///
+    /// On compiler success the entry-stem executable beside `file` is run and
+    /// its status and output are returned; if it is absent, `try_output` is
+    /// `Err(CrError::LinkedExecutableMissing)`. On compiler failure the
+    /// compiler's own `CrOutput` is returned.
     pub fn link_then_run(self, file: &str) -> Self;
 
     // === On-disk fixture composition =========================================
@@ -167,8 +180,10 @@ pub struct CrOutput {
     /// Whole compiler-child lifecycle through completion. Excludes a separately
     /// spawned executable from `link_then_run`.
     pub elapsed: Duration,
-    /// Duration of only the executable spawned by `link_then_run`; `None` if
-    /// no produced executable ran.
+    /// Duration of only the executable spawned by `link_then_run`; `None` when
+    /// the mode is not `link_then_run` or the compiler failed. A successful
+    /// compile whose artifact is absent is `CrError::LinkedExecutableMissing`,
+    /// never `None` here.
     pub linked_execution_elapsed: Option<Duration>,
     pub tmpdir: PathBuf,
     // _td: tempfile::TempDir held internally so cleanup runs on drop.
@@ -254,6 +269,15 @@ The boundary is guarded by
 `tests/concurrency_capacity.rs::linked_execution_duration_excludes_compilation_and_observes_the_child`:
 it rejects compiler-only and compiler-plus-execution substitutes, while
 preserving the existing `elapsed` contract.
+
+The artifact path `link_then_run` executes is derived as §0.2.1.1 derives it —
+`file`'s stem plus `std::env::consts::EXE_SUFFIX`, in `file`'s own directory
+under the TempDir — the same rule as `src/session_v4/lifecycle.rs::derive_link_output_path`.
+A nested target such as `sub/hello.cl` therefore runs `sub/hello`; guarded by
+`tests/link.rs::link_then_run_executes_artifact_beside_nested_source`. An
+`-o`/`--output` flag moves the artifact away from that path and is not
+compatible with `link_then_run`; use `.link(file)` and spawn the named output
+directly, as `link_output_long_form_writes_named_path_not_default` does.
 
 ### `PreludeVariant` — named prelude catalogue
 

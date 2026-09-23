@@ -409,7 +409,7 @@ fn self_recursion_carveout_skips_nested_let_shadow() {
 }
 
 // spec: spec/04-expressions.md §4.2;
-//   design/typecheck/checked-body-publication.md §11.4;
+//   design/typecheck/checked-body-publication.md §7.3;
 //   tests/plan/s121-test-plan.md §3.8 BF-2.
 // A param named identically to the fn (`(defn f [f] …)`) shadows the
 // recursion name: the `f` in `(f 3)` is the PARAM (a backend local), so its

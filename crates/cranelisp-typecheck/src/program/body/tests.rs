@@ -75,7 +75,7 @@ fn register_then_require_body_error(
     assert_eq!(tc.state.body_frame, expected_frame);
 }
 
-// spec: design/typecheck/checked-body-publication.md §11.4;
+// spec: design/typecheck/checked-body-publication.md §7.3;
 //   tests/plan/s121-test-plan.md §3.8 BF-1.
 #[test]
 fn body_frame_and_scope_restore_together_on_body_error() {

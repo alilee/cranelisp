@@ -16,7 +16,7 @@ fn concrete_ast(entry: &Binding) -> Option<&DefnVariant> {
     }
 }
 
-// spec: design/typecheck/checked-body-publication.md §11.5;
+// spec: design/typecheck/checked-body-publication.md §7.4;
 //   tests/plan/s121-test-plan.md §3.8 MR-1.
 #[test]
 fn sweep_moves_the_complete_method_resolution_record_once() {

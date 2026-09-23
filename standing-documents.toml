@@ -422,14 +422,6 @@ established_by = "design/typecheck/CLAUDE.md"
 disposition = "established"
 
 [[document_class]]
-name = "typecheck-historical-records"
-patterns = ["design/typecheck/s87-fq-walk-consolidation.md"]
-owner = "design"
-purpose = "`s87-fq-walk-consolidation.md`, held only for its §2.4 `Type`-rendering table, which three `crates/cranelisp-types/src/types/tests.rs` cases cite. It carries a `HISTORICAL` banner and is not design intent. It retires when `arch` restates the table under `design/arch/bounded-contexts.md` §\"Type rendering\" and the anchors re-point."
-established_by = "design/typecheck/CLAUDE.md"
-disposition = "established"
-
-[[document_class]]
 name = "platform-current-designs"
 patterns = ["design/platform/adt-marker-binding.md", "design/platform/platform-dlls.md", "design/platform/platform.md", "design/platform/poll-leaf-authoring.md"]
 owner = "design"

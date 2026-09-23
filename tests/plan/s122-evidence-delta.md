@@ -2333,9 +2333,12 @@ a `flags_of` helper and three units) and cells in `tests/spec_10_io.rs` and
 or harness line changed. Authorities: [CLI](../../repl/spec/00-cli-invocation.md)
 §0.2, §0.2.1.1, §0.3, §0.5, §0.5.3; [IO](../../spec/10-io.md) §10.6.1;
 [runtime](../../spec/12-runtime.md) §12.6. The independent review of this
-delta (`.local/s122-cli-review-result.md`) was not available at this
-assessment; the coordinator composes it, and a surviving finding re-opens the
-affected row below.
+delta (`.local/s122-cli-review-result.md`) passed it with no blocking finding.
+Its advisories: the stale link-cell name is already current below; the `--run`
+half of `main_returning_io_bool_exits_zero_run_and_linked` duplicates
+`spec_12_runtime::main_returning_non_int_produces_zero_exit_code` — accepted
+redundancy, the allocation asked for the paired mode observation in one cell;
+the `link_then_run` harness residual is allocated in its own section below.
 
 Executed runs (logs under `.local/`). Binary units:
 `cargo nextest run -p cranelisp --bin cranelisp` 14 run, 14 passed
@@ -2394,3 +2397,109 @@ with limits; §0.5's ordering sentence cites its unit. After restoration
 `spec_coverage_reconcile --mode check` reports no cleared CLI/IO row and 0 dead
 citations. References outside the QA surface were scanned for the renamed link
 cell and the restored tags: none require a change.
+
+## `link_then_run` harness observation — maintenance-check allocation (2026-09-22)
+
+Source of the observation: `.local/s122-cli-review-result.md` advisory 3.
+Read against `tests/helpers/e2e.rs::materialise` and
+`tests/helpers/e2e.rs::spawn_and_capture`, the 104 `link_then_run` call sites
+across 43 test files, [CLI](../../repl/spec/00-cli-invocation.md) §0.2.1.1 and
+`src/session_v4/lifecycle.rs::derive_link_output_path`. No build or run.
+
+Finding. `spawn_and_capture` executes the produced executable only when the
+compiler exited 0 **and** the path the harness derived exists; otherwise it
+returns the compiler's own `CrOutput` (exit 0, `; Linking: …` on stderr,
+`linked_execution_elapsed == None`) without error. The harness derives the
+path as `<tempdir>/<file stem>`; §0.2.1.1 and the compiler place the artifact
+**beside the source**. The two coincide only because every current caller
+passes a root-level file. This is not a compiler defect: artifact placement is
+GREEN under `tests/link.rs::link_default_output_is_entry_stem_no_extension`
+(a nested source and its executable in the same directory) and
+`…::link_output_long_form_writes_named_path_not_default`. It is a gap in the
+instrument's honesty: a `link_then_run` cell that asserts exit 0 cannot tell
+"the program ran and returned 0" from "nothing ran". Nine committed cells sit
+in that position (`concurrency_spark::dependent_spark_dependency_panic_ferried_caught_link`,
+`link::link_main_returning_zero_exits_zero`,
+`link::link_main_returning_io_pure_zero_with_prelude_exits_zero`,
+`link::link_repeated_platform_adt_marshal_does_not_corrupt_heap`,
+`spec_08_name_shadowing` and `spec_03_types` link twins,
+`stdlib_trait_impls::stdlib_link_mode_against_intrinsics_archive`,
+`spec_12_runtime::catch_runtime_error_err_arm_link`,
+`spec_12_runtime::apply_arg_panic_ferried_caught_link`); the 42 cells asserting
+a non-zero exit, the stdout-comparing mode-equivalence permutations and the
+safety-matrix link face with a non-zero expectation discriminate already.
+Class: **maintenance check** — governs the `link_then_run` instrument, not
+product acceptance; a failure blocks claims resting on that instrument only.
+
+Conditions (harness; owner `test`, `tests/helpers/e2e.rs` and cells):
+
+| Condition | Plausible wrong outcome | Cell (existing APIs, synthetic files, no planted fault) | RED reason today |
+|---|---|---|---|
+| H1 — `link_then_run` derives the artifact where §0.2.1.1 places it (stem beside the source), so a target in a subdirectory runs | Compiler writes `sub/hello`; harness looks for `hello`; compiler status returned | `.file("sub/hello.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 23))").link_then_run("sub/hello.cl").output()`; assert `tmp_exists("sub/hello")` (compiler control), exit `23`, `linked_execution_elapsed.is_some()` | exit `Some(0)`, `linked_execution_elapsed == None`, while `sub/hello` exists — the miss is the harness's, not the compiler's |
+| H2 — compiler exit 0 with the derived artifact absent is a `CrError`, never a `CrOutput` | Vacuous green on every exit-0 link cell | `.file("hello.cl", same program).link_then_run("hello.cl").cli_flag("--output").cli_flag("out/custom").try_output()` must be `Err` | returns `Ok` with exit 0 and no execution |
+| H2 control — compiler failure through `link_then_run` still yields the compiler's `CrOutput` | Compile-failure assertions turned into harness errors | existing `link::link_module_referencing_discover_tests_extern_fails_with_friendly_message` stays GREEN unchanged | — |
+
+Discrimination: exit 23 versus the compiler's 0 is the same construction as
+the `--output` cell; the `tmp_exists` control attributes the miss to the harness
+seam, and `linked_execution_elapsed` observes the mechanism directly rather
+than inferring it from the status.
+
+Acceptance evidence, minimal: H1 and H2 observed RED for the stated reasons
+before the harness change and GREEN after, in one log; the H2 control and the
+focused `--test link` binary GREEN; one further `link_then_run` binary from the
+nine-cell list GREEN. Root-level callers are unaffected by construction
+(`Path::new("user.cl").parent()` is empty), and a derivation mistake fails
+every caller loudly, so the integration gate's full run is the backstop, not a
+prerequisite. The correction is a `test` dispatch inside this increment; no
+action, no `dev` or `spec` work, no compiler defect intake.
+
+### Closure (2026-09-24)
+
+Delivered by `test` at checkpoint `2fee9bb2` plus working tree, no commit
+(`.local/s122-harness-artifact-test-result.md`): `tests/helpers/e2e.rs`
+derives the artifact as `tmpdir.join(file).with_file_name(stem + EXE_SUFFIX)`,
+returns the new `CrError::LinkedExecutableMissing(PathBuf)` on compiler
+success with that path absent, and still returns the compiler's `CrOutput` on
+compiler failure; `tests/link.rs` §2 carries H1
+(`link_then_run_executes_artifact_beside_nested_source`) and H2
+(`link_then_run_without_expected_artifact_is_a_harness_error`), both
+`// spec:`-anchored to `helpers-api.md` and to the
+[CLI artifact-placement rule](../../repl/spec/00-cli-invocation.md). H2 adds `out/.keep` so
+the compiler's `--output out/custom` succeeds, the same shape as the existing
+`--output` cell, and recognises the error by its `Display` text. QA read the
+diff and the three logs; no build or run by QA.
+
+| Leg | Command | Observed | Reads as |
+|---|---|---|---|
+| RED, cells present, helper unchanged | `cargo nextest run --no-fail-fast --test link -E 'test(…nested_source) \| test(…harness_error)'` — `.local/s122-harness-artifact-before.log` | 2 run, 0 passed, 2 failed. H1: `tmp_exists("sub/hello")` passed, then `tests/link.rs:172` `left: Some(0) right: Some(23)`, stderr only `; Linking: cc -o hello …`. H2: `got Ok: exit Some(0), linked_execution_elapsed None` | Both RED for the stated reasons: the compiler wrote the artifact, the harness looked at `<tmpdir>/hello` and handed back the compiler's status; nothing ran |
+| GREEN, helper changed, cells unedited | `cargo nextest run --no-fail-fast --test link` — `.local/s122-harness-artifact-after.log` | 25 run, 25 passed: H1, H2, the H2 control `link_module_referencing_discover_tests_extern_fails_with_friendly_message`, and the nine-cell members `link_main_returning_zero_exits_zero`, `…_io_pure_zero_with_prelude_exits_zero`, `…_repeated_platform_adt_marshal_does_not_corrupt_heap` | Detection proven at the harness seam; compile-failure `CrOutput` preserved; root-level callers in this binary unchanged |
+| Further nine-cell binary | `cargo nextest run --no-fail-fast --test spec_12_runtime` — `.local/s122-harness-artifact-spec12.log` | 98 run, 98 passed, including `catch_runtime_error_err_arm_link` and `apply_arg_panic_ferried_caught_link` | Those two exit-0 cells now certify an executed program |
+
+Adequacy: sufficient for this maintenance check. The pre-fix RED is observed,
+not inferred; the H2 control discriminates fail-closed from fail-everywhere;
+the detection cells were not edited between legs. Five of the nine exit-0
+cells have executed GREEN under the fail-closed harness. `helpers-api.md`
+§Errors, the `link_then_run` doc line, the `linked_execution_elapsed` field
+and the artifact-path paragraph now state the delivered contract; `helpers.md`
+§Output already reads `Some` only when the executable was launched and needs
+no change. No spec requirement changed, so no `Tested` band moves; no defect
+intake, action or `dev`/`spec` work arises.
+
+Limits, explicit:
+
+- No full-suite run. The other 41 `link_then_run` binaries — including the
+  remaining four exit-0 cells (`concurrency_spark`, `spec_08_name_shadowing`,
+  `spec_03_types`, `stdlib_trait_impls`) — have not executed against the new
+  helper. Root-level callers derive the identical path by construction
+  (`EXE_SUFFIX` is empty on Linux), and `test`'s grep found no caller passing
+  `-o`/`--output` through `link_then_run`; the integration gate's full run is
+  the backstop. A RED there of the form `link succeeded but the expected linked
+  executable … was not produced` is the instrument working, not a regression:
+  it names a cell whose green was vacuous.
+- The `EXE_SUFFIX` leg of the derivation is Linux-observed only; parity with
+  `derive_link_output_path` on a suffixed platform is by reading, not by run.
+- Stdout-only `link_then_run` cells were not individually classified; they
+  already discriminated by construction and are unchanged.
+- QA's advisory record (`.local/s122-harness-artifact-qa-result.md`) placed
+  `; Linking:` on stdout; the log shows stderr. Corrected above; no assertion
+  depended on it.

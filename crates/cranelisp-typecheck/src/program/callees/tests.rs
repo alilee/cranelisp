@@ -330,7 +330,7 @@ fn callees_uniform_carrier_for_call_and_value_position() {
     );
 }
 
-// spec: design/typecheck/checked-body-publication.md §11.2 — a late
+// spec: design/typecheck/checked-body-publication.md §7.1 — a late
 // fn-value mono rewrite refines the exact checked body's callee vector before
 // its single publication window.
 #[test]

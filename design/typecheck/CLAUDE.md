@@ -35,14 +35,13 @@ disagrees with source, repair the document.
 
 ## Collections
 
-This memory establishes two collections, declared in `standing-documents.toml`:
+This memory establishes one collection, declared in `standing-documents.toml`:
 
 | Collection | Purpose |
 |---|---|
 | `typecheck-current-designs` | The master and every current subordinate design listed in its §10. |
-| `typecheck-historical-records` | `s87-fq-walk-consolidation.md`, held only for its §2.4 `Type`-rendering table, which three `crates/cranelisp-types/src/types/tests.rs` cases cite. It carries a `HISTORICAL` banner and is not design intent. It retires when `arch` restates the table under `design/arch/bounded-contexts.md` §"Type rendering" and the anchors re-point. |
 
-Every reference in either collection is live; a historical grade does not excuse
+Every reference in the collection is live; a historical grade does not excuse
 a stale citation.
 
 ## Redirections
@@ -52,6 +51,7 @@ of them reads instead:
 
 | Deleted record | Read instead |
 |---|---|
+| `s87-fq-walk-consolidation.md` | [Type rendering](../arch/interfaces.md#type-rendering), the byte-for-byte contract; `render_type` rustdoc for the API promise |
 | `sprint50-fixes.md` | `spec/08-modules.md` §8.9.1 + §8.9.4 (a new module is seeded with special forms only; builtin type names are reachable by import or qualification, never by inheritance) and `design/arch/bounded-contexts.md` §2 for the source-ordered `defmacro` checkpoint that replaced eager clause compilation |
 | `phase-b-plan.md` | `crates/cranelisp-typecheck/src/builtins.rs` + `resolve.rs` rustdoc for the intrinsic-vs-ADT kind split (the four scalars are intrinsic records returning their bare `Type` variant; ADT-shaped bundled types stay type definitions, and the fix for a mismatch belongs at the mint site, never as a bridge in `unify`); `ast-annotation.md` for the AST-co-located annotation model that retired the per-mono side maps |
 | `wave-3a-check-form.md` | `typecheck.md` §6.4 (staging-vs-live write dispatch) and §5 (the two-pass discipline inside `check_forms`); `crates/cranelisp-typecheck/src/cluster.rs` module rustdoc for the accessor's as-built shape |

@@ -115,8 +115,7 @@ one stage need the same derivation, it is one function with thin callers, and
 the carrier parameter is REQUIRED so a new site cannot forget it
 (Principle 18's unforgettable-parameter form). Instances unified under this
 principle: 0583 (backend keyed-lookup consumer — the typecheck→backend seam;
-`design/arch/backend-keyed-consumer.md`), the S109 §10/DC-11 pattern-position
-cure (retrospectively its first application), 0590 (one written-type-var
+`design/arch/backend-keyed-consumer.md`), the [S109 pattern-position cure](../dotted-ctor-canonical-keys.md#10-the-resolved-pattern-constructor-reaches-codegen) (retrospectively its first application), 0590 (one written-type-var
 resolver), 0585 (one value-position enumeration for mint and die), R-2 (one
 ADT-entry derivation, `cranelisp_types::build_adt_entries`). The backend's
 end-state under this principle is a PURE keyed-lookup consumer: zero name

@@ -36,6 +36,9 @@ pub enum CrError {
     StdinWriteFailed(io::Error),
     /// Fixture source path is missing or unreadable.
     FixtureMissing(PathBuf),
+    /// `link_then_run`: the compiler exited successfully but the executable
+    /// §0.2.1.1 places beside the source was not produced, so nothing ran.
+    LinkedExecutableMissing(PathBuf),
 }
 
 impl std::fmt::Display for CrError {
@@ -54,6 +57,11 @@ impl std::fmt::Display for CrError {
             CrError::FixtureMissing(p) => {
                 write!(f, "fixture missing or unreadable: {}", p.display())
             }
+            CrError::LinkedExecutableMissing(p) => write!(
+                f,
+                "link succeeded but the expected linked executable {} was not produced",
+                p.display()
+            ),
         }
     }
 }
@@ -187,6 +195,11 @@ impl Cranelisp {
     }
 
     /// Link via `--link <file>` and then exec the produced binary.
+    ///
+    /// On compiler success the entry-stem executable beside `file` is run and
+    /// its status and output are returned; if it is absent, `try_output` is
+    /// `Err(CrError::LinkedExecutableMissing)`. On compiler failure the
+    /// compiler's own `CrOutput` is returned.
     pub fn link_then_run(mut self, file: &str) -> Self {
         self.mode = Mode::LinkThenRun(file.to_string());
         self
@@ -425,17 +438,12 @@ impl Cranelisp {
             Mode::LinkThenRun(file) => {
                 args.push("--link".to_string());
                 args.push(file.clone());
-                // Caller wants the produced binary executed too. The convention
-                // is the linker emits `<stem>` next to the source. We stash the
-                // produced-binary path so spawn_and_capture can run it after
-                // link succeeds.
-                let stem = Path::new(file)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("a.out")
-                    .to_string();
-                let produced = self.tmpdir.path().join(stem);
-                Some((produced, true))
+                // repl/spec/00-cli-invocation.md §0.2.1.1: the default artifact
+                // is the entry stem beside its source.
+                let source = self.tmpdir.path().join(file);
+                let mut name = source.file_stem().unwrap_or_default().to_os_string();
+                name.push(std::env::consts::EXE_SUFFIX);
+                Some((source.with_file_name(name), true))
             }
         };
 
@@ -534,7 +542,8 @@ struct CrInvocationOwned {
     stdin_unread_ok: bool,
     timeout: Duration,
     tmpdir: tempfile::TempDir,
-    /// If Some, after the child completes successfully, exec the produced binary.
+    /// If Some, after the child completes successfully, exec the produced
+    /// binary; its absence is `CrError::LinkedExecutableMissing`.
     link_then_run: Option<(PathBuf, bool)>,
 }
 
@@ -606,7 +615,10 @@ impl CrInvocationOwned {
         // this optional interval is only for the separately spawned executable.
         let mut linked_execution_elapsed = None;
         if let Some((produced, _)) = &self.link_then_run {
-            if status.success() && produced.exists() {
+            if status.success() {
+                if !produced.exists() {
+                    return Err(CrError::LinkedExecutableMissing(produced.clone()));
+                }
                 let started2 = Instant::now();
                 let mut cmd2 = Command::new(produced);
                 cmd2.current_dir(&self.cwd)

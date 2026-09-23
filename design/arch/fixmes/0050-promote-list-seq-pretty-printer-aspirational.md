@@ -1,13 +1,13 @@
 ---
 number: 0050
-target: /int
+target: /dev
 filed_by: /repl
 filed_at: 2026-05-01
 sprint_filed: 64
 refers_to: repl/spec/01-display-format.md §1.5
 status: deferred
 deferred_at: 2026-06-13
-deferred_reason: blocked on display-protocol design (does not yet exist); revisit in the Ring-4 polish sprint that builds the type-directed pretty-printer
+deferred_reason: design exists (design/arch/display-protocol.md, user rulings 2026-07-10); implementation unscheduled
 target_sprint: TBD
 migrated_from_inline: true
 ---
@@ -16,16 +16,19 @@ migrated_from_inline: true
 
 ## Issue
 
-When the type-directed pretty-printer or display-protocol mechanism is designed (likely in a Ring 4 polish sprint), revisit `repl/spec.md §1.5` and promote the aspirational forms (`(list elem1 elem2 ...)` and `(seq elem1 elem2 ... +more)`) to MUST. Owning skill: `/int` (REPL display layer); coordinate with `/arch` on the protocol design and `/stdlib` on opt-in for List/Seq.
+Implement the settled [display design](../display-protocol.md) before promoting
+its aspirational List/Seq forms to requirements. The design records the user's
+2026-07-10 rulings: compiler-internal recognition and no forcing of lazy tails.
+Implementation remains unscheduled.
 
 ## Source location
 
-`repl/spec/01-display-format.md` §1.5 (HTML-comment FIXME below the aspirational paragraph).
+[Value display](../../../repl/spec/01-display-format.md#15-value-display),
+including its aspirational paragraph. Generic ADT display remains normative.
 
-## Context
+## Resolution
 
-Currently the REPL renders `List` and `Seq` (stdlib types) through the generic ADT recursive formatter. A future revision may introduce a type-directed pretty-printer recognising these types and rendering them in their natural surface form. Until that protocol exists, the generic ADT form is normative.
-
-## Proposed resolution
-
-`/int` (with `/arch` and `/stdlib`) designs the display protocol; once the protocol lands, promote the aspirational forms to MUST in `repl/spec.md §1.5` and remove the FIXME.
+`dev` owns implementation in the surfaces allocated by the display design;
+`arch` owns cross-crate changes. After the mechanism lands, route requirement
+promotion to `spec` under the user approval gate. Retain this filing until the
+implementation and specification obligations are discharged.

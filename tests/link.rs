@@ -150,6 +150,69 @@ fn link_output_long_form_writes_named_path_not_default() {
     );
 }
 
+// spec: tests/plan/helpers-api.md — `link_then_run` executes the artifact where
+// repl/spec/00-cli-invocation.md §0.2.1.1 places it: the entry stem beside its
+// source, including a source in a subdirectory (S122 harness condition H1).
+#[test]
+fn link_then_run_executes_artifact_beside_nested_source() {
+    let out = Cranelisp::new()
+        .file(
+            "sub/hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+        )
+        .link_then_run("sub/hello.cl")
+        .output();
+
+    assert!(
+        out.tmp_exists("sub/hello"),
+        "compiler control: the artifact must be written beside the source; stdout={:?} stderr={:?}",
+        out.stdout,
+        out.stderr
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(23),
+        "the linked executable must run main; stdout={:?} stderr={:?}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        out.linked_execution_elapsed.is_some(),
+        "the harness must have spawned the linked executable"
+    );
+}
+
+// spec: tests/plan/helpers-api.md — a successful compiler exit whose expected
+// `link_then_run` artifact is absent is a harness error, not the compiler's
+// output mistaken for a run (S122 harness condition H2). `--output` moves the
+// artifact away from the default path the harness executes.
+#[test]
+fn link_then_run_without_expected_artifact_is_a_harness_error() {
+    let result = Cranelisp::new()
+        .file(
+            "hello.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+        )
+        .file("out/.keep", "")
+        .link_then_run("hello.cl")
+        .cli_flag("--output")
+        .cli_flag("out/custom")
+        .try_output();
+
+    match result {
+        Ok(out) => panic!(
+            "expected a missing-executable harness error, got Ok: exit {:?}, linked_execution_elapsed {:?}, stdout={:?}",
+            out.status.code(),
+            out.linked_execution_elapsed,
+            out.stdout
+        ),
+        Err(e) => assert!(
+            e.to_string().contains("expected linked executable"),
+            "wrong harness error: {e}"
+        ),
+    }
+}
+
 // spec: repl/spec/00-cli-invocation.md §0.2.1.1 — [neg] an output path is
 // link-only: with `--run` the binary prints an error and the usage hint to stderr,
 // exits 1 and writes no artifact. §0.3's usage-hint clause is observed here too.
