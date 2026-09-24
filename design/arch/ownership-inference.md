@@ -825,7 +825,7 @@ inline-`vec-get` shapes.
 ### 5.1 Batch (`--run`/`--link`): already conservatively covered
 
 The `.meta.json` **is** a serialised `SymbolTable`
-([cache rewrite](../backend/module-caching.md#14-step-5b-cache-rewrite-via-symboltable-serialisation-sprint-58-phase-5));
+([cache rewrite](../backend/module-caching.md#14-persisted-module-record));
 the per-callable `ModeSummary` joins the serde-visible payload of the concrete callable state
 (§3.3), gated by
 the existing `CACHE_SCHEMA_VERSION` bump discipline — old caches deserialise summaries as `None`

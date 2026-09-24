@@ -165,7 +165,7 @@ The two structural facts that dominate the tree today:
 | Macro execution | `expander.rs` (the `JitMacroExpander` invocation core + expand loop); `marshal.rs` (sexp marshaling) |
 | Display / pretty-print | `display.rs` (`display::envelope` + value render); `pretty.rs` (`pretty_print`/`pretty_print_plain`); `styled.rs` (the `Role`/`StyledDoc` vocabulary + `styled::render`, the sole style-table site); `style.rs` (raw style helpers); `syntax.rs` |
 | Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/CLAUDE.md` §Degraded startup) |
-| Cache orchestration | `cache.rs`; `cache_writer.rs` (background `.o`/`.meta` emit) |
+| Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller |
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
 | Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` / `LaunchContinue` transform (`bind-chain-analysis.md`) |
@@ -734,11 +734,12 @@ restored module's own imports, so cached and fresh modules mix in any combinatio
 
 ```text
 register dependency M:
-  if try_cache_hit_load(M):           # valid .meta.json (+ .o unless generic-only)
+  if try_cache_hit_load(M):           # valid record (§7.6), .meta.json (+ .o unless generic-only)
     install M's decoded table
     re-resolve M's platform declarations
     register M with the scheduler as typechecked-from-cache  # enqueues LoadObject(M)
-    recurse into M's imports, re-export targets and declared children
+    recurse into M's imports, re-export targets, declared children
+      and qualified-reference targets (§7.6.1)
   else:
     register M for a fresh typecheck
 
@@ -788,10 +789,8 @@ rebuilt fresh and the next write replaces the stale files. Staleness produces no
 user-visible message. Backend owns the constant and its bump policy.
 
 Per-module validity is backend's manifest check: the global keys, then the
-module's own source hash, then the dependency hashes the caller supplies. Int
-supplies none. The nice worker records an empty dependency map and the restore
-path checks against an empty one, so the dependency-hash comparison never runs
-(§16.0).
+module's own source hash, then its dependency record
+([dependency record and validity](#76-dependency-record-and-validity)).
 
 ### 7.4 Linker retention
 
@@ -812,9 +811,18 @@ path checks against an empty one, so the dependency-hash comparison never runs
 A restored module holds every relationship the fresh build holds. Each restore
 step is the same call the fresh path makes, at the equivalent lifecycle point
 (Principle 11). Do not add a cache-only parallel path. `try_cache_hit_load`
-returns `Result<bool, CranelispError>`: an ordinary miss is `Ok(false)` and falls
-through to a fresh build. Malformed metadata or conflicting live state is `Err`,
-never downgraded to a miss.
+returns `Result<bool, CranelispError>`:
+
+- **Miss, `Ok(false)`, falls through to a fresh build.** This covers:
+  - a stale or absent manifest entry (§7.6);
+  - every sidecar the backend decoder refuses as `CacheStale`
+    (`design/backend/module-caching.md` §14.7);
+  - a macro clause off the canonical ABI;
+  - malformed trait-impl provenance;
+  - an unrestorable trait home or platform.
+- **`Err`, never downgraded to a miss.** This covers conflicting live state,
+  such as a trait-impl record that diverges from its home's live occupant, and
+  a failure in a dependency registration the restore recurses into.
 
 | Relationship | Fresh path | Restore rule |
 |---|---|---|
@@ -828,6 +836,197 @@ The types crate defines lifecycle legality of a decoded table. The backend
 decoder maps only an instance-key mismatch from `validate_lifecycle` to
 `CacheStale`, and restore adds no further check. The restore path must not grow
 an int-private copy of a lifecycle rule to close that gap (§16.0).
+
+### 7.6 Dependency record and validity
+
+A cached module restores only if every source its artefact was derived from is
+unchanged. An importer's `.meta` and `.o` embed more than its dependencies'
+declared signatures. They also embed GOT slot indices, ADT layouts, expanded
+macros, monomorphic instances compiled from generic bodies, and types inferred
+through the dependency. Any of these can change when a module deeper in the
+graph changes, even though the direct dependency's own source does not.
+
+- **The record is the transitive closure.** A module M's manifest entry maps
+  every module reachable from M through its edges to the source hash of the
+  version M was compiled against. M itself is excluded.
+  - Direct-import hashes alone are insufficient. In `c → a → b`, an edit to `b`
+    can change `a`'s published types or slot layout while `a`'s source stays the
+    same, so a restored `c` would use the stale interface.
+  - Validating recursively through other modules' current manifest entries is
+    also unsound: a rebuilt `a` rewrites its own entry to match the new `b`.
+- **Edges.** A module's edges are:
+  - every import spec, including alias-only and null imports
+    (`spec/08-modules.md` §8.3.6–8.3.7), because qualified access still reads
+    the target;
+  - every re-export target;
+  - every declared child;
+  - the prelude, when the module's prelude-fallback bit is set;
+  - every module a qualified reference named
+    ([qualified-reference edges](#761-qualified-reference-edges)).
+
+  This is the set the restore walk loads ([cache-hit flow](#71-cache-hit-flow-inside-register_module)),
+  plus the name-less imports that walk skips and the implicit prelude. Define
+  it once (Principle 7). The fallback bit has one structural rule, shared by
+  the restore environment and the index writer. Two kinds of module are
+  excluded:
+  - `primitives` and `macros`, which are compiler-owned and keyed by the build
+    identity and compiler fingerprint;
+  - platform modules (see *Known gaps* below).
+
+  The edges are read from a module's table, except for the index writer. Its
+  private table does not carry the structural declaration fields, so its edges
+  come from the structural peel of the source it typechecked, plus the
+  qualified-reference set its private typecheck recorded.
+- **Whole-source hashes.** Each member is keyed by its whole source, not by its
+  interface. An importer's artefact contains code compiled from its
+  dependencies' generic and macro bodies, so an interface hash would have to
+  cover those bodies. Interface hashing remains backend's future optimisation
+  (`design/backend/module-caching.md` §12).
+- **Record from settled state (Principle 26).** A writer builds M's record when
+  it writes M's manifest entry, from the versions this session loaded:
+  - a member's hash is the one the session stashed when it loaded that module,
+    whether by a fresh registration or a cache hit. It is never a re-read of the
+    file at write time;
+  - a restored member contributes itself and its own validated record. The
+    writer does not walk the restored member's table, whose dependencies may
+    still be building;
+  - a fresh member's edges come from its live table, which is complete once its
+    typecheck is.
+
+  A member is unsettled if it is not loaded, not yet typechecked, or has no
+  stashed hash. An empty or partial map is never recorded as a stand-in.
+  - **Defer, retry once, then drop.** If any member is unsettled when M is
+    written, M's entry is deferred. The deferred entries are retried once
+    object codegen has drained, immediately before the manifest flush. An
+    entry still unsettled then is not written, so the next session rebuilds
+    M: a miss, never stale service.
+  - **Why deferral is needed.** A declared child that imports `super`
+    typechecks while its parent still waits on it, so its writer meets an
+    unfinished parent.
+  - **Prelude edge.** A prelude edge is dropped when the session holds no
+    prelude table, because no prelude file resolved. Without this, no module
+    of a prelude-less project would ever be recorded (*Known gaps*).
+- **One builder, every writer.** Every manifest write builds its record with
+  this one builder: the nice worker's object write, its no-object write
+  (generic-only, types-only and imports-only modules), and the index worker's
+  `.meta` write ([index-worker isolation](index-worker-isolation.md) §3). The
+  index entry is keyed by the hash of the source the index typechecked. The
+  index worker writes no loaded-source stash, because it loads no module.
+- **Validation.** Validity is backend's `check_manifest`: the global keys, M's
+  own source hash, and a current-hash map that int builds from exactly the keys
+  M's entry records.
+  - A member's current hash is the hash of the file that the loading handler
+    would resolve for that path now.
+  - A member that cannot be resolved or read is a miss.
+  - Int's validity query takes a source of current hashes, not a caller-built
+    map, so no int caller can run the dependency comparison over nothing
+    (Principle 18).
+  - Session cache state keeps each restored module's validated record for the
+    builder. A fresh registration of that module supersedes it.
+- **Compatibility.** The record changes the shape of neither the manifest nor
+  `.meta.json`; §7.6.1's field is the one shape change. The record reuses the
+  existing module-to-hash map, which now holds the closure.
+  Entries written before this change hold empty records, and the corrected
+  compiler never reads them: its new build identity invalidates every `.meta`
+  (§7.3), and its compiler fingerprint discards the manifest. No schema bump
+  is needed.
+- **Known gaps.** Each gap below can serve a stale artefact silently, and none
+  has an executed observation.
+  - **Status.** No user ruling accepts gaps 1–6; their disposition is open
+    (§16.0). QA's evidence plan lists gaps 4 and 5 as unallocated accepted
+    residuals. This design does not accept them on the user's behalf.
+  - **Gap 7 (C-A)** is the only user ruling.
+
+  The gaps:
+  1. **Qualified-reference dependencies.** A module can reach another only
+     through a qualified reference, such as `b/f`, an FQ macro head or an FQ
+     type annotation. That target auto-loads (`spec/08-modules.md` §8.5.4) but
+     is not yet an edge, because no carrier records it. Two failing guards in
+     `tests/cache.rs` reproduce it (`--run`, callable references only):
+     - `cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run`:
+       after `b` gains a `defn` ahead of `f`, the cached run exits 99 where
+       `--no-cache` exits 11;
+     - `cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run`:
+       with no importer of `b`, the unchanged warm run fails with
+       `unresolved symbol: __cranelisp_got_b`, because nothing restores `b`.
+
+     The correction is [qualified-reference edges](#761-qualified-reference-edges).
+  2. **Version conflicts in one closure.** The builder resolves a member
+     reached both through a walked edge and through a restored member's record
+     to the walked (loaded) hash. Between two restored records, the first one
+     reached wins. The two hashes differ only after a same-session source
+     change. When they do, recording the newer hash can let an importer
+     restore next session against a restored member that was derived from the
+     older version. A builder unit pins the rule as built; no end-to-end
+     fixture is constructed.
+  3. **Write-time stash reads.** The builder reads the stash when the entry is
+     written or retried, not when the importer was compiled. The REPL's
+     per-turn persist refreshes a module's stash. So an importer compiled
+     before a redefining turn, but written after it, records the dependency's
+     new hash. Falsifier: needs nice-worker ordering control, which no fixture
+     has yet.
+  4. **Same-session disk edit.** A dependency is edited on disk after this
+     session loaded it, and a same-session importer then restores. The disk
+     hash can then match a record written against the edited file while the
+     live module is still the older version. Falsifier: in the REPL, edit
+     `b.cl` without reloading it, then `/import` a cached `a`.
+  5. **Platform signatures.** A platform DLL's manifest signatures change
+     without a `.cl` edit. Falsifier: rebuild a DLL with one changed signature
+     and check whether a cached importer restores.
+  6. **Absent prelude.** A module cached while no prelude resolved records no
+     prelude member, so adding a prelude later does not invalidate it. A
+     prelude name that collides with an explicit import makes bare use
+     ambiguous under a fresh build (`spec/08-modules.md` §8.8.1), so the
+     cached run would wrong-accept. Falsifier: cache `a`, which uses bare `f`
+     from `(import [u [f]])`, with no prelude; add a `prelude.cl` exporting
+     `f`; compare with `--run --no-cache`. The stored format has no absence
+     sentinel.
+  7. **Corrupted or hand-edited cache content.** The user declined hardening
+     (`tests/plan/s122-evidence-delta.md` §C-A).
+
+#### 7.6.1 Qualified-reference edges
+
+**Status: designed in S122 Phase 5, not built.** It needs a new
+`cranelisp-types` table field, which requires the user's API approval
+(root `CLAUDE.md` §Roles). Until it lands, *Known gaps* 1 stands.
+
+- **The fact.** It is the set of modules, other than M, that a qualified
+  spelling named while M compiled. Each member is the reference's first-hop
+  module: the module the successful lookup used, after §8.6.6 alias
+  substitution and after typecheck's child-before-absolute candidate order.
+  - The fact covers value, call and pattern positions, type syntax, and FQ
+    macro heads (`spec/08-modules.md` §8.5.4 edge 1).
+  - The terminal home is not enough. When the first hop re-exports the name,
+    the first hop's own source decides what the spelling denotes.
+- **Recorded where the reference resolves** (Principles 24 and 26).
+  - Typecheck records at its scope-resolution seams, on success only.
+    `design`(typecheck) owns where the recorder sits.
+  - Int's macro recogniser records an FQ head that recognises as a macro.
+  - Both write to the table being staged for M. The fact therefore publishes
+    with M's cluster or macro checkpoint, and a failed cluster discards it. It
+    accumulates across M's clusters.
+  - Quoted data is never resolved, so it is never recorded. No scan of M's
+    forms derives the set. A scan would be a second resolver and could not
+    tell which spellings resolved.
+- **Carried on M's table.** A persisted `SymbolTable` field carries it, as
+  `written_trait_impls` carries impl provenance.
+  - `ModuleEdges::of_table` reads the field for every writer.
+  - The restore walk loads each target with the per-dependency step it uses
+    for an import target. Only compiler-owned modules are skipped, because the
+    fresh path auto-loads every other target through the same file
+    resolution. This load is what lets a restored object bind the target's
+    GOT.
+  - Do not substitute the validated record as the restore list. The record is
+    the staleness key. It also holds the null-import targets that §8.3.7 says
+    are never loaded.
+- **Filtering is int's.** Typecheck records every non-self first hop,
+  `primitives` included. Int's one compiler-owned predicate excludes those
+  modules from edges and from restore (Principle 19).
+- **Over-approximation.** A REPL redefinition that drops a qualified reference
+  leaves its module in the set until M is next registered fresh. The cost is an
+  extra invalidation and load, never stale service.
+- **Compatibility.** The field changes the persisted `.meta.json` shape, so
+  backend's `CACHE_SCHEMA_VERSION` bumps with it (§7.3).
 
 ---
 
@@ -1306,16 +1505,57 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   The user deferred hardening; `qa` holds it as an accepted residual
   (`tests/plan/s122-evidence-delta.md` §C-A). Any fix belongs to the
   types/backend owners.
-- **Dependency-hash validity (verified 2026-09-24).** Int neither records nor
-  checks dependency hashes ([cache validity](#73-cache-schema-versioning-decision-34)). An importer therefore restores
-  on its own source hash even after a dependency's source changed. The
-  body-change cells in `tests/cache.rs` pass because calls go through the
-  dependency's GOT. A changed dependency *signature* under an unchanged,
-  itself-cached importer is unobserved: build `main → a → b`, change `b`'s
-  exported type between runs, leave `a` untouched, and see whether `a` restores
-  against the new `b`. Attribution belongs to `qa`. Any fix sits in int's
-  writer and restore path, which would feed backend's existing check; it needs
-  no second check.
+- **Dependency-record validity (CD-1; source read 2026-09-24).** The
+  [dependency record](#76-dependency-record-and-validity) is realised in the
+  uncommitted working tree:
+  - every writer records its closure through the one builder;
+  - validity is driven by the recorded keys;
+  - the change is int-private, with no public API, stored-schema shape or
+    schema-version change.
+
+  Before it, a cached importer restored on its own source hash alone. It then
+  ran an ill-typed program after a dependency's signature changed, and called
+  whatever held the old slot after a layout change.
+
+  Evidence reported by `dev`(src) and read by `review`, not re-run by `design`:
+  - the validity seam unit went RED 4/5, then GREEN 5/5. Its pre-fix form was
+    the surviving signature over an empty current map, not the old query;
+  - the deferral unit was RED under a no-op retry, then GREEN;
+  - the four `cache_dep_*` cells (`--run`, `--link`) and the restored-chain
+    cells CL-B and CL-C (`--run` only) are GREEN with their arming steps;
+  - `tests/cache.rs` 52/52 and `tests/search.rs` 42/42;
+  - full suite 6048/6049 with one skip. The one RED is the pre-existing
+    document gate.
+
+  Open:
+  - **Qualified-reference edges (review F1).** *Known gaps* 1 is reproduced
+    by two failing guards. The correction is designed
+    ([qualified-reference edges](#761-qualified-reference-edges)). It waits on
+    the user's approval of the `cranelisp-types` field, then
+    `design`(typecheck) for the recorder, then `dev`. Until it lands, CD-1
+    does not discharge §7.6's opening sentence for this dependency kind.
+  - **Unaccepted gaps 2–6** (version conflict, write-time stash, same-session
+    disk edit, platform signatures, absent prelude). These need a disposition
+    through `sprint`.
+  - **Deferred-entry drop (review F2).** A deferred entry is retried before the
+    flush, so a child that imports `super` is recorded once its parent
+    settles. An entry still unsettled then is only a miss. No `tests/cache.rs`
+    cell covers a `super`-importing child or a mutual-import pair; that is
+    `qa`'s fence gap.
+  - **Index `.meta` structural fields.** The index-written table has empty
+    `imports`, `exports` and `submodules`. A restore from it therefore walks
+    none of its dependencies and rebuilds no aliases or fallback bit from them
+    ([restoration parity](#75-restoration-parity)). This predates CD-1 and is
+    unmeasured. Falsifier: in the REPL, let the index write a module that
+    imports another, then import it and compare its restore with a fresh
+    build. Attribution belongs to `qa`.
+  - **Behaviour change and unmeasured points.** A changed recorded dependency
+    now also skips the REPL entry-slot preload, so the module gets fresh
+    numbering. Restore-time closure hashing and the trait-home reverse
+    dependency are unmeasured.
+  - **`dev` cleanup (review F5, F6).** `introduce_module` is an uncalled
+    cache-install path that skips validity. Two compiler-owned module lists
+    are duplicated.
 - **Abandoned restore after platform failure (verified 2026-09-24).**
   `reresolve_cached_platforms` runs after `install_cached_table`, so a
   platform-load miss returns `Ok(false)` with the decoded table installed

@@ -574,7 +574,6 @@ single source of truth and takes `&ConcreteType`.
   glue. The release symbol for a program result is minted over
   `ConcreteType::result_root`, which strips one `primitives/IO` head.
 - The backend result-root enumeration and binary release key both call that rule.
-  FIXME 0898 remains open; its disposition against source is owed.
 - The binary's result-owner design is `design/int/result-owner.md`.
 
 ---

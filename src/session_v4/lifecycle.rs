@@ -1942,7 +1942,9 @@ impl CompilerSession {
         let result = self.shared.scheduler.wait_object_complete();
 
         // Flush the cache manifest to disk so the next session can detect
-        // cache hits. Sprint 67 Cluster B sub-fire 3: ObjectCache facade.
+        // cache hits, including entries whose records settled after their
+        // module was written.
+        crate::cache::dependency_record::record_deferred_entries(&self.shared);
         self.shared.cache.flush_manifest();
 
         result
@@ -2258,11 +2260,20 @@ impl CompilerSession {
             return;
         };
         let hash = cache::manifest::hash_source(source);
-        if !self
+        let lib_dirs = self
             .shared
-            .cache
-            .is_cache_valid(module, &hash, &std::collections::HashMap::new())
-        {
+            .lib_dirs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let sources = crate::cache::dependency_record::ModuleSources::new(
+            &self.shared.project_root,
+            &lib_dirs,
+        );
+        if !matches!(
+            self.shared.cache.validate(module, &hash, &sources),
+            crate::session_setup::CacheValidity::Valid { .. }
+        ) {
             return;
         }
         let Ok(Some(cached)) = cache::try_load_cached_module(&cache_dir, module) else {

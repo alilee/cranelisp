@@ -108,12 +108,14 @@ The index feed does **not** stop at in-memory tables. On a clean branch-(c) chec
 
 - `write_index_meta` (`:995`) serialises a `.meta` for the module, explicitly "so a later
   real `/import` of this module is a **cache-hit** (§25.5)" (`:946–948`, `:990–994`);
-- it records `shared.cache.record_source_hash(module, hash)` **and**
-  `shared.cache.record_compiled(module, hash, {})` (`:1034–1037`), and `try_branch_b`
-  likewise `record_source_hash`s (`:916`).
+- it records the module's manifest entry through the one record builder
+  (`record_manifest_entry`, [`int.md` §7.6](int.md#76-dependency-record-and-validity)).
+  The entry is deferred until every recorded member settles, and it is dropped
+  if a member is still unsettled at the pre-flush retry. The index feed writes no
+  loaded-source stash.
 
 These are **live writes into `shared.cache`**, a substrate the **foreground import path
-reads** (`is_cache_valid` → deserialise the index-written `.meta` → install its entries
+reads** (manifest validity → deserialise the index-written `.meta` → install its entries
 without re-typechecking). So even with the in-memory tables perfectly isolated, the index
 feed reaches the foreground compile through the cache: a background warm-up of module *M*
 publishes a `.meta` + manifest entry that a subsequent real `(import M)` (or a transitive
@@ -139,7 +141,10 @@ S91 in-memory isolation left open.
 > 2. **The dangerous coupling is already closed.** The S61→S93 lineage concern is a
 >    *shared-mutable-state* race; that is the in-memory half (§3.1/§3.2), **landed**. The cache
 >    channel is a *persistent-artifact read* — a materially safer shape, content-addressed by
->    source hash and gated by `is_cache_valid`. The one known divergence (an incomplete index
+>    source hash and gated by the manifest validity query. That query checks the module's own
+>    source hash and its recorded dependency closure ([`int.md` §7.6](int.md#76-dependency-record-and-validity)).
+>    The index writer records through the same builder as the other writers, keyed by the
+>    source it typechecked, with edges from its structural peel. The one known divergence (an incomplete index
 >    `.meta` for a macro-carrying module) is already carved out at `:950–969`.
 >
 > Against that: severing retires **§25.5, a genuine optimization** (warm-project startup stays
@@ -210,7 +215,7 @@ for the *absence* of foreground-substrate writes on every index branch:
    only permitted contact with a live map is the **read** that seeds the snapshot clone.
 2. **(PARKED — not enforced; FIXME 0626 ruling.)** ~~No `shared.cache` write on any index
    branch.~~ This guard belonged to the §3.3 severance, ruled **WON'T-DO** — §25.5 is kept, so
-   branch (b)/(c) `record_source_hash` / `record_compiled` / `write_index_meta` writes are the
+   the branch-(c) `write_index_meta` sidecar and its `record_manifest_entry` manifest entry are the
    sanctioned as-built (the index→import cache-hit optimization). A `/review` pass must **not**
    flag these as a Blocker. Re-instate this guard only if the parked cache-channel coupling is
    ever re-opened on evidence (§3.3 ruling box).

@@ -332,7 +332,7 @@ the two typecheck predicates of §11.8 and the additive
 
 ## §8. Related concepts
 
-- **`/learn`** (`design/arch/fixmes/0052-docs-learn-system-repl-feature.md`) is
+- **`/learn`** ([ACT-0951](../../sprints/actions/ACT-0951-specify-learn-feature.md)) is
   a scripted, deterministic, offline tutorial. It stays separate from the
   agent, which is neither deterministic nor offline.
 - **Self-documentation.** The agent consumes that surface and, through Document

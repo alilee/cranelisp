@@ -114,7 +114,7 @@ fn adt(module: &str, name: &str, args: Vec<ConcreteType>) -> ConcreteType {
     )
 }
 
-// spec: design/arch/fixmes/0898 ruling — `(IO a)` strips ONE hop to `a`;
+// spec: design/arch/concrete-boundary-type.md §1.3 — ConcreteType::result_root — `(IO a)` strips ONE hop to `a`;
 // `(IO (IO a))` strips to `(IO a)`, never recursively.
 #[test]
 fn result_root_strips_exactly_one_io_hop() {
@@ -125,7 +125,7 @@ fn result_root_strips_exactly_one_io_hop() {
     assert_eq!(io_io_int.result_root(), &io_int, "one hop only");
 }
 
-// spec: design/arch/fixmes/0898 ruling — everything that is not the
+// spec: design/arch/concrete-boundary-type.md §1.3 — ConcreteType::result_root — everything that is not the
 // `primitives/IO` non-empty-args head is its own root: scalars, other ADTs,
 // a USER-module type named IO, and a nullary IO head.
 #[test]

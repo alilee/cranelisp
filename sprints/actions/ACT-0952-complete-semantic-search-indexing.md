@@ -128,10 +128,10 @@ already-compiled symbols and per-module GOT data symbols; wire the restored
 module GOT; and retain the `Arc<Linker>` through each callable's `Code` owner.
 A JIT-only semantic index is not evidence that a reusable `.o` exists.
 
-Current limitation (S122 QA intake CD-1): the integration writer and restore
-path both supply empty dependency-hash maps, so the existing backend comparison
-is inert. Do not treat dependency validation as already delivered; its minimal
-reproduction and attribution are tracked in `tests/plan/s122-evidence-delta.md`.
+The integration writer and restore path now use transitive dependency records.
+Remaining cache and index limitations are recorded in
+[the integration cache contract](../../design/int/int.md#76-dependency-record-and-validity);
+`tests/plan/s122-evidence-delta.md` carries the measured scope and open intake.
 
 A later cache-write stage needs separate user approval. A background result is
 trustworthy for foreground reuse only if it ran the exact complete compiler,

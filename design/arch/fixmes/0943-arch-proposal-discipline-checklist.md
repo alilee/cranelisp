@@ -4,70 +4,57 @@ target: /arch
 filed_by: /sprint
 filed_at: 2026-08-29
 sprint_filed: 119
-refers_to: design/arch/principles/21-actors-and-functions-before-mechanism.md —
-  covers modelling actors before synthesising a mechanism, but not the
-  receiver-level checks that shape the resulting API
+refers_to: design/arch/principles/21-actors-and-functions-before-mechanism.md;
+  .agents/skills/arch/SKILL.md;
+  .agents/skills/quality-standards/SKILL.md
 status: open
 ---
 
-# Proposal discipline: data ownership, derive-before-add, minimum mechanism
+# Proposal discipline: receiver-level checks before a proposal reaches the user
 
-## S122 verified disposition (2026-09-10)
+## The user's checklist (S69 Phase 3)
 
-Verified Principle 21 and adopted arch/quality-standards skills. Actors/functions-first remains in Principle 21; current arch guidance covers callers, single data ownership, narrow consumer facades, and simpler existing boundaries before new mechanisms. These satisfy the general boundary/minimum-mechanism claims. The specific receiver-level derive-before-add/accessor checklist below is not fully recorded. Remaining owner: arch, to reconcile the retained user examples into an appropriate procedural carrier; a principle amendment, if selected, belongs at Phase 7. The examples do not authorize a new blanket prohibition on methods accepting other data. No source sweep, new API rule or shared-package amendment is enacted here.
+Run before an API-shaping proposal reaches the user:
 
-## Issue
+1. **Data ownership.** A method belongs on the type holding its data. A
+   parameter logically required to answer the question means the receiver is
+   wrong: `Type::do_thing(&self, extra: &OtherType)` is really a question of
+   the pair.
+2. **Derive before adding.** Check whether existing receivers already answer
+   the question before adding a field, accessor or layer. A proposed
+   `param_names: Vec<Symbol>` duplicated `scheme.ty.fn_arity()`.
+3. **Single responsibility.** An accessor answers one question from receiver
+   data alone.
+4. **Minimum mechanism.** A layer that carries no information is removed:
+   `ModuleEntry::arity() → DefKind::arity(scheme)` added nothing over
+   `scheme.ty.fn_arity()`.
+5. **Trace consumer paths.** Two consumers reading `.len()` and `.is_empty()`
+   want one `arity() -> Option<usize>`, not a `Vec` exposure. Derive the
+   contract from read sites, not a field name.
+6. **The spec owns language-level shapes.** For an AST, type, pattern or
+   declaration shape, read `spec/` before source or design. A pattern-enum
+   proposal once listed kinds §6.6.1–2 forbid.
 
-Principle 21 requires an actor/function model before a mechanism is synthesised. It says
-nothing about the shape of the API that comes out the other side, and that is where a
-recurring class of sticking-plaster proposals lives. A grep over `design/arch/principles/`,
-`sprints/METHOD.md` and `.claude/commands/` for "receiver", "data owner", "minimum
-mechanism", and "single responsibility" finds nothing on point.
+The test: if a colleague reading cold asks "why does X take Y when Y is
+already known?", each parameter needs an answer.
 
-The checklist (user, S69 Phase 3), to be run before a proposal reaches the user:
+## Current state (verified 2026-09-24)
 
-1. **Data ownership.** Methods belong on the type that holds the data. If a method needs
-   data passed in from outside, the receiver is wrong. The smell is
-   `Type::do_thing(&self, extra: &OtherType)` where `extra` is logically required to
-   answer the question — that is `(Type, OtherType)::do_thing()`, not `Type::do_thing()`.
-2. **Derive before adding.** Check whether the answer is already reachable from existing
-   receivers before adding a field, accessor, or layer. A `param_names: Vec<Symbol>`
-   addition was proposed when `scheme.ty.fn_arity()` already had the answer.
-3. **Single responsibility.** An accessor answers one question from receiver data alone.
-   If it answers several, or needs threading, decompose.
-4. **Minimum mechanism.** Don't add layers that carry no information. The delegation
-   chain `ModuleEntry::arity() → DefKind::arity(scheme)` adds nothing over
-   `ModuleEntry::arity() → scheme.ty.fn_arity()`; the middle layer is mechanism without
-   payload.
-5. **Trace the actual consumer paths.** Two consumers reading `.len()` and `.is_empty()`
-   on a `Vec<Symbol>` want one `arity() -> Option<usize>`, not a Vec exposure. Don't
-   infer the contract from a field's name — trace it from the read sites.
-6. **The spec is the data owner for any language-level construct.** For an AST type,
-   type-system type, pattern, or declaration shape, check `spec/NN-*.md` before source or
-   design doc. A pattern-enum proposal once listed "literal / var / wildcard / constructor
-   / nested" when §6.6.1–2 explicitly forbid literal and nested patterns and §6.2
-   normatively lists three kinds — the source matched the spec and the design doc was
-   wishful thinking about a forbidden feature.
+Principle 21 covers modelling actors and functions before a mechanism. The
+shared `arch` contract covers callers, single data ownership, narrow consumer
+facades and preferring an existing boundary over a new mechanism; the shared
+quality standards cover cohesion and minimum mechanism. Items 1, 2, 5 and 6
+are not stated at receiver level in any carrier.
 
-The triggering exchange:
+## Remaining obligation
 
-> "I'm not getting enough discipline from the recommendations — so many sticking-plaster
-> solutions that don't bear much scrutiny. It's like the suggestions aren't considering
-> the solution context but also aren't considering basic technical disciplines. E.g. why
-> is scheme passed in to DefKind::arity?" — user, S69
+`arch` decides at the Phase 7 principle review whether the residual items
+belong in Principle 21, a project procedural carrier or a shared-package
+contribution. The examples illustrate the rule; they do not create a blanket
+prohibition on methods taking other data. The user's local memory entry
+"Proposal discipline" retires when this lands.
 
-That parameter was the tell that `DefKind` did not own the arity data. The general test:
-does the proposal still hold if a colleague reads it cold and asks "why does X take Y as
-a parameter when Y is already known?" If you cannot justify each parameter, the shape is
-wrong — and if the discipline check produces a smaller proposal than the pattern-matched
-first draft, the first draft was the sticking plaster.
+## Closure
 
-## Proposed resolution
-
-`/arch` to rule on the home. Candidates: an extension to Principle 21 (same axis —
-Principle 21 governs whether the mechanism is right, this governs whether its API shape
-is), or a new Principle, or a checklist section in `.claude/commands/arch.md` §Workflow
-if `/arch` judges it procedural rather than architectural. If it lands as a Principle,
-`design/arch/principles/CLAUDE.md` steps 1–3 apply: index entry plus the four import blocks (arch
-and the three triad skill defs) — that skill-def edit is the user's, so flag it in the
-resolution commit for `/sprint` to chase.
+The residual items are in their chosen carrier; this filing and the memory
+retire.

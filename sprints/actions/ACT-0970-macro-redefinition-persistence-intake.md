@@ -33,3 +33,18 @@ source first. Allocate a minimal reproduction with a function-redefinition
 control and a fresh restart observation. If confirmed, retain a permanent
 failing, unignored spec-traced test and attribute before routing a fix.
 Otherwise record the discriminating evidence and retire this intake.
+
+## Restart observation (2026-09-25)
+
+The D1 cache-deferral test attempt reproduced the restart leg. A macro k
+initially expands to quoted1; after an admitted replacement with quoted100,
+the live REPL displays100, but mac.cl persists the old body as quasiquote1.
+A no-cache batch restart using7 plus k exits8, not107. Three probe variants
+showed the same result. The function-redefinition control remains unexecuted,
+so mechanism attribution and a permanent minimal reproduction are still owed.
+
+This also blocks the intended D1 macro-deferral comparison: the restart
+trigger has no semantic change to distinguish stale cached code from fresh
+compilation. Do not treat that unarmed comparison as refuting D1. Test session
+`7c2ea103-8c63-4aef-bbc6-38733d8f079a` retained its local draft; no D1 defect
+cell or tag was landed.

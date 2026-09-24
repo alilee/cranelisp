@@ -83,8 +83,8 @@ pub struct CacheManifest {
 pub struct CachedModuleRef {
     /// Hex-encoded SHA-256 of the module's source text.
     pub source_hash: String,
-    /// Source hashes of direct dependencies at the time this module was cached.
-    /// Used for transitive dependency invalidation (design doc §3).
+    /// Source hashes of every module in this module's transitive dependency
+    /// closure when it was cached (design/int/int.md §7.6).
     #[serde(default)]
     pub dependency_hashes: HashMap<String, String>,
 }
@@ -136,6 +136,9 @@ impl CacheManifest {
 
 /// Check whether a manifest is compatible with the current environment,
 /// and whether a specific module's cache is valid.
+///
+/// Compares only the dependencies in `dependency_source_hashes`; the caller
+/// supplies the current hash of every dependency the entry records.
 ///
 /// Returns Ok(true) if the module can be loaded from cache,
 /// Ok(false) if the module needs recompilation,

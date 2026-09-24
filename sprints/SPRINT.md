@@ -1,10 +1,10 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. Latest checkpoint: `bad445da`. The compiler corrections,
+**Status:** PHASE 5. Latest checkpoint: `5b1a843b`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
-Document consolidation continues: the last integrated check has 238 findings
-across 535 documents. Historical audit reports are retired to Git with
+Document consolidation continues: the last integrated check has 179 findings
+across 525 documents. Historical audit reports are retired to Git with
 open points preserved. Current reservations appear at the end of this plan.
 C-A cache-corruption hardening is user-deferred; no API approval is pending.
 No phase transition or publication is authorized.
@@ -3798,3 +3798,160 @@ under an unchanged restored importer accept an ill-typed call (107 vs rejection)
 or call the wrong slot (99 vs11), in both --run and --link. Controls establish
 cache-use dependence; writer versus restore mechanism is not isolated. QA
 reconciliation is next. No compiler fix or broad test run is claimed.
+
+### Checkpoint 5b1a843b and continuation (2026-09-24)
+
+Committed45 files, including four permanently failing CD-1 reproductions,
+under the user's checkpoint instruction. Documentation checker247→238,
+535 documents, no introduced identities. NOTES hash unchanged; .agents excluded.
+QA Opus5.5/high `d204f966-70a0-475b-beb3-3319270981e7` reconciles CD-1
+evidence and retains the separate sentinel/M3 instrument candidates.
+Spec receives the two platform specifications' factual ownership corrections;
+no new language behavior is authorized. Still Phase5.
+
+QA reconciliation complete: direct-import e2e evidence adequate; cache-use
+dependence confirmed, precise mechanism remains source-supported/provisional.
+Root applied QA's exact artifact-underkey vocabulary/tag remaps, no test logic
+changed. The separate panic-sentinel and M3 candidates remain advisory.
+Spec Opus5.5/high `a07fe940-296f-4584-ae01-c16e1f8068ee` corrected the two
+platform specs against existing authority, no semantic gate. Residuals: platform
+spec ownership/establishment absent from root; stale stdio read-line source
+comment; language IO ABI wording versus poll leaves; unused test-utility export
+requirements; final unterminated-line behavior lacks a pinning test. These
+remain open, not silently discharged.
+
+### CD-1 design and filing cleanup (2026-09-24)
+
+User requested continuation. Design(int) Opus5.5/high
+`53395bf4-baca-4ffd-9242-697033e4bf23` settles the private cache correction
+and same-fact standing claims; no implementation dispatched before that result.
+Arch receives the current checker findings in its legacy filing collection for
+a coherent cleanup batch, preserving unresolved obligations. Baseline238.
+
+Arch filing pass: Opus5.5/high `772c5b94-f103-4025-8ec8-ddea5f3b7293`.
+Root applied the prior spec owner's exact stdio read-line scheduling comment
+correction against READ_LINE_DESC; no runtime behavior changed.
+
+Cache design complete: int7.6 records transitive source dependencies using the
+existing map, shared across restore and all three writer paths. No public API
+or schema-shape change proposed. QA Opus5.5/high
+`d3b81897-0789-4486-9abb-28443170f0ca` settles the incremental evidence handoff.
+Root applied design's exact backend prose/rustdoc handoffs.
+
+Arch filing cleanup completed:24 touched,10 retired, collection6135→2957
+lines. All55 findings sourced in the collection resolved; incoming remaps
+being integrated. Open obligations preserved in canonical filings, including
+0835's derive ceiling in0815 and0916's backend arm in0903. Owner reroutes
+0553/0708 to design(int),0907/0914 to QA reflect verified residual work;
+coordinator accepts routing, not evidence closure.
+
+Integrated checker238→183, no introduced identities after filing remaps.
+QA settled CL-A–F: two closure-path e2e cells (including rebuild over restored
+intermediate), builder/edge units, validity seam, existing hit fences. Test
+receives the two RED-first e2e cells; dev implementation waits for the result.
+
+Test Opus5.5/high `f1330d6e-24e0-4a51-957f-0b52092c8612` completed CL-B/C:
+both intended RED, re-export-only arming passed without contingency. Full
+cache target52:46PASS/6FAIL, all six CD-1. The early hit trace's limits remain
+explicit; stale output confirms completed restore in the failing subject.
+Dev(src) receives implementation, units, cache/search and wave verification.
+
+Dev(src) Opus5.5/high `3c6460dd-a3f8-477c-aa57-451912c5208b` owns source
+and all builds. Design(backend) Opus5.5/high
+`ea11a743-88d1-452d-999f-44358c365dc7` condensed module-caching1287→565
+lines (11742→4188words), retaining live anchors. Root repaired its one renamed
+anchor. Remaining same-fact handoffs: ownership-inference5.1 still claims the
+old transitive cascade; cache test14.4 citation should be3; int7.5 malformed
+metadata wording; backend master6 disk-IO/resolution attribution; backend
+cache rustdoc. Dormant public packet API disposition remains open in cache7,
+no removal or public API change authorized.
+
+CD-1 implementation complete in src:61 focused units,96 cache/search/exemplar
+e2e pass. Initial full run exposed an unsettled parent/child write omission;
+a RED-first deferral unit and retry-before-flush corrected it. Final full run
+6049run:6048PASS/1document-conformanceFAIL,1skip. Checker179findings, no
+new identities against238 baseline. No public cross-crate API/schema-shape
+change; no commit requested in this continuation.
+
+Review Opus5.5/high `f8a9e5fc-941b-4733-9f4b-b3fb506588be` found no blocker
+to the allocated implementation, but FQautoload dependency edges remain an
+unexecuted required lead. F2 predates final deferral correction. QA
+`37110182-ec4a-4020-baed-3474b484ee15` reconciles final evidence and next intake;
+design(int) `d80349af-ed9a-4d26-8be2-0b3419dd3e31` updates standing status;
+review `a61ba638-847a-40e3-bd76-eaea5d6cbcf9` checks only final F2 correction.
+All Opus5.5/high. Root applied backend's exact cache test citation14.4→3.
+
+User ruling (2026-09-25): stdio and test-capture are QA-owned platform
+components controlled as test-suite dependencies. Examples, documentation,
+demos and the exemplar share them under that ownership. Their behavior is
+not language specification. Root guidance establishes both existing contracts;
+no new document is needed.
+
+QA accepts CL-A–F as delivered, not the entire cache-validity class. F1 and the
+observed fresh-child/restored-library face receive bounded repros under test
+Opus5.5/high `6cb50359-8d90-4d2e-8857-8b43c6f5d3ac`. Finding-scoped review
+resolved F2 but raised unexecuted D1 depending on a REPL type-changing turn.
+QA read-only triage `02cb464f-03af-49ab-a4b4-ed4292e3a5e9` checks whether the
+existing dependent-redefinition refusal refutes that trigger before any fix.
+Root applied design's exact backend as-built remaps and ACT0952 status update.
+
+D1 triage: the review's ABI-changing/BROKEN trigger is refuted by the dependent
+redefinition guard. QA nevertheless holds deferral acceptance on a distinct
+allowed macro-edit/restart trigger, with a non-deferred sibling control. Root
+integrated that exact QA allocation into the evidence delta; no fix chosen.
+
+F1 followup executed: two permanent REDs, stale slot99vs11 and unchanged warm
+load unresolved GOT when only qualified use loads b. Cache target56:54PASS/
+2FAIL; the six corrected CD-1 cases remain GREEN. DV3 base and super shapes
+GREEN; the original exemplar observation remains unreproduced, not closed.
+Design(int) Opus5.5/high `5417a002-566a-4060-8f8e-abcaba85f0b4` now prepares
+the F1 carrier/restore correction. Test Opus5.5/high
+`7c2ea103-8c63-4aef-bbc6-38733d8f079a` executes QA's D1 macro-deferral cell.
+No new runtime fix has been made since the final6049-test run; the current
+working suite additionally contains the two newly discovered F1 REDs.
+
+D1 test result (2026-09-25): UNARMED, neither confirmed nor refuted. A legal
+observable fixture deferred the parent rather than child (12/12 probes).
+The super-edge type-change refusal is now executed. More importantly, the
+admitted macro replacement remained live-only: three restart probes persisted
+the old definition, extending ACT0970 evidence. No D1 cell was landed; draft
+remains local. The deferral acceptance hold is not discharged by this attempt.
+
+F1 design7.6.1 needs a persisted SymbolTable qualified-reference carrier.
+Arch Opus5.5/high `e143eb83-5320-41af-9c7d-66e0f4d2bc92` prepares the exact
+public-API/schema approval packet; no field or schema change implemented.
+The last integrated checker remains179 findings/525documents, no introduced
+identities; net Markdown reduction approximately28,200 words before final
+proposal/evidence adjustments.
+
+### Pending user approval: qualified-reference cache carrier
+
+Arch Opus5.5/high `e143eb83-5320-41af-9c7d-66e0f4d2bc92` recommends the
+following exact F1 delta. This is proposed, not approved or implemented.
+
+- Types: private persisted `SymbolTable<C,L>` field
+  `qualified_reference_modules: BTreeSet<ModuleFullPath>`, initialized empty,
+  carried by into_concrete, no serde default.
+- Two new public methods:
+
+```rust
+pub fn record_qualified_reference(&mut self, module: ModuleFullPath)
+pub fn qualified_reference_modules(&self) -> impl Iterator<Item = &ModuleFullPath>
+```
+
+- Recorder inserts successful first-hop resolutions and ignores self.
+  Typecheck and int's macro recogniser produce records; int's cache builder,
+  restore walk and index worker consume them. No new crate dependency edges.
+- Both publication methods union staged records atomically; failed publication
+  leaves live records unchanged. Their signatures are unchanged.
+- Typecheck check_forms gains the documented recording guarantee, no signature
+  change. Typecheck interior design follows approval.
+- Backend cache schema29→30 invalidates older sidecars and paired objects for
+  rebuild. No platform ABI or language syntax change; manifest shape unchanged.
+- Expected generated API delta: two methods in the types baseline. The actual
+  generated delta must return for user confirmation before the wave passes.
+
+The two permanent F1 guards remain RED until the full producer/consumer cascade
+lands. D1 acceptance remains separately held because its macro-restart probe
+was unarmed; ACT0970 now carries the restart observations. The API proposal
+does not accept or silently close that residual.

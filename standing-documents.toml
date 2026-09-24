@@ -213,6 +213,20 @@ purpose = "Directs coding agents to the canonical repository guidance."
 established_by = "CLAUDE.md"
 
 [[document]]
+path = "platforms/stdio/spec.md"
+kind = "standing"
+owner = "qa"
+purpose = "Define the console IO platform contract controlled as a test-suite dependency."
+established_by = "CLAUDE.md"
+
+[[document]]
+path = "platforms/test-capture/spec.md"
+kind = "standing"
+owner = "qa"
+purpose = "Define the deterministic IO and test-support platform contract."
+established_by = "CLAUDE.md"
+
+[[document]]
 path = ".github/copilot-instructions.md"
 kind = "standing"
 owner = "sprint"

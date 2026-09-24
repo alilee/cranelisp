@@ -18,6 +18,8 @@ use cranelisp_types::{
     PlatformSpec, Realization, Span, Symbol, WrittenTraitImpl,
 };
 
+use crate::cache::dependency_record::{DependencyRecord, ModuleSources};
+use crate::session_setup::CacheValidity;
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
 
 use super::register_dep;
@@ -53,9 +55,13 @@ pub(super) fn try_cache_hit_load(
 
     // Phases 1–3: validity check + meta decode + `.o`-exists gate. `None` on any
     // miss → caller returns `false`.
-    let (cached, source_hash, needs_inmem_load) = match cache_validity_check(ctx, dep, dep_file) {
-        Some(t) => t,
-        None => return Ok(false),
+    let Some(ValidCacheEntry {
+        cached,
+        source,
+        needs_inmem_load,
+    }) = cache_validity_check(ctx, dep, dep_file)
+    else {
+        return Ok(false);
     };
 
     // Phase 4: extract all data BEFORE moving the symbol table (avoids clone /
@@ -81,14 +87,7 @@ pub(super) fn try_cache_hit_load(
 
     // Phases 5–8: scheduler register + typecheck-product + record-hit +
     // cached-module insert + file_to_module.
-    register_cached_with_scheduler(
-        ctx,
-        dep,
-        dep_file,
-        specs.symbols,
-        source_hash,
-        needs_inmem_load,
-    );
+    register_cached_with_scheduler(ctx, dep, dep_file, specs.symbols, source, needs_inmem_load);
 
     // Phase 9: recurse on transitive imports + re-export targets.
     register_transitive_cached_imports(ctx, &specs.imports)?;
@@ -105,34 +104,44 @@ pub(super) fn try_cache_hit_load(
     Ok(true)
 }
 
+/// A cache entry that passed every restore gate.
+struct ValidCacheEntry {
+    cached: cranelisp_backend::cache::CachedModule,
+    source: RestoredSource,
+    /// Whether the module has an `.o` to load (a generic-only module has none).
+    needs_inmem_load: bool,
+}
+
+/// The source version a restore installs, recorded for the importers'
+/// dependency records (`design/int/int.md` §7.6).
+struct RestoredSource {
+    source_hash: String,
+    record: DependencyRecord,
+}
+
 /// Phases 1–3 of `try_cache_hit_load`: cache-dir check, source read + hash,
-/// manifest validity, meta decode, and the `.o`-exists / generic-only gate.
-///
-/// Returns `None` on any cache miss (the caller returns `false`); on a hit
-/// returns `(cached_module, source_hash, needs_inmem_load)`.
+/// manifest validity (own source and every recorded dependency), meta decode,
+/// and the `.o`-exists / generic-only gate. Returns `None` on any cache miss.
 fn cache_validity_check(
     ctx: &ModuleCompiler,
     dep: &ModuleFullPath,
     dep_file: &Path,
-) -> Option<(cranelisp_backend::cache::CachedModule, String, bool)> {
+) -> Option<ValidCacheEntry> {
     use cranelisp_backend::cache;
     use cranelisp_backend::cache::manifest as cache_manifest;
-    use std::collections::HashMap as StdHashMap;
 
     let shared = ctx.shared_state?;
 
     // 1. Check cache validity: read source, compute hash, check manifest.
-    //    Sprint 67 Cluster B sub-fire 3: ObjectCache facade.
     let cache_dir = shared.cache.cache_dir()?;
 
     let dep_source = std::fs::read_to_string(dep_file).ok()?;
     let source_hash = cache_manifest::hash_source(&dep_source);
 
-    // Check manifest (source hash only, no dep hashes yet).
-    let dep_hashes: StdHashMap<ModuleFullPath, String> = StdHashMap::new();
-    if !shared.cache.is_cache_valid(dep, &source_hash, &dep_hashes) {
+    let sources = ModuleSources::new(ctx.project_root, ctx.lib_dirs);
+    let CacheValidity::Valid { record } = shared.cache.validate(dep, &source_hash, &sources) else {
         return None;
-    }
+    };
 
     // `CRANELISP_MODULE_TRACE` — the module-discovery / compile-order / cache-hit
     // observability channel (tests/CLAUDE.md §"Diagnostic Logging"). The `.meta`
@@ -170,7 +179,14 @@ fn cache_validity_check(
     }
     let needs_inmem_load = cached.has_object;
 
-    Some((cached, source_hash, needs_inmem_load))
+    Some(ValidCacheEntry {
+        cached,
+        source: RestoredSource {
+            source_hash,
+            record,
+        },
+        needs_inmem_load,
+    })
 }
 
 /// Cache metadata is accepted only when every owned macro clause has the
@@ -447,7 +463,7 @@ fn register_cached_with_scheduler(
     dep: &ModuleFullPath,
     dep_file: &Path,
     symbols: std::collections::HashSet<Symbol>,
-    source_hash: String,
+    source: RestoredSource,
     needs_inmem_load: bool,
 ) {
     let shared = match ctx.shared_state {
@@ -490,8 +506,10 @@ fn register_cached_with_scheduler(
         ctx.prelude_fallback,
     );
 
-    // 7. Record cache hit. Sprint 67 Cluster B sub-fire 3: ObjectCache facade.
-    shared.cache.record_cache_hit(dep, source_hash);
+    // 7. Record cache hit with the record it validated under.
+    shared
+        .cache
+        .record_cache_hit(dep, source.source_hash, source.record);
 
     // 8. Record in cached_modules set (via scheduler — Sprint 67 Cluster B
     //    sub-fire 2e) and file_to_module mapping.

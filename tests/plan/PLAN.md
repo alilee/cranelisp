@@ -286,12 +286,16 @@ active allocation cites them; they are not fresh source censuses.
 - Other open compiler findings retain their own records in the
   [sprint inventory](../../sprints/s122-candidate-inventory.md) and active
   allocation. This rewrite closes none of them.
-- The [annotation-in-macro-argument fork 0708](../../design/arch/fixmes/0708-annotation-not-folded-in-macro-argument-position.md)
-  awaits a `spec` ruling. Its polarity-safe pin is allocated to `test` after
-  or with that ruling: the filing's free-standing repro (a two-parameter
-  `defmacro` invoked with a `:`-annotated second argument, no stdlib) asserts
-  that stdout does not contain `returned malformed sexp`. RED today, GREEN
-  under either ruling; the positive assertion is sharpened after the ruling.
+- [Annotation in macro-argument position, 0708](../../design/arch/fixmes/0708-annotation-not-folded-in-macro-argument-position.md):
+  the user's Reading A-structural ruling is scribed. The acceptance evidence is
+  `annotation_fold_macro_arg_0708::annotation_folds_in_macro_argument_position`
+  and its unannotated control, both GREEN in the S122 CD-1 final suite. The
+  witness asserts the folded `:primitives/Int 5` result, which a malformed-sexp
+  failure cannot produce, so it supersedes the former polarity-safe
+  `returned malformed sexp` pin; no pin is allocated. `test` owes only the
+  witness's notation upkeep: `fixed=` and past-tense framing on its open
+  `// defect:` line and header. The filing's int mirror tail and spaced
+  `: Int` spelling stay with their owners.
 - Historical unfiled limits remain explicitly unclassified. Each keeps its
   exact provenance so its substance is recoverable without re-derivation:
   - the S108 all-green multi-form display note — the
@@ -489,8 +493,8 @@ reuse. Retirement needs the citing owners to move their citations first.
   [enforcement matrices](../../design/frontend/enforcement-matrices.md)), or
   an open filing carrying its own subject (0694, 0708, 0745, 0811, 0857).
   Their standing rules are in §Standing coverage audit and §Traceability;
-  their two unlanded observations are the 0708 pin and the §15.2 persistence
-  rows in §Active allocation. Their attributions, wave rulings and counts
+  their unlanded observation is the §15.2 persistence rows in §Active
+  allocation. Their attributions, wave rulings and counts
   are dated S113/S114 and do not describe current status; the 0720 exemplar
   attribution in the S114 plan was later falsified by re-measurement
   ([0811](../../design/arch/fixmes/0811-attribution-closed-on-the-repro-never-re-measured-at-source.md)),

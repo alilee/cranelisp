@@ -9,7 +9,6 @@ sprint: 121
 filed_at: 2026-09-01
 refers_to:
   - repl/spec.md
-  - design/arch/fixmes/0052-docs-learn-system-repl-feature.md
   - user/CLAUDE.md
 ---
 

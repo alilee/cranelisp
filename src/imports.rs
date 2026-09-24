@@ -371,7 +371,6 @@ pub(crate) fn install_module_session_env(
     module_aliases: &ModuleAliases,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
 ) {
-    let prelude_path = ModuleFullPath::from("prelude");
     let Some(table) = symbol_tables.get(module) else {
         return;
     };
@@ -382,7 +381,7 @@ pub(crate) fn install_module_session_env(
     //     (§8.8.1). A module that imports prelude explicitly keeps the bit OFF
     //     (absence-is-OFF), exactly as `inject_prelude_if_needed`'s early return
     //     leaves it.
-    if *module != prelude_path && !table_references_prelude(&table) {
+    if gets_prelude_fallback(module, &table.imports, &table.exports) {
         prelude_fallback.insert(module.clone(), true);
     }
 
@@ -413,19 +412,19 @@ pub(crate) fn install_module_session_env(
     }
 }
 
-/// Structural equivalent of `dependency::sexps_reference_prelude` (§8.8.1) over a
-/// restored table's `imports`/`exports` fields: does the module explicitly name
-/// `prelude` in an import or export? Used by `install_module_session_env` to
-/// decide the prelude-fallback bit without the source sexps in hand.
-fn table_references_prelude(table: &SessionSymbolTable) -> bool {
-    table
-        .imports
-        .iter()
-        .any(|s| s.module_path.as_ref() == "prelude")
-        || table
-            .exports
-            .iter()
-            .any(|s| s.module_path.as_ref() == "prelude")
+/// Whether a module with these structural declarations gets the prelude
+/// fallback: every module except the prelude itself that does not import or
+/// export `prelude` explicitly (§8.8.1). The structural equivalent of
+/// `dependency::sexps_reference_prelude`, for callers without the source sexps.
+pub(crate) fn gets_prelude_fallback(
+    module: &ModuleFullPath,
+    imports: &[ImportSpec],
+    exports: &[ExportSpec],
+) -> bool {
+    let is_prelude = |path: &ModuleFullPath| path.as_ref() == "prelude";
+    !is_prelude(module)
+        && !imports.iter().any(|s| is_prelude(&s.module_path))
+        && !exports.iter().any(|s| is_prelude(&s.module_path))
 }
 
 /// `<owner>.<alias>` key for the session-level alias table; owner is the

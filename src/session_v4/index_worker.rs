@@ -46,13 +46,15 @@
 // drained-to-completion at a flush; the loop checks the shutdown flag between
 // `IndexModule` tasks.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::sync::Mutex;
 
 use cranelisp_types::{Binding, Decl, ModuleFullPath, Symbol, Type};
 
 use super::SharedState;
+use crate::cache::dependency_record::{ModuleEdges, ModuleSources, record_manifest_entry};
 use crate::scheduler::ModulePool;
+use crate::session_setup::CacheValidity;
 
 /// The two purpose-built lookup indices (R3, R16) — int-private, derived
 /// read-caches over the `.meta` cache. NOT a symbol table, NOT serialized, NO
@@ -158,7 +160,16 @@ struct ImportableRow {
 struct CheckedIndexModule {
     table: crate::code::SessionSymbolTable,
     entries: Vec<(Symbol, Type, Binding<crate::code::Code>)>,
+    /// Hash of the source the index typechecked.
+    source_hash: String,
+    declarations: IndexedDeclarations,
+}
+
+/// What the isolated index typecheck learned about the module's declarations
+/// beyond its table, whose structural declaration fields it does not populate.
+struct IndexedDeclarations {
     source_had_macro: bool,
+    edges: ModuleEdges,
 }
 
 /// Relevance tier of a `/search` hit — the §17.19.1a total order, strongest
@@ -930,7 +941,8 @@ fn index_one_module(shared: &SharedState, module: &ModuleFullPath) {
 
 /// Branch (b): read the module's `.meta` if it is valid on BOTH gates — the
 /// backend schema+BUILD_ID gate (`cache::load_meta`) AND int's source-content
-/// gate (`is_cache_valid` over the freshly-hashed source). Returns the public
+/// gate (`ObjectCache::validate` over the freshly-hashed source and its recorded
+/// dependencies). Returns the public
 /// entries on a hit; `None` on any miss (caller falls to branch c).
 fn try_branch_b(
     shared: &SharedState,
@@ -940,19 +952,20 @@ fn try_branch_b(
 ) -> Option<Vec<ImportableRow>> {
     use cranelisp_backend::cache;
 
-    // Source-content gate: hash the live source and consult the manifest loaded
-    // at session start. A source edit since the `.meta` was written invalidates
-    // it here (caught exactly like the real path's `is_cache_valid`).
+    // Source-content gate: the same manifest validity the import path applies
+    // (own source and every recorded dependency, `design/int/int.md` §7.6).
     let source = std::fs::read_to_string(file).ok()?;
     let source_hash = cache::manifest::hash_source(&source);
-    // Record the hash so a later real `/import` of this module is a cache-hit on
-    // the live import path (§25.5 — index→import is a `.meta` cache-hit).
-    shared.cache.record_source_hash(module, source_hash.clone());
-    let empty_deps = HashMap::new();
-    if !shared
-        .cache
-        .is_cache_valid(module, &source_hash, &empty_deps)
-    {
+    let lib_dirs = shared
+        .lib_dirs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let sources = ModuleSources::new(&shared.project_root, &lib_dirs);
+    if !matches!(
+        shared.cache.validate(module, &source_hash, &sources),
+        CacheValidity::Valid { .. }
+    ) {
         return None;
     }
 
@@ -992,9 +1005,9 @@ fn index_branch_c(
             // built from the typed entries we read out of the private snapshot.
             //
             if let Some(dir) = cache_dir.as_deref()
-                && !checked.source_had_macro
+                && !checked.declarations.source_had_macro
             {
-                write_index_meta(shared, module, dir, &checked.table);
+                write_index_meta(shared, module, dir, &checked);
             }
             shared
                 .importable_indices
@@ -1019,8 +1032,9 @@ fn index_branch_c(
 /// Write a benign branch-(c) `.meta` for `module` built from its typed public
 /// entries — byte-compatible with the real Phase-1 writer's serialised
 /// `SymbolTable` (R13/R14). No `.o`. The `.meta` makes a later real `/import` a
-/// cache-hit (§25.5). Also records the module's source hash so `is_cache_valid`
-/// finds it on the import path.
+/// cache-hit (§25.5). Its manifest entry records the hash of the source the
+/// index typechecked and, like every writer's, its dependency closure
+/// (`design/int/int.md` §7.6).
 ///
 /// (This benign-`.meta` write is the §25.5 index→import cache-hit optimization.
 /// Its retirement is proposed by `index-worker-isolation.md` §3.3 but is NOT
@@ -1031,8 +1045,9 @@ fn write_index_meta(
     shared: &SharedState,
     module: &ModuleFullPath,
     cache_dir: &std::path::Path,
-    table: &crate::code::SessionSymbolTable,
+    checked: &CheckedIndexModule,
 ) {
+    let table = &checked.table;
     use cranelisp_backend::cache;
 
     let (meta_path, _o) = cache::module_cache_path(cache_dir, module);
@@ -1044,22 +1059,12 @@ fn write_index_meta(
     {
         eprintln!("index: .meta write failed for {module}: {}", e.message());
     }
-    // Record the source hash + manifest entry so a later real `/import` is a
-    // cache-hit on the live import path (§25.5 — index→import cache-hit).
-    if let Ok(source) = std::fs::read_to_string(
-        crate::pipeline::resolve_module_file(
-            module,
-            &shared.project_root,
-            &shared.lib_dirs.lock().unwrap_or_else(|e| e.into_inner()),
-        )
-        .unwrap_or_default(),
-    ) {
-        let hash = cache::manifest::hash_source(&source);
-        shared.cache.record_source_hash(module, hash.clone());
-        shared
-            .cache
-            .record_compiled(module, hash, std::collections::HashMap::new());
-    }
+    record_manifest_entry(
+        shared,
+        module,
+        checked.source_hash.clone(),
+        checked.declarations.edges.clone(),
+    );
 }
 
 /// Run the real import-installing + typecheck path for `module` over its source
@@ -1137,7 +1142,7 @@ fn checked_typecheck_module(
     }));
 
     match outcome {
-        Ok(Ok(source_had_macro)) => {
+        Ok(Ok(declarations)) => {
             // Read the typed public entries OUT of the PRIVATE module table.
             match private_tables.get(module) {
                 Some(t) => {
@@ -1148,7 +1153,8 @@ fn checked_typecheck_module(
                         Ok(Some(CheckedIndexModule {
                             table: t.clone(),
                             entries,
-                            source_had_macro,
+                            source_hash: cranelisp_backend::cache::manifest::hash_source(&source),
+                            declarations,
                         }))
                     }
                 }
@@ -1170,7 +1176,7 @@ fn index_typecheck_into_private(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     sexps: &[cranelisp_types::Sexp],
-) -> Result<bool, String> {
+) -> Result<IndexedDeclarations, String> {
     use cranelisp_typecheck::SymbolTableAccess;
 
     // Pass-0 structural peel: extract the module's own import/export decls and
@@ -1178,6 +1184,13 @@ fn index_typecheck_into_private(
     // resolve). `super` is resolved at the frontend boundary.
     let (decls, remaining) = cranelisp_frontend::extract_module_declarations(module, sexps)
         .map_err(|e| format!("structural peel error: {e}"))?;
+    let edges = ModuleEdges::of_declarations(
+        module,
+        &decls.import_specs,
+        &decls.export_specs,
+        &decls.mod_decls,
+        crate::imports::gets_prelude_fallback(module, &decls.import_specs, &decls.export_specs),
+    );
 
     crate::imports::install_imports(
         priv_tables,
@@ -1221,8 +1234,12 @@ fn index_typecheck_into_private(
     let program =
         crate::worker::build_program_compat(&regular).map_err(|e| format!("build error: {e}"))?;
     let parsed = crate::worker::top_level_to_parsed_entries(&program);
+    let declarations = IndexedDeclarations {
+        source_had_macro,
+        edges,
+    };
     if parsed.is_empty() {
-        return Ok(source_had_macro);
+        return Ok(declarations);
     }
 
     // Staging-mode `check_forms`: typed entries land in the private module table
@@ -1247,7 +1264,7 @@ fn index_typecheck_into_private(
                 live.publish_staged(staging, &[])
                     .map_err(|error| format!("private index publication error: {error}"))?;
             }
-            Ok(source_had_macro)
+            Ok(declarations)
         }
         Err(e) => Err(format!("typecheck error: {e:?}")),
     }
@@ -1329,6 +1346,7 @@ fn public_entries_from_table(
 mod tests {
     use super::*;
     use cranelisp_types::Type;
+    use std::collections::HashMap;
 
     fn m(s: &str) -> ModuleFullPath {
         ModuleFullPath::from(s)

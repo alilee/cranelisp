@@ -89,6 +89,17 @@ shape a bounded index loop produces.
    author cannot debug their own expansion — this is the usability half and it is
    what made this a /qa handoff instead of a /stdlib fix.
 
+## Also carried: the two-field derive ceiling (from retired FIXME 0835, S122)
+
+FIXME 0835 attributed a second derive ceiling — a data constructor with two or
+more fields killed the compiler process under all three derive macros — to
+heap corruption in `SList`/`Sexp` construction. Every 0835 face is fixed and
+its permanent repros are `tests/slist_sconcat_ownership_0835.rs`, so that
+attribution no longer explains the ceiling. `stdlib/derive/test.cl` still
+withholds the two-field `Point` case and the three-constructor `derive-Ord`
+case. Revalidate both omitted cases at current source before attributing,
+fixing or closing; a green 0835 repro does not by itself show they run.
+
 ## Context
 
 Found by `/stdlib` during the S115 Phase-6a assessment sweep of the modules that

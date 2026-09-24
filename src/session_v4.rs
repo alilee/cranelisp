@@ -142,7 +142,7 @@ pub struct SharedState {
     /// `compiled_o_paths: Mutex<Vec<PathBuf>>`) with this single facade
     /// owner. Workers and the initiator dispatch through `ObjectCache`
     /// methods (`is_enabled`, `cache_dir`, `record_source_hash`,
-    /// `is_cache_valid`, `record_cache_hit`, `record_compiled`,
+    /// `validate`, `record_cache_hit`, `record_compiled`,
     /// `source_hash`, `flush_manifest`, `append_o_path`, `all_paths`) —
     /// the method surface is the load-bearing facade landing.
     pub cache: std::sync::Arc<crate::cache::ObjectCache>,

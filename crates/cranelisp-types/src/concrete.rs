@@ -113,10 +113,8 @@ impl ConcreteType {
     }
 
     /// The program-result ROOT of this type — the IO-head-strip rule
-    /// (S118 ruling, FIXME 0898; the single derivation behind backend's
-    /// result-root glue enumeration in `compile_to_module` and int's
-    /// `release_key` in `src/result_owner.rs`, whose two literal encodings
-    /// re-express over this method and delete — Principle 7).
+    /// shared by backend's result-root glue enumeration in `compile_to_module`
+    /// and int's `release_key` in `src/result_owner.rs` (Principle 7).
     ///
     /// `(IO a)` — the `primitives/IO` ADT with non-empty args — strips to
     /// `a`; anything else is itself. **ONE hop, no recursion**

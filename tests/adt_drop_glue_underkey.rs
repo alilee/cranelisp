@@ -17,7 +17,7 @@
 // implicated. These REDs flip GREEN when CS-1.1 re-keys BOTH layers on a mangle
 // of the full concrete instantiation (module + type name + concrete args).
 //
-// The `class=drop-glue-underkey` tag is the ratified controlled vocabulary
+// The `class=artifact-underkey` tag is the ratified controlled vocabulary
 // (`tests/CLAUDE.md` §"Defect-repro notation"; ratified S111, /qa): a
 // per-INSTANTIATION artifact deduped under a key that under-determines its
 // body. The closest existing tags — `uaf` (R1 corruption face) and
@@ -72,7 +72,7 @@ fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
 // -----------------------------------------------------------------------------
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_concrete_args_axis_repl_r1() {
     // Both vecs built and dropped in ONE REPL turn (one JIT batch). Clean:
@@ -91,7 +91,7 @@ fn adt_vec_drop_glue_concrete_args_axis_repl_r1() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_concrete_args_axis_run_r1() {
     // --run: the whole module is one codegen batch. Clean exit == the returned
@@ -105,7 +105,7 @@ fn adt_vec_drop_glue_concrete_args_axis_run_r1() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_concrete_args_axis_link_r1() {
     // --link → run the produced standalone binary: the whole module compiles
@@ -311,7 +311,7 @@ const R1_0640_NAME_AXIS_MODULE: &str = "\
 ";
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_name_sanitize_axis_repl_0640() {
     // Both vecs in ONE REPL turn (one JIT batch). Clean: `:primitives/Int 2`.
@@ -330,7 +330,7 @@ fn adt_vec_drop_glue_name_sanitize_axis_repl_0640() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_name_sanitize_axis_run_0640() {
     // --run: whole module = one codegen batch. Clean exit == returned Int (2).
@@ -344,7 +344,7 @@ fn adt_vec_drop_glue_name_sanitize_axis_run_0640() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_name_sanitize_axis_link_0640() {
     // --link → run the standalone binary: whole module into one ObjectModule
@@ -358,7 +358,7 @@ fn adt_vec_drop_glue_name_sanitize_axis_link_0640() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/resolution.rs::adt_instantiation_mangle found=S111 owner=/dev
 #[test]
 fn adt_vec_drop_glue_module_sanitize_axis_run_0640() {
     // MODULE axis: two modules whose names differ ONLY in a sanitize-equivalent

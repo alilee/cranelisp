@@ -400,9 +400,8 @@ exercises through `sfold`.
 
 ## 9. Cross-references
 
-- `design/arch/fixmes/0835-slist-sexp-construction-corrupts-the-heap-at-small-sizes.md`
-  — the defect record and the `/qa` attribution + prelude-face scope note.
-  Stays **open** until implementation lands.
+- FIXME 0835 (retired S122; record in Git history) — every face fixed at S118
+  (`959833ea`, `c6234398`, `22072a0c`); the derive-ceiling remainder is FIXME 0815.
 - `tests/slist_sconcat_ownership_0835.rs` — the committed repros and controls.
 - `tests/plan/s118-test-plan.md` §2.5 (ambient face, Branches F/H, flip
   accounting), §4.5 (the attribution evidence table).

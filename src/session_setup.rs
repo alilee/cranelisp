@@ -11,6 +11,10 @@ use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Program, Sp
 
 use cranelisp_backend::cache::manifest as cache_manifest;
 
+use crate::cache::dependency_record::{
+    DeferredEntry, DependencyRecord, LoadedSource, ModuleSources,
+};
+
 // ---------------------------------------------------------------------------
 // Cache state
 // ---------------------------------------------------------------------------
@@ -24,15 +28,28 @@ pub struct CacheState {
     manifest: cache_manifest::CacheManifest,
     /// The cache directory path.
     cache_dir: PathBuf,
-    /// Source hashes for modules compiled in this session.
-    /// Used as dependency hashes for downstream modules.
-    source_hashes: HashMap<ModuleFullPath, String>,
+    /// The source version of each module this session loaded, which the
+    /// dependency record builder reads (`design/int/int.md` §7.6).
+    loaded: HashMap<ModuleFullPath, LoadedSource>,
+    /// Entries written before their dependency record settled.
+    deferred: HashMap<ModuleFullPath, DeferredEntry>,
     /// Whether the manifest has been modified and needs writing.
     dirty: bool,
     /// Modules that were recompiled (cache miss) in this session.
     /// Used for cascade invalidation: if a dependency was recompiled,
     /// all its dependents must also recompile.
     recompiled: HashSet<ModuleFullPath>,
+}
+
+/// Outcome of validating a module's manifest entry against current sources.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CacheValidity {
+    /// The entry and every recorded dependency match; `record` is the
+    /// validated record the restored module contributes to its importers.
+    Valid {
+        record: DependencyRecord,
+    },
+    Stale,
 }
 
 impl CacheState {
@@ -58,7 +75,8 @@ impl CacheState {
         CacheState {
             manifest,
             cache_dir,
-            source_hashes: HashMap::new(),
+            loaded: HashMap::new(),
+            deferred: HashMap::new(),
             dirty: false,
             recompiled: HashSet::new(),
         }
@@ -74,30 +92,41 @@ impl CacheState {
         self.recompiled.insert(module_path.clone());
     }
 
-    /// Read access to source hashes for dependency hash lookups.
-    pub fn source_hashes(&self) -> &HashMap<ModuleFullPath, String> {
-        &self.source_hashes
-    }
-
-    /// Mutable access to source hashes for external recompilation tracking.
-    pub fn source_hashes_mut(&mut self) -> &mut HashMap<ModuleFullPath, String> {
-        &mut self.source_hashes
-    }
-
-    /// Record a compiled module in the manifest with its source hash and
-    /// dependency hashes. Also records the module as recompiled for cascade
-    /// invalidation and stores the source hash for downstream dependency tracking.
-    pub fn record_module(
+    /// Record the source version a fresh registration loaded. Supersedes a
+    /// restored version of the same module.
+    pub(crate) fn record_fresh_source(
         &mut self,
         module_path: &ModuleFullPath,
         source_hash: String,
-        dep_hashes: HashMap<String, String>,
+    ) {
+        self.loaded
+            .insert(module_path.clone(), LoadedSource::Fresh { source_hash });
+    }
+
+    pub(crate) fn loaded_source(&self, module_path: &ModuleFullPath) -> Option<&LoadedSource> {
+        self.loaded.get(module_path)
+    }
+
+    /// Record a compiled module's manifest entry and mark it recompiled.
+    pub(crate) fn record_module(
+        &mut self,
+        module_path: &ModuleFullPath,
+        source_hash: String,
+        record: DependencyRecord,
     ) {
         self.manifest
-            .upsert_module(module_path, source_hash.clone(), dep_hashes);
-        self.source_hashes.insert(module_path.clone(), source_hash);
+            .upsert_module(module_path, source_hash, record.into_manifest());
+        self.deferred.remove(module_path);
         self.dirty = true;
         self.recompiled.insert(module_path.clone());
+    }
+
+    pub(crate) fn defer_entry(&mut self, entry: DeferredEntry) {
+        self.deferred.insert(entry.module.clone(), entry);
+    }
+
+    pub(crate) fn take_deferred_entries(&mut self) -> Vec<DeferredEntry> {
+        self.deferred.drain().map(|(_, entry)| entry).collect()
     }
 
     /// Write the manifest to disk if it was modified.
@@ -116,29 +145,53 @@ impl CacheState {
         let _ = self.flush();
     }
 
-    /// Check if a module has a valid cache entry.
-    ///
-    /// Returns `true` if the manifest has an entry for this module whose
-    /// source hash matches `current_source_hash` and all dependency hashes
-    /// match. Returns `false` on cache miss. Returns `false` (not error)
-    /// on global invalidation (compiler changed, format version, etc.).
-    pub fn is_cache_valid(
+    /// Validate a module's manifest entry: the global keys, its own source
+    /// hash, and the current hash of exactly the dependencies its entry
+    /// records. A recorded dependency that cannot be resolved or read is
+    /// stale. Global invalidation is stale, not an error.
+    pub(crate) fn validate(
         &self,
         module_path: &ModuleFullPath,
         current_source_hash: &str,
-        dep_hashes: &HashMap<ModuleFullPath, String>,
-    ) -> bool {
-        cache_manifest::check_manifest(&self.manifest, module_path, current_source_hash, dep_hashes)
-            .unwrap_or_default() // Global invalidation — treat as miss.
+        sources: &ModuleSources<'_>,
+    ) -> CacheValidity {
+        let Some(entry) = self.manifest.get_module(module_path) else {
+            return CacheValidity::Stale;
+        };
+        let record = DependencyRecord::from_manifest(&entry.dependency_hashes);
+        let Some(current) = record
+            .members()
+            .map(|(member, _)| Some((member.clone(), sources.current_hash(member)?)))
+            .collect::<Option<HashMap<ModuleFullPath, String>>>()
+        else {
+            return CacheValidity::Stale;
+        };
+        match cache_manifest::check_manifest(
+            &self.manifest,
+            module_path,
+            current_source_hash,
+            &current,
+        ) {
+            Ok(true) => CacheValidity::Valid { record },
+            Ok(false) | Err(_) => CacheValidity::Stale,
+        }
     }
 
-    /// Record a cache-hit module's source hash without marking it as recompiled.
-    ///
-    /// On cache hit, the module was NOT recompiled — it was loaded from cache.
-    /// But downstream modules need this module's source hash for their own
-    /// dependency hash checks.
-    pub fn record_cache_hit(&mut self, module_path: &ModuleFullPath, source_hash: String) {
-        self.source_hashes.insert(module_path.clone(), source_hash);
+    /// Record the source version and validated record of a module restored
+    /// from the cache, without marking it recompiled.
+    pub(crate) fn record_cache_hit(
+        &mut self,
+        module_path: &ModuleFullPath,
+        source_hash: String,
+        record: DependencyRecord,
+    ) {
+        self.loaded.insert(
+            module_path.clone(),
+            LoadedSource::Restored {
+                source_hash,
+                record,
+            },
+        );
     }
 }
 
@@ -582,7 +635,7 @@ mod manifest_convergence_tests {
         cs.record_module(
             &ModuleFullPath::from("user"),
             "fresh-hash".to_string(),
-            HashMap::new(),
+            DependencyRecord::default(),
         );
         cs.flush().unwrap();
 
@@ -618,8 +671,15 @@ mod manifest_convergence_tests {
         cache_manifest::write_manifest(tmp.path(), &manifest).unwrap();
 
         let cs = CacheState::new(tmp.path().to_path_buf());
-        assert!(
-            cs.is_cache_valid(&ModuleFullPath::from("user"), "kept-hash", &HashMap::new()),
+        assert_eq!(
+            cs.validate(
+                &ModuleFullPath::from("user"),
+                "kept-hash",
+                &ModuleSources::new(tmp.path(), &[]),
+            ),
+            CacheValidity::Valid {
+                record: DependencyRecord::default()
+            },
             "a globally-current manifest's module entries must survive the load"
         );
     }

@@ -67,7 +67,7 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 | `design` | `design/{crate}/` | Narrow-deployed — one crate-shaped surface per invocation |
 | `dev` | `crates/{crate}/src/`, `src/`, `stdlib/`, `exemplar/` | Narrow-deployed |
 | `review` | no directory | Narrow-deployed; runs in a fresh named subagent that did not author the change |
-| `qa` | `tests/plan/` | Risk, evidence allocation, defect intake and attribution, the traceability band |
+| `qa` | `tests/plan/`, `platforms/stdio/`, `platforms/test-capture/` | Risk, evidence allocation, defect intake and attribution, the traceability band; control of test-suite platform dependencies |
 | `test` | test sources, fixtures and helpers under `tests/` | |
 | `audit` | `audits/` | One bounded context per sprint, in rotation |
 | `docs` | `user/` | |
@@ -256,6 +256,14 @@ migration mapping are retained as [reconciliation evidence](tests/plan/s122-docu
 not suppression input.
 
 ## Testing
+
+The [stdio contract](platforms/stdio/spec.md) and
+[test-capture contract](platforms/test-capture/spec.md) are owned by `qa`,
+together with their platform components, because the test suite depends on
+them. Changes are controlled as part of the test suite. Examples, user
+documentation, REPL demos and the exemplar reuse these components under that
+ownership. Platforms are application or standard-library components; their
+individual behavior is not language specification.
 
 - **Always use `cargo nextest run --no-fail-fast`** instead of `cargo test`. Nextest runs each test in its own process, parallelizes across binaries, and completes the full suite in **~170s** post-build (measured 2026-08-29 at 5,687 tests; `stdlib_conformance` alone is ~85s of it, and a rebuild adds ~30–60s). `--no-fail-fast` is required for full-picture runs — the intentional defect guards (below) otherwise stop the run early. The suite includes every crate's lib tier via `[workspace] default-members` (S101). The alias `cargo nt` is also available via `.cargo/config.toml`.
 - **Never run tests in background mode.** Wait for the run to complete before proceeding. Background test runs pile up and contend on build locks.

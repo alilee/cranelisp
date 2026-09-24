@@ -14,8 +14,8 @@
 //!   readiness, the textbook poll leaf. Rewritten as a [`PollFn`]: the first poll
 //!   does a non-blocking read of stdin (fd 0); if data is available it returns the
 //!   line `Ready`, otherwise it registers fd-readiness with the host reactor and
-//!   parks, resuming when stdin becomes readable. It is `Commutative` (tokenless),
-//!   so the backend injects the `(0, 1)` leading pair — no token/capacity args.
+//!   parks, resuming when stdin becomes readable. Its descriptor gives stdin a
+//!   non-zero token at capacity 1, so the host derives `Sequential` scheduling.
 //!
 //! This is the "simple platform ports cleanly" ergonomics check
 //! (`design/platform/poll-leaf-authoring.md §3`): the poll leaf is written against the extracted

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use cranelisp_types::ModuleFullPath;
 
 use super::SharedState;
+use crate::cache::dependency_record::{ModuleEdges, record_manifest_entry};
 
 // ---------------------------------------------------------------------------
 // Nice worker spawning + loop (Step 10)
@@ -141,7 +142,7 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 /// marked object-complete so the scheduler lifecycle proceeds.
 ///
 /// S87 §3.3: decomposed into phase-helpers (`write_module_meta`,
-/// `enumerate_codegen_targets`, `record_empty_codegen`, `emit_object`,
+/// `enumerate_codegen_targets`, `record_loaded_module`, `emit_object`,
 /// `write_object_and_record`). The orchestrator preserves every early `return`
 /// and the load-bearing ordering (.meta.json is DECOUPLED from `.o` output —
 /// persists whenever the module type-checked).
@@ -181,11 +182,13 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
         return;
     }
 
-    // Phase 2: enumerate codegen-compilable symbols. Empty → no `.o`, but the
-    // module is still recorded in the manifest (Phase 3).
+    // Phase 2: enumerate codegen-compilable symbols. A generic-only,
+    // types-only or imports-only module emits no `.o` but is still recorded in
+    // the manifest, so the next session restores it rather than rewriting its
+    // `.meta.json` (FIXME 0387); the cache-hit loader tolerates the absent `.o`.
     let targets = enumerate_codegen_targets(shared, module);
     if targets.is_empty() {
-        record_empty_codegen(shared, module);
+        record_loaded_module(shared, module);
         return;
     }
 
@@ -266,18 +269,20 @@ fn enumerate_codegen_targets(
         .unwrap_or_default()
 }
 
-/// Phase 3a (S87 §3.3): generic-only / types-only / imports-only module — no
-/// `.o` is emitted, but the module MUST still be recorded in the manifest so
-/// the next session recognises it as a cache hit (FIXME 0387). Without this the
-/// module is absent from the manifest, `is_cache_valid` returns false on the
-/// next run, and the module is needlessly recompiled — rewriting its
-/// `.meta.json`. The cache-hit loader (`try_cache_hit_load`) tolerates the
-/// absent `.o` for a module whose codegen batch is empty.
-fn record_empty_codegen(shared: &SharedState, module: &ModuleFullPath) {
-    let source_hash = shared.cache.source_hash(module).unwrap_or_default();
-    shared
-        .cache
-        .record_compiled(module, source_hash, std::collections::HashMap::new());
+/// Write the manifest entry of a module this session loaded, keyed by the
+/// source version it loaded and its live table's dependency closure
+/// (`design/int/int.md` §7.6). A module with no stashed source hash gets none.
+fn record_loaded_module(shared: &SharedState, module: &ModuleFullPath) {
+    let Some(source_hash) = shared.cache.source_hash(module) else {
+        return;
+    };
+    let Some(edges) = shared.symbol_tables.get(module).map(|table| {
+        let fallback = shared.prelude_fallback.get(module).is_some_and(|bit| *bit);
+        ModuleEdges::of_table(module, &table, fallback)
+    }) else {
+        return;
+    };
+    record_manifest_entry(shared, module, source_hash, edges);
 }
 
 /// Phase 3b (S87 §3.3): build the ObjectModule with PIC ISA and emit the `.o`
@@ -374,15 +379,7 @@ fn write_object_and_record(
     }
 
     // Record module in manifest for cache-hit detection on next session.
-    // Sprint 67 Cluster B sub-fire 3: ObjectCache facade — `source_hash` +
-    // `record_compiled` replace the manual cache_state lock + record_module.
-    {
-        let source_hash = shared.cache.source_hash(module).unwrap_or_default();
-        // dep_hashes: empty for now — full dependency tracking is a future enhancement.
-        shared
-            .cache
-            .record_compiled(module, source_hash, std::collections::HashMap::new());
-    }
+    record_loaded_module(shared, module);
 
     // Append the .o path for the linker. Sprint 67 Cluster B sub-fire 3:
     // ObjectCache facade.

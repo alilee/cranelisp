@@ -2,61 +2,42 @@
 
 **Name**: stdio
 **Version**: 0.1.0
-**ABI Version**: 1 (cranelisp-platform ABI_VERSION)
+**ABI Version**: the host's current `ABI_VERSION` (the [version gate](../../design/platform/platform-dlls.md#1-the-version-gate); the constant's rustdoc carries its value)
 **Purpose**: Standard input/output platform for interactive and batch programs. Provides console IO via stdin/stdout.
 
 ## Consumer Requirements
 
-### From /repl
-
-- `print :: (Fn [String] (IO Int))` -- REPL needs print for user-visible IO output at the interactive prompt. The trampoline forces the IO tree after each REPL evaluation, so print output appears immediately.
-- `read-line :: (Fn [] (IO String))` -- Future REPL input capability (not yet required by active sprints).
-
-### From /port
-
-- `print :: (Fn [String] (IO Int))` -- Exemplar project (Sudoku solver) needs print for solution output. Used in `bind!` chains to display formatted results.
-
-### From /examples
-
-- `print :: (Fn [String] (IO Int))` -- IO examples need print to demonstrate the effect system. Examples show `bind!`, `do`, and raw IO tree construction.
+- **REPL**: `print :: (Fn [String] (IO Int))` for user-visible output at the prompt. The REPL forces the IO tree after each evaluation ([spec/10-io.md](../../spec/10-io.md) §10.6.2), so print output appears immediately.
+- **Exemplar** (`exemplar/`): `print` for solution output in `bind!` chains.
+- **Examples** (`examples/`): `print` to demonstrate the effect system — `bind!`, `do` and raw IO tree construction.
 
 ## Function Table
 
 | Cranelisp Name | Type Signature | Scheduling Class | JIT Symbol | Description |
 |---|---|---|---|---|
-| `print` | `(Fn [String] (IO Int))` | Sequential | `cranelisp_print` | Print a string followed by a newline to stdout. Returns `(IO Int)` with value 0. Uses capture-RC protocol for the string parameter. |
-| `read-line` | `(Fn [] (IO String))` | Sequential | `cranelisp_read_line` | Read a line from stdin. Trims trailing newline/carriage return. Returns the line as `(IO String)`. |
+| `print` | `(Fn [String] (IO Int))` | Sequential | `cranelisp_print` | Blocking effect. When forced, prints the string followed by a newline to stdout and yields `0`. Consumes its argument (§Heap Parameter Ownership). |
+| `read-line` | `(Fn [] (IO String))` | Sequential | `cranelisp_read_line` | Poll-shape leaf. When forced, reads one line from stdin, suspending on stdin readiness rather than blocking, and yields it with the trailing newline/carriage return removed. |
 
 ### Heap Parameter Ownership
 
-The compiler uses a consuming calling convention (`compile_consuming_arg_list`): callers transfer ownership of heap-typed arguments to the callee. The caller does NOT decrement the reference count after the call returns. This means every platform function MUST consume every heap-typed parameter it receives, regardless of whether it needs to retain the value.
+A platform function consumes every heap-typed argument: the caller transfers its reference and does not release it after the call ([bounded contexts](../../design/arch/bounded-contexts.md) §4b invariant 6). Reading an argument without taking over that reference leaks it.
 
-**Rules for platform function implementors:**
-
-1. **If you capture the value** (e.g., storing it in a closure or buffer): call `.own()` on the `CL*` wrapper. This takes ownership without incrementing the reference count, since the caller already transferred its count to you.
-2. **If you do not capture the value** (e.g., you read it and discard): call `.own()` to take ownership, then let the owned value drop normally. The `Drop` impl will decrement the reference count and free the allocation if it reaches zero.
-3. **Never borrow without `.own()`**: A platform function that reads a heap parameter without calling `.own()` will leak the allocation. The caller has already relinquished its reference count, so nobody will free the value.
-
-**Example — `print`**: The `print` function receives a `CLString` parameter. It calls `.own()` to take ownership, reads the string content for output, and then the owned value is dropped at function exit, decrementing the reference count.
+`print`'s `String` argument is read when the returned `Effect` node is forced, which may be later and more than once ([spec/10-io.md](../../spec/10-io.md) §10.8.1). The node therefore holds the transferred reference for its whole life and releases it once, when the node is freed — not when `print` returns and not per force. The implementation mechanism is the [capture-RC protocol](../../design/platform/platform-dlls.md#4-the-capture-rc-protocol): capture the argument as the `CLOwned` from `into_owned_consuming`, which takes over the transferred reference without incrementing. `own()` increments, so on a transferred argument it leaks one reference per call.
 
 ### Scheduling Rationale
 
-Both functions use `Sequential` scheduling because they share global resources (stdout, stdin). Two `print` calls in a `par-bind!` group must not interleave output. Two `read-line` calls must consume input lines in program order.
+Both functions are `Sequential` because they share global resources (stdout, stdin). Two `print` calls in one `bind!` chain must not interleave output. Two `read-line` calls must consume input lines in program order ([spec/10-io.md](../../spec/10-io.md) §10.12.2–10.12.3).
+
+`print` declares the class directly. `read-line` declares a descriptor instead: a manifest-static stdin token at capacity 1 with the `Consume` role ([singleton resources](../../design/platform/poll-leaf-authoring.md#3-the-four-roles)). The host derives `Sequential` from its non-zero token, and the token admits at most one in-flight read.
 
 ### Return Conventions
 
-- `print` returns `(IO Int)` with value 0 (success). The return value exists so `bind!` chains can sequence print with other IO operations. A non-zero return value is reserved for future error reporting.
-- `read-line` returns `(IO String)` containing the input line with trailing newline/carriage return stripped. On EOF or read error, returns an empty string.
+- `print` yields `0` (success). The value exists so `bind!` chains can sequence print with other IO operations. A non-zero value is reserved for future error reporting.
+- `read-line` yields the input line with its trailing newline/carriage return removed. End of input or a read error ends the current line: an unterminated remainder is yielded as the line, and an empty string when nothing remains.
 
 ## ABI Contract
 
-Functions are declared via `declare_platform!` in the platform DLL and exported with `cranelisp_` prefix. The host loads the DLL, calls `cranelisp_platform_manifest` (which receives `HostCallbacks` containing the host allocator), and registers each function with the JIT using the declared type signature.
-
-All platform functions:
-- Are `extern "C"` with `i64` parameter/return ABI
-- Use `CL*` wrapper types (`CLString`, `CLInt`) for type safety within the DLL
-- Return `CLIO<CL*>` which allocates an IO Effect node on the host heap
-- Must use `CLString.own()` (capture-RC protocol) when capturing heap parameters into deferred closures
+The C calling convention is [spec/10-io.md](../../spec/10-io.md) §10.10. `declare_platform!` registers both functions, and the host loads them through the DLL's manifest entry point; the authoring and loading mechanics are [platform DLLs](../../design/platform/platform-dlls.md). `print` is an `extern "C"` function over `CL*` wrapper types returning a `CLIO` node; `read-line` is a poll-fn ([poll-leaf authoring](../../design/platform/poll-leaf-authoring.md)).
 
 ## Conformance
 
@@ -65,5 +46,5 @@ Any platform that exports the same function names with the same type signatures 
 1. MUST export `print` with signature `(Fn [String] (IO Int))`
 2. MUST export `read-line` with signature `(Fn [] (IO String))`
 3. MUST use the same scheduling classes (Sequential for both)
-4. MUST respect the capture-RC protocol for heap parameters
+4. MUST consume `print`'s heap argument as §Heap Parameter Ownership states
 5. MAY differ in observable behavior (e.g., capturing output instead of printing)

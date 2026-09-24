@@ -6,7 +6,7 @@
 // for cache reads + writes. The interior holds the three pre-S67 SharedState
 // fields (`cache_dir`, `cache_state`, `compiled_o_paths`) as
 // `Mutex<>`-wrapped private state; callers depend on the method surface
-// (`source_hash`, `record_cache_hit`, `record_compiled`, `is_cache_valid`,
+// (`source_hash`, `record_cache_hit`, `record_compiled`, `validate`,
 // `cache_dir`, `flush_manifest`, `append_o_path`, `all_paths`,
 // `is_enabled`) — S68 may reshape internals freely without changing call
 // sites.
@@ -29,7 +29,11 @@ use std::sync::Mutex;
 
 use cranelisp_types::ModuleFullPath;
 
-use crate::session_setup::CacheState;
+use crate::session_setup::{CacheState, CacheValidity};
+
+pub(crate) mod dependency_record;
+
+use dependency_record::{DeferredEntry, DependencyRecord, LoadedSource, ModuleSources};
 
 /// The on-disk object cache, owned by `SharedState`.
 ///
@@ -97,72 +101,91 @@ impl ObjectCache {
         self.dir.clone()
     }
 
-    /// Record a module's source hash for downstream dependency tracking.
-    ///
-    /// Called by `register_module_with_source` (initiator) and
-    /// `try_cache_hit_load` (worker, for transitive deps). Used as the
-    /// dep hash by downstream modules when computing their cache
-    /// validity. No-op if caching is disabled.
+    /// Record the source hash a fresh registration of `module` loaded. It
+    /// supersedes a restored version. No-op if caching is disabled.
     pub fn record_source_hash(&self, module: &ModuleFullPath, hash: String) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cs) = guard.as_mut() {
-            cs.source_hashes_mut().insert(module.clone(), hash);
+            cs.record_fresh_source(module, hash);
         }
     }
 
-    /// Check whether a module has a valid cache entry.
-    ///
-    /// Returns `true` iff caching is enabled AND the manifest has a
-    /// record matching `current_source_hash` + all `dep_hashes`.
-    /// Returns `false` on cache miss, on disabled caching, and on
-    /// global invalidation (compiler version mismatch, etc.).
-    pub fn is_cache_valid(
+    /// Validate `module`'s manifest entry against the current sources.
+    /// Always stale when caching is disabled.
+    pub(crate) fn validate(
         &self,
         module: &ModuleFullPath,
         current_source_hash: &str,
-        dep_hashes: &std::collections::HashMap<ModuleFullPath, String>,
-    ) -> bool {
+        sources: &ModuleSources<'_>,
+    ) -> CacheValidity {
         let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
-            Some(cs) => cs.is_cache_valid(module, current_source_hash, dep_hashes),
-            None => false,
+            Some(cs) => cs.validate(module, current_source_hash, sources),
+            None => CacheValidity::Stale,
         }
     }
 
-    /// Record a cache hit for `module` — stores its source hash for
-    /// downstream dependency tracking without marking it as recompiled.
-    ///
-    /// Called by `try_cache_hit_load` after a successful cache load.
-    pub fn record_cache_hit(&self, module: &ModuleFullPath, source_hash: String) {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cs) = guard.as_mut() {
-            cs.record_cache_hit(module, source_hash);
-        }
-    }
-
-    /// Record that a module was recompiled (cache miss) and write its
-    /// manifest entry. Called by the nice worker after a successful
-    /// `.o` write.
-    pub fn record_compiled(
+    /// Record that `module` was restored from the cache under its validated
+    /// `record`, without marking it recompiled.
+    pub(crate) fn record_cache_hit(
         &self,
         module: &ModuleFullPath,
         source_hash: String,
-        dep_hashes: std::collections::HashMap<String, String>,
+        record: DependencyRecord,
     ) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cs) = guard.as_mut() {
-            cs.record_module(module, source_hash, dep_hashes);
+            cs.record_cache_hit(module, source_hash, record);
         }
     }
 
-    /// Get a snapshot of stored source hashes for the in-flight session.
-    /// Used by `compile_module_object` to look up the dep's hash when
-    /// recording its manifest entry.
+    /// Write `module`'s manifest entry. Called by the cache writers once
+    /// `record` has been built from settled state.
+    pub(crate) fn record_compiled(
+        &self,
+        module: &ModuleFullPath,
+        source_hash: String,
+        record: DependencyRecord,
+    ) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cs) = guard.as_mut() {
+            cs.record_module(module, source_hash, record);
+        }
+    }
+
+    /// Hold `entry` until its record settles; a later write of the same module
+    /// supersedes it.
+    pub(crate) fn defer_entry(&self, entry: DeferredEntry) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cs) = guard.as_mut() {
+            cs.defer_entry(entry);
+        }
+    }
+
+    pub(crate) fn take_deferred_entries(&self) -> Vec<DeferredEntry> {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_mut()
+            .map(CacheState::take_deferred_entries)
+            .unwrap_or_default()
+    }
+
+    /// The source hash this session loaded for `module`.
     pub fn source_hash(&self, module: &ModuleFullPath) -> Option<String> {
         let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard
             .as_ref()
-            .and_then(|cs| cs.source_hashes().get(module).cloned())
+            .and_then(|cs| cs.loaded_source(module))
+            .map(|loaded| loaded.source_hash().to_string())
+    }
+
+    /// The source version this session loaded for `module`.
+    pub(crate) fn loaded_source(&self, module: &ModuleFullPath) -> Option<LoadedSource> {
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(|cs| cs.loaded_source(module))
+            .cloned()
     }
 
     /// Flush the cache manifest to disk. No-op when caching is disabled.
@@ -282,12 +305,13 @@ mod tests {
     }
 
     #[test]
-    fn is_cache_valid_returns_false_when_disabled() {
+    fn validate_is_stale_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
         let cache = ObjectCache::new(None, None);
         let m = ModuleFullPath::from("user");
-        let dep_hashes = std::collections::HashMap::new();
-        assert!(
-            !cache.is_cache_valid(&m, "anyhash", &dep_hashes),
+        assert_eq!(
+            cache.validate(&m, "anyhash", &ModuleSources::new(tmp.path(), &[])),
+            CacheValidity::Stale,
             "disabled cache must always miss"
         );
     }
@@ -350,7 +374,125 @@ mod tests {
         let cs = cache_state_for(tmp.path());
         let cache = ObjectCache::new(Some(tmp.path().to_path_buf()), Some(cs));
         let m = ModuleFullPath::from("dep");
-        cache.record_cache_hit(&m, "depHash".to_string());
+        cache.record_cache_hit(&m, "depHash".to_string(), DependencyRecord::default());
         assert_eq!(cache.source_hash(&m).as_deref(), Some("depHash"));
+    }
+
+    #[test]
+    fn fresh_registration_supersedes_a_restored_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = ObjectCache::new(
+            Some(tmp.path().to_path_buf()),
+            Some(cache_state_for(tmp.path())),
+        );
+        let m = ModuleFullPath::from("dep");
+        cache.record_cache_hit(&m, "restored".to_string(), DependencyRecord::default());
+        cache.record_source_hash(&m, "fresh".to_string());
+        assert_eq!(
+            cache.loaded_source(&m),
+            Some(LoadedSource::Fresh {
+                source_hash: "fresh".to_string()
+            })
+        );
+    }
+
+    // Validity seam (`design/int/int.md` §7.6; S122 CL-E). An importer `user`
+    // is cached against dependency `dep` and the prelude; each case changes
+    // what the loading handler would read now.
+    mod validity_seam {
+        use super::*;
+        use cranelisp_backend::cache::manifest::{self, CacheManifest};
+        use std::collections::HashMap;
+
+        const USER_SOURCE: &str = "(defn main [] 1)";
+        const DEP_SOURCE: &str = "(defn f [] 1)";
+        const PRELUDE_SOURCE: &str = "(defn p [] 1)";
+
+        struct Fixture {
+            project: tempfile::TempDir,
+            lib: tempfile::TempDir,
+            cache_dir: tempfile::TempDir,
+        }
+
+        impl Fixture {
+            /// A project whose sources are those `user`'s entry recorded; the
+            /// prelude lives in a lib dir.
+            fn cached() -> Self {
+                let fixture = Fixture {
+                    project: tempfile::tempdir().unwrap(),
+                    lib: tempfile::tempdir().unwrap(),
+                    cache_dir: tempfile::tempdir().unwrap(),
+                };
+                fixture.write("dep.cl", DEP_SOURCE);
+                std::fs::write(fixture.lib.path().join("prelude.cl"), PRELUDE_SOURCE).unwrap();
+                let mut entry = CacheManifest::new_for_host();
+                entry.upsert_module(
+                    &ModuleFullPath::from("user"),
+                    manifest::hash_source(USER_SOURCE),
+                    HashMap::from([
+                        ("dep".to_string(), manifest::hash_source(DEP_SOURCE)),
+                        ("prelude".to_string(), manifest::hash_source(PRELUDE_SOURCE)),
+                    ]),
+                );
+                manifest::write_manifest(fixture.cache_dir.path(), &entry).unwrap();
+                fixture
+            }
+
+            fn write(&self, relative: &str, source: &str) {
+                std::fs::write(self.project.path().join(relative), source).unwrap();
+            }
+
+            fn validate_user(&self) -> CacheValidity {
+                let cache = ObjectCache::new(
+                    Some(self.cache_dir.path().to_path_buf()),
+                    Some(cache_state_for(self.cache_dir.path())),
+                );
+                let lib_dirs = [self.lib.path().to_path_buf()];
+                cache.validate(
+                    &ModuleFullPath::from("user"),
+                    &manifest::hash_source(USER_SOURCE),
+                    &ModuleSources::new(self.project.path(), &lib_dirs),
+                )
+            }
+        }
+
+        #[test]
+        fn unchanged_recorded_members_hit_with_their_record() {
+            let CacheValidity::Valid { record } = Fixture::cached().validate_user() else {
+                panic!("unchanged sources must hit");
+            };
+            let members: Vec<&str> = record.members().map(|(m, _)| m.as_ref()).collect();
+            assert_eq!(members, ["dep", "prelude"]);
+        }
+
+        #[test]
+        fn changed_recorded_member_is_stale() {
+            let fixture = Fixture::cached();
+            fixture.write("dep.cl", "(defn f [] 2)");
+            assert_eq!(fixture.validate_user(), CacheValidity::Stale);
+        }
+
+        #[test]
+        fn unresolvable_recorded_member_is_stale() {
+            let fixture = Fixture::cached();
+            std::fs::remove_file(fixture.project.path().join("dep.cl")).unwrap();
+            assert_eq!(fixture.validate_user(), CacheValidity::Stale);
+        }
+
+        #[test]
+        fn changed_prelude_in_lib_dir_is_stale() {
+            let fixture = Fixture::cached();
+            std::fs::write(fixture.lib.path().join("prelude.cl"), "(defn p [] 2)").unwrap();
+            assert_eq!(fixture.validate_user(), CacheValidity::Stale);
+        }
+
+        #[test]
+        fn project_prelude_shadowing_the_lib_prelude_is_stale() {
+            let fixture = Fixture::cached();
+            // `resolve_prelude` prefers the project root, so the loading
+            // handler would now read this file instead.
+            fixture.write("prelude.cl", "(defn p [] 2)");
+            assert_eq!(fixture.validate_user(), CacheValidity::Stale);
+        }
     }
 }

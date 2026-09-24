@@ -1,5 +1,5 @@
 // slist_sconcat_ownership_0835.rs — the permanent repros for FIXME 0835
-// (`design/arch/fixmes/0835-slist-sexp-construction-corrupts-the-heap-at-small-sizes.md`),
+// (retired S122; Git history),
 // filed by `/stdlib` in S115 Phase 6b, ATTRIBUTED by `/qa` in S118 Phase 3
 // (`tests/plan/s118-test-plan.md` §4.5; FIXME 0877 disposed into the ruling).
 // Authored by `/testing` in S118 W1 per plan §2.3 / disposition 1 — which also

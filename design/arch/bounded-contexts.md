@@ -618,8 +618,6 @@ referenced by qualified name.
    fault crosses as a returned value. Intrinsics captures; the binary composes
    (§4b invariant 14).
 
-Open: marker-binding ergonomics for multi-ADT platforms (FIXME 0873 under
-`design/arch/fixmes/`).
 
 ---
 
@@ -842,8 +840,7 @@ newtypes; spans, errors and warnings; shared constants. Narrative companion:
 - **Soundness-coupled predicates are single-sourced here.** Value-layout
   eligibility, concreteness, the IO result-root rule and the
   ownership-analysis toggle each have one definition that typecheck and backend
-  both delegate to, because two copies could disagree unsoundly. FIXME 0898
-  under `design/arch/fixmes/` tracks the result-root rule's second encoding.
+  both delegate to, because two copies could disagree unsoundly.
 - **Registration funnels.** ADT registration derives its complete entry set
   through one builder shared by typecheck and the binary's bootstrap. No generic
   "module table from a source" abstraction exists, because no consumer

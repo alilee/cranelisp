@@ -4,402 +4,63 @@ target: /qa
 filed_by: /review
 filed_at: 2026-07-20
 sprint_filed: 114
-refers_to: tests/nullary_return_dispatch_method_only_import.rs + tests/macro_expansion_interior_alias_double_free.rs (suite-count ledger arithmetic)
+refers_to: tests/nullary_return_dispatch_method_only_import.rs;
+  tests/macro_expansion_interior_alias_double_free.rs;
+  tests/multi_sig_module_locality.rs;
+  tests/agent.rs;
+  tests/repl_persist.rs;
+  tests/cache.rs;
+  tests/plan/s122-evidence-delta.md
 status: open
 ---
 
-# W4's "30 failed, exact" does not reproduce: 31 both runs, with two guards trading membership across runs (interleaving-dependent)
-
-## Severity
-Important
-
-## Issue
-
-The W4 close note records `5080 run / 5050 passed / 30 failed / 1 skipped
-(exact)`. Two consecutive full `cargo nextest run --no-fail-fast` runs on the
-committed tree (f9435b37) both give **5049 passed / 31 failed / 1 skipped**,
-and the failing SET differs between runs:
-
-- Run 1: `macro_clause_interior_alias_double_free_link` RED (its `_run`/`_m1`
-  siblings are stably RED in both runs); `nullary_return_dispatch_…` GREEN.
-- Run 2: `…_link` GREEN; `nullary_return_dispatch_method_only_import_no_codegen_leak`
-  RED.
-
-Both flickering tests trace to open defects (`// defect:` S111 uaf /src
-marshal seam; S112 check-gate-leak typecheck), so neither is an untraced
-regression — but:
-
-1. `nullary_return_dispatch_method_only_import_no_codegen_leak` is
-   **expected-GREEN post-W2** (its header says "RED until W2 flips the accept
-   path", and it passes 8/8 in isolation). Its failure appears only under
-   full-suite parallel load — an interleaving/load-dependent failure of a
-   should-be-green test. Per the failing-test discipline, "flaky" is banned:
-   this is evidence of a real race or load-dependent fault that needs
-   characterization and attribution (candidate classes:
-   `shared-state-write-race`, or resource contention in the harness).
-   The failure output of the in-suite occurrence was not captured; first step
-   is reproducing under controlled parallel load and reading the actual
-   assertion failure.
-2. The `_link` UAF face flickering red↔green is at least *consistent* with its
-   class (layout-dependent corruption), but a KNOWN-open guard whose color is
-   run-dependent breaks the exact-count wave-gate arithmetic (47 − 18 + 1 = 30
-   assumed deterministic REDs). /review cannot rule out that W4's RC-emission
-   changes shifted heap layout in that subprocess (the commit changes RC
-   patterns in `main` frames); attribution needs the S98 discipline
-   (verify-fix-not-symptom: perturbation reshapes layout).
-
-## Proposed resolution
-
-/qa: characterize both under repetition (isolation vs parallel load), capture
-the in-suite failure output, attribute, and decide how the ledger arithmetic
-handles guards whose manifestation is probabilistic (e.g. count them as a
-named unstable set rather than folding them into an "exact" scalar). If the
-nullary face's load-dependence is new since W2/W4, bisect attribution is
-warranted.
-
-## /qa S114 pre-W7 disposition (2026-07-20 — RE-SCOPED; stays open through the Phase-7 verification)
-
-Record: S114 §11 item 2 in the S114 test plan at revision `7b1220c7`.
-Current counting convention: [QA traceability](../../../tests/plan/PLAN.md#traceability-and-authoring).
-
-1. **The macro_clause `_link` face is CLOSED BY FIX.** W5 C2 (`58ac8e46`,
-   0638 deep protect-on-build) fixed the underlying double-free; all 5 pins
-   GREEN and the test is stable green through W6/cleanup (`adb8d3fb`: 8
-   REDs, none macro_clause). The red↔green run-dependence was the real
-   layout-dependent corruption manifesting — consistent with its class, and
-   the mechanism is gone. No further action on this face.
-2. **Remaining scope = the nullary load-flap only**
-   (`nullary_return_dispatch_method_only_import_no_codegen_leak`: 14/14 in
-   isolation, fails only under full-suite parallel load; 0/… in-suite
-   output never captured). **Expectation:** W7's /dev(typecheck) work at
-   the no-impl fallback seam family (F-D2-11) may stabilize it.
-   **Verification (Phase-7 certification, binding):** ≥3 consecutive full
-   `cargo nextest run --no-fail-fast` runs —
-   - green in ALL → this FIXME closes with a watch clause (any future
-     in-suite RED of this test = reopen as a root-cause row; "flake" is
-     banned);
-   - RED in ANY → capture the in-suite failure output (nextest captures it
-     — preserve it) and open a **root-cause investigation row in S115**:
-     load-dependent behaviour in a check-gate is a real defect signal
-     (candidate classes: `shared-state-write-race`, or a
-     harness/resource-contention mechanism — to be demonstrated, not
-     presumed).
-3. **Counting convention (standing, adopted):** suite-state certification
-   reports stable REDs as an exact count PLUS a NAMED flap-class set; a
-   run-dependent guard is never folded into an "exact" scalar (`adb8d3fb`'s
-   "7 W7 residuals + the 0694 nullary load-flap" is the practiced form).
-   The bisect question (new since W2/W4?) folds into the S115 row if opened
-   — not worth build-window contention before the W7 seam work lands.
-
-## /qa S115 Phase-3 disposition (2026-07-20 — the root-cause row is drawn)
-
-The S114 Phase-7 ≥3-run verification did not complete before close (2/≥3);
-the nullary flap carried into S115 as the named flap set's first member.
-**Plan of record: `tests/plan/s115-test-plan.md` §2** — standing counting
-convention (stable-exact = 11 + named flaps, live-verified this session:
-the nullary face was GREEN in the single Phase-3 run); passive capture of
-the first in-suite failure output across the ≥2/≥3 certification runs;
-stabilization-hypothesis check after the S115 0709/no-impl-gate typecheck
-wave (×20 under-load re-run); a time-boxed load rig SHARED with 0604's
-re-induction attempt; disposition forks by what the captured output names.
-Close condition unchanged: ≥3 consecutive certification runs green + the
-post-fix ×20 green → close with the watch clause; any RED reopens the row
-by name, never "flake".
-
-## /testing roster update (2026-07-21, S115 W3c) — the named flap set is now THREE
-
-`agent::y_short_flag_errors_on_non_agent_build` (`tests/agent.rs:240`) joins the
-named flap family recorded in the S114 disposition item 3 / `s115-test-plan.md`
-§2. Same signature as the 0694 nullary face: **passes in isolation, fails only
-under full-suite parallel load**, and traces to no unattributed defect. Observed
-in the W3b baseline run at `1ee57501` (suite 5255 run / 5225 passed / 28 stable
-REDs / 1 skipped, plus these two flaps).
-
-Consequences for the counting convention (unchanged in kind, wider in scope):
-
-- the certification scalar remains **stable-REDs-exact + a NAMED flap set**, and
-  that set now has TWO members: `{0694 nullary load-flap,
-  agent::y_short_flag_errors_on_non_agent_build}`. Neither is folded into the
-  exact count.
-- the ≥3-run close condition in the S115 Phase-3 disposition applies to the
-  nullary face only; the agent-lane face is a NEW observation whose
-  characterization (isolation vs load, in-suite output capture, attribution) is
-  owed the same treatment before it can close. Per the failing-test discipline
-  "flaky" is not a disposition for either.
-- note the lane asymmetry: `tests/agent.rs` cells run in BOTH lanes (the
-  `#[cfg(not(feature = "agent"))]` face here runs in the DEFAULT suite, not
-  through `run-agent-lane.sh`), so the binary-provenance isolation of FIXME 0615
-  is not by itself an explanation — a candidate mechanism, to be demonstrated
-  rather than presumed, is process/resource contention at spawn under full
-  parallel load.
-
-**THIRD member, observed live this session:
-`multi_sig_module_locality::imported_multi_sig_base_direct_call_repl`
-(`tests/multi_sig_module_locality.rs:83`).** Two consecutive full
-`cargo nextest run --no-fail-fast` runs on the SAME tree (W3c, HEAD `1ee57501`
-plus this wave's test-only edits): RED in run 1, GREEN in run 2. It is a
-declared GREEN fence ("Was RED pre-W2; GREEN fence now" — the MC-X2 REPL face
-of the S113 carrier-loss family, `// defect:` class=carrier-loss,
-owner=/dev(typecheck)), so like the nullary face this is a should-be-green
-test failing only under full-suite parallel load. Its in-suite failure output
-was NOT captured (run 1 was not tee'd — my miss; run 2 onward is logged).
-Notably it is a REPL-mode cell of the same multi-sig/no-impl-fallback seam
-family as the nullary face — a shared-seam hypothesis worth testing before a
-harness-contention one.
-
-Both new members carry the same evidentiary obligation as the nullary face
-(isolation-vs-load characterization, in-suite output capture, attribution);
-none may be dispositioned as "flaky".
-
-This FIXME stays OPEN (roster update only; no disposition change).
-
-## /qa S115 W7 ADJUDICATION — the family is TWO phenomena, not one
-
-Durable record + the S116 attack plan: `tests/plan/s115-test-plan.md` §9.5/§9.6.
-This FIXME **stays OPEN** and carries to S116 with the scope below.
-
-**The evidence this row waited three sprints for arrived at W6: two in-suite
-failures captured VERBATIM.** They are categorically different events, and the
-single most consequential conclusion here is that treating them as one "flap
-family" would have pointed one investigation at two different bugs.
-
-**Member — `macro_clause_interior_alias_double_free_run`** (verbatim,
-`…/scratchpad/suite_r3.log:1235`):
-
-```
-… `main` returns `(Pure 3)` → exit 3; got exit None:
-free(): chunks in smallbin corrupted
-```
-
-`free(): chunks in smallbin corrupted` is **glibc's own heap-consistency
-detector aborting the subprocess**; exit `None` = killed by signal. Not a
-timeout, not a threshold, not a slow machine — the allocator found its free-list
-metadata overwritten. A **memory-safety datum**. In that same run the file's
-four sibling faces (`_repl`, `_link`, `_m1_on_quarantine_face`,
-`_m1_off_assert_face`) all PASSED, so it is per-process and per-mode.
-
-**Member — `nullary_return_dispatch_method_only_import_no_codegen_leak`**
-(verbatim, `…/scratchpad/suite_r2.log:1299`):
-
-```
-Error: codegen error at 14..15: codegen failed for /:
-codegen error at 14..15: undefined function: z
-```
-
-A **compile-time diagnostic** from a subprocess that then exited cleanly.
-Nothing corrupted; a symbol was not there when the compiler looked. The
-signature of a **publication/enrolment ordering** question — the
-`shared-state-write-race` class, the same class this FIXME originally named.
-
-### Verdict: TWO phenomena, ONE shared enabling condition
-
-The shared condition is real and explains why both read as "load flaps": every
-e2e test spawns its own `cranelisp` subprocess, each subprocess is itself
-multi-threaded (index worker, rayon sparks, IO reactor), and host CPU
-oversubscription under a full nextest run changes *intra-subprocess* interleaving.
-One condition — but what breaks, who owns it, and how bad it is all differ:
-
-- **Class I — heap-invariant violation** (macro_clause `_run`). Memory-safety.
-  Aggravating history: this test is the repro for 0638, a double-free *fixed* at
-  S114 W5 (`58ac8e46`). Either that fix was incomplete or a second mechanism
-  reaches the same heap. The S98 rule binds: a fix verified by symptom absence
-  under a perturbing tool may be a false green. **Highest severity in the set.**
-- **Class II — publication/enrolment ordering** (nullary; and
-  `multi_sig_module_locality::imported_multi_sig_base_direct_call_repl`, a
-  REPL-mode cell of the SAME multi-sig/no-impl-fallback seam family — a
-  discriminating datum arguing one bug, not two). Correctness, no memory-unsafety.
-- **Class III — unclassified** (`agent::y_short_flag_errors_on_non_agent_build`;
-  `repl_persist::imported_trait_impl_survives_restart`). One observation each,
-  no captured output; the agent face is explicitly NOT explained by 0615 (that
-  cell runs in the DEFAULT suite). **They are not assigned to I or II** — two
-  observations do not make a class.
-
-### Which parts are hypothesis (METHOD §2.2)
-
-- **Observed:** the two signatures verbatim; that they are different kinds of
-  event; that sibling faces passed in the same run; that the nullary and
-  multi_sig members share a seam family; that all five pass in isolation.
-- **Hypothesis, NOT established:** that intra-subprocess interleaving is the
-  mechanism for either class; that Class II is a publication-order race; that
-  Class I is a data race rather than a latent deterministic overrun whose
-  manifestation is layout-dependent. **Symptom captures exist; seam observations
-  do not.** Nothing above is an attribution until S116 runs the experiments.
-
-### The discriminating experiment (S116)
-
-**D1 — run FIRST; it can falsify the shared premise cheaply.** Run the single
-test binary in isolation ~200× while the host carries equal CPU load from a
-**non-cranelisp** source. Reproduces → host contention suffices, the fault is
-intra-subprocess, premise holds. Does NOT reproduce while the full suite does →
-other *cranelisp subprocesses* matter, and the premise is wrong: that points at
-inter-process shared state (cache dir, `CRANELISP_LIB`, tmpdir reuse, shared-cwd
-`user.cl`) and a completely different fix. Worth more than any further
-full-suite sampling, because it can invalidate the framing instead of
-accumulating symptom counts.
-
-**D2 — the seam observation, per class.** Class I: re-run under M1/M3 +
-`CRANELISP_RC_DEC_CHECK=1`, and again with the subprocess forced single-threaded
-(rayon = 1, spark budget 0) under *identical* host load — elimination names
-intra-subprocess concurrency on the heap; survival names a latent deterministic
-overrun (and S98 forbids reading absence as a fix). Class II: run under load with
-`CRANELISP_MODULE_TRACE=1` tee'd — **newly possible**, because the 0604 wave
-landed MODULE_TRACE emission at the staging→live commit seam, exactly the
-publication edge in question. A trace showing the eval read preceding publication
-*demonstrates* Class II and names /dev(src) as owner.
-
-**D3 — anti-vacuity control, converts hypothesis to attribution.** Env-gated
-dev-only delay injected at the publication seam; show the nullary face goes RED
-**deterministically with the same error text**. A planted fault reproducing the
-observed signature is a demonstrated mechanism; anything less is a story that
-fits. If D3 succeeds it also becomes the standing regression guard.
-
-**Binding hygiene:** every run is `tee`'d. The fifth member's output was lost to
-a summary-only tail this sprint and is not recoverable.
-
-**D1 gates D2/D3** — if it falsifies the premise, they are re-designed, not
-re-run.
-
-### Scope change for S116
-
-1. **The heap-corruption member is pulled OUT of the flap family by name.** It
-   is a memory-safety event, not a fifth flap, and it gets first-class sprint
-   work ahead of the family. `/qa` will not certify a suite state that folds it
-   into a flap count.
-2. The ≥3-consecutive-green close condition still applies to the nullary face
-   only. Classes I and III each owe their own characterisation before closing.
-3. "Flaky" remains banned for all five.
-
-## /qa S118 W1+ roster update (2026-07-25) — first INVERSE-polarity member, a NAMED cell
-
-**`cache::cache_restores_sibling_written_trait_impls_for_dispatch`** (S118
-baseline cell #28, the 0869 intended-RED guard) **silently PASSED once under
-a 4-binary interleaved focused run** during W1's baseline reconciliation
-(the run counted 5 failures where 6 were expected); it is reproducibly RED
-alone and in re-runs. This is the family's first member of the OPPOSITE
-polarity — a should-be-RED guard passing under interleaving, where every
-prior member was a should-be-GREEN test failing under load — and it is a
-named-cell instance, stronger evidence than the count-level arithmetic this
-FIXME was filed on.
-
-Consequences (see [QA traceability and authoring](../../../tests/plan/PLAN.md#traceability-and-authoring)):
-
-- the counting convention widens: certification reports stable-exact counts
-  PLUS a named flap set covering BOTH polarities (should-be-GREEN failures
-  AND should-be-RED passes). An intended-RED count taken only from an
-  interleaved multi-binary run is not evidence; wave gates verify intended
-  REDs per-binary.
-- candidate-mechanism note, to be demonstrated not presumed: the cell is a
-  CACHE-restoration guard — cross-subprocess shared state (cache dir /
-  tmpdir / `CRANELISP_LIB`) is exactly the D1-falsifiable premise class, so
-  the W5 D1 experiment discriminates for this member too. It carries the
-  same evidentiary obligation as every member (isolation-vs-load
-  characterization, in-suite output capture, attribution); "flaky" remains
-  banned.
-
-## /qa S119 Phase-3 roster update (2026-07-26) — the nullary member reappeared unprompted at the S119 opening run
-
-**`nullary_return_dispatch_method_only_import::…_no_codegen_leak` was RED in
-the S119 baseline run** (2026-07-26, HEAD `5520186d`, clean tree; 5,660 run /
-21 failed — `sprints/SPRINT.md` §Baseline). It was NOT in S118's certified 20
-(GREEN in both S118 W8 certification runs, §11.7); its reappearance on the
-first S119 full run, with no intervening compiler change, is fresh evidence
-that the Class-II member is live and load-conditional exactly as adjudicated
-— not cured by any S116–S118 wave.
-
-Consequences and scope (plan of record: `tests/plan/s119-test-plan.md` §8):
-
-- S119 owes exactly the bounded Track-C obligation: **D1** (the S116-designed
-  discriminating experiment, §"The discriminating experiment" above), run on
-  THIS member, ~200× isolated under equal non-cranelisp host load, tee'd;
-  plus the recorded re-measurement — isolation color at current HEAD (a
-  deterministic isolation RED would be a NEW attribution, not a flap datum)
-  and per-run in-suite color across every tee'd full-suite run this sprint,
-  appended here.
-- D1's falsification branch now has a named corroboration candidate: the S118
-  inverse-polarity member is a CACHE-restoration guard, and the S119 rider-2
-  window (0868/0869) reworks exactly the suspected shared substrate — its
-  dispatch brief carries the hazard note.
-- No D2/D3, no 0604/0818 root-cause work this sprint (SPRINT §Track C).
-  "Flaky" remains banned.
-
-## /qa S121 W0 D1 adjudication (2026-09-01) — host contention suffices; mechanism remains provisional
-
-**D1 executed and its W0 prerequisite is discharged.** Provenance:
-
-- repository HEAD `18bca20d07a0b563314ff38f38c93486809bb980`;
-- test binary
-  `target/debug/deps/nullary_return_dispatch_method_only_import-e34f1e684d53b9ad`,
-  SHA-256
-  `c3286dae44220694a56134719b19714b737c5bcef716ac63c89158d5896a64e4`;
-- one unloaded isolation control, reported GREEN 1/1; and
-- 200 direct repetitions with twelve non-Cranelisp `yes` workers on thirteen
-  logical CPUs: **147 pass / 53 fail**. All 53 failures carried the same REPL
-  face at `tests/helpers/e2e.rs:708`, ending in
-  `codegen error at 14..15: undefined function: z`. No timeout, spawn failure,
-  heap signal or second failure signature occurred.
-
-The load-run capture was `/tmp/s121-0694-d1.log`, SHA-256
-`6450eb8485f6198df6bf38ac7277a9c59a68589225aff9739d0627b883a3032d`.
-The unloaded 1/1 control was reported separately and is not present in that
-capture; it is an anti-vacuity control, not an unloaded-stability claim.
-
-### What D1 establishes and falsifies
-
-Non-Cranelisp CPU contention alone is sufficient to reproduce the exact
-nullary Class-II symptom while only one Cranelisp subprocess is active. D1
-therefore falsifies the branch in which *other Cranelisp subprocesses are
-necessary*: shared Cranelisp cache/tmpdir/`CRANELISP_LIB` state and repository
-`user.cl` contamination are not required causes of this member. They remain
-possible full-suite amplifiers, not the root-cause prerequisite.
-
-The 53 harness panics report missing expected output; they are not the product
-failure. The product failure is the compiler's clean `undefined function: z`
-diagnostic. D1 neither demonstrates a staging→live ordering violation nor a
-data race, and it says nothing about Class I, Class III or the inverse-polarity
-0869 member. The 53/200 ratio belongs only to this binary and load shape. It is
-diagnostic evidence, not an acceptance threshold.
-
-No C1 return follows. A static carrier defect does not explain why identical
-input on one binary succeeds 147 times and takes the exact publication-shaped
-refusal 53 times; the remaining hypothesis is observed at C6's existing
-publication boundary before any correction is attributed.
-
-### Remaining smallest evidence — inside the retained C6 N1/N5 visit
-
-**D2, ordered failure/control pair.** The existing
-`CRANELISP_MODULE_TRACE` emission in `check_terminal_closure` occurs only on a
-terminal-closure breach. It does not emit an ordinary publication/read pair,
-so setting the variable on current HEAD without additional observation would
-be vacuous. Under the same environment gate, the C6 change-set temporarily
-records:
-
-1. N1's `commit_staging_to_live` publication of `zlib/z` and completion of its
-   staged batch; and
-2. N5's REPL/eval boundary making the user expression readable.
-
-Use D1's host-load shape, cap at 200 repetitions and stop after one exact
-`undefined function: z` failure plus one passing control. The attribution is
-demonstrated only if the failed trace orders the read before `zlib/z`/batch
-publication and the passing trace orders publication before the read. Missing
-events or identical ordering falsify the proposed seam; D1 alone does not
-license a fix.
-
-**D3, anti-vacuity plant.** At that same generic publication gate, an
-experiment-only, env-gated dev delay before live publication must make the
-otherwise-unloaded nullary row fail 5/5 with the exact `undefined function: z`
-text; the unarmed twin must return `42` 5/5. Both captures and the instrumented
-binary are hashed. A different signature, a non-deterministic armed leg or an
-unarmed failure leaves attribution provisional.
-
-D2/D3 use paths N1/N5 already reserve and change no facade, lifecycle state,
-cache carrier or C1 contract. The delay and added experiment-only events are
-removed before C6 closes; the existing process-level row remains the standing
-guard. This FIXME stays **open** pending D2/D3 and corrected-build verification,
-but it no longer blocks W0 or the C1 reservation on behalf of 0694.
-
-## Context
-
-Found by /review W4 while verifying dispatch priority 8 (suite-state
-certification). The 18 flips themselves verified green in both runs; the
-MS-P7 safety-lane pin (`safety_lane_cow_set_read_returns_set_value_abort_free_red`)
-is RED in both runs (fence held).
+# Run-dependent guards: attribute each member; never count one as "flaky"
+
+The standing counting convention this filing produced — an exact stable
+failing set plus a separately named run-dependent set — is canonical in
+[QA traceability](../../../tests/plan/PLAN.md#traceability-and-authoring).
+This filing carries the unattributed members.
+
+Every e2e test spawns a multi-threaded `cranelisp` subprocess (index worker,
+rayon sparks, IO reactor); host CPU load changes intra-subprocess interleaving.
+That shared condition does not make the members one defect.
+
+## Members and state
+
+| Member | Observed signature | State |
+|---|---|---|
+| `nullary_return_dispatch_method_only_import::…_no_codegen_leak` (Class II, publication ordering) | clean compile diagnostic `codegen error at 14..15: undefined function: z` | S121 D1: 53/200 failures under twelve non-Cranelisp CPU workers, one Cranelisp subprocess, one signature. Host contention alone suffices; shared cache/tmpdir/`CRANELISP_LIB`/`user.cl` state is not required. Mechanism not yet demonstrated. |
+| `multi_sig_module_locality::imported_multi_sig_base_direct_call_repl` (Class II candidate) | one RED under load, output not captured | same seam family as the nullary member; unattributed |
+| `macro_expansion_interior_alias_double_free::macro_clause_interior_alias_double_free_run` (Class I, heap invariant) | glibc `free(): chunks in smallbin corrupted`, killed by signal | memory-safety event, not a flap; one S115 capture; not re-characterised since |
+| `agent::y_short_flag_errors_on_non_agent_build`, `repl_persist::imported_trait_impl_survives_restart` (Class III) | one RED each under load, output not captured | unclassified |
+| `cache::cache_restores_sibling_written_trait_impls_for_dispatch` (inverse polarity) | an intended-RED guard passed once in an interleaved multi-binary run | intended REDs are verified per binary; unattributed |
+
+## Remaining obligation
+
+- **Class II.** Demonstrate or falsify the publication-ordering mechanism at
+  the existing Binary/int publication boundary, under D1's load shape:
+  - D2 — an env-gated, experiment-only event pair records `zlib/z` batch
+    publication and the REPL eval read. The attribution holds only if a
+    failing trace orders the read before publication and a passing trace
+    orders it after. Current `CRANELISP_MODULE_TRACE` emits only on a
+    terminal-closure breach, so setting it alone is vacuous.
+  - D3 — an env-gated delay before live publication makes the unloaded
+    nullary row fail 5/5 with the exact text while the unarmed twin returns
+    42 5/5.
+  - Remove the experiment-only events and delay before the change-set closes.
+    The S122 allocation asks `qa` to reconcile this against the current Q1/Q7
+    publication evidence: identify a surviving exact condition or seek an
+    explicit residual disposition, not another speculative detector.
+- **Class I** owes its own characterisation under the armed diagnostic modes
+  and a single-threaded run at identical load. Absence under a perturbing
+  tool is not a fix.
+- **Class III and the inverse-polarity member** owe isolation-versus-load
+  characterisation with captured in-suite output.
+- Tee every characterisation run; the D1 capture and binary hash are in Git
+  history of this file.
+
+## Closure
+
+Each member has a demonstrated mechanism and a fix that fails on revert, or an
+explicit user-approved residual disposition. A later green suite does not
+reconstruct missing attribution.

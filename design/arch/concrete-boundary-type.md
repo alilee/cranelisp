@@ -62,8 +62,7 @@ property (fully concrete), not a producing process or a consumer.
 - `ConcreteType::to_type` is the total inverse embedding.
 - `ConcreteType::result_root` strips one `primitives/IO` head. It is the single derivation of
   the program-result root; the backend’s result-root enumeration and the binary’s release
-  key both call it. FIXME 0898 is the open filing that asked for this; its disposition
-  against source is owed.
+  key both call it.
 
 ### 1.4 The check is full concreteness
 

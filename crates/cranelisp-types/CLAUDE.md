@@ -117,10 +117,9 @@ re-pattern the lifecycle set:
   are `CtorFieldsAtError::NotACtor`/`ParamArity`/`InstantiationMismatch`,
   never conflated with the refusal). The backend's hand-rolled `scheme.ty`
   walk retires onto it in the S120 wash.
-- **`ConcreteType::result_root()`** — the ONE IO-head-strip rule (FIXME 0898;
-  one hop, `primitives/IO` only). Backend `result_roots` and int
-  `release_key` re-express over it in the wash; hand-rolling the match again
-  is the two-encodings defect it closed.
+- **`ConcreteType::result_root()`** — the ONE IO-head-strip rule
+  (one hop, `primitives/IO` only). Backend `result_roots` and int
+  `release_key` both delegate to it; do not hand-roll the match again.
 - **`got_data_symbol_name` is INJECTIVE** (FIXME 0748): `_`→`__`, `.`→`_d`,
   `-`→`_h`, `_u{cp:06x}` catch-all; alphanumeric paths are fixed points
   (`__cranelisp_got_primitives` is a link-time ABI literal); `_entry` is

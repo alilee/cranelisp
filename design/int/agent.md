@@ -707,13 +707,15 @@ compiler in an isolated realm. Until then this section describes what is built.
 - Each module takes exactly one branch:
   - **(a)** present in the scheduler registry: the real path owns it, so the
     index reads the loaded table's rows (or none) and never typechecks it;
-  - **(b)** valid `.meta` (schema, build id and source gates): the table is
-    deserialised and read, with no typecheck;
+  - **(b)** valid `.meta` (schema and build-id gates, plus
+    [manifest validity](int.md#76-dependency-record-and-validity)): the table
+    is deserialised and read, with no typecheck;
   - **(c)** no or stale `.meta`: the module is typechecked once against a
     private substrate (§25.2), inside the containment catch (§25.4).
 - **Current branch-(c) cache write.** A clean branch (c) on a macro-free
-  module writes a `.meta` and manifest entry (no `.o`), so a later real import
-  is a cache hit. `design/int/index-worker-isolation.md` §3.3 proposes
+  module writes a `.meta` (no `.o`) and, once its
+  [dependency record](int.md#76-dependency-record-and-validity) settles, a
+  manifest entry, so a later real import is a cache hit. `design/int/index-worker-isolation.md` §3.3 proposes
   retiring that write, and ACT-0952 forbids it for the future semantic index;
   its removal must be a coordinated design and test change, because
   `tests/search.rs` pins the current behaviour.

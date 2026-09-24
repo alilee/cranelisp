@@ -7,7 +7,6 @@ sprint_filed: 118
 refers_to: design/int/macro-turn-ownership.md (the S119 /design(int) protocol ruling — READ FIRST);
   src/marshal.rs (header: "their RC is never decremented");
   src/expander.rs §invoke_clause (result tree dropped unconsumed);
-  design/arch/fixmes/0835-slist-sexp-construction-corrupts-the-heap-at-small-sizes.md §Branch-F falsification pointer;
   tests/plan/s118-test-plan.md §2.5 (Branch-F execution record);
   sprints/archive/sprint-118.md §Notes 2026-07-26 (user decision)
 status: open

@@ -23,8 +23,8 @@ the suite going RED:
 
 | Defect | How found | Class |
 |---|---|---|
-| 0633 drop-glue under-key (2 layers, SIGBUS all modes) | `/review` Important on CS-1 (a FALSE guard had canonized the bug as correct) | `drop-glue-underkey` |
-| 0640 mangle non-injectivity (`A-B`/`A_B` → one glue, SIGBUS) | `/review` Blocker on the 0633 *fix* | `drop-glue-underkey` |
+| 0633 drop-glue under-key (2 layers, SIGBUS all modes) | `/review` Important on CS-1 (a FALSE guard had canonized the bug as correct) | `artifact-underkey` |
+| 0640 mangle non-injectivity (`A-B`/`A_B` → one glue, SIGBUS) | `/review` Blocker on the 0633 *fix* | `artifact-underkey` |
 | Multi-arity §5.1.2 wrong-accepts — B-1 vectors 1–3 (String heap ptr read as Int) | `/review` adversarial refute-hunts, 3 successive vectors | `wrong-accept` |
 | 0641 false-`Fresh` family — B-1 container-element laundering, B-2 producer seam, I-1 capture, I-2 element-store (UAF; `--link` SIGABRT) | `/review` adversarial hunt on CS-5 | `uaf` (false-Fresh elision) |
 | 0638 macro-expansion interior-alias double-free | `/stdlib` exercising derive macros | `uaf` |

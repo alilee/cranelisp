@@ -611,7 +611,7 @@ fn safety_lane_detects_falsified_clean_expectation_capability_green() {
 // vec-lens of 1 → exit 2. RED until the 0633 re-key (W5 R4 census).
 // spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable;
 // drop glue must not DEC a non-heap slot.
-// defect: class=drop-glue-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/{resolution.rs::adt_drop_glue_name,vec_codegen.rs::build_elem_dec_fn} found=S111 owner=/dev
 #[test]
 fn safety_lane_module_axis_same_name_adt_corruption_face() {
     let ma = "(deftype Thing (MkA [:String s]))\n";

@@ -2710,7 +2710,7 @@ matches a fresh compile.
 
 | ID / class | Required observable and plausible wrong outcome | Lowest discriminating evidence and allocation | Existing evidence / limit |
 |---|---|---|---|
-| CD-1 A — dependency-hash validity (priority: required) | A program with a cached importer behaves exactly as it does under `--no-cache` after one of that importer's dependencies changes. Two wrong outcomes are plausible. (a) Signature leg: the importer `a` restores against its stale typecheck, so a program that is ill-typed under fresh compilation runs, or runs through a mismatched ABI. (b) Layout leg: the dependency `b` changes compatibly by inserting a concrete `defn` before the called one, and cached `a` calls through a slot index that now names a different function. | `test` writes one minimal repro in `tests/cache.rs` with the shape `main → a → b`, run twice in one project, so that `a` itself is cached and unchanged. The signature leg changes `b`'s exported parameter type. With `--no-cache` this is a type error at `a`'s call site; the cached run must match it. The layout leg inserts a new concrete `defn` ahead of the called one; the value must match `--no-cache`. For each leg, the control is the same second run under `--no-cache`, which differs only in cache use. Cover `--run` and `--link`: link reuses cached objects. Tag it `// defect:` only after a RED is observed, with the class chosen by the observed face. `dev`(src) owns the attributed unit at the writer/restore seam when a fix is scheduled. | Source: `cache_restore.rs::cache_validity_check` passes an empty dependency map, and `nice_worker.rs` records `HashMap::new()` ("future enhancement"). Backend `check_manifest` therefore never runs its dependency loop. Every existing dependency-change cell makes the fresh CLI target the importer, which is never cache-restored (`cache_multi_module_invalidation_dependency_change`, `cache_invalidation_on_dep_change_e2e`, `cache_invalidation_transitive_pipeline`, `cache_prelude_change_invalidates_user_module`), so none can discriminate this case. That is the coverage attribution. The layout leg is a hypothesis: callers bake `slot * 8` as an immediate (`apply.rs`), and slots are first-free (`cranelisp-types` `allocate_got_slot_with_claims`), but reordering is unobserved. |
+| CD-1 A — dependency-hash validity (priority: required) | A program with a cached importer behaves exactly as it does under `--no-cache` after one of that importer's dependencies changes. Two wrong outcomes are plausible. (a) Signature leg: the importer `a` restores against its stale typecheck, so a program that is ill-typed under fresh compilation runs, or runs through a mismatched ABI. (b) Layout leg: the dependency `b` changes compatibly by inserting a concrete `defn` before the called one, and cached `a` calls through a slot index that now names a different function. | `test` writes one minimal repro in `tests/cache.rs` with the shape `main → a → b`, run twice in one project, so that `a` itself is cached and unchanged. The signature leg changes `b`'s exported parameter type. With `--no-cache` this is a type error at `a`'s call site; the cached run must match it. The layout leg inserts a new concrete `defn` ahead of the called one; the value must match `--no-cache`. For each leg, the control is the same second run under `--no-cache`, which differs only in cache use. Cover `--run` and `--link`: link reuses cached objects. Tag it `// defect:` only after a RED is observed, with the class chosen by the observed face. `dev`(src) owns the attributed unit at the writer/restore seam when a fix is scheduled. | Source: `cache_restore.rs::cache_validity_check` passes an empty dependency map, and `nice_worker.rs` records `HashMap::new()` ("future enhancement"). Backend `check_manifest` therefore never runs its dependency loop. Every existing dependency-change cell makes the fresh CLI target the importer, which is never cache-restored (`cache_multi_module_invalidation_dependency_change`, `cache_invalidation_on_dep_change_e2e`, `cache_invalidation_transitive_pipeline`, `cache_prelude_change_invalidates_user_module`), so none can discriminate this case. That is the coverage attribution. Both legs were observed RED and are GREEN under the correction; see [delivered adequacy](#delivered-adequacy-2026-09-24). |
 | CD-2 A — platform-miss fall-through (priority: advisory) | When a cached module's recorded platform DLL is absent or refused at restore, the run ends with the same platform-load diagnostic as `--no-cache`. It must not crash, report a conflicting-state error, or complete against the decoded table. A second importer of that module must not accept the abandoned table as satisfied. | This is a bounded later handoff to `test`, sequenced after CD-1. Extend the existing two-run platform cache round-trip in `tests/spec_platforms_adt.rs`. Leg 1 makes the DLL unavailable on the second run, with a single importer. Leg 2 is the same with two importers. The control for each leg is the same second run under `--no-cache`, whose diagnostic is the expected oracle, plus the existing DLL-present cache hit. Any fix belongs to the `dev`(src) restore path. | Source: `try_cache_hit_load` calls `install_cached_table` before `reresolve_cached_platforms` and returns `Ok(false)` with the table installed. Its `contains_key` guard returns `Ok(true)` for any later importer. No test takes this branch. If the DLL is absent, the fresh path also fails, which bounds the impact to crash or misattribution. A DLL that is refused and then accepted on the fresh path could let a second importer compile against the stale table; this is unobserved. |
 
 **CD-3 — cached-object load diagnostic: observation only, no allocation.** The
@@ -2721,18 +2721,284 @@ compiler-written object, which falls under C-A. The failure is not lost:
 `worker.rs::handle_cached_codegen` marks the module failed. Revisit if CD-1,
 CD-2 or another observation shows such a load failure in normal operation.
 
-Handoffs from this intake (none are QA edits):
+Open handoffs from this intake are listed under
+[outstanding risk and next allocation](#outstanding-risk-and-next-allocation).
 
-- **CD-1.** `sprint` schedules the `test` repro. The first observation settles
-  whether this is a defect, and RED→design→GREEN follows (METHOD §2.2).
-- **Design, when CD-1 is fixed.** `design`(int with backend) decides which
-  hashes an importer records: direct imports, as module caching §3 states, or
-  the closure including re-export targets. A direct-only rule would leave a
-  re-exported signature change under an unchanged intermediate module
-  unguarded. QA adds that leg to the fix's completion evidence once design
-  rules. Unchanged dependencies must keep an importer cached; this extends
-  `cache_multi_module_unchanged_dep_stays_cached` to the three-level shape.
-- **Currency.** `design`(backend) should mark the module caching §3, §6 and §10
-  dependency check as inert on the int path until CD-1 is fixed. The ACT-0952
-  owner should know that its premise, that cache restore already validates
-  dependency hashes, is false today.
+### CD-1 reconciliation — observed defect (2026-09-24)
+
+QA read the committed cells and the recorded runs (`5b1a843b`,
+`.local/s122-cd1-cache-repro-result.md`); no QA build, run or test edit.
+
+Observed, in two consecutive targeted runs: the four cells in the
+`tests/cache.rs` section "Dependency change under an unchanged,
+cache-restored intermediate importer" are RED — signature and layout legs,
+each under `--run` and `--link`. The signature leg runs an ill-typed program (exit 107 where
+the uncached oracle rejects with a `String` mismatch). The layout leg calls
+`e` instead of `f` (99 where the oracle gives 11).
+
+Evidence adequacy — adequate as the defect record and as the fix's e2e
+acceptance evidence for direct imports:
+
+- The arming step (nothing changed, trace shows `cache hit (.meta valid) for
+  a`) proves the subject restores `a`; the cell cannot pass through the fresh
+  path. It stays valid after a fix, and it discharges the intake's "unchanged
+  dependencies keep the importer cached" leg in the three-level shape.
+- The `--run` control differs from the subject only in cache use, and
+  `a.o` is byte-identical afterwards. The `--link` control is a fresh project
+  because `--link` refuses `--no-cache`; each control is also pinned to an
+  independent oracle, so equivalence does not rest on the control alone.
+- The gate asserts behavioural equivalence, not a cache miss. That is correct:
+  the design may permit a hit that re-resolves against the new `b`.
+- Recorded RED for the intended reason satisfies the pre-fix detection proof;
+  the fix owes GREEN on the same cells with the arming step still GREEN.
+
+Attribution:
+
+- **Symptom and cache-use dependence: confirmed** by the controls above.
+- **Locus `src/process_form/cache_restore.rs::cache_validity_check`:
+  confirmed by source, mechanism provisional.** Backend `check_manifest`
+  iterates only the caller-supplied current map, so the restore seam's empty
+  map makes the comparison vacuous whatever the writer recorded. The
+  writer's empty record (`session_v4/nice_worker.rs`) alone would cause
+  misses, not stale service; it is a co-requisite for keeping importers
+  cached, not the stale-serve mechanism. The existing backend unit
+  `check_manifest_transitive_dependency_change_invalidates` shows the
+  comparison discriminates when given a map (not re-run here).
+- **Refuter:** with the restore seam supplying the importer's current
+  dependency hashes and the writer recording them, any of the four cells
+  stays RED, or the arming step turns RED.
+- **Class: one mechanism, one class across all four cells.** The face tokens
+  (`wrong-accept`, `enumeration-miss`) are superseded. The key under which the
+  cached module is validated omits a determinant of its content, the class
+  `drop-glue-underkey` anticipated generalizing when a non-glue sibling
+  appeared. The class becomes `artifact-underkey`; the vocabulary in `tests/CLAUDE.md` and the affected test tags now use
+  that class under QA's vocabulary authority.
+
+#### Correction evidence — transitive dependency record ([`int.md` §7.6](../../design/int/int.md#76-dependency-record-and-validity))
+
+The correction is int-private: each manifest entry records the source hash of
+every module in its transitive closure, and validity is driven by the recorded
+keys. That shift changes which failure is silent. As built, the vacuous
+comparison served stale. After the correction, an **under-recorded** map (a
+missed edge kind, an empty or partial stand-in, a restored member contributing
+only itself) serves stale silently. An over-recorded or unsettled member only
+causes a miss, which the arming steps and existing hit cells observe. The
+delta therefore weights evidence toward under-recording.
+
+| Condition | Plausible wrong outcome | Lowest discriminating evidence | Owner |
+|---|---|---|---|
+| CL-A — direct dependency (unchanged condition) | Cached importer served against a changed direct dependency | The four `cache_dep_*` cells, recorded RED, turn GREEN with their arming steps GREEN | `dev` turns GREEN; no new `test` work |
+| CL-B — change reaching an importer only through an unchanged intermediate (added) | A direct-imports record: `c` records only `{a}`, `a` is unchanged, so `c` restores stale | New `--run` cell, shape `main → c → a → b`. `a` only re-exports `(export [b [f]])`; `c` imports `[a [f]]` and calls `(f 5)`. Signature leg as in CD-1. Arming: with nothing changed, both `a` and `c` restore from cache. Oracle and control: `--run --no-cache` on the edited sources | `test`, RED before the fix |
+| CL-C — importer rebuilt over a restored intermediate (added) | Session cache state does not keep a restored member's validated record, or the builder treats a missing record as empty, so rebuilt `c` records `{a}` alone | Same fixture as CL-B. After the cold run, edit only `c`, adding a comment line so its source hash changes. Arming: `a` restores and `c` rebuilds. Then edit `b` and compare with `--run --no-cache` | `test`, RED before the fix |
+| CL-D — record builder (added) | An edge kind is omitted, an unsettled member is recorded as empty or partial, or a synthetic module is keyed | Module units: see `dev` completion below | `dev` |
+| CL-E — validity query (changed) | A recorded member's current hash is not compared, or an unresolvable member hits | Seam unit at `cache_restore.rs::cache_validity_check`: see `dev` completion below | `dev`, RED before the fix |
+| CL-F — no over-invalidation (retained fence) | Unsettled-at-write timing or a wrong prelude lookup leaves modules missing on every run | Existing hit-asserting cells in `tests/cache.rs`; the three `tests/search.rs` pins, including `search_index_to_import_is_meta_cache_hit`; the prelude and submodule cache cells; the CL-B and CL-C arming steps | Existing; `dev` keeps GREEN |
+
+Why these layers:
+
+- **CL-B discriminates the closure from a direct-imports record** only through
+  the shape's construction: under direct imports, `c`'s record holds `a` alone,
+  and `a`'s source never changes. Its RED as built proves only that it detects
+  stale service. No legitimate build records direct imports only, so that RED
+  is not observable. The seam observation is the CL-D chain row. Falsifier:
+  with the correction in place, CL-B is GREEN while that chain row is absent
+  or RED.
+- **Why `a` re-exports only.** Its sole edge to `b` is then a re-export target,
+  and its entry comes from the no-object writer. So CL-B also discriminates a
+  missing re-export edge, and CL-C discriminates a no-object writer that
+  bypasses the builder. Contingency: if a re-export-only `a` does not restore
+  from cache as built, `test` reports this, gives `a` a concrete `defn` called
+  by `c`, and the no-object writer then relies on the structural criterion
+  below.
+- **`--run` alone suffices for CL-B and CL-C.** The builder and the validity
+  query are shared by all modes. The CD-1 `--link` cells already show that
+  link restores through this seam.
+- **CL-C covers what the builder units cannot.** Those units use a constructed
+  session state. CL-C is the only observation that the real restore path
+  stores the validated record that the builder reads.
+
+#### Delivered adequacy (2026-09-24)
+
+QA read the working-tree correction (`src/cache/dependency_record.rs`, its
+unit module, the retry in `src/session_v4/lifecycle.rs::wait_object_complete`), the `dev` and
+`review` results and the recorded logs. No QA build or run.
+
+**Verdict: adequate for CL-A to CL-F; the correction may land.** It protects
+dependencies reached through imports, re-exports, declared children and the
+prelude. It does not close CD-1 as a class: while F1 below is unresolved, the
+§7.6 opening sentence must not be recorded as satisfied.
+
+| Condition | Executed evidence | Judgment |
+|---|---|---|
+| CL-A | The four `cache_dep_*` cells, recorded RED under `--run` and `--link`, are GREEN with their arming steps in the targeted and final full runs | Adequate |
+| CL-B, CL-C | `test` observed both RED for the intended reason: arming, `c.o` identity and control legs passed, and the cached run exited 107 where the uncached run rejects with the `String` mismatch. Both are GREEN after the fix. The re-export-only `a` restored, so they also discriminate a missing re-export edge and a no-object writer that bypasses the builder | Adequate |
+| CL-D | Builder units: fresh chain, restored member without a table walk, the six-row edge matrix, prelude absent when the bit is clear, compiler-owned and self exclusion, the three representable unsettled cases. Restored-without-record is unrepresentable because `LoadedSource::Restored` carries its record | Adequate; the chain row discharges CL-B's falsifier |
+| CL-E | Five seam units: 4 RED with the unchanged case passing, then 5 GREEN. Limit: the RED ran the surviving `validate` signature with as-built empty-map semantics, not the removed `is_cache_valid`; the recorded e2e REDs cover the original | Adequate |
+| CL-F | `tests/cache.rs` 52/52 and `tests/search.rs` 42/42, including `search_index_to_import_is_meta_cache_hit`. The fence fired: the first full run failed both `exemplar_ownership_residue_s116` warm cells because declared children importing `super` lost their entries (review F2). The correction defers an unsettled entry and retries it before the only manifest flush. `a_child_written_before_its_parent_settles_is_recorded_once_it_has` was RED under a no-op retry; it and both warm cells are now GREEN | Adequate; F2 is resolved |
+| Structural | `review` confirmed one edge definition, one builder behind every writer, validity only through a current-hash source and no empty-map record. `manifest_globals_current` passes an empty map only as a global-key probe | Adequate |
+
+The final full suite ran 6049 tests: 6048 passed, 1 failed, 1 skipped. The
+failure is the maintenance check
+`citation_drift::project_documents_conform_to_the_checked_in_declaration`. It
+reports document-checker findings over the integrating documentation tree and
+names no changed symbol. It blocks document claims, not CD-1 acceptance; root
+disposes of it at integration.
+
+#### Outstanding risk and next allocation
+
+Neither required item is a user-accepted residual. Both come before any claim
+that CD-1 is closed.
+
+| ID / priority | Risk | State | Smallest next evidence |
+|---|---|---|---|
+| F1 — FQ-reference dependency (required) | A module whose only use of `b` is a qualified reference has no edge to `b`: `b/f`, an FQ macro head or an FQ type annotation, which §8.5.4 admits without an import. An ordinary edit to `b` then restores it stale, the same `artifact-underkey` mechanism outside the edge set. This is a source edit, not cache corruption, so C-A does not cover it | Unexecuted; source reading by `review`. The correction neither causes nor widens it. The entry point is §7.6's edge list, which CL-D inherited; that attribution is provisional until the repro runs | `test`, one `--run` cell in the `tests/cache.rs` dependency-change section, RED first. `main` imports `[a [g]]` and `[b [f]]`; `a` is `(defn g [] (b/f))` with no import of `b`; `b` gains `(defn e [] 99)` ahead of `f` before the final run. Arming: a warm run with nothing changed hits `a`. Control and oracle: `--run --no-cache` gives 11. Prediction: 99. A second cell drops `main`'s import of `b` and records the observed face, because nothing may then load `b` for the restored `a.o`. Then `design`(int) decides how an FQ-referenced module becomes an edge and where that fact is carried, and `qa` extends CL-D |
+| DV3 — fresh module over a restored module (required intake) | A spec-valid program failed on a warm run. A freshly re-typechecked declared test child reported `'assert-true' not found in module 'testing.assertions'` while that module restored (first full run, both `exemplar_ownership_residue_s116` warm cells). Deferral removed this trigger, not the mechanism. Editing only such a child reaches the same shape | Observed once; mechanism unknown; no minimal repro | `test`, one stdlib-free `tests/cache.rs` cell. `grp.cl` declares `(mod asserts)`, and `grp/asserts.cl` defines `one`. `lib.cl` declares `(mod- test)`, and `lib/test.cl` imports `[grp.asserts [one]]` and calls it. `main` imports `lib`. Run cold, then warm with nothing changed (arming: `grp.asserts` and `lib.test` hit). Append a comment to `lib/test.cl` only and compare with `--run --no-cache`. If GREEN, add one variant whose child also imports `super` (the exemplar shape) and report. If RED, add the sibling that differs only in `asserts` being a top-level module, to control the declared-child cause |
+
+Advisory and unallocated; each awaits its owner:
+
+- **F3 — record conflicts and write-time reads.** A walked member's loaded
+  hash overrides a restored member's recorded hash, and the builder reads the
+  stash at write time. After an in-session change, both under-record. The
+  unit `hashes_are_the_versions_this_session_loaded` pins the current rule,
+  which §7.6 does not state. `design`(int) rules: make a conflict `Unsettled`,
+  or record both paths under *Unprotected* with falsifiers. No repro is
+  allocated, because a deterministic e2e face needs nice-worker ordering
+  control.
+- **F4 — a prelude that was absent.** The builder drops the prelude edge when
+  no prelude loaded, so adding a `prelude.cl` later is undetected. The face is
+  a wrong-accept of a bare name that the new prelude makes ambiguous. It needs
+  a project that had no prelude. `design`(int) records or protects it.
+- **Index-writer entries.** An index-written entry whose member this session
+  never loaded stays unsettled and is dropped at session end. This is
+  source-read and causes misses only. `design`(int) records it with `dev`'s
+  observations on index edges and empty index `.meta` structural fields,
+  which bear on ACT-0952.
+- **F5 and F6.** `dev` removes the uncalled
+  `introduce_module`/`try_load_cached_for_introduction` install path, which
+  skips `validate`, and resolves the duplications at its next visit.
+- **Reactor panic, `dev` observation 6.**
+  `spec_10_io::resource_serial_diff_token_parallelizes` panicked once in the
+  first full run with `reactor suspended with no armed interest`. It passed
+  alone and in the final run. No cache is involved: each run uses a fresh
+  tempdir. It joins the unattributed run-dependent members of
+  [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md);
+  QA's filing edit is outside this dispatch's write scope.
+- Unchanged: the `startup_latency` before/after run, if restore-time closure
+  hashing is questioned, and the trait-home reverse-dependency question, which
+  `design`(int) establishes from source before QA allocates.
+
+Unprotected paths recorded by design in `int.md` §7.6, not allocated:
+
+- a platform DLL signature change made without a `.cl` edit;
+- a same-session disk edit to a loaded dependency before an importer restores;
+- corrupt cache content.
+
+Only the last has a user decision: the user deferred C-A hardening, and that
+deferral still binds. The first two are design records, not user-accepted
+residuals.
+
+Limits:
+
+- Every `process_form` restore caller reaches validity through
+  `try_cache_hit_load`, so no per-caller or REPL cell is allocated.
+- The signature leg's body ignores its argument, so the memory-safety
+  consequence of the mismatched ABI was never probed.
+- The `--link` signature cells compare compiler stdout from two failing links
+  in different projects.
+
+Retained observation, not CD-1: a dependency's diagnostic location. Under
+`--link`, and under `--run` for the four-module shape, the uncached signature
+diagnostic renders at `main.cl:1:1 … 0..0`. In the three-module `--run` cell,
+`a.cl`'s span `69..74` renders as `main.cl:3:24`, which is byte 69 of the
+entry file. This is a candidate wrong-file span and a candidate
+`mode-divergence`. It stays unallocated until `spec` confirms whether a
+dependency-failure location is normative.
+
+Pending, in order:
+
+1. Root commits the correction. `test` then adds `fixed=S122/<sha>` and
+   past-tense framing to the six CD-1 cells.
+2. `test` writes F1 and DV3 RED first.
+3. `design`(int) records the deferral rule, F3, F4 and the index-writer entry
+   in §7.6. It replaces §7.6's as-built paragraph and the §16.0 CD-1 entry, and
+   it decides the F1 edge carrier after the F1 repro.
+4. The user decides whether an F1 correction lands in S122 or F1 is disposed
+   of as a residual. QA records no acceptance on the user's behalf.
+
+The `design`(backend) remaps B1–B5 are documents and comments only, and are
+not evidence-bearing.
+
+### Unverified evidence leads — candidates, not defects (2026-09-24)
+
+Neither lead has an executed observation. Neither gates S122.
+
+- **Panic-sentinel consumers** (`design/backend/backend.md` §7). Graded there
+  as asserted with a named falsifier: a panic site's sentinel `0` reaching a
+  heap dereference before the invocation returns. Plausible wrong outcome:
+  a heap-typed callee panics and its caller dereferences the `0`, so the
+  process faults instead of reporting and, in the REPL, surviving
+  (`spec/12-runtime.md` §12.7.2). Proportionate next evidence, advisory and
+  scheduled by `sprint` when convenient: `test` first checks whether
+  `tests/spec_12_runtime.rs` already has a heap-consuming caller of a
+  panicking callee; if not, one `PreludeVariant::None` probe in `--run` and
+  the REPL. A RED becomes defect intake; a GREEN lets `design`(backend) cite
+  it as a witness, not a proof for every consumer shape.
+- **M3 ledger and DLL-side frees** (`.local/s122-platform-capture-doc-result.md`
+  finding 3). An instrument-capability question, not a product defect.
+  Source supports the concern: `design/intrinsics/diagnostic-modes.md` §3
+  names intrinsics `alloc::dealloc` as the only free funnel, but platform
+  `CLHeap::dec_rc` frees through the DLL's own `std::alloc::dealloc`,
+  bypassing the host counters. If so, M3 would report correct capturing code
+  as leaking and cannot serve as the capture-RC falsifier that
+  `platform-dlls.md` §4 names as a candidate. No allocation now: nothing
+  relies on M3 over a DLL-freeing workload. Before anyone upgrades that grade
+  through M3, `test` runs one marginal pair differing only in extra calls to
+  a capturing extern; a non-zero residual on correct code confirms the
+  limit. `design`(intrinsics) owns the "only free funnel" wording.
+
+### Deferred-record provenance — D1 triage (2026-09-24)
+
+QA refutes the ABI-changing-parent/BROKEN-child trigger in the finding-scoped
+review: the live-dependent guard rejects that turn before publication or
+persistence. The recorded cross-module refusal tests pass. The specific
+`super`-child edge is not separately executed.
+
+A distinct macro-redefinition trigger remains plausible: a deferred child's
+record is rebuilt at flush after an allowed macro edit advances a dependency's
+stashed hash. QA holds acceptance of the deferral correction on one armed
+REPL-to-restart cell and its non-deferred sibling control. The authoritative
+requirement is [macro restart semantics](../../repl/spec/18-redefinition.md)
+§18.4; the implementation contract is [dependency record validity](../../design/int/int.md)
+§7.6. This is source-supported intake, not an observed defect.
+
+Allocated to test: main declares kid; kid imports super/helper and mac/k, and
+compiles helper plus k. Arm the child's deferred-write trace at startup, verify
+the type-changing helper turn refuses, then switch to mac and change k's
+expansion from1 to100. After quit, compare cached and no-cache batch runs:
+expected107, suspected stale8. The matched control removes only the super
+dependency (uses literal7), must not defer, and should give107 on both paths.
+An unarmed run is not GREEN evidence. Tag a defect only after RED. If the
+control also serves stale, reattribute rather than blaming deferral.
+
+Execution update (2026-09-25): D1 is UNARMED, neither confirmed nor refuted.
+In the legal observable shape, the parent deferred, not the child (12/12).
+The super-import dependent correctly blocks the type-changing turn. Three
+macro-edit probes showed the new expansion live but saved the old macro body;
+the no-cache restart therefore also returns the old value. This extends
+[ACT-0970](../../sprints/actions/ACT-0970-macro-redefinition-persistence-intake.md). The requested function control is
+still owed. No permanent D1 test was added; the acceptance hold remains open.
+
+### F1 and DV3 execution update (2026-09-25)
+
+Test's two F1 guards are RED in two complete cache-target runs (56run,
+54PASS/2FAIL). With main also importing b, the qualified-only cached a
+returns99 where no-cache returns11 after a compatible insertion in b. With
+main's import removed, the unchanged warm run fails resolving b's GOT; its
+cold run succeeds. The six earlier CD-1 guards remain GREEN. Cell2's
+enumeration-miss tag is provisional for QA; the design identifies the same
+missing qualified-reference provenance behind both faces.
+
+Both allocated DV3 shapes are GREEN: an edited test child imports a restored
+declared child successfully, with and without a super import. The original
+exemplar assertion lookup failure remains unreproduced outside its first
+full-run observation; these smaller shapes do not establish its mechanism.

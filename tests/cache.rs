@@ -1009,7 +1009,7 @@ fn cache_round_trip_multi_module_observable_equivalence() {
     fresh.run_again().run("main.cl").output().assert_exit(42);
 }
 
-// spec: design/backend/module-caching.md §14.4 — cache invalidation on dep change is observable
+// spec: design/backend/module-caching.md §3 — cache invalidation on dep change is observable
 #[test]
 fn cache_invalidation_on_dep_change_e2e() {
     let first = project(&[
@@ -2063,11 +2063,12 @@ fn assert_cached_matches_uncached(control: &Observed, cached: &Observed) {
         cached.exit == control.exit && cached.stdout == control.stdout,
         "after `b` changed, the cached run must behave as the uncached run\n\
          uncached: exit={:?} stdout={:?}\ncached:   exit={:?} stdout={:?}\n\
-         cached stderr:\n{}",
+         uncached stderr:\n{}\ncached stderr:\n{}",
         control.exit,
         control.stdout,
         cached.exit,
         cached.stdout,
+        control.stderr,
         cached.stderr
     );
 }
@@ -2085,7 +2086,7 @@ fn assert_uncached_rejects_int_argument(control: &Observed) {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes; §8 cache-load/fresh-compile equivalence under `--run`.
-// defect: class=wrong-accept locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
 #[test]
 fn cache_dep_signature_change_under_cached_importer_matches_uncached_run() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2100,7 +2101,7 @@ fn cache_dep_signature_change_under_cached_importer_matches_uncached_run() {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes; §11 quick build links cached objects.
-// defect: class=wrong-accept locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
 #[test]
 fn cache_dep_signature_change_under_cached_importer_matches_uncached_link() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2115,7 +2116,7 @@ fn cache_dep_signature_change_under_cached_importer_matches_uncached_link() {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes (GOT layout); §8 equivalence under `--run`.
-// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
 #[test]
 fn cache_dep_layout_change_under_cached_importer_matches_uncached_run() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2135,7 +2136,7 @@ fn cache_dep_layout_change_under_cached_importer_matches_uncached_run() {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes (GOT layout); §11 quick build links cached objects.
-// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
 #[test]
 fn cache_dep_layout_change_under_cached_importer_matches_uncached_link() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2151,4 +2152,273 @@ fn cache_dep_layout_change_under_cached_importer_matches_uncached_link() {
         control.stderr
     );
     assert_cached_matches_uncached(&control, &cached);
+}
+
+// Shape `main → c → a → b`: `a` only re-exports `b`'s `f`, so a change to `b`
+// reaches `c` only through `a`, whose own source never changes. A record of
+// `c`'s direct imports alone (`{a}`) would restore `c` stale
+// (design/int/int.md §7.6: the record is the transitive closure).
+const CLOSURE_MAIN: &str = "(import [primitives [Pure]])\n\
+                            (import [c [g]])\n\
+                            (defn main [] (Pure (g)))\n";
+const CLOSURE_C: &str = "(import [primitives [add-i64]])\n\
+                         (import [a [f]])\n\
+                         (defn g [] (add-i64 (f 5) 100))\n";
+const CLOSURE_A: &str = "(export [b [f]])\n";
+
+fn trace_hit(out: &helpers::e2e::CrOutput, module: &str) -> bool {
+    let hit = format!("cache hit (.meta valid) for {module}");
+    out.stderr.lines().any(|line| line.ends_with(&hit))
+}
+
+/// Compiles `main → c → a → b` cold, then either restores it warm with nothing
+/// changed (`rebuild_c == false`) or edits only `c` so that `c` is rebuilt over
+/// a restored `a`. Then edits `b` and returns the uncached oracle and the
+/// cached run for the edited sources.
+fn closure_change_under_cached_importer(rebuild_c: bool) -> (Observed, Observed) {
+    let run = |c: Cranelisp| c.env("CRANELISP_MODULE_TRACE", "1").run("main.cl");
+    let cold = run(project(&[
+        ("main.cl", CLOSURE_MAIN),
+        ("c.cl", CLOSURE_C),
+        ("a.cl", CLOSURE_A),
+        ("b.cl", DEP_CHANGE_SIG_B_BEFORE),
+    ]))
+    .output()
+    .assert_exit(106);
+
+    let second = if rebuild_c {
+        // A trailing comment changes `c`'s source hash and nothing else.
+        let touched_c = format!("{CLOSURE_C};; touched\n");
+        let out = run(cold.run_again().file("c.cl", &touched_c))
+            .output()
+            .assert_exit(106);
+        assert!(
+            trace_hit(&out, "a") && !trace_hit(&out, "c"),
+            "with only `c` edited, `a` must restore from cache and `c` must rebuild:\n{}",
+            out.stderr
+        );
+        out
+    } else {
+        let out = run(cold.run_again()).output().assert_exit(106);
+        assert!(
+            trace_hit(&out, "a") && trace_hit(&out, "c"),
+            "with nothing changed, `a` and `c` must both restore from cache:\n{}",
+            out.stderr
+        );
+        out
+    };
+    let c_object = second.tmpdir.join(".cranelisp-cache/c.o");
+    let c_bytes = fs::read(&c_object).expect("c.o is cached");
+
+    let control = run(second.run_again().file("b.cl", DEP_CHANGE_SIG_B_AFTER))
+        .cli_flag("--no-cache")
+        .output();
+    assert_eq!(
+        fs::read(&c_object).expect("c.o is still cached"),
+        c_bytes,
+        "the uncached control must leave the cached c.o untouched"
+    );
+    let observed_control = Observed::of(&control);
+    let cached = Observed::of(&run(control.run_again()).output());
+    (observed_control, cached)
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (the record is
+// the transitive closure; a re-export target is an edge).
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+#[test]
+fn cache_dep_change_through_unchanged_reexporter_matches_uncached_run() {
+    let (control, cached) = closure_change_under_cached_importer(false);
+    assert_uncached_rejects_int_argument(&control);
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (a restored
+// member contributes its own validated record to a rebuilt importer's record).
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+#[test]
+fn cache_dep_change_after_importer_rebuilt_over_restored_reexporter_matches_uncached_run() {
+    let (control, cached) = closure_change_under_cached_importer(true);
+    assert_uncached_rejects_int_argument(&control);
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+/// Every file under the project's cache directory, keyed by relative path.
+fn cache_snapshot(tmpdir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) {
+        for entry in fs::read_dir(dir).expect("read cache dir") {
+            let path = entry.expect("cache dir entry").path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                let rel = path.strip_prefix(root).expect("under root");
+                out.insert(rel.display().to_string(), fs::read(&path).expect("read"));
+            }
+        }
+    }
+    let root = tmpdir.join(".cranelisp-cache");
+    let mut out = std::collections::BTreeMap::new();
+    walk(&root, &root, &mut out);
+    out
+}
+
+impl Observed {
+    fn hit(&self, module: &str) -> bool {
+        let hit = format!("cache hit (.meta valid) for {module}");
+        self.stderr.lines().any(|line| line.ends_with(&hit))
+    }
+}
+
+/// Runs `files` cold, then warm with nothing changed, asserting that the warm
+/// run behaves as the cold one and that every module in `restored` is served
+/// from cache. Then replaces one file and returns the uncached oracle and the
+/// cached `--run` for the edited sources.
+fn edit_after_warm_restore(
+    files: &[(&str, &str)],
+    before_exit: i32,
+    restored: &[&str],
+    (edited_path, edited_src): (&str, &str),
+) -> (Observed, Observed) {
+    let run = |c: Cranelisp| c.env("CRANELISP_MODULE_TRACE", "1").run("main.cl");
+    let cold = run(project(files)).output().assert_exit(before_exit);
+    let cold_stdout = cold.stdout.clone();
+    let warm = run(cold.run_again()).output();
+    assert!(
+        warm.status.code() == Some(before_exit) && warm.stdout == cold_stdout,
+        "with nothing changed, the warm run must behave as the cold run\n\
+         cold: exit={before_exit} stdout={cold_stdout:?}\nwarm: exit={:?} stdout={:?}\n\
+         warm stderr:\n{}",
+        warm.status.code(),
+        warm.stdout,
+        warm.stderr
+    );
+    for module in restored {
+        assert!(
+            trace_hit(&warm, module),
+            "with nothing changed, `{module}` must be restored from cache:\n{}",
+            warm.stderr
+        );
+    }
+    let cache_before = cache_snapshot(&warm.tmpdir);
+
+    let control = run(warm.run_again().file(edited_path, edited_src))
+        .cli_flag("--no-cache")
+        .output();
+    assert!(
+        cache_snapshot(&control.tmpdir) == cache_before,
+        "the uncached control must leave the cache untouched"
+    );
+    let observed_control = Observed::of(&control);
+    let cached = Observed::of(&run(control.run_again()).output());
+    (observed_control, cached)
+}
+
+// F1: `a` reaches `b` only through the qualified reference `b/f`, which
+// spec/08-modules.md §8.5.4 admits without an import of `b`. The layout edit
+// inserts `e` (99) ahead of the called `f` (11).
+const FQ_ONLY_A: &str = "(defn g [] (b/f))\n";
+
+fn fq_only_dependency_change(main_src: &str) -> (Observed, Observed) {
+    let (control, cached) = edit_after_warm_restore(
+        &[
+            ("main.cl", main_src),
+            ("a.cl", FQ_ONLY_A),
+            ("b.cl", DEP_CHANGE_LAYOUT_B_BEFORE),
+        ],
+        11,
+        &["a"],
+        ("b.cl", DEP_CHANGE_LAYOUT_B_AFTER),
+    );
+    assert_eq!(
+        control.exit,
+        Some(11),
+        "uncached `a` calls `f`: {}",
+        control.stderr
+    );
+    (control, cached)
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (a dependency
+// reached only through a qualified reference, spec/08-modules.md §8.5.4).
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run() {
+    let (control, cached) = fq_only_dependency_change(
+        "(import [primitives [Pure]])\n\
+         (import [a [g]])\n\
+         (import [b [f]])\n\
+         (defn main [] (Pure (g)))\n",
+    );
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (a dependency
+// reached only through a qualified reference, spec/08-modules.md §8.5.4, that
+// no other module imports). Nothing but `a`'s qualified reference loads `b`,
+// so the restored `a.o` is observed before any edit.
+// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev
+#[test]
+fn cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run() {
+    let (control, cached) = fq_only_dependency_change(
+        "(import [primitives [Pure]])\n\
+         (import [a [g]])\n\
+         (defn main [] (Pure (g)))\n",
+    );
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// DV3: a declared test child `lib.test` imports from `grp.asserts`, itself a
+// declared child. Editing only `lib.test` re-typechecks it over a restored
+// `grp.asserts`.
+const DV3_MAIN: &str = "(import [primitives [Pure]])\n\
+                        (import [lib [v]])\n\
+                        (defn main [] (Pure (v)))\n";
+const DV3_LIB: &str = "(mod- test)\n(defn v [] 7)\n";
+
+fn fresh_test_child_over_restored_declared_child(lib_test: &str) {
+    let touched = format!("{lib_test};; touched\n");
+    let (control, cached) = edit_after_warm_restore(
+        &[
+            ("main.cl", DV3_MAIN),
+            ("lib.cl", DV3_LIB),
+            ("lib/test.cl", lib_test),
+            ("grp.cl", "(mod asserts)\n"),
+            ("grp/asserts.cl", "(defn one [] 1)\n"),
+        ],
+        7,
+        &["grp.asserts", "lib.test"],
+        ("lib/test.cl", &touched),
+    );
+    assert_eq!(control.exit, Some(7), "uncached: {}", control.stderr);
+    assert!(
+        cached.hit("grp.asserts") && !cached.hit("lib.test"),
+        "with only `lib.test` edited, `grp.asserts` must restore and `lib.test` rebuild:\n{}",
+        cached.stderr
+    );
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (a fresh
+// module typechecked over a restored declared child, spec/08-modules.md §8.2.3).
+#[test]
+fn cache_fresh_test_child_over_restored_declared_child_matches_uncached_run() {
+    fresh_test_child_over_restored_declared_child(
+        "(import [grp.asserts [one]])\n(defn check [] (one))\n",
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (as above, the
+// child also importing its parent, spec/08-modules.md §8.3.8).
+#[test]
+fn cache_fresh_super_importing_test_child_over_restored_declared_child_matches_uncached_run() {
+    fresh_test_child_over_restored_declared_child(
+        "(import [super [v]])\n\
+         (import [grp.asserts [one]])\n\
+         (defn check [] (one))\n\
+         (defn parent-value [] (v))\n",
+    );
 }

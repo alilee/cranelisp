@@ -1827,7 +1827,7 @@ Stage B audit backlog / FIXME store, defer the rest into §26.4 with rationale.
 
 **Design refs.** `stdlib/plan-stdlib.md` §1.5 (managed-surface model + the
 three curation invariants), §26 (this rollout design); `stdlib/CLAUDE.md`
-S86 state; `design/arch/fixmes/0402-spec-curated-overload-naming-reservation.md`
+S86 state; [historical naming reservation](https://github.com/alilee/cranelisp/blob/2fd730023dc0be3f6116bbf1638693c2141f96f3/design/arch/fixmes/0402-spec-curated-overload-naming-reservation.md)
 (the binding naming reservation — must be RESOLVED in Stage A before §26.2
 authoring); [test runner](../design/arch/test-discovery.md#43-the-in-language-runner-over-discovered-pairs), [linked-mode boundary](../design/arch/test-discovery.md#45-what---link-users-see), [language constructs](../design/arch/test-discovery.md#5-the-language-constructs) and [implementation](../design/arch/test-discovery.md#6-the-implementation) (runner +
 dev-session scope + the fork-join ferry note); `testing/runner.cl §S82/S83`

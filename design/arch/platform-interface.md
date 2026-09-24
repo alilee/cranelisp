@@ -83,13 +83,10 @@ is the generated type-layout artifact.
 
 ### 2.1 Open points
 
-- **Marker-binding ergonomics for multi-ADT platforms** — FIXME 0873 under
-  [open filings](fixmes/); interior in
-  [ADT marker binding](../platform/adt-marker-binding.md).
 - **A platform signature with a residual type variable must refuse at mint** —
   FIXME 0933 under [open filings](fixmes/).
-- **Shared-heap ADT fixture** (FIXME 0874) and **source rustdoc describing
-  retired ABIs** (FIXME 0870), both under [open filings](fixmes/). Until 0870
+- **Source rustdoc describing retired ABIs** (FIXME 0870) under
+  [open filings](fixmes/). Until 0870
   closes, rustdoc that disagrees with this document about a *retired* mechanism
   is the stale side; rustdoc remains authoritative for exact current items.
 - **`spec/10-io.md` §10.10.1 still carries a forward commitment** (its `Fn a b`

@@ -1,484 +1,65 @@
 ---
 number: 0907
-target: /design (backend)
+target: /qa
 filed_by: /qa
 filed_at: 2026-07-26
 sprint_filed: 118
-refers_to: crates/cranelisp-backend/src/drop_glue.rs:497-505 (ctor_shapes identity check);
-  src/bootstrap.rs:767-783 (the seeded Bind ctor scheme);
-  crates/cranelisp-intrinsics/src/drop.rs::free_io_node_with_disposition (the live runtime IO-node teardown owner);
-  design/backend/transitive-drop-glue.md §4.1; design/arch/fixmes/0903-*.md (sibling class);
-  tests/plan/s118-test-plan.md §11 (attribution record)
+refers_to: design/backend/non-concrete-release-contract.md §4, §5;
+  crates/cranelisp-backend/src/drop_glue.rs;
+  tests/spec_10_io.rs;
+  tests/ctor_as_value.rs;
+  tests/examples.rs;
+  tests/stdlib_conformance.rs;
+  tests/plan/s122-evidence-delta.md
 status: open
-retargeted_by: /design (backend)
-retargeted_at: 2026-07-26
-ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §4.4, §4.5, §5.4
-blocked_on: 0923
+ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §5
 ---
 
-# `IO`'s existential `Bind` ctor defeats canonical per-concrete glue derivation — every release of a concrete `IO T` value hard-refuses
-
-> **RULED S119 Phase 3, `/design`(backend) —
-> `design/backend/non-concrete-release-contract.md` §4 face 4.**
-> **Disposition: runtime-directed teardown** (direction 1 of the three offered).
->
-> IO is the one face of the class where the disposition is available, and the
-> ruling says why: the unknown is discoverable *dynamically without a header
-> type-word*, because an IO node carries a tag that
-> `cranelisp-intrinsics::consume_io_tree` already walks, and `Bind`'s
-> continuation is a closure carrying its own `DROP_GLUE_PTR` — the standing M5
-> runtime dispatch. For the class's other faces the unknown word may be a raw
-> scalar with no runtime self-description at all, which is why they get a
-> different disposition.
->
-> **Split of duty:** backend owns what only the *type* knows — `Pure`'s payload,
-> discharged by the ordinary `drop<T>`, minting no IO-specific releaser — and the
-> runtime owns what only the *value* knows. `drop_glue.rs::ctor_shapes` is not
-> reached for `primitives/IO`, so its identity check at :497-505 stays exactly as
-> it is; it is a correct check on a precondition IO structurally cannot meet.
->
-> **Direction 3 (admission exclusion) is REJECTED**, weighed as `/stdlib` and
-> `/examples` demanded rather than as a cheap out: it restores the silent leak,
-> and `/examples` already measured what that costs on this exact type (the
-> `(impl (Functor IO))` spelling compiles, returns the right answer, and retains
-> ~68 bytes/call — linear to 82.7 MB at 800k iterations). It also violates the
-> ruling's R-2 directly: refusing to own a type in order to pass the release gate
-> fabricates the false fact "this type owns nothing". Ruling §4.5.
->
-> **Named residual, recorded not hidden:** a `Pure` node nested inside an *unrun*
-> `Bind` sub-tree has payload type `b` — the existential — which neither side can
-> name, so it is not discharged. Bounded leak on unrun IO trees; strictly better
-> than today's hard refusal; `/qa` owes it a failing-not-ignored guard
-> (ruling §7.1). Papering over it with a fabricated `b` is forbidden by R-2.
->
-> **Blocked on FIXME 0923** (`/arch`) — the one `cranelisp-intrinsics` public
-> entry point this needs is a *split* of `consume_io_tree` at the dec, not a new
-> mechanism. All 7 REDs here close with that plus a backend-only glue arm; this
-> is piece 2 of the ruling's §7 staging, the largest backend-only payload in
-> Spine 1.
->
-> Two riders carried into the fixing window: `Bind`'s manual seed must leave the
-> ctor **introspectable** (`/repl` item 5 — one cause, two symptoms), and the
-> `/examples` §5 trait-instance leak cell sits at the intersection of this face
-> and face 3, so it is an acceptance cell for the *class*, not for this piece
-> alone.
-
-## Severity
-
-Important — 7 committed e2e cells RED (`spec_10_io` ×3, `ctor_as_value` ×2,
-`examples` ×1 [two example programs: 21-hello-io, 23-io-sequence],
-`stdlib_conformance` ×1 [core.io/when-io, taking `core` and `core.io` down]),
-and the whole class of user programs with an IO-typed *binding or temporary*
-(any IO combinator: `when-io`, `then`, `map-io`) refuses to compile.
-
-## Minimal repro (one line, PrimitivesOnly prelude, verified at HEAD `49a20269`)
-
-```
-(match (Pure 5) [(Pure x) x (Effect e) 0])
-→ Error: codegen failed for user/__expr: codegen error at 0..0:
-  constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'
-```
-
-Scope-exit face, same signature:
-
-```
-(defn f [] (let [x (Pure 5)] 1))
-```
-
-Any release site of a concrete `IO T` value reproduces it — the match
-temporary-scrutinee dec and the scope-exit dec both route through
-`emit_typed_rc_dec` → `DropGlueRegistry::request_if_owning(IO(Int))`.
-
-## Mechanism (attributed, read at source — two layers)
-
-1. **The proximate error.** `drop_glue.rs::ctor_shapes` builds one shared
-   substitution over ALL of a type's constructors and hard-errors when two
-   ctors' result-type ADT args bind different `TypeId`s (`existing !=
-   &ctor_subst`, :497-505). `Pure`/`Effect` are seeded through
-   `register_synth_adt` sharing `Var(io_a)`; `Bind` is seeded MANUALLY
-   (`src/bootstrap.rs:767-783`) with fresh `bind_a`/`bind_b` — an intentional
-   existential encoding ("HM cannot express the existential, so Bind bypasses
-   the normal ctor scheme path"). The identity precondition is therefore
-   structurally unsatisfiable for `primitives/IO`; the check fires on the
-   first concrete `IO T` glue request, always.
-
-2. **The deeper fact — a per-ctor substitution does NOT fix it.** Even
-   substituting each ctor's own result vars positionally, `Bind`'s field
-   types (`inner: IO b`, `cont: Fn [b] (IO a)`) keep `Var(bind_b)` free:
-   the existential `b` is not determined by `IO a`'s parameter, so
-   per-concrete static glue for `IO T` cannot type Bind's fields from ctor
-   shapes at all. This is a modelling gap, not an implementation slip.
-
-## Why it surfaced at W3 (honest provenance)
-
-The S116 registry had **zero consumers** until W3 (the D1 borrow-conflict
-finding), so `ctor_shapes` was unreachable and these programs compiled —
-IO-typed scope releases went through the legacy inline emitter, which did
-not derive IO glue this way (silent shallow teardown, the leak direction).
-W3's migration routed every typed release through the registry and turned
-the silent-wrong into loud-refusal — D2's no-fallback discipline working as
-designed on a type it cannot yet model. These 7 REDs are therefore
-W3-surfaced (not in the sprint-open 28; proven not-W4's by stash/pop at the
-W4 review). A revert is not the fix; a ruling is.
-
-## Relation to FIXME 0903 — same class, third face
-
-0903's two censused escapee families (synthetic accessors of
-generic/undeclared-field products; generic trait-method instances) reach the
-release machinery with *residual signature vars* and silently leak. The
-IO/Bind face reaches it with an *existential ctor field* and loudly refuses.
-One class: signature-driven, compiled-once artifacts whose field/parameter
-types are not determined by the concrete type the release is keyed on. The
-`/design`(backend) ruling 0903 already owes should co-rule this face — ruling
-the accessor/trait families without IO leaves the loudest member unfixed.
-
-## Candidate directions (for the ruling; none costed here)
-
-- **Route IO to the runtime teardown owner.** `cranelisp-intrinsics` already
-  owns dynamic, tag-directed IO-tree teardown
-  (`drop.rs::free_io_node_with_disposition`, with the PAR branch walk in
-  `drop.rs::discharge_io_field`); a closure field is already
-  dynamically releasable via its embedded `DROP_GLUE_PTR`. The registry
-  would classify `primitives/IO` as runtime-owned and emit a call to the
-  intrinsic instead of deriving ctor shapes. Note `Pure`'s payload (`a`) is
-  the one field that IS determined by the concrete arg — the ruling must say
-  who discharges it and how the runtime knows its category.
-- **Per-ctor substitution + dynamic escape hatch for existential fields** —
-  relax the identity precondition to positional per-ctor mapping and give
-  unresolvable fields a dynamic disposition (closure via embedded ptr; ADT
-  fields would need information that does not exist without a header
-  type-word, rejected R15). Likely unsound for the general case; recorded
-  for completeness.
-- **Special-case exclusion at admission** (`HeapCategory`/registry refuses
-  to own IO; the S116-era behaviour) — restores compilation but restores the
-  silent leak too; if taken it MUST land with a failing-not-ignored leak
-  guard so the leak stays visible.
-
-## Sequencing
-
-`/qa` recommends the ruling ride the S119 0903 window (`/design`(backend),
-with `/arch` adjacency: IO is seeded by int's bootstrap, torn down by
-intrinsics, refused by backend — three contexts meet here). Until then the 7
-cells are attributed carries; `tests/plan/s118-test-plan.md` §11 carries the
-name-for-name list.
-
-## REPL-experience evidence (appended by `/repl`, S118 Phase 6a)
-
-Added at `/sprint`'s request rather than filed as a duplicate. Three things the
-attribution above does not record, all measured at the prompt at HEAD `4ed43430`.
-
-### 1. The blast radius at the prompt is narrower than "IO refuses"
-
-This matters for the ruling's urgency and for what a user can be told meanwhile.
-`07-io-and-effects.demo` — the guided arc's whole IO chapter — **replays green**.
-Everything a user meets first still works: `(platform stdio)`, `print`,
-`(do …)`, `(bind! [x …] …)`, `(Pure 42)`, `(bind (Pure 10) (fn [x] …))`, an
-effect-returning `defn` with inferred `(IO Int)`, and `if` selecting between two
-effects. The refusal needs an IO value to reach a **release site**: a `match` on
-IO constructors, an IO-typed `let` binding, or a user-defined combinator over
-`(IO a)`. So the reachable-by-a-beginner surface is intact, and the shapes that
-refuse are the ones a user reaches when they start *abstracting* over effects —
-writing their own `then`/`when-io`/`map-io`. That is a bad place to hit a wall
-(it is the first genuinely creative thing a user does with effects) but it is not
-the first ten minutes.
-
-### 2. It takes an archived regression guard down
-
-`repl/demos/archive/ring4s.demo` is RED, at exactly its `(defn then [a b] (bind a
-(fn [_] b)))` + `(then …)` segment — a demo written in S61 to guard the *previous*
-IO-combinator double-free. The segment is retained failing on purpose with an
-attribution comment naming this FIXME (`repl/demos/CLAUDE.md` §archive records
-the attribute-don't-repair rule). It is the archive's only red and it flips when
-this is ruled. Note the shape it guards: `(fn [_] b)` returning a captured IO
-value is the *same* idiom whose double-free S61 fixed, so this segment is
-load-bearing history, not incidental.
-
-### 3. The definition/call asymmetry is itself confusing
-
-```
-> (defn then [a b] (bind a (fn [_] b)))
-:(Fn [(primitives/IO a) (primitives/IO b)] (primitives/IO b)) user/then ; defn
-> /sig then
-:(Fn [(primitives/IO a) (primitives/IO b)] (primitives/IO b)) user/then ; defn
-> (then (Pure 1) (Pure 2))
-Error: codegen error at 0..0: codegen failed for user/user/then$primitives/IO$Int+primitives/IO$Int: ...
-```
-
-The definition is accepted, echoes a correct polymorphic signature, and
-introspects cleanly through `/sig`. Only instantiation refuses. From the prompt
-this reads as "the function exists and is well-typed, but calling it is
-impossible" — the user has no way to tell that the obstruction is per-concrete
-release-code derivation, and nothing in the surface suggests the shape is
-unsupported *before* they write it. If the ruling ends up at the "special-case
-exclusion at admission" option, consider whether the refusal should move to the
-**definition** so the feedback arrives where the user can still change course.
-
-### 4. Recovery is clean (the one unambiguous good news)
-
-`repl/spec.md` §5.2 holds. After each refusal the session is intact: `(+ 1 2)` →
-`:primitives/Int 3`, a following `defn` compiles and runs. No poisoning, no
-cascade. The S117 failed-codegen transaction work is doing its job here.
-
-### 5. The diagnostic's nouns are undiscoverable — and inconsistently so
-
-```
-> Bind
-Error: type error at 0..4: undefined variable: Bind
-> /info Bind
-error: unknown symbol 'Bind'
-> /info IO
-error: unknown symbol 'IO'
-> Pure
-:(Fn [a] (primitives/IO a)) primitives/IO.Pure ; deftype
-```
-
-The message names a constructor `Bind` and a type `primitives/IO`; the REPL then
-denies both exist — while `Pure`, the *sibling constructor of the same type*,
-introspects correctly. This traces straight to the mechanism above: `Pure` and
-`Effect` go through `register_synth_adt` and land as ordinary entries, `Bind` is
-seeded manually at `src/bootstrap.rs:767-783` and evidently not enrolled the same
-way. So the introspection asymmetry and the glue refusal have **one cause**, and
-whatever the ruling does about `Bind`'s scheme should make it introspectable —
-a user told to reason about `Bind` must be able to look it up.
-
-`/info IO` failing is a separate small gap worth catching in the same window: the
-type is nameable in a signature (`(primitives/IO a)` prints in every `defn` echo
-above) but not introspectable.
-
-The *frame* the message is rendered in — degenerate `0..0` span, doubled
-`codegen error at 0..0:` prefix, `user/user/` doubling, and the `$`-mangled
-instance name — is **not** specific to this defect and is filed separately as
-FIXME 0915 with `repl/spec.md` §5.5 as the new normative contract. Items 1–5
-here are the IO-specific half.
-
-## Stdlib evidence (appended by `/stdlib`, S118 Phase 6a)
-
-Appended per `/sprint`'s dispatch rather than filed as a duplicate. The
-library-author half: what the refusal costs, and the falsification of the
-"just re-spell it" option that a reader of this FIXME would otherwise try.
-
-### 1. Conformance gate reconciled name-for-name — 36 of 38
-
-`stdlib_conformance::stdlib_all_public_modules_compile_and_run` (78 s, cold
-per-module subprocess loop) reports **two** modules, one cause: `core.io`
-(`codegen failed for core.io/when-io`) and its parent shell `core`
-(transitive — `core.cl` declares `(mod io)`). The other 36 are green; the
-three `def`/`const` binder rows in the same binary are green. So the
-severity block's "×1 [core.io/when-io]" is one *cause* but **two named
-modules** in the aggregated report — worth knowing at the ruling's
-acceptance, since both flip together.
-
-Blast radius *inside* `stdlib/` is exactly those two: the prelude does not
-re-export `core.io`, and `derive`/`derive.helpers` reach `core.syntax`
-directly rather than through the `core` shell. `io.monad` — the prelude's
-`pure`/`do`/`bind!` — is **green**, which is the mechanism behind `/repl`'s
-item 1: a beginner's first effects work; what breaks is the first attempt to
-*abstract* over effects, which is what all six `core.io` combinators are.
-
-### 2. The trigger inside `when-io` is the MIXED `if` arm (narrowed)
-
-`when-io` contains no `bind` at all — `(if cond io-action (Pure 0))`. Probes
-at HEAD `e67857ce` (one file, PrimitivesOnly, `--no-cache`):
-
-| Shape | Result |
-|---|---|
-| `(defn f [] (Pure 0))` | compiles — returned concrete IO transfers, no release |
-| `(defn g [c] (if c (Pure 1) (Pure 0)))` | **compiles** — both arms fresh |
-| `(defn i [io] (if true io (Pure 0)))` | refuses |
-| `(defn j [c io] (if c io (Pure 0)))` | refuses — this is `when-io` |
-| `(defn h [] (let [x (Pure 5)] 1))` | refuses (the §"Minimal repro" scope-exit face) |
-| `(defn pick [c b] (if c b (MkBx 0)))` over an ordinary user ADT | **compiles** |
-
-So the `if`-join is not itself the trigger: two freshly-constructed arms
-returned are fine. The refusing shape is **one borrowed-parameter arm joined
-with one freshly-built concrete arm** — and the identical shape over a
-non-IO heap ADT compiles, which independently confirms the attribution is
-IO/`Bind`-specific and not a general mixed-arm release defect (i.e. it is
-not 0726's axis).
-
-### 3. There is NO legal re-spelling — the workaround option is falsified
-
-This is the load-bearing finding for the ruling's urgency.
-
-| Shape | Definition | Concrete call |
-|---|---|---|
-| `(defn >> [a b] (bind a (fn [_] b)))` | compiles | **refuses** (`>>$primitives/IO$Int+primitives/IO$Int`) |
-| `(defn map-io [f io] (bind io (fn [x] (Pure (f x)))))` | compiles | refuses |
-| `(defn wi3 [c a alt] (if c a alt))` — polymorphic `when-io` | **compiles** | **refuses** (`wi3$Bool+primitives/IO$Int+primitives/IO$Int`) |
-
-The four combinators that are *polymorphic* (`>>`, `map-io`, `timeout`,
-`sequence-io`) already compile in `core.io` — they refuse only when a user
-instantiates them. `when-io`/`unless-io` refuse earlier only because they
-name a concrete `(Pure 0)` in their own bodies. Re-spelling `when-io`
-polymorphically therefore **compiles the module and leaves the capability
-exactly as broken**, while removing the only signal the conformance gate
-has. `/stdlib` has consequently declined to land any workaround: `core.io`
-stays red as the honest record, with the measured detail and the six
-withheld self-tests enumerated in `stdlib/core/io.cl`'s header (per
-`stdlib/CLAUDE.md`'s ceilinged-coverage convention), and the assessment in
-`stdlib/plan-stdlib.md` §28.2.
-
-**Implication for the ruling's option 3** ("special-case exclusion at
-admission", which restores compilation and the silent leak): from the
-library-author side that option is the *only* one that makes the six
-combinators reachable again, and it would restore a leak on every IO value
-a user's own combinator releases. If it is taken, the failing-not-ignored
-leak guard the option already requires should include a **stdlib-shaped**
-cell (a user-defined `then`/`when-io` over `(IO a)`, not just a bare
-`(Pure 5)` release), because that is the shape the leak actually reaches in
-production.
-
-### 4. Acceptance rider for the fixing change-set
-
-`core.io` has no `(mod- test)` today — untestable while refused. The six
-withheld cases (`>>`, `map-io`, `when-io`, `unless-io`, `sequence-io` over
-`Nil` and a 3-element list, `timeout` both arms incl. loser cancellation)
-are enumerated in the module header as a restore list; `/stdlib` lands
-`stdlib/core/io/test.cl` in the same window the ruling's fix lands, and the
-`stdlib_conformance` red flips from 2 modules to 0.
-
-## Examples evidence (appended by `/examples`, S118 Phase 6a)
-
-Appended per `/sprint`'s dispatch rather than filed as a duplicate. The
-learner-facing half, plus **one new measurement that changes the shape of the
-class**: a trait-method instance over `IO` does NOT refuse — it compiles, runs,
-returns the right answer, and leaks.
-
-### 1. Examples matrix reconciled name-for-name — 35 of 37, four cells
-
-Full replay at HEAD `a1f5b2b7`, 37 programs (35 top-level `.cl` + `16-modules/`
-+ `37-method-import/`) × four cells (cold `--run`, warm `--run`, cold `--link`,
-warm `--link`; cold = `examples/.cranelisp-cache` removed, `--no-cache` for the
-run cells since `--link` rejects that flag). **Every cell agrees**: 35 green at
-their documented exit codes, `21-hello-io.cl` and `23-io-sequence.cl` red in all
-four. No third example affected; no run/link divergence; no cold/warm
-divergence. This matches the severity block's `examples ×1 [two programs]`
-exactly.
-
-### 2. The dark region inside each file is TWO definitions, not the IO chapter
-
-Measured by deleting only the refusing definitions in a scratch copy (never
-committed):
-
-| File | Refusing definitions | Rest of the file |
-|---|---|---|
-| `21-hello-io.cl` | `then` (`(bind a (fn [_] b))`), `map-io` | remaining 13 of 15 sub-tests run, exit 167 (was 243 for 15) |
-| `23-io-sequence.cl` | `map-io` | remaining 7 of 8 sub-tests run, exit 136 (was 178) |
-
-So 3 sub-tests out of 23 across the two files carry the whole refusal, and all
-three are the same beat: **"build your own combinator out of `Pure` and
-`bind`."** Everything else in both files — `Pure` round-trips, nested `bind`
-chains, `if` selecting between two freshly built IO branches, recursive IO
-construction, IO-returning helper functions, and real `(platform stdio)` console
-output — compiles and runs today. This is the batch-mode confirmation of
-`/repl`'s item 1 and `/stdlib`'s item 1, measured on the sequence rather than at
-the prompt.
-
-### 3. NEW — the trait-method spelling COMPILES, and LEAKS (the silent face)
-
-Neither `/repl` nor `/stdlib` probed the trait-instance axis. It behaves
-differently from every shape in `/stdlib`'s tables, in **one file, one session,
-one concrete instantiation**:
-
-```
-(import [primitives [IO Pure bind mul-i64]])
-(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))
-(impl (Functor f) (Functor IO)
-  (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))     ; compiles AND RUNS
-(defn map-io [g io] (bind io (fn [x] (Pure (g x)))))      ; byte-identical body
-(defn dbl [n] (mul-i64 n 2))
-(defn main [] (bind (fmap dbl (Pure 21)) (fn [a] (map-io dbl (Pure a)))))
-→ codegen failed for u/u/map-io$Fn(Int;Int)+primitives/IO$Int:
-  constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'
-```
-
-Delete the `map-io` leg and the same program exits **42** — the trait-dispatched
-`fmap` over `(IO Int)` produced the correct value. Same body, same concrete
-type, same release obligation; the monomorphised free function refuses and the
-trait-method instance does not.
-
-**It is not a workaround — it is the leak.** Driver loop, 400k and 800k
-iterations, `--run --no-cache`, maxRSS of the child process:
-
-| Driver | 1k | 400k | 800k |
-|---|---|---|---|
-| `(bind (fmap (fn [z] z) (Pure n)) (fn [v] (recurse)))` — trait `fmap` over IO | 28.1 MB | 55.4 MB | 82.7 MB |
-| same loop with the fmap body written INLINE (`(bind (Pure n) (fn [x] (Pure x)))`) | 28.0 MB | 27.9 MB | — |
-
-Linear, ~68 bytes retained per call; the inline control over the identical IO
-tree is flat. So the trait instance reaches the release machinery and does not
-discharge the `IO T` it was handed. That is precisely 0903's censused family 2
-(**generic trait-method instances → residual signature vars → silent leak**)
-arriving on the *same type* whose free-function face loudly refuses here.
-
-Two consequences for the ruling:
-
-- **The "no legal re-spelling" finding of `/stdlib` §3 is stronger than it
-  reads.** There IS a spelling that compiles — and it is worse, because it
-  removes the diagnostic while keeping the defect. Anyone reading this FIXME and
-  reaching for `impl (Functor IO)` as a way to unblock a program should be told
-  not to.
-- **The co-ruling with 0903 is now evidenced, not just argued.** The loud face
-  and the silent face are demonstrable on one type, in one file, differing only
-  by whether the combinator is a free function or a trait method. A ruling that
-  fixes the refusal without discharging the trait-instance release would turn
-  the 7 loud REDs into silent leaks.
-
-Not claimed: whether the leak is IO-specific or is the general trait-instance
-behaviour. The natural non-IO control (a `(Functor Option)` instance in a
-deep-recursion driver) is unavailable — it SIGSEGVs, which is a **separate**
-defect filed as FIXME 0916, not this one.
-
-### 4. What the learner loses, and where
-
-`21-hello-io.cl` is the **opening file of the IO chapter**, and `22`, `23`, `24`
-all name it in their headers ("Example 21 introduced Pure, bind, and print").
-Two of the chapter's four files are dark, including the entry point, so a reader
-walking the sequence in order meets their first broken program exactly where
-effects are introduced. Concepts with no surviving carrier anywhere in the
-sequence: `if` selecting between IO branches; recursive IO construction; user-
-defined IO combinators (the refused capability itself); and **real console
-output** — `21` is the only example that loads `(platform stdio)`, so with it
-dark nothing in the corpus prints to a terminal. Surviving elsewhere: `Pure`/
-`bind` basics and effect-then-pure-result (`22`), read-then-process (`24`),
-IO-returning `defn` and nested dependent binds (`34`), IO values as arguments to
-the `race`/`select` primitives (`32`).
-
-Both files are attributed in place (header block naming this FIXME, plus an
-inline marker on the refusing Part) and left unmodified otherwise, per the
-attribute-don't-repair rule `/repl` applies to `repl/demos/archive` and
-`/stdlib` applies to `core.io`. They flip green as whole units when this is
-ruled; no `tests/examples.rs` exit-code change is owed then or now.
-
-### 5. Acceptance rider for the fixing change-set
-
-- `examples/21-hello-io.cl` exits **243** and `examples/23-io-sequence.cl` exits
-  **178** in all four cells (cold/warm × run/link). Their attribution headers and
-  Part markers delete in the same change-set.
-- Add a **trait-instance leak cell** to whatever guard the ruling lands: the
-  `(impl (Functor IO) (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))`
-  instance must balance. `/stdlib`'s rider already asks for a stdlib-shaped leak
-  cell if option 3 is taken; this one is needed under **every** option, because
-  the trait face leaks at HEAD today regardless of what happens to the refusal.
-
-## Docs-side rider (appended by `/docs`, S118 Phase 6b)
-
-Three user-doc surfaces carry a known-limitation note that **deletes in the fixing
-change-set** (they are the user-visible face of this defect, not new evidence):
-
-- `user/getting-started.md` §"A program that does IO" — the note; the section's
-  worked program was re-spelled to an inline `hello.cl` because
-  `examples/21-hello-io` is dark. When the ruling lands, restore the
-  `examples/21-hello-io --run` transcript (`Hello, world! / Hello, / world! /
-  Computing... / Cranelisp`, exit 243).
-- `user/guide/concurrency.md` §`timeout` — the note, and the §"Honest scope"
-  bullet re-worded to say `timeout` is unavailable to *every* program (not only
-  free-standing ones) while `core.io` is dark. Both revert.
-- `user/guide/concurrency.md` §"Structured cancellation" — the `(import [core.io
-  [timeout >>]])` stdio example was replaced with a `primitives`-only
-  `race`/`sleep` spelling (verified running at HEAD `1c79b227`). The `core.io`
-  spelling may return, but the `primitives`-only one is worth keeping as the
-  free-standing variant.
-
-Plus `user/guide/using-platforms.md`'s pointer at `examples/21-hello-io.cl`, which
-carries a one-line caveat.
+# IO release after the runtime-directed teardown — evidence and rider reconciliation
+
+## Current state (verified 2026-09-24)
+
+- The concrete `IO T` release refusal (`constructor 'Bind' disagrees on
+  declared parameter identity`) is ruled and its mechanism delivered:
+  `drop_glue.rs` classifies `primitives/IO` as runtime-owned before shape
+  derivation and releases through `runtime/free_io_node`; `Pure` carries a
+  stamped payload-glue word
+  ([contract](../../backend/non-concrete-release-contract.md) §5). An
+  admission exclusion for IO stays rejected (contract §4.5).
+- The S122 nested-action `sequence-io` abort was attributed separately and its
+  reduced public batch passes; it is not this filing's evidence.
+- The seven S118 cells — `spec_10_io` (three), `ctor_as_value` (two),
+  `every_example_runs_with_documented_exit` (examples 21 and 23) and
+  `stdlib_all_public_modules_compile_and_run` (`core.io`, `core`) — are not
+  among the six non-environmental REDs of the S122 opening stocktake
+  (run `b5d19d16-6bf5-4265-bc02-18fb1f773fde`,
+  [candidate inventory](../../../sprints/s122-candidate-inventory.md)). Not
+  rerun here.
+- Several consumers still describe the pre-delivery refusal as current.
+
+## Remaining obligation
+
+1. **Evidence (`qa`).** Accept the seven cells' passing state as closure
+   evidence for the refusal, or rerun them. Add a
+   balance cell for a trait instance over IO, such as
+   `(impl (Functor IO) (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))`:
+   in S118 it compiled, returned correctly and retained about 68 bytes per
+   call. The unrun-`Bind` payload residual is FIXME 0934's.
+2. **Stale refusal text (route to owners).** Once the cells pass:
+   - `test` updates the `// defect:` notation on those cells;
+   - `training` removes the known-red headers and part markers in examples 21
+     and 23;
+   - `test` flips the retained red segment in `repl/demos/archive/ring4s.demo`;
+   - `dev` (stdlib) restores the six withheld `core.io` cases listed in
+     `stdlib/core/io.cl`;
+   - `docs` removes the limitation notes in `user/getting-started.md` and
+     `user/guide/concurrency.md`.
+3. **Introspection (`spec`/`design` int).** `Bind` and `IO` are named by
+   diagnostics yet `/info Bind` and `/info IO` report unknown symbols while
+   `Pure` introspects. Decide whether the manually seeded `Bind` must be
+   introspectable.
+
+## Closure
+
+The seven cells and the trait-instance balance cell pass, and the listed
+owners have removed their refusal-era text or recorded why it stays.
