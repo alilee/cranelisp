@@ -76,10 +76,11 @@ reopen a NULL window for a stale closure mid-reload.
 
 One `JITModule` per compile batch. A worker claims a codegen work item, creates
 a **fresh** JIT for that batch, compiles, finalises, writes each function's code
-pointer into the GOT, and stores an `Arc<Jit>` on each produced
-`ModuleEntry::Def.code`. A worker carries no long-lived JIT between work items.
-The `__expr` synthetic defn for REPL eval is compiled inline on the eval path
-against its own fresh JIT, not submitted to a worker.
+pointer into the GOT, and attaches a `Code::Jit(Arc<Jit>)` clone to each
+compiled entry. A worker carries no long-lived JIT between work items. A REPL
+eval turn's batch compiles inline on the eval thread, not on a worker. Its
+`__expr` wrapper is an ordinary entry of that batch and shares the turn's fresh
+JIT (`int.md` §5.3).
 
 `Arc<Jit>` is the sharing primitive: the functions produced by one
 `compile_to_module` call share one underlying `Jit`, whose custom `Drop` calls

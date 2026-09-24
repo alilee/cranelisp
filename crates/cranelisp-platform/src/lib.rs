@@ -50,7 +50,7 @@
 //! takes the caller's transferred ref directly without re-inc'ing — used
 //! by platform externs that capture a heap parameter into an Effect
 //! closure (Decision 0024 — consuming capture-RC protocol; see
-//! `design/backend/ring2-rc.md` §10.4).
+//! `design/platform/platform-dlls.md` §4).
 //!
 //! # RC discipline at the boundary
 //!
@@ -1386,7 +1386,7 @@ pub trait CLHeap: CLType + Copy {
     /// when the caller did NOT transfer ownership (e.g. when the extern
     /// takes a borrow / the ref is reused after the extern returns).
     ///
-    /// See `design/backend/ring2-rc.md` §10.4 Form B for the rationale.
+    /// See `design/platform/platform-dlls.md` §4 for the rationale.
     fn into_owned_consuming(self) -> CLOwned<Self> {
         // No inc — the caller's transferred ref becomes the CLOwned's ref.
         // Construct the wrapper directly, bypassing `CLOwned::new`'s inc.
@@ -1704,7 +1704,7 @@ pub unsafe fn manifest_to_descriptors(
 // transferred-reference contract: one caller-transfer in, one CLOwned::drop
 // dec out, net zero. `own()` vs `into_owned_consuming()` differ by whether
 // they inc for the capture (former) or take the caller's transferred ref
-// directly (latter). Regression guard for `design/backend/ring2-rc.md` §10.4.
+// directly (latter). Regression guard for `design/platform/platform-dlls.md` §4.
 // ---------------------------------------------------------------------
 
 #[cfg(test)]

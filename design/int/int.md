@@ -92,9 +92,9 @@ Per `design/arch/bounded-contexts.md` §6 — `int` is the *integration layer* s
 
 **Does not own**:
 - Source parsing (frontend)
-- Macro-head recognition (`cranelisp_types::resolve_macro_head`) and reader-quote folding (frontend). int owns the Pass-1 expand walk and macro execution (`src/expander.rs`, `src/marshal.rs`; `src/CLAUDE.md` §"Macro expansion")
+- Macro-head recognition (`cranelisp_types::resolve_macro_head`) and reader-quote folding (frontend). int owns the Pass-1 expand walk and macro execution ([§6.8](#68-pass-1-macro-recognition-and-execution))
 - Type inference (typecheck)
-- Code emission (backend) — backend writes its own `Code::Jit` directly via Decision 41
+- Code emission (backend) — backend fills GOT slots and returns artefacts; int attaches the `Code` owner (§7.2)
 - Runtime helpers — RC, allocator, string ops, IO trampoline (runtime)
 - Platform ABI contract (platform)
 - Boundary types (`cranelisp-types`, owned by `/arch`)
@@ -109,7 +109,7 @@ Per `design/arch/bounded-contexts.md` §6 — `int` is the *integration layer* s
 - Mutual-import deadlock (Decision 30) — two modules that import each other deadlock the form-by-form scheduler. Workaround: `discover-tests`. **S93: structurally resolved by the signature/body pre-pass (`design/int/signature-body-prepass.md`) — the same fix that closes the H6/H7 import race (FIXME 0425 item 1). Mutual imports are a compile-time cycle-error (ratified user ruling, S93 Phase-3 review): the module-atomic src/-only barrier converts the deadlock into a deterministic `CycleError` at the import site. The "compile mutual imports" reading is REJECTED, not deferred — no cross-crate typecheck change is admitted; FIXME 0448 is closed. Authoritative record: BC §6 + `concurrency-dependency-service.mmd` Note.**
 - **Compiler-internal H6/H7 import/typecheck race** (`'X' not found in module 'Y'`, ~5–10% under contention) — the convention-spread publish/readiness/block/resume protocol ([historical concurrency analysis](https://github.com/alilee/cranelisp/blob/48d6e713a396e0e6ba3f4c0b19174144ad3676a6/design/int/concurrency-architecture.md), sections 3.5–3.6, FIXME 0425 item 1). **S93 gate: closed structurally by the signature/body pre-pass (`design/int/signature-body-prepass.md`), replacing the tactical `eval_in_flight`/`eval_owned` flag family (heisenbug lineage) with a two-phase barrier — Principle 8/18.**
 - One `CompilerSession` per process (pipeline-v4 §1).
-- Per-batch JIT lifetime (Decision 31, amended by Decision 41 — per-symbol cardinality) — never a long-lived per-worker JIT.
+- Per-batch JIT lifetime (Decision 31; §5.2) — never a long-lived per-worker JIT.
 
 ---
 
@@ -127,7 +127,7 @@ Three structural notes about the surface worth naming:
    int imports from each implementation crate directly. Any convenience
    re-export is retained only when it remains present in the current checked
    public surface; the root library has a small consumer audience.
-3. **`Code` re-export per Decision 41.** `Code` lives in `cranelisp-backend/src/code.rs` (moved per Decision 41 from the previous `src/code.rs` location). int re-exports `pub use cranelisp_backend::Code;` for session-boundary `SymbolTable<Code, ()>` instantiation. Backend constructs `Code::Jit` directly inside `compile_to_module` and writes via `SymbolTable::write_code(&self, sym, code)`; int no longer wraps a backend return tuple. Principle 3 protection (no `cranelisp-types → cranelisp-backend` dep) survives intact.
+3. **`Code` is re-exported, not defined, here.** `Code` lives in `cranelisp-backend`; `src/code.rs` re-exports it and instantiates the session table (§5.1). Backend fills GOT slots inside `compile_to_module`; int attaches the `Code` owner afterwards (§7.2). `cranelisp-types` never depends on backend (Principle 3).
 
 ---
 
@@ -680,6 +680,40 @@ no-regression sweep, not attribution. A firing is a `dev`(src) defect routed thr
 `qa` for attribution. The unit cells are listed on the R7 row of
 `design/arch/safety-invariants.md`.
 
+### 6.8 Pass-1 macro recognition and execution
+
+[Macro expansion ownership](../arch/macro-expansion-ownership.md) splits
+recognition from execution; the
+[availability model](../arch/macro-availability-model.md) decides when a macro
+exists. Within those, int's expand walk (`expander::expand_sexp_recursive`,
+driven by `process_form/macro_resolution.rs::try_expand_sexp`) keeps these rules:
+
+- **Two recognisers, one query.** The cluster walk uses
+  `SymbolTableMacroResolver`; `/expand` uses `ReadOnlyMacroResolver`. Both
+  recognise only through `ResolutionScope::resolve_macro_head` over committed
+  tables and the session's prelude-fallback bit. Neither walks import chains,
+  aliases or visibility itself.
+- **One executor, keyed by the canonical home.** `JitMacroExpander` reads a
+  clause's code from the GOT slot of the macro's home module. No per-caller macro
+  map exists. Such a map would duplicate that fact and could key it by the
+  calling module, not the home.
+- **Recognition never compiles from source.** A macro's clauses compile when its
+  checkpoint publishes (`s117-conformance-recovery.md` §2.1). The cluster
+  recogniser has one side effect: when the home module was restored from cache
+  and its object is not yet loaded, it loads that object before returning.
+  `/expand` has no side effect. If a recognised clause is still not in memory,
+  execution fails with an aborted-expansion diagnostic. It is never skipped
+  silently.
+- **Borrow scope.** The recogniser borrows only the committed tables and the
+  resolution scope. It drops before the expanded form is built and checked, and
+  never holds check state or staging.
+- **Unloaded qualified head.** A `mod/macro` head whose module is not loaded
+  aborts the walk as blocked. The cluster core turns that into a dependency gap
+  through `drive_module_dep` (§6.3) and commits no partial expansion. A
+  `:`-prefixed symbol is a type annotation, never a macro head or load candidate.
+- **Hygiene.** Recognition records each foreign defining module. Post-expansion
+  qualification then uses them (`expansion-qualification-scope.md`).
+
 ---
 
 ## 7. Cache + linker orchestration (Decisions 34, 37)
@@ -700,10 +734,11 @@ restored module's own imports, so cached and fresh modules mix in any combinatio
 
 ```text
 register dependency M:
-  if try_cache_hit_load(M):           # valid .meta.json + .o, decoded and installed
+  if try_cache_hit_load(M):           # valid .meta.json (+ .o unless generic-only)
+    install M's decoded table
     re-resolve M's platform declarations
     register M with the scheduler as typechecked-from-cache  # enqueues LoadObject(M)
-    recurse into M's imports          # cache-load or register fresh, per dependency
+    recurse into M's imports, re-export targets and declared children
   else:
     register M for a fresh typecheck
 
@@ -716,14 +751,23 @@ codegen worker, LoadObject(M):
 - **Order independence.** Typecheck, fresh or restored, fixes each module's GOT slot
   layout. Codegen fills slot contents, and cross-module calls read another module's
   GOT at run time, so modules load in any order.
+- **Table before readiness.** The decoded table installs before the scheduler
+  registration, because that registration releases waiters that read it.
+- **Concurrent discovery is idempotent.** A dependency whose table is already
+  installed, by a concurrent restore or the prelude preload, is satisfied
+  without a re-read.
+- **Generic-only modules have no object.** A module whose only definitions are
+  slot-less templates writes no `.o`; its metadata restores and it registers with
+  nothing to load. A missing `.o` with codegen targets is a miss.
 - **No swallowed failures.** A restored callable whose address the `.o` does not
   define is a hard load error. A published NULL slot would be reachable from its
   callers.
 - **A failed platform re-resolution is a cache miss.** If a recorded DLL cannot be
-  loaded, the restore is abandoned and the module takes the fresh path, which reports
-  the load error normally.
-- **Restoration parity.** A restored world must match a fresh one
-  (`cache-hit-loading.md` §0).
+  loaded, the restore returns a miss and the caller takes the fresh path. The
+  decoded table is already installed at that point. Nothing yet shows that the
+  fresh path replaces it, or that a later handler does not take it as satisfied
+  (§16.0).
+- **Restoration parity.** A restored world must match a fresh one ([restoration parity](#75-restoration-parity)).
 
 ### 7.2 Backend entry points
 
@@ -743,6 +787,12 @@ The nice worker stamps `SymbolTable.schema_version` with backend's
 rebuilt fresh and the next write replaces the stale files. Staleness produces no
 user-visible message. Backend owns the constant and its bump policy.
 
+Per-module validity is backend's manifest check: the global keys, then the
+module's own source hash, then the dependency hashes the caller supplies. Int
+supplies none. The nice worker records an empty dependency map and the restore
+path checks against an empty one, so the dependency-hash comparison never runs
+(§16.0).
+
 ### 7.4 Linker retention
 
 - Every entry restored from one `.o` holds a clone of the same `Arc<Linker>`; the
@@ -756,6 +806,28 @@ user-visible message. Backend owns the constant and its bump policy.
   the pair through display, exit conversion and the glue call. Linked startup needs
   no host `Arc`, because system-linked text stays mapped until process exit
   (`result-owner.md`).
+
+### 7.5 Restoration parity
+
+A restored module holds every relationship the fresh build holds. Each restore
+step is the same call the fresh path makes, at the equivalent lifecycle point
+(Principle 11). Do not add a cache-only parallel path. `try_cache_hit_load`
+returns `Result<bool, CranelispError>`: an ordinary miss is `Ok(false)` and falls
+through to a fresh build. Malformed metadata or conflicting live state is `Err`,
+never downgraded to a miss.
+
+| Relationship | Fresh path | Restore rule |
+|---|---|---|
+| Declared children | `dependency.rs::enrol_declared_submodule` after the parent's cluster commits | The same registrar, over the persisted `submodules`, after the parent table installs, so a child's `super` import sees it. Private and public children take one path, and an existing child is a no-op. |
+| Trait impls the module wrote | The typecheck producer appends `WrittenTraitImpl` records (`design/arch/trait-impl-cache-carrier.md`) | Restore each foreign trait home first. After the writer table installs, re-enrol every record through the types-owned `enrol_written_trait_impl`. `Enrolled` and `AlreadyEnrolled` succeed; a divergence is an error, never a silent pick. An empty record vector is trusted as written: never default it, rescan the trait home or rebuild it from mangled names. |
+| Module aliases | Session `ModuleAliases`, keyed by `cranelisp_types::module_alias_key` (`design/arch/module-alias-scoped-lookup.md`) | Rebuilt from the persisted `imports` and `submodules` by the same writers. The map is unserialized session state, so aliases add no cache field. |
+| Monomorphic instances | `Concrete` entries in the demanding module's table, each with its `minted_from` link | Restored with that table; no separate step. |
+| Platform functions | Platform load wraps the DLL's GOT (`design/arch/platform-interface.md` §6.4) | The persisted declarations re-run the same load; a failure is a miss ([cache-hit flow](#71-cache-hit-flow-inside-register_module)). |
+
+The types crate defines lifecycle legality of a decoded table. The backend
+decoder maps only an instance-key mismatch from `validate_lifecycle` to
+`CacheStale`, and restore adds no further check. The restore path must not grow
+an int-private copy of a lifecycle rule to close that gap (§16.0).
 
 ---
 
@@ -1103,8 +1175,7 @@ carries the rule; this list is the review checklist.
    (`design/int/s122-closure.md` §2).
 3. **A cache-specific parallel** — child, written-impl or alias restoration on
    the restore branch only; a silent pick on written-impl divergence; any
-   tolerance for an empty `written_trait_impls` vector (`cache-hit-loading.md`
-   §0).
+   tolerance for an empty `written_trait_impls` vector ([restoration parity](#75-restoration-parity)).
 4. **An alias outside the one mint** — a `module_aliases.insert` key not produced
    by `cranelisp_types::module_alias_key`, a bare-key fallback beside the
    scoped walk, or a substitution that accepts an undeclared alias.
@@ -1156,12 +1227,12 @@ Active Decisions affecting int (operative this sprint or constraint-bearing):
 
 | Decision | Headline | Status for int |
 |---|---|---|
-| 30 | Form-by-form scheduler deadlocks on mutual imports | int's scheduler exhibits the deadlock; workaround via `discover-tests` |
+| 30 | Form-by-form scheduler deadlocks on mutual imports | Resolved: a mutual import is a cycle error at the import site ([§6.2](#62-cluster-orchestration)) |
 | 31 | One `JITModule` per batch; `Arc<Jit>` on entry; custom Drop | Operative (§5.3); no current test observes reclaim |
 | 35 | `Code` owns lifetime only; addresses live in the GOT | `Code` lives in `cranelisp-backend`; int re-exports it and instantiates the session table (§5.1) |
-| 40 | `trace.rs` + `io_trace.rs` relocate to int; runtime exposes `IoObserver` | Pre-implementation; FIXME 0103 |
+| 40 | `trace.rs` + `io_trace.rs` relocate to int; runtime exposes `IoObserver` | Operative (§11) |
 | 41 | Backend publishes slot addresses and returns artifacts | Operative for slot publication and artifacts; int attaches `Code` (§7.2). The compile batch, not the symbol, is the JIT unit (§5.2) |
-| 42 | `PlatformError` adopts `ErrorLocation`; lives in `cranelisp-types` | Pre-implementation; FIXME 0104 |
+| 42 | `PlatformError` adopts `ErrorLocation`; lives in `cranelisp-types` | Operative (§9) |
 
 Legacy Decisions (outcome embodied in architecture; located through [the decision index](../arch/decisions/README.md)) — int-specific embodiments include 9, 21, 22, 23, 24, 25, 26, 32, 33, 34, 36, 37, 38, 39. Each of these is "as-built" inside int today; the source code reflects the commitment.
 
@@ -1193,7 +1264,7 @@ dispositions never executed, and on files since deleted.
 
 ---
 
-## 16. Open questions / FIXMEs filed
+## 16. Open obligations
 
 ### 16.0 Open Binary/int obligations (verified against source 2026-09-21)
 
@@ -1229,9 +1300,30 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   unverified; the filing stays open until a platform-module unit row shows a
   concrete signature registering and a bare-lowercase-leaf signature refusing.
 - **Load-boundary lifecycle validation.** The cache decoder treats only an
-  instance-key mismatch as stale (`cache-hit-loading.md` §0). Whether other
-  invalid decoded lifecycle states can restore is unmeasured; attribution
-  belongs to `qa` and the fix, if needed, to the types/backend owners.
+  instance-key mismatch as stale ([restoration parity](#75-restoration-parity)). Whether other invalid decoded
+  lifecycle states can restore is unmeasured. The falsifier is a decoded table
+  with any other invalid lifecycle state that restores instead of regenerating.
+  The user deferred hardening; `qa` holds it as an accepted residual
+  (`tests/plan/s122-evidence-delta.md` §C-A). Any fix belongs to the
+  types/backend owners.
+- **Dependency-hash validity (verified 2026-09-24).** Int neither records nor
+  checks dependency hashes ([cache validity](#73-cache-schema-versioning-decision-34)). An importer therefore restores
+  on its own source hash even after a dependency's source changed. The
+  body-change cells in `tests/cache.rs` pass because calls go through the
+  dependency's GOT. A changed dependency *signature* under an unchanged,
+  itself-cached importer is unobserved: build `main → a → b`, change `b`'s
+  exported type between runs, leave `a` untouched, and see whether `a` restores
+  against the new `b`. Attribution belongs to `qa`. Any fix sits in int's
+  writer and restore path, which would feed backend's existing check; it needs
+  no second check.
+- **Abandoned restore after platform failure (verified 2026-09-24).**
+  `reresolve_cached_platforms` runs after `install_cached_table`, so a
+  platform-load miss returns `Ok(false)` with the decoded table installed
+  ([cache-hit flow](#71-cache-hit-flow-inside-register_module)). No test exercises this branch. The falsifier: a cached module whose
+  recorded DLL is absent at restore. Check whether the fresh build replaces the
+  table and reports the load error, and whether a second importer's
+  already-installed guard takes the stale table as satisfied. Attribution
+  belongs to `qa`.
 - **Superseded dependent-recompilation machinery.** `src/redefine.rs` still
   contains the S101–S103 transaction (`run_transaction`, `mark_broken` and trap
   stubs, the T1 end-of-turn reload and its error block, `TransactionReport`
@@ -1264,75 +1356,6 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   only consumers of those outcomes are the superseded machinery above, so
   whether the rule is still owed or retires with that machinery is an
   authority question for `arch` and the user, not a wording fix.
-
-**S64-era FIXMEs (0098/0099/0100/0103/0104/0108) have all CLOSED** (W-Macro, the trace relocation, the platform-interface landing, the display absorb, and the cluster-atomic restructure resolved them — verified against source S81). The current int FIXME backlog (S81 "clean & green", Phase 3 design):
-
-**S81 Wave 9a — light int items:**
-
-- **FIXME 0013** (`/int`) — `observability.rs::reset_panic_hook_installed_for_tests` mutates process-global panic-hook state without a serialisation lock. Add a `static TEST_GUARD: Mutex<()>` and take it at the top of every test that touches the install path. ~10 LOC; test-only; no baseline impact.
-- **FIXME 0217** (`/int`) — inline-module spec §8.2.2 step-2 parent-file rewrite. `handle_mod` (`worker.rs:2650`) calls `write_inline_mod_to_disk` (step 1) but never rewrites the parent file's `(mod name forms…)` → `(mod name)` (step 2). Real behavioural gap (the "one-time creation" + "indistinguishable from manually created" semantics are violated; `inline_body` persists in the symbol table forever). Needs the rewrite + a reload of the parent's structural decls + a new integration test (target /qa for the test). Files: `worker.rs`, possibly `repl/spec/15-session-persistence.md` §15.4.
-- **FIXME 0266** (`/dev (int)`) — move the `trace` SpecialForm metadata entry from the `primitives` module to root `""`. As-built: `bootstrap.rs::register_trace_type` (~L894) inserts it into the `primitives` table; the 2026-06-04 root-special-form ruling + corrected FIXME 0241 Trace row require it at root `""` alongside the structural special forms. ~1-line mount-move (the `Trace`/`TraceCall` ADT + accessors STAY in `primitives` — form/ADT asymmetry). Regression check: `/imports`/`/exports primitives`/`/info trace` reflect the new placement; recognition is parser-side (`Expr::Trace`) and does not consult this entry, so dispatch is unaffected.
-
-**S81 Wave 9b — FIXME 0109 Waves A/B/C only** (see §3.4). The carry boundary: Wave D + the dependent observability harvest cluster co-carry to the next arc sprint.
-
-**Verify-and-plan / cross-skill-gated:**
-
-- **FIXME 0101** (`target: /sprint`) — runtime + platform audit-pass scheduling. **NOT an int-impl item** — it is a `/sprint` scheduling request for `audits/runtime-*.md` + `audits/platform-*.md` passes, and it concerns the runtime/platform crates, not `src/`. No int action; flag to `/sprint` that it sits outside the int component clearance.
-- **FIXME 0220** (`target: /arch`) — cache-hit Introspection rehydration. **/arch design question first** — the FIXME explicitly filed `target: /arch` to arbitrate WHERE the rehydration trigger sits (lazy-per-symbol vs eager-per-module vs per-first-edit) + WHETHER to serialize a minimal per-symbol `source_range: Option<Range<usize>>` into the cache. Until /arch rules, the int implementation (a `SharedState::rehydrate_introspection(fq)` private path) cannot be specced. **Blocked on /arch; not actionable as int-impl this wave.** Surface to `/sprint` as needing an /arch ruling before any int wave can take it.
-- **FIXME 0281** (`target: /design`) — int-facade trim of the dead `priority_boost_jit`/`wait_for_inmem` priority-codegen machinery. **Folds into FIXME 0298** (the int-facade retire/doc-reorg, a W1 doc item, `target: /arch`). The source already deleted the subsystem (S76 W3 — confirmed: `priority_boost_jit`/`wait_for_inmem`/`PriorityEntry`/`BlockingJitCodegen` are gone from `scheduler.rs`; only `unblock_module` remains); `facades/int.md` still describes it (L649-650, L1077, L1195-1196, L1229). Since 0298 retires `facades/int.md` wholesale (migrating its internal-orchestration content to `design/int/` + `src/` rustdoc), the 0281 trim is subsumed: the dead pseudocode simply does not carry over into the migrated docs, and `scheduler.rs`'s `unblock_module` is documented in its rustdoc. **Recommendation: close 0281 as folded-into-0298** rather than authoring a standalone facade patch on a doc that is being retired. (If 0298 slips past S81, do the standalone trim as a fallback.)
-
-**FIXME 0316 consumer-side (int half of the Wave-1 0316 work):**
-
-- **`insert_detecting_ambiguity` terminal-resolve** (`imports.rs:282-332`, `target: /dev (int)`). Per the /arch Phase-3 ruling (SPRINT.md §3): before emitting `Ambiguous`, chain-follow BOTH the existing and incoming `Import` edge to their terminal `(home_module, canonical_symbol)` via `cranelisp_types::resolve_terminal_entry_and_home` (already `pub` — confirmed exported at `resolve.rs:67`; NO promotion needed) and dedup if the terminals match. Replaces the immediate-source `s1 == s2` test at L301. Pure spec-conformance fix (§8.6.4 "same original definition is NOT ambiguous"). The existing visibility-upgrade branch (L297-309) stays. Needs a /qa test for the glob+re-export-specific overlap case.
-- **`recognize_macro_head` collapse to `resolve_with_fallback`** (`expander.rs:262`, the `pub(crate) fn`). Once /arch authors `cranelisp_types::resolve_with_fallback` (the new pub fn unifying the 5 prelude-fallback wrappers — types-side, /arch-owned, lands Wave 1 first), the expander's hand-rolled 3-step retry (first-hop resolve → on-miss-if-bit-on retry-rooted-at-prelude → public-only filter) collapses to one call. **Cross-crate dependency: int rebuilds against the new types seam AFTER /arch lands it.** The 4 checker.rs wrappers are typecheck-owned (the int half is just this expander wrapper). No int baseline impact (binary).
-
-These are tracked in `design/arch/fixmes/NNNN-*.md`; this section mirrors them for design-intent visibility. The S64 audit-recommendation items (`scheduler_trace/` rename, subordinate-doc sweep) are retired: the `*_trace` rename did not survive the S76 trace relocation, and the doc-currency sweep is subsumed by the 0298 facade-retire reorg.
-
-### 16.1 S114 Track C (src/) — design-of-record
-
-Four design-bearing items + three riders, each with a subordinate doc or a
-dev-direct disposition:
-
-- **FIXME 0638** (macro-alias double-free ×5) — the current cure is the
-  single-owner transfer in `macro-turn-ownership.md` Rules 1–3; Rule 2 records
-  why it does not reopen the defect, and the five pins guard it.
-- **FIXME 0670** (int qualifies a value binder) — `expansion-qualification-scope.md`.
-  `qualify_expanded_sexp` becomes scope-aware, skipping the value-level binder
-  slots (defn/fn params, let names, match var-patterns) by sharing the expander's
-  `is_binding_form`/`params_scope`/`pattern_binders` enumeration. Wave-1 of the F8
-  three-wave chain (int-first, strict; then frontend reject re-lands, then cells).
-- **FIXME 0604** (foreground prelude-table write race) — closed structurally by
-  the export-closure gate, §6.7, which also records its evidence limit.
-- **"in expansion of" on the def/const finalize path** (S113 carry) —
-  `macro-diagnostic-reanchoring.md` §2.1. Second application site of the existing
-  pure re-anchor transform at the `check_program_compat` finalize seam
-  (`process_form.rs:468`); no new mechanism.
-
-**Riders (dev-direct — design constraint noted, no subordinate doc needed):**
-
-- **FIXME 0671** (PS-D1 — impl-confirmation line stamps the asking module, not
-  each name's canonical home; `src/repl/format.rs:497-501` + `:707-710`).
-  **Dev-direct** under `resolve-home-enumeration.md` §3 rule-1 authority — the
-  design constraint is the only load-bearing part: resolve the **trait's** home
-  (chain-follow the trait ref / `TraitImpl.impl_module` back-pointer) and the
-  **type's** canonical home each **once**, and root the `impl <trait-home>/Trait
-  for <type-home>/Type` line at those homes — never `push_fq_name(module, …)`
-  from the asking module (P24 "resolve once", P26 read the settled home). Same
-  CLASS as the S112-guarded `impl user/Functor for user/Functor` defect. `/testing`
-  pins first (repl/spec.md §1.3); `/repl` tightens §1.3 to the canonical-home rule
-  (6b). No int design elaboration beyond this constraint.
-- **FIXME 0674** (startup restore notice, `repl/spec/15-session-persistence.md` §15.2.2) — **dev-direct**.
-  Implement at the session-restore seam: emit `; resumed N definitions from
-  <file>` when startup restores a **non-empty** backing file, **suppressed** when
-  absent/empty (fresh-dir transcripts stay byte-identical). Count = restored
-  **definitions** (§15.7), not transient expressions; startup chrome, never
-  persisted. Land the guard both ways. Wording/count/empty-suppression are
-  `/repl`-owned (spec'd); no int design elaboration.
-- **FIXME 0675** (cheatsheet multi-sig settled facts, `src/syntax/cheatsheet.txt`)
-  — **dev-direct**, pure static-primer content. `/repl` specifies the exact
-  `INDEPENDENT` block (0575: `fn` single-arity, multi-arity is `defn`-only; 0576:
-  clauses type-check independently, shared param names carry no shared type),
-  inserted after `EXAMPLE`, before `NOT`. No test owed; no int design elaboration.
 
 ---
 

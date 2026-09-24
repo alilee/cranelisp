@@ -101,4 +101,4 @@ document states the questions, not a test plan:
 - `design/int/session-transaction.md` §6–§7 — the session retention pool
 - `module-caching.md` — the cache-hit half of the boundary
 - `executable-generation.md` — the `--link` half
-- `ring2-rc.md` — the RC conventions §1.1 requires to be identical
+- `ring2-rc.md` — the RC conventions, which must emit identically on both paths

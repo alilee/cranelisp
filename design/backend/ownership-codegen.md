@@ -474,7 +474,7 @@ one bare pointer and no side channel says which symbol was hit.
   for the session's life.
 - **Known leak:** the caller's consuming incs on heap arguments are not released
   when the stub raises — one reference per trap invocation, the same caveat as
-  every runtime panic ([ring1-codegen.md](ring1-codegen.md)).
+  every runtime panic ([backend.md](backend.md#7-runtime-failure)).
 
 ### 8.2 Fresh slots and frozen slots
 

@@ -249,7 +249,7 @@ impl Jit {
     /// module A, A's compiled function pointers are passed in as
     /// extra symbols so B can link against them.
     ///
-    /// `pub(crate)` per design doc §1.4 — the boundary construct path is
+    /// `pub(crate)`: the boundary is `Jit::new` (bounded-contexts.md §3 "Minimal JIT-setup boundary") — the boundary construct path is
     /// `Jit::new(symbol_tables)`. int's parallel hand-assembly path
     /// (`worker.rs`) is its only out-of-crate caller and is deleted in
     /// W-Collapse (S76 W2); the resulting dead-code on int's side is the
@@ -267,7 +267,7 @@ impl Jit {
     /// Construct the ISA once via the module-level `build_isa()`, then
     /// `Arc::clone` it for each worker's `Jit`.
     ///
-    /// `pub(crate)` per design doc §1.4 — used internally if a shared-ISA
+    /// `pub(crate)`: the boundary is `Jit::new` (bounded-contexts.md §3 "Minimal JIT-setup boundary") — used internally if a shared-ISA
     /// micro-optimisation for per-symbol batches ever lands; no external
     /// caller (`feedback_callee_api_for_caller_only`).
     #[allow(dead_code)]

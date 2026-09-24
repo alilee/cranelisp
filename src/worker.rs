@@ -2948,9 +2948,8 @@ fn load_cached_module_via_linker(
         }
         drop(displaced_owners);
     }
-    // Sprint 58 Wave 3b: `kept_linkers` dissolved per Decision 35 — the
-    // `Arc<Linker>` retention root is now the per-entry `Code::Linker`.
-    // No session-level push needed.
+    // Each restored entry's `Code::Linker` clone is the retention root; there
+    // is no session-level linker pool (`design/int/int.md` §7.4).
     drop(linker_arc);
 
     // S86 D5b: register the cache-restored `.o` into the `--link` set. The
@@ -2977,9 +2976,10 @@ fn load_cached_module_via_linker(
 /// Handle a cache-hit codegen work item: check if the module is cached
 /// and load it via Linker, then notify the scheduler.
 ///
-/// Shared helper for both `priority_worker_loop` (inline) and
-/// `priority_worker_thread` (spawned). Returns Ok(true) if the module
-/// was loaded, Ok(false) if it was not cached (no-op).
+/// Called by `priority_worker_loop_shared` and by the cluster macro
+/// recognizer. Returns `Ok(true)` if the module was loaded. Returns
+/// `Ok(false)` if it was not cached (no-op), or if the load failed; the
+/// failure is then reported to the scheduler as the module's failure.
 pub(crate) fn handle_cached_codegen(
     module: &ModuleFullPath,
     shared_state: Option<&crate::session_v4::SharedState>,
@@ -2999,12 +2999,6 @@ pub(crate) fn handle_cached_codegen(
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })?;
 
-    // Sprint 57 Wave 2 G6: `codegen_products` deleted. The linker is retained
-    // on `shared.kept_linkers` by `load_cached_module_via_linker`; compiled
-    // code pointers come from `ModuleEntry::Def.code` on the symbol tables.
-    // Sprint 57 Wave 3 G8: platform symbols are registered from the symbol
-    // tables' `PlatformEffect` entries; the `PlatformRegistry` parameter is
-    // gone.
     match load_cached_module_via_linker(module, shared) {
         Ok(symbols) => {
             scheduler.notify_inmem_codegen_batch_complete(module, &symbols);

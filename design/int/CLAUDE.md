@@ -60,13 +60,13 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `persistent-workers.md` | The delivered worker-lifecycle contract — spawn, park/wake, enqueue-not-spawn, per-batch JIT, shutdown. Section numbers are pinned by live source. |
 | `signature-body-prepass.md` | The S93 two-phase barrier — the durable race cure. |
 | `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification (including trait-implementation redefinition, §2.5), slot versioning, the retention pool and persistence. Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
-| `session-persistence.md`, `cache-hit-loading.md` | Save/regenerate and cache-hit module loading; `cache-hit-loading.md` §0 is the restoration-parity rule. The cache artefact, cache-hit flow and `Code` carrier are `int.md` §§5 and 7. |
+| `session-persistence.md` | Save/regenerate. The cache artefact, cache-hit flow, restoration parity and `Code` carrier are `int.md` §§5 and 7. |
 | `io-integration.md` | Host-side IO forcing and platform-DLL load wiring. |
 | `result-owner.md` | The one program-result owner across REPL, `--run`, cache-hit and linked startup: observe, then release exactly once through canonical type glue. |
 | `macro-turn-ownership.md` | The macro-clause invocation protocol: the declared all-Owned clause ABI, single-owner argument transfer by ABI crossing, and exactly-once result discharge through `consume_sexp`. |
 | `bind-chain-analysis.md` | The compile-time automatic-IO-scheduling pass (`spec/10-io.md` §10.12), including how it reads a platform function's scheduling class (`design/int/bind-chain-analysis.md` §4). |
 | `observability.md` | The trace and event sinks. |
-| `macro-resolver-impl.md`, `cranelisp-toml.md`, `repl-lifecycle.md` | Macro resolution, project configuration, REPL lifecycle and project-root resolution. |
+| `cranelisp-toml.md`, `repl-lifecycle.md` | Project configuration, REPL lifecycle and project-root resolution. Pass-1 macro recognition and execution are `int.md` §6.8. |
 | `agent.md` | The embedded agent (dispatch, turn loop, harvest, write gates, rendering, log and trace), `/refs`, `/tests-for`, `/syntax` and the interim `/search` index. Section numbers are pinned by live source. |
 | `terminal-styling.md` | The layered styling interior below the `styled::render` role-span seam, and the pretty-printer layout. |
 | `concurrency/` | As-built structural, protocol and lifecycle diagrams for the scheduling axis. |

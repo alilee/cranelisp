@@ -27,15 +27,12 @@ use super::macro_clause::{MacroCheckpoint, MacroClauseEnv, compile_macro_checkpo
 /// Recognition driver for the live in-place expansion walk
 /// (`expand_sexp_recursive`).
 ///
-/// `recognize` calls the LOCKED `cranelisp_types::ResolutionScope::resolve_macro_head` primitive
-/// (via `expander::recognize_macro_head`) to recognize a macro head, then
-/// ensures the recognized macro's clause code is in memory (on-demand inline
-/// compile via `compile_macro_with_state`). Execution is NOT this resolver's
-/// job — the walk runs the single `JitMacroExpander` over the returned `FQSymbol`
-/// (S76 W-Macro, fire B; `macro-availability-model.md` §5).
-///
-/// Holds `&CheckState` (mut, for on-demand compilation) + the committed
-/// symbol-table set + module aliases (for `resolve_macro_head`).
+/// `recognize` recognizes a macro head through `expander::recognize_macro_head`.
+/// It never compiles clauses from source. Its one side effect: when the
+/// macro's home module was restored from cache and its object is not yet
+/// loaded, it loads that object (`handle_cached_codegen`) before returning.
+/// Execution is the walk's single `JitMacroExpander`
+/// (`design/int/int.md` §6.8).
 pub(super) struct SymbolTableMacroResolver<'a> {
     /// Per-module symbol tables (DashMap, interior mutability).
     pub(super) symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
@@ -47,10 +44,10 @@ pub(super) struct SymbolTableMacroResolver<'a> {
     /// prelude-provided macro (`cond`/`when`/`str`/…) is recognized from a user
     /// module via the implicit outer scope (S78 §2; public-only per I-1).
     pub(super) prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
-    /// Scheduler — for notify_inmem_codegen_complete after on-demand compilation.
+    /// Scheduler — identifies a cache-restored home module and receives the
+    /// completion of its object load.
     pub(super) scheduler: &'a CompileScheduler,
-    /// Shared state — needed for JIT retention during on-demand compilation.
-    /// None for REPL contexts where caching is not used.
+    /// Shared state for the cached-object load. `None` disables that load.
     pub(super) shared_state: Option<&'a crate::session_v4::SharedState>,
     /// Defining modules for macros that were resolved during expansion.
     /// Used to qualify bare symbols in expanded output (cross-module hygiene).
@@ -139,31 +136,15 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             self.macro_defining_modules.push(defining_module.clone());
         }
 
-        // Step 2: Ensure the clause code is in memory (on-demand compile). The
-        // executor (`JitMacroExpander::invoke`) reads clause code ptrs from the
-        // GOT, so they must be compiled before the walk executes the macro.
+        // Step 2: the executor reads clause code from the home module's GOT.
+        // A published checkpoint compiled every clause, but a home module
+        // restored from cache has no bodies until its object loads, and the
+        // cached-codegen work item may not have run yet. Load it synchronously.
+        // Any clause still missing fails execution with
+        // `MacroInvokeError::Aborted`.
         let all_compiled = (0..clauses).all(|idx| has_code_ptr(self.symbol_tables, &fq, idx));
 
         if !all_compiled {
-            // Step 2a (S77 W-MacroTrait, FIXME 0299): cache-restore parity.
-            //
-            // When `defining_module` is an imported module restored from the
-            // disk cache, `try_cache_hit_load` installs its symbol table at
-            // `TypecheckDone` with `code: None` + empty GOT — the macro's
-            // `DefKind::Macro` entry (recognised above) is present, but the
-            // clause code's `.o` has not been linked into the GOT yet (that is
-            // a separate deferred codegen step, `load_cached_module_via_linker`,
-            // dispatched via the scheduler's cached-codegen work item). On a
-            // fresh build the clause is JIT-codegened inline during the home
-            // module's Pass 2, so it is already in memory; on cache-restore it
-            // is not, and `resolve_macro_sexp_from` returns `None` because the
-            // introspection record (the on-demand recompile source) is never
-            // populated for a cache-restored module. Drive the cached codegen
-            // synchronously here so the clause GOT slot is populated before the
-            // executor reads it. This is the cross-module macro half of the
-            // disk-cache gap noted in `src/CLAUDE.md` ("clause N is not in
-            // memory") and is the RT5 root for `mode_equiv_macro_user_defined`
-            // (repl_cached/run_cached) and the persist-restart macro tests.
             if defining_module != self.current_module
                 && self.scheduler.cached_module_contains(&defining_module)
             {
@@ -202,27 +183,6 @@ fn read_macro_meta(
     Some((declaration.clauses.len(), declaration.docstring.clone()))
 }
 
-/// Resolve a macro's original sexp for on-demand clause compilation.
-///
-/// D1 ruling (S80, `design/arch/d1-introspection-repl-only.md` §2/§6): the
-/// macro's original `(defmacro …)` form is re-sourced from the **symbol table**
-/// `DefKind::Macro.macro_sexp` field, NOT `SharedState.introspection`. This is
-/// the load-bearing fix for **cache-restored** macros: introspection is a
-/// REPL-only facility and is NEVER populated for a cache-restored module, so
-/// the prior introspection read returned `None` for exactly the case this
-/// recompile path serves (cross-module macro whose clause `.o` was not linked
-/// inline). `macro_sexp` serializes (no `#[serde(skip)]`), so a cache-restored
-/// macro entry carries it directly off the deserialized symbol table — no
-/// rehydration step. FQ-autoloaded (fresh-build) macros populate it through the
-/// ordinary staged macro declaration path before this runs.
-///
-/// Returns `None` when the entry is absent or is not a `DefKind::Macro` (a
-/// forward reference or a non-macro shadowing the name).
-/// Scope the resolver's borrows to just the expansion phase.
-///
-/// Creates a SymbolTableMacroResolver, runs expand_sexp_recursive,
-/// drops the resolver, returns the expanded sexp. After this returns,
-/// ctx is available for the caller to use freely.
 /// Outcome of attempting macro expansion on a single Pass-2 form.
 pub(super) enum ExpandOutcome {
     /// Expansion ran to fixpoint. `Some(sexp)` = expanded result (differs from
@@ -234,6 +194,11 @@ pub(super) enum ExpandOutcome {
     BlockedOnFqModule(ModuleFullPath),
 }
 
+/// Expand one form with a resolver whose borrows end before this returns.
+///
+/// The resolver is dropped before qualification and before the caller builds
+/// or checks the expanded form, so `ctx` is free again on return
+/// (`design/int/int.md` §6.8).
 pub(super) fn try_expand_sexp(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -257,7 +222,7 @@ pub(super) fn try_expand_sexp(
         let dms = std::mem::take(&mut resolver.macro_defining_modules);
         let blocked = resolver.blocked_on_fq_module.take();
         (r, dms, blocked)
-        // resolver dropped here, releasing all borrows on check_state
+        // resolver dropped here, releasing its borrows of `ctx`
     };
 
     // An FQ macro head named an unloaded module — signal the worker loop to

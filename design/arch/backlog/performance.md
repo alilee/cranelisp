@@ -154,7 +154,7 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
 - **Origin** — FIXME 0510 · filed_by `/dev` (cranelisp-primitives) · target `/design`
   (cranelisp-backend) · sprint 102.
 - **`refers_to`** — `design/typecheck/ownership-inference.md` §9 (the `neq-string` bullet + the
-  coverage verdict); `design/backend/ring2-rc.md` §3.3 (the `neq-string` audit row, FIXME 0504).
+  coverage verdict); the `neq-string` row in `crates/cranelisp-primitives/src/declarations.rs` (FIXME 0504; rule: `design/backend/ring2-rc.md` §3.3).
 - **Pinned analysis** — §13.4 lists `neq-string` as a covered leaf, but as-built `neq-string` has
   **no `ModuleEntry` in `cranelisp-primitives`**: it is shim-only (`extern_shims()` harvests its fn
   ptr for GOT population; reached exclusively through the `Eq.!=` trait-dispatch path,

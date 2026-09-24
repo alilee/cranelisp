@@ -71,7 +71,7 @@ pub extern "C" fn pool_write(token: CLInt, capacity: CLInt, ms: CLInt) -> CLIO<C
 ///
 /// `tag` is captured into the deferred Effect closure via the consuming capture-RC
 /// protocol (Decision 24): `into_owned_consuming` takes ownership of the caller's
-/// transferred reference and releases it on drop when the thunk runs.
+/// transferred reference and releases it when the Effect node is freed.
 pub extern "C" fn pool_log(token: CLInt, capacity: CLInt, ms: CLInt, tag: CLString) -> CLIO<CLInt> {
     let tok = i64::from(token);
     let cap = i64::from(capacity);

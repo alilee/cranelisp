@@ -501,7 +501,7 @@ where
         .index()
 }
 
-// spec: design/backend/jit-setup-boundary.md §1 — `Jit::new(symbol_tables)`
+// spec: design/arch/bounded-contexts.md §3 "Minimal JIT-setup boundary" — `Jit::new(symbol_tables)`
 // constructs from an empty symbol set (no modules) without error.
 #[test]
 fn jit_new_from_empty_symbol_tables() {
@@ -513,7 +513,7 @@ fn jit_new_from_empty_symbol_tables() {
     );
 }
 
-// spec: design/backend/jit-setup-boundary.md §1.3 — `Jit::new` derives the
+// spec: design/arch/bounded-contexts.md §3 "Minimal JIT-setup boundary"; `Jit::new` rustdoc derivations 2–3 — `Jit::new` derives the
 // per-module GOT data symbol AND the platform-effect jit-name from
 // `symbol_tables`. Build two modules (one plain, one carrying a
 // PlatformEffect def with a populated GOT slot) and assert the JIT resolves
@@ -595,7 +595,7 @@ fn jit_new_registers_platform_effect_and_got_symbols() {
     assert_eq!(read, PLATFORM_FN.load(Ordering::Relaxed));
 }
 
-// spec: design/backend/jit-setup-boundary.md §1.3 — a PlatformEffect with a
+// spec: design/arch/bounded-contexts.md §3 "Minimal JIT-setup boundary"; `Jit::new` rustdoc derivation 3 — a PlatformEffect with a
 // null GOT slot (loader has not populated it) contributes no symbol; an
 // Import edge to a populated PlatformEffect in another module resolves the
 // platform fn by the defining module's key. Verifies both via reachability
@@ -759,7 +759,7 @@ fn define_symbol_settles_host_promised_import() {
 
 // ----- §2 `intrinsics_table()` consumption -----
 
-// spec: design/backend/jit-setup-boundary.md §2 — `declare_intrinsics_generic`
+// spec: design/arch/bounded-contexts.md §4b invariant 11 — `declare_intrinsics_generic`
 // reads `cranelisp_intrinsics::intrinsics_table()`, declaring one FuncId per
 // catalog record. Confirms the re-point preserves the full intrinsic set and
 // the 6 convenience accessors are populated.

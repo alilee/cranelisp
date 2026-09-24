@@ -331,10 +331,8 @@ where
     /// Emit `rc_inc` on the lambda body's return value when that value is a
     /// bare reference to a captured heap variable.
     ///
-    /// See `design/backend/ring2-rc.md §5.6` for
-    /// the investigation history, and `design/backend/ring2-rc.md` (new
-    /// **capture-return inc** rule, sibling of §5.5) for the normative
-    /// description.
+    /// See `design/backend/ring2-rc.md` §5.6 (capture-return inc, sibling of
+    /// §5.5).
     ///
     /// ## Invariant
     ///

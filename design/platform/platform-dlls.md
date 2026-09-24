@@ -167,31 +167,52 @@ fault catch on both paths. For an author, this means:
 
 **This is a correctness requirement, not a convention.**
 
-A platform function receives a `CLString` and returns an effect whose closure
-captures it. The closure runs *later*. By then the original caller may have
-dropped its reference, taking the RC to zero and freeing the allocation; the
-closure would read freed memory.
+A platform function is an extern, so it owns every heap parameter: the caller
+has transferred the reference
+([bounded contexts](../arch/bounded-contexts.md) §4b invariant 6). The function
+releases each parameter it does not return; the per-parameter fates are
+[RC discipline](../backend/ring2-rc.md) §3.3.
 
-The cure is `CLOwned<T>`: `CLHeap::own(&self)` increments and yields an owned
-handle that decrements on drop, so the capture holds a reference of its own.
-`CLHeap::into_owned_consuming(self)` is the sibling for a reference that was
-already transferred rather than borrowed — it does not increment. There is
-deliberately no `into_inner`: an owned reference leaves only by being dropped or
-by being handed on as a value.
+An effect closure runs *later*, when the node is forced, so a parameter it reads
+must keep its reference until the node is freed. `CLHeap::into_owned_consuming(self)`
+moves the transferred reference into a `CLOwned<T>` without incrementing; the
+closure captures the `CLOwned`, which releases the reference when the node, and
+with it the closure, is dropped. The shipped `platforms/stdio` `print_string`:
 
 ```rust
 pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-    let owned = s.own();          // +1 — the capture's own reference
-    CLIO::effect(move || {        // `owned` decrements when the node is freed
+    let owned = s.into_owned_consuming(); // the transferred reference; no +1
+    CLIO::effect(move || {                // `owned` releases it when the node is freed
         println!("{}", owned.as_str());
         CLInt::from(0i64)
     })
 }
 ```
 
-**Rule:** capturing a bare `CLHeap` value in an effect closure is a
-use-after-free. A function that captures nothing — a parameterless `read-line` —
-needs no owned handle.
+`CLHeap::own(&self)` increments, so its `CLOwned` holds a reference of its own.
+It is correct only for a reference the function does not own, such as a heap
+field read out of a borrowed structure (`CLAdt::own_field`). On a transferred
+parameter it leaks one reference per call. There is deliberately no
+`into_inner`: an owned reference leaves only by being dropped or by being handed
+on as a value.
+
+**Rule:** a closure captures a transferred heap parameter only as the
+`CLOwned` from `into_owned_consuming`. A bare `CLHeap` capture holds no
+reference: released at return, the closure reads freed memory; never released,
+it leaks. A function that captures nothing, such as the parameterless
+`read-line`, needs no owned handle.
+
+**Grade.** The two helpers' RC effects are measured by the
+`into_owned_consuming`/`own` contrast tests and the balanced capture-effect test
+in `crates/cranelisp-platform/src/tests.rs`. Each function's choice between them
+is *asserted*: `own()` on a transferred parameter compiles. Candidate falsifier:
+an M3 alloc/free parity run ([diagnostic modes](../intrinsics/diagnostic-modes.md)
+§3) over a program that calls a capturing platform function repeatedly, showing
+allocations exceeding deallocations by the call count.
+
+**Rejected: `own()` plus an explicit release before return.** It balances, but
+only while every author remembers the release; `into_owned_consuming` makes the
+release part of the capture.
 
 RC operations are `SeqCst`, matching the backend's Cranelift `atomic_rmw`
 semantics. `Relaxed` on the decrement is unsound here: it permits the decrement

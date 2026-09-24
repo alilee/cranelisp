@@ -205,7 +205,7 @@ fn read_rc(base: i64) -> i64 {
     }
 }
 
-// spec: design/backend/ring2-rc.md §10.4 — `into_owned_consuming` must NOT
+// spec: design/platform/platform-dlls.md §4 — `into_owned_consuming` must NOT
 // inc RC on wrap (it takes the caller's transferred ref as-is) and MUST
 // dec on drop — so the net RC change is exactly -1 over the wrap+drop
 // pair, symmetric with the caller's +1 transfer.
@@ -231,7 +231,7 @@ fn into_owned_consuming_does_not_inc_on_wrap() {
     // so the allocation is freed. Cannot read_rc here (use-after-free).
 }
 
-// spec: design/backend/ring2-rc.md §10.4 — contrast with `own()`: `own()`
+// spec: design/platform/platform-dlls.md §4 — contrast with `own()`: `own()`
 // inc's on wrap, so one extra inc is needed by the caller when the
 // caller does NOT transfer ownership. This test locks in the behavioural
 // difference between the two wrappers so regressions are caught.
@@ -258,7 +258,7 @@ fn own_vs_into_owned_consuming_rc_semantics_differ() {
     // ref itself is consumed and freed. Contrast verified above.
 }
 
-// spec: design/backend/ring2-rc.md §10.4 — the capture-Effect pattern used
+// spec: design/platform/platform-dlls.md §4 — the capture-Effect pattern used
 // by platform externs (print, capture_print): caller transfers one ref,
 // extern wraps via `into_owned_consuming`, closure holds `CLOwned`,
 // deferred thunk-drop dec's once. Net allocator operations: 1 alloc

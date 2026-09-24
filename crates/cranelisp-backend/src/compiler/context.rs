@@ -120,7 +120,7 @@ where
     pub dealloc_func_id: FuncId,
     /// FuncId for runtime/alloc_string. None in Ring 0 (no strings).
     pub alloc_string_func_id: Option<FuncId>,
-    /// FuncId for runtime/panic. None in Ring 0 (uses trap instead).
+    /// FuncId for runtime/panic. A panic site with `None` is a located codegen error (backend.md §7).
     pub panic_func_id: Option<FuncId>,
     /// FuncId for runtime/vec_new. None in Ring 0 (no Vecs).
     pub vec_new_func_id: Option<FuncId>,

@@ -39,8 +39,8 @@ static HOST: HostContext = HostContext::new();
 ///
 /// BLOCKING (`SchedulingClass::Sequential`) — unchanged from v6. Uses the
 /// consuming capture-RC protocol (Decision 24): `into_owned_consuming` takes
-/// ownership of the caller's transferred reference and releases it on drop when
-/// the Effect thunk runs. See `design/backend/ring2-rc.md` §10.4.
+/// ownership of the caller's transferred reference and releases it when the
+/// Effect node is freed. See `design/platform/platform-dlls.md` §4.
 pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
     let owned = s.into_owned_consuming();
     CLIO::effect(move || {

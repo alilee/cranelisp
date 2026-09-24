@@ -17,9 +17,10 @@ use crate::code::SessionSymbolTable;
 
 /// Read-only macro resolver for the /expand slash command.
 ///
-/// Same lookup logic as `SymbolTableMacroResolver` (follows Import/Reexport
-/// chains) but never triggers compilation. If a macro's clauses are not
-/// compiled, returns `Ok(None)` (silently skipped).
+/// Recognizes through the same `recognize_macro_head` query as
+/// `SymbolTableMacroResolver`, with no side effect: it loads no cached object.
+/// A recognized macro whose clause is not in memory fails execution with
+/// `MacroInvokeError::Aborted` (`design/int/int.md` §6.8).
 pub(crate) struct ReadOnlyMacroResolver<'a> {
     pub(crate) symbol_tables: &'a dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     pub(crate) module_aliases: &'a cranelisp_types::ModuleAliases,
@@ -38,11 +39,7 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
     fn recognize(&mut self, name: &str, span: Span) -> Result<Option<FQSymbol>, CranelispError> {
         // RECOGNITION via the LOCKED types primitive (committed `View`,
         // `macro-availability-model.md` §5) — same path as the live
-        // compile-time recognition; no second chain-walk copy. Read-only:
-        // no on-demand compilation. If the macro's clauses are not already in
-        // memory, the executor (`JitMacroExpander::invoke`) surfaces a clear
-        // `Aborted` — `/expand` is only meaningful after the macro is defined
-        // and compiled, which the REPL flow guarantees for a prior input.
+        // compile-time recognition; no second chain-walk copy.
         crate::expander::recognize_macro_head(
             self.symbol_tables,
             self.module_aliases,

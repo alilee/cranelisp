@@ -1104,8 +1104,7 @@ fn collect_var_uses(
             // the direct arg `v` (occurrence #1) is textually BEFORE the nested
             // `(vec-push v …)` (occurrence #2), so #2 was marked last-use. But
             // the tail call re-passes `v` into the next iteration (the backend
-            // lowers it to a `jump` reusing the binding — see ring2-rc.md §"TCO+
-            // RC"), so `v` is live across iterations. Marking the `vec-push` use
+            // lowers it to a `jump` reusing the binding — see transitive-drop-glue.md §6), so `v` is live across iterations. Marking the `vec-push` use
             // as last-use let Vec COW mutate `v` in place and then drop the
             // aliased result as a temporary → use-after-free (DEF-2 / T2). See
             // ring2-rc.md §5.5 for the sibling captured/borrowed-var rules.

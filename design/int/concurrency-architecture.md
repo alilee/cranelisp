@@ -130,7 +130,7 @@ meet; keep the concurrency narrow and the invariants named.
 `load_cached_module_via_linker` (`src/worker.rs`) and
 `register_module_cached`. Metadata restores cheaply, in-memory code loads when
 needed, and a cached module joins the same scheduler-driven pipeline as a fresh
-one after registration. Design: `design/int/cache-hit-loading.md`.
+one after registration. Design: [`int.md` §7](int.md#7-cache--linker-orchestration-decisions-34-37).
 
 Cache-hit publication has explicitly narrower retention guarantees than staged
 or compiled publication — see `session-transaction.md` §6.1.

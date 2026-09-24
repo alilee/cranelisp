@@ -1805,7 +1805,7 @@ fn def2_vec_push_wrapper_scalar_element_unaffected_control() {
 // forwarded through a `vec-push` wrapper; DEF-3 OVER-counts a temporary handed
 // straight to `vec-set`. The fix (next step, /backend) aligns `vec-set` to the
 // same consuming-Var rule that DEF-2 aligns `vec-push` to — Var→inc,
-// temp→transfer (ring2-rc.md §"Decision 24" / "Algorithm" steps 1–2).
+// temp→transfer (ring2-rc.md §3.1).
 //
 // ISOLATION (this session, /qa S86):
 //   - A single `vec-set` with a TEMPORARY heap element allocs 5, frees 4 —

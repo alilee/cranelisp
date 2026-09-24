@@ -2527,7 +2527,7 @@ The earlier risk argument concerned invalid cached tables, not evidence that
 the compiler produces them during normal operation. C-A is accepted residual
 risk for now, not a delivery gate or a request awaiting approval.
 
-The existing design record is `design/int/cache-hit-loading.md` §0. Revisit
+The existing design record is `design/int/int.md` §7.5. Revisit
 prioritization if evidence implicates compiler-written caches or the user
 chooses to expand corruption handling; do not reopen solely because a
 hand-edited cache can violate an invariant.
@@ -2690,3 +2690,49 @@ Retained observations: the remaining source-grep assertions are comment-blind;
 the non-IO-main diagnostic uses an empty span (`codegen error at 0..0`). These
 are recorded limitations/intake, not newly allocated gates. C-A remains
 user-deferred.
+
+## Cache documentation leads — QA intake (2026-09-24)
+
+Source: the three cache observations the Binary/int design result carried into
+[`int.md` §16.0](../../design/int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21).
+Read-only intake at `bad445da` plus the documentation working tree. No build,
+run or test edit: every claim below comes from reading source and records no
+executed observation.
+
+The user's C-A ruling covers deliberate or negligent corruption of
+compiler-written caches. It does not cover a cache that goes stale because an
+input the compiler does not control changed. Examples are an edited dependency
+source and a platform DLL that is missing or refused. The cache design treats
+those as ordinary invalidation:
+[module caching §1 goals 1–2, §3, §6 and §10](../../design/backend/module-caching.md#3-cache-key-design).
+It requires that stale caches are never served and that a cached module
+matches a fresh compile.
+
+| ID / class | Required observable and plausible wrong outcome | Lowest discriminating evidence and allocation | Existing evidence / limit |
+|---|---|---|---|
+| CD-1 A — dependency-hash validity (priority: required) | A program with a cached importer behaves exactly as it does under `--no-cache` after one of that importer's dependencies changes. Two wrong outcomes are plausible. (a) Signature leg: the importer `a` restores against its stale typecheck, so a program that is ill-typed under fresh compilation runs, or runs through a mismatched ABI. (b) Layout leg: the dependency `b` changes compatibly by inserting a concrete `defn` before the called one, and cached `a` calls through a slot index that now names a different function. | `test` writes one minimal repro in `tests/cache.rs` with the shape `main → a → b`, run twice in one project, so that `a` itself is cached and unchanged. The signature leg changes `b`'s exported parameter type. With `--no-cache` this is a type error at `a`'s call site; the cached run must match it. The layout leg inserts a new concrete `defn` ahead of the called one; the value must match `--no-cache`. For each leg, the control is the same second run under `--no-cache`, which differs only in cache use. Cover `--run` and `--link`: link reuses cached objects. Tag it `// defect:` only after a RED is observed, with the class chosen by the observed face. `dev`(src) owns the attributed unit at the writer/restore seam when a fix is scheduled. | Source: `cache_restore.rs::cache_validity_check` passes an empty dependency map, and `nice_worker.rs` records `HashMap::new()` ("future enhancement"). Backend `check_manifest` therefore never runs its dependency loop. Every existing dependency-change cell makes the fresh CLI target the importer, which is never cache-restored (`cache_multi_module_invalidation_dependency_change`, `cache_invalidation_on_dep_change_e2e`, `cache_invalidation_transitive_pipeline`, `cache_prelude_change_invalidates_user_module`), so none can discriminate this case. That is the coverage attribution. The layout leg is a hypothesis: callers bake `slot * 8` as an immediate (`apply.rs`), and slots are first-free (`cranelisp-types` `allocate_got_slot_with_claims`), but reordering is unobserved. |
+| CD-2 A — platform-miss fall-through (priority: advisory) | When a cached module's recorded platform DLL is absent or refused at restore, the run ends with the same platform-load diagnostic as `--no-cache`. It must not crash, report a conflicting-state error, or complete against the decoded table. A second importer of that module must not accept the abandoned table as satisfied. | This is a bounded later handoff to `test`, sequenced after CD-1. Extend the existing two-run platform cache round-trip in `tests/spec_platforms_adt.rs`. Leg 1 makes the DLL unavailable on the second run, with a single importer. Leg 2 is the same with two importers. The control for each leg is the same second run under `--no-cache`, whose diagnostic is the expected oracle, plus the existing DLL-present cache hit. Any fix belongs to the `dev`(src) restore path. | Source: `try_cache_hit_load` calls `install_cached_table` before `reresolve_cached_platforms` and returns `Ok(false)` with the table installed. Its `contains_key` guard returns `Ok(true)` for any later importer. No test takes this branch. If the DLL is absent, the fresh path also fails, which bounds the impact to crash or misattribution. A DLL that is refused and then accepted on the fresh path could let a second importer compile against the stale table; this is unobserved. |
+
+**CD-3 — cached-object load diagnostic: observation only, no allocation.** The
+misattributed "orchestrator-sequencing bug — clause not in memory" message
+needs a cached object that fails to load after its metadata validated. A
+missing `.o` is already a miss, so this means a malformed or incomplete
+compiler-written object, which falls under C-A. The failure is not lost:
+`worker.rs::handle_cached_codegen` marks the module failed. Revisit if CD-1,
+CD-2 or another observation shows such a load failure in normal operation.
+
+Handoffs from this intake (none are QA edits):
+
+- **CD-1.** `sprint` schedules the `test` repro. The first observation settles
+  whether this is a defect, and RED→design→GREEN follows (METHOD §2.2).
+- **Design, when CD-1 is fixed.** `design`(int with backend) decides which
+  hashes an importer records: direct imports, as module caching §3 states, or
+  the closure including re-export targets. A direct-only rule would leave a
+  re-exported signature change under an unchanged intermediate module
+  unguarded. QA adds that leg to the fix's completion evidence once design
+  rules. Unchanged dependencies must keep an importer cached; this extends
+  `cache_multi_module_unchanged_dep_stays_cached` to the three-level shape.
+- **Currency.** `design`(backend) should mark the module caching §3, §6 and §10
+  dependency check as inert on the int path until CD-1 is fixed. The ACT-0952
+  owner should know that its premise, that cache restore already validates
+  dependency hashes, is false today.

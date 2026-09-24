@@ -29,7 +29,8 @@ once.
 ## 1. IO Node Layout
 
 IO nodes are heap-allocated ADTs under the standard `HeapHeader`
-(`[alloc_size @0 | rc @8]`, `ring2-rc.md` §1) with the tag at offset 16. The
+(`[alloc_size @0 | rc @8]`, `HeapHeader` in `crates/cranelisp-types/src/heap.rs`)
+with the tag at offset 16. The
 node family is a layout contract governed by `cranelisp_platform::ABI_VERSION`
 (currently 11). Offsets below are absolute.
 
@@ -284,8 +285,9 @@ poll-shape Effect-node seam** (`design/arch/effect-concurrency.md` §13 "S94 R1"
 Appendix B §"the ratified backend↔intrinsics poll-shape Effect-node seam"; ABI-field
 consequence in `design/arch/platform-interface.md` §6.8) — that seam is the contract,
 this section is the codegen that realizes it. It reuses the closure-construction
-codegen of `design/backend/ring2-rc.md` / `lambda.rs` (Principle 7 reuse) and the
-GOT-indirect dispatch mechanism of §7 here + `apply.rs::emit_got_indirect_call_via_data_id`.
+codegen of `lambda.rs`, with RC per `design/backend/ring2-rc.md` (Principle 7
+reuse), and the GOT-indirect dispatch mechanism of `io-trampoline.md` §7 +
+`apply.rs::emit_got_indirect_call_via_data_id`.
 (The S6 poll arm returns before §7's stamp block, so the S121 tag dispatch leaves it untouched.)
 
 ### 12.1 What is new vs. the blocking path (and what is byte-identical)

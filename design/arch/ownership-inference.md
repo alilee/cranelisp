@@ -123,7 +123,7 @@ yet atomic while alive — op-wise per §2.3, it is the spark-side RC ops that f
 the crossing itself).
 And the pre-S100 state — `borrowed_vars` (`ring2-rc.md` §5.5), spark-capture-by-borrow (§5.5.2),
 Vec-COW last-use — is three ad-hoc instances of this one missing analysis; the design subsumes
-them as special cases (§8) rather than adding a fourth.
+them as special cases (`design/arch/ownership-inference.md` §8) rather than adding a fourth.
 
 **Where it bites S99:** the 81 per-copy `rc_inc` come from projecting `Cell`s out of the `Vec` —
 Q1's borrow-through-projection makes all read access rc-free, shrinking the problem to genuine

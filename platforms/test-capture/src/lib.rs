@@ -36,8 +36,8 @@ static INPUT: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// Capture print output instead of writing to stdout. Returns a deferred IO Effect.
 ///
 /// Uses the consuming capture-RC protocol (Decision 24): `into_owned_consuming`
-/// takes ownership of the caller's transferred reference and releases it on
-/// drop when the Effect thunk runs. See `design/backend/ring2-rc.md` §10.4.
+/// takes ownership of the caller's transferred reference and releases it
+/// when the Effect node is freed. See `design/platform/platform-dlls.md` §4.
 pub extern "C" fn capture_print(s: CLString) -> CLIO<CLInt> {
     let owned = s.into_owned_consuming();
     CLIO::effect(move || {

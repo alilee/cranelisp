@@ -1629,7 +1629,7 @@ fn emit_vec_bounds_panic<M: Module>(
     panic_func_id: cranelift_module::FuncId,
     span: Span,
 ) -> Result<(), CranelispError> {
-    // runtime/panic(msg_ptr, msg_len) — never returns.
+    // runtime/panic(msg_ptr, msg_len) records the error and returns; we return the sentinel.
     // We store the error message in a data section.
     let msg = b"vec-get: index out of bounds";
     let data_id =

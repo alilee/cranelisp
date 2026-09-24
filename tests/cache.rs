@@ -1936,3 +1936,219 @@ fn stale_schema20_multi_sig_var_concrete_cache_refused_wholesale_neg() {
          class; §11.3(B) 'no $Var concrete entry survives'). schema stayed {after_schema}."
     );
 }
+
+// =============================================================================
+// Dependency change under an unchanged, cache-restored intermediate importer
+//
+// Shape `main → a → b`, two runs in one project. The second run edits only
+// `b`, so the only reason not to serve `a` from cache is its dependency on `b`
+// (design/backend/module-caching.md §3, secondary key). The CLI target `main`
+// is always compiled fresh, so `a` is the importer under test. The oracle is
+// the edited sources compiled without cache use: `--run --no-cache` in the same
+// project, and a cold `--link` in a fresh project because `--link` refuses
+// `--no-cache`. Each cell first shows that the unchanged `a` really is restored
+// from cache, so agreement is not agreement through the fresh path.
+// =============================================================================
+
+const DEP_CHANGE_MAIN: &str = "(import [primitives [Pure]])\n\
+                               (import [a [g]])\n\
+                               (defn main [] (Pure (g)))\n";
+
+/// Signature leg: `f`'s parameter changes from Int to String, so `a`'s
+/// unchanged call `(f 5)` becomes ill-typed.
+const DEP_CHANGE_SIG_A: &str = "(import [primitives [add-i64]])\n\
+                                (import [b [f]])\n\
+                                (defn g [] (add-i64 (f 5) 100))\n";
+const DEP_CHANGE_SIG_B_BEFORE: &str = "(import [primitives [Int add-i64]])\n\
+                                       (defn f [:Int x] :Int (add-i64 x 1))\n";
+const DEP_CHANGE_SIG_B_AFTER: &str = "(import [primitives [Int String]])\n\
+                                      (defn f [:String s] :Int 7)\n";
+
+/// Layout leg: a compatible edit inserts a concrete `e` ahead of the called
+/// `f`. The return values tell `f` (11) from `e` (99).
+const DEP_CHANGE_LAYOUT_A: &str = "(import [b [f]])\n(defn g [] (f))\n";
+const DEP_CHANGE_LAYOUT_B_BEFORE: &str = "(defn f [] 11)\n";
+const DEP_CHANGE_LAYOUT_B_AFTER: &str = "(defn e [] 99)\n(defn f [] 11)\n";
+
+#[derive(Clone, Copy)]
+enum DepChangeMode {
+    Run,
+    Link,
+}
+
+impl DepChangeMode {
+    fn select(self, c: Cranelisp) -> Cranelisp {
+        let c = c.env("CRANELISP_MODULE_TRACE", "1");
+        match self {
+            DepChangeMode::Run => c.run("main.cl"),
+            DepChangeMode::Link => c.link_then_run("main.cl"),
+        }
+    }
+}
+
+struct Observed {
+    exit: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+impl Observed {
+    fn of(out: &helpers::e2e::CrOutput) -> Self {
+        Observed {
+            exit: out.status.code(),
+            stdout: out.stdout.clone(),
+            stderr: out.stderr.clone(),
+        }
+    }
+}
+
+/// Compiles `main → a → b`, restores it warm, edits `b`, and returns the
+/// uncached oracle and the cached run for the edited sources.
+fn dep_change_under_cached_importer(
+    mode: DepChangeMode,
+    a_src: &str,
+    (b_before, before_exit): (&str, i32),
+    b_after: &str,
+) -> (Observed, Observed) {
+    let files_before = [
+        ("main.cl", DEP_CHANGE_MAIN),
+        ("a.cl", a_src),
+        ("b.cl", b_before),
+    ];
+    let cold = mode
+        .select(project(&files_before))
+        .output()
+        .assert_exit(before_exit);
+    let a_object = cold.tmpdir.join(".cranelisp-cache/a.o");
+    let a_bytes = fs::read(&a_object).expect("the cold run writes a.o");
+
+    let warm = mode
+        .select(cold.run_again())
+        .output()
+        .assert_exit(before_exit);
+    assert!(
+        warm.stderr.contains("cache hit (.meta valid) for a"),
+        "with nothing changed, `a` must be restored from cache:\n{}",
+        warm.stderr
+    );
+
+    let edited = warm.run_again().file("b.cl", b_after);
+    let (control, edited) = match mode {
+        DepChangeMode::Run => {
+            let control = edited.run("main.cl").cli_flag("--no-cache").output();
+            (Observed::of(&control), control.run_again())
+        }
+        DepChangeMode::Link => {
+            let files_after = [
+                ("main.cl", DEP_CHANGE_MAIN),
+                ("a.cl", a_src),
+                ("b.cl", b_after),
+            ];
+            let control = mode.select(project(&files_after)).output();
+            (Observed::of(&control), edited)
+        }
+    };
+    assert_eq!(
+        fs::read(&a_object).expect("a.o is still cached"),
+        a_bytes,
+        "the uncached control must leave the cached a.o untouched"
+    );
+
+    let cached = Observed::of(&mode.select(edited).output());
+    (control, cached)
+}
+
+fn assert_cached_matches_uncached(control: &Observed, cached: &Observed) {
+    assert!(
+        cached.exit == control.exit && cached.stdout == control.stdout,
+        "after `b` changed, the cached run must behave as the uncached run\n\
+         uncached: exit={:?} stdout={:?}\ncached:   exit={:?} stdout={:?}\n\
+         cached stderr:\n{}",
+        control.exit,
+        control.stdout,
+        cached.exit,
+        cached.stdout,
+        cached.stderr
+    );
+}
+
+fn assert_uncached_rejects_int_argument(control: &Observed) {
+    assert!(
+        control.exit != Some(0) && control.exit != Some(107) && control.stderr.contains("String"),
+        "the uncached compile must reject `a`'s Int argument to a String parameter:\n\
+         exit={:?}\nstdout:\n{}\nstderr:\n{}",
+        control.exit,
+        control.stdout,
+        control.stderr
+    );
+}
+
+// spec: design/backend/module-caching.md §3 — Secondary key: transitive
+// dependency hashes; §8 cache-load/fresh-compile equivalence under `--run`.
+// defect: class=wrong-accept locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+#[test]
+fn cache_dep_signature_change_under_cached_importer_matches_uncached_run() {
+    let (control, cached) = dep_change_under_cached_importer(
+        DepChangeMode::Run,
+        DEP_CHANGE_SIG_A,
+        (DEP_CHANGE_SIG_B_BEFORE, 106),
+        DEP_CHANGE_SIG_B_AFTER,
+    );
+    assert_uncached_rejects_int_argument(&control);
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// spec: design/backend/module-caching.md §3 — Secondary key: transitive
+// dependency hashes; §11 quick build links cached objects.
+// defect: class=wrong-accept locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+#[test]
+fn cache_dep_signature_change_under_cached_importer_matches_uncached_link() {
+    let (control, cached) = dep_change_under_cached_importer(
+        DepChangeMode::Link,
+        DEP_CHANGE_SIG_A,
+        (DEP_CHANGE_SIG_B_BEFORE, 106),
+        DEP_CHANGE_SIG_B_AFTER,
+    );
+    assert_uncached_rejects_int_argument(&control);
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// spec: design/backend/module-caching.md §3 — Secondary key: transitive
+// dependency hashes (GOT layout); §8 equivalence under `--run`.
+// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+#[test]
+fn cache_dep_layout_change_under_cached_importer_matches_uncached_run() {
+    let (control, cached) = dep_change_under_cached_importer(
+        DepChangeMode::Run,
+        DEP_CHANGE_LAYOUT_A,
+        (DEP_CHANGE_LAYOUT_B_BEFORE, 11),
+        DEP_CHANGE_LAYOUT_B_AFTER,
+    );
+    assert_eq!(
+        control.exit,
+        Some(11),
+        "uncached `a` calls `f`: {}",
+        control.stderr
+    );
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// spec: design/backend/module-caching.md §3 — Secondary key: transitive
+// dependency hashes (GOT layout); §11 quick build links cached objects.
+// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+#[test]
+fn cache_dep_layout_change_under_cached_importer_matches_uncached_link() {
+    let (control, cached) = dep_change_under_cached_importer(
+        DepChangeMode::Link,
+        DEP_CHANGE_LAYOUT_A,
+        (DEP_CHANGE_LAYOUT_B_BEFORE, 11),
+        DEP_CHANGE_LAYOUT_B_AFTER,
+    );
+    assert_eq!(
+        control.exit,
+        Some(11),
+        "uncached `a` calls `f`: {}",
+        control.stderr
+    );
+    assert_cached_matches_uncached(&control, &cached);
+}

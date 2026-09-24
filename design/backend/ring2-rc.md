@@ -1,1108 +1,325 @@
-# Ring 2 Reference Counting Design
+# RC discipline — the conservative lowering
 
-## Overview
-
-Ring 2 activates the RC scaffolding laid down in Ring 1 (see `ring1-codegen.md` for foundation). It implements automatic memory management for all heap-allocated values: Strings, ADTs with data constructors, closures (Fn types), and Vecs. The key contribution is the **uniform consuming calling convention** (Decision 24) — every call site compiles identically for RC management, with the callee responsible for dec'ing heap parameters it does not return — plus the **scope cleanup** protocol that ensures no leaks on function exit.
-
-This document is the authoritative reference for Ring 3 implementers. If you are compiling functions (macros, auto-curry wrappers, trace instrumentation), you must follow these conventions exactly or introduce leaks or use-after-free.
-
-## 1. Heap Layout
-
-All heap objects share a common header defined in `cranelisp-types::HeapHeader`:
-
-```
-Offset 0:  alloc_size  (i64)   -- total bytes (header + payload)
-Offset 8:  rc          (i64)   -- reference count, initial = 1
-Offset 16: ... payload ...
-```
-
-**Base-pointer convention**: pointers point to offset 0 (where `alloc_size` lives). All field accesses use positive offsets from the base. This is enforced by the representation containment rule: only `heap.rs` may import layout constants. All other codegen code calls `heap_load`, `heap_store`, `emit_alloc`, `emit_rc_inc`, `emit_rc_dec`.
-
-### 1.1 HeapHeader (cranelisp-types)
-
-```rust
-#[repr(C)]
-pub struct HeapHeader {
-    pub alloc_size: i64,   // ALLOC_SIZE_OFFSET = 0
-    pub rc: i64,           // RC_OFFSET = 8
-}
-// HeapHeader::SIZE = 16
-```
-
-### 1.2 HeapAdt (cranelisp-backend)
-
-ADT data constructors (values with at least one field):
-
-```
-[header(16) | tag(8) | field_0(8) | field_1(8) | ... | field_n(8)]
- ^-- base pointer
-```
-
-- `TAG_OFFSET = 16`
-- `FIELDS_START = 24`
-- `field_offset(i) = 24 + i * 8`
-- `payload_size(n_fields) = 8 + n_fields * 8`
-
-Nullary constructors (e.g., `None`, `Red`) are **not** heap-allocated. They are bare i64 tags (0, 1, 2, ...). This means a value of a Mixed ADT type (e.g., `Option`) might be either a bare tag or a heap pointer. The `NULLARY_TAG_THRESHOLD` constant (1024) discriminates: values below the threshold are bare tags; values at or above are heap pointers.
-
-### 1.3 HeapClosure (cranelisp-backend)
-
-Closures carry a drop glue pointer embedded in the struct:
-
-```
-[header(16) | code_ptr(8) | drop_glue_ptr(8) | cap_0(8) | ... | cap_n(8)]
- ^-- base pointer
-```
-
-- `CODE_PTR_OFFSET = 16`
-- `DROP_GLUE_PTR_OFFSET = 24`
-- `CAPTURES_START = 32`
-- `capture_offset(i) = 32 + i * 8`
-- `payload_size(n_captures) = 16 + n_captures * 8`
-
-The `drop_glue_ptr` is 0 when no captures are heap-typed. When non-zero, it points to a JIT-compiled function `(closure_ptr: i64) -> ()` that dec's each heap-typed capture before the closure itself is freed.
-
-### 1.4 HeapVec (cranelisp-backend)
-
-Vecs use a two-allocation design:
-
-```
-Vec struct: [header(16) | len(8) | cap(8) | data_ptr(8)]   = 40 bytes
-Data buffer: [elem_0(8) | elem_1(8) | ... | elem_{cap-1}(8)]  (plain allocation, no header)
-```
-
-- `LEN_OFFSET = 16`
-- `CAP_OFFSET = 24`
-- `DATA_PTR_OFFSET = 32`
-
-Only the Vec struct has an RC header. The data buffer is a plain `alloc`/`dealloc` allocation. `vec_drop` frees both the data buffer and the Vec struct.
-
-### 1.5 HeapCategory
-
-The `HeapCategory` enum classifies types for RC decisions:
-
-| Category | Types | RC treatment |
-|---|---|---|
-| `NeverHeap` | Int, Bool, Float, pure-enum ADTs | No RC ops |
-| `AlwaysHeap` | String, Fn, ADTs with only data constructors, Vec | Unconditional inc/dec |
-| `Mixed` | ADTs with both nullary and data constructors (e.g., Option) | Guarded inc/dec: skip if value < `NULLARY_TAG_THRESHOLD` |
-
-`HeapCategory::classify(ty, type_defs)` is the single source of truth. When `type_defs` is available (after typechecking), classification is exact. Without it, ADTs conservatively classify as Mixed.
-
-#### The two historical sources of `Mixed` — and their post-S84 disposition
-
-`classify` has, historically, returned `Mixed` for **two structurally distinct reasons**, collapsed into one verdict (the enum carries no discriminator):
-
-1. **Legitimate, type-known nullary-tag discrimination.** A `Type::ADT(fqtn, _)` whose constructor set is genuinely mixed — some nullary (bare-tag), some data (heap pointer), e.g. `Option`. Here the `<1024` guard is **sound**: the type is known, the tags are bounded (`tag < NULLARY_TAG_THRESHOLD` by construction — nullary constructors get small sequential tags), and the runtime value really is *either* a bare tag *or* a heap pointer. The guard is the correct discriminator. (`classify_from_ctor_names` → `(true, true) => Mixed`, heap.rs ~552.)
-
-2. **Unsound fallback from a non-concrete type.** The `Type::Var(_) | Type::TyConApp(_, _)` arm (heap.rs ~456), plus the conservative `Type::ADT`-without-tables / ADT-not-in-tables fallbacks (heap.rs ~485, ~491). Here `classify` has **no static knowledge** and guesses `Mixed`. On the `Type::Var` path the `<1024` guard is **unsound** (BC §3 invariant 9): a negative or `≥ 1024` `Int` flowing through a polymorphic position is misread as a heap pointer, and the dec path frees it — use-after-free. The guard's tag-vs-pointer dichotomy does not hold for an arbitrary monomorphic instantiation.
-
-**The reasons are NOT separable at the RC-emission call sites.** Every guarded-RC site (7 `emit_rc_inc_guarded`, 8 `emit_rc_dec_guarded(guard_nullary=true)` — inventory in §1.6) follows the identical shape `match classify(ty, …) { … Mixed => guarded … }` and never re-inspects `ty` to ask *why* it was `Mixed`. The collapse is in the **verdict**, not in the inputs: the call sites all still hold the original `&Type`, so the distinction is **recoverable at `classify` itself** — reason (1) is exactly `matches!(ty, Type::ADT(..))` reaching the `(true,true)` arm; reason (2) is every other path that yields `Mixed`. This recoverability is what makes the S84 change a `classify`-local change, not a call-site rewrite (see §1.6).
-
-**Post-S84 invariant (gated on FIXME 0374).** Once typecheck's Tier-2 full-monomorphisation-from-roots guarantees that **no `Type::Var` reaches codegen** (BC §2 + §3 invariant 9), reason (2)'s `Type::Var` path is *unreachable by construction*. The only surviving producer of `Mixed` is reason (1) — the type-known mixed ADT — for which the `<1024` guard is sound. `Mixed` then means exactly "a known ADT with both nullary and data constructors," nothing more. The table row above is already written to that target state (the "unresolved type vars" entry is struck).
-
-### 1.6 S84 / FIXME 0375 — retire the unsound guard from the `Type::Var` path
-
-**Gating (hard, directional — restated from BC §3 invariant 9 and /arch Phase-2 point 1).** This change is a **strict downstream of FIXME 0374** (typecheck Tier-2). It MUST NOT land before 0374 is green. Landing the panic (below) while a residual `Type::Var` can still reach codegen is **strictly worse** than today: today a residual `Type::Var` falls through to the (unsound-but-non-crashing) `Mixed` fallback; with the panic in place it would crash at codegen instead. The non-crashing fallback is the *operatively load-bearing* safety net that only total concreteness retires. In the S84 wave plan this is **Wave 2**, after Wave 1's 0374. The typecheck-side complement (the unconstrained-top-level-var **ambiguity error**, 0373 part ii, raised at the post-inference generalisation boundary) and this codegen-side assert together make a residual `Type::Var` at codegen structurally impossible (Principle 18 — enforce invariants structurally).
-
-#### Change 1 — `classify(Type::Var)` becomes an assert/panic
-
-The `Type::Var(_)` arm of `HeapCategory::classify` is no longer a silent `Mixed` fallback. A `Type::Var` reaching codegen classification is, post-0374, a **compiler bug** (concreteness is an upstream guarantee), so it must fail loud, not silently emit an unsound guard.
-
-**Assert form (specification for /dev).** A bare `panic!` with a diagnostic that names the invariant, the violating type, and the upstream owner of the guarantee — so a future regression points the reader straight at typecheck, not at the backend:
-
-```rust
-Type::Var(_) => unreachable!(
-    "HeapCategory::classify: Type::Var reached codegen heap-classification — \
-     full monomorphisation (typecheck Tier-2, FIXME 0374 / BC §2) must make all \
-     types concrete before the codegen boundary; a Type::Var here is a compiler \
-     bug, not a fallback (BC §3 invariant 9). ty = {ty:?}"
-);
-```
-
-Rationale for `unreachable!` over `debug_assert!`: the existing pre-codegen tripwire `Type::contains_var()` (cranelisp-types, used in `debug_assert!`) is *debug-only*; this arm is the **release-mode** structural backstop at the exact point where the unsound guard would otherwise be emitted. It must hold in release builds too (the use-after-free it guards against is a release-mode hazard). `unreachable!` panics in all build profiles and documents the "cannot happen" intent at the type level. Cost is nil on the hot path — it replaces an arm that is, post-0374, never taken.
-
-**`Type::TyConApp` disposition.** The current arm is `Type::Var(_) | Type::TyConApp(_, _) => Mixed`. **Split the arm.** `TyConApp` is a separate question (a partially-applied type constructor at the HKT boundary; not a free var) and is NOT covered by 0374's concreteness guarantee in the same way. `/dev` must split: `Type::Var` → the `unreachable!` above; `Type::TyConApp(_, _)` → **keep** its current `Mixed` fallback for now, with a `// FIXME(0375): TyConApp concreteness is a separate question from Var; revisit if HKT codegen monomorphises through it` note. Folding `TyConApp` into the panic would be an over-reach beyond 0374's guarantee — flag this explicitly so /dev does not collapse both into the panic. If, during implementation, /dev finds `TyConApp` also cannot reach codegen post-0374, that is a follow-up (file `target: /typecheck` or `target: /arch`), not part of 0375.
-
-#### Change 2 — retire the `<1024` guard from the `Type::Var`-originated path; KEEP it for nullary-tag ADT discrimination
-
-The crux of 0375 is the **retire-vs-keep** split. State of the code (verified S84 Phase 3):
-
-- **KEEP** — the guard's sound origin. The 15 guarded-RC call sites that fire on a `classify` verdict of `Mixed` derived from **reason (1)** — a `Type::ADT` that is genuinely mixed (`(has_nullary, has_data) == (true, true)`). These are the within-known-`Mixed`-ADT nullary-tag discriminators. They MUST keep the guard: at these sites the runtime value really is tag-or-pointer and the `<1024` test is the correct discriminator. The kept path is genuinely the **type-known / tags-bounded** case — confirmed: the `(true,true)` arm is only reachable from `classify_adt` → `classify_from_ctor_names`, both of which require a `Type::ADT(fqtn, _)` *and* a resolvable constructor set in the symbol tables; a `Type::Var` can never reach that arm.
-
-- **RETIRE** — the guard on the `Type::Var`-originated path. Post-Change-1, this path **no longer produces a `Mixed` verdict at all** — it panics. Therefore the unsound guard is retired **by construction at its source**: with no `Mixed` flowing from `Type::Var`, no guarded-RC op is ever emitted for a `Type::Var`-originated value. There is no separate call-site edit required to "remove" the unsound guard — making `classify(Type::Var)` unreachable removes every downstream unsound `emit_rc_inc_guarded` / `emit_rc_dec_guarded` it would have fed.
-
-**Are the two paths cleanly separable in the current code? YES — at `classify`, NOT at the call sites.** This is the key design finding. The call sites cannot tell the two `Mixed` reasons apart (they never re-inspect `ty`), but they do not need to: the separation lives entirely in `classify`'s arms. Reason (1) flows from the `Type::ADT` arms; reason (2)'s `Type::Var` sub-path is severed by Change 1. **No call-site refactor is required, and no new `HeapCategory` discriminator variant is needed.** The 15 guarded sites are unchanged — they keep firing for reason (1), and simply never receive a reason-(2) `Mixed` anymore. This is the minimal, containment-respecting form (Principle 6 — complexity has a budget; Principle 7 — single source of truth: the retire/keep decision stays inside the one `classify` SSOT, not scattered across 15 call sites).
-
-**The remaining `Type::ADT`-without-tables / ADT-not-in-tables fallbacks (heap.rs ~485, ~491) stay `Mixed` — and that is correct.** They are reason-(2)-flavoured (conservative, no static knowledge), but they are NOT on the `Type::Var` path and are NOT made unsound by 0374: an ADT-without-tables `Mixed` value is still genuinely tag-or-pointer (it IS an ADT, just one whose ctor set we could not resolve at this call), so the `<1024` guard remains sound for it. 0375 does **not** touch these. (If a future audit shows tables are *always* present at codegen heap-classification — making these fallbacks themselves dead — that is a separate cleanup, not 0375.) Be exact: 0375 retires the guard from the **`Type::Var`** sub-path only, by making that sub-path panic; it does not touch the conservative-ADT fallbacks.
-
-#### Testability — backend-seam unit tests (per the per-fix discipline)
-
-Two backend unit tests in `heap.rs`'s `heap_category_tests` module pin the change at the seam where the bug lived (mandatory per `memory/feedback_unit_test_per_fix.md` — write failing-first, fix flips green, same change-set):
-
-- **(a) The kept path still works — `Mixed` ADT still discriminates nullary tags.** The existing `test_mixed_adt_with_tables` already pins `classify(Option<Int>, Some(&tables)) == Mixed` (the `(true,true)` arm). Keep it; it is the regression guard that the *sound* `Mixed` path is intact after the `Type::Var` arm changes. No new positive test is strictly required, but /dev should add an explicit `// regression: kept path (0375)` annotation so the guard's role is legible. The `(true,true)`→`Mixed`→`emit_rc_*_guarded` chain is what must NOT break.
-
-- **(b) The `Type::Var` arm now panics — the assert is the structural guard.** Replace the existing `test_var_mixed` (which asserts `classify(Type::Var(0), None) == Mixed`) with a `#[should_panic(expected = "Type::Var reached codegen")]` test asserting `classify::<(), ()>(&Type::Var(0), None)` panics. This is the negative/structural guard: it pins that a `Type::Var` is now rejected at the seam, not silently mis-classified. (Note: this test is **gated** — it must land in the same Wave-2 change-set as Change 1, after 0374; before 0374 it would be a true statement of an unsound behaviour and must not be asserted as desired. /qa and /dev coordinate the wave timing.)
-- **`TyConApp` arm** — add/keep a test pinning `classify(Type::TyConApp(..), None) == Mixed` so the split (Change 1) is explicit and the `TyConApp` fallback is not accidentally swept into the panic.
-
-#### Testability — e2e (coordinate with /qa)
-
-An e2e is **warranted**. The original 0373 defect was a `--run` SIGSEGV (use-after-free on the unsound guard). The durable guard is the cross-mode concreteness e2e /qa authors sprint-wide in Wave 0 (Tier-2 mono concreteness + SIGSEGV-class repros across `--run`/`--link`/REPL — SPRINT.md §Waves Wave 0). 0375's specific e2e expectation: the previously-SIGSEGV-ing polymorphic-`Int`-through-a-`Mixed`-position repro **runs clean** under `--run` and `--link` once 0374 + 0375 land. This is /qa's to author (cross-skill: /backend names the expectation, /qa writes the test per the user-proxy/defect protocol). The unit test (b) is the backend-seam guard; the e2e is the end-to-end witness — they answer different questions (the panic-reachability at the seam vs. the absence of the runtime crash), so both are needed.
-
-#### Risk
-
-- **Premature landing (the gating risk).** If 0375 lands before 0374 is *fully* green, a residual `Type::Var` crashes at codegen. Mitigation: the wave ordering (Wave 2 strictly after Wave 1) plus the typecheck-side ambiguity error (0373 ii). /dev(backend) must confirm 0374's concreteness guard is green before merging Change 1 — the cheapest confirmation is that /qa's Wave-0 concreteness e2e (and the `Type::contains_var()` debug-assert) pass with Tier-2 in place.
-- **Over-reach on `TyConApp`.** Folding `TyConApp` into the panic exceeds 0374's guarantee and would crash valid HKT codegen. Mitigation: the explicit arm-split instruction in Change 1.
-- **No baseline move.** `classify` / `emit_rc_inc_guarded` / `emit_rc_dec_guarded` are backend-internal (`pub(crate)` / `pub` for in-crate intrinsics consumers, not boundary surface). No `crates/cranelisp-backend/public-api.txt` move expected, no BC §3 *shape* change (invariant 9 already states the retire direction in prose). Confirmed against /arch Phase-2 point 4.
-
-## 2. Reference Counting Protocol
-
-### 2.1 Atomic Operations
-
-RC operations are emitted as **inline atomic instructions**, not extern function calls:
-
-- **Increment** (`emit_rc_inc`): `atomic_rmw(Add, ptr + RC_OFFSET, 1)` with `MemFlags::trusted()`.
-- **Decrement** (`emit_rc_dec`): `atomic_rmw(Sub, ptr + RC_OFFSET, 1)` with `MemFlags::trusted()`. The old value is compared to 1: if equal (last reference), an Acquire fence is emitted, optional drop glue is called, and `runtime/dealloc` frees the object.
-
-The atomics use `MemFlags::trusted()` (Cranelift's ordering for single-threaded code with potential future multi-threaded extension). The Acquire fence on the free path ensures all prior writes to the object are visible before deallocation.
-
-### 2.2 Guarded Operations
-
-For `Mixed` types, guarded variants skip the RC operation entirely when the value is a bare nullary tag:
-
-```
-if value < NULLARY_TAG_THRESHOLD:
-    skip (bare tag, not a heap pointer)
-else:
-    perform rc_inc / rc_dec
-```
-
-- `emit_rc_inc_guarded`: branches around the inc.
-- `emit_rc_dec_guarded(guard_nullary=true)`: branches around the dec.
-
-Post-S84 / FIXME 0375 (gated on Tier-2 monomorphisation), the guarded variants fire **only** for the type-known mixed-ADT path — reason (1) in §1.5. The unsound `Type::Var`-originated guard is retired at its source by making `classify(Type::Var)` panic (§1.6); guarded RC is no longer emitted for any value whose `Mixed` verdict came from a non-concrete type. The `<1024` discriminator is therefore sound everywhere it still fires: the value is provably tag-or-pointer.
-
-### 2.3 When Inc Happens
-
-An `rc_inc` is emitted whenever a new reference to a heap value is created:
-
-1. **Consuming call arguments** (variable args): caller inc's before the call so the caller's binding survives the callee's dec.
-2. **Closure capture**: each heap-typed capture is inc'd when stored into the closure env.
-3. **Match field extraction**: when binding a field from a data constructor in a match arm, the field is inc'd to give the new binding its own reference.
-4. **`vec-get` element read**: the loaded element is inc'd (it now has an independent reference outside the Vec).
-5. **Return value protection**: `protect_return_value` inc's the body result before scope cleanup if the return value might alias a scope binding.
-
-### 2.4 When Dec Happens
-
-An `rc_dec` is emitted when a reference is released:
-
-1. **Scope cleanup** (`pop_scope_with_cleanup`): at the end of a `let` body or function body, all heap-typed bindings are dec'd (except the return value). For user-defined functions, this includes all heap-typed parameters (the consuming convention).
-2. **Callee-side extern dec**: extern primitives implemented in Rust (`str-concat`, `string-length`, Vec ops, Sexp marshaling, IO trampolines, etc.) dec any heap argument they do not return. This is part of the uniform consuming convention — there is no caller-side post-call temporary dec.
-3. **Temporary closure callee**: after calling a closure expression (not a named variable), the closure is dec'd.
-4. **Match scrutinee temporary**: if the scrutinee is a non-variable expression, it is dec'd after all arms have been compiled.
-5. **Vec COW mutate-in-place**: the old element is dec'd before storing the new value.
-
-### 2.5 What Triggers Free
-
-When `rc_dec` brings the old RC to 1 (meaning it was the last reference):
-
-1. **Acquire fence** to ensure write visibility.
-2. **Drop glue** (if provided) is called to recursively dec any heap-typed sub-values.
-3. **`runtime/dealloc`** reads `alloc_size` from offset 0 and frees the allocation.
-
-## 3. Calling Convention
-
-**Historical note**: Prior to Sprint 56 Step 2c, this section described a split convention (Decision 20, retracted) with three classifications — consuming for user functions, borrowing for builtins/externs, and none for data constructors — plus a caller-side `dec_temporary_args` helper. The current target is **Decision 24** — a uniform consuming convention applied to every call type. The split form is gone; data constructors are reclassified as consuming (the ADT inherits ownership of field values); extern primitives now dec their own heap arguments before return.
-
-There is exactly one calling convention, applied identically to direct user-function calls, closure calls (named or temporary callee), trait method dispatch (user impls and primitive/extern impls), sig-dispatch, data constructors, inline builtin operators, Vec primitives, and every extern Rust function that takes heap arguments.
-
-> **S100 forward note — Decision 24 becomes the conservative point of the mode lattice
-> (`design/arch/ownership-inference.md`, the S100 memory-model spine).** Decision 24 is retained
-> verbatim as the **conservative default / absent-summary semantics**: it is the ⊤ point of the
-> spine's per-param mode lattice (`Copy ⊑ Borrowed ⊑ Owned`, spine §2.1). The "exactly one calling
-> convention" sentence above is therefore scoped to **one *default* convention**: refinements are
-> inferred, never annotated — statically-resolved calls (`resolved_call = Some`) may carry an
-> inferred per-param mode vector (ABI-bearing; absence ⇒ byte-for-byte this convention) — and
-> every unrefined edge (closure-valued/HOF call sites, constructors, externs, intrinsics, platform
-> effects) keeps exactly this convention permanently (spine §3.1 boundary pins). The increment-I
-> `Borrowed` elision on statically-resolved calls is specified by
-> `design/backend/ownership-codegen.md` against the spine; under the master analysis-off toggle
-> the emitted code remains byte-identical to this section as written. Everything below in §3
-> stands unchanged as the as-built behaviour and the permanent conservative lowering.
-
-### 3.1 The Uniform Consuming Convention
-
-**Protocol**:
-1. **Caller** compiles args via `compile_consuming_arg_list`:
-   - For each argument that is a variable reference (`Expr::Var`), check its type via `variable_types`. If heap-typed, emit `rc_inc` (or `rc_inc_guarded` for Mixed). This gives the callee its own reference to the caller's binding while preserving the caller-side binding. (Future optimisation: skip this inc when last-use analysis proves the variable is not reused after the call — direct transfer.)
-   - For each argument that is a temporary expression (not a Var), no caller-side action is needed. The temporary starts at rc=1 from its allocation; ownership transfers to the callee.
-2. **Callee** owns all heap parameters. It is responsible for dec'ing anything it does not return. The form of that dec depends on what the callee is:
-   - **User-defined function**: `pop_scope_with_cleanup` at function exit dec's all heap-typed parameters (and let-bindings) except the return variable. This is automatic — the backend emits it for every user function.
-   - **Extern Rust primitive**: the Rust implementation itself dec's its heap arguments before returning. See §3.3 Extern Consumption Audit.
-   - **Data constructor**: the field-store implicitly consumes the argument (the new heap object holds the only reference to the transferred value; the ADT's own drop glue will dec each heap-typed field when the ADT itself reaches rc=0). The constructor emits no explicit dec because the dec happens later through the ADT's lifetime.
-   - **Inline builtin operator**: operators whose operands are NeverHeap (integers, booleans, floats, comparison results) need no dec — there is nothing to free. Operators whose operands are heap-typed (e.g., a hypothetical string arithmetic) behave like externs: they dec their heap args inline before producing the result.
-   - **Closure call**: the code pointer leads to a user function body, so `pop_scope_with_cleanup` in the target applies. When the closure callee is a temporary expression, the caller additionally dec's the closure value itself after the call (it was a one-shot temporary, not a named binding).
-
-**Why this works**: With uniform consuming semantics, every heap-typed argument has exactly one dec responsibility — the callee. The caller's inc for variable args preserves the caller-side binding; the callee's dec matches it. Temporary args transfer rc=1 directly; the callee's dec releases them. There is no divergent code path, no attribute annotation on extern symbols, no `dec_temporary_args` post-call cleanup.
-
-### 3.2 Variable-into-Constructor Ownership
-
-Consider `(let [s "hello"] (Some s))`. At the `(Some s)` call site, `compile_consuming_arg_list` emits an `rc_inc` on `s` (it is a heap-typed Var). The constructor stores the string pointer as a field; the ADT now holds one reference. Two things now reference the string: the variable `s` (held by the enclosing `let` scope) and the `Some` ADT's field.
-
-- The variable `s` is owned by its scope. When `s` goes out of scope, `pop_scope_with_cleanup` dec's it.
-- The ADT `(Some s)` is itself a new heap allocation at rc=1. It is tracked by whatever scope or calling convention governs the ADT value. The ADT's drop glue will dec the field when the ADT reaches rc=0.
-
-Between these two dec paths, the underlying string stays alive as long as either reference exists. If the ADT is later passed to a user function, the inc at *that* call site is on the ADT pointer itself.
-
-For temporary-into-constructor (e.g. `(Some (str-concat a b))`): the temporary result of `str-concat` has rc=1, no caller-side inc is emitted (it is not a Var), and the field store transfers ownership directly to the ADT. No extra inc/dec is required.
-
-### 3.3 Extern Consumption Audit (Sprint 56 Step 2c)
-
-Under Decision 24, every extern primitive implemented in Rust that takes a heap argument MUST dec that argument before returning, unless the argument is returned unchanged (in which case ownership flows out through the return value) or stored in a runtime-owned structure that will outlive the call (in which case the extern has inc'd it and the caller's passed-in reference must not be dec'd by the extern — use the "retains" column).
-
-The authoritative per-extern table is:
-
-| Extern name | Crate/file | Heap arg(s) | Returns arg unchanged? | Retains arg? | Action (Sprint 56 Step 2c) |
-|---|---|---|---|---|---|
-| `str-concat` | runtime/string.rs | `a`, `b` (String) | No (returns new String) | No | **DONE**: dec both via `rc::consume_shallow` before return; caller uses `compile_consuming_arg_list` |
-| `str-eq` | runtime/string.rs | `a`, `b` (String) | No (returns Bool) | No | **DONE**: dec both |
-| `neq-string` | primitives/string.rs (post-D43 path; `crates/cranelisp-primitives/src/string.rs:109–116`) | `a`, `b` (String) | No (returns Bool) | No | verified consuming (S102, FIXME 0504): dec both via `rc::consume_shallow` — same pattern as `str-eq` (its `Eq.!=` counterpart). **S103 (FIXME 0510, `ownership-codegen.md` §9.4): registered as a `ring1` `DefKind::Primitive` entry** so its declared `Borrowed` facts attach for pass5 — restoring `==`/`!=` precision symmetry; the scalar `neq-i64/f64/bool` siblings stay harvest-only (scalar args ⇒ Decision-24 default is free) |
-| `str-len` | runtime/string.rs | `s` (String) | No (returns Int) | No | **DONE**: dec |
-| `string-identity` | runtime/string.rs | `s` (String) | Yes (returns same ptr after inc) | Yes (inc'd) | **DONE** (semantics-preserving): inc-and-return is already consuming — the returned pointer carries the caller's consumed reference plus a fresh inc. Caller uses `compile_arg_list` (no inc) because inc-and-return would double-up otherwise. |
-| `substring` | runtime/string.rs | `s` | No (returns new String) | No | **DONE**: dec |
-| `char-at` | runtime/string.rs | `s` | No (returns new String) | No | **DONE**: dec |
-| `split` | runtime/string.rs | `s`, `sep` | No (returns Vec of Strings) | No | **DONE**: dec both |
-| `join` | runtime/string.rs | `sep`, `vec` | No (returns new String) | No | **DONE**: `consume_shallow` on sep; `drop::consume_vec_of_string` on vec (walks String elements, frees data buffer, frees Vec struct). |
-| `replace` | runtime/string.rs | `s`, `from`, `to` | No | No | **DONE**: dec all three |
-| `trim` | runtime/string.rs | `s` | No | No | **DONE**: dec |
-| `starts-with?` | runtime/string.rs | `s`, `prefix` | No | No | **DONE**: dec both |
-| `ends-with?` | runtime/string.rs | `s`, `suffix` | No | No | **DONE**: dec both |
-| `contains?` | runtime/string.rs | `s`, `needle` | No | No | **DONE**: dec both |
-| `to-upper` | runtime/string.rs | `s` | No | No | **DONE**: dec |
-| `to-lower` | runtime/string.rs | `s` | No | No | **DONE**: dec |
-| `int-to-string` | runtime/primitives/int.rs | none (Int arg) | — | — | no heap arg |
-| `float-to-string` | runtime/primitives/float.rs | none (Float bits) | — | — | no heap arg |
-| `bool-to-string` | runtime/primitives/bool.rs | none (Bool arg) | — | — | no heap arg |
-| `parse-int` | runtime/primitives/int.rs | `s` (String) | No (returns Option Int) | No | **DONE**: dec |
-| `sconcat` | runtime/marshal.rs | `xs`, `ys` (SList) | Sometimes (ys if xs empty — inc'd) | Sometimes (ys deep inc; xs items shallow inc) | **DONE**: after building result (which shares items from xs and reuses ys as tail with deep inc), `drop::consume_slist` releases both inputs — on the last-ref path it recursively walks SCons nodes and Sexp heads. |
-| `quote-sexp` | runtime/marshal.rs | `val` (Sexp) | No (returns new Sexp) | No | **DONE**: split into `quote_sexp` (extern entry — builds then `drop::consume_sexp(val)`) and `quote_sexp_build` (internal, non-consuming, used by `quote_slist` recursion since sub-items are owned by the parent SList). |
-| `vec-len` | runtime/vec.rs | `vec` (Vec) | No (returns Int) | No | handled inline in vec codegen via `emit_vec_drop_if_temporary` → **rc-checked** `emit_vec_rc_dec_with_drop` (frees only at `old_rc == 1`; Vec-op caller handling — see below). Not routed through the extern-primitive consuming path. |
-| `vec-set-copy` | runtime/vec.rs | `vec` | No (returns new Vec) | No | handled by caller (`emit_vec_drop_if_temporary` → rc-checked `emit_vec_rc_dec_with_drop`) — no change here; vec-codegen path is already correct |
-| `vec-push-copy` | runtime/vec.rs | `vec` | No (returns new Vec) | No | handled by caller (`emit_vec_drop_if_temporary` → rc-checked `emit_vec_rc_dec_with_drop`) |
-| `vec-push-grow` | runtime/vec.rs | `vec` | Yes (returns same pointer) | Yes (keeps ownership) | ok — mutation in place; semantically consuming-then-re-returning |
-| `heap_alloc_string` | runtime/string.rs | none (raw bytes ptr, len) | — | — | no heap arg (raw, not a Cranelisp heap) |
-| `string_read` | runtime/string.rs | `s` | out-params only, no return | borrowed for the call | ok — called from Rust side (ValueFormatter), not from JIT |
-| `cranelisp_trace_name` | runtime/trace.rs | `trace` (Trace ADT) | No (returns field value) | No | **DONE**: inc the returned field (heap-typed — now has its own reference), then `drop::consume_trace_call` releases the Trace (walks sub-refs tname/tparams/tresult/tchildren on last ref). |
-| `cranelisp_trace_params` | runtime/trace.rs | `trace` | No | No | **DONE**: same as cranelisp_trace_name |
-| `cranelisp_trace_result` | runtime/trace.rs | `trace` | No | No | **DONE**: same as cranelisp_trace_name |
-| `cranelisp_trace_children` | runtime/trace.rs | `trace` | No | No | **DONE**: same as cranelisp_trace_name |
-| `cranelisp_trace_nanos` | runtime/trace.rs | `trace` | No | No | **DONE**: Int return — no inc; `drop::consume_trace_call` on the Trace. |
-| `cranelisp_trace_first_child_nanos` | runtime/trace.rs | `trace` | No | No | **DONE**: Int return — no inc; `drop::consume_trace_call` on the Trace. |
-| `cranelisp_run_io` | runtime/io.rs | `io_ast` (IO ADT) | No | No (evaluates to completion) | **TOP-LEVEL DONE**: after `run_io_trampoline` returns the final value, `drop::consume_io_tree(io_ptr)` releases the whole tree (tag-dispatched: Pure/Effect are leaves, Bind recurses into inner + consumes the continuation closure, Par walks all branches). **INTERNAL-LOOP OPEN (Sprint 57 Phase 4 G8 fix)**: intermediate Pure/Effect/Bind/Par nodes produced or replaced during the trampoline walk, and continuation closures popped from `cont_stack` and invoked, are leaked. See §3.5. |
-| IVar intrinsics | runtime/ivar.rs | various | varies | varies | separately reviewed — IVar code already has RC management for its specific semantics |
-| `print_string` (stdio) | `platforms/stdio/src/lib.rs` | `s: CLString` | No (returns `IO Int`) | Yes (captured into Effect thunk) | **DONE (Sprint 59 Workstream C-i)**: uses `CLHeap::into_owned_consuming` (Form B) — takes the caller's transferred ref directly into a `CLOwned` without inc'ing; the `CLOwned` dec's on closure drop, matching Decision 24's per-call balance. |
-| `capture_print` (test-capture) | `platforms/test-capture/src/lib.rs` | `s: CLString` | No (returns `IO Int`) | Yes (captured into Effect thunk) | **DONE (Sprint 59 Workstream C-i)**: uses `CLHeap::into_owned_consuming` (Form B) — same pattern as `print_string`. |
-| `read_line` / `scripted_read_line` | `platforms/{stdio,test-capture}/src/lib.rs` | none | — | — | no heap arg |
-| `commutative_*`, `resource_serial_noop` (test-capture) | `platforms/test-capture/src/lib.rs` | none (CLInt args) | — | — | no heap arg |
-| Other platform DLL functions | `cranelisp-platform/src/lib.rs` | varies per DLL | varies | varies | default rule: any new extern that captures a heap param into an Effect thunk MUST use `into_owned_consuming` (not `own()`). See §10.4 Form B. Platform-author checklist in `crates/cranelisp-platform/CLAUDE.md`. |
-
-**Full migration complete**: all externs consume correctly under Decision 24 (Sprint 56 Step 2c; platform-DLL capture-Effect pattern closed Sprint 59 Workstream C-i). Caller-side inc runs via `compile_consuming_arg_list` (apply.rs) for every heap-typed Var argument. Callee-side dec runs via:
-
-- `rc::consume_shallow` — simple-heap externs whose heap args have no heap sub-refs (all 14 string externs + `parse-int`).
-- `drop::consume_slist` / `consume_sexp` — SList/Sexp runtime marshaling (`sconcat`, `quote-sexp`).
-- `drop::consume_vec_of_string` — Vec of Strings (`join`).
-- `drop::consume_trace_call` — Trace ADT accessors (6 functions).
-- `drop::consume_io_tree` — IO trampoline (`cranelisp_run_io`).
-
-Each `drop::consume_*` function mirrors the backend's `emit_rc_dec_with_inline_drop_glue` in Rust: atomic dec with Release ordering; on last-ref path, Acquire fence → walk heap-typed fields → recursively consume each → dealloc the outer allocation. Non-last-ref paths short-circuit after the outer dec, matching the inline-drop-glue invariant that sub-refs are dec'd only when the outer reaches rc=0.
-
-RC balance is: Var arg → caller +1, callee −1 = net 0 (Var's own scope still holds its original ref); Temp arg → caller +0 (no inc), callee −1 = net −1 (frees the temp, which started at rc=1).
-
-**`string-identity`**: the one exception remains consuming-compatible. Semantically it is "inc and return" — the input pointer flows out through the return value with a fresh inc. Callers use `compile_arg_list` (no caller-side inc) because inc-and-return on an already-inc'd arg would double-count.
-
-**Vec-op caller handling**: `compile_vec_op` in backend emits `emit_vec_drop_if_temporary(vec_arg)` for a temporary Vec expression consumed by an inline Vec op (`vec-get`/`vec-len`) — named `Var`s are skipped (cleaned up at scope exit). This is a caller-side dec that predates Decision 24 and is tied to COW semantics. It is NOT a post-call `dec_temporary_args`.
-
-The release is **rc-checked**, not unconditional: `emit_vec_drop_if_temporary` routes through `emit_vec_rc_dec_with_drop`, which atomically decs and frees (data buffer + Vec struct) **only when this was the sole reference (`old_rc == 1`)**. The earlier design (and the pre-fix code) did an unconditional `vec_drop` on the temporary; that was the S97 nested-ADT-wrapping-Vec double-use soundness defect — a "temporary" Vec expression is not always the sole owner. When it is a **borrowed ADT field** — e.g. `(vec-get (gcells g) 0)`, where `gcells` projects the inner Vec still owned by the live `Grid g` — the Vec's rc is > 1, and an unconditional free would release it out from under the still-reachable `Grid`, corrupting the heap on the next write through the now-dangling pointer. The rc-checked dec is byte-identical to the old behaviour for a genuinely fresh `rc == 1` temporary, and correct (no free) for a shared borrowed-field temporary. See §5.5 (borrowed variables) for the ownership discipline this restores. Keep it as is.
-
-**Data constructor calls** (`compile_var_apply` → `compile_data_constructor_call`): now uses `compile_consuming_arg_list` for its args. Variable args get inc'd at the call site so the caller's scope still holds a reference while the ADT holds its own independent reference (released via the ADT's drop glue at destruction). Previously used plain-arg compilation, which caused use-after-free when the ADT outlived the caller's scope (the field stored a pointer to a heap object whose only reference was about to be dec'd by scope cleanup). Fixed in Step 2c.
-
-**Operator wrappers (`cranelisp_op_add` etc.)**: No heap args — Int/Bool/Float bit-patterns only. No action.
-
-**Guidance for adding new externs**: default to consuming. For each heap-typed parameter decide: (a) does it flow out unchanged through the return? If yes, inc-and-return or just return-as-is with ownership transfer. (b) does it get stored/retained? If yes, inc it into the storage. (c) otherwise: dec it before return. Write a test per §4 of this doc.
-
-### 3.4 Temporary Closure Callee
-
-When the callee itself is a temporary expression (e.g., `((make-adder 5) 3)`), the result of the callee expression is a closure at rc=1. After the call:
-
-1. The return value is **protected**: if heap-typed, emit `rc_inc` on the result before dec'ing the closure. This prevents premature deallocation if the result aliases a captured value.
-2. The temporary closure is dec'd via `emit_closure_dec`.
-
-### 3.5 IO Trampoline Intermediate-Node Leak (Sprint 57 Wave 3 — LANDED)
-
-The IO trampoline in `crates/cranelisp-intrinsics/src/io.rs` is the Ring 4 counterpart to the user-function consuming convention: it executes an IO ADT tree built by the frontend/prelude (Pure / Effect / Bind / Par) and returns the final value. Under Decision 24, the extern entry `cranelisp_run_io(io_ptr)` consumes the **top-level** IO argument via `crate::drop::consume_io_tree(io_ptr)` after the trampoline returns. Before Sprint 57 Wave 3, intermediate Pure/Effect nodes produced by continuations during the walk were leaked: each continuation's returned node became the new `current` and the prior `current` was dropped from the local without a matching dec/dealloc.
-
-Before the Wave 3 fix, this was a real leak, not cosmetic (per `/arch` review condition 6). Every Bind-chain step through a continuation produces a fresh IO node (typically a Pure or Effect) that replaces the previous `current`; the previous `current` — an earlier intermediate produced by an earlier continuation — had no further reference and no matching dec. Under a Ring-4 program doing many binds, the leak was O(binds).
-
-The Wave 3 fix distinguishes **caller-tree** nodes (reachable from the original `io_ptr`, released by the top-level `consume_io_tree`) from **fresh** nodes (produced by continuations during the walk, released inline by the trampoline). See §3.5.4 for the landed implementation.
-
-#### 3.5.1 What `run_io_trampoline` does
-
-`run_io_trampoline(io_ptr: i64) -> i64` walks the IO ADT iteratively with an explicit `cont_stack: Vec<i64>` of continuation closures. On each iteration, it reads `current`'s tag (offset 16) and dispatches:
-
-| Tag | Action | How `current` is replaced |
-|---|---|---|
-| Pure | Read field0 (payload). Pop a continuation or return. | If cont popped: `current = call_continuation(cont_ptr, val)` — the continuation returns a fresh IO node. If no cont: return val to caller (Pure node is not consumed here; dec'd by `cranelisp_run_io` via `consume_io_tree` on the top-level root — but only if `current` IS the top-level root at return time, which it is not after the first continuation). |
-| Effect | Read field0 (thunk ptr), invoke the thunk via `call_effect_thunk`. Pop a continuation or return. | Same as Pure — continuation returns a fresh IO node, or trampoline returns the result value directly. |
-| Bind | Read field0 (inner), field1 (cont). Push cont on stack. | `current = inner` — the Bind node itself has no further use; its inner pointer is now the new current. The Bind node is leaked unless later consumed. |
-| Par | Read count + branch pointers. Dispatch rayon parallel evaluation. Allocate results buffer. Pop a continuation or return. | `current = call_continuation(cont_ptr, results_ptr)` or return results_ptr. |
-
-#### 3.5.2 Where the intermediate nodes come from
-
-Two sources:
-
-1. **Continuation returns.** A Cranelisp continuation is a lambda `(fn [x] <expr>)` where `<expr>` builds and returns an IO value — typically `(pure (+ x 1))` or `(bind <another-io> <next-cont>)`. The returned IO node is a fresh heap allocation at rc=1 (the continuation allocated it via the backend's normal allocation path). The trampoline assigns it into `current` and proceeds. When the NEXT iteration replaces `current` again, the previous IO node — a fresh Pure / Effect / Bind / Par at rc=1 — has no remaining reference.
-
-2. **Bind dispatch.** When `current.tag == IO_TAG_BIND`, the trampoline reads `field0` (inner IO) and `field1` (continuation closure), pushes the closure on `cont_stack`, and replaces `current = inner`. The Bind node itself is now unreferenced by the trampoline. The top-level `consume_io_tree` call in `cranelisp_run_io` does dec the Bind node — but only if the Bind node is still reachable from the top-level root pointer at that time. The dec is only correct for Bind nodes directly on the root's spine; a Bind node produced by a continuation mid-walk is NOT on the root's spine.
-
-Combined effect: every continuation-produced node and every mid-walk Bind node is leaked. The rc=1 reference is never dec'd.
-
-#### 3.5.3 The RC-balance rule
-
-Under Decision 24, the extern `cranelisp_run_io(io_ptr)` is a consuming callee: it fully releases the IO tree handed in. The internal trampoline (`run_io_trampoline`) is a non-consuming helper — it walks the caller-owned tree read-only and dec's only the nodes IT allocates (continuation-produced intermediates). The extern wrapper handles the caller's tree via `consume_io_tree(io_ptr)` post-return.
-
-Stated as an invariant:
-
-- Caller-tree nodes (reachable from the original `io_ptr` by following Bind spines, Par branches, and Bind continuations) are owned by the top-level extern caller. They are released by one transitive `consume_io_tree(io_ptr)` call after the trampoline returns.
-- Fresh nodes (allocated during the trampoline's walk by invoked continuations) are owned by the trampoline and released inline when `current` is replaced, including on the no-continuation return path (§3.5.4).
-- Continuations popped from `cont_stack` carry their parent Bind's freshness. Caller-tree closures are not dec'd by the trampoline (the tree walks them); fresh closures are `consume_closure`-dec'd after invocation (one-shot semantics).
-- The trampoline returns a scalar `i64` — whatever payload the final Pure/Effect/Par yielded. If that payload is a heap pointer (e.g., a String from `Pure "hello"`), its rc is managed by the caller's scope, as for any heap-typed return value.
-
-See §3.5.4 for the landed implementation of these rules.
-
-#### 3.5.4 Fix shape — LANDED Sprint 57 Wave 3
-
-The minimal fix is to dec the replaced node inside each loop iteration WHEN the trampoline owns it (not when the caller does). The earlier formulation of this section proposed unconditional shallow-dec at every replace site — that turned out to double-dec the caller's tree because `cranelisp_run_io` still needs to run `consume_io_tree(io_ptr)` post-return to release the top-level tree (closures embedded in caller-tree Binds are transitively released by that walk). The correct discipline is ownership-aware release: release only the nodes and closures the trampoline itself produced.
-
-**Landed implementation (Approach 4)**. `run_io_trampoline` is non-consuming of `io_ptr`:
-
-- The trampoline tracks `current_is_fresh: bool` — initially false (the caller's tree). It flips to true after the first `call_continuation` (continuation returns a freshly-allocated IO node) and stays true for the rest of that subtree (stepping into a fresh Bind's inner descends to another fresh node because the continuation allocated the whole subtree).
-- When `current` is replaced, the old `current` is released **only if `current_is_fresh` was true**. A finished value-producing node (continuation pop or the no-continuation return) goes through `drop::dec_shallow_io`. A fresh `Bind` → inner step follows the fresh-`Bind` descent in [ownership-and-disposal.md §7](../intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions): it acquires the inner and continuation references, then releases the parent structurally.
-- `cont_stack` stores `(cont_ptr, cont_is_fresh)` — the freshness inherited from the enclosing Bind at push time. When popped, `call_continuation(cont_ptr, val, cont_is_fresh)` invokes the closure and, if `cont_is_fresh`, `drop::consume_closure(cont_ptr)` after the call to dec the continuation-produced closure. Caller-tree closures (is_fresh=false) are left alone; `consume_io_tree(io_ptr)` releases them post-return.
-- `cranelisp_run_io(io_ptr)` wrapper: runs the trampoline, then `drop::consume_io_tree(io_ptr)` to transitively release the caller's tree.
-
-**Ownership invariant**. Every IO ADT node is dec'd exactly once:
-- Caller-tree nodes (Pure/Effect/Bind/Par and their cont closures) — released by the post-return `consume_io_tree(io_ptr)` transitive walk.
-- Fresh nodes (allocated by a continuation during the trampoline's walk) — released inline by the trampoline, as above.
-
-The two sets are disjoint: caller-tree nodes are reachable only via `io_ptr`; fresh nodes are reachable only via `current` after the first `call_continuation`. There is no overlap, so no node gets double-dec'd, and none leaks.
-
-**Release primitives**:
-
-- `drop::dec_shallow_io` releases the trampoline's reference to a fresh node under the `SpineTransferred` disposition. On the last reference it runs the one IO teardown tail and discharges the fields that disposition's column of the `ownership-and-disposal.md` §6 table declares. Only `Bind`'s transferred fields are skipped, so this is not an outer-allocation-only free. A bare nullary tag is a no-op.
-- `call_continuation(cont_ptr, val, cont_is_fresh)` — when `cont_is_fresh`, releases the closure with `consume_closure(cont_ptr)` after the call.
-
-**Rejected alternatives**:
-
-- **Unconditional shallow-dec at every replace site** (the earlier §3.5.4 recommendation): double-dec's caller-tree closures because `consume_io_tree(io_ptr)` still walks them. The pre-landing analysis missed this because the two dec paths (inline + post-return) were not modelled together.
-- **Track-and-drop** (keep a `Vec<i64>` of owned nodes and dec them at returns): allocates a Vec per trampoline invocation; the `current_is_fresh` bool is a simpler invariant.
-- **Consume io_ptr at the trampoline level** (make `run_io_trampoline` consuming): cleanest in theory but changes the contract of a public Rust function, breaking all direct Rust-level callers (tests in `tests/spec_10_io.rs` that call `run_io_trampoline` then `heap_dealloc(value)`). Keeping the post-return `consume_io_tree(io_ptr)` at the extern wrapper preserves backward compat.
-
-**Freshness flag is viral within a subtree**. Once set to true (by a continuation returning a fresh node), freshness is inherited by Bind's inner (same continuation allocated both), Par's branches (same), and popped continuations (stored with their enclosing Bind's freshness). Freshness never flips back to false — a fresh subtree cannot contain a caller-tree node.
-
-#### 3.5.5 Why `call_effect_thunk` is NOT affected
-
-`call_effect_thunk` borrows its thunk: the node keeps it across any number of forces, and the node's teardown discharges it once through `drop_effect_thunk`, identically under the `Structural` and `SpineTransferred` releases (`design/intrinsics/ownership-and-disposal.md` §6.2). The thunk is a platform-owned Rust allocation, not a Cranelisp heap value with an RC header, so it does not interact with this fix; the resource token is a scalar. Only the Effect node's own allocation is RC-managed, and a fresh node's release is the `dec_shallow_io` release from §3.5.4.
-
-#### 3.5.6 Par-specific note
-
-`dispatch_par_branches` invokes `run_io_trampoline` recursively on each branch. Under the fix, each recursive trampoline call is itself RC-balanced — every intermediate node produced inside the branch walk is dec'd inline by the branch's own trampoline instance. The outer trampoline then allocates a fresh `results_buf` via `alloc_with_rc` to hold the scalar results; this buffer is passed to the continuation and eventually dec'd by whatever scope owns it (typically the continuation's `pop_scope_with_cleanup`). A fresh outer Par node is released through `drop::dec_shallow_io`, which discharges its branch block (§3.5.10), at the point where `current` is replaced with the continuation's return (or at the `return results_ptr` path at the top-level).
-
-#### 3.5.7 Testing — RC balance required, not just "tests pass"
-
-Per `/arch` review condition 6, the acceptance criterion for this fix is NOT "IO platform tests pass" but a real RC-balance integration test. `/qa` owns the integration test; the backend/runtime-side unit test is:
-
-```text
-Setup:  record alloc_count / dealloc_count; build an IO tree with N
-        intermediate Bind steps, each continuation producing a Pure node.
-Act:    call cranelisp_run_io on the root.
-Assert: (alloc_count - baseline) == (dealloc_count - baseline) + returned-heap.
-        For scalar-payload programs, returned-heap == 0, so alloc delta == dealloc delta.
-```
-
-The existing `decision24_run_io_pure_rc_balanced` test (at `io.rs:554`) already exercises the no-continuation path and is balanced. The fix MUST enable analogous tests for bind-chains and par-chains to pass with the same alloc/dealloc invariant.
-
-Pre-existing `test_run_io_deep_bind_chain` (1000 binds) is a natural stress test — under the fix, it must run with `(alloc_count - baseline) == (dealloc_count - baseline)` at the end. Today it leaks 1000+ intermediate nodes; post-fix, zero.
-
-#### 3.5.9 Cross-references
-
-- `crates/cranelisp-intrinsics/src/io.rs` — the landed fix (non-consuming trampoline + `current_is_fresh` flag).
-- `crates/cranelisp-intrinsics/src/drop.rs` — `consume_io_tree` (transitive) for caller-tree release; `consume_closure` for fresh-closure release; `dec_shallow_io` for fresh IO-node release.
-- `§3.3 Extern Consumption Audit` — the row for `cranelisp_run_io` that describes the top-level `consume_io_tree(io_ptr)` behaviour; remains accurate after the fix.
-- [ownership-and-disposal.md §6](../intrinsics/ownership-and-disposal.md#6-the-io-family) (the IO teardown table and its two dispositions) and [§7](../intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions) (trampoline ownership transitions) — the canonical runtime rules this section applies.
-- Decision 24 ([label index](../arch/decisions/README.md)) — the uniform consuming convention.
-
-#### 3.5.10 Fresh `Par`/`Select` node release (FIXME 0474, closed)
-
-- A `Par` or `Select` node's branches live in its branch container, not on the `current` spine. The trampoline dispatches them to recursive trampolines (`Par`) or the reactor (`Select`) and leaves the branch sub-trees for the node's teardown (`io-trampoline.md` §16.5).
-- A fresh `Par` or `Select` node therefore needs its branch container discharged when the trampoline releases it. The `Par` and `Select` rows of the `SpineTransferred` column in `design/intrinsics/ownership-and-disposal.md` §6 match their `Structural` rows, so `drop::dec_shallow_io` discharges the branches through the same teardown tail as `consume_io_tree` (Principle 7, single source of truth). Every finished-node release site calls that one function, and the node-shape knowledge stays in the table. FIXME 0474 recorded the leak from an outer-allocation-only release of a fresh `(bind X (fn [_] (select […])))` or `par`.
-- The discharge is timely. The trampoline replaces a fresh `Par`/`Select` node only after interpreting it: `Par` branches have joined, and `Select` losers' futures have been dropped (`io-trampoline.md` §16.5). No in-flight future references the branch sub-trees at release.
-- It cannot double-free. Freshness is viral within a subtree (see [Fix shape](#354-fix-shape--landed-sprint-57-wave-3) above), so the branches are themselves fresh and the caller's post-return `consume_io_tree(io_ptr)` never reaches them.
-- Evidence: `crates/cranelisp-intrinsics/src/drop/tests.rs` `dec_shallow_io_select_deep_frees_branch_vec_and_all_branches` and `dec_shallow_io_par_deep_frees_branches`; the heap-balance e2e `tests/concurrency_fanout.rs` `fresh_select_in_continuation_rc_balanced` and `fresh_par_in_continuation_rc_balanced`.
-
-## 4. Drop Glue
-
-Drop glue is the mechanism by which composite heap values recursively release their sub-values when freed.
-
-### 4.1 Closure Drop Glue
-
-Closure drop glue is generated by `build_closure_drop_glue` when a lambda has heap-typed captures. The generated function:
-
-1. Receives the closure base pointer.
-2. For each heap-typed capture at offset `capture_offset(i)`, loads the value and emits `rc_dec` (guarded for Mixed types).
-
-The drop glue pointer is **embedded** in the closure at `DROP_GLUE_PTR_OFFSET` (offset 24). This is essential because the caller often does not know the closure's capture layout at compile time (e.g., when a `Fn` parameter is received from another module).
-
-At dec time, `emit_closure_dec_inline`:
-1. Atomically decrements RC.
-2. If old RC was 1 (last reference):
-   a. Acquire fence.
-   b. Loads `drop_glue_ptr` from offset 24.
-   c. If non-zero, calls it via `call_indirect`.
-   d. Calls `runtime/dealloc`.
-
-### 4.2 ADT Inline Drop Glue
-
-ADT field cleanup uses two approaches:
-
-**Inline drop glue** (`emit_inline_drop_glue` on FnCompiler): Emitted directly into the caller's function body. Used by `pop_scope_with_cleanup` (the historical `dec_temporary_args` helper was deleted in Sprint 56 Step 2c — see §3 historical note). For each data constructor with heap-typed fields:
-- Single data constructor: directly load and dec each heap-typed field.
-- Multiple data constructors: load the tag, branch to the correct constructor's field-dec block.
-- For Mixed ADTs, the entire drop glue is guarded by a heap-pointer check.
-
-**Standalone drop glue** (`build_adt_drop_glue_fn`): A separate JIT function `(ptr: i64) -> ()`. Used by Vec element dec functions. The generated function has the same tag-dispatch logic but lives as an independent function that can be referenced by function pointer.
-
-### 4.3 Vec Drop Glue
-
-Vec uses a two-level approach:
-
-1. **Element-level**: `build_elem_dec_fn` generates a standalone `(val: i64) -> i64` function per element type. If the element type is an ADT with heap fields, `build_adt_drop_glue_fn` generates a nested drop glue function that is passed to `emit_rc_dec_guarded` inside the element dec function.
-
-2. **Vec-level**: `vec_drop(vec_ptr, elem_dec_fn_ptr)` in the runtime iterates over live elements (indices 0..len), calls the element dec function on each, then frees the data buffer and the Vec struct.
-
-Element inc/dec functions are generated by:
-- `build_elem_inc_fn`: emits `rc_inc` (or guarded inc for Mixed) on the element value.
-- `build_elem_dec_fn`: emits `rc_dec_guarded` (with optional ADT drop glue) on the element value.
-
-Both are called from the runtime via function pointer during Vec copy operations and Vec drop.
-
-## 5. Scope Cleanup
-
-### 5.1 pop_scope_with_cleanup
-
-`pop_scope_with_cleanup(skip_var)` is the workhorse of automatic memory management. Called at the end of every `let` body and every function body:
-
-1. Iterates over the current scope frame's bindings.
-2. Skips the `skip_var` (the binding whose value is being returned -- its ownership transfers to the caller).
-3. Skips consumed variables (already transferred to a callee).
-4. For each remaining heap-typed binding:
-   - `Type::Fn`: calls `emit_closure_dec_inline` (runtime drop glue dispatch).
-   - ADT types: calls `emit_inline_drop_glue` then `emit_rc_dec` (or guarded variants for Mixed).
-   - Other heap types (String): calls `emit_rc_dec` directly.
-5. Pops the scope frame, removing bindings from `variables` and `variable_types`.
-
-### 5.2 return_var_in_scope
-
-Determines which variable (if any) should be skipped by scope cleanup:
-
-```rust
-fn return_var_in_scope(body: &Expr, scope_frame: Option<&Vec<Symbol>>) -> Option<Symbol>
-```
-
-If the body is a direct `Expr::Var` reference to a name in the current scope frame, that name is returned as the skip_var. Scope cleanup then dec's everything except this binding, whose ownership is transferred to the parent.
-
-### 5.3 protect_return_value
-
-When `skip_var` is `None` (the body is not a direct variable reference -- e.g., it's an `if`, `match`, or function call), the return value might alias a scope binding. For example:
-
-```clojure
-(let [s "hello"]
-  (if cond s "world"))
-```
-
-Here the `if` expression's result might be `s`, but `return_var_in_scope` returns `None` (the body is `if`, not a `Var`). Scope cleanup will dec `s`, which could free it before the result is returned.
-
-`protect_return_value` handles this by emitting `rc_inc` on the result value before scope cleanup runs, but only when:
-1. `skip_var` is `None`.
-2. The body is not a fresh allocation (`Lambda` or `StringLit`) that cannot alias scope bindings.
-3. The current scope has at least one heap-typed binding.
-4. The result type is heap-typed.
-
-The caller's subsequent dec (at its own scope exit) restores the net count.
-
-### 5.4 Match Interaction with Scope Cleanup
-
-Match arms introduce their own scope frames:
-
-1. **Variable pattern** (`x`): binds the scrutinee to `x`, pushes a scope. The arm body is compiled, then `pop_scope_with_cleanup` dec's the binding (unless it's the return value).
-
-2. **Constructor pattern** (`(Some val)`): pushes a scope, binds each extracted field. Extracted fields get `rc_inc` at extraction time (they need their own reference independent of the scrutinee). The arm body is compiled, then `pop_scope_with_cleanup` dec's the field bindings.
-
-3. **Scrutinee temporary**: After all arms converge at the merge block, if the scrutinee was a temporary expression (not a Var), inline drop glue is emitted and the scrutinee is dec'd.
-
-The scope cleanup per arm ensures that field bindings extracted in constructor patterns are properly released even when the arm body doesn't return them.
-
-### 5.5 Captured and Borrowed Variables and Last-Use
-
-Three rules modify scope cleanup behavior:
-
-- **Captured variables** (`captured_vars`): Variables closed over by a lambda are NEVER eligible for last-use transfer. The closure env holds its own inc'd reference, and the enclosing scope must dec its own reference at scope exit regardless.
-
-- **Borrowed variables** (`borrowed_vars`): Variables introduced by match-arm constructor-pattern field bindings (e.g. `v` in `(match b [(Box v) ...])`). These extract a field from the scrutinee and skip both inc (at extraction) and dec (at scope exit) — the scrutinee still owns the value. Consequently, borrowed variables are NEVER eligible for last-use transfer, structurally symmetric with `captured_vars`: neither owns the value, so neither may transfer ownership. Violating this rule causes Vec COW mutate-in-place on an aliased Vec, followed by use-after-free when the scrutinee's drop glue independently dec's the field.
-
-  **Regression history**: Sprint 61 Slice 2 Layer 3 (the Sprint-61 slice-2 exemplar reduction (Git)). `(consume (Box [0]))` where `consume` does `(match b [(Box v) (Box (vec-set v 0 1))])` read the inner Vec length as `0` instead of `1`. Root cause: `is_last_use` did not gate on `borrowed_vars`, so the textually-last reference to `v` in `(vec-set v 0 1)` was treated as an ownership transfer. Vec COW saw `is_last_use + rc==1` and mutated in place, aliasing the original Box's field. When inline `(Box [0])` reached rc=0 and its drop glue fired, the mutated Vec was double-dec'd. The Layer 2 Sudoku backtracking regression (`try-digits`/`solve` on valid puzzles under the Layer 1 eliminate fix) was the same root cause — the `(match g [(Grid v) ...])` pattern bound `v` and passed it to `vec-set`, triggering the same aliasing. Fix landed 2026-04-22; the current guard is `crates/cranelisp-backend/src/compiler/fn_compiler.rs::is_last_use`.
-
-- **Last-use analysis** (`compute_last_uses`): Walks the expression tree in pre-order to determine the final use of each variable. The last use of a variable reference is a candidate for ownership transfer (skip the inc at the call site because the callee gets the caller's last reference). Currently used by Vec COW to determine mutate-in-place eligibility, but the general mechanism is available for future optimization. Must be gated on both `captured_vars` and `borrowed_vars` — neither owns the value, so neither may transfer ownership.
-
-> **S100 note:** the general ownership analysis subsumes these rules as inferred cases
-> (`design/arch/ownership-inference.md` §8.2 — `borrowed_vars` is the intra-function seed of
-> borrow-through-projection, spine §4.4). The structural rules here remain correct and remain
-> the as-built behaviour until the analysis lands; the backend consumption design is
-> `design/backend/ownership-codegen.md` §3.
-
-### 5.5.2 Spark-capture borrow — the structured-fork-join generalisation (Sprint 99, FIXME 0461)
-
-> **Arch-ratified soundness boundary (FIXME 0461, `target: /design`).** This subsection pins the
-> contract `/dev`(backend) implements against in Wave 1b. It is a **generalisation of §5.5's
-> `borrowed_vars` discipline to a new binding-introduction site — the spark-capture** — NOT a new
-> RC discipline and NOT escape analysis. The three arch conditions (structural-join gate; coarse
-> retain / no escape analysis; read-only no-COW-hazard) are binding and MUST NOT be widened; the
-> place the design "wants to widen" is a Phase-H forward-pointer (§5.5.2.5), not this sprint's work.
+> **Owner**: `design`, narrow-deployed to `cranelisp-backend`. Subordinate to
+> [backend.md](backend.md).
 >
-> **S100 note:** the general ownership analysis subsumes spark-capture borrow as an inferred case
-> (`design/arch/ownership-inference.md` §8.2 — the escape query classifies suspension crossings as
-> escape edges, discharging this document’s §5.5.2 ParBind caveat by classification, never by widening the
-> borrow). This section remains the as-built contract until the analysis lands.
-
-> **S99 ablation outcome (Wave 1b, `s99-measurement.md` §8; FIXME 0461 resolved, FIXME 0462 filed → this doc).**
-> The mechanism landed **within its boundary and is CORRECT** — implemented opt-in behind
-> `CRANELISP_CAPTURE_BORROW` (off by default, byte-identical-off; the mandatory
-> `LaunchContinue`-exclusion / parallel≡serial / heap-balance / inc-drop guards are all green,
-> and with the toggle on the parallel `rc_inc` drops to **exactly** the serial `rc_inc`, proving
-> it elides precisely the joined-spark-capture incs and nothing else). **But on the measured
-> workload it recovers ~0% of the (b) atomic-RC contention it was funded to remove** — the elided
-> incs number in the **hundreds** (F2: −897 of 170M = 0.0005%; F1/F3/F4: −1,003/−577/−23,144),
-> because the dominant (b) traffic is **not** fork-join captures but the **in-leaf vec-COW
-> refcount volume** (each `(vec-set g …)` COW-copies the 81-cell grid and bumps every retained
-> `Cell` — ~81 incs × copies × leaves ≈ the 170M). See §5.5.2.6 (the refuted volume prediction)
-> and §5.5.2.7 (the re-pointed (b)-cure). **Disposition: STAYS OPT-IN, NOT default-on** — there is
-> no measured (b) recovery to justify perturbing the canonical path, and the borrowed/owned
-> classification is permanent + Phase-H-durable (§5.5.2.5), so it carries at zero cost off as a
-> correct substrate until a real (b)-cure lands.
+> **What this document is**: the backend's reference-counting discipline when no
+> ownership refinement applies — the uniform consuming convention as emitted,
+> its extern application, the binders that own nothing, and
+> the opt-in spark-capture borrow. Every refinement is defined against this
+> lowering ([Principle 25](../arch/principles/25-narrowing-carries-its-check.md)).
 >
-> **UNRESOLVED SOUNDNESS CAVEAT — MUST be cleared before any future default-on (flagged by the
-> Wave 1b impl).** The §5.5.2.3 parent-outlives-spark argument is proven for the *synchronous*
-> apply-arg / independent-`let` joins (the parent frame is live across spark→join→call within one
-> stack extent). It is **NOT yet established for the `ParBind`-continuation borrow site**: a
-> `ParBind` branch closure may capture values that live in a **returned IO tree run later by the
-> trampoline**, so — unlike the synchronous joins — the capturing parent frame may **not** outlive
-> the borrow (this is the S98-0486 "lifetime-across-suspension" class: the join is structural in
-> the source, but the *dynamic* extent is deferred into a trampoline-scheduled continuation). The
-> current opt-in default-off status contains this: it never reaches the canonical path. Any move to
-> default-on MUST first prove (or gate out) the ParBind-continuation site against this
-> across-suspension lifetime — treat it as a live open item, not a solved one.
+> **Section numbers are citation anchors.** Source comments and tests cite them,
+> so they are stable; a missing number is a retired section whose content now
+> lives in one of the homes below.
 
-**The optimisation.** A sparked branch (a lenient-eval IVar thunk — the synthetic zero-arg
-`(Fn [] T)` wrapping an apply-argument (`lenient-eval.md` §4.4) or an independent `let` binding
-(§4.2), and the `ParBind` branch closures) captures free variables from its **enclosing scope**.
-Today each heap-typed capture is **retained** (`emit_capture_inc`, `lambda.rs:159`) when stored
-into the thunk env, and the thunk's drop glue **decs** it (`build_closure_drop_glue`,
-`lambda.rs:175`). Under N workers this atomic inc/dec on *shared parent cells* is the (b)
-cache-line-bouncing contention term the Wave-0 measurement found dominant (`s99-measurement.md`:
-F2 99% user, F4 ~70%). **Capture-by-borrow elides both ops:** the capture of a *structurally-joined*
-spark is a **borrow** — rc-invisible, exactly as a match-arm field binding in `borrowed_vars` is —
-because the join proves the parent frame outlives every spark, so the parent's own scope-cleanup
-dec is the single dec that accounts for the cell. The atomic-RC operations are removed **entirely**
-(not merely made non-atomic, which is all Phase-H thread-local RC would achieve).
+## 0. Where the rest of RC lives
 
-#### 5.5.2.1 The structural-join gate (load-bearing — eligibility)
+| Question | Canonical home |
+|---|---|
+| The convention as a boundary rule, and the extern boundary | [bounded contexts](../arch/bounded-contexts.md) §3 invariant 2; §4b invariants 3, 5 and 6 |
+| Heap word layouts and header | `spec/12-runtime.md` §12.1 (descriptive); the "Heap Object Layouts" and "Heap Classification" sections of [interfaces](../arch/interfaces.md); the offsets are the associated constants beside each `#[repr(C)]` layout, starting with `HeapHeader` in `crates/cranelisp-types/src/heap.rs` |
+| Why classification never sees a type variable | [concrete-boundary-type.md](../arch/concrete-boundary-type.md) §2 |
+| Release emission, drop glue, match scrutinee lifetimes, the TCO transfer predicate | [transitive-drop-glue.md](transitive-drop-glue.md) §4–§6 |
+| Ownership refinements narrowing this lowering | [ownership-codegen.md](ownership-codegen.md); the [ownership inference contract](../arch/ownership-inference.md) |
+| Runtime IO teardown and trampoline transitions | [intrinsics ownership and disposal](../intrinsics/ownership-and-disposal.md) §6–§7 |
+| Allocation ledger, RC tracing and double-free checks | [intrinsics diagnostic modes](../intrinsics/diagnostic-modes.md) |
+| Capturing a heap parameter in a platform effect closure | [platform-dlls.md](../platform/platform-dlls.md) §4 |
+| Where each mechanism sits in source | `crates/cranelisp-backend/CLAUDE.md` |
 
-Borrow-elision is admissible **only** for a spark whose join is **within the capturing frame's
-dynamic extent** — the expression does not return until every branch has joined. The eligible
-sites, all of which barrier-join before their enclosing form completes:
+## 2. RC emission
 
-- **Apply-argument sparks** (`lenient-eval.md` §4.4) — the create-gate lenient arm forces every
-  sparked IVar (Phase 2 barrier) *before* the call instruction is emitted; the parent frame is
-  live across the whole spark→join→call sequence.
-- **Independent + dependent `let` sparks** (§4.2 / §4.5) — Phase 2 forces every sparked IVar before
-  the `let` body; same barrier.
-- **`ParBind` branches** (`par_bind.rs`) — structured fork-join (spec §12.4.3 / §10.12): the `Par`
-  node does not yield until all branches join.
+### 2.1 Atomicity
 
-**EXCLUDED — the detached launch MUST retain.** `MonoExpr::LaunchContinue` (spec §10.12.7,
-`launch.rs`) is a **fire-and-forget** effect: its `launched` sub-tree is dispatched to a detached
-supervised strand (`IO_TAG_LAUNCH`) that has **no join inside the parent's extent** — the parent's
-continuation runs (and its scope cleanup decs) *before* the strand completes. A borrowed capture
-there is a use-after-free of the freed parent cell. `LaunchContinue` captures MUST keep the
-existing retain (`emit_capture_inc` + drop-glue dec), unchanged.
+- Increments and decrements are emitted inline as Cranelift `atomic_rmw` on the
+  header count, never as extern calls.
+- The last-reference path fences before it reads fields for release, then runs
+  the value's release and deallocates.
+- The one exception is a cell the ownership analysis proves `Confined`, which
+  may take the non-atomic arm (`ownership-codegen.md` §5.1, §5.2). The ordering
+  policy itself is intrinsics'
+  ([intrinsics context](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics),
+  invariant 3).
 
-**The discriminator `/dev` reads (a flag/variant, not a new analysis).** The joined-vs-detached
-signal is already carried **representationally** by the `MonoExpr` variant, per Principle 20
-(model invariants by representation) — `ast.rs:283–306` states this explicitly: `ParBind` =
-structured join, `LaunchContinue` = detached, deliberately kept as *distinct variants* precisely
-so "a structured-join spark cannot be mis-lowered as detached (or vice versa) by construction."
-The gate therefore **reads the lowering site**, it does not analyse. Concretely, the borrow is
-switched on at the three joined emission sites and is **never reachable** from the `launch.rs`
-`LaunchContinue` arm:
-  - The seam is a compiler flag on `FnCompiler` — a sibling of the existing `in_trace_body` /
-    `suppress_spark_gate` bools (`fn_compiler.rs:139,186`), e.g. `spark_capture_borrow: bool`,
-    set `true` only around the spark-thunk `compile_expr(&thunk_expr)` call in `apply.rs`
-    (the §4.4 lenient arm), the symmetric `let_if.rs` site, and the `par_bind.rs` branch-closure
-    build; restored (RAII/`saved`) after. `launch.rs` never sets it.
-  - Both the capture-store inc (`lambda.rs:156–160`) and `build_closure_drop_glue`'s heap-capture
-    dec (`lambda.rs:183–196`) read the flag: when set, **skip both** for every heap-typed capture.
-    The two skips are symmetric — exactly §5.5's borrowed-Var rule (skip inc at introduction *and*
-    dec at release). Skipping only one is the classic under/over-count bug; the design skips both,
-    coarsely, for the whole thunk.
+### 2.2 Guarded operations
 
-#### 5.5.2.2 Coarse retain — no per-capture escape decision (the Principle-8 line)
+A known ADT with both nullary and data constructors is `Mixed`: its word is a
+bare tag below `NULLARY_TAG_THRESHOLD` or a heap pointer. Its RC operations skip
+the count when the word is a tag. The guard is sound only because the type is
+known and its tags are bounded; classification takes a concrete type, so no
+guard is ever emitted for an unknown type.
 
-Every capture of a joined spark **borrows** (rc-invisible). The **only** retain is on the spark's
-**return value**, and it flows through the **already-audited** machinery — the consuming convention
-(Decision 24, §3.1) at the join plus the §5.6 capture-return-inc rule — **not** a new path:
+## 3. Calling convention
 
-- The apply-arg / `let` thunk body is, by the cost heuristic (`lenient-eval.md` §2.2), a
-  non-trivial `Apply`. Its result is a **fresh `rc=1` temporary** produced by the callee under
-  the consuming convention — it is NOT a borrowed capture, so it transfers ownership out of the
-  IVar into the joining frame with no special retain (`lenient-eval.md` §4.4 "RC / consuming
-  convention"). The single escape is this ordinary temporary.
-- In the degenerate case where a spark's return value *would* alias a borrowed capture (a bare
-  `(fn [] cap)` — which the cost heuristic already **excludes** from sparking, so it does not arise
-  in practice), the §5.6 capture-return-inc rule is the audited retain that balances it. This is
-  the one path S98 hardened (FIXME 0497); the design reuses it rather than inventing a per-capture
-  classifier.
+### 3.1 The uniform consuming convention
 
-There is **NO per-capture escape decision.** The rule is: *structural join ⇒ borrow the capture;
-retain only the return value via the existing consuming/§5.6 path.* Any classification that inspects
-a capture's value-flow to prove it does-not-escape is **Phase-H escape analysis** and is OUT OF
-SCOPE (§5.5.2.5). The clean interim line is exactly: **structural join ⇒ borrow; anything needing
-non-escape analysis ⇒ Phase H.**
+One convention governs every call — user functions, closures, trait methods,
+signature dispatch, constructors, inline builtins, Vec operations and externs.
+It is the ⊤ of the ownership lattice: an edge without an inferred mode vector
+compiles exactly this way, and closure-valued, constructor, extern, intrinsic
+and platform-effect edges always do.
+
+- **Caller.** A heap-typed variable argument is incremented before the call, so
+  the caller's binding survives. A temporary starts at one and transfers without
+  caller action. A sparked argument is forced at its position and transfers as
+  a temporary.
+- **Callee.** The callee owns every heap parameter and releases what it does not
+  return. A user function releases at scope exit (§5). An extern releases in its
+  Rust body (§3.3). A constructor stores the argument as an owned field that the
+  ADT's release discharges later. An inline builtin on scalar operands has
+  nothing to release.
+- **Temporary closure callee.** After calling a closure that was itself a
+  temporary, the caller releases the closure. A heap result is retained first in
+  case it aliases a capture.
+- **Balance.** A variable argument nets zero (caller +1, callee −1); a temporary
+  nets −1 and is freed by its callee.
+
+The convention is uniform because the split alternative — borrowing for
+builtins and externs, with a caller-side release of temporaries — puts a
+callee-classification branch at every application site. That is the parallel
+structure Principles [7](../arch/principles/07-single-source-of-truth.md) and
+[11](../arch/principles/11-single-pipeline-mode-parameters.md) exclude; the
+per-extern cost of releasing its own arguments is small and enumerable.
+
+### 3.3 Extern consumption
+
+Every extern releases each heap argument it neither returns nor retains. For
+each heap parameter an extern author decides exactly one of:
+
+| Parameter fate | Extern obligation | Declared ownership fact |
+|---|---|---|
+| Flows out unchanged through the result | Return it; the caller's reference leaves with it | `AliasOf` |
+| Stored in a structure that outlives the call | Store the transferred reference, or increment into storage | `Retained` |
+| Only read | Release it before return; the caller adapts at the site when the analysis declares the read | `Borrowed` (analysis fact; the extern still consumes) |
+| Otherwise | Release it before return | `Consumed` |
+
+- The per-primitive record is the declaration row in
+  `crates/cranelisp-primitives/src/declarations.rs`: its shim signature types
+  each argument as owned or borrowed, and its ownership summary carries the
+  fact. There is no separate audit table to keep in step.
+- Runtime helpers behind an extern are not bound by it; the extern entry is.
+  `cranelisp_run_io` consumes the caller's tree while the trampoline it drives
+  borrows that tree (§3.5).
+- **Vec operations compiled inline.** The operation releases its Vec operand
+  only when that operand is an owned temporary by provenance, not by expression
+  kind — an `if` or `match` that yields a binding is not a temporary. The
+  release is rc-checked: it frees only at the last reference, because a
+  temporary reached through a borrowed field is still owned by its parent (§5.5).
+
+### 3.5 The IO extern and the trampoline
+
+`cranelisp_run_io(io_ptr)` is a consuming extern. It drives the trampoline to
+completion and then releases the caller's whole tree with one structural
+`consume_io_tree(io_ptr)`. The trampoline itself borrows the caller's tree and
+owns only what continuations produce during the walk. The node teardown table
+and the trampoline's ownership transitions are intrinsics'
+([§6](../intrinsics/ownership-and-disposal.md#6-the-io-family),
+[§7](../intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions));
+this section states only the balance the extern entry relies on.
+
+#### 3.5.4 Caller-tree and fresh nodes
+
+- **Two disjoint owners.** Caller-tree nodes and their continuation closures are
+  reachable from `io_ptr` and released by the terminal structural walk. Fresh
+  nodes — produced by a continuation during the walk — are owned by the
+  trampoline and released when it replaces them.
+- **Freshness is viral.** Once a continuation returns a fresh node, everything
+  reached from it is fresh: a fresh `Bind`'s inner and continuation, a fresh
+  `Par`'s or `Select`'s branches. It never reverts, so a fresh subtree contains
+  no caller-tree node and nothing is released twice.
+- **Release sites.** A finished fresh node is released with `dec_shallow_io`
+  under the `SpineTransferred` disposition. A fresh `Bind` is descended by
+  acquiring its inner and continuation before releasing the parent, per
+  intrinsics §7. A fresh continuation is released after it is invoked; a
+  caller-tree continuation is left to the terminal walk.
+- **Rejected: release at every replacement.** Releasing each replaced node
+  unconditionally double-releases the caller's tree, because the terminal walk
+  still reaches it. Ownership decides the release, not the replacement.
+
+#### 3.5.7 Evidence is heap balance
+
+Acceptance for trampoline release is alloc/dealloc balance, not a passing
+program. The module guards are `decision24_run_io_pure_rc_balanced`,
+`run_io_trampoline_rc_balanced` and the deep bind-chain balance test in
+`crates/cranelisp-intrinsics/src/io/tests.rs`; a 1000-bind chain must end
+balanced.
+
+#### 3.5.10 Fresh `Par` and `Select` release
+
+- A `Par` or `Select` node keeps its branches in a branch container, not on the
+  `current` spine. The trampoline hands them to recursive trampolines (`Par`) or
+  the reactor (`Select`) and leaves the sub-trees to the node's teardown
+  ([io-trampoline.md](io-trampoline.md) §16.5).
+- A fresh `Par` or `Select` therefore discharges its branch container when
+  released. Their `SpineTransferred` rows match their `Structural` rows in the
+  intrinsics teardown table, so `dec_shallow_io` discharges the branches through
+  the same teardown tail as `consume_io_tree`
+  ([Principle 7](../arch/principles/07-single-source-of-truth.md)).
+- The release is timely: the node is replaced only after interpretation, when
+  `Par` branches have joined and `Select` losers' futures have been dropped.
+- It cannot double-free: the branches are fresh (§3.5.4), so the caller's
+  terminal walk never reaches them.
+- Evidence: `dec_shallow_io_select_deep_frees_branch_vec_and_all_branches` and
+  `dec_shallow_io_par_deep_frees_branches` in
+  `crates/cranelisp-intrinsics/src/drop/tests.rs`; the heap-balance e2e
+  `fresh_select_in_continuation_rc_balanced` and
+  `fresh_par_in_continuation_rc_balanced` in `tests/concurrency_fanout.rs`.
+
+## 5. Scope cleanup
+
+- At the end of every `let` body and function body, scope cleanup releases the
+  frame's heap-typed owning bindings — for a function, its parameters too —
+  except the binding the body returns, whose owner transfers to the caller.
+- When the body is not a bare binding but may yield one (an `if` or `match`
+  whose result aliases a binding), the result is retained before cleanup. A
+  body whose result is an independently owned reference needs no retain, and
+  borrowed bindings do not count as cleanup targets. `protect_return_value`'s
+  rustdoc carries the exact gate.
+- The frame tracks owning references only. Captures and borrowed binders live
+  outside it; §5.5 and §5.6 are the rules that follow.
+
+### 5.5 Captured and borrowed binders
+
+Two kinds of binder may never transfer ownership by last use:
+
+- **Captured variables.** The closure environment holds its own retained
+  reference and the enclosing scope still releases its reference at exit, so
+  no textual use is the value's last.
+- **Borrowed variables.** A binder projected from a scrutinee's field in a
+  constructor pattern is neither incremented at extraction nor released at scope
+  exit; the scrutinee still owns the value.
+
+Last-use analysis marks the final use of each variable as a transfer candidate,
+on which Vec COW may mutate in place; `is_last_use` rejects captured and
+borrowed binders.
+Violating this lets COW mutate an aliased Vec in place, after which the owner's
+release frees it a second time. The Sprint 61 reduction
+`(consume (Box [0]))`, which read length `0`, is the pinned regression
+(`tests/regression.rs`).
+
+The ownership analysis treats both as inferred cases —
+`borrowed_vars` seeds borrow-through-projection
+([ownership inference](../arch/ownership-inference.md) §8.2). These structural
+rules are the conservative lowering beneath it.
+
+### 5.5.2 Spark-capture borrow (opt-in)
+
+A structurally joined spark may borrow, rather than retain, its heap captures:
+the capture-store increment and the matching closure-release decrement are both
+skipped. It generalises §5.5's borrowed binder to a new introduction site. It is
+off by default behind `CRANELISP_CAPTURE_BORROW=1`, and byte-identical when off.
+
+**Open condition before default-on.** The parent-outlives-spark argument (§5.5.2.3)
+is proven for the synchronous apply-argument and `let` joins. It is **not**
+established for the `ParBind` continuation: that closure may capture values in a
+returned IO tree that the trampoline runs later, so the capturing frame may not
+outlive the borrow — the lifetime-across-suspension class. The toggle raises the
+borrow at that site. Making the borrow default-on requires first proving that
+site or gating it out. The ownership analysis resolves the same question by
+classifying suspension crossings as escapes (ownership inference §2.2 rule 4);
+that ruling does not govern this toggle.
+
+#### 5.5.2.1 The structural-join gate
+
+Borrowing is admissible only when every spark joins inside the capturing
+frame's dynamic extent:
+
+- apply-argument sparks, forced at the barrier before the call is emitted
+  ([lenient-eval.md](lenient-eval.md) §4.4);
+- independent `let` sparks, forced before the body (lenient-eval §4.2);
+- `ParBind` branch continuations — structured fork-join
+  (`spec/12-runtime.md` §12.4.3), subject to the open condition above.
+
+**`LaunchContinue` must retain.** A launched sub-tree runs on a detached strand
+with no join in the parent's extent (`spec/10-io.md` §10.12.7); a borrowed
+capture there is a use-after-free once the parent's cleanup runs.
+
+**Dependent `let` sparks must retain.** Their synthetic IVar-pointer captures
+are keep-alives, not borrows of a live parent binding
+(lenient-eval §4.4.1).
+
+The gate reads the lowering site; it does not analyse. `ParBind` and
+`LaunchContinue` are distinct `MonoExpr` variants so a joined spark cannot be
+lowered as detached or the reverse
+([Principle 20](../arch/principles/20-model-invariants-by-representation.md)).
+A compiler flag is raised only around the joined emission sites; the launch
+lowering never raises it. Both the capture increment and the release decrement
+read the same flag, so they cannot be skipped separately.
+
+#### 5.5.2.2 Coarse retain
+
+Every capture of a joined spark borrows; there is no per-capture escape
+decision. The only reference crossing the join outward is the spark's result.
+It is an ordinary temporary under §3.1, and the degenerate case of a result that
+is itself a capture is covered by §5.6.
 
 #### 5.5.2.3 Why it is sound
 
-1. **Parent-outlives-spark (the structural guarantee).** For every eligible site the join happens
-   *inside* the capturing frame's dynamic extent (§5.5.2.1). The parent binding that a spark borrows
-   is therefore still owned by a live parent scope for the whole life of the spark; the parent's
-   `pop_scope_with_cleanup` dec (§5.1) runs **after** the join. The borrowed capture never needs its
-   own inc/dec because the parent's owning reference already covers the spark's read — identical
-   to how a match scrutinee's owning reference covers a `borrowed_vars` field binding (§5.5).
+1. **The parent outlives the spark.** Each eligible join completes inside the
+   capturing frame's extent, so the parent's owning reference covers every read
+   and its cleanup runs after the join — the §5.5 scrutinee argument.
+2. **No COW hazard.** The spark only reads. Being rc-invisible, the borrow also
+   stops inflating the parent's count during the spark.
+3. **One escape, already audited.** The result travels by §3.1 and §5.6.
 
-2. **Immutability removes the §5.5 COW-mutate hazard.** §5.5 gates last-use on `borrowed_vars`
-   because a borrowed Vec that reached `is_last_use + rc==1` could be COW-mutated *in place*,
-   aliasing the still-live owner (the Sprint 61 regression). That hazard **cannot arise here**:
-   Cranelisp values are immutable and the spark only *reads* the borrowed cell. The borrow is
-   strictly **safer** than the match-arm case — being rc-invisible it *preserves* the parent's own
-   COW-last-use accounting (today's inc-on-capture inflates parent rc during the spark's life and
-   defeats parent-side mutate-in-place; the borrow removes that perturbation and may improve COW
-   hit-rate).
+#### 5.5.2.4 Failure modes the shape excludes
 
-3. **The single escape is already audited.** The only reference that crosses the join boundary
-   outward is the return value, and it rides the consuming convention + §5.6 — no new machinery,
-   no new invariant.
+- Admitting a detached launch frees the cell under a still-running strand;
+  excluded by representation, not by a predicate.
+- Letting a capture escape by any path other than the result outlives the
+  parent's release; excluded by having no per-capture classifier. A bespoke
+  classification traversal with a blind spot is the failure class this avoids
+  (FIXME 0494's starved consuming increment).
 
-#### 5.5.2.4 The failure mode if the gate is wrong (and how the coarse design precludes bug #2)
+#### 5.5.2.5 The boundary
 
-This is a **"skip the inc" optimisation** — the exact class of S98 bug #2 (FIXME 0494:
-`find_var_type_in_expr` traversal-gap starved a required consuming-inc → heap corruption / UAF).
-State the failure mode plainly so the guard is legible:
+Borrowing a capture because an analysis shows it does not escape is escape
+analysis. It belongs to the ownership analysis, which widens the admit set on
+the same borrowed/owned axis; it must not be added to this toggle.
 
-- **If a detached spark's capture is borrowed** (the gate wrongly admits `LaunchContinue`): the
-  parent frame's cleanup dec frees the cell while the still-running detached strand holds a
-  borrowed pointer into it → **use-after-free** on the strand's next read. This is why the gate
-  excludes `LaunchContinue` **structurally** (a distinct variant that never sets the borrow flag),
-  not by a predicate that could be mis-evaluated.
-- **If a capture escapes via a path other than the audited return value** (e.g. a bespoke analysis
-  wrongly classified a capture as non-escaping): the escaped reference outlives the parent's
-  cleanup dec → **use-after-free**. This is why the design forbids any per-capture escape traversal
-  and routes the *single* escape through the return-value path only.
+#### 5.5.2.6 Evidence and measured effect
 
-**How the coarse/structural design precludes the bug-#2 class.** Bug #2 was a *bespoke
-classification traversal with a blind spot* (`find_var_type_in_expr` missed a shape). The coarse
-design has **no bespoke traversal**: it borrows **all** captures of a joined spark uniformly (one
-flag, no per-capture inspection) and retains **only** the return value via already-audited paths
-(Decision 24 + §5.6). There is no value-flow classifier to have a blind spot in. The one decision
-that *is* made — joined vs detached — is read off the `MonoExpr` variant (Principle 20), not
-computed, so it has no traversal to under-cover. This is the structural mitigation: eliminate the
-class of bug by eliminating the class of code that produces it.
+- **Permanent UAF guard.** A `LaunchContinue` capturing a heap value keeps its
+  increment and release with the toggle on — at the backend seam
+  (`compiler/control_flow/par_codegen_tests.rs`) and end to end.
+- **Parallel ≡ serial.** The S99 fixtures (`tests/fixtures/s99/`) produce the
+  same result lenient and under `CRANELISP_NO_LENIENT=1`, with heap balance
+  (`tests/s99_fixtures.rs`).
+- **Measured effect.** With the toggle on, parallel `rc_inc` falls to exactly
+  the serial count: the borrow elides precisely the joined-spark capture
+  increments. That is hundreds of increments, not millions — spark count is
+  bounded by the create-gate budget, and capture arity is about one. The
+  measurement is `tests/plan/s99-measurement.md` §8.
 
-#### 5.5.2.5 Phase-H forward-pointer (where the boundary wants to widen — DO NOT)
+#### 5.5.2.7 Where the contention actually is
 
-The profitable-borrow set is *wider* than "structurally-joined captures": a capture the parent
-never reads again, or a value a whole-program escape analysis proves thread-local, could also be
-borrowed (or drop the atomic entirely). Widening "borrow" to "captures an analysis says don't
-escape" **IS Phase-H escape/thread-locality analysis** and is explicitly out of scope (Principle 8
-— no interim implementations against a moving target; the concurrency model that defines
-which-values-cross-threads has not settled). The borrowed/owned classification pinned here is
-**permanent** and survives Phase H unchanged; Phase H feeds a *sharper* signal into the *same*
-axis, widening the admit set (`effect-concurrency.md` §3.1). If `/dev` finds itself wanting a
-"does this capture escape?" traversal, STOP — that is the bug-#2-class risk returning (§5.5.2.4)
-and the arch boundary forbids it; file a Phase-H forward note, do not implement.
-
-#### 5.5.2.6 Test obligations (for `/qa` / `/dev`, Wave 1b)
-
-Per the per-fix discipline (`memory/feedback_unit_test_per_fix.md`) and the cross-skill defect
-protocol, Wave 1b lands with these guards (failing-first where they encode a defect class,
-co-landing with the `/dev` fix):
-
-- **(MANDATORY) UAF regression guard on the `LaunchContinue` exclusion.** A launched
-  (`LaunchContinue`) effect that captures a heap value MUST still **retain** it — the capture must
-  NOT be borrow-elided. This is the headline bug-#2-class guard: the detached strand outlives the
-  parent, so a borrowed capture there is a UAF. Backend-seam unit test — assert the
-  `LaunchContinue` lowering path emits the capture inc (and the drop-glue dec) with the borrow flag
-  *not* set; e2e — a launch-and-continue program capturing a heap value runs clean under `--run`
-  (and where applicable `--link`) with the borrow toggle **on** (the toggle must not reach the
-  detached path). This guard is un-ignored and permanent.
-- **Parallel ≡ serial correctness guard on a joined-spark capture.** A joined spark (apply-arg /
-  `let` / `ParBind`) that captures a heap value produces byte-identical results parallel vs serial.
-  The **F1–F4 fixtures already exist** (`tests/fixtures/s99/{f1_machinery,f2_contention,
-  f3_inverted_search,f4_sudoku}.cl`) and encode exactly this shape (shared-grid copy-per-guess,
-  captured `Grid`); the A/B is `default` (lenient/parallel) vs `CRANELISP_NO_LENIENT=1` (serial),
-  same result. Reference these; add a narrow heap-balance/`CRANELISP_RC_TRACE` guard that
-  `alloc == dealloc` across the joined-spark run (no borrow-elision leak or double-free).
-- **Inc-count reduction is directly observable (not a correctness gate, a witness).** The capture
-  inc elision is measurable via the `CRANELISP_RC_STATS` counters (Wave 0.1 substrate,
-  `crates/cranelisp-intrinsics/src/rc.rs:119`; `s99-measurement.md` records program-attributable
-  counts = raw − no-op baseline). The A/B toggle makes the elision a direct before/after read on
-  `rc_inc`, and the observable *is* real — with the toggle on, parallel `rc_inc` drops to exactly
-  the serial `rc_inc`, confirming the borrow elides precisely the joined-spark-capture incs.
-  > **VOLUME PREDICTION REFUTED (Wave 1b ablation, `s99-measurement.md` §8 — FIXME 0462).** The
-  > original prediction here — "`rc_inc` should drop by ≈ (captures-per-spark × spark-count) ≈
-  > leaf-count × per-leaf shared-capture arity", i.e. **millions** on the F2/F4 shape — was
-  > **empirically wrong by three-to-five orders of magnitude**. The measured drops are in the
-  > **hundreds**: F2 −897 (of 170M = 0.0005%), F1 −1,003, F3 −577, F4-hard −23,144 (of 52.6M).
-  > **Two errors in the prediction:** (1) **spark count is create-gate-budget-bounded (`O(cap)`,
-  > §3.6 of `lenient-eval.md`), NOT leaf-count** — the budget caps concurrent sparks far below the
-  > leaf count, so the number of elided spark-captures is small and size-insensitive; (2)
-  > **capture-arity is ~1** (the single shared grid `g`), not a wide fan. The dominant (b)
-  > atomic-RC traffic is **not** spark captures at all — it is the **in-leaf vec-COW refcount
-  > volume** (each `(vec-set g …)` COW-copies the 81-cell grid and bumps every retained `Cell`;
-  > ~81 incs × copies × leaves ≈ the 170M), which lives *inside the computation* and which
-  > capture-by-borrow — correctly, by its scope — never touches. **What STANDS:** the
-  > soundness/correctness content (§5.5.2.1–.5) and every guard in this test list are unaffected —
-  > the borrow is still correct and still elides exactly what it claims; only this *magnitude
-  > witness* was mis-predicted. The witness's true reading: capture-by-borrow removes a
-  > budget-bounded handful of incs and is **not** the (b)-contention lever (see §5.5.2.7).
-
-#### 5.5.2.7 The real (b)-cure is Phase-H (re-pointed, Wave 1b/1c/1d ablation)
-
-The Wave 1b ablation (§5.5.2.6) refuted capture-by-borrow as the (b) performance cure. The S99
-close-out ablation then tested every **pre-Phase-H substrate lever** against the dominant (b) term
-and found each moves it only single-digit percent on the clean F2 contention probe
-(`s99-measurement.md` §8–§10):
-
-- **capture-by-borrow (Wave 1b): ~0%** — wrong-scoped; the retain it elides is at the fork-join,
-  not the in-leaf vec-COW (§5.5.2.6).
-- **saturation gate (Wave 1c, `CRANELISP_SATURATION_GATE`, opt-in): ~9%** — caps concurrent sparks
-  from `4×threads` to `threads`, confining only the *overflow* subtrees to one thread; the top
-  ~`threads` branches still run parallel and still COW-copy + refcount-bump shared ancestor cells.
-  Pure locality, real but marginal.
-- **mimalloc (Wave 1d, `--features thread-caching-alloc`, opt-in): user-neutral-to-worse on the
-  clean probe** — its win is the (a) allocator-lock *sys* term (F4 ~6.7× median sys), but on the
-  fixed-work F2 probe it slightly *worsens* user, because (a) and (b) are **coupled**: removing the
-  allocator serialization lets threads run concurrently and bounce the shared-cell atomic-RC cache
-  lines *more*.
-
-After mimalloc + saturation gate, F2 parallel is still **2.3× slower** than serial and F4 is
-**6–15× slower** (`s99-measurement.md` §10.3). **The dominant (b) driver is confirmed genuinely
-Phase-H:** the removable term is the **vec-COW leaf-refcount volume** (the ~81 atomic bumps per
-grid COW-copy), and the only levers that touch it are **owned-copy mutate-in-place / last-use on
-the freshly-COW'd grid / Perceus reuse / non-atomic thread-local RC** — all **Phase-H memory-model
-work**, not scheduling and not a capture rule. This is a §5.5 last-use *extension* (mutate the
-freshly-COW'd, provably-unique grid in place instead of re-bumping every cell), NOT a widening of
-the §5.5.2 spark-capture borrow. The ablation numbers (`s99-measurement.md` §8–§10) are the
-evidence and the durable record of *why* three in-track cures were tried and set aside. **Forward
-item (Phase-H (b)-cure):** owned-copy mutate-in-place / last-use / Perceus reuse on COW'd
-heap-Vec leaves; the S99 ablation is the funding justification. **S100: the designed home now
-exists** — `design/arch/ownership-inference.md` (the memory-model spine; the (b)-cure is the Q4
-reuse / Q5 value-flattening write path, spine §6.3 + §10 items 10–11), with the backend emission
-half in `design/backend/ownership-codegen.md` §6–§7.
+The dominant atomic-RC traffic in the S99 workloads is in-leaf Vec COW: each
+copy re-increments every retained element. The spark-capture borrow does not
+reach it, and neither the saturation gate nor the allocator swap removed it
+(`tests/plan/s99-measurement.md` §9–§10). The levers that do are owned-copy
+mutation in place, uniqueness-driven reuse and non-atomic confined RC — the
+ownership work in [uniqueness and reuse](ownership-codegen.md#6-uniqueness-and-reuse),
+[value flattening](ownership-codegen.md#7-one-word-value-flattening) and
+[confined RC](ownership-codegen.md#51-one-decision-point-two-gates), under the
+ownership inference contract. It is an extension of §5.5's last-use
+rule, not a widening of this borrow.
 
 ### 5.6 Capture-return inc
 
-**Rule (Slice 4, Sprint 61 Wave 4 — LANDED 2026-04-21).** When a lambda body's return expression resolves to a captured heap variable (i.e. `Expr::Var { name: cap }` where `cap ∈ captured_vars` and the capture's type is `AlwaysHeap` or `Mixed`), the body MUST emit `rc_inc` on the returned value before `return`.
-
-This is structurally sibling to §5.5's rules — all three arise from the same discipline that `scope_stack` tracks owning references only, and that captured/borrowed variables live outside that discipline. The prior rules handle cleanup (no dec on exit for borrowed; no last-use transfer for either). This rule handles the mirror case: the *return value* must be inc'd when it originates outside the scope frame, because the closure's drop-glue WILL dec the capture after the body returns.
-
-**Why `protect_return_value` does not cover this case.** The gate in `protect_return_value` examines `scope_stack` for heap-typed cleanup targets and emits an inc only when at least one is present. Captures are deliberately absent from `scope_stack` (their release is the closure env's responsibility, handled by the drop-glue emitted in `build_closure_drop_glue`). For a `(fn [_] b)` where `_` is non-heap and `b` is a heap capture, `scope_stack.last() = [_]` — no heap-typed targets, no inc emitted. The returned value then flows out at the rc it came in with, the drop-glue runs on closure consumption and dec's the capture to zero, and the caller is left with a pointer to freed memory.
-
-**Why captures are consumed after return.** One-shot closure call sites (the IO trampoline's `consume_closure`; analogous fresh-closure paths) dec the closure after invocation. The closure's drop-glue iterates its heap captures and dec's each. That dec is structurally correct (the closure env owns its captures), and this rule does not change it. Instead, we ensure that when the returned value IS one of those captures, the ownership transfer to the caller is balanced by an inc inside the body.
-
-**Why the fix is backend-side, not trampoline-side (the boundary rule).** The alternative — have the trampoline detach captures before `consume_closure` — is rejected, and the rejection is the durable part. The trampoline's `current_is_fresh` + `consume_closure` protocol is internally consistent: a fresh closure owns its captures, so dec'ing it releases them, and that invariant is what closed the O(N) bind-chain leaks in §3.5. Detaching would weaken it for the narrow case where a capture happens to be the returned value, **and would require the trampoline to introspect the closure's capture layout — layout is backend-owned. That is the wrong boundary to cross.** The closure body, by contrast, knows at codegen time that its return expression is a bare `Var(b)` with `b` captured; that is exactly where the balancing inc belongs. Do not re-open this as a runtime-side change.
-
-**Implementation.** Helper `emit_capture_return_inc` (`crates/cranelisp-backend/src/compiler/control_flow/lambda.rs`), called from `compile_lambda_body` between `protect_return_value` and `pop_scope_with_cleanup`. It is a no-op unless (a) the body is `Expr::Var`, (b) the name is captured, and (c) the capture's type is heap-categorised. This preserves `protect_return_value`'s existing semantics for all other return shapes — a separate helper rather than widening that gate, so the invariant "`scope_stack` tracks owning references only" stays undisturbed.
-
-**Regression history.** Sprint 61 Slice 4. A 7-line repro exercising `(defn then [a b] (bind a (fn [_] b)))` plus a second user-defined `bind` layer consuming `then`'s output through the IO trampoline reproduced at 100% as `cranelisp_run_io: unknown IO tag ...` — a pointer read from freed memory dereferencing mid-object and yielding a garbage tag byte. Pinned by `control_flow/lambda.rs::lambda_return_captured_heap_var_emits_inc` (unit) and the then-combinator RC block in `tests/spec_10_io.rs` (e2e); the accepted-exit tightening for `examples/21-hello-io.cl` landed with it. Raw reduction logs are retained at [S61 dumps in Git](https://github.com/alilee/cranelisp/tree/fc49541f/tests/sprint61/race-evidence).
-
-## 6. Invariants
-
-These invariants must hold at all times. Violation indicates a bug.
-
-### 6.1 RC Invariants
-
-1. **RC never negative**: Every `rc_dec` that brings RC to 0 triggers deallocation. If RC would go below 0, `rc_underflow_check` fires a debug assertion.
-
-2. **RC starts at 1**: `alloc_with_rc` initializes RC to 1. The allocating expression is the initial owner.
-
-3. **Every inc has a matching dec**: Inc-dec pairs are balanced across ownership transfers. A calling convention violation (wrong convention for a call type) will cause either a leak (missing dec) or a use-after-free (extra dec).
-
-4. **Drop glue runs before dealloc**: When a value reaches rc=0, its drop glue recursively dec's sub-values before the object is freed. Skipping drop glue causes field leaks.
-
-### 6.2 Calling Convention Invariants
-
-5. **All call sites use consuming convention (Decision 24)**: The caller incs heap-typed variable arguments before the call; the callee is responsible for dec'ing heap arguments it does not return. This applies uniformly to user functions, trait methods, sig-dispatch, data constructors, closure calls, inline builtins, Vec ops, and extern primitives.
-
-6. **Extern primitives dec their own heap args**: A Rust-implemented extern that takes a heap pointer MUST dec that pointer before returning (unless it returns the pointer unchanged, i.e. ownership flows out through the return value, or it stores the pointer in a runtime-owned structure). The caller emits no post-call dec. See §3.3 Extern Consumption Audit.
-
-7. **Data constructor fields are owned by the ADT**: The caller incs variable args (consuming convention); the constructor stores the field values into the new heap object and emits no explicit dec. Drop glue handles fields at destruction time when the ADT itself reaches rc=0.
-
-### 6.3 Debugging Invariants
-
-8. **LIVE_ALLOCS tracking** (debug builds): Every `alloc_with_rc` call adds the pointer to a `HashSet`. Every `dealloc` removes it (asserting it was present). A double-free triggers a debug assertion.
-
-9. **RC trace logging**: `CRANELISP_RC_TRACE=1` enables per-operation logging to stderr, showing pointer address and RC value for every alloc, free, inc, and dec.
-
-## 7. Implementation Locations
-
-| Component | File | Key functions |
-|---|---|---|
-| HeapHeader | `cranelisp-types/src/heap.rs` | `HeapHeader`, `HeapCategory::classify` |
-| Heap layout structs | `cranelisp-backend/src/heap.rs` | `HeapAdt`, `HeapClosure`, `HeapVec` |
-| RC emission | `cranelisp-backend/src/heap.rs` | `emit_rc_inc`, `emit_rc_inc_guarded`, `emit_rc_dec`, `emit_rc_dec_guarded` |
-| Last-use analysis | `cranelisp-backend/src/heap.rs` | `compute_last_uses` |
-| Last-use ownership gate | `cranelisp-backend/src/compiler/mod.rs` | `is_last_use` (gates on both `captured_vars` and `borrowed_vars`) |
-| Calling convention | `cranelisp-backend/src/compiler/apply.rs` | `compile_consuming_arg_list`, `compile_arg_list` (plain args; consuming dispatch applies uniformly — no caller-side `dec_temporary_args`) |
-| Scope cleanup | `cranelisp-backend/src/compiler/mod.rs` | `pop_scope_with_cleanup`, `return_var_in_scope`, `protect_return_value` |
-| Inline drop glue | `cranelisp-backend/src/compiler/mod.rs` | `emit_inline_drop_glue`, `emit_field_decs` |
-| Closure drop glue | `cranelisp-backend/src/compiler/control_flow.rs` | `build_closure_drop_glue`, `emit_closure_dec_inline` |
-| Standalone ADT drop glue | `cranelisp-backend/src/compiler/vec_codegen.rs` | `build_adt_drop_glue_fn`, `emit_standalone_field_decs` |
-| Vec element inc/dec | `cranelisp-backend/src/compiler/vec_codegen.rs` | `build_elem_inc_fn`, `build_elem_dec_fn` |
-| Runtime allocator | `cranelisp-runtime/src/alloc.rs` | `alloc_with_rc`, `dealloc`, `heap_alloc`, `heap_dealloc` |
-| Runtime Vec | `cranelisp-runtime/src/vec.rs` | `vec_new`, `vec_drop`, `vec_set_copy`, `vec_push_copy`, `vec_push_grow` |
-| RC debug/trace | `cranelisp-runtime/src/rc.rs` | `rc_trace`, `rc_underflow_check`, `consume_shallow` |
-| Runtime drop glue | `cranelisp-runtime/src/drop.rs` | `consume_slist`, `consume_sexp`, `consume_vec_of_string`, `consume_vec_with`, `consume_trace_call`, `consume_io_tree`, `consume_closure` |
-| Intrinsic registration | `cranelisp-backend/src/jit.rs` | `register_intrinsics` |
-
-## 8. Guidance for Ring 3 Implementers
-
-### 8.1 Compiling a New Function
-
-If you are generating a JIT function (e.g., a macro expansion helper, a trace wrapper):
-
-1. **Parameters**: All user-defined functions are called with consuming convention — their parameters are owned. You MUST ensure `pop_scope_with_cleanup` runs at function exit with the return variable excluded.
-2. **Calling any function (user, extern, trait method, data constructor, closure)**: Use `compile_consuming_arg_list` for the args. The callee is responsible for dec'ing anything it does not return.
-3. **Writing an extern primitive in Rust**: Decide per heap-typed parameter — return unchanged (ownership flows out), retain/store (inc it into storage), or consume (dec before return). See §3.3 for the audit table.
-4. **Allocating closures**: Call `build_closure_drop_glue` and store the result at `DROP_GLUE_PTR_OFFSET`. Inc heap-typed captures.
-
-### 8.2 TCO and RC
-
-Self-recursive tail calls currently do NOT emit scope cleanup before jumping to the loop header. This means heap-typed parameters from the previous iteration may leak. TCO+RC interaction is a known gap: the sketch's `emit_scope_cleanup_for_tco` was not carried forward to the reimplementation. Ring 3 should either implement this or document the restriction.
-
-### 8.3 Common Pitfalls
-
-- **Missing inc for variable args in consuming calls**: Causes use-after-free. The callee dec's the parameter at exit; without the caller's inc, the caller's binding is freed.
-- **Missing dec in a new extern primitive**: Causes leaks. Under Decision 24 the extern owns its heap args — write the dec before return, or verify the arg flows out through the return value.
-- **Extra dec in an existing extern primitive**: Causes use-after-free / double-free. Since Decision 24 the caller no longer emits `dec_temporary_args`; if an extern was previously dec'ing AND the caller was dec'ing, removing one without fixing the other flips the balance wrong.
-- **Forgetting protect_return_value**: Causes use-after-free when the return value aliases a scope binding that gets dec'd by scope cleanup.
-- **Captured variables treated as last-use**: Captured variables must NEVER skip inc at consuming call sites. The closure env needs its reference to remain valid.
-
-## 9. Rejected Alternatives
-
-### 9.1 Drop Function Side Table (Ring 1)
-
-Ring 1 considered using a `HashMap<code_ptr, drop_fn>` for closure drop glue instead of embedding the pointer in the closure struct. This was rejected because:
-- The side table requires locking or thread-local storage for lookups.
-- Embedding the pointer costs 8 bytes per closure but makes closure dec a self-contained operation.
-- Critical benefit: `emit_closure_dec_inline` can handle closures from any module without a global side table lookup.
-
-### 9.2 Unified Calling Convention (ADOPTED — Sprint 56 Step 2c, Decision 24)
-
-This is now the implemented convention — see §3. Historical context: it was initially rejected in favour of a split convention (Decision 20) because requiring builtins/externs to dec their own heap args was seen as adding overhead and complexity. In practice:
-
-- Inline builtins operate on NeverHeap operands (Int/Bool/Float) — no dec required.
-- Extern Rust primitives that take heap args are a finite, enumerable set (§3.3 audit). Adding a dec before return is a small, localised change per extern.
-- The complexity saved on the caller side (no `dec_temporary_args`, no per-call-type classification, no `Option<dealloc_func_id>` conditional) dwarfs the per-extern cost. Every call site now compiles identically for RC management; the code path no longer branches on callee classification.
-
-The split convention created a divergent compile path at every application site, exactly the kind of parallel structure Principle 7 (single source of truth) and Principle 11 (single pipeline) exist to prevent.
-
-### 9.3 Deferred Reference Counting
-
-Considered deferring RC operations to epoch boundaries (like Nim). Rejected because:
-- Deterministic destruction is a language design goal.
-- Deferred RC complicates reasoning about when side effects (via destructors/drop glue) occur.
-- The inline atomic approach has acceptable overhead for the current single-threaded model.
-
-## 10. Addendum — String-literal RC residual through `print` (Sprint 58 Wave 3)
-
-**Status**: PRESCRIPTIVE for Sprint 58 Wave 3. This addendum specifies the fix for the FIXME(/backend) at `crates/cranelisp-intrinsics/src/io.rs:28` carried from Sprint 57 Wave 3. Per `/arch` Sprint 58 review condition 6, this MUST land in Wave 3 alongside other RC work, OR be deferred with explicit rationale and a named regression-test symptom for `/qa`. Disposition selected: **fix in Wave 3** (one-deferral-permitted policy is held in reserve only if implementation surfaces unexpected scope).
-
-### 10.1 The leak
-
-Observable via REPL-compiled `(print "a")` flowing through the IO trampoline. Allocations exceed deallocations by the size of the string literal allocation per call. Sprint 57 Wave 3 closed the trampoline-internal IO-node leak via §3.5.4 (`current_is_fresh` discipline + `dec_shallow_io`); this string-literal leak is in a different code path and was identified as separate at Wave-3 close.
-
-### 10.2 Root cause
-
-The `print` extern at `platforms/stdio/src/lib.rs:18-25` follows the capture-RC pattern:
-
-```rust
-#[unsafe(export_name = "cranelisp_print")]
-pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-    let owned = s.own();           // inc s's RC, owned drops at thunk-drop
-    CLIO::effect(move || {
-        println!("{}", owned.as_str());
-        CLInt::from(0i64)
-    })
-}
-```
-
-This pattern is correct for the deferred-execution discipline: `s.own()` calls `inc_rc` so the captured `owned: CLOwned<CLString>` keeps the string alive across the gap between `print_string` returning the IO Effect node and the trampoline later forcing the thunk. When the thunk runs and the closure drops, `CLOwned::drop` calls `dec_rc` and the string's RC returns to its pre-capture level.
-
-The leak is at the **input boundary**, not the capture boundary. Decision 24's uniform consuming convention says: every extern with a heap-typed parameter dec's that parameter before return (unless it's returned unchanged or retained as a runtime-owned reference). For `print_string`:
-
-1. The caller (JIT-emitted CLIF for `(print "a")`) emits `compile_consuming_arg_list` for the String literal, which inc's it (or transfers ownership of the literal allocation if it's a temporary). After `print_string` returns, the caller's RC view of the string is balanced — the inc was consumed by transferring to `print_string`.
-2. `print_string` receives `s: CLString` with an extra reference (from the caller's transfer). It calls `s.own()` — inc again — and captures `owned`. So the string now has two references attributable to this call: one from the caller's transfer, one from `s.own()`.
-3. `print_string` returns. The local `s: CLString` drops at end of scope, but `CLString` is `Copy` (it's just an `i64` base pointer wrapper) — its `Drop` is a no-op. The caller's transferred reference is **never** dec'd. **Leak: one reference per `(print "a")` call.**
-4. When the trampoline later forces the Effect thunk, the closure runs `println!`, drops, and `CLOwned::drop` dec's once. That dec balances `s.own()`'s inc — but the original transferred reference from the caller is still leaked.
-
-The pattern works for the *capture* lifetime (between Effect-node creation and thunk-force) but does not honour the *input-boundary* contract that Decision 24 added in Sprint 56. The capture-RC pattern was designed before Decision 24 was unified.
-
-### 10.3 Why the Sprint 57 Wave 3 IO trampoline fix did not close this
-
-Sprint 57 Wave 3 (§3.5.4) targeted the trampoline's internal node leak — Pure/Effect/Bind/Par nodes produced and replaced *during* the trampoline walk, plus continuation closures popped from `cont_stack`. The fix added the `current_is_fresh` discipline + `dec_shallow_io` for trampoline-owned intermediates, and updated `cranelisp_run_io` to call `consume_io_tree(io_ptr)` post-return for the caller's tree.
-
-That fix is correct for IO ADT nodes. It does not extend to *captures* held by Effect-thunk closures — closures are dec'd by the trampoline's `consume_closure` (which runs the embedded drop_glue_ptr per Decision 11), and the drop-glue handles closure-captured heap references. The drop-glue runs `dec_rc` on every captured heap reference; for `print_string`'s closure, the captured `owned: CLOwned<CLString>` calls its own `Drop` which dec's once.
-
-So the trampoline-side and capture-side are both correct. What's wrong is the missing dec on the input parameter `s: CLString` before `print_string` returns — outside both the trampoline's responsibility and the closure's responsibility, in extern-boundary territory per Decision 24.
-
-The Wave-3 audit (§3.3) listed `cranelisp_run_io` and a generic note "Platform DLL functions" but did NOT walk every individual platform extern under Decision 24's lens. `print_string` slipped through because the capture-RC pattern looked locally correct (it balances `s.own()`'s inc with the closure's drop). Decision 24's contract requires the *additional* dec for the caller's transferred reference, which the capture-RC pattern does not provide.
-
-### 10.4 The fix shape
-
-Two equivalent forms; either is acceptable. Pick the one with the smaller code-volume impact across all platform externs (a sweep is required because the same pattern appears wherever a platform fn captures a heap arg into an Effect closure).
-
-**Form A — extern dec's the input after own()**:
-
-```rust
-#[unsafe(export_name = "cranelisp_print")]
-pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-    let owned = s.own();           // inc — for the capture
-    s.dec_rc();                     // dec — for the caller's transfer (Decision 24)
-    CLIO::effect(move || {
-        println!("{}", owned.as_str());
-        CLInt::from(0i64)
-    })
-}
-```
-
-This is the minimal local change. The `s.dec_rc()` matches the caller's `compile_consuming_arg_list` inc, satisfying Decision 24. The `owned` capture continues to keep the string alive for the deferred thunk-force; its `Drop` dec's at thunk-drop time, balancing `s.own()`. Net references attributable to one call: caller +1, `print_string`-extern -1 + 1 (`own`) - 1 (`Drop` later) = 0.
-
-**Form B — capture-helper takes ownership, extern uses it inline**:
-
-Refactor `s.own()` into `s.into_owned_consuming()` — a method on `CLHeap` that inc's once for the capture AND dec's the caller's transferred ref in one call. The extern stops calling `s.own()`; it calls `into_owned_consuming()`. Net effect identical to Form A; the consuming dec is hidden inside the helper so platform authors can't forget it.
-
-```rust
-impl<T: CLHeap + Copy> T {
-    /// Consuming-convention version of `own()`: caller owns one transferred
-    /// reference (per Decision 24); this helper takes ownership of that
-    /// reference (no inc needed for it) and inc's an additional reference
-    /// for the returned CLOwned. Symmetric: caller's transferred ref +
-    /// CLOwned's inc'd ref = exactly one ref will be dropped by CLOwned::drop.
-    fn into_owned_consuming(self) -> CLOwned<Self> {
-        // No inc — the caller's transferred ref becomes the CLOwned's ref.
-        // Just construct the wrapper directly without the inc that own() does.
-        CLOwned { inner: self }
-    }
-}
-```
-
-```rust
-#[unsafe(export_name = "cranelisp_print")]
-pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-    let owned = s.into_owned_consuming();
-    CLIO::effect(move || {
-        println!("{}", owned.as_str());
-        CLInt::from(0i64)
-    })
-}
-```
-
-Form B has the architectural advantage of making the capture-RC pattern aware of Decision 24 by construction. Form A is one line per affected extern. Recommend Form B if the platform-extern audit (§10.5) reveals more than 2–3 functions with the capture-Effect pattern; Form A if `print_string` is essentially alone.
-
-### 10.5 Audit — every platform extern that captures a heap arg
-
-Sprint 58 Wave 3 implementation MUST include an audit pass over every `extern "C"` function in `platforms/*/src/lib.rs` AND in the platform-bridge layer of `crates/cranelisp-platform/src/lib.rs`. For each function with a heap-typed parameter (CLString, CLVec-equivalent, etc.):
-
-- If the param is captured into a closure (Effect/Bind continuation): apply Form A or Form B fix.
-- If the param is consumed inline (e.g. printed without capture, as in a hypothetical `print-and-return-int`): add `s.dec_rc()` before return per Decision 24 (no capture-RC pattern at all).
-- If the param is returned unchanged: no fix needed (caller's transferred ref flows out through the return).
-
-Initial pass (verify during implementation):
-
-| Extern | Heap arg | Captures? | Fix |
-|---|---|---|---|
-| `print_string` (`platforms/stdio/src/lib.rs:18`) | `s: CLString` | Yes (into Effect thunk) | Form A or B |
-| `read_line` (`platforms/stdio/src/lib.rs:32`) | none | — | no fix needed |
-| `test-capture::*` (`platforms/test-capture/src/lib.rs`) | TBD — audit | TBD | per row |
-
-The §3.3 audit table in this document MUST gain a "Platform DLL functions" expansion sub-section enumerating each platform function individually after Wave 3 lands.
-
-### 10.6 User-visible regression-test symptom (per /arch Condition 6)
-
-Per `/arch` Sprint 58 review condition 6, the deferral-or-fix policy requires naming the specific user-visible symptom under which the leak manifests, so `/qa` can write a regression test before any deferral.
-
-**Symptom**: when a Cranelisp program executes `(print "hello")` (or any string-emitting platform call) repeatedly under the IO trampoline, `cranelisp_runtime::alloc_count() - dealloc_count()` grows monotonically with the call count. Specifically:
-
-- **Positive coverage** (program runs and prints correctly):
-  ```text
-  Setup:  let allocs_before = cranelisp_runtime::alloc::alloc_count();
-          let deallocs_before = cranelisp_runtime::alloc::dealloc_count();
-  Act:    run a Cranelisp program that does `(do (print "a") (print "b") (print "c"))`,
-          drained through `cranelisp_run_io`.
-  Assert: alloc_count - allocs_before == dealloc_count - deallocs_before.
-          (Pre-fix: alloc delta exceeds dealloc delta by 3 — one leaked CLString
-           reference per print call.)
-  ```
-
-- **Negative coverage** (bytes do not grow unbounded):
-  ```text
-  Setup:  baseline alloc/dealloc counters.
-  Act:    run `(loop 1000 (print "x"))` (or hand-build a 1000-bind chain
-          repeatedly forcing print) through `cranelisp_run_io`.
-  Assert: dealloc_count - allocs_before is within ±1 of alloc_count - allocs_before
-          across the entire run. (Pre-fix: gap grows by ~1000.)
-  ```
-
-`/qa` writes both tests. The negative test is the "headline" diagnostic — catches any future regression where the fix is correct on a single call but breaks on N calls (e.g. if Form B's `into_owned_consuming` accidentally inc's twice, the symptom would invert and dealloc would exceed alloc; the assertion catches that direction too).
-
-The unit-test variant (in `crates/cranelisp-intrinsics/src/io.rs::tests`) must use a synthetic heap-string-capturing extern to exercise the same code path without depending on the platform DLL — see `decision24_run_io_pure_rc_balanced` for the existing pattern. Naming convention: `decision24_print_string_input_rc_balanced` (positive) + `decision24_print_string_repeated_rc_no_growth` (negative).
-
-### 10.7 Why this is small and Wave-3-scoped
-
-The fix is one line per affected extern (Form A) or one helper-method addition + one-line edit per affected extern (Form B). The audit is an enumeration over a small number of files (`platforms/*/src/lib.rs` plus any platform helpers in `crates/cranelisp-platform/src/lib.rs`). The IO-trampoline code in `crates/cranelisp-intrinsics/src/io.rs` is unchanged — the trampoline correctly dec's IO ADT nodes per §3.5.4; only the platform-extern boundary needs adjustment. Total estimated work: <1 day for the fix + audit + two regression tests.
-
-### 10.8 Deferral fallback (one-deferral-permitted policy)
-
-If implementation surfaces unexpected scope (e.g. the platform-extern audit reveals 20+ functions all needing rework, OR the capture-RC pattern in `crates/cranelisp-platform/src/lib.rs:CLOwned` requires deeper design work that exceeds Wave 3 budget), the one-deferral-permitted disposition is available. Required artefacts for deferral:
-
-1. The user-visible symptom from §10.6 above (positive + negative regression test) MUST land in `/qa`'s Wave-5 work as `#[ignore]`'d tests with a comment naming the FIXME and the deferral rationale. The tests themselves are NOT `#[ignore]`'d to hide spec violations (per `feedback_failing_not_ignored.md`); they're `#[ignore]`'d only because the symptom is documented as a known leak. `/qa` removes the `#[ignore]` when the fix lands.
-2. The FIXME(/backend) at `io.rs:28` is rewritten to name the deferral sprint and the explicit deferral rationale (not just "still open").
-3. `/sprint` records the deferral in §Outcome → §Deferred with the rationale.
-
-Default disposition: ship the fix in Wave 3. Deferral is held in reserve only if scope discovery during implementation makes Wave 3 untenable.
-
-### 10.9 Cross-references
-
-- `crates/cranelisp-intrinsics/src/io.rs:28` — the FIXME being closed.
-- `platforms/stdio/src/lib.rs:18-25` — the `print_string` extern.
-- `crates/cranelisp-platform/src/lib.rs:478-482` — `CLHeap::own()` (Form B's `into_owned_consuming` would land here).
-- `design/arch/CLAUDE.md` Decision 24 — the consuming convention contract being enforced.
-- `design/backend/ring2-rc.md` §3.3 — the extern consumption audit table; this addendum's §10.5 audit feeds back into §3.3.
-- `sprints/SPRINT.md` §"Architecture Review" condition 6 — the disposition policy.
+When a lambda body is a bare reference to a heap-typed captured variable, the
+body increments the value before returning.
+
+- The closure's release decrements its captures after the body returns, so a
+  returned capture needs a reference of its own. `protect_return_value` cannot
+  see it, because captures are absent from the scope frame.
+- The balancing increment belongs in the closure body, which knows at codegen
+  time that it returns a capture. The alternative — having the trampoline detach
+  captures before releasing a one-shot closure — would make the runtime read the
+  closure's capture layout, which is backend-owned. Do not reopen this as a
+  runtime change.
+- It is a separate helper, `emit_capture_return_inc`, so
+  `protect_return_value` keeps its scope-frame rule.
+- Evidence: `lambda_return_captured_heap_var_emits_inc`
+  (`compiler/control_flow/lambda.rs`) and the then-combinator RC block in
+  `tests/spec_10_io.rs`. The raw S61 reduction logs are in
+  [Git](https://github.com/alilee/cranelisp/tree/fc49541f/tests/sprint61/race-evidence).

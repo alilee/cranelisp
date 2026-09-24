@@ -206,19 +206,53 @@ interior facts worth stating once here:
   system linker: it must map an object and resolve relocations against
   in-memory addresses.
 
-## 7. Subordinate designs
+## 7. Runtime failure
+
+A runtime error must stay reportable, and in the REPL the process must survive
+it (`spec/12-runtime.md` §12.7.2). A hardware fault cannot provide that: a bare
+Cranelift `trap` (SIGILL) or an unguarded `sdiv` (SIGFPE) kills the process. So
+**no codegen path emits a bare hardware trap**; every site that can fail at
+runtime lowers to `runtime/panic`.
+
+- **Shape.** Place the message bytes in an anonymous data object, call
+  `runtime/panic(msg_ptr, msg_len)`, then return the sentinel `0` from the
+  current function. `runtime/panic` records the message in the thread-local
+  error slot and returns; it does not unwind, because JIT frames carry no unwind
+  tables. The host, or `catch-runtime-error`, reads the slot after the
+  invocation returns
+  ([the `catch-runtime-error` construct](../arch/test-discovery.md#5-the-language-constructs)).
+- **A missing `runtime/panic` declaration** is a located codegen error, never a
+  fall-through to a trap.
+- **Sites.** Non-exhaustive match (`"match failed"`), division by zero and
+  `i64::MIN / -1` (both `"division by zero"`), and Vec bounds. The messages are
+  the spec's §12.7.2.1 table and are observable. The redefinition
+  [trap stub](ownership-codegen.md#81-the-trap-stub) raises through the same
+  slot with its own provenance message. A new trapping operation, such
+  as a remainder primitive, adopts the same shape.
+- **`MIN / -1` reports `"division by zero"`** because the spec table gives one
+  message for the division family. A distinct message is a `spec` question. The
+  out-of-line `div-i64` primitive applies the same two guards, so inline and
+  out-of-line division agree.
+- **`+`, `-` and `*` wrap unguarded** (spec §12.7.3). Only an operation that would
+  fault in hardware earns a guard; checked arithmetic would be stricter than the
+  language requires.
+- **What the shape does not do.** It stops only the faulting function. Frames
+  above it are not unwound by codegen and continue with the sentinel until the
+  invocation returns. Whether every consumer of that sentinel is safe is
+  asserted, not measured: a panic site whose `0` reaches a heap dereference
+  before the invocation returns would falsify it.
+
+## 8. Subordinate designs
 
 | Subject | Document | Standing |
 |---|---|---|
 | Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture and macro alias correction. Solution-golden selection and integrated acceptance remain open. |
 | Compilation entry shape | `compile-to-module.md` | How the one entry is organised, and generics activation. |
-| Minimal JIT-setup boundary | `jit-setup-boundary.md` | The JIT newtype's construct/hand-off/reclaim surface and where its symbol set is derived from. |
 | JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
 | Per-module GOT | `per-module-got.md` | The two-GOT model as emitted, and why it is shaped that way. |
 | Module caching | `module-caching.md` | Cache keys, serialisation, invalidation, the load path. |
 | Executable generation | `executable-generation.md` | `--link` mode. |
-| Ring 0/1 primitives backbone | `ring1-codegen.md` | Heap layout entry, inline primitives incl. the bitwise lowering, and the runtime-panic boundary. |
-| RC discipline | `ring2-rc.md` | The uniform consuming convention, now framed as the conservative point of the ownership lattice, plus the capture-return rule. |
+| RC discipline | `ring2-rc.md` | The conservative lowering: the uniform consuming convention, extern and platform consumption, the IO extern's balance, scope cleanup and the binders that never transfer by last use, the opt-in spark-capture borrow and its open default-on condition. |
 | Ownership codegen | `ownership-codegen.md` | The mechanisms that consume the ownership analysis — borrow elision, stack placement, confined non-atomic RC, uniqueness and reuse, value flattening, redefinition machinery — with their built/open state. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
 | Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the open structural close (lifecycle disposition, refusal frame, census, wrapper discharge). |
@@ -230,7 +264,7 @@ interior facts worth stating once here:
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry. Open depth/contention work is in `design/arch/backlog/performance.md`. |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
-## 8. Cross-references
+## 9. Cross-references
 
 - `design/arch/bounded-contexts.md` §3 — the bounded context, boundary and
   invariants (authoritative over anything here)

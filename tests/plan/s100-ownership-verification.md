@@ -604,7 +604,7 @@ Wrong things must NOT happen:
   the suspension 200–2000 crossings; ASan + behavioral legs. The existing guards carry
   forward unchanged as this fence's floor: `ring2-rc.md` §5.5.2.6's UAF/exclusion
   guards, `tests/launch_grid_corrupt.rs`, `tests/launch_vec_send_corrupt.rs` (flipped
-  green with the 0486 fix — the S100-close suite state carries only the §7 guards as
+  green with the 0486 fix — the S100-close suite state carries only the `tests/plan/s100-ownership-verification.md` §7 guards as
   intentional failures, per root `CLAUDE.md` §Testing; they remain the standing
   launched-strand fence, independent of this design).
 - **L-C2 — stack-slot lanes** (item 3 of the backend design's

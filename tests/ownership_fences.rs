@@ -475,7 +475,7 @@ fn l_d3f_stored_param_not_summarised_borrowed() {
 
 // =============================================================================
 // L-D3e — the declared-fact-table row tests, generated per row from the
-// ring2-rc.md §3.3 extern-consumption audit (the CS-B seed table,
+// primitive declaration rows' ownership facts (rule: ring2-rc.md §3.3; the CS-B seed,
 // design/typecheck/ownership-inference.md §9.1). For every row a behavioral
 // guard: the Var arg SURVIVES the call, is USABLE AFTER, and balances — so a
 // mis-declared row (says only-read, actually retains/frees) fails a test

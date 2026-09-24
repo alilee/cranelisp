@@ -344,31 +344,11 @@ pub(crate) fn committed_scope<'a>(
 /// or forward (pre-`defmacro`) reference, `Err` only for hard resolution
 /// failures (private, unknown qualified module).
 ///
-/// **Prelude outer-scope fallback (S78 §2).** Since the prelude is no longer
-/// flattened into each module's inner table, prelude-provided macros (`cond`,
-/// `when`, `do`, `str`, `thread-first`, `case`, `vec`, …) are NOT in the current
-/// module's table. When the first-hop recognition misses (`Ok(None)` — a bare
-/// name unreachable from the current module) AND the module's
-/// `prelude_fallback` bit is ON (and current ≠ `prelude`), recognition retries
-/// `resolve_macro_head` against the `prelude` module's OWN view, rooted at
-/// `prelude` (so prelude's `(export …)` re-exports chain-follow correctly).
-///
-/// **Public-only (the I-1 lesson).** Rooting the retry at `prelude` makes
-/// `cranelisp_types`'s visibility check see `from_module = prelude`, and
-/// `in_subtree(prelude, prelude)` is true — so a PRIVATE prelude macro would be
-/// recognized. Reachability must instead be judged relative to the ORIGINAL
-/// `current_module` (a user module is never in prelude's subtree), so the retry
-/// hit is post-filtered on the canonical entry's `is_public()`: a private
-/// prelude macro is treated as NOT a macro head (`Ok(None)`) and must not leak.
-/// Only PUBLIC prelude macros (and the chain-follow through public re-exports)
-/// reach a user module.
-///
-/// A FQ (`mod/macro`) reference never falls back — it names its module directly,
-/// and `resolve_macro_head`'s qualified branch resolves it (or surfaces
-/// `QualifiedModuleUnknown`, an `Err`, which short-circuits before any retry).
-///
-/// Mostly zero int→typecheck dependency: recognition is a `cranelisp-types`
-/// query; the fallback bit is the session-side `PreludeFallback` companion map.
+/// The prelude fallback, its public-only filter and the rule that a qualified
+/// (`mod/macro`) head never falls back are intrinsic to the `ResolutionScope`
+/// that `committed_scope` builds. This function only builds the committed
+/// first-hop view and derives the scope's prelude from the session-side
+/// `prelude_fallback` bit; it must not re-decide the fallback or visibility.
 pub(crate) fn recognize_macro_head(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &ModuleAliases,
@@ -388,14 +368,6 @@ pub(crate) fn recognize_macro_head(
     if name.starts_with(':') {
         return Ok(None);
     }
-    // S108 Wave-G CS2: the resolve → prelude-fallback → public-only-filter →
-    // macro-head projection all live intrinsic to `ResolutionScope` (the fallback
-    // is decided ONCE at scope construction, never re-decided per call).  int's
-    // job is only (1) build the committed first-hop view, (2) derive the scope's
-    // `prelude: Option` from the session-side `prelude_fallback` bit, and (3) call
-    // the scope's `resolve_macro_head` projection.  The former hand-rolled
-    // free-fn fallback call + kind-discriminator match are gone (the projection IS
-    // `ResolutionScope::resolve_macro_head`).
     let Some(table_ref) = committed_view(symbol_tables, current_module) else {
         return Ok(None);
     };
@@ -421,16 +393,16 @@ pub(crate) fn recognize_macro_head(
 // MacroResolver trait
 // ---------------------------------------------------------------------------
 
-/// Recognition driver for the legacy in-place expansion walk
+/// Recognition driver for the in-place expansion walk
 /// (`expand_sexp_recursive`).
 ///
 /// **Recognition** uses the LOCKED types primitive
 /// (`cranelisp_types::ResolutionScope::resolve_macro_head`, `macro-availability-model.md` §5)
-/// — each impl's `recognize` is a thin caller of `recognize_macro_head`. The
-/// `&mut self` receiver lets an impl additionally **ensure the clause code is
-/// in memory** as a side effect of recognition (the worker's
-/// `SymbolTableMacroResolver` compiles macro clauses the first time they are
-/// referenced; the read-only `/expand` resolver does not).
+/// — each impl's `recognize` is a thin caller of `recognize_macro_head`. No
+/// impl compiles clauses from source. The `&mut self` receiver serves the
+/// cluster walk's `SymbolTableMacroResolver`, which records blocked modules
+/// and defining modules and may load a cache-restored home module's object;
+/// the `/expand` resolver has no side effect (`design/int/int.md` §6.8).
 ///
 /// **Execution** is uniform: once `recognize` returns the macro's `FQSymbol`,
 /// the walk executes through the single [`JitMacroExpander`] (the locked
@@ -440,10 +412,10 @@ pub(crate) trait MacroResolver {
     /// Recognize `name` as a macro head; return its `FQSymbol` if so.
     ///
     /// Returns:
-    /// - `Ok(Some(fq))` — `name` is a macro; its clauses are (or have just been
-    ///   made) in memory, addressable by `fq`.
+    /// - `Ok(Some(fq))` — `name` is a macro addressable by `fq`. Its clauses
+    ///   are normally in memory; execution aborts on any that is not.
     /// - `Ok(None)` — not a macro, or a forward / not-yet-visible reference.
-    /// - `Err(...)` — hard resolution failure or on-demand compilation failure.
+    /// - `Err(...)` — hard resolution failure.
     fn recognize(&mut self, name: &str, span: Span) -> Result<Option<FQSymbol>, CranelispError>;
 
     /// The committed symbol tables to execute recognized macros over.

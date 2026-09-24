@@ -54,15 +54,14 @@ static HOST: HostContext = HostContext::new();
 /// (Decision 24) the caller transfers its reference to us. Following the
 /// `stdio` capture-RC protocol, `into_owned_consuming` adopts the transferred
 /// reference (no inc on wrap) and the resulting `CLOwned` is captured by-move
-/// into the Effect closure; it releases the reference on drop when the thunk
-/// runs. The field reads happen inside the thunk against the still-live
+/// into the Effect closure; it releases the reference when the Effect node is freed. The field reads happen inside the thunk against the still-live
 /// allocation (`CLOwned` derefs to `CLAdt<Rectangle>`). `CLAdt<T>` is `Copy`
 /// and `'static` (a transparent pointer wrapper over a marker type), so the
 /// owned handle is `'static`-capturable. Net RC: caller +1 (transfer) →
 /// `CLOwned` drop −1 = balanced.
 pub extern "C" fn rectangle_area(r: CLAdt<Rectangle>) -> CLIO<CLInt> {
-    // Adopt the caller-transferred reference; released on drop when the Effect
-    // thunk runs (consuming capture-RC protocol, Decision 24).
+    // Adopt the caller-transferred reference; released when the Effect
+    // node is freed (consuming capture-RC protocol, Decision 24).
     let owned = <CLAdt<Rectangle> as CLHeap>::into_owned_consuming(r);
     CLIO::effect(move || {
         let w: CLInt = owned.read_field("w");

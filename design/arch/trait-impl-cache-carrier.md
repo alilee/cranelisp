@@ -302,7 +302,7 @@ question):
   §2's `instantiate_demands` contract.
   Zero typecheck public-API delta; zero schema delta (§6).
 - **C6 (int, bundle N3) — the restore enrolment**, exactly as section 5 of this
-  contract and [cache-hit loading](../int/cache-hit-loading.md) design it, at both cache
+  contract and [restoration parity](../int/int.md#75-restoration-parity) design it, at both cache
   entry points, after the writer's
   dependency closure installs. N3's entry gate "0869 producer placed" reads
   **"C3's producer landed"**.

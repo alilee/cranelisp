@@ -6,7 +6,7 @@ each half of macro expansion and why the split is shaped as it is. *When* a
 macro is available and the source-ordered checkpoint sequencing are the
 [macro availability model](macro-availability-model.md); the binary's
 expansion-loop interior is
-[macro resolver implementation](../int/macro-resolver-impl.md) and
+[macro recognition and execution](../int/int.md#68-pass-1-macro-recognition-and-execution) and
 [quote shield](../int/int.md#66-pass-1-quote-shield); the boundary type is
 `cranelisp_types::MacroExpander` and its rustdoc.
 

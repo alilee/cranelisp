@@ -1,10 +1,10 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. Latest checkpoint: `fc49541f`. The compiler corrections,
+**Status:** PHASE 5. Latest checkpoint: `bad445da`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
-Document consolidation continues: the last integrated check has 331 findings
-across 589 documents. Historical audit reports are retired to Git with
+Document consolidation continues: the last integrated check has 238 findings
+across 535 documents. Historical audit reports are retired to Git with
 open points preserved. Current reservations appear at the end of this plan.
 C-A cache-corruption hardening is user-deferred; no API approval is pending.
 No phase transition or publication is authorized.
@@ -3747,3 +3747,54 @@ Next candidates: macro-resolver-impl/cache-hit-loading and int.md16 history;
 remaining backend ring-era design prose. Arch's unverified wording comparison
 of persistent-workers4.5's fresh eval JIT and int.md5.3's turn batch is retained
 for that int follow-up; no reclaim correctness claim is inferred.
+
+### Checkpoint bad445da and next lineage batch (2026-09-24)
+
+User requested commit and continuation. Committed76 files asbad445da, NOTES
+and .agents excluded. Baseline247 findings/corpus539.
+- design(int) Opus5.5/high `57fcbf09-1d74-4181-8e91-02855dbbe7b6`: macro
+  resolver/cache-loading migration notes and int16 historical backlog.
+- design(backend) Opus5.5/high `8d2990da-afc1-48c8-9e7c-135c83324f9b`: ring1-codegen, ring2-rc,
+  jit-setup-boundary current-home/retirement assessment and consolidation.
+Disjoint documentation writers; root integrates exact cross-owner remaps.
+Still Phase5; no runtime/API/spec changes dispatched.
+
+Int lineage pass completed: macro/cache migration docs retired, current macro
+contract in int6.8 and restoration parity in int7.5; delivered §16 backlog
+removed. Net6,405 words removed. The eval JIT wording question is resolved:
+__expr shares its turn batch's JIT; persistent-workers4.5 corrected. Root applied
+the exact4 document and2 config remaps.
+- qa Opus5.5/high `4ec3560e-9f47-4533-b3aa-b54939ec0650`: classify newly
+  preserved dependency-hash/platform-restore leads, source/evidence read-only.
+- dev(src) Opus5.5/high `3ce710df-4358-4c67-b763-b356f4e8b454`: same-fact
+  macro/cache rustdoc and memory coherence; sole source writer, no behavior edit.
+C-A remains user-deferred. Neither cache lead is a reproduced defect.
+
+Backend consolidated1882 lines across4 selected carriers to621 in2. Ring2
+retained at its cited anchors; ring1/jit-setup retired; panic boundary corrected
+to recorded-error plus returning sentinel (no unwind/trap). Existing capture
+borrow default-on and sentinel-safety evidence limits remain explicitly open.
+Root applied exact16 remaps (R3's own §7 confirmed as its triage record).
+- design(platform) Opus5.5/high `780e16f9-7172-43fa-9454-425233010f25`:
+  consuming-capture example correction and canonical-home consolidation.
+QA classified CD-1 required reproduction, CD-2 later advisory, CD-3 deferred
+under user C-A policy. Dev comment pass complete; cargo check clean; runtime
+unchanged. Its additional stale macro comments are retained for next int sweep.
+Test owns CD-1's ordinary dependency-edit repro and controls; no fix dispatched.
+
+CD-1 test Opus5.5/high `3c8f4d72-4324-409b-a005-ca88de503749` is the sole
+source writer/runner. ACT-0952's statement that the dependency-hash path was
+already complete corrected per QA, retaining the planned requirement.
+Integrated documentation check currently247→238, no introduced identities.
+
+Platform capture ownership now has one home, platform-dlls4. Root applied the
+owner's exact backend/source citation and release-timing remaps; no behavior
+changed. Wrong own() descriptions in platforms/stdio/spec.md and
+platforms/test-capture/spec.md remain for a focused documentation pass.
+
+CD-1 reproduction completed: four permanent, nonignored tests in tests/cache.rs
+are RED in two consecutive targeted nextest runs. Ordinary dependency edits
+under an unchanged restored importer accept an ill-typed call (107 vs rejection)
+or call the wrong slot (99 vs11), in both --run and --link. Controls establish
+cache-use dependence; writer versus restore mechanism is not isolated. QA
+reconciliation is next. No compiler fix or broad test run is claimed.

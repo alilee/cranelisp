@@ -120,13 +120,18 @@ invalidation, failure fan-out and reference-counted closure lifetime, and would
 otherwise become the parallel authoritative compiler store this action forbids.
 
 The first implementation stage reads valid normal cache artifacts but writes
-none. Cache restore must use the existing complete path: validate source,
+none. Cache restore must validate source,
 dependency hashes, schema/build identity and macro parent-to-active-clause
 bijection; install the decoded table into the realm; load `.o` through the
 normal Linker; register intrinsics, host primitives, platform pointers,
 already-compiled symbols and per-module GOT data symbols; wire the restored
 module GOT; and retain the `Arc<Linker>` through each callable's `Code` owner.
 A JIT-only semantic index is not evidence that a reusable `.o` exists.
+
+Current limitation (S122 QA intake CD-1): the integration writer and restore
+path both supply empty dependency-hash maps, so the existing backend comparison
+is inert. Do not treat dependency validation as already delivered; its minimal
+reproduction and attribution are tracked in `tests/plan/s122-evidence-delta.md`.
 
 A later cache-write stage needs separate user approval. A background result is
 trustworthy for foreground reuse only if it ran the exact complete compiler,
