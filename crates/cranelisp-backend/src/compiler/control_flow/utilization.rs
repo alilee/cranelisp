@@ -4,8 +4,8 @@
 // (`design/backend/lenient-eval.md` §2.8.2). Wave 0 computes the M-static
 // classification `{recursive-SCC?, tail?}` at every current spark site and
 // records it into a gated registry (`CRANELISP_SPARK_STATS=1`) WITHOUT changing
-// whether the site sparks — the discrimination-experiment substrate for `/qa`'s
-// Stage-0 measurement (`tests/plan/s104-utilization-measurement.md` §4). The
+// whether the site sparks — the substrate of M-static's discrimination table
+// (`design/backend/lenient-eval.md` §2.8.2). The
 // classifier itself (recursive-SCC membership + the admit predicate) is the pure
 // function M-static (Wave 1) will consume to *act* on the decision; here it is
 // only observed.
@@ -213,7 +213,7 @@ static SITE_STATS_ATEXIT: std::sync::Once = std::sync::Once::new();
 /// spawn *volume* per site is not attributed here — that requires a compile→run
 /// channel M-static (Wave 1) introduces; Wave 0 pairs this classification with
 /// the aggregate runtime `SPARK_SPAWNS` (ivar.rs) which the harness reads
-/// together (`tests/plan/s104-utilization-measurement.md` §3/§4).
+/// together (`design/backend/lenient-eval.md` §2.8.7).
 struct SiteRecord {
     scc: bool,
     tail: bool,

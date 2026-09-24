@@ -271,8 +271,8 @@ pub struct SharedState {
     // no other entry references the same `Arc<Jit>`, the count hits zero
     // and `Jit::Drop` calls `unsafe JITModule::free_memory()` — the
     // Decision 31 Scenario 2 per-redefinition reclaim primitive. See
-    // `src/code.rs` for the `Code` enum; `design/int/symbol-table-generics.md`
-    // §2.3 for the dissolution rationale.
+    // `src/code.rs` for the `Code` enum; `design/int/int.md`
+    // §5 for the dissolution rationale.
     /// Platform DLL retention pool (Sprint 57 Wave 3 G8). Holds
     /// `LoadedPlatform` handles for the session lifetime so that every
     /// platform-fn pointer in a per-module GOT (referenced by an entry's

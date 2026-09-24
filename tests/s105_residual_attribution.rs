@@ -1,9 +1,9 @@
 //! S105 Phase-5 — residual-attribution perf-lane BEHAVIOURAL guards.
 //!
 //! Companion to the graded perf-lane instrument `tests/perf/s105_attribution.py`
-//! + fixtures `tests/fixtures/s99/{f7_alloc,f8_stack_witness}.cl`. Per the plan
-//! (`tests/plan/s105-residual-attribution.md` §0.5 / §9.1), the graded walls and
-//! attribution vectors are perf-lane (NOT nextest guards); what lands in the
+//! + fixtures `tests/fixtures/s99/{f7_alloc,f8_stack_witness}.cl`. The graded walls and
+//! attribution vectors are perf-lane records (`tests/plan/s105-attribution-results.md`),
+//! not nextest guards; what lands in the
 //! `cargo nextest` suite is (a) the fixtures' parallel≡serial exit-match
 //! CORRECTNESS record (GREEN) and (b) the two failing-not-ignored BEHAVIOURAL
 //! guards that flip green when the selected build lever lands.
@@ -151,7 +151,7 @@ const F3_SHARED_READ: &str = "(import [primitives [*]])\n\
 // The fixtures' durable cargo-nextest correctness record, independent of perf.
 // =============================================================================
 
-// spec: tests/plan/s105-residual-attribution.md §"the (a)-isolating fixture"
+// spec: spec/12-runtime.md §12.4.3 — lenient evaluation preserves the serial result (F7 allocation-heavy)
 #[test]
 fn f7_alloc_parallel_serial_exit_match() {
     let s = run_serial(F7_MINI).status.code();
@@ -163,7 +163,7 @@ fn f7_alloc_parallel_serial_exit_match() {
     assert!(s.is_some(), "F7 must exit cleanly");
 }
 
-// spec: tests/plan/s105-residual-attribution.md §"the parallel stack-allocation witness"
+// spec: spec/12-runtime.md §12.4.3 — lenient evaluation preserves the serial result (F8 both arms)
 #[test]
 fn f8_stack_witness_parallel_serial_exit_match() {
     for src in [F8_SERIAL, F8_PARALLEL] {
@@ -174,7 +174,7 @@ fn f8_stack_witness_parallel_serial_exit_match() {
     }
 }
 
-// spec: tests/plan/s105-residual-attribution.md §"the parallel stack-allocation witness"
+// spec: design/backend/ownership-codegen.md §4.1 — in-frame NoEscape scalar constructor is stack-eligible
 // — positive control: stack allocation CAN fire on the non-recursive in-frame phi-ADT.
 #[test]
 fn f8_serial_arm_stack_allocates() {
@@ -196,7 +196,7 @@ fn f8_serial_arm_stack_allocates() {
 // REDs. See the module doc comment for the reclassification rationale.
 // =============================================================================
 
-// spec: tests/plan/s105-residual-attribution.md §"Behavioural guards" (guard 1 / §4.1) — the 0525
+// spec: design/backend/ownership-codegen.md §4.3 — spark relocation declines stack placement (gate 5); the 0525
 // gate-5 parallel-residual behaviour. GREEN characterization: the stack lever fires
 // only on the non-recursive in-frame arm (f8_serial_arm_stack_allocates, GREEN) and
 // CORRECTLY declines on the recursive/sparked parallel-search arm — gate 3 (self-
@@ -230,7 +230,7 @@ fn f8_gate5_parallel_arm_correctly_declines_stack_alloc() {
     );
 }
 
-// spec: tests/plan/s105-residual-attribution.md §"Behavioural guards" (guard 2 / §6) — the F3
+// spec: design/backend/ownership-codegen.md §5.1 — shared reads outside one strand stay atomic; the F3
 // dominant term. GREEN characterization: a shared-read parallel reduce CURRENTLY
 // emits conservatively-atomic RC ops (rc_atomic>0). This is the current, correct
 // behaviour — atomic RC is the SOUND default for reads the analysis marks Crossing

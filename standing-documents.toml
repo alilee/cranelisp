@@ -389,7 +389,7 @@ disposition = "established"
 
 [[document_class]]
 name = "int-current-designs"
-patterns = ["design/int/agent.md", "design/int/bind-chain-analysis.md", "design/int/cache-hit-loading.md", "design/int/concurrency-architecture.md", "design/int/cranelisp-toml.md", "design/int/expansion-qualification-scope.md", "design/int/impl-redefinition-hot-reload.md", "design/int/index-worker-isolation.md", "design/int/int.md", "design/int/io-integration.md", "design/int/macro-diagnostic-reanchoring.md", "design/int/macro-resolver-impl.md", "design/int/macro-turn-ownership.md", "design/int/multi-sig-introspection.md", "design/int/observability.md", "design/int/prelude-table-write-isolation.md", "design/int/private-submodule-import.md", "design/int/quote-shield.md", "design/int/repl-lifecycle.md", "design/int/result-owner.md", "design/int/s117-conformance-recovery.md", "design/int/s122-closure.md", "design/int/session-persistence.md", "design/int/session-transaction.md", "design/int/signature-body-prepass.md", "design/int/symbol-table-cache.md", "design/int/symbol-table-generics.md", "design/int/terminal-styling.md", "design/int/persistent-workers.md", "design/int/concurrency/README.md"]
+patterns = ["design/int/agent.md", "design/int/bind-chain-analysis.md", "design/int/cache-hit-loading.md", "design/int/concurrency-architecture.md", "design/int/cranelisp-toml.md", "design/int/expansion-qualification-scope.md", "design/int/index-worker-isolation.md", "design/int/int.md", "design/int/io-integration.md", "design/int/macro-diagnostic-reanchoring.md", "design/int/macro-resolver-impl.md", "design/int/macro-turn-ownership.md", "design/int/multi-sig-introspection.md", "design/int/observability.md", "design/int/private-submodule-import.md", "design/int/repl-lifecycle.md", "design/int/result-owner.md", "design/int/s117-conformance-recovery.md", "design/int/s122-closure.md", "design/int/session-persistence.md", "design/int/session-transaction.md", "design/int/signature-body-prepass.md", "design/int/terminal-styling.md", "design/int/persistent-workers.md", "design/int/concurrency/README.md"]
 owner = "design"
 purpose = "The master, subsystem and active feature designs for pipeline orchestration, compiler-internal scheduling, REPL/session, persistence, macro execution, host integration and observability."
 established_by = "design/int/CLAUDE.md"
@@ -452,7 +452,7 @@ disposition = "established"
 
 [[document_class]]
 name = "qa-retained-evidence-records"
-patterns = ["tests/plan/s99-measurement.md", "tests/plan/s100-ownership-verification.md", "tests/plan/s101-coverage-postmortem.md", "tests/plan/coverage-audit-s101.md", "tests/plan/s10[2-5]-*.md", "tests/plan/s109-*.md", "tests/plan/s11[1-9]-*.md", "tests/plan/s12[01]-*.md"]
+patterns = ["tests/plan/s99-measurement.md", "tests/plan/s100-ownership-verification.md", "tests/plan/s101-coverage-postmortem.md", "tests/plan/coverage-audit-s101.md", "tests/plan/s10[2-5]-*.md", "tests/plan/s11[1-9]-*.md", "tests/plan/s12[01]-*.md"]
 owner = "qa"
 purpose = "Dated QA measurement, lane-baseline and coverage-analysis records retained because current designs, test sources and harnesses cite them by section."
 established_by = "tests/CLAUDE.md"

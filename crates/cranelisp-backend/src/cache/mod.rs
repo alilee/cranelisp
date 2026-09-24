@@ -457,7 +457,7 @@ pub const CACHE_SCHEMA_VERSION: u32 = 29;
 pub const BUILD_ID: &str = env!("CRANELISP_BUILD_ID");
 
 /// **SUPERSEDED (Sprint 58 §14.2)**: renamed to `CACHE_SCHEMA_VERSION` so
-/// `/int`'s `symbol-table-cache.md` and Decision 34 use one term. The semantic
+/// `/int`'s `int.md` §7.3 and Decision 34 use one term. The semantic
 /// is unchanged. Kept as an alias so `tests/cache.rs` (owned by `/qa`)
 /// continues to compile during the Wave 2b parallel migration. Doc-only
 /// deprecation: a `#[deprecated]` attribute would surface warnings inside

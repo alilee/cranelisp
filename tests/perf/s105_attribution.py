@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """S105 residual-attribution instrument — the per-fixture attribution vector.
 
-Implements `tests/plan/s105-residual-attribution.md` (Phase-3 plan): the upgraded
+Implements the retired S105 Phase-3 plan (https://github.com/alilee/cranelisp/blob/fc49541f/tests/plan/s105-residual-attribution.md); model: design/arch/effect-concurrency.md §3.1.6: the upgraded
 instrument that attributes the post-increment-II F3/F4 parallel residual BY
 MECHANISM — {scheduler-spread, (a)-allocation, residual-atomic-RC,
 unavailable-parallelism} + the named joint interaction term `I` — so the build

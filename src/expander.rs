@@ -805,7 +805,7 @@ pub(crate) fn is_defmacro_head(head: &str) -> bool {
     matches!(head, "defmacro" | "defmacro-")
 }
 
-/// The quasiquote template walker (Rule QQ, `design/int/quote-shield.md` §4).
+/// The quasiquote template walker (Rule QQ, `design/int/int.md` §6.6).
 ///
 /// Holds every node of a `quasiquote` template verbatim EXCEPT the body of a
 /// **live** `unquote`/`unquote-splicing` (one at the matching nesting depth),
@@ -923,7 +923,7 @@ fn expand_scoped(
             //    `quote`/`quasiquote` head + `len() == 2`, the SAME test the fold
             //    uses (`quasiquote.rs::is_quote`/`is_quasiquote`); the shield
             //    consults neither `shadows` nor the resolver, keeping the two in
-            //    lockstep (`design/int/quote-shield.md` §§2–5). Placed FIRST: a
+            //    lockstep (`design/int/int.md` §6.6). Placed FIRST: a
             //    reader-quote head is handled by the shield and nothing else.
             {
                 match quote_head(&children) {
@@ -1711,7 +1711,7 @@ mod tests {
         );
     }
 
-    // --- §9.4 quote shield (S111, design/int/quote-shield.md) ---
+    // --- §9.4 quote shield (S111, design/int/int.md#66-pass-1-quote-shield) ---
 
     // spec: spec/09-macros.md §9.4.4 — Rule Q: a `(quote …)` form is pure data
     // held FULLY verbatim, with NO descent. A macro-call-shaped list inside the

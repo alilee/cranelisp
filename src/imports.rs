@@ -211,8 +211,8 @@ pub(crate) fn install_exports(
 }
 
 // ===========================================================================
-// FIXME 0604 — the foreground public-write CHOKEPOINT (prelude-table-write-
-// isolation.md §2). Isolation by construction: every foreground writer that can
+// FIXME 0604 — the foreground public-write CHOKEPOINT (design/int/int.md §6.7).
+// Isolation by construction: every foreground writer that can
 // insert a PUBLIC name candidate into a module's live symbol table routes through
 // the ONE `check_exposed_candidate_closure` gate (below) or carries a named
 // legal-skip.
@@ -288,7 +288,7 @@ pub(crate) fn install_exports(
 /// the settled `(export …)` surface, NOT the source-provider heuristic the S114
 /// predicate mistook for it). The S114 predicate was **provider-existence** shaped
 /// and BLIND to the live phantom by construction: `bit-and` IS a bundled public
-/// primitive (`cranelisp-primitives/src/lib.rs:412`), so a phantom
+/// primitive (`crates/cranelisp-primitives/src/declarations.rs`), so a phantom
 /// `bit-and → primitives/bit-and` names a genuine provider and provider-existence
 /// returned `true` (/qa S114 re-attribution; /arch Phase-2 §4). The distinguishing
 /// fact is that `bit-and` is **outside prelude's declared export closure**

@@ -2071,7 +2071,7 @@ fn derive_codegen_batch_includes_synthesised_constructors() {
 // spec: spec/05-definitions.md §5.4.5 — a re-`impl` of an existing
 // (trait, target-type) pair REPLACES the previous implementation; dispatch
 // afterwards runs the NEW method bodies (hot-reload, like `defn`).
-// Design: design/int/impl-redefinition-hot-reload.md §2/§3.
+// Design: design/int/session-transaction.md §2.5.
 //
 // The seam: `derive_codegen_batch`'s FORCED first loop must enroll the
 // impl's MANGLED method Defs (`Trait.method$<fq-type>` — the callables), so
@@ -2144,7 +2144,7 @@ fn derive_codegen_batch_enrolls_mangled_impl_methods_even_when_compiled() {
 // re-`impl` REPLACES the previous implementation. Together: a re-impl that
 // OMITS a method the prior impl overrode MUST fall back to the trait's
 // DEFAULT body, not keep dispatching the stale override.
-// Design: design/int/impl-redefinition-hot-reload.md §3. FIXME 0791.
+// Design: design/int/session-transaction.md §2.5. FIXME 0791.
 //
 // The seam: the re-impl's `TopLevel::TraitImpl` names only `size` in
 // `impl_.methods` (`weight` is omitted, and its re-staged DEFAULT `Defn`
@@ -2223,7 +2223,7 @@ fn derive_codegen_batch_enrolls_omitted_default_method_of_the_impl() {
 // an assertion ships with its detection proof). `forced_enrollment_resolves`
 // is the predicate behind `derive_codegen_batch`'s `debug_assert!`; this pins
 // that it actually discriminates rather than always answering `true`.
-// spec: design/int/impl-redefinition-hot-reload.md §2 (the dead-lookup class)
+// spec: design/int/session-transaction.md §2.5 (the dead-lookup class)
 #[test]
 fn forced_enrollment_predicate_discriminates() {
     let module = ModuleFullPath::from("user");
@@ -2281,7 +2281,7 @@ fn forced_enrollment_predicate_discriminates() {
 
 // -----------------------------------------------------------------------
 // Sprint 58 Wave 2b — /int Step 5a/5b unit tests
-// (per `tests/plan/ring4.md` §G.10 + §G.11 + design/int/symbol-table-cache.md)
+// (per `tests/plan/ring4.md` §G.10 + §G.11 + design/int/int.md)
 // -----------------------------------------------------------------------
 
 /// Build a minimal `ModuleCompiler` context that's sufficient for
@@ -2322,7 +2322,7 @@ fn mk_writer_test_ctx<'a>(
 }
 
 // §G.10 (1) — writer source-order: two imports preserve insertion order.
-// spec: design/int/symbol-table-cache.md §3 + design/typecheck/ast-annotation.md §11.3
+// spec: design/int/int.md §6.5 + design/typecheck/ast-annotation.md §11.3
 #[test]
 fn writer_records_imports_in_source_order() {
     let module = ModuleFullPath::from("user");
@@ -2377,7 +2377,7 @@ fn writer_records_imports_in_source_order() {
 }
 
 // §G.10 (2) — implicit-prelude disposition: option (b) confirmed.
-// spec: design/int/symbol-table-cache.md §3 (CP3 resolution). The implicit
+// spec: design/int/int.md §6.5 (CP3 resolution). The implicit
 // `(import [prelude [*]])` synthesised by `inject_prelude_if_needed` must
 // NOT appear in `SymbolTable.imports`; that field records only
 // user-authored `(import …)` forms. The implicit prelude shows up only as
@@ -2459,7 +2459,7 @@ fn writer_does_not_record_implicit_prelude_in_imports() {
 // A failure means somebody re-introduced the parallel store — fix the
 // re-introduction, don't relax this assertion.
 //
-// spec: design/int/symbol-table-cache.md §5 (Affected Files: ModuleStructure dissolves)
+// spec: design/int/int.md §7 (Affected Files: ModuleStructure dissolves)
 #[test]
 fn module_structure_struct_and_field_deleted() {
     let save_src = std::fs::read_to_string(
@@ -2500,7 +2500,7 @@ fn module_structure_struct_and_field_deleted() {
 
 // §G.10 (4) — `save.rs` reads structural decls directly off SymbolTable
 // (round-trip a small built-up table).
-// spec: design/int/symbol-table-cache.md §5 (consumer migration)
+// spec: design/int/int.md §7 (consumer migration)
 #[test]
 fn save_generate_module_source_reads_structural_decls_from_symbol_table() {
     use cranelisp_types::ModDecl;
@@ -2599,7 +2599,7 @@ fn writer_records_private_submodule_with_is_private_true() {
 // `schema_version == CACHE_SCHEMA_VERSION` AND with the structural decls
 // that were on the input.
 //
-// spec: design/int/symbol-table-cache.md §3 + design/backend/module-caching.md §14.5
+// spec: design/int/int.md §7 + design/backend/module-caching.md §14.5
 #[test]
 fn worker_cache_write_stamps_schema_version_and_round_trips_structural_decls() {
     use cranelisp_backend::cache;
@@ -2659,7 +2659,7 @@ fn worker_cache_write_stamps_schema_version_and_round_trips_structural_decls() {
 // failure guard + REPL display invariants.
 // ──────────────────────────────────────────────────────────────────────
 
-// spec: design/int/symbol-table-cache.md §3.2 (no swallowed failures) —
+// spec: design/int/int.md §7.1 (no swallowed failures) —
 // cache-hit codegen worker MUST surface a hard error when an expected
 // bare-name symbol is missing from the loaded `.o`. Regression guard for
 // the pre-Sprint-58 swallowed-failure pattern (worker.rs:2810-2823 push
@@ -2713,7 +2713,7 @@ fn cache_hit_swallowed_failure_guard_signals_module_error() {
     }
 }
 
-// spec: design/int/symbol-table-cache.md §3.2 (Decision 37) +
+// spec: design/int/int.md §7.1 (Decision 37) +
 //       design/arch/CLAUDE.md Decision 36 — cache-hit transitive recursion
 //       walks `cached.symbol_table.imports` and ensures each transitive
 //       dep's symbol table is installed before the codegen worker for
@@ -2791,7 +2791,7 @@ fn register_transitive_cached_imports_filters_synthetic_modules() {
     }
 }
 
-// spec: design/arch/CLAUDE.md Decision 36 + design/int/symbol-table-cache.md
+// spec: design/arch/CLAUDE.md Decision 36 + design/int/int.md §7.1
 //       §"Investigation findings" → "Bug A — DISSOLVED"
 //
 // Under Decision 36, `compile_to_module` declares every user-defined
@@ -3595,7 +3595,7 @@ fn prepared_empty_batch_emits_terminal_inmem_signal() {
     );
 }
 
-// spec: design/int/prelude-table-write-isolation.md §2.4 (FIXME 0604) — the
+// spec: design/int/int.md §6.7 (FIXME 0604) — the
 // S115 missed-census-row ROUTE: `commit_staging_to_live` gates every staged
 // PUBLIC write through the terminal declared-export-closure chokepoint. A
 // phantom public re-export edge (`bit-and → primitives/bit-and`, the live
@@ -3655,7 +3655,7 @@ fn commit_staging_to_live_rejects_out_of_closure_public_write() {
     );
 }
 
-// spec: design/int/prelude-table-write-isolation.md §2.4 — the false-fire
+// spec: design/int/int.md §6.7 — the false-fire
 // fence at the commit route: a staged public re-export whose name IS in
 // D(module) commits cleanly (the gate must not reject the legal population).
 #[test]

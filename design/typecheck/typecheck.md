@@ -440,9 +440,9 @@ One standing, tripwired re-derivation remains (`overload_homes`,
 
 The same classification over the rest of the producer surface — callees,
 codegen views, pattern constructors, deferred self-call dispatch, scheme
-write-backs — has not been done; it is the open typecheck leg of the
-[Principle 24 register](../../tests/plan/s111-principle24-register.md), and
-its seed is that register's written-name identity battery.
+write-backs — has not been done; it is the open typecheck leg of the Principle 24
+classification kept among QA's [unresolved leads](../../tests/plan/PLAN.md#active-allocation-and-unresolved-evidence),
+under the carve-outs and corollary of [Principle 24](../arch/principles/24-resolve-once.md).
 
 ### 9.8 Module aliases
 

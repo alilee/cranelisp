@@ -312,7 +312,7 @@ fn insert_primitive(
 /// **FIXME 0604 census disposition (S115 W6, FIXME 0740): NAMED LEGAL-SKIP of
 /// the foreground public-write chokepoint**
 /// (`imports.rs::check_exposed_candidate_closure`;
-/// `design/int/prelude-table-write-isolation.md` §2.1/§2.4). This runs ONCE at
+/// `design/int/int.md` §6.7). This runs ONCE at
 /// session init, single-threaded, before any worker is spawned — outside the
 /// foreground concurrent-compile path — and every entry it seeds is either the
 /// module's OWN definition or ONE intra-module public self-alias
@@ -1356,7 +1356,7 @@ mod tests {
         );
     }
 
-    // spec: design/int/prelude-table-write-isolation.md §2.1/§2.4 (FIXME 0604
+    // spec: design/int/int.md §6.7 (FIXME 0604
     // census; 0740 disposition) — `mount_synthetic_modules` is a NAMED LEGAL-SKIP
     // of the foreground public-write chokepoint, and this is its DETECTION PROOF
     // rather than an argument. Every candidate exposure the bootstrap seeds is

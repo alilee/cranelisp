@@ -386,7 +386,42 @@ active allocation cites them; they are not fresh source censuses.
     [introspection](../repl_introspection.rs) are the acceptance evidence at
     those seams; a module matrix is owed only if `dev` names a private branch
     they cannot reach. The R-2 matrices that row also named are retired with
-    0859 above.
+    0859 above;
+  - the S111 Principle-24 register's unfinished legs. S111 set out to classify
+    every unindexed iteration whose result can become a compile-necessary
+    identity as an enumeration or an identity scan, under the carve-outs in
+    [Principle 24](../../design/arch/principles/24-resolve-once.md). The backend
+    and the primitives, intrinsics and platform crates were classified. Three
+    legs were not: the typecheck producer surface, which
+    [typecheck](../../design/typecheck/typecheck.md) §9.7 names as open; the
+    integration layer's `symbol_tables.iter()` sites
+    (`git grep -n 'symbol_tables.iter()' -- src`), which carry only unverified
+    leans; and the frontend, delegated to an audit rotation that recorded no
+    verdicts. One backend row was never decided:
+    [`register_platform_effect_symbols`](../../crates/cranelisp-backend/src/jit.rs)
+    registers each platform effect under its table key, without a module
+    qualifier, into the JIT's one flat namespace, and checks for no collision.
+    Two same-keyed effects in different platform modules would resolve by
+    table iteration order. S111 judged the keys unique by convention only and
+    left the choice between a structural tie error and an asserted uniqueness
+    invariant open ([retired register](https://github.com/alilee/cranelisp/blob/fc49541f/tests/plan/s111-principle24-register.md)
+    §2);
+  - the S104 U-G6 gate. S104 defined `CRANELISP_SPARK_STATS` unset as
+    byte-identical codegen and wall against the uninstrumented build, and its
+    final acceptance graded U-G1 to U-G5 only. The zero-cost-off claim stands
+    asserted in the counters' rustdoc in the `ivar` and `utilization` modules;
+    the byte-identical-when-off invariant (§1 item 5) in
+    [lenient evaluation](../../design/backend/lenient-eval.md) has no row in
+    that design's evidence table
+    ([retired S104 record](https://github.com/alilee/cranelisp/blob/fc49541f/tests/plan/s104-utilization-measurement.md)
+    §6, §8.7);
+  - the S109 capacity-window observation.
+    `concurrency_capacity::same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks`
+    was seen to pass, fail and pass in isolation during S109. It was listed as
+    an unverified candidate member of the 0604 index-feed family, and 0604
+    closed structurally in S122 without that verification. The test's
+    two-sided wall-clock window is a contention-falsifiable timing assertion
+    ([closed S109 record](../../sprints/archive/sprint-109.md)).
 
   They are not newly allocated defects. Before relying on any, compare current
   specification and evidence; no new test, API or optimization is authorized
@@ -429,14 +464,9 @@ row identifier. Each is a dated allocation, attribution or measurement, never
 current status; compare a RED, carry or count in one with current source before
 reuse. Retirement needs the citing owners to move their citations first.
 
-- Measurements: [S104 utilization](s104-utilization-measurement.md) and the S105
-  [attribution plan](s105-residual-attribution.md) and
-  [results](s105-attribution-results.md) — the counter definitions, discrimination
-  experiment and graded walls that backend and intrinsics source, the perf
-  harnesses and the performance backlog cite.
-- Attributions: the [S109 index-feed race](s109-attribution-index-feed-race.md),
-  the [S111 drop-glue under-key reachability record](s111-0633-adt-drop-glue-underkey.md)
-  and the [S111 Principle-24 register](s111-principle24-register.md).
+- Measurement: the [S105 attribution results](s105-attribution-results.md) — the
+  graded walls and accept-done verdict that the S105 behavioural guards and the
+  CLIF-verification demo cite.
 - Cut in S122 to their cited sections, original numbering kept and the removed
   remainder named in each header: [S102](s102-test-plan.md),
   [S103](s103-test-plan.md), [S112](s112-0628-ic-wave.md),
@@ -455,7 +485,7 @@ reuse. Retirement needs the citing owners to move their citations first.
   test under its planned family, a design that now states the mechanism
   ([binding-indirection consume](../../design/backend/binding-indirection-consume.md),
   [expansion qualification](../../design/int/expansion-qualification-scope.md),
-  [prelude-table write isolation](../../design/int/prelude-table-write-isolation.md),
+  [the export-closure gate](../../design/int/int.md#67-public-candidate-exposure--the-export-closure-gate),
   [enforcement matrices](../../design/frontend/enforcement-matrices.md)), or
   an open filing carrying its own subject (0694, 0708, 0745, 0811, 0857).
   Their standing rules are in §Standing coverage audit and §Traceability;
@@ -482,6 +512,24 @@ reuse. Retirement needs the citing owners to move their citations first.
   advisories are delivered in the shared package; the
   [repository gates](#repository-gates--maintenance-checks-never-compiler-authority)
   state the current conditions.
+- The S104 utilization plan, the S105 attribution plan, the S109 index-feed
+  attribution, the S111 drop-glue under-key record and the S111 Principle-24
+  register are retired to Git (`git show fc49541f:tests/plan/`). Their standing
+  content has current homes: the utilization mechanism, measured outcome,
+  measurement rules and open depth obligations in
+  [lenient evaluation](../../design/backend/lenient-eval.md) §2.8 and the
+  [performance backlog](../../design/arch/backlog/performance.md) (0535, 0536);
+  the attribution model in [effect concurrency](../../design/arch/effect-concurrency.md)
+  §3.1.6 and its measurement seams in
+  [ownership codegen](../../design/backend/ownership-codegen.md) §13.2.2; the
+  structural cure for the phantom write in
+  [integration](../../design/int/int.md#67-public-candidate-exposure--the-export-closure-gate)
+  §6.7, with its firing record in the [closed S109 record](../../sprints/archive/sprint-109.md#findings-record-in-fixmes-if-not-already);
+  canonical glue identity in [transitive drop glue](../../design/backend/transitive-drop-glue.md)
+  §3.1; the classification criteria in [Principle 24](../../design/arch/principles/24-resolve-once.md)
+  and its imported-base tripwire in
+  [monomorphisation](../../design/typecheck/monomorphisation.md) §11.8.9. Their
+  unresolved residuals are the S104, S109 and S111 leads above.
 
 The following compact closure records remain because other current records
 point to their specific evidence, which must not be lost during consolidation.

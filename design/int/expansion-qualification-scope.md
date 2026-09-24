@@ -130,7 +130,7 @@ consumes. Int keeps no private copy.
 **Ruling.** A symbol inside quoted data is **not a reference at all**, so the §2.1
 rule ("qualify iff a free reference") already excludes it. `qualify_scoped`'s
 shield is the **Rule Q / Rule QQ equivalent**, structurally identical to
-`expand_scoped`'s shield (Principle 7 — one shield model, not a second copy):
+`expand_scoped`'s shield (`int.md` §6.6; Principle 7 — one shield model, not a second copy):
 
 - `(quote X)` — classified by
   `cranelisp_types::quote_head(children) == Some(QuoteHead::Quote)`, the exact
@@ -227,7 +227,7 @@ The consequent chain is three waves, strict order (SPRINT.md F8):
 **Sequencing is load-bearing.** If the frontend reject re-landed **before** the
 int fix, it would reject int's mis-qualified binders and break valid programs
 (exactly why W3 reverted it). Int-first is mandatory; the two surfaces are one
-logical wave over two `/dev` deployments (the `quote-shield.md` / 0613 precedent).
+logical wave over two `/dev` deployments.
 
 ## 5. Principles cited
 

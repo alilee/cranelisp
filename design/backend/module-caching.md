@@ -1076,9 +1076,9 @@ Per Decision 34 + `/arch` Sprint 58 review condition 2: `/backend` owns the `CAC
 pub const CACHE_SCHEMA_VERSION: u32 = 1;
 ```
 
-Sprint 58 Wave 2 ships `CACHE_SCHEMA_VERSION = 1` (the first numbered shape; pre-Sprint-58 caches lack the field and deserialise as `0`, which mismatches `1` and invalidates as cache-stale). The pre-existing `CACHE_FORMAT_VERSION` constant on `cache/mod.rs:30` is renamed to `CACHE_SCHEMA_VERSION` in this rewrite — the semantic is the same, and the new name matches Decision 34's wording so `/int`'s `symbol-table-cache.md` and the architecture decision use one term.
+Sprint 58 Wave 2 ships `CACHE_SCHEMA_VERSION = 1` (the first numbered shape; pre-Sprint-58 caches lack the field and deserialise as `0`, which mismatches `1` and invalidates as cache-stale). The pre-existing `CACHE_FORMAT_VERSION` constant on `cache/mod.rs:30` is renamed to `CACHE_SCHEMA_VERSION` in this rewrite — the semantic is the same, and the new name matches Decision 34's wording so `/int`'s `int.md` §7.3 and the architecture decision use one term.
 
-`/int`'s worker cache-write path (in `src/worker.rs`) emits the field by reading `CACHE_SCHEMA_VERSION` and writing it onto the `SymbolTable.schema_version` field before serialisation. Cross-reference: `design/int/symbol-table-cache.md` is the producer-side companion to this section; the two docs MUST agree on the constant's name and its location.
+`/int`'s worker cache-write path (in `src/worker.rs`) emits the field by reading `CACHE_SCHEMA_VERSION` and writing it onto the `SymbolTable.schema_version` field before serialisation. Cross-reference: `design/int/int.md` §7.3 is the producer-side companion to this section; the two docs MUST agree on the constant's name and its location.
 
 ### 14.3 Cache-restore (load path)
 
@@ -1243,7 +1243,7 @@ Symmetric to load:
     hashes.
 ```
 
-The cache-write path is single-source-of-truth: the symbol table IS the input. There is no parallel "build a packet from scattered session state" step (the sketch's `CacheWritePacket` and the Sprint-22 `ObjectCompileInput` both decompose). For the `.o` write, `compile_to_module` reads the `defined_symbols` iterator off the symbol table itself. Cross-reference: `/int`'s `symbol-table-cache.md` documents the worker-side write trigger and any background-thread coordination.
+The cache-write path is single-source-of-truth: the symbol table IS the input. There is no parallel "build a packet from scattered session state" step (the sketch's `CacheWritePacket` and the Sprint-22 `ObjectCompileInput` both decompose). For the `.o` write, `compile_to_module` reads the `defined_symbols` iterator off the symbol table itself. Cross-reference: `/int`'s `int.md` §7.3 documents the worker-side write trigger and any background-thread coordination.
 
 ### 14.6 Symmetry invariant (mirrors §8 design principle)
 
@@ -1280,7 +1280,7 @@ Every variant maps to the same caller-visible behaviour: invalidate, recompile f
 
 ### 14.9 Cross-references
 
-- `design/int/symbol-table-cache.md` — `/int`-owned producer-side companion. Documents the worker cache-write trigger, background-thread coordination, and call into `/backend`'s cache-write helper. MUST agree with this section on the `CACHE_SCHEMA_VERSION` constant name + location.
+- `design/int/int.md` §7.3 — `/int`-owned producer-side companion. Documents the worker cache-write trigger, background-thread coordination, and call into `/backend`'s cache-write helper. MUST agree with this section on the `CACHE_SCHEMA_VERSION` constant name + location.
 - `design/arch/CLAUDE.md` Decisions 25, 26, 31, 32, 33, 34 — the architectural foundation for §14's design choices.
 - `design/arch/interfaces.md` §"Symbol table and binding tree" and `design/arch/symbol-table-lifecycle.md` — current table and lifecycle contracts.
 - `design/arch/interfaces.md` — the cache persistence contract ("the `.meta.json` file is a serialized `SymbolTable`").

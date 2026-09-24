@@ -31,7 +31,7 @@ pub(crate) type SessionModuleEntry = cranelisp_types::Binding<Code>;
 mod tests {
     use super::*;
 
-    // spec: design/int/symbol-table-generics.md §6 (mixed-lineage modules)
+    // spec: design/int/int.md §5 (mixed-lineage modules)
     //       — A SessionSymbolTable can carry both Code::Jit and Code::Linker
     //       entries simultaneously; serde skips both uniformly (the field is
     //       `#[serde(skip)]`).
@@ -146,7 +146,7 @@ mod tests {
         }
     }
 
-    // spec: design/int/symbol-table-generics.md §2.3 — `SharedState.kept_jits`
+    // spec: design/int/int.md §5 — `SharedState.kept_jits`
     //       and `SharedState.kept_linkers` dissolved (Wave 3b regression guard).
     //
     // This is a textual regression guard: read the live source for SharedState

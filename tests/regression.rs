@@ -3319,7 +3319,7 @@ fn shared_state_pub_field_count_guard() {
          (16 − module_sexps − suspend_states + prelude_fallback + run_mode + \
          declared_exports; design/int/int.md §6.2 + S78 Wave 4 \
          §2.7 + S80 Wave 2D D1 design/arch/d1-introspection-repl-only.md §4 + \
-         S115 W2 design/int/prelude-table-write-isolation.md §2.2). This is the \
+         S115 W2 design/int/int.md §6.7). This is the \
          standing guard that the two cross-thread parking maps \
          (module_sexps/suspend_states) do not creep back, while admitting the \
          legitimate sanctioned session-side field additions `prelude_fallback` \

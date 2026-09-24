@@ -423,50 +423,64 @@ Cited principles: P1 (Decoupling), P6 (Complexity has a budget — production ca
 
 ## 5. Code enum + lifecycle (Decisions 31, 35, 41)
 
-### 5.1 Placement (post-Decision-41)
+### 5.1 Placement and instantiation
 
-`Code` lives in `cranelisp-backend/src/code.rs` (Decision 41 amends Decision 35). int re-exports for session-boundary instantiation:
-
-```rust
-pub use cranelisp_backend::Code;
-```
-
-`cranelisp-types` exposes only the empty marker traits `CodeStore` / `LinkerStore` (Decision 32) and stays Cranelift-ignorant — Principle 3 protected. Backend is no longer C-blind: it constructs `Code::Jit { jit, ptr }` directly inside `compile_to_module`. The previous `cranelisp-backend → cranelisp-types` boundary widens by one item (`Code` lives in backend now), but the types crate's surface tightens by exactly that one item.
+- `cranelisp-types` keeps `SymbolTable<C: CodeStore, L: LinkerStore>` generic
+  over empty marker traits, so the shared crate never names Cranelift
+  (Principle 3).
+- `Code` lives in `cranelisp-backend` beside `Jit` and `cache::Linker`, the
+  types its variants own. `src/code.rs` re-exports it and pins the session
+  instantiation `SessionSymbolTable = SymbolTable<Code, ()>`; int is the only
+  context that names a concrete `C`.
+- `L = ()`: every cache-hit entry already retains its `Linker` through
+  `Code::Linker`, so no per-table linker store exists.
 
 ### 5.2 Variants
 
-- **`Code::Jit { jit: Arc<Jit>, ptr: *const u8 }`** — fresh-build code from a `compile_to_module` invocation. The `Arc<Jit>` is the retention root for JIT-mmap'd executable pages; `ptr` is the per-symbol entry point. Per Decision 41's per-symbol cardinality, each `compile_to_module` call defines exactly one symbol — so each `Arc<Jit>` clone is owned by exactly one entry, not shared across batched defines. (Multi-symbol modules are processed by N independent `compile_to_module` calls.)
-- **`Code::Linker { linker: Arc<Linker>, ptr: *const u8 }`** — cache-hit `.o`-mapped code. The `Arc<Linker>` is the retention root for mmap'd code regions; `ptr` is the linker-resolved per-symbol address. All entries from one cache-hit `.o` share the same `Arc<Linker>` clone.
+- **`Code::Jit(Arc<Jit>)`** — fresh-build code. One `Jit` serves one compile
+  batch ([persistent-workers §4.5](persistent-workers.md#45-per-batch-jit-not-per-worker-decision-31));
+  int wraps it in an `Arc` after `compile_to_module` returns and attaches one
+  clone to every entry the batch compiled.
+- **`Code::Linker(Arc<Linker>)`** — cache-hit code mapped from one `.o`; every
+  entry restored from that object shares the clone.
 
-**Mixed-lineage modules are first-class**: a REPL session that loads cached `.o` for module `M` (entries hold `Code::Linker`) and then evaluates `(defn foo …)` in `M` (the new entry holds `Code::Jit` from a fresh batch) is a normal mixed state. The variant choice lives per-entry; there is no "cache mode" vs "JIT mode" discriminator on the symbol table.
+`Code` carries lifetime only. Callable addresses live in the module's GOT,
+which is their single source of truth.
 
-### 5.3 Reclaim — the per-symbol JIT story (Decision 31, amended by Decision 41)
+One enum keeps mixed lineage ordinary: a module restored from cache and then
+extended at the REPL holds both variants, and no table-level "cache mode"
+exists. Do not split the carrier into a second per-entry field, a `dyn`
+store or a per-backing session; each reintroduces two retention disciplines
+for one fact.
 
-Cranelift 0.116 leaks per-function memory on default `Drop` (`cranelift-jit/src/memory.rs:269-276` does `mem::forget` to preserve fn-pointer validity). Reclaim is necessarily per-JIT, gated by the `unsafe JITModule::free_memory()` safety contract: *"none of the `fn` pointers are called afterwards"*. We satisfy this by:
+### 5.3 Lifetime and reclaim
 
-1. Wrapping `JITModule` in our `Jit` wrapper with a custom `Drop` that calls `unsafe free_memory()` once.
-2. Refcounting `Jit` via `Arc`, with one `Arc<Jit>` clone per `Code::Jit { jit, ptr }` entry. With Decision 41's per-symbol cardinality, that's one clone per entry, no sharing.
-3. Reclaim follows the last owner. A redefinition does **not** free the replaced body: every retaining publication path moves the displaced `Code` into the session retention pool, because a detached strand or heap closure may still execute it (`session-transaction.md` §6). Its pages are reclaimed at session end, or at replacement only on the two non-pooling paths §6.1 there names.
+- `Jit`'s `Drop` calls `JITModule::free_memory()` once, so pages unmap only
+  when the last `Arc<Jit>` clone drops. `Code::Linker` behaves the same for a
+  mapped object.
+- The table entries are the retention roots. There is no session-side JIT or
+  linker pool; `kept_dlls` remains because platform DLLs are session-scoped
+  and hold their own GOT slab.
+- A displaced body is not freed at replacement. Every retaining publication
+  path moves the displaced owner into the session retention pool, because a
+  detached strand or heap closure may still execute it
+  (`session-transaction.md` §6). The two non-pooling paths that section names
+  are its falsifier.
+- The eval wrapper `__expr` is an ordinary entry of its turn's batch. Its owner
+  keeps the pages mapped through execution and through the result's release
+  (`result-owner.md`); its replacement follows the same displacement rule.
+- A persistent per-worker JIT (withdrawn Decision 28) must not return: it
+  coalesces every batch a worker ran and defeats reclaim.
+- No current test observes per-JIT reclaim.
 
-**Carry-forward invariant** (typecheck's defn re-registration upsert, Wave 3b discovery; the S64 typecheck program module is now Git history and the seam needs re-anchoring against HEAD): `register_defn_signature` clones the existing `code: Option<C>` forward into the rebuilt entry on REPL upsert. Without this, mid-typecheck `Arc<Jit>` drop would call `free_memory()` on JIT pages still referenced by the GOT slot before the new code address is written. This is the fix that made `C: Clone` a `CodeStore` super-bound (Decision 32 Wave 3 close).
+### 5.4 Access discipline
 
-**Eval lifetime**: each REPL expression compiles its temp closure on a fresh `JITModule` wrapped in `Arc<Jit>`; the Arc reclaims when the trampoline returns and the value is consumed (per pipeline-v4 §6.2 + facade invariant 6).
-
-**Three scenarios summary**:
-
-| Scenario | Module | Lifetime | Reclaim trigger |
-|---|---|---|---|
-| REPL eval | Fresh `JITModule` for `__expr` | Per-eval | Custom `Drop` on `Jit` after value consumed |
-| Defn JIT (per-symbol) | Fresh `JITModule` per `compile_to_module` | `Arc<Jit>` per entry | Last `Arc<Jit>` clone drops — at session end for a pooled displaced body |
-| Object | `ObjectModule` | Per compile batch | Plain `Drop`; no executable memory to reclaim |
-
-No current test observes per-JIT reclaim; the former Decision 31 Scenario 2 reclaim test was removed.
-
-**Decision 28 retraction**: the older "per-worker persistent JIT" framing (Decision 28) was retracted by Decision 31 — long-lived per-worker JIT coalesces batches and defeats Scenario-2 reclaim. Don't perpetuate.
-
-### 5.4 Code accessor discipline
-
-Every read site that needs the code address calls `code.ptr()`, which variant-matches and returns the inner `*const u8`. The handful of sites that need the lifetime root (JIT-entry registration; Linker-pages observation) variant-match explicitly. `Code: Send + Sync` is `unsafe`-impl'd; the raw pointer is an integer handle into pages the Arc keeps alive. Cited principle: P7 (single accessor — one variant-uniform code-pointer access path).
+- Read a callable address from the GOT slot, never from `Code`.
+- Consult `Code` only for compiled-code presence (introspection and codegen
+  target selection) or to pair a retention root with an address that must
+  outlive a call, as the result owner does (§7.4).
+- `Code: Send + Sync` is `unsafe`-implemented in backend: after finalisation
+  the carrier is only cloned and dropped.
 
 ---
 
@@ -593,62 +607,155 @@ The scheduler maps these to readiness states; waiters unblock when the correspon
   - Only public prelude bindings are reachable as bare names.
   - `/imports` lists prelude-provided names in a separate `Prelude (implicit)` group when
     the bit is ON.
+  - `SymbolTable.imports` records only user-authored `(import …)` forms. The implicit
+    prelude import is never recorded there: source regeneration and duplicate-import
+    warnings reason about what the user wrote. Its resolved effect lives in the
+    module's name candidates. `writer_does_not_record_implicit_prelude_in_imports`
+    pins this.
+
+### 6.6 Pass-1 quote shield
+
+Pass-1 expansion runs before the frontend fold desugars quotation, so without a
+shield a macro-call-shaped list inside quoted data — `(defn f [] '(m x))` — would be
+expanded and silently change a runtime value. `expand_scoped` therefore handles the
+reader-quote family before binding-form or macro-head recognition:
+
+- **Quote:** `(quote X)` is returned verbatim, with no descent.
+- **Quasiquote:** the template is walked at depth 0 and held verbatim except the body
+  of a live `unquote`/`unquote-splicing`, which is an ordinary expression position and
+  re-enters `expand_scoped`. A nested `quasiquote` raises the depth; an
+  `unquote`/`unquote-splicing` under it lowers the depth and stays shielded.
+- **Quote under a quasiquote is not a boundary.** Inside a quasiquote template a
+  `(quote …)` is an ordinary list, so `` `(quote ~x) `` still expands `~x`. This
+  matches the fold.
+- **Recognition is structural and shared.** Every walk classifies the family through
+  `cranelisp_types::quote_head`, the fold's own test, and consults neither lexical
+  shadows nor the macro resolver. The qualify walk carries the same shield
+  (`expansion-qualification-scope.md` §2.4). A second classifier or a different depth
+  rule would let shield and fold disagree, double-desugaring or expanding a subtree.
+- The shield raises no quotation diagnostic; the fold owns them, including
+  unquote-splicing at the top level of a template. The macro expansion-depth limit
+  still applies inside a live unquote.
+
+The interaction rows, including nested-depth agreement, are in
+`tests/spec_09_macros.rs`.
+
+### 6.7 Public candidate exposure — the export-closure gate
+
+A module never accepts a public cross-module name candidate outside its declared export
+closure `D(M)` (safety register R7).
+
+- **One gate.** `imports::check_exposed_candidate_closure` admits a candidate that is
+  private, whose canonical source is the destination module, whose local name is in
+  `D(M)`, or whose `D(M)` is not yet recorded. It rejects any other public
+  cross-module candidate. The rejection is a diagnosed internal-invariant error in every
+  build, naming the module, name and source edge; it never aborts the session.
+- **Why the destination's declared exports.** A provider-existence test cannot see the
+  historical phantom: `primitives/bit-and` is a genuine public primitive, so a phantom
+  `bit-and → primitives/bit-and` in `prelude` names a real provider. What makes it
+  invalid is that `prelude` never declared `bit-and` (Principle 26).
+- **`D(M)`** is recorded from `M`'s own `(export …)` specs into
+  `SharedState.declared_exports`. It is session-side, unserialized and separate from
+  `symbol_tables`, so reading it never re-enters a shard held by a write guard. Every
+  route reads `D(M)` before taking the destination's write guard.
+- **Routes.** Import installation, export installation, prepared publication and staged
+  publication validate the complete candidate batch before mutating the table or
+  publishing a GOT change. One rejected candidate rejects the batch.
+- **Bindings are not closure-checked.** A module's own definitions are exported by
+  `spec/08-modules.md` §8.4; cross-module exposure exists only as a name candidate.
+- **Session-initialization seams are named legal skips**: synthetic-module bootstrap, the
+  `PRIMITIVES_TABLE` mount and platform-DLL registration. They run before any worker
+  exists or install only canonical own definitions. Bootstrap's skip is proven:
+  `bootstrap_public_candidate_exposures_are_self_aliases_or_private` sweeps every seeded
+  candidate through the gate under an empty `D(M)` and plants a forbidden candidate that
+  must reject. Bootstrap's four `macros` edges to `primitives` are private, not public
+  re-exports.
+- **Candidate coexistence is not this gate's concern.** Importing distinct canonical
+  sources is permitted; typecheck selects among candidates at the use site.
+
+Evidence limit: the writer that produced the S109–S114 phantom was never identified,
+and the phantom has not been re-induced since the gate landed. The gate converts any
+recurrence into a located diagnostic; `tests/index_race_foreground_0604.rs` is a
+no-regression sweep, not attribution. A firing is a `dev`(src) defect routed through
+`qa` for attribution. The unit cells are listed on the R7 row of
+`design/arch/safety-invariants.md`.
 
 ---
 
 ## 7. Cache + linker orchestration (Decisions 34, 37)
 
+The cache artefact is a module's own symbol table: `.meta.json` is the serialized
+`SymbolTable<(), ()>` stamped with the schema version, beside the module's `.o`.
+The nice worker writes both from `symbol_tables` alone; no parallel store of
+programs or structures feeds it. `design/backend/module-caching.md` owns the
+format and its versioning; int stamps and consumes it.
+
 ### 7.1 Cache-hit flow inside `register_module`
 
-Per Decision 37 — cache-hit decision lives INSIDE the recursive `register_module` flow, not in a parallel codepath. The pre-Sprint-58 `try_cache_hit_load` path (a parallel orchestrator) is deleted.
+Per Decision 37 the cache-hit decision lives inside the recursive dependency flow,
+not in a parallel orchestrator. `process_form/cache_restore.rs::try_cache_hit_load`
+is its one entry point. Every dependency handler (import, export, `mod`, implicit
+prelude) calls it before falling through to a fresh build, and it recurses into the
+restored module's own imports, so cached and fresh modules mix in any combination.
 
 ```text
-register_module(M):
-  if <cache>/M.meta.json exists and schema_version matches:
-    deserialise SymbolTable<(), ()> → into_concrete::<Code, ()>() → install
-    notify_typecheck_done_from_cache(M)            // enqueues LoadObject(M)
+register dependency M:
+  if try_cache_hit_load(M):           # valid .meta.json + .o, decoded and installed
+    re-resolve M's platform declarations
+    register M with the scheduler as typechecked-from-cache  # enqueues LoadObject(M)
+    recurse into M's imports          # cache-load or register fresh, per dependency
   else:
-    parse → typecheck → install                    // fresh build path
-    notify_typecheck_done(M)                       // enqueues Jit per defined symbol
-  for each import in symbol_tables[M].imports:
-    register_module(import.module_path)            // recursive
+    register M for a fresh typecheck
 
-codegen_worker:
-  match work:
-    Jit(fq)           => compile_to_module(scope, &[fq.symbol], ..., jit.jit_module())
-                         // backend writes Code::Jit directly via SymbolTable::write_code; stores GOT slot
-    LoadObject(M)     => Linker::load_object(read M.o) → for each defined symbol s:
-                         ptr = linker.get_symbol(bare_name(s)) → write Code::Linker { linker, ptr } → store_slot
+codegen worker, LoadObject(M):
+  map M.o through cache::load_cached_object -> per-target addresses
+  store each address in its GOT slot
+  attach Code::Linker(shared Arc<Linker>) to each restored entry
 ```
 
-**Order-independence rationale**: typecheck phase pins the GOT slot LAYOUT (slot indices in `SymbolTable.symbols[s].got_slot`); codegen workers fill slot CONTENTS in any order. No cross-module ordering required for codegen — each module is a self-contained operation on its own SymbolTable + its own JIT (or `.o`).
+- **Order independence.** Typecheck, fresh or restored, fixes each module's GOT slot
+  layout. Codegen fills slot contents, and cross-module calls read another module's
+  GOT at run time, so modules load in any order.
+- **No swallowed failures.** A restored callable whose address the `.o` does not
+  define is a hard load error. A published NULL slot would be reachable from its
+  callers.
+- **A failed platform re-resolution is a cache miss.** If a recorded DLL cannot be
+  loaded, the restore is abandoned and the module takes the fresh path, which reports
+  the load error normally.
+- **Restoration parity.** A restored world must match a fresh one
+  (`cache-hit-loading.md` §0).
 
-**No swallowed failures**: a `LoadObject` worker that finds `linker.get_symbol(name) == None` MUST error out with a `CacheLoadError`, not silently push to `loaded_symbols`. The pre-Sprint-58 swallowing was a Decision-31 safety-invariant violation (slot resolves to NULL but worker reports success).
+### 7.2 Backend entry points
 
-### 7.2 Backend's three return shapes (post-Decision-41)
-
-Per `facades/backend.md` (and Decision 41): backend exposes three entry points — `compile_to_module<M: Module>` for fresh build, `load_object` for cache-hit, `compile_to_object` for `--link`. With Decision 41:
-- `compile_to_module` returns `Result<(), CompilationError>` and writes `Code::Jit` directly via `SymbolTable::write_code(&self, sym, code)`. Per-symbol cardinality (one defined-symbol per call); no defined-symbol set traversal inside backend.
-- `load_object` returns `Result<LinkerArtefact, CompilationError>` carrying `Arc<Linker>` + symbol-pointer map; int constructs `Code::Linker` per symbol.
-- `compile_to_object` returns `Result<ObjectArtefact, CompilationError>` for `--link` mode; int's cache writer + linker driver consume it.
-
-Backend's `CompilationError` lives in `cranelisp-backend` (post-FIXME 0100 Phase 2, originally `cranelisp-types`). The `SymbolNotCompilable` variant lets backend error out with structured information when an entry is invariant-violated rather than panicking.
+- `compile_to_module` is generic over the Cranelift `Module`. It serves the JIT for
+  fresh builds and the object module for the nice worker's `.o` and `--link`. It fills
+  GOT slots and returns compilation artefacts. It never owns the `Arc<Jit>`; int
+  attaches `Code::Jit` afterwards (§5.2).
+- `cache::load_cached_object` maps a cached `.o` into a `Linker` and returns
+  per-target addresses; int stores the addresses in the GOT and attaches
+  `Code::Linker`.
 
 ### 7.3 Cache schema versioning (Decision 34)
 
-`SymbolTable.schema_version: u32` lives at the top of the serialised shape. Cache-load checks it before accepting state; mismatch → `CacheError::SchemaVersionMismatch { found, expected }` and treats the entry as stale. The constant lives in `crates/cranelisp-backend/src/cache/mod.rs` (`/backend`-owned; bumps every time the serialised shape changes). int's worker cache-write path emits the field. Old caches (pre-S58) lack it → default 0 → version-mismatch → reject. Cited principles: P5 (testability — explicit version → explicit failure mode), P8 (the cache envelope IS the target shape).
+The nice worker stamps `SymbolTable.schema_version` with backend's
+`CACHE_SCHEMA_VERSION` on every write. On load, a version or build-id mismatch is a
+`CacheStale` reason like any other: the entry is treated as missing, the module is
+rebuilt fresh and the next write replaces the stale files. Staleness produces no
+user-visible message. Backend owns the constant and its bump policy.
 
 ### 7.4 Linker retention
 
-Result drop-glue addresses obey the same retention rule as callable code. A
-fresh-JIT `DropGlueArtifact.jit_address` is usable only while paired with the
-existing `Code::Jit(Arc<Jit>)`; a cache-hit symbol returned by
-`Linker::get_symbol` is usable only while paired with `Code::Linker`'s
-`Arc<Linker>`. The pair is carried by the armed program-result owner through
-display/exit conversion and the glue call. Linked startup needs no host `Arc`:
-the system-linked text remains live until process exit. See `result-owner.md`.
-
-`Code::Linker.linker: Arc<Linker>` is the per-symbol retention root. When the last `Code::Linker` referencing an `Arc<Linker>` drops (last entry from one cache-hit `.o` evicted/redefined), the mmap'd pages reclaim. Symmetrical with Decision 31 Scenario 2 (per-redefinition reclaim) but at module granularity. `SharedState.kept_linkers` is dissolved (Sprint 58 Wave 3); only `kept_dlls` remains as a session-global side store (orthogonal — DLLs are session-scoped, not per-module).
+- Every entry restored from one `.o` holds a clone of the same `Arc<Linker>`; the
+  mapped pages unmap when the last clone drops (§5.3).
+- Cache-hit owner publication drops a displaced owner rather than pooling it. It is
+  one of the two non-pooling paths `session-transaction.md` §6.1 names.
+- Result drop-glue addresses follow the same rule as callable code. A fresh-JIT
+  `DropGlueArtifact.jit_address` is usable only while paired with its
+  `Code::Jit(Arc<Jit>)`; a cache-hit address from `Linker::get_symbol` only while
+  paired with `Code::Linker`'s `Arc<Linker>`. The armed program-result owner carries
+  the pair through display, exit conversion and the glue call. Linked startup needs
+  no host `Arc`, because system-linked text stays mapped until process exit
+  (`result-owner.md`).
 
 ---
 
@@ -974,8 +1081,8 @@ The fourth sink (introspection) is a per-key store, not a ring; it serves slash 
 | Simplicity (P6) | 2026-04-23 src audit (Git history), F1+F2+F5 are the operative complexity gaps. The 38/39/41 simplification removes three dimensions (per-form RefMut, `module_sources`, the int-side post-loop unpacking after `compile_to_module`). The S64 module decomposition (§3.3) closes the rest. Decision 35/41's `Code` enum is single-cleavage Cranelift exposure — one site, not scattered. |
 | Maintainability (P1, P2) | Audit's "split `session_v4.rs` by responsibility" is the centrepiece. Per-symbol mutability + `process_form`-as-sole-crossing closes F3. The three-instance observability pattern (alongside introspection) closes F7's "long historical narratives in hot paths" by routing rationale into `design/int/observability.md`. |
 | Observability | §11. Four sinks; one pattern; all production-batch zero-cost. The four-pattern uniformity is a deliberate design choice — once a developer learns the IO-trace shape, the GOT-trace and scheduler-trace shapes are mechanically the same. |
-| Concurrency-safety (P4) | §10 invariants. Decision 31 reclaim safety invariant ("Arc-refcount-zero means no fn pointer reachable") is upheld by the GOT swap discipline + the language-level "function values are heap closures, not raw code pointers" rule. Per-symbol mutability discipline removes the per-form whole-module write lock. Decision 41's per-symbol JIT cardinality eliminates batch-level Arc-clone aliasing. |
-| Performance (P6) | Per-symbol JIT (Decisions 31 + 41) is the chosen target — long-lived per-worker JIT (Decision 28) was retracted because it coalesces batches and defeats reclaim. Persistent worker pool (Decision 27) avoids per-module thread spawn cost. Cache-hit-via-`LoadObject` skips codegen entirely on cache-hit. Production batch zero-overhead introspection (`shared.introspection == None`) and zero-overhead observer ring buffers (no observer registered → relaxed load + null-check branch). |
+| Concurrency-safety (P4) | §10 invariants. Decision 31 reclaim safety invariant ("Arc-refcount-zero means no fn pointer reachable") is upheld by the GOT swap discipline + the language-level "function values are heap closures, not raw code pointers" rule. Per-symbol mutability discipline removes the per-form whole-module write lock. |
+| Performance (P6) | One JIT per compile batch (§5.2); a long-lived per-worker JIT (withdrawn Decision 28) coalesces batches and defeats reclaim. Persistent worker pool (Decision 27) avoids per-module thread spawn cost. Cache-hit-via-`LoadObject` skips codegen entirely on cache-hit. Production batch zero-overhead introspection (`shared.introspection == None`) and zero-overhead observer ring buffers (no observer registered → relaxed load + null-check branch). |
 | Testability (P5) | `process_form` is a free function over `&SharedState` — testable with a synthetic SharedState. The scheduler's wait/notify primitives are unit-testable in isolation. `Introspection` populate paths are conditional on a single discriminator — easy to assert in integration tests. The observer contracts are unit-testable: register a captured-events observer; assert events fired in the expected order. |
 
 At the typed result exit, one owner state machine accepts three keyed
@@ -1031,7 +1138,7 @@ carries the rule; this list is the review checklist.
     mailbox, `SharedState`/`ModuleState`, parking record, cache field or source
     continuation (`s117-conformance-recovery.md` §1.1.3).
 15. **A binding-shaped closure gate** — any exposure predicate over `Binding`
-    beside the candidate-shaped gate (`prelude-table-write-isolation.md` §2.4).
+    beside the [candidate-shaped export-closure gate](#67-public-candidate-exposure--the-export-closure-gate).
 16. **A bootstrap lifecycle panic** — `unwrap`, `expect` or `unreachable!`
     asserting a fallible lifecycle transition during session construction.
 17. **Dependent recompilation on an ordinary redefinition** — re-typechecking,
@@ -1050,10 +1157,10 @@ Active Decisions affecting int (operative this sprint or constraint-bearing):
 | Decision | Headline | Status for int |
 |---|---|---|
 | 30 | Form-by-form scheduler deadlocks on mutual imports | int's scheduler exhibits the deadlock; workaround via `discover-tests` |
-| 31 | One `JITModule` per batch; `Arc<Jit>` on entry; custom Drop | Active; verified by jit-reclaim tests; per-symbol cardinality post-Decision 41 |
-| 35 | `Code` enum location (operative; amended by Decision 41) | `Code` lives in `cranelisp-backend` post-Decision 41; int re-exports |
+| 31 | One `JITModule` per batch; `Arc<Jit>` on entry; custom Drop | Operative (§5.3); no current test observes reclaim |
+| 35 | `Code` owns lifetime only; addresses live in the GOT | `Code` lives in `cranelisp-backend`; int re-exports it and instantiates the session table (§5.1) |
 | 40 | `trace.rs` + `io_trace.rs` relocate to int; runtime exposes `IoObserver` | Pre-implementation; FIXME 0103 |
-| 41 | `compile_to_module` per-symbol JIT cardinality; backend writes `Code` directly | Pre-implementation; amends 31 + 35; FIXME 0098 (typed errors) bundles |
+| 41 | Backend publishes slot addresses and returns artifacts | Operative for slot publication and artifacts; int attaches `Code` (§7.2). The compile batch, not the symbol, is the JIT unit (§5.2) |
 | 42 | `PlatformError` adopts `ErrorLocation`; lives in `cranelisp-types` | Pre-implementation; FIXME 0104 |
 
 Legacy Decisions (outcome embodied in architecture; located through [the decision index](../arch/decisions/README.md)) — int-specific embodiments include 9, 21, 22, 23, 24, 25, 26, 32, 33, 34, 36, 37, 38, 39. Each of these is "as-built" inside int today; the source code reflects the commitment.
@@ -1194,11 +1301,8 @@ dev-direct disposition:
   slots (defn/fn params, let names, match var-patterns) by sharing the expander's
   `is_binding_form`/`params_scope`/`pattern_binders` enumeration. Wave-1 of the F8
   three-wave chain (int-first, strict; then frontend reject re-lands, then cells).
-- **FIXME 0604** (foreground prelude-table write race, ships this sprint) —
-  `prelude-table-write-isolation.md`. Foreground writer census + ONE
-  terminal-table export-closure chokepoint (S113 `assert_prelude_closure`
-  `debug_assert!` promoted to an unconditional diagnosed error). The poison
-  consumer `insert_detecting_ambiguity` is CORRECT and must not be touched.
+- **FIXME 0604** (foreground prelude-table write race) — closed structurally by
+  the export-closure gate, §6.7, which also records its evidence limit.
 - **"in expansion of" on the def/const finalize path** (S113 carry) —
   `macro-diagnostic-reanchoring.md` §2.1. Second application site of the existing
   pure re-anchor transform at the `check_program_compat` finalize seam

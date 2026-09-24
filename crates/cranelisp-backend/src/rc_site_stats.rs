@@ -3,8 +3,7 @@
 //!
 //! The aggregate `rc_nonatomic`/`rc_atomic` split (B3.3, `[RC_STATS]`) says *how
 //! many* RC ops stay atomic, but not *where*; 0526/0528 need the *sites* of the
-//! residual atomic ops to target the right cells (I3, `tests/plan/
-//! s105-residual-attribution.md` §1.1). This module is the structural **twin** of
+//! residual atomic ops to target the right cells . This module is the structural **twin** of
 //! `compiler::control_flow::utilization`'s `[SPARK_SITE_STATS]` registry: a gated,
 //! compile-time `BTreeMap` populated at the confinement-decision seam
 //! (`FnCompiler::rc_atomicity_for_node`, the live `node_confined` consumer) and

@@ -9,7 +9,7 @@
 
 ## §0. Context and scope
 
-Cranelisp ships two codegen *cardinalities* over **one** Cranelift codegen path: `compile_to_module::<JITModule>` (REPL / `--run`, per-symbol) and `compile_to_module::<ObjectModule>` (`--link`, per-module → `.o` → system linker → standalone exe). The full pipeline — frontend → typecheck → **monomorphisation** → RC insertion → codegen — is stable and green (S85: `--workspace` 2752/0; S86: 2812/0). The long internal-refactoring run is behind us; Phase H is the first genuinely-new-capability work.
+Cranelisp ships two codegen *cardinalities* over **one** Cranelift codegen path: `compile_to_module::<JITModule>` (REPL / `--run`, per compile batch) and `compile_to_module::<ObjectModule>` (`--link`, per-module → `.o` → system linker → standalone exe). The full pipeline — frontend → typecheck → **monomorphisation** → RC insertion → codegen — is stable and green (S85: `--workspace` 2752/0; S86: 2812/0). The long internal-refactoring run is behind us; Phase H is the first genuinely-new-capability work.
 
 This document designs `--release`: **the tier for final runtime space and time efficiency.** The headline framing (§2) is deliberate: `--release` is *not* "the LLVM backend" — it is an **efficiency tier** of which LLVM codegen is one component, alongside GOT-elision/direct-calls, whole-program optimization (LTO), and beyond-RC memory management.
 

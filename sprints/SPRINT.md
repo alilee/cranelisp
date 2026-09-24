@@ -1,6 +1,6 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. Latest checkpoint: `b66d3615`. The compiler corrections,
+**Status:** PHASE 5. Latest checkpoint: `fc49541f`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
 Document consolidation continues: the last integrated check has 331 findings
@@ -3706,3 +3706,44 @@ exec-flow-runtime still depicts Par/rayon, runtime SymbolTable effect lookup
 and omits Select/EffectPoll/Launch arms. Arch flagged these outside the current
 IO-release correction, not as newly reproduced runtime defects. Backend ring2
 pre-fix history and unrelated existing findings remain for its next cleanup.
+
+### Checkpoint fc49541f and historical design/evidence batch (2026-09-24)
+
+User requested commit and continuation. Committed75 files (excluding NOTES and
+.agents) asfc49541f. Baseline289 document findings, corpus552.
+- design Opus5.5/high `8cf8e3e6-843b-4774-adb4-26785a31fc78`: five
+  integration design notes assessed against canonical current homes.
+- qa Opus5.5/high `9d7d0e4c-7178-48a4-8f7c-2fd4370a713d`: historical measurement/attribution
+  records and read-only S61 evidence-retention assessment; exact handoffs to root.
+No source/API/spec changes dispatched; still Phase5.
+
+Batch completed: all5 int notes and5 QA records retired after extraction;
+FIXME0795 discharged against trait-prefix enrollment and session-transaction2.5.
+S61's11 frozen evidence files retired to byte-exact Git recovery atfc49541f;
+incoming links now cite that checkpoint. User's historical-retention ruling
+authorizes the Git form, and the raw evidence remains recoverable.
+
+Int contracts now live in int.md5/6.5/6.6/6.7/7 and session-transaction2.5.
+The JIT-unit and Code-shape descriptions and cache-entry/error descriptions
+were corrected against source. Arch Opus5.5/high
+`7cece6e3-f0e4-49c6-b96a-afeeb06097d1` corrected Decision41 and the same
+current-state sentence in the deferred LLVM proposal; no LLVM work authorized.
+Root applied the exact backend rustdoc cardinality and other-owner remaps.
+
+QA retained3 unclassified leads in PLAN's active allocation: unfinished P24
+classification legs, ungraded U-G6 zero-cost-off claim, and the old S109
+capacity-window pass/fail/pass observation. None became a new defect or test
+allocation. R7 attribution limits and unmeasured reclaim limits remain explicit.
+The same-turn cache owner-drop limit remains at session-transaction6.1.
+
+Final integrated checker289→247 across539 corpus documents, zero introduced
+identities (.local/s122-int-qa-final-check.json). Net Markdown reduction about
+33,300 words including destination growth. Source/test changes are citation
+and comment repairs only; no runtime/API/schema/spec change and no suite rerun
+needed. Diff whitespace clean; NOTES unchanged; .agents excluded. New work
+remains uncommitted afterfc49541f.
+
+Next candidates: macro-resolver-impl/cache-hit-loading and int.md16 history;
+remaining backend ring-era design prose. Arch's unverified wording comparison
+of persistent-workers4.5's fresh eval JIT and int.md5.3's turn batch is retained
+for that int follow-up; no reclaim correctness claim is inferred.

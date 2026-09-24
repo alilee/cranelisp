@@ -76,7 +76,7 @@ pub(crate) fn should_regenerate(symbol_table: &crate::code::SessionSymbolTable) 
 /// `symbol_table.{submodules, platforms, imports, exports}`. The implicit
 /// prelude `(import [prelude [*]])` is suppressed by `generate_imports`
 /// itself — `imports` records only user-authored forms (CP3 / option (b),
-/// see `design/int/symbol-table-cache.md` §3) but the filter remains as a
+/// see `design/int/int.md` §6.5) but the filter remains as a
 /// belt-and-braces guard.
 pub fn generate_module_source(
     symbol_table: &crate::code::SessionSymbolTable,

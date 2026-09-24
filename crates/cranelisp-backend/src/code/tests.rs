@@ -1,6 +1,6 @@
 use super::*;
 
-// spec: design/int/symbol-table-generics.md §3 Layer 3 + Decision 31
+// spec: design/int/int.md §5 Layer 3 + Decision 31
 //       Scenario 2 reclaim primitive.
 //
 // Construct `Code::Jit(Arc<Jit>)`; assert `Arc::strong_count` semantics:
@@ -44,7 +44,7 @@ fn code_enum_jit_variant_carries_arc_jit() {
     );
 }
 
-// spec: design/int/symbol-table-generics.md §2.1 — Code enum unifies
+// spec: design/int/int.md §5 — Code enum unifies
 //       fresh-build (Jit) and cache-hit (Linker) into one shape.
 #[test]
 fn code_enum_linker_variant_constructible() {
@@ -75,7 +75,7 @@ fn code_implements_code_store() {
     _requires_code_store::<Code>();
 }
 
-// spec: design/int/symbol-table-generics.md §2.1 — `Code::Linker` carries
+// spec: design/int/int.md §5 — `Code::Linker` carries
 //       `Arc<Linker>`; one cache-loaded `.o` batch backs MULTIPLE `Def`
 //       entries (each its own `Code::Linker` clone), all sharing one
 //       `Arc<Linker>`. The batch's mmap'd regions reclaim only when the

@@ -92,6 +92,32 @@ REPL §18.1.2). A caller-free language-type change takes a fresh slot and may
 change modes. ACT-0953 carries the future decoupling of slot ABI from ownership
 inference.
 
+### 2.5 Trait-implementation redefinition
+
+A same-type re-`impl` takes effect (`spec/05-definitions.md` §5.4.5). It is an
+ordinary callable redefinition of the implementation's method bodies and uses
+the same guard, gate, slot policy and retention; there is no impl-specific
+admission or commit path (Principles 7 and 11).
+
+- Trait conformance, checked before anything publishes, fixes each method's
+  language type for an unchanged trait. A conforming re-impl therefore
+  classifies `AbiPreserving`, subject to the §2.4 ownership-ABI check, and its
+  bodies patch the existing slots. A non-conforming body is rejected with the
+  prior implementation still live.
+- The codegen batch must recompile every re-staged method body even though
+  publication retained a prior owner. `worker::derive_codegen_batch` forces
+  every concrete implementation body of the authored trait into the batch.
+  It selects them from the table, not from the impl form's written methods.
+- Deriving the set from the form under-approximates it. When a method changes
+  from explicit to default, the synthesised default body never appears in the
+  form, and the stale override would keep dispatching (`spec/07-traits.md`
+  §7.1.5). Recompiling a sibling implementation of the same trait costs a
+  compile and changes nothing observable.
+- The discriminating unit cell is
+  `derive_codegen_batch_enrolls_omitted_default_method_of_the_impl`; an
+  explicit-method cell passes under either derivation. End-to-end behaviour
+  is `tests/impl_redefinition_dispatch.rs`.
+
 ---
 
 ## §3. Reverse edges

@@ -121,7 +121,7 @@ feeds ([resolve home before enumeration](resolve-home-enumeration.md)), and
 typecheck's `find_trait_method_decl`, a method-name-to-trait enumeration that
 `resolve` cannot answer. Each prelude-side read keeps public names only. A new
 reader outside these classes is a review finding.
-[Prelude table write isolation](../int/prelude-table-write-isolation.md) owns
+[Prelude table write isolation](../int/int.md#67-public-candidate-exposure--the-export-closure-gate) owns
 the binary-side writer discipline.
 
 ### 3.5 REPL introspection

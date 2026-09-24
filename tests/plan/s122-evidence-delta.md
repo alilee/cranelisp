@@ -727,7 +727,7 @@ are now both satisfied; its design owner receives that exact closure handoff.
 0604's explicit no-flip retirement ruling already discharged executing guard
 evidence; its remaining design census rows and the imports mirror now exist,
 including all three session-init seams and the Private/intra-module corrections.
-Canonical homes are `design/int/prelude-table-write-isolation.md` §§2.1,2.4,4.
+The canonical home is `design/int/int.md` §6.7.
 0740/0793's design obligations are satisfied. The one remaining retirement rider
 is test-owned commentary in `tests/index_race_foreground_0604.rs`: replace the
 UNLOCATED/future-fix/scheduling-attribution banner and assertion prose with the

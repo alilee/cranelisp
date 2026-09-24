@@ -187,7 +187,7 @@ naming the **written** head/form (the origin form int holds), so the user sees
 both the real rule (frontend's text) and where they typed the offending form. int
 never reconstructs or second-guesses the frontend message.
 
-## 5. Sequencing (per the 0613 quote-shield precedent)
+## 5. Sequencing
 
 The frontend reject (W3) is **inert-safe** without this seam — a qualified
 macro-route head still rejects (correctness), only its location/name degrade. So
@@ -221,8 +221,6 @@ e2e/provenance-through-expansion assertion (BD-M2/M3) is `/qa`+`/testing`'s.
 - `design/frontend/binder-head-reject.md` §4 — the paired frontend reject + the
   rejected deep fixes in that section (span-preservation breaks span-uniqueness; per-form
   special-casing violates P19).
-- `design/int/quote-shield.md` — the 0613 frontend-fold + int-shield pairing this
-  mirrors (one logical wave, two `/dev` surfaces).
 - `design/arch/backend-keyed-consumer.md` §1.1 — the span-uniqueness/carrier
   invariant that forbids preserving real spans through marshal.
 - `src/worker.rs:73` (`build_program_compat`) + `src/expander.rs:707`

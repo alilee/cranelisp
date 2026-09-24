@@ -511,7 +511,7 @@ without the full pipeline; steps 4–6 integrate; step 7 is the gate.
    20/20 under contention; full suite shows no RED beyond the known intentional
    guards. This is the behavioural gate (Scope 1 "Gate (behavioural)").
    *Seam*: `cargo nextest run` clean; capture a post-fix interleaving/loom artifact
-   alongside the test (the structural successor to `tests/sprint61/race-evidence/`).
+   alongside the test (the structural successor to [S61 dumps in Git](https://github.com/alilee/cranelisp/tree/fc49541f/tests/sprint61/race-evidence)).
 
 **Cross-cutting risk (Principle 6):** `src/scheduler.rs` is the most complex `src/`
 module; a barrier *adds* states. **The mitigation is NOT net-LOC neutrality — that

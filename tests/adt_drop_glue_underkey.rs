@@ -11,8 +11,7 @@
 //   - `adt_drop_glue_name`  (compiler/resolution.rs)   → `runtime/drop_glue_{name}`
 //   - `build_elem_dec_fn`   (compiler/vec_codegen.rs)   → `runtime/vec_elem_dec_{cat}_{name}`
 //
-// Attribution + reachability record: `tests/plan/s111-0633-adt-drop-glue-underkey.md`
-// (REACHABLE, both axes, all three modes). Owner: /dev (backend) — both
+// Glue identity is now single-sourced: `design/backend/transitive-drop-glue.md` §3.1. Owner: /dev (backend) — both
 // under-keys and both `get_name` skips are backend-local; typecheck/mono hand
 // vec codegen a fully-disambiguated `Type::ADT(fqtn, args)` and are not
 // implicated. These REDs flip GREEN when CS-1.1 re-keys BOTH layers on a mangle

@@ -3,8 +3,8 @@
 Owner: `/design` (int). Subordinate to `int.md` (§ the compilation cadence) and to the
 concurrency-isolation lineage `heisenbug-race-closure.md` (S61) →
 `signature-body-prepass.md` (S93). Authored Sprint 110 Phase 3 to record the durable
-cure for **FIXME 0604** (the index-feed phantom-prelude write-race). The attribution of
-record is `tests/plan/s109-attribution-index-feed-race.md`.
+cure for **FIXME 0604** (the index-feed phantom-prelude write-race). Its closure and evidence limit are
+`design/int/int.md` §6.7; the S109 firing record is in the closed S109 sprint record.
 
 > **This is a contract, not a root-cause claim.** The isolation *invariant* below is the
 > design intent the S110 fix must satisfy. Which surviving write violates it is for
@@ -337,8 +337,7 @@ applied to the int live-table trust boundary.
 
 ## Cross-references
 
-- `tests/plan/s109-attribution-index-feed-race.md` — the attribution of record (mechanism,
-  fingerprint, family verdict, the coverage gate 0605).
+- `design/int/int.md` §6.7 — the export-closure gate that closed 0604, with its evidence limit.
 - `design/int/heisenbug-race-closure.md` (S61) → `signature-body-prepass.md` (S93) — the
   isolation-over-undo lineage this contract instantiates for the index feed.
 - `design/int/agent.md §25` — the `/search` importable-index subsystem (R13–R18); §25.5 (the

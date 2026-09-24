@@ -107,9 +107,8 @@ then read tables.
 
 Its invariants are carried by construction, not by prose, in two companion
 documents: `design/int/index-worker-isolation.md` (the background index feed)
-and `design/int/prelude-table-write-isolation.md` (the foreground public-write
-chokepoint, including candidate-batch validation before table or GOT
-publication).
+and `design/int/int.md` §6.7 (the foreground export-closure gate, including
+candidate-batch validation before table or GOT publication).
 
 ### 2.6 Code publication, GOT and retention
 
@@ -196,5 +195,3 @@ single cached-module authority and stack-local cluster state (§2.3).
 - `design/arch/sequences/` — the architectural-altitude cadence diagrams.
 - `design/arch/effect-concurrency.md`, `design/intrinsics/reactor.md` — the
   language-level concurrency axis, deliberately out of scope here.
-- `tests/plan/s109-attribution-index-feed-race.md` — `qa`'s attribution reading
-  of this surface's race class.

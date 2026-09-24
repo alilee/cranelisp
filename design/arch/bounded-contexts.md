@@ -678,7 +678,7 @@ and watcher state cannot cross-contaminate.
   to typecheck, the gap-retry loop, and the choice of publication decisions the
   types table executes ([symbol-table lifecycle](symbol-table-lifecycle.md)).
   Candidate work is isolated until publication
-  ([design](../int/prelude-table-write-isolation.md)).
+  ([design](../int/int.md#67-public-candidate-exposure--the-export-closure-gate)).
 - **Macro execution and source-ordered checkpoints.** The binary implements
   `MacroExpander` and owns the expansion loop that runs before `check_forms`.
   Each direct or expansion-produced `defmacro` is prepared, compiled and
@@ -692,7 +692,7 @@ and watcher state cannot cross-contaminate.
   are not retry state.
   Contracts: [macro availability](macro-availability-model.md),
   [macro expansion ownership](macro-expansion-ownership.md),
-  [quote shield](../int/quote-shield.md).
+  [quote shield](../int/int.md#66-pass-1-quote-shield).
 - **Macro clause ownership is pinned, not inferred.** A clause receives an owned
   argument list and returns an owned result, so the binary clears any inferred
   ownership summary from a synthesised clause before publication; two clauses

@@ -393,7 +393,7 @@ fn install_cached_table(
 /// above, so there is no unresolved type-ref to drive a dependency for — only
 /// the fn-ptr GOT slots (`#[serde(skip)]`) need re-populating. Failures here
 /// are non-fatal at the cache-hit level (we treat them as "platform missing —
-/// fall back to full rebuild" per `symbol-table-cache.md` §6); we abandon the
+/// fall back to full rebuild" per `design/int/int.md` §7.1); we abandon the
 /// cache-hit attempt and let the normal load path retry.
 fn reresolve_cached_platforms(
     ctx: &ModuleCompiler,

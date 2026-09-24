@@ -168,7 +168,7 @@ Pass-1 macro expansion must not rewrite the interior of quoted literals. It hold
 bodies — the ordinary expression positions where a macro call *should* expand —
 tracking nesting depth so a nested quasiquote stays shielded. Without the shield,
 a macro-call-shaped list inside quoted data would be expanded as code: silent data
-corruption. `design/int/quote-shield.md` owns it.
+corruption. `design/int/int.md` owns it.
 
 Both halves recognise the family through the one classifier (§4.1), so "shield
 and fold stay in lockstep" is a property of the code rather than a discipline.
@@ -197,5 +197,5 @@ classes of assertion discriminate different failures:
 
 - `spec/09-macros.md` §9.4 — quasiquote semantics and the expansion rules.
 - `design/arch/interfaces.md` §"Reader-quote structural predicate" — the `QuoteHead`/`quote_head` contract.
-- [quote shield ordering](../int/quote-shield.md#6-ordering-note-binding-on-the-phase-4-wave-plan) — the paired int-side obligation.
+- [Pass-1 quote shield](../int/int.md#66-pass-1-quote-shield) — the paired int-side obligation.
 - `design/frontend/defmacro-synthesis.md` — the sibling synthetic surface.

@@ -386,7 +386,7 @@ fn drop_wakes_parked_worker() {
 // actually finishes loading the .o.
 // ──────────────────────────────────────────────────────────────────────
 
-// spec: design/int/symbol-table-cache.md §3.2 — claim guard does not
+// spec: design/int/int.md §7.1 — claim guard does not
 // pre-set `inmem_done`; only the worker's
 // `notify_inmem_codegen_batch_complete` does.
 #[test]
@@ -477,7 +477,7 @@ fn register_module_cached_no_object_enters_inmem_done_no_jitcodegen() {
     );
 }
 
-// spec: design/int/symbol-table-cache.md §3.2 — wait_inmem_complete
+// spec: design/int/int.md §7.1 — wait_inmem_complete
 // distinguishes "claimed but not done" from "done"; cache-hit worker
 // failure must surface as an error before trampoline runs.
 #[test]
@@ -499,7 +499,7 @@ fn wait_inmem_complete_does_not_pass_on_claimed_but_unfinished_module() {
     );
 }
 
-// spec: design/int/symbol-table-cache.md §3.2 — multiple cache-hit
+// spec: design/int/int.md §7.1 — multiple cache-hit
 // modules can be loaded in parallel without the claim guard letting
 // wait_inmem_complete pass prematurely.
 #[test]

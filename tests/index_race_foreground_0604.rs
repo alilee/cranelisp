@@ -4,15 +4,15 @@
 //! candidate through `check_exposed_candidate_closure` before table or GOT
 //! mutation. Private and intra-module candidates take their explicit arms; the
 //! three session-initialization seams have separate dispositions. The route
-//! census and contract live in `design/int/prelude-table-write-isolation.md`
-//! §§2.1, 2.4 and 4.
+//! census and contract live in `design/int/int.md`
+//! §6.7.
 //!
 //! This retained recipe exercises the historical `num.bits` + prelude fan-out
 //! and refuses the old phantom-write signatures. It is a no-regression sweep,
 //! not proof that the historical race fired in this environment or that its
 //! exact writer was established. The old firing record (16/16 in one
 //! environment and quiet runs elsewhere) remains provenance in
-//! `tests/plan/s109-attribution-index-feed-race.md`. FIXME 0818's contaminated
+//! `sprints/archive/sprint-109.md` §Findings. FIXME 0818's contaminated
 //! probe is an unconfirmed explanatory lead, not attribution of those runs.
 //!
 //! Historical defect provenance: class=shared-state-write-race, observed as a

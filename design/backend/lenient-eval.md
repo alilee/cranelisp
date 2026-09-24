@@ -419,8 +419,7 @@ instrument here.
 - **Check `load1` is near zero before a timed run.** An idle-guard inside a
   sweep defeats itself, because the sweep's own reps keep the machine busy.
 - **Use the rigorous harness only for final acceptance.**
-  `tests/perf/s104_utilization.py` is that harness; its plan is
-  `tests/plan/s104-utilization-measurement.md`.
+  `tests/perf/s104_utilization.py` is that harness; its module docstring states its controls.
 
 The F1–F6 fixtures each isolate one axis: F1 coarse-parallel, F3/F4
 alloc/RC-dense, F5 deep-recursion count, F6 balanced alloc-free compute. The
@@ -889,7 +888,7 @@ The observations below hold these invariants. The traceability band itself is
 | Budget, depth, backoff, inline ferry (§2.8.4, §3.6.1, §3.6.2) | `cranelisp-intrinsics/src/ivar/tests.rs` (`spark_budget_*`, `mdynamic_*`, `hier_decline_*`, `ivar_force_backoff_*`, `ivar_inline_claim_dual_panic_first_error_wins`) |
 | Equivalence, opt-out, apply-site ferry (§5, §8) | `tests/spec_12_runtime.rs` (lenient and `apply_arg_*` rows) |
 | Dependent sparks (§4.5, §4.5.1) | `tests/concurrency_spark.rs` (`dependent_spark_*`) |
-| Performance lanes (§2.8, §3.6.3) | `tests/perf/s104_utilization.py`; `tests/plan/s104-utilization-measurement.md` |
+| Performance lanes (§2.8, §3.6.3) | `tests/perf/s104_utilization.py`; `tests/perf/s104_spot.py` |
 
 Parallel wall-clock is not a suite gate. The floor witnesses in the suite cover
 alloc/RC-light work only (§3.6.3 scope).

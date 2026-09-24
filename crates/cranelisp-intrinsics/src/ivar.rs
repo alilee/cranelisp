@@ -46,7 +46,7 @@ use crate::alloc::{alloc_with_rc, dealloc};
 
 // ── Spark-stats profiling instrumentation (CRANELISP_SPARK_STATS=1) ──────────
 // Counts spark instances + ivar_force outcomes + the utilization-model signals
-// (S104 Wave 0, `tests/plan/s104-utilization-measurement.md` §3). Gated behind
+// (S104 Wave 0; measurement rules in `design/backend/lenient-eval.md` §2.8.7). Gated behind
 // an env var; **zero cost when off** — the hot paths read a single `LazyLock`
 // bool and skip every counter (no atomics executed when disabled), matching the
 // `CRANELISP_NO_LENIENT` / `SPARK_BUDGET` idioms. Origin: S103 FIXME-0534.
@@ -56,8 +56,8 @@ static FORCE_FASTPATH_RESOLVED: AtomicU64 = AtomicU64::new(0);
 static FORCE_CLAIM_WINS: AtomicU64 = AtomicU64::new(0);
 static FORCE_SPIN_WAITS: AtomicU64 = AtomicU64::new(0);
 static FORCE_SPIN_ITERS: AtomicU64 = AtomicU64::new(0);
-/// S104 Wave 0 — the "continue-serial" half of the spawn/serial ratio
-/// (§3, `tests/plan/s104-utilization-measurement.md`). Incremented once per
+/// S104 Wave 0 — the "continue-serial" half of the spawn/serial ratio.
+/// Incremented once per
 /// create-gate site that takes the direct/inline arm (`spark_budget_try_reserve`
 /// returns `0` — the over-budget branch, `lenient-eval.md` §3.6.2) instead of
 /// sparking.

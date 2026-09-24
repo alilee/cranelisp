@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Sprint 104 Stage-0 (Wave 0) utilization-thesis measurement harness.
 
-Builds the core-count-controlled instrument specified in
-`tests/plan/s104-utilization-measurement.md` §1–§4 and runs:
+Builds the core-count-controlled instrument specified in the retired S104 plan §1–§4
+(https://github.com/alilee/cranelisp/blob/fc49541f/tests/plan/s104-utilization-measurement.md) and runs:
 
   1. the config × thread-count baseline matrix (the Wave-0-feasible configs
      only — the M-static/M-dynamic rows are Waves 1–3),

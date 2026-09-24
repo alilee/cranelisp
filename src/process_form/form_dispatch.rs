@@ -37,7 +37,7 @@ pub(super) enum FormKind {
 // `(mod …)` declarations onto the module's `SymbolTable.{imports,exports,
 // platforms,submodules}` Vec in source order.
 //
-// Implicit-prelude disposition (CP3 / `design/int/symbol-table-cache.md` §3
+// Implicit-prelude disposition (CP3 / `design/int/int.md` §6.5
 // open-question resolution): chose **option (b)** — `imports` records only
 // user-authored `(import …)` forms. The implicit prelude `ImportSpec`
 // constructed at `inject_prelude_if_needed` is NOT recorded here. Rationale:

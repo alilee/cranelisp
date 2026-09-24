@@ -664,7 +664,7 @@ chokepoint, `bootstrap.rs` a named legal-skip carrying an asserting sweep,
 and the `src/imports.rs` census-comment mirror updated for both rows):
 
 1. **`/design`(int) lands the census rows** in
-   `design/int/prelude-table-write-isolation.md` §2.1/§2.4 — both seams
+   the census, now `design/int/int.md` §6.7 — both seams
    dispositioned (scope-boundary statement and/or named legal-skip rows,
    bootstrap's row stating the PRIVATE ground above, not the phantom-shape
    ground), **plus the 0793 `PRIMITIVES_TABLE` session-init install rider**,

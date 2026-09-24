@@ -434,7 +434,7 @@ Nothing specific to GOT emission. Both modes receive the same IR. `FnCompiler` r
 
 ### 5.3 GOT data symbol — defined inside `compile_to_module` (Sprint 58 Wave 2)
 
-Per `/arch` Decision 23 (updated Sprint 58 Wave 2) — the two-GOT model — the per-module data symbol `__cranelisp_got_{M}` MUST be defined inside the module's own `.o` so that the system linker (`--link` mode) and our cache `Linker` (`--run` mode after cache-hit) can resolve cross-`.o` GOT references at load time. The pre-Sprint-58 state (declared `Linkage::Import` everywhere, defined nowhere in the `.o`) was Bug B in `design/int/symbol-table-cache.md` §"Investigation findings".
+Per `/arch` Decision 23 (updated Sprint 58 Wave 2) — the two-GOT model — the per-module data symbol `__cranelisp_got_{M}` MUST be defined inside the module's own `.o` so that the system linker (`--link` mode) and our cache `Linker` (`--run` mode after cache-hit) can resolve cross-`.o` GOT references at load time.
 
 The Wave-2 fix moves the `.o` data definition INSIDE `compile_to_module<M>` via a new method on the `CodeFinalizer` trait (Module trait extension — option (a) per the FIXME's three options):
 
@@ -1419,7 +1419,7 @@ For the cache `.o` path (nice worker), the same `compile_to_module` call passes 
 - Backend never wraps the `JITModule` in `Arc<Jit>` (the caller owns the `M` instance and constructs the `Arc` after `compile_to_module` returns).
 - `CompilationResult` carries no `Arc<Jit>` field and no return tuple — the `Arc` retention root lives at the integration layer (per-entry on `Code::Jit`).
 
-(Cross-references: the [`Code` enum decision index (35)](../arch/decisions/README.md) records the Layer 2 Option B rationale; `design/int/symbol-table-generics.md` documents the integration-layer call-site choices; `crates/cranelisp-backend/src/lib.rs` tests `compile_to_module_returns_code_ptrs_after_finalize` and `compile_to_module_object_mode_empty_code_ptrs` (lines 3084 and 3144) are the regression-guards for the JIT-populated and object-empty invariants.)
+(Cross-references: the [`Code` enum decision index (35)](../arch/decisions/README.md) records the Layer 2 Option B rationale; `design/int/int.md` documents the integration-layer call-site choices; `crates/cranelisp-backend/src/lib.rs` tests `compile_to_module_returns_code_ptrs_after_finalize` and `compile_to_module_object_mode_empty_code_ptrs` (lines 3084 and 3144) are the regression-guards for the JIT-populated and object-empty invariants.)
 
 ### 17.2 Backend-internal helper signatures
 

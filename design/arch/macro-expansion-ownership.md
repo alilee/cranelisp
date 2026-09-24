@@ -7,7 +7,7 @@ macro is available and the source-ordered checkpoint sequencing are the
 [macro availability model](macro-availability-model.md); the binary's
 expansion-loop interior is
 [macro resolver implementation](../int/macro-resolver-impl.md) and
-[quote shield](../int/quote-shield.md); the boundary type is
+[quote shield](../int/int.md#66-pass-1-quote-shield); the boundary type is
 `cranelisp_types::MacroExpander` and its rustdoc.
 
 ## 1. The split

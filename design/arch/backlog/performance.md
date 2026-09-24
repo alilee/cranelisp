@@ -283,7 +283,7 @@ Common re-entry trigger: contention-aware gate design OR the Phase-H RC/allocati
 #### 0535 — density-aware depth allowance (the S105 focus)
 - **Origin** — FIXME 0535 · filed_by `/qa` · target `/design` · sprint 104.
 - **`refers_to`** — `design/backend/lenient-eval.md` §2.8; `design/arch/effect-concurrency.md` §3.1;
-  `tests/plan/s104-utilization-measurement.md` §8.7 (U-G1 regrade).
+  `design/backend/lenient-eval.md` §2.8 (measured outcome) and §2.8.8.
 - **Pinned analysis** — S104 shipped a uniform depth cap `CRANELISP_SPARK_MAX_DEPTH =
   floor(log2(nproc))` (= 3 on the 10-core host) with worker-origin depth decline + backoff.
   Single-shot at D3 (§8.7): **F6** (heavy balanced pure compute) 3.10s → 0.82s (3.4×, peak ≈ 12) — the
@@ -320,7 +320,7 @@ Common re-entry trigger: contention-aware gate design OR the Phase-H RC/allocati
   `/design` judges the §3.6 contract already covers it and only the code hook is missing) · sprint
   104.
 - **`refers_to`** — `crates/cranelisp-intrinsics/src/ivar.rs` (the create-gate);
-  `design/backend/lenient-eval.md` §3.6; `tests/plan/s104-utilization-measurement.md` §8.7.
+  `design/backend/lenient-eval.md` §3.6; `design/backend/lenient-eval.md` §2.8.8.
 - **Pinned analysis** — the create-gate (`lenient-eval.md` §3.6.2; `ivar.rs`) has two arms —
   budget-granted (allocates IVars/thunks + sparks) and over-budget **inline** (sequential arg
   codegen). The depth cap decides sparking by comparing the current `SPARK_DEPTH` against the cap. The

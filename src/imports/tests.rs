@@ -862,7 +862,7 @@ fn declared_without_bit_and() -> HashSet<Symbol> {
 // `D(M)`, not on source-provider existence (the S114 predicate was blind to
 // the live phantom because `bit-and` IS a bundled primitive — see the
 // provides-name-but-outside-declared-exports discriminating trigger below).
-// spec: prelude-table-write-isolation.md §2.2 — declared-export-closure gate.
+// spec: design/int/int.md §6.7 — declared-export-closure gate.
 #[test]
 fn candidate_closure_rejects_out_of_closure_public_write() {
     let entry = public_import_entry("primitives", "bit-and");
@@ -893,7 +893,7 @@ fn candidate_closure_rejects_out_of_closure_public_write() {
 // old predicate by construction, GREEN with the correction, interleaving-
 // independent (a direct call against constructed tables, no session, no
 // threads) — the fail-on-revert guard for the CORRECTION (not just the gate).
-// spec: prelude-table-write-isolation.md §2.2 — provides-name-but-outside-D(M).
+// spec: design/int/int.md §6.7 — provides-name-but-outside-D(M).
 // defect: class=shared-state-write-race locus=src/imports.rs::check_exposed_candidate_closure found=S115 owner=/dev
 #[test]
 fn candidate_closure_rejects_provided_name_outside_declared_exports() {
@@ -933,7 +933,7 @@ fn candidate_closure_rejects_provided_name_outside_declared_exports() {
 // FALSE-FIRE FENCE (FIXME 0604 §3.1 item 2): a public re-export whose name IS
 // in D(M) passes — the corrected predicate must not reject the legal declared
 // population. Fail-on-revert of an over-strict correction.
-// spec: prelude-table-write-isolation.md §2.2 — name ∈ D(M) permits.
+// spec: design/int/int.md §6.7 — name ∈ D(M) permits.
 #[test]
 fn candidate_closure_permits_name_in_declared_exports() {
     let entry = public_import_entry("primitives", "Int");
@@ -953,7 +953,7 @@ fn candidate_closure_permits_name_in_declared_exports() {
 // The never-false-fire arm: an UNKNOWN D(M) (`None`, not yet recorded) permits
 // — a foreign write racing ahead of M's own export processing must never be
 // rejected on incomplete information (FIXME 0604 §2.2 unknown-permit arm).
-// spec: prelude-table-write-isolation.md §2.2 — D(M) unknown permits.
+// spec: design/int/int.md §6.7 — D(M) unknown permits.
 #[test]
 fn candidate_closure_permits_when_declared_exports_unknown() {
     let entry = public_import_entry("primitives", "bit-and");
@@ -972,7 +972,7 @@ fn candidate_closure_permits_when_declared_exports_unknown() {
 // GENERALIZATION vs the prelude-only rider: the phantom into a NON-prelude
 // terminal module is ALSO rejected (the rider ignores non-prelude modules;
 // the gate does not).
-// spec: prelude-table-write-isolation.md §2.2 — any terminal module.
+// spec: design/int/int.md §6.7 — any terminal module.
 #[test]
 fn candidate_closure_generalizes_beyond_prelude() {
     // A non-prelude terminal module with a recorded D(M) that lacks the name.
@@ -992,7 +992,7 @@ fn candidate_closure_generalizes_beyond_prelude() {
 
 // A legitimate re-export whose name IS in the module's declared export
 // closure PASSES — the gate must not false-fire the build.
-// spec: prelude-table-write-isolation.md §2.2 — declared name permits.
+// spec: design/int/int.md §6.7 — declared name permits.
 #[test]
 fn candidate_closure_permits_legitimate_reexport() {
     let entry = public_import_entry("primitives", "add-i64");
@@ -1012,7 +1012,7 @@ fn candidate_closure_permits_legitimate_reexport() {
 // A PRIVATE write (an `import` edge) is never a cross-module phantom — the
 // isolation invariant is PUBLIC-write-only, so the gate is a no-op even when
 // the source lacks the name (census legal-skip for `install_imports`).
-// spec: prelude-table-write-isolation.md §2.1 — private-only legal-skip.
+// spec: design/int/int.md §6.7 — private-only legal-skip.
 #[test]
 fn candidate_closure_noop_for_private_write() {
     let entry = CandidateExposure {

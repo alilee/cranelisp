@@ -21,7 +21,7 @@ Retained for three uses, in order of value:
 
 1. **Precedent** — what a per-interleaving cure costs, and what evidence is
    required before one is believed. The next race-class investigation starts
-   here and at `tests/plan/s109-attribution-index-feed-race.md`.
+   here and at the evidence limit in `design/int/int.md` §6.7.
 2. **Rationale for live instruments** — `SchedulerTraceTag::SymbolTableEnsure`
    and the typecheck-side trace hook follow the [instrument rationale](#834-the-instrument--symboltableensure)
    and [H6 ruling](#3d-arch-verdict-h6--retained-rulings); the
@@ -75,7 +75,7 @@ cache-hit path is not exercised by this shape.
 
 ## 3c. Evidence artefacts
 
-Committed under `tests/sprint61/race-evidence/` — paired failing/passing
+Retained as [S61 dumps in Git](https://github.com/alilee/cranelisp/tree/fc49541f/tests/sprint61/race-evidence) — paired failing/passing
 scheduler-trace dumps, merge-sorted across threads at dump time per
 `design/int/observability.md`. They are the irreplaceable part of this record:
 the prose below summarises them, and any re-reading of the lineage should
@@ -273,11 +273,9 @@ documented pattern for any future typecheck-side trace emission
   supersedes this whole approach.
 - `design/int/int.md` §6.2 — the in-call-stack cluster model that
   removed the shared re-read surface these races lived on.
-- `design/int/index-worker-isolation.md`, `design/int/prelude-table-write-isolation.md`
+- `design/int/index-worker-isolation.md` and `design/int/int.md` §6.7
   — the isolation-by-construction successors in the same lineage.
 - `design/int/observability.md` — the trace sinks and dump-time merge-sort.
 - `design/typecheck/typecheck.md` — the typecheck-side trace hook as the
   crate's documented observability mechanism.
-- `tests/plan/s109-attribution-index-feed-race.md` — `qa`'s reading of this
-  treadmill as attribution precedent.
-- `tests/sprint61/race-evidence/` — the dumps.
+- [S61 dumps in Git](https://github.com/alilee/cranelisp/tree/fc49541f/tests/sprint61/race-evidence) — the dumps.

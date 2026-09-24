@@ -59,8 +59,8 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `concurrency-architecture.md` | The compiler-internal scheduling axis: where int is concurrent, why, and which doc carries each invariant. |
 | `persistent-workers.md` | The delivered worker-lifecycle contract — spawn, park/wake, enqueue-not-spawn, per-batch JIT, shutdown. Section numbers are pinned by live source. |
 | `signature-body-prepass.md` | The S93 two-phase barrier — the durable race cure. |
-| `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification, slot versioning, the retention pool and persistence. Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
-| `session-persistence.md`, `symbol-table-cache.md`, `cache-hit-loading.md` | Save/regenerate, the cached symbol table, and cache-hit module loading; `cache-hit-loading.md` §0 is the restoration-parity rule. |
+| `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification (including trait-implementation redefinition, §2.5), slot versioning, the retention pool and persistence. Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
+| `session-persistence.md`, `cache-hit-loading.md` | Save/regenerate and cache-hit module loading; `cache-hit-loading.md` §0 is the restoration-parity rule. The cache artefact, cache-hit flow and `Code` carrier are `int.md` §§5 and 7. |
 | `io-integration.md` | Host-side IO forcing and platform-DLL load wiring. |
 | `result-owner.md` | The one program-result owner across REPL, `--run`, cache-hit and linked startup: observe, then release exactly once through canonical type glue. |
 | `macro-turn-ownership.md` | The macro-clause invocation protocol: the declared all-Owned clause ABI, single-owner argument transfer by ABI crossing, and exactly-once result discharge through `consume_sexp`. |
@@ -76,14 +76,11 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | Doc | Subject |
 |---|---|
 | `s117-conformance-recovery.md` | The prepared-turn transaction (prepare → whole-batch codegen → publish, one cadence for eval and worker), its presentation readers, and the source-ordered macro checkpoint (§1.1.2/§2.1). |
-| `index-worker-isolation.md` | The index-feed isolation contract (background half). |
-| `prelude-table-write-isolation.md` | The foreground public-write chokepoint, including candidate-batch validation before table or GOT publication (foreground half). |
-| `quote-shield.md` | `expand_scoped` holds quoted data out of Pass-1 macro expansion. |
+| `index-worker-isolation.md` | The index-feed isolation contract (background half; the foreground export-closure gate is `int.md` §6.7). |
 | `macro-diagnostic-reanchoring.md` | Synthetic-span diagnostics over macro output relocate to the origin form; paired with `design/frontend/binder-head-reject.md`. |
 | `expansion-qualification-scope.md` | `qualify_expanded_sexp` is scope-aware, skipping value-level binder slots. |
-| `impl-redefinition-hot-reload.md` | A same-type re-impl hot-reloads through the existing `commit_staging_to_live` → `commit_slotted_def` GOT-patch path; no impl-specific parallel path. |
 | `multi-sig-introspection.md` | Multi-signature introspection, with the D1 constraint-display read-follow (§2.4). |
-| `private-submodule-import.md`, `symbol-table-generics.md` | Private submodule imports; generics in the session symbol table. |
+| `private-submodule-import.md` | Private submodule imports. |
 
 ### Reference lineage
 

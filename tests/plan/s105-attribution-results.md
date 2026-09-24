@@ -2,7 +2,7 @@
 
 **Author:** `/qa` · **Date:** 2026-07-07 (Phase-5 Wave-1) ·
 **Instrument:** `tests/perf/s105_attribution.py` (Wave-0, this sprint) ·
-**Plan:** `tests/plan/s105-residual-attribution.md` (the Phase-3 spec this executes) ·
+**Plan:** the [retired S105 Phase-3 plan](https://github.com/alilee/cranelisp/blob/fc49541f/tests/plan/s105-residual-attribution.md); its attribution model is in `design/arch/effect-concurrency.md` §3.1.6 ·
 **Binaries:** two release builds — system allocator + `--features thread-caching-alloc`
 (mimalloc); nproc=10.
 
