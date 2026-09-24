@@ -108,7 +108,7 @@ primitives context. The rest is already in the homes named at the top.
 |---|---|
 | `tests/spec_appendix_a_builtins.rs`, two `// spec:` blocks citing "The invariant" | primitives context invariant 3 |
 | `tests/s68_primitives_uniform.rs`: "The invariant" (one block) | primitives context invariant 3 |
-| `tests/s68_primitives_uniform.rs`: "Shape" (three blocks, plus the module header and one assertion message) | primitives context boundary statement and invariant 6 |
+| `tests/s68_primitives_uniform.rs`: "Shape" (two blocks, plus the module header and one assertion message) | primitives context boundary statement and invariant 6 |
 | `tests/s68_primitives_uniform.rs`: "Consequences" (one block) | primitives context invariant 3 |
 | `tests/s68_primitives_uniform.rs`: "Cascade" (one block, plus two assertion messages) | the executable-bundle crate-root rustdoc |
 | `tests/s68_primitives_uniform.rs`: the dep-ban section (one block, plus two assertion messages) | primitives context invariant 3 and Principle 18 |

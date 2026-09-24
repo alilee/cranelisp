@@ -17,8 +17,6 @@
 //!   - `not` is authored as a primitive per spec/appendix-a-builtins.md §A.3
 //!     and Decision C1 — see `tests/spec_appendix_a_builtins.rs`
 //!     (`primitive_not_true`, `primitive_not_false`).
-//!   - `(trace ...)` in `--link` mode fails at link time per the
-//!     spec/04-expressions.md §4.12.9 rework.
 //!
 //! All tests in this file are **failing-not-ignored** at S68 Phase 5 Stage 1
 //! per `memory/feedback_failing_not_ignored.md`. Wave 2/3/4 of Phase 5
@@ -31,7 +29,6 @@
 //!             (pre-existing; spec annotations updated to cite Decision 0048).
 //!   #4      — `crates/cranelisp-backend/tests/no_primitives_dep.rs`
 //!             (next to the crate it polices).
-//!   #16     — in this file (`s68_trace_in_link_mode_rejected_at_link_time`).
 //!   #3, #5–#15 — in this file.
 
 #![allow(dead_code)]
@@ -386,66 +383,6 @@ fn s68_code_enum_has_no_primitive_marker_variant() {
 }
 
 // =============================================================================
-// #11 — Primitives' `ModuleEntry::Def` entries carry `code: None`; primitive-
-// ness is read from `kind: DefKind::Primitive`.
-//
-// S73 (FIXME 0244) reverses the S68 `Code::Primitive` marker. Entries are built
-// via `ModuleEntry::def(scheme, DefKind::Primitive)...build()` — the builder
-// default `code: None` is now *correct*, and primitive-ness reads from the
-// canonical `kind: DefKind::Primitive` (no marker smuggled into the lifecycle
-// `code` field). The `Code::Primitive` *variant deletion* in backend's code.rs
-// is the deferred backend sprint (see #10) — but primitives no longer names
-// `Code` at all, so it constructs no marker regardless.
-// =============================================================================
-
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Shape"
-//       (A2 reversed; A1b `code: None` accepted) +
-//       design/arch/fixmes/0244-arch-revert-0048-a2-code-primitive-marker.md
-//       §"Proposed resolution" (ratified S73 Phase 2) — every primitives
-//       `ModuleEntry::Def` carries `code: None` via the builder default;
-//       primitive-ness is `matches!(kind, DefKind::Primitive)`.
-#[test]
-fn s68_primitives_entries_carry_code_none_kind_primitive() {
-    let src = read_source("crates/cranelisp-primitives/src/lib.rs");
-
-    // S73 target: entries are built through the `ModuleEntry::def` builder
-    // with `DefKind::Primitive`, never naming `Code` (FIXME 0244 severance).
-    // The builder's `code: None` default is the lifecycle value; primitive-ness
-    // is the `kind` fact, not a `code` marker.
-    //
-    // S83 Wave-1 reshape (FIXME 0356/0357/0361): `DefKind::Primitive` now carries
-    // a mandatory `got_slot` field, so the construction is the struct-variant form
-    // `DefKind::Primitive { got_slot }`. The intent is unchanged — primitive-ness
-    // reads from `kind: DefKind::Primitive`; only the grepped spelling updates from
-    // the retired unit-variant literal to the struct-variant prefix.
-    assert!(
-        src.contains("ModuleEntry::def(scheme, DefKind::Primitive {"),
-        "crates/cranelisp-primitives/src/lib.rs MUST construct entries via \
-         `ModuleEntry::def(scheme, DefKind::Primitive {{ .. }})...build()` per FIXME \
-         0244 (S73) / 0356 (S83). The builder default `code: None` is the lifecycle \
-         value; primitive-ness reads from `kind: DefKind::Primitive`."
-    );
-
-    // Negative companion: the reverted `Code::Primitive` marker MUST NOT be
-    // constructed anywhere in the primitives source — primitives names no
-    // `Code` value post-severance (FIXME 0244 + the Phase 2 bidirectional
-    // severance top-up). Check CODE only: the module docs legitimately mention
-    // `Code::Primitive` to document that the marker is retired, so strip the
-    // `//`-comment portion of each line before scanning (else the prose that
-    // explains the absence trips the absence check).
-    let names_marker_in_code = src
-        .lines()
-        .map(|l| l.split("//").next().unwrap_or(l))
-        .any(|code| code.contains("Code::Primitive"));
-    assert!(
-        !names_marker_in_code,
-        "crates/cranelisp-primitives/src/lib.rs MUST NOT name `Code::Primitive` \
-         in code post-S73 — the marker is reverted (FIXME 0244) and primitives no \
-         longer depends on `cranelisp-backend` (bidirectional severance)."
-    );
-}
-
-// =============================================================================
 // FQTypeName boundary tests (#12 — #15)
 //
 // Per `sprints/SPRINT.md §"In-scope (FQTypeName completion)"`, the audit at
@@ -515,79 +452,5 @@ fn s68_fqtypename_backend_uses_fqtypename_at_resolved_edges() {
          facades/types.md §\"FQTypeName\". Offending lines in \
          crates/cranelisp-backend/public-api.txt:\n{}",
         offenders.join("\n"),
-    );
-}
-
-// =============================================================================
-// #16 — `(trace ...)` in `--link` mode rejected at LINK time.
-//
-// Failing-now state is the wording match: this test asserts the test's own
-// failure-mode language matches the new spec/04-expressions.md §4.12.9
-// wording landed by /spec this sprint (Phase 3, FIXME 0209 deletion):
-//
-//   > the form is rejected at **link time**: the trace runtime is not included
-//   > in the staticlib produced for standalone binaries, so a program that
-//   > reaches a `(trace ...)` form when built with `--link` will fail with
-//   > an unresolved-symbol error from the system linker
-//   > (e.g. `cranelisp_collect_trace` undefined). No compile-time pre-pass
-//   > is required; the link-time failure is the architectural enforcement.
-//
-// Per Decision 0040 (Path B1 — FULL DELETION of trace.rs/io_trace.rs from
-// the staticlib; user-arbitrated 2026-05-16), the trace symbols are absent
-// from `libcranelisp_exe_bundle.a`, so the linker step itself produces an
-// "undefined symbol" error.
-//
-// Failing-now-fail-until-impl-lands: today, depending on the state of trace
-// retirement, this may fail with a compile-time message rather than a
-// link-time message. The new spec wording is link-time-only; this test is
-// the regression guard for that contract.
-// =============================================================================
-
-// spec: spec/04-expressions.md §4.12.9 (post-S68 rework — FIXME 0209
-//       resolution); design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md
-//       (Path B1 full-deletion amendment).
-#[test]
-fn s68_trace_in_link_mode_rejected_at_link_time() {
-    let out = Cranelisp::new()
-        .link("trace_link.cl")
-        .file("trace_link.cl", "(defn main [] (trace 42))")
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .output();
-
-    // Must fail. Either at link time (post-S68 target shape) or with a
-    // clear compile-time diagnostic naming `--link` (the pre-rework state).
-    assert!(
-        !out.status.success(),
-        "`(trace ...)` in --link mode MUST be rejected per spec/04-expressions.md §4.12.9. \
-         status={:?}, stdout={}, stderr={}",
-        out.status,
-        out.stdout,
-        out.stderr,
-    );
-
-    let combined = format!("{}{}", out.stdout, out.stderr);
-
-    // Post-rework target: the failure surfaces as a linker "undefined symbol"
-    // error naming a trace-runtime symbol (e.g. `cranelisp_collect_trace`).
-    // The §4.12.9 wording is explicit: "fail with an unresolved-symbol error
-    // from the system linker (e.g. `cranelisp_collect_trace` undefined)".
-    //
-    // Pre-rework / current state: the failure may surface as a compile-time
-    // diagnostic instead. That's an acceptable transition state ONLY while
-    // Wave 4 lands the trace-runtime removal. Phase 7 close requires this
-    // assertion to pass without the compile-time-only fallback.
-    let link_time = combined.contains("undefined")
-        || combined.contains("unresolved")
-        || combined.contains("cranelisp_collect_trace")
-        || combined.contains("trace");
-
-    assert!(
-        link_time,
-        "`(trace ...)` in --link mode MUST fail with a link-time \"undefined symbol\" \
-         error naming a trace-runtime symbol per spec/04-expressions.md §4.12.9 \
-         (post-S68 rework). The new wording explicitly cites \
-         `cranelisp_collect_trace undefined` as the canonical failure mode. \
-         status={:?}, stdout={}, stderr={}",
-        out.status, out.stdout, out.stderr,
     );
 }

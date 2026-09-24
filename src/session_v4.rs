@@ -173,14 +173,8 @@ pub struct SharedState {
     // was here. Folded into `ObjectCache` (above) as interior state — callers
     // now dispatch through `shared.cache.*` methods.
 
-    // Sprint 67 Wave 4 follow-up: `codegen_behaviour: CodegenBehaviour` was
-    // here. Retired. The frontend `build_form` / `build_expr` boundary is
-    // mode-agnostic; `(trace ...)` in `--link` standalone-binary mode fails at
-    // link time via the architecture's natural missing-symbol detection (the
-    // trace runtime is not bundled into the staticlib produced by exe-bundle).
-    // The session-construction value still lives on `SessionSettings` for
-    // potential future consumers; no projection onto `SharedState` is needed.
-    // See spec/04-expressions.md §4.12.9.
+    // Form construction is mode-agnostic; trace runtime support is available
+    // in every build mode (spec/04-expressions.md §4.12.9).
 
     // -- Stateless TC: shared state (Sprint 51) --
     // The single source of truth for per-module symbol data. Formerly owned

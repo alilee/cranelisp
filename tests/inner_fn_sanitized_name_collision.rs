@@ -22,7 +22,7 @@ fn program(second_type: &str) -> String {
 
 // spec: spec/01-lexical.md §1.4.1 Simple Symbols — `-` and `_` are distinct symbol characters
 // spec: spec/04-expressions.md §4.5.1 Free Variable Capture
-// defect: class=wrong-reject locus=crates/cranelisp-backend/src/compiler/resolution.rs::inner_fn_discriminator_for found=S122 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-backend/src/compiler/resolution.rs::inner_fn_discriminator_for found=S122 fixed=S122/f84a6d69 owner=/dev
 // Reproduced before the S122 fix: every mode rejected with `Duplicate definition of identifier:
 // __lambda__user_f__user_A_B__user_A_B___…` — both instances' lambda bodies
 // received one name. The injective encoding now keeps them distinct.

@@ -90,7 +90,7 @@ The former runtime context is now `bounded-contexts.md` §4a + §4b:
 ## Cross-references
 
 - Sprint 63 substance-scoping pass §1.7 (Git history; the legacy record was retired S122) — the symptom and tension analysis this Decision distils
-- `design/arch/decisions/0040-runtime-trace-io-trace-relocate-to-int.md` — IoObserver callback contract; the registration API now resides in `cranelisp-intrinsics` post-split
+- `crates/cranelisp-intrinsics/src/io_observer.rs` — IO observer registration, event and threading contract
 - Decision 41 ([label index](README.md)) — backend's substitution-table responsibility becomes explicit at the per-symbol JIT site
 - `design/arch/principles.md` — Principle 1 (decoupling), Principle 7 (no duplicate addressable forms) cited as rationale
 - FIXME 0150 — the implementation tracker, closed with this Decision at S67 (Git history); it coordinated with FIXME 0103 (trace/io_trace relocation)

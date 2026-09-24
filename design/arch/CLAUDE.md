@@ -53,7 +53,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | Collection | Purpose | Navigation |
 |---|---|---|
 | `architecture-contracts` | Current architecture contracts and explicitly retained design proposals. | The top-level products linked above. |
-| `architecture-decisions-drain` | The decision-label index, and the five decision records that tests still cite by section. | [Decision labels](decisions/README.md). |
+| `architecture-decisions-drain` | The decision-label index, and the remaining decision records with live section citations. | [Decision labels](decisions/README.md). |
 | `architecture-filings` | Actionable architecture filing register, retained until its owning obligation is discharged. | [Open filings](fixmes/). |
 | `architecture-sequences` | Current execution and lifecycle sequence diagrams with their navigation and rendering conventions. | [Sequence guide](sequences/README.md). |
 | `architecture-archive` | Frozen superseded architecture records retained as historical reference. | [Archive](archive/); historical references retain their recorded meaning. |

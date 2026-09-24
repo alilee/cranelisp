@@ -94,8 +94,6 @@ pub(crate) mod eval;
 // points, introspection-display helpers; extracted from session_v4.rs
 // (FIXME 0109 Wave D). The §3.3 Wave-D target home.
 pub(crate) mod repl;
-// repl/ module deleted — v4 REPL is driven by CompilerSession in main.rs + session_v4.rs.
-// FileWatcher extracted to watch.rs; remaining features (save, trace, run-tests) are future work.
 pub(crate) mod save;
 pub(crate) mod sched_dump;
 pub(crate) mod scheduler;

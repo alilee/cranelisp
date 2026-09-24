@@ -322,11 +322,3 @@ reaching `collect` is cleaned by `clear_trace_guard_on_panic` from
 
 **Backend obligations the guard relies on.** Backend never clears the flag,
 and emits `cranelisp_collect_trace` exactly once per form, last (§3.3).
-
-## 7. Open obligations
-
-- [ACT-0984](../../sprints/actions/ACT-0984-trace-link-test-claim-intake.md)
-  (`qa`): `tests/s68_primitives_uniform.rs` still carries a test asserting
-  link-mode rejection of `(trace …)`, contrary to spec §4.12.9 and §2.5.
-  Positive link-mode evidence is `tests/link.rs`. Its disposition does not
-  reopen the build-mode ruling.

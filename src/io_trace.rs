@@ -1,5 +1,6 @@
-//! IO trampoline event log — int-hosted ring buffer + observer per
-//! Decision 40 §"Int hosting — the trace bodies and observer state" (Path B1).
+//! IO trampoline event log — binary-owned ring buffer and observer.
+//! Registration and event contracts: `crates/cranelisp-intrinsics/src/io_observer.rs`;
+//! ownership: `design/arch/bounded-contexts.md` §4b and §6.
 //!
 //! This file absorbs the io_trace ring-buffer machinery that previously lived
 //! in `cranelisp-intrinsics`. Int's session startup registers `record` (below)

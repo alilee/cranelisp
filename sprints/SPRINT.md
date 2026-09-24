@@ -1,10 +1,10 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. Latest checkpoint: `6c1fe761`. The compiler corrections,
+**Status:** PHASE 5. Latest checkpoint: `f84a6d69`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
-additional generated-inner-name collision fix is verified and uncommitted.
-Document consolidation continues: the last integrated check has 333 findings
-across 591 documents. Historical audit reports are retired to Git with
+generated-inner-name collision fix is verified and committed.
+Document consolidation continues: the last integrated check has 331 findings
+across 589 documents. Historical audit reports are retired to Git with
 open points preserved. Current reservations appear at the end of this plan.
 C-A cache-corruption hardening is user-deferred; no API approval is pending.
 No phase transition or publication is authorized.
@@ -2427,7 +2427,7 @@ are aligned. Source and test assertions are unchanged.
 
 [ACT-0983](actions/ACT-0983-accessor-impl-collision-intake.md) retains the
 obsolete accessor/impl rejection for QA reproduction; it is not closed by the
-document edit. [ACT-0984](actions/ACT-0984-trace-link-test-claim-intake.md)
+document edit. ACT-0984 (resolved; filing retired)
 retains the trace-under-link rejection test's conflict with current authority.
 Neither source-read lead is represented as an executed reproduction.
 
@@ -3550,3 +3550,44 @@ Final integrated document check339→333, six removed and zero introduced
 identities;13 source/test citation files verified comment-only by diff.
 No runtime tests repeated; C-B prior evidence remains unchanged. C-A remains
 user-deferred. Work after6c1fe761 uncommitted; NOTES and .agents untouched.
+
+### Checkpointf84a6d69 and trace evidence reconciliation (2026-09-24)
+
+User requested commit and continuation. Committed28 files asf84a6d69, including
+C-B naming fix and typecheck/tracing cleanup; NOTES/.agents excluded. Added
+the actual fixing SHA to C-B's regression annotation after commit.
+QA Claude/Fable/high `4bcb41b0-0d4b-4c13-ab80-8025a59396df` owns ACT-0984
+read-only assessment and minimal evidence allocation. Sprint integrated prior
+arch handoffs: removed stale integration comments promising link-mode trace
+failure/future trace support; repaired Principle10 citations only, preserving
+the principle statement and the Phase7 revision gate. Baseline333 findings.
+
+ACT-0984 probe confirmed the obsolete cell passed solely through its filename:
+main returned Trace, validate_main refused non-IO, no linker/trace-runtime error.
+Test Claude/Opus/high `c7895261-f754-45e6-822a-8e6e06673059` removed77 lines.
+Targeted suite8/9: one unrelated pre-existing source-grep RED; cargo check --tests
+passes with only known nix future-incompatibility warning.
+QA Claude/Fable/high `55c69a85-5bfd-4a32-9b68-90016d89200f` assesses that stale
+source-grep cell in the same file; no tracing-runtime issue inferred.
+Sprint completed Decision0040's existing exact retirement checklist: source
+observer citation and Decision43/index references repointed to current homes;
+record deleted with no unique content moved. Decision label40 remains in index.
+
+QA confirmed ACT-0984 independently complete; sprint deleted its filing and
+tracing's now-empty open-obligation section. Known diagnostic empty-span note
+remains recorded as observer intake, not a new gate.
+QA retired the redundant primitives source-grep allocation: it has observed
+only a comment since S117, while every_entry_is_def_kind_primitive checks the
+live table. Test Claude/Opus/high `e5f072a8-ab2f-43a5-a22d-d38c540065ff` owns
+that deletion and the final8-test run. The remaining source-grep limitations
+stay recorded in QA's evidence delta; no compiler defect is inferred.
+
+Final S68 binary8/8 PASS (foreground nextest);137 stale test lines removed in
+total. Earlier cargo check --tests passed with only known nix warning; no
+import or compiler behavior change. Decision0048 retirement map updated from
+three Shape citation blocks to two. No full-suite claim or extra review round
+for this QA-directed removal of superseded instruments.
+
+Final integrated document check333→331, no introduced identities. QA working
+allocations condensed to final evidence and retained limits after completion.
+Whitespace clean; NOTES unchanged. New work uncommitted afterf84a6d69.

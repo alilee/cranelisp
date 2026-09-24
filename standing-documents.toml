@@ -361,7 +361,7 @@ disposition = "established"
 name = "architecture-decisions-drain"
 patterns = ["design/arch/decisions/*.md"]
 owner = "arch"
-purpose = "The decision-label index, and the five decision records that tests still cite by section."
+purpose = "The decision-label index, and the remaining decision records with live section citations."
 established_by = "design/arch/CLAUDE.md"
 disposition = "established"
 

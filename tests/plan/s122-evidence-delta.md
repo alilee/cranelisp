@@ -2655,3 +2655,38 @@ sibling-slot arm as landed and the filing as resolved, and route the open
 cache-seam residual to C-A; `s115-instrumentation-matrix.md` carries a dated
 closure addendum rather than rewritten Phase-3/W7 verdicts. No other QA-owned
 surface names 0637.
+
+## S68 obsolete-instrument retirement (2026-09-24)
+
+ACT-0984 is resolved. The obsolete link-mode trace rejection cell and its
+header references were deleted (77 lines); its filing and Decision 0040's
+superseded citation record are retired. The verbatim fixture probe exited 1
+with only the non-IO-main diagnostic: `primitives/Trace` was the return type.
+The cell's lowercase "trace" match came solely from its filename. There was
+no linker or trace-runtime failure. Existing positive linked-trace tests and
+the wrong-main-type negative cover the current requirements; no replacement
+or spec coverage promotion is needed.
+
+The same binary exposed a second obsolete instrument: a primitive-entry
+source grep that had matched only a comment since S117 (`d1c34699`), then
+failed when `7134cb28` removed the comment. Its 60 lines were deleted without
+replacement: the live-table unit
+`crates/cranelisp-primitives/src/tests.rs::every_entry_is_def_kind_primitive`
+already checks origin and lifecycle shape, which is the governing rule
+(`design/primitives/primitives.md` invariant 6). Its negative leg — no
+`Code::Primitive` in primitives code — is structurally discharged: primitives'
+manifest names no backend crate, and
+`s68_code_enum_has_no_primitive_marker_variant` fences the variant at its
+owner. This was an instrument failure, not a compiler regression.
+
+Final evidence: `cargo nextest run --no-fail-fast --test s68_primitives_uniform`
+passes 8/8. The earlier `cargo check --tests` passed with only the known nix
+future-incompatibility warning; no imports changed afterward. No full-suite
+claim. Logs: `.local/s122-act0984-probe.log`, `.local/s122-act0984-check.log`,
+and `.local/s122-s68-source-test-run.log`; source checkpoint `f84a6d69` plus
+the deletions. QA's allocated conditions are satisfied.
+
+Retained observations: the remaining source-grep assertions are comment-blind;
+the non-IO-main diagnostic uses an empty span (`codegen error at 0..0`). These
+are recorded limitations/intake, not newly allocated gates. C-A remains
+user-deferred.

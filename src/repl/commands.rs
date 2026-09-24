@@ -617,12 +617,8 @@ impl CompilerSession {
         }
         let module = self.current_module_path();
 
-        // Build the input through the new `build_form` / `build_expr` boundary
-        // (replacing the retired `build_repl_input`). A bare-expr REPL input
-        // is wrapped as a synthetic `__expr` defn for typecheck dispatch.
-        // Build is mode-agnostic; `(trace ...)` in `--link` standalone-binary
-        // mode (not reachable via REPL) fails at link time via the
-        // architecture's natural missing-symbol detection.
+        // Bare expressions become synthetic __expr definitions for the same
+        // typecheck path used by definitions.
         let working_program = crate::worker::build_program_compat(&[sexps[0].clone()])?;
         let working_program = self.wrap_exprs_as_synthetic_defns(&working_program);
 
