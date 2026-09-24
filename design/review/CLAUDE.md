@@ -1,20 +1,10 @@
 # design/review/
 
-Owned by `/review` (per-crate triad reviewer). This directory is a **historical
-archive**, not a live standard: it holds ring-era and sprint-wave review records
-produced when review was gate-shaped rather than change-set-shaped.
-
-## What this directory holds now
-
-The files here (`ring0-*`, `ring1-*`, `ring2-*`, `checklist.md`,
-`crate-quality.md`, `naming-convention-review.md`, and the dated `sprintNN-*`
-review write-ups) are **frozen artifacts** from earlier sprints. The ring axis
-was retired as a scheduling axis in Sprint 64, and review moved to per-crate
-narrow-deployment; the ring checklists and completion reports are read as a
-record of what was reviewed and when, not as instructions for a current pass.
-Nothing new is written here — findings are per-FIXME now (see below) — with
-ONE exception: §"Standing change-set cues" below is live and extends the
-assembled per-invocation standard.
+Standing change-set cues owned by `review`, extending the shared review role.
+Historical checklists and reports are recoverable from Git checkpoint
+`07f46769`. The remaining cache-packet `Send` cleanup is retained with the
+[coordinated API baseline work](../../sprints/actions/ACT-0955-omit-auto-traits-from-public-api-baselines.md);
+S122 discharged the other extracted points or corrected their current homes.
 
 ## Where the live review standard actually lives
 
@@ -40,8 +30,7 @@ reviewed against is assembled per invocation from:
 
 ## Standing change-set cues (live)
 
-Unlike the frozen records above, this section is a **live** part of the review
-standard. Walk these cues on every change set, alongside the quality checks in
+Walk these cues on every change set, alongside the quality checks in
 `.agents/skills/review/SKILL.md`.
 
 ### Duplication — two distinct lenses
@@ -53,8 +42,8 @@ in the standard; the second is the one diff-shaped review habitually misses.
 copies: three-or-more near-identical sites, copy-pasted blocks, parallel
 concept tables. Principle 7 (single source of truth) and Principle 8 (no
 interim implementations) are the citations; the skill def's "repeated
-patterns" quality check and the ring-era `checklist.md` §§5–6 are the
-lineage. Mirrors *look alike* — reading the diff against the codebase finds
+patterns" quality check are the current authority. The ring-era checklist
+lineage is recoverable at the Git checkpoint above. Mirrors *look alike* — reading the diff against the codebase finds
 them by resemblance.
 
 **2. Divergent / entry-point duplication** (this cue — what the mirror lens
@@ -96,11 +85,12 @@ lens on the same category:
 | Altitude | Skill | Lens |
 |---|---|---|
 | Per-diff | `review` (this cue) | catch the (N+1)th variant as it is proposed |
-| Rolling coverage | `qa` | the "coverage by definition variants" standing category (`tests/plan/`) |
-| Whole-context | `audit` | the Duplication quality attribute (FIXME 0564: mirror + divergent + entry-point + spec-surface facets) — sweeps what per-diff review cannot see |
+| Rolling coverage | `qa` | the [coverage by definition variants](../../tests/CLAUDE.md) standing category |
+| Whole-context | `audit` | the [Duplication quality attribute](../../audits/CLAUDE.md) (mirror + divergent + entry-point + spec-surface facets) — sweeps what per-diff review cannot see |
 
 ## Findings
 
-Review findings are filed as FIXMEs in `design/arch/fixmes/NNNN-name.md`,
-classified Blocker / Important / Suggestion, and resolved by the owning skill.
-Reviewed change sets become git history. There are no ring-completion reports.
+Review findings follow the shared role's classification and handoff rules.
+New retained filings go to `sprints/actions/`; existing `design/arch/fixmes/`
+filings run down in place under the root guidance. Reviewed change sets become
+Git history. Historical reports are not a standing documentation product.

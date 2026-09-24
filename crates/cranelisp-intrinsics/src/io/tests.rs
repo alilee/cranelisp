@@ -524,8 +524,8 @@ fn decision24_run_io_pure_rc_balanced() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 29 — trampoline inline-dec's every
-// intermediate node (Pure + Bind + continuation) and the final Pure.
+// spec: design/backend/ring2-rc.md §3.5.4 — the trampoline releases every fresh
+// intermediate node and continuation, and the final Pure.
 #[test]
 fn run_io_trampoline_rc_balanced() {
     let allocs_before = crate::alloc::alloc_count();
@@ -956,7 +956,7 @@ fn releasing_one_of_two_effect_references_discharges_nothing() {
     assert_eq!(ledger.discharges(), 1);
 }
 
-// spec: design/arch/CLAUDE.md Decision 29 — deep bind chain is RC-balanced
+// spec: design/backend/ring2-rc.md §3.5.7 — deep bind chain is RC-balanced
 // (was the O(N) leak reason before Wave 3).
 #[test]
 fn run_io_trampoline_deep_bind_chain_rc_balanced() {
@@ -983,7 +983,7 @@ fn run_io_trampoline_deep_bind_chain_rc_balanced() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 29 — call_continuation dec's the
+// spec: design/backend/ring2-rc.md §3.5.4 — call_continuation dec's the
 // closure when `cont_is_fresh=true` (closure belonged to a fresh/
 // continuation-produced Bind). Closures from the caller's tree
 // (`cont_is_fresh=false`) are left alone for post-return consume_io_tree.

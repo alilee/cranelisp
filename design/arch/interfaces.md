@@ -153,6 +153,11 @@ regress one path or the other, which is why the walk branches on the discriminan
 - There are exactly two exceptions, neither extendable without `arch` review: recognising or
   emitting the built-in non-ADT primitive types by bare name, which is unique workspace-wide;
   and receiver-pinned lookups, where the table already supplies the module.
+- Why: a boundary value carries its full identity, so no consumer needs caller-side module
+  context to disambiguate ([Principle 02](principles/02-narrow-interfaces.md)), and a type
+  has exactly one qualified name workspace-wide
+  ([Principle 07](principles/07-single-source-of-truth.md)). The cross-module guard is
+  `tests/spec_fqtypename_boundary.rs`.
 - Consequences. The primitive types keep dedicated `Type` variants: they need no tag,
   constructor or heap layout, and `primitives/Int` is a rendering convention, not a
   type-system fact. No derived name-to-module map exists; an ADT type carries its module, so
@@ -263,17 +268,40 @@ rebuilt. Contract: [trait-implementation persistence](trait-impl-cache-carrier.m
   live. The binary commits staging atomically on whole-cluster success; on a gap or type
   error the live table is byte-identical to its prior state.
 - Staging is a per-cluster frame, not a second write surface on the canonical store: nothing
-  publishes it.
+  publishes it ([Principle 07](principles/07-single-source-of-truth.md)).
+- The caller-supplied `SymbolTableAccess` has two modes, and its two accessors are the only
+  place they differ. `Live` reads and writes the committed per-module table. `Cluster` sends
+  current-module writes to the binary's staging table and reads through the types-owned
+  `View`, which consults staging before live. Staging starts empty, reads union staging over
+  live, and publication drains staging into live; no table is cloned per cluster. Two rules
+  this pins, each with a regression in `tests/regression.rs`: a cluster-mode read of live
+  alone loses an intra-cluster forward reference to a sibling staged in the same cluster
+  (FIXME 0179), and cross-form working state lives in the `check_forms` frame and nowhere
+  else (FIXME 0177). Cloning live into staging and replacing it on publish was not adopted:
+  it costs a clone per cluster for an initial-equal-to-live staging no workload needs, and
+  adopting it would be an orchestration change for `arch` and the user, not an accessor
+  change.
+- Rejected shapes, each returning only with a new ruling: two public pass functions (working
+  state could not cross two free-function calls without a public accumulator); one function
+  with a pass-discriminator parameter (every consumer would dispatch on the pass —
+  [Principle 02](principles/02-narrow-interfaces.md)); staging as a mode of `SymbolTable` (a
+  second write surface and a mode-qualified live invariant); a read-view trait implemented
+  by `&SymbolTable` (one caller pattern does not earn a trait, so `View` is a concrete
+  types-owned value); a cluster-wide macro transaction
+  ([macro availability](macro-availability-model.md) §7).
 - A cluster is the fully expanded non-macro entry set: one REPL form, the contents of an
-  explicit `begin`, or a file's non-structural forms. A source-ordered `defmacro` publishes
+  explicit `begin`, or a file's non-structural forms, all on one path
+  ([Principle 11](principles/11-single-pipeline-mode-parameters.md)). A source-ordered `defmacro` publishes
   its parent, clauses and generated realizations as a module-local checkpoint once its
   expansion-time closure has typechecked and compiled; a later failure does not roll it
   back. A macro replacement with fewer clauses supplies explicit absent-key ABI-change
   decisions in that publication; omission alone never deletes.
 - `instantiate_demands` is the sibling entry point that replays `MonoDemand`s on reload.
-- Contracts: [BC 6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle),
-  [macro availability](macro-availability-model.md) and the Decision 44 record under
-  `decisions/`.
+- Contracts: [BC 2](bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) (the cluster
+  definition and invariants 2, 3a, 7, 10 and 11),
+  [BC 6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle) and
+  [macro availability](macro-availability-model.md). Exact signatures are the rustdoc on
+  `check_forms` and `SymbolTableAccess` in `crates/cranelisp-typecheck/src/`.
 
 ---
 

@@ -1,6 +1,6 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. Latest checkpoint: `f84a6d69`. The compiler corrections,
+**Status:** PHASE 5. Latest checkpoint: `b66d3615`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
 Document consolidation continues: the last integrated check has 331 findings
@@ -3591,3 +3591,118 @@ for this QA-directed removal of superseded instruments.
 Final integrated document check333→331, no introduced identities. QA working
 allocations condensed to final evidence and retained limits after completion.
 Whitespace clean; NOTES unchanged. New work uncommitted afterf84a6d69.
+
+### Checkpointb66d3615 and remaining record collections (2026-09-24)
+
+User requested commit and continuation. Committed17 files asb66d3615; NOTES
+and .agents excluded. Baseline331 findings.
+- arch Claude/Fable/high `6d8c5f27-cef9-4c2c-9dfa-63f52b4226f8`: remaining
+  four architecture decisions as one retirement/consolidation batch, source
+  read-only with exact cross-owner remaps.
+- review Claude/Fable/high `8771bdc0-8170-4a49-80a5-bae49a116ed4`: read-only
+  inspection of the historical design/review collection for bulk retirement;
+  preserve live cues and unresolved obligations, no fresh compiler audit.
+C-A remains user-deferred; C-B fix committed in f84a6d69. No runtime work or
+phase transition dispatched.
+
+Retirement integration: review cleared all33 historical reports (90,464 words),
+with14 unresolved/unverified points preserved in ACT-0990 for current QA
+classification. Report retirement is not defect closure. Root applies the exact
+owner remaps; the live review cues remain. Arch's four decision records are
+retired after their unique rationale moved to bounded-contexts/interfaces.
+- test Claude/Opus/high `d89e22c0-6013-49b1-824f-eb6c46a6625d`: test citation
+  remaps and document-checker discovery/class assertions; focused nextest.
+- arch Claude/Fable/high `b10a23e5-e53a-4a1d-972c-2ab97ebbfe5f`: review's
+  E1/E13/E14 convention and architecture handoffs, docs only.
+No cache-corruption hardening approved or implied by historical findings.
+
+Arch follow-up stopped with provider HTTP429 usage credits exhausted, no result
+or architecture changes. E1/E13/E14 remain pending, not resolved. Root restored
+the historical checklist pending E1's owner decision;32 other review reports
+retire with residuals preserved. The temporary historical class is narrowed to
+that one original record, not an exemption for new documents.
+
+Integrated outcome:32 historical review reports and the final4 architecture
+decision records retired;14 residual review points retained in ACT-0990. The
+original checklist remains pending E1. Canonical contracts and label index
+retain current rationale. Net Markdown reduction approximately91,000 words.
+Final checker331→290 across554 corpus documents, zero introduced identities
+(.local/s122-retirement-final-check.json). The last2 reductions are the
+exe-bundle memory's stale facade/heading references.
+Test dispatch completed: citation_drift discovery + planted-source fault
+checks2/2 PASS; overall no-baseline conformance gate remains red for known
+findings (3 run,2 pass,1 fail). Affected test targets compile. Root completed
+comment/citation-only remaps after test writer finished; no runtime/API delta.
+Whitespace check clean; NOTES hash unchanged; .agents untouched by integration.
+No repeat independent review for mechanical remaps. New cleanup is uncommitted
+afterb66d3615. Further owning-role work awaits Claude quota; no model
+substitution or user decision is assumed.
+
+### Opus continuation (2026-09-24)
+
+User authorized Opus5.5 instead of Fable. Shared package unchanged; dispatch
+uses the wrapper's explicit model override. Both roles run Opus5.5/high:
+- arch `2344eb18-f4f1-484d-a866-d89dccdfb794`: E1/E13/E14 dispositions.
+- qa `24329d7f-4058-43f9-9ceb-eb25a71c760c`: E2–E12 current-source
+  classification in ACT-0990; no implementation or broad audit.
+Baseline290 findings. Root retains mechanical integration ownership.
+
+Arch Opus continuation completed. E1: the historical extra must_use rule is
+unadopted; Rust's existing Result warning supplies its stated purpose (owner
+analysis, not a new runtime probe). E13: clarified existing extern ownership
+scope in bounded-contexts4b invariant6; internal trampoline borrows while
+extern consumes. E14: signature already has Clone; root applied exact rustdoc
+bound/citation repairs. Decisions25/31 notes already retired into current homes.
+All33 historical review reports/checklists can now retire; temporary retention
+class removed. No public API, language or runtime change.
+
+QA Opus classified11 points:8 discharged (E2 analyses differ and exhaustive
+walks catch variant additions; E4/E5/E6 no credible current obligation under
+existing producer/provenance and cache policy; E7 isolated/guarded tests; E8
+existing failed-redefinition tests; E11 rewrites removed old premises; E12
+obsolete suggestions). Source inspection, not fresh suite evidence.3 bounded
+corrections retained; no defect reproduction/new test allocated.
+E3 redundant explicit Send is folded into existing ACT-0955's coordinated
+public-API baseline work with user review preserved; no source edit now.
+Dev int Opus5.5/high `7c860d85-0a7e-4643-842d-cabda55560f0` completed E9:
+/help marks /reset unavailable. Cargo check passes; real REPL /help and /reset
+confirm matching text. Existing unrelated format_type formatting drift left.
+Dev intrinsics Opus5.5/high `d4b57ce9-5a34-4e6e-a87a-e97777626097` owns
+E10 rustdoc correction; behavior and tests unchanged.
+
+Dev intrinsics completed E10 rustdoc; compile/format checks pass, no runtime
+change or test rerun allocated. Same stale claim found in backend ring2 design.
+Design Opus5.5/high `17ec823c-afdb-4a9e-b7ba-a7d4826d45b3` owns that
+document's IO-release reconciliation and exact adjacent test citation handoff.
+ACT-0990 now carries only this remaining same-fact correction; its other
+points are discharged above or retained in ACT-0955.
+
+Backend design reconciled the same IO claim through §3.5, removed the obsolete
+0474 open-fix narrative while preserving §3.5.10 as a cited anchor; checker
+290→289. Exact three drop-test citation remaps integrated, no predicates or
+values changed. The same stale summary remained upstream at BC4b invariant7,
+Decision29 index and sequence diagram. Arch Opus5.5/high
+`a3c52c3c-dba6-4116-aa19-ae6e8988a9f3` owns that final three-carrier repair.
+
+E10 complete across intrinsics rustdoc, backend §3.5, BC4b invariant7,
+Decision29 index and runtime sequence; canonical field rules remain solely in
+ownership-and-disposal §6/§7. Root applied the owners' exact test-citation
+remaps and removed the same stale universal-shallow claim from run_io rustdoc.
+Assertions/behavior unchanged. ACT-0990 deleted:13 points resolved and E3
+retained in ACT-0955, not lost. Diagram rendering uses system ARM Chromium
+because mmdc's bundled x86 browser cannot run on this host.
+
+Final Opus batch integration: checker290→289 (331 before record retirement),
+corpus552, no introduced finding identities. ACT-0990 removed after disposition;
+E3 remains explicitly in ACT-0955. SVG regenerated successfully with local CLI
+HTML and system ARM Chromium after repairing the pre-existing semicolon parse
+error. Source/SVG lockstep restored. Whitespace clean; NOTES unchanged.
+No full-suite rerun for documentation/comment changes. Prior scoped compile,
+format, checker fault-detection and live REPL observations remain the evidence.
+No new language, API, cache or runtime behavior; changes remain uncommitted.
+
+Retained unverified observation for the next architecture sequence refresh:
+exec-flow-runtime still depicts Par/rayon, runtime SymbolTable effect lookup
+and omits Select/EffectPoll/Launch arms. Arch flagged these outside the current
+IO-release correction, not as newly reproduced runtime defects. Backend ring2
+pre-fix history and unrelated existing findings remain for its next cleanup.

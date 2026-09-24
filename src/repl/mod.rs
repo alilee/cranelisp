@@ -279,10 +279,7 @@ pub(crate) fn print_help(stdout: &mut impl Write) {
         stdout,
         "  /context <path>     Dump the assembled agent request to a file (debug; if built in)"
     );
-    let _ = writeln!(
-        stdout,
-        "  /reset              Clear all state and reload prelude"
-    );
+    let _ = writeln!(stdout, "  /reset              (not yet available)");
     let _ = writeln!(stdout, "  /sh <cmd>       Run a shell command");
 }
 

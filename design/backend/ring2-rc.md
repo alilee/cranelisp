@@ -373,7 +373,7 @@ Under Decision 24, the extern `cranelisp_run_io(io_ptr)` is a consuming callee: 
 Stated as an invariant:
 
 - Caller-tree nodes (reachable from the original `io_ptr` by following Bind spines, Par branches, and Bind continuations) are owned by the top-level extern caller. They are released by one transitive `consume_io_tree(io_ptr)` call after the trampoline returns.
-- Fresh nodes (allocated during the trampoline's walk by invoked continuations) are owned by the trampoline. They are released inline via `rc::dec_shallow_io` at the point of replacement, and a final shallow dec on the no-continuation return path.
+- Fresh nodes (allocated during the trampoline's walk by invoked continuations) are owned by the trampoline and released inline when `current` is replaced, including on the no-continuation return path (§3.5.4).
 - Continuations popped from `cont_stack` carry their parent Bind's freshness. Caller-tree closures are not dec'd by the trampoline (the tree walks them); fresh closures are `consume_closure`-dec'd after invocation (one-shot semantics).
 - The trampoline returns a scalar `i64` — whatever payload the final Pure/Effect/Par yielded. If that payload is a heap pointer (e.g., a String from `Pure "hello"`), its rc is managed by the caller's scope, as for any heap-typed return value.
 
@@ -381,25 +381,25 @@ See §3.5.4 for the landed implementation of these rules.
 
 #### 3.5.4 Fix shape — LANDED Sprint 57 Wave 3
 
-The minimal fix is to dec the replaced node inside each loop iteration WHEN the trampoline owns it (not when the caller does). The earlier formulation of this section proposed unconditional shallow-dec at every replace site — that turned out to double-dec the caller's tree because `cranelisp_run_io` still needs to run `consume_io_tree(io_ptr)` post-return to release the top-level tree (closures embedded in caller-tree Binds are transitively released by that walk). The correct discipline is ownership-aware shallow dec: shallow-dec only the nodes and closures the trampoline itself produced.
+The minimal fix is to dec the replaced node inside each loop iteration WHEN the trampoline owns it (not when the caller does). The earlier formulation of this section proposed unconditional shallow-dec at every replace site — that turned out to double-dec the caller's tree because `cranelisp_run_io` still needs to run `consume_io_tree(io_ptr)` post-return to release the top-level tree (closures embedded in caller-tree Binds are transitively released by that walk). The correct discipline is ownership-aware release: release only the nodes and closures the trampoline itself produced.
 
 **Landed implementation (Approach 4)**. `run_io_trampoline` is non-consuming of `io_ptr`:
 
 - The trampoline tracks `current_is_fresh: bool` — initially false (the caller's tree). It flips to true after the first `call_continuation` (continuation returns a freshly-allocated IO node) and stays true for the rest of that subtree (stepping into a fresh Bind's inner descends to another fresh node because the continuation allocated the whole subtree).
-- At every transition where `current` is replaced (Bind → inner, Pure/Effect/Par pop → continuation result), shallow-dec the old `current` via `rc::dec_shallow_io` **only if `current_is_fresh` was true**.
+- When `current` is replaced, the old `current` is released **only if `current_is_fresh` was true**. A finished value-producing node (continuation pop or the no-continuation return) goes through `drop::dec_shallow_io`. A fresh `Bind` → inner step follows the fresh-`Bind` descent in [ownership-and-disposal.md §7](../intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions): it acquires the inner and continuation references, then releases the parent structurally.
 - `cont_stack` stores `(cont_ptr, cont_is_fresh)` — the freshness inherited from the enclosing Bind at push time. When popped, `call_continuation(cont_ptr, val, cont_is_fresh)` invokes the closure and, if `cont_is_fresh`, `drop::consume_closure(cont_ptr)` after the call to dec the continuation-produced closure. Caller-tree closures (is_fresh=false) are left alone; `consume_io_tree(io_ptr)` releases them post-return.
 - `cranelisp_run_io(io_ptr)` wrapper: runs the trampoline, then `drop::consume_io_tree(io_ptr)` to transitively release the caller's tree.
 
 **Ownership invariant**. Every IO ADT node is dec'd exactly once:
 - Caller-tree nodes (Pure/Effect/Bind/Par and their cont closures) — released by the post-return `consume_io_tree(io_ptr)` transitive walk.
-- Fresh nodes (allocated by a continuation during the trampoline's walk) — released inline by the trampoline's ownership-aware shallow dec.
+- Fresh nodes (allocated by a continuation during the trampoline's walk) — released inline by the trampoline, as above.
 
 The two sets are disjoint: caller-tree nodes are reachable only via `io_ptr`; fresh nodes are reachable only via `current` after the first `call_continuation`. There is no overlap, so no node gets double-dec'd, and none leaks.
 
-**Primitives introduced in Wave 3**:
+**Release primitives**:
 
-- `rc::dec_shallow_io(ptr)` — landed in `crates/cranelisp-intrinsics/src/drop.rs` (Decision 29). Atomically dec's the RC with Release ordering; on last-ref, emits an Acquire fence and deallocs the outer allocation only — no field walk. Safe on bare nullary tags.
-- `call_continuation(cont_ptr, val, cont_is_fresh: bool)` — existing helper gains the freshness flag; when true, invokes `consume_closure(cont_ptr)` post-call.
+- `drop::dec_shallow_io` releases the trampoline's reference to a fresh node under the `SpineTransferred` disposition. On the last reference it runs the one IO teardown tail and discharges the fields that disposition's column of the `ownership-and-disposal.md` §6 table declares. Only `Bind`'s transferred fields are skipped, so this is not an outer-allocation-only free. A bare nullary tag is a no-op.
+- `call_continuation(cont_ptr, val, cont_is_fresh)` — when `cont_is_fresh`, releases the closure with `consume_closure(cont_ptr)` after the call.
 
 **Rejected alternatives**:
 
@@ -411,11 +411,11 @@ The two sets are disjoint: caller-tree nodes are reachable only via `io_ptr`; fr
 
 #### 3.5.5 Why `call_effect_thunk` is NOT affected
 
-`call_effect_thunk` borrows its thunk: the node keeps it across any number of forces, and the node's teardown discharges it once through `drop_effect_thunk`, identically under the structural and the shallow release (`design/intrinsics/ownership-and-disposal.md` §6.2). The thunk is a platform-owned Rust allocation, not a Cranelisp heap value with an RC header, so it does not interact with this fix; the resource token is a scalar. Only the Effect node's own allocation is RC-managed, and a fresh node's release is the shallow one from §3.5.4.
+`call_effect_thunk` borrows its thunk: the node keeps it across any number of forces, and the node's teardown discharges it once through `drop_effect_thunk`, identically under the `Structural` and `SpineTransferred` releases (`design/intrinsics/ownership-and-disposal.md` §6.2). The thunk is a platform-owned Rust allocation, not a Cranelisp heap value with an RC header, so it does not interact with this fix; the resource token is a scalar. Only the Effect node's own allocation is RC-managed, and a fresh node's release is the `dec_shallow_io` release from §3.5.4.
 
 #### 3.5.6 Par-specific note
 
-`dispatch_par_branches` invokes `run_io_trampoline` recursively on each branch. Under the fix, each recursive trampoline call is itself RC-balanced — every intermediate node produced inside the branch walk is dec'd inline by the branch's own trampoline instance. The outer trampoline then allocates a fresh `results_buf` via `alloc_with_rc` to hold the scalar results; this buffer is passed to the continuation and eventually dec'd by whatever scope owns it (typically the continuation's `pop_scope_with_cleanup`). The outer Par node itself is shallow-dec'd at the point where `current` is replaced with the continuation's return (or at the `return results_ptr` path at the top-level).
+`dispatch_par_branches` invokes `run_io_trampoline` recursively on each branch. Under the fix, each recursive trampoline call is itself RC-balanced — every intermediate node produced inside the branch walk is dec'd inline by the branch's own trampoline instance. The outer trampoline then allocates a fresh `results_buf` via `alloc_with_rc` to hold the scalar results; this buffer is passed to the continuation and eventually dec'd by whatever scope owns it (typically the continuation's `pop_scope_with_cleanup`). A fresh outer Par node is released through `drop::dec_shallow_io`, which discharges its branch block (§3.5.10), at the point where `current` is replaced with the continuation's return (or at the `return results_ptr` path at the top-level).
 
 #### 3.5.7 Testing — RC balance required, not just "tests pass"
 
@@ -436,91 +436,18 @@ Pre-existing `test_run_io_deep_bind_chain` (1000 binds) is a natural stress test
 #### 3.5.9 Cross-references
 
 - `crates/cranelisp-intrinsics/src/io.rs` — the landed fix (non-consuming trampoline + `current_is_fresh` flag).
-- `crates/cranelisp-intrinsics/src/drop.rs` — `consume_io_tree` (transitive) for caller-tree release; `consume_closure` for fresh-closure release; `dec_shallow_io` (Decision 29, Wave 3) for fresh IO-node release.
+- `crates/cranelisp-intrinsics/src/drop.rs` — `consume_io_tree` (transitive) for caller-tree release; `consume_closure` for fresh-closure release; `dec_shallow_io` for fresh IO-node release.
 - `§3.3 Extern Consumption Audit` — the row for `cranelisp_run_io` that describes the top-level `consume_io_tree(io_ptr)` behaviour; remains accurate after the fix.
-- `design/arch/CLAUDE.md` Decision 24 — the uniform consuming convention.
-- `design/arch/CLAUDE.md` Decision 29 — `rc::dec_shallow_io` primitive introduced by the Wave 3 fix.
+- [ownership-and-disposal.md §6](../intrinsics/ownership-and-disposal.md#6-the-io-family) (the IO teardown table and its two dispositions) and [§7](../intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions) (trampoline ownership transitions) — the canonical runtime rules this section applies.
+- Decision 24 ([label index](../arch/decisions/README.md)) — the uniform consuming convention.
 
-#### 3.5.10 Fresh-continuation-produced `SELECT`/`PAR` node release — the deep-free ruling (S97, FIXME 0474)
+#### 3.5.10 Fresh `Par`/`Select` node release (FIXME 0474, closed)
 
-> **Model-independent — STANDS through the S97 ctx-vtable pivot.** This ruling is about freeing
-> a fresh `IO_TAG_PAR`/`IO_TAG_SELECT` node's branch container (field-0 `List`/`Vec` + sub-trees)
-> in the trampoline's fresh-node release path. It has nothing to do with resource descriptors,
-> the retired header-slot model, or the ctx-vtable scheduling model (`io-trampoline.md` §17) —
-> it is unaffected by the Wave-0 re-cascade and is implemented unchanged.
-
-**The defect.** The Wave-3 fresh-node release path (`current_is_fresh` + `dec_shallow_io`,
-§3.5.4) is **shallow** by design: it frees a fresh node's *own* allocation and relies on the
-trampoline's spine walk to reach the node's children (a fresh `Bind`'s `inner` is descended
-to and shallow-dec'd separately; its `cont` is released via `consume_closure`). This is correct
-for the **single-spine** tags — `Pure`, `Effect`, `Bind` — because every child is on a path the
-walk visits.
-
-It is **wrong for the multi-child tags** `IO_TAG_PAR` (3) and `IO_TAG_SELECT` (6). Their
-branches live in a **branch container** (the `List (IO a)` / branch `Vec`) at field 0, **not**
-on the `current` spine — the trampoline dispatches them to recursive trampolines (Par) or the
-reactor partition (Select) and, per `io-trampoline.md` §16.5, deliberately **leaves the branch
-heap sub-trees for the node's drop glue** (`consume_io_tree`'s `IO_TAG_PAR`/`IO_TAG_SELECT`
-arms walk the container and free each branch exactly once). For a **caller-tree** par/select
-node that drop glue runs (the post-return `consume_io_tree(io_ptr)`); for a **fresh** par/select
-node — one a bind continuation built, e.g. `(bind X (fn [_] (select […])))` — the node is
-released by `dec_shallow_io`, which **never walks field 0**, so the branch container + every
-branch sub-tree **leak** (FIXME 0474). The leak is pre-existing (inherited from `Par`; `Select`
-inherited the same shape in S96 Chunk C) and observable only for a select/par **constructed
-inside** a continuation.
-
-**Ruling — option (a), applied to BOTH tags together (shared model).** The **fresh-node release
-path becomes shape-aware** for the two multi-child tags: on a last-ref release of a fresh
-`IO_TAG_PAR` **or** `IO_TAG_SELECT` node it **deep-frees the branch container** (the field-0
-`List`/`Vec` and, transitively, every branch sub-tree) **before** deallocating the node header;
-all other tags stay **shallow exactly as today**. Concretely, `dec_shallow_io` (or a dedicated
-`dec_fresh_io` release entry) grows a tag check: for PAR/SELECT it runs the **same branch-
-container walk `consume_io_tree`'s PAR/SELECT arms already use** (Principle 7 — single source,
-not a second free path), then deallocs the header; for every other tag it is byte-identical to
-the current shallow behaviour.
-
-**Why (a) over (b) (route fresh PAR/SELECT through `consume_io_tree`).** Both options are
-**functionally equivalent and both safe** — fresh nodes are disjoint from caller-tree nodes
-(§3.5.4: the two sets never overlap), and freshness is **viral within a subtree** (§3.5.4 /
-§3.5.6: a fresh par/select node's branches are themselves fresh), so a transitive deep-free of
-a fresh node frees exactly the fresh branches, each once, with **no double-free** (the post-
-return `consume_io_tree(io_ptr)` never reaches them). Option (b) is rejected on **placement**,
-not correctness: routing fresh par/select through `consume_io_tree` requires a "if tag ∈
-{PAR, SELECT} call `consume_io_tree` else `dec_shallow_io`" branch at **every** fresh replace
-site (Bind→inner, Pure/Effect/Par/Select pop → cont result, the no-cont return path), and
-crucially it must **NOT** be generalized to all fresh nodes — routing a fresh `Bind`/`Pure`/
-`Effect` through `consume_io_tree` would **double-free** the children the spine walk already
-handled (the §3.5.4 "unconditional shallow-dec / transitive" hazard, restated). Option (a)
-centralizes the node-shape knowledge in the **one** release primitive — the same place
-`dec_shallow_io` already encodes "safe on bare nullary tags" — so the trampoline's replace
-sites stay uniform (always call the one release fn; the fn knows node shapes). This is the
-single-source choice (Principle 7) and the smaller blast radius (Principle 6).
-
-**Safety condition (why the deep-free is timely).** A fresh par/select node is replaced as
-`current` only **after** the trampoline has finished interpreting it — for `Select`, the losers'
-futures are dropped (cancellation = drop, releasing permits + deregistering interest,
-`io-trampoline.md` §16.5) when the winner is found; for `Par`, all branches **join** (structured
-fork-join) — both **before** the node is shallow-dec'd. So at the deep-free point **no in-flight
-future references the branch heap sub-trees**, and the deep-free reclaims exactly the rc=1
-branch roots the recursive branch trampolines / reactor left behind (the recursive trampolines
-RC-balance their *own* intermediates, §3.5.6, but never consume the branch **root** node — that
-root is what leaked).
-
-**Test obligation (per the cross-skill defect protocol).** `/qa` owns a narrow **heap-balance**
-repro — a `(bind X (fn [_] (select […])))` and a `par` analogue asserting `alloc == dealloc`
-under `CRANELISP_RC_TRACE` / sustained repetition (failing-not-ignored, co-landing with the
-`/dev` fix). The backend/runtime-side unit guard mirrors §3.5.7: build a tree whose continuation
-returns a fresh select (then par) node with N branches; after `cranelisp_run_io`,
-`(alloc_count − baseline) == (dealloc_count − baseline)` — today it leaks the branch container +
-N branch roots, post-fix zero. FIXME 0474 stays open until `/qa`'s guard + the `/dev` fix land
-(Phase 5); the cross-ref is `io-trampoline.md` §16.12.
-
-**Code-location note.** §3.5's paths cite `crates/cranelisp-runtime/src/{io,drop}.rs`; post the
-D43 split the IO trampoline + `dec_shallow_io`/`consume_io_tree` live in
-`crates/cranelisp-intrinsics/src/io.rs` (+ `drop.rs`) — the FIXME's `refers_to`. The **model**
-above is unchanged by the relocation; the fix edits the intrinsics-crate release path.
-- `sprints/SPRINT.md` §"Architecture Review" condition 6 — the `/qa` RC-balance integration test (Wave 3 acceptance criterion).
-- `repl/demos/…` — platform demos that exercise the trampoline (behaviour-preserving; memory behaviour fixed).
+- A `Par` or `Select` node's branches live in its branch container, not on the `current` spine. The trampoline dispatches them to recursive trampolines (`Par`) or the reactor (`Select`) and leaves the branch sub-trees for the node's teardown (`io-trampoline.md` §16.5).
+- A fresh `Par` or `Select` node therefore needs its branch container discharged when the trampoline releases it. The `Par` and `Select` rows of the `SpineTransferred` column in `design/intrinsics/ownership-and-disposal.md` §6 match their `Structural` rows, so `drop::dec_shallow_io` discharges the branches through the same teardown tail as `consume_io_tree` (Principle 7, single source of truth). Every finished-node release site calls that one function, and the node-shape knowledge stays in the table. FIXME 0474 recorded the leak from an outer-allocation-only release of a fresh `(bind X (fn [_] (select […])))` or `par`.
+- The discharge is timely. The trampoline replaces a fresh `Par`/`Select` node only after interpreting it: `Par` branches have joined, and `Select` losers' futures have been dropped (`io-trampoline.md` §16.5). No in-flight future references the branch sub-trees at release.
+- It cannot double-free. Freshness is viral within a subtree (see [Fix shape](#354-fix-shape--landed-sprint-57-wave-3) above), so the branches are themselves fresh and the caller's post-return `consume_io_tree(io_ptr)` never reaches them.
+- Evidence: `crates/cranelisp-intrinsics/src/drop/tests.rs` `dec_shallow_io_select_deep_frees_branch_vec_and_all_branches` and `dec_shallow_io_par_deep_frees_branches`; the heap-balance e2e `tests/concurrency_fanout.rs` `fresh_select_in_continuation_rc_balanced` and `fresh_par_in_continuation_rc_balanced`.
 
 ## 4. Drop Glue
 

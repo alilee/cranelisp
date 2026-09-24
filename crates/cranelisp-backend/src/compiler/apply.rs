@@ -888,8 +888,8 @@ where
             );
         }
         self.in_tail_position = saved_tail;
-        // Per Decision 0048 §"Structural invariant — backend
-        // dep-ban": every PRIMITIVE call site MUST emit
+        // Per Decision 48 (design/arch/bounded-contexts.md §4a invariant 3):
+        // every PRIMITIVE call site MUST emit
         // GOT-indirect dispatch against `__cranelisp_got_primitives`
         // — never a `Linkage::Import` direct extern, which the
         // cache-mode in-process linker (`cache::linker::Linker`)

@@ -3059,8 +3059,8 @@ fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
 // =============================================================================
 
 // regression-for: FIXME 0177 — check_forms cross-form state regression
-// spec: design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
-//       §"`SymbolTableAccess` (Approach B is canonical)"
+// spec: design/arch/interfaces.md §"check_forms" — cross-form working state
+//       lives only in the check_forms frame
 //
 // Pre-S66 the cross-form state hole manifested as stack-overflow when a
 // later REPL input referenced a constrained-polymorphic defn registered
@@ -3090,8 +3090,8 @@ fn regression_0177_cross_form_state_no_bleed() {
 }
 
 // regression-for: FIXME 0179 — cluster-mode union read staging + live
-// spec: design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
-//       §"`SymbolTableAccess` (Approach B is canonical)"
+// spec: design/arch/interfaces.md §"check_forms" — cluster-mode reads union
+//       staging over live
 //
 // Pre-S66 cluster-mode reads went only to live; an intra-cluster
 // forward reference to a sibling defn staged in the same cluster but not

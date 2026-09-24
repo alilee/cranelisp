@@ -4,7 +4,7 @@
 
 **Owner.** `/design` (backend).
 
-**Reads.** `design/arch/bounded-contexts.md` §3 ("Minimal JIT-setup boundary" + invariants 1–7); `design/backend/compile-to-module.md` (S75 banner + §6 + §2.6.5); `design/backend/backend.md` (the context master); `crates/cranelisp-backend/src/lib.rs` `//!` + `crates/cranelisp-backend/src/jit.rs` rustdoc; [primitives ownership decision](../arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md) (primitives precedent), [per-symbol JIT cardinality and direct-write decision](../arch/decisions/README.md) (per-symbol JIT direct-writes); `sprints/SPRINT.md` §"Architecture review (Phase 2)" Q1/Q2 (the seam dispositions, /arch sign-off); FIXMEs `0232-backend-meta-json-platform-schema.md`, `0122-backend-link-mode-got-alignment-divergence.md`, `0233-int-platform-as-module-*`.
+**Reads.** `design/arch/bounded-contexts.md` §3 ("Minimal JIT-setup boundary" + invariants 1–7); `design/backend/compile-to-module.md` (S75 banner + §6 + §2.6.5); `design/backend/backend.md` (the context master); `crates/cranelisp-backend/src/lib.rs` `//!` + `crates/cranelisp-backend/src/jit.rs` rustdoc; [primitives context](../arch/bounded-contexts.md#4a-primitives-cratescranelisp-primitives) invariants 3 and 6 (primitives precedent), [per-symbol JIT cardinality and direct-write decision](../arch/decisions/README.md) (per-symbol JIT direct-writes); `sprints/SPRINT.md` §"Architecture review (Phase 2)" Q1/Q2 (the seam dispositions, /arch sign-off); FIXMEs `0232-backend-meta-json-platform-schema.md`, `0122-backend-link-mode-got-alignment-divergence.md`, `0233-int-platform-as-module-*`.
 
 **Scope from BC §3.** Four S76 backend obligations, all W-Enablement / W-Integrate (NOT macro-driven):
 

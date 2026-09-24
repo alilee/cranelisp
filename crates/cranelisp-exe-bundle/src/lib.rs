@@ -33,8 +33,8 @@
 //! ## Startup-hook discipline — primitives
 //!
 //! `cranelisp-primitives`' force-link `pub use` re-exports were retired in
-//! Sprint 68 Wave 3 per `design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md`
-//! §Cascade. The replacement is the explicit `cranelisp_init_primitives()`
+//! Sprint 68 Wave 3 (Decision 48). The replacement is the explicit
+//! `cranelisp_init_primitives()`
 //! startup hook (below) — the standalone binary's startup stub calls it
 //! UNCONDITIONALLY before user code runs (FIXME 0280 made the call
 //! unconditional; pre-0280 it rode on `cranelisp_init_platform`, so a
@@ -52,8 +52,7 @@
 //! time instead of failing with "symbol not found: ___cranelisp_got_primitives".
 //! The startup hook populates the slab's slots before the first GOT-indirect
 //! dispatch reads them (null slots → SIGSEGV).
-//! See `design/arch/facades/int.md` §"Exe-bundle startup contract —
-//! `cranelisp_init_primitives()`" for the full rationale.
+//! This startup ordering is the exe-bundle contract.
 
 // Force-link intrinsics submodules (backend-emitted calls).
 pub use cranelisp_intrinsics::alloc;
@@ -76,7 +75,7 @@ pub use cranelisp_intrinsics::trace;
 pub use cranelisp_intrinsics::vec_runtime as intrinsics_vec;
 
 // Primitives force-link `pub use` lines RETIRED in S68 Wave 3 per
-// Decision 0048 §Cascade. The replacement is the explicit
+// Decision 48. The replacement is the explicit
 // `cranelisp_init_primitives()` startup hook below — see crate-level docs.
 
 extern crate cranelisp_platform;
@@ -84,9 +83,8 @@ extern crate cranelisp_platform;
 /// Force population of `cranelisp-primitives`' static `SymbolTable` + `GotTable`
 /// before any compiled code runs.
 ///
-/// Per `design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md`
-/// §Cascade and `design/arch/facades/int.md` §"Exe-bundle startup contract —
-/// `cranelisp_init_primitives()`", this hook replaces the pre-S68 force-link
+/// Per Decision 48 (design/arch/bounded-contexts.md §4a invariant 6),
+/// this hook replaces the pre-S68 force-link
 /// `pub use cranelisp_primitives::*` re-exports. The standalone binary's
 /// startup stub calls it (alongside `cranelisp_init_platform`) before user
 /// code runs.

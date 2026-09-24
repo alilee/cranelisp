@@ -166,7 +166,7 @@ fn rows_03_04_linker_and_object_artefact_named_in_backend_pub_api() {
 // Row 6 — primitive_for_trait_method (D43 forbidden pattern; delete)
 // =============================================================================
 
-// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE"
+// spec: design/arch/bounded-contexts.md §4a invariant 4 — no trait-keyed substitution in backend
 // FIXME(/dev backend Wave 3 row 6): delete primitive_for_trait_method per D43.
 #[test]
 fn row_06_primitive_for_trait_method_absent_from_backend_pub_api() {
@@ -189,7 +189,7 @@ fn row_06_primitive_for_trait_method_absent_from_backend_pub_api() {
 // Row 7 — operators.rs full retirement (D43 full close; FIXME 0150)
 // =============================================================================
 
-// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE"
+// spec: design/arch/bounded-contexts.md §4a invariants 4 and 5 — name-keyed inline substitution only
 // What the facade actually forbids (S69 audit F-6 + F-7, grounded in Decision
 // 43 §"Status pointer — Sprint 67 FULL CLOSE"): the TRAIT-KEYED substitution
 // — `primitive_for_trait_method(TraitName, Symbol, TypeName) -> Option<&str>`
@@ -399,7 +399,7 @@ fn row_33_trace_bodies_hosted_in_intrinsics_pub_api() {
 // Row 31 — ops::cranelisp_op_* deletion (D43 full close)
 // =============================================================================
 
-// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE"
+// spec: design/arch/bounded-contexts.md §4a invariant 2; design/arch/principles/16-punctuation-symbols-are-not-special.md — no duplicate `cranelisp_op_*` addressable forms
 // FIXME(/dev intrinsics Wave 2 row 31, REV-5 audit): delete ops::cranelisp_op_*.
 #[test]
 fn row_31_cranelisp_op_extern_fns_deleted_from_intrinsics() {
@@ -510,7 +510,7 @@ fn walk_rust_files(root: &std::path::Path) -> Vec<PathBuf> {
 // FQTypeName binding (Decision 47, types.md §232) — second user-challenge amend
 // =============================================================================
 
-// spec: design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md §"Status pointer — Sprint 67 close"
+// spec: design/arch/interfaces.md §"Type System" — resolved-stage APIs use FQTypeName
 // FIXME(/dev typecheck/backend/intrinsics/primitives/platform/int Wave 3):
 // every API past frontend's resolution stage that names a type uses FQTypeName.
 // Exceptions: frontend syntactic-stage; receiver-pinned SymbolTable::get_type;

@@ -256,9 +256,7 @@ fn stdlib_not_mappable_path() {
 // FIXME 0150 — `--link` mode against intrinsics + primitives archives
 // =============================================================================
 
-// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Migration scope" — Phase 5 retirement: `--link` mode produces a runnable
-// binary that links against `cranelisp-intrinsics.a` + `cranelisp-primitives.a`
-// instead of `cranelisp-runtime.a`.
+// spec: design/arch/bounded-contexts.md §"Dependency direction" (the `cranelisp-exe-bundle` row) — `--link` links intrinsics + primitives; there is no runtime crate
 // FIXME(/dev FIXME 0150 Phase 5 land — runtime crate retires, primitives +
 // intrinsics archive paths active in linker invocation).
 #[test]
@@ -296,7 +294,7 @@ impl CrOutputExt for helpers::e2e::CrOutput {
 // FIXME 0150 — Negative: cranelisp-runtime crate retired post-Phase 5
 // =============================================================================
 
-// spec: design/arch/decisions/0043-runtime-split-into-primitives-intrinsics.md §"Status pointer — Sprint 67 FULL CLOSE" — D43 Phase 5 retirement.
+// spec: design/arch/bounded-contexts.md §"Dependency direction" — the `cranelisp-runtime` crate is retired (Decision 43).
 // FIXME(/dev FIXME 0150 Phase 5 land) — fails until the runtime crate
 // directory is removed AND the workspace `Cargo.toml` no longer lists it.
 #[test]

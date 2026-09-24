@@ -597,7 +597,7 @@ fn decision24_consume_closure_bare() {
     assert_eq!(dealloc_count() - deallocs, 1);
 }
 
-// spec: design/arch/CLAUDE.md Decision 29 — dec_shallow_io frees outer only
+// spec: design/intrinsics/ownership-and-disposal.md §6 — dec_shallow_io on a Bind (SpineTransferred) discharges no fields; frees the node only
 #[test]
 fn dec_shallow_io_frees_outer_only() {
     let allocs = alloc_count();
@@ -638,7 +638,7 @@ fn dec_shallow_io_frees_outer_only() {
     assert_eq!(dealloc_count() - deallocs, 3);
 }
 
-// spec: design/arch/CLAUDE.md Decision 29 — dec_shallow_io skips nullary tags
+// spec: design/backend/ring2-rc.md §3.5.4 — dec_shallow_io is a no-op on bare nullary tags
 #[test]
 fn dec_shallow_io_skips_nullary() {
     let allocs = alloc_count();
@@ -650,7 +650,7 @@ fn dec_shallow_io_skips_nullary() {
     assert_eq!(dealloc_count() - deallocs, 0);
 }
 
-// spec: design/arch/CLAUDE.md Decision 29 — dec_shallow_io preserves shared refs
+// spec: design/backend/ring2-rc.md §3.5.4 — dec_shallow_io tears down only on the last reference
 #[test]
 fn dec_shallow_io_preserves_shared_reference() {
     let allocs = alloc_count();

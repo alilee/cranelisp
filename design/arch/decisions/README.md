@@ -4,14 +4,13 @@ Source comments, tests and design documents cite architecture rulings as
 "Decision N" / "D00NN". This index resolves each label to the ruling's current
 statement. The label is a name for the ruling; the linked home is the authority.
 
-- No new Decision files are authored. A new cross-context commitment is written
-  into [bounded contexts](../bounded-contexts.md) or a focused contract.
-- Five records remain as files because tests cite their sections as `// spec:`
-  anchors. Each retires when its contract is restated in the listed home and
-  `test` repoints the citations in the same change.
-- Every other record was retired once its ruling was confirmed in the listed
-  home; the original text is in Git history under `design/arch/decisions/` and
-  the retired legacy decision directory.
+- No Decision files exist and none are authored. A new cross-context commitment
+  is written into [bounded contexts](../bounded-contexts.md) or a focused
+  contract; a label row is added only for a number source already cites.
+- Every record was retired once its ruling was confirmed in the listed home.
+  The original texts are Git history under `design/arch/decisions/` (the last
+  four, 43, 44, 47 and 48, before the S122 Phase 5 checkpoint that removed
+  them) and the retired legacy decision directory.
 - A number absent from this table (7, 14, 15 and other gaps) was withdrawn
   before the register was split into files; Git history is its only record.
 
@@ -41,7 +40,7 @@ BC = [`bounded-contexts.md`](../bounded-contexts.md).
 | 26 | Platform function addresses live in the owning module's GOT slot; the scheduling class is a field of the platform-effect kind. | [BC 5](../bounded-contexts.md#5-platform-cratescranelisp-platform) invariant 1 |
 | 27 | Withdrawn: a Sprint 57 wave-ordering constraint, discharged when both waves landed. | — |
 | 28 | Withdrawn: a persistent per-worker JIT. Replaced by 31. | `design/int/int.md` §5.3 |
-| 29 | The IO trampoline releases an intermediate node with a shallow, single-node decrement. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 7 |
+| 29 | The IO trampoline releases only the IO nodes it owns, each through the single IO teardown tail under the disposition its transfer requires; no release is outer-allocation-only. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 7; [ownership and disposal](../../intrinsics/ownership-and-disposal.md) §6–§7 |
 | 30 | Withdrawn: mutual imports are diagnosed as a cycle instead of deadlocking the scheduler. | [BC 6](../bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle) "Known architectural constraints" |
 | 31 | JIT pages are reclaimed only by dropping the owning `Jit`; every pointer published from it has a retention owner. | [BC 3](../bounded-contexts.md#3-backend-cratescranelisp-backend) invariant 5; [Principle 22](../principles/22-published-pointers-have-retention-owners.md); `crates/cranelisp-backend/src/jit.rs` rustdoc; `design/int/session-transaction.md` |
 | 32 | `CodeStore` and `LinkerStore` are method-free marker bounds, so the types crate never names Cranelift. | [arch memory](../CLAUDE.md) §"Facade convention"; rustdoc in `crates/cranelisp-types/src/module.rs` |
@@ -55,9 +54,9 @@ BC = [`bounded-contexts.md`](../bounded-contexts.md).
 | 40 | IO observation is a callback contract registered with intrinsics; the observer state belongs to the binary. The `(trace …)` half was withdrawn. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) in-scope and [BC 6](../bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle) development tooling for the observer half, with `crates/cranelisp-intrinsics/src/io_observer.rs` rustdoc; [`tracing.md`](../tracing.md) for tracing |
 | 41 | One JIT per compiled symbol; backend publishes the slot address and returns artifacts; disassembly is produced on demand. | [BC 3](../bounded-contexts.md#3-backend-cratescranelisp-backend) "What crosses the boundary" and invariant 5; backend crate rustdoc |
 | 42 | Platform failures are a located `PlatformError` in the types crate, surfaced through `CranelispError::Platform`. | [BC 5](../bounded-contexts.md#5-platform-cratescranelisp-platform) invariant 9; rustdoc in `crates/cranelisp-types/src/error.rs` |
-| 43 | The runtime is split into `cranelisp-primitives` and `cranelisp-intrinsics`; neither has trait knowledge. | [0043](0043-runtime-split-into-primitives-intrinsics.md); [BC 4a](../bounded-contexts.md#4a-primitives-cratescranelisp-primitives), §4b |
-| 44 | Typecheck is cluster-atomic over caller-owned staging, behind the single `check_forms` entry. | [0044](0044-cluster-atomic-typecheck-orchestrator-staging.md); [BC 2](../bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) |
+| 43 | The runtime is split into `cranelisp-primitives` and `cranelisp-intrinsics`; backend has no trait knowledge and its inline table is name-keyed only. Retracts 14 and reframes 15; the operator-table debt they created is recorded in [Principle 16](../principles/16-punctuation-symbols-are-not-special.md). | [BC 4a](../bounded-contexts.md#4a-primitives-cratescranelisp-primitives) invariants 4, 5 and 7; [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 9; [BC 3](../bounded-contexts.md#3-backend-cratescranelisp-backend) invariant 10 |
+| 44 | Typecheck is cluster-atomic over caller-owned staging, behind the single `check_forms` entry; a source-ordered `defmacro` is a checkpoint outside that rollback domain. | [BC 2](../bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) cluster definition and invariants 2, 3a, 7, 10 and 11; [`check_forms` narrative](../interfaces.md#check_forms); [macro availability](../macro-availability-model.md) |
 | 45 | A trait implementation's shell is stored in the trait's defining module; method bodies live with the writer. | [BC 7](../bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) "TraitImpl storage"; [`backend-keyed-consumer.md`](../backend-keyed-consumer.md) §1.1.1; [`trait-impl-cache-carrier.md`](../trait-impl-cache-carrier.md) |
 | 46 | Withdrawn: a Sprint 66 wave-ordering constraint, discharged when both waves landed. | [BC 2](../bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) invariant 10 holds the surviving locality rule |
-| 47 | Resolved-stage type identity is module-qualified, with two named exceptions. | [0047](0047-fqtypename-binding-at-resolved-stage-boundaries.md); [`interfaces.md`](../interfaces.md) §"Type System" |
-| 48 | Primitives own a statically constructed symbol table and GOT and dispatch like any other module; backend and primitives do not depend on each other. | [0048](0048-primitives-static-symboltable-and-got-in-crate.md); [BC 4a](../bounded-contexts.md#4a-primitives-cratescranelisp-primitives) |
+| 47 | Resolved-stage type identity is module-qualified (`FQTypeName`/`FQTraitName`), with two named exceptions. | [`interfaces.md`](../interfaces.md) §"Type System"; [BC 7](../bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) "FQTypeName binding"; rustdoc in `crates/cranelisp-types/src/newtype.rs` |
+| 48 | Primitives own a statically constructed symbol table and GOT and dispatch like any other module; backend and primitives do not depend on each other. | [BC 4a](../bounded-contexts.md#4a-primitives-cratescranelisp-primitives) boundary statement, invariants 2, 3, 5 and 6 and "Rejected shapes"; [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariants 9 and 11; [Principle 18](../principles/18-enforce-invariants-structurally.md); crate-root rustdoc of `crates/cranelisp-primitives/src/lib.rs` and `crates/cranelisp-exe-bundle/src/lib.rs` |

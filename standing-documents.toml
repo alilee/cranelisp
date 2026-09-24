@@ -289,16 +289,6 @@ established_by = "CLAUDE.md"
 disposition = "established"
 
 [[document_class]]
-name = "frozen-review-records"
-patterns = ["design/review/*.md"]
-owner = "review"
-purpose = "Frozen ring-era and sprint-wave review records under `design/review/`."
-established_by = "design/review/CLAUDE.md"
-disposition = "established"
-reference_policy = "historical-record"
-reason = "The governing review memory retains these completed records as historical context rather than current instructions."
-
-[[document_class]]
 name = "primitives-designs"
 patterns = ["design/primitives/*.md"]
 owner = "design"
@@ -361,7 +351,7 @@ disposition = "established"
 name = "architecture-decisions-drain"
 patterns = ["design/arch/decisions/*.md"]
 owner = "arch"
-purpose = "The decision-label index, and the remaining decision records with live section citations."
+purpose = "The decision-label index resolving cited \"Decision N\" labels to their current homes; no decision records remain."
 established_by = "design/arch/CLAUDE.md"
 disposition = "established"
 

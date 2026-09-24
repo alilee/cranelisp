@@ -38,3 +38,19 @@ guard together and regenerate every tracked library baseline once.
   or receive an equivalent direct fence.
 - No product behavior, language specification, cache schema or platform ABI is
   changed by the baseline-format migration.
+
+## Coupled cleanup: compiler-checked cache packet transfer
+
+S122 QA's historical-review intake E3 found an explicit `unsafe impl Send` for
+`CacheWritePacket` in `crates/cranelisp-backend/src/cache/object.rs` although
+all its fields already have auto-`Send` (inspected against the committed public
+API baselines; removal has not yet been compiled). The explicit impl prevents
+a future non-Send field from being rejected at the writer-thread handoff in
+`src/cache_writer.rs`.
+
+During this coordinated baseline change, have `dev` (backend) remove the
+redundant impl and its comment, then verify that the writer handoff compiles
+with derived `Send`. Include the explicit-to-auto `Send` row change in `arch`'s
+user-approved baseline proposal and resulting diff. No behavioral test was
+allocated: the compile-time bound is the relevant check. Original finding:
+historical S22 I-1/S23 review, recoverable at Git checkpoint `07f46769`.

@@ -53,7 +53,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | Collection | Purpose | Navigation |
 |---|---|---|
 | `architecture-contracts` | Current architecture contracts and explicitly retained design proposals. | The top-level products linked above. |
-| `architecture-decisions-drain` | The decision-label index, and the remaining decision records with live section citations. | [Decision labels](decisions/README.md). |
+| `architecture-decisions-drain` | The decision-label index resolving cited "Decision N" labels to their current homes; no decision records remain. | [Decision labels](decisions/README.md). |
 | `architecture-filings` | Actionable architecture filing register, retained until its owning obligation is discharged. | [Open filings](fixmes/). |
 | `architecture-sequences` | Current execution and lifecycle sequence diagrams with their navigation and rendering conventions. | [Sequence guide](sequences/README.md). |
 | `architecture-archive` | Frozen superseded architecture records retained as historical reference. | [Archive](archive/); historical references retain their recorded meaning. |
@@ -64,8 +64,7 @@ membership does not waive live references or settle a file's outstanding work.
 
 ## Archive (`archive/`)
 
-The existing archive is historical reference, not current architecture. Its
-bounded historical-reference policy does not cover `decisions/`.
+The existing archive is historical reference, not current architecture.
 Retention follows the project method: Git suffices for ordinary working history;
 retain a document only for useful evidence or rationale beyond that history.
 Do not move obsolete prose into the archive merely to preserve file counts.
@@ -74,10 +73,10 @@ Do not move obsolete prose into the archive merely to preserve file counts.
 
 Source, tests and designs cite rulings as "Decision N". The
 [label index](decisions/README.md) resolves each label to the ruling's current
-home. Do not create Decision files; write a new cross-context commitment into
-bounded contexts or a focused contract. A remaining record retires when its
-contract is restated in that home and `test` repoints the `// spec:` citations
-in the same change. Open filings retain their own lifecycle.
+home; no decision record files exist, and their original texts are Git history.
+Do not create Decision files; write a new cross-context commitment into
+bounded contexts or a focused contract, and add a label row only for a number
+that source already cites. Open filings retain their own lifecycle.
 
 ## Where a commitment manifests
 

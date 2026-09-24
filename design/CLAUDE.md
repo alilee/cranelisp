@@ -23,7 +23,7 @@ The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retire
 | `intrinsics/` | `/design` (intrinsics) | Drop glue, RC/alloc, IO reactor, intrinsic helpers design (D43 split) |
 | `platform/` | `/design` (platform) | Host/DLL C-ABI contract, DLL authoring and loading, poll-leaf and ADT-marshalling design |
 | `int/` | `/design` (int) | Binary/integration layer — pipeline orchestration, REPL session, CLI, `--link` |
-| `review/` | `/review` | Review checklists, ring-completion reports, code-quality standards |
+| `review/` | `/review` | Standing change-set cues extending the review standard |
 | `runtime/` | `/design` (runtime-pair contract; one nominated crate pass owns each edit) | Shared `cranelisp-primitives` ↔ `cranelisp-intrinsics` ownership/ABI contracts. A sprint reserves each shared file to one crate pass so both sides do not rewrite it. |
 
 ## Governing memories and document collections

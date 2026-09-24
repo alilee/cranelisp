@@ -685,29 +685,19 @@ pub(crate) extern "C" fn free_io_node(ptr: i64) {
 }
 
 // ---------------------------------------------------------------------------
-// Shallow IO-node dec (Decision 29; design/backend/ring2-rc.md §3.5.4)
+// Spine-transferred IO-node release (ownership-and-disposal.md §6, §7)
 // ---------------------------------------------------------------------------
 
-/// Shallow dec of a single IO ADT node — atomically dec's the RC and, on
-/// last-ref, frees the outer allocation ONLY without walking fields.
+/// Release the trampoline's reference to a fresh IO node under the
+/// `SpineTransferred` disposition.
 ///
-/// This is the IO-trampoline dual of the transitive `consume_io_tree`
-/// (§3.5.4): used when the trampoline releases its reference to a
-/// Pure/Effect/Bind/Par node whose field pointers have already been re-owned
-/// by other holders (Bind's inner → new `current`; Bind's continuation →
-/// `cont_stack`; Par's branches → consumed by rayon dispatch). A transitive
-/// walk here would double-dec those sub-references.
+/// On the last reference the node goes through the same teardown tail as
+/// `consume_io_tree`, discharging the fields the `SpineTransferred` column of
+/// the `ownership-and-disposal.md` §6 table declares; that column differs from
+/// the `Structural` walk only in skipping `Bind`'s two fields. This is not
+/// `rc::consume_shallow`, which discharges no fields.
 ///
-/// Semantically equivalent to `rc::consume_shallow` (both perform a shallow
-/// last-ref dec + dealloc); this helper is exposed as a distinct primitive
-/// because the caller's ownership story is specific to tree-walking state
-/// machines where fields are transferred elsewhere before the outer node is
-/// released (Decision 29). Reusing `consume_shallow` would work
-/// operationally, but naming it `dec_shallow_io` documents the
-/// ownership-transfer-then-drop pattern at the call site.
-///
-/// Also safe to call on SNil-style bare nullary tags — returns without
-/// touching memory for values below `NULLARY_TAG_THRESHOLD`.
+/// A bare nullary tag is a no-op.
 ///
 /// # Safety
 /// `ptr` must be either a valid IO ADT heap pointer with `rc > 0`, or a

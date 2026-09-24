@@ -35,14 +35,14 @@ a reader will misread the asymmetry as inconsistency:
 
 2. **Primitives — anchored by a startup hook, NOT re-exports.** The
    `pub use cranelisp_primitives::*` force-link lines were RETIRED S68 W3
-   (Decision 0048 §Cascade). The replacement is `cranelisp_init_primitives()`
+   (Decision 48; the hook's rustdoc in `src/lib.rs` is the authority). The replacement is `cranelisp_init_primitives()`
    (`lib.rs:100-103`): `LazyLock::force(&cranelisp_primitives::PRIMITIVES_TABLE)`.
    Forcing the static runs its init body, which takes every primitive fn ptr's
    address (`extern_shims()`), so the linker keeps them as transitive deps of a
    live static rather than via implicit `pub use` discipline (Principle 7 — the
    dependency is legible at the site that needs it). If a *primitive* vanishes
    from a `--link` binary, this hook or one of the three mechanisms in
-   `crates/cranelisp-primitives/CLAUDE.md` §"DCE survival" regressed — do NOT
+   `crates/cranelisp-primitives/CLAUDE.md` §"Traps" regressed — do NOT
    re-add a `pub use` or a `#[used]` static to "fix" it.
 
 ## The `__cranelisp_got_primitives` link symbol + the null-slab crash window
@@ -61,8 +61,8 @@ The same `LazyLock::force` ALSO populates `PRIMITIVES_GOT_SLAB`, exported as
   (`lib.rs:118`) for exactly this reason. FIXME 0280 also made the primitives
   call **unconditional**: pre-0280 it rode on `cranelisp_init_platform`, so a
   no-platform program calling an extern primitive reached user code with an
-  unpopulated GOT. Full rationale: `design/arch/facades/int.md` §"Exe-bundle
-  startup contract".
+  unpopulated GOT. Full rationale: `src/lib.rs` crate rustdoc,
+  "Startup-hook discipline — primitives".
 
 ## `host_callbacks()` is single-sourced — do not hand-mirror (FIXME 0419)
 

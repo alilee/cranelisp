@@ -2,7 +2,7 @@
 //! completion. /qa Phase 5 Stage 1 failing-tests authoring.
 //!
 //! These tests gate the simplification described in `sprints/SPRINT.md` and
-//! pinned by `design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md`:
+//! pinned by `design/arch/bounded-contexts.md` §4a (Decision 48):
 //!
 //!   - `cranelisp-primitives` exposes `PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>`
 //!     populated with raw `*const u8` fn ptrs at statically-known GOT slot indices.
@@ -84,9 +84,8 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
 // =============================================================================
 
 // spec: spec/appendix-a-builtins.md §A.3 (not) +
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-//       §"The invariant" — primitives dispatch must remain functional
-//       through the Wave 3/4 cutover. Sentinel; not failing-now.
+// spec: design/arch/bounded-contexts.md §4a invariant 3 — primitives dispatch
+//       stays functional in --link mode. Sentinel.
 #[test]
 fn s68_not_primitive_works_in_link_mode_sentinel() {
     // `(not true) -> false`; in `--link` mode `main` must return an Int.
@@ -117,11 +116,10 @@ fn s68_not_primitive_works_in_link_mode_sentinel() {
 // `int` concretizes to `<Code, ()>` via `into_concrete` at the S74 session mount.
 // =============================================================================
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Shape"
-//       (A2 reversed; dep-ban → bidirectional severance per the S73 Phase 2
-//       top-up) + design/arch/fixmes/0244-arch-revert-0048-a2-code-primitive-marker.md
-//       §"Proposed resolution" (ratified S73 Phase 2) — the table is
-//       `pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>`.
+// spec: design/arch/bounded-contexts.md §4a "What crosses the boundary" and
+//       invariant 3 — the table is
+//       `pub static PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>` and
+//       primitives never names backend's `Code`.
 #[test]
 fn s68_primitives_table_is_arc_symboltable_unit_unit() {
     let src = read_source("crates/cranelisp-primitives/src/lib.rs");
@@ -133,7 +131,7 @@ fn s68_primitives_table_is_arc_symboltable_unit_unit() {
     assert!(
         src.contains("PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<(), ()>>>"),
         "PRIMITIVES_TABLE MUST be typed `LazyLock<Arc<SymbolTable<(), ()>>>` per \
-         FIXME 0244 + Decision 0048 §Shape (S73 severance). Current declaration in \
+         design/arch/bounded-contexts.md §4a invariant 3 (S73 severance). Current declaration in \
          crates/cranelisp-primitives/src/lib.rs does not match the target shape."
     );
 }
@@ -228,8 +226,8 @@ fn s68_facade_compliance_test_exists_for_s68_touched_crates() {
 // free fn; Wave 4 (backend side) stops consuming it.
 // =============================================================================
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Consequences"
-//       — `ring0_jit_symbols()` retires.
+// spec: design/arch/bounded-contexts.md §4a invariant 3 — backend enumerates
+//       no primitive symbol; `ring0_jit_symbols()` is retired.
 #[test]
 fn s68_ring0_jit_symbols_free_fn_is_retired() {
     let primitives_lib = read_source("crates/cranelisp-primitives/src/lib.rs");
@@ -240,7 +238,7 @@ fn s68_ring0_jit_symbols_free_fn_is_retired() {
     assert!(
         !primitives_lib.contains("pub use ring0::ring0_jit_symbols"),
         "`ring0_jit_symbols` MUST NOT be re-exported from \
-         crates/cranelisp-primitives/src/lib.rs per FIXME 0182 + Decision 0048. \
+         crates/cranelisp-primitives/src/lib.rs per design/arch/bounded-contexts.md §4a invariant 3. \
          The free fn body and its re-export both retire in Wave 3."
     );
 
@@ -263,10 +261,9 @@ fn s68_ring0_jit_symbols_free_fn_is_retired() {
 // from `cranelisp_init_platform`. Replaces the implicit `pub use` force-link.
 // =============================================================================
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md §"Cascade" — "cranelisp-exe-bundle's force-link `pub use`
-//       lines retire; replaced by an explicit `cranelisp_init_primitives()`
-//       no-op that forces `LazyLock::force(&PRIMITIVES_TABLE)` at startup".
-//       /arch recommendation in `sprints/SPRINT.md` Phase 2 outcomes.
+// spec: crates/cranelisp-exe-bundle/src/lib.rs crate rustdoc §"Startup-hook
+//       discipline — primitives" — the force-link `pub use` lines are replaced
+//       by the `cranelisp_init_primitives()` startup hook.
 #[test]
 fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
     let lib = read_source("crates/cranelisp-exe-bundle/src/lib.rs");
@@ -277,7 +274,7 @@ fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
     assert!(
         lib.contains("pub extern \"C\" fn cranelisp_init_primitives"),
         "cranelisp-exe-bundle MUST publish `pub extern \"C\" fn cranelisp_init_primitives` \
-         per Decision 0048 §Cascade (Wave 3). The explicit LazyLock::force hook \
+         per the exe-bundle crate rustdoc (startup-hook discipline). The explicit LazyLock::force hook \
          replaces the implicit force-link `pub use cranelisp_primitives::*` incantation."
     );
 
@@ -293,7 +290,7 @@ fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
             !lib.contains(forced),
             "exe-bundle MUST NOT carry the force-link line `{forced}` post-S68 — \
              the explicit `cranelisp_init_primitives()` hook replaces it \
-             per Decision 0048 §Cascade."
+             per the exe-bundle crate rustdoc (startup-hook discipline)."
         );
     }
 }
@@ -310,9 +307,9 @@ fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
 // `cranelisp_primitives::*` paths are deleted.
 // =============================================================================
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-//       §"Structural invariant — backend dep-ban" (S73 Phase 2: → bidirectional
-//       severance). The `intrinsic_symbols()` shrink and the backend dep-ban
+// spec: design/arch/bounded-contexts.md §4a invariant 3;
+//       design/arch/principles/18-enforce-invariants-structurally.md —
+//       source-side companion of the dep-ban fence. The `intrinsic_symbols()` shrink and the backend dep-ban
 //       source cleanup have landed: `jit.rs` / `primitives_inline.rs` no longer
 //       name `cranelisp_primitives`. Un-ignored S81 (the backend cleanup shipped;
 //       the assertion passes against the current source).
@@ -325,7 +322,7 @@ fn s68_backend_intrinsic_symbols_drops_primitives_paths() {
     assert!(
         !jit.contains("cranelisp_primitives"),
         "crates/cranelisp-backend/src/jit.rs MUST NOT name `cranelisp_primitives` \
-         per Decision 0048 §dep-ban (Wave 4). All references retire in the same \
+         per design/arch/bounded-contexts.md §4a invariant 3. All references retire in the same \
          change-set that removes the dep line from backend's Cargo.toml."
     );
 
@@ -336,7 +333,7 @@ fn s68_backend_intrinsic_symbols_drops_primitives_paths() {
     assert!(
         !inline.contains("cranelisp_primitives::"),
         "crates/cranelisp-backend/src/primitives_inline.rs MUST NOT name \
-         `cranelisp_primitives::*` per Decision 0048 §dep-ban (Wave 4)."
+         `cranelisp_primitives::*` per design/arch/bounded-contexts.md §4a invariant 3."
     );
 }
 
@@ -349,9 +346,9 @@ fn s68_backend_intrinsic_symbols_drops_primitives_paths() {
 // from `kind: DefKind::Primitive`. This is the absence guard.
 // =============================================================================
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-//       §"Shape" — A2 (`Code::Primitive` marker) REVERSED by FIXME 0244 (S73
-//       Phase 2). The variant deletion has landed: `code.rs` carries only
+// spec: design/arch/bounded-contexts.md §4a "Rejected shapes" — the
+//       `Code::Primitive` marker was reversed in S73 and must not reappear.
+//       The variant deletion has landed: `code.rs` carries only
 //       `Jit(Arc<Jit>)` and `Linker(Arc<Linker>)`. Flipped to assert ABSENCE +
 //       un-ignored S81 (the deletion shipped; the marker must never reappear).
 #[test]
@@ -375,7 +372,7 @@ fn s68_code_enum_has_no_primitive_marker_variant() {
     assert!(
         !declares_primitive_variant,
         "Code enum MUST NOT carry a `Primitive` marker variant per FIXME 0244 \
-         (S73 Phase 2 reversal of Decision 0048 A2). The variant is deleted; \
+         (S73 reversal; design/arch/bounded-contexts.md §4a \"Rejected shapes\"). The variant is deleted; \
          primitive-ness reads from `kind: DefKind::Primitive`, not a `Code` \
          marker. crates/cranelisp-backend/src/code.rs must carry only \
          `Jit(Arc<Jit>)` and `Linker(Arc<Linker>)`."
@@ -422,8 +419,8 @@ fn s68_code_enum_has_no_primitive_marker_variant() {
 // records rows 12–14 as "removed — non-applicable target".
 // =============================================================================
 
-// spec: design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md
-//       + design/arch/facades/types.md §"FQTypeName" (per-crate disposition).
+// spec: design/arch/interfaces.md §"Type System" — resolved-stage type identity
+//       is module-qualified (Decision 47).
 // Shape A: scan the published cargo-public-api baseline rather than source text.
 // The baseline is the as-built record of the crate's edge; if a bare `TypeName`
 // appears in a `pub fn` parameter or return position, the facade contract is
@@ -448,8 +445,8 @@ fn s68_fqtypename_backend_uses_fqtypename_at_resolved_edges() {
     assert!(
         offenders.is_empty(),
         "cranelisp-backend's published fn signatures at resolved-stage edges \
-         MUST use FQTypeName, not bare TypeName, per Decision 0047 + \
-         facades/types.md §\"FQTypeName\". Offending lines in \
+         MUST use FQTypeName, not bare TypeName, per \
+         design/arch/interfaces.md §\"Type System\". Offending lines in \
          crates/cranelisp-backend/public-api.txt:\n{}",
         offenders.join("\n"),
     );

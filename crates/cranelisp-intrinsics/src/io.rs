@@ -180,10 +180,10 @@ const CLOSURE_ENV_OFFSET: i64 = HeapHeader::SIZE as i64 + 16; // 32
 /// tree handed to `cranelisp_run_io` is released via
 /// `crate::drop::consume_io_tree` after evaluation. The trampoline itself
 /// is non-consuming of its input tree (`io_ptr`); it walks the caller's
-/// tree read-only. Any IO ADT node produced INSIDE the trampoline by a
-/// continuation (Sprint 57 Wave 3 fix per `design/backend/ring2-rc.md`
-/// §3.5) is shallow-dec'd inline via `drop::dec_shallow_io`, so continuation
-/// intermediates do not leak. Closures reached via the caller's tree are
+/// tree read-only. Fresh-node release follows
+/// `design/intrinsics/ownership-and-disposal.md` §7: fresh Bind descent
+/// releases the parent structurally after acquiring its fields; finished
+/// fresh nodes use `drop::dec_shallow_io`. Closures reached via the caller's tree are
 /// left alone — `consume_io_tree` walks and dec's them transitively.
 /// Closures produced INSIDE the trampoline by a continuation (continuation
 /// returns a Bind whose cont field is fresh) are also inline-dec'd by the

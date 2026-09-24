@@ -11,7 +11,7 @@ title: Enforce architectural invariants structurally where possible
 
 The principle does not claim every invariant admits a structural form. It claims that *when both options exist*, the structural option is the right choice.
 
-**Worked example — primitives dispatch (Decision 0048 §"Structural invariant — backend dep-ban", S68 Phase 3, 2026-05-17).** The architectural invariant "backend reaches primitives via the GOT, never via direct extern" was originally proposed as a CLIF-inspection test: "scan backend's emitted CLIF for direct calls to primitive symbols; assert none exist." User-arbitrated revision converted it to a workspace dep-ban: `cranelisp-backend` MUST NOT depend on `cranelisp-primitives`. With no Rust-path visibility into primitives' fns, backend physically cannot emit a direct-call instruction targeting one — the only available dispatch is the type-erased SymbolTable + GOT mechanism in `cranelisp-types`. The test reduces to a one-line Cargo.toml parse. The invariant is now a property of the workspace, not a property of the test that probed it.
+**Worked example — primitives dispatch ([BC 4a](../bounded-contexts.md#4a-primitives-cratescranelisp-primitives) invariant 3; Decision 48, S68 Phase 3, 2026-05-17).** The architectural invariant "backend reaches primitives via the GOT, never via direct extern" was originally proposed as a CLIF-inspection test: "scan backend's emitted CLIF for direct calls to primitive symbols; assert none exist." User-arbitrated revision converted it to a workspace dep-ban: `cranelisp-backend` MUST NOT depend on `cranelisp-primitives`. With no Rust-path visibility into primitives' fns, backend physically cannot emit a direct-call instruction targeting one — the only available dispatch is the type-erased SymbolTable + GOT mechanism in `cranelisp-types`. The test reduces to a one-line Cargo.toml parse. The invariant is now a property of the workspace, not a property of the test that probed it.
 
 **When to reach for the structural mechanism.**
 
@@ -37,4 +37,4 @@ Some invariants do not admit a structural form. Examples: "the typed AST after m
 - Principle 05 — Testability is structural (the antecedent; this Principle extends from "tests are easier when boundaries are right" to "the right boundary often replaces the test entirely").
 - Principle 07 — Single source of truth (single-home placement is one form of structural enforcement).
 - Principle 13 — `interfaces.md` is auditable (`cargo-public-api` is the audit-of-record for structural public-surface invariants).
-- Decision 0048 — the worked example: backend dep-ban as structural enforcement of the GOT-dispatch invariant for primitives.
+- [BC 4a](../bounded-contexts.md#4a-primitives-cratescranelisp-primitives) invariant 3 (Decision 48) — the worked example: backend dep-ban as structural enforcement of the GOT-dispatch invariant for primitives; the fence is `crates/cranelisp-backend/tests/no_primitives_dep.rs`.

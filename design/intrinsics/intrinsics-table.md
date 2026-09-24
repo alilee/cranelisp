@@ -114,7 +114,7 @@ crate, which is not this catalog's. A `vec-len` row here is a `/review` reject.
 
 - [intrinsics bounded context](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics), invariants 9, 10 and 11 — Import dispatch,
   the surface's type rules, and the catalog obligation.
-- `design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md`
-  — the precedent this applies to intrinsics.
+- [primitives bounded context](../arch/bounded-contexts.md#4a-primitives-cratescranelisp-primitives),
+  invariant 3 and "Rejected shapes" — the precedent this applies to intrinsics.
 - [`ownership-and-disposal.md`](ownership-and-disposal.md) §9 — deriving the
   hand-written extern shims from this catalog is a triggered extension.

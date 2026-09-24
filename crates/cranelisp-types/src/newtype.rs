@@ -93,8 +93,7 @@ impl std::fmt::Display for FQSymbol {
 /// with the name, downstream consumers (backend match codegen, display,
 /// cache) never reverse-look a module up from a bare name; do not introduce
 /// such a map. Binding rule, its two exceptions and rationale:
-/// `design/arch/interfaces.md` §"Type System" and
-/// `design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md`.
+/// `design/arch/interfaces.md` §"Type System".
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FQTypeName {
     pub module: ModuleFullPath,
@@ -119,8 +118,7 @@ impl std::fmt::Display for FQTypeName {
 /// rule (Decision 47): past the resolution lift a trait is named only by this
 /// value, and bare `TraitName` is syntactic-stage only — `TraitRef` is the
 /// as-written form it is lifted from. See `design/arch/interfaces.md`
-/// §"Type System" and
-/// `design/arch/decisions/0047-fqtypename-binding-at-resolved-stage-boundaries.md`.
+/// §"Type System".
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FQTraitName {
     pub module: ModuleFullPath,

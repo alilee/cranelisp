@@ -162,6 +162,17 @@ fn corpus_contains(report: &str, path: &str) -> bool {
     report.contains(&format!("\"path\": \"{path}\""))
 }
 
+/// The body of the `[[document_class]]` table named `name`, up to the next
+/// table header, so a field assertion cannot be satisfied by another class.
+fn document_class<'a>(declaration: &'a str, name: &str) -> Option<&'a str> {
+    let name_line = format!("name = \"{name}\"");
+    declaration
+        .split("\n[[")
+        .find(|table| {
+            table.starts_with("document_class]]") && table.lines().any(|l| l.trim() == name_line)
+        })
+}
+
 // The real project invocation is the gate. It must not reinterpret exit 1 as
 // success: unresolved findings stay visible until their owners repair or
 // explicitly disposition them.
@@ -237,8 +248,9 @@ fn project_document_gate_detects_a_planted_source_symbol_and_clears_its_control(
 }
 
 // Discovery remains independent of declarations: the real project manifest
-// includes current scheduling, host, review, and declaration products while the
-// separately owned `.agents` Gitlink stays outside the project corpus.
+// includes current scheduling, host, review, declaration and closed historical
+// products while the separately owned `.agents` Gitlink stays outside the
+// project corpus.
 //
 // spec: CLAUDE.md §Assurance — shared document discovery and ownership boundary
 #[test]
@@ -256,7 +268,7 @@ fn project_document_discovery_covers_owned_surfaces_and_the_package_boundary() {
         ".github/agents/qa.agent.md",
         ".github/copilot-instructions.md",
         "design/review/CLAUDE.md",
-        "design/review/sprint-61-final.md",
+        "sprints/archive/sprint-108.md",
         "standing-documents.toml",
         "tests/plan/s122-document-checker-reconciliation/README.md",
     ] {
@@ -274,11 +286,15 @@ fn project_document_discovery_covers_owned_surfaces_and_the_package_boundary() {
 
     let declaration = fs::read_to_string(Path::new(workspace_root()).join(CONFIG))
         .expect("read checked-in project declaration");
+    let closed_sprints = document_class(&declaration, "closed-sprint-records")
+        .expect("project declaration lost the `closed-sprint-records` class");
     assert!(
-        declaration.contains("name = \"frozen-review-records\"")
-            && declaration.contains("patterns = [\"design/review/*.md\"]")
-            && declaration.contains("reference_policy = \"historical-record\"")
-            && declaration.contains("path = \".agents\""),
-        "project declaration lost the approved review-history or package-boundary policy",
+        closed_sprints.contains("patterns = [\"sprints/archive/*.md\"]")
+            && closed_sprints.contains("reference_policy = \"historical-record\""),
+        "`closed-sprint-records` lost its archive pattern or historical-record policy:\n{closed_sprints}",
+    );
+    assert!(
+        declaration.contains("path = \".agents\""),
+        "project declaration lost the `.agents` package-boundary entry",
     );
 }

@@ -85,12 +85,7 @@ fn process_form_dispatch_macro_after_import_succeeds_in_one_eval() {
 // spec: spec/05-definitions.md §5.13.2 + spec/09-macros.md §9.12.1 — a
 // source-ordered macro checkpoint does not split the surrounding non-macro HM
 // cluster; mutual recursion remains available across it.
-//       design/arch/decisions/0044-cluster-atomic-typecheck-orchestrator-staging.md
-// FIXME(/dev typecheck Phase 3 + /dev int Phase 4 of FIXME 0098, Decision 44)
-//       — fails until `check_form` splits into `check_form_signatures` +
-//       `check_form_body` AND int's `process_cluster` orchestrates the two
-//       pure passes against orchestrator-owned staging with `View::union`
-//       and atomic commit per Decision 44.
+//       design/arch/bounded-contexts.md §2 invariant 11; design/arch/macro-availability-model.md §4
 #[test]
 fn process_form_dispatch_begin_cluster_resolves_mutual_forward_ref() {
     // Positive: a `(begin ...)` cluster wraps two mutually-referencing
@@ -123,10 +118,6 @@ fn process_form_dispatch_begin_cluster_resolves_mutual_forward_ref() {
 //       references are an error ("a reference in a REPL input to a name that
 //       has not yet been defined is an error, with the same diagnostic shape
 //       as a reference to a non-existent identifier")
-// FIXME(/dev int Phase 4 of FIXME 0098, Decision 44) — fails until
-//       `process_cluster` rejects bare cross-input forward refs with a
-//       typed Gap-converted error and drops staging atomically without
-//       committing the failing form to the live `SymbolTable`.
 #[test]
 fn process_form_dispatch_bare_forward_ref_errors_clearly() {
     // Negative: without a `(begin ...)` cluster, the REPL input
@@ -191,11 +182,6 @@ fn process_form_dispatch_bare_forward_ref_errors_clearly() {
 // (`CRANELISP_GOT_TRACE` reservation) + orchestration invariant per
 // the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
 // FIXME 0098 — process_form gap-orchestration.
-// FIXME(/dev int Phase 4 of FIXME 0098 + /dev backend Phase 1 of FIXME 0099,
-//       Decision 44) — fails until backend's `register_got_observer` exists
-//       AND int's `process_cluster` dispatches macro vs. fn after the
-//       Pass-2 body-check resolves a forward reference, without
-//       speculatively JIT'ing the function.
 #[test]
 fn process_form_dispatch_function_gap_does_not_speculatively_jit() {
     // Define a function (`g`) referenced ahead of its definition inside a

@@ -346,10 +346,35 @@ mounting (binary).
    a slot-dispatched primitive's pointer remains the fallback for indirect use.
    A primitive realised only inline has no slot by construction (§7).
 6. **Process-static lifecycle.** The table is built once and never invalidated;
-   entries own no reclaimable code; primitives are never cached.
-7. **Language-driven evolution.** Backend convenience belongs in intrinsics.
+   entries own no reclaimable code, so primitive-ness is a fact of an entry's
+   origin and never of its code state; primitives are never cached and sit
+   outside per-batch JIT reclaim.
+7. **Language-driven evolution.** A primitive changes when the specification
+   does; backend convenience belongs in intrinsics. The two runtime crates stay
+   separate because a symbol's category is then its crate: one runtime crate
+   left that category ambiguous, and intrinsics inside backend would put
+   stable-ABI runtime code in the codegen context.
 8. **Consuming convention at the extern boundary.** Every extern consumes the
    heap arguments it does not return.
+
+**Rejected shapes** — each returns only with a new ruling:
+
+- A per-batch primitives table and GOT. The addresses are process-stable, so
+  rebuilding them per batch repeats identical work
+  ([Principle 07](principles/07-single-source-of-truth.md)).
+- A third "static GOT" category. A GOT in static memory is operationally the
+  ordinary per-module GOT; a category would reintroduce the primitives branch
+  in symbol resolution that invariant 3 removes.
+- A primitive marker or extern-payload variant on backend's code carrier. The
+  payload would duplicate the GOT's address or wrap only a name; the marker
+  (`Code::Primitive`, adopted S68 and reversed by the user in S73) copied a kind
+  fact into the lifecycle field, no match site did work on it, and it was the
+  only reason primitives depended on backend. `tests/s68_primitives_uniform.rs`
+  guards its absence.
+- A CLIF-inspection fence for direct primitive calls. It checks one compilation
+  path where the dependency ban forecloses every path
+  ([Principle 18](principles/18-enforce-invariants-structurally.md)); the fence
+  is `crates/cranelisp-backend/tests/no_primitives_dep.rs`.
 
 ---
 
@@ -419,10 +444,22 @@ and diagnostics composition (binary); platform DLL loading (binary).
 5. **Closures embed their drop-glue pointer** beside the code pointer, so a
    closure released in another module needs no side table. The glue is
    backend-generated per lambda and null when nothing is captured by heap.
-6. **Consuming convention at the extern boundary.**
-7. **The trampoline releases an intermediate IO node shallowly**, because its
-   fields are already re-owned during the walk; transitive release is a
-   distinct operation.
+6. **Consuming convention at the extern boundary.** Every extern consumes the
+   heap arguments it does not return. The convention binds the extern, not the
+   Rust helpers behind it: `cranelisp_run_io` consumes the caller's tree, while
+   the trampoline it drives borrows that tree.
+7. **The trampoline releases only the IO nodes it owns, each through the
+   single IO teardown tail.** It borrows the caller's tree, which the caller's
+   structural walk releases. Fresh-`Bind` descent acquires the inner and
+   continuation references before releasing the parent structurally. A finished
+   fresh node is released under the `SpineTransferred` disposition, which
+   differs from `Structural` only by skipping a `Bind`'s transferred fields. A
+   cancelled frame's drop guard releases its fresh owners structurally. No
+   trampoline release is outer-allocation-only.
+   [Ownership and disposal](../intrinsics/ownership-and-disposal.md) owns the
+   per-tag field rules ([§6](../intrinsics/ownership-and-disposal.md#6-the-io-family))
+   and the transitions, including the open abort-path leak
+   ([§7](../intrinsics/ownership-and-disposal.md#7-trampoline-ownership-transitions)).
 8. **No state across sessions, and no reset seam.** The allocation counters are
    process-lifetime evidence. The absence of a public reset is deliberate: a
    reset could zero the only evidence the allocation-parity check has.

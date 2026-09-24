@@ -21,5 +21,5 @@ title: Punctuation symbols are not special
 
 - Decision 14 — retracted by Decision 43; deleted from the active register (commit `754d525` per [decision index](../decisions/README.md)). The retracted commitment created the closure-table this Principle prohibits.
 - Decision 15 — reframed by Decision 43; the operator-resolution mechanism it specified retracts with Decision 14.
-- [Decision 43](../decisions/0043-runtime-split-into-primitives-intrinsics.md) — operator-category retirement; the runtime split where the closure-table mechanism deletes.
+- Decision 43 ([label index](../decisions/README.md)) — operator-category retirement; the runtime split where the closure-table mechanism deletes. Current statement: [BC 4a](../bounded-contexts.md#4a-primitives-cratescranelisp-primitives) invariants 4 and 7 and [BC 3](../bounded-contexts.md#3-backend-cratescranelisp-backend) invariant 10.
 - `crates/cranelisp-backend/src/primitives_inline.rs` — the surviving name-keyed table. The trait-keyed map, the `literals.rs` operator-as-value map and the `cranelisp_op_*` duplicate externs were deleted at the Decision 43 close (S67).

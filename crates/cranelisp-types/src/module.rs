@@ -28,14 +28,14 @@ use crate::{
 /// the parameterisation without inverting the dependency edge that
 /// Principle 3 protects (`cranelisp-types → cranelisp-backend` is forbidden).
 ///
-/// The blanket `impl<T: Send + Sync + 'static> CodeStore for T` means any
-/// `Send + Sync + 'static` type the integration layer wants to use as `C`
+/// The blanket `impl<T: Clone + Send + Sync + 'static> CodeStore for T` means any
+/// `Clone + Send + Sync + 'static` type the integration layer wants to use as `C`
 /// automatically satisfies the bound — no per-call-site `impl` line needed.
-/// `()` trivially satisfies it (zero-sized, Send + Sync + 'static), which
+/// `()` trivially satisfies it (zero-sized, Clone + Send + Sync + 'static), which
 /// is why it works as the default for crates that don't handle compiled
 /// code (typecheck, frontend, the bulk of backend).
 ///
-/// See `design/arch/CLAUDE.md` Decision 32 (canonical) and Decision 35
+/// See Decision 32 (label index `design/arch/decisions/README.md`) and Decision 35
 /// (the integration layer's `Code` enum) and Decision 31 (per-redefinition
 /// JIT reclaim — the behavioural payoff this enables).
 pub trait CodeStore: Clone + Send + Sync + 'static {}
@@ -54,7 +54,7 @@ impl<T: Clone + Send + Sync + 'static> CodeStore for T {}
 /// expansion if a Linker must be retained without any `Code::Linker`
 /// referencing it.
 ///
-/// See `design/arch/CLAUDE.md` Decision 32 (canonical) and Decision 35
+/// See Decision 32 (label index `design/arch/decisions/README.md`) and Decision 35
 /// (`L = ()` rationale).
 pub trait LinkerStore: Clone + Send + Sync + 'static {}
 impl<T: Clone + Send + Sync + 'static> LinkerStore for T {}

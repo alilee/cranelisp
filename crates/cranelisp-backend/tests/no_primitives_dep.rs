@@ -1,7 +1,7 @@
 //! S68 — backend dep-ban: `cranelisp-backend` MUST NOT depend on
 //! `cranelisp-primitives`.
 //!
-//! Per Decision 0048 §"Structural invariant — backend dep-ban" and
+//! Per design/arch/bounded-contexts.md §4a invariant 3 (Decision 48) and
 //! Principle 18 (enforce architectural invariants structurally where
 //! possible). The architectural invariant "primitives dispatch reaches
 //! code via GOT, never via direct extern" is enforced structurally by
@@ -26,8 +26,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-// spec: design/arch/decisions/0048-primitives-static-symboltable-and-got-in-crate.md
-//       §"Structural invariant — backend dep-ban";
+// spec: design/arch/bounded-contexts.md §4a invariant 3;
 //       design/arch/principles/18-enforce-invariants-structurally.md
 //
 // Architectural invariant: cranelisp-backend MUST NOT depend on cranelisp-primitives.
@@ -54,7 +53,7 @@ fn s68_backend_does_not_depend_on_primitives() {
     assert!(
         !cargo_toml.contains("cranelisp-primitives"),
         "cranelisp-backend MUST NOT depend on cranelisp-primitives per \
-         Decision 0048 §\"Structural invariant — backend dep-ban\". \
+         design/arch/bounded-contexts.md §4a invariant 3. \
          Workspace DAG enforces the GOT-dispatch invariant structurally. \
          Wave 4 of S68 deletes the dep line as part of the atomic edit pair \
          (backend dep removed; primitives dep on backend added for Code::Primitive). \

@@ -94,7 +94,9 @@ diagnostic (§6).
 
 ## 4. Decision 44 stays true
 
-Non-macro cluster atomicity (the Decision 44 record under `decisions/`)
+Non-macro cluster atomicity (Decision 44:
+[typecheck context](bounded-contexts.md#2-typecheck-cratescranelisp-typecheck)
+invariants 2 and 11 and the [`check_forms` narrative](interfaces.md#check_forms))
 operates unchanged on the Pass-2/3 layer: `check_forms` receives an already
 fully expanded `Vec<ParsedEntry>`, stages, and commits on whole-cluster `Ok`.
 Macro checkpoints sit deliberately outside that rollback domain. The statement
@@ -157,7 +159,7 @@ Each still reads as a plausible simplification; the reason it lost is kept.
 | [Bounded contexts](bounded-contexts.md) | Per-context statements |
 | [Boundary types](interfaces.md) | Narrative companion to the types |
 | [Symbol-table lifecycle](symbol-table-lifecycle.md) §5.4 | Macro declaration population and publication cadence |
-| Decision 44 record under `decisions/` | Non-macro atomicity with the checkpoint amendment |
+| [`check_forms` narrative](interfaces.md#check_forms) | Non-macro atomicity with the checkpoint amendment |
 | [Compilation sequence](sequences/exec-flow-compilation.mmd) | Pass 1 in the binary |
 | `src/save.rs::generate_fns_and_macros` | Macros-first regeneration order |
 | `tests/s76_macro_availability.rs`, `tests/spec_09_macros.rs` | Solution-level evidence |

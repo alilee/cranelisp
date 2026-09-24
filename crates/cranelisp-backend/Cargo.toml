@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
-# Decision 0048 §"Structural invariant — backend dep-ban" — this crate MUST
+# Decision 48 (design/arch/bounded-contexts.md §4a invariant 3) — this crate MUST
 # NOT depend on the user-callable primitives crate. Dispatch reaches
 # primitive fn ptrs exclusively through the cross-module SymbolTable + GOT
 # mechanism in cranelisp-types. Compliance: tests/no_primitives_dep.rs.
