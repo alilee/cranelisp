@@ -1,399 +1,194 @@
-# S115 backend design — carrier-state evidence, RC-release sweep, R4/R6 censuses
+# S115 backend record — carrier attribution, RC-sweep discriminators, R4 and R6 censuses
 
-**Status:** DESIGN (S115 Phase 3, `/design`(backend) narrow). Produces the
-`/arch`-required deciding evidence for the GOT-slot carrier-loss pair (SPRINT.md
-§Architecture-review §3 / `tests/plan/s115-test-plan.md` §1.5) BEFORE the fix
-wave, and the design shapes for the four backend-owned S115 scope inputs: the ONE
-RC-release sweep (§2), the 0705 consumer-totality arm (§3), the R4 mangle-family
-injectivity census (§4), and the R6 persisted-index validation seam (§5). §6
-records that the W-B5 patch-collapse is retired (the 0747 disposition).
+**Status:** retained evidence plus the current R4 census. Every fix this S115
+design scheduled has landed, and each current rule has a canonical home named in
+its section. This record keeps what source cannot re-derive:
 
-**Governing authority:** `design/arch/safety-invariants.md` §4 register rows R4
-(keyed-identity injectivity) + R6 (persisted-index trust boundary) — re-audited
-this Phase 2, SCHEDULED S115; `design/arch/backend-keyed-consumer.md`
-§1.2 and `design/arch/dotted-ctor-canonical-keys.md` §10 (the wrapper-emission keyed-read seam) + `typed-resolution-carrier.md`
-§4 (the closed `VarRef`/`ApplyRef` sums); `design/backend/ownership-codegen.md`
-§13.7 + `binding-indirection-consume.md` (the consume family this sweep sits
-beside). Subordinate to `backend.md` (§8 indexes this doc).
+- the carrier-state attribution that split the S115 GOT-slot pair;
+- the measurements that located the RC-release sweep's faces;
+- the R4 mangle-family census, which
+  [safety invariants R4](../arch/safety-invariants.md) cites.
 
----
+Test outcomes cited here come from the S122 full-suite run of 2026-09-21. They
+were not re-run for this record. Source and tests cite §1.3, §2–§4 and §6 by
+number, so keep that numbering.
 
-## 1. Carrier-state evidence dumps (the gating deliverable)
+## 1. Carrier-state attribution for the GOT-slot pair
 
-`/arch` (SPRINT.md §3) ruled the GOT-slot pair presumptively TWO fixes on
-opposite sides of the carrier contract and named the deciding step: **for each
-repro, dump the carrier state as read at the wrapper-emission seam — `VarRef`
-verdict + `ApplyRef` + slot presence — before any fix wave opens.** This section
-is that dump, taken at HEAD against the debug binary with a throwaway env-gated
-probe at the two seams (`compile_resolved_call`'s `AutoCurry` arm in
-`apply.rs`; the `got_entry_at` GOT-terminal in
-`control_flow/fn_as_value.rs::emit_wrapper_call` — probe reverted, tree clean).
+Two partial applications failed at the same wrapper-emission terminal:
+"fn-as-value wrapper … reached codegen with no GOT-slot carrier". Before choosing
+where to fix them, S115 dumped the carrier that each one presented at that seam.
+The dumps split the pair into two fixes, one on each side of the carrier
+contract.
 
-### 1.1 The wrapper-emission seam (where both repros converge and fail)
+| Repro | Carrier at the seam | Verdict | Where the fix lives |
+|---|---|---|---|
+| 0705: auto-curry over a `let`-bound closure, `(let [g (fn [a b] 0)] ((g 1) 2))` | `ApplyRef::ViaCallee`; callee `VarRef::Local`; no target FQ | Producer correct; backend emission arm missing | §3 |
+| `=` partially applied inside a generic, `(defn g [x] (= x))` monomorphised at `Int` | `ApplyRef::Dispatch(prelude/=)`, which names the trait-method declaration and has no slot | Producer wrong | §1.3 |
 
-Both repros are partial applications (auto-curry: 1 arg applied of a 2-arg
-target) and both die at the SAME terminal —
-`control_flow/fn_as_value.rs::emit_wrapper_call-609`:
+### 1.1 The discriminator
 
-```
-fn-as-value wrapper for '<name>' reached codegen with no GOT-slot carrier
-(S110 W2 keyed read; backend-keyed-consumer.md §1.2/§10)
-```
+The terminal fires after the direct, constructor and inline arms miss. At that
+point the carrier is either absent or names an entry without a GOT slot. A dump
+at the seam tells the two apart. An absent carrier is correct only for a
+scope-stack or computed callee. A present carrier that reaches the terminal is a
+producer error.
 
-The terminal fires when `target_fq.and_then(|fq| self.ctx.got_entry_at(fq))`
-is `None` — i.e. either the carrier is `None` at the seam, or the carrier
-resolves to a symbol-table entry that carries **no GOT slot**. The dump
-discriminates which, per repro.
+### 1.2 The local-closure face (0705)
 
-The producer path that feeds this seam (verified in
-`crates/cranelisp-typecheck/src/program/mono_collect.rs::resolve_auto_curry`,
-`:790-821`): an `AutoCurry` with a resolved inner (`has_inner`) derives its
-Apply-span carrier from that inner resolution; a plain-fn auto-curry over a
-**`VarRef::Global`** callee TRANSPORTS the callee's storage FQ as
-`ApplyRef::Dispatch(fq)`; a curry over a **`VarRef::Local`** callee matches
-nothing → the `ApplyRef::ViaCallee` epilogue default stands.
+A `let`-bound closure is a `VarRef::Local` and has no slot. The producer
+therefore records `ViaCallee` correctly. The backend lacked an arm for currying a
+closure value (§3). The born-green control is
+`tests/shadowing_scope_lookup.rs::local_closure_auto_curry_non_trait_control_resolves_to_local`.
 
-### 1.2 Repro A — 0705 AutoCurry-over-a-LOCAL-closure
+### 1.3 The `=` face: the producer boundary
 
-Source (`PrimitivesOnly`, `--run`), the FIXME 0705 minimal repro:
-```clojure
-(defn f [] (let [g (fn [a b] 0)] ((g 1) 2)))
-(defn main [] (Pure (f)))
-```
-Dump at the seam:
-```
-AutoCurry target=g applied=1 total=2  ApplyRef=ViaCallee  inner_trait_resolution=None
-emit_wrapper_call GOT-terminal  target_name=g  target_fq=None  got_entry_at=None
-```
+**Rule:** never transport a trait-method declaration FQ as a dispatch carrier. A
+declaration FQ is a dispatch-table key, not a slotted callable. This is one
+instance of the carrier value-source rule in
+[backend keyed consumption §1.1](../arch/backend-keyed-consumer.md).
 
-**Verdict — carrier CORRECT at the seam → BACKEND consumer-totality fix.**
-`g` is a `let`-bound local closure; typecheck rightly records the callee `Var`
-as `VarRef::Local` (a local closure has no GOT slot), so the Apply is
-`ApplyRef::ViaCallee` and the wrapper receives `target_fq=None`. This is the
-correct, complete producer output — there is no dispatch FQ to record. The gap
-is that the wrapper emitter has **no arm for currying a local closure value**:
-it exhausts `func_ids` (miss — `g` is not a compiled unit fn), ctor
-(`ctor_meta_at` miss), inline-primitive (miss), and hits the GOT terminal with
-`None`. This exactly matches `/arch`'s presumption: **0705 is the backend half.**
-The fix (the curry-the-local-closure-value arm) is designed in §3.
+**Evidence that located the gap:**
 
-### 1.3 Repro B — fn-as-value `'='` face (impl-present trait operator)
+- The direct concrete control `(defn h [] (= 3))` resolved to
+  `primitives/eq-i64` and ran.
+- Only the generic-to-instance path failed. There, the auto-curry's trait
+  resolution ran in the template context while the operand was still a type
+  variable. It found no impl. The transport branch then carried the callee's
+  `VarRef::Global(prelude/=)` through as the carrier.
 
-Source (`TestStandard`, `--run`), test
-`fn_as_value_carrier_loss::trait_operator_partial_app_impl_present_has_got_carrier`:
-```clojure
-(defn g [x] (= x))
-(defn main [] (Pure (if ((g 3) 3) 5 0)))
-```
-Dump at the seam:
-```
-AutoCurry target==  applied=1 total=2  ApplyRef=Dispatch(prelude/=)  inner_trait_resolution=None
-emit_wrapper_call GOT-terminal  target_name==  target_fq=Some("prelude/=")  got_entry_at=None
-```
+**Realization:** typecheck owns the fix. A pre-settlement drain holds such an
+entry back, then retries it once from settled state at finalization. The typecheck
+[dispatch settlement queues](../typecheck/checked-body-publication.md#76-kept-separate-with-triggers)
+describe this mechanism. The pin is
+`tests/fn_as_value_carrier_loss.rs::trait_operator_partial_app_impl_present_has_got_carrier`,
+which passes.
 
-**Verdict — carrier WRONG at the seam → TYPECHECK PRODUCER gap. The two do NOT
-collapse; the conditional /dev(typecheck) slot FIRES.** The carrier is present
-but points at **`prelude/=`** — the Eq trait-method DECLARATION FQ, which is
-NOT a slotted callable (`got_entry_at(prelude/=) = None`; only a resolved impl —
-the `eq-i64` builtin, or a mangled `=$…` in an impl module — carries a slot).
-`inner_trait_resolution=None` is the smoking gun: `resolve_auto_curry` did NOT
-resolve the operator to its impl for this instance, so the else-branch
-(`mono_collect.rs:807-820`) transported the callee `Var`'s raw
-`VarRef::Global(prelude/=)` as the dispatch carrier. Per `/arch` §3: a face
-arriving `Global`/`Dispatch` with **no slot carrier** is a typecheck-side fix.
+## 2. RC-release sweep
 
-**Discriminating control (decisive).** The DIRECT concrete partial-app — no
-generic wrapper — compiles and runs:
-```clojure
-(defn h [] (= 3))
-(defn main [] (Pure (if ((h) 3) 5 0)))     ; → exit 5
-```
-Dump: `ApplyRef=Dispatch(primitives/eq-i64)  inner_trait_resolution=Some(BuiltinFn{eq-i64})`,
-and `got_entry_at(primitives/eq-i64)` HITS. So `resolve_auto_curry`'s late
-re-resolution (`mono_collect.rs:770-787`) works when the operand type is
-concrete AT the point the auto-curry is resolved. The gap is specifically the
-**generic → mono-instance (late-pinning) path**: when the auto-curry over `=`
-lives inside a generic `g` monomorphised at Int, the auto-curry's
-`trait_resolution` is not re-resolved against the concrete instance types (the
-resolution ran in the template context where `= : (Fn [a a] Bool)` is
-non-concrete → `try_resolve_trait_method` fails → `inner=None`). This is the
-`§1.1.3` map-provenance / check-run-pairing territory
-(`backend-keyed-consumer.md`): the mono-instance body's auto-curry carrier is
-derived from the enclosing template run, not re-resolved per instance.
+S115 scheduled three leak faces as one backend sweep. The measurements below
+used `CRANELISP_RC_STATS` at the S115 head and are reported as allocations to
+deallocations.
 
-**Boundary the dump draws for the typecheck fix:** never transport a
-trait-method-DECLARATION FQ (`prelude/=`) as a dispatch carrier — a decl is not
-a slotted storage key (the `backend-keyed-consumer.md` §1.1 carrier
-value-source rule: a carrier is a resolved storage key, walk-resolved /
-mint-resolved / transported, never a raw operator spelling's decl). The
-principled cure is to re-resolve the mono-instance auto-curry's `trait_resolution`
-against the concrete instance types (yielding `Dispatch(primitives/eq-i64)` /
-the mangled impl FQ, both slotted), so `has_inner` is true and the
-`record_dispatch_target` path — not the `VarRef::Global` transport — sets the
-carrier.
+### 2.1 Entry-`main` heap payload — not a backend defect
 
-### 1.4 Phase-4 consequence (the gate output)
+| Program | Allocations/deallocations |
+|---|---|
+| `(defn main [] (let [s "hi"] (Pure 9)))` | 2/2 |
+| `(defn main [] (let [s "hi"] (Pure s)))` | 2/1 |
+| `(defn main [] (Pure "hi"))` | 2/1 |
 
-| Repro | Carrier at seam | Slot present | Verdict | Owner |
-|---|---|---|---|---|
-| 0705 AutoCurry-over-local | `ApplyRef::ViaCallee` + callee `VarRef::Local`, `target_fq=None` | n/a (correctly none) | carrier CORRECT | **backend** (§3 arm) |
-| `'='` fn-as-value (generic-mono) | `ApplyRef::Dispatch(prelude/=)`, `target_fq=Some(prelude/=)` | **absent** (trait-method decl, not a slotted callable) | carrier WRONG (producer) | **typecheck** (mono-instance auto-curry re-resolution) |
+The heap-payload leak was identical with the ownership toggle on and off. S115
+first blamed `protect_return_value` and proposed two backend mechanisms. FIXME
+0745 falsified both:
 
-The pair does **not** collapse into one backend change-set. Phase 4 holds the
-conditional `/dev`(typecheck) slot for the `'='` face; the backend fix wave lands
-only 0705's arm (§3). `MC-E1` note (`s115-test-plan.md` §1.5): any pin
-colour-change under either change-set is reported to `/qa` as attribution
-evidence, not a win/regression.
+- The leaked reference belonged to the program's result value.
+- Int is the only type-aware owner of that value.
+- S118 fixed the leak at the
+  [program-result owner](../int/result-owner.md).
+- The pin is
+  `tests/adt_drop_glue_underkey.rs::entry_main_ioresult_heap_payload_toggle_off_leak_r2`.
 
----
+The backend owns only the function-return protect licence, which is what source
+cites this section for. A freshly constructed return needs no protect in any
+function. A return that may alias an argument or a live binding keeps its
+protect. The licence is `value_provenance(body) <= Fresh`, defined in
+[non-concrete release contract §6.1](non-concrete-release-contract.md#61-the-lattice).
 
-## 2. The RC-release sweep — ONE change-set, three faces (deliverable 2)
+Do not reintroduce the other rejected mechanism: releasing the payload inside the
+IO-tree teardown. REPL display dereferences that payload after the tree has been
+consumed, so releasing it there creates a use-after-free.
 
-Per `tests/adt_drop_glue_underkey.rs` and
-`design/arch/fixmes/0745-entry-payload-leak-misattributed-to-protect-return-value.md`
-(entry-payload leak), plus `tests/adt_wrapped_supersede_leak_0720.rs`, `/qa` scopes these as ONE backend sweep
-(shared oracle-lane criticality: both poison a future `allocs==deallocs` cell).
-Faces and seams:
+### 2.2 ADT-wrapped superseded loop parameter (0720)
 
-### 2.1 Face 1+2 — entry-`main` IO-result heap PAYLOAD leak (both toggles)
+A tail loop superseding a `(deftype G2 (Gr [cells]))` parameter leaked two
+objects per iteration: 403/2 at N=200 and 803/2 at N=400. The ownership toggle
+did not change the result. The bare-vector twin balanced at 202/202. Replacing
+the parameter with an unrelated fresh `Gr` leaked identically. That isolated the
+tail-jump parameter flush, not the match that consumes the parameter.
 
-**Seam:** `compiler/rc_emission.rs::protect_return_value-344` — the F-R1
-entry-frame suppression (`:303-309`) + the entry-`main` IO teardown it hands to
-(`cranelisp_intrinsics::drop::consume_io_tree`, the single trampoline consumer).
+The fix landed. The current rule is the single transfer/replacement predicate
+and its exemptions in
+[transitive drop glue §6](transitive-drop-glue.md#6-tco-replacementtransfer-predicate).
+The pins are the three tests in `tests/adt_wrapped_supersede_leak_0720.rs`,
+including the bare-vector control. All three pass.
 
-**Discriminators (measured at HEAD, `RC_STATS`):**
-- Scalar Pure-box `(defn main [] (let [s "hi"] (Pure 9)))` — **balanced**
-  (allocs=2 deallocs=2). The W4 F-R1 fix covers this.
-- Heap-payload `(defn main [] (let [s "hi"] (Pure s)))` — **leaks 1**
-  (allocs=2 deallocs=1; rc_inc=2 rc_dec=1), and **toggle-INDEPENDENT**: identical
-  2/1 under `CRANELISP_NO_OWNERSHIP=1`. The payload `s` acquires a second
-  reference (the `Pure`-store consuming inc) that no dec balances — the
-  trampoline's one `consume_io_tree` dec frees the box shell and decs the payload
-  once, but the store-inc's matching dec (the `let`-scope dec of `s`, or a
-  payload-recursive teardown dec) is absent.
+### 2.3 Acceptance bar
 
-**Fix shape.** The F-R1 suppression is licensed for the *box* over-inc only; it
-must not leave the *payload's* store-inc unbalanced. Two admissible mechanisms
-(the `/dev` wave picks the one that keeps the scalar face balanced):
-(a) at the entry-`main` fresh-`Pure(payload)` return, do not suppress the
-balancing accounting for a HEAP payload — suppress the box protect but let the
-`let`-scope dec of the moved-in binding stand (so payload nets to the box's
-single owned ref, freed by `consume_io_tree`); or (b) make the entry teardown's
-box drop-glue recursively release the heap payload (the payload's own
-reference), so the store-inc is balanced at teardown. Face 2 (toggle-ON heap
-payload) is the SAME mechanism — the fix covers both; the toggle-OFF face is the
-oracle-lane-critical reference-semantics one (pin
-`adt_drop_glue_underkey::entry_main_ioresult_heap_payload_toggle_off_leak_r2`).
+Each face must balance exactly (`allocs == deallocs`) under both toggles. Equal
+imbalance between the toggles is not acceptance. That differential check cannot
+see a leak that both lowerings share, and every leak found in S115 W3b was of
+that kind (FIXME 0761). The standing exact-balance lane is QA's
+`tests/gen_ownership_flows.rs`.
 
-**Hazard (binding, `s115-test-plan.md` §0 risk-2 / arch seq item 4):** must not
-weaken the general G2/item-26 protect — the entry-frame suppression is licensed
-SOLELY by the entry-`main` single-consumer trampoline contract; a non-`main` fn
-or an `Apply` return that MAY alias an argument keeps its protect. `allocs ==
-deallocs` EXACTLY (never leak → under-count).
+## 3. Auto-curry emission is total over the closed carrier sums
 
-### 2.2 Face 3 — 0720 ADT-wrapped superseded loop-param never released
+**Invariant:** every legal `(ApplyRef, VarRef)` state at the auto-curry seam has
+an emission arm. The one illegal state is a located producer error. There is no
+`_ =>` fallback and no re-resolution by name. The classifier is
+`classify_auto_curry_target` in `crates/cranelisp-backend/src/compiler/apply.rs`.
+Its closed result enum is the totality claim, and
+`crates/cranelisp-backend/src/compiler/apply/auto_curry_totality_tests.rs` pins it.
 
-**Seam:** `compiler/fn_compiler.rs::flush_superseded_heap_params_before_tail_jump
-:1210-1233` + its `collect_frame_heap_decs:1069` / `is_heap_type:1327`
-classification (`signature_heap_category ∈ {AlwaysHeap, Mixed}`). Called from
-`apply.rs::compile_tail_self_call`.
+| Carrier state | Emission arm |
+|---|---|
+| `Dispatch(fq)` naming a slotted callable | GOT-indirect wrapper call |
+| `Dispatch(fq)` naming a function in the current unit | direct wrapper call |
+| `Dispatch(fq)` naming a constructor or an inline primitive | constructor or inline-emission arm |
+| `ViaCallee` with an inner trait-method or builtin resolution | impl carrier derived from that resolution |
+| `ViaCallee` with a `VarRef::Local` or computed callee | curry the closure value (0705) |
+| `ViaCallee` with a `VarRef::Global` callee and no inner resolution | located producer-contradiction error |
 
-**Discriminators (measured at HEAD, `RC_STATS`, exact `adt_wrapped_supersede_leak_0720`
-shape `(deftype G2 (Gr [cells]))`):**
-- ADT-wrapped supersede loop, N=200: allocs=403 deallocs=2; N=400: allocs=803
-  deallocs=2 — **2 objects/iteration leak** (the `Gr` box AND its `cells` vec),
-  residue scales ~2·N. `reuse_hit=0 reuse_miss=0` (the flush's COW accounting
-  never engages for this param). **Toggle-independent** (analysis-OFF: allocs=403
-  deallocs=3).
-- Bare-vec twin `(defn go [v m] … (go (vec-set v 0 m) …))`, N=200: allocs=202
-  deallocs=202 — **balanced** (`reuse_miss=200`; the superseded `v` is flushed).
-
-**Isolation (decisive — the flush is the seam, NOT set0's match-consume).** A
-variant that supersedes the loop param with an UNRELATED fresh box —
-`(defn go [g m] … (go (Gr [9 9]) …))` (no match-extract of `g` in the tail
-arg) — leaks IDENTICALLY (403/2, 2/iteration). Since `g` is not consumed by any
-op in the tail argument here, the missing release can only be the tail-jump
-flush failing to dec the superseded `Gr` loop param. A single-ctor product ADT
-(`Gr` wrapping a vec — a real heap box, not value-flattened: 2 allocs/iteration
-prove the separate box) is not being released by
-`flush_superseded_heap_params_before_tail_jump`, whereas the bare-vec param IS.
-
-**Fix shape.** The flush must release a superseded single-ctor-product ADT loop
-param exactly as it releases a bare-vec loop param. Root-cause candidate for
-`/dev` to confirm: `is_heap_type(Gr)` / the param-frame `variable_types`
-population under-classifies the product-ctor ADT param, so
-`collect_frame_heap_decs` filters it out. The dec routes through
-`emit_heap_binding_decs:1100` → `emit_rc_dec_with_inline_drop_glue` (the ADT
-inline drop-glue path, which recursively decs the `cells` field on rc→0) — so
-once the param is admitted to the dec set, BOTH leaked objects are released.
-
-**Hazard (binding):** the MS-P8 param-flush must balance in BOTH conj arms and
-honor the existing exemptions — `transfer_skip` (a bare top-level `Var` tail arg
-MOVES, no dec), borrowed params, and the analysis-ON in-place-COW exemption
-(`param_flush_exempts_inplace_cow`, `:1503` / FIXMEs 0691/0695 — a param SOME
-tail arg is an in-place COW rooted at is NOT superseded; toggle-off always
-copies so the dec is owed). Admitting the ADT-wrapped param must not disturb the
-bare-vec twin (must stay balanced) nor re-introduce the 0691 cross-position UAF.
-
-### 2.3 Sweep acceptance
-
-`allocs == deallocs` EXACTLY at each face (never leak → under-count); the tier-4
-safety lane + `RC_STATS` pins are the acceptance instrument (arch seq item 4).
-Unit tier per METHOD §2.2 at each seam (`s115-test-plan.md` §6.5): the tail-jump
-flush ADT-wrapped-param arm; the entry-frame protect license under both toggles.
-The three e2e pins
-(`adt_drop_glue_underkey::entry_main_ioresult_heap_payload_toggle_off_leak_r2`,
-`adt_wrapped_supersede_leak_0720::{…loop_does_not_leak, …residue_does_not_scale_with_n}`)
-flip green; the bare-vec twin GREEN control holds.
-
----
-
-## 3. 0705 consumer-totality — the curry-the-local-closure arm (deliverable 3)
-
-The §1.2 dump confirms the backend half: an `AutoCurry` whose Apply is
-`ApplyRef::ViaCallee` and whose callee `Var` is `VarRef::Local` is a legal
-carrier state with **no emission arm**. The unifying commitment (`/arch` §3, P24
-corollary prong 3 / P20 exhaustiveness): **the wrapper-emission seam is total
-over the closed carrier sum.** After the S114 typed-resolution flip
-(`typed-resolution-carrier.md` §4), the carrier sums are CLOSED:
-`ApplyRef ∈ {Dispatch(FQ), ViaCallee}` and `VarRef ∈ {Global(FQ), Local{binder,
-binding_span}}`. The seam must have an arm for every legal state and a located
-producer error for nothing else — **no `_ =>`**.
-
-**The totality over the closed sums (the emission contract at the auto-curry
-seam):**
-
-| Carrier state | Emission arm | Status |
-|---|---|---|
-| `ApplyRef::Dispatch(fq)`, `fq` a slotted callable | GOT-indirect wrapper call (`emit_wrapper_call` GOT terminal) | landed |
-| `ApplyRef::Dispatch(fq)`, `fq` in current unit `func_ids` | direct wrapper call | landed |
-| `ApplyRef::Dispatch(fq)`, `fq` a ctor / inline-primitive | ctor-construct / inline-emit arms | landed |
-| inner `TraitMethod`/`BuiltinFn` resolution | self-derived impl carrier (`emit_curry_target_call`) | landed |
-| **`ApplyRef::ViaCallee` + callee `VarRef::Local`** | **curry the LOCAL CLOSURE VALUE (NEW)** | **0705 — owed** |
-| `ApplyRef::Dispatch(fq)` with no slot / entry miss | located `CodegenError` (no name-resolver fallback, Rev-2) | landed (the loud terminal) |
-
-**The new arm.** When the auto-curry callee is `VarRef::Local`, the target is a
-scope-stack closure value, not a table symbol. The wrapper must capture that
-closure value (from `self.variables` / the scope stack, by the local `binder`)
-and curry the CLOSURE — i.e. the auto-curry closure captures the applied args
-AND the local closure value, and its body forwards all args to the captured
-closure via `compile_closure_call` (the GOT-indirect `call_indirect` over the
-closure's embedded `CODE_PTR`), NOT via a `target_name` GOT-slot lookup. This is
-the auto-curry analogue of the locals-first dispatch already in
-`compile_var_apply:913-919` (a shadowing local wins the closure-call path
-unconditionally) and `compile_closure_call`; 0705 extends that discipline from
-the FULL-application path to the PARTIAL-application (auto-curry) path.
-
-**Totality argument (no `_ =>`).** The `ApplyRef` sum is closed and
-`#[non_exhaustive]`-free at the seam (`typed-resolution-carrier.md` §4); the
-`VarRef` sum likewise. `ViaCallee` means "the identity rides the callee `Var`" —
-so the callee's `VarRef` is the SOLE remaining discriminator, and it is one of
-exactly two: `Local` (the new arm — curry the captured closure) or `Global`
-(unreachable here — a `Global` callee under a plain-fn auto-curry would have been
-transported to `ApplyRef::Dispatch` by `resolve_auto_curry:807`, so a
-`ViaCallee` + `Global` is a producer contradiction → located error, the honest
-floor). Every legal `(ApplyRef, VarRef)` pair thus has an arm; the illegal pair
-is a located producer error. The threading: `compile_auto_curry_call` already
-receives `apply_target: Option<&FQSymbol>` (`None` for `ViaCallee`); it must ALSO
-receive the callee `Var` node (or its `VarRef`) so the seam can read the `Local`
-binder and compile the closure value — a signature widening internal to
-`apply.rs`/`fn_as_value.rs`, no cross-crate type change.
-
-**Control (born-green, `s115-test-plan.md` §1.5).** The non-trait local
-`(defn f [] (let [g (fn [a b] 0)] ((g 1) 2)))` isolates the arm from trait
-dispatch; the FULL application `(let [g (fn [a b] 0)] (g 1 2))` already compiles
-(exit 0) and must stay green. Unit tier: the emission-seam totality (each carrier
-state → its arm; the illegal state → located error) per METHOD §2.2.
-
----
+The last row is illegal because the producer transports a global plain-function
+callee as `Dispatch`. The closure-value arm captures the closure alongside the
+applied arguments and forwards through the closure call. It is the
+partial-application counterpart of the locals-first rule for full application.
 
 ## 4. R4 — mangle-family injectivity census (owed O3; deliverable 4)
 
-`safety-invariants.md` §4 R4: every mangle semantic-identity → symbol is
-injective, or additionally disambiguator-keyed. Drop-glue is `witnessed`
-(CS-1.2). This census covers **every other symbol-mint site**; the two naming
-primitives in `compiler/resolution.rs` are the natural home, extended to the
-platform/typecheck-boundary mints. Per family: witness exists / disambiguator-keyed
-/ OWED-witness (naming the `/dev` build).
+The rule comes from [safety invariants R4](../arch/safety-invariants.md): every
+mangle from semantic identity to symbol must be injective, or keyed by an
+additional disambiguator. This census was re-verified against source on
+2026-09-24.
 
-| Family | Mint site | Key | Verdict |
+| Family | Mint | Key | Verdict |
 |---|---|---|---|
-| ADT drop glue / vec elem-dec | `resolution.rs::adt_instantiation_mangle` → `adt_drop_glue_name:219`; `build_elem_dec_fn` | `escape_symbol(render_type(…,Qualified,Numbered))` | **witnessed** — `escape_symbol:182` is injective + prefix-free with a total decoder (CS-1.2 model); round-trip battery in `resolution/tests.rs`. Debug-asserts concreteness (S-2). |
-| inner-fn discriminators | `resolution.rs::inner_fn_discriminator_for` | sanitize (non-injective `[^A-Za-z0-9_]→_`) **+ span** | **disambiguator-keyed** — the sanitize map alone collapses `-`/`.`/`/`/space, but every consumer additionally folds `span.start_span.end` (the mono-instance + create-gate arm); the span breaks sanitize ties. VERIFY: confirm no consumer uses the disc WITHOUT a span fold. |
-| closure/curry capture drop glue | `resolution.rs::closure_drop_glue_name` / `curry_drop_glue_name:110` | `disc + span` | **disambiguator-keyed** — disc+span, paired identically to the lambda/wrapper body name (FIXME 0350 class closed). Safe. |
-| trait-method-value wrapper | `fn_as_value.rs::compile_trait_method_as_value` (`__wrap_tmv_{target}_{disc}{span.start}_{span.end}__`) | `target + disc + span` | **disambiguator-keyed** — disc+span. Safe (same discipline). |
-| GOT data symbols | `resolution.rs::got_data_symbol_name` (`__cranelisp_got_{module.replace('.','_')}`) | flattened module path | **OWED-witness** — the `.`→`_` flatten is NON-injective: module names admit `_` AND `-` (reader.rs:226), so a two-component path `a.b` and a one-component module `a_b` BOTH flatten to `__cranelisp_got_a_b` → two modules share ONE GOT slab data symbol (cross-module wrong-slab dispatch — the R4 class, one level up from drop-glue). Constructible in a multi-module program. **/dev builds:** an injective flatten (escape `.`/`_`/`-` via the `escape_symbol` scheme, or a per-module disambiguator) + a round-trip witness. |
-| platform GOT / layout-hash exports | `cranelisp-platform/src/declare.rs:343/223` (`__cranelisp_got_platform_<name>`, `__cranelisp_layout_hash_<name>`) | platform `<name>` verbatim (macro `concat!`) | **disambiguator-keyed by uniqueness** — one platform ⇒ one name, `concat!`'d literal, no flatten; injective iff platform names are unique (a load-time invariant — two loaded platforms sharing a name is a diagnosed load condition, out of R4's mangle scope). **Cross-crate:** the mint lives in `cranelisp-platform`; record the census row there via FIXME if a witness is wanted; no backend action. |
-| LinkerSymbol / mangled method keys | **typecheck-side** (`impl$FQType$FQTrait`, `add$Int+Int`; `checker.rs:2630`, the `$`/`+`-joined FQ mangle) — backend consumes verbatim as a Cranelift symbol | `$`/`+`-delimited FQ component join | **OWED-witness, CROSS-CRATE** — injectivity depends on the FQ-component join being unambiguous; `$`/`+` are delimiters and FQ names should not contain them, but a `render_type` containing `+` (arg separators) could alias. The mint is typecheck's; the backend cannot witness it. **Route:** FIXME `target: /arch` (or the R4 typecheck sibling) — the census records the family as owed at its true mint site, not backend `resolution.rs`. |
+| Type drop glue | `cranelisp_types::drop_glue_symbol_name` | Module plus full concrete instantiation | Witnessed at the types home. The backend-local escape scheme was deleted in S118. |
+| GOT data symbol | `cranelisp_types::got_data_symbol_name`; the backend function forwards to it | Escaped module path | Witnessed since S119 (FIXME 0748). `crates/cranelisp-backend/src/compiler/resolution/tests.rs::got_data_symbol_name_agrees_with_the_types_owned_home` fences agreement with the backend forward. |
+| Span-derived inner names: lambda bodies, closure and curry glue, fn-as-value, trait-method-value, operator and curry wrappers, parallel and launch continuations, dependent thunks and their glue, poll-state glue | `inner_fn_discriminator()` plus the span, composed at each site. Glue names go through `closure_drop_glue_name` and `curry_drop_glue_name`. | Sanitized enclosing instance name, then the gate-arm token, then the span's start and end | Across different spans: disambiguator-keyed; every composition site folds the span. Across instances of one template: **asserted with a named falsifier**; see the note below this table. |
+| Platform exports | `cranelisp-platform` `declare.rs`, via `concat!` | Platform name, verbatim | Keyed by platform-name uniqueness. The residual and its loader-side close are recorded in the R4 row. |
+| Typecheck signature and method mangles | Typecheck's `$`/`+` joins | Joined FQ components | Stands with its rationale and is fenced; the R4 row carries both. |
 
-**Census verdict:** the two backend `resolution.rs` naming primitives are
-otherwise witnessed/disambiguator-keyed; the ONE backend-owned OWED-witness is
-`got_data_symbol_name` (the flatten collision). The platform and LinkerSymbol
-families are owed but mint OUTSIDE backend — recorded here for completeness and
-routed cross-crate. `/qa` reserves the §6.2 R4 witness rows against this final
-family set (do not pre-guess — the 0660 discipline; the concrete rows land when
-this census is the artifact).
+The span-derived inner-name families are not witnessed across instances of one
+template, for these reasons:
 
-**Register-row remedy language (R4):** *"drop-glue witnessed (CS-1.2);
-inner-fn/closure/curry/tmv-wrapper disambiguator-keyed (span/disc); GOT data
-symbol `got_data_symbol_name` is the ONE backend OWED-witness — the `.`→`_`
-flatten is non-injective over `_`/`-`-bearing module names (constructible
-cross-slab collision); /dev builds an injective flatten + round-trip witness.
-Platform export names (uniqueness-keyed, cranelisp-platform) and typecheck's
-`$`-join LinkerSymbol/method mangle (cross-crate, owed at its mint) are routed to
-their own homes."*
+- Those instances share every span, so the names differ only if the sanitized
+  instance names differ.
+- The sanitize map `[^A-Za-z0-9_]→_` is not injective.
+- The falsifier is two instance names from one template that differ only in
+  characters the map collapses.
+- Glue declaration is idempotent on a name hit, so a glue collision would reuse
+  the first instance's glue silently.
+- Reachability has not been established.
 
----
+## 5. R6 — persisted-index validation seam
 
-## 5. R6 — persisted-index validation seam (deliverable 5, for /dev(backend, cache))
+The persisted-index census, the single validation loop and the maintenance rule
+live in two places:
 
-`safety-invariants.md` §4 R6: every index/key/slot deserialized from
-`.meta.json` is validated at load; violation = diagnosed `CacheStale`, never
-trusted into emission. Trust-boundary taxonomy (§2 tier 3): cache bytes are
-external data — **diagnose and recompile, never `assert!`.**
+- the module rustdoc of `crates/cranelisp-backend/src/cache/serialize.rs`;
+- [safety invariants R6](../arch/safety-invariants.md).
 
-**The ONE seam.** `cache/serialize.rs::deserialise_meta_with_build_id-304`
-already carries the single existing per-entry validation loop (`:294-303`,
-`callable_got_slot() < GOT_TABLE_SIZE` → `CacheStale::GotSlotOutOfRange`). The
-R6 census extends THIS loop (never a parallel walk) with one arm + one
-`CacheStale` class per persisted-index family.
+Every family is diagnosed as its own `CacheStale` class and triggers a
+recompile. No arm uses `assert!`.
 
-**Persisted-index census (the seed list, each → its own `CacheStale` class):**
-
-| Persisted index | Corrupt-bytes hazard | Validation arm | `CacheStale` class |
-|---|---|---|---|
-| `callable_got_slot()` | OOB slot → `store_slot`/`load_slot` `assert!` panic on disk content | `< GOT_TABLE_SIZE` | `GotSlotOutOfRange` (landed) |
-| borrowed sibling slot (`borrowed_sibling_slot`, R5 carrier) | OOB → same GOT panic when its first consumer reads it | `< GOT_TABLE_SIZE` (per-entry, if present) | `SiblingSlotOutOfRange` (NEW) |
-| summary param indices — `ResultMode::MayAliasOf(k)` | `k ≥ arity` → `arg_origins[k]` OOB read at the consume seam | `k < def.arity()` (per summary) | `SummaryParamIndexOutOfRange` (NEW) |
-| `callees` FQs (feeds the future reverse index) | malformed FQ (empty module/symbol) → resolve/reverse-index corruption | non-empty module + symbol per FQ | `MalformedCalleeFq` (NEW) |
-| span keys (`resolved_targets`/mono-view sidecar keys, if persisted) | `start > end` / out-of-source span → keyed-read miss or panic | `start ≤ end` (well-formed span) | `MalformedSpanKey` (NEW) |
-
-**Design constraints for the /dev(backend, cache) change-set:**
-- ONE loop, ONE pass over `table.all_symbols()` (extend the existing
-  `:294` loop; the per-family arms are cheap field checks, no allocation).
-- Every arm diagnoses `CacheStale` (→ recompile) and NEVER `assert!` — the tier-3
-  external-data sub-form (contrast the in-process `store_slot` `assert!`).
-- The census table lands as a **durable artifact in the cache-submodule rustdoc**
-  (`cache/serialize.rs` or `cache/mod.rs` `//!`) per `/arch` revision 3, and
-  `/review` verifies census COMPLETENESS against it (no persisted index escapes a
-  row).
-- Any NEW persisted index added later adds its row + arm in the same change-set
-  (the R6 maintenance rule).
-
-**Testability (`s115-test-plan.md` §6.1):** unit tier — corrupt each index
-(out-of-range sibling slot; `MayAliasOf(k≥arity)`; malformed `callees` FQ /
-span key) → its distinct `CacheStale` class; valid meta round-trips untouched
-(false-fire fence). E2e — tamper a persisted `.meta.json` field (summary index)
-in a warm cache dir, re-run → recompile + correct output, no crash, no
-stale-summary elision.
-
-**Note on 0637 (R5 row).** The sibling-slot VALIDATION is co-landed here (R6),
-but the sibling-slot CONSUMER remains parked to its first reader (R5 ruling,
-re-affirmed S113 W5 — validating an unread index guards nothing; the co-landing
-rule is the mechanism). The R6 arm above validates the sibling slot's RANGE at
-load defensively (cheap, uniform with the loop); it does not build the consumer.
-
----
+The borrowed-sibling slot is range-checked for `RustPrimitive` extern shims,
+which are the only origin the lifecycle rules admit for that realization. The
+slot still has no production reader. Out-of-range sibling slots are therefore
+harmless today. That claim is asserted, with a falsifier: any production read of
+`borrowed_sibling`. The first reader must also confirm that a restored extern
+shim under any other origin is rejected. The range check depends on the origin
+rule, and this seam propagates only the instance-key lifecycle error.
 
 ## 6. W-B5 patch-collapse — retired
 
@@ -406,24 +201,3 @@ binding indirection — and their separation is the current design
 binding-indirection class remains a potential extension with a stated hazard and
 trigger ([non-concrete-release-contract.md](non-concrete-release-contract.md)
 §10).
-
-## 7. FIXME dispositions
-
-Both dispositions this section carried are complete: 0697's whole-match
-approximation is recorded in [binding-indirection-consume.md](binding-indirection-consume.md)
-§2, and 0696's re-keying was resolved at S115 W3.
-
----
-
-## 8. Testability + cross-references
-
-- Fix-wave unit obligations enumerated in `s115-test-plan.md` §6.5 (§2 tail-jump
-  flush arm + entry-frame protect both toggles; §3 wrapper-emission totality per
-  carrier state + illegal-state located error).
-- No `cranelisp-types` / `CACHE_SCHEMA_VERSION` / public-API change in any §2/§3
-  backend change-set (arch §7). §5 R6 adds NEW `CacheStale` variants — a
-  backend-internal enum (not persisted), no schema bump. §4's `got_data_symbol_name`
-  fix changes an INTERNAL relocation-symbol scheme (no persisted surface); the
-  LinkerSymbol/platform families route cross-crate via FIXME.
-- Cited by `backend.md` §8; extends `ownership-codegen.md` §13.7 + the
-  `binding-indirection-consume.md` consume family (§2.2 flush, §2.1 fn-return).

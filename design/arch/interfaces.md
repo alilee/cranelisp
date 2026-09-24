@@ -187,11 +187,24 @@ not a backend input and no function converts it into one. The backend's input is
 - `MethodResolutions` holds span-keyed sidecars for one check run. `var_refs` and
   `apply_refs` are total over that run's references: locals record `VarRef::Local` and
   dispatch-less applications record `ApplyRef::ViaCallee`. "No entry means local" is retired.
+- `VarRef::Local` carries the binder identity — the bound name plus the span of the binding
+  form that introduced it, because the AST has no per-binder span for parameters. It is a
+  resolution verdict, not a storage locator: the backend's scope stack owns the slot, and a
+  binder absent from it is a producer breach that fails hard naming the binder.
+  `ApplyRef::ViaCallee` is a positive verdict that no dispatch was selected at the
+  application: the identity rides the callee expression.
 - `MonoExpr::from_expr` transports them onto the typed view as non-optional fields. A
   real-span reference with no verdict is `ViewBuildError::Unresolved`, read before the node
   type so it cannot degrade into the type error. `VarRef` and `ApplyRef` are closed sums with
   no unresolved case and no `#[non_exhaustive]`: a new variant must break every consumer
   match.
+- `Span::SYNTHETIC` is one shared key, so the sidecars cannot address synthetic nodes
+  individually. In both builders a synthetic-span node with no entry takes the all-local
+  verdict (`VarRef::Local` at the synthetic span, `ApplyRef::ViaCallee`); an entry recorded
+  under that key still wins. Compiler-synthesised all-local bodies enter through
+  `MonoExpr::synthetic_local_from_expr`, which asserts every node is synthetic. The standing
+  invariant this rests on, and its falsifier, are in
+  [backend keyed consumption §4](backend-keyed-consumer.md#4-view-production--typecheck-is-the-sole-producer-w0b).
 - The `FQSymbol` inside `Global` and `Dispatch` is the storage identity: the module plus the
   exact table key at which resolution terminated. It is neither the written name nor a
   display name.
@@ -201,10 +214,10 @@ not a backend input and no function converts it into one. The backend's input is
   module, where the selected method body is stored.
 - `pattern_ctors` carries each constructor pattern's storage identity to the view's
   `resolved_ctor`.
-- Contracts: [typed resolution carriers](typed-resolution-carrier.md),
-  [backend keyed consumption](backend-keyed-consumer.md),
+- Contracts: [backend keyed consumption](backend-keyed-consumer.md),
   [constructor keys](dotted-ctor-canonical-keys.md) and
-  [Principle 24](principles/24-resolve-once.md).
+  [Principle 24](principles/24-resolve-once.md). Exact promises: the rustdoc in
+  `crates/cranelisp-types/src/mono_expr.rs` and `crates/cranelisp-types/src/check.rs`.
 
 ### Ownership-inference carriers
 

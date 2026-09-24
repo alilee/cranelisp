@@ -202,8 +202,8 @@ the unioned `View` read surface is types-owned because it has several.
 13. **Typecheck is the sole producer of resolved identities and codegen views.**
     Every statically resolved reference carries the storage identity under
     which it resolved; minting and the ambiguity check share one value-position
-    walk. Contracts: [backend keyed consumption](backend-keyed-consumer.md),
-    [typed resolution carriers](typed-resolution-carrier.md).
+    walk. Contracts: [backend keyed consumption](backend-keyed-consumer.md) and
+    [interfaces — method resolutions](interfaces.md#method-resolutions).
 14. **Unresolved return-polymorphic dispatch crosses on `CheckResult`.** The
     types live with their producer because the binary is the only consumer; the
     binary raises the diagnostic at its two execution boundaries and backend

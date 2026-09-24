@@ -2503,3 +2503,102 @@ Limits, explicit:
 - QA's advisory record (`.local/s122-harness-artifact-qa-result.md`) placed
   `; Linking:` on stdout; the log shows stderr. Corrected above; no assertion
   depended on it.
+
+## Backend cleanup QA triage — cache-seam lifecycle discard and R4 sanitize (2026-09-24)
+
+Source: the two inspection-only intake questions in the S115 backend design
+consolidation (`.local/s122-s115-backend-design-result.md`). Read-only source
+triage; no build, run or test edit. A scratch-directory probe with the built
+binary was attempted and refused by the sandbox, so neither lead carries an
+executed observation here — every claim below is source-derived and says so.
+
+### C-A — cache seam discards every lifecycle refusal but one (observation → allocated condition)
+
+Source facts, verified 2026-09-24:
+
+- `crates/cranelisp-backend/src/cache/serialize.rs::deserialise_meta_with_build_id`
+  calls `table.validate_lifecycle()` and matches only
+  `LifecycleError::InstanceKeyMismatch`; any other `Err` falls through to the
+  per-entry index loop and the table is returned `Ok`.
+- `crates/cranelisp-types/src/module.rs::validate_lifecycle` also refuses
+  out-of-range or duplicate retired slots and duplicate live slots
+  (`crates/cranelisp-types/src/module.rs::validate_slot`, one `seen` set across
+  all entries), illegal origin/state pairs and illegal realization payloads
+  (`crates/cranelisp-types/src/module.rs::validate_origin_state`).
+- The int restore path adds no later check:
+  `src/process_form/cache_restore.rs::install_cached_table` is
+  `into_concrete` → `advance_next_id_past_table` → `install_module`; none of
+  the three validates.
+- `design/int/cache-hit-loading.md` §0 already records this as "asserted, not
+  measured" with the exact falsifier (a decoded table with any other invalid
+  lifecycle state that restores instead of regenerating).
+
+Classification: not a reproduced defect and not a surprise — a design-recorded
+asserted claim whose falsifier is cheap to construct. The R6 arms already
+treat the identical threat model (corrupt or hand-edited `.meta.json`) as
+material, and the discarded check already executes, so the residual is the
+cost of one error mapping. Plausible wrong outcome that survives the R6 loop:
+two restored callables at one in-range slot; the second `store_slot` wins and
+the first dispatches to the wrong body under the wrong signature — the
+wrong-code face of a GOT-slot fault, silent where the OOB face panics.
+
+| Condition / class | Required observable | Lowest discriminating evidence | Existing evidence to extend | Limit |
+|---|---|---|---|---|
+| C-A, S (safety fence under R6) | A decoded `.meta.json` whose `validate_lifecycle` fails for any `LifecycleError` is refused as `CacheStale` and the module recompiles; a lifecycle-valid table is not refused | Backend cache module cell, dev-owned: two legal entries at distinct slots, JSON tampered so both claim one slot, `deserialise_meta_with_build_id` must return `Err` with a non-empty `reason()`. Existing false-fire control `crates/cranelisp-backend/src/cache/serialize/tests.rs::cache_load_accepts_a_valid_meta_with_every_persisted_index_populated` stays GREEN | `crates/cranelisp-backend/src/cache/serialize/tests.rs::roundtrip_tampered` and the sibling-slot cell supply the tamper shape; `cache_load_rejects_out_of_range_sibling_slot_as_stale` is the positive/negative template | Intended RED today. Whether the mapping widens an existing `CacheStale` variant or adds one is a backend public-surface question for `arch` before `dev` edits; the cell asserts refusal, not the variant. No e2e: there is no public trigger without hand-editing a cache, which is why the whole R6 family is module-tier. |
+
+Owner of the correction: `dev`(backend, cache) with `design`(backend) recording
+the rule in the R6 census; `design`(int) retires the §0 falsifier when the cell
+lands. Sequencing is `sprint`'s.
+
+### C-B — sanitized inner names across instances of one template (asserted → constructible falsifier, repro allocated)
+
+Source facts, verified 2026-09-24:
+
+- A mono instance's symbol is its storage key,
+  `crates/cranelisp-types/src/lifecycle.rs::concrete_callable_key`, rendered
+  `(owner [params] result)` with qualified type names — for example
+  `(user/f [user/A-B] primitives/Int)`.
+- `crates/cranelisp-backend/src/compiler/resolution.rs::inner_fn_discriminator_for`
+  maps every non-`[A-Za-z0-9_]` char of that name to `_`. The reader admits
+  `_`, `-`, `?` and `!` as symbol constituents
+  (`crates/cranelisp-frontend/src/reader.rs::is_symbol_char`), so type names
+  `A-B` and `A_B` (or `A?B`) produce byte-identical discriminators.
+- The lambda body name is `__lambda_{discriminator}{start}_{end}__`
+  (`crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda`);
+  instances of one template share the span; `define_function` is not
+  idempotent. The body is defined before the capture glue is built
+  (`compile_lambda_body` precedes `build_closure_drop_glue`), so in one batch
+  the collision surfaces as a loud `Duplicate definition of identifier`
+  codegen error, and the silent `emit_capture_dec_glue` reuse is unreachable
+  there.
+- The only unit witness,
+  `crates/cranelisp-backend/src/compiler/resolution/tests.rs::inner_fn_discriminator_uniquifies_per_mono_instance`,
+  compares names that differ in alphanumerics; nothing exercises two names
+  differing only in collapsed characters.
+
+Classification: a source-derived prediction of a `wrong-reject` on a
+spec-valid program (two product types whose names differ only in `-`/`_`,
+one generic function containing a `fn`, instantiated at both), not an
+observed defect. Reachability is not disputed by anything in source; it is
+unobserved. The mechanism is the 0640 class (`A-B`/`A_B` collapsing to one
+symbol) at a sibling seam, which makes it material: the fix is a
+backend-internal injective escape with no public surface.
+
+| Condition / class | Required observable | Lowest discriminating evidence | Control | Limit |
+|---|---|---|---|---|
+| C-B unit, A (mechanism) | `inner_fn_discriminator_for` yields distinct strings for two instance names differing only in collapsed characters | `dev`(backend) cell beside the existing discriminator test: `(user/f [user/A-B] primitives/Int)` versus `(user/f [user/A_B] primitives/Int)` must differ | The existing alphanumeric-difference cell | RED today by construction; it names the seam, not the symptom |
+| C-B e2e, A (acceptance) | A program defining `(deftype A-B [x :Int])`, `(deftype A_B [x :Int])`, a generic `(defn f [v] (let [g (fn [] v)] (g)))` and a `main` applying `f` to one value of each type runs and returns the expected value in REPL, `--run` and `--link` | `test` authors the minimal repro through `run_through_all_modes`, `PreludeVariant::None`, tracing to `spec/01-lexical.md` §1.4.1 and `spec/04-expressions.md` §4.5.1; the capture makes the glue name collide as well as the body name | The same program with `A-C` in place of `A_B` (names distinct after sanitizing) must pass | Predicted RED in every mode with the duplicate-definition message; if GREEN, the prediction is refuted and the pair becomes R4's cross-instance witness, which the register lacks either way. If REPL accepts across two turns while `--run` refuses, record `mode-divergence` as a second face |
+
+`// defect:` on the e2e cell, if RED: `class=wrong-reject
+locus=crates/cranelisp-backend/src/compiler/resolution.rs::inner_fn_discriminator_for
+found=S122 owner=/dev`. The R4 register row is `arch`'s to regrade after the
+observation; `design`(backend) already carries the asserted claim with this
+falsifier in `design/backend/s115-carrier-and-rc-sweep.md` §4.
+
+### 0637 tracking closure (QA surfaces)
+
+`memory-safety-coverage.md` §4 table row and §7 cross-reference now state the
+sibling-slot arm as landed and the filing as resolved, and route the open
+cache-seam residual to C-A; `s115-instrumentation-matrix.md` carries a dated
+closure addendum rather than rewritten Phase-3/W7 verdicts. No other QA-owned
+surface names 0637.

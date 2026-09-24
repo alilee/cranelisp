@@ -79,7 +79,8 @@ pub struct WrittenTraitImpl {
 **Carried as** `SymbolTable.written_trait_impls: Vec<WrittenTraitImpl>` — the
 established per-module-metadata placement (the Decision-32/33 family:
 structural decls as fields on `SymbolTable`). **No `#[serde(default)]`** — the
-typed-resolution-carrier precedent (schema-22 window): post-bump, absence is a
+S114 typed-carrier precedent (schema-22 window;
+[backend keyed consumption §8](backend-keyed-consumer.md#8-the-landed-carrier-surface)): post-bump, absence is a
 hard serde error, not a silently-empty default. Vec order is registration
 order (deterministic from source; keeps `.meta.json` byte-reproducible).
 

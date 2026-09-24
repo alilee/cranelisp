@@ -119,7 +119,7 @@ property (fully concrete), not a producing process or a consumer.
   the concrete type), and adding a parallel optional concrete field on `Expr` (the node would
   still hold a `Type`, so the guarantee degrades to a reading convention).
 - Carried beside the type: the node span; the typed resolution carriers `VarRef` and
-  `ApplyRef` ([typed resolution carriers](typed-resolution-carrier.md)); `resolved_call`
+  `ApplyRef` ([method resolutions](interfaces.md#method-resolutions)); `resolved_call`
   dispatch metadata; match-arm `resolved_ctor`
   ([constructor keys](dotted-ctor-canonical-keys.md)); and advisory ownership site facts
   ([ownership inference](ownership-inference.md)).

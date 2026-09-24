@@ -151,9 +151,9 @@ scribed S114 Phase 3).** Three prongs, one rule:
    never a codegen-time keyed miss (wrong phase). Sweeps — the bare-name
    helper classification, the scan census — are **migration aids, never the
    enforcement mechanism** (an interim gate patch a constructor obsoletes is
-   the Principle-8 half-measure). Carrier shape + wave plan:
-   `crates/cranelisp-types/src/mono_expr.rs` (`VarRef`/`ApplyRef` rustdoc) +
-   `design/arch/typed-resolution-carrier.md`.
+   the Principle-8 half-measure). Carrier shape:
+   `crates/cranelisp-types/src/mono_expr.rs` (`VarRef`/`ApplyRef` rustdoc) and
+   `design/arch/interfaces.md` §Method Resolutions.
 
 **Enforcement consequence.** Under the compiler-wide statement, any ambient
 identity-scan anywhere in the pipeline is a defect this principle names: an

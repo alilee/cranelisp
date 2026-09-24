@@ -11,7 +11,7 @@ not contiguous.
 Governing contracts: the callable lifecycle and its settlement funnels
 (`design/arch/symbol-table-lifecycle.md`), the concrete codegen boundary
 (`design/arch/concrete-boundary-type.md`), and the typed resolution carrier
-(`design/arch/typed-resolution-carrier.md`; producer side in
+([method resolution carriers](../arch/interfaces.md#method-resolutions); producer side in
 `typed-resolution-carrier.md`). The checked-body ledger is designed in
 `checked-body-publication.md`.
 

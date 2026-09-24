@@ -3,9 +3,9 @@
 **DESIGN (S114 Phase 3, `/design`(typecheck); pre-implementation).** The
 producer-side pass plan for the `VarRef`/`ApplyRef` carrier flip. Subordinate to
 `monomorphisation.md` (the view-build + settlement machinery it extends) and
-governed by the binding cross-crate contract `design/arch/typed-resolution-carrier.md`
-(where they disagree, the arch doc wins) and Principle 24 §Corollary "resolution
-products travel typed". This doc elaborates **only what typecheck does**: the
+governed by the binding cross-crate [method-resolution contract](../arch/interfaces.md#method-resolutions)
+(where they disagree, the arch contract wins) and [Principle 24](../arch/principles/24-resolve-once.md),
+whose corollary states that resolution products travel typed. This doc elaborates **only what typecheck does**: the
 chokepoint totality flip, binder-identity provenance plumbing, the view-build
 gate error widening, the lenient-population census, the F-D2-10 dispatch-completeness
 fix that rides the flip, and the B-2 escape-fact half.
@@ -557,8 +557,8 @@ Until the brief exists MS-P7 stays an attributed-RED carry in no wave's flip set
 
 1. This doc §2 (chokepoint totality) + §3 (provenance plumbing) + §4 (split + gate
    + lenient reshape) — the producer contract.
-2. `design/arch/typed-resolution-carrier.md` §3–§5 (binding) + Principle 24
-   §Corollary.
+2. `design/arch/backend-keyed-consumer.md` §1 and §4 (binding), plus
+   [Principle 24](../arch/principles/24-resolve-once.md).
 3. `crates/cranelisp-types/src/mono_expr.rs` `VarRef`/`ApplyRef` rustdoc (the
    landed dormant sums) — the FIXME-0685 arch resolution must be in hand before
    the `from_expr` signature is touched.

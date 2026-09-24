@@ -269,3 +269,23 @@ FIXME 0767 is **discharged by this section**: the criterion is upgraded, the
 the movement is recorded as a finding. The §4.1 generalisation from "diagnostic
 mode" to "instrument, including a composed one" is adopted — item 1 above is its
 first bill.
+
+---
+
+# 0637 / R5-SIBLING CLOSURE ADDENDUM (2026-09-24, /qa)
+
+The three places above that carry "0637/R5-sibling — PARKED to first consumer"
+(the Phase-3 verdict summary, the R5 register row, and the W7 amended verdict
+summary) were superseded inside this sprint and the record did not move: the O2
+change-set (`4ea5c758`, S115 W3) extended the ONE R6 validation loop with the
+sibling-slot arm (`CacheStale::SiblingSlotOutOfRange`) and its planted cell
+(`crates/cranelisp-backend/src/cache/serialize/tests.rs::cache_load_rejects_out_of_range_sibling_slot_as_stale`,
+positive leg at `GOT_TABLE_SIZE - 1`, negative leg at `GOT_TABLE_SIZE`). The
+R5 row's "parked" wording therefore described the filing's status, not the
+mechanism's, from W3 onward. `design`(backend) verified the arm against source
+and resolved FIXME 0637 on 2026-09-24 (`design/backend/s115-carrier-and-rc-sweep.md`
+§5); the filing is deleted. The DEFERRED/PARKED count in the amended verdict
+summary drops from 3 to 2 (R13, R12). The carrier still has no production
+reader — that is `design`'s asserted claim with its named falsifier, not a QA
+instrument. This addendum records the correction; the dated verdicts above are
+left as written.

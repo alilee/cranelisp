@@ -165,7 +165,7 @@ these streams, not separate ticket-shaped waves.
 | Binary / integration | 0553, 0604, 0694, 0740, 0745, 0789, 0793, 0795, 0798, 0800, 0818, 0863, 0868, 0889, 0898, 0914, 0921, 0927, 0933, ACT-0958 |
 | Frontend / annotation closure | 0708, 0785 |
 | Typecheck | 0762, 0776, 0777, 0779, 0794, 0799, 0869, 0913, 0924, 0929, 0935 |
-| Backend | 0637, 0747, 0781, 0782, 0891, 0900, 0903, 0906, 0907, 0915, 0916, 0917 |
+| Backend | 0747, 0781, 0782, 0891, 0900, 0903, 0906, 0907, 0915, 0916, 0917 |
 | Types / public contracts | 0931, ACT-0954 |
 | Intrinsics | 0835, 0848, 0857, 0928, 0934, ACT-0956 |
 | Primitives | 0859, 0932, 0936 |
@@ -3396,7 +3396,7 @@ Arch's exact remap applied to two incoming citations that incorrectly bound
 The Principle24 edit repairs that citation only under the approved document
 integrity work; no principle statement or membership changed (Phase7 revisions
 remain out of scope).
-Remaining owner work:0637 source-verified disposition (backend design); R12
+Remaining owner work:R12
 grade and R18(8) severity (integration design); R11 I-EMIT scheduling; Principle25
 register-range prose at close. Optional source-comment remaps and all safety
 residuals remain recorded in the standing documents and arch's handoff. Next
@@ -3406,3 +3406,47 @@ Final integrated document check:382→345 findings, 37 removed and zero
 introduced identities. Diff whitespace clean; NOTES hash unchanged. Harness
 25/25 +98/98 passes and independent review/QA remain the completed evidence.
 Work since checkpoint2fee9bb2 is uncommitted; .agents remains excluded.
+
+### Checkpoint777ed404 and carrier/backend continuation (2026-09-24)
+
+User requested checkpoint and continuation. Committed25 files as777ed404;
+NOTES and .agents excluded. Baseline345 document findings. Phase5 continues:
+- arch, Claude/Fable/high, session `3e58160d-3f69-425d-8e6a-02c79a6e2521`: typed
+  carrier migration retirement/consolidation, existing canonical homes and links.
+- design, Claude/Opus/high, session `745810c9-5ce9-479e-9639-c79c3ecd034f`: S115
+  backend plan consolidation and source-verified0637 disposition.
+Disjoint document ownership; source read-only; no test run or phase transition.
+
+Backend design completed:6,190→3,934 words destination-inclusive (2,256
+removed). S115 retains unique measured discriminators and R4 census, with
+current contracts linked.0637 resolved/deleted against cache-loader arm and
+existing positive/negative corruption evidence; sprint inventory reconciled.
+QA Claude/Fable/high session `0f1283a0-a737-4395-a8b5-b7cc1ba9914a` owns bounded
+triage of two inspection-only leads (discarded cache lifecycle errors; sanitized
+inner names across instances) and QA0637 tracking reconciliation. No defect
+claimed from inspection and no new test allocated yet.
+
+Arch retired the completed S114 carrier migration record, folding only unique
+current obligations into interfaces and backend-keyed-consumer. Destination-
+inclusive reduction1,658 words (including the new192-word ACT-0989 retaining
+the orphaned helper-disposition obligation). All source/API behavior unchanged.
+Sprint applied the exact typecheck-document and collection-pattern remaps.
+Arch also repaired incoming links in its broader owned surface and types
+guidance. Source-comment/diagnostic remaps remain its explicit handoff.
+
+QA triage completed. C-A is an existing documented cache-restore residual:
+only InstanceKeyMismatch propagates from validate_lifecycle; no later check
+was found. Allocated duplicate-slot corruption unit + existing valid control;
+CacheStale surface choice routes to arch before implementation/API approval.
+C-B predicts wrong-reject for distinct legal types A-B/A_B through the generated
+inner-name sanitizer; allocated unit inequality and all-modes repro/control.
+Neither lead has executed failing evidence. QA's scratch probe was refused by
+its sandbox; no application behavior was observed and no production correction
+is authorized by that attempt. Both conditions remain active in the evidence
+delta for the next backend evidence batch; no defect closed or deferred.
+QA0637 tracking reconciled; dated measurement verdicts preserved with correction.
+No runtime tests rerun for this documentation-only batch.
+
+Final integrated check after QA:345→339 findings, six removed and zero
+introduced identities. Diff whitespace clean; NOTES unchanged. All continuation
+changes remain uncommitted after777ed404; .agents excluded.

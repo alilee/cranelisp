@@ -224,7 +224,7 @@ interior facts worth stating once here:
 | Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the open structural close (lifecycle disposition, refusal frame, census, wrapper discharge). |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
 | Binding-indirection consume | `binding-indirection-consume.md` | The consume-position × operand-provenance contract. |
-| Carrier + RC sweep evidence | `s115-carrier-and-rc-sweep.md` | Measured carrier-state and RC evidence that cannot be re-derived from source, plus the mangle-injectivity census. |
+| S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |
 | Failed-member attribution | `s117-failed-member-attribution.md` | The attribution seam and its negative design list. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry. Open depth/contention work is in `design/arch/backlog/performance.md`. |
@@ -235,8 +235,8 @@ interior facts worth stating once here:
 - `design/arch/bounded-contexts.md` §3 — the bounded context, boundary and
   invariants (authoritative over anything here)
 - `design/arch/backend-keyed-consumer.md` — the keyed-consumer end state
-  summarised in this document
-- `design/arch/typed-resolution-carrier.md` — the carrier sums consumed here
+  summarised in this document, and the `VarRef`/`ApplyRef` carrier sums
+  consumed here
 - `design/arch/concrete-boundary-type.md` — why the type the backend classifies
   has no variable case
 - `design/arch/principles.md` — the principles cited above

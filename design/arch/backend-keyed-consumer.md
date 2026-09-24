@@ -1,8 +1,8 @@
 # Backend keyed consumption — resolved identities at the typecheck/backend boundary
 
 **Status: canonical contract, maintained by `arch`.** Delivered S110 (FIXME
-0583); the carrier shape was reshaped S114 into the closed sums of
-[typed resolution carriers](typed-resolution-carrier.md). Typecheck emits the
+0583); the carrier shape was reshaped S114 into the closed sums `VarRef` and
+`ApplyRef`. Typecheck emits the
 fully-qualified storage identity of every statically resolved reference; the
 backend performs no name resolution — one keyed fetch, kind discrimination on
 the fetched binding, a hard `CodegenError` on a miss. This realizes
@@ -31,10 +31,9 @@ pinned diffs and gating verdicts) is in Git history.
   without answering the question
   ([Principle 18](principles/18-enforce-invariants-structurally.md)).
   Shape, totality and the "unresolved has no constructor" rule:
-  [typed resolution carriers](typed-resolution-carrier.md) and the rustdoc in
-  `crates/cranelisp-types/src/mono_expr.rs` and
-  `crates/cranelisp-types/src/check.rs`; the summary is
-  [interfaces — method resolutions](interfaces.md#method-resolutions).
+  [interfaces — method resolutions](interfaces.md#method-resolutions) and the
+  rustdoc in `crates/cranelisp-types/src/mono_expr.rs` and
+  `crates/cranelisp-types/src/check.rs`.
 - `ResolvedCall` is supplementary dispatch metadata (inline-builtin intercepts,
   auto-curry counts, trait resolution for the as-value wrapper). The backend
   never reads it as the keyed-lookup carrier. `ResolvedCall::TraitMethod.impl_module`
@@ -290,6 +289,20 @@ producer never recording a self-`SigDispatch` for a shadowed call (Principle
   `MonoExpr::synthetic_local_from_expr` and their single pattern arm's
   `resolved_ctor` is the just-registered canonical constructor key;
   constructor bodies are `ConstrADT` and reference nothing.
+- **Standing invariant, asserted with a named falsifier.** No producer writes
+  `var_refs` or `apply_refs` at `Span::SYNTHETIC`, and no real check-run body
+  carries a synthetic-span table reference. Both builders classify a
+  synthetic-span miss as local, so a synthetic-span table reference in a real
+  body would be silently localised rather than refused — that observation is
+  the falsifier. Synthetic nodes do occur inside real bodies
+  (`crates/cranelisp-typecheck/src/builtins.rs`,
+  `crates/cranelisp-typecheck/src/program/finalize.rs` and
+  `crates/cranelisp-typecheck/src/program/mono_collect.rs`); every known
+  population is a compiler-synthesised local or wrapper. The check is a read
+  of those synthesis sites and of the two map writers
+  (`record_reference_target` in `crates/cranelisp-typecheck/src/checker.rs`,
+  `record_dispatch_target` in `crates/cranelisp-typecheck/src/program/callees.rs`)
+  at review of a change to either; no test executes it.
 - **Open: staged retirement of the lenient builder** (S119 ruling; FIXME 0931;
   [concrete boundary type](concrete-boundary-type.md)). Its
   `unwrap_or(ConcreteType::Int)` placeholder is a fabrication site the

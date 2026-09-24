@@ -323,7 +323,7 @@ LIVE since the S114 Phase-5 carrier flip: `MonoExpr::Var.resolution: VarRef`
 `#[serde(default)]` (absence is unrepresentable — a cache missing them is a
 hard serde error by design; `CACHE_SCHEMA_VERSION` 22 window), and
 `MethodResolutions` carries the TOTAL typed `var_refs`/`apply_refs` maps
-(`design/arch/typed-resolution-carrier.md`). **`ViewBuildError`**
+(`design/arch/interfaces.md` §Method Resolutions). **`ViewBuildError`**
 (`from_expr`'s failure sum) is in the exception class too: the
 `NotConcrete`-vs-`Unresolved` routing at the strict-first/lenient-fallback
 seam is the load-bearing match — `NotConcrete` may fall back to

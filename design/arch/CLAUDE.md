@@ -21,8 +21,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | [Architectural principles](principles.md) | Sole membership index for principle bodies. |
 | [Symbol-table lifecycle](symbol-table-lifecycle.md) | Declaration ownership, slot conservation and atomic publication. |
 | [Concrete codegen boundary](concrete-boundary-type.md) | Concrete-only typed body contract. |
-| [Backend keyed consumption](backend-keyed-consumer.md) | Resolved identities at the typecheck/backend boundary. |
-| [Typed resolution carriers](typed-resolution-carrier.md) | VarRef and ApplyRef transport contract. |
+| [Backend keyed consumption](backend-keyed-consumer.md) | Resolved identities at the typecheck/backend boundary; the `VarRef`/`ApplyRef` carriers. |
 | [Constructor keys](dotted-ctor-canonical-keys.md) | Constructor storage-key grammar and its writer, reader and codegen-transport obligations. |
 | [Scoped module aliases](module-alias-scoped-lookup.md) | Referring-module lookup and shared key derivation. |
 | [Resolve home before enumeration](resolve-home-enumeration.md) | Display and index enumeration rooted at the resolved home; complete source coverage. |

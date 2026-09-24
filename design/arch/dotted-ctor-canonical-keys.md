@@ -5,9 +5,8 @@ constructors and the obligations it places on every writer and reader across
 types, typecheck, backend and the binary. Exact signatures live in source
 rustdoc. Member storage in general is
 [the symbol-table lifecycle](symbol-table-lifecycle.md#58-constructors-and-accessors);
-the resolved-identity carriers that generalise §10 are
-[backend keyed consumption](backend-keyed-consumer.md) and
-[typed resolution carriers](typed-resolution-carrier.md); typecheck's
+the resolved-identity carrier contract that generalises §10 is
+[backend keyed consumption](backend-keyed-consumer.md); typecheck's
 registration interior is [dotted constructor registration](../typecheck/dotted-ctor-registration.md).
 Language authority is [the module specification](../../spec/08-modules.md) §8.5
 and §8.6.5 and [pattern matching](../../spec/06-pattern-matching.md) §6.2.1.

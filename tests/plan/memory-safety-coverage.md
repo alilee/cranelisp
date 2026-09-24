@@ -261,8 +261,9 @@ because a static claim says it is unnecessary — and the claim was verified by
 the examples at hand rather than by a structural or differential argument.
 0641 (protect elided on a false `Fresh`), 0633/0640 (glue rebuild elided on
 an under-determined identity key), and 0637 (cache-load validation covering
-`callable_got_slot` but not `borrowed_sibling_slot`) are the same profile at
-three different seams.
+`callable_got_slot` but not `borrowed_sibling_slot`; the sibling arm landed
+with the R6 seam at S115 W3 `4ea5c758`, filing resolved 2026-09-24) are the
+same profile at three different seams.
 
 `/qa` audits this as a **rolling per-sprint category** (peer of the
 "coverage by definition variants" lens). The audit question per surface:
@@ -278,7 +279,7 @@ three different seams.
 | RC/borrow elision (backend B3.x: caller-inc/callee-dec elision, projection elision, capture-borrow, confined non-atomic RC, return-protect elision `fn_compiler.rs` §B3.2) | inc/dec/protect | mode summary / escape / confinement | §1 oracle lane (this strategy) — partial until landed |
 | Drop-glue / dealloc identity (`adt_instantiation_mangle` consumers, `build_elem_dec_fn`, `poll_state_drop_glue`) | glue rebuild (dedup) | key determines body | 0633-R3 battery + 0640 injectivity round-trip decoder — GREEN; keep under §1 lane |
 | Keyed-identity resolution (Principle 24 carriers/sidecars) | re-resolution | carrier value = storage key | P24 battery (PLAN §F) — a wrong-key read is an elided resolution "verified" by whichever example hit the right key |
-| Cache (de)serialization boundaries (GOT slots, ownership `ModeSummary` round-trip — schema 20 makes summaries SAFETY-BEARING: a stale summary elides protects) | re-validation / recompile | schema + validation cover what consumers read | 0637 is the open counterexample: validation enumerated by *current* consumers, not by *persisted* fields. Audit rule: every persisted safety-bearing field gets a load-validation row WHEN WRITTEN, not when its first consumer appears |
+| Cache (de)serialization boundaries (GOT slots, ownership `ModeSummary` round-trip — schema 20 makes summaries SAFETY-BEARING: a stale summary elides protects) | re-validation / recompile | schema + validation cover what consumers read | R6 seam: one per-entry loop in `crates/cranelisp-backend/src/cache/serialize.rs::deserialise_meta_with_build_id`, one `CacheStale` class per persisted-index family, planted-corruption cells per family (0637's sibling slot included; resolved 2026-09-24). Open residual at the same seam: every `validate_lifecycle` refusal except `InstanceKeyMismatch` is discarded, so a decoded table with a duplicate or out-of-range retired slot or an illegal origin/realization restores — allocated as condition C-A in [s122-evidence-delta.md](s122-evidence-delta.md#backend-cleanup-qa-triage--cache-seam-lifecycle-discard-and-r4-sanitize-2026-09-24). Audit rule: every persisted safety-bearing field gets a load-validation row WHEN WRITTEN, not when its first consumer appears |
 | Spark admission (S104 M-static flip: spark-leg deletion at non-recursive sites; R6 suspension-escape edges) | spark leg + its RC symmetry | static recursion/escape classification | CS-0.5 cert was by-hand; fold representative shapes into §1 corpus |
 | Macro-expansion marshalling (Sexp interior aliases across the JIT boundary — 0638) | copy/protect on expansion values | expansion value ownership assumptions | none — 0638 is open; v2 generator axis |
 | Extern-primitive declared fact tables (§3.1(a) hand-declared per-param facts) | inference at the leaves | the hand-written table is truthful | CS-5 swept the table once by hand; audit = table vs implementation per sprint a primitive changes; oracle lane catches downstream divergence |
@@ -475,8 +476,11 @@ Everything else is sequencing discipline over work already owed.
 - The parallel `/arch` foundational-invariants assessment (S111 Phase-7) —
   the differential-checkability principle; this doc is its enforcement arm.
 - `design/arch/fixmes/0641-…md` — the gated instance-fix (§1.5).
-- `design/arch/fixmes/0637-…md`, `0638-…md` — open instances of the §4
-  profile at non-ownership seams.
+- FIXME 0637 (resolved 2026-09-24; evidence recorded in
+  `design/backend/s115-carrier-and-rc-sweep.md` §5) and 0638 (fixed S114) were
+  the §4 profile's instances at non-ownership seams. Both filings are deleted;
+  Git history keeps them. The §4 cache-seam residual now open is the
+  lifecycle-refusal discard (condition C-A in `s122-evidence-delta.md`).
 - [S111 safety-matrix allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) — the
   committed S111 safety matrices this strategy generalizes.
 - `tests/plan/risks.md` — standing risk entry pointing here.
