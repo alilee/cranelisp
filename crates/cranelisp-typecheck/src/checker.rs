@@ -1384,8 +1384,8 @@ where
     /// Push a new scope frame introduced by the binding form at `binding_span`
     /// (the `let`/`fn`/`defn`/match-arm node) — its span becomes the
     /// `VarRef::Local` binding-form provenance for every binder bound into the
-    /// frame (S114 carrier flip; `design/typecheck/typed-resolution-carrier.md`
-    /// §3).
+    /// frame (S114 carrier flip; `design/typecheck/ast-annotation.md`
+    /// §2.1).
     pub(crate) fn push_scope(&self, state: &mut CheckState, binding_span: Span) {
         state.env.push_scope(binding_span);
     }
@@ -1578,7 +1578,7 @@ where
     ///
     /// - **`var_refs`** (S114 carrier flip — was `resolved_targets`) — the total,
     ///   typed backend keyed-consumer carrier (S110 0583 →
-    ///   `design/arch/typed-resolution-carrier.md`; `backend-keyed-consumer.md`
+    ///   `design/arch/backend-keyed-consumer.md`
     ///   §1.1/§1.1.2). Keyed at the referencing `Var` span, the value is a
     ///   `VarRef` VERDICT — no longer a bare `Option<FQSymbol>`. A table-resolved
     ///   reference records `VarRef::Global(resolved.canonical)` — the TERMINAL

@@ -75,7 +75,7 @@ pub struct MethodResolutions {
     /// the S70 cranelisp-types solidness sweep finding #4.
     pub pattern_ctors: HashMap<Span, FQSymbol>,
     /// Per-`Var`-span typed resolution verdict (S114 carrier flip;
-    /// `design/arch/typed-resolution-carrier.md` §3) — TOTAL over the
+    /// `design/arch/interfaces.md` §"Method Resolutions") — TOTAL over the
     /// check-run's `Var` references: typecheck's `infer_var` chokepoint
     /// records a [`VarRef`] for **every** successfully-typed `Var` — locals
     /// get `VarRef::Local { binder, binding_span }` (binder identity from the

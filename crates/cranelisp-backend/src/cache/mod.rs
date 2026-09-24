@@ -357,7 +357,7 @@ pub mod serialize;
 /// drop-glue naming function adds no serialized state or second bump.
 ///
 /// **21 → 22 (S114 carrier flip + B-2 escape-fact window —
-/// `design/arch/typed-resolution-carrier.md` §4; ONE window, F7).** Two
+/// `design/arch/backend-keyed-consumer.md` §8; ONE window, F7).** Two
 /// bump-worthy changes share this single invalidation event:
 /// (1) the typed-resolution-carrier reshape — `MonoExpr::Var.resolved_target:
 /// Option<FQSymbol>` → `resolution: VarRef` and `MonoExpr::Apply.resolved_target`

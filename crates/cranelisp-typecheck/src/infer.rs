@@ -43,7 +43,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 callee, args, span, ..
             } => {
                 let ty = self.infer_apply(state, callee, args, *span)?;
-                // Apply-side totality (S114 carrier flip, design §2.2): EVERY
+                // Apply-side totality (S114 carrier flip, design/typecheck/ast-annotation.md §2.1): EVERY
                 // checked `Apply` records a typed dispatch verdict. A dispatch
                 // seam inside `infer_apply` (trait-method / sig-dispatch /
                 // builtin / auto-curry) already recorded `ApplyRef::Dispatch`;
@@ -1486,8 +1486,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// returns the located "no impl of trait X for type Y" error naming the owning
     /// trait. That `Err` is now PROPAGATED (the pre-S114 `if let Ok(Some(..))`
     /// SWALLOWED it, leaking the unresolved Apply to codegen as `undefined
-    /// function` — the wrong phase; `design/typecheck/typed-resolution-carrier.md`
-    /// §5). This makes the nullary case uniform with the unary sibling (F-D2-7),
+    /// function` — the wrong phase; `design/typecheck/typecheck.md`
+    /// §9.1). This makes the nullary case uniform with the unary sibling (F-D2-7),
     /// which already propagates from `infer_apply`. `Ok(None)` (genuinely still
     /// deferred — a non-concrete return type, dispatched elsewhere) stays a skip.
     pub(crate) fn resolve_deferred_trait_calls(

@@ -91,29 +91,30 @@ pub(crate) fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
 /// Pure core of `FnCompiler::inner_fn_discriminator` (FIXME 0347 defect 1).
 ///
 /// Returns the mono-instance discriminator prefix for a span-derived inner-fn
-/// name: the sanitized enclosing-fn name + `"__"` when an enclosing name is
-/// present, else the empty string. Sanitization maps every non-`[A-Za-z0-9_]`
-/// char to `_` so a mangled mono name (`reduce$Int+Vec`) yields a clean symbol
-/// prefix (`reduce_Int_Vec__`). Free function so the uniqueness property is
-/// unit-testable without constructing a full `FnCompiler`.
+/// name: the escaped enclosing-fn name + `"__"` when an enclosing name is
+/// present, else the empty string (`reduce$Int+Vec` → `reduce_24Int_2bVec__`).
+///
+/// Injective and prefix-free: ASCII alphanumerics are kept and every other
+/// UTF-8 byte, `_` included, becomes `_` plus two lowercase hex digits. `__`
+/// therefore never occurs inside the escaped name and terminates it. Symbol
+/// constituents such as `-`, `_` and `?` must not collapse together, since
+/// instances of one template share every span-derived inner-fn name except
+/// this prefix.
 pub(crate) fn inner_fn_discriminator_for(current_fn_name: Option<&Symbol>) -> String {
-    match current_fn_name {
-        Some(name) => {
-            let sanitized: String = name
-                .as_ref()
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '_' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
-            format!("{sanitized}__")
+    use std::fmt::Write as _;
+    let Some(name) = current_fn_name else {
+        return String::new();
+    };
+    let mut disc = String::new();
+    for byte in name.as_ref().bytes() {
+        if byte.is_ascii_alphanumeric() {
+            disc.push(char::from(byte));
+        } else {
+            write!(disc, "_{byte:02x}").expect("String write");
         }
-        None => String::new(),
     }
+    disc.push_str("__");
+    disc
 }
 
 // =========================================================================

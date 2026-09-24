@@ -596,7 +596,7 @@ fn match_whole_var_pattern_returning_scrutinee_records_scrutinee_escape() {
     // `r` returns it in the escaping body ctx — RE-WALKED escaping so its
     // allocation-site escape fact is TRUE. A stale `Some(false)` here defeats the
     // backend P25 absent-default and produces the COW-var-pattern UAF the fix
-    // cures (`design/typecheck/typed-resolution-carrier.md` §6). This pins the
+    // cures (`design/typecheck/ownership-inference.md` §3.3 rule 3). This pins the
     // transfer.rs recording seam directly — it FAILS on revert of the §16 row-3
     // scrutinee re-walk.
     let scrut_span = Span::new(10, 20);

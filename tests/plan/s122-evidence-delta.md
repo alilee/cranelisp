@@ -2512,43 +2512,25 @@ triage; no build, run or test edit. A scratch-directory probe with the built
 binary was attempted and refused by the sandbox, so neither lead carries an
 executed observation here — every claim below is source-derived and says so.
 
-### C-A — cache seam discards every lifecycle refusal but one (observation → allocated condition)
+### C-A — cache lifecycle-validation hardening (deferred by user)
 
-Source facts, verified 2026-09-24:
+User ruling, 2026-09-24: the compiler is the cache writer; handling deliberate
+or negligent cache corruption does not currently justify added complexity.
+The proposed `LifecycleInvalid` API change and tampered-cache test allocation
+are withdrawn from active S122 work. Existing checks remain unchanged.
 
-- `crates/cranelisp-backend/src/cache/serialize.rs::deserialise_meta_with_build_id`
-  calls `table.validate_lifecycle()` and matches only
-  `LifecycleError::InstanceKeyMismatch`; any other `Err` falls through to the
-  per-entry index loop and the table is returned `Ok`.
-- `crates/cranelisp-types/src/module.rs::validate_lifecycle` also refuses
-  out-of-range or duplicate retired slots and duplicate live slots
-  (`crates/cranelisp-types/src/module.rs::validate_slot`, one `seen` set across
-  all entries), illegal origin/state pairs and illegal realization payloads
-  (`crates/cranelisp-types/src/module.rs::validate_origin_state`).
-- The int restore path adds no later check:
-  `src/process_form/cache_restore.rs::install_cached_table` is
-  `into_concrete` → `advance_next_id_past_table` → `install_module`; none of
-  the three validates.
-- `design/int/cache-hit-loading.md` §0 already records this as "asserted, not
-  measured" with the exact falsifier (a decoded table with any other invalid
-  lifecycle state that restores instead of regenerating).
+Known limitation retained: the backend decoder propagates only
+`LifecycleError::InstanceKeyMismatch` from `validate_lifecycle`; other refusals
+are discarded and the integration restore path adds no later validation.
+No failing reproduction or downstream wrong-code outcome has been executed.
+The earlier risk argument concerned invalid cached tables, not evidence that
+the compiler produces them during normal operation. C-A is accepted residual
+risk for now, not a delivery gate or a request awaiting approval.
 
-Classification: not a reproduced defect and not a surprise — a design-recorded
-asserted claim whose falsifier is cheap to construct. The R6 arms already
-treat the identical threat model (corrupt or hand-edited `.meta.json`) as
-material, and the discarded check already executes, so the residual is the
-cost of one error mapping. Plausible wrong outcome that survives the R6 loop:
-two restored callables at one in-range slot; the second `store_slot` wins and
-the first dispatches to the wrong body under the wrong signature — the
-wrong-code face of a GOT-slot fault, silent where the OOB face panics.
-
-| Condition / class | Required observable | Lowest discriminating evidence | Existing evidence to extend | Limit |
-|---|---|---|---|---|
-| C-A, S (safety fence under R6) | A decoded `.meta.json` whose `validate_lifecycle` fails for any `LifecycleError` is refused as `CacheStale` and the module recompiles; a lifecycle-valid table is not refused | Backend cache module cell, dev-owned: two legal entries at distinct slots, JSON tampered so both claim one slot, `deserialise_meta_with_build_id` must return `Err` with a non-empty `reason()`. Existing false-fire control `crates/cranelisp-backend/src/cache/serialize/tests.rs::cache_load_accepts_a_valid_meta_with_every_persisted_index_populated` stays GREEN | `crates/cranelisp-backend/src/cache/serialize/tests.rs::roundtrip_tampered` and the sibling-slot cell supply the tamper shape; `cache_load_rejects_out_of_range_sibling_slot_as_stale` is the positive/negative template | Intended RED today. Whether the mapping widens an existing `CacheStale` variant or adds one is a backend public-surface question for `arch` before `dev` edits; the cell asserts refusal, not the variant. No e2e: there is no public trigger without hand-editing a cache, which is why the whole R6 family is module-tier. |
-
-Owner of the correction: `dev`(backend, cache) with `design`(backend) recording
-the rule in the R6 census; `design`(int) retires the §0 falsifier when the cell
-lands. Sequencing is `sprint`'s.
+The existing design record is `design/int/cache-hit-loading.md` §0. Revisit
+prioritization if evidence implicates compiler-written caches or the user
+chooses to expand corruption handling; do not reopen solely because a
+hand-edited cache can violate an invariant.
 
 ### C-B — sanitized inner names across instances of one template (asserted → constructible falsifier, repro allocated)
 
@@ -2594,6 +2576,77 @@ locus=crates/cranelisp-backend/src/compiler/resolution.rs::inner_fn_discriminato
 found=S122 owner=/dev`. The R4 register row is `arch`'s to regrade after the
 observation; `design`(backend) already carries the asserted claim with this
 falsifier in `design/backend/s115-carrier-and-rc-sweep.md` §4.
+
+### C-B closure — prediction reconciled to executed evidence (2026-09-24)
+
+QA inspected the recorded runs; no QA rerun, build or source edit.
+
+Executed evidence at `6c1fe761` plus the S122 working tree:
+
+- **e2e RED before correction.** `tests/inner_fn_sanitized_name_collision.rs::generic_capturing_lambda_at_hyphen_and_underscore_type_names_runs_in_all_modes`
+  fails in all six permutations (run `a7297f9b`, `.local/s122-cb-test-run-final.log`;
+  untruncated output `.local/s122-cb-diag.log`). `--run`/`--link`, fresh and
+  cached, exit 1 with `Duplicate definition of identifier:
+  __lambda__user_f__user_A_B__user_A_B___114_123__`. REPL, fresh and cached,
+  exits 0: the `main` turn is rejected with the same identifier at span
+  `20..29`, then `(main)` reports `undefined variable: main`; no value is
+  observed. Control `…names_distinct_after_sanitizing…` (`A-C`) is GREEN, 7 in
+  all six.
+- **Unit RED before correction.** `compiler::resolution::tests::inner_fn_discriminator_separates_names_differing_only_in_escaped_chars`
+  fails on the QA pair with both sides `_user_f__user_A_B__primitives_Int___`
+  (run `3edaea23`, `.local/s122-cb-dev-red.log`); the existing alphanumeric
+  cell and four sibling naming cells pass in the same run.
+- **GREEN after correction.** Focused resolution units 6/6 (run `5f687fb4`);
+  both e2e cells across six permutations 2/2 (run `bbc8b20b`);
+  `-p cranelisp-backend` 594/594; `regression` + `ownership_fences` +
+  `drop_glue_legacy_emitter_fence` 133/133.
+
+Reconciliation:
+
+- The prediction holds in symptom, mode set and message. Class `wrong-reject`
+  and locus `inner_fn_discriminator_for` are confirmed, not inferred: the unit
+  RED observes the collapse at that seam, and the e2e control differs from the
+  repro only in the collapsed character.
+- Not `mode-divergence`: every mode rejects. The REPL face is a rejected turn
+  at exit 0, so the e2e cell discriminates by observed value, not exit code.
+- Two immaterial deviations from the allocated row: the failing key is
+  `(user/f [user/A_B] user/A_B)` (result type is the ADT, not `Int` as the
+  example spelled), and the repro uses `[:primitives/Int p]` because the row's
+  `[x :Int]` field syntax was invalid. Neither touches the mechanism; the unit
+  pair keeps `primitives/Int` and differs only in the parameter segment.
+- Detection is established at both layers by the recorded RED-for-the-intended-
+  reason → GREEN sequence; no planted fault or mutation run is owed.
+
+Adequacy: the C-B unit and e2e conditions are discharged. The cross-instance
+property of span-derived inner names now has acceptance evidence at both
+layers, and the e2e guard is a GREEN regression guard. Public API unchanged.
+
+Limits:
+
+- Not a full-suite claim. Exposure of the unrun remainder to the new spelling
+  is bounded by inspection only: no test or fixture matches an inner-fn name by
+  exact spelling (`tests/regression.rs` mentions are comments), and the names
+  are not persisted in `SymbolTable`. `BUILD_ID` cache invalidation is dev's
+  source claim; the cached permutations ran in fresh tempdirs and observe no
+  stale cross-build cache.
+- The unit composes through `closure_drop_glue_name` only; lambda-body
+  composition is covered by the e2e. Adequate, since the property lives in the
+  prefix.
+- The `__curry_{target}_…` `target` component was not re-examined for
+  injectivity (dev's report). It is an existing R4-census codepoint, recorded
+  as a residual for `arch`'s regrade, not a new allocation.
+- Independent review had not reported when this record was written; a review
+  finding routes through `sprint` and may reopen this closure.
+
+Handoffs, none of them QA edits here: `arch` regrades R4's inner-name families
+against these witnesses and carries the curry-target residual; `design`(backend)
+supersedes the `s115-carrier-and-rc-sweep.md` §4 asserted note (falsifier
+observed; map now injective); `test` on commit moves the guard's `// Open:`
+framing to past tense and adds `fixed=S122/<sha>`. QA's own pending band edit,
+outside this invocation's writable set: add the repro as one more `[Tested …]`
+citation on `spec/04-expressions.md` §4.5.1 only — no `+Neg` promotion, and the
+lexical chapter's simple-symbol row is not promoted from one cell. C-A is
+deferred by the user; its current disposition is recorded above.
 
 ### 0637 tracking closure (QA surfaces)
 

@@ -11,9 +11,10 @@ not contiguous.
 Governing contracts: the callable lifecycle and its settlement funnels
 (`design/arch/symbol-table-lifecycle.md`), the concrete codegen boundary
 (`design/arch/concrete-boundary-type.md`), and the typed resolution carrier
-([method resolution carriers](../arch/interfaces.md#method-resolutions); producer side in
-`typed-resolution-carrier.md`). The checked-body ledger is designed in
-`checked-body-publication.md`.
+([method resolution carriers](../arch/interfaces.md#method-resolutions) and
+[backend keyed consumption](../arch/backend-keyed-consumer.md#1-the-one-carrier-contract);
+typecheck's producer obligations are §2.1). The checked-body ledger is designed
+in `checked-body-publication.md`.
 
 ---
 
@@ -50,6 +51,43 @@ entry fails view construction as a located typecheck error rather than reaching
 backend. No producer writes either map at `Span::SYNTHETIC`, whose single shared
 key would collide. The complete `MethodResolutions` moves once into the module
 accumulator; no per-form copy is authoritative.
+
+### 2.1 Recording the resolution verdicts
+
+- **One `Var` chokepoint.** `infer_var` passes every successfully typed `Var`,
+  after all of its rejection gates, to `record_reference_target`, which records
+  exactly one `VarRef`. A table reference records `VarRef::Global` of the
+  terminal storage key, under the value-source rule of
+  [backend keyed consumption](../arch/backend-keyed-consumer.md#1-the-one-carrier-contract).
+- **A local names its binding form.** `VarRef::Local` records the binder and the
+  span of the form that introduced it: a `let`, parallel binding, lambda, match
+  arm, definition body or impl-method body. Each scope frame stores that span
+  when pushed; the module base frame holds `Span::SYNTHETIC` and sources no
+  local. Considered: a span per binder or inside each frame value. Rejected:
+  every binder in a frame shares its form's span, parameters have no
+  per-binder span, and either shape would change every bind and lookup.
+- **Self-recursion is global.** The enclosing definition's own name is locally
+  bound for shadowing, but a genuine self-reference records `VarRef::Global` of
+  the definition's storage key. Backend compiles the self-call through the
+  function's own slot; a `Local` verdict would send it to a scope-stack slot
+  that does not exist (`monomorphisation.md` §11.8.7).
+- **Every `Apply` gets a verdict.** Dispatch writers — the dispatch seams, the
+  overload drain and monomorphisation rechecks — insert `ApplyRef::Dispatch`.
+  The `Apply` epilogue in `infer_expr` adds the positive `ApplyRef::ViaCallee`
+  only where no verdict exists. A dispatch therefore always replaces
+  `ViaCallee` and is never replaced by it, so the final verdict does not depend
+  on which pass settles the dispatch. This relies on at most one dispatch writer
+  per `Apply` span: the outer drain and a recheck's scoped drain
+  (`monomorphisation.md` §11.8.3) settle disjoint span populations. A
+  candidate-backed call is stamped when its candidate is selected instead
+  (`use-site-candidate-selection.md`).
+- **A builtin records both projections from one resolution.** The bare ABI name
+  for `ResolvedCall::BuiltinFn` and the terminal storage `FQSymbol` for
+  `ApplyRef::Dispatch` come from the same terminal resolution, after the
+  primitive kind gate, and are written together. A deferred auto-curry carries
+  the pair to its drain; the pending record cannot hold a builtin call without
+  its storage identity. No site reconstructs the storage identity from the ABI
+  name or defaults its module.
 
 ## 3. Publication
 

@@ -80,7 +80,7 @@ pub struct MonoMatchArm {
 /// How a `MonoExpr::Var` reference was resolved — the CLOSED sum at the
 /// checked-program boundary (S114, FIXME 0653 prong 3; Principle 24 corollary
 /// "resolution products travel typed" — `principles/24-resolve-once.md`;
-/// design: `design/arch/typed-resolution-carrier.md`).
+/// design: `design/arch/interfaces.md`).
 ///
 /// Constructed ONLY by typecheck, at its Var-resolution chokepoint.
 /// **"Unresolved" has NO constructor**: a `Var` whose reference typecheck could
@@ -125,7 +125,7 @@ pub enum VarRef {
 
 /// How a `MonoExpr::Apply`'s dispatch identity is carried — the Apply-side
 /// closed sum (S114, FIXME 0653 prong 3; design:
-/// `design/arch/typed-resolution-carrier.md`).
+/// `design/arch/interfaces.md`).
 ///
 /// Deliberately a SEPARATE sum from [`VarRef`]: an `Apply` has a third legal
 /// state a `Var` does not — "the identity rides the callee expression" — and
@@ -153,7 +153,7 @@ pub enum ApplyRef {
 }
 
 /// [`MonoExpr::from_expr`]'s failure sum (S114 carrier flip;
-/// `design/arch/typed-resolution-carrier.md` §4) — the strict view-build gate
+/// `design/arch/interfaces.md` §"Method Resolutions") — the strict view-build gate
 /// distinguishes TYPE incompleteness from RESOLUTION incompleteness, because
 /// the two route differently at `build_concrete_codegen_view`:
 ///
@@ -259,7 +259,7 @@ pub enum MonoExpr {
         resolved_call: Option<Box<ResolvedCall>>,
         /// How this reference was resolved — the typed, NON-OPTIONAL carrier
         /// (S114 flip of the S110 `resolved_target: Option<FQSymbol>`;
-        /// `design/arch/typed-resolution-carrier.md` §4). [`VarRef::Local`]
+        /// `design/arch/interfaces.md` §"Method Resolutions"). [`VarRef::Local`]
         /// carries the binder identity (backend: scope-stack read, hard
         /// invariant failure on a miss); [`VarRef::Global`] carries the
         /// storage FQ — "whichever storage key HIT" at typecheck's resolution
@@ -309,7 +309,7 @@ pub enum MonoExpr {
         /// How this call's dispatch identity is carried — the typed,
         /// NON-OPTIONAL carrier (S114 flip of the S110
         /// `resolved_target: Option<FQSymbol>`;
-        /// `design/arch/typed-resolution-carrier.md` §4).
+        /// `design/arch/interfaces.md` §"Method Resolutions").
         /// [`ApplyRef::Dispatch`] carries the storage FQ of the SELECTED
         /// mangled/mono entry (the backend keys ONE fetch on it, Principle
         /// 24); [`ApplyRef::ViaCallee`] is the POSITIVE no-Apply-level-dispatch
@@ -461,7 +461,7 @@ impl MonoExpr {
     /// `var_refs` populates `MonoExpr::Var.resolution`; `apply_refs`
     /// populates `MonoExpr::Apply.dispatch`. The maps are TOTAL over the
     /// paired check-run's real-span references (the producer contract,
-    /// `design/arch/typed-resolution-carrier.md` §3) — the former "pass empty
+    /// `design/arch/interfaces.md` §"Method Resolutions") — the former "pass empty
     /// maps for all-local bodies" license is RETIRED (all-local bodies carry
     /// `VarRef::Local` entries; synthetic bodies go through
     /// [`MonoExpr::synthetic_local_from_expr`]).
@@ -801,7 +801,7 @@ impl MonoExpr {
     /// `resolution`/`dispatch`/`resolved_ctor` carriers as a strict one.
     ///
     /// **Tolerance is for TYPES only** (S114 carrier flip;
-    /// `design/arch/typed-resolution-carrier.md` §3.5): resolution verdicts
+    /// `design/arch/backend-keyed-consumer.md` §4): resolution verdicts
     /// come from the same paired check-run and are equally TOTAL. A real-span
     /// `Var`/`Apply` with no `var_refs`/`apply_refs` entry is an in-process
     /// producer-bug breach and PANICS via an always-on tier-3 seam assertion
@@ -1054,7 +1054,7 @@ impl MonoExpr {
     /// Build a `MonoExpr` from a SYNTHETIC, **all-local** body — the sanctioned
     /// entry point for compiler-synthesised bodies whose every reference is a
     /// local **by construction** (FIXME 0685;
-    /// `design/arch/typed-resolution-carrier.md` §3.4): the deftype ctor body
+    /// `design/arch/backend-keyed-consumer.md` §4): the deftype ctor body
     /// (`Expr::ConstrADT` over param `Var`s) and the field-accessor body
     /// (`(match self [(Ctor .. field ..) field])` — `self` param + `field`
     /// match-var), both synthesised in typecheck's `adt.rs` with
@@ -1087,7 +1087,7 @@ impl MonoExpr {
     /// binding_span: Span::SYNTHETIC }` and every `Apply` takes
     /// [`ApplyRef::ViaCallee`] — the all-local mode is the span-directed
     /// behaviour of the one walk, never a hand-built second
-    /// node-construction walk (`design/arch/typed-resolution-carrier.md` §4).
+    /// node-construction walk (`design/arch/interfaces.md` §"Method Resolutions").
     /// The synthetic-span assert is what bounds the license: a real-span node
     /// in the body panics here (and the shared walk's real-span seam assert
     /// would refuse it a silent local verdict regardless).
@@ -1245,7 +1245,7 @@ fn node_ty(expr: &Expr) -> Result<ConcreteType, NotConcrete> {
 /// # Equivalence contract with `from_expr`
 ///
 /// For a body whose resolution maps are TOTAL over its real-span references
-/// (the producer contract, `design/arch/typed-resolution-carrier.md` §3) —
+/// (the producer contract, `design/arch/interfaces.md` §"Method Resolutions") —
 /// equivalently, for an all-synthetic-span body — `from_expr` succeeds **iff**
 /// this predicate holds: totality excludes [`ViewBuildError::Unresolved`], and
 /// `from_expr`'s only other failure is [`ViewBuildError::NotConcrete`], raised

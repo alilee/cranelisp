@@ -505,8 +505,8 @@ where
     /// (top-level expression, nested-lambda inner compiler), the span alone
     /// suffices for uniqueness within that scope, so the prefix is empty.
     ///
-    /// Non-`[A-Za-z0-9_]` chars in the enclosing name (`$`, `+`, `/`, `.`) are
-    /// mapped to `_` so the result is a clean Cranelift symbol.
+    /// Non-alphanumeric UTF-8 bytes, including `_`, use `_hh` hex escapes;
+    /// this preserves distinct enclosing names in a clean Cranelift symbol.
     pub(crate) fn inner_fn_discriminator(&self) -> String {
         // Fold in the create-gate arm discriminator (§3.6.2): the gate compiles
         // the same expressions on both arms, so the per-arm `g{id}{L|D}_` token

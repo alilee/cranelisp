@@ -14,8 +14,9 @@ use cranelisp_types::{Scheme, Span, Symbol, TypeId, free_vars};
 /// parallel `frame_spans` records the span of the **binding form** that
 /// introduced each frame (the `let`/`fn`/`defn`/match-arm node — every binder
 /// in one frame shares that form's span, the honest grain since per-binder
-/// spans do not exist on the AST for params; `design/arch/typed-resolution-carrier.md`
-/// §2(a)). `binding_form_span(name)` reads it so `record_reference_target` can
+/// spans do not exist on the AST for params; see `VarRef::Local` rustdoc in
+/// `crates/cranelisp-types/src/mono_expr.rs`). `binding_form_span(name)` reads
+/// it so `record_reference_target` can
 /// stamp `VarRef::Local { binder, binding_span }` for a local reference. The
 /// base (module) frame carries [`Span::SYNTHETIC`] — it never sources a
 /// `VarRef::Local` (module-level defs resolve via the table → `Global`).

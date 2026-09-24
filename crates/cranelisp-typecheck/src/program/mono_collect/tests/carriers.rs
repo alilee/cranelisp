@@ -1,5 +1,5 @@
 //! `program/mono_collect.rs` sub-topic — the typed dispatch carriers
-//! (`VarRef`/`ApplyRef`, `design/typecheck/typed-resolution-carrier.md`): what
+//! (`VarRef`/`ApplyRef`, `design/typecheck/ast-annotation.md` §2.1): what
 //! identity each resolved reference records, and the shadowing carve-outs that
 //! must record none.
 
@@ -325,7 +325,7 @@ fn resolved_target_self_recursion_carries_own_fq_at_var_span() {
     );
 }
 
-// spec: design/typecheck/typed-resolution-carrier.md §3 (test plan §3.4 item 3)
+// spec: design/typecheck/ast-annotation.md §2.1 (test plan §3.4 item 3)
 // — binder-identity provenance: a §4.6 LOCAL reference records `VarRef::Local`
 // carrying the binder name + the span of the BINDING FORM that introduced it.
 // A defn-param reference and a `let` reference resolve in DIFFERENT frames, so

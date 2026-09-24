@@ -357,6 +357,22 @@ do not add a local type printer.
   record is built from the values the impl shell is built from, inside
   `register_trait_impl`'s transaction, and upserts per `(type, trait)`
   ([trait implementation](traits.md#3-trait-implementation).0.1; `design/arch/trait-impl-cache-carrier.md`).
+- Impl existence is checked only at the trait's resolved home
+  (`has_impl_in_home`; [dispatch roots](traits.md#701-dispatch-roots-at-the-methods-home-spec-7112)).
+  The bare-name-rooted predicates in `checker.rs` (`has_impl`,
+  `has_impl_in_module`, `ModuleReadView::has_impl`, `has_impl_with_state`)
+  have no production caller and re-resolve a trait name that production has
+  already resolved; two wrong-rejects came from using one. They belong in
+  `#[cfg(test)]` support with their chain-follow unit cells. Until
+  [ACT-0989](../../sprints/actions/ACT-0989-has-impl-with-state-production-dead-helper.md)
+  moves them, they compile in production under `#[allow(dead_code)]`.
+- A deferred trait call retried from settled state that reaches a concrete type
+  with no impl propagates the located no-impl error naming the owning trait; a
+  nullary return-dispatched method pinned to a type without an impl is rejected
+  this way, not at codegen. A caller of `try_resolve_trait_method` that discards
+  its error needs a fenced reason. The only one is the auto-curry re-attempt in
+  `program/mono_collect.rs`, which falls back to builtin resolution; its no-impl
+  face is fenced by `tests/trait_method_noimpl_swallow_siblings.rs`.
 
 `traits.md` carries the subsystem; `hkt.md` the constructor-variable path.
 
@@ -416,10 +432,11 @@ concrete signature. Auto-currying and its drain seams are in `auto-curry.md`.
 
 Every span- or entry-keyed carrier this crate produces is derived once from the
 state its settlement window guarantees, never recorded early and patched. The
-typed resolution carrier (`typed-resolution-carrier.md` §14) is classified
-in-window, with one standing, tripwired re-derivation (`overload_homes`,
-`monomorphisation.md` §11.8.9). No typecheck producer writes a `var_refs` or
-`apply_refs` entry at `Span::SYNTHETIC`.
+resolution carriers meet this: each verdict is written at its resolution seam
+or settlement point, and the `Apply` verdict is order-independent
+([recording the verdicts](ast-annotation.md#21-recording-the-resolution-verdicts)).
+One standing, tripwired re-derivation remains (`overload_homes`,
+`monomorphisation.md` §11.8.9).
 
 The same classification over the rest of the producer surface — callees,
 codegen views, pattern constructors, deferred self-call dispatch, scheme
@@ -451,13 +468,12 @@ never walks alias segments or spells an alias key itself, fixtures included
 | Complete-substitution specialization identity | `result-context-specialization.md` | Implemented |
 | Non-concrete producer obligations | `non-concrete-producer-obligations.md` | Current: the funnel, one instance identity, accessor re-synthesis and residual-parameter defaulting |
 | Return-polymorphic dispatch signal | `return-poly-dispatch-signal.md` | Implemented (`CheckResult.unresolved_dispatch`) |
-| Typed resolution carrier | `typed-resolution-carrier.md` | Implemented |
 | `TypeExpr` resolver convergence | `type-expr-resolver-convergence.md` | Implemented |
 | ADT typing | `adt.md` | Current |
 | Field accessors | `fixme-0365-field-accessor-dotted.md` | Current |
 | Dotted constructor registration | `dotted-ctor-registration.md` | Current |
 | Auto-currying | `auto-curry.md` | Current |
-| AST annotation model | `ast-annotation.md` | Current |
+| AST annotation, resolution carriers and publication | `ast-annotation.md` | Current |
 | IO typing | `io-types.md` | Current |
 | Importable-symbol signature match | `signature-match.md` | Current |
 | Ownership inference | `ownership-inference.md` | Current; governed by `design/arch/ownership-inference.md` |

@@ -668,7 +668,7 @@ fn first_child_nanos_empty_children_returns_zero() {
 
 // ── 0130 harvest: ::skipped:: concurrent-skip sentinel ────────────────────
 //
-// `tracing.md` §thread-safety: when a DIFFERENT thread already owns the trace
+// `design/arch/tracing.md` §4.2: when a DIFFERENT thread already owns the trace
 // role, `cranelisp_trace_swap_got` does NOT swap — it pushes a `::skipped::`
 // sentinel frame and returns SENTINEL_SAVED_GOT (the concurrent-trace skip).
 // This is the `current_owner != my_tid` branch; the W2 guards cover only the

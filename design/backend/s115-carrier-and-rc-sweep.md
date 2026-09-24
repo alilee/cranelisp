@@ -155,21 +155,19 @@ additional disambiguator. This census was re-verified against source on
 |---|---|---|---|
 | Type drop glue | `cranelisp_types::drop_glue_symbol_name` | Module plus full concrete instantiation | Witnessed at the types home. The backend-local escape scheme was deleted in S118. |
 | GOT data symbol | `cranelisp_types::got_data_symbol_name`; the backend function forwards to it | Escaped module path | Witnessed since S119 (FIXME 0748). `crates/cranelisp-backend/src/compiler/resolution/tests.rs::got_data_symbol_name_agrees_with_the_types_owned_home` fences agreement with the backend forward. |
-| Span-derived inner names: lambda bodies, closure and curry glue, fn-as-value, trait-method-value, operator and curry wrappers, parallel and launch continuations, dependent thunks and their glue, poll-state glue | `inner_fn_discriminator()` plus the span, composed at each site. Glue names go through `closure_drop_glue_name` and `curry_drop_glue_name`. | Sanitized enclosing instance name, then the gate-arm token, then the span's start and end | Across different spans: disambiguator-keyed; every composition site folds the span. Across instances of one template: **asserted with a named falsifier**; see the note below this table. |
+| Span-derived inner names: lambda bodies, closure and curry glue, fn-as-value, trait-method-value, operator and curry wrappers, parallel and launch continuations, dependent thunks and their glue, poll-state glue | `inner_fn_discriminator()` plus the span, composed at each site. Glue names go through `closure_drop_glue_name` and `curry_drop_glue_name`. | Injectively escaped enclosing instance name, then the gate-arm token, then the span's start and end | Across different spans: disambiguator-keyed; every composition site folds the span. Across instances of one template: the collapsed-character case is reproduced and corrected in S122; see the evidence and limits below. |
 | Platform exports | `cranelisp-platform` `declare.rs`, via `concat!` | Platform name, verbatim | Keyed by platform-name uniqueness. The residual and its loader-side close are recorded in the R4 row. |
 | Typecheck signature and method mangles | Typecheck's `$`/`+` joins | Joined FQ components | Stands with its rationale and is fenced; the R4 row carries both. |
 
-The span-derived inner-name families are not witnessed across instances of one
-template, for these reasons:
-
-- Those instances share every span, so the names differ only if the sanitized
-  instance names differ.
-- The sanitize map `[^A-Za-z0-9_]→_` is not injective.
-- The falsifier is two instance names from one template that differ only in
-  characters the map collapses.
-- Glue declaration is idempotent on a name hit, so a glue collision would reuse
-  the first instance's glue silently.
-- Reachability has not been established.
+The S122 cross-instance falsifier reproduced a duplicate lambda definition for
+valid type names `A-B` and `A_B`; the `A-B`/`A-C` control passed. The discriminator
+now escapes each non-alphanumeric UTF-8 byte, including underscore, as `_hh`.
+The unit guard checks collapsed-character and escape-like spellings; the e2e
+guard `tests/inner_fn_sanitized_name_collision.rs` passes fresh/cached REPL,
+run and linked execution after failing in all six before the fix.
+[QA's C-B closure](../../tests/plan/s122-evidence-delta.md) owns the exact evidence
+and limits. This proves the discriminator correction, not every composed name:
+the separate target component of curry wrapper names has not been re-examined.
 
 ## 5. R6 — persisted-index validation seam
 

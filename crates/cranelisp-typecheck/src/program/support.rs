@@ -290,7 +290,7 @@ pub(super) fn annotate_expr_from_maps(
 /// transport) are populated DIRECTLY at their synthesis seams (`adt.rs`), not
 /// here.
 ///
-/// **S114 carrier flip — the `ViewBuildError` fork (design §4.3).** The strict
+/// **S114 carrier flip — the `ViewBuildError` fork (design/typecheck/ast-annotation.md §2–§3).** The strict
 /// `from_expr` now returns `Result<_, ViewBuildError>`, and the two failure arms
 /// route DIFFERENTLY:
 /// - `NotConcrete` — eligible residual parameter positions are defaulted on a
@@ -358,7 +358,7 @@ pub(crate) fn build_concrete_codegen_view(
             span,
             name: ref_name,
         }) => {
-            // The located typecheck-phase gate error (design §4.2/§4.3): a
+            // The located typecheck-phase gate error (design/typecheck/ast-annotation.md §2–§3): a
             // reference typecheck could not classify surfaces HERE, never a
             // codegen-time keyed miss (wrong phase).
             return Err(unresolved_codegen_view_error(name, ref_name, span));

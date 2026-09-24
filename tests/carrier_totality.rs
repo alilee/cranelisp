@@ -1,5 +1,5 @@
 // carrier_totality.rs — Track A born-green totality fences for the typed
-// resolution carrier (0653 prong 3; `design/arch/typed-resolution-carrier.md`).
+// resolution carrier (0653 prong 3; `design/arch/backend-keyed-consumer.md`).
 //
 // The carrier flips `resolved_target` from an `Option<FQSymbol>` convention to a
 // closed sum `VarRef::Local{binder,binding_span} | VarRef::Global(FQSymbol)` (and

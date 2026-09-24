@@ -322,7 +322,7 @@ fn kc_n6_local_none_carrier_is_not_a_miss() {
     );
 }
 
-// spec: design/arch/typed-resolution-carrier.md §2.7.2 (unit obligation 4) — the
+// spec: design/arch/backend-keyed-consumer.md §1.1 (unit obligation 4) — the
 // NEGATIVE twin of KC-N6. A `VarRef::Local` reference whose binder is ABSENT from
 // the backend scope stack is a HARD invariant failure (Principle 18) carrying the
 // binder IDENTITY — never the old silent "undefined variable". The `Local`

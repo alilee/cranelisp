@@ -392,7 +392,7 @@ fn var_resolution_field_absence_is_unrepresentable_in_serde() {
     );
 }
 
-// S114 FIXME 0685 (design/arch/typed-resolution-carrier.md §3.4): the sanctioned
+// S114 FIXME 0685 (design/arch/backend-keyed-consumer.md §4): the sanctioned
 // all-local builder for SYNTHETIC synthesis bodies (adt.rs ctor + accessor) —
 // the all-local MODE of the ONE shared lenient walk: every Var takes
 // `VarRef::Local { binding_span: SYNTHETIC }`, every Apply `ViaCallee`;

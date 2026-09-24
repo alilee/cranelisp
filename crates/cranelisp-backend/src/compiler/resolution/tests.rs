@@ -39,16 +39,57 @@ fn inner_fn_discriminator_uniquifies_per_mono_instance() {
          (else the 2nd define_function collides)"
     );
 
-    // Sanitization: $/+/./ become _, leaving a clean Cranelift symbol.
-    assert!(
-        a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
-        "discriminator must be a clean symbol: {a:?}"
-    );
-    assert_eq!(a, "reduce_Int_Vec__");
+    // Escaping: $/+ become `_` + hex, leaving a clean Cranelift symbol.
+    assert_eq!(a, "reduce_24Int_2bVec__");
 
     // No enclosing fn (top-level expr / nested-lambda inner compiler): empty
     // prefix — the span alone disambiguates within that scope.
     assert_eq!(inner_fn_discriminator_for(None), "");
+}
+
+// spec: spec/01-lexical.md §1.4.1 + spec/04-expressions.md §4.5.1 — symbol
+//   names admit `-`, `_`, `?`, `!`, so two concrete instances of one template
+//   can differ only in characters a lossy sanitizer collapses; each instance's
+//   inner fn must still get its own symbol (S122 C-B).
+#[test]
+fn inner_fn_discriminator_separates_names_differing_only_in_escaped_chars() {
+    use cranelisp_types::{Span, Symbol};
+    let disc = |name: &str| inner_fn_discriminator_for(Some(&Symbol::from(name)));
+
+    // The QA pair: concrete-signature keys differing only in `-` versus `_`.
+    assert_ne!(
+        disc("(user/f [user/A-B] primitives/Int)"),
+        disc("(user/f [user/A_B] primitives/Int)"),
+    );
+
+    // Adversarial spellings: symbol constituents, a literal that spells an
+    // escape image, a literal terminator, and non-ASCII. Every composed symbol
+    // must be distinct, including against the empty (no enclosing fn) prefix.
+    let names = [
+        "A-B", "A_B", "A?B", "A!B", "A.B", "A/B", "AB", "A__B", "A_2dB", "A_2d", "A-", "A_", "A",
+        "Aé", "A_c3_a9",
+    ];
+    let span = Span::new(114, 123);
+    let mut composed: Vec<String> = names
+        .iter()
+        .map(|n| closure_drop_glue_name(&disc(n), span))
+        .collect();
+    let no_enclosing_fn = inner_fn_discriminator_for(None);
+    composed.push(closure_drop_glue_name(&no_enclosing_fn, span));
+    for (i, a) in composed.iter().enumerate() {
+        for b in &composed[i + 1..] {
+            assert_ne!(a, b, "collapsed inner-fn symbol");
+        }
+    }
+
+    // The image stays a plain Cranelift symbol.
+    for n in names {
+        let d = disc(n);
+        assert!(
+            d.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "discriminator must be a clean symbol: {d:?}"
+        );
+    }
 }
 
 // ── drop-glue naming identity (S111 R6 §4.4 — the ONE consolidated test) ──

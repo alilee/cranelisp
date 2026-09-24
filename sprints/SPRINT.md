@@ -1,11 +1,13 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. The compiler corrections, bounded Haiku eval and IO reuse
-corrections have executing evidence; checkpoint `9c74e2eb` is committed.
-Document consolidation continues: the last integrated check has 630 findings
-across 592 documents. Historical audit reports are retired to Git with open
-points preserved in actions and existing filings. Current reservations appear
-at the end of this plan. No phase transition or publication is authorized.
+**Status:** PHASE 5. Latest checkpoint: `6c1fe761`. The compiler corrections,
+bounded Haiku eval and IO reuse corrections have executing evidence. The
+additional generated-inner-name collision fix is verified and uncommitted.
+Document consolidation continues: the last integrated check has 333 findings
+across 591 documents. Historical audit reports are retired to Git with
+open points preserved. Current reservations appear at the end of this plan.
+C-A cache-corruption hardening is user-deferred; no API approval is pending.
+No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
 issue records truthful, and deliver a repeatable REPL-agent evaluation baseline.
@@ -3450,3 +3452,101 @@ No runtime tests rerun for this documentation-only batch.
 Final integrated check after QA:345→339 findings, six removed and zero
 introduced identities. Diff whitespace clean; NOTES unchanged. All continuation
 changes remain uncommitted after777ed404; .agents excluded.
+
+### Checkpoint6c1fe761 and backend evidence (2026-09-24)
+
+User requested commit and continuation. Committed23 files as6c1fe761; NOTES
+and .agents excluded. Phase5, document baseline339.
+- arch Claude/Fable/high `77691048-8fc2-4f0f-b5a3-4393288276b7`: bounded C-A
+  error-mapping decision, source read-only; exact API proposal if necessary.
+- test Claude/Opus/high `fedddb6b-8024-4048-9110-0e6e07321f0b`: C-B all-modes
+  e2e repro/control, sole source writer and foreground test runner.
+No public API change authorized by this dispatch. Observe before correction.
+
+C-B independently reproduced: A-B/A_B fails duplicate-definition in all six
+fresh/cached REPL/run/link permutations; A-B/A-C control returns7 in all six.
+No mode-divergence claim (REPL rejects the turn with process exit0). New
+unignored guard tests/inner_fn_sanitized_name_collision.rs retained.
+Dev Claude/Opus/high `4443c0d0-7e6f-4c6b-bc22-47e064f92436` now owns backend
+resolution unit RED→injective internal-name correction→focused GREEN. Test
+dispatch complete before source ownership transferred. C-A remains read-only.
+
+C-A arch proposal awaits user API gate: replace CacheStale::InstanceKeyMismatch
+{path,symbol,expected} with LifecycleInvalid {path:PathBuf,error:LifecycleError};
+reason lifecycle_invalid. Map every refusal after existing R6 per-field loop
+to preserve specific error precedence. No cache format/schema/ABI change;
+existing consumers handle Err generically. Backend baseline4 removed lines,
+3 added; types unchanged. User approval requested while C-B continues.
+No cache source or baseline modified before approval. Source-based consequence
+(wrong-body dispatch) is a risk prediction, not an executed C-A observation.
+
+C-B correction complete: discriminator escapes every non-alphanumeric UTF-8
+byte (including underscore) with fixed-width hex, retaining a distinct terminator.
+Unit RED before fix;6/6 focused units GREEN, both e2e cells GREEN across six
+modes each;594/594 backend tests and133/133 related integration tests GREEN.
+No API/schema change. Sprint applied dev's exact stale-rustdoc handoff in
+fn_compiler.rs, comment-only.
+Review Claude/Fable/high `3e7c0cbb-1a4b-4b01-b1d6-4d1026104690` owns independent
+inspection; QA Claude/Fable/high `d3203bee-f7b0-4ed5-8a17-0ee0c6889b4e` owns
+evidence closure. C-A approval remains pending; no cache code changed.
+
+QA accepted C-B evidence and confirmed wrong-reject attribution from unit/e2e
+RED and discriminating control. Sprint reconciled the test's Open comment and
+the S115 asserted-note to the executed correction, linking QA's exact evidence
+and retaining the separate curry-target limitation. No broad grade/coverage
+promotion. The fixing SHA is still pending a future user-requested checkpoint.
+
+C-B independent review passed; required rustdoc repair already applied. Reviewer
+noted final rustfmt reflow postdated evidence, so sprint ran the six affected
+resolution unit tests on the final file:6/6 GREEN (.local/s122-cb-final-unit.log).
+No full-suite rerun warranted by formatting-only change; prior594backend and
+133related integration results remain qualified evidence. Review's BUILD_ID
+advisory retained: it includes HEAD and changes at commit, not each edit;
+local object symbols stay self-consistent and no cache schema bump is required.
+Final document check339→339, zero introduced identities; whitespace clean and
+NOTES hash unchanged. C-B fix/regression uncommitted after6c1fe761.
+C-A has no executed reproduction or cache correction; the user disposition
+below supersedes the API-approval request.
+
+### C-A disposition — user declines corruption hardening (2026-09-24)
+
+User treats caches as compiler-written and declines added complexity to catch
+self-poisoned/corrupt caches at this stage. Defer C-A as accepted residual risk;
+withdraw the LifecycleInvalid proposal and tampered-cache test allocation from
+active work. No pending API approval, source change or new assurance gate.
+Existing checks unchanged. No evidence currently shows the compiler writing
+the invalid state; predicted downstream damage was never reproduced. QA's
+active allocation and coverage status reconciled mechanically to this ruling.
+C-B is independent: ordinary valid source reproduced its failure and the
+verified naming correction remains complete and uncommitted.
+
+### Continued document cleanup after C-A deferral (2026-09-24)
+
+User requested continuation. C-A deferred; C-B already verified, uncommitted.
+- design Claude/Opus/high `b79dda1d-c8f3-4bef-935e-28d03f4de499`: typecheck
+  carrier producer plan and its canonical homes, source read-only.
+- arch Claude/Fable/high `10506821-601a-4a1f-81d2-7e561f2987f3`: tracing
+  contract cleanup, source read-only.
+Sprint applied the prior arch pass's exact comment-only carrier reference
+remaps in eight source/test files. Runtime diagnostic strings remain an owning
+dev handoff; no executable token changed. No test rerun needed for citations.
+
+Typecheck producer plan retired: destination-inclusive13,345→6,156 words
+(7,189 removed). Current producer contract lives in ast-annotation §2.1 and
+typecheck §9.1/§9.7; existing residuals retain their established homes.
+ACT-0989 design disposition: retain the test-only predicate family under
+cfg(test), advisory dev follow-on; no source implementation in this pass.
+Sprint removed the retired collection member and applied exact comment-only
+remaps in checker/infer/transfer tests/mono-collector tests/support.
+Runtime diagnostic citations remain a dev handoff, not changed here.
+
+Tracing contract retained and condensed6,992→2,383 words (4,609 removed),
+source-verified adopted/landed status and current implementation; external
+section numbers preserved. ACT-0984 remains the explicit QA obligation for
+the obsolete link-rejection test. Sprint corrected the intrinsics trace-test
+section citation mechanically. Principle10 references and stale integration
+comments remain the arch report's exact owning-role handoffs.
+Final integrated document check339→333, six removed and zero introduced
+identities;13 source/test citation files verified comment-only by diff.
+No runtime tests repeated; C-B prior evidence remains unchanged. C-A remains
+user-deferred. Work after6c1fe761 uncommitted; NOTES and .agents untouched.
