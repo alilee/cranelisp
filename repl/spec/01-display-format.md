@@ -161,7 +161,7 @@ Types MUST be displayed using Cranelisp type notation with fully-qualified names
 |---|---|---|
 | Primitive | `primitives/Int`, `primitives/Bool`, `primitives/Float`, `primitives/String` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 | Function | `(Fn [ParamType1 ParamType2] ReturnType)` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
-| ADT (no args) | `user/Color` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| ADT (no args) | `user/Color` | [Tested tests/repl_negative::display_neg_type_always_qualified] | <!-- doc-check: literal reason="Illustrative language symbols" -->
 | ADT (with args) | `(user/Option primitives/Int)` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 | Type variable | lowercase letter: `a`, `b`, `c`, ... | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 | Constrained variable | `:num.num/Num a` | [Tested+Neg tests/repl_introspection::constraint_trait_name_displays_canonical_home_neg_no_bare_trait, tests/repl_introspection::constraint_display_is_identical_across_definition_sig_and_bare_lookup] |
@@ -189,7 +189,7 @@ Values are runtime results and have no module scope. They are displayed bare.
 | Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::data_constructor_applied_dot_notation_display] |
 | Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested+Neg tests/repl_introspection::data_constructor_product_no_dot_notation_display] |
 
-| Name-bearing function reference | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — only when the *displayed expression is itself a name-bearing reference* (a bare/qualified symbol resolving to a named function); never `<closure>` | 1 | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] |
+| Name-bearing function reference | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — only when the *displayed expression is itself a name-bearing reference* (a bare/qualified symbol resolving to a named function); never `<closure>` | 1 | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] | <!-- doc-check: literal reason="Illustrative language symbols" -->
 | Function value with no recoverable name | `<closure>` — a literal `(fn …)`, a captured closure, or a named function that has passed through computation and lost its binding (`(id double)`, `(let [f double] f)`) | 1 | [Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
 | Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/display_exact::display_exact_vec_value_lines, tests/repl_introspection::vec_value_display_shows_element_content] |
 | List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested tests/repl_introspection::display_user_list_value_shows_elements_and_nil, tests/display_exact::display_exact_user_list_recursive_form_whole_line] |
@@ -200,7 +200,7 @@ Values are runtime results and have no module scope. They are displayed bare.
 **A name-bearing reference carries its qualified name; a value that lost its binding shows `<closure>` (S109 — 0572).**
 The qualified-name rule applies to a **name-bearing reference expression** — a bare or qualified
 symbol that resolves to a named function, evaluated as a value (e.g. entering `primitives/vec-len`
-or `user/double` bare at the prompt). When the *displayed expression is itself* such a reference, the
+or `user/double` bare at the prompt). When the *displayed expression is itself* such a reference, the <!-- doc-check: literal reason="Illustrative language symbols" -->
 value slot MUST show the value's **fully-qualified name** (`primitives/vec-len`), in the same
 qualified form every other name-bearing display uses (§1.4, the self-documenting-REPL rule that names
 are always fully qualified). The opaque token `<closure>` is a **placeholder for the absence of a

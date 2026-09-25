@@ -1,10 +1,11 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. Latest checkpoint: `5b1a843b`. The compiler corrections,
+**Status:** PHASE 5. Latest consumer checkpoint: `50d95d48`; local shared-package
+checkpoint: `52d7e20`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
-Document consolidation continues: the last integrated check has 179 findings
-across 525 documents. Historical audit reports are retired to Git with
+Document consolidation continues: the last integrated check has zero findings
+across 508 documents. Historical audit reports are retired to Git with
 open points preserved. Current reservations appear at the end of this plan.
 C-A cache-corruption hardening is user-deferred; no API approval is pending.
 No phase transition or publication is authorized.
@@ -4251,3 +4252,47 @@ is accepted and would prematurely close the rendered comment. The two applied
 reasons contain no such terminator. A cosmetic contract reflow advisory is also
 unresolved. Package changes and consumer changes are uncommitted; no push or
 phase transition occurred. NOTES.md is unchanged.
+
+Checkpointed at user request: consumer 50d95d48 and local shared-package
+52d7e20. The consumer Gitlink remains on its published revision, following the
+package contribution contract; neither checkpoint was pushed. NOTES.md was
+excluded. Dev, Claude Opus5.5/high session
+`f82fe71e-b39e-43f4-b109-5bce5e3965c4`, now owns an isolated shared-checker
+correction for section markers inside explicit Markdown links, plus the small
+annotation-reason rendering advisory. A user question remains pending on
+whether the eight bare qualified-name findings should use literal annotations
+or a shared heuristic that stops detecting unresolved bare paths. No heuristic
+change or additional annotation is authorized pending that answer.
+
+Section-association correction integrated after independent review, Claude
+Opus5.5/high session `068d729c-b4bd-438e-bb44-aa16d5699813`: 28 unit and 21
+consumer CLI acceptance tests pass. Ordinary checker findings fall 9→8 with
+one removed identity and none added; three other silent wrong-document
+associations are also removed. Existing supported section citations remain
+checked. HTML comment terminators in annotation reasons are now rejected and
+the remaining cosmetic contract reflow is repaired. These shared changes are
+uncommitted after 52d7e20. Evidence: `.local/s122-section-final.json` and
+`.local/s122-section-review-result.md`. No compiler runtime suite was run.
+
+The user asks whether source can be recognized reliably and excluded. Fenced
+examples are already excluded; source-file inputs already use comment/docstring
+extraction. Inline backticks carry both symbols and citations, so their text
+alone is ambiguous. A read-only census found 3,066 resolving standalone code-span
+path occurrences in 283 live documents (historical records excluded), indicating
+the migration size if references were required to be explicit Markdown links.
+This is an unclassified occurrence count, not an approved migration inventory.
+The eight name findings remain, with no new annotation or heuristic applied.
+
+At the user's request, [ACT-0991](actions/ACT-0991-explicit-markdown-reference-adoption.md)
+defers explicit Markdown-reference adoption across the shared package and its
+three consumers to a future increment. Current reference checks remain active.
+The user subsequently approved literal annotations for the remaining language
+examples. Nine physical lines in six documents now carry the annotation;
+example spellings and requirements are unchanged. The integrated checker exits
+0 across 508 documents, with zero findings, no baseline matches, no configured
+reference-exception matches and no stale entries. Evidence:
+`.local/s122-annotations-final.json`; `git diff --check` passes. Existing
+historical-record policy is unchanged. ACT-0991 records the future migration;
+the bare-path heuristic remains unchanged. This clears the checker findings,
+not the separate compiler defects or every substantive document obligation.
+Follow-on changes remain uncommitted and NOTES.md remains untouched.

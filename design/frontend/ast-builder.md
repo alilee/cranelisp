@@ -108,7 +108,7 @@ name with `module: None` — the spec §8.5 canonicalisation rule. Every site th
 builds a `TypeRef` or `TraitRef` from a written name routes through them. Hand-
 rolling `TypeRef::new(None, TypeName::from(name))` instead is the defect shape
 that re-roots `primitives/Int` under the current module as a phantom
-`user/primitives/Int`; the splitters exist so that shape has one home rather than
+`user/primitives/Int`; the splitters exist so that shape has one home rather than <!-- doc-check: literal reason="Illustrative language symbols" -->
 one per position.
 
 Dotted names are transported, not resolved. `Box.v`, `Option.Some` and `Num.+`

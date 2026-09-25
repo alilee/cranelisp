@@ -117,7 +117,7 @@ particular failure's cause:
   in the message MUST be a name the user can type back at the prompt. Internal
   synthetic names (`__expr` and the `__macro_*` family), monomorphisation
   instance mangles (`name$Param+Param`), and doubled module prefixes
-  (`user/user/name`, arising when a module path is prepended to a symbol that
+  (`user/user/name`, arising when a module path is prepended to a symbol that <!-- doc-check: literal reason="Illustrative language symbols" -->
   already carries one) MUST NOT appear. A REPL expression's subject is the
   expression; a monomorphised instance's subject is the generic definition the
   user defined, and the instantiating types belong in the prose if they are

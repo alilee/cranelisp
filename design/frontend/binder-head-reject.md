@@ -15,13 +15,13 @@ into another module, and no notion of a nested path a dotted binder would name.
 Re-rooting a qualified binder under the current module is the plausible
 alternative, and each of its outcomes is worse than an error:
 
-- `(defn fmt/foo [x] x)` would bind `user/fmt/foo`: the REPL echoes success
+- `(defn fmt/foo [x] x)` would bind `user/fmt/foo`: the REPL echoes success <!-- doc-check: literal reason="Illustrative language symbols" -->
   while `--run` fails later at the reference site with an incidental "module
   `fmt` not found" — a **mode-divergent** face.
 - `(deftrait fmt/Foo …)` would bind when a module `fmt` exists and fail at a
   degenerate `0..0` span when it does not.
 - `(deftype A.B [:Int v])` would declare type `user/A.B` and mint constructor <!-- doc-check: literal reason="Illustrative language symbols" -->
-  `user/B`, because the dotted head is re-read downstream as a `Type.Ctor`
+  `user/B`, because the dotted head is re-read downstream as a `Type.Ctor` <!-- doc-check: literal reason="Illustrative language symbols" -->
   member spelling — **constructor identity corruption**, the outcome the rule
   most needs to make unreachable.
 

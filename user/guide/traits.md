@@ -181,7 +181,7 @@ imported its bare name:
   (defn describe [self] "a dog"))
 ```
 
-`Describe` and `user/Describe` mean the same thing here because both resolve to that
+`Describe` and `user/Describe` mean the same thing here because both resolve to that <!-- doc-check: literal reason="Illustrative language symbols" -->
 one trait. The qualifier identifies the trait's home; it does not become part
 of the generated method name. This is different from `(deftrait Describe …)`:
 that `Describe` introduces a new name and is therefore a bare-only

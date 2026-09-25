@@ -288,7 +288,7 @@ source-order operation inside one cluster.
 ```
 
 - Registration rejects the second direct target before any body is checked,
-  whether the body says `qloop` or `user/qloop`; the second body is not a
+  whether the body says `qloop` or `user/qloop`; the second body is not a <!-- doc-check: literal reason="Illustrative language symbols" -->
   definition body, so its recursive reference binds to nothing.
 - Interior rule: a direct target owns at most one ledger record. A
   multi-signature group owns one record per clause target by construction; that
