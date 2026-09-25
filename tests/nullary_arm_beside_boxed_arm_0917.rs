@@ -1,12 +1,13 @@
-//! FIXME 0917 — a `match` arm returning a NULLARY constructor beside a boxed
-//! arm strands the whole loop.
+//! Regression guards for FIXME 0917, fixed in S120 (`cbb3be9e`): a `match`
+//! arm returning a NULLARY constructor beside a boxed arm stranded the whole
+//! loop.
 //!
 //! The subject and the control below are byte-identical apart from `step`'s
 //! arms: the subject returns `None` from arms the loop never takes, the control
 //! returns `(Some …)` from all of them. Nothing else differs — same `deftype`s,
 //! same accessor, same COW `vec-set`, same driving loop, same iteration count.
 //!
-//! Measured at S118 HEAD (`--run --no-cache`, and again through `--link`):
+//! Pre-fix measurement at S118 (`--run --no-cache`, and again through `--link`):
 //!
 //! | loop    |    N | allocs | deallocs | residue |
 //! |---------|-----:|-------:|---------:|--------:|
@@ -15,24 +16,13 @@
 //! | control |  100 |    406 |      406 |   **0** |
 //! | control | 1100 |   4406 |     4406 |   **0** |
 //!
-//! Slope exactly 4 objects/iteration and deallocs CONSTANT: after the first
-//! four the loop performs no deallocation whatsoever. `/qa`'s CLIF probe
-//! (`tests/plan/s118-test-plan.md` §11.8.1) localises it to one instruction —
-//! the subject's `step` ends with a `NULLARY_TAG_THRESHOLD`-guarded protect inc
-//! on the match result (`icmp ult v10, 1024; brif …; atomic_rmw add v10+8`)
-//! that nothing balances, so the returned `(Some …)` tree leaves the frame at
-//! rc=2 and strands at rc=1 once the caller releases its one count. The
-//! control's `step` emits no protect inc at that seam. Both callers are correct
-//! for their callee's truthful summary, so typecheck is exonerated: the defect
-//! is that a nullary `ConstrADT` arm classifies non-Fresh in the
-//! `value_provenance`/`is_fresh_construction` join, licensing a protect that
-//! only a genuinely aliasing result could ever balance.
-//!
-//! This is the real owner of cell #21
-//! (`tests/exemplar_ownership_residue_s116.rs`) — the exemplar's `eliminate` is
-//! this shape, and the reduction accounts for 100% of its 12,431 warm retained
-//! objects. It is NOT a FIXME 0903 family: every type here is concrete and no
-//! residual signature var is involved.
+//! The subject's `step` ended with a `NULLARY_TAG_THRESHOLD`-guarded protect inc
+//! on the match result that nothing balanced, so each returned `(Some …)` tree
+//! stranded at rc=1: a nullary `ConstrADT` arm classified non-Fresh in the
+//! result-provenance join. The fix gave `ValueProvenance` a `NoReference` bottom
+//! below `Fresh`; the ruling is `design/backend/non-concrete-release-contract.md`
+//! §6. The exemplar's `eliminate` has this shape — the application-scale guard
+//! is `tests/exemplar_ownership_residue_s116.rs`.
 //!
 //! Free-standing per root `CLAUDE.md` §"Stdlib separation": no prelude file and
 //! no `CRANELISP_LIB`, with `(import [primitives [*]])` supplying the same bare
@@ -72,7 +62,7 @@ fn program(step_arms: &str) -> String {
 }
 
 /// One arm returns the NULLARY `None`, the other a boxed `(Some …)`. Neither
-/// `None` arm is ever taken at runtime — its mere presence is the defect.
+/// `None` arm is ever taken at runtime — its mere presence triggered 0917.
 fn subject() -> String {
     program(
         "(A x) (if (eq-i64 x d) None (Some (set-item bx i (A d))))\n\
@@ -93,10 +83,9 @@ const CONTRACT: &str = "a match whose arms mix a nullary constructor with a \
     does — the nullary arm is not even taken (FIXME 0917)";
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev
-//   — the locus token cited `fn_compiler.rs` at filing; the method was never
-//   defined there (FIXME 0917's header carries the `git log -S` proof), so this
-//   is a factual correction of the citation, not a move of the seam.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev fixed=S120/cbb3be9e
+//   — the filing cited `fn_compiler.rs`, where this method was never defined;
+//   the token corrects that citation and does not move the seam.
 #[test]
 fn nullary_arm_beside_boxed_arm_frees_its_loop_under_run() {
     MarginalPair::new(
@@ -110,14 +99,12 @@ fn nullary_arm_beside_boxed_arm_frees_its_loop_under_run() {
 }
 
 // The `--link` face of the same pair: the produced executable is measured, not
-// the linking child. /port verified the numbers are identical through both
-// toggles, so a divergence here would be a NEW finding (mode divergence) on top
-// of 0917, not a duplicate of the cell above.
+// the linking child. The pre-fix numbers were identical in both modes, so a
+// divergence here is a new mode-divergence finding, not a return of 0917.
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev
-//   — the locus token cited `fn_compiler.rs` at filing; the method was never
-//   defined there (FIXME 0917's header carries the `git log -S` proof), so this
-//   is a factual correction of the citation, not a move of the seam.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev fixed=S120/cbb3be9e
+//   — the filing cited `fn_compiler.rs`, where this method was never defined;
+//   the token corrects that citation and does not move the seam.
 #[test]
 fn nullary_arm_beside_boxed_arm_frees_its_loop_under_link() {
     MarginalPair::new(
@@ -132,7 +119,7 @@ fn nullary_arm_beside_boxed_arm_frees_its_loop_under_link() {
 
 // spec: spec/12-runtime.md §12.3.1 — forwarding an owned result must not retain
 // unreachable heap ownership after the caller releases it.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S121 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S121 owner=/dev fixed=S121/992cb595
 #[test]
 fn forwarding_fresh_option_releases_its_payload() {
     let program = |callee: &str, count: i64| {

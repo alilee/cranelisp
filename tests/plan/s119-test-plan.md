@@ -1,13 +1,18 @@
 # Sprint 119 QA plan — the non-concrete release contract, and the typed consume funnel
 
-> **Retained dated record (S122 consolidation).** Only the sections that current
-> architecture, designs and open filings (0694, 0761, 0929) cite by number
-> remain, with their original numbering: §3.7, §4.5, §5 (5.1, 5.3), §7 and §8.
-> They are S119 allocations, measurements and dispositions, not current status;
-> every RED, census or count below is dated and must be compared with current
-> source before reuse. References to a section that is no longer here, and the
-> removed baseline enumeration, gate map, tranche rows, riders and close gate,
-> are recoverable with `git show 48d6e713:tests/plan/s119-test-plan.md`.
+> **Retained dated record.** Only the sections that the safety-invariant
+> register and open filings 0761 and 0929 cite by number remain, with their
+> original numbering: §3.7 (the NC-series definitions, including the unlanded
+> NC-2 census), §4.5 and §5.1. They are S119 allocations and rulings, not
+> current status; every RED, census, line number or count below is dated and
+> must be compared with current source before reuse. The removed threshold-cell
+> retirement (§5.3), the option-2 measurement gate (§7, never recorded), the
+> 0694 D1 experiment and flap datum (§8.1–§8.2; the S121 D1 result is in filing
+> 0694) and the 0859 disposition (§8.3; retired per [PLAN](PLAN.md)) are
+> recoverable with `git show a07823d8:tests/plan/s119-test-plan.md`; the
+> baseline, gate map, tranche rows, riders and close gate with
+> `git show 48d6e713:tests/plan/s119-test-plan.md`.
+
 ## 3. Spine 1 rows — the non-concrete release contract
 
 ### 3.7 The R11/R17/R18 negative set (user finding, Phase-5 amendment)
@@ -111,27 +116,10 @@ ungraded). All routed into NC-2 family B + FIXME 0929's extension.
   over slotted entries' schemes and cannot see the backend's
   declaration-materialised `CtorMeta` channel — that is NC-5's job; the two
   are a pair, not alternatives.
-> S122 current disposition: the following NC-R description is historical. Its
-> I-ABI label and four-member roster are superseded by the retained backend
-> uniform-realization contract. The current production evidence task and actual
-> lifecycle distinction are in [S122 QA](s122-evidence-delta.md#09320936-current-realization-roster-evidence-handoff).
-> Synthetic UniformRust fixtures do not establish the production roster.
-
-- **NC-R — the I-ABI roster pin** (NC-1's partner cell; unit row,
-  `/dev`(src) beside `src/bootstrap.rs`, stage-1, GREEN at author time).
-  The slot-less polymorphic by-name callable roster is a **closed set**
-  (invariant I-ABI, `total-concreteness.md` §3.3): the primitives-table
-  entries with `DefKind::PrimitiveExtern` and a non-concrete scheme are
-  exactly {`bind`, `race`, `select`, `catch-runtime-error`}. A fifth member
-  REDs the cell until declared — in the cell AND the roster doc, with its
-  representation dependencies recorded. That roster is the re-visit list
-  when `--release` layouts specialise, which is why it is a cell and not a
-  comment: a silent fifth member is precisely the class of quiet exception
-  that kept R11 false for thirty-five sprints. Authored NOW, not with 0932
-  — the silent-addition hazard exists today; if 0932 chooses spelling (b),
-  `vec-len` joins the pin in that change-set (the §3.6 census mechanics).
-  Detection proof per 0768: a planted fifth member REDs, recorded,
-  reverted.
+- **NC-R — superseded.** Its I-ABI label and four-member roster gave way to
+  the backend uniform-realization contract. The current production roster
+  cell and its closure are [PLAN §S122 — 0936](PLAN.md#s122--0936-production-realization-roster-closure);
+  synthetic UniformRust fixtures do not establish that roster.
 - **NC-2 — the fabrication census** (`/testing` structural cell, Spine-1
   implementing wave, §3.6 mechanics; precedent
   `drop_glue_legacy_emitter_fence`). Grep-shaped over non-test source: every
@@ -274,8 +262,8 @@ one of exactly two forms:
   is non-compliant.
 
 **Thresholds are banned outright** for this class (already the
-`tests/CLAUDE.md` rule; this proposal makes it the required form's negative
-space). §5.3 executes the retirement of the last standing threshold cell.
+[allocator-balance rule](../CLAUDE.md#allocator-balance-is-measured-marginally-never-absolutely);
+this proposal makes it the required form's negative space).
 
 **N2 — the unit-tier lens rule.** A unit row asserting balance **at one
 sampled point** is the named anti-pattern (the decision24 blindness: the
@@ -304,126 +292,3 @@ at e2e the harness constructs both children identically except the declared
 axis; at unit tier the helper's constructor takes the shared setup once and
 the axis as a parameter — hand-built control/subject closure pairs are the
 non-compliant spelling.
-
-### 5.3 Threshold-cell retirement (the census, and the worked instance)
-
-Census at baseline: **exactly one threshold cell stands** —
-`exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`
-(grep over `tests/` finds no other `at_most`/`<= N` balance form). S118 §11.3
-kept its threshold form deliberately while its residue was 0917-attributed;
-0917 closes in the Spine-1 window, so the retirement executes this sprint:
-
-- **After 0917's fix flips it**, `/testing` re-derives the cell in the fixing
-  change-set's rider: warm absolute exact balance (`residual == 0`), with the
-  already-landed warm-control leg as the executed ambient-free premise
-  (§5.1(b)) — the S118 measurement showed warm absolute and marginal coincide
-  (warm carries no 0889 term). The ≤1400 bound retires with the flip.
-- If 0917's fix leaves a nonzero residue, that is a NEW attribution routed to
-  `/qa` (the §4.4-S118 discipline) — never a re-derived threshold.
-
-## 7. The option-2 measurement gate (report-only; the number, not the adoption)
-
-**Sequencing:** after Spine-1 implementation lands; never sharing a wave with
-tranche churn. A measurement against emission we are about to change is not
-decision-grade for S120. Executed by `/testing` under this method; recorded as
-`tests/plan/s119-option2-measurement.md` (mine to hold).
-
-**Axis and its honest gap.** Subject = the conservative all-Owned lowering
-(the R7 differential-oracle toggle, the permanently-reachable reference
-semantics); control = current dev-tier emission. Same binary, same HEAD, same
-tree, per-child env only. **Binding on decision-grade status:**
-`/design`(backend) enumerates, in the report, the gap between toggle-off and
-true option-2 uniform emission (emission special cases the toggle does NOT
-govern — TCO carry-forward, scrutinee release gates, protect licences, as
-post-Spine-1 built). Because toggle-off restores analysis-licensed ops while
-keeping structural elisions, the measured cost is a **lower bound** on
-uniform emission's cost; the report says so on its face. If the gap cannot be
-enumerated cheaply, the report states that and S120 prices a prototype
-uniform-emission flag before adoption.
-
-**Workloads and quantities** (each: median of ≥5 repetitions, spread reported,
-tee'd, HEAD + machine recorded):
-
-1. **Exemplar warm serial solve**, driver loop N ∈ {1, 8, 64} (the `/port`
-   S118 shape): wall time + RC_STATS op counts (allocs / incs / decs) —
-   control vs subject. The op-count multiplier is reported beside the time:
-   it is the S94-flagged term.
-2. **Parallel/contention face:** the sanctioned on-demand contention benchmark
-   (`tests/concurrency_spark.rs:823`, the suite's 1 skip) run explicitly under
-   both emissions — the S94 ~10× floor-violation shape is exactly what the
-   adoption decision must price.
-3. **Suite face:** one full `cargo nextest run --no-fail-fast` with the toggle
-   exported (it is not a detector variable; the arming ban does not apply),
-   wall time vs a same-HEAD baseline run, **and the failure-set delta by
-   name** — toggle-sensitive cells are data for the adoption decision, not
-   noise. Run in a window `/sprint` allocates (one-agent-one-test-run).
-
-**Deliverable:** the number(s) + method + gap enumeration + failure-set delta.
-No adoption action this sprint under any capacity outcome (arch ruling).
-
-## 8. Track C — the bounded obligation (0694 D1), the datum, and 0859
-
-### 8.1 The D1 discriminating experiment (the only 0604/0818-family work this sprint)
-
-Scope: FIXME 0694's D1 exactly, on the **nullary flap member** (the member
-with fresh S119 evidence — baseline cell #21 of §1.2):
-
-- Run the single test binary (`nullary_return_dispatch_method_only_import`)
-  in isolation ~200× while the host carries equal CPU load from a
-  **non-cranelisp** source (`stress`/`yes` on N−1 cores). Tee everything.
-- **Reproduces** → host contention alone suffices; the fault is
-  intra-subprocess interleaving; the shared premise holds; S120 proceeds to
-  D2 Class-II (the MODULE_TRACE lane at the publication seam) with the rig
-  validated. The captured failure output either matches the S115 signature
-  (`undefined function: z`) — confirming Class II — or names a new face.
-- **Does not reproduce** (while full-suite runs do) → the premise is
-  **falsified**: other cranelisp subprocesses matter, pointing at
-  inter-process shared state (cache dir, `CRANELISP_LIB`, tmpdir, cwd). D2/D3
-  are re-designed, not run; the S118 inverse-polarity member
-  (`cache::…written_trait_impls…` passing under interleaving) becomes the
-  leading corroboration, and the rider-2 cache window gains a hazard note
-  (its fixes touch exactly the suspected shared substrate).
-- Either outcome is recorded in FIXME 0694 before any further 0694-family
-  scheduling. Execution: `/testing`, in a `/sprint`-allocated run window
-  (D1 is run-heavy; it must not contend with a fix wave's build slot).
-
-### 8.2 The opening flap datum — recorded re-measurement
-
-The member's reappearance at `5520186d` (unprompted, first S119 run, not in
-S118's certified 20) is logged in 0694's roster this phase. The re-measurement
-obligation: (a) isolation color at current HEAD (expected GREEN n/n — 
-confirming the load-flap signature rather than a new deterministic
-regression; a deterministic RED in isolation would be a NEW attribution, not a
-flap datum); (b) per-run color captured across every full-suite run this
-sprint (Phase 5/7 runs are all tee'd), appended to the roster. The flap set
-reports at close beside the exact scalar, both polarities.
-
-### 8.3 FIXME 0859 — disposition returned (its own §Future resolution, option 2)
-
-The S118 close-gate item 5 ("dispositioned … or returned to the user — never
-silently carried") went undischarged; discharged now, analytically:
-
-**Disposition 2 is returned to the user, with a recommendation.** The S117
-survey was competent and bounded-complete: every attempted production shape
-(direct return, wrapper return, retained root, return adaptation, two-function
-compositions) left `ProjectionOf(0) → Fresh` emission-inert, for the
-structural reason recorded — materialisation makes every escaping heap element
-an owned reference either way at the current language boundary. No S118/S119
-surface changes that: Spine 1 rules the *release* of non-concrete values, not
-projection provenance emission.
-
-**Recommendation:** accept R-2 on the existing evidence (typecheck transfer
-units distinguishing Projection provenance + the direct inline-body guards +
-the nine production witnesses), **with a named revival trigger**: the moment
-projection provenance becomes emission-live — ownership-inference increment
-II's uniqueness/reuse tokens, or option-2 adoption re-staging elision into
-`--release` under the differential lane — the declaration-sensitive witness
-obligation revives automatically and is a plan row of that sprint. Until a
-consumer exists, a witness cannot exist; manufacturing an observation surface
-for it was already ruled out by the FIXME itself. Second-order support:
-option-1's typed handles independently narrow the same risk class the
-declaration table carries (the facts become representational at the pair's
-seams). Disposition appended to the FIXME; it deletes when the user answers
-(accept ⇒ delete with the trigger recorded in `PLAN.md`; designed-observable
-wanted ⇒ re-target `/arch` for the seam design). Routed via `/sprint` with the
-Phase-3 exit gate.

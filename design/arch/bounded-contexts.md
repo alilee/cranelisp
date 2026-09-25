@@ -237,11 +237,13 @@ retention (binary); runtime helpers (intrinsics) and primitive bodies
 (primitives).
 
 **What crosses the boundary.**
-- **In:** the symbol tables and module aliases, the targets to compile, and a
-  Cranelift module to emit into.
+- **In:** the module path, symbol tables, targets to compile, Cranelift module
+  to emit into, and CLIF-capture flag.
 - **Out:** the populated GOT slot for each compiled target, and returned
   artefacts (IR text, code size, duration, per-type drop-glue addresses). On a
-  cache hit, `load_object` returns the linker artefact and restored table.
+  cache hit, the binary calls `cache::load_cached_object` with its linker and
+  cached module to obtain target addresses. The separate `load_object` entry
+  returns a linker artefact only and has no production caller.
 - The **caller composes the lifecycle owner**: backend names `Code` but never
   constructs it; the binary builds it from the `Jit` or linker artefact it owns
   and publishes it through the types table.

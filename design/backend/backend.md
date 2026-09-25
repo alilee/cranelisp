@@ -184,11 +184,14 @@ was not behaviour-preserving; the refactor is wrong, not the golden.**
 `module-caching.md` and `compile-to-module.md` carry the mechanism; the
 interior facts worth stating once here:
 
-- **Writes.** The object path is the ordinary emission entry against an object
-  module, finalised **by the caller**. There is no separate object-compile entry
-  — that function was retracted as never-real, and the asymmetry is deliberate:
-  it keeps mode out of the entry point. The backend produces bytes and a
-  sidecar; it writes nothing to disk. File IO is int's.
+- **Writes.** The backend owns the persisted format and writes two of its
+  files: `write_meta` writes a module's sidecar and `write_manifest` writes the
+  index, each through a temporary file and rename. The object is the ordinary
+  emission entry against an object module, finalised **by the caller**; int
+  emits its bytes and writes the `.o` itself. There is no separate
+  object-compile entry, which keeps mode out of the entry point. Int decides
+  when to write and where the cache directory is
+  ([module caching](module-caching.md) §7).
 - **Reads.** The cache-hit path is not a parallel codepath. It lives inside the
   ordinary recursive module registration. Symbol resolution returns a typed
   result, never an option: **a resolution failure is a cache-load error, never a
@@ -247,14 +250,14 @@ runtime lowers to `runtime/panic`.
 | Subject | Document | Standing |
 |---|---|---|
 | Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture and macro alias correction. Solution-golden selection and integrated acceptance remain open. |
-| Compilation entry shape | `compile-to-module.md` | How the one entry is organised, and generics activation. |
+| Compilation entry shape | `compile-to-module.md` | The one entry's contract and phase order, constructor codegen, GOT emission, finalisation and publication, and its error contract. |
 | JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
 | Per-module GOT | `per-module-got.md` | The two-GOT model as emitted, and why it is shaped that way. |
 | Module caching | `module-caching.md` | Cache keys, serialisation, invalidation, the load path. |
 | Executable generation | `executable-generation.md` | `--link` mode. |
 | RC discipline | `ring2-rc.md` | The conservative lowering: the uniform consuming convention, extern and platform consumption, the IO extern's balance, scope cleanup and the binders that never transfer by last use, the opt-in spark-capture borrow and its open default-on condition. |
 | Ownership codegen | `ownership-codegen.md` | The mechanisms that consume the ownership analysis — borrow elision, stack placement, confined non-atomic RC, uniqueness and reuse, value flattening, redefinition machinery — with their built/open state. |
-| Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
+| Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; per-arm match release; the TCO slot predicate; no depth cutoff, no shallow fallback. |
 | Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the open structural close (lifecycle disposition, refusal frame, census, wrapper discharge). |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
 | Binding-indirection consume | `binding-indirection-consume.md` | The consume-position × operand-provenance contract. |

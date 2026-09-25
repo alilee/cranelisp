@@ -174,9 +174,12 @@ accepted, or the module compiles from scratch.
   - `compile_to_module` runs against an object module, and the caller
     finalises it into bytes.
   - `build_isa(true)` builds the position-independent ISA.
-  - `write_manifest` writes the index.
-  - Every file write goes to a temporary file and is then renamed, so a
-    concurrent reader never sees a partial file.
+  - `write_manifest` writes the index atomically.
+  - The backend's writers go through a temporary file and a rename, so a
+    concurrent reader never sees a partial sidecar or manifest.
+- **Int writes the object.** The nice worker writes the emitted `.o` bytes with
+  a plain file write, not the backend's atomic helper. It records the manifest
+  entry only after that write succeeds.
 - **Open: the packet API has no live consumer.** `build_cache_packet`,
   `process_cache_packet`, `CacheWritePacket`, `ObjectCompileInput` and
   `ProcessedPacket` are public, but no live production path calls them. Their

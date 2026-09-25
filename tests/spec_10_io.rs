@@ -414,21 +414,19 @@ fn bind_polymorphic_inference() {
 //
 // The REPL forces an `IO` result through the trampoline (spec/10-io.md
 // §10.6.2), then displays it with its `IO` type and `IO.Pure` value, e.g.
-// `:(IO primitives/Int) (IO.Pure 42)`. The compiler currently displays only
-// the inner result (`:primitives/Int 42`), so these cells are RED until that
-// defect is corrected. The earlier §10.6.2 text required that inner-only
-// display; the user ruled on 2026-09-25 that §1.2 governs.
+// `:(primitives/IO primitives/Int) (IO.Pure 42)`. The compiler currently
+// displays only the inner result (`:primitives/Int 42`), so these cells are RED
+// until that defect is corrected. The earlier §10.6.2 text required that
+// inner-only display; the user ruled on 2026-09-25 that §1.2 governs.
 //
-// Head-spelling limit: §1.2's example writes `IO`, but its rule that the type
-// prefix is always fully qualified implies `primitives/IO`. That conflict is
-// open, so these cells accept either head and do not decide it.
+// The type head is `primitives/IO`: the user ruled that IO takes no exception
+// from the rule that the type prefix is fully qualified. A bare `IO` head fails.
 
 /// Assert that the REPL displayed an executed `IO` result as
-/// `:(IO <inner_type>) (IO.Pure <inner_value>)`, accepting `IO` or
-/// `primitives/IO` as the type head (see the head-spelling limit above).
+/// `:(primitives/IO <inner_type>) (IO.Pure <inner_value>)`.
 fn assert_io_result_envelope(out: helpers::e2e::CrOutput, inner_type: &str, inner_value: &str) {
     let envelope = regex::Regex::new(&format!(
-        r":\((?:primitives/)?IO {}\) \(IO\.Pure {}\)",
+        r":\(primitives/IO {}\) \(IO\.Pure {}\)",
         regex::escape(inner_type),
         regex::escape(inner_value)
     ))

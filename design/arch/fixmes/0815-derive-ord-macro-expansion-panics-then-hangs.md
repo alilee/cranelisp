@@ -6,7 +6,7 @@ filed_at: 2026-07-21
 sprint_filed: 115
 refers_to: stdlib/derive.cl:39 (derive-Ord); stdlib/derive/helpers.cl:251-269
   (build-later-arms / build-ord-enum-lt-go / build-ord-enum-lt-arms);
-  spec/09-macros.md §9.3 (macro expansion); stdlib/plan-stdlib.md §26.4
+  spec/09-macros.md §9.3 (macro expansion); stdlib/plan-stdlib.md §3.3
 status: open
 ---
 
@@ -103,8 +103,8 @@ fixing or closing; a green 0835 repro does not by itself show they run.
 ## Context
 
 Found by `/stdlib` during the S115 Phase-6a assessment sweep of the modules that
-carry **no self-tests**. `derive.cl` is one of 12 such modules; `plan-stdlib.md`
-§26.4 records that the derive self-test home must be a downstream consumer module
+carry **no self-tests**. `derive.cl` is one of 12 such modules; `stdlib/plan-stdlib.md`
+§3.3 (derive) records that the derive self-test home must be a downstream consumer module
 that derives on its own ADT, and that module was never built. Every derive defect
 in this FIXME and in 0816 would have been caught on the day it appeared by that
 missing test module. `/stdlib` is building it in 6b.

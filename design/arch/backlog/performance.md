@@ -244,8 +244,8 @@ Common re-entry trigger: contention-aware gate design OR the Phase-H RC/allocati
 #### 0408 — Sudoku exemplar copy-per-guess allocator/atomic-RC contention (the floor-violation exemplar)
 - **Origin** — FIXME 0408 · filed_by `/sprint` · target `/port` · sprint 86; narrowed 2026-06-27
   sprint 92 (the parallel-search EXPRESSION half is DONE S92; this tracks the PERF half only).
-- **`refers_to`** — `exemplar/solver.cl`, `exemplar/grid.cl`, `exemplar/plan-exemplar.md` §"Wave 4
-  Parallelism Opportunities Assessment", `exemplar/CLAUDE.md` §"Known Issues", `exemplar/tests.cl`;
+- **`refers_to`** — `exemplar/solver.cl`, `exemplar/grid.cl`, `exemplar/plan-exemplar.md` §"Copy-per-guess
+  performance" and §"Solving", `exemplar/CLAUDE.md` §"Known Issues", `exemplar/tests.cl`;
   cross-note `design/backend/lenient-eval.md` §3.6.3 (the never-slower-than-serial floor).
 - **Pinned analysis** — the S92 reshape parallelises the backtracking search **structurally**
   (divide-and-conquer over candidate digits via `first-success` + `solve-range`; slice-1 lenient eval

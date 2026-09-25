@@ -307,13 +307,14 @@ zero known defects — that is the whole point of the category.
 >    reports a *rate* or a *balance*, both polarities (a planted leak AND a
 >    planted over-release; the latter is the one no residue-allowance ever
 >    catches).
-> 2. **`/qa`'s instrumentation matrix marks a row VERIFIED only with a cited
+> 2. **A `/qa` instrumentation verification marks a row VERIFIED only with a cited
 >    detection proof.** "The mechanism exists at file:line" and "a test exercises
 >    it" are both weaker and neither substitutes; a row with a mechanism but no
 >    plant takes the distinct status `asserted-but-unproven`, which is an open
 >    item, not a pass. Worked example, including the movement this produced
->    across the S115 register: `tests/plan/s115-instrumentation-matrix.md`
->    §"W7 re-audit against the stronger bar".
+>    across the S115 register: the retired matrix's §"W7 re-audit against the
+>    stronger bar" ([last revision](https://github.com/alilee/cranelisp/blob/a07823d8/tests/plan/s115-instrumentation-matrix.md));
+>    current row grades are in the safety-invariant register.
 >
 > The worked exemplar of an instrument that met this bar on arrival is the S115
 > generative harness (`tests/gen_ownership_flows.rs`, §2 below): four synthetic
@@ -444,28 +445,21 @@ no curated list reaches.
 
 ---
 
-## §6. First increment (what to wire first) + sequencing
+## §6. Delivered increment and standing hooks
 
-1. **`/testing` — the combinator + lane** (one change-set, est. 1 `/testing`
-   dispatch): `assert_safety_matrix` in `tests/helpers/e2e.rs` +
-   `tests/safety_oracle_lane.rs` + `tests/fixtures/safety_corpus/` seeded per
-   §1.3. Acceptance: the 0641 B-1 program goes RED under the lane on all four
-   signals' union TODAY (it is the live counterexample); the §3.7 fixed
-   family is GREEN; lane wall ≤60s.
-2. **Then the 0641 fix increment** (`/design`(typecheck) per FIXME 0641 →
-   `/dev`) — gated per §1.5; the lane repros flip green and STAY in the lane.
-3. **Retro-wrap the existing ownership/RC corpus** (~10 files) through the
-   combinator (`/testing`, mechanical, may ride change-set 1 or follow).
-4. **Generator v1 core** (`/testing`, est. 1 dispatch after the lane exists —
-   the lane is its output surface): §2.2 always-on core + env-gated full
-   sweep.
-5. **`/qa` standing hooks** (no dispatch — process): `[oracle]` row marking
-   from S112 Phase 3 on; the §4 audit joins the rolling per-sprint sweep
-   beside the definition-variants lens; Phase-7 suite report gains a
-   safety-signal-reach line (the §5 table's deltas).
+The first increment is delivered: the combinator and lane
+(`SafetyMatrix`/`assert_safety_matrix`, `tests/safety_oracle_lane.rs`) landed
+at S113 W1 with the §1.3 as-built deviations, and the generator core
+(`tests/gen_ownership_flows.rs`) landed at S115 W7. The sequencing plan is in
+Git (`git show a07823d8:tests/plan/memory-safety-coverage.md` §6).
 
-Items 1 and 4 are the only new build cost: **two `/testing` dispatches**.
-Everything else is sequencing discipline over work already owed.
+`/qa`'s standing hooks remain:
+
+- mark oracle-covered plan rows `[oracle]`;
+- run the §4 audit in the rolling per-sprint sweep beside the
+  definition-variants lens;
+- include a safety-signal-reach line (the §5 table's deltas) in the Phase-7
+  suite report.
 
 ---
 

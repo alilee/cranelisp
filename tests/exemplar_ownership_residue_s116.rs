@@ -86,31 +86,29 @@ fn warm_residue_of(dir: &Path, entry: &str) -> (i64, String) {
     (residue(&stderr), stderr)
 }
 
-// RED — the warm serial Sudoku solve must be bounded by the independently
-// measured composition residue (~1,312). The current ~12,431 retained objects
-// are pure runtime retention (the warm ambient term is 0 — see the second cell
-// and the header), and no partial fix can pass.
+// The warm serial Sudoku solve must be bounded by the independently measured
+// composition residue (~1,312). Before FIXME 0917's S120 fix it retained
+// ~12,431 objects, all runtime retention (the warm ambient term is 0 — see the
+// second cell and the header); a partial fix could not pass.
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released;
 // application-scale quantitative acceptance for the transitive-discharge class.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S115 owner=/dev
-//   — the locus token cited `fn_compiler.rs` at filing; the method was never
-//   defined there (FIXME 0917's header carries the `git log -S` proof), so this
-//   is a factual correction of the citation, not a move of the seam.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S115 owner=/dev fixed=S120/cbb3be9e
+//   — the filing cited `fn_compiler.rs`, where this method was never defined;
+//   the token corrects that citation and does not move the seam.
 //   — FIXME 0917: an unbalanced `NULLARY_TAG_THRESHOLD`-guarded protect inc at
-//   the match-result return seam. A nullary `ConstrADT` arm classifies non-Fresh
-//   in the `value_provenance`/`is_fresh_construction` join, so ONE `None` arm —
-//   never taken at runtime — flips the whole match result to protect-eligible,
-//   and nothing balances the inc: the returned tree strands at rc=1 per
-//   iteration. That is the `eliminate` shape the backtracking solver runs per
-//   cell per pass, and it accounts for 100% of the 12,431
-//   (`tests/plan/s118-test-plan.md` §11.8.1; probe-backed subject/control
-//   4406/4 vs 4406/4406, repro pair `tests/nullary_arm_beside_boxed_arm_0917.rs`).
+//   the match-result return seam. A nullary `ConstrADT` arm classified non-Fresh
+//   in the result-provenance join, so ONE `None` arm — never taken at runtime —
+//   made the whole match result protect-eligible, and nothing balanced the inc:
+//   the returned tree stranded at rc=1 per iteration. That is the `eliminate`
+//   shape the backtracking solver runs per cell per pass, and it accounted for
+//   100% of the 12,431 (`tests/plan/s118-test-plan.md` §11.8.1; repro pair
+//   `tests/nullary_arm_beside_boxed_arm_0917.rs`).
 //   Two superseded attributions, kept so neither is re-tried: the 0810/0840 pair
-//   this cell was born under (S118 W2b+W3 landed those fixes and the residue
-//   survived them), and the §11.3 lead pointing at 0903's two censused families
-//   via `grid/Grid.cells` — FALSIFIED by `/port`'s direct experiment (the
-//   exemplar never calls that accessor) and by the 0917 reduction. This cell is
-//   NOT 0903's acceptance witness; it flips when 0917's fix lands.
+//   this cell was born under (S118 fixes for both left the residue in place),
+//   and the §11.3 lead pointing at 0903's two censused families via
+//   `grid/Grid.cells` — falsified by direct experiment (the exemplar never
+//   calls that accessor) and by the 0917 reduction. This cell is NOT 0903's
+//   acceptance witness; it passed once 0917's fix landed in S120 (`cbb3be9e`).
 #[test]
 fn sudoku_warm_serial_solve_residue_at_most_1400() {
     let td = exemplar_scratch();
@@ -130,9 +128,9 @@ fn sudoku_warm_serial_solve_residue_at_most_1400() {
 // still importing `solver` so the exemplar modules' own compilation is present
 // in both children.
 //
-// Its warm residual is EXACTLY 0 (allocs=1 / deallocs=1) at S118 HEAD. That is
-// the fact that makes the subject's 12,431 attributable to runtime retention
-// rather than to an ambient compile-time term: if this cell ever goes nonzero,
+// Its warm residual was EXACTLY 0 (allocs=1 / deallocs=1) at S118. That fact
+// made the subject's pre-fix 12,431 attributable to runtime retention rather
+// than to an ambient compile-time term: if this cell ever goes nonzero,
 // the ambient term has returned and the subject cell's bound has silently
 // changed meaning — re-derive it (marginally) before reading the subject again.
 // Exact, not a threshold: any movement must flip this cell and force the record

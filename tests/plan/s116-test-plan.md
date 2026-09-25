@@ -87,7 +87,7 @@ All fault seams are inert in production and reachable only in test configuration
 | A3 freed/quarantined pointer | decrement a planted released allocation | lifecycle validation rejects |
 | A4 malformed header/size | corrupt the planted header invariant | header/size validation rejects |
 
-M3 requires both intrinsics unit proof and one e2e counter→atexit→abort cell. M1/M2/A1–A4 require production-funnel unit proofs; add e2e only where the public diagnostic mode can express the plant without internal APIs. `tests/plan/s115-instrumentation-matrix.md` and `memory-safety-coverage.md` remain **asserted-but-unproven** until these cells and their revert demonstrations land; then `/qa` regrades R8/0857 by mode.
+M3 requires both intrinsics unit proof and one e2e counter→atexit→abort cell. M1/M2/A1–A4 require production-funnel unit proofs; add e2e only where the public diagnostic mode can express the plant without internal APIs. The [S115 instrumentation matrix](https://github.com/alilee/cranelisp/blob/a07823d8/tests/plan/s115-instrumentation-matrix.md) (retired) and `memory-safety-coverage.md` remain **asserted-but-unproven** until these cells and their revert demonstrations land; then `/qa` regrades R8/0857 by mode.
 
 ## 5. Syntax and carrier coverage
 

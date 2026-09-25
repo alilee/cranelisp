@@ -48,13 +48,14 @@ allocation with `got_exhaustion_surfaces_error_not_ub`). What remains is
    closure, auto-curry and Vec glue *builders* should share one emission
    skeleton was not re-assessed after ADT glue moved to `drop_glue.rs`.
    `design` (backend) states converge-or-keep with a reason.
-3. **Retired-facade citations and one deletion overclaim (R4/R8 residue, S87
-   F9).** The old architecture-facade directory no longer exists, yet backend source cites
-   retired `facades/` files on 24 lines (including the four `jit.rs` sites the
-   audit named), and `design/backend/compile-to-module.md` states
-   `FunctionArtifacts` DELETED while `pub(crate) struct FunctionArtifacts`
-   survives in `crates/cranelisp-backend/src/lib.rs`. The S122 backend design
-   consolidation may already be absorbing the design-side half.
+3. **Retired-facade citations and stale source rustdoc (R4/R8 residue, S87
+   F9).** Backend source still cites the retired architecture-facade directory,
+   including the four `jit.rs` sites identified by the audit. The crate-root
+   rustdoc also needs reconciliation with current GOT publication, body access
+   and object-loading behavior. The S122 design-side cleanup is complete:
+   backend designs no longer cite retired facades, and
+   `design/backend/compile-to-module.md` §8 describes the surviving private
+   `FunctionArtifacts` carrier. The source-side obligation remains open.
 
 ## Completion evidence
 

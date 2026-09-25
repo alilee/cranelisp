@@ -1,26 +1,26 @@
-# ASan / checking-allocator lane (scripted, NOT canonical nextest)
+# Checking-allocator fence lane (scripted, not in nextest)
 
-The two-condition rule (`tests/plan/s100-ownership-verification.md` §3.2):
-every starved-inc fence and memory-safety lane runs under plain execution
-(the canonical `tests/ownership_fences.rs` behavioral+balance legs) AND under
-a checking tool. A fence green only under one condition is not green
-(`memory/feedback_verify_fix_not_symptom_absence.md` — tools perturb layout;
-the behavioral legs are the always-on guards).
+`run_fences_checked.sh` re-runs the starved-inc fence shapes under a checking
+allocator. It is the checking-tool leg of QA's two-condition rule
+([starved-inc fences](../../plan/s100-ownership-verification.md#32-starved-inc-fences--every-skip-the-inc-emission-site-the-s98-bug-2-class)
+and [memory-safety lanes](../../plan/s100-ownership-verification.md#34-memory-safety-lanes-asanuaf-stack-slots-reuse)):
+a fence counts as green only when its plain-execution leg in
+`tests/ownership_fences.rs` and this leg both pass. Checking tools perturb
+layout, so the behavioural legs remain the always-on guards.
 
-**Toolchain reality on this platform (aarch64 Linux, honest cap per §3.4):**
-ASan needs `RUSTFLAGS=-Zsanitizer=address` on nightly with a rebuilt binary;
-where unavailable, the documented fallback is the glibc checking allocator:
-`MALLOC_CHECK_=3 MALLOC_PERTURB_=42`.
-
-Run at B3 wave gates (attended), not per-commit:
+- **Default leg:** the glibc checking allocator,
+  `MALLOC_CHECK_=3 MALLOC_PERTURB_=42`, against `target/debug/cranelisp`.
+- **Optional ASan leg:** set `CRANELISP_ASAN_BINARY` to a binary built on
+  nightly with `RUSTFLAGS=-Zsanitizer=address`.
+- **Verdict:** each shape runs twice via `--run`; the lane fails on differing
+  exit codes or allocator abort/corruption output on stderr. Expected values
+  stay in `ownership_fences.rs`.
 
 ```bash
-tests/scripts/asan/run_fences_checked.sh          # checking-allocator lane
-CRANELISP_ASAN_BINARY=path/to/asan-build \
-  tests/scripts/asan/run_fences_checked.sh        # true-ASan lane (optional)
+tests/scripts/asan/run_fences_checked.sh
+CRANELISP_ASAN_BINARY=path/to/asan-build tests/scripts/asan/run_fences_checked.sh
 ```
 
-The script re-runs the fence corpus (`ownership_fences.rs` fixtures via
-`--run`) under the checking allocator and fails on any abort/crash. Scope
-grows with the B3 mechanisms (stack slots → L-C2 shapes at ≥10k iterations;
-reuse → L-C3 at increment II).
+The script carries copies of the fence programs; update them when the
+corresponding `ownership_fences.rs` templates change. Run it attended when
+QA's allocation calls for the checking-tool leg; it is not run per commit.

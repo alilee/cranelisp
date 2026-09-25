@@ -2,12 +2,12 @@
 
 Test infrastructure for the Cranelisp reimplementation.
 
-**Ownership.** `tests/plan/` is owned by `/qa` (strategy, risk, coverage
+**Ownership.** `tests/plan/` is owned by `qa` (strategy, risk, coverage
 process and attribution; its [current assurance plan](plan/PLAN.md) supplies
 evidence policy, navigation and active allocation without replacing the specs).
 Everything else here — `tests/*.rs`, `tests/helpers/`, `tests/fixtures/`,
 `tests/scripts/`, `// defect:` notation upkeep, and this file — is owned by
-`/test`. Per-crate `#[cfg(test)]` unit tests are `/dev`'s and live in
+`test`. Per-crate `#[cfg(test)]` unit tests are `dev`'s and live in
 `crates/{crate}/src/`, not here.
 
 ## Two tiers, no middle
@@ -20,7 +20,7 @@ and fall into exactly two tiers:
    Helpers are process-spawn + stdout/stderr/exit capture + isolated tmpdir +
    on-disk fixture files. **This is the release gate.**
 2. **Unit tests** — `crates/{crate}/src/` `#[cfg(test)]` modules, authored by
-   `/dev` alongside the implementation.
+   `dev` alongside the implementation.
 
 Both tiers observe the *compiler*. A third, small and closed category observes
 the **repository** instead — the standing gates that make root `CLAUDE.md`
@@ -34,10 +34,9 @@ cannot fire is indistinguishable from one that finds nothing.
 There is **no middle integration tier.** Tests do NOT construct `Sess`,
 `SharedState`, `SymbolTable`, or any internal session primitive. If a feature
 cannot be expressed e2e, that is a gap in the binary's testability surface —
-file a FIXME (`target: /qa` or `/arch`), do not bridge with an internal-API
-helper. The earlier four-layer pyramid is retired (Git history).
+file an action for `qa` or `arch`; do not bridge with an internal-API helper.
 
-## Plan documents (`plan/`, owned by `/qa`)
+## Plan documents (`plan/`, owned by `qa`)
 
 | File | Purpose |
 |---|---|
@@ -77,7 +76,7 @@ Supporting directories:
 ```
 tests/
   CLAUDE.md              — this file
-  plan/                  — /qa's plan + tooling (see above)
+  plan/                  — qa's plan + tooling (see above)
   helpers/
     mod.rs               — module declarations only (pub mod e2e; marginal; regex;)
     e2e.rs               — the e2e harness: `Cranelisp` builder + subprocess
@@ -87,9 +86,20 @@ tests/
   fixtures/              — on-disk fixtures (preludes/, stdlib_project/, golden/, …)
   scripts/               — build-link-prereqs.sh and other suite-level scripts
   perf/                  — measurement harnesses (per-sprint attribution/perf)
-  legacy/                — quarantine archive, HARVEST COMPLETE (0 .rs files);
-                            see tests/legacy/README.md. Provenance only.
 ```
+
+### Fixture and lane contracts (`test-fixture-contracts`)
+
+Capture and run contracts for golden-CLIF fixture corpora and the checking-allocator fence lane.
+Keep each beside the artifacts it governs:
+
+- [L-B1 golden-CLIF corpus](fixtures/clif_baseline/MANIFEST.md) and its
+  [exclusion register](fixtures/clif_baseline/EXCLUSIONS.md) —
+  `clif_golden_lane.rs`, `ownership_fences.rs` smoke, `scripts/clif_golden.sh`;
+- [W0.b synthetic-body golden-CLIF corpus](fixtures/clif_w0b/MANIFEST.md) —
+  `golden_clif_w0b.rs`;
+- [checking-allocator fence lane](scripts/asan/README.md) —
+  `scripts/asan/run_fences_checked.sh`.
 
 ## Test helpers
 
@@ -115,8 +125,8 @@ mode**, **capture + assert**.
   `.fixture_tree(src_dir, dst_dir)` (copies from `tests/fixtures/`).
 - Input/env: `.stdin(lines)`, `.stdin_lines(&[…])`, `.env(k, v)`, `.timeout(d)`,
   `.expects_exit_without_reading_stdin()` (opt-in EPIPE tolerance for a child
-  whose contract is to reject the invocation and exit before reading — FIXME
-  0911; never a blanket swallow, see the method's rustdoc).
+  whose contract is to reject the invocation and exit before reading; never a
+  blanket swallow, see the method's rustdoc).
 - Terminal: `.output()` → `CrOutput` (panics on spawn/timeout error);
   `.try_output()` returns the error instead.
 - `CrOutput` carries fluent assertions: `.assert_ok()`, `.assert_exit(code)`,
@@ -151,15 +161,13 @@ MUST measure a control/subject **pair** and assert on the difference. Absolute
 this class.
 
 **Why:** every stdlib-prelude child carries a program-independent compile-time
-residual — 1143 allocations at S118 HEAD — from the int-side macro-turn marshal
-boundary (FIXME 0889). An absolute cell over such a child measures **only** that
-residual: it reads RED regardless of the runtime behaviour it is named after,
-and it would read GREEN again the moment 0889 is fixed even if that behaviour
-had rotted meanwhile. Either way it is not an instrument. A threshold is worse
-than useless in the same situation — it encodes today's ambient number as slack,
-silently absorbing new leaks up to it, and it has to be re-derived every time the
-baseline moves. Four S118 baseline cells were RED on this alone; the S118 W1
-measurement is the worked example (`tests/plan/s118-test-plan.md` §2.5).
+residual from the macro-turn marshal boundary (FIXME 0889). An absolute cell
+over such a child measures **only** that residual: it reads RED regardless of
+the runtime behaviour it is named after, and it would read GREEN again the
+moment 0889 is fixed even if that behaviour had rotted meanwhile. Either way it
+is not an instrument. A threshold is worse than useless in the same situation —
+it encodes today's ambient number as slack, silently absorbing new leaks up to
+it, and it has to be re-derived every time the baseline moves.
 
 **How:** `helpers::marginal` — `MarginalPair::new(label, control, subject)`, two
 `Child`s that differ in exactly ONE thing (the program, or one macro invocation
@@ -200,10 +208,9 @@ review and `git grep`. Outside the suite, the REPL-agent eval runner copies
 NOT write to checked-in paths (`exemplar/`, `examples/`, `stdlib/`,
 `tests/fixtures/`, `src/`, …) or to `workspace_root()`.
 
-**Why:** Sprint 60 found that `user.cl` persistence in a shared working
-directory accumulated across runs, masking a defect's disposition; cross-test
-state pollution also hides races that fire only under specific filesystem
-preconditions.
+**Why:** `user.cl` persistence in a shared working directory accumulates
+across runs and has masked a defect's disposition; cross-test state pollution
+also hides races that fire only under specific filesystem preconditions.
 
 **How:** `Cranelisp::new()` allocates a `tempfile::TempDir` and manages its
 lifetime for the duration of the builder — compose fixtures into it with
@@ -247,49 +254,13 @@ wrong things.
   input must not succeed silently), display format (no unqualified names where
   qualified are required).
 
-## Coverage by definition variants (standing lens, owned by `/qa`)
+## Coverage by definition variants
 
-Standing coverage-audit category (user directive, S108, 2026-07-12): **coverage
-by definition variants** — the coverage-process face of the codepath-duplication
-class the project is trying everything to eliminate. For any operation that
-must behave UNIFORMLY across a variant family, the rolling audit question is:
-
-- is there a **variant × {positive, negative} matrix** — a row per variant,
-  both polarities — rather than coverage of whichever variant the implementer
-  happened to exercise?
-- does the matrix **pressure ONE codepath**, or has each variant grown its own
-  resolver/registrar/formatter? A per-variant fix that leaves the siblings
-  untested is the smell; the worked exemplar is the prelude ≡ explicit-import
-  convergence described by the [current parity guidance](plan/PLAN.md#prelude-and-explicit-import-parity),
-  where equivalent-provenance twins guard the shared resolution contract.
-
-Variant families to sweep (rolling; extend as the language grows):
-
-- **definition forms** — `defn` / `def` / `deftype` / `deftrait` (trait name
-  AND method names) / `defmacro`, plus the private `-` variants;
-- **resolution sites** — value ref, type-annotation ref, deftype field type,
-  ctor in value/pattern/dotted-member position, impl target, trait ref, macro
-  recognition, mono collection, the §8.6.4 conflict checks (the PLAN §I site
-  enumeration is the template);
-- **import shapes** — specific / renamed / member / glob / glob re-export;
-- **provenance** — explicit import vs implicit prelude (§8.8.1);
-- **output kinds** — the token-styled render surfaces (values, introspection,
-  `/doc`, code printer, search rows, errors — the §10.3 kind table);
-- **binder multiplicity** — one binder of a name vs. two in ONE frame vs. two
-  across nested frames, × {scalar, heap, type-changing} × {ordinary scope exit,
-  tail transfer} × {sparked, not}. Added
-  S121: five defects hid where every corpus program used distinct binder names,
-  so the whole toolchain's name-keyed binding facts were never asked to tell two
-  binders apart. Ask it of any `let`-, param- or capture-shaped change.
-
-**The twin fixture is the highest-signal shape**: one invariant satisfied two
-ways (two variants, two provenances), SAME assertion — a variant that grew its
-own codepath diverges the twins, and the failing twin names the site. **A
-missing cell in the matrix is where a variant silently diverges.**
-
-This is one lens at three altitudes: `/review`'s per-diff duplication cue
-(FIXME 0565), THIS rolling per-sprint coverage lens (`/qa`), and `/audit`'s
-whole-context Duplication attribute (FIXME 0564).
+`qa` owns this lens: [standing coverage audit — definition variants](plan/PLAN.md#standing-coverage-audit--definition-variants)
+decides which variant families and relational axes a change must enumerate.
+When authoring a cell for it, prefer the **twin fixture**: one invariant
+satisfied two ways under the same assertion, so a variant that grew its own
+codepath diverges the pair and the failing twin names the site.
 
 ## `--link` / platform prerequisites (nextest setup script)
 
@@ -321,9 +292,8 @@ The launcher sets `CARGO_TARGET_DIR=target/agent` so the agent-featured binary
 lives at `target/agent/debug/cranelisp` and can never clobber the default
 `target/debug/cranelisp` mid-suite. The e2e harness (`helpers/e2e.rs::binary_path`)
 resolves the binary root from `CARGO_TARGET_DIR`, so each lane execs its own
-binary — isolation by construction. This closes FIXME 0615's binary-provenance
-race (a differently-featured build swapping the binary a feature-OFF guard then
-spawns); the race is deterministic in provenance, never a flake.
+binary — isolation by construction. A shared target directory lets a
+differently-featured build replace the binary a feature-off test then spawns.
 
 ### REPL-agent evals
 
@@ -355,23 +325,27 @@ defines the tasks, graders, result classes and report contents.
 Silent by default, controlled by environment variables — set them on the
 spawned subprocess via `.env(…)`, or export before `cargo nextest run`:
 
-| Variable | Shows |
-|---|---|
-| `CRANELISP_RC_TRACE=1` | Every alloc, inc, dec, free with pointer + type |
-| `CRANELISP_INFER_TRACE=1` | Unification steps, constraint generation |
-| `CRANELISP_CODEGEN_TRACE=1` | CLIF IR before/after optimization |
-| `CRANELISP_MODULE_TRACE=1` | Module discovery, compile order, cache hits |
-| `CRANELISP_MACRO_TRACE=1` | Macro expansion steps |
+| Variable | Shows (stderr) | Reader |
+|---|---|---|
+| `CRANELISP_CODEGEN_DUMP=<name>\|*` | Framed CLIF for each matching compiled function; the golden-CLIF lanes' channel | `cranelisp-backend` `lib.rs` |
+| `CRANELISP_RC_TRACE=1` | Every alloc, free, inc and dec with pointer (debug builds) | `cranelisp-intrinsics` `rc.rs` |
+| `CRANELISP_OWNERSHIP_TRACE=1` | Per-cluster callable summaries and per-site ownership verdicts | `cranelisp-typecheck` `ownership/trace.rs` |
+| `CRANELISP_MODULE_TRACE=1` | Module cache restore, dependency-record and save decisions | `src/` cache and session code |
+| `CRANELISP_SCHEDULER_TRACE=1\|<modules>` | Scheduler registration and state transitions | `src/observability.rs` |
+| `CRANELISP_IO_TRACE=1` | IO trampoline events | `src/io_trace.rs` |
+| `CRANELISP_GOT_TRACE=1` | GOT slot writes (JIT, linker, redefinition) | `src/got_trace.rs` |
+| `CRANELISP_CODEGEN_TRACE=1` | Nice-worker object-emission failures only | `src/session_v4/nice_worker.rs` |
 
-Compiler skills back invariants with `debug_assert!` (span monotonicity, no
-unresolved type vars in output, RC never negative, GOT slot uniqueness). At the
-host↔platform-DLL marshaling boundary these must assert heap-header integrity
-after each construct/consume crossing (`/platform` + `/backend` obligation) —
-a few-bytes-per-crossing overrun is silent under the system allocator until it
-trips a glibc abort many crossings later. Every marshaling boundary therefore
-also needs a **sustained-repetition** guard (drive it 200–2000 crossings in
-both directions, assert exit 0), and `--link` capabilities guard
-link-then-RUN-under-load, not link-success-only. First such guard:
+The allocator diagnostic modes (`CRANELISP_ALLOC_PARITY`, quarantine, scrub,
+`CRANELISP_RC_DEC_CHECK`) are documented in the
+[CLI reference](../user/cli-reference.md#memory-safety-diagnostics-developer-tools).
+
+A few-bytes-per-crossing overrun at the host↔platform marshalling boundary is
+silent under the system allocator until it trips a glibc abort many crossings
+later. Every marshalling boundary therefore needs a **sustained-repetition**
+guard (drive it 200–2000 crossings in both directions, assert exit 0), and
+`--link` capabilities guard link-then-run-under-load, not link success alone —
+for example
 `tests/link.rs::link_repeated_platform_adt_marshal_does_not_corrupt_heap`.
 
 ## Spec traceability
@@ -382,9 +356,9 @@ Every `#[test]` carries a `// spec:` comment naming the section it validates:
 // spec: repl/spec.md §1.2 — Int display format
 ```
 
-`/test` adds the test-side `// spec:`; `/qa` audits the two-sided match and
+`test` adds the test-side `// spec:`; `qa` audits the two-sided match and
 adds the spec-side `[Tested …]` annotation. Two structural verifiers live in
-`plan/` (owned by `/qa`; run them before landing annotation changes):
+`plan/` (owned by `qa`; run them before landing annotation changes):
 
 - `plan/spec_link_check.py` — test → spec: every `// spec:` anchor must match a
   real heading in the cited file.
@@ -426,45 +400,41 @@ Every **repro test** — a test born from a defect, committed per root
 
 ```rust
 // spec: repl/spec.md §4.1.2 — bare nullary-ctor lookup classification
-// defect: class=wrong-scope-lookup locus=src/repl.rs::format_type_display found=S108 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/repl/format_type.rs::format_type_display found=S108 owner=/dev
 #[test]
 fn nullary_constructor_bare_lookup_shows_deftype_and_qualified_home() { ... }
 ```
 
-This replaces the failure ledger retired in S108 — its last full revision is
-`git show a25ce2c8:tests/plan/` — as the substrate for defect
-frequency/locus/recurrence analysis. Unlike the ledger, which by its own
-discipline held only *currently-failing* tests, the notation rides the
-permanent corpus, so analysis works over **GREEN repros too**: a fixed defect
-keeps contributing to the class-frequency and hotspot signals forever.
+The notation is the substrate for defect frequency, locus and recurrence
+analysis. It rides the permanent corpus, so analysis works over **GREEN repros
+too**: a fixed defect keeps contributing to the class-frequency and hotspot
+signals.
 
 **Fields** (the four below required; single line; no free text):
 
 - `class=<class>` — the defect class, from the controlled vocabulary below.
   Free-text fragments defeat `uniq -c`; if no class fits, request a vocabulary
-  addition from `/qa` — adding a class is a `/qa` edit to this list.
+  addition from `qa` — adding a class is a `qa` edit to this list.
 - `locus=<file:line-or-seam>` — where the bug lived: `file.rs:NNN` at fix
-  time, or a stable seam name (`src/repl.rs::format_trait_display`,
+  time, or a stable seam name (`src/repl/format_type.rs::format_trait_display`,
   `host<->platform marshal boundary`). Prefer the seam form — line numbers rot.
 - `found=S<NN>` — the sprint the defect was found in.
-- `owner=/<skill>` — the skill that owned the **fix** (not the discoverer).
+- `owner=/<role>` — the role that owned the **fix** (not the discoverer).
 
-**Optional fifth field — `fixed=S<NN>/<sha>`** (added S118 W3, `/testing`).
-Names the sprint and commit that closed the defect. Present ⇒ the repro is a
-GREEN regression guard; absent ⇒ still open, so `grep -L` over the corpus
-separates the two without running anything.
+**Optional fifth field — `fixed=S<NN>/<sha>`.** Names the sprint and commit
+that closed the defect. Present ⇒ the repro is a GREEN regression guard;
+absent ⇒ still open, so `grep -L` over the corpus separates the two without
+running anything.
 
 The locus **never moves when a fix lands**. It records where the bug LIVED,
 which is what the hotspot recipe below counts; rewriting it to the post-fix
-seam would erase the history the notation exists to keep. When the seam was
-DELETED by its fix — the S118 W3 case, where a twelve-symbol atomic deletion
-took several loci out of the tree — keep the historical seam as the `locus=`
-token and say so in the prose after it, naming what a reader should read
-today. `grep -o "locus=[^ ]*"` stops at the first space, so prose after the
-token never pollutes the frequency counts.
+seam would erase the history the notation exists to keep. When the fix deleted
+the seam, keep the historical seam as the `locus=` token and say so in the
+prose after it, naming what a reader should read today.
+`grep -o "locus=[^ ]*"` stops at the first space, so prose after the token
+never pollutes the frequency counts.
 
-**Controlled `class=` vocabulary** (owned by `/qa`; seeded S108 from
-evidenced classes):
+**Controlled `class=` vocabulary** (owned by `qa`):
 
 | Class | Meaning (evidence) |
 |---|---|
@@ -490,14 +460,14 @@ evidenced classes):
 | `carrier-loss` | A keyed producer→consumer carrier (the S110 0583 architecture: typecheck-published, backend keyed-read, e.g. `resolved_target`) is NEVER WRITTEN for a reachable consumer site, so the loud keyed-consumer miss surfaces as a backend/codegen error on a spec-VALID program (S112 R2: multi-sig-base dispatch call inside a monomorphised instance body — the minted body's call sites get no carrier derivation). Distinct from `check-gate-leak` (INVALID program raised at the wrong layer — here nothing should be rejected at all) and from the forbidden soft-fallback (the loud miss is the consumer working as designed; the PRODUCER is the owner). Fix shape is P26-constrained: derive from settled state at the site that mints the reaching context, never patch-after-record (added S112, /qa) |
 | `scalar-as-pointer` | A scalar-typed value RC-manipulated or dereferenced as a heap pointer because its category is unknown at emission — e.g. a generic trait-method instance's residual-`Var` slot RC-inc'd behind the nullary-tag guard, so an `Int` payload with value ≥ `NULLARY_TAG_THRESHOLD` takes a wild atomic write at payload+8 (S118, FIXME 0916; boundary measured exactly 1023/1024). The nullary-tag guard discriminates tags from pointers, never scalars from pointers. Distinct from `rc-miscount` (counts on real heap values) and `uaf` (a real pointer, wrong lifetime): here the operand was never a pointer at all (added S118, /qa) |
 | `release-path-bypass` | Retained session state whose release the spec ties to one named condition is discarded by an unrelated lifecycle action — e.g. `/reset` clearing `failed_forms`, so the next regeneration silently dropped unrepaired startup-failed source that §15.2.3 releases only on a successful same-name definition or reload (S122, `tests/repl_persist.rs` reset cell; the S102 W5R M-1 coupling invariant was kept by clearing both carriers instead of retaining both). Class the release SITE, not the symptom face (authored-source loss). Distinct from `error-swallow` (a raised diagnostic dropped in flight) and `enumeration-miss` (the carrier is enumerated correctly — it was emptied). A sibling face is an error-set membership lifted by a command the §14.4–§14.6 repair exit does not name (added S122, /qa) |
-| `requirement-conflict` | Two requirement texts prescribed conflicting behaviour; the implementation and its covering test followed the one the user's later ruling rejected, so both encoded the wrong behaviour. Example: `spec/10-io.md` §10.6.2 said the REPL shows only an executed `IO` result's inner value, while `repl/spec/01-display-format.md` §1.2 requires `:(IO InnerType) (IO.Pure inner_value)`. The user ruled on 2026-09-25 that §1.2 governs (S122, `tests/spec_10_io.rs` IO display cells). Class the conflict that admitted the defect, not the source site that realizes it. Distinct from `wrong-accept` and `wrong-reject`, where the implementation departs from one requirement that does not conflict with another (added S122, /qa) |
+| `requirement-conflict` | Two requirement texts prescribed conflicting behaviour; the implementation and its covering test followed the one the user's later ruling rejected, so both encoded the wrong behaviour. Example: `spec/10-io.md` §10.6.2 said the REPL shows only an executed `IO` result's inner value, while `repl/spec/01-display-format.md` §1.2 requires `:(primitives/IO InnerType) (IO.Pure inner_value)`. The user ruled on 2026-09-25 that §1.2 governs (S122, `tests/spec_10_io.rs` IO display cells). Class the conflict that admitted the defect, not the source site that realizes it. Distinct from `wrong-accept` and `wrong-reject`, where the implementation departs from one requirement that does not conflict with another (added S122, /qa) |
 
 **Rules:**
 
 - ONLY defect-repro tests carry `// defect:`. Ordinary spec-coverage tests do
   not — the signal is defect density, and tagging everything erases it.
-- The notation is applied by `/test` at repro time (and retro-tagged
-  opportunistically); the vocabulary is `/qa`'s.
+- The notation is applied by `test` at repro time (and retro-tagged
+  opportunistically); the vocabulary is `qa`'s.
 - A repro's comment states its defect in the PAST tense once fixed. A GREEN
   repro carrying present-tense "DEFECT (open)" framing lets a future
   regression pose as a known guard — strip the framing when the fix lands.
@@ -505,7 +475,7 @@ evidenced classes):
 **Analysis recipes** (the point of the structure):
 
 ```bash
-# recurring-class frequency — the /arch-escalation signal (a class that
+# recurring-class frequency — the arch-escalation signal (a class that
 # keeps recurring is an architecture problem, not an instance problem)
 grep -rh "// defect:" tests/ | grep -o "class=[a-z-]*" | sort | uniq -c | sort -rn
 
@@ -628,7 +598,7 @@ CRANELISP_RC_TRACE=1 cargo nextest run --test spec_12_runtime         # with a t
    `PrimitivesOnly` or `TestStandard` when operators/ADTs are needed.
 4. **Name after the behaviour** validated.
 5. **Run through all modes** if it asserts language semantics.
-6. **Add `// spec:`** on every `#[test]`; ask `/qa` to update active allocation
+6. **Add `// spec:`** on every `#[test]`; ask `qa` to update active allocation
    or [current coverage navigation](plan/PLAN.md#current-coverage-navigation)
    when the new evidence is not already discoverable there.
 
@@ -639,25 +609,15 @@ Every fix lands with a unit test, and the e2e need is assessed
 in the same change-set. This is stated canonically in root `CLAUDE.md`
 §Testing and `sprints/METHOD.md` §2.2 — follow those; not restated here.
 
-## QA-first targeting and deferral discipline (S108 Inc2 lesson)
+## QA-first targeting and deferral discipline
 
-A `/review`-caught **correctness** defect is a QA-first + unit-test **miss**,
-not a review win — review is the LAST line of defence, tests the first. All
-three S108-Inc2 review findings (I-1/I-2/I-3) were knowable before review:
-one was `/arch`-pre-flagged, one was a stated spec MUST, one was a standing
-invariant. Two operational rules:
+A correctness defect first caught by `review` is a QA-first and unit-test
+miss: review is the last line of defence, tests the first.
 
-- **Spec MUSTs and arch-pre-flagged boundaries are the highest-signal
-  QA-first targets.** Author guards for them FIRST — before the happy path.
-  A design outcome that says "watch this collision/accounting/gate" is a
-  test row, not a footnote.
-- **A deferral to unit tests MUST enumerate its cases.** When an e2e-hard
-  case (async, timing-coupled) is deferred to `/dev` unit tests, the
-  deferral names the specific boundaries/negatives/spec-MUSTs to pin, and
-  `/dev` + `/review` confirm each enumerated case has a guard that FAILS on
-  revert of its fix. A bare "unit-pinned" with no enumeration is a hole —
-  `/dev` pins the happy path and the negatives fall through.
-
-Provenance: S108 Increment 2 (user finding in the [closed sprint record](../sprints/archive/sprint-108.md#findings));
-the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
-retains the worked enumerated-deferral pattern for that increment.
+- **Author guards for spec MUSTs and `arch`-flagged boundaries first** —
+  before the happy path. A design outcome that says "watch this
+  collision/accounting/gate" is a test row, not a footnote.
+- **A deferral to unit tests enumerates its cases**, per QA's
+  [traceability and authoring policy](plan/PLAN.md#traceability-and-authoring):
+  the specific boundaries, negatives and spec MUSTs `dev` must pin, each with
+  a guard that fails on revert of its fix. A bare "unit-pinned" is a hole.

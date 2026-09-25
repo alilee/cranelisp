@@ -1,1492 +1,423 @@
-# compile_to_module<M: Module> — Unified Compilation Function
+# The compilation entry — `compile_to_module`
 
-<!-- ============================================================
-     S75 NORMATIVE BANNER — read this first; it supersedes the
-     pre-D41 `CompilationResult` / `FunctionArtifacts` shape that
-     the body sections (§2.1, §8, §9.1, §13) still describe as
-     historical migration narrative.
+> **Owner**: `design`, narrow-deployed to `cranelisp-backend`.
+> **Status**: current design, verified against source 2026-09-25.
+> **Authority**: `design/arch/bounded-contexts.md` §3 owns the boundary and its
+> invariants; the rustdoc in `crates/cranelisp-backend/src/lib.rs` owns the exact
+> signatures. This document explains how the one entry is organised and why.
+> Section numbers are cited by source and tests, so unused numbers are skipped
+> rather than renumbered.
 
-     S75 (Sprint 75) rotates the source to the D41-amended boundary
-     (FIXME 0221, S70 Phase B amendment to Decision 41) AND retracts
-     the never-real `compile_to_object` free function. The settled
-     target after S75 is:
+## 1. What the entry is
 
-     1. THE CODEGEN BOUNDARY IS EXACTLY THREE FREE FUNCTIONS:
-          compile_to_module<M>   (the only CLIF-emission entry; §2)
-          load_object            (cache-hit .o map; no codegen)
-          produce_disasm         (on-demand disassembly)
-        `compile_to_object` is RETRACTED — it never had a real body
-        (a Sprint-67 facade scaffold returning unimplemented!(),
-        citing the never-filed FIXME 0184). The object path is
-        `compile_to_module::<ObjectModule>` + CALLER `finish().emit()`
-        — the §2.5 caller-finalize contract, symmetric to int holding
-        the JITModule for Arc<Jit> reclaim in JIT mode. See
-        `facades/backend.md` §"Free functions" tombstone + Decision 23.
+`compile_to_module` is the only place the backend emits Cranelift IR. It
+compiles a caller-chosen set of executable targets from one module into a
+caller-supplied Cranelift `Module`, publishes each compiled address into the
+target's GOT slot, and returns the introspection byproducts.
 
-     2. compile_to_module's S75 SIGNATURE (the D41 rotation):
-          pub fn compile_to_module<M: Module + CodeFinalizer, C, L>(
-              scope: &ModuleFullPath,
-              names: &[Symbol],
-              symbol_tables: &SymbolTables<C, L>,   // SymbolTables<Code,()> at the int boundary
-              module_aliases: &ModuleAliases,        // NEW param — alias resolution for qualified callees
-              module: &mut M,
-          ) -> Result<CompilationArtifacts, CompilationError>;
+- **One path for every mode.** Fresh JIT batches, REPL evaluation, cache
+  objects and `--link` objects all call it. The emitted CLIF is identical in
+  each case ([JIT/object convergence](jit-object-convergence.md)).
+- **Mode is the `Module` instance.** A `JITModule` and an `ObjectModule` differ
+  only in how they finalise and resolve the per-module GOT symbol (§5, §9.1).
+  There is no mode parameter, environment trait or wrapper entry.
+- **It decides nothing it could be told.** Targets, bodies, identities and
+  ownership summaries arrive resolved on the symbol tables ([backend master](backend.md) §2).
 
-          #[non_exhaustive]
-          pub struct CompilationArtifacts {       // value-returned, always created
-              pub clif_ir: String,
-              pub code_size: usize,
-              pub compile_duration: std::time::Duration,
-          }
+The public codegen surface around it is small: `load_object` (§10),
+`produce_disasm` (§11), `build_isa` and the `Jit` construct boundary. Their
+exact shape is the crate-root rustdoc.
 
-          pub fn produce_disasm(
-              fq: &FQSymbol,
-              symbol_tables: &SymbolTables<C, L>,
-          ) -> Result<String, CompilationError>;
+## 2. The entry contract
 
-        `CompilationResult` + `FunctionArtifacts` are DELETED (they were
-        the pre-rotation per-batch return tuple). D41 #1 (write_code) and
-        #2 (got().store_slot) direct-writes are PRESERVED; D41 #3
-        (Introspection direct-write) is RETRACTED — backend returns the
-        artefact BY VALUE and never names int's `Introspection`.
-        The `module_aliases` param is what `compiler::resolve_func_arity`
-        / `resolve_got_target` already need for qualified-callee
-        resolution; it is threaded in rather than re-derived.
+### 2.1 Inputs
 
-     3. `Code` SLIMS to lifecycle-owner-only and loses `Primitive`
-        (FIXME 0244 backend half): `Code::Jit(Arc<Jit>)` /
-        `Code::Linker(Arc<Linker>)`; NO per-variant `ptr` (the GOT is
-        the single source of truth for callable addresses); NO
-        `Code::Primitive` (primitive-ness reads from
-        `kind: DefKind::Primitive`; primitives entries carry `code: None`).
-
-     4. `Linker::get_symbol -> Result<*const u8, LinkerError>` (D37);
-        `Linker::load_object` becomes `pub(crate)`; the free `load_object`
-        is the public cache-hit entry.
-
-     5. ADT constructors lower through `compile_constr_adt` (the
-        `Expr::ConstrADT` handler — see §2.6 below), replacing the
-        four-function ctor family.
-
-     int's call sites stay RED after S75 (re-wired S77); acceptance is
-     crate-narrow green. See `sprints/SPRINT.md` §"Phase 2 re-scope".
-     ============================================================ -->
-
-<!-- Sprint 58 Wave 2 architectural reconciliation: COMPLETE.
-     The four FIXME points filed by /arch (Decisions 23 UPDATED, 25 UPDATED,
-     36 NEW, 37 NEW) have all landed:
-       (1) Function declaration loop: bare names + Linkage::Local uniformly
-           (Decision 36). §7 updated; the "Cross-module function
-           references (ObjectModule)" paragraph removed.
-       (2) __cranelisp_got_{M} Export-data definition emitted inside
-           compile_to_module<ObjectModule> via the new CodeFinalizer trait
-           method `define_module_got_data` (Module trait extension, option
-           (a)). §5.3/§5.4 updated.
-       (3) §12 head paragraph cross-references the two-GOT framing.
-       (4) §17.1.1 documents the raw-shape return type per CP1 arbitration
-           (Decision 35 / Layer 2 Option B). Wave 3b superseded the early
-           Wave 2 framing (caller-side finalize + per-symbol pointer
-           extraction): compile_to_module now finalizes internally via
-           CodeFinalizer::finalize_for_code_read and surfaces per-symbol
-           pointers in CompilationResult.code_ptrs. The integration layer
-           wraps the JITModule in Arc<Jit> and constructs Code::Jit { jit,
-           ptr } per defined symbol. See §17.1.1 for the full contract.
-     Sprint 58 Wave 3c update: §17.1 / §17.1.1 / §17.6 rewritten to match
-     the landed code (CompilationResult.code_ptrs, internal finalize,
-     <C, L>-propagating signature). The pre-Wave-3 "caller finalizes"
-     text was replaced — it described the rejected Option-(c) shape that
-     never landed.
--->
-
-Design for replacing all compilation paths — JIT batch, REPL expression, and object file — with a single generic function parameterised by Cranelift module type.
-
-`compile_to_module<M>` is the ONLY compilation entry point in the backend crate. The backend's public compilation API is exactly two functions: `compile_to_module<M: Module>` and `declare_intrinsics<M: Module>`. Nothing else.
-
-**Status**: Design document — PRESCRIPTIVE for §2 and §15. Replaces the ad-hoc object compilation path described in module-caching.md §13.11, and subsumes the REPL expression compilation path (`compile_expr_with_got_and_symbols`).
-
-**Revision history**:
-- Original: five-parameter signature `(module_path, program, typecheck, symbol_tables, module)`.
-- Sprint 55 (Phase 1): dropped `typecheck: &CheckResult`; annotations moved onto AST nodes and mangled bodies onto symbol-table entries. That direction was later completed by the concrete typed body view; see `design/arch/concrete-boundary-type.md`.
-- Sprint 56 (Phase 2, this revision): dropped `program: &Program`; backend reads defn bodies from `symbol_tables[module_path]` via `names: &[Symbol]`. Current normative signature is four parameters — see §2.1 and §16. §13 describes the Sprint-55 migration path; §16 describes the Sprint-56 migration path.
-
-## 1. Problem Statement
-
-The JIT batch path (`compile_program` in `lib.rs`), the REPL expression path (`compile_expr_with_got_and_symbols` in `lib.rs`), and the object path (`compile_module_to_object` in `cache/object.rs`) all perform the same logical work but are separate implementations:
-
-1. **Defn collection**: JIT uses `collect_and_declare_defns` (handles multi-sig, constrained, mono, defaults). Object uses `collect_defns_for_cache` (broken — panics on `DefnMulti`).
-2. **Function declaration**: JIT declares against `JITModule`. Object declares against `ObjectModule`. Same Cranelift `Module` API.
-3. **GOT / cross-module references**: JIT reads live GOT state via bespoke session plumbing. Object invents sequential slot numbers instead of reading `SymbolTable.got_slot`. The Phase 2 design replaces both with uniform emission against `Linkage::Import` data symbols (§12).
-4. **Function compilation**: Both use `FnCompiler<M: Module>`. Same code, different wiring.
-5. **Intrinsic declaration**: JIT uses `Jit::declare_intrinsics()`. Object uses `declare_intrinsic_imports()`. Same set of symbols, different declaration paths.
-
-Additionally, `compile_expr_with_got_and_symbols` is a third compilation path for REPL expressions. It creates a fresh JIT, declares intrinsics, defines GOT data entries, wraps the expression in a synthetic zero-arg `Defn`, declares and compiles that one function, finalizes, and returns the pointer. This is exactly `compile_to_module<JITModule>` with a one-defn program — the only caller-specific parts are the extra symbols on the JITBuilder and the GOT data definitions, both of which are the caller's responsibility before module creation.
-
-This triplication causes:
-- Multi-sig crash in the object path (`defn.params()` panics on `DefnMulti`).
-- Invented GOT slot numbers that don't match the JIT's actual slots.
-- Redundant data assembly in `ObjectCompileInput`, `CodegenInput`, `build_object_compile_input`.
-- Three code paths that can (and do) diverge silently.
-- `CompiledExpr` struct that exists only to hold a `Jit` alive — unnecessary once the caller owns the module.
-
-## 2. Target API — PRESCRIPTIVE
-
-This section is normative. The function signature, parameter list, and constraints MUST be implemented exactly as written. No additional parameters. No restructuring of the signature.
-
-### 2.1 Exact Signature
-
-```rust
-pub fn compile_to_module<M: Module>(
-    module_path: ModuleFullPath,
-    names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    module: &mut M,
-) -> Result<CompilationResult, CranelispError>
-```
-
-**Four parameters. No more. No optional parameters. No feature flags.** This signature is normative — the Phase 2 target. It replaces the five-parameter `(path, program, typecheck, symbol_tables, module)` shape from earlier revisions, and the four-parameter `(path, program, symbol_tables, module)` intermediate shape introduced in Sprint 55 when `CheckResult` was eliminated.
-
-| Parameter | What it is | Where caller gets it |
-|-----------|-----------|---------------------|
-| `module_path` | Identity of the module being compiled | DashMap key, scheduler, or hardcoded for batch |
-| `names` | The set of defined symbols in `module_path` that codegen must produce | `symbol_tables[module_path].defined_symbols().collect()` for a full module compile; filtered subset for partial compile / mono batches / per-function JIT |
-| `symbol_tables` | All module symbol tables (GOT slots, imports, schemes, AST bodies, annotations) | `SharedState.symbol_tables` |
-| `module` | Cranelift module to populate | Caller creates `JITModule` or `ObjectModule` |
-
-`names` carries only symbol identifiers — no AST, no types, no resolutions. The backend retrieves everything from `symbol_tables[module_path]` by name:
-
-- **Body + annotations**: the entry's **concrete typed view**, whose nodes each carry a concrete type and their resolution carriers. It is the single body source for every codegen-reached definition; the older untyped AST field is not the codegen read path. Canonical: `design/arch/concrete-boundary-type.md`.
-- **Type signature**: `ModuleEntry::Def.scheme`.
-- **GOT slot**: `ModuleEntry::Def.got_slot`.
-- **Kind** (regular / `Overloaded` base / `UserFn { constrained_fn }` template / etc.): `ModuleEntry::Def.kind`.
-
-**Precondition on `names` (Wave 0 contract, enforced by `/typecheck`)**: for every name in `names`, the symbol table entry must carry `ast: Some(_)` — including mangled multi-sig variants and mono specializations. See `design/typecheck/ast-annotation.md` for the authoritative table of which entry categories carry `ast: Some(_)` post-Phase-2. A `None` body is a typecheck bug, not a legitimate input state; `compile_to_module` returns a codegen error naming the symbol rather than silently skipping it.
-
-**Callers obtain `names` via `SymbolTable::defined_symbols()`**, which yields exactly the set of names that codegen must produce (filtered to `ast.is_some()` AND kind-is-not-`Overloaded` AND kind-is-not-`UserFn { constrained_fn: Some(_) }`). This is the shared predicate — the same filter is used by the priority worker when deciding what to hand to `compile_to_module` and by the backend if it re-enumerates internally. It lives on `SymbolTable` in `cranelisp-types` so both sides agree without duplication (addresses `/arch` review §6 condition 5).
-
-### 2.2 Hard Constraints
-
-1. **No caller-provided intrinsic IDs.** `compile_to_module` declares intrinsics internally on the module.
-2. **No caller-provided GOT resolution.** GOT *slot assignments* are read from `symbol_tables[module_path]` entries (`ModuleEntry::Def { got_slot }`). GOT *base addresses* are resolved at module finalize time by the `Module` implementation — never internally by `compile_to_module`. The backend emits the same CLIF regardless of mode: a `global_value` against a `Linkage::Import` data symbol named `__cranelisp_got_{module}`. For `ObjectModule`, the linker patches the relocations at load. For `JITModule`, the caller pre-registers `JITBuilder::symbol_lookup_fn` that resolves `__cranelisp_got_{name}` → `symbol_tables[name].got.base_ptr()` before the module is built (see `design/backend/per-module-got.md` §2 and Decision 22 / Principle 11 in `design/arch/CLAUDE.md`).
-3. **No caller-provided function arities.** Derived from the defns being compiled.
-4. **No JIT prefix parameter.** Module-qualified JIT names derived from `module_path` internally.
-5. **No traced_fns parameter.** Tracing is a runtime/GOT concern, not a compilation concern.
-6. **No prior_funcs or cross-module func sigs.** Cross-module references resolved from `symbol_tables` (follow Import chains).
-7. **No extra JIT symbols or GOT data defs.** Caller registers these on the JITBuilder/module before creating it — not a compile_to_module concern.
-
-### 2.3 What the function derives internally
-
-| Concern | Source | NOT passed by caller |
-|---------|--------|---------------------|
-| Intrinsic FuncIds | Declares intrinsics on `module` internally | Not a parameter |
-| **Defn bodies** | `symbol_tables[module_path].get(name).ast.as_ref()` — required to be `Some(_)` | Not a parameter |
-| **Resolved calls** | `Expr::Apply.resolved_call` on each AST node in the body | Not a parameter — on the AST |
-| **Expression types** | `Expr.inferred_type` on each AST node | Not a parameter — on the AST |
-| **Constrained-fn filter** | `SymbolTable::defined_symbols()` excludes `UserFn { constrained_fn: Some(_) }` templates at enumeration time | Not a parameter — and no inline scan of the symbol table inside `compile_to_module` |
-| **Multi-sig variant bodies** | Pre-materialised by Wave 0 as mangled `ModuleEntry::Def` entries carrying `ast: Some(_)` — backend never expands at codegen time | Not a parameter |
-| **Mono specialization bodies** | Pre-materialised by Wave 0 as mangled `ModuleEntry::Def` entries carrying `ast: Some(_)` with all post-pass resolutions applied | Not a parameter |
-| **Default method bodies** | Already materialised on mangled entries (Phase 1 — `register_mangled_method`) | Not a parameter |
-| GOT slot assignments | `symbol_tables[module_path]` → `ModuleEntry::Def { got_slot }` | Not a parameter |
-| GOT base resolution | **Uniform** — backend emits `global_value` against `Linkage::Import` data symbol `__cranelisp_got_{module}`. Object: linker patches relocation. JIT: caller pre-registers `JITBuilder::symbol_lookup_fn` mapping `__cranelisp_got_{name}` → `symbol_tables[name].got.base_ptr()`. See §12. | Not a parameter |
-| Cross-module refs | `symbol_tables[module_path]` → `ModuleEntry::Import { source }` chain | Not a parameter |
-| Function arities | `Defn.params().len()` on the AST retrieved from each entry | Not a parameter |
-| JIT name prefix | Derived from `module_path` | Not a parameter |
-
-The rows marked in bold are new or changed in Phase 2. In particular, `CheckResult` no longer appears anywhere in this table — Sprint 55 removed it as a boundary type (`method_resolutions` and `expr_types` live on AST nodes; `mono_defns`, `default_method_defns`, and `constrained_fn_names` are all sourced from symbol-table entries after Wave 0).
-
-### 2.4 No Internal Fork
-
-There is no internal fork inside `compile_to_module`. Backend IR is byte-identical across JIT and object modes — same CLIF, same instruction selection, same GOT reference encoding. Mode differences live entirely in the `Module` implementation at finalize time. See §12 for the uniform GOT emission strategy.
-
-### 2.5 Caller Usage
-
-The caller creates the module, builds the `names` list, and passes them in. `compile_to_module` reads bodies and annotations from `symbol_tables[module_path]` for each name, populates and finalises the module. The caller then processes the result:
-
-```rust
-// JIT caller (priority worker, per-function isolation per §9.4):
-// Typical case: compile exactly one symbol at a time into its own JITModule.
-let names = vec![symbol_name.clone()];
-let result = compile_to_module(module_path.clone(), &names, &symbol_tables, &mut jit_module)?;
-for (jit_name, func_id) in &result.func_ids {
-    let ptr = jit_module.get_finalized_function(*func_id);
-    // Write ptr into the module's GOT slot
-}
-
-// JIT caller (REPL expression — synthetic `__expr` defn):
-// Typecheck has registered `__expr` on the REPL module's symbol table with
-// `ast: Some(...)` carrying the wrapped expression body. The REPL just hands
-// that one name to compile_to_module.
-let names = vec![Symbol::from("__expr")];
-let result = compile_to_module(repl_module.clone(), &names, &symbol_tables, &mut jit_module)?;
-let entry_ptr = jit_module.get_finalized_function(result.entry_func_id.unwrap());
-
-// Object caller (nice worker, --link):
-// Full module compile — enumerate every defined symbol.
-let names: Vec<Symbol> = symbol_tables
-    .get(&module_path)
-    .map(|t| t.defined_symbols().collect())
-    .unwrap_or_default();
-let result = compile_to_module(module_path.clone(), &names, &symbol_tables, &mut obj_module)?;
-let bytes = obj_module.finish().emit()?;
-// Write bytes to .o file
-```
-
-`Jit` is the JIT retention newtype (`pub` per `facades/backend.md` §"Jit"); callers also work with `JITModule` directly (from cranelift_jit). The only backend value-type in the public return of `compile_to_module` is `CompilationArtifacts` (post-S75; the pre-D41 `CompilationResult` shown in the snippets below is the historical pre-rotation shape — see the S75 banner at the top of this file).
-
-**`names` as an ordered list**. The iteration order of `names` determines compilation order, which determines the "last zero-arg defn" chosen for `entry_func_id` and the order of `func_ids` population. Callers that care (e.g., `--run` batch mode picking a main entry) pass a deterministic order (typically source order); callers that don't (nice worker `.o` emission) may pass any stable enumeration.
-
-### 2.6 Constructor codegen — two paths over one core op (`emit_adt_construct`), constructors-like-primitives (S69/S75 ctor-as-Def)
-
-> **Status: PRESCRIPTIVE for S75 W1 (landed `compile_constr_adt`) + W4 (the full two-path collapse formalized below — closure deletion included).** This section is the backend-owned design for the constructor codegen the S70 ctor-as-Def collapse lands in backend. It is grounded in `facades/backend.md` §"Constructor codegen" (already target-stated to this model — see line 567 "First-class use `(map Some list)` passes the ctor Def's `got_slot` address — same path as any other callable. No on-demand closure synthesis.") + the `Expr::ConstrADT` rustdoc at `crates/cranelisp-types/src/ast.rs` + `DefKind::Constructor` at `crates/cranelisp-types/src/module.rs` + `bounded-contexts.md` §7 "Multi-legged authoring" + **Decision 48 (the primitives symmetry the constructor model mirrors exactly).**
-
-> **W4 correction — designs for the FINAL state (user directive 2026-06-02).** The prior W4 text of this section treated "int does not yet got-slot / compile constructor `Def`s" as a *blocker* that forces backend to keep the bespoke as-value closure (`compile_data_constructor_as_value` + `compile_ctor_wrapper_body`) until S77, deferring the deletion to category (B). **That framing is retracted — it was the int-deference this sprint rejects.** Backend designs for the final state, exactly as it already does for **primitives** (Decision 48): primitives dispatch GOT-indirect and resolve operator/primitive-as-value through a GOT-resolving closure (`compile_operator_as_value`) **because backend assumes the primitives module's GOT entries exist** — primitives/int populate them, not backend. Constructors get the *identical* treatment: backend **EXPECTS the constructor's GOT slot to be populated** and routes constructor-as-value through the **same fn-as-value / GOT-resolving path** primitives-as-value already uses. The bespoke closure is **DELETED.** int not yet producing the constructor GOT entries is int's red state (S77 enablement, §2.6.5) — it is **not a backend concern** and **not a reason to keep the closure**. The "three live paths today" observation from the prior text is the *current source state W4 collapses*, not a constraint on the target.
-
-**Why this arm exists now.** Pre-S70, ADT construction was emitted by a four-function family — `compile_data_constructor_call` (`compiler/apply.rs`), `compile_data_constructor_as_value` (`compiler/literals.rs`), `nullary_constructor_tag` (`compiler/literals.rs`), `data_constructor_info` (`compiler/literals.rs`) — each reading a `ConstructorInfo` struct via `CompileContext::lookup_constructor` (`compiler/mod.rs`). S70 retired the `ConstructorInfo` struct from `cranelisp-types`. Constructors are now ordinary `ModuleEntry::Def` entries: `kind: DefKind::Constructor { type_name: FQTypeName, tag: usize, field_count: usize, internal: bool }`, with a synthesised `DefnVariant` body whose single body expression is `Expr::ConstrADT { type_name, tag, fields, span, inferred_type }`. Backend lowers the body node for construction — it reads the `DefKind::Constructor` metadata only for *recognition* (Path-1 inline) and pattern matching (`tag`).
-
-#### 2.6.1 The model — two paths over one core op, mirroring primitives exactly
-
-Constructors get the **same shape as primitives** (Decision 48): a GOT-dispatched `Def` reachable as a first-class value, **plus** an optional inline-substitution emitted at saturated call sites. The symmetry is point-for-point:
-
-| Concern | Primitive (Decision 48 — landed) | Constructor (this design — W4) |
-|---|---|---|
-| Callable form | got-slotted `Def` in the synthetic `primitives` module; GOT-indirect dispatch uniformly | got-slotted `Def`; GOT-indirect dispatch uniformly |
-| Saturated call optimization | `primitives_inline::try_emit_inline_primitive` at the call site (no call frame) | `emit_adt_construct` inline at the saturated `(Some 3)` call site (no call frame) |
-| As-value (`(map + xs)` / `(map Some xs)`) | `compile_operator_as_value` — resolve the primitive's GOT slot, build a zero-capture closure whose wrapper body GOT-indirects to the slot | the **same** fn-as-value / GOT-resolving mechanism: `compile_fn_as_value` over the got-slotted ctor `Def` |
-| GOT-entry producer | primitives crate / int (Decision 48) — **backend ASSUMES it** | typecheck (got-slot) + int (batch) — **backend ASSUMES it** (§2.6.5) |
-| Core construct/dispatch | (n/a — primitive bodies are extern/inline) | `emit_adt_construct(tag, field_vals) -> Value` |
-
-One core emitter does the actual construction; the two paths differ only in *who* invokes it and *whether a call frame is involved*.
-
-**Core op — `emit_adt_construct(tag, field_vals: &[Value], span) -> Value`.** The single ADT-construct emitter, taking an already-computed `tag` and the already-computed field `Value`s:
-
-| Case | Emission |
+| Input | Meaning |
 |---|---|
-| `field_vals.is_empty()` (nullary, e.g. `None`, `Red`) | `iconst.i64 tag` — a bare tag value, no heap allocation. Preserves the `NULLARY_TAG_THRESHOLD` discrimination contract (see `heap.rs` + `per-module-got.md`). This folds in the former `nullary_constructor_tag` *emission* arm. |
-| `!field_vals.is_empty()` (data ctor, e.g. `Some 42`, `Cons h t`) | (1) `heap::emit_alloc` a `HeapAdt` payload sized `HeapAdt::payload_size(field_vals.len())`; (2) store `tag` at `HeapAdt::TAG_OFFSET`; (3) `heap::heap_store` each field `Value` at `HeapAdt::field_offset(i)`. Result `Value` is the heap pointer. |
+| Module path | The one module whose targets are compiled. |
+| Targets | Exact `CallableTarget` values, each an executable arm owned by that module. |
+| Symbol tables | The shared concurrent map. It is the single source for bodies, schemes, GOT slots, constructor metadata and callee identity. |
+| Cranelift module | The emission target, exclusively borrowed for the call. |
+| CLIF capture flag | Whether to render CLIF text into the returned artefacts (§8). |
+
+The entry is generic over the symbol table's code and linker stores and never
+names or constructs either (§2.5).
 
-`emit_adt_construct` does **no field compilation and no RC adjustment** — its callers pre-compute `field_vals` (with the consuming-convention inc/transfer already applied) and hand them in. This is exactly the contract of the current `compile_data_constructor_call` body (`apply.rs`); W4 renames it to `emit_adt_construct`, adds the nullary arm, and routes all construct sites through it. See §2.6.4 for the RC contract.
+### 2.2 What the caller does not supply
 
-**Path 1 — inline construction `(Some 3)` (saturated application).** A saturated constructor *application* emits `emit_adt_construct` **inline at the call site** — no call, no GOT, no closure. This is the existing `compile_var_apply` branch (`apply.rs`): `data_constructor_info(name)` recognises the callee as a data ctor with N fields, `compile_consuming_arg_list` computes the N field values, and the construct is emitted in place. **KEEP this branch** — it is the optimization, structurally identical to `primitives_inline` for saturated primitive calls (Decision 48). It is *not* a redundant interception. W4 only re-points its tail from `compile_data_constructor_call` to `emit_adt_construct`.
+The backend derives each of these internally, so no caller can supply a
+disagreeing copy:
 
-Nullary applications never reach Path 1 (a nullary ctor like `None` is not applied; it appears as `Expr::Var`). Nullary *references* fold to `iconst tag` at the `compile_var` site (the current `nullary_constructor_tag` branch in `literals.rs`), which W4 re-expresses as `emit_adt_construct(tag, &[], span)` for a single emission rule.
+- intrinsic function identities — declared on the module (§6);
+- bodies, parameter types and ownership summaries — read from each target's
+  concrete realization (§4);
+- arities — from each target's own parameters or, for a callee, its keyed entry;
+- GOT slot assignments — from the symbol table;
+- GOT base addresses — never a compile-time value (§5);
+- function labels and linkage — derived per target (§7).
+
+### 2.3 Caller obligations
 
-**Path 1 (Def-body) — `compile_constr_adt` (`Expr::ConstrADT` node).** The `Expr::ConstrADT` node is born **only** as the synthesised body of a constructor `Def` (verified: typecheck `register_constructors` + `builtins.rs` synth_body; user code `(Some 3)` arrives as `Apply { Var("Some"), [3] }`, never as a `ConstrADT` node — S69 Sub 35). `compile_constr_adt` (`apply.rs`) is therefore the **constructor Def's body** codegen: it `compile_consuming_arg_list`s the body's field `Var`s, then calls the core op. **KEEP it** — W4 re-points its tail (currently `compile_data_constructor_call`) to `emit_adt_construct`. This is the codegen that runs *inside* the got-slotted constructor function — the GOT target's body for Path 2.
+- **JIT callers construct the module through `Jit::new(symbol_tables)`.** That
+  one constructor registers every symbol the emitted code imports: intrinsics,
+  each module's `__cranelisp_got_{M}` base and platform effects. Host-promised
+  externs are added through `Jit::define_symbol`.
+- **Object callers need no pre-registration.** Imports remain relocations.
+- **Targets must come from the owning table's `codegen_targets()`
+  projection** (BC §3 invariant 4). A target outside it is an error (§16).
 
-**Path 2 — GOT-as-value `(map Some [3 4 5])`, via the normal fn-as-value path.** `Some` mentioned as a first-class value resolves through the **same mechanism primitives-as-value uses** — the `compile_var` fall-through to `is_known_function` → `compile_fn_as_value` (`control_flow.rs`). The corrected `compile_var` dispatch **deletes its dedicated constructor-as-value branch entirely**; a constructor reference simply falls through to the generic fn-as-value handler, exactly as `(map + xs)` falls through `compile_operator_as_value` and any user `(map f xs)` falls through `compile_fn_as_value`:
+### 2.4 No internal fork
+
+The body never inspects which `Module` it holds. Every mode difference is a
+method on the `Module` implementation or its `CodeFinalizer` capability (§9.1).
+
+### 2.5 Caller finalisation and lifecycle ownership
+
+- **Object mode.** The backend does not produce bytes. The caller calls
+  `finish().emit()` on the object module after the entry returns and writes the
+  result. There is no separate object-compile entry; that keeps mode out of the
+  entry point.
+- **JIT mode.** The backend finalises internally (§9.1.1) and writes GOT slots,
+  but it never owns the `Arc<Jit>`. The caller composes `Code::Jit` from the
+  `Jit` it owns and publishes it; the cache-hit path composes `Code::Linker` the
+  same way. `Code` carries lifecycle only; the GOT is the single home of
+  callable addresses (BC §3 invariant 3).
 
-```
-compile_var(name):
-    1. local variable?           → use_var
-    2. nullary ctor reference?   → emit_adt_construct(tag, &[], span)   // Path-1 nullary fold; KEEP recognition
-    3. operator-as-value?        → compile_operator_as_value           // primitives-as-value; UNCHANGED
-    4. is_known_function(name)?  → compile_fn_as_value                  // ← constructors land HERE now (Path 2)
-    5. else                      → undefined-variable error
-```
+### 2.6 Constructor codegen
+
+A constructor is an ordinary callable `Def` whose `DefKind::Constructor`
+carries its type, tag and field count. Typecheck synthesises its body as a
+single `ConstrADT` node. The backend reads the constructor metadata by one keyed
+fetch (`CtorMeta`); pattern matching reads the same tag.
+
+#### 2.6.1 One construct operation, several call shapes
+
+`emit_adt_construct(tag, field values)` is the single construct emitter:
+
+- **no fields** — the value is the bare tag (`iconst`); nothing is allocated,
+  preserving the `NULLARY_TAG_THRESHOLD` contract;
+- **fields** — allocate an ADT payload, store the tag and store each field.
+  Only the allocation varies: a saturated inline site may place a proven
+  non-escaping aggregate in a stack slot ([ownership codegen](ownership-codegen.md) §4).
+
+Every construction reaches it:
+
+| Shape | Lowering |
+|---|---|
+| Saturated application `(Some 3)` | Inline at the call site, with no call frame. This is the constructor analogue of inline primitives. |
+| Nullary reference `None` | Folds to the tag at the variable site. |
+| The constructor's own body | `compile_constr_adt` compiles the synthesised `ConstrADT` node into the constructor function. |
+| Wrapper body that needs no call | A borrowed-builder form performs the same construction inside a generated wrapper (§2.6.2). |
+
+A data-constructor *reference* is not special-cased at the variable site. It
+falls through to the generic function-as-value path (§12).
+
+#### 2.6.2 Constructor as a value
+
+`(map Some xs)` builds a zero-capture closure through the ordinary
+function-as-value path. Its wrapper body chooses by what is known:
+
+1. the constructor function is in this compilation unit — a direct call;
+2. otherwise the keyed constructor metadata is present — construct inline in the
+   wrapper. This covers primitive constructors such as `Some`, whose GOT slot
+   does not hold a callable constructor body, and constructors from other
+   modules.
 
-The dedicated `if data_constructor_info → compile_data_constructor_as_value` branch (currently between steps 2 and 3) is **removed**. A *data* constructor is no longer special-cased at `compile_var`: once it is got-slotted (§2.6.5), `is_known_function` returns true (via `resolve_got_target`) and `compile_fn_as_value` builds the zero-capture closure whose wrapper body (`emit_wrapper_call` → GOT-indirect `call_indirect` against `__cranelisp_got_{module}` + slot) calls the constructor function. The constructor function's body (`compile_constr_adt` → `emit_adt_construct`) performs the actual construct. `map` invokes the closure under the ordinary closure-call convention.
+The wrapper therefore never calls a constructor through the GOT.
 
-This is the **identical mechanism** validated in source for primitives-as-value: `compile_operator_as_value` (`literals.rs`) resolves the primitive's slot via `resolve_got_target`, declares `__cranelisp_got_{primitives}` as `Linkage::Import` data, and emits a wrapper that `global_value`s the slab base, loads `slab_base + slot*8`, and `call_indirect`s. `compile_fn_as_value`'s `emit_wrapper_call` (`control_flow.rs`) does the same GOT-indirect dance (or a direct `call` when the name is in the current unit's `func_ids`). **Backend EXPECTS the constructor's GOT slot to be populated** — exactly as `compile_operator_as_value` expects the primitive's slot to be populated. The producer of that entry (typecheck got-slot + int batch, §2.6.5) is the S77 *int-side* enablement, the precise analogue of how primitives/int produced the primitive GOT entries that `compile_operator_as_value` already assumes.
+#### 2.6.3 Value-flattened constructors
 
-**Pattern matching is none of these paths** — `Pattern::Constructor` codegen (`compiler/match_codegen.rs`) reads `DefKind::Constructor.tag` from the symbol table; discrimination is unchanged.
+A single-constructor type flattened to a bare word constructs by moving its
+field, with no allocation. The inline site, the synthesised body and the
+wrapper consult the same `value_construct` decision. If they disagreed, a heap
+pointer would be matched as a bare word ([ownership codegen](ownership-codegen.md) §7).
+
+#### 2.6.4 Reference-counting contract
+
+`emit_adt_construct` is **RC-neutral**: it stores the field values it is given.
+Callers produce those values under the uniform consuming convention
+(`compile_consuming_arg_list`): a non-last-use heap variable is incremented and a
+last use or temporary is transferred. Adding an increment inside the construct
+operation would double-count at the inline site.
+
+#### 2.6.5 Upstream production
+
+The backend consumes constructor `Def`s and their slots; it produces neither.
+Typecheck registers and slots constructors and int batches their targets, as it
+does for any callable. Constructor-as-value runs end to end in `--run` and
+`--link` (`tests/ctor_as_value.rs`).
+
+#### 2.6.6 Evidence
+
+- Crate unit: `compiler/control_flow/fn_as_value/value_use_tests.rs` compiles a
+  constructor and a consumer that binds it as a value. It is the guard that the
+  generic function-as-value path replaced the deleted bespoke constructor
+  wrapper.
+- Solution: `tests/ctor_as_value.rs` covers a user constructor to a
+  higher-order function, a primitive constructor bound with `let`, and the
+  composed IO form, each in both execution modes.
+
+## 3. Phase order
+
+One invocation runs these phases in order:
+
+1. Declare intrinsics on the module (§6).
+2. Collect targets and their concrete bodies (§4).
+3. Declare every target function (§7).
+4. Request drop glue for each body's result root
+   ([transitive drop glue](transitive-drop-glue.md) §3.3).
+5. Compile bodies. Release seams request further glue as they need it.
+6. Fence the glue registry: every requested glue body is defined.
+7. Emit the per-module GOT data symbol (§5.4).
+8. Finalise (§9.1.1).
+9. Project glue addresses into the artefacts (§8).
+10. Publish each compiled address into its GOT slot (§9.1.3).
+
+A failure in phases 1–8 publishes nothing (§9.1.4).
+
+## 4. Target collection
+
+The backend compiles exactly the targets it is handed:
+
+- **No expansion.** An overload arm, a monomorphic instance or a
+  default-method instance is already a separate executable arm with its own
+  concrete body. The backend never splits a multi-signature definition.
+- **No template filtering.** A constrained or generic template is not a codegen
+  target; typecheck's `codegen_targets()` projection omits it (BC §3 invariant 4).
+  The backend does not scan the table to exclude templates.
+- **One body source.** Each target must be a `Life::Concrete` arm realised as a
+  body. Its typecheck-built codegen view supplies the concrete body and ownership
+  summary. The backend has no rebuild from untyped syntax; a missing view is a
+  producer gap and an error (§16).
+- **The selected arm owns the parameter types.** Generated overload and macro
+  labels are not table bindings, so types come from the arm's scheme, never a
+  later lookup by label.
+
+## 5. GOT references
+
+### 5.1 The reference site
+
+Every GOT-indirect call or load emits the same three steps: import the target
+module's `__cranelisp_got_{M}` as a `Linkage::Import` data symbol, take its
+address with `global_value`, and load `base + slot × 8`. The slot comes from the
+callee's keyed entry. The data-symbol name is the types-owned
+`got_data_symbol_name`; the backend forwards to it and must not re-derive it.
+
+### 5.2 Two resolvers, one reference
+
+- **JIT.** `Jit::new` resolves each `__cranelisp_got_{M}` to that module's live
+  table base, the redefinition swap target.
+- **Object.** The symbol stays a relocation. The in-process cache linker or the
+  system linker resolves it against the data symbol the defining module's own
+  object exports (§5.4).
+
+[Per-module GOT](per-module-got.md) owns the two-GOT model.
+
+### 5.3 Why the reference is uniform
+
+A per-mode reference would be two emission paths that can drift (Principle 7;
+Principle 11). Uniformity also makes GOT emission testable with any `Module`,
+without mode scaffolding (Principle 5).
+
+### 5.4 The per-module GOT data definition
+
+`CodeFinalizer::define_module_got_data` defines the module's own GOT slab:
+
+- **JIT: no-op.** The live table is defined outside the module by `Jit::new`.
+- **Object: an exported, writable, 8-byte-aligned data symbol.** It holds
+  explicit zero bytes plus one function-address relocation per compiled target
+  at `slot × 8`.
+  - The slab is sized to the larger of the fixed runtime `GOT_TABLE_SIZE` and
+    the module's highest live, target or retired slot plus one. The `(trace …)`
+    GOT swap copies a fixed `GOT_TABLE_SIZE` words in every mode, so a smaller
+    object slab would be read past its end.
+  - It is writable because the trace swap writes into it.
+  - It uses explicit zero bytes rather than zero-fill, because the macOS linker
+    faults applying relocations to a zero-fill section.
+  - A relocation slot beyond the declared count is an error, never a
+    truncation.
+
+## 6. Intrinsic declaration
+
+The entry declares every intrinsic in the catalogue as an imported function on
+the supplied module, one catalogue for both modes. `runtime/dealloc` is
+mandatory: drop-glue emission and every compiled body depend on it, and its
+absence is a codegen error. The resolved identities seed the function map
+before any target is declared.
+
+## 7. Function labels and linkage
+
+Each target is declared under its executable label with `Linkage::Local`,
+uniformly across modules.
+
+- **Why local suffices.** Every call is GOT-indirect, including calls within a
+  module (redefinition correctness), so no function symbol is referenced across
+  objects. Exporting function symbols would only pollute the linked symbol
+  table.
+- **No entry-module special case.** The linked program's `main` alias is int's
+  (BC §3 invariant 7).
+- **Labels stay private to the backend.** Integration crosses back with
+  semantic `CallableTarget` values, never label spellings (§10).
+- **Glue is the exception.** Drop glue is exported under the types-owned
+  per-module name because cache-hit and linked execution locate it by symbol
+  ([transitive drop glue](transitive-drop-glue.md) §3.3).
+
+## 8. Returned artefacts
+
+`CompilationArtifacts` is returned by value on every successful call. It is
+non-exhaustive, so additions do not break callers.
+
+| Field | Content |
+|---|---|
+| CLIF text | Each compiled function's CLIF, joined. It is empty unless the caller asked for capture. |
+| Code size | The sum across the compiled set. |
+| Compile duration | The whole call. |
+| Drop glues | Each canonical glue body emitted, keyed by concrete type, with its symbol and, in JIT mode, its finalised address. |
+
+- **Capture is caller-selected.** Int requests CLIF only while introspection is
+  live, so batch runs skip rendering. The `CRANELISP_CODEGEN_DUMP` stderr dump
+  has its own trigger and renders matching functions regardless.
+- **Disassembly is not an artefact.** It is re-derived on demand (§11).
+- **The backend never writes introspection.** Placement belongs to the caller
+  (`design/arch/d1-introspection-repl-only.md`).
+- Per-function byproducts pass through a crate-private carrier before
+  aggregation; no per-function artefact type is public.
+
+## 9. Finalisation and publication
+
+### 9.1 The `CodeFinalizer` capability
+
+`cranelift_module::Module` exposes neither finalisation nor finalised-pointer
+reads. `CodeFinalizer` adds them as a capability of the implementation, so mode
+differences stay on the `Module` rather than becoming a parameter. Any new
+`Module` target must implement it.
+
+#### 9.1.1 Finalise
+
+The entry finalises once, after every body and the GOT data are defined. JIT
+finalisation patches relocations and makes pages executable. Object
+finalisation is a no-op; bytes are produced by the caller's later `finish()`.
 
-#### 2.6.2 The primitives precedent — backend assumes the GOT entry, it does not produce it
+#### 9.1.2 Read addresses
 
-The crux of the correction: **a callable's GOT entry is produced by the surface that owns the callable, never by the codegen that *consumes* it.** Decision 48 settled this for primitives — `cranelisp-primitives` owns a statically-constructed `SymbolTable` + `Arc<GotTable>` referenced from `CompilerSession` at startup; from session-init onward primitives dispatch is functionally equivalent to any other module. Backend's `compile_operator_as_value` does not got-slot the primitive or populate the slab — it *resolves* the slot (`resolve_got_target`) and *emits a reference* (`global_value` + indexed load), trusting that by the time the emitted code runs, the slab base resolves (JIT: int's `symbol_lookup_fn` over `symbol_tables[primitives].got().base_ptr()`; object: linker relocation). The slot's *population* is upstream.
+After finalisation, JIT mode returns each function's address. Object mode
+returns none. The capability is module-wide, so the first absent address ends
+the publication loop.
 
-Constructors are the same kind of callable `Def` and get the same division of labour. Backend's `compile_constr_adt` (the body) + `compile_fn_as_value` (the as-value reference) are the *consume* side and are **already capable** — `compile_to_module`'s loop compiles whatever named `Def` with `ast: Some(_)` it is handed, and `compile_constr_adt` emits the body correctly. The *produce* side — got-slotting the constructor `Def` and enumerating it into the codegen batch — is upstream (typecheck + int), and is the S77 enablement (§2.6.5). Backend's design assumes it, names it, and does not wait on it: the W4 source change lands the consume side complete (closure deleted), and int's call sites stay red until S77 — exactly as the S75 banner already establishes for the whole `compile_to_module` rotation ("int's call sites stay RED after S75; acceptance is crate-narrow green").
+#### 9.1.3 Publish into the GOT
 
-#### 2.6.3 W4 disposition — the full collapse, backend-only
+For each compiled target with a slot, the entry stores the finalised address
+into that module's table (`store_slot`). This is the one production write of a
+freshly compiled address. It then emits a `JitWrite` event to the GOT observer,
+if one is registered ([backend master](backend.md) §5).
 
-W4 lands the **complete** collapse in backend. There is no deferred category-(B): the closure is deleted now, and the as-value path is rerouted through the GOT/fn-as-value mechanism that backend already owns and already exercises for primitives. The runtime-completeness of `(map Some xs)` depends on the S77 int-side GOT-entry production, but that is int's red state — not a backend deferral.
+#### 9.1.4 Failure before publication
 
-| Function | Site | W4 disposition |
-|---|---|---|
-| `compile_data_constructor_call` | `apply.rs` | **Unify → `emit_adt_construct`.** Rename; it already takes `(tag, field_vals, span)` and does alloc+tag+stores. Add the `field_vals.is_empty() → iconst tag` nullary arm (absorbing `nullary_constructor_tag`'s emission). |
-| `compile_constr_adt` | `apply.rs` | **KEEP** (Path-1 Def body — the GOT target's body for Path 2). Re-point tail to `emit_adt_construct`. |
-| `compile_var_apply` ctor branch | `apply.rs` | **KEEP** (Path-1 inline). Re-point tail to `emit_adt_construct`. |
-| `nullary_constructor_tag` | `literals.rs` | **Fold into `emit_adt_construct` nullary arm.** The `compile_var` nullary-reference site calls `emit_adt_construct(tag, &[], span)` instead. The `lookup_constructor` *recognition* (is-this-a-nullary-ctor) stays — only the *emission* helper folds away. |
-| `data_constructor_info` | `literals.rs` | **KEEP** (Path-1 inline-substitution recognition — the `(Some 3)`-is-a-saturated-ctor-call test, and the `compile_var` nullary-vs-data discrimination). Already reconciled with W1's `CtorMeta`/`lookup_constructor` (`data_constructor_info` *delegates* to `lookup_constructor`). Used by `compile_var_apply`'s Path-1 branch. No change beyond the tail re-point at its caller. |
-| `compile_data_constructor_as_value` | `literals.rs` | **DELETE.** Replaced by Path 2: remove the dedicated `compile_var` branch (`if data_constructor_info → compile_data_constructor_as_value`); the reference falls through to `is_known_function` → `compile_fn_as_value` over the got-slotted ctor `Def` — the same GOT/fn-as-value mechanism `compile_operator_as_value` uses for primitives. |
-| `compile_ctor_wrapper_body` | `literals.rs` | **DELETE with `compile_data_constructor_as_value`** (its only caller). The wrapper body it synthesised is superseded by `compile_fn_as_value`'s `compile_fn_wrapper_body` + `emit_wrapper_call`. |
+Any error before the publication loop returns without writing a slot. The
+caller-owned module may retain declarations or definitions, but it is
+unpublished and the caller discards it. The backend therefore needs no rollback,
+retention or transaction step. The publication loop itself has no failure path.
 
-**Net effect of W4:** (1) one core emitter (`emit_adt_construct`) with all construct copies routed through it (`compile_data_constructor_call`→renamed, `compile_constr_adt`→re-pointed, the inline `compile_var_apply` branch→re-pointed, the nullary `compile_var` reference→re-pointed); `nullary_constructor_tag` emission folded in. (2) The bespoke as-value closure (`compile_data_constructor_as_value` + `compile_ctor_wrapper_body`) **deleted**, constructor-as-value rerouted through the generic `compile_fn_as_value` GOT path. This *achieves* the facade's "single handler" collapse in backend this sprint. The construct-as-value path is **runtime-complete only once** the S77 int-side GOT-entry production lands (§2.6.5) — that dependency is named, not absorbed into backend.
+#### 9.1.5 Relationship to the cache
 
-> **`/design` note — the deletion is correct now, not "owed until S77."** The prior note here said "do NOT delete the as-value closure in W4." **That is retracted by the 2026-06-02 user directive.** Backend mirrors primitives: it deletes the bespoke wrapper and routes through the GOT mechanism, *expecting* the GOT entry the way `compile_operator_as_value` expects the primitive's. The crate-narrow tests prove the path by populating the constructor's GOT slot the way the W1 `make_def_entry_slot` tests populate a `Def`'s slot (§2.6.6). int's production of those entries in the real pipeline is S77; the design does not hold the deletion hostage to it.
+The entry is cache-ignorant. A cache hit does not call it: int maps the cached
+object and publishes the linker's addresses ([module caching](module-caching.md) §8).
+The object compiled for the cache comes from this same entry, so a restored
+module runs the same code a fresh compile would.
 
-#### 2.6.4 RC / Decision-24 contract for `emit_adt_construct`
+#### 9.1.6 Object-mode behaviour
 
-`emit_adt_construct` itself performs **no** RC adjustment — it stores the `field_vals` it is handed verbatim. The consuming-convention inc/transfer happens in the **caller** that produces `field_vals`:
-- **Path 1 inline** (`compile_var_apply`) and **Path 1 Def body** (`compile_constr_adt`) both build `field_vals` via `compile_consuming_arg_list`, which inc's non-last-use heap `Var` fields (`AlwaysHeap` → `emit_rc_inc`; `Mixed` → `emit_rc_inc_guarded`) and transfers last-use / temporary fields at their existing rc. This is Decision 24's uniform consuming convention (BC invariant 2): the ADT holds an independent reference; the ADT's drop glue dec's heap-typed fields when the ADT reaches rc=0.
-- **Path 2** routes through the got-slotted ctor function whose body *is* `compile_constr_adt` — so the same `compile_consuming_arg_list` discipline applies inside the function. The fn-as-value caller (`map`) passes arguments under the ordinary consuming calling convention; no special ctor-as-value RC handling is needed (another reason the bespoke wrapper is redundant once Path 2 is the path).
+`ObjectModule` has no runtime address. Finalisation is a no-op, no address is
+read, no slot is written, and glue artefacts carry no address. The caller emits
+the bytes (§2.5). The same entry body runs; the capability's absent address is
+what skips publication.
 
-**`/dev` must preserve:** `emit_adt_construct` stays RC-neutral; the inc/transfer remains in the `compile_consuming_arg_list` callers. Do **not** move RC into the core op — doing so would double-inc the Path-1 inline site (which already inc'd) and is the classic RC mis-count the small-CLIF-by-eye discipline catches.
+## 10. Cache-hit loading
 
-#### 2.6.5 S77 int-side enablement — the dependency backend's design ASSUMES
+The live cache-hit path is `cache::load_cached_object`. It maps a cached object
+into a caller-prepared `Linker` and returns one address per semantic
+`CallableTarget`; [module caching](module-caching.md) §8 states its rules.
 
-Backend's Path 2 design assumes a constructor `Def` is a genuine got-slotted, compiled callable — exactly as primitives are. That production is **not** backend's; it is the S77 enablement, owned by `/arch` + `/typecheck` + `/int`:
+The crate-root free function `load_object` builds its own linker, loads object
+bytes and returns a `LinkerArtefact` keyed by binding name. It registers no
+externals and has no production caller. Keeping, wiring or removing it is an
+inter-crate public-API decision for `arch` and the user.
 
-| Enabling step | Owner | What it does |
-|---|---|---|
-| **got-slot assignment** to `DefKind::Constructor` entries | typecheck (`register_constructors` / the slot-allocation pass) | Constructor `Def`s currently build with `got_slot: None` (the `allocate_got_slot()` sites key on `DefKind::UserFn`/mono/trait-method only). S77 assigns a slot to each constructor `Def`, so `resolve_got_target` finds it and `is_known_function` returns true. |
-| **batch enumeration** of constructor names | int (`derive_codegen_batch`) | The codegen `names` list currently pushes only `TopLevel::Defn`/`__expr`/`TraitImpl` names. Constructors are synthesised under `TopLevel::TypeDef`, so their names never enter `names`. S77 enumerates each `TypeDef`'s constructor `Def`s into the batch, so `compile_to_module` compiles each constructor body (`Expr::ConstrADT` → `compile_constr_adt`) into a function whose address `compile_to_module` writes into the slot (D41 #2). |
-| **GOT-data / symbol-lookup** for the constructor's module | int (JIT `symbol_lookup_fn` / object relocation) | Already general — the constructor lives in a user/prelude module whose `__cranelisp_got_{M}` is wired the same as any other module. No constructor-specific work beyond the two rows above. |
+## 11. On-demand disassembly
 
-This mirrors the primitives precedent precisely: primitives' GOT entries were produced by primitives/int (Decision 48); `compile_operator_as_value` simply assumed them. The constructor GOT entries are produced by typecheck + int (S77); `compile_fn_as_value` simply assumes them. **The W4 backend change is complete and correct without S77** — it lands the consume side (closure deleted, as-value rerouted) and the crate-narrow tests prove it by populating the slot in the harness (§2.6.6). S77 makes the path runtime-complete in the *production* pipeline. A FIXME `target: /arch` (§9 handoff) names this dependency for `/arch` to route to typecheck + int.
+`produce_disasm` disassembles one callable on request, for the REPL `/disasm`
+command. It reads the live address from the callable's GOT slot, so it serves
+fresh and cache-restored code alike. The caller passes back the code size it
+received in the artefacts, so the backend does not persist a size. A slot-less
+or unpublished callable is `SymbolNotCompilable`. Disassembly costs far more
+than CLIF capture, which is why it is not an artefact.
 
-#### 2.6.6 Acceptance — crate-narrow, GOT-slot populated by the harness
+## 12. Function values
 
-With the closure gone, Path 2 needs the constructor's GOT slot populated to *run*. Backend's crate-narrow tests set up the slot **the way the W1 `make_def_entry_slot` tests do** (`lib.rs` — `make_def_entry_slot(defn, slot)` inserts a `ModuleEntry::Def` with an explicit `got_slot: Some(slot)` and `next_got_slot` bumped; `compile_to_module` then writes the finalised code pointer into the slab via `got().store_slot` — D41 #2, verified in `compile_to_module_writes_got_slot_after_finalize`). The constructor as-value test follows the same two-stage shape:
+A function used as a value becomes a closure over a generated wrapper body. The
+wrapper's call follows the first applicable rule:
 
-1. **Stage 1 — got-slot + compile the constructor `Def`.** Build a constructor `Def` whose single `DefnVariant` body is an `Expr::ConstrADT { tag, fields: [field Vars…], … }` (the synthesised shape typecheck will produce at S77). Insert it via `make_def_entry_slot(ctor_defn, 0)` into a shared `SymbolTable` (so `got_slot: Some(0)`). Compile it with `compile_to_module(module, &[ctor_name], &tables, &aliases, jit)`. Assert the GOT slot is non-null afterward (the constructor body is now a live callable at slab slot 0) — the exact assertion `compile_to_module_writes_got_slot_after_finalize` already makes for an ordinary `Def`.
-2. **Stage 2 — compile a consumer that references the constructor as a value.** A consumer defn `(let [f Some] (f 3))` (or a direct `compile_fn_as_value`-exercising body) in a module that imports/sees the constructor's table. With the shared `tables` carrying the got-slotted constructor, `is_known_function` returns true (via `resolve_got_target`), `compile_fn_as_value` builds the zero-capture closure, and `emit_wrapper_call` emits the GOT-indirect `call_indirect` against `__cranelisp_got_{module}` + slot 0. The test asserts the consumer compiles (no `undefined variable` / `unknown arity` error — `resolve_func_arity` reads `param_names.len()`, already green per the prior W4 verdict) and, when run end-to-end in the harness's JIT (slot populated in Stage 1, `symbol_lookup_fn` registered the same way the existing JIT tests do), produces the constructed ADT.
+1. **target in this compilation** — a direct call;
+2. **constructor** — construct inline (§2.6.2);
+3. **inline Vec primitive** — emit the operation inline, since it has no slot;
+4. **otherwise** — a GOT-indirect call through the uniform reference (§5.1).
+   A target with no GOT carrier is a located error, never a name search.
 
-**What stays crate-narrow GREEN this sprint (all proven without S77):**
-- The unified core op `emit_adt_construct` — both arms (nullary `iconst tag`; data alloc+tag+stores), exercised via the Path-1 inline and `compile_constr_adt` Def-body sites (these need no GOT entry — they emit inline / are the body itself).
-- The constructor `Def`'s body compiled into a got-slotted callable (Stage 1) — `compile_to_module` + `store_slot`, the `make_def_entry_slot` pattern.
-- The as-value reroute (Stage 2) — `compile_fn_as_value` over a harness-got-slotted constructor `Def`, including the GOT-indirect wrapper. This is the durable regression guard for the closure deletion: it proves the generic fn-as-value path subsumes the deleted bespoke wrapper.
+When the target's ownership summary is not conservative, the wrapper adapts the
+call to the uniform consuming convention. Every code pointer reachable from a
+closure therefore obeys that convention
+([ownership codegen](ownership-codegen.md) §3.5).
 
-**What is pending-S77 (failing-not-ignored, NOT a backend regression):** any *existing* end-to-end / integration test that exercises `(map Some xs)` or `(let [f Some] (f 3))` **through the real pipeline** (not the crate-narrow harness) will not run until int's production batch got-slots + enumerates constructors (§2.6.5). Per `memory/feedback_failing_not_ignored.md`, such a test stays **failing, un-ignored**, carrying a `FIXME(/arch)` (S77 enablement) — it is the trigger for the cross-crate work, not a hidden gap. The crate-narrow tests above (harness-populated slot) cover the *backend* obligation completely; the pending test covers the *pipeline* obligation that S77 closes. `/qa` owns authoring the pending e2e test in `tests/`; `/dev` owns the crate-narrow unit tests in `crates/cranelisp-backend/src/`.
+## 13. Evidence
 
-> **Honest statement of the split:** the design + the inline path + the GOT-emit + the as-value-via-fn-as-value reroute are **all exercised crate-narrow** this sprint (slot set up by the harness). The *only* thing that waits on S77 is the real-pipeline e2e, because only int produces the constructor GOT entry in production. Backend does not got-slot constructors and never will — that is int/typecheck's job, exactly as primitives' GOT entries are not backend's.
+- Entry contract, object mode, target collection and GOT emission:
+  `crates/cranelisp-backend/src/module_assembly_tests.rs`.
+- Slab stability and bounds: `crates/cranelisp-backend/src/got_slab_tests.rs`.
+- Per-member failure attribution: [failed-member attribution](s117-failed-member-attribution.md) §5.
+- Constructors: §2.6.6.
 
-## 3. Function Signature and Generic Constraints
+## 14. Open points
 
-### What `M: Module` provides
+- `load_object` has no production caller (§10).
+- The cache packet API has no live consumer ([module caching](module-caching.md) §7).
 
-The `cranelift_module::Module` trait (from Cranelift v0.125) provides all APIs needed for function/data declaration, definition, and compilation. Both `JITModule` and `ObjectModule` implement it. `FnCompiler` is already generic over `M: Module`. No additional trait bounds are needed.
+## 15. Failure attribution
 
-## 4. Defn Collection — Symbol-Table Sourced
+When one member of a batch fails, the error names that member's module and
+executable label. The attribution is attached at the body loop, where the
+identity is in hand, and the original cause and location pass through
+unchanged ([failed-member attribution](s117-failed-member-attribution.md)).
 
-After Phase 2, `compile_to_module` does not collect defns from a `Program` and does not expand multi-sig base defns. Every name the backend will compile already exists as a mangled `ModuleEntry::Def` entry with `ast: Some(_)`. The "collection" step is a direct lookup loop:
+## 16. Error contract
 
-```rust
-// Phase 2: look up each name's entry and retrieve its AST body.
-let table = symbol_tables.get(&module_path).ok_or_else(|| CranelispError::CodegenError {
-    message: format!("no symbol table for module '{}'", module_path),
-    span: Span::SYNTHETIC,
-})?;
-
-let mut defns: Vec<Defn> = Vec::with_capacity(names.len());
-for name in names {
-    let entry = table.get(name.as_ref()).ok_or_else(|| CranelispError::CodegenError {
-        message: format!("symbol '{}' not found in module '{}'", name, module_path),
-        span: Span::SYNTHETIC,
-    })?;
-    let ModuleEntry::Def { ast, .. } = entry else {
-        return Err(CranelispError::CodegenError {
-            message: format!("symbol '{}' in module '{}' is not a compilable Def (wrong ModuleEntry variant)", name, module_path),
-            span: Span::SYNTHETIC,
-        });
-    };
-    let defn = ast.as_ref().ok_or_else(|| CranelispError::CodegenError {
-        message: format!(
-            "symbol '{}' in module '{}' has no AST body (ast: None) — Wave 0 invariant violated; \
-             see design/typecheck/ast-annotation.md for the categories of entries that must carry ast: Some(_)",
-            name, module_path
-        ),
-        span: Span::SYNTHETIC,
-    })?;
-    defns.push(defn.clone()); // or &'a Defn if we hold the DashMap guard
-}
-```
-
-**No base-defn expansion.** The pre-Phase-2 backend split `DefnMulti` into per-variant `Defn`s at codegen time via `expand_multi_sig_defn`. After Wave 0, each variant is already a separate symbol-table entry keyed by its mangled name (`add$Int+Int`, `add$Float+Float`, …), each carrying a single-variant `Defn` in its `ast`. The backend treats them as ordinary defns. `expand_multi_sig_defn` (currently at `crates/cranelisp-backend/src/lib.rs:379-436`) is deleted.
-
-**No constrained-template scan.** The pre-Phase-2 backend scanned the symbol table for `UserFn { constrained_fn: Some(_) }` templates and excluded them from compilation inline (`lib.rs:95-109`). After Phase 2 that filter lives in `SymbolTable::defined_symbols()` — the iterator never yields template names, so `compile_to_module` sees only things it can compile. The inline scan is deleted.
-
-**No default-method / mono injection.** The pre-Phase-2 backend received `default_method_defns` and `mono_defns` via `CheckResult` (since Sprint 55, the caller in `finalize_module` inlined them into `program` before calling the backend). After Wave 0 every such body already lives on a mangled `ModuleEntry::Def` entry; the `finalize_module` inlining path goes away (owned by `/int` in Step 2b, but the backend-side consequence is that `compile_to_module` does no special handling for these categories — they appear in `names` like any other symbol).
-
-### GOT slot assignments
-
-GOT slots continue to be **read from the symbol table**, not invented:
-
-```rust
-for name in names {
-    if let Some(ModuleEntry::Def { got_slot: Some(slot), .. }) = table.get(name.as_ref()) {
-        fn_slot_assignments.insert(name.clone(), FnSlotInfo {
-            slot: *slot,
-            param_count: /* defn.params().len() from the ast retrieved above */,
-        });
-    }
-}
-```
-
-This is unchanged in structure from the Sprint-55 shape — the only difference is that the `defn_ref.params().len()` comes from the AST retrieved by symbol-table lookup rather than from an AST owned by an incoming `program: &Program`.
-
-## 5. GOT Reference Encoding — Uniform Across Modes
-
-The JIT path and object path emit **identical** CLIF for every GOT reference. There is no per-mode fork inside `compile_to_module` — see §12 for the authoritative description.
-
-At each GOT load site `FnCompiler` emits:
-
-| Step | CLIF |
-|------|------|
-| 1. Declare | `module.declare_data_in_func` on a `Linkage::Import` data symbol named `__cranelisp_got_{target_module}` |
-| 2. Load base | `global_value(got_data_gv)` — the data symbol's address |
-| 3. Indexed load | `load(i64, base, slot * 8)` where `slot` is read from `symbol_tables[target_module].get(name).got_slot` |
-
-Mode differences live in the passed-in `Module` implementation at finalize time:
-- `ObjectModule` emits relocations; the linker patches the data symbol at load.
-- `JITModule` queries the caller-registered `JITBuilder::symbol_lookup_fn`, which returns `symbol_tables[name].got.base_ptr()`.
-
-### What changes for compile_to_module
-
-Nothing specific to GOT emission. Both modes receive the same IR. `FnCompiler` reads slot assignments from `symbol_tables` and emits `global_value` uniformly; it does not know (and does not need to know) which `Module` implementation it is targeting.
-
-### 5.3 GOT data symbol — defined inside `compile_to_module` (Sprint 58 Wave 2)
-
-Per `/arch` Decision 23 (updated Sprint 58 Wave 2) — the two-GOT model — the per-module data symbol `__cranelisp_got_{M}` MUST be defined inside the module's own `.o` so that the system linker (`--link` mode) and our cache `Linker` (`--run` mode after cache-hit) can resolve cross-`.o` GOT references at load time.
-
-The Wave-2 fix moves the `.o` data definition INSIDE `compile_to_module<M>` via a new method on the `CodeFinalizer` trait (Module trait extension — option (a) per the FIXME's three options):
-
-```rust
-trait CodeFinalizer {
-    // ... existing methods ...
-
-    /// Define `__cranelisp_got_{M}` inside the .o (or no-op for JIT).
-    fn define_module_got_data(
-        &mut self,
-        name: &str,
-        slot_count: usize,
-        slot_funcs: &[(usize, FuncId)],
-    ) -> Result<(), CranelispError>;
-}
-```
-
-- **`JITModule` impl: no-op.** The JIT-mode definition lives outside `compile_to_module` in the integration layer's `Jit::define_got_data` call (which points the symbol at the runtime `SymbolTable.got.base_ptr()`). The `.o` data section GOT shape is irrelevant in JIT mode (no `.o` is emitted).
-- **`ObjectModule` impl: declares `Linkage::Export` + emits relocations.** The data symbol is `slot_count * 8` bytes (zero-initialized); for each `(slot_index, FuncId)` pair, a function-address relocation is written at byte offset `slot * 8` via `DataDescription::write_function_addr`. The system linker (`--link`) and the cache `Linker` (`--run` after cache-hit) materialise the relocations into actual function addresses at load time.
-
-The implementation lives at `crates/cranelisp-backend/src/lib.rs` (CodeFinalizer trait + impls). The call site in `compile_to_module` reads each defined function's `got_slot` from the symbol-table entry (after function declaration, before `finalize_for_code_read`), assembles the `(slot, FuncId)` list, and invokes `module.define_module_got_data(...)`.
-
-**Why option (a) over downcast / caller-side:**
-- (b) `TypeId` downcast: violates Principle 11 (mode-as-discriminator inside a function); the `Module` impl IS the mode dispatch.
-- (c) caller-side responsibility: was the pre-Sprint-58 state. The consequence was that `.o` mode never defined the symbol because the cache writer was the only `ObjectModule` caller and it never ran the GOT-define pre-step.
-- (a) Module trait extension: aligns with the existing `CodeFinalizer` extension pattern (`finalize_for_code_read`, `try_get_finalized_function`) and Principle 11 (mode is a Module property, not a function parameter).
-
-### 5.4 Legacy `declare_got_data_symbols` / `define_got_data` helpers
-
-The pre-Sprint-58 helpers `declare_got_data_symbols` and `define_got_data` (`cache/object.rs`) for caller-side ObjectModule setup are obsoleted by §5.3. The JIT path's `Jit::define_got_data` (integration-layer call to point the data symbol at the SymbolTable GOT base) is unchanged — it's the JIT-mode symbol-lookup-fn registration mechanism, orthogonal to `.o` data emission.
-
-## 6. Intrinsic Declaration
-
-Currently handled differently:
-- JIT: `Jit::declare_intrinsics()` — declares runtime + primitive functions against `JITModule`.
-- Object: `declare_intrinsic_imports()` — declares the same set against `ObjectModule` as imports.
-
-### Unified approach
-
-Extract a generic `declare_intrinsics<M: Module>(module: &mut M)` function:
-
-```rust
-/// Declare all runtime and primitive intrinsics in a Cranelift module.
-///
-/// For JITModule: these resolve to function pointers registered via JITBuilder::symbol().
-/// For ObjectModule: these become Import symbols resolved by the linker.
-pub fn declare_intrinsics<M: Module>(
-    module: &mut M,
-) -> Result<IntrinsicFuncIds, CranelispError> {
-    let mut ids = IntrinsicFuncIds::default();
-
-    for sym in intrinsic_symbols() {
-        let mut sig = module.make_signature();
-        for _ in 0..sym.param_count {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        sig.returns.push(AbiParam::new(types::I64));
-
-        let linkage = Linkage::Import; // JITModule resolves imports via symbol table
-        let func_id = module.declare_function(sym.name, linkage, &sig)?;
-        ids.register(sym.name, func_id);
-    }
-
-    Ok(ids)
-}
-```
-
-`IntrinsicFuncIds` replaces the current approach where intrinsic FuncIds are scattered across `Jit` fields and ad-hoc lookup maps:
-
-```rust
-/// FuncIds for all intrinsic functions, populated during declare_intrinsics.
-///
-/// Convenience-accessor fields are stored as `Option<FuncId>` internally because
-/// intrinsic declaration is a two-phase affair on the `Jit` wrapper (the struct
-/// exists before `declare_intrinsics` runs). Once intrinsics have been declared
-/// and the `CompileContext` is built, the fields consumed inside codegen are
-/// non-optional `FuncId` values — see Decision 24.
-#[derive(Default)]
-pub struct IntrinsicFuncIds {
-    by_name: HashMap<Symbol, FuncId>,
-    // Convenience accessors for commonly-used intrinsics
-    pub alloc: Option<FuncId>,
-    pub dealloc: Option<FuncId>,
-    pub alloc_string: Option<FuncId>,
-    pub panic: Option<FuncId>,
-    pub vec_new: Option<FuncId>,
-    pub vec_drop: Option<FuncId>,
-}
-```
-
-The `IntrinsicTable` struct (currently in `cache/object.rs`) becomes unnecessary for compilation — it was a workaround for the object path not sharing the JIT's intrinsic declaration. It may be retained for cache metadata serialization if needed, but is no longer an input to `compile_to_module`.
-
-**Note**: For `JITModule`, the symbols must be registered in the `JITBuilder` before module creation (via `JITBuilder::symbol()`). This happens before `compile_to_module` is called and is unchanged.
-
-## 7. Function Compilation
-
-`FnCompiler<M: Module>` is already generic. The compilation loop inside `compile_to_module`:
-
-```rust
-// Declare all functions (Pass 1) — bare names + Linkage::Local uniformly
-// per /arch Decision 36 (Sprint 58 Wave 2). The pre-Sprint-58 user/main
-// vs FQ-Export discriminator was a defect, deleted in Wave 2. All calls
-// go through __cranelisp_got_{M}, so function symbols are intra-`.o`-only;
-// Linkage::Local is sufficient.
-let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
-for defn in &defns { // defns collected per §4 from symbol-table entries
-    let mut sig = module.make_signature();
-    for _ in defn.params() {
-        sig.params.push(AbiParam::new(types::I64));
-    }
-    sig.returns.push(AbiParam::new(types::I64));
-    let func_id = module.declare_function(defn.name.as_ref(), Linkage::Local, &sig)?;
-    func_ids.insert(defn.name.clone(), func_id);
-}
-
-// Compile each function body (Pass 2)
-let mut func_ctx = FunctionBuilderContext::new();
-for defn in &defns {
-    let compile_ctx = CompileContext {
-        // Note: method_resolutions / expr_types removed from CompileContext
-        // in Sprint 55 — those live on AST nodes now.
-        func_ids: &func_ids,
-        func_arities: &func_arities,
-        symbol_tables,
-        current_module: module_path.clone(),
-        env,
-        traced_fns: None,
-        alloc_func_id: intrinsic_ids.alloc,
-        dealloc_func_id: intrinsic_ids.dealloc.expect("dealloc must be declared"),
-        alloc_string_func_id: intrinsic_ids.alloc_string,
-        panic_func_id: intrinsic_ids.panic,
-        vec_new_func_id: intrinsic_ids.vec_new,
-        vec_drop_func_id: intrinsic_ids.vec_drop,
-    };
-    // CompileContext.dealloc_func_id is a non-optional FuncId per Decision 24 —
-    // the split convention's caller-suppressible dealloc flag is gone. Extract
-    // the concrete FuncId once at the compile-site and pass it in unconditionally.
-
-    FnCompiler::compile_body(defn, &mut func, &mut func_ctx, module, compile_ctx)?;
-
-    let mut ctx = Context::for_function(func);
-    module.define_function(func_id, &mut ctx)?;
-}
-```
-
-**No separate mono loop.** Mono specializations are ordinary entries in `names` after Wave 0; their AST nodes carry their own `inferred_type` and `resolved_call` annotations. The pre-Phase-2 "merge base resolutions with per-specialization resolutions" dance is obsolete — there is no base `method_resolutions` map to merge against, and nothing per-specialization to splice in; each mono defn reads its resolutions from its own AST.
-
-### What changes in FnCompiler
-
-Nothing. `FnCompiler` is already `FnCompiler<'a, M: Module>`. Its `compile_body` method takes `&mut M` and works with both `JITModule` and `ObjectModule`. GOT reference encoding is uniform — `FnCompiler` reads slot assignments from `symbol_tables` and emits a `global_value` against a `Linkage::Import` data symbol for every mode (§12). There is no env parameter on `CompileContext`.
-
-### Cross-module function references — NO `Linkage::Import` declarations (Sprint 58 Wave 2)
-
-Per `/arch` Decision 36 + Decision 31 (all-GOT calling for REPL redefinition correctness), every cross-module function call is GOT-indirect through `__cranelisp_got_{other_M}` data symbol — never via a `Linkage::Import` function declaration. Cross-module function symbols are not exposed across `.o` boundaries (they are `Linkage::Local` per Decision 36), so `Linkage::Import` declarations against them would fail to link.
-
-`compile_to_module` therefore declares NO cross-module function imports. The previous `cross_refs` loop (`crates/cranelisp-backend/src/lib.rs:269-303` pre-Sprint-58) was deleted in Wave 2.
-
-Compile-time arity for cross-module call sites is resolved at codegen time via `compiler::resolve_func_arity` walking the symbol tables (used in `compile_curry_function`, `control_flow.rs:1064`).
-
-## 8. Return Type
-
-> **SUPERSEDED by the S75 banner (top of file).** The `CompilationResult` /
-> `FunctionArtifacts` shapes below are the **pre-D41 historical return tuple**,
-> kept here as migration narrative. After S75 W2, `compile_to_module` returns
-> `Result<CompilationArtifacts, CompilationError>` — a value-returned, always-
-> created `{ clif_ir, code_size, compile_duration }` triple — and writes `Code` +
-> the GOT slot ptr directly into the passed-in stores (D41 #1 + #2). The
-> expensive `disasm` field moves to the separate on-demand `produce_disasm` free
-> function. `CompilationResult` + `FunctionArtifacts` + `entry_func_id` +
-> `func_ids` + `func_arities` + `warnings` are DELETED. Read §8/§8.1/§9.1 below
-> as the *journey*, not the destination.
-
-```rust
-/// Result of compiling a program's functions into a module.
-///
-/// Module-type-agnostic: the caller extracts what it needs.
-/// For JIT: uses `entry_func_id` to get the entry point after finalization.
-/// For ObjectModule: ignores `entry_func_id` (no entry needed for .o files).
-pub struct CompilationResult {
-    /// FuncIds for all compiled functions (name -> FuncId).
-    /// The caller uses these to get finalized pointers (JIT) or
-    /// to verify all expected functions were compiled (Object).
-    pub func_ids: HashMap<Symbol, FuncId>,
-
-    /// Per-symbol compilation artifacts for introspection
-    /// (CLIF IR, disassembly, code size). See §8.1.
-    pub artifacts: HashMap<Symbol, FunctionArtifacts>,
-
-    /// FuncId of the entry function (last zero-arg defn), if any.
-    /// Used by JIT batch mode to get the entry point.
-    /// None for modules that have no zero-arg function (library modules, .o files).
-    pub entry_func_id: Option<FuncId>,
-
-    /// Function arities for all compiled functions (for closure wrapper generation).
-    pub func_arities: HashMap<Symbol, usize>,
-
-    /// Warnings accumulated during codegen.
-    pub warnings: Vec<Warning>,
-}
-```
-
-### 8.1 Artifacts by symbol (Phase 3a — condition 1)
-
-`compile_to_module` captures per-symbol codegen byproducts needed for introspection slash commands (`/clif`, `/disasm`, `/time`) and returns them keyed by `Symbol`. This keeps `Introspection` (an integration-layer type; `design/arch/d1-introspection-repl-only.md`) strictly **separate** from compilation: the backend does not know, and does not care, whether the caller intends to display these artifacts, persist them, or drop them.
-
-```rust
-pub struct FunctionArtifacts {
-    /// Human-readable CLIF dump of the compiled function, captured after
-    /// FnCompiler finalises the Cranelift IR but before `module.define_function`
-    /// consumes the context. Same text rendered by `/clif`.
-    pub clif_ir: String,
-
-    /// Human-readable machine-code disassembly, captured from the compiled
-    /// `CompiledCode` after `define_function`. Same text rendered by `/disasm`.
-    pub disasm: String,
-
-    /// Size in bytes of the compiled machine code. Captured from
-    /// `CompiledCode::code_info().total_size`.
-    pub code_size: u32,
-}
-```
-
-**Contract**:
-
-1. **Keying**. Both `func_ids` and `artifacts` are keyed by `Symbol` — the *local* name of the entry in `symbol_tables[module_path]`. For multi-sig variants and mono specializations, the local name IS the mangled name (that is how Wave 0 stores them on the symbol table — see `design/typecheck/ast-annotation.md`). There is no separate "mangled vs unmangled" key; the backend compiles what `names` says, and keys both maps by those same identifiers.
-
-2. **No separate pass**. Artifacts are populated during the SAME `FnCompiler` pass that declares and defines the function — captured from the `FunctionBuilder`'s function before `module.define_function` consumes the context, and from `CompiledCode` immediately after. There is no second compilation pass, no round-trip through the object file, and no recompilation for `/clif` or `/disasm`. (Intrinsics declared via `declare_intrinsics` are not compiled by this function and do NOT appear in `artifacts`.)
-
-3. **Empty is valid**. `artifacts` is a `HashMap`, not an `Option<HashMap>`. Callers that do not want introspection overhead (e.g., release builds, batch `--run`) may configure `compile_to_module` to skip capture so the map is returned empty. The *type* of the field is not optional per entry; the entry's *presence* signals whether capture ran. A follow-up revision may gate capture behind a feature flag or a no-op arena strategy — the shape does not change. Object-path callers typically request an empty map since `.o` emission has no display surface; JIT callers under a REPL request a populated one.
-
-4. **Caller routes artifacts wherever**. The priority worker's loop (`design/int/int.md`) is:
-
-   ```rust
-   let result = compile_to_module(module_path.clone(), &names, &symbol_tables, &mut jit_module)?;
-   for (sym, art) in result.artifacts {
-       let fq = FQSymbol { module: module_path.clone(), symbol: sym };
-       shared.introspection.insert(fq, Introspection { clif_ir: art.clif_ir, disasm: art.disasm, code_size: art.code_size, /* ... */ });
-   }
-   ```
-
-   The backend never touches `shared.introspection`. An in-process caller writes to a `DashMap`; a serializing caller writes to a file; a discarding caller drops the map. All three paths use the same `CompilationResult` shape.
-
-**Rationale** (`design/arch/d1-introspection-repl-only.md`): `Introspection` is display-only, caller-owned, and keyed by `FQSymbol` on `SharedState` — it must not be an input to or output of `compile_to_module`, because that would couple the backend to the integration layer's concurrent storage model. Returning artifacts on `CompilationResult` preserves the separation: codegen produces the artifacts (only codegen *can* — the CLIF and disasm don't exist before compilation runs), and the caller owns placement. A symbol-table-sourced alternative (write artifacts onto `ModuleEntry` during codegen) was rejected because artifacts are not part of the compilable contract — they are an output, not durable state; writing them onto the symbol table would entangle the per-module symbol tables with display-only data that the cache has no interest in.
-
-**What this replaces**: the pre-Phase-2 shape returned one flattened `(Option<String>, Option<String>, Option<u32>)` triple tied to "the last compiled function" or "the batch entry". That shape assumed `compile_to_module` compiled exactly one driving symbol. Once `names: &[Symbol]` is the input, per-symbol keying is the only coherent shape.
-
-The caller finishes the job:
-
-```rust
-// JIT path: get entry pointer
-let result = compile_to_module(..., &mut jit_module, ...)?;
-jit_module.finalize_definitions()?;
-if let Some(entry_id) = result.entry_func_id {
-    let entry_ptr = jit_module.get_finalized_function(entry_id);
-    // Execute...
-}
-
-// Object path: emit bytes
-let result = compile_to_module(..., &mut obj_module, ...)?;
-let bytes = obj_module.finish().emit()?;
-// Write to .o file...
-```
-
-### What it replaces
-
-- `CompiledProgram` (JIT batch) — replaced by `CompilationResult` + caller-side finalization.
-- `CompiledModuleInfo` (shared-JIT multi-module) — replaced by `CompilationResult.func_ids` + `func_arities`.
-- `Vec<u8>` (object path return) — the caller calls `obj_module.finish().emit()` directly.
-
-## 9. What to Delete
-
-### Structs and types
-
-| Item | Location | Replacement |
-|------|----------|-------------|
-| `CompiledExpr` | `lib.rs` | Caller owns the `JITModule` directly; no wrapper struct needed |
-| `CompiledProgram` | `lib.rs` | `CompilationResult` + caller-side `execute()` |
-| `CompiledModuleInfo` | `lib.rs` | `CompilationResult` |
-| `CollectedDefns` (backend) | `lib.rs` | Inline logic in `compile_to_module` |
-| `CollectedDefns` (pipeline) | `pipeline.rs` | Deleted entirely |
-| `ObjectCompileInput` | `cache/object.rs` | Deleted — `compile_to_module` reads from `symbol_tables[module_path]` by name |
-| `ObjFnSlot` | `cache/object.rs` | Deleted — GOT encoding is uniform (`global_value` + `Linkage::Import` data symbol); see §12 |
-| `CrossModuleRefs` | `pipeline.rs` | Deleted — derived from symbol tables inside `compile_to_module` or caller |
-| `CompilationEnv` trait | `crates/cranelisp-backend/src/lib.rs` | Deleted — no env parameter; mode lives on the `Module` impl (§12) |
-| `ObjectCompilationEnv` | `cache/object.rs` | Deleted — withdrawn from the Sprint 56 Phase 3a design |
-| `SessionCompilationEnv` | `src/session_v4.rs` | Deleted — no env plumbing; uniform GOT strategy (§12) |
-
-### Functions
-
-| Function | Location | Replacement |
-|----------|----------|-------------|
-| `compile_expr_with_got_and_symbols` | `lib.rs` | Caller wraps expr in one-defn `Program`, calls `compile_to_module<JITModule>` |
-| `compile_and_run_expr` | `lib.rs` | Caller wraps expr, calls `compile_to_module<JITModule>`, executes pointer |
-| `compile_program` | `lib.rs` | `compile_to_module<JITModule>` |
-| `compile_module_program` | `lib.rs` | `compile_to_module<JITModule>` with shared JIT |
-| `collect_and_declare_defns` | `lib.rs` | Logic inlined in `compile_to_module` |
-| `find_entry_and_finalize` | `lib.rs` | Caller-side after `compile_to_module` returns |
-| `collect_extra_defns` | `lib.rs` | Trivial inline |
-| `compile_mono_defns` | `lib.rs` | Logic inlined in `compile_to_module` |
-| `compile_module_to_object` | `cache/object.rs` | `compile_to_module<ObjectModule>` |
-| `compile_all_functions` | `cache/object.rs` | Logic inlined in `compile_to_module` |
-| `collect_defns_for_cache` | `pipeline.rs` | Deleted entirely (the broken path) |
-| `build_object_compile_input` | `pipeline.rs` | Deleted entirely |
-| `collect_cross_module_refs` | `pipeline.rs` | Deleted entirely |
-| `scheme_for_defn` | `pipeline.rs` | Deleted (schemes come from symbol table) |
-| `build_intrinsic_table` | `pipeline.rs` | Replaced by `declare_intrinsics<M>` |
-
-### Fields
-
-| Field | Location | Replacement |
-|-------|----------|-------------|
-| `CodegenInput.cross_module_func_sigs` | `session_v4.rs` | Deleted — derived from symbol tables at compile time |
-
-### Functions to keep (ObjectModule-specific, called by nice worker)
-
-| Function | Location | Why kept |
-|----------|----------|----------|
-| `declare_got_data_symbols` | `cache/object.rs` | ObjectModule-specific GOT setup |
-| `define_got_data` | `cache/object.rs` | ObjectModule-specific GOT data section |
-| `build_obj_fn_slots` | `cache/object.rs` | ObjectModule-specific GOT slot info (or deleted outright — slot info now read directly from `symbol_tables[module].get(name).got_slot` per §12) |
-| `declare_intrinsic_imports` | `cache/object.rs` | Subsumed by generic `declare_intrinsics<M>` — delete |
-| `declare_module_functions` | `cache/object.rs` | Subsumed by `compile_to_module` declaration loop — delete |
-| `build_isa` | `cache/object.rs` | Kept (single ISA construction point) |
-| `build_cache_packet` | `cache/object.rs` | Kept (cache write logic) |
-| `process_cache_packet` | `cache/object.rs` | Kept (cache write logic, but simplified — calls `compile_to_module<ObjectModule>` instead of `compile_module_to_object`) |
-
-### 9.1 Phase 3 G6 — `code: Option<Code>` write path (Sprint 57 Wave 2 — LANDED)
-
-Phase 2 (Sprint 56) kept compiled `Code` living in the integration-layer `CodegenProduct` DashMap. §16.7 flagged the Phase 2 → Phase 3 bridge: the field moves onto `ModuleEntry::Def.code` in G6 without changing `compile_to_module`'s contract. This section pins the code-write path as landed in Sprint 57 Wave 2.
-
-**PRESCRIPTIVE for Sprint 57 Wave 2.** `/arch` Decision 25 is the authoritative architectural statement; this subsection specifies the backend-side mechanics. The landed implementation uses **Shape 1** for `Code` — a pointer-only handle whose `Arc<Jit>` lifetime anchor lives in the session's `kept_jits` retention pool (Decision 28) rather than on the entry itself. The subsections below describe Shape 1 throughout.
-
-#### 9.1.1 Signature unchanged
-
-The §2.1 PRESCRIPTIVE signature
-
-```rust
-pub fn compile_to_module<M: Module>(
-    module_path: ModuleFullPath,
-    names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    module: &mut M,
-) -> Result<CompilationResult, CranelispError>
-```
-
-does NOT change. The four-parameter shape from Sprint 56 is the target and remains so. The G6 change is internal to `compile_to_module`: after the backend finalises the module's definitions, it writes each produced `Code` onto the corresponding `ModuleEntry::Def.code` in `symbol_tables[module_path]` before returning.
-
-#### 9.1.2 `Code` shape — Shape 1 (pointer-only)
-
-Per Decision 25 + Decision 28, `Code` is a thin pointer-only handle living in `crates/cranelisp-backend/src/code.rs`:
-
-```rust
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Code {
-    #[serde(skip, default = "default_ptr")]
-    pub ptr: *const u8,
-}
-```
-
-`Code` holds only a raw code pointer. The `Arc<Jit>` that owns the mmap'd executable pages (and the DLL handles reopened on cache-hit rehydration) is retained SEPARATELY by the integration layer at `SharedState.kept_jits: Mutex<Vec<KeptJit>>` in `src/session_v4.rs` (Decision 28 — per-worker JIT lifetime is session-bound). Sessions keep their `Arc<Jit>` set alive for as long as any `SymbolTable` holding `Code` entries is reachable, which keeps every `ptr` valid.
-
-The `Serialize`/`Deserialize` derives on `Code` exist only so containers holding `Code` (e.g., `Option<Code>` on `ModuleEntry::Def`) can derive the traits uniformly — the `#[serde(skip)]` attribute on the containing field is what actually enforces the runtime-state discipline. `Code` itself round-trips through a null pointer default on the rare occasions it is serialised.
-
-`unsafe impl Send for Code` and `unsafe impl Sync for Code` hold because `ptr` is an integer address; any thread that reads it must transitively hold a live `Arc<Jit>` via the session, which the session-lifetime guarantee enforces.
+Every refusal is a located `CodegenError` or `CompilationError`. None
+silently skips a target.
 
-`Code` lives in `cranelisp-types` (not the integration layer) because `ModuleEntry::Def.code` is a `types`-crate field. Storing just the pointer avoids a cyclic dependency with `cranelisp-backend::jit::Jit`.
+### 16.1 Missing module table
 
-#### 9.1.3 When the write happens — lifecycle
+The module path has no symbol table.
 
-The write happens **after `module.finalize_definitions()` and after reading out the finalised code pointer for each function**, and **before `compile_to_module` returns**. The sequence inside `compile_to_module`:
-
-```text
-1. Declare intrinsics on `module`.
-2. Collect defns by looking up each name in `symbol_tables[module_path]`
-   (§4 lookup loop).
-3. Declare all functions on `module` (Pass 1).
-4. Compile each function body (Pass 2) — populates `FuncId` map + artifacts.
-5. module.finalize_definitions()                   ← finalise happens here
-6. For each name in `names`:                       ← G6 write loop
-     let func_id = func_ids[name];
-     let ptr     = module.get_finalized_function(func_id);
-     symbol_tables[module_path].get_mut(name)
-         .set_code(Some(Code::new(ptr)));
-7. Return CompilationResult { func_ids, artifacts, entry_func_id,
-                              func_arities, warnings }.
-```
-
-The `Arc<Jit>` holding the JIT module's pages alive is retained by the **caller** on `SharedState.kept_jits` (Decision 28) — the caller constructs `Arc::new(jit_module)` once, pushes the `KeptJit` onto the retention pool, and does not thread the Arc into `compile_to_module`. `Code::new(ptr)` takes just the raw pointer; freshness of the pointer is enforced by the session keeping `kept_jits` alive for as long as any `SymbolTable` reads `Code` entries. See §9.1.5 for the object-mode behaviour.
-
-The write happens AFTER `finalize_definitions`, not after `define_function`, because `get_finalized_function` requires finalisation; the raw pointer is only defined once the module's code regions are committed.
-
-Why before return, not at the caller site? Per Decision 25 the symbol table IS the compilation state — the backend owns "I produced this code; it goes here." Returning `CompilationResult` with pointers that the caller then re-routes into the symbol table is the Sprint-56 shape (the bridge) and is what G6 eliminates. After G6, `func_ids` remains on `CompilationResult` only for the caller's immediate needs (entry lookup for `--run` mode, fund-id→jit-name bookkeeping for cache packet serialisation); the durable compiled-code pointer lives on the entry.
-
-**Object mode caveat.** For `ObjectModule`, there is no `get_finalized_function` — the emitted bytes are the output, not runtime code pointers. `Code` is not produced at all (there is nothing to store). The G6 write loop in `compile_to_module` is gated: if `M` is `JITModule`, write; if `M` is `ObjectModule`, skip. This is not a mode parameter — it is a capability difference expressed through the `Module` trait (there is no `get_finalized_function` to call on an `ObjectModule` post-`finish`, so there is nothing to write). See §9.1.5.
-
-#### 9.1.4 Failure semantics — best-effort, caller decides
+### 16.2 Foreign or unsupported target
 
-If function N fails to compile (e.g., a CLIF verifier error, an RC-emission bug), symbols 0..N−1 have already been declared and may already have definitions written to the module. The current Sprint 56 behaviour is for `compile_to_module` to propagate the error without attempting to roll back the module state — the caller is responsible for treating the result as an atomic success/failure at the `CompilationResult` level and not half-committing per-symbol code on the assumption of partial success. G6 preserves this semantics with one extension:
+The target belongs to another module or is not an executable arm of this one.
 
-- **If the failure is pre-finalise** (verifier / Pass-2 compilation error, thrown from `compile_body` or `define_function`): `module.finalize_definitions()` is never reached, no `Code` is written to any entry, `compile_to_module` returns `Err(...)`. Symbol-table entries remain at `code: None`. This is the clean path.
-- **If the failure is in finalise itself** (linker error in JIT mode — rare but possible): no entries have been written yet. `compile_to_module` returns `Err(...)`; entries remain at `code: None`.
-- **If a failure happens during the G6 write loop** (step 6 above): this must not fail — it is a trivial pointer-write into a `SymbolTable` entry that the backend already holds by name. The only realistic failure mode is a missing entry or a wrong variant, which is a `defined_symbols()` contract violation and produces a `CodegenError` naming the symbol (same error path as §16.4).
+### 16.3 Empty compilation
 
-**Recommendation (for `CompilationResult` consumers)**: treat `Err(_)` as atomic. If codegen fails, do not trust partial `code: Some(_)` writes on the caller side; the caller may choose to clear `code` on the affected module's entries or leave them as-is (the entries will be overwritten on re-compile). The typical pattern is to propagate the error to the priority worker, which fails the module and moves on — partial entries from a failed compile remain present but unused because the module is marked failed and no callers look up its code.
+The collected target set is empty.
 
-No rollback is performed inside `compile_to_module`. Adding rollback would require shadowing the DashMap writes with a pending-set that is atomically committed on success, which is complexity that the caller-decides rule avoids.
+### 16.4 No concrete body
 
-#### 9.1.5 Cache-hit interaction
+The target is not a concrete body realization, or its body is absent. The
+backend has no fallback synthesis: a codegen-reached arm without a body is a
+typecheck producer gap. A silent skip would publish no address for a callable
+others may call, and a panic would stop the process on a recoverable wiring
+error.
 
-Per Decision 25, `code` is `#[serde(skip)]` — it does not round-trip through the cache. On cache-hit load, the symbol table is restored from the serialised manifest, `ast` is deserialised, and `code` starts `None` for every entry.
+## 17. Related designs
 
-Two production paths regenerate `code` from `None`:
-
-- **Eager rehydration** (object-cache hit, JIT link mode). The cached `.o` file is mmap'd and its symbols are resolved via the linker; a `Code::new(ptr)` is constructed around the linker-resolved pointer. Under Shape 1, `Code` holds only the pointer — there is no `jit` field to populate. The linker's page lifetime is anchored on `SharedState.kept_linkers` in the session (analogue of `kept_jits` for linker-resolved code; Decision 28 extends to linkers).
-- **Lazy recompilation** (JIT eval over a cache-hit module). The first call-site lookup finds `code: None`; the priority worker recompiles via `compile_to_module` as if the entry were fresh (its `ast: Some(_)` is already on the entry from cache load). The `compile_to_module` path is identical — in particular, the G6 write loop fills in the `code` field that was `None` after cache load. No special cache-hit logic inside `compile_to_module`.
-
-This means `compile_to_module` is cache-ignorant: it takes a `SymbolTable` with `ast: Some(_)` and `code: None`, produces code, writes `code: Some(_)`. Whether the `ast` came from fresh typecheck or from a serialised cache is the symbol table's concern, not the backend's.
-
-The `#[serde(skip)]` default of `None` is exactly what a cache-hit load produces; no manual `code = None` zero-ing is needed post-load.
-
-#### 9.1.6 Object-mode (`ObjectModule`) behaviour
-
-`ObjectModule` has no finalised runtime pointer — the output is a `Vec<u8>` via `module.finish().emit()`, not mmap'd executable pages. There is nothing to store on `ModuleEntry::Def.code` in object mode.
-
-G6 write loop behaviour in object mode: skip the write entirely. `compile_to_module<ObjectModule>` returns the `CompilationResult` with `func_ids` populated (the caller uses those to verify all expected functions were compiled before writing `.o` bytes) and `artifacts` populated (for introspection capture, if requested). `code` remains `None` on every entry until a later JIT-mode compile or cache-hit mmap-relink writes it.
-
-This keeps the two paths uniform at the signature level — one `compile_to_module` — while the capability difference (get_finalized_function exists on JIT, not on ObjectModule post-emit) naturally gates the write. No runtime mode discriminator in the signature.
-
-#### 9.1.7 Handoff to priority worker (cross-reference `/int`)
-
-The priority worker's post-compile loop (currently in `src/worker.rs` around line 2444, per §9.1.3 above) is the consumer of the write-to-entry contract. After G6 lands, the worker's responsibility is reduced:
-
-- **Before G6 (Sprint 56 shape, described in §11 for reference)**: worker reads `result.func_ids`, calls `jit.get_finalized_ptr(func_id)`, writes into GOT slot, and inserts into `CodegenProduct.code` DashMap.
-- **After G6 (Sprint 57 target)**: worker reads `result.func_ids` (for GOT-slot-population convenience only — the slot write still lives on the worker side per the current boundary), and relies on `compile_to_module` having already populated `ModuleEntry::Def.code`. The `CodegenProduct` DashMap is deleted. GOT-slot population may consolidate onto the backend side as a follow-on micro-change, but is not required by G6 itself.
-
-The completed G6 consumer-side migration is retained in the S56/S57 record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`). Current integration responsibilities and code lifetime are documented under [no merge step](../int/int.md#42-no-merge-step) and [Code lifecycle](../int/int.md#5-code-enum--lifecycle-decisions-31-35-41).
-
-#### 9.1.8 Cross-references
-
-- `/arch` Decision 25 — `design/arch/CLAUDE.md` — the architectural statement of `code: Option<Code>` as `#[serde(skip)]` on `ModuleEntry::Def`. PRESCRIPTIVE source.
-- `/arch` `design/arch/symbol-table-lifecycle.md` — the current declaration and realization shapes.
-- `/arch` `design/arch/overview.md` §"Phase 3 Step 3b (G6)" — the migration step summary, deferring `SymbolTable<C, L>` generics.
-- `/typecheck` `design/typecheck/ast-annotation.md` §9 — source of `ast` that `compile_to_module` reads. Invariant: for every name in `names`, the entry carries `ast: Some(_)` (the historical Wave 0 contract; current lifecycle contract in §9.5).
-- `/int` S56/S57 codegen migration record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`) G6 extension — consumer-side read-site migration table (priority worker, REPL eval, introspection, `/clif`, `/disasm`, `/source`).
-- `crates/cranelisp-backend/src/code.rs` — landed Shape-1 `Code` definition (pointer-only). The earlier `src/session_v4.rs:447` location held the pre-Shape-1 `{ jit, ptr }` form; that form is retired and the canonical `Code` is now in `cranelisp-types`.
-- `src/session_v4.rs` `SharedState.kept_jits` field — session-side `Arc<Jit>` retention pool (Decision 28) that anchors the lifetime of every `Code::ptr` produced.
-
-#### 9.1.9 Serialization story
-
-`code` is `#[serde(skip)]` on `ModuleEntry::Def`. The default for a skipped field is produced by `Default::default()`; for `Option<Code>` this is `None`. A `SymbolTable` serialised at sprint-close time (or cache-write time) elides `code` from every entry; a `SymbolTable` deserialised from cache sees every entry's `code` as `None`. No custom serde shim, no "reset to None after load" pass.
-
-Under Shape 1, `Code` itself DERIVES `Serialize + Deserialize` so containers holding `Code` can uniformly `derive(Serialize, Deserialize)`. The field-level `#[serde(skip)]` on `ModuleEntry::Def.code` is what enforces the runtime-state boundary — the derive-at-type-level is a container-convenience affordance, not a commitment to persist `Code` across processes. The raw pointer is not meaningfully serialisable; `Code`'s own `Serialize` impl is `#[serde(skip, default = "default_ptr")]` on the `ptr` field, so round-tripping through serde produces a null-pointer placeholder that is only safe inside a `#[serde(skip)]` parent field.
-
-There is no separate serde test needed for G6 beyond the existing cache round-trip test — the field's absence from the wire format is the test.
-
-### 9.2 What G6 eliminates
-
-- `CodegenProduct` DashMap — deleted in full. All downstream code-read sites migrate to `symbol_tables[module].get(name).code`.
-- The post-`compile_to_module` "route code into DashMap" loop on the caller side — collapsed into `compile_to_module` itself.
-- Under Shape 1, the `Arc<Jit>` handle is NOT threaded through `compile_to_module` or stored on `Code`. The caller constructs `Arc::new(jit_module)` once post-finalise and retains it on `SharedState.kept_jits` (Decision 28); `compile_to_module` sees only the raw pointer via `module.get_finalized_function(func_id)` and writes `Code::new(ptr)`. This keeps the `cranelisp-types` crate (where `Code` lives) decoupled from `cranelisp-backend::jit::Jit`.
-
-## 10. CodegenInput Simplification
-
-Currently `CodegenInput` in `session_v4.rs`:
-
-```rust
-pub struct CodegenInput {
-    pub method_resolutions: MethodResolutions,
-    pub expr_types: HashMap<Span, Type>,
-    pub mono_defns: Vec<MonoDefn>,
-    pub default_method_defns: Vec<Defn>,
-    pub program: Vec<TopLevel>,
-    pub cross_module_func_sigs: Vec<(Symbol, usize)>,  // DELETE
-}
-```
-
-After unification, `cross_module_func_sigs` is deleted. The remaining fields are exactly `CheckResult` (minus `warnings`, `display`, `constrained_fn_names`) plus `program`.
-
-### Option A: Keep CodegenInput as a slimmed struct
-
-```rust
-pub struct CodegenInput {
-    pub check: CheckResult,
-    pub program: Program,
-}
-```
-
-### Option B: Stash CheckResult and Program separately
-
-```rust
-pub codegen_checks: DashMap<ModuleFullPath, CheckResult>,
-pub codegen_programs: DashMap<ModuleFullPath, Program>,
-```
-
-### Recommendation
-
-Option A. A single DashMap entry per module is simpler to manage (atomic insert/remove). The nice worker takes the entry, extracts `check` and `program`, and calls `compile_to_module`.
-
-Note: `constrained_fn_names` must be included in the stashed `CheckResult`. The current code discards it at stash time and passes an empty set to the object path — this is a pre-existing bug that the unification fixes for free (both workers get the same `CheckResult`).
-
-## 11. Call Site Changes
-
-> **Historical note (Sprint 56)**: The code snippets in this section show the Sprint-55 five-parameter call shape (`&program, &check, &symbol_tables, ...`). They are retained as a record of the transition through Sprint 55's `CheckResult` elimination. The current call shape is four parameters `(module_path, names, symbol_tables, module)` — see §2.5 for present-tense examples and §16 for the Phase 2 caller contract. The structural points below (which worker owns which setup, `CompiledExpr` deletion, REPL wrapper ownership moving to `src/`) remain accurate.
-
-### Priority worker (JIT path)
-
-Current flow in `session_v4.rs`:
-1. Typecheck produces `CheckResult`.
-2. For each defn: `compile_and_register_defn_shared()` creates a fresh `Jit`, compiles one defn, registers in GOT.
-3. Stashes `CodegenInput` for nice worker.
-
-**Change**: The priority worker's per-defn compilation is unchanged — it doesn't use `compile_program` (that's only for `--run` batch mode). The priority worker already uses `compile_and_register_defn_shared` which creates individual JITs per defn.
-
-For `--run` mode (batch), the caller currently uses `compile_program`. This becomes:
-
-```rust
-let mut jit = Jit::new()?;
-jit.declare_intrinsics()?;
-let result = compile_to_module(&program, &check, &symbol_tables, jit.module_mut(), module_path)?;
-let entry_ptr = jit.finalize_and_get_ptr_by_id(result.entry_func_id.unwrap())?;
-```
-
-### Nice worker (object path)
-
-Current flow:
-1. Takes `CodegenInput` from DashMap.
-2. Calls `build_object_compile_input()` — re-derives defn lists, invents slot numbers.
-3. Calls `compile_module_to_object()` — separate compilation path.
-
-**Change**:
-
-```rust
-fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_dir: &Path) {
-    let Some((_, input)) = shared.codegen_inputs.remove(module) else { return; };
-
-    if !has_compilable_defns(&input.program) { return; }
-
-    // Build ObjectModule
-    let isa = build_isa(true)?;
-    let obj_builder = ObjectBuilder::new(isa, format!("cranelisp_{}", module), default_libcall_names())?;
-    let mut obj_module = ObjectModule::new(obj_builder);
-
-    // Declare intrinsics (generic over Module)
-    let intrinsic_ids = declare_intrinsics(&mut obj_module)?;
-
-    // ObjectModule-specific: declare GOT data symbols, define GOT data
-    // (reads fn_to_module and slot assignments from symbol_tables)
-    setup_object_got(&mut obj_module, module, &shared.symbol_tables)?;
-
-    // Compile — same function as JIT
-    let result = compile_to_module(
-        &input.program, &input.check, &shared.symbol_tables,
-        &mut obj_module, module.clone(),
-    )?;
-
-    // Emit .o bytes
-    let bytes = obj_module.finish().emit()?;
-
-    // Write .o file
-    let (_, o_path) = cache::module_cache_path(cache_dir, module);
-    cache::atomic_write(&o_path, &bytes)?;
-}
-```
-
-The `ObjectCompileInput` struct, `build_object_compile_input()`, `collect_defns_for_cache()`, and `collect_cross_module_refs()` are all deleted. The nice worker reads everything it needs from `CheckResult`, `Program`, and `SymbolTable` — the same inputs the JIT path uses.
-
-### REPL expression eval
-
-Current flow in `lib.rs`:
-1. `compile_expr_with_got_and_symbols` receives an `Expr` + extra symbols + GOT data defs.
-2. Creates a fresh `Jit` with extra symbols on the `JITBuilder`.
-3. Declares intrinsics.
-4. Defines GOT data entries on the JIT module.
-5. Wraps the expression in a synthetic zero-arg `Defn` named `__repl_expr__`.
-6. Declares and compiles that one function.
-7. Finalizes and returns a `CompiledExpr` (which holds the `Jit` alive so the pointer stays valid).
-
-**Change**: The REPL caller (in `src/`) takes over the wrapper and module setup:
-
-```rust
-fn compile_repl_expr(
-    expr: &Expr,
-    check: &CheckResult,
-    extra_symbols: &[(&str, *const u8)],
-    got_data_defs: &[(String, *const u8)],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    current_module: ModuleFullPath,
-) -> Result<(JITModule, *const u8), CranelispError> {
-    // 1. Wrap expr in a one-defn Program (caller's responsibility)
-    let wrapper_name = Symbol::from("__repl_expr__");
-    let wrapper_defn = Defn {
-        name: wrapper_name.clone(),
-        docstring: None,
-        variants: vec![DefnVariant {
-            params: vec![],
-            param_annotations: vec![],
-            body: expr.clone(),
-            span: expr.span(),
-        }],
-        visibility: Visibility::Public,
-        span: expr.span(),
-    };
-    let program = vec![TopLevel::Defn(wrapper_defn)];
-
-    // 2. Create JITModule with extra symbols (caller's responsibility)
-    let mut jit_builder = JITBuilder::new(...)?;
-    for (name, ptr) in extra_symbols {
-        jit_builder.symbol(name, *ptr);
-    }
-    let mut jit_module = JITModule::new(jit_builder)?;
-
-    // 3. Declare intrinsics (shared API)
-    declare_intrinsics(&mut jit_module)?;
-
-    // 4. Define GOT data entries (caller's responsibility)
-    for (name, ptr) in got_data_defs {
-        define_got_data(&mut jit_module, name, *ptr)?;
-    }
-
-    // 5. Compile — same function as batch and object
-    let result = compile_to_module(
-        &program, &check, &symbol_tables,
-        &mut jit_module, current_module,
-    )?;
-
-    // 6. Finalize and get pointer
-    jit_module.finalize_definitions()?;
-    let entry_ptr = jit_module.get_finalized_function(result.entry_func_id.unwrap());
-
-    // Caller keeps jit_module alive while executing the pointer
-    Ok((jit_module, entry_ptr))
-}
-```
-
-`CompiledExpr` is deleted. The caller owns the `JITModule` directly and is responsible for keeping it alive while the function pointer is in use. `compile_and_run_expr` (the convenience wrapper) is also deleted — callers use the pattern above.
-
-The `define_got_data` helper (currently `Jit::define_got_data`) is extracted as a free function that works on any `Module` that supports `declare_data` / `define_data`, or kept as a JIT-specific utility in the caller's code.
-
-### --link mode
-
-Works identically to the nice worker: creates `ObjectModule`, calls `compile_to_module`, emits bytes. No special handling needed.
-
-## 12. GOT Reference Emission
-
-> **Historical note**: Earlier drafts proposed a `CompilationEnv` trait with two implementations (`ObjectCompilationEnv`, `JitCompilationEnv`), two public wrapper entry points (`compile_to_module_object`, `compile_to_module_jit`), and a crate-private `compile_to_module_core`. That design was retracted during Sprint 56 Phase 3a review in favour of the uniform strategy below. See `design/arch/overview.md` §9.1 / §9.3 and Principle 11 + Decision 22 in `design/arch/CLAUDE.md`.
-
-> **Two-GOT framing (Sprint 58 Wave 2 — Decision 23 updated)**: there are two distinct GOT artefacts that share the same data-symbol name but serve different masters. (a) The **SymbolTable GOT** is in-process, mutable, owned by the runtime — it lives at `symbol_tables[M].got.base_ptr()` and is the redefinition swap target (Decision 31). (b) The **`.o` data section GOT** is on-disk, immutable, defined as `Linkage::Export` in the module's own `.o` per Decision 36 — it carries function-address relocation initializers and is patched by the system linker (`--link`) or our cache `Linker` (`--run` after cache-hit). Both are referenced from CLIF as a single `Linkage::Import` data symbol named `__cranelisp_got_{M}`; the *resolver* differs by `Module` impl at finalize time. See `design/backend/per-module-got.md` for the current GOT contract.
-
-GOT reference emission is **uniform across JIT and object modes**. The backend emits the same CLIF at every GOT load site — mode differences live entirely in the `Module` implementation at finalize time.
-
-### The uniform strategy
-
-For every cross-module function reference, `compile_to_module` emits:
-
-1. A `Linkage::Import` data symbol declaration named `__cranelisp_got_{target_module}`.
-2. A `global_value` load that reads the GOT base from that data symbol.
-3. An indexed load at `base + slot * 8` to reach the target function pointer, where `slot` is read from `symbol_tables[target_module].get(name).got_slot` (or, post-G7, `symbol_tables[target_module].got.slot_of(name)`).
-
-The backend does not know, and does not care, whether the data symbol will be resolved by a linker or by a runtime callback. Both modes get byte-identical IR.
-
-### How each `Module` implementation resolves `__cranelisp_got_{module}`
-
-- **`ObjectModule` (`.o` emission)**: The relocation entries emitted for `__cranelisp_got_{module}` are left unresolved in the object file. The platform linker (or the cache `Linker` at load time) patches concrete addresses — against the per-module GOT data block emitted into the same `.o` for the module's own symbols, or against an imported data symbol for cross-module references.
-
-- **`JITModule` (in-process codegen)**: Before creating the `JITModule`, the caller registers `JITBuilder::symbol_lookup_fn(|name|)` that maps `__cranelisp_got_{name}` → `symbol_tables[name].got.base_ptr()`. When Cranelift resolves the import at finalize, it invokes this callback and receives a concrete runtime address.
-
-### Caller contract
-
-Callers are responsible for ensuring the `Module` they pass can resolve `__cranelisp_got_{module}` symbols:
-
-- **Object callers** (nice worker, `--link`): no extra wiring — the default `ObjectModule` relocation machinery handles it.
-- **JIT callers** (priority worker, REPL): **MUST** register a `symbol_lookup_fn` on the `JITBuilder` before constructing the `JITModule`. After G7 lands in Wave 0, `got` lives on `SymbolTable` — the lookup closure walks `symbol_tables[name].got.base_ptr()`. See `design/backend/per-module-got.md` §2 for the caller's end-to-end responsibility.
-
-### Why uniform
-
-1. **Principle 7 (single source of truth)**: one CLIF emission path for every GOT reference. No possibility of JIT-path and object-path IR drifting.
-2. **Principle 11 (single pipeline, mode parameters)**: the difference between JIT and object is a mode-appropriate `Module` impl, not a fork inside the backend. Decision 23 in the [label index](../arch/decisions/README.md) records this after the dual-wrapper / crate-private-core design was rejected.
-3. **No behaviour-carrying parameters**: this document's [exact signature](#21-exact-signature) stays data-only. No trait object, no env, no runtime dispatch on mode.
-4. **Testability (Principle 5)**: a fake `Module` or fake `symbol_lookup_fn` is all a test needs to exercise GOT emission — no environment scaffolding per-mode.
-
-## 13. Migration Steps
-
-> **Historical note (Sprint 56)**: The steps below describe the original migration plan leading up to the five-parameter `compile_to_module` and then through Sprint 55's `CheckResult` removal. They have landed. For the Phase 2 (Sprint 56) migration — replacing `program` with `names` and deleting `expand_multi_sig_defn` — see §16. §13 is retained as a record of how we arrived at the pre-Phase-2 shape.
-
-Ordered implementation plan with dependency constraints.
-
-### Step 1: Extract `declare_intrinsics<M: Module>`
-
-**Files**: `crates/cranelisp-backend/src/jit.rs`, `crates/cranelisp-backend/src/cache/object.rs`
-
-Extract the intrinsic declaration logic from `Jit::declare_intrinsics()` into a free function `declare_intrinsics<M: Module>(module: &mut M) -> Result<IntrinsicFuncIds>`. Both `Jit::declare_intrinsics` and `declare_intrinsic_imports` delegate to this function.
-
-**Verification**: All existing tests pass. No behavioural change.
-
-### Step 2: Implement `compile_to_module<M: Module>`
-
-**Files**: `crates/cranelisp-backend/src/lib.rs`
-
-Write the unified function using the defn collection logic from `collect_and_declare_defns` (the working path). Initially, `compile_program`, `compile_module_program`, and `compile_expr_with_got_and_symbols` become thin wrappers that call `compile_to_module<JITModule>`.
-
-**Verification**: All existing tests pass. `compile_program`, `compile_module_program`, and REPL expression compilation produce identical results.
-
-### Step 3: ~~Implement `ObjectCompilationEnv`~~ (WITHDRAWN)
-
-The Sprint-55 migration briefly introduced an `ObjectCompilationEnv` scaffold as an interim step. The entire `CompilationEnv` design was subsequently retracted in Sprint 56 Phase 3a review in favour of the uniform GOT emission described in §12. There is no env to implement. Slot assignments are read directly from `symbol_tables[target].get(name).got_slot` at each GOT load site; GOT base resolution is a `Module`-implementation concern at finalize time.
-
-### Step 4: Wire nice worker to `compile_to_module<ObjectModule>`
-
-**Files**: `src/session_v4.rs`, `src/pipeline.rs`
-
-Replace `compile_module_object`'s call to `build_object_compile_input` + `compile_module_to_object` with direct calls to `compile_to_module<ObjectModule>`. Delete `CodegenInput.cross_module_func_sigs`.
-
-**Verification**: `.o` files are generated without crashes (the multi-sig panic is fixed). Run the existing cache integration tests.
-
-### Step 5: Delete dead code
-
-**Files**: `lib.rs`, `cache/object.rs`, `pipeline.rs`, `session_v4.rs`
-
-Delete all items listed in section 9 (including `CompiledExpr`, `compile_expr_with_got_and_symbols`, and `compile_and_run_expr`). Clean up imports. Move the REPL wrapper logic (synthetic `Defn` construction, `JITBuilder` symbol registration, GOT data defs) to the caller in `src/`.
-
-**Verification**: `cargo build` succeeds. All tests pass. `cargo clippy` clean.
-
-### Step 6: Simplify `CodegenInput`
-
-**Files**: `src/session_v4.rs`
-
-Replace `CodegenInput` with `CodegenInput { check: CheckResult, program: Program }`. Ensure `constrained_fn_names` is preserved in the stashed `CheckResult`.
-
-**Verification**: All tests pass. Nice worker correctly handles constrained polymorphic functions.
-
-## 15. Acceptance Criteria — PRESCRIPTIVE
-
-These criteria MUST ALL pass before the implementation is accepted. They are not suggestions.
-
-### 15.1 Signature compliance
-
-`compile_to_module` MUST have EXACTLY this signature (Phase 2 target — see §2.1):
-
-```rust
-pub fn compile_to_module<M: Module>(
-    module_path: ModuleFullPath,
-    names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable>,
-    module: &mut M,
-) -> Result<CompilationResult, CranelispError>
-```
-
-Four parameters. No additional parameters of any kind. No `program`, no `CheckResult`, no extra input struct, no feature flag.
-
-### 15.2 No test coverage loss
-
-Every test that existed before the migration MUST either:
-- (a) Be ported to call `compile_to_module` (preferred), or
-- (b) Still call a deprecated function (acceptable during migration)
-
-No test may be deleted.
-
-### 15.3 Internal derivation
-
-`compile_to_module` must NOT receive from callers:
-- **Defn AST bodies / Program** (reads `ModuleEntry::Def.ast` from `symbol_tables[module_path]` by name — Phase 2)
-- **CheckResult / method_resolutions / expr_types / mono_defns / default_method_defns / constrained_fn_names** (removed as a boundary type in Sprint 55; annotations live on AST nodes, mangled bodies live on symbol-table entries)
-- Intrinsic FuncIds (declares them internally on the module)
-- GOT slot assignments (reads from symbol_tables)
-- GOT base pointers (not a compile-time concern — resolved at module finalize by the `Module` impl via `__cranelisp_got_{module}` data symbols; see §12)
-- Function arities (derives from the AST retrieved per name)
-- Cross-module function sigs (resolves from symbol_tables)
-- JIT name prefix (derives from module_path)
-- Traced function list (not a compilation concern)
-- Extra JIT symbols (caller registers on `JITBuilder` — including the `symbol_lookup_fn` that resolves `__cranelisp_got_{name}` — before creating the module)
-
-### 15.4 Build state
-
-- `cargo build --lib -p cranelisp-backend` passes with zero errors
-- Backend crate tests pass (or call deprecated functions during transition)
-- Full workspace `cargo build` will have errors in `src/` callers from deprecated functions — that is expected and correct
-
-### 15.5 Public API surface
-
-The backend crate's public compilation API is:
-- `compile_to_module<M: Module>` — the only compilation entry point
-- `declare_intrinsics<M: Module>` — intrinsic declaration for callers that pre-populate a `Module`
-- `CompilationResult` — the return type
-- `build_isa(pic: bool)` — for callers creating ObjectModule
-
-`Jit` and all its methods are `pub(crate)`. Callers work with `JITModule` directly.
-No `CompilationEnv` in the public API (the trait does not exist — see §12). No `compile_to_module_jit` / `compile_to_module_object` wrappers. No `CodegenTarget` enum. No `ObjectCompileInput`. No `IntrinsicTable`.
-
-## 16. Phase 2 Migration (Sprint 56)
-
-Phase 2 of `design/arch/overview.md` — Step 2a (signature flip from `program` to `names`) and Step 2b (delete `codegen_module_symbols`). This section is the `/backend` Wave-1 deliverable: it documents the target shape, preconditions owned by `/typecheck` (Wave 0), and the deletion list. It supersedes the migration-step narrative in §13 (which described the Sprint-55 path through the old five-parameter signature).
-
-### 16.1 Precondition — Wave 0 (owned by `/typecheck`)
-
-Step 2a cannot land green until Wave 0 is in place:
-
-1. `register_mangled_variants` must insert each multi-sig variant entry with `ast: Some(single_variant_Defn)` — the `DefnVariant` selected for that mangled name, cloned into a single-variant `Defn` under the mangled key.
-2. `register_mono_entry` must insert each mono specialization with `ast: Some(annotated_Defn)` — the monomorphised body with all post-pass `resolved_call` / `inferred_type` annotations applied.
-3. `SymbolTable::defined_symbols()` (or an equivalent iterator method in `cranelisp-types`) is exposed, returning exactly the names codegen must compile. Predicate: `ast.is_some() AND kind is not Overloaded AND kind is not UserFn { constrained_fn: Some(_) }`. This is the shared filter used by both `compile_to_module`'s callers and (if ever needed) the backend itself — a single source of truth. See `/arch` review §6 condition 5.
-
-`/typecheck`'s `ast-annotation.md` carries the authoritative table of which symbol-table entry categories must carry `ast: Some(_)` post-Phase-2. The backend relies on that contract; violations are surfaced as codegen errors (§16.3) rather than silently tolerated.
-
-### 16.2 What replaces `collect_and_declare_defns` / the program loop
-
-The Sprint-55 shape of `compile_to_module` (see `crates/cranelisp-backend/src/lib.rs:73` at the start of this sprint) has a single loop over `program: &Program` that:
-
-1. Skips `TopLevel::Defn`s whose name is in the inline `constrained_fn_names` set derived from the symbol table at `lib.rs:95-109`.
-2. Splits remaining defns into `regular_defns` (pushed by reference) and `multi_sig_defns` (expanded into mangled variants via `expand_multi_sig_defn` at `lib.rs:379-436`).
-3. Compiles the union.
-
-Phase 2 replaces that loop with the §4 lookup loop: iterate `names`, pull each entry's `ast`, push into `defns`. The filter is gone (moved into `defined_symbols()`); the expansion is gone (moved into `register_mangled_variants`).
-
-### 16.3 Caller contract for `names`
-
-**Typical case** — compile a whole module:
-
-```rust
-let names: Vec<Symbol> = symbol_tables
-    .get(&module_path)
-    .map(|t| t.defined_symbols().collect())
-    .unwrap_or_default();
-```
-
-**Nice worker** (`.o` emission) and **`--link` mode** use the typical case.
-
-**Priority worker** (per-function JIT isolation; `design/int/int.md`) passes a one-element slice per symbol it compiles:
-
-```rust
-let names = vec![symbol_name.clone()];
-```
-
-**REPL expression eval**: typecheck registers the wrapped expression under a known synthetic name (e.g., `__expr`) on the REPL module's symbol table, with `ast: Some(...)` carrying the annotated wrapper. The REPL caller passes that one name. The synthetic-`Defn` construction currently owned by the backend (`compile_expr_with_got_and_symbols` or its Phase-2 successor in `/int`) moves fully to the caller side, driven by typecheck's registration rather than backend wrapping.
-
-**Partial recompile / mono batch** (future use): pass the filtered subset. The backend treats `names` as authoritative — it compiles exactly what it is told to compile, nothing more.
-
-### 16.4 Error behaviour for `ast: None`
-
-If a name in `names` resolves to a `ModuleEntry::Def` with `ast: None`, `compile_to_module` returns a `CranelispError::CodegenError` naming the symbol and module and pointing at `design/typecheck/ast-annotation.md` for the expected annotation contract. Rationale: per Principle 7 (single source of truth), the backend does not have a fallback synthesis path — if the symbol table promises a compilable entry, it must deliver the AST. A silent skip would hide typecheck bugs; an `unreachable!` would panic production builds on a recoverable wiring error. A named codegen error is the right middle ground.
-
-If a name resolves to a non-`Def` variant (`Import`, `Constructor`, `Macro`, `TypeDef`, `TraitDecl`, `Ambiguous`, `Reexport`), the same error path fires — those are not compilable by `compile_to_module` and must not appear in `names`. `defined_symbols()` filters them out; if a caller builds `names` by hand and includes one, the error names the kind.
-
-### 16.5 GOT emission is uniform (§2.4, §12) — no mode fork
-
-The signature change touches **what** to compile. Mode handling — **how** GOT base addresses materialise — is uniform across JIT and object modes per Decision 23 ([label index](../arch/decisions/README.md)) and [GOT reference emission](#12-got-reference-emission). The backend emits the same CLIF for every GOT reference (`global_value` against a `Linkage::Import` data symbol named `__cranelisp_got_{module}`); mode differences live entirely in the `Module` implementation at finalize time. Earlier drafts of this doc described a `CompilationEnv` fork that has since been withdrawn.
-
-### 16.6 Deletions (Wave 1 — backend side)
-
-These are deleted as part of the Phase 2 implementation wave:
-
-- `expand_multi_sig_defn` — currently `crates/cranelisp-backend/src/lib.rs:379-436`. Wave 0 pre-materialises mangled variant entries with `ast: Some(_)`; there is nothing left to expand.
-- The inline `constrained_fn_names` HashSet construction at `crates/cranelisp-backend/src/lib.rs:95-109`. Filtering moves into `SymbolTable::defined_symbols()`.
-- `concrete_type_name` / `build_mangled_name` helpers at `lib.rs:347-369` if they were used only by `expand_multi_sig_defn`. (Check dependencies during implementation — they may still be needed by cross-module resolution; if so, they survive.)
-- The `program: &Program` parameter on `compile_to_module`; every type, function, or field that only existed to plumb `program` into this function.
-- The inline `for tl in program { if let TopLevel::Defn(defn) = tl { ... } }` loop — replaced by the §4 symbol-table lookup loop.
-- `CompilationEnv` trait and every related type: `ObjectCompilationEnv`, `JitCompilationEnv`, and shared helpers (`resolve_got_module_shared`, `func_arity_shared`, `resolve_cross_module_ref_shared`) introduced for the withdrawn dual-env design.
-- `CodegenTarget` enum (or any equivalent mode discriminator) — mode lives on the `Module` implementation, not inside `compile_to_module`.
-
-Deletions on the `/int` side (Step 2b) are out of scope for this doc (covered in S56/S57 codegen migration record (`phase2-codegen-convergence.md` in `git show 7f834bf6:design/int/`)), but the principal ones are: `codegen_module_symbols`, `compile_regular_defns`, `compile_and_register_defn_shared`, `pre_register_got_slots_in_tc`, `SessionCompilationEnv` (all of it — env plumbing is gone), and the `finalize_module` program-inlining path that currently splices `mono_defns` and `default_method_defns` into the program before codegen.
-
-### 16.7 Phase 3 seam — `code: Option<Code>` on `ModuleEntry::Def`
-
-Phase 2 keeps `Code` (JIT module + code pointer) living in `CodegenProduct`, the existing integration-layer `DashMap<ModuleFullPath, CodegenProduct>` that holds JIT-module ownership and per-function pointers. `CompilationResult` (see §8) is unchanged — it still carries `func_ids`, `entry_func_id`, `func_arities`, and `warnings`. Per `/arch` review §2 and §6 condition 4, this is an intentional Phase-2→Phase-3 bridge, not interim architecture: moving `Code` onto `ModuleEntry::Def.code` is G6 in `pipeline-v4-roadmap.md` Phase 3, deliberately scoped as a **refactor** (mechanical relocation of a field) rather than a rewrite.
-
-The implication for `/backend`: `CompilationResult` stays as-is for Phase 2. Do not preemptively collapse it into per-entry writes — Phase 3 will collapse it, and conflating the two phases muddies both. The Phase 3 transition (documented in §9.1 as the PRESCRIPTIVE Sprint 57 target) pushes the `code` write inside `compile_to_module` itself: `CompilationResult` still carries `func_ids`/`entry_func_id`/`func_arities`/`warnings` for callers' immediate needs, but the durable compiled-code pointer lives on `ModuleEntry::Def.code`, written by `compile_to_module` post-finalise and pre-return. The storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`, and the write-site moves from the priority worker into the backend — both changes land together in Sprint 57 Wave 2.
-
-### 16.8 Relationship to §13
-
-§13 documents the Sprint-55 migration path (five-parameter → four-parameter, `CheckResult` elimination). Its steps are historical at this point — they describe work that has landed. §16 is the Phase-2 continuation: `program` elimination, symbol-table-sourced defn collection, `expand_multi_sig_defn` deletion. Treat §16 as authoritative for Phase 2 and §13 as a historical record of how we got here.
-
-## 17. Step 5c — `SymbolTable<C, L>` generics activation (Sprint 58, Phase 5)
-
-**Status**: PRESCRIPTIVE for Sprint 58 Wave 3. Refines §2.1's signature for the parameterised symbol-table type. Backend-internal call-site changes are mechanical.
-
-**Decisions consumed**: Decision 25 (`code` on `ModuleEntry::Def`), Decision 31 (`Arc<Jit>` lifetime; per-batch reclaim with custom `Drop`), Decision 32 (`CodeStore`/`LinkerStore` empty marker traits with default `()`).
-
-### 17.1 Signature shape — backend POV (Wave 3b landed)
-
-The §2.1 normative signature, as landed in Sprint 58 Wave 3b, is:
-
-```rust
-pub fn compile_to_module<M, C, L>(
-    module_path: ModuleFullPath,
-    names: &[Symbol],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    module: &mut M,
-) -> Result<CompilationResult, CranelispError>
-where
-    M: Module + CodeFinalizer,
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-```
-
-The `<C, L>` parameters propagate generically — the backend can be called with any concrete `(C, L)` choice the integration layer instantiates (in practice `SymbolTable<Code, ()>` per Decision 35; default `SymbolTable<(), ()>` for backend's own unit tests). **The backend never reifies `C` or `L`**: it never names the concrete `Code` enum, never calls accessors on `C` (e.g., `c.ptr()`), never writes a `C` value onto an entry. The blanket `CodeStore`/`LinkerStore` impls (Decision 32) admit any `Send + Sync + 'static` choice without further bounds.
-
-**Why the `<C, L>` parameters are present even though the backend is generic-blind:** the backend reads `&DashMap<ModuleFullPath, SymbolTable<C, L>>` from the caller, which is the *same* DashMap the integration layer also holds (e.g., `SymbolTable<Code, ()>`). Without the parameters on `compile_to_module`, the integration layer would have to construct a parallel `SymbolTable<(), ()>` view to call backend — which would either copy data (Principle 7 violation: two stores) or require reference-projection acrobatics. With propagated parameters, the integration layer hands its live table to the backend; the backend reads `<C, L>`-erased fields (`ast`, `scheme`, `got_slot`) without observing the storage type.
-
-**Why the backend never names `Code`** (Decision 35 Layer 2 Option B): putting `Code` construction in backend would require either (i) a `From<RawCode>` bound on `C` plus a backend-defined `RawCode` type used solely for that conversion (Layer 2 Option A — rejected), or (ii) backend importing the integration-layer's `Code` enum (Principle 3 violation — `cranelisp-backend → src/` is the forbidden direction). Layer 2 Option B keeps the conversion local to the one site that knows what `Code` is: `src/worker.rs::inline_jit_codegen_for_names`.
-
-(If a future change pushes the `code: Some(Code)` write inside `compile_to_module` — the deferred §16.7 Phase-3 seam — the signature would gain a constructor closure or a `From`-style bound; Sprint 58 keeps the caller-writes-after-return contract per Wave 3b.)
-
-#### 17.1.1 Return shape — Decision 35 / Layer 2 Option B (landed Wave 3b)
-
-Per the [`Code` enum decision index (35)](../arch/decisions/README.md) (CP1 arbitration), Sprint 58 binds **Layer 2 Option B**: the backend stays generic-blind on `Code` storage; the integration layer constructs `Code::Jit { jit, ptr }` from raw outputs. As landed in Wave 3b, the backend returns the per-symbol code pointers `*const u8` directly inside `CompilationResult`, and finalises definitions internally so the pointers are valid before the function returns. The backend does NOT name `Code` at all.
-
-**`CompilationResult` shape** (Wave 3b):
-
-```rust
-pub struct CompilationResult {
-    pub func_ids: HashMap<Symbol, FuncId>,
-    /// Per-symbol finalised code pointers. Populated for JIT-capable
-    /// modules; empty for `ObjectModule` (capability-based skip via
-    /// `CodeFinalizer::try_get_finalized_function` returning `None`).
-    pub code_ptrs: HashMap<Symbol, *const u8>,
-    pub artifacts: HashMap<Symbol, FunctionArtifacts>,
-    pub entry_func_id: Option<FuncId>,
-    pub func_arities: HashMap<Symbol, usize>,
-    pub warnings: Vec<Warning>,
-}
-
-unsafe impl Send for CompilationResult {}
-unsafe impl Sync for CompilationResult {}
-```
-
-**Lifecycle inside `compile_to_module`**:
-
-1. Declare functions, compile bodies, emit GOT-data symbol per Decision 23/36.
-2. Call `module.finalize_for_code_read()` — the `CodeFinalizer` capability (`crates/cranelisp-backend/src/lib.rs:122-138`). For `JITModule` this performs `finalize_definitions()` + makes pages executable; for `ObjectModule` this is a no-op.
-3. For each defined symbol, call `module.try_get_finalized_function(func_id)` and insert into `code_ptrs`. JIT-mode returns `Some(ptr)`; object-mode returns `None` and the loop breaks (capability is module-wide, not per-symbol — see `crates/cranelisp-backend/src/lib.rs:559-571`).
-4. Return `CompilationResult` with `code_ptrs` populated (JIT) or empty (object).
-
-**Why backend finalises internally** (Wave 3b refinement of the earlier Wave 2 framing): pushing finalize + per-symbol pointer extraction inside `compile_to_module` collapses two responsibilities the caller would otherwise have to discharge in lockstep with backend's internal state (declared FuncIds + signatures). The `CodeFinalizer` trait makes the operation capability-based — `JITModule` exposes the real finalize, `ObjectModule` exposes a no-op stub — so the same `compile_to_module<M, C, L>` body runs end-to-end without a mode discriminator. This is Principle 11 (single pipeline) applied to the finalize step. The integration layer's only post-call work is the lifetime-rooting `Code::Jit { jit, ptr }` construction and the per-entry `*code = Some(...)` write — both of which require the integration-layer-owned `Code` enum and so cannot live in backend.
-
-**Concrete integration-layer flow** (`src/worker.rs::inline_jit_codegen_for_names`, ~line 2731):
-
-```rust
-// 1. Backend compiles + finalises + extracts per-symbol code pointers.
-let result = cranelisp_backend::compile_to_module(
-    module.clone(),
-    names,
-    tc_modules,
-    jit.jit_module(),
-)?;
-
-// 2. Wrap the (now-finalised) Jit in Arc per Decision 31 Scenario 2 — the
-//    Arc is the per-batch reclaim primitive.
-let jit_arc = std::sync::Arc::new(jit);
-
-// 3. Per defined symbol: store the pointer in the GOT slot AND construct
-//    Code::Jit { jit, ptr } onto Def.code — the Arc::clone is the
-//    per-entry lifetime root that activates Decision 31 Scenario 2.
-for name in names {
-    let Some(code_ptr) = result.code_ptrs.get(name).copied() else { continue };
-    if let Some(slot) = lookup_got_slot(tc_modules, module, name)
-        && let Some(st) = tc_modules.get(module) {
-        st.got.store_slot(slot, code_ptr);
-    }
-    if let Some(mut st) = tc_modules.get_mut(module)
-        && let Some(entry) = st.symbols.get_mut(name.as_ref())
-        && let cranelisp_types::ModuleEntry::Def { code, .. } = entry {
-        *code = Some(crate::code::Code::jit(
-            std::sync::Arc::clone(&jit_arc),
-            code_ptr,
-        ));
-    }
-}
-```
-
-For the cache `.o` path (nice worker), the same `compile_to_module` call passes a `&mut ObjectModule`. `result.code_ptrs` is empty (object mode has no runtime pointers). The nice worker calls `obj_module.finish().emit()` for `.o` bytes and writes them via `cache::write_meta`; no `Code::Jit` is constructed because the `.o` is destined for disk, not a live session table. On cache-hit (per `module-caching.md` §14.3), the integration layer's cache-loader bypasses `compile_to_module` entirely: it loads the `.o` via `Linker::load_object`, looks up bare-name function symbols per Decision 36, and constructs `Code::Linker { linker: Arc<Linker>, ptr }` per Defn entry.
-
-**Concrete forward-pointers**:
-
-- `crates/cranelisp-backend/src/lib.rs:66-91` — `CompilationResult` definition with `code_ptrs` field.
-- `crates/cranelisp-backend/src/lib.rs:122-180` — `CodeFinalizer` trait + JIT/Object impls.
-- `crates/cranelisp-backend/src/lib.rs:351-583` — `compile_to_module<M, C, L>` body (finalize + code_ptrs population at lines 540-571).
-- `src/code.rs` — integration-layer `Code` enum (`Code::Jit`, `Code::Linker`) per Decision 35.
-- `src/worker.rs::inline_jit_codegen_for_names` (~line 2672) — the post-call site that wraps the `Jit` in `Arc` and writes `Code::Jit { jit, ptr }` per defined symbol.
-
-**What backend does NOT do** (preserved invariants from Decision 35 Layer 2 Option B):
-
-- Backend never names `Code`, `Code::Jit`, or `Code::Linker` (the enum lives in `src/code.rs`).
-- Backend never writes to `ModuleEntry::Def.code` (the integration layer holds the only write-site; backend pattern-matches on `Def { .. }` with the `code` field skipped via `..`).
-- Backend never wraps the `JITModule` in `Arc<Jit>` (the caller owns the `M` instance and constructs the `Arc` after `compile_to_module` returns).
-- `CompilationResult` carries no `Arc<Jit>` field and no return tuple — the `Arc` retention root lives at the integration layer (per-entry on `Code::Jit`).
-
-(Cross-references: the [`Code` enum decision index (35)](../arch/decisions/README.md) records the Layer 2 Option B rationale; `design/int/int.md` documents the integration-layer call-site choices; `crates/cranelisp-backend/src/lib.rs` tests `compile_to_module_returns_code_ptrs_after_finalize` and `compile_to_module_object_mode_empty_code_ptrs` (lines 3084 and 3144) are the regression-guards for the JIT-populated and object-empty invariants.)
-
-### 17.2 Backend-internal helper signatures
-
-Most backend-internal helpers (`FnCompiler<M: Module>`, `compile_function_body`, `declare_intrinsics<M>`, `expand_multi_sig_defn` legacy paths if any survive, GOT-data-symbol declaration helpers) operate on the data-shape fields of `SymbolTable`/`ModuleEntry`. They do NOT need explicit `<C: CodeStore, L: LinkerStore>` bounds because:
-- They read fields like `entry.scheme`, `entry.ast`, `entry.got_slot` whose types are independent of `C`.
-- They never read `entry.code` (the runtime field) — that's the integration layer's territory.
-- They never read `symbol_table.linker` or `symbol_table.got` (also runtime).
-- The `<M: Module>` bound on `FnCompiler` is independent of `<C, L>` on `SymbolTable` — the former is a Cranelift codegen concept, the latter a storage concept.
-
-Confirmation step during implementation: when sweeping backend signatures (Wave 3), if any helper *does* need to access `entry.code` for some reason, that's a sign that the helper has been mis-placed across the integration boundary and should be moved out of the backend crate. The expected outcome is that `cranelisp-backend`'s public and private signatures all read `SymbolTable` (i.e. `SymbolTable<(), ()>`) and never name `C` or `L`.
-
-### 17.3 Concrete-type instantiation — outside backend
-
-The integration layer (`src/session_v4.rs`, owned by `/int`) is the sole site where the concrete `C` and `L` types are chosen. The expected choice (per Decision 31 + Decision 32):
-
-```rust
-// src/session_v4.rs
-use std::sync::Arc;
-use cranelisp_backend::jit::Jit;
-use cranelisp_backend::cache::Linker;
-
-type Code = Arc<Jit>;          // or a thin newtype wrapper if /int prefers
-type LinkerHandle = Linker;    // or a newtype
-
-pub struct ReplSession {
-    // ...
-    pub symbol_tables: DashMap<ModuleFullPath, SymbolTable<Code, LinkerHandle>>,
-    // ...
-}
-```
-
-The `Arc<Jit>` choice activates Decision 31 Scenario 2: when a `ModuleEntry::Def` is replaced (REPL redefinition) or evicted, the `Arc` clone on that entry drops; when the last `Arc` referencing a particular `Jit` instance drops, our custom `Drop` fires `unsafe Jit::free_memory()` and JIT pages are reclaimed per-redefinition (not just at session teardown). `SharedState.kept_jits` dissolves at this transition because the `Arc<Jit>` lives directly on entries instead of in the side-store.
-
-**Backend's role at the instantiation:** `cranelisp-backend` exports the `Jit` struct (with the custom `Drop` impl) and the `Linker` struct. The integration layer composes them into the concrete `SymbolTable<Arc<Jit>, Linker>` shape. Backend does not name the composed type — it just provides the building blocks. This split satisfies Principle 3 (`cranelisp-types` knows nothing about Cranelift; `cranelisp-backend` knows about Cranelift but doesn't pick the storage shape; integration layer picks the storage shape).
-
-### 17.4 `Jit` wrapper drop-impl placement
-
-Decision 31 names `crates/cranelisp-backend/src/jit.rs` as the canonical location of the `Jit` wrapper with custom `Drop`. Step 5c does not change the Jit wrapper itself — that landed in Sprint 57 Wave 4 per Decision 31. What changes is where `Arc<Jit>` clones live: previously `SharedState.kept_jits: Mutex<Vec<KeptJit>>` (session-side side-store); after Wave 3b, `ModuleEntry::Def.code: Option<Code>` where `Code::Jit { jit: Arc<Jit>, ptr }` for every Def produced by the same `compile_to_module` batch (entry-side; the `Code` enum lives in `src/code.rs` per Decision 35). The `Drop` impl on `Jit` is unchanged — it still calls `unsafe JITModule::free_memory()` when the Arc refcount hits 0.
-
-The integration-layer migration of `Arc<Jit>` from `kept_jits` to entries landed in Wave 3b (`/int`'s work). Backend's side: the `Jit` wrapper's API surface accepts `Arc<Jit>` storage (it does — `Jit` is `Send + Sync + 'static`, satisfying the blanket `CodeStore` impl) and nothing in backend code references `kept_jits`. The integration layer holds the only `Arc::new(jit)` call (in `src/worker.rs::inline_jit_codegen_for_names`); backend hands the finalised `M` (a JITModule) back to the caller via the `&mut M` borrow exiting scope.
-
-### 17.5 Cache coupling (cross-reference to §14)
-
-**Updated Sprint 58 Wave 2** per Decision 25's correction. `module-caching.md` §14.3 step [5b] (Wave 2 rewrite) does NOT re-run codegen on cache-hit; it loads the cached `.o` via `Linker::load_object`, looks up bare-name function symbols per Decision 36, and writes the resolved addresses into the SymbolTable GOT slots. The integration layer constructs `Code::Linker { linker: Arc<Linker>, ptr }` per Defn entry on cache-hit (vs `Code::Jit { jit: Arc<Jit>, ptr }` on fresh-build). Both variants land on `ModuleEntry::Def.code` per §17.3's instantiation — the entry holds the appropriate lifetime root for its compilation lineage. The `Arc<Linker>` from cache-restore reclaims on per-module Linker basis (when the last `Code::Linker` clone referencing a particular `Linker` drops); the `Arc<Jit>` from fresh-build reclaims on per-batch JIT basis per Decision 31. Cache-restore therefore does NOT exercise `compile_to_module` — the same Step-5c data path applies, but the writer for `Code::Linker` lives in the integration layer's cache loader, not in `compile_to_module`. See `module-caching.md` §14.3 + §14.6 for the fresh-vs-restore symmetry framing.
-
-### 17.6 What does NOT change in compile_to_module
-
-- The four-parameter signature (§2.1 — `module_path`, `names`, `symbol_tables`, `module`) — same.
-- The §4 defn-collection loop reading from `symbol_tables[module_path]` — same.
-- The §5 GOT reference encoding (uniform across modes via `__cranelisp_got_{module}` data symbol) — same.
-- The §6 intrinsic declaration via `declare_intrinsics<M: Module>` — same.
-- The integration-layer write-site for `code: Some(Code::Jit { ... })` lives at the *caller* (`src/worker.rs::inline_jit_codegen_for_names`), not inside `compile_to_module` — backend stays generic-blind on `Code`. Per §16.7's Phase-3-seam framing, pushing the `code` write inside backend is deferred and would require re-introducing a `<C>` constructor bound at that future time.
-- No `Arc<Jit>` is added to `CompilationResult`; no return tuple appears. The `Arc<Jit>` lifetime root is constructed at the integration-layer post-call site from the `M` instance the caller already owns.
-
-**What Wave 3b DID change** (relative to the §16.7 pre-Decision-35 framing):
-- The `<M: Module>` bound on `compile_to_module` widened to `<M, C, L> where M: Module + CodeFinalizer, C: CodeStore, L: LinkerStore`. The `<C, L>` parameters propagate generically; backend never reifies them.
-- `CompilationResult` gained `code_ptrs: HashMap<Symbol, *const u8>` (§17.1.1).
-- `compile_to_module` now finalises definitions internally via the new `CodeFinalizer` trait (§17.1.1 step 2). The earlier "caller finalises" framing was rejected — capability-based internal finalize keeps the function single-pipeline.
-
-Step 5c is a type-annotation activation plus the Decision-35 finalize-and-extract refinement. The contract was deliberately written generic-friendly in earlier sprints (§16.7's "the storage location moves from `CodegenProduct` to `ModuleEntry::Def.code`" — Sprint 57 landed the field move; Sprint 58 Step 5c lands the generic-parameter activation + the `code_ptrs` return shape enabling per-redefinition reclaim).
-
-### 17.7 Acceptance signals (backend-side, Wave 3b landed + Wave 3c confirmed)
-
-After Step 5c + Wave 3b land (Wave 3c re-verifies):
-- `compile_to_module<M, C, L>` propagates `<C, L>` to read `SymbolTable<C, L>` but the backend never reifies `C` or `L` (no `Code` constructor calls, no `c.ptr()` accessors, no concrete-type assertions). All `ModuleEntry::Def { .. }` matches in backend use `..` to skip the `code` field.
-- The integration layer's `src/code.rs` defines `Code::Jit { jit: Arc<Jit>, ptr }` and `Code::Linker { linker: Arc<Linker>, ptr }`; `src/worker.rs::inline_jit_codegen_for_names` reads `result.code_ptrs[name]` and constructs `Code::Jit` per defined symbol.
-- `kept_jits` and `kept_linkers` are dissolved; backend confirms no backend code referenced either.
-- Backend regression-guard tests `compile_to_module_returns_code_ptrs_after_finalize` (JIT mode populates `code_ptrs` and does NOT touch `Def.code`) and `compile_to_module_object_mode_empty_code_ptrs` (object mode produces empty `code_ptrs`) live in `crates/cranelisp-backend/src/lib.rs`.
-- `/qa`'s Decision-31-Scenario-2 reclaim test (Wave 3d) shows REPL redefinition triggering JIT page reclaim on the redefinition (not just session teardown).
-- `/qa`'s Decision-31-Scenario-2 reclaim test passes: REPL redefinition shows `/mem` live-bytes drop on the redefinition (not just session teardown).
+- `design/arch/bounded-contexts.md` §3 — boundary and invariants.
+- `design/arch/concrete-boundary-type.md` — the concrete typed body.
+- `design/arch/backend-keyed-consumer.md` — resolved identity carriers.
+- [Per-module GOT](per-module-got.md), [module caching](module-caching.md),
+  [executable generation](executable-generation.md),
+  [transitive drop glue](transitive-drop-glue.md).

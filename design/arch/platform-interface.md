@@ -85,18 +85,6 @@ is the generated type-layout artifact.
 
 - **A platform signature with a residual type variable must refuse at mint** —
   FIXME 0933 under [open filings](fixmes/).
-- **Source rustdoc describing retired ABIs** (FIXME 0870) under
-  [open filings](fixmes/). Until 0870
-  closes, rustdoc that disagrees with this document about a *retired* mechanism
-  is the stale side; rustdoc remains authoritative for exact current items.
-- **`spec/10-io.md` §10.10.1 still carries a forward commitment** (its `Fn a b`
-  row, marked future) to a host callback through which a platform invokes a
-  cranelisp closure, with reference-count callbacks for retention. The later
-  user ruling in [effect concurrency](effect-concurrency.md) §12.1 closes the
-  boundary to closures and says `HostCallbacks` will not grow those entries
-  (§3a). The two carriers disagree. Reconciling them is a normative question for
-  `spec` and the user; this document applies the later ruling and does not
-  decide the specification's wording.
 - **The layout-hash symbol is a Rust `&'static str`, not a C-ABI layout.** The
   host (`src/platform.rs::load_platform_dll`) and the startup check
   (`crates/cranelisp-intrinsics/src/layout.rs::cranelisp_check_layout_hash`)

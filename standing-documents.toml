@@ -157,6 +157,13 @@ purpose = "State implementation ownership and guidance for exemplar."
 established_by = "CLAUDE.md"
 
 [[document]]
+path = "exemplar/plan-exemplar.md"
+kind = "standing"
+owner = "dev"
+purpose = "Current Sudoku exemplar design, design decisions and open exemplar obligations."
+established_by = "exemplar/CLAUDE.md"
+
+[[document]]
 path = "repl/CLAUDE.md"
 kind = "memory"
 owner = "spec"
@@ -190,6 +197,13 @@ kind = "memory"
 owner = "dev"
 purpose = "State implementation ownership and guidance for stdlib."
 established_by = "CLAUDE.md"
+
+[[document]]
+path = "stdlib/plan-stdlib.md"
+kind = "standing"
+owner = "dev"
+purpose = "Current standard-library design, curated surface, self-test model and open obligations."
+established_by = "stdlib/CLAUDE.md"
 
 [[document]]
 path = "tests/CLAUDE.md"
@@ -492,5 +506,13 @@ name = "qa-support-documents"
 patterns = ["tests/plan/0488-isolation.md", "tests/plan/agent-context-tuning.md", "tests/plan/agent-testing-strategy.md", "tests/plan/helpers.md", "tests/plan/helpers-api.md", "tests/plan/memory-safety-coverage.md", "tests/plan/risks.md", "tests/plan/s122-evidence-delta.md", "tests/plan/s122-document-checker-reconciliation/README.md"]
 owner = "qa"
 purpose = "Current QA support contracts, active evidence and retained checker reconciliation."
+established_by = "tests/CLAUDE.md"
+disposition = "established"
+
+[[document_class]]
+name = "test-fixture-contracts"
+patterns = ["tests/fixtures/clif_baseline/MANIFEST.md", "tests/fixtures/clif_baseline/EXCLUSIONS.md", "tests/fixtures/clif_w0b/MANIFEST.md", "tests/scripts/asan/README.md"]
+owner = "test"
+purpose = "Capture and run contracts for golden-CLIF fixture corpora and the checking-allocator fence lane."
 established_by = "tests/CLAUDE.md"
 disposition = "established"

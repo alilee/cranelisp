@@ -51,7 +51,7 @@ without a prior import) → `undefined function: gen/iden2`.
   `iden$Int`, CLIF dump shows `user::iden$Int` + `__expr` with a GOT-indirect
   `call_indirect` through the mono's slot.)
 - In the failing session `__expr` never reaches a CLIF dump — its codegen
-  aborts at the un-rewritten `user/iden` call site.
+  aborts at the un-rewritten call site `(user/iden 5)`.
 - REPL ≡ `--run` (cross-module shape: identical `undefined function:
   gen/iden2`; concrete FQ control `(gen/incr2 5)` exits 0 in both modes) —
   parity places the defect below the session-side derivation.
@@ -181,7 +181,7 @@ the causal chain (links 1–3 each independently verified); medium on the
   all three signatures argues against a session-side derivation divergence.
 - **(iii) backend resolution:** the CLIF + code path show the failing name
   reaching `compile_direct_call`/`compile_var` is the RAW un-rewritten
-  reference (`user/iden`, `iden2`, `vcount`); GOT resolution correctly
+  reference (the head of `(user/iden 5)`, `iden2`, `vcount`); GOT resolution correctly
   refuses a slot-less `Polymorphic` template (that slot-less-ness is a
   designed invariant, S84 Phase 4B / Principle 20). The backend cannot
   resolve an instance typecheck never minted nor a call site typecheck never

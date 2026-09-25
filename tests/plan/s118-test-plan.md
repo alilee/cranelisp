@@ -1,13 +1,18 @@
 # Sprint 118 QA plan — instrumented ownership closure
 
-**Status:** Phase 3 plan of record
-**Authority:** `/qa`; `/testing` authors e2e sources; narrow `/dev` owners author
-unit tiers beside their seams
-**Baseline evidence:** full-run 2026-07-25 (5,514 run / 5,486 passed / 28
-failed / 1 skipped), reconciled name-for-name against live test sources below
-**Binding architecture inputs:** `sprints/SPRINT.md` §Architecture review
-rulings 1–13; `design/intrinsics/diagnostic-modes.md` §6–§9;
-`design/backend/transitive-drop-glue.md`; `design/int/result-owner.md`
+> **Retained dated record.** Only the sections that current designs, source,
+> tests and open filings cite by number remain, with their original
+> numbering: §1, §2 (2.1–2.3, 2.5), §3 (3.1, 3.5), §4, §11.1, §11.3 and §11.8
+> (11.8.1–11.8.3, 11.8.5, 11.8.6). They are S118 allocations, measurements and
+> attributions from the 2026-07-25 baseline (5,514 run / 28 failed) and the
+> 2026-07-26 pre-gate pass, not current status; compare every RED, count and
+> line number with current source before reuse. "Ruling N" means the S118
+> architecture-review rulings in the [closed sprint record](../../sprints/archive/sprint-118.md).
+> The removed sections are recoverable with
+> `git show a07823d8:tests/plan/s118-test-plan.md`. Their open subjects are
+> carried by filings 0694, 0761, 0857, 0863, 0868, 0903 and 0915, by the
+> result-owner design's cache-hit residual, and by the 0818 disposition in
+> [S122 evidence](s122-evidence-delta.md). The rest are closed.
 
 ## 1. Certification split and detector-arming discipline (ruling 3, structural)
 
@@ -136,16 +141,6 @@ set and do not alter the 28-baseline arithmetic (S116 W1 precedent):
 Every addition carries `// spec:` and (for defect repros) one `// defect:`
 line; no `#[ignore]`; no baseline name renamed or deleted.
 
-### 2.4 Exit reconciliation
-
-Phase 7 reports name-for-name: each of the 28 either GREEN (with the flipping
-change-set named), or an explicit user-approved carry (pre-authorized
-candidates in §1). A cell that goes green **without** its owning fix landing
-is treated with suspicion, not celebration — S98 rule: perturbation reshapes
-layout; the flip must trace to the mechanism change-set, and the Track-B
-fixes must be demonstrated with detectors armed in their acceptance legs
-(§4.1), not by symptom absence.
-
 ### 2.5 Ambient prelude-load residue — ATTRIBUTION RULING (`/qa`, 2026-07-25)
 
 **Ruling: the program-independent 1143-allocation residual that every
@@ -246,42 +241,6 @@ compile-time leak (bounded per session), not a runtime RC violation —
 P1/P2 = 0 stands; its cost is instrument poisoning of every
 stdlib-prelude exact-balance cell.
 
-### 2.6 Cell trade-out — the 0782 linked cell's suspicious green (S98 rule, executed 2026-07-25)
-
-`match_owned_temporary_scrutinee_0810::var_pattern_arm_consuming_owned_temporary_releases_it_once_linked`
-left the 28 (GREEN at HEAD) with **no fix landed**. Per §2.4 that is
-suspicion, not closure. The S98 step is executed: the original defect
-signature is **reproduced another way, at the IR level** — `/clif f` over
-0782's exact repro (`(defn f [] (match [7 8 9] [xs (vec-get xs 1)]))`,
-empty prelude, HEAD debug binary) shows the double release verbatim:
-
-```
-block5:  v24 = iadd_imm.i64 v4, 8
-         v26 = atomic_rmw.i64 sub v24, v25   ; arm-exit scope cleanup
-         brif v27, block8, …                 ; → fn2(v4) conditional free
-block2:  v33 = iadd_imm.i64 v4, 8
-         v35 = atomic_rmw.i64 sub v33, v34   ; merge-block consume dec
-         brif v36, block10, …                ; → fn4(v4) conditional free
-```
-
-Both subs target the SAME scrutinee `v4` (RC field +8) — exactly 0782's
-mechanism (`compile_var_pattern_arm` scope registration +
-`dec_temporary_scrutinee` both firing), unfalsified by the FIXME's own
-falsifiability clause. **Disposition: the defect is LIVE and deterministic
-in the emitted IR; only the e2e symptom (the `--link` allocator abort) is
-layout-latent at HEAD.** The cell:
-
-- does NOT join the 0694 load/interleaving family — nothing here is
-  interleaving-dependent; the mechanism is byte-visible in every compile;
-- stays attributed to 0782, stays in the suite as the regression guard, and
-  is OUT of the 28 as measured (baseline honesty);
-- exit reconciliation (§2.4) must NOT count its green as 0782 closure: 0782
-  closes only when its fix change-set lands (Track B match_codegen seam) and
-  the acceptance evidence shows ONE release in this CLIF shape (the `/clif`
-  probe above is the check; `/dev`'s unit tier pins the count at the seam).
-  A tightened e2e cell (CLIF-trace-asserting sibling) is `/testing`'s option
-  in the fixing change-set, not a W1 obligation.
-
 ## 3. Track A — detection proofs (the sprint's foundation)
 
 ### 3.1 Eight detector rows × plant triplets (0848)
@@ -334,49 +293,6 @@ unit children own both polarities. No new e2e detector cells are owed unless
 a public diagnostic mode can express a plant without internal APIs — `/dev`
 proposes, `/qa` disposes; default is unit-tier.
 
-### 3.2 0850 convergence — what pins behavior-invariance
-
-`drop.rs` deletes its private `read_i64` and copied Vec offsets, delegating
-to `heap_access`/`vec_runtime` (ruling 6). Pins:
-
-- unit: the `heap_access`/`vec_runtime` matrix rows of `diagnostic-modes.md`
-  §10 (round-trip, largest field offset, typed Vec readers; M2 reads through
-  the shared accessor; **no local reader/offset copy** — grep-zero in
-  `drop.rs`);
-- behavior-invariance evidence: zero e2e delta — every currently-GREEN
-  drop/Vec/ADT cell stays green AND every currently-RED cell in §2.1 stays
-  RED with byte-identical failure signature in the same run. A RED that flips
-  in the 0850 change-set is *mis-attributed evidence*, not a win — it reopens
-  attribution;
-- zero public-API delta for the convergence itself (the subtractive delta
-  below is ruling 7's, riding the same change-set but separately accounted).
-
-### 3.3 Ruling-7 subtractive API change — baseline regeneration check
-
-`reset_counts()` and `bytes_peak()` removed from `cranelisp-intrinsics`; the
-remaining counters are monotonic process-lifetime evidence (M3's monotonicity
-cannot be invalidated by a public reset). Cells:
-
-- `crates/cranelisp-intrinsics/public-api.txt` regenerated in the SAME
-  change-set, subtractive-only diff;
-- grep-zero `reset_counts`/`bytes_peak` across the crate's src + rustdoc;
-- `tests/facade_compliance.rs` + `tests/public_api_relocations.rs` green;
-- the catalog guard `name_set_is_exactly_expected` remains the only numeric
-  authority (no count-bearing prose reintroduced).
-
-### 3.4 0857 regrade — sequencing and inputs (mine)
-
-The regrade of R8/detector-mode grades runs **after**: (a) W2's triplets land
-with recorded fail-on-revert evidence, and (b) `/arch` actions FIXME 0768
-(register status vocabulary) — ruling 12 pairs the two in one window so the
-regrade lands into the amended vocabulary. Inputs: the per-row revert records,
-the M3 e2e pair's color, and the dead-citation repair
-(`s115-instrumentation-matrix.md` line-55 tombstone reference). Output: each
-mode graded at its actually-proven tier — proven, or explicitly downgraded;
-no "asserted" grade survives without a matching triplet. Grades land in
-`tests/plan/memory-safety-coverage.md` + the instrumentation matrix, and the
-`/arch` register row consumes them.
-
 ### 3.5 0859 ProjectionOf witness — CONDITIONAL cell (ruling 2)
 
 > Retired unexecuted under the 2026-09-01 user disposition (gate 3 below,
@@ -427,7 +343,8 @@ displacement; typed-context exits; both analysis toggles; REPL/`--run`/
 
 **Behaviour-neutral slice invariance (S0/S1):** the §3.2 invariance pin
 extends to backend slices S0 (registry reshape) and S1 (glue-call emitter
-swap), which are behaviour-neutral by design (`transitive-drop-glue.md`
+swap), which are behaviour-neutral by design (the S118-era
+[transitive drop glue design](https://github.com/alilee/cranelisp/blob/a07823d8/design/backend/transitive-drop-glue.md)
 §7.0–§7.1, §9): every baseline RED stays byte-identically RED through them —
 a RED that flips during S0/S1 re-opens attribution rather than counting as a
 win — and the 0753 controls (`moded_arg_rc_tests`) stay green at S1.
@@ -571,218 +488,6 @@ Dispositions:
 4. FIXME 0877 is fully disposed and deleted; FIXME 0835 stays open,
    retargeted to `/design`(intrinsics) with this ruling appended.
 
-## 5. Track C — load-dependent characterization and certification
-
-### 5.1 Certification design
-
-- **Deterministic:** two identical complete captured runs (§1 exit
-  contract). Runs are `tee`'d — the S115 lost-output lesson is binding
-  hygiene.
-- **Loaded:** the corruption member (#24) reports separately. Closure
-  requires: controlled reproduction under load; reduction to a mechanism
-  (named violated invariant + owning seam); a permanent reduced repro; the
-  fix; fail-on-revert evidence; the targeted loaded repetition the reduction
-  prescribes; and **at least three consecutive captured complete runs green
-  after the fix**. Symptom absence, M1 perturbation, or folding into a
-  scalar is not closure. If capacity cuts the three-run loaded certification
-  (third in the cut order), the characterization evidence is still required
-  and the member carries with an explicit user-approved carry.
-
-### 5.2 Characterization protocol (0694 — with proven detectors)
-
-Executes the FIXME's D1→D2→D3 design, now with Track-A-proven instruments;
-armed lanes are subprocess/lane-scoped per §1. **D1 gates D2/D3.**
-
-1. **D1 — falsify the shared premise cheaply.** The member binary in
-   isolation ~200× under equal non-cranelisp host CPU load. Reproduces →
-   intra-subprocess fault, premise holds. Does not reproduce while the full
-   suite does → inter-process shared state (cache dir, `CRANELISP_LIB`,
-   tmpdir, cwd) — re-design before running D2/D3.
-2. **D2 — per-class seam observation.** Class I (heap-invariant violation):
-   re-run under M1+M2+M3 + `CRANELISP_RC_DEC_CHECK=1` (armed children), and
-   again single-threaded (rayon=1, spark budget 0) under identical load —
-   elimination names intra-subprocess concurrency; survival names a latent
-   deterministic overrun (S98: absence under perturbation is not a fix).
-   With detectors proven, an armed-lane firing is now evidence-grade: the
-   faulting op names its seam. Class II (publication ordering — the nullary/
-   multi-sig faces, if they resurface): under load with
-   `CRANELISP_MODULE_TRACE=1` tee'd; a trace showing read-before-publication
-   demonstrates the class and names `/dev`(src).
-3. **D3 — anti-vacuity control.** Env-gated dev-only delay at the
-   publication seam must reproduce the Class-II signature deterministically;
-   the plant then becomes the standing regression guard. A mechanism that
-   cannot be planted is not attributed.
-
-Evidence closes 0694 only by demonstrated mechanism + fix + fail-on-revert +
-the ≥3-green-run condition. If S118 produces characterization but no
-mechanism fix, what returns to the user is the evidence record and a
-scheduling decision — never a "flap" disposition (banned vocabulary).
-
-### 5.3 0604 / 0818 discriminator
-
-- **0604**: retirement is already mechanical on `/design`(int)'s census rows
-  (check 1; code half done, check 2 discharged). `/qa` owes no new analysis;
-  the plan records only that Track C's load work must not reopen it without
-  a named-seam firing from the landed MODULE_TRACE.
-- **0818 (mine, cheap-first)**: run the contamination experiment — seed a
-  contaminated working directory (persisted `user.cl` touching
-  `bit-and`/`num.bits`), run 0604's recipe; and its pristine control.
-  Confirmation gives the three-sprint heisenbug a deterministic trigger and
-  re-attributes it to session persistence re-entering the live table;
-  falsification is recorded in the FIXME and removes the last plausible
-  non-scheduling hypothesis. Either outcome is progress; both are recorded
-  in 0818 before any further 0694-family scheduling.
-
-## 6. Track D — forward-flow cells
-
-### 6.1 0863 (DF-1/DF-2 + transaction negatives) — late wave, after 0745
-
-Serialized after the W4 int wave (ruling 11: same `src/` publication/
-result-owner seams; must not interleave). Cells:
-
-- flips: #25/#26 (committed DF guards) through echo, `/info`, `/sig`, and
-  bare lookup;
-- new negatives (authored in the W6 window, expressible e2e through the
-  public binary): induced preparation/backend failure mid-macro-turn leaves
-  **no partial state** — no emitted symbol callable, no introspection row,
-  no reserved GOT cell observable, next turn fully functional (the TX-family
-  pattern from S117 reused for the prepared-transaction boundary);
-- controls: ordinary direct `defmacro` unchanged; private emitted subjects
-  not presented; zero/one/multiple public emitted subjects each present the
-  right subject set;
-- structural: no parallel presentation store (projection lives only in
-  canonical introspection — `/review` checks against the rejected S117
-  shape).
-
-### 6.2 0867 — repro landed W1; ATTRIBUTION FINALIZED (`/qa`, 2026-07-25)
-
-The W1 reduction (`tests/spec_field_accessor.rs` §"THE CONSTRUCTOR-ARM
-AXIS") falsified 0867's polymorphism framing: two polymorphic forms mint
-both accessors, and a CONCRETE distinct-name constructor arm mints neither.
-**The axis is where the field list lives**: accessors are synthesised only
-from the deftype-LEVEL field list (and the same-name single-constructor
-spelling that reduces to it); a field list in a named constructor arm whose
-name differs from the type's contributes NO accessor — every sum type,
-every distinct-name product.
-
-**Finalized attribution — `/dev`(typecheck), single-crate.** The seam is
-`crates/cranelisp-typecheck/src/adt.rs`: `synthesise_field_accessors` is
-called only under `if is_product` and only over `ctor_infos[0]`, with an
-explicit (wrong) comment "Sum/enum fields have no total accessor". Spec
-§5.2.6 is already normative against it — it REQUIRES sum-type accessors and
-specifies their semantics ("**Sum type accessors** are partial — they
-succeed on the matching variant and panic on mismatched variants", with
-`Option.unwrap` worked). No `/spec` question is open: the fix synthesises
-accessors over EVERY constructor arm's field list (partial semantics for
-multi-arm types per §5.2.6), preserving the §8.6.5 bare-alias contest
-classification unchanged — the retained duplicate-field negative family is
-the boundary fence. The panic face of a partial accessor needs its own
-positive + negative cells when the fix lands (`(Option.unwrap None)` →
-runtime panic — currently untestable, nothing mints).
-
-**`class=` re-label ruling: `class=enumeration-miss` STANDS.** The
-controlled-vocabulary definition ("a reachable-set enumeration omits …a
-symbol source") fits exactly: the accessor-source enumeration omits the
-constructor-arm field lists. No vocabulary addition; no test edit needed.
-Invisibility cause confirmed as the coverage-by-definition-variants lens
-(every prior guard spelled the ONE variant that works); the landed matrix is
-the variant × polarity grid that lens requires. Fix remains
-capacity-dependent (not in the pre-authorized carry list — an unfixed 0867
-at close needs an explicit user-approved carry). FIXME 0867 is retargeted
-`/testing` → `/dev` (typecheck) with this attribution appended.
-
-### 6.3 0868 — cache-hit lifecycle parity
-
-Flip of #27. Acceptance beyond the flip: fresh/cache equivalence for public
-AND private declared children; child resolution relative to the declaring
-parent; parent-before-child readiness; idempotence under multiple dependency
-edges. Owner unit test pins the cache-hit registration→child-enrollment
-transition. Schema-free and ruling-free — survives a 0869 cut independently
-(ruling 8).
-
-### 6.4 0869 — CONDITIONAL (ruling 1)
-
-The carrier **ruling** is the S118 deliverable regardless. Implementation
-cells apply only if it ships:
-
-- flip of #28; qualified and imported-bare variants both;
-- schema 23→24 in its own window: stale-cache rejection cell (a pre-24
-  sidecar invalidates cleanly rather than half-restoring);
-- idempotent re-enrollment (multiple restore paths, one discovery shell);
-- malformed/conflicting cached records rejected loudly (no silent row
-  choice);
-- owner units: writer-side metadata projection, restore-time enrollment,
-  replay idempotence, rejection polarity.
-
-If cut: #28 carries to S119 with the settled ruling as a user-approved carry
-(pre-authorized first cut).
-
-## 7. Track E — platform slice checks
-
-- **0874 fixture consolidation — preservation check (the QA cell).** Sharing
-  the raw heap-ADT fixture across the three integration crates must not
-  weaken assertions: before/after inventory of test fns + assertions in the
-  affected crates' tiers; zero assertion deletions/weakenings; schema
-  isolation (per-crate schemas) demonstrably retained; sustained-repetition
-  marshal guards untouched. `/review` executes against this checklist; `/qa`
-  audits at Phase 6.
-- **0870 (facade/ABI-v9 doc repair)**: documentation-only — acceptance is
-  zero semantic API delta (`public-api.txt` byte-identical) + doc-accuracy
-  review. No test cells.
-- **0873 (marker-binding ergonomics design)**: design-only; any public
-  `cranelisp-platform` surface contact returns to `/arch` (ruling 5). No
-  test cells this sprint; the design's verification ideas are future rows,
-  not present obligations (the S117 byte-backed-text precedent).
-
-## 8. 0875 — attribution before fix (mine)
-
-The exemplar standalone-`--link` failure (unresolved Rust symbols in the
-platform archive) gets a **minimal repro before any fix dispatch**: smallest
-program + platform-archive combination that fails the standalone link, with
-the exact unresolved-symbol set captured and mapped to its defining crate
-(exe-bundle force-link set vs platform staticlib build vs archive
-production). Scheduling recommendation: the symbol-inventory attribution is
-cheap and read-only — run it in the W5 window **after** the 0745 linked-
-startup work lands (same link path; 0745's changes may shift or even cure
-the symptom, so attributing before W4 wastes the reduction). Fix ships S118
-only if the repro proves it trivially adjacent to the 0745 change-set;
-otherwise S119 with the repro as the durable handoff.
-
-## 9. Re-eligible instrumented-matrix FIXMEs — triage (mine)
-
-| FIXME | Disposition | Rationale |
-|---|---|---|
-| 0726 | **RIDES Track B (W1 cells)** | The per-arm release plan is exactly what Track B implements; the tripwire cells become Track-B acceptance (§4.2). FIXME stays open until the cells land; disposition appended to the file. |
-| 0830 | **RIDES Track B (W1 rows + PLAN rows now)** | The eliminator axis is the v1-vs-its-own-design gap that let 0810 ship; adding it while the fix lands makes the harness the standing fence (§4.2). PLAN rows for the 0810/0782 pin batch land in `PLAN.md` this phase. Stays open until the harness rows land. |
-| 0831 | **ACTIONED NOW → delete** | The ask is a `/qa`-owned risk-register row (eliminator/consumer axis). Landed in `risks.md` S118 read as a standing register entry; FIXME deleted per protocol. |
-| 0778 | **ACTIONED NOW → delete** | PLAN rows for the six 0772-family lane cells land in `PLAN.md`; the arm-order/order-symmetry twin obligation for join-shaped seams lands as a standing lens in `risks.md`. The `/dev` property cells (`join_lattice_*`) already exist. Nothing residual. |
-| 0761 | **DEFER standing lane to S119; requirement rides now** | Every Track-B acceptance cell already asserts absolute `allocs == deallocs` (the committed REDs) and the new §4.2 rows are exact-balance by specification. Building the full owning-type × position exact-balance LANE while 21 cells are RED adds no discrimination and competes with W1's detection-proof capacity; it is the right S119 follow-on once the cells are green and can seed the lane. Deferral recorded in the FIXME. |
-| 0779 | **DECIDED; residual deferred to S119** | `/qa` decision recorded: adopt candidate (1) — a seam-level polarity cell driving `resolve_auto_curry` over a seeded `pending_auto_curry` (the `join_lattice_*` template), `/dev`(typecheck)-owned, S119 (no typecheck wave exists in S118); the four recheck-scoped seams are recorded as "`Final` by construction, not by test" per the FIXME's own honest-disposition clause. Recorded in the FIXME; stays open as the S119 trigger. |
-
-## 10. Close gate
-
-1. Deterministic: two consecutive complete captured (`tee`'d) runs, identical
-   failure sets, empty except user-approved carries (§1). Name-for-name
-   reconciliation of §2.1 per §2.4.
-2. Load-dependent member per §5.1 — or explicit carry with characterization
-   evidence attached.
-3. All eight detector rows have positive + clean + fail-on-revert evidence;
-   0857 regrade landed into the amended (0768) vocabulary; no
-   asserted-but-unproven grade survives.
-4. Ruling-10 fence GREEN (legacy emitter + depth constant + the second
-   glue-identity home — §4.3 extended cell — all gone) in the same wave as
-   the consumer flips; the 0796 balance-exclusion removal landed with S4
-   (§4.1); cell #15's `// defect:` re-locus landed with its flip (§4.1);
-   ruling-7 subtractive baseline landed; zero schema deltas outside the
-   0869 window.
-5. 0859 dispositioned: closed with a committed witness, or returned to the
-   user as disposition 2 — never silently carried.
-6. No new ignores; every new cell carries `// spec:` (+ `// defect:` where a
-   repro); `plan/spec_link_check.py` + `plan/spec_coverage_reconcile.py`
-   clean over the changed set.
-7. Track E preservation check clean (§7); 0875 repro produced before any fix
-   dispatch (§8).
-
 ## 11. Pre-gate pass (`/qa`, 2026-07-26, HEAD `49a20269`) — attribution + exit reconciliation
 
 Evidence: one focused run over all eleven baseline binaries + every §2.3
@@ -821,24 +526,6 @@ types not determined by the release key), loud where 0903's two families are
 silent; the S119 0903 ruling should co-rule it. Runtime already owns dynamic
 IO teardown (`free_io_branches`) — the natural ruling direction is recorded
 in 0907.
-
-### 11.2 The two 0903 leak families — DECISION: plan rows now, guards at S119 W1
-
-The censused families (synthetic accessors of generic/undeclared-field
-products; generic trait-method instances — both shallow-release and leak
-today, pre-existing) get **PLAN rows now** (landed, [historical S118 track rows](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)) and **failing-not-ignored marginal-balance guards authored by
-`/testing` at S119 W1**, QA-first, BEFORE the 0903 ruling's implementing
-wave. Not now, because: (1) the W8 gate's name-for-name accounting is
-already fixed — injecting new intended REDs mid-gate churns the exact
-arithmetic the gate exists to verify, for zero added detection (no fix can
-land before the S119 ruling); (2) FIXME 0765's no-fix-without-repro
-precondition is satisfied so long as the repros precede the fix dispatch —
-S119 W1 does; (3) the leak polarity needs the marginal harness (subject vs
-control differing in exactly the accessor call / trait-instance invocation),
-which is the S119-W1-shaped authoring the harness was built for. Interim
-visibility is not zero: cell #21 already carries the class at application
-scale (§11.3), and the 0903 file + `emit_heap_binding_decs` rustdoc census
-are the durable record.
 
 ### 11.3 Cell #21 / FIXME 0890 — marginal re-derivation EXECUTED; 0890 disposed
 
@@ -889,162 +576,6 @@ section; (b) add a warm-control guard leg (same-env trivial main, warmed
 identically, asserting residual exactly 0) so the "warm ⇒ ambient-free"
 premise that makes the absolute bound meaningful is continuously executed —
 the marginal-harness principle adapted to the cold/warm axis 0890 flagged.
-
-### 11.4 Golden CLIF lanes — pure expected drift; rebaseline ROUTED (FIXME 0908)
-
-Two RED cells: `clif_golden_lane::clif_golden_lane_no_drift` (**11 frames**:
-01,02,03,04,05,07,08,f1,f2,f3,f4) and
-`golden_clif_w0b::golden_clif_w0b_synth_accessor`. Verified drift shape in
-every inspected hunk: inline guarded-dec sequences (rmw/icmp/brif/fence +
-dealloc or embedded-ptr call, inline 1024 nullary guards) replaced by ONE
-colocated canonical-glue call with void signature — the W3 §8 reshape and
-nothing else; renumbering deltas are consequences. Behaviour corroboration:
-backend 527/527, consumer guards green, armed legs balanced, three-round W3
-review PASS. `/testing` re-captures BOTH lanes scoped + attributed citing
-`2df95c41..966d298e` (never blind), **before the W8 full-suite run**.
-
-### 11.5 Result-owner error-path negatives — COVERAGE CONFIRMED
-
-The §5/§6 rows the design owes are landed and discriminating
-(`src/result_owner.rs` unit tier + `src/pipeline.rs` + `src/exe.rs`):
-
-- **All four fresh-JIT polarities**: `fresh_jit_absent_key_is_a_hard_error_naming_the_expected_symbol`,
-  `fresh_jit_missing_address_is_a_hard_error`,
-  `fresh_jit_zero_address_is_a_hard_error` (the new null-address row — and it
-  discriminates the adapter's located error, not the `debug_assert`, per the
-  §6 requirement; verified again by the W4 closing review),
-  `fresh_jit_symbol_key_mismatch_names_both_spellings`; plus
-  `armed_owner_survives_a_pair_atomic_row_replacement`.
-- **Error outcomes release nothing**:
-  `resolver_failure_propagates_and_releases_nothing`;
-  `drop_backstop_releases_once_and_never_doubles` +
-  `observation_completes_before_the_single_glue_call` (exact-once);
-  `io_type_is_rejected_and_never_selects_io_glue`;
-  `non_concrete_type_is_a_hard_error_naming_module_and_type`;
-  `startup_non_concrete_inner_type_is_a_located_link_error` +
-  `scalar_result_startup_stub_omits_the_release_call_entirely` +
-  `exit_conversion_and_release_are_independent_axes` (link arm). The
-  trap/dispatch-fault row is tier-1 unconstructable (an owner exists only on
-  the clean arms; `program_outcome_to_result_runtime_error_*` +
-  `…_dispatch_fault_is_err` pin the arms' classification) — accepted.
-- **Honest residuals** (recorded, not gaps in the owed set): the cache-hit
-  adapter's miss/null rejections are code-present with located diagnostics
-  but have no constructed-`Linker` unit row, and the adapter itself is
-  production-unreached (W4 as-built note; `/design`(int) call recorded W4+).
-
-### 11.6 Exit reconciliation — name-for-name (input to W8/Phase 7)
-
-**The 28-name baseline: 22 GREEN / 6 RED, verified in this pass, exactly as
-committed.** Flip attribution: #22 → W2a; #10/#19/#20/#23 → W2b+ (marginal
-instrument, real measurements); #1–#9, #11–#14 → W3 (S3/S4 slices; S0/S1
-invariance held); #15–#18 → W4 (I3/I4/I5). The 6 remaining, all explicit
-carries: **#21** (re-attributed §11.3, S119/0903), **#24** (0694, Track C →
-S119), **#25/#26** (0863, Track D → S119; still failing on their OWN
-mechanisms — §11.1), **#27** (0868, S119), **#28** (0869 implementation
-deferred, carrier ruling in force). §2.2.1's 0688 trace-to-mechanism
-question stays open (absence proven, cure-vs-unreached unruled) and carries
-with the 0688 attribution question to S119; §2.6's 0782 stays "mechanism
-live in CLIF, cell green-by-latency" — closes only with fix + one-release
-IR evidence.
-
-**Intended-RED additions (§2.3), disposition:** arming gate, ruling-10 fence
-(extended), 0726 tripwires, 0830 rows (incl. `matched_in_tail_loop`), 0835
-repros A+B, 0889 exact-value pins, marginal-harness capability fence — **all
-GREEN** (flipped by their named waves; fence flipped atomically with W3's
-twelve-symbol deletion). Still RED: **0867 repro ×3**
-(`spec_field_accessor`) — not in the pre-authorized carry list; needs an
-explicit user-approved carry at close (fix retargeted `/dev`(typecheck),
-S119).
-
-**REDs at HEAD outside both sets** (all attributed this pass): Bind family
-×7 (§11.1, FIXME 0907, W3-surfaced) and golden lanes ×2 (§11.4, FIXME 0908,
-rebaseline owed). **Expected W8 full-suite failure set: 18 named cells** = 6
-carries + 3 (0867) + 7 (Bind) + 2 (golden; 0 if the rebaseline lands
-first). Any other RED in W8's run is a genuine regression. (This pass's
-universe covered the eleven baseline binaries + §2.3 binaries + Bind/golden
-binaries; the W2/W3 fence binaries and the wider corpus ride W8's full run.)
-
-**S118 FIXME ledger at the gate.** Filed-and-resolved this sprint: 0876,
-0877, 0878, 0879, 0880, 0881, 0882, 0883, 0884, 0885, 0886, 0887, 0888,
-0892, 0893, 0894, 0895, 0896, 0897, 0899, 0901, 0904, 0905, plus 0890 +
-0726 actioned/deleted in this pass. **Open S118-filed set going into close:**
-0889 (S119, user-required recovery), 0891 (deferred S119 on 0903), 0898
-(`/arch`), 0900 (`/testing`, locus-form suggestion), 0902 (`/arch`), 0903
-(`/design` backend, S119 ruling), 0906 (backend nit), 0907 + 0908 (this
-pass). Pre-S118 carries with recorded S118 dispositions: 0761/0779 (S119
-triggers), 0694/0604/0818 (Track C → S119), 0863/0867/0868/0869 (Track D →
-S119), 0870/0871/0872/0874/0875 (Track E / S119). **0835 is a candidate
-close for its owner**: all committed repros (A, B1–B3) are GREEN after
-W2b+W3 and the prelude face is carved off as 0889 — `/design`(intrinsics)
-confirms and deletes.
-
-### 11.7 W8 Phase-5 gate — certified full-suite reconciliation (`/qa`, 2026-07-26)
-
-**Verdict: PASS.** Two full `cargo nextest run --no-fail-fast` runs over the
-whole workspace: **5,653 run / 5,634 passed / 19 failed / 1 skipped — both
-runs, and the two failure sets are IDENTICAL name-for-name** (the first
-two-run deterministic evidence since S115; run 2 teed to the session
-scratchpad). The 1 skip is the sanctioned on-demand contention benchmark
-(`tests/concurrency_spark.rs:823`, explicit `#[ignore = "perf/contention
-benchmark…"]`) — not a hidden defect guard. Expectation: §11.6's 18 named,
-amended to **16** by the landed golden re-baseline (`d20ce68e`, FIXME 0908
-resolved — both golden-lane cells GREEN in both runs, confirmed). **All 16
-reconciled RED; zero expected-but-green; zero unexplained.**
-
-| # | Cell (both runs RED) | Attribution |
-|---|---|---|
-| 1 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400` | carry #21 — 0903 families, S119 (§11.3) **[re-attributed at P6 close to FIXME 0917 — §11.8.1]** |
-| 2 | `launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg` | carry #24 — 0694, Track C → S119 |
-| 3 | `spec_11_stdlib::def_definition_echo_names_user_binding_not_internal_thunk` | carry #25 — 0863 DF-1, Track D → S119 |
-| 4 | `spec_11_stdlib::def_info_and_sig_describe_bound_value_not_macro` | carry #26 — 0863 DF-2, Track D → S119 |
-| 5 | `cache::cache_restored_parent_enrols_private_test_child` | carry #27 — 0868, S119 |
-| 6 | `cache::cache_restores_sibling_written_trait_impls_for_dispatch` | carry #28 — 0869 implementation, S119 (carrier ruling in force) |
-| 7–9 | `spec_field_accessor::{concrete_constructor_arm_product…, polymorphic_product…, sum_type_variant_field…}_mints_canonical_and_unique_bare_accessors` | 0867 ×3 — `/dev`(typecheck), S119; needs the explicit user-approved carry at close (§11.6) |
-| 10–12 | `spec_10_io::{io_internal_ctors_stay_excluded_from_exhaustiveness_neg, match_arms_all_io_pure, pure_pattern_accepted}` | Bind family — 0907 (§11.1) |
-| 13–14 | `ctor_as_value::{bare_ctor_as_map_io_function_run_and_link, bare_ctor_through_race_map_io_run_and_link}` | Bind family — 0907 |
-| 15 | `examples::every_example_runs_with_documented_exit` (21-hello-io, 23-io-sequence) | Bind family — 0907 |
-| 16 | `stdlib_conformance::stdlib_all_public_modules_compile_and_run` (`core.io/when-io`; Bind signature verbatim in both runs' output) | Bind family — 0907 |
-
-**Deviations: 3 additional REDs, all present in BOTH runs, all attributed at
-the gate, none a compiler regression** (each now traces to an open FIXME per
-the RED-traceability rule):
-
-- `s117_ownership_witnesses::r2_borrowed_scalar_result_has_production_clif_polarity`
-  and `…::r2_alias_of_string_identity_has_production_clif_transfer` — **stale
-  textual oracles vs. W3's release-site collapse** (also fail focused; outside
-  every focused set since W3, per §11.6's stated universe). Both grep for the
-  legacy inline `atomic_rmw.i64 sub` release; W3 collapsed it into ONE
-  canonical glue call. **Invariants verified intact at the gate**: Borrowed
-  precise arm emits NO release (`return v16` directly) while the conservative
-  arm emits exactly one `call fn0(v1)` glue release — the polarity difference
-  lives; the AliasOf wrapper keeps its protect and releases the transferred
-  argument exactly once via glue. Behavioral siblings (`r2_*_all_modes`)
-  GREEN. **FIXME 0910** (`/testing`): re-express the release-side oracles
-  over the glue-call shape without weakening polarity.
-- `agent::yes_flag_errors_on_non_agent_build` — **harness stdin-write race
-  against an immediate-exit child**: EPIPE panic at `tests/helpers/e2e.rs:365`
-  in both loaded runs (0.003s/0.007s), PASSES focused with the guarded
-  behaviour verified correct (exit 1 + usage hint). Deterministic in cause (a
-  real ordering race in the test's harness usage — not "flaky"); latent since
-  the 0539 fix, first surfaced by these first-since-S115 full runs. **FIXME
-  0911** (`/testing`): make the guard race-independent; sweep the
-  structurally-identical `-y` sibling.
-
-**Flap-family check (category c): clean.** Failure sets byte-identical across
-the two runs — zero run-to-run flappers. The 0694 sibling-cache interleaving
-member did not flap (both cache guards RED in both runs, expected polarity);
-no sandbox-only class appeared. Load-dependent guards across both runs:
-`launch_grid` RED both (5.0s → 2.8s), exemplar #21 RED both (9.3s → 4.6s),
-consistent signatures.
-
-**0909 resolved at this gate**: MANIFEST §Re-baselines S118 entry landed
-(with the `Grid.cells` defect-sighting record — the blessed golden is a leak
-record, not certification); [S116 warm-control row](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) added
-(`exemplar_ownership_residue_s116::warm_cache_hit_control_carries_no_ambient_residual`,
-GREEN in both runs); 0903 gained the acceptance addendum naming the
-`f4_sudoku::user::Grid.cells` re-baseline as the S119 fix's own witness.
-0909 deleted. The stray uncommitted 0726/0890 deletions from the pre-gate
-pass (`33098d33` missed them) are committed with this record.
 
 ### 11.8 Phase-6 close dispositions (`/qa`, 2026-07-26) — 0917/0875/0913/0915/0916 + the `/testing` close batch
 
@@ -1154,33 +685,6 @@ recurrence is caught by the suite instead of by a Phase-6 replay.
   (`CRANELISP_ALLOC_PARITY_DUMP`), never `/mem` deltas — `/mem`'s window
   closes before the result release and is itself the subject of 0914.
 
-#### 11.8.4 FIXME 0915 — attribution SPLIT recorded; retargeted `/design`(backend) with a named int rider; guard deferred S119
-
-Read at source (`crates/cranelisp-backend/src/error.rs:60-146`,
-`crates/cranelisp-types/src/error.rs:192`):
-
-- **Backend half (items 1–3):** `CompilationError::CodegenFailed` carries a
-  structured `ErrorLocation` but its `cause` is a pre-rendered `String` that
-  already embeds the inner types-level located prefix — the doubled
-  `codegen error at 0..0:` is baked at construction (structure lost at the
-  wrapping seam). The `user/user/…` doubling is `error.rs:126-132` composing
-  `"{module}/{symbol}"` over an instance `Symbol` that already carries its
-  qualified spelling (plain `user/f` composes correctly — instance-specific).
-  The `0..0` is the raise sites not threading the failing form's span into
-  `ErrorLocation` — the spans exist on the `MonoExpr` nodes (the span-keyed
-  carrier architecture), so population is a backend raise-site obligation,
-  with int required not to discard it.
-- **Int rider (item 4 + presentation):** `user/__expr` and the `$`-mangled
-  instance spelling are subject-presentation defects at the display boundary
-  (D39: coordinates as data, formatting downstream in int) — the subject must
-  render as the user would write it per `repl/spec/05-error-presentation.md` §5.5. Named for
-  `/design`(int) in the same S119 window.
-- **Guard sequencing:** every currently-reachable e2e trigger for this frame
-  is 0907's refusal, so a guard authored now dies with 0907's fix. The §5.5
-  frame guard is deferred to S119, authored in the 0907/0903 fix window
-  against whatever codegen-refusal trigger remains (or a constructed one).
-  Recorded as a `[S119]` PLAN row, not a close-batch cell.
-
 #### 11.8.5 FIXME 0916 — "loses TCO" FALSIFIED; the SIGSEGV is a wild guarded RC write on a scalar payload; 0903 family 2's memory-unsafety face
 
 The probe rewrites this finding's mechanism entirely:
@@ -1242,25 +746,3 @@ flips. Any RED outside this set after the batch is a genuine regression.
 0903 family marginal guards (S119 W1, §11.2 — family 2's spec now MUST
 include a wild-write subject per §11.8.5); the S119 W1 golden re-baseline
 obligations (0903 addendum).
-
-## Next skills
-
-- `/testing` — W1: baseline reconciliation (§2.2), the §2.3 intended-RED
-  additions (extended fence, 0726 cells, 0830 rows, 0867 repro, 0835
-  repros A+B with process-abort guards), static arming-discipline gate
-  (§1); later, riding their flipping change-sets: the 0796
-  balance-exclusion removal (§4.1) and the cell-#15 `// defect:` re-locus
-  (§4.1).
-- `/design`(intrinsics) → `/dev`(runtime pair) — 0835 per the §4.5 ruling:
-  consume-owner contract first, fix after the W1 repros land; decoupled
-  from the backend W3 wave.
-- `/design`(intrinsics) → `/dev`(intrinsics) — Track A per §3; the triplet
-  revert records are `/qa`'s regrade input.
-- `/design`/`/dev`(backend) — Track B per §4 + `transitive-drop-glue.md`;
-  atomic deletion with the fence.
-- `/design`/`/dev`(int, exe-bundle) — 0745 per `result-owner.md`; then 0863
-  serialized after.
-- `/arch` — 0869 carrier ruling; 0768 vocabulary amendment in the 0857
-  regrade window.
-- `/sprint` — sequence waves with the W1 static gate before Track A, and the
-  armed-acceptance obligation (§4.1) in each fix wave's dispatch brief.

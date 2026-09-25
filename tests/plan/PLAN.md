@@ -157,7 +157,7 @@ and Git preserve the migration result and original per-test dispositions.
 
 The ring-era plans, the four-layer strategy and the S61 audits that lived
 in the legacy-plan collection (`git show 7f834bf6:tests/plan/legacy/`)
-were deleted in S122 after verification against source; the checkpoint retains the set. The Sprint-64 harvest audits of the deleted `tests/legacy`
+were deleted in S122 after verification against source; the checkpoint retains the set. The Sprint-64 harvest audits of the deleted test
 quarantine (the wave-3.5, wave-5.5, wave-5.6 and wave-6 records), the S21
 line-coverage snapshot, the S16 negative-coverage register and the
 failure-ledger stub followed (`git show b602708e:tests/plan/`): every
@@ -296,6 +296,43 @@ active allocation cites them; they are not fresh source censuses.
   witness's notation upkeep: `fixed=` and past-tense framing on its open
   `// defect:` line and header. The filing's int mirror tail and spaced
   `: Int` spelling stay with their owners.
+- The last allocator-balance threshold cell,
+  `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`,
+  still asserts `retained <= 1_400`, against the
+  [allocator-balance rule](../CLAUDE.md#allocator-balance-is-measured-marginally-never-absolutely).
+  S119 allocated its retirement to the change-set fixing 0917. That fix has
+  landed and the cell passes, but the bound was never re-derived. The
+  allocation stands for `test`: assert exact warm balance (`retained == 0`),
+  using `warm_cache_hit_control_carries_no_ambient_residual` in the same binary
+  as the executed ambient-free premise. A nonzero residual is new intake to
+  `qa`, never a new threshold. S122 completed the notation cleanup separately;
+  the executable assertion remains unchanged. Provenance: S119 §5.3,
+  `git show a07823d8:tests/plan/s119-test-plan.md`.
+- **L-B1 corpus extension: QA disposition pending.** The retired S102
+  exclusions promised capture after six shapes were fixed, but the corpus was
+  not extended. Their existing regression guards pass in the S122 cache-work
+  log; that does not establish corpus completeness. QA must decide whether
+  the current 14 entries are adequate or allocate additional captures to
+  `test`. The shapes are: two-instantiation Vec-operation HOF value use
+  (0483), single-instantiation Vec-operation value use (0474), qualified
+  generic call (0488a), imported generic value use (0488b), composition over
+  a fold-bodied imported generic (0488c), and definition-over-import shadow
+  order (0484, a rejected-program case whose capture suitability needs review).
+  Provenance: `git show a07823d8:tests/fixtures/clif_baseline/EXCLUSIONS.md`.
+- Option-2 (uniform emission) dev-tier cost remains unmeasured. The
+  [ownership-stratum options](../../design/arch/ownership-stratum-options.md)
+  paper defers option-2 adoption until that cost is measured, and no sprint
+  schedules the measurement. The S119 method (§7 at the revision above) is the
+  starting point:
+  - subject: the all-Owned lowering toggle; control: current emission; same
+    binary and tree, with only the per-child environment differing;
+  - the toggle leaves structural elisions in place, so the result is a lower
+    bound on uniform emission's cost unless `design`(backend) enumerates the
+    gap;
+  - measure the exemplar warm solve's wall time and RC op counts, the
+    contention benchmark, and the full suite's wall time and failures by name.
+
+  Nothing is allocated until the option is scheduled.
 - Historical unfiled limits remain explicitly unclassified. Each keeps its
   exact provenance so its substance is recoverable without re-derivation:
   - the S108 all-green multi-form display note — the
@@ -474,15 +511,21 @@ reuse. Retirement needs the citing owners to move their citations first.
 - Cut in S122 to their cited sections, original numbering kept and the removed
   remainder named in each header: [S102](s102-test-plan.md),
   [S103](s103-test-plan.md), [S112](s112-0628-ic-wave.md),
-  [S115](s115-test-plan.md), [S119](s119-test-plan.md) and
-  [S121](s121-test-plan.md). [S117](s117-test-plan.md) holds only its §3.3
+  [S115](s115-test-plan.md), [S118](s118-test-plan.md),
+  [S119](s119-test-plan.md) and [S121](s121-test-plan.md). [S117](s117-test-plan.md) holds only its §3.3
   failed-turn rows for ACT-0958 and retires with that action; its §3 e2e rows
   are in the suite under their planned names, its §6 S115 band reconciliation
   has no surviving `[Uncovered S115 …]` subject, and its §5 module-matrix
   allocation is dispositioned in the unclassified leads above.
-- Kept whole, because citations reach most sections: the
-  [S115 instrumentation matrix](s115-instrumentation-matrix.md),
-  [S116](s116-test-plan.md) and [S118](s118-test-plan.md).
+- Kept whole, because citations reach most sections: [S116](s116-test-plan.md).
+- The S115 instrumentation matrix is retired to Git
+  ([last revision](https://github.com/alilee/cranelisp/blob/a07823d8/tests/plan/s115-instrumentation-matrix.md)). Its row
+  verdicts were a dated S115 snapshot; some were later falsified. The current
+  grade and evidence for each row are in the
+  [safety-invariant register](../../design/arch/safety-invariants.md). Its
+  standing lesson, that a row is verified only with a cited detection proof, is
+  in [memory-safety coverage](memory-safety-coverage.md) §4.1. The R8 regrade it
+  fed stays open in filing 0857.
 - The Sprint-113 and Sprint-114 working plans and the S113 global risk
   assessment were deleted in S122
   (`git show 7b1220c7:tests/plan/`). Every row they allocated is a committed

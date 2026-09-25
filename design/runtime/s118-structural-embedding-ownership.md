@@ -123,8 +123,8 @@ not wrong; it is *blind*, and the reason is arithmetic:
 `over-incs = (1−1) + 0 = 0`. The single row in the suite that exercises this
 seam sits exactly on the one point where the defect is invisible. The two
 missing axes are `|ys| ≥ 2` and heap-typed elements — the
-`tests/CLAUDE.md` §"Coverage by definition variants" lens applied to a producer
-seam. §5's matrix restores both.
+[coverage-by-definition-variants lens](../../tests/plan/PLAN.md#standing-coverage-audit--definition-variants)
+applied to a producer seam. This document's matrix below restores both axes.
 
 ---
 

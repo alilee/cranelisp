@@ -91,7 +91,7 @@ from the persisted declarations, and a failure is a cache miss
 
 ## 3. Open gaps
 
-These were read from source on 2026-09-25. Neither has a failing test, and
+These were read from source on 2026-09-25. Evidence status is stated per gap;
 `qa` owns attribution.
 
 1. **A non-entry platform form is silently ignored.** `spec/10-io.md` §10.9.1
@@ -99,9 +99,12 @@ These were read from source on 2026-09-25. Neither has a failing test, and
    source skips it with no diagnostic, and the test for the rule is missing.
 2. **The REPL IO display strips the expression's IO type.** The user confirms
    the [REPL display contract](../../repl/spec/01-display-format.md#12-expression-results):
-   `(Pure 42)` must display `:(IO primitives/Int) (IO.Pure 42)` after forcing.
+   `(Pure 42)` must display `:(primitives/IO primitives/Int) (IO.Pure 42)` after forcing.
    Presentation belongs to that contract;
    [language REPL-mode semantics](../../spec/10-io.md#1062-repl-mode) defer to it.
    The source currently displays `:primitives/Int 42`, and the conflicting
-   assertion in `tests/spec_10_io.rs` must become a failing regression guard.
-   QA owns the evidence allocation. No runtime correction has landed.
+   assertions have been replaced by three failing regression guards in
+   `tests/spec_10_io.rs` (Int, String and bind results). The
+   [QA evidence plan](../../tests/plan/s122-evidence-delta.md) records their
+   limits. IO has no exception to fully qualified type names. No runtime
+   correction has landed.

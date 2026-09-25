@@ -778,7 +778,7 @@ fn effect_on_resource_with_capacity_appends_capacity_at_offset_32_byte_identical
 // DEF-6 (Sprint 86) — the alloc-callback payload-pointer LAYOUT INVARIANT
 // ---------------------------------------------------------------------
 //
-// spec: HostCallbacks::alloc (lib.rs §"Current shape (ABI v3)") —
+// spec: HostCallbacks::alloc (lib.rs §"Current shape (ABI v11)") —
 // "Allocate `size` bytes, returns payload pointer (base + 16)."
 //
 // The platform's heap-node constructors (`CLIO::pure`, `CLIO::effect*`,
@@ -1125,7 +1125,7 @@ fn t25_null_alloc_with_tag_panic_message_contract() {
     );
 }
 
-// T27 — HostCallbacks carries the two fn-pointer fields (ABI v3, FIXME
+// T27 — HostCallbacks carries the two fn-pointer fields (ABI v11, FIXME
 // 0288 — `validate_schema` removed; schema validation superseded by the
 // layout-hash gate, platform-interface.md §5.5.4).
 // spec: bounded-contexts.md §5 — HostCallbacks { alloc, alloc_with_tag }

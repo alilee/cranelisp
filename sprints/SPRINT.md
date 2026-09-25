@@ -4061,3 +4061,81 @@ citations. The language passage now delegates display to REPL§1.2, and int's
 design records the implemented display as non-conforming. Runtime unchanged;
 all changes remain uncommitted. The type-head spelling question remains
 separate from the confirmed envelope defect.
+
+Checkpoint `a07823d8` commits the documentation consolidation and three IO
+display guards. The user directs continuation. The next document-only batch
+starts from76 findings: QA Opus5.5/high
+`2ae38ac3-9d0c-4d9f-8bf8-f22accd4e798` owns retained test-plan cleanup;
+dev(exemplar) `126dbf84-aeaa-48c4-8c56-b43aed28ac14` owns exemplar standing
+documents; design(backend) `9d8b56e8-68ef-454f-a5d6-2d65fc3a0716` owns
+backend design consolidation. The writable surfaces are disjoint; no source
+correction, new behavior or runtime testing is in this batch.
+
+The exemplar document pass completed (dev session above): 2,055 lines across
+three files become 264 lines across two, preserving four open obligations.
+Root establishes the retained design and repairs its incoming performance
+reference. Dev(stdlib) Opus5.5/high session
+`2cd80c55-399d-4a6c-9980-083dbdcf3f4d` now owns `stdlib/**/*.md`, including
+the incoming citation to the retired exemplar review. QA and backend continue
+on their reserved surfaces. Platform finding0870 is retired after its last
+two ABI comment corrections; the already-settled closure-boundary discrepancy
+is removed from architecture's open list. Runtime behavior is unchanged.
+
+QA's document pass completed with all11 QA-plan findings resolved; current
+REDs remain open. Backend's five findings are resolved. Root integrates the
+QA citation handoffs and updates the IO design's delivered-test status.
+Test Opus5.5/high session `3413f932-bd54-4b2f-b809-fd1bb8c6739e` owns
+test-side Markdown outside QA plans plus the exact0917 comment/notation tail.
+No executable test changes or threshold-cell retirement are allocated in this
+document-only pass; the newly extracted QA allocation remains in PLAN.
+
+Stdlib documentation pass completed: five documents/2,603 lines become
+two/507 lines. Its backlog and function-valued-def options now live in the
+current design, and missing IO self-test obligations have been recovered there.
+Root establishes that design and repairs incoming filing citations. The
+existing `Ord String` usability gap and stale sconcat spec attribution remain
+explicit in its open-obligations section; no feature or semantic change is
+implied. The IO type-prefix question has been presented to the user: retain
+bare IO as an exception, or follow the general fully-qualified-type rule.
+No answer has yet been recorded.
+
+The integrated follow-on documentation check reports76→34 findings:42
+baseline identities resolved, zero new identities. Reports are the second-pass
+QA/backend/exemplar results and stdlib/test-cleanup results under `.local/`;
+the final observation is `.local/s122-doc-followon-final.json`. Eight obsolete
+documents are retired in the working tree, with roughly73,000 net Markdown
+words removed. Current obligations remain in owned plans/designs; QA's L-B1
+corpus-extension disposition is explicitly retained in PLAN.
+
+The test pass completed, including0917's three S120 fixed annotations and the
+separate forwarding guard's verified S121 annotation. Its filing remains until
+the comment edits are committed, as its closure rule requires; runtime tests
+and the residue threshold are unchanged. All Rust diffs are comment-only;
+`git diff --check` passes, the index is clean, and NOTES.md retains its original
+hash. The independently dirty `.agents` is untouched. These follow-on edits
+are uncommitted after checkpoint a07823d8. No phase advancement or push.
+
+Remaining document work includes frontend/typecheck/runtime designs, teaching
+and user-document surfaces, and checker false positives on language symbols.
+Known source-comment handoffs remain with their owners, including backend
+rustdoc under ACT-0964 and stdlib/test references to retired sections. The IO
+head-spelling question is settled by the user ruling below; runtime display
+correction remains outstanding.
+
+User ruling (2026-09-25): "No exception for IO types - consistency is critical
+for simple code and least surprise." IO follows the fully qualified type rule:
+`(Pure 42)` displays `:(primitives/IO primitives/Int) (IO.Pure 42)` after
+forcing. This changes the type-prefix spelling only; the IO envelope ruling
+stands. Spec, test and QA are applying the narrow specification/example,
+existing-guard and evidence-plan delta, respectively, on disjoint paths.
+Claude Opus5.5/high sessions: spec `f91ea0f8-31cc-424b-b226-e0cf7f0c3adb`,
+test `f1083887-8cb7-4177-bfb7-53dbd9deaa3e`, QA
+`344400e8-d7a5-4b9c-bbce-60cdf994788d`. Only test runs the affected guards;
+production implementation is unchanged.
+
+The IO head delta is complete: spec example and rule, strict three-cell
+predicate, QA evidence plan and int design agree on `primitives/IO`.
+The affected nextest filter reports3run/3expected failures, still inner-only
+display. QA accepts the filtered evidence because only those three cells call
+the changed helper; bare-head rejection is structural in its literal regex.
+No coverage is marked green and production display remains uncorrected.

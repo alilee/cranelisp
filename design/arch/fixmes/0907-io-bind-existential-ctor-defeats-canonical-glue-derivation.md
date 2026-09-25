@@ -50,8 +50,8 @@ ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §5
    - `training` removes the known-red headers and part markers in examples 21
      and 23;
    - `test` flips the retained red segment in `repl/demos/archive/ring4s.demo`;
-   - `dev` (stdlib) restores the six withheld `core.io` cases listed in
-     `stdlib/core/io.cl`;
+   - `dev` (stdlib) authors the six `core.io` self-tests listed in
+     `stdlib/plan-stdlib.md` §6.2;
    - `docs` removes the limitation notes in `user/getting-started.md` and
      `user/guide/concurrency.md`.
 3. **Introspection (`spec`/`design` int).** `Bind` and `IO` are named by

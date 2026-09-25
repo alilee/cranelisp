@@ -93,7 +93,7 @@ protocol; this FIXME stays open as the S119 trigger.
 
 The S118 deferral's condition is met: the Track-B cells flipped GREEN at S118
 W3 and can seed the lane. Plan of record: `tests/plan/s119-test-plan.md` §4.5,
-under the §5.1 normative-form proposal (paper §7 decision 5):
+under the §5.1 normative-form proposal (`design/arch/ownership-stratum-options.md` §7, decision 5):
 
 - **Vehicle:** `tests/gen_ownership_flows.rs` (already the owning-type ×
   position harness, 12 positions incl. the S118 eliminator rows). `/testing`
