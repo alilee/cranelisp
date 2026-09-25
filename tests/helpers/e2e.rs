@@ -1406,25 +1406,42 @@ pub fn run_through_all_modes_output(program: &str, prelude: PreludeVariant) -> A
     }
 }
 
-/// Strip REPL chrome (banner, `N+Mms; <module>> ` prompts, and `:Type value`
-/// value-echo lines) from REPL stdout, leaving only the program's `print`
-/// output. The prompt is emitted inline (not newline-terminated), so it is
-/// removed by regex rather than line-filtering.
-fn strip_repl_chrome(stdout: &str) -> String {
-    // Remove every `N+Mms; <word>> ` prompt fragment wherever it appears.
+/// The line the REPL prints before it executes an `IO` expression
+/// (repl/spec/01-display-format.md §1.2.1). U+2026, no `; ` prefix.
+pub const REPL_IO_NOTICE: &str = "Executing IO…";
+
+/// REPL stdout split into lines with every inline `N+Mms; <module>> ` prompt
+/// fragment removed. The prompt is not newline-terminated, so the output that
+/// follows it shares its line.
+pub fn repl_output_lines(stdout: &str) -> Vec<String> {
     let prompt_re = Regex::new(r"\d+\+\d+ms; \w+> ").unwrap();
-    let no_prompts = prompt_re.replace_all(stdout, "");
+    prompt_re
+        .replace_all(stdout, "")
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Strip REPL chrome (banner, prompts, the `Executing IO…` notice and
+/// `:Type value` value-echo lines) from REPL stdout, leaving only the
+/// program's `print` output.
+fn strip_repl_chrome(stdout: &str) -> String {
     let mut out = String::new();
-    for line in no_prompts.lines() {
+    for line in repl_output_lines(stdout) {
         // Drop the startup banner.
         if line.starts_with("cranelisp REPL") {
+            continue;
+        }
+        // The notice is REPL presentation, not program output (§1.2.1). Exact
+        // equality keeps a program line that merely contains it.
+        if line == REPL_IO_NOTICE {
             continue;
         }
         // Drop the `:Type value` value-echo lines (REPL result display).
         if line.trim_start().starts_with(':') {
             continue;
         }
-        out.push_str(line);
+        out.push_str(&line);
         out.push('\n');
     }
     // Trim ALL trailing newlines: the line-join above plus the prompt-only

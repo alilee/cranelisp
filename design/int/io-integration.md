@@ -24,10 +24,44 @@ contract is `design/arch/platform-interface.md`.
   (`result_owner::result_is_exit_code`), which the linked stub bakes in as
   well.
 - **REPL expressions.** An IO-typed expression is forced by the same driver.
-  The current display incorrectly shows the inner type and value; §3 records
-  the gap against the REPL's IO display contract. A definition turn executes
-  nothing. A runtime trap renders as
-  `runtime error: …`.
+  Its result displays the returned payload under the payload's own
+  fully qualified type, as
+  [REPL display §1.2.1](../../repl/spec/01-display-format.md#121-io-expression-results)
+  requires. The driver unwraps `IO a` once and
+  [result-owner.md](result-owner.md) owns the payload. A definition turn
+  executes nothing. A runtime trap renders as `runtime error: …`.
+
+### 1.1 REPL IO execution notice
+
+- **One determinant.** `pipeline::execute_compiled_expr` reads IO-ness once
+  from the expression's settled type. The same value selects driver forcing
+  and, when true, writes the notice line to process stdout and flushes it
+  immediately before the driver call. Notice and forcing cannot disagree, and
+  the notice precedes every effect and any code the driver runs
+  ([Principle 07](../arch/principles/07-single-source-of-truth.md),
+  [Principle 24](../arch/principles/24-resolve-once.md)). The driver is
+  runtime-owned, so the notice is not placed inside it
+  ([Principle 02](../arch/principles/02-narrow-interfaces.md)).
+- **A flushed write, not returned data.** The notice is ordered against
+  output that platforms write to fd 1 during the driver call. Data returned
+  after the call cannot precede that output, so the notice is exempt from the
+  binary's rule that warnings are returned data (`src/CLAUDE.md`).
+- **Text and style.** The REPL display module owns the notice text, rendered
+  through the `styled::render` seam. The pipeline decides only when it is
+  written.
+- **REPL-only by construction.** `--run` and `--link` do not reach
+  `execute_compiled_expr`, so batch output never contains the notice. There is
+  no mode flag ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
+- **Every executing REPL caller shows it.** This covers user turns, the EOF
+  flush, `/time`, `/mem` and agent submissions, with no per-caller code. The
+  agent's tool result and the recent-turn ring carry the formatted result
+  only, so they contain neither the notice nor effect output. Turns that do not
+  execute show no notice: definitions, introspection, compile errors and
+  typecheck-only agent probes.
+- **Accepted residual.** Degraded startup recovery re-drives a backing file
+  through the eval path. A hand-edited file holding a top-level IO expression
+  prints the notice alongside the effect output it already prints. A
+  suppression flag would cost more than this risk.
 
 ## 2. Platform-DLL loading
 
@@ -97,14 +131,3 @@ These were read from source on 2026-09-25. Evidence status is stated per gap;
 1. **A non-entry platform form is silently ignored.** `spec/10-io.md` §10.9.1
    makes a `platform` form in a non-entry module a compile-time error. The
    source skips it with no diagnostic, and the test for the rule is missing.
-2. **The REPL IO display strips the expression's IO type.** The user confirms
-   the [REPL display contract](../../repl/spec/01-display-format.md#12-expression-results):
-   `(Pure 42)` must display `:(primitives/IO primitives/Int) (IO.Pure 42)` after forcing.
-   Presentation belongs to that contract;
-   [language REPL-mode semantics](../../spec/10-io.md#1062-repl-mode) defer to it.
-   The source currently displays `:primitives/Int 42`, and the conflicting
-   assertions have been replaced by three failing regression guards in
-   `tests/spec_10_io.rs` (Int, String and bind results). The
-   [QA evidence plan](../../tests/plan/s122-evidence-delta.md) records their
-   limits. IO has no exception to fully qualified type names. No runtime
-   correction has landed.

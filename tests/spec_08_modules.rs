@@ -743,6 +743,133 @@ fn qualified_ref_to_missing_module_errors_neg() {
     );
 }
 
+/// `--run main.cl` over a project holding `main.cl` and `b.cl`.
+fn run_main_with_b(main: &str, b: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .file("main.cl", main)
+        .file("b.cl", b)
+        .run("main.cl")
+        .output()
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 — a fully-qualified type name in an
+// annotation loads its module
+// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev
+// One-module form of tests/cache.rs::fq_type_only_reference_loads_its_module_on_a_fresh_compile.
+// The control differs only in a named import that loads `b` first, so `b/T`
+// resolves once `b` is loaded. The subject fails with the type error
+// "module `b` referenced by `b/T` is not loaded", not the loader's
+// module-not-found error: nothing turns the unloaded type home into a load.
+// Which layer should is not attributed.
+#[test]
+fn fq_type_annotation_alone_loads_its_module() {
+    let b = "(import [primitives [Int]])\n(deftype T [:Int n])\n(defn mk [] (T 7))\n";
+    let annotated = "(defn h [:b/T t] :Int 7)\n(defn main [] (Pure 7))\n";
+    let control = run_main_with_b(
+        &format!("(import [primitives [Pure Int]])\n(import [b [mk]])\n{annotated}"),
+        b,
+    );
+    assert_eq!(
+        control.status.code(),
+        Some(7),
+        "control: with `b` loaded, `:b/T` must resolve:\n{}",
+        control.stderr
+    );
+    let subject = run_main_with_b(&format!("(import [primitives [Pure Int]])\n{annotated}"), b);
+    assert_eq!(
+        subject.status.code(),
+        Some(7),
+        "`:b/T` alone must load `b`:\n{}",
+        subject.stderr
+    );
+}
+
+// =============================================================================
+// §8.3.6 Alias-Only Import / §8.3.7 Null Import
+// =============================================================================
+
+const ALIAS_TARGET_B: &str = "(defn f [] 11)\n";
+
+// spec: spec/08-modules.md §8.3.6 — Alias-Only Import (the alias serves
+// qualified access, §8.6.6 step 1, whether or not its target is already loaded)
+// defect: class=wrong-reject locus=src/process_form/dependency.rs::handle_import found=S115 owner=/dev
+// FIXME 0798. The explicit-name alias control resolves `bb/f`. Both subjects
+// fail with "module 'bb' referenced by 'bb/...' not found", the face of an
+// undeclared qualifier, even when an earlier named import has loaded `b`. So
+// the alias of the empty-name form is not registered; loading its target is
+// not the missing step. The locus is a source reading, not a seam observation.
+#[test]
+fn alias_only_import_alias_resolves_qualified_call() {
+    let prefix = "(import [primitives [Pure]])\n";
+    let call = "(defn main [] (Pure (bb/f)))\n";
+    let control = run_main_with_b(
+        &format!("{prefix}(import [(b bb) [f]])\n{call}"),
+        ALIAS_TARGET_B,
+    );
+    assert_eq!(
+        control.status.code(),
+        Some(11),
+        "control: an explicit-name alias must resolve `bb/f`:\n{}",
+        control.stderr
+    );
+    let mut rejected = Vec::new();
+    for (shape, imports) in [
+        ("alias-only", "(import [(b bb) []])\n"),
+        (
+            "alias-only, target already loaded",
+            "(import [b [f]])\n(import [(b bb) []])\n",
+        ),
+    ] {
+        let out = run_main_with_b(&format!("{prefix}{imports}{call}"), ALIAS_TARGET_B);
+        if out.status.code() != Some(11) {
+            rejected.push(format!("{shape}: exit={:?}\n{}", out.status.code(), out.stderr));
+        }
+    }
+    assert!(
+        rejected.is_empty(),
+        "`(import [(b bb) []])` must register `bb` for `bb/f`:\n{}",
+        rejected.join("\n")
+    );
+}
+
+// spec: spec/08-modules.md §8.6.6 — Qualified Name Resolution Order (step 5: a
+// qualifier that names no alias and no module is an unknown module)
+#[test]
+fn undeclared_alias_qualifier_is_not_resolved_neg() {
+    let out = run_main_with_b(
+        "(import [primitives [Pure]])\n(import [(b bb) []])\n(defn main [] (Pure (vv/f)))\n",
+        ALIAS_TARGET_B,
+    );
+    assert!(
+        !out.status.success() && out.stderr.contains("'vv'"),
+        "`vv/f` must be rejected naming `vv` when only `bb` is declared: exit={:?}\n{}",
+        out.status.code(),
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.3.7 — Null Import (imports nothing and does not
+// load the module)
+#[test]
+fn null_import_does_not_load_its_module() {
+    let broken = "(defn f [] (no-such-name))\n";
+    let named = run_main_with_b(
+        "(import [primitives [Pure]])\n(import [b [f]])\n(defn main [] (Pure 5))\n",
+        broken,
+    );
+    assert!(
+        !named.status.success() && named.stderr.contains("no-such-name"),
+        "control: loading `b` must report its compile error: exit={:?}\n{}",
+        named.status.code(),
+        named.stderr
+    );
+    run_main_with_b(
+        "(import [primitives [Pure]])\n(import [b []])\n(defn main [] (Pure 5))\n",
+        broken,
+    )
+    .assert_exit(5);
+}
+
 // =============================================================================
 // §8.7.3 Private Name Semantics — glob excludes private
 // =============================================================================

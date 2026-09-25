@@ -186,7 +186,7 @@ transports, and `redef_slots`.
 - The `Registered` record owns parameter and return monotypes and the written
   scope; `Checked` adds the annotated body and canonical callees. They cannot
   disagree on body identity, and a body error publishes none of them.
-- Initial callees come from `program/callees.rs::harvest_callees` over the body
+- Initial callees come from `crates/cranelisp-typecheck/src/program/callees.rs::harvest_callees` over the body
   frame's exact user-function references.
 - Late edges need no module-wide list: during final annotation the publisher
   walks each record's AST with the final resolution maps, harvests the edges in

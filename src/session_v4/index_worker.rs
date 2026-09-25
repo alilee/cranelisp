@@ -1253,11 +1253,16 @@ fn index_typecheck_into_private(
         Ok(_check) => {
             // Commit the staged typed entries into the private module table so
             // the caller reads them out (the private table is discarded after).
-            if let Some(mut live) = priv_tables.get_mut(module) {
-                live.publish_staged(staging, &[])
-                    .map_err(|error| format!("private index publication error: {error}"))?;
-            }
-            Ok(declarations)
+            let Some(mut private) = priv_tables.get_mut(module) else {
+                return Ok(declarations);
+            };
+            private
+                .publish_staged(staging, &[])
+                .map_err(|error| format!("private index publication error: {error}"))?;
+            Ok(IndexedDeclarations {
+                edges: declarations.edges.with_callee_modules(module, &private),
+                ..declarations
+            })
         }
         Err(e) => Err(format!("typecheck error: {e:?}")),
     }
@@ -2121,6 +2126,43 @@ mod tests {
             fallback_before, fallback_after,
             "ISOLATION §3.2: the index typecheck must not mutate the live \
              prelude_fallback (it reads a private snapshot)"
+        );
+    }
+
+    // spec: design/int/int.md §7.6.1 — the index writer's edges include the
+    // callee modules of its private table after typecheck, so a module that
+    // reaches a loaded module only through a qualified call records it.
+    #[test]
+    fn index_edges_include_a_module_reached_only_through_a_qualified_call() {
+        let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        crate::bootstrap::mount_synthetic_modules(&tables, &std::sync::atomic::AtomicU32::new(0))
+            .unwrap();
+        let aliases = cranelisp_types::ModuleAliases::default();
+        let fallback = cranelisp_typecheck::PreludeFallback::default();
+        let index = |module: &ModuleFullPath, source: &str| {
+            tables.insert(
+                module.clone(),
+                crate::code::SessionSymbolTable::new_with_params(module.clone()),
+            );
+            let sexps = cranelisp_frontend::parse(source).unwrap();
+            index_typecheck_into_private(&tables, &aliases, &fallback, module, &sexps).unwrap()
+        };
+        index(&m("b"), "(defn f [] 11)");
+
+        let indexed = index(&m("a"), "(defn g [] (b/f))");
+
+        let fallback_bit = crate::imports::gets_prelude_fallback(&m("a"), &[], &[]);
+        let null_import_of_b = cranelisp_types::ImportSpec {
+            module_path: m("b"),
+            alias: None,
+            names: cranelisp_types::ImportNames::None,
+            span: cranelisp_types::Span::SYNTHETIC,
+        };
+        assert_eq!(
+            indexed.edges,
+            ModuleEdges::of_declarations(&m("a"), &[null_import_of_b], &[], &[], fallback_bit),
+            "`b` is an edge of `a` only through the recorded callee `b/f`"
         );
     }
 

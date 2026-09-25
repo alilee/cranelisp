@@ -402,7 +402,7 @@ Platform DLLs are discovered via the platform DLL search order defined in §8.11
 
 This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results, by the `trace` special form for formatting traced arguments and return values, and by the `Display` trait's default implementations.
 
-### 12.9.1 Format by Type [Tested tests/repl_introspection::display_int_result]
+### 12.9.1 Format by Type [Tested tests/repl_introspection::display_int_result, tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload]
 
 Each type has a defined display representation:
 
@@ -416,7 +416,7 @@ Each type has a defined display representation:
 | Data ADT constructor | `(Type.Constructor field1 field2 ...)` — constructor in dot notation, fields formatted recursively, space-separated, wrapped in parentheses | `(Option.Some 42)`, `(Cons 1 (Cons 2 Nil))` |
 | `Vec` | `[elem1, elem2, ...]` — elements formatted recursively, comma-separated | `[1, 2, 3]`, `["a", "b"]` |
 | Closure / function value | `<closure>` | `<closure>` |
-| `IO` | Displayed as the ADT value after trampoline execution resolves to `Pure` | `(IO.Pure 42)` |
+| `IO` | Not displayed as a value by the REPL: the REPL executes an IO expression and displays the payload it returns under the payload's type ([REPL §1.2.1](../repl/spec/01-display-format.md#121-io-expression-results)) | `42` for `(Pure 42)` |
 | `Trace` | Displayed as the ADT value | `(Trace.TraceCall ...)` |
 
 ### 12.9.2 Qualified Names in Display [Tested tests/repl_introspection::display_int_result]

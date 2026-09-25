@@ -32,6 +32,7 @@ rediscover or divide the work into new tickets.
 | Shared quote classifier | `src/expander.rs`, `src/process_form/macro_resolution.rs` | Both int walkers consume `cranelisp_types::{quote_head, QuoteHead}`; quote behavior is unchanged |
 | Canonical result root and `/mem` | `src/result_owner.rs`, `src/repl/commands.rs` | Both int consumers are delivered; Q6 observes the rendered heap result and the post-release counter snapshot |
 | Failed-turn recovery evidence | private unit surface in `src/worker.rs` | Use the approved §5 private substitution; no production flag is authorized |
+| Qualified-callable cache dependency (review F1) | `src/callee_edges.rs` (the shared callee enumeration, also read by `src/redefine.rs`), `src/cache/dependency_record.rs`, `src/process_form/cache_restore.rs`, `src/session_v4/index_worker.rs` | The user approved the private correction in `int.md` §7.6.1 on 2026-09-25. It is delivered without public API, carrier or schema change. Review accepted it, and QA judged its evidence adequate as a bounded correction ([F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-acceptance-and-qr-classification-2026-09-25)). The FN-1 fence (unarmed until FIXME 0798 is repaired) and the user's Phase-5 acceptance remain; the QR kinds are a separate disposition |
 | Eval production follow-up | none selected | Open Binary/int source only if an approved live configuration proves the condition in §6 |
 
 `crates/cranelisp-exe-bundle/` remains inside the reservation and caller census,

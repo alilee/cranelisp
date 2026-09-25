@@ -414,3 +414,253 @@ fn unsettled_when_a_typechecked_member_has_no_stashed_hash() {
         RecordOutcome::Unsettled { member: m("d") }
     );
 }
+
+// ---------------------------------------------------------------------------
+// Callee-module edges (`design/int/int.md` §7.6.1)
+// ---------------------------------------------------------------------------
+
+mod callee_modules {
+    use std::collections::HashMap as StdHashMap;
+
+    use cranelisp_types::{
+        CallableArmDraft, CallableOrigin, CodeStore, DefnVariant, Expr, FQSymbol, MacroClauseDraft,
+        MonoDefnVariant, MonoExpr, Realization, Scheme, Sexp, Symbol, SymbolTable, TemplateBody,
+        TemplateKind, Type,
+    };
+
+    use super::*;
+
+    fn callees(modules: &[&str]) -> Vec<FQSymbol> {
+        modules
+            .iter()
+            .map(|module| FQSymbol {
+                module: m(module),
+                symbol: Symbol::from("f"),
+            })
+            .collect()
+    }
+
+    fn scheme(ty: Type) -> Scheme {
+        Scheme {
+            type_vars: cranelisp_types::free_vars(&ty).into_iter().collect(),
+            constraints: StdHashMap::new(),
+            ty,
+        }
+    }
+
+    fn concrete_ty(arity: usize) -> Type {
+        Type::Fn(vec![Type::Int; arity], Box::new(Type::Int))
+    }
+
+    fn template_ty() -> Type {
+        Type::Fn(vec![Type::Var(0)], Box::new(Type::Int))
+    }
+
+    fn body(name: &str) -> (DefnVariant, MonoDefnVariant) {
+        let ast = DefnVariant {
+            params: Vec::new(),
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
+        };
+        let view = MonoDefnVariant {
+            name: Symbol::from(name),
+            params: Vec::new(),
+            body: MonoExpr::lenient_from_expr(
+                &ast.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        (ast, view)
+    }
+
+    fn concrete<C: CodeStore>(table: &mut SymbolTable<C, ()>, name: &str, modules: &[&str]) {
+        let (ast, view) = body(name);
+        table
+            .install_concrete(
+                Symbol::from(name),
+                scheme(concrete_ty(0)),
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(ast),
+                callees(modules),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+
+    fn template<C: CodeStore>(table: &mut SymbolTable<C, ()>, name: &str, modules: &[&str]) {
+        let (ast, _) = body(name);
+        table
+            .install_template(
+                Symbol::from(name),
+                scheme(template_ty()),
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                TemplateBody::Ast(ast),
+                TemplateKind::Parametric,
+                callees(modules),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+
+    fn concrete_arm(name: &str, arity: usize, modules: &[&str]) -> CallableArmDraft {
+        let (ast, view) = body(name);
+        CallableArmDraft::concrete_body(
+            scheme(concrete_ty(arity)),
+            Vec::new(),
+            ast,
+            view,
+            callees(modules),
+        )
+    }
+
+    fn template_arm(name: &str, modules: &[&str]) -> CallableArmDraft {
+        let (ast, _) = body(name);
+        CallableArmDraft::template(
+            scheme(template_ty()),
+            Vec::new(),
+            TemplateBody::Ast(ast),
+            TemplateKind::Parametric,
+            callees(modules),
+        )
+    }
+
+    /// One binding of every callable kind, each calling a distinct module:
+    /// concrete and template callables, an overload with a template and a
+    /// concrete arm, and a macro clause.
+    fn every_callable_kind<C: CodeStore>(table: &mut SymbolTable<C, ()>) {
+        concrete(table, "plain", &["c-concrete"]);
+        template(table, "generic", &["c-template"]);
+        table
+            .install_overloaded(
+                Symbol::from("multi"),
+                None,
+                0,
+                vec![
+                    template_arm("multi-generic", &["c-arm-template"]),
+                    concrete_arm("multi-binary", 2, &["c-arm-concrete"]),
+                ],
+                Visibility::Public,
+            )
+            .unwrap();
+        let clause = MacroClauseDraft::new(Vec::new(), None, concrete_arm("mac", 0, &["c-macro"]));
+        table
+            .install_macro(
+                Symbol::from("mac"),
+                None,
+                0,
+                Sexp::List(Vec::new(), Span::SYNTHETIC),
+                vec![clause],
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+
+    const EVERY_KIND: [&str; 5] = [
+        "c-arm-concrete",
+        "c-arm-template",
+        "c-concrete",
+        "c-macro",
+        "c-template",
+    ];
+
+    fn table_edges(table: &SessionSymbolTable) -> Vec<String> {
+        let ModuleEdges(edges) = ModuleEdges::of_table(&m("m"), table, false);
+        edges.into_iter().map(|edge| edge.to_string()).collect()
+    }
+
+    #[test]
+    fn every_callable_kind_contributes_its_callee_modules() {
+        let mut table = SessionSymbolTable::new_with_params(m("m"));
+        every_callable_kind(&mut table);
+        assert_eq!(table_edges(&table), EVERY_KIND);
+    }
+
+    // The restore walk reads a decoded table before installing it.
+    #[test]
+    fn a_decoded_table_yields_the_same_callee_modules() {
+        let mut table = SymbolTable::<(), ()>::new_with_params(m("m"));
+        every_callable_kind(&mut table);
+        let modules: Vec<String> = callee_modules(&m("m"), &table)
+            .into_iter()
+            .map(|module| module.to_string())
+            .collect();
+        assert_eq!(modules, EVERY_KIND);
+    }
+
+    #[test]
+    fn own_module_and_compiler_owned_callees_are_not_edges() {
+        let mut table = SessionSymbolTable::new_with_params(m("m"));
+        concrete(
+            &mut table,
+            "plain",
+            &["m", "primitives", "macros", "platform.io"],
+        );
+        assert!(table_edges(&table).is_empty(), "{:?}", table_edges(&table));
+    }
+
+    #[test]
+    fn a_table_without_callees_yields_exactly_its_declared_edges() {
+        let mut table = SessionSymbolTable::new_with_params(m("m"));
+        concrete(&mut table, "plain", &[]);
+        template(&mut table, "generic", &[]);
+        table.imports = vec![named_import("d"), import("n", None, ImportNames::None)];
+        table.exports = vec![reexport("e")];
+        table.submodules = vec![child("kid")];
+        assert_eq!(
+            ModuleEdges::of_table(&m("m"), &table, true),
+            ModuleEdges::of_declarations(
+                &m("m"),
+                &table.imports,
+                &table.exports,
+                &table.submodules,
+                true,
+            )
+        );
+    }
+
+    #[test]
+    fn a_fresh_member_linked_only_by_a_callee_is_in_the_closure() {
+        let session = Session::new();
+        session.fresh("e", "hash-e", &[]);
+        session.fresh("d", "hash-d", &[]);
+        concrete(
+            &mut session.shared.symbol_tables.get_mut(&m("d")).unwrap(),
+            "g",
+            &["e"],
+        );
+        assert_eq!(
+            record_of(session.build("m", &["d"])),
+            pairs(&[("d", "hash-d"), ("e", "hash-e")])
+        );
+    }
+
+    #[test]
+    fn unsettled_when_a_callee_module_has_no_loaded_source() {
+        let session = Session::new();
+        session.fresh("d", "hash-d", &[]);
+        concrete(
+            &mut session.shared.symbol_tables.get_mut(&m("d")).unwrap(),
+            "g",
+            &["e"],
+        );
+        assert_eq!(
+            session.build("m", &["d"]),
+            RecordOutcome::Unsettled { member: m("e") }
+        );
+    }
+}

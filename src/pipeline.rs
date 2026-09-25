@@ -167,7 +167,10 @@ pub fn execute_compiled_expr(
     // `__expr` wrapper, written by `compile_to_module`. The `Arc<Jit>` on the
     // `__expr` entry keeps the pages mapped for the duration of this call +
     // the IO drive the program driver performs internally.
-    let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, ty.is_io());
+    let is_io = ty.is_io();
+    // A failed stdout write is ignored, as for every REPL display line.
+    let _ = write_io_execution_notice(is_io, &mut std::io::stdout());
+    let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, is_io);
 
     // The driver boundary: `IO a` is unwrapped exactly once here, and the clean
     // arm's word crosses into the ONE program-result owner (FIXME 0745). The
@@ -192,6 +195,19 @@ pub fn execute_compiled_expr(
             ))
         }
     }
+}
+
+/// Write the §1.2.1 notice when the driver is about to force an IO action.
+///
+/// The notice must precede output that platforms write to stdout during the
+/// driver call, so it is written and flushed here rather than returned with the
+/// result. `is_io` must be the same value that selects forcing.
+fn write_io_execution_notice(is_io: bool, out: &mut impl std::io::Write) -> std::io::Result<()> {
+    if !is_io {
+        return Ok(());
+    }
+    writeln!(out, "{}", crate::repl::format::io_execution_notice_line())?;
+    out.flush()
 }
 
 /// The outcome of running a compiled `__expr`: a computed value or a
@@ -504,5 +520,48 @@ mod tests {
             other => panic!("expected Platform(DispatchError), got {other:?}"),
         }
         assert_eq!(cranelisp_intrinsics::panic::take_dispatch_fault(), None);
+    }
+
+    /// Records whether a flush followed the last write, so a notice left in a
+    /// buffer (and therefore printed after the effects) is observable.
+    #[derive(Default)]
+    struct FlushProbe {
+        bytes: Vec<u8>,
+        flushed_after_write: bool,
+    }
+
+    impl std::io::Write for FlushProbe {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            self.flushed_after_write = false;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushed_after_write = true;
+            Ok(())
+        }
+    }
+
+    // spec: repl/spec/01-display-format.md §1.2.1 — the notice line precedes
+    // the IO action's platform output, so it is flushed before the driver runs.
+    #[test]
+    fn io_execution_notice_is_written_as_one_line_and_flushed_for_io() {
+        let mut out = FlushProbe::default();
+        write_io_execution_notice(true, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out.bytes).unwrap(),
+            format!("{}\n", crate::repl::format::io_execution_notice_line())
+        );
+        assert!(out.flushed_after_write, "the notice must be flushed");
+    }
+
+    // spec: repl/spec/01-display-format.md §1.2.1 — a non-IO expression MUST
+    // NOT produce the notice.
+    #[test]
+    fn io_execution_notice_writes_nothing_for_non_io() {
+        let mut out = FlushProbe::default();
+        write_io_execution_notice(false, &mut out).unwrap();
+        assert!(out.bytes.is_empty());
     }
 }

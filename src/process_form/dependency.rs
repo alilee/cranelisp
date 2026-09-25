@@ -156,8 +156,11 @@ pub(super) fn handle_import(
         );
         let dep = &dep_owned;
 
-        // §8.3.6 Null import: empty names means suppress loading entirely.
+        // A name-less import loads nothing (§8.3.7); an alias-only one still
+        // registers its alias (§8.3.6), and a qualified reference through it
+        // auto-loads the target (§8.5.4).
         if matches!(&spec.names, ImportNames::None) {
+            crate::imports::install_import_alias(&ctx.current_module, ctx.module_aliases, spec);
             continue;
         }
 

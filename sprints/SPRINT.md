@@ -1,7 +1,8 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5. Latest consumer checkpoint: `50d95d48`; local shared-package
-checkpoint: `52d7e20`. The compiler corrections,
+**Status:** PHASE 5, final acceptance reconciliation: not yet ready for acceptance.
+Latest consumer checkpoint: `293534ee`; local shared-package checkpoint:
+`c339fa7`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
 Document consolidation continues: the last integrated check has zero findings
@@ -4038,30 +4039,10 @@ to the language-spec passage; QA Opus5.5/high
 `f4044d03-ed5d-4f8d-a33a-391d83a9caea` allocates a focused regression
 correction. No production fix is selected. The document batch remains uncommitted.
 
-Spec completed the language-to-REPL presentation deferral and invalidated the
-old coverage claim. Root applied its mechanical design handoff: inner-only
-display is now a ruled implementation gap. QA allocated three existing-test
-replacements (Int, String, bind-produced IO) and existing execution/exit-code
-fences. Test Opus5.5/high `07ea9aa7-e6eb-4249-af21-ca6a9985477f` writes
-and executes those RED guards. The QA-proposed requirement-conflict notation
-entry is authorized within its vocabulary band; no additional user gate is
-needed for that role-owned classification.
-
-The distinct type-head spelling conflict (IO in the specific example versus
-fully-qualified primitives/IO under the general prefix rule) remains explicit;
-QA's current guards allow either while pinning the wrapper and inner value.
-No spelling rule is changed by those tests. Coupled inner-only assertions and
-shared parsers are reserved for the later correction, not silently accepted as
-requirements. Production display correction remains pending.
-
-Test completed IOD-1–3: two complete spec_10_io runs each report66PASS/3FAIL
-of69, no skips. The failures are the allocated inner-only Int, String and
-bind-result displays; every other cell passes. Root applies QA's preallocated
-RED annotation with the actual replacement names and repairs their renamed
-citations. The language passage now delegates display to REPL§1.2, and int's
-design records the implemented display as non-conforming. Runtime unchanged;
-all changes remain uncommitted. The type-head spelling question remains
-separate from the confirmed envelope defect.
+The earlier IO-envelope ruling and its IOD-1–3 guards are superseded by the
+user's later automatic-execution notice ruling. The delivered IOT evidence and
+current requirement are recorded at the end of this sprint log and in the QA
+plan; inner-payload display is no longer classified as a defect.
 
 Checkpoint `a07823d8` commits the documentation consolidation and three IO
 display guards. The user directs continuation. The next document-only batch
@@ -4296,3 +4277,169 @@ historical-record policy is unchanged. ACT-0991 records the future migration;
 the bare-path heuristic remains unchanged. This clears the checker findings,
 not the separate compiler defects or every substantive document obligation.
 Follow-on changes remain uncommitted and NOTES.md remains untouched.
+
+### Final acceptance reconciliation (2026-09-25)
+
+The user approved a bounded final QA reconciliation and fresh test run, not
+carry acceptance, Phase6 advancement or publication. QA Claude Opus5.5/high
+session `4caf3e09-2fd9-49a4-804b-d056f620140e` reports that Phase5 is not yet
+ready. Its read-only assessment is `.local/s122-final-qa-result.md`.
+
+Fresh evidence at consumer293534ee with local packagec339fa7:
+
+- Default nextest: 6,060 executed, 6,049 pass, 11 fail, one intentionally ignored
+  contention benchmark; 109.2 seconds. `.local/s122-final-nextest.log` and
+  `.exit` retain the run. Seven failures concern qualified-reference cache
+  invalidation/restoration, one is fresh-compile type-only module loading,
+  and three concern the approved REPL IO display. All match existing recorded
+  guards; QA found no new regression in this run.
+- The prior sandboxed run had 13 additional failures: ten denied ephemeral-port
+  binds and three reactor backstop timeouts. All pass in the controlled rerun
+  with socket access. The sandbox log is retained separately; it is not product
+  failure evidence.
+- Citation drift, role wiring and public-API relocation checks pass in the
+  default suite. This is maintenance evidence, not proof of substantive coverage.
+- Refreshed isolated agent integration lane:81/81 pass. Feature-gated agent
+  module selection:137/137 pass, 3,544 outside the selection. Logs are
+  `.local/s122-final-agent-lane.log` and `.local/s122-final-agent-modules.log`.
+  The latter supplies current evidence but does not repair ACT-0982's launcher
+  routing. Offline eval self-check:18/18 cases agree, recorded in
+  `.local/s122-final-eval-self-check/report.json`. This refreshes the harness
+  evidence that was stale at QA's assessment. No live model rerun was requested
+  or performed.
+
+Delivered scope has evidence for generic replacement, public IO composition,
+recovery under its approved public-trigger limit, macro-turn ownership fixes,
+selected convergence and the shared document checker. The historical Haiku
+baseline completed2/2 tasks with one attempt each; it is not a reliability
+estimate or a current-binary model-quality claim.
+
+Acceptance work still requires explicit disposition:
+
+- QA recommends implementing the private callee-consumption correction and
+  approved IO display, then rerunning the qualified-reference guards before
+  deciding whether any additional dependency representation is needed.
+  Persistence and fresh type-only loading remain separate defect questions.
+- ACT-0970 needs a permanent macro-persistence repro/control; ACT-0983 has a
+  passing test for superseded rejection behavior; ACT-0980 is an unexecuted
+  potential source-loss lead. Remaining intake actions require bounded QA
+  triage, and the platform GOT collision still lacks its allocated fixture.
+- The known-issue inventory outcome remains incomplete. Fixed/superseded
+  records require owner retirement, remaining records require repair or
+  individual carry decisions, and QA must reconcile cleared coverage claims.
+  No blanket carry is inferred from the user's wish to wrap the sprint.
+- User-facing assessment/action, the selected backend audit and Phase7
+  principle/contribution work remain under their declared phase gates.
+
+No source fixes, carry approvals, phase transition or publication occurred
+during this reconciliation. The checking-allocator lane, fmt/clippy and API
+regeneration were not refreshed by this default-suite run.
+
+The user approves the bounded F1 callee-consumption correction before carry
+decisions. Sequence: design(int) reconciles existing §7.6.1 against source;
+dev(src) implements the private consumption change with module evidence and
+reruns the complete cache target; independent review and QA assess the result.
+No new public API, dependency carrier or cache schema is approved. The QR
+guards that survive are returned as measured remaining scope; IO display and
+other acceptance items are not included in this approval. Design session:
+Claude Opus5.5/high `602047c8-2cae-4954-8fdc-d49518b515aa`.
+
+F1 delivered in the uncommitted tree over293534ee. Dev
+`aa5943ba-beb5-47f1-ba8f-169793ecbeac` shares the private callee enumeration
+between redefinition and cache edges, consumes it after index publication,
+and loads callee modules during restoration. No public API or schema changed.
+Four new module units failed for the intended reason before implementation;
+74 focused tests pass afterward. Both original F1 guards now pass. Final full
+run before the extra FN-1 test:6,067 executed,6,058 pass,9 known fail,one skip.
+The fail set is the prior11 minus the two F1 guards. Cargo check and check-tests
+pass without warnings; clippy has existing warnings and no new changed-site
+lint by review inspection, not a measured clean-baseline comparison.
+
+Review `2c866097-38f5-4134-bbca-c8400826fa30` accepts the implementation.
+Test `7b65e004-f08e-4fa3-8cc9-c98cfa0dcf6a` independently reconciles arming,
+oracles and outcomes; preserves defect-history annotations as fixed and runs
+the final cache target:63 executed,57 pass,6 known fail. Design
+`5b26ea93-8488-4f96-a338-82f923fdd92c` reconciles delivered status. QA
+`3c31f4a5-6046-4154-8717-cf36989b685a` accepts F1 as a bounded correction and
+classifies QR-1–5 as measured missing dependency edges, without concluding a
+new carrier is necessary. All roles use Claude Opus5.5/high. Root retains three
+mechanically qualified typechecker source citations and applies QA's explicit
+status-wording handoff. Test annotations must land with the implementation.
+
+QA's additional FN-1 alias-only import fence exposed a cold-start rejection
+before its warm leg. Test `435e6a73-a341-4496-92ef-a03a6c6320a7` retains the new
+cell:64 cache tests executed,57 pass,7 fail; both original F1 guards still pass.
+It is not a restoration failure and does not reopen F1 acceptance. QA
+`bf17a803-5866-450e-a303-53ad2f63607c` owns immediate intake and requirement
+classification. No alias implementation change is authorized. FN-1 remains
+unarmed; the full-suite count above predates this new cell. No source fixes
+outside F1, phase transition, publication or carry acceptance occurred.
+
+FN-1 intake complete: QA classifies the cold failure under existing deferred
+FIXME0798 (alias-only imports fail to register their alias on the fresh path).
+The requirement is unambiguous; source attribution remains provisional because
+the diagnostic controls were not executed. Root applies QA's exact test
+annotation and design-status handoffs. The new guard remains failing and
+unignored, attributed to0798; it does not reopen F1 or claim warm restoration
+coverage. Repair scheduling remains a separate user decision. No ACT-0992 was
+created. The narrow F1 correction is review-accepted and QA-adequate; overall
+Phase5 acceptance and the remaining compiler defects are still open. All
+changes in this correction remain uncommitted; NOTES.md is untouched.
+
+The user approves fixing the confirmed remaining failures before close, grouped
+as module loading/cache dependencies, then REPL IO display. This authorizes
+private corrections to established requirements; any public-API, cache-format
+or architectural delta still returns for explicit review. Initial reservations:
+arch read-only dependency assessment `434a4038-0943-4fff-96e6-c0be4880de46`;
+design(int) read-only IO correction assessment
+`27042402-e39a-42cf-8549-8188631b79de`; test is the sole source writer/runner for
+narrow loading reproductions `c0c133e2-848b-4f39-a290-4b6d1cd424cb`. All use
+Claude Opus5.5/high. The earlier unscheduled0798 status is superseded by this
+approval; its correction is now included in the loading group. Existing F1
+work remains accepted and uncommitted. No phase transition or publication.
+
+The user's latest IO ruling supersedes the earlier IO-envelope display decision:
+automatic REPL execution remains; announce `Executing IO…` before executing an
+IO action, then display its returned payload with its fully qualified type.
+Pure expressions have no notice; batch output is unchanged. The proposed
+original-expression-type field on `EvalResult::Val` is withdrawn, not approved.
+No explicit `/run` REPL command or configurable execution mode is included.
+Spec `ccd38b5f-98f2-4352-9de8-56ad2ea011e3` reconciles owned requirements;
+design(int) `3f5c2309-282c-4dae-9fcd-6447c447b060` assesses the notice placement
+read-only before implementation. Both use Claude Opus5.5/high; the user's
+question about medium effort did not authorize changing the shared effort.
+Spec reconciliation is complete: REPL §1.2.1 owns the notice/payload rule;
+language IO/runtime references point there. Document check:508 documents,
+zero findings. Design assesses a private pre-driver write/flush with the same
+IO predicate used for execution; no API, ABI or cache schema delta. QA readiness
+`04944214-75bd-4953-8b3c-50837954b8ef` allocates evidence before the test writer.
+QA readiness accepts the bounded notice correction; test
+`37eb08d0-3d4c-4065-a3e5-6ecfee60ff59` owns the sole source/test write and Cargo
+reservation for IOT acceptance cells and REPL-chrome filtering. Design(int)
+`7d39adac-45c4-4e19-80f8-cde56a45d50f` reconciles only the owned IO design while
+implementation is pending. No new public surface or phase transition.
+IOT preimplementation evidence:278 executed,273 passed, five intended failures
+at the missing-notice assertion. Existing mode-output equivalence cells pass.
+Dev(src) `e06ff3fd-0bcb-44a3-87b5-2066a5ee4a3b` now owns the sole source/Cargo
+reservation to add the private notice and module evidence, then run focused
+and default-suite verification. Test edits preserve the existing payload
+expectations; the obsolete envelope defect classification is withdrawn.
+IO notice focused verification passes278/278. Default suite:6,079 executed,
+6,071 pass,8 fail,one skip in112.862s. Seven failures are known QR/fresh-type
+loading cases; the eighth is document conformance on renamed IO-test references,
+being repaired by QA. Independent review
+`468d4f1e-95a3-4a31-ab27-4fe2f9a51c20` is read-only; QA
+`95a15b51-c19d-441f-a37d-85eb7da07981` assesses evidence and reconciles the owned
+plan/traceability. All roles use Claude Opus5.5/high. This does not close Phase5.
+
+IO notice slice complete in the uncommitted tree: review accepted, QA adequate,
+and final code/test hashes match the reviewed checkpoint. Root verified the
+advisory source-memory sentence and applied design's exact delivered-status
+handoff. QA reconciled the plan and traceability; document checker is clean.
+Runtime verification remains the full6,079-test run above; only document-gate
+verification is repeated after the citation repairs. Seven cache/loading defect
+guards remain; no phase transition, carry acceptance, commit or publication.
+Final document gate rerun passes1/1 (two unselected tests); standalone checker
+confirms508 documents with zero findings. Diff whitespace check is clean and
+NOTES.md retains its protected hash. No second full-suite run was needed for
+these document-only repairs.

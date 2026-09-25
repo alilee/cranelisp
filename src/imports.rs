@@ -61,14 +61,7 @@ pub(crate) fn install_imports(
     specs: &[ImportSpec],
 ) -> Result<(), CranelispError> {
     for spec in specs {
-        // Module-path alias (§8.3.4) → ModuleAliases keyed by <owner>.<alias>.
-        if let Some(alias) = &spec.alias {
-            let key = alias_key(current_module, alias.as_ref());
-            module_aliases.insert(
-                key,
-                ModuleAliasEntry::new(spec.module_path.clone(), Visibility::Private, spec.span),
-            );
-        }
+        install_import_alias(current_module, module_aliases, spec);
 
         // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
         // (try as-is, then `<current>.<name>`), SYMMETRIC with `install_exports`
@@ -390,12 +383,7 @@ pub(crate) fn install_module_session_env(
     //     themselves were serialized in the restored table; only the session-side
     //     alias map needs re-populating).
     for spec in &table.imports {
-        if let Some(alias) = &spec.alias {
-            module_aliases.insert(
-                alias_key(module, alias.as_ref()),
-                ModuleAliasEntry::new(spec.module_path.clone(), Visibility::Private, spec.span),
-            );
-        }
+        install_import_alias(module, module_aliases, spec);
     }
 
     // (c) Submodule short-name aliases (`(mod util)` → bare `util/…` resolves to
@@ -425,6 +413,22 @@ pub(crate) fn gets_prelude_fallback(
     !is_prelude(module)
         && !imports.iter().any(|s| is_prelude(&s.module_path))
         && !exports.iter().any(|s| is_prelude(&s.module_path))
+}
+
+/// Register `spec`'s module-path alias (§8.3.4, §8.3.6), if it has one. This is
+/// the one import-alias writer, and it needs no loaded target: a name-less
+/// alias-only import registers its alias without loading anything.
+pub(crate) fn install_import_alias(
+    current_module: &ModuleFullPath,
+    module_aliases: &ModuleAliases,
+    spec: &ImportSpec,
+) {
+    if let Some(alias) = &spec.alias {
+        module_aliases.insert(
+            alias_key(current_module, alias.as_ref()),
+            ModuleAliasEntry::new(spec.module_path.clone(), Visibility::Private, spec.span),
+        );
+    }
 }
 
 /// `<owner>.<alias>` key for the session-level alias table; owner is the

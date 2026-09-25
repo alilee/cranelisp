@@ -19,7 +19,7 @@
 //   - Internal Bind constructor / pattern rejection (§10.1 — Bind is internal,
 //     not user-invocable per the runtime representation)
 //   - IO type inference / propagation (§10.7)
-//   - REPL display of an executed IO result (repl/spec/01-display-format.md §1.2)
+//   - REPL execution notice and payload display (repl/spec/01-display-format.md §1.2.1)
 //   - --run mode: main returns IO, exit code from Pure / from bind chain (§10.6.1)
 //   - Closure-capture inc regression (Sprint 61 Wave 4 — `emit_capture_return_inc`)
 //   - bind! desugaring (§10.5 macro form)
@@ -32,7 +32,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
 use helpers::marginal::{Child, MarginalPair};
 
 // =============================================================================
@@ -409,58 +409,115 @@ fn bind_polymorphic_inference() {
 }
 
 // =============================================================================
-// REPL display of an executed IO result — repl/spec/01-display-format.md §1.2
+// REPL execution of an IO expression — repl/spec/01-display-format.md §1.2.1
 // =============================================================================
 //
-// The REPL forces an `IO` result through the trampoline (spec/10-io.md
-// §10.6.2), then displays it with its `IO` type and `IO.Pure` value, e.g.
-// `:(primitives/IO primitives/Int) (IO.Pure 42)`. The compiler currently
-// displays only the inner result (`:primitives/Int 42`), so these cells are RED
-// until that defect is corrected. The earlier §10.6.2 text required that
-// inner-only display; the user ruled on 2026-09-25 that §1.2 governs.
-//
-// The type head is `primitives/IO`: the user ruled that IO takes no exception
-// from the rule that the type prefix is fully qualified. A bare `IO` head fails.
+// The REPL executes an `IO`-typed expression automatically. It prints the
+// exact line `Executing IO…` before execution, then the platform output, then
+// the payload under its own type (`:primitives/Int 42`, never `IO …`). A
+// non-IO turn prints no notice. The notice is REPL output only; batch output
+// never carries it (`tests/output_equivalence.rs`, run and link legs).
 
-/// Assert that the REPL displayed an executed `IO` result as
-/// `:(primitives/IO <inner_type>) (IO.Pure <inner_value>)`.
-fn assert_io_result_envelope(out: helpers::e2e::CrOutput, inner_type: &str, inner_value: &str) {
-    let envelope = regex::Regex::new(&format!(
-        r":\(primitives/IO {}\) \(IO\.Pure {}\)",
-        regex::escape(inner_type),
-        regex::escape(inner_value)
-    ))
-    .unwrap();
-    out.assert_stdout_matches(&envelope);
+/// Assert the §1.2.1 presentation of one executed IO expression: exactly one
+/// line equal to the notice, before the line equal to `payload_line`, and no
+/// `IO` type or constructor in the display.
+fn assert_io_notice_then_payload(out: helpers::e2e::CrOutput, payload_line: &str) {
+    let lines = repl_output_lines(&out.stdout);
+    let notices: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i] == REPL_IO_NOTICE)
+        .collect();
+    assert_eq!(
+        notices.len(),
+        1,
+        "an IO expression MUST print exactly one `{REPL_IO_NOTICE}` line; got:\n{}",
+        out.stdout
+    );
+    let payload = lines.iter().position(|l| l == payload_line);
+    assert!(
+        payload.is_some_and(|p| notices[0] < p),
+        "the payload line `{payload_line}` MUST follow the notice; got:\n{}",
+        out.stdout
+    );
+    for envelope in ["primitives/IO", "IO.Pure"] {
+        assert!(
+            !out.stdout.contains(envelope),
+            "the payload MUST display under its own type, without `{envelope}`; got:\n{}",
+            out.stdout
+        );
+    }
 }
 
-// spec: repl/spec/01-display-format.md §1.2 — Expression Results (IO, Ring 4)
-// defect: class=requirement-conflict locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev
+// spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
 #[test]
-fn repl_pure_int_result_displays_io_envelope() {
-    let out = repl("(Pure 42)\n").assert_stdout_does_not_contain(":primitives/Int 42");
-    assert_io_result_envelope(out, "primitives/Int", "42");
+fn repl_pure_int_result_prints_io_notice_then_payload() {
+    assert_io_notice_then_payload(repl("(Pure 42)\n"), ":primitives/Int 42");
 }
 
-// spec: repl/spec/01-display-format.md §1.2 — Expression Results (IO, Ring 4)
+// spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
 // spec: spec/10-io.md §10.2.3 — Pure wraps String
-// defect: class=requirement-conflict locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev
 #[test]
-fn repl_pure_string_result_displays_io_envelope() {
-    assert_io_result_envelope(repl("(Pure \"hello\")\n"), "primitives/String", "\"hello\"");
+fn repl_pure_string_result_prints_io_notice_then_payload() {
+    assert_io_notice_then_payload(repl("(Pure \"hello\")\n"), ":primitives/String \"hello\"");
 }
 
-// spec: repl/spec/01-display-format.md §1.2 — Expression Results (IO, Ring 4)
-// defect: class=requirement-conflict locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev
+// spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
 // The input is also the S61 capture-return-inc double-free guard
-// (`emit_capture_return_inc`), and its result comes from `bind`, not from a
-// literal `(Pure …)` form.
+// (`emit_capture_return_inc`). Its result comes from `bind`, not from a
+// literal `(Pure …)` form, so the notice must follow the type.
 #[test]
-fn repl_bind_pure_lambda_result_displays_io_envelope_without_double_free() {
-    assert_io_result_envelope(
+fn repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free() {
+    assert_io_notice_then_payload(
         repl("(bind (Pure 42) (fn [x] (Pure x)))\n"),
-        "primitives/Int",
-        "42",
+        ":primitives/Int 42",
+    );
+}
+
+// spec: repl/spec/01-display-format.md §1.2.1 — the notice precedes the
+// platform output, and non-IO turns print none
+// spec: spec/10-io.md §10.6.2 — the REPL executes an IO expression, so its
+// effects occur
+// One session: a definition whose body is IO, a bare IO-returning function
+// name and a pure call must print no notice; the executed `print` prints one,
+// before its effect.
+#[test]
+fn repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns() {
+    let out = Cranelisp::new()
+        .repl()
+        .use_workspace_platforms()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (defn greet [] (print \"iot-never\"))\n\
+             print\n\
+             (add-i64 1 2)\n\
+             (print \"iot-probe\")\n",
+        )
+        .output();
+    let lines = repl_output_lines(&out.stdout);
+    let at = |wanted: &str| lines.iter().position(|l| l == wanted);
+    let notices = lines.iter().filter(|l| *l == REPL_IO_NOTICE).count();
+    assert_eq!(
+        notices, 1,
+        "only the executed `print` turn MUST print `{REPL_IO_NOTICE}`; got:\n{}",
+        out.stdout
+    );
+    let order = [
+        at(":primitives/Int 3"),
+        at(REPL_IO_NOTICE),
+        at("iot-probe"),
+        at(":primitives/Int 0"),
+    ];
+    assert!(
+        order.iter().all(Option::is_some) && order.windows(2).all(|w| w[0] < w[1]),
+        "expected pure result, notice, effect output, payload in that order \
+         (positions {order:?}); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("iot-never"),
+        "defining an IO function MUST NOT execute its body; got:\n{}",
+        out.stdout
     );
 }
 

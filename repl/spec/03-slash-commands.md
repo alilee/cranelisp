@@ -261,7 +261,7 @@ user> /mem
 
 The two fields between `allocs:` and `deallocs:` are separated by two spaces. The `(<live-allocs> allocations)` group is singular or plural depending on count (the implementation MAY always use `allocations` for simplicity).
 
-**Delta — `/mem <expr>`** — MUST evaluate the expression, print its formatted result on the first line (per §1.2), then emit one comment delta line:
+**Delta — `/mem <expr>`** — MUST evaluate the expression, display its result per §1.2 (for an IO expression, after the §1.2.1 notice and the action's platform output), then emit one comment delta line:
 
 ```
 user> /mem (list 1 2 3)
@@ -289,7 +289,7 @@ Until this holds, the **snapshot** form is the truthful instrument and the delta
 | Requirement | Test |
 |---|---|
 | snapshot emits live + totals | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
-| delta prints result then delta line | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
+| delta prints result then delta line | [Tested tests/repl_introspection::mem_with_expr_emits_signed_delta_line, tests/repl_introspection::mem_with_io_expr_prints_notice_then_payload_then_delta] |
 | signed `bytes` and `live` deltas | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
 | baseline counters at process start are zero | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
 | `/m` short alias produces snapshot | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |

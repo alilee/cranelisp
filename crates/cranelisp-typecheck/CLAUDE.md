@@ -53,7 +53,7 @@ and `design/int/session-transaction.md` §3.2.
 
 - A checked body's `callees` names every statically resolved user-function
   reference, call and value position alike. It is harvested by the one
-  `program/callees.rs::harvest_callees` projection from the resolution delta
+  `crates/cranelisp-typecheck/src/program/callees.rs::harvest_callees` projection from the resolution delta
   plus `BodyFrame.user_fn_refs`.
 - A new body-check seam uses the shared `BodyFrame` wrapper and routes through
   `harvest_callees` before publication. Do not publish a body and mutate its

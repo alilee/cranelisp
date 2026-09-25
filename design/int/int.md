@@ -165,7 +165,7 @@ The two structural facts that dominate the tree today:
 | Macro execution | `expander.rs` (the `JitMacroExpander` invocation core + expand loop); `marshal.rs` (sexp marshaling) |
 | Display / pretty-print | `display.rs` (`display::envelope` + value render); `pretty.rs` (`pretty_print`/`pretty_print_plain`); `styled.rs` (the `Role`/`StyledDoc` vocabulary + `styled::render`, the sole style-table site); `style.rs` (raw style helpers); `syntax.rs` |
 | Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/CLAUDE.md` §Degraded startup) |
-| Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller |
+| Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `callee_edges.rs` (the one callee enumeration, shared with `redefine.rs`, §7.6.1); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller |
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
 | Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` / `LaunchContinue` transform (`bind-chain-analysis.md`) |
@@ -743,7 +743,7 @@ register dependency M:
     re-resolve M's platform declarations
     register M with the scheduler as typechecked-from-cache  # enqueues LoadObject(M)
     recurse into M's imports, re-export targets, declared children
-      and callee modules (§7.6.1; designed, not built)
+      and callee modules (§7.6.1)
   else:
     register M for a fresh typecheck
 
@@ -866,8 +866,7 @@ graph changes, even though the direct dependency's own source does not.
   - every declared child;
   - the prelude, when the module's prelude-fallback bit is set;
   - every callee module: the storage home of each callable M's bindings
-    call ([callee-module edges](#761-callee-module-edges); designed, not
-    built).
+    call ([callee-module edges](#761-callee-module-edges)).
 
   This is the set the restore walk loads ([cache-hit flow](#71-cache-hit-flow-inside-register_module)),
   plus the name-less imports that walk skips and the implicit prelude. Define
@@ -946,19 +945,11 @@ graph changes, even though the direct dependency's own source does not.
   The gaps:
   1. **Qualified-reference dependencies.** A module can reach another only
      through a qualified reference, whose target auto-loads
-     (`spec/08-modules.md` §8.5.4). No such target is an edge today. Failing
-     guards in `tests/cache.rs` (`--run`) measure it, and this gap is the one
-     with executed observations.
-     - **Callable references: the fact exists but is not consumed.** Typecheck
-       already persists `b/f` in the caller's `callees`.
-       - `cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run`:
-         after `b` gains a `defn` ahead of `f`, the cached run exits 99 where
-         `--no-cache` exits 11.
-       - `cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run`:
-         with no importer of `b`, the unchanged warm run fails with
-         `unresolved symbol: __cranelisp_got_b`, because nothing restores `b`.
-
-       The correction is [callee-module edges](#761-callee-module-edges).
+     (`spec/08-modules.md` §8.5.4). A qualified callable target is an edge
+     through [callee-module edges](#761-callee-module-edges). No other
+     qualified target is an edge. Failing guards in `tests/cache.rs` (`--run`)
+     measure the remainder, and this gap is the one with executed
+     observations.
      - **Kinds `callees` does not carry.** Each guard below is RED while its
        explicit-import sibling is GREEN.
 
@@ -970,8 +961,12 @@ graph changes, even though the direct dependency's own source does not.
        | Type-only reference | `cache_qualified_type_only_field_change_matches_uncached_allocator_counts` | (allocs, deallocs) (5, 3) / (6, 6) |
        | FQ macro head | `cache_qualified_macro_head_expansion_change_matches_uncached_run` | 11 / 99 |
 
-       - That these stay RED after callee-module edges land is predicted, not
-         executed.
+       - The faces above are unchanged with callee-module edges built: `dev`
+         measured the five guards in two cache-target runs and a full-suite
+         run (2026-09-25). QA classified each as RED with the edge-supplied
+         sibling GREEN: the depended-on module is absent from the record after
+         `callees` is consumed. Whether an existing or new fact should supply
+         the edge is not measured.
        - Whether and how they become edges is open for `arch` and the user.
          Type and constructor homes are first assessed against resolved
          schemes and concrete views; no further carrier is designed here.
@@ -1014,42 +1009,103 @@ graph changes, even though the direct dependency's own source does not.
 
 #### 7.6.1 Callee-module edges
 
-**Status: designed in S122 Phase 5, not built.** It is int-private: it reads
-the existing public `SymbolTable` API, adds no field and bumps no schema. The
-two callable guards in *Known gaps* 1 are its acceptance evidence.
+**Status: built; QA evidence adequate as a bounded correction (2026-09-25).**
+The user approved this as a private correction. It reads the existing public
+`SymbolTable` API and adds no public API, carrier, field or schema change.
+Evidence and limits: [F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-acceptance-and-qr-classification-2026-09-25).
 
-- **The fact.** Typecheck resolves each reference once and records the
-  callable's terminal storage identity in the binding's `callees`, including
-  trait-method edges to the implementing module
+- **The fact.** Typecheck resolves each reference once. It records the
+  terminal storage identity of each `Plain` or `TraitMethod` callable in the
+  binding's `callees`; trait-method edges name the implementing module
   (`crates/cranelisp-typecheck/src/program/callees.rs`). `callees` is
-  persisted on template and concrete lifecycles, so every `.meta.json` and the
-  index worker's private table already hold it. A module's **callee-module
-  set** is the modules of those identities across every callable, overload arm
-  and macro clause.
-- **One enumeration (Principle 7).** Hoist the per-binding enumeration
-  `src/redefine.rs::binding_callees` already implements into one shared int
-  helper that redefinition and the edge set both call. Do not copy it.
-  - The helper excludes M itself and applies the one compiler-owned
-    predicate (Principle 19).
-  - It enumerates a recorded resolved fact; it is not a scan for identity
+  serialized on `Life::Template` and `Life::Concrete`. Every `.meta.json` and
+  the index worker's private table therefore already hold it.
+- **One enumeration (Principle 7).** `src/callee_edges.rs::binding_callees`
+  is the one crate-private enumeration of a binding's callees across
+  callables, overload arms and macro clauses, in template and concrete lives.
+  Redefinition's blocking-dependent scan and the cache both call it; neither
+  keeps a copy.
+  - It is generic over the code store: redefinition reads live
+    `Binding<Code>` values, and the restore walk reads the decoded
+    `SymbolTable<(), ()>` before it is installed.
+  - It sits outside `redefine` so that `cache` does not depend on it.
+  - It enumerates a recorded resolved fact. It is not a scan for identity
     (Principle 24).
-- **Consumers.**
-  - `ModuleEdges::of_table` unions the callee-module set, so every
-    table-backed writer records it.
-  - The index worker unions the set from its private table after typecheck,
-    beside the structural peel.
-  - The restore walk loads each callee module with the per-dependency step it
-    uses for an import target (Principle 11), with the same skips for
-    compiler-owned, platform and `prelude` modules. This load is what lets a
-    restored object bind the callee's GOT.
-  - Do not substitute the validated record as the restore list. The record is
-    the staleness key. It also holds the null-import targets that
-    `spec/08-modules.md` §8.3.7 says are never loaded.
+- **The callee-module set.**
+  `cache/dependency_record.rs::callee_modules` gives the module of every
+  enumerated identity in a table. It excludes the table's own module and
+  compiler-owned modules through the filter every other edge uses.
+- **Record consumers.**
+  - `ModuleEdges::of_table` unions the callee-module set with the declared
+    edges. The nice worker's writes and `build_dependency_record`'s walk of
+    fresh members use this constructor, so the closure follows callee edges
+    transitively.
+  - `session_v4/index_worker.rs::index_typecheck_into_private` takes its
+    declared edges from the structural peel. After the staged publish succeeds,
+    it adds the callee-module set of the private module table. A failed index
+    typecheck writes nothing.
+- **Restore consumer.** `process_form/cache_restore.rs::try_cache_hit_load`
+  loads each callee module.
+  - `extract_cached_specs` extracts the set before the table is moved.
+  - The callee walk runs after the import and re-export walks.
+  - Imports, re-exports and callee modules share the per-dependency step
+    `register_cached_dependency` (Principle 11). It skips compiler-owned
+    modules, `prelude` and installed modules, resolves the file, tries a cache
+    hit, and otherwise registers the module fresh.
+  - The null-import skip applies to import specs only. A module that is both
+    a null-import target and a callee is loaded, because the fresh build
+    auto-loads it (`spec/08-modules.md` §8.5.4).
+  - Callee modules are not carried as `ImportSpec` values, which would
+    misrepresent them as imports.
+  - The walk installs no names in the restoring module, as §8.5.4 edge 10
+    requires.
+  - A callee cycle stops at the installed-module check, as an import cycle
+    does.
+- **Unchanged.**
+  - Explicit edges, their restore walks and the null-import rule for import
+    specs.
+  - The validated record is never used as the restore list: it is the
+    staleness key, and it holds null-import targets that §8.3.7 never loads.
+  - The builder's settlement, deferral and prelude rules (Principle 26).
+  - The manifest and `.meta.json` shapes.
+- **Failure direction.** An unresolvable or unloaded callee module makes the
+  record unsettled, or makes validation miss. Either way the next session
+  rebuilds the module. The correction can lose a cache hit; it cannot serve a
+  stale one.
 - **Redefinition.** `callees` is replaced when a body re-settles, so the
   edges follow REPL redefinition without over-approximating.
-- **Consequence for evidence.** `callees` completeness now gates cache
-  validity as well as redefinition blocking: a missed callee becomes stale
-  service, not only a missed blocker.
+- **Risk.** `callees` completeness now gates cache validity and restore
+  loading, as well as redefinition blocking. A missed callee becomes stale
+  service or an unresolved GOT, not only a missed blocker.
+- **Limits.** The correction covers only references recorded in `callees`.
+  The five kinds in *Known gaps* 1 stayed RED with unchanged faces. That
+  measurement is not acceptance evidence for this correction.
+- **Evidence.** Independent review accepted the change, and QA judged the
+  evidence adequate ([F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-acceptance-and-qr-classification-2026-09-25)).
+  - **Acceptance.** Both callable guards in `tests/cache.rs` failed for the
+    intended reasons before the correction, and pass on the delivered source
+    in `dev`'s full-suite run and `test`'s cache-target run. The `cache_dep_*`, restored-chain
+    and CD-1 cells stayed GREEN.
+    - `cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run`:
+      the cached run's exit code matches the uncached run after `b` gains a
+      `defn` ahead of `f`. The code was 99 against 11 before the correction.
+    - `cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run`:
+      the warm run restores `b`, which no import names. It previously failed
+      with `unresolved symbol: __cranelisp_got_b`.
+  - **`cache/dependency_record` units.**
+    - The callee-module set covers every callable kind, in template and
+      concrete lives. A decoded table yields the same set.
+    - It excludes the module itself and compiler-owned modules.
+    - A table without callees yields exactly its declared edges.
+    - A fresh member whose only link to a module is a callee brings that
+      module into the closure.
+    - A callee module with no loaded source leaves the record unsettled.
+  - **`index_worker` unit.** A module that reaches a loaded module only
+    through a qualified call records that module among its edges.
+  - **`redefine`.** The existing blocking-dependent units stay GREEN.
+  - The restore walk has no unit tier; the second guard is its measurement.
+    The null-import fence FN-1 is unarmed until FIXME 0798 is repaired.
+    The callee-cycle rule is asserted with a falsifier.
 
 ---
 
@@ -1533,14 +1589,17 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   `94486f24`: every writer records its closure through the one builder, and
   validity is driven by the recorded keys. The `cache_dep_*` and restored-chain
   cells in `tests/cache.rs` guard it. Open:
-  - **Callee-module edges (review F1).** Designed in
-    [callee-module edges](#761-callee-module-edges); `dev`(src) implements
-    next, with the two callable guards as acceptance evidence. Until it lands,
-    CD-1 does not discharge §7.6's opening sentence for callable qualified
-    references.
-  - **Qualified-reference kinds outside `callees`.** Five failing guards
-    (*Known gaps* 1) await `arch`'s and the user's disposition after the
-    callee correction's rerun.
+  - **Callee-module edges (review F1).** Built
+    ([callee-module edges](#761-callee-module-edges)); both callable guards
+    pass on the delivered source. QA judged the evidence adequate as a bounded
+    correction ([F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-acceptance-and-qr-classification-2026-09-25)). CD-1 discharges §7.6's opening sentence for
+    qualified callable references only. Open: the FN-1 null-import fence, unarmed until FIXME 0798 is repaired,
+    and the user's Phase-5 acceptance.
+  - **Qualified-reference kinds outside `callees`.** Five guards (*Known
+    gaps* 1) stayed RED with unchanged faces after the callee correction.
+    QA classified them as measured missing dependency edges, which does not
+    show that a new carrier is necessary. They await `arch`'s and the user's
+    disposition.
   - **Unaccepted gaps 2–6** (version conflict, write-time stash, same-session
     disk edit, platform signatures, absent prelude). These need a disposition
     through `sprint`.

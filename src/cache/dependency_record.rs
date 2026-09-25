@@ -10,8 +10,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use cranelisp_types::{ExportSpec, ImportSpec, ModDecl, ModuleFullPath};
+use cranelisp_types::{
+    CodeStore, ExportSpec, ImportSpec, LinkerStore, ModDecl, ModuleFullPath, SymbolTable,
+};
 
+use crate::callee_edges::binding_callees;
 use crate::code::SessionSymbolTable;
 use crate::session_v4::SharedState;
 
@@ -46,14 +49,16 @@ impl DependencyRecord {
 }
 
 /// A module's direct dependency edges: every import (including alias-only and
-/// null imports), every re-export target, every declared child, and the
-/// prelude when the module's prelude-fallback bit is set. Compiler-owned
-/// modules are excluded — the build identity keys `primitives` and `macros`,
-/// and platform modules are an accepted residual (§7.6 *Unprotected*).
+/// null imports), every re-export target, every declared child, the prelude
+/// when the module's prelude-fallback bit is set, and every callee module.
+/// Compiler-owned modules are excluded — the build identity keys `primitives`
+/// and `macros`, and platform modules are §7.6 *Known gaps* 5.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleEdges(BTreeSet<ModuleFullPath>);
 
 impl ModuleEdges {
+    /// The declared edges alone, for a writer whose table does not carry the
+    /// structural declarations.
     pub(crate) fn of_declarations(
         module: &ModuleFullPath,
         imports: &[ImportSpec],
@@ -71,11 +76,7 @@ impl ModuleEdges {
                     .map(|decl| ModuleFullPath::from(format!("{module}.{}", decl.name))),
             )
             .chain(prelude_fallback.then(|| ModuleFullPath::from(PRELUDE)));
-        ModuleEdges(
-            targets
-                .filter(|target| target != module && !is_compiler_owned(target))
-                .collect(),
-        )
+        ModuleEdges(targets.filter(|target| is_edge(module, target)).collect())
     }
 
     pub(crate) fn of_table(
@@ -90,10 +91,41 @@ impl ModuleEdges {
             &table.submodules,
             prelude_fallback,
         )
+        .with_callee_modules(module, table)
+    }
+
+    pub(crate) fn with_callee_modules(
+        mut self,
+        module: &ModuleFullPath,
+        table: &SessionSymbolTable,
+    ) -> Self {
+        self.0.extend(callee_modules(module, table));
+        self
     }
 }
 
-fn is_compiler_owned(module: &ModuleFullPath) -> bool {
+/// The module of every callee recorded on `table`'s callables, overload arms
+/// and macro clauses (§7.6.1), other than `module` itself and compiler-owned
+/// modules. Generic over the code store so a decoded table can be read before
+/// it is installed.
+pub(crate) fn callee_modules<C: CodeStore, L: LinkerStore>(
+    module: &ModuleFullPath,
+    table: &SymbolTable<C, L>,
+) -> BTreeSet<ModuleFullPath> {
+    table
+        .all_symbols()
+        .flat_map(|(_, binding)| binding_callees(binding))
+        .map(|callee| &callee.module)
+        .filter(|target| is_edge(module, target))
+        .cloned()
+        .collect()
+}
+
+fn is_edge(module: &ModuleFullPath, target: &ModuleFullPath) -> bool {
+    target != module && !is_compiler_owned(target)
+}
+
+pub(crate) fn is_compiler_owned(module: &ModuleFullPath) -> bool {
     let path: &str = module.as_ref();
     path == "primitives" || path == "macros" || path.starts_with("platform.")
 }

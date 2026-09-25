@@ -165,7 +165,7 @@ no measured performance need.
    against its registration. The checked AST and initial canonical callees stay
    in the private body ledger (`checked-body-publication.md`); active expression
    and resolution facts stay on `CheckState`. Initial callees come from
-   `program/callees.rs::harvest_callees`.
+   `crates/cranelisp-typecheck/src/program/callees.rs::harvest_callees`.
 3. **Finalize** (`program/finalize.rs`). Generalisation, overload resolution and
    the multi-signature back-flow drain (`monomorphisation.md` §11), the
    ambiguity backstop, the two post-settlement monomorphisation harvest windows

@@ -105,9 +105,33 @@ Examples:
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
 
-**Ring 4**: `IO` (trampoline executes the effect chain; result displayed as `:(primitives/IO InnerType) (IO.Pure inner_value)`, e.g. `:(primitives/IO primitives/Int) (IO.Pure 42)`). IO is an ADT and MUST follow the same `Type.Constructor` display format as all other ADTs per [spec §12.9](../../spec/12-runtime.md#129-value-display-format). IO types take no exception to the fully-qualified type rule (§1.4): the type head MUST read `primitives/IO`, never bare `IO`. [S122 — tests/spec_10_io.rs::repl_pure_int_result_displays_io_envelope, tests/spec_10_io.rs::repl_pure_string_result_displays_io_envelope, tests/spec_10_io.rs::repl_bind_pure_lambda_result_displays_io_envelope_without_double_free RED]
+**Ring 4**: `IO` expressions are executed, not displayed as values (§1.2.1).
 
 **Ring 4**: `Trace` — displayed using the standard ADT format per [spec §12.9](../../spec/12-runtime.md#129-value-display-format). The REPL does NOT auto-format trace trees — the raw ADT value is shown. Users who want a human-readable indented call tree SHOULD import `core.trace` and call `trace-show-tree`. [R4 S20]
+
+### 1.2.1 IO Expression Results [Tested+Neg tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_pure_string_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free, tests/spec_10_io.rs::repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns, tests/output_equivalence::output_equiv_single_print]
+
+An expression whose type is `IO a` ([spec §10.1](../../spec/10-io.md#101-io-type)) is an IO action. The REPL MUST execute it automatically as part of evaluating the expression, and MUST present it in this order:
+
+1. The notice line `Executing IO…`, printed before the action starts executing through the trampoline and platform.
+2. The platform output the action produces.
+3. The payload the action returns, in the §1.2 format under the payload's own fully-qualified type `a` — not `IO a`.
+
+An expression whose type is not `IO` MUST NOT produce the notice. The notice is REPL output: batch output (§0.2, §0.2.1) never contains it.
+
+```
+user> (Pure 42)
+Executing IO…
+:primitives/Int 42
+
+user> (print "hello")
+Executing IO…
+hello
+:primitives/Int 0
+
+user> (+ 1 2)
+:primitives/Int 3
+```
 
 ### 1.3 Definition Results [Tested]
 

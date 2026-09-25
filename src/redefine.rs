@@ -629,7 +629,9 @@ fn blocking_dependents(symbol_tables: &SymbolTables, target: &FQSymbol) -> Vec<F
                 symbol: name.clone(),
             };
             immediate_owners.insert(caller.clone(), immediate_callable_owner(&caller, binding));
-            let callees = binding_callees(binding);
+            let callees: Vec<FQSymbol> = crate::callee_edges::binding_callees(binding)
+                .cloned()
+                .collect();
             if !callees.is_empty() {
                 edges.push((caller, callees));
             }
@@ -676,31 +678,6 @@ fn immediate_callable_owner(fq: &FQSymbol, binding: &Binding<Code>) -> FQSymbol 
         };
     }
     fq.clone()
-}
-
-fn binding_callees(binding: &Binding<Code>) -> Vec<FQSymbol> {
-    fn life_callees(life: &Life<Code>) -> &[FQSymbol] {
-        match life {
-            Life::Template { callees, .. } | Life::Concrete { callees, .. } => callees,
-            _ => &[],
-        }
-    }
-    match &binding.declaration {
-        Decl::Callable(_) => binding.callees().to_vec(),
-        Decl::Overloaded(declaration) => declaration
-            .arms
-            .iter()
-            .flat_map(|arm| life_callees(&arm.callable.life))
-            .cloned()
-            .collect(),
-        Decl::Macro(declaration) => declaration
-            .clauses
-            .iter()
-            .flat_map(|clause| life_callees(&clause.callable.life))
-            .cloned()
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 fn normalize_callable_owner(

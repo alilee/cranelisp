@@ -2360,13 +2360,18 @@ fn edit_after_warm_restore(
 // inserts `e` (99) ahead of the called `f` (11).
 const FQ_ONLY_A: &str = "(defn g [] (b/f))\n";
 
-fn fq_only_dependency_change(main_src: &str) -> (Observed, Observed) {
+/// Entry that loads `a` but not `b`, so only `a`'s restore can load `b`.
+const FQ_ONLY_MAIN_WITHOUT_B: &str = "(import [primitives [Pure]])\n\
+                                      (import [a [g]])\n\
+                                      (defn main [] (Pure (g)))\n";
+
+fn fq_only_dependency_change(main_src: &str, a_src: &str) -> (Observed, Observed) {
     let EditLegs {
         control, cached, ..
     } = edit_after_warm_restore(
         &[
             ("main.cl", main_src),
-            ("a.cl", FQ_ONLY_A),
+            ("a.cl", a_src),
             ("b.cl", DEP_CHANGE_LAYOUT_B_BEFORE),
         ],
         11,
@@ -2385,7 +2390,9 @@ fn fq_only_dependency_change(main_src: &str) -> (Observed, Observed) {
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (a dependency
 // reached only through a qualified reference, spec/08-modules.md §8.5.4).
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// The defect: `a`'s dependency record omitted `b`, so after the edit the
+// restored `a` ran against the new `b` and exited 99 where uncached gave 11.
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122
 #[test]
 fn cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run() {
     let (control, cached) = fq_only_dependency_change(
@@ -2393,6 +2400,7 @@ fn cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run() 
          (import [a [g]])\n\
          (import [b [f]])\n\
          (defn main [] (Pure (g)))\n",
+        FQ_ONLY_A,
     );
     assert_cached_matches_uncached(&control, &cached);
 }
@@ -2400,14 +2408,31 @@ fn cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run() 
 // spec: design/int/int.md §7.6 — Dependency record and validity (a dependency
 // reached only through a qualified reference, spec/08-modules.md §8.5.4, that
 // no other module imports). Nothing but `a`'s qualified reference loads `b`,
-// so the restored `a.o` is observed before any edit.
-// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev
+// so the restored `a.o` is observed before any edit. The defect: the restore
+// walk did not load `b`, so the unchanged warm run failed with
+// `unresolved symbol: __cranelisp_got_b` where the cold run exited 11.
+// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev fixed=S122
 #[test]
 fn cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run() {
+    let (control, cached) = fq_only_dependency_change(FQ_ONLY_MAIN_WITHOUT_B, FQ_ONLY_A);
+    assert_cached_matches_uncached(&control, &cached);
+}
+
+// spec: design/int/int.md §7.6.1 — Callee-module edges (alias-only import target
+// reached by a qualified call; spec/08-modules.md §8.3.6, §8.5.4)
+// defect: class=wrong-reject locus=src/process_form/dependency.rs::handle_import found=S115 owner=/dev
+// FIXME 0798: the cold leg fails because a fresh compile does not register an
+// alias-only import's alias, so `bb/f` names an unknown module `bb` (locus
+// provisional; tests/plan/s122-evidence-delta.md, FN-1 cold rejection). Until
+// 0798 is repaired this fence is unarmed. It then guards the restore: `a`'s
+// alias-only import is a null import, which the restore walk's import step
+// skips, so only the callee walk loads `b` for the restored `a.o`. A warm
+// `unresolved symbol: __cranelisp_got_b` means that skip reached callee modules.
+#[test]
+fn cache_alias_only_import_target_reached_by_qualified_call_restores_and_matches_uncached_run() {
     let (control, cached) = fq_only_dependency_change(
-        "(import [primitives [Pure]])\n\
-         (import [a [g]])\n\
-         (defn main [] (Pure (g)))\n",
+        FQ_ONLY_MAIN_WITHOUT_B,
+        "(import [(b bb) []])\n(defn g [] (bb/f))\n",
     );
     assert_cached_matches_uncached(&control, &cached);
 }

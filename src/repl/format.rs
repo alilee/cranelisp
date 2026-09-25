@@ -87,6 +87,12 @@ pub(crate) fn push_warning_line(doc: &mut StyledDoc, message: &str) {
     doc.plain("\n");
 }
 
+/// The line the REPL writes before an `IO` expression executes
+/// (`repl/spec/01-display-format.md` §1.2.1). The spec assigns it no style.
+pub(crate) fn io_execution_notice_line() -> String {
+    render(&StyledDoc::span(Role::Plain, "Executing IO…"))
+}
+
 /// A `; header\n<code>` block — the R6 metadata header line over a code `StyledDoc`
 /// (the `/source`/`/sexp` framing).
 pub(crate) fn code_block_doc(header: &str, code: StyledDoc) -> StyledDoc {
@@ -1057,5 +1063,20 @@ mod impl_line_home_tests {
             home, user,
             "an unresolvable name falls back to the asking module"
         );
+    }
+}
+
+#[cfg(test)]
+mod io_execution_notice_tests {
+    use super::*;
+    use crate::style::test_support::ColorGuard;
+
+    // spec: repl/spec/01-display-format.md §1.2.1 — the exact notice text, with
+    // no `; ` prefix; the spec assigns no style, so colour changes no byte.
+    #[test]
+    fn io_execution_notice_line_is_the_plain_spec_text() {
+        assert_eq!(io_execution_notice_line(), "Executing IO…");
+        let _g = ColorGuard::force(true);
+        assert_eq!(io_execution_notice_line(), "Executing IO…");
     }
 }

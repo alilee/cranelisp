@@ -2851,7 +2851,7 @@ that CD-1 is closed.
 
 | ID / priority | Risk | State | Smallest next evidence |
 |---|---|---|---|
-| F1 — FQ-reference dependency (required) | A module whose only use of `b` is a qualified reference has no edge to `b`: `b/f`, an FQ macro head or an FQ type annotation, which §8.5.4 admits without an import. An ordinary edit to `b` then restores it stale, the same `artifact-underkey` mechanism outside the edge set. This is a source edit, not cache corruption, so C-A does not cover it | Unexecuted; source reading by `review`. The correction neither causes nor widens it. The entry point is §7.6's edge list, which CL-D inherited; that attribution is provisional until the repro runs | `test`, one `--run` cell in the `tests/cache.rs` dependency-change section, RED first. `main` imports `[a [g]]` and `[b [f]]`; `a` is `(defn g [] (b/f))` with no import of `b`; `b` gains `(defn e [] 99)` ahead of `f` before the final run. Arming: a warm run with nothing changed hits `a`. Control and oracle: `--run --no-cache` gives 11. Prediction: 99. A second cell drops `main`'s import of `b` and records the observed face, because nothing may then load `b` for the restored `a.o`. Then `design`(int) decides how an FQ-referenced module becomes an edge and where that fact is carried, and `qa` extends CL-D |
+| F1 — FQ-reference dependency (required) | A module whose only use of `b` is a qualified reference has no edge to `b`, which §8.5.4 admits without an import. An ordinary edit to `b` then restores it stale (`artifact-underkey`), or nothing loads `b` for the restored object (`enumeration-miss`). This is a source edit, not cache corruption, so C-A does not cover it | Qualified **callable** references: corrected by [callee-module edges](../../design/int/int.md#761-callee-module-edges) and adequate as a bounded correction ([F1 acceptance](#f1-acceptance-and-qr-classification-2026-09-25)). Every other qualified-reference kind: the measured QR REDs below | FN-1 fence, unarmed until FIXME 0798 is repaired; QR disposition by `arch` and the user |
 | DV3 — fresh module over a restored module (required intake) | A spec-valid program failed on a warm run. A freshly re-typechecked declared test child reported `'assert-true' not found in module 'testing.assertions'` while that module restored (first full run, both `exemplar_ownership_residue_s116` warm cells). Deferral removed this trigger, not the mechanism. Editing only such a child reaches the same shape | Observed once; mechanism unknown; no minimal repro | `test`, one stdlib-free `tests/cache.rs` cell. `grp.cl` declares `(mod asserts)`, and `grp/asserts.cl` defines `one`. `lib.cl` declares `(mod- test)`, and `lib/test.cl` imports `[grp.asserts [one]]` and calls it. `main` imports `lib`. Run cold, then warm with nothing changed (arming: `grp.asserts` and `lib.test` hit). Append a comment to `lib/test.cl` only and compare with `--run --no-cache`. If GREEN, add one variant whose child also imports `super` (the exemplar shape) and report. If RED, add the sibling that differs only in `asserts` being a top-level module, to control the declared-child cause |
 
 Advisory and unallocated; each awaits its owner:
@@ -2916,16 +2916,12 @@ dependency-failure location is normative.
 
 Pending, in order:
 
-1. Root commits the correction. `test` then adds `fixed=S122/<sha>` and
-   past-tense framing to the six CD-1 cells.
-2. `test` writes F1 and DV3 RED first.
-3. `design`(int) records the deferral rule, F3, F4 and the index-writer entry
-   in §7.6. It replaces §7.6's as-built paragraph and the §16.0 CD-1 entry, and
-   it makes the F1 correction consume `callees` (`arch` reassessment). Any
-   further carrier waits for the
-   [remaining-kinds evidence](#remaining-qualified-reference-kinds--evidence-allocation-2026-09-25).
-4. The user decides whether an F1 correction lands in S122 or F1 is disposed
-   of as a residual. QA records no acceptance on the user's behalf.
+1. `test` confirms the commit that carries the CD-1 correction (its F1 record
+   names `94486f24`), then adds `fixed=S122/<sha>` and past-tense framing to
+   the six CD-1 cells.
+2. The F1 items under [F1 acceptance](#f1-acceptance-and-qr-classification-2026-09-25).
+3. `arch` and the user dispose of the five measured QR kinds. QA records no
+   acceptance on the user's behalf.
 
 The `design`(backend) remaps B1–B5 are documents and comments only, and are
 not evidence-bearing.
@@ -3127,204 +3123,252 @@ question.
   A spec-valid program that fails fresh is §8.5.4 intake: keep the minimal
   shape and report it. Do not force a result.
 
-**Separating consumption from information:**
+Trace every cell with
+`// spec: design/int/int.md §7.6 — Dependency record and validity (<kind>; spec/08-modules.md §8.5.4 edge 1)`.
 
-- **Prediction.** From source, QA predicts every QR RED survives callee
-  consumption.
-- **Discriminator.** At the acceptance of that correction, `test` reruns the
-  F1 and QR cells.
-  - The F1 cells must turn GREEN; they are that correction's acceptance
-    evidence.
-  - A QR cell that turns GREEN is reclassified as missing consumption.
-  - A QR cell that stays RED is missing information. It is the only evidence
-    on which `arch` may bring a carrier to the user.
-- **Refuter.** A QR RED that turns GREEN after consumption alone refutes
-  QA's prediction.
+### F1 acceptance and QR classification (2026-09-25)
 
-**Completion for `test`:**
+QA read the `design`, `dev`, `review` and `test` F1 results, their logs, and
+the changed restore and record source. QA ran no build or test and edited no
+test.
 
-- Run two complete `tests/cache.rs` target runs.
-- Report each leg: sibling, arming, control and cached run, each with its exit
-  code, stdout and, for QR-4, the stats line.
-- Trace every cell with
-  `// spec: design/int/int.md §7.6 — Dependency record and validity (<kind>; spec/08-modules.md §8.5.4 edge 1)`.
-- Make no edits to production code, to helpers outside `tests/cache.rs`, to
-  REPL persistence or to cache files. Make no commit.
-- Report the results to QA through `sprint`.
+**Verdict: F1 is adequate as a bounded correction for qualified callable
+references.** It does not close CD-1 or the cache-dependency class. `int.md`
+§7.6 *Known gaps* 1 (the QR kinds) and 2–7 stay open.
 
-QA adds a spec-side annotation only after reading the executed evidence.
-
-## REPL display of an `IO` result — evidence delta (2026-09-25)
-
-**Authority.** [`repl/spec/01-display-format.md` §1.2](../../repl/spec/01-display-format.md)
-(Ring 4) is the requirement: after the trampoline runs the effect chain, an
-`IO`-typed result displays as `:(primitives/IO InnerType) (IO.Pure inner_value)`.
-[`spec/12-runtime.md` §12.9.1](../../spec/12-runtime.md)
-agrees on the value, `(IO.Pure 42)`. The user ruled on 2026-09-25 that the
-REPL specification governs. `spec` removed the contrary display text from
-[`spec/10-io.md` §10.6.2](../../spec/10-io.md). The user then ruled that `IO`
-takes no exception to the fully-qualified type rule, so the type head MUST
-read `primitives/IO`, never bare `IO`. No behaviour beyond the existing REPL
-requirement is approved.
-
-**Observed defect.** `(Pure 42)` displays `:primitives/Int 42`, and
-the former inner-only assertion pinned that output. Its replacement,
-`tests/spec_10_io.rs::repl_pure_int_result_displays_io_envelope`, records the
-required IO envelope as a failing regression guard.
-
-- **Entry: a requirement conflict that coverage followed.** §10.6.2 said the
-  REPL shows the inner result. The spec_10_io tests cite §10.6.2 for their
-  display assertions, and [`io-integration.md` §3](../../design/int/io-integration.md#3-open-gaps)
-  item 2 records the conflict.
-- **Implementation seam: a provisional source reading, not confirmed by a
-  control.** `pipeline::program_outcome_to_result` (clean arm) and the
-  equivalent `--run` arm in `session_v4/lifecycle.rs` strip `IO a` to `a`
-  before the result owner is built. The owner refuses `IO a`
-  (`src/CLAUDE.md` §Program-result ownership), so the formatter never receives
-  the `IO` fact.
-  - Refuter: a display path that receives the original `IO` type and drops it.
-  - `design`(int) decides where the fact is carried. No correction is selected.
-- **No language type change is involved.** The expression is already typed
-  `IO`: `io_propagates_into_inferred_return_type` displays
-  `(Fn [] (primitives/IO primitives/Int))`. Typecheck is not implicated.
-- **No execution change is involved.** The driver forces the tree once, and
-  the word it returns is the correct `inner_value`. A correction must not
-  re-force the effect at display, must not give the owner an `IO a` type, and
-  must not change `--run` or `--link` exit handling.
-
-**Type head.** The display requires `primitives/IO`; bare `IO` is a wrong
-outcome.
-
-**Conditions.**
-
-| Id | Condition and observable | Plausible wrong outcome it discriminates | Class |
+| Condition | Class | Executed evidence | Judgment |
 |---|---|---|---|
-| IOD-1 | `(Pure 42)` → the envelope `:(primitives/IO primitives/Int) (IO.Pure 42)`; no `:primitives/Int 42` line | Current inner-only display; both lines printed; a raw word; an unqualified inner type or bare `IO` head | Acceptance evidence, RED now |
-| IOD-2 | `(Pure "hello")` → `:(primitives/IO primitives/String) (IO.Pure "hello")` | A correction that handles only scalar inner values, or hands an owning result to the owner as `IO a` (refused → error); a bare `IO` head | Acceptance evidence, RED now |
-| IOD-3 | `(bind (Pure 42) (fn [x] (Pure x)))` → the IOD-1 envelope | Display keyed on a literal `(Pure …)` form rather than the result type | Acceptance evidence, RED now |
+| F1 cell 1: validity (`artifact-underkey`) | Acceptance | RED for the intended reason in two runs: cached 99, uncached 11, arming GREEN. GREEN on the delivered source in `dev`'s full run and `test`'s cache-target run, with no assertion changed | Adequate |
+| F1 cell 2: restore load (`enumeration-miss`) | Acceptance | RED for the intended reason: cold 11, then the unchanged warm run failed with `unresolved symbol: __cranelisp_got_b`. GREEN in the same two runs | Adequate; the only measurement of the restore walk |
+| Callee-module set and index edges | Acceptance (module) | Four units RED → GREEN: every callable kind in both lives, a closure member linked only by a callee, `Unsettled` for an unloaded callee module, and an index edge from a real typecheck. Two preservation units GREEN before and after | Adequate. Limit: the decoded-table unit was never observed RED; F1 cell 2 measures that read end to end |
+| No regression | Safety fence | Full suite: 6067 run, 6058 PASS, 9 FAIL, which is the before-set of 11 minus the two F1 cells. The `cache_dep_*`, restored-chain, DV3 and QR-6 cells and the `redefine` blocking units are GREEN | Adequate |
+| Private boundary | Maintenance | No change to `crates/*/src` or `public-api.txt` against `293534ee`; new visibility is `pub(crate)`. `cargo check` and `--tests` are zero-warning | Adequate. Limit: no new clippy lint is graded by inspection of the changed sites, because no count exists at `293534ee`. That bears on the `dev` release gate, not on F1 behaviour |
 
-**Existing evidence:**
+`dev`'s two cache-target runs predate its final `cache_restore.rs` edit and
+the module rename. The delivered source therefore has two cache observations:
+`dev`'s full run and `test`'s run. `test`'s run kept the fail set, panic sites
+and face values, but not per-leg output, so per-leg results rest on `dev`'s
+full run over the same source.
 
-- **Effect runs exactly once.** `tests/output_equivalence.rs` evaluates
-  `(main)` with `print` at the REPL. It strips every `:`-prefixed echo line
-  and compares the effect stream with `--run` and `--link`. A display that
-  re-forces the effect prints twice and fails there. It stays a safety fence
-  and needs no change.
-- **Non-`IO` results keep their envelope.** The `repl_introspection`
-  `display_*` cells cover this.
-- **Exit codes are unchanged.** The §10.6.1 cells cover this.
+**Residual: `callees` completeness.** It now gates cache validity and restore,
+so a callable reference that typecheck does not record is served stale.
 
-**Delivered guards** (`test`, 2026-09-25), in `tests/spec_10_io.rs`. Each
-replaces the former inner-only assertion and is failing, not ignored:
+- Covered: every callable kind and life at the unit tier, and a direct
+  monomorphic qualified call end to end. The QR cells measure the kinds
+  `callees` does not carry.
+- Asserted only: a qualified trait-method callee and a qualified call inside a
+  generic template. The template life records the call, and the closure is
+  transitive through `a`. Falsifier: either shape in `a` whose cached importer
+  differs from `--run --no-cache` after an edit to `b`. It is not allocated,
+  because no source reading shows an omission and the cell would add little to
+  the unit matrix. Instance-mediated dispatch stays held for `spec` (above).
 
-| Id | Cell | Replaced |
+**Review advisory 1.**
+
+- **Null-import target that is also a callee.** §7.6.1 requires the module to
+  load. Source satisfies it: the callee walk applies no import filter, and the
+  validity record already counts null imports as edges, so the exposure is a
+  loud warm-run load failure, not stale service. The shape is ordinary. An
+  alias-only import (`spec/08-modules.md` §8.3.6, for qualified access) is an
+  `ImportNames::None` spec, which both import walks skip, so only the callee
+  walk restores its target. F1 cell 2 cannot detect a later change that
+  applies the import skip to callee modules, because its `a` has no import
+  spec. One cheap cell earns its cost: FN-1.
+- **Callee cycle.** Not allocated. Mutual imports are a compile-time cycle
+  error, and whether mutual qualified-only calls compile fresh is unestablished.
+  Establishing that is §8.5.4 fresh-path intake outside F1. Restore
+  termination rests on the installed-module check that every restore
+  dependency step and declared-child enrolment share. Falsifier: a cold-valid
+  pair, `a` calling `b/f` and `b` calling `a/g`, whose warm run fails to
+  terminate or differs from the cold run.
+
+| ID | Class | Evidence | Expected and limits |
+|---|---|---|---|
+| FN-1: an alias-only import target reached by a qualified call restores | Safety fence for the §7.6.1 null-import rule. **Unarmed** until FIXME 0798 is repaired | `test`'s cell `cache_alias_only_import_target_reached_by_qualified_call_restores_and_matches_uncached_run` in the F1 section of `tests/cache.rs`. It is F1 cell 2 with `a` replaced by `(import [(b bb) []])` and `(defn g [] (bb/f))`. Legs as cell 2: cold 11; warm arming hits `a` and behaves as cold, which is the discriminating leg; the `--no-cache` control gives 11 after the edit; the cached run matches the control | **RED on the cold leg**, the known-defect face of FIXME 0798 ([FN-1 cold rejection](#fn-1-cold-rejection-intake-2026-09-25)). The warm leg has never run, so the fence has detected nothing yet. After 0798 is repaired the cold leg is predicted GREEN and the warm leg arms the fence. From then on, a warm `unresolved symbol: __cranelisp_got_b` is F1 defect intake and reopens this acceptance. Limit: the warm face is predicted, not observed. Before the F1 fix, both walks skipped the spec and no callee walk existed. No revert run is required |
+
+FN-1 does not gate F1 acceptance. Source establishes present conformance, and
+the fence protects later change. Its cell is authored; arming waits on the
+0798 repair, which S122 has not approved.
+
+### FN-1 cold rejection: intake (2026-09-25)
+
+**Classification: a known defect, not an F1 regression and not a requirement
+question.** The fresh compile rejects the FN-1 program before anything is
+cached. The error is `module 'bb' referenced by 'bb/...' not found (referenced
+by 'a')` (`.local/s122-fn1-cache-run.log`). FIXME 0798 (S115, `wrong-reject`,
+deferred) records the same face for the same construct. F1 cells 1 and 2 are
+GREEN in that run, and no `__cranelisp_got_b` face appeared.
+
+**The requirement is unambiguous.**
+
+- `spec/08-modules.md` §8.3.6: the alias-only import registers the alias, "for
+  qualified access".
+- §8.6.6 step 1: a qualifier that matches an import alias resolves in the
+  aliased module.
+- §8.5.4: a qualified reference to an unloaded module must load it. Edge 2
+  applies already-registered aliases.
+- §8.3.7's no-loading rule governs `(import [b []])`, which has no alias. It
+  does not cancel §8.3.6's alias.
+- The spec does not say whether an alias-only import loads its target eagerly
+  or leaves it to §8.5.4. Both readings give exit 11 here, so the observable is
+  settled and no user ruling is needed.
+
+**Mechanism: a provisional hypothesis from source, with no seam
+observation.**
+
+- `src/process_form/dependency.rs::handle_import` skips every
+  `ImportNames::None` spec before `install_imports`. On a fresh compile,
+  `install_imports` is the only writer of an import alias into the live alias
+  table. The alias `a.bb` is therefore never registered.
+- `substitute_module_alias` then returns `bb` unchanged.
+- The typecheck gap carries the substituted module. That module is `bb`, and
+  `drive_module_dep` finds no file for it.
+- The cache-restore route (`install_module_session_env`) does install
+  alias-only aliases. The defect is therefore in the fresh path only.
+
+**Falsifiers.** Each control is a sibling of the FN-1 program, run as a fresh
+`--run --no-cache` compile. None has been executed: this dispatch's harness
+refused scratch writes outside the repository and execution of the prebuilt
+binary.
+
+| Control | Prediction | Result that refutes the hypothesis |
 |---|---|---|
-| IOD-1 | `repl_pure_int_result_displays_io_envelope` | `repl_pure_int_unwraps` |
-| IOD-2 | `repl_pure_string_result_displays_io_envelope` | `pure_string_unwraps_inline` |
-| IOD-3 | `repl_bind_pure_lambda_result_displays_io_envelope_without_double_free` | `repl_bind_pure_lambda_no_double_free`; the input, and so the S61 capture-return guard, is unchanged |
+| `a` = `(import [(b bb) [f]])` and `(bb/f)` | Exit 11 | The same face. That would mean alias registration fails beyond the null-import skip, as 0798's S115 row 2 recorded. The locus would then widen |
+| The entry also imports `[b [f]]`, and `a` is FN-1's | The same `bb` face | Exit 11. That would make load order, not alias registration, the mechanism |
+| One module: `main` has `(import [(b bb) []])` and calls `(bb/f)` | The same `bb` face | Exit 11. That would tie the fault to the importer being a dependency |
 
-- **Trace.** Each cell cites `repl/spec/01-display-format.md` §1.2 (IO,
-  Ring 4); IOD-2 also keeps `spec/10-io.md` §10.2.3. Display-only §10.6.2
-  citations were re-pointed to the REPL display requirement. The `§10.6.2 — no main requirement`
-  comment stays, because the retained prose still says it.
-- **Defect line.** `class=requirement-conflict
-  locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev`.
-  The class is in the `tests/CLAUDE.md` vocabulary. The locus is QA's
-  provisional source reading, not a confirmed mechanism.
-- **Head tightening completed (2026-09-25).** The file-local predicate
-  requires `primitives/IO` in all three cells. Inputs, traces, defect lines and
-  names are unchanged. The focused run and its limits are recorded below.
-- **Detection limits.** No current output satisfies the envelope, so its
-  pattern was checked outside the product. For the delivered two-head
-  predicate: 4 accepted and 8 rejected spellings. IOD-1 fails first at its
-  absence assertion, so its envelope leg runs only after the correction. Only
-  IOD-1 asserts that the inner-only line is absent; that is the allocated
-  negative.
+**Disposition.**
 
-**Coupled assertions are not display authority.** These sites pin
-the inner-only display for an `IO`-typed REPL result. They stay unchanged now,
-because turning them RED would repeat IOD-1 to IOD-3 without discriminating
-anything more. `test` updates them in the correction's change-set,
-sequenced by `sprint` immediately after `dev`:
+- F1 acceptance is unchanged.
+- The FN-1 cell stays permanently as a composed, cache-target reproduction of
+  0798. It is not 0798's narrow repro, which is still owed (0798 ask 1).
+- Owner of the repair: `dev` on the binary/int surface, with the provisional
+  locus above. The first act is to observe the alias table at typecheck,
+  or to run the first control. The repair must keep §8.3.7: a plain
+  `[m []]` loads nothing and still suppresses the implicit prelude.
+- The repair is pending. 0798 is a deferred legacy filing with no approved
+  schedule, and the S122 approval covers F1 only. `sprint` schedules it with
+  the user.
+- No new action is filed. 0798 is the open record, and a second filing would
+  duplicate it.
 
-- `tests/spec_10_io.rs`: `pure_int_unwraps_inline`, `pure_bool_unwraps_inline`,
-  `bind_pure_to_pure_plus_one`, `bind_identity_continuation`,
-  `bind_nested_chain`, `bind_triple_chain`, `bind_named_defn_continuation` and
-  `bind_polymorphic_inference`. Assert the envelope, and replace the
-  `unwraps` names.
-- `tests/helpers/e2e.rs::parse_repl_int`: the REPL legs of every
-  `run_through_all_modes` caller, 13 files, evaluate an `IO`-typed
-  `(main)`. The parser must read the inner `Int` from the envelope. Update its
-  doc comments, which describe a `:primitives/Int N` echo.
-- `tests/same_form_rebinding.rs::parse_repl_int`, with the same change.
-- Literal `(main)` echoes: `shadowing_scope_lookup.rs` (two),
-  `spec_03_types.rs` (one), `regression.rs` (one) and
-  `spec_07_traits.rs::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches`.
-  `stdlib_conformance.rs` `(main)` sites are within the correction-time
-  census.
-- Excluded: `pure_pattern_accepted` has an `Int` result and remains the
-  FIXME 0907 guard.
+**QR classification: measured.** QR-1 to QR-5 are RED with unchanged faces
+under callee consumption in all four runs. Every panic is at the subject's
+final cached-versus-uncached comparison (for QR-4, the `(allocs, deallocs)`
+pair), so each edge-supplied sibling, arming leg and control passed. Each is therefore **RED with the sibling GREEN**, with a
+validity face (`artifact-underkey`, `ModuleEdges`). QA's prediction stands
+unrefuted.
 
-**Correction-time classification rule.** A RED is a display
-expectation update only when its failing assertion is the echo of an
-`IO`-typed REPL result, and the type argument and value are identical to
-the prior `:T v`. Every other RED is a regression. `test` reports the census it
-applied.
+- **Measured.** After `callees` is consumed, the module that a re-export first
+  hop, constructor, accessor, type-only or macro-head reference depends on is
+  still absent from the importer's dependency record, and restore serves the
+  stale object. For QR-1 the absent member is the spelled re-exporter `r`; the
+  terminal home `c` is now recorded.
+- **Not measured.** Whether another fact already persisted can supply these
+  edges without a new carrier; for example resolved schemes, concrete views,
+  export chains or expansion provenance. Which carrier, field or API would be
+  needed, and whether any is necessary. The REDs are the evidence on which
+  `arch` may assess this with the user; they approve nothing.
+- QR-4 remains a memory-safety exposure: the stale importer under-releases.
+- QR-6 is GREEN: a constructor-only home that the object does not bind
+  restores.
+- Outside F1 and unchanged by it:
+  `fq_type_only_reference_loads_its_module_on_a_fresh_compile` (a cold
+  `wrong-reject`).
+
+**F1 items still open, none an evidence gate:**
+
+1. The two F1 `fixed=S122` stamps are true only if they land with the `src/`
+   correction. If that correction commits separately, `test` appends `/<sha>`.
+2. `design`(int) marks F1 accepted in `int.md` §7.6.1 and §16.0 and in the
+   `s122-closure.md` row.
+3. `test` tags the FN-1 cell as a reproduction of FIXME 0798
+   ([FN-1 cold rejection](#fn-1-cold-rejection-intake-2026-09-25)). Arming
+   waits on the 0798 repair.
+4. The user accepts what ships at the Phase-5 checkpoint.
+
+## REPL execution notice for `IO` expressions — evidence delta (2026-09-25)
+
+**Authority.** [`repl/spec/01-display-format.md` §1.2.1](../../repl/spec/01-display-format.md#121-io-expression-results):
+the REPL executes an `IO a` expression automatically. It prints the exact line
+`Executing IO…`, then the action's platform output, then the payload under
+`a`. A non-`IO` expression prints no notice. Batch output never contains it.
+[`spec/10-io.md` §10.6.2](../../spec/10-io.md) and the `IO` row of
+[`spec/12-runtime.md` §12.9.1](../../spec/12-runtime.md) defer to that REPL
+requirement.
+[`repl/spec/03-slash-commands.md` §3.7](../../repl/spec/03-slash-commands.md)
+applies the same order to `/mem <expr>`. This requirement supersedes the
+`IO` envelope display; its conditions and cells are retired.
+
+**Design guard.** [`design/int/io-integration.md`](../../design/int/io-integration.md)
+§1.1: one site in `pipeline::execute_compiled_expr`. From the same `is_io`
+that selects forcing, the notice is written to process stdout and flushed
+before `cranelisp_run_program`. `--run` and `--link` do not reach that site.
+The "stdout" and "flushed" parts of the conditions below trace to this guard,
+not to the spec.
+
+| Id | Cell | Observable | Plausible wrong outcome discriminated | Class |
+|---|---|---|---|---|
+| IOT-1 | `tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload` | `(Pure 42)`: exactly one notice line, then `:primitives/Int 42`; neither `primitives/IO` nor `IO.Pure` | No notice; notice after the payload or on the payload line; ASCII `...`; envelope display | Acceptance |
+| IOT-2 | `…::repl_pure_string_result_prints_io_notice_then_payload` | `(Pure "hello")`: notice, then `:primitives/String "hello"` | The heap payload path diverges | Acceptance |
+| IOT-3 | `…::repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free` | `(bind (Pure 42) (fn [x] (Pure x)))`: notice, then `:primitives/Int 42` | Notice keyed on a literal `(Pure …)` form rather than the type; the S61 double free | Acceptance |
+| IOT-4 | `…::repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns` | One `PrimitivesOnly` session with the stdio platform: a pure call, a `defn` whose body prints, the bare name `print`, then `(print "iot-probe")`. Exactly one notice; `:primitives/Int 3` < notice < `iot-probe` < `:primitives/Int 0`; `iot-never` absent | Notice written after execution or unflushed; notice on a pure, definition or lookup turn; notice keyed on a displayed type that mentions `IO`; duplicated notice; no effect | Acceptance (positive and negative) |
+| IOT-5 | `tests/repl_introspection.rs::mem_with_io_expr_prints_notice_then_payload_then_delta` | `/mem (Pure 42)`: one notice < `:primitives/Int 42` < the `; delta:` line | `/mem` bypasses the notice site; delta before the payload | Acceptance |
+| IOT-B | `tests/output_equivalence.rs`, all cells | Unstripped `--run` and `--link` stdout equals the REPL effect stream | Notice leaks into batch output; an effect runs twice | Acceptance (batch negative); safety fence (effect once) |
+
+**Maintenance check.** `tests/helpers/e2e.rs::strip_repl_chrome` drops a
+line exactly equal to `REPL_IO_NOTICE` from the REPL leg only. Without it,
+every `run_through_all_modes` REPL leg would fail on the notice. Only the
+unstripped batch legs give IOT-B its authority.
+
+**`dev` module evidence** (`src/pipeline.rs`, `src/repl/format.rs`):
+
+- `write_io_execution_notice` writes exactly one notice line and flushes after
+  the write when `is_io`.
+- It writes zero bytes when `!is_io`.
+- `io_execution_notice_line` is byte-identical to the spec text, with colour
+  off and on.
+
+**Adequacy (2026-09-25): adequate.**
+
+- **Detection.** IOT-1 to IOT-5 were RED before the correction, each at its
+  notice-count assertion (`.local/s122-io-notice-test-run1.log`: 278 run, 5
+  failed). They are GREEN on the delivered source
+  (`.local/s122-io-notice-dev-targets.log`: 278/278, including all 12
+  `output_equivalence` cells).
+- **Full suite.** `.local/s122-io-notice-dev-full.log`: 6079 run, 6071
+  passed, 8 failed, 1 skipped. The three module tests pass.
+  - Seven failures are defect guards outside this change: the five
+    [QR cells](#f1-acceptance-and-qr-classification-2026-09-25) in
+    `tests/cache.rs`, `fq_type_only_reference_loads_its_module_on_a_fresh_compile`
+    and its one-module reduction
+    `tests/spec_08_modules.rs::fq_type_annotation_alone_loads_its_module`.
+    Each fails in a batch `--run` leg, which never reaches the notice site.
+  - `citation_drift` failed on four citations of the retired cell names:
+    three in §1.2.1 and one in this record. This record and the §1.2.1 band
+    now repair them.
+  - No failure is a notice-only expectation update, which matches the
+    census's prediction of zero.
+- **Review.** Independent `review`(src) accepted the delivered source with
+  no blocking or required finding.
 
 **Limits:**
 
-- No allocator cell: a formatting-only correction constructs and releases
-  nothing. If the correction adds a heap construction or release on the
-  display path, QA reassesses, and `dev` owns the module witness.
-- No `--link` cell: nothing is displayed there.
-
-**Traceability band.**
-
-- **Applied (root, 2026-09-25):** the §1.2 Ring 4 `IO` line carries
-  `[S122 — …::repl_pure_int_result_displays_io_envelope, …::repl_pure_string_result_displays_io_envelope, …::repl_bind_pure_lambda_result_displays_io_envelope_without_double_free RED]`,
-  with each name qualified by `tests/spec_10_io.rs`, and the §1.2 heading
-  reads `[S122]`, its lowest child.
-- **§10.6.2 re-evaluated (QA, 2026-09-25):** it stays `[Uncovered S122]`. Its
-  retained prose covers no `main` requirement in REPL mode, trampoline forcing
-  before display, and deferral of presentation to REPL §1.2. No test traces
-  §10.6.2. The candidate witness is a REPL leg of `tests/output_equivalence.rs`:
-  there, `(main)` is an ordinary expression entered at the prompt, and its
-  forced effect stream is compared byte-for-byte with `--run` and `--link`, so
-  a skipped or repeated effect fails. Restoring the band needs a `test` backlink
-  (`// spec: spec/10-io.md §10.6.2`) on one such cell. QA then confirms that
-  the cell validates the retained prose in both directions before
-  re-annotating. No new test is allocated.
-- **After a verified correction:** the Ring 4 line becomes
-  `[Tested+Neg …]` over the same three cells, with IOD-1's absence assertion
-  as the negative. The §1.2 heading returns to `[Tested]`, and the `IO` row of
-  `spec/12-runtime.md` §12.9.1 gains the same citation.
-
-**Open items**, for `sprint` to route:
-
-- `design`(int) records `io-integration.md` §3 item 2 as ruled. Its "neither
-  has a failing test" no longer holds for item 2, because IOD-1 to IOD-3 are
-  the failing guards.
-- The correction itself: `design`(int), then `dev`(src). `test` then updates
-  the coupled assertions under the classification rule above.
-
-**Execution (2026-09-25).** Test Opus5.5/high
-`07ea9aa7-e6eb-4249-af21-ca6a9985477f` replaced the three allocated assertions.
-Two foreground `cargo nextest run --no-fail-fast --test spec_10_io` runs each
-report 69 run, 66 passed and 3 failed, with no skips. IOD-1 observes `:primitives/Int 42`,
-IOD-2 `:primitives/String "hello"`, IOD-3 `:primitives/Int 42`; all fail on
-inner-only display. No other cell changed result. The QA-proposed
-requirement-conflict vocabulary row is installed; source attribution remains
-provisional. Root applied the allocated RED annotation with the replacement
-names and removed the obsolete test-name citation from language §10.6.2's
-cleared coverage. No production correction or new coverage acceptance is
-claimed. Those runs used the two-head predicate, so they do not discriminate
-a bare `IO` head. **Head tightening executed (2026-09-25).** `test` narrowed
-`assert_io_result_envelope` to `:\(primitives/IO {}\) \(IO\.Pure {}\)`;
-inputs, the IOD-1 absence assertion, `// spec:` and `// defect:` lines are
-unchanged. `cargo nextest run --no-fail-fast --test spec_10_io -E
-'test(/displays_io_envelope/)'` reports 3 run, 0 passed, 3 failed: IOD-1 at
-its absence assertion (`:primitives/Int 42`), IOD-2 and IOD-3 at the envelope
-regex (`:primitives/String "hello"`, `:primitives/Int 42`). The helper has no
-other caller, so the filtered run covers every affected cell. Bare-`IO`
-rejection holds by the regex's literal prefix; no outside-product spelling
-check was reported, and the accepting leg runs after the correction.
+- The negative legs of IOT-4 and the zero-bytes module test were never
+  observed RED, because the product emitted no notice before the correction.
+  Their detection rests on the count and position assertions, which the
+  outside-product predicate replica rejected for a notice on the pure,
+  definition and lookup turns.
+- IOT-B's batch negative is observed only through `output_equiv_*`, whose
+  `// spec:` lines cite §10.6.3, not §1.2.1.
+- For a non-`IO` `/mem <expr>`, the order of result and delta line is not
+  asserted. `mem_with_expr_emits_signed_delta_line` checks only that both are
+  present.
+- Evidence covers only a piped session. A terminal session uses the same
+  stdout write and flush.
+- Not allocated, each unobserved:
+  - a trapping IO action;
+  - an `IO`-typed compile error;
+  - multi-form lines, which the spec leaves open;
+  - agent submit;
+  - the design-accepted degraded-startup residual.

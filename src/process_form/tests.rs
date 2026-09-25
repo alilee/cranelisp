@@ -686,6 +686,82 @@ fn handle_mod_pass0_returns_continue_no_block() {
     );
 }
 
+fn null_import_spec(target: &str, alias: Option<&str>) -> cranelisp_types::ImportSpec {
+    cranelisp_types::ImportSpec {
+        module_path: ModuleFullPath::from(target),
+        alias: alias.map(cranelisp_types::ModuleName::from),
+        names: cranelisp_types::ImportNames::None,
+        span: Span::SYNTHETIC,
+    }
+}
+
+/// Runs Pass-0 `handle_import` for one name-less spec in module `user`, whose
+/// project root holds no `b.cl`, so any load attempt would fail.
+fn run_null_import(spec: cranelisp_types::ImportSpec) -> ModuleAliasProbe {
+    let module = ModuleFullPath::from("user");
+    let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+        dashmap::DashMap::new();
+    symbol_tables.insert(
+        module.clone(),
+        crate::code::SessionSymbolTable::new_with_params(module.clone()),
+    );
+    let next_type_id = std::sync::atomic::AtomicU32::new(0);
+    let scheduler = CompileScheduler::new();
+    let typecheck_products = dashmap::DashMap::new();
+    let mut ctx = mk_mod_test_ctx(
+        &symbol_tables,
+        &next_type_id,
+        &scheduler,
+        &typecheck_products,
+        module.clone(),
+    );
+    let action = handle_import(&mut ctx, &module, vec![spec])
+        .expect("a name-less import must not attempt to load its target");
+    ModuleAliasProbe {
+        continued: matches!(action, BlockAction::Continue),
+        target_registered: symbol_tables.contains_key(&ModuleFullPath::from("b")),
+        aliases: ctx
+            .module_aliases
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().target.clone()))
+            .collect(),
+    }
+}
+
+struct ModuleAliasProbe {
+    continued: bool,
+    target_registered: bool,
+    aliases: Vec<(ModuleFullPath, ModuleFullPath)>,
+}
+
+// spec: spec/08-modules.md §8.3.6 — an alias-only import registers its alias for
+// qualified access (§8.6.6 step 1) without loading the target; loading is left
+// to the qualified reference (§8.5.4).
+#[test]
+fn alias_only_import_registers_alias_without_loading() {
+    let probe = run_null_import(null_import_spec("b", Some("bb")));
+    assert!(probe.continued);
+    assert!(!probe.target_registered);
+    assert_eq!(
+        probe.aliases,
+        vec![(
+            cranelisp_types::module_alias_key(&ModuleFullPath::from("user"), "bb"),
+            ModuleFullPath::from("b"),
+        )],
+        "`(import [(b bb) []])` must register `bb` as user's alias for `b`"
+    );
+}
+
+// spec: spec/08-modules.md §8.3.7 — NEGATIVE: a plain null import registers no
+// alias and loads nothing.
+#[test]
+fn null_import_registers_no_alias_and_loads_nothing() {
+    let probe = run_null_import(null_import_spec("b", None));
+    assert!(probe.continued);
+    assert!(!probe.target_registered);
+    assert!(probe.aliases.is_empty(), "got {:?}", probe.aliases);
+}
+
 // -----------------------------------------------------------------------
 // 0571 member-not-found diagnostic: the span-attribution walker
 // (`find_named_var_span`) that gives the "module X has no member Y" error a

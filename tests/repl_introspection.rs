@@ -31,7 +31,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
 
 // Test-authoring shortcuts: `Cranelisp::repl_capture(lines)` for bare REPL,
 // `Cranelisp::repl_prims_capture(lines)` for REPL with PrimitivesOnly prelude.
@@ -2559,6 +2559,31 @@ fn mem_with_expr_emits_signed_delta_line() {
     assert!(
         delta_line.contains("live +0"),
         "the rendered heap result must be released before /mem closes its delta window; got:\n{delta_line}\nfull stdout:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec/03-slash-commands.md §3.7 — `/mem <expr>` on an IO
+// expression prints the §1.2.1 notice, then the payload, then the delta line.
+// spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
+#[test]
+fn mem_with_io_expr_prints_notice_then_payload_then_delta() {
+    let out = repl_prims("/mem (Pure 42)\n");
+    let lines = repl_output_lines(&out.stdout);
+    let notices = lines.iter().filter(|l| *l == REPL_IO_NOTICE).count();
+    assert_eq!(
+        notices, 1,
+        "`/mem` of an IO expression MUST print exactly one `{REPL_IO_NOTICE}` line; got:\n{}",
+        out.stdout
+    );
+    let order = [
+        lines.iter().position(|l| l == REPL_IO_NOTICE),
+        lines.iter().position(|l| l == ":primitives/Int 42"),
+        lines.iter().position(|l| l.starts_with("; delta:")),
+    ];
+    assert!(
+        order.iter().all(Option::is_some) && order.windows(2).all(|w| w[0] < w[1]),
+        "expected notice, payload, delta line in that order (positions {order:?}); got:\n{}",
         out.stdout
     );
 }

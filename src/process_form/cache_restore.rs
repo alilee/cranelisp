@@ -11,6 +11,7 @@
 //! Cross-submodule: calls `super::register_dep` (the per-dep prologue lives in
 //! `dependency.rs`).
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use cranelisp_types::{
@@ -18,7 +19,9 @@ use cranelisp_types::{
     PlatformSpec, Realization, Span, Symbol, WrittenTraitImpl,
 };
 
-use crate::cache::dependency_record::{DependencyRecord, ModuleSources};
+use crate::cache::dependency_record::{
+    DependencyRecord, ModuleSources, callee_modules, is_compiler_owned,
+};
 use crate::session_setup::CacheValidity;
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
 
@@ -35,8 +38,9 @@ use super::register_dep;
 ///
 /// **Decision 37 / Sprint 58 Wave 2c**: cache-hit decision lives inside
 /// the recursive `register_module(M)` flow. After installing M's symbol
-/// table, we walk `M.imports` and recursively attempt cache-load for
-/// each transitive dep — failing over to fresh-build registration when
+/// table, we walk `M.imports`, re-export targets and callee modules and
+/// recursively attempt cache-load for each transitive dep — failing over
+/// to fresh-build registration when
 /// any dep is not cached. This ensures cache-hit modules' transitive
 /// `__cranelisp_got_{transitive_dep}` symbols are registerable when the
 /// codegen-phase worker walks `symbol_tables` (per Decision 37 §3.2).
@@ -66,7 +70,7 @@ pub(super) fn try_cache_hit_load(
 
     // Phase 4: extract all data BEFORE moving the symbol table (avoids clone /
     // honours the extract-before-move ordering invariant).
-    let specs = extract_cached_specs(&cached);
+    let specs = extract_cached_specs(dep, &cached);
 
     // A writer-side impl record publishes its discovery shell into the trait's
     // HOME table. Make those homes available before consuming/installing the
@@ -94,6 +98,11 @@ pub(super) fn try_cache_hit_load(
     // Re-export targets are transitive deps too (FIXME 0387 — prelude's
     // `(export [text.string [str]])` etc.). Walk them through the same path.
     register_transitive_cached_imports(ctx, &specs.reexport_deps)?;
+    // Callee modules: the restored object binds their GOTs even when no
+    // import names them (§7.6.1). The walk installs no names in `dep`.
+    for callee_module in &specs.callee_modules {
+        register_cached_dependency(ctx, callee_module)?;
+    }
     enrol_cached_written_impls(ctx, dep, &specs.written_trait_impls)?;
     // Declared submodules are part of the parent's load graph even when they
     // are private and never imported. A fresh parent enrolls them after its
@@ -236,11 +245,16 @@ struct CachedSpecs {
     /// Canonical writer-side trait implementation records. Cache restore
     /// re-enrols each one into its trait-home table.
     written_trait_impls: Vec<WrittenTraitImpl>,
+    /// Modules the table's callables call — also transitive deps.
+    callee_modules: BTreeSet<ModuleFullPath>,
 }
 
 /// Phase 4: extract every spec the install + register + recurse phases need out
 /// of the about-to-be-moved cached symbol table (extract-before-move invariant).
-fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> CachedSpecs {
+fn extract_cached_specs(
+    dep: &ModuleFullPath,
+    cached: &cranelisp_backend::cache::CachedModule,
+) -> CachedSpecs {
     use std::collections::HashSet as StdHashSet;
 
     let symbols: StdHashSet<Symbol> = cached
@@ -301,6 +315,7 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
         .collect();
     let submodules = cached.symbol_table.submodules.clone();
     let written_trait_impls = cached.symbol_table.written_trait_impls.clone();
+    let callee_modules = callee_modules(dep, &cached.symbol_table);
 
     CachedSpecs {
         symbols,
@@ -309,6 +324,7 @@ fn extract_cached_specs(cached: &cranelisp_backend::cache::CachedModule) -> Cach
         reexport_deps,
         submodules,
         written_trait_impls,
+        callee_modules,
     }
 }
 
@@ -524,95 +540,72 @@ fn register_cached_with_scheduler(
 }
 
 /// Walk a cached module's `imports` and ensure each transitive dep is
-/// installed (cache-hit or fresh-build registration). Decision 37 §3.2:
-/// the recursive register-then-recurse-on-imports flow that the cache-hit
-/// branch must mirror.
-///
-/// For each `ImportSpec`:
-/// - If the dep is already in `ctx.symbol_tables`, skip (already installed
-///   via another path).
-/// - If the dep file is found and cache-loadable, recurse into
-///   `try_cache_hit_load` (which will recurse further on its own imports).
-/// - Otherwise, register with the scheduler for fresh build — the
-///   priority worker will pick it up. Source parsing is deferred to the
-///   worker via `ensure_module_sexps_for_fresh_build`; we cannot block here
-///   because cache-hit load is called from inside form processing of the
-///   *outer* module, which is mid-typecheck and cannot also drive a
-///   fresh build of a transitive dep.
+/// installed. A null import (§8.3.6) loads nothing and is skipped here only;
+/// the same module reached as a callee still loads.
 pub(super) fn register_transitive_cached_imports(
     ctx: &mut ModuleCompiler,
     imports: &[ImportSpec],
 ) -> Result<(), CranelispError> {
     for spec in imports {
-        let transitive_dep = &spec.module_path;
-        // §8.3.6 Null import — skip.
         if matches!(&spec.names, ImportNames::None) {
             continue;
         }
-        // Synthetic compiler modules (primitives, macros, platform.*) are
-        // installed by the session, not file-backed.
-        let dep_str = transitive_dep.as_ref();
-        if dep_str == "primitives"
-            || dep_str == "macros"
-            || dep_str.starts_with("platform.")
-            || dep_str == "prelude"
-        {
-            continue;
-        }
-        // Already installed via another path — done.
-        if ctx.symbol_tables.contains_key(transitive_dep) {
-            continue;
-        }
-        // Resolve the dep file. If we can't find it, leave for the regular
-        // import handler — it will surface the error properly.
-        let Some(dep_file) =
-            crate::pipeline::resolve_module_file(transitive_dep, ctx.project_root, ctx.lib_dirs)
-        else {
-            continue;
-        };
-        // Try cache-hit load first (recurses transitively itself).
-        if try_cache_hit_load(ctx, transitive_dep, &dep_file)? {
-            continue;
-        }
-        // Sprint 60 Workstream E-1 — route the cache-miss branch through the
-        // `register_dep` shim (`src/process_form/dependency.rs`), closing the
-        // 6th per-dep prologue site. See `design/int/int.md §6.1` — dep
-        // registration inside the single `register_module` recursion.
-        // The shim publishes dep_sexps BEFORE returning (Sprint 58 W6 Defect 1
-        // ordering), stashes source_text for /source introspection, records the
-        // source hash, and updates file_to_module. Silent-continue-on-error is
-        // preserved: cache-hit transitive recursion is best-effort; if we can't
-        // read/parse the dep file here, the regular import handler will surface
-        // a proper error when it reaches the dep.
-        let dep_file_ref = dep_file.clone();
-        let dep_for_err = transitive_dep.clone();
-        let dep_sexps = match register_dep(ctx, transitive_dep, &dep_file, |e| {
-            CranelispError::ModuleError {
-                message: format!(
-                    "failed to read transitive dep '{}' from '{}': {}",
-                    dep_for_err,
-                    dep_file_ref.display(),
-                    e
-                ),
-                location: ErrorLocation::from_span_file(
-                    Span::SYNTHETIC,
-                    Some(dep_file_ref.clone()),
-                ),
-            }
-        }) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        // Register with scheduler — the sexps ride the dep's work packet (S78).
-        // The worker loop processes this dep's typecheck and eventually marks
-        // it `inmem_done`. We do NOT block here (we are inside the outer
-        // module's typecheck); the outer module either already typechecked or
-        // its own normal import-block chain handles its dependency on this dep.
-        // `delays_other=true` matches worker-side consensus — every dep site
-        // passes `true` (`design/int/int.md §6.1`, queue-priority rule).
-        ctx.scheduler
-            .register_module(transitive_dep.clone(), dep_sexps, true);
+        register_cached_dependency(ctx, &spec.module_path)?;
     }
+    Ok(())
+}
+
+/// Ensure one dependency of a cache-restored module is installed, by cache
+/// hit or fresh-build registration (Decision 37 §3.2). Imports, re-export
+/// targets and callee modules share this step.
+///
+/// - Session-installed modules (`primitives`, `macros`, `platform.*`,
+///   `prelude`) and already-installed modules are satisfied.
+/// - An unresolvable file is left for the regular handler to report.
+/// - A cache miss registers the module with the scheduler without blocking:
+///   restore runs inside the outer module's form processing, which cannot
+///   also drive a fresh build.
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+fn register_cached_dependency(
+    ctx: &mut ModuleCompiler,
+    dependency: &ModuleFullPath,
+) -> Result<(), CranelispError> {
+    if is_compiler_owned(dependency)
+        || dependency.as_ref() == "prelude"
+        || ctx.symbol_tables.contains_key(dependency)
+    {
+        return Ok(());
+    }
+    let Some(dep_file) =
+        crate::pipeline::resolve_module_file(dependency, ctx.project_root, ctx.lib_dirs)
+    else {
+        return Ok(());
+    };
+    if try_cache_hit_load(ctx, dependency, &dep_file)? {
+        return Ok(());
+    }
+    // `register_dep` publishes the sexps before returning, stashes the source
+    // text and hash, and maps the file. A read or parse failure here is left
+    // for the regular handler to surface when it reaches the dependency.
+    let dep_file_ref = dep_file.clone();
+    let dep_for_err = dependency.clone();
+    let Ok(dep_sexps) = register_dep(ctx, dependency, &dep_file, |e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "failed to read transitive dep '{}' from '{}': {}",
+                dep_for_err,
+                dep_file_ref.display(),
+                e
+            ),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(dep_file_ref.clone())),
+        }
+    }) else {
+        return Ok(());
+    };
+    // Every dependency site passes `delays_other = true`
+    // (`design/int/int.md` §6.1, queue-priority rule).
+    ctx.scheduler
+        .register_module(dependency.clone(), dep_sexps, true);
     Ok(())
 }
 

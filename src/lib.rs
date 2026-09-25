@@ -47,6 +47,7 @@ pub(crate) mod bootstrap;
 // struck `register_imports`/`register_exports`. See `design/arch/fixmes/0242-*`
 // §S76-addendum (2) + bounded-contexts.md §2 invariants 2+8.
 pub(crate) mod cache_writer;
+pub(crate) mod callee_edges;
 pub(crate) mod code;
 pub(crate) mod display;
 pub(crate) mod exe;
