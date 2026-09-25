@@ -140,10 +140,8 @@ types at a concrete instantiation for category and glue purposes.
   and no concrete instance can be demanded as a value. Its teardown is §3.4.
 - A constructor instance body owes zero RC operations: fields transfer into the box at
   concrete types as they did in the template.
-- Open: FIXME 0931 stays open for one bounded evidence disposition — reconciling the retained
-  NC-1 and constructor-partition evidence and MEASURE-C1 (wrapper-mint count) and MEASURE-C2
-  (`primitives` module slot high-water mark) against the delivered lifecycle. Its
-  implementation instructions are superseded.
+- Open: FIXME 0931 holds one evidence tail — a current witness, or a recorded supersession,
+  for the whole bootstrap constructor population and the R17 constructor partition.
 
 ### 3.2 The Vec family
 

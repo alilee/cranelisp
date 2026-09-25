@@ -1,18 +1,24 @@
 # The ownership stratum — structural options
 
-**STATUS: OPTION PAPER (S118 deliverable, user-commissioned 2026-07-26; feeds
-S119 Phase 1).** This paper decides nothing. It lays out the structural options
-for the manual reference-counting stratum — evidence, mechanisms, costs, staged
-paths, composition — and states a recommended S119 shape. **The user decides**
-(§7). Archive trigger: the user's S119 Phase-1 disposition lands and each
-adopted option's binding contract moves to its own manifestation site
-(per-crate design docs, `safety-invariants.md`, `tests/plan/`, `principles/`);
-this file then archives as the decision record.
+**Status: option paper with open options.** This paper decides nothing; a
+retained option is not approval. It lays out the structural options for the
+manual reference-counting stratum — evidence, mechanisms, costs, staged paths
+and composition. The user dispositioned it at S119 Phase 1
+(`sprints/archive/sprint-119.md`):
+
+- option 1 tranches A and B (int marshal boundary) became the S119 commitment
+  ([typed consume funnel](../runtime/s119-typed-consume-funnel.md));
+- option 2 adoption was deferred until its dev-tier cost is measured;
+- the option-4 emission-audit spike and option-1 tranches C and D were
+  deferred to S120.
+
+No later sprint has scheduled the deferred options. Retire this paper when each
+is adopted into its own manifestation site or explicitly declined by the user.
 
 **Commission.** After three sprints (S116–S118) in which nearly every execution
 failure concentrated in one stratum, the user asked whether tooling,
 restructuring, or modularity changes are needed to make the code manageable.
-The shared diagnosis (`sprints/SPRINT.md` §Notes 2026-07-26): the stratum's
+The shared diagnosis (S119 Phase 1, 2026-07-26): the stratum's
 **cost structure** — not the process, and not the codebase broadly — is the
 systemic reliability problem. The big decisions are made on paper, not
 mid-wave.
@@ -309,7 +315,7 @@ owner, uniformly, with no per-construct arithmetic. Elision becomes an
 optimization the `--release` tier performs under a verification guard.
 
 The architecture already names this lowering: it is the **conservative
-all-Owned lowering** that `ownership-inference.md` §2.1/R7 keeps permanently
+all-Owned lowering** that [ownership inference](ownership-inference.md) §2.1/R7 keeps permanently
 reachable as the differential oracle, and that Principle 25 defines as **the
 reference semantics** ("the conservative all-Owned lowering IS the definition
 of correct behavior for the memory model; an elision is correct iff
@@ -572,7 +578,7 @@ documented-residual to zero; the marginal instrument stays valid unchanged.
 1. **Option 2 — adopt, reject, or defer-pending-measurement?** Adopting makes
    the conservative lowering the dev-tier default and moves all elision to
    `--release` under the existing differential guard; it removes the emission
-   special-case defect class and re-stages `ownership-inference.md`; it costs
+   special-case defect class and re-stages [ownership inference](ownership-inference.md); it costs
    dev-tier performance by an amount not yet measured (§3.3's gate would
    produce the number first). Rejecting keeps tuned dev-tier emission and its
    special cases, with W3's mechanism collapse and options 3/4 as the
@@ -637,7 +643,7 @@ documented-residual to zero; the marginal instrument stays valid unchanged.
   conservative-lowering reference semantics option 2 promotes.
 - `tests/helpers/marginal.rs` + `tests/CLAUDE.md` §"Allocator balance…" —
   option 3's landed first instance and its e2e-tier rule.
-- FIXMEs 0889 (leak recovery — §6.3), 0890 (threshold re-derivation),
+- FIXMEs 0889 (leak recovery; [the 0889 routing section](#63-fixme-0889-routing-the-user-required-leak-recovery)), 0890 (threshold re-derivation),
   0867 (historical variant-coverage hypothesis; retired by the S121 ruling).
 - [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-primitives-s116.md), [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md)
   — the prose-contract evidence.

@@ -18,8 +18,8 @@ use super::*;
 /// (`format_def_entry`).
 ///
 /// First line carries the `; defn` classification + optional docstring; subsequent
-/// variant lines carry only the type and qualified name. See repl/spec.md §1.3
-/// + §4.1.1 and design/int/multi-sig-introspection.md.
+/// variant lines carry only the type and qualified name. See repl/spec/01-display-format.md §1.3,
+/// repl/spec/04-self-documentation.md §4.1.1 and design/int/multi-sig-introspection.md.
 #[cfg(test)]
 pub(crate) fn format_overloaded_variants<C: cranelisp_types::CodeStore>(
     name: &str,

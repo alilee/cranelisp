@@ -358,7 +358,7 @@ solution, and the rendered HTML solution page (exit 0).
   primitives (`char-at`, `str-concat`, `substring`, `split`, …) and boolean
   `not` imported by name from `primitives`.
 - **Test functions** are top-level `test-*` defns returning `(Option String)`
-  (`None` = pass, `(Some why)` = fail; `repl/spec.md` §16.1). They are run by
+  (`None` = pass, `(Some why)` = fail; `repl/spec/16-test-discovery.md` §16.1). They are run by
   the free-standing `tests.cl` runner — NOT `(mod test)` / `discover-tests`
   (in-language discovery is REPL-only).
 - **Every batch `main` returns `(IO _)`** via `(Pure n)` or a `bind` chain; the

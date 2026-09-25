@@ -439,7 +439,7 @@ complete index" and "nothing matched yet because the index is still building" ca
 reader actions (rephrase vs. simply retry). This is the same self-documenting, never-opaque
 posture as every other deterministic command: a not-yet-complete index is a transient state
 surfaced plainly, never an error and never a silent empty result. A subsequent `/search`, once
-the burn-down has advanced, returns the fuller set. [S90 re-pin] [Tested tests/search::search_seeded_file_name_collision_does_not_wedge_pending_note — e2e pins the no-wedge/absence-after-settle path; the note-fires and empty-partial non-conflation MUSTs are unit-pinned (src/repl.rs::indexing_note_text_present_iff_pending, src/repl.rs::empty_result_still_indexing_serves_only_the_note_not_no_match, src/repl.rs::empty_result_complete_index_serves_only_no_match_not_the_note) — the fire path is timing-coupled, not e2e-deterministic (S108)]
+the burn-down has advanced, returns the fuller set. [S90 re-pin] [Tested tests/search::search_seeded_file_name_collision_does_not_wedge_pending_note — e2e pins the no-wedge/absence-after-settle path; the note-fires and empty-partial non-conflation MUSTs are unit-pinned (src/repl/search.rs::indexing_note_text_present_iff_pending, src/repl/search.rs::empty_result_still_indexing_serves_only_the_note_not_no_match, src/repl/search.rs::empty_result_complete_index_serves_only_no_match_not_the_note) — the fire path is timing-coupled, not e2e-deterministic (S108)]
 
 **Completion message — `; search index complete.` (S108).** When the background burn-down
 finishes — every reachable module source (file-resolved + seeded) processed under the current

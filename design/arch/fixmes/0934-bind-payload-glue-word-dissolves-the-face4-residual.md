@@ -1,44 +1,51 @@
 ---
 number: 0934
-target: /design
+target: /qa
 filed_by: /arch
 filed_at: 2026-07-28
 sprint_filed: 119
-refers_to: design/arch/total-concreteness.md §3.4;
-  design/backend/non-concrete-release-contract.md §4.4 (face 4's named
-  bounded residual: a Pure payload nested in an unrun Bind sub-tree is not
-  discharged), §5.3 (the free_io_node split this rides on);
-  design/arch/fixmes/0907-* (the ruled face);
-  crates/cranelisp-intrinsics/src/drop.rs (consume_io_tree / free_io_branches);
-  Decision 0011 (closure DROP_GLUE_PTR — the self-description precedent)
+refers_to: design/backend/non-concrete-release-contract.md;
+  design/intrinsics/ownership-and-disposal.md;
+  design/backend/s122-closure.md;
+  crates/cranelisp-intrinsics/src/drop.rs;
+  crates/cranelisp-intrinsics/src/drop/tests.rs;
+  design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md
 status: open
+retargeted_by: /arch
+retargeted_at: 2026-09-25
 ---
 
-# S121+: the `Pure` payload-glue word — local self-description dissolves the face-4 bounded residual
+# `Pure` payload witness — delivered; the unrun-`Bind` discharge lacks an executing witness
 
-**Target: `/design`(backend) + `/design`(intrinsics), one coordinated window.
-S121 or later — AFTER face 4 (S119) and the S120 ctor tranche land; the IO
-node layout change is ABI-version-gated.**
+## Current state (verified 2026-09-25)
 
-Face 4's disposition (runtime-directed IO teardown) leaves one named residual:
-a `Pure` node nested inside an *unrun* `Bind` sub-tree has payload type `b` —
-the existential — which neither backend (no type) nor runtime (opaque word)
-can name, so the payload is not discharged. `/qa`'s failing-not-ignored leak
-guard carries it.
+- **The mechanism is delivered.** Every `Pure` node carries a payload-glue
+  witness stamped at construction — the canonical glue for the payload's
+  concrete type, following the closure `DROP_GLUE_PTR` precedent — and the
+  intrinsics IO teardown releases a nested `Pure` payload through it
+  (`crates/cranelisp-intrinsics/src/drop.rs`, `IO_PURE_GLUE_OFFSET`). The
+  platform ABI took the layout change at `ABI_VERSION` 10 (S121). The
+  contracts are the release contract's
+  [IO node section](../../backend/non-concrete-release-contract.md#5-the-io-node-and-its-release-face-4-delivered)
+  and the intrinsics
+  [ownership and disposal](../../intrinsics/ownership-and-disposal.md) design;
+  `design/backend/s122-closure.md` records the backend work as delivered.
+- **No release identity was minted.** The witness is the ordinary canonical
+  glue, not a general header type-word.
 
-Under I-FRAME (`total-concreteness.md` §2) every IO-node construction site is
-concrete post-mono: `(Pure x)` knows `x`'s concrete type; the backend's inline
-`bind` lowering knows the intermediate type at each call site. So the residual
-dissolves by the architecture's standing pattern (closure `DROP_GLUE_PTR`,
-Decision 0011): **stamp a payload-glue word at construction** — the canonical
-`drop<T>` address for the payload's concrete type — on the `Pure` node (or the
-IO header uniformly; `/design` chooses the narrower sound shape), and have the
-intrinsics tag-walker (`free_io_node`) call through it when discharging a
-nested `Pure`. This is one glue pointer on one runtime-owned node family — the
-closure precedent, NOT a general header type-word (R15 stands).
+## Remaining obligation (`qa`)
 
-Acceptance: the face-4 residual leak guard flips GREEN and retires; no new
-release identity is minted (`drop<T>` is the same canonical glue — release
-contract reject criterion 5); IO node ABI version bumped in the same window.
+The residual this filing existed for — a heap payload in a `Pure` nested
+inside a `Bind` sub-tree that never runs — has no identified executing
+observation. The intrinsics unit
+`decision24_consume_io_bind_recurses_into_inner` tears down a `Bind` over a
+`Pure` with a scalar payload only, and `reserved_pure_witness_teardown_discharges_nothing`
+covers the reserved witness. `qa` either names an existing end-to-end or unit
+witness that a heap payload in an unrun `Bind` is released exactly once, or
+allocates the smallest one. The same reconciliation covers the cancellation
+face that `design/backend/s122-closure.md` routes to QA and runtime owners.
 
-Delete this file when the design lands.
+## Closure
+
+An executing balance observation of that shape passes, or `qa` records why
+existing evidence already discriminates it.

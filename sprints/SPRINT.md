@@ -3979,4 +3979,85 @@ CD-1 and DV3 controls remain GREEN. No production code changed. QR-4's fixture
 loads b before a to bypass the independently retained fresh-compile defect;
 QA must confirm this evidence adjustment and classify that fresh failure.
 The prediction that QR-1–5 survive callee consumption remains unexecuted
-until that correction is implemented. Tests and this evidence are uncommitted.
+until that correction is implemented.
+
+Checkpoint `d5b460b6` commits the reference regression tests and evidence.
+The user directs the next work back to documentation. Baseline remains177
+findings. Three disjoint document-only batches run on Opus5.5/high: arch
+`1a93530e-47e6-4e90-8561-887164ed0a9b` (architecture and types memory,
+including legacy filings0870/0917/0931/0934); spec
+`79cf69d8-af17-46c0-84e5-7c969fa2c3c1` (language and REPL references);
+design(int) `07ca6e96-8dd0-48e3-9dde-f2c5b4543a17` (integration designs
+and withdrawal of the superseded cache carrier proposal). No source fix,
+new semantic ruling or public API change is in these batches.
+
+All three batches completed. Arch resolves all35 allocated findings, int all32,
+and spec17 of23. Root applies their mechanical incoming-citation handoffs,
+updates the int document collections and removes the empty untracked foo
+probe directory responsible for two false path findings. Integrated checker:
+177→76 findings, zero introduced identities; approximately32,000 net Markdown
+words removed. `git diff --check` is clean. Rust changes are comments only;
+parsed Cargo configuration is unchanged. No build or behavioral test was run
+for this documentation batch. NOTES.md and the shared package are untouched.
+
+Retirement: the fixed cache-prelude reproduction report moves to Git history;
+its current fallback-parity fact and regression reference now live in int§6.5.
+Other rewritten documents retain their current contracts and open obligations.
+Legacy0870/0917/0931/0934 retain only their unresolved residue; no evidence gap
+was closed by deleting narration. The extra qualified-reference carrier is
+withdrawn in canonical int design; callee consumption remains unimplemented.
+
+Remaining handoffs from the batch:
+- QA: confirm the unchanged executable-output coverage after the CLI table's
+  settled wording correction; assess trait-impl carrier unit-evidence gaps,
+  0934's unrun-Bind/cancellation evidence, and int's source-observed gaps
+  recorded in its revised designs. They are not executed defect attributions.
+- Test/platform dev: clear the comment/notation residues in0870 and0917 before
+  retiring those filings. 0931 still needs its constructor-population evidence.
+- Source rustdoc: RunMode still names a nonexistent backend CompileMode;
+  CacheState.recompiled still claims a consumer it lacks; typecheck ownership
+  publication still mentions retired set_mode_summary. Correct documentation
+  or allocate implementation separately; no code removal is approved here.
+- Four spec findings are valid illustrative names/paths misclassified by the
+  shared checker; no exception or suppression was added. Shared-tool treatment
+  remains separate from these repository prose repairs.
+- Spec also retains the obsolete ring-gated conformance sentence pending a
+  ruling; int retains the undocumented /reset behavior question. Git-revision
+  references preserve the S102 lineage; no historical report is new authority.
+
+User ruling: the REPL specification is correct. The REPL reports the type and
+value of the expression, so IO retains its displayed IO type and the completed
+IO.Pure wrapper under REPL§1.2. The proposed inner-value-only display is
+rejected. Presentation belongs to the REPL specification; language§10.6.2's
+conflicting display policy/example must defer to it. The implementation and
+test that currently strip the displayed IO type are not authority.
+
+Spec Opus5.5/high `0f46311d-aae9-4692-9350-1742ca521a46` applies the ruling
+to the language-spec passage; QA Opus5.5/high
+`f4044d03-ed5d-4f8d-a33a-391d83a9caea` allocates a focused regression
+correction. No production fix is selected. The document batch remains uncommitted.
+
+Spec completed the language-to-REPL presentation deferral and invalidated the
+old coverage claim. Root applied its mechanical design handoff: inner-only
+display is now a ruled implementation gap. QA allocated three existing-test
+replacements (Int, String, bind-produced IO) and existing execution/exit-code
+fences. Test Opus5.5/high `07ea9aa7-e6eb-4249-af21-ca6a9985477f` writes
+and executes those RED guards. The QA-proposed requirement-conflict notation
+entry is authorized within its vocabulary band; no additional user gate is
+needed for that role-owned classification.
+
+The distinct type-head spelling conflict (IO in the specific example versus
+fully-qualified primitives/IO under the general prefix rule) remains explicit;
+QA's current guards allow either while pinning the wrapper and inner value.
+No spelling rule is changed by those tests. Coupled inner-only assertions and
+shared parsers are reserved for the later correction, not silently accepted as
+requirements. Production display correction remains pending.
+
+Test completed IOD-1–3: two complete spec_10_io runs each report66PASS/3FAIL
+of69, no skips. The failures are the allocated inner-only Int, String and
+bind-result displays; every other cell passes. Root applies QA's preallocated
+RED annotation with the actual replacement names and repairs their renamed
+citations. The language passage now delegates display to REPL§1.2, and int's
+design records the implemented display as non-conforming. Runtime unchanged;
+all changes remain uncommitted. The type-head spelling question remains
+separate from the confirmed envelope defect.

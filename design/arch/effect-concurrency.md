@@ -211,7 +211,7 @@ scoped to *spark-machinery* overhead, not per-branch user contention) is filed a
 **S99 settlement — the four-spike ablation resolved the pre-Phase-H hypothesis: the floor
 is NOT restorable in-track for alloc/RC-heavy parallel workloads.** The Sprint-99 close-out
 ran a falsification-first ablation (fixtures F1 machinery / F2 clean contention / F3 inverted
-search / F4 real Sudoku; `tests/plan/s99-measurement.md` §1–§10, on the **release** backend)
+search / F4 real Sudoku; the [S99 measurement report](../../tests/plan/s99-measurement.md), on the **release** backend)
 to decide whether the two contention terms (a) allocator-lock + (b) atomic-RC cache-line
 bouncing could be cured before Phase H. The S94 framing above (contention splits (a)/(b); the
 (b) in-track cure is capture-by-borrow across structured fork-join) was a *hypothesis*; the
@@ -222,7 +222,7 @@ now on record:
   ladder's **debug** sys-dominance as a prior toward **(a) allocator-lock** as the larger term.
   On **release** the sys-dominance did **not survive**: contention is (b)-dominated — F2's
   N-worker contention delta is **99% user / 1% sys**, F4's **~70% user / ~30% sys**
-  (`s99-measurement.md` §4 isolation 3). The user/sys *method* was right; the debug *numbers*
+  ([S99 measurement §4](../../tests/plan/s99-measurement.md#4-the-six-isolations), isolation 3). The user/sys *method* was right; the debug *numbers*
   misled the attribution. **Durable lesson: attribute contention on the release tier — a
   debug build's allocator-syscall (sys) overhead masks the atomic-RC (user) cache-line
   bouncing that dominates optimised code.**
@@ -330,7 +330,7 @@ contention model did not capture.** Two consequences correct this section's sequ
    (the score-0 accessor/projection pairs), or hierarchically suppress fine sparks nested under a
    declined-coarse subtree. That axis is distinct from *both* the compute-cost axis (§2.2 of
    `lenient-eval.md`, which admits these because they are non-cheap-named `Apply`s) *and* the
-   allocation/RC-density (contention) axis (0459 / spine §8.3, which cannot see a trivial accessor as
+   allocation/RC-density (contention) axis (0459; [the ownership-inference spark-gate section](ownership-inference.md#83-the-lenient-eval-spark-gate-0459--fed-not-blocked), which cannot see a trivial accessor as
    costly). **Phase H alone does not close the F4 parallel floor; the spark-overhead gate is a
    separate in-track deliverable available now, independent of the memory model.**
 
@@ -472,8 +472,8 @@ reading (the pre-S103 [floor scope](#31-floor-scope--contention-is-the-boundary-
 and the "F4-at-north-star = III-G2" [two-increment staging](ownership-inference.md#7-two-increment-staging-principle-8))
 that Phase-H is the structural cure for the parallel floor is corrected — Phase-H cures the (b) alloc/RC
 contention term it measured, but the F4 scheduler-churn floor is a *separate* axis cured by the utilization
-gate, available now and independent of the memory model. No `design/arch/` roadmap doc carries the stale
-claim (there is no `design/arch/roadmap.md`); the correction lives here + rides to `sprints/ROADMAP.md`.
+gate, available now and independent of the memory model. No architecture roadmap carries the stale claim;
+the correction lives here and in `sprints/ROADMAP.md`.
 
 ### 3.1.5 AS-BUILT outcome — the utilization model is validated, and it re-motivates the contention axis (arch, S104 Phase 5)
 
@@ -652,13 +652,9 @@ is **measurement + gated instrumentation only, no interim mechanism**: the RC at
 extends the existing H2 `RC_STATS` grammar (intrinsics-internal), the alloc counters are
 intrinsics-internal, and the stack-oracle toggle **already exists** as the
 `STACK_ALLOC_ESCAPE_FACT_SOUND` / `CRANELISP_NO_OWNERSHIP` switch. **No `cranelisp-types` edit and no
-new C-ABI symbol** for the preparatory phase — confirmed. One caveat carried, not resolved here: the
-`STACK_SLOT_HITS` backend **codegen-time** counter cannot reach the `cranelisp-intrinsics` runtime
-print surface without a reverse/cyclic dependency (the standing **h2-RED** coordination question,
-`ownership-codegen.md` §4). The measurement phase must **read that counter backend-side**
-(`CRANELISP_CODEGEN_TRACE` / a backend-side print) and **must not** force-resolve the counter-surface
-cross-crate seam under measurement pressure — that is a separate design question, not measurement
-scope. For the **build branches**, each selected lever is a target memory-model mechanism (stack
+new C-ABI symbol** for the preparatory phase — confirmed. The codegen-time stack-slot counter
+(`STACK_SLOT_HITS`) lives in `cranelisp-intrinsics`: backend tallies it while emitting a stack
+allocation and the runtime `CRANELISP_RC_STATS` print reads it, so no reverse dependency arises. For the **build branches**, each selected lever is a target memory-model mechanism (stack
 allocation = the spine's Q2∧Q4; density-aware depth 0535 = the S104-utilization × §3.1-contention
 synthesis, composing with M-static + the structural depth bound; 0526/0528 = increment-II precision;
 accept-done = no build) — all **shaped-to-be-subsumed, none a throwaway interim** (Principle 8 clean).

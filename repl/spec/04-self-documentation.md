@@ -70,10 +70,21 @@ user> Point
 
 **Dotted-input parity — no type-segment doubling.** A constructor entered in its
 dotted `Type.Ctor` form (e.g. `Color.Red`) MUST render the **same** canonical
-qualified home as the bare form (`Red`) — `:user/Color user/Color.Red ; deftype`,
-never `:user/Color user/Color.Color.Red ; deftype`. The value slot carries the
-constructor's home exactly once (`module/Type.Ctor`); the dotted-input path and the
-bare-input path render through one canonical home and MUST NOT diverge. [Tested tests/repl_introspection::dotted_nullary_constructor_input_does_not_double_type_segment]
+qualified home as the bare form (`Red`):
+
+```
+user> Color.Red
+:user/Color user/Color.Red ; deftype
+```
+
+never:
+
+```
+:user/Color user/Color.Color.Red ; deftype
+```
+
+The value slot carries the constructor's home exactly once (`module/Type.Ctor`);
+the dotted-input path and the bare-input path render through one canonical home and MUST NOT diverge. [Tested tests/repl_introspection::dotted_nullary_constructor_input_does_not_double_type_segment]
 
 #### 4.1.3 Types (deftype) [Tested tests/repl_introspection::bare_type_lookup_includes_match_section]
 

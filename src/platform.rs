@@ -61,16 +61,6 @@ const PLATFORM_EXT: &str = "so";
 #[cfg(target_os = "windows")]
 const PLATFORM_EXT: &str = "dll";
 
-/// Resolve a platform DLL's file path using the three-tier search order.
-///
-/// Search order (first match wins):
-/// 1. `CRANELISP_PLATFORM_PATH` env var (colon-separated directories)
-/// 2. `{project_root}/platforms/{name}.{ext}`
-/// 3. `target/debug/lib{crate_name}.{ext}` then `target/release/lib{crate_name}.{ext}`
-/// 4. `~/.cranelisp/platforms/{name}.{ext}`
-///
-/// If the name contains `/` or ends with a platform extension, it is treated
-/// as an explicit path and used directly.
 /// Resolve a platform name to a DLL file path.
 ///
 /// Search order per spec §8.11.3:

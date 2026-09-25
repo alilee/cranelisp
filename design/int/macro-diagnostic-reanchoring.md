@@ -1,231 +1,98 @@
-# Macro-route diagnostic re-anchoring — synthetic-span errors relocate to the origin form (S113 W4, FIXME 0650)
+# Macro-route diagnostic re-anchoring
 
-> Subordinate topic doc, cited from `design/int/int.md`. Owned by `/design`(int).
-> Authored S113 Phase 3 for SPRINT.md §Scope-D + the `/arch` ruling recorded in
-> `design/arch/fixmes/0650-*.md`. **LANDED S113 W4** (`/dev`(src/), reviewed
-> APPROVE): `process_form::reanchor_expansion_diagnostic`, e2e cell
-> `macro_route_qualified_head_reject_span_at_written_form` GREEN. The paired
-> frontend reject is `design/frontend/binder-head-reject.md` (landed W3,
-> inert-safe first).
+A diagnostic raised over macro-expansion output is relocated to the written
+form that produced it. `spec/05-definitions.md` §5 requires the diagnostic span
+to point at the user's written form. The paired frontend reject is
+`design/frontend/binder-head-reject.md`.
 
-> **As-built note (settled state).** The seam landed at
-> **`src/process_form.rs:784` (`reanchor_expansion_diagnostic`)**, applied at the
-> per-form build site (`:936`, `Err(reanchor_expansion_diagnostic(e, sexp.span(),
-> sexp))`), **NOT** at `worker::build_program_compat` (`worker.rs:73`) as §2 below
-> designed. The relocation belongs with the caller that holds the origin form —
-> `process_form` — rather than the `build_forms` wrapper; the design intent
-> (synthetic-location predicate, append-provenance, pure transform) is unchanged.
-> §2's `worker.rs:73` reference is the design-time seam candidate; read
-> `process_form.rs:784/:936` as the live site. Unit tier landed at
-> `process_form/tests.rs:167/:933`.
+## 1. Problem
 
-> **Residual — SCHEDULED S114 Track C (design §2.1 below).** The W4 seam covers
-> **frontend** diagnostics from `build_form(s)` over expansion output.
-> **Typecheck** errors over macro-expansion output — surfaced via
-> `check_program_compat` at finalize (`process_form.rs:468`) — still carry
-> synthetic spans and reach the user as `def`/`const`-route diagnostics pointing
-> at no source byte. The S114 extension applies the **same** re-anchor transform
-> at that second application site: identical synthetic-location predicate,
-> identical origin-span + `in expansion of …` treatment, **no new mechanism**.
-> Designed in §2.1.
+Macro output carries no source provenance:
 
-## 1. The problem — a correct reject with a useless location
+- `src/marshal.rs` unmarshals every returned `Sexp` with `Span::SYNTHETIC`,
+  which is `(0, 0)`.
+- `src/expander.rs::rewrite_spans_unique` gives each expansion node a unique
+  synthetic span in a band beyond any real source length.
 
-The W3 frontend binder-head reject (`reject_qualified_binder_head`) fires
-correctly on a qualified head reached **via macro expansion** — `def`/`const`
-(stdlib macros) or any user inline `defmacro` whose expansion emits a qualified
-`defn`/`defmacro` head. Correctness is preserved: `(def fmt/x 1)` rejects. But the
-diagnostic **location and shown name degrade to synthetic values**, because int's
-macro-expansion pipeline discards all source provenance from macro output:
+The frontend and typecheck therefore report errors over expanded code at
+locations that map to no source byte. For `def`, the error also names the
+mangled synthesized head rather than the written `fmt/x`.
 
-- `src/marshal.rs:62` — every Sexp a macro returns is unmarshalled with
-  `Span::SYNTHETIC` (`= Span { start: 0, end: 0 }`).
-- `src/expander.rs` `rewrite_spans_unique` — assigns each expansion node a **fresh
-  unique synthetic span** in the ≥ 1_000_000 band (span-uniqueness is a landed
-  invariant for the `backend-keyed-consumer.md` span-keyed carriers; preserving
-  real spans through the marshal boundary is REJECTED — it would collide with that
-  invariant, `binder-head-reject.md` §4).
+Do not carry real spans through the marshal boundary. The span-keyed carriers
+depend on span uniqueness (`design/arch/backend-keyed-consumer.md` §1.1;
+`binder-head-reject.md` §4).
 
-So the reject on the synthesized `(defn fmt/x-def …)` head points at a span that
-maps to **no source byte**, and for `def` (which mangles `~impl-name = fmt/x-def`)
-names the mangled synthesized head, not the written `fmt/x`. Native forms are
-unaffected (a directly-written `(defn fmt/foo …)` keeps its real reader span).
-Spec `spec/05-definitions.md` §5 carries a hard
-MUST: the diagnostic span MUST point at the **user's written form**.
+## 2. Seam
 
-## 2. The seam — re-anchor at the `build_form`/`build_forms` drive site
+Int owns the provenance: it holds each pre-expansion origin form and its real
+span. A pure transform, `process_form::reanchor_expansion_diagnostic`, takes
+the error, the origin span and the origin form.
 
-int already threads the original call's real span as `origin_span` **into**
-expansion for diagnostics raised *during* expansion (FIXME 0485;
-`src/expander.rs:707` doc, `call_span = origin_span.unwrap_or(span)`). The binder
-reject fires **after** expansion returns — at the frontend fold, when int drives
-`build_forms` over the expanded sexps. That drive site is
-**`worker::build_program_compat` (`src/worker.rs:73`)**, called from
-`process_cluster_once` where the pre-expansion cluster source + the origin form's
-real span are in hand.
+- A diagnostic whose location is synthetic (§3) is re-anchored to the origin
+  span, and the provenance is appended (§4).
+- A diagnostic already located inside the origin form passes through unchanged.
 
-**The seam:** when int drives `build_form`/`build_forms` on macro-expansion
-output and it returns an error whose `location` is **synthetic**, re-anchor that
-error's `location` to the **origin form's span** (the span int holds for the
-pre-expansion form) and append expansion context to the message.
+This enriches location only. The reject stays single-sourced in its owning
+crate (Principles 7 and 19).
 
-This is diagnostic-location *enrichment* at the layer that owns the provenance —
-NOT a second reject seam. The reject stays single-sourced in frontend (Principle
-7 / P19). Span-uniqueness stays intact: macro output keeps its unique synthetic
-spans for the carriers; only the one surfaced diagnostic's `location` is
-rewritten.
+**Build site.** When `process_form` drives `build_program_compat` over
+expansion output, a frontend error is re-anchored to the form being processed.
+A native form's error is never touched.
 
-## 2.1 The finalize/typecheck-error extension (S114 Track C — the def/const path)
+### 2.1 Finalize site
 
-The W4 seam fires only where int drives `build_form(s)` over expansion output. A
-**typecheck** error over macro-expansion output takes a different route: it is
-surfaced by `check_program_compat` at the cluster **finalize** step
-(`src/process_form.rs:468`, `let (maybe_gap, …) = check_program_compat(…)` over
-`final_working`), which typechecks the fully-expanded cluster. A `def`/`const`
-(stdlib macros) whose expansion typechecks with an error — e.g. a type mismatch in
-the synthesized body — surfaces that error carrying the macro output's
-**synthetic** span (`Span::SYNTHETIC` from marshal, or the `rewrite_spans_unique`
-≥ 1M band), so the user sees a diagnostic anchored at no source byte, with no
-`in expansion of …` provenance.
+The cluster finalize typecheck (`check_program_compat` over the expanded
+cluster) routes its errors through `reanchor_finalize_error`, which applies the
+same transform.
 
-**The extension is a second APPLICATION SITE of the existing transform, not a new
-mechanism.** `reanchor_expansion_diagnostic` (`process_form.rs:784`) is already a
-pure `(error, origin_span, source_text) → error` function (§6): synthetic-location
-predicate in, origin-span + `in expansion of …` suffix out, native-form errors
-passed through unchanged. The S114 work wraps the finalize-path typecheck error in
-the **same** call, at the finalize site that holds the same provenance the W4 site
-holds — the pre-expansion cluster source text and each origin form's real span.
+- An error located inside any origin form is native and returned unchanged.
+- Otherwise it is re-anchored. A `def` or `const` cluster has one origin form,
+  which is the exact anchor.
+- A multi-form cluster whose synthetic node cannot be attributed to one form
+  falls back to the **first** origin form. A coarse real location is better
+  than none.
 
-**Design constraints (unchanged from §3–§6, restated for the new site):**
+## 3. Synthetic-location predicate
 
-- **Key on the synthetic-location predicate, never the error class** (§3). The
-  finalize path yields *typecheck* errors, a different class from the frontend
-  binder reject — which is exactly why class-sniffing would fail and the
-  structural "location maps to no source byte in the cluster's source text"
-  predicate is the right and only key. Re-anchoring is strictly better for every
-  finalize-path error class (any typecheck error over macro output gets a located
-  diagnostic for free), so the predicate closes the whole family here too.
-- **The origin form for a multi-form cluster.** Finalize typechecks the whole
-  `final_working` cluster; a surfaced error must re-anchor to the **origin form
-  whose expansion produced the erroring node**, not blanket-anchor to the cluster
-  head. The finalize site holds the pre-expansion cluster forms; the origin span
-  is the pre-expansion form whose real byte extent the erroring node's provenance
-  belongs to — the same "outside the origin form's real byte range" test §3 uses,
-  applied per-form. If the error's synthetic node cannot be attributed to a single
-  origin form (rare — a cluster-level check with no single culprit), the **landed**
-  fallback is the **FIRST origin form's span** (not "the cluster's own source
-  span" as this doc originally read — aligned to as-built S115, FIXME 0699 item 4;
-  pinned by `process_form/tests.rs::reanchor_finalize_multi_form_falls_back_to_first_origin`,
-  `:1064`) — a real, if coarse, location always beats a no-source-byte location.
-- **Append provenance, never re-phrase** (§4) — the typecheck message stays
-  single-sourced in `cranelisp-typecheck`; int adds `  in expansion of <written
-  form>` naming the origin form it holds. Never reconstruct or second-guess the
-  typecheck text (Principle 7).
-- **Pure + unit-testable** (§6) — the extension needs no new transform, so the
-  existing unit tier (`process_form/tests.rs:167/:933`) extends with one cell: a
-  finalize-shaped error carrying a synthetic `location` + an origin span + source
-  text ⇒ re-anchored location + `in expansion of …` suffix; a native finalize
-  error ⇒ passes through unchanged.
+Key the re-anchor on location, never on the error class or message; sniffing
+the class is a review reject. A location is synthetic when its byte range lies
+outside the origin form's real extent:
 
-**Do NOT** preserve real spans through the marshal boundary to avoid the problem —
-that is REJECTED (§1, §8): it collides with the span-uniqueness invariant the
-`backend-keyed-consumer.md` carriers depend on. The re-anchor-at-the-owning-layer
-model is the settled shape for both sites.
+- zero or negative width (`end <= start`), which includes `Span::SYNTHETIC`; or
+- starting before, or ending after, the origin's `[start, end)`.
 
-**Testability.** Whether the def/const finalize error is reachable end-to-end (a
-`--run`/REPL cell producing a synthetic-span typecheck error over `def`/`const`
-output) is `/qa`+`/testing`'s to pin; the unit tier is `/dev`'s at the finalize
-application site.
+This catches the unique synthetic band without hard-coding its offset, so a
+change to the band cannot silently defeat the seam. Because the test is
+int-local, no types-level `Span::is_synthetic` is needed.
 
-## 3. The binding arch pin — key on the SYNTHETIC-LOCATION predicate, never the error class
+## 4. Message
 
-**`/arch` ruling (recorded in 0650, confirmed here):** do NOT key the re-anchor on
-recognizing "a binder-reject error" — error-class sniffing (worst form: message
-string-matching) is fragile and a **`/review` REJECT**. Key it on the
-**synthetic-location predicate**:
+Append provenance and never re-phrase the owning crate's message:
 
-```
-any error produced by build_form(s) over macro-expansion output
-whose `location` maps to no source byte in the cluster's source text
-    ⇒ re-anchor `location` to the origin form's span.
-```
-
-A synthetic span maps to no source byte and is **never** useful to a user, so
-re-anchoring is strictly better for **every** error class — this closes the whole
-family (any future frontend reject on macro output gets a located diagnostic for
-free), not just the binder reject. The predicate is structural, not classificatory.
-
-**Predicate mechanics.** There are two synthetic-span flavours to catch, and both
-map to no real byte:
-
-- `Span::SYNTHETIC` = `(0, 0)` (marshal output), and any zero-width `start == end`;
-- the `rewrite_spans_unique` unique band (`start`/`end` ≥ the ≥ 1_000_000 offsets,
-  beyond any real source length).
-
-The robust test the seam owns (it holds the cluster's source text): the error's
-`location` is synthetic iff its byte range does **not** fall within the
-pre-expansion form's real byte range in that source text (`start == end`, or
-`end > source_len`, or `[start,end)` outside the origin form's extent). Prefer
-this "outside the real source extent" test over hard-coding the 1M constant, so a
-future change to the synthetic band cannot silently defeat the seam. (If a
-`Span::is_synthetic()` predicate is added to `cranelisp-types` for this, that is a
-types touch → FIXME `target: /arch`; the int-local "outside source extent" test
-needs no types change and is preferred for W4.)
-
-## 4. Message treatment — append provenance, never re-phrase
-
-**Prefer appending expansion context over rewriting the frontend message** — the
-frontend error text stays single-sourced (Principle 7); int adds provenance, never
-re-phrases. Shape:
-
-```
-<frontend reject message, verbatim>
+```text
+<original message, verbatim>
   in expansion of `(def fmt/x …)`
 ```
 
-naming the **written** head/form (the origin form int holds), so the user sees
-both the real rule (frontend's text) and where they typed the offending form. int
-never reconstructs or second-guesses the frontend message.
+The quoted form is the written origin, truncated to a short flat rendering.
+The stale line/column context is cleared, so the formatter recomputes it from
+the origin span.
 
-## 5. Sequencing
+## 5. Scope
 
-The frontend reject (W3) is **inert-safe** without this seam — a qualified
-macro-route head still rejects (correctness), only its location/name degrade. So
-the frontend reject lands W3 ahead of the int seam; this re-anchoring lands **W4**.
-The BD-M2/M3 e2e (degenerate-span assertion) stays **RED until this seam lands**
-and is the durable trigger that keeps it honest. Delete FIXME 0650 when the seam
-lands and BD-M2/M3 flip green.
+The re-anchor covers errors surfaced from the two sites above. Diagnostics
+raised during expansion itself already carry the call's real span through
+`origin_span` (`src/expander.rs`).
 
-## 6. Testability (Principle 5)
+## 6. Evidence
 
-The re-anchor is a pure `(error, origin_span, source_text) → error` transform,
-unit-testable with no session: feed an error carrying a synthetic `location` +
-an origin span + source text ⇒ assert the returned error's `location` equals the
-origin span and the message carries the `in expansion of …` suffix; feed a
-NATIVE-form error (real span within the source extent) ⇒ assert it passes through
-**unchanged** (the predicate must not touch already-located diagnostics). The
-e2e/provenance-through-expansion assertion (BD-M2/M3) is `/qa`+`/testing`'s.
+The transform is pure, so its unit cells need no session.
 
-## 7. Principles cited
-
-- **Principle 7 / Principle 19** — the reject stays single-sourced in frontend; int
-  enriches location, never adds a second reject seam or a name-privileged
-  special-case.
-- **Principle 18** — the re-anchor keys on the structural synthetic-location
-  predicate (where the provenance defect lives), not on classifying the error.
-- **Principle 26** — re-anchor to the settled origin span int already holds, never
-  re-derive a location from the synthesized form.
-
-## 8. Cross-references
-
-- `design/frontend/binder-head-reject.md` §4 — the paired frontend reject + the
-  rejected deep fixes in that section (span-preservation breaks span-uniqueness; per-form
-  special-casing violates P19).
-- `design/arch/backend-keyed-consumer.md` §1.1 — the span-uniqueness/carrier
-  invariant that forbids preserving real spans through marshal.
-- `src/worker.rs:73` (`build_program_compat`) + `src/expander.rs:707`
-  (`origin_span` / FIXME 0485 discipline) — the seam + the provenance int holds.
-- `src/marshal.rs:62` + `src/expander.rs` `rewrite_spans_unique` — the
-  synthetic-span sources (§1).
-- `design/arch/fixmes/0650-*.md` — the `/arch` ruling this designs against.
-- `tests/spec_05_definitions.rs::macro_route_qualified_head_reject_span_at_written_form` — the written-form diagnostic e2e.
+- `src/process_form/tests.rs` covers the build site:
+  - `reanchor_synthetic_diagnostic_relocates_and_appends_context`;
+  - `reanchor_catches_degenerate_zero_width_synthetic`;
+  - `reanchor_leaves_native_span_diagnostic_untouched`.
+- The same file covers the finalize site, including
+  `reanchor_finalize_multi_form_falls_back_to_first_origin`.
+- `tests/spec_05_definitions.rs::macro_route_qualified_head_reject_span_at_written_form`
+  is the end-to-end written-form cell.

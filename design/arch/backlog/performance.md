@@ -14,106 +14,34 @@ gated on a measured trigger (Principle 8: the Phase-H structural cures — threa
 escape→stack/region, reuse tokens, value-layout flattening — remain the sequencing edge; none of
 these items pulls that edge forward).
 
-## Provenance discipline (required per entry)
+## Entry form
 
-Every migrated entry MUST carry, verbatim enough to act on without re-deriving:
+Each entry keeps what re-entry needs without re-deriving it:
 
-1. **Origin line** — `FIXME NNNN · filed_by /skill · original target · sprint filed` (and
-   `narrowed/diagnosed` sprints where the file recorded them).
-2. **`refers_to` anchors** — the exact doc §sections + source paths the FIXME pinned.
-3. **Pinned analysis** — the root cause / mechanism / measurement the FIXME had already
-   isolated (this is the payload the arc paid for; losing it forces re-isolation).
-4. **Re-entry trigger** — the measured condition under which the item becomes actionable
-   (e.g. "measured GOT slab growth from redefinition churn", "an index-specific `ResultMode`
-   consumer goes live", "II-B3 uniqueness machinery lands").
-5. **Reversibility note** — whether the residual is monotone-sound-if-ignored (most are: they
-   widen toward the conservative Owned/protect side).
+1. **Origin** — the retired filing's number, filer, original target and sprint.
+2. **`refers_to`** — the document sections and source paths it pinned.
+3. **Pinned analysis** — the mechanism or measurement already isolated.
+4. **Re-entry trigger** — the measured condition that makes it actionable.
+5. **Reversibility** — whether ignoring it is monotone-sound (most widen toward
+   the conservative Owned/protect side).
 
-## Structure (Phase 5 authoring target)
+The originating filings are retired; this document is their only carrier.
+Anchors inside an entry record what the filing pinned and may have moved since;
+re-verify an entry against current source and specification before acting on
+it.
 
-Group the 11 items + the /qa matrix note by their coupling, not by filing order:
-
-- **§1 Ownership-lattice precision residuals** — 0521 (ResultMode ⊤ element), 0528
-  (`result_unique` preservation), 0510 (`neq-string` has no `DefKind::Primitive` carrier),
-  0526 (producer-side projection elision parallel-unsound → promoted to increment II).
-  Common trigger: the increment-II uniqueness / index-specific-consumer machinery going live.
-- **§2 Create-gate / lenient contention + density** — 0534 (F4 hard-parallel regression),
-  0535 (density-aware depth allowance), 0536 (budget-inline depth leak), 0408 (Sudoku
-  copy-per-guess allocator/atomic-RC contention — the floor-violation exemplar). Common
-  trigger: contention-aware gate design OR the Phase-H RC/allocation cures.
-- **§3 Regen / capture spec holes** — 0506 (§13.1 capture normalization spec), 0507 (T1
-  trigger route + 0491 exclusion design holes). Trigger: the memory-model implementation
-  sprint that reactivates these design surfaces.
-- **§4 GOT slot-hole reclamation** — 0466. Trigger: measured GOT slab growth from redefinition
-  churn.
-- **§5 /qa verification-matrix growth** — 0499 / L-M1 (reference×referent×instantiation e2e
-  matrix; growth driven by the parked backend `fn_as_value` seam). Recorded here so it
-  re-enters with the perf track; the 0499 file itself closes under S106 WS-G once L-S1 lands.
-
-## Deletion ownership (S106 WS-J) — Phase-2 ruling 2
-
-`/arch` authors this doc (migrating each item's substance). Each owning skill then deletes ITS
-OWN FIXME file once it confirms the substance is captured here — filing-skill-deletes, per the
-cross-skill protocol. **A file is deleted ONLY after its §-entry below is filled — never before.**
-The §-entries are now filled (AUTHORED S106 WS-J); `/arch` has deleted its own (0521, 0526). The
-other owners delete on their next close-out step.
-
-| FIXME(s) | Deletes its file | § home | Status |
-|---|---|---|---|
-| 0521, 0526 | `/arch` (own) | §1 | **DELETED S106 WS-J** (substance in §1) |
-| 0528, 0510 | `/design` (narrow per crate) | §1 | captured — owner deletes |
-| 0534, 0535, 0536 | `/design` (narrow per crate) | §2 | captured — owner deletes |
-| 0408 | `/port` | §2 | captured — owner deletes |
-| 0506, 0507 | `/design` (narrow per crate) | §3 | captured — owner deletes |
-| 0466 | `/design` (narrow per crate) | §4 | captured — owner deletes |
-| 0499 / L-M1 | `/qa` (L-M1 note migrates here; the 0499 *file* closes under WS-G at S106 close once L-S1 lands — not deleted from here) | §5 | L-M1 captured — file closes under WS-G |
-
-Count check: **11 FIXME files** (0521, 0526, 0528, 0510, 0534, 0535, 0536, 0408, 0506, 0507, 0466)
-+ the **0499/L-M1 note** = the full WS-J set. `/design` deletions are narrow-per-crate: the owning
-crate's `/design` slot deletes only the FIXMEs whose substance sits in a section it has confirmed.
+| Section | Entries | Common trigger |
+|---|---|---|
+| §1 Ownership-lattice precision residuals | 0528, 0526 | Increment-II uniqueness or index-specific-consumer machinery going live |
+| §2 Create-gate / lenient contention and density | 0534, 0535, 0536, 0408 | Contention-aware gate design, or the Phase-H RC/allocation cures |
+| §3 Regen / capture specification holes | 0506, 0507 | The memory-model implementation sprint that reactivates these surfaces |
+| §4 GOT slot-hole reclamation | 0466 | Measured GOT slab growth from redefinition churn |
+| §5 QA verification-matrix growth | 0499 / L-M1 | The parked `fn_as_value` seam reactivating |
 
 ---
 
-## Item sections — the pre-assembled re-entry scope (Phase 5, AUTHORED S106 WS-J)
-
-Each `###` entry carries the five-field provenance contract (Origin line · `refers_to` anchors ·
-Pinned analysis · Re-entry trigger · Reversibility note), migrated verbatim-enough-to-act-on from
-its FIXME file. Once an entry is filled, the corresponding FIXME file is deleted by its owner
-(deletion table above). `/arch` deleted its own (0521, 0526) at authoring; the rest are captured
-here for their owning skills to delete cleanly.
-
 ### §1 — Ownership-lattice precision residuals
 Common re-entry trigger: increment-II uniqueness / index-specific-consumer machinery going live.
-
-#### 0521 — `ResultMode` needs a ⊤ element ("may alias MULTIPLE distinct params")
-- **Origin** — FIXME 0521 · filed_by `/dev` · target `/arch` · sprint 102.
-- **`refers_to`** — `crates/cranelisp-types/src/ownership.rs` (`ResultMode`);
-  `design/typecheck/ownership-inference.md` §3.4(c); `design/arch/ownership-inference.md` §3.3.
-- **Pinned analysis** — the 3-element lattice `{Fresh, ProjectionOf(usize), AliasOf(usize)}` (FIXME
-  0520, landed S102 in `cranelisp-typecheck`, fixed the pass5 join so a partial-control-flow param
-  return no longer collapses to `Fresh`) is **complete for the single-param case** but cannot
-  express "may alias param 0 OR param 1" — the multi-distinct-param `(if c v w)` shape (`v`,`w`
-  DIFFERENT params both reaching the result). 0520 chose the sound conservative representative
-  **`AliasOf(lowest reaching index)`**: sound for the live binary `result == Fresh` gate consumer
-  (`return_is_fresh_by_summary`, `cranelisp-backend/src/compiler/fn_compiler.rs` — any not-`Fresh`
-  keeps the return protect), strictly more sound than pre-0520 `Fresh` (which elided protect on a
-  possibly-returned param — a latent UAF), but imprecise for a hypothetical index-specific consumer.
-  `walk_apply` composition (`transfer.rs`) maps `AliasOf(k) → arg_origins[k]`; a callee summarised
-  `AliasOf(0)` under-reports on `(pick fresh p)` (caller passes fresh at 0, param at 1: caller
-  composes `Fresh`, and a direct-`Apply` body would elide its own protect). No index-specific
-  composition consumer is live at increment I (only the binary gate; a multi-param body is an
-  `if`/`match`, never a direct `Apply`), so it is a **latent precision/soundness residual, not a
-  live defect**. Cure: add a distinct ⊤ element (`MayAliasParam`/`AliasOfAny`, index-free) that the
-  join maps the multi-distinct/mixed-kind case to and `walk_apply` treats as unconditionally
-  not-`Fresh` (never resolving to a single arg) — closes the `(pick fresh p)` hole. A
-  `cranelisp-types` carrier change (new variant + `#[serde(default)]` `Fresh`) + a
-  `CACHE_SCHEMA_VERSION` bump in the same change-set.
-- **Re-entry trigger** — co-land with the **first backend consumer that reads the `AliasOf` INDEX**
-  (rather than the binary `Fresh` test): part 12/16 borrow-elision keyed off the specific param
-  (`design/backend/ownership-codegen.md`).
-- **Reversibility** — only ever widens a value away from `Fresh` ⇒ monotone-sound, additive to
-  reverse. Until the index-specific consumer exists the 0520 lowest-index representative is sound for
-  every live consumer.
 
 #### 0528 — `result_unique` does not model uniqueness-PRESERVATION (unique-in ⇒ unique-out)
 - **Origin** — FIXME 0528 · filed_by `/dev` · target `/design` · sprint 103.
@@ -149,38 +77,6 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
   precondition).
 - **Reversibility** — no spec change; an analysis-precision extension, monotone-sound — absent the new
   proof everything degrades to the dynamic `rc==1` token, exactly as today.
-
-#### 0510 — `neq-string` has no `DefKind::Primitive` entry to carry declared facts
-- **Origin** — FIXME 0510 · filed_by `/dev` (cranelisp-primitives) · target `/design`
-  (cranelisp-backend) · sprint 102.
-- **`refers_to`** — `design/typecheck/ownership-inference.md` §9 (the `neq-string` bullet + the
-  coverage verdict); the `neq-string` row in `crates/cranelisp-primitives/src/declarations.rs` (FIXME 0504; rule: `design/backend/ring2-rc.md` §3.3).
-- **Pinned analysis** — §13.4 lists `neq-string` as a covered leaf, but as-built `neq-string` has
-  **no `ModuleEntry` in `cranelisp-primitives`**: it is shim-only (`extern_shims()` harvests its fn
-  ptr for GOT population; reached exclusively through the `Eq.!=` trait-dispatch path,
-  `cranelisp-typecheck/src/traits/dispatch.rs:177` maps `("Eq","!=","String") → "neq-string"`),
-  registered in neither `ring0/ring1/ring3_primitives()` nor the vec-query family. So CS-B has no
-  `DefKind::Primitive { mode_summary }` leaf for pass5 to read via `ModuleEntry::mode_summary()`;
-  pass5's `Apply` classification of `(!= s1 s2)` (String) chain-follows to a missing entry ⇒ the
-  Decision-24 conservative `Owned` default ⇒ `s1`/`s2` widen to `Owned`. **Asymmetric** with `str-eq`
-  (`==`), a registered `ring1` entry that DOES get the declared `Borrowed` facts. Precision loss only
-  (monotone-sound), not a correctness defect. CS-B populated every entry that exists, **transcribed
-  the `neq-string` 0504 audit row into the classifier anyway** (`ownership_facts::declared_mode_summary`
-  lists it in the only-read `Borrowed` set — unit-tested `neq_string_transcribes_the_0504_borrowed_row`
-  — so IF an entry is ever registered it gets correct facts by construction), but did NOT register a
-  new entry (a table change that would perturb name-resolution + the golden corpus / harvest
-  invariant). Cure options: **(a)** register `neq-string` as a `ring1` `PrimitiveDef` entry symmetric
-  with `str-eq` (assess vs Q1/`extern_shims` invariants; a pure table-registration change, no
-  `ownership_facts` edit since the classifier already encodes the facts); **(b)** accept the
-  conservative `Owned` default for the entry-less `neq-*` family (matching `neq-i64/f64/bool`, also
-  shim-only trait-dispatch targets) and amend the §13.4 verdict to name `neq-string` as a
-  trait-dispatch leaf outside the declared-fact table (like `sconcat`'s `PrimitiveExtern` scope cut)
-  — a doc amendment, no code.
-- **Re-entry trigger** — a memory-model implementation sprint electing to close the `==`/`!=`
-  precision asymmetry for String args (or the broader `neq-*` family declared-fact coverage).
-  Non-blocking for CS-B / CS-1..4 / the L-D3e per-row guards.
-- **Reversibility** — precision loss only, monotone-sound; option (a) is a pure table registration,
-  option (b) a doc amendment — both additive/reversible.
 
 #### 0526 — §3.3 producer-side projection elision is parallel-unsound (promoted to increment II)
 - **Origin** — FIXME 0526 · filed_by `/dev` (cranelisp-backend, S102 Wave 14) · target `/arch`
@@ -431,7 +327,10 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
 - **Origin** — FIXME 0507 · filed_by `/sprint` · target `/design` (src/) · sprint 102 (+ Wave-5 and
   Wave-5-review addenda, same drain).
 - **`refers_to`** — `design/int/session-transaction.md` §9.1.1; `design/int/s102-defect-wave.md`
-  §1/§7.1; `repl/spec.md` §18.1.1.
+  §1/§7.1; and the REPL specification's former stale-caller negative requirement (then numbered 18.1.1).
+  That specification has since been rewritten
+  as [callable redefinition](../../../repl/spec/18-redefinition.md#181-callable-redefinition-uncovered-s121);
+  re-verify every item against it before acting.
 - **Pinned analysis** — nine design-argument holes surfaced by the Wave-4/Wave-5 reviews (the fixes
   conform to their designs; the holes are in the *arguments*). **Issue 1 (F2 — T1 over-fires for
   slotted→slotted late-binding targets):** `is_t1_downgrade()` (`prior_was_def && !per_symbol &&
@@ -439,7 +338,7 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
   per-symbol precision (reachable: `deftype` re-entry, ctors are slotted `DefKind::Constructor` Defs)
   the commit reuses the prior slot + patches code in place — compiled callers dispatch through the GOT
   slot and DO pick up the new definition at next call, yet `stale_callers` names them, violating
-  §18.1.1's negative MUST. The "route not diff" ruling was argued only from templates/mints. Proposed:
+  the former §18.1.1's negative MUST. The "route not diff" ruling was argued only from templates/mints. Proposed:
   trigger additionally requires `o.new_slot.is_none() || o.old_slot.is_none()`. **Issue 2 (F3 — 0491's
   frozen-world argument over-generalized):** the safety argument ("a stale wrapper is never re-invoked;
   each expression turn redefines it before invoking") is true of `__expr` only, but `ReverseIndex::build`
@@ -454,7 +353,7 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
   reverse edges — but the S103 module-grain cure should note the T1 route cannot fire for macro targets
   today). **Wave-5 addenda:** (4) startup-load exception pin — `recover_startup_failure` (CS-0489)
   drains `pending_cascade_reports`; a load is not a user redefinition turn so `stale:`/cascade sections
-  are suppressed (record in `session-transaction.md` §9.1.1). (5) `design/int/s102-defect-wave.md` §5.2 correction — "today `error_modules` gates nothing" is wrong; the §14.4 gate WAS wired in
+  are suppressed (record in `session-transaction.md` §9.1.1). (5) `design/int/s102-defect-wave.md` §5.2 correction — "today `error_modules` gates nothing" is wrong; the [file-watching error-blocking gate](../../../repl/spec/14-file-watching.md#144-error-blocking-tested-testsrepl_watchwatch_errors_block_evaluation_no_last_known_good) WAS wired in
   `process_commands`, the actual Wave-5 change was the [startup load failure, section 15.2.3](../../../repl/spec/15-session-persistence.md) definition carve-out
   (`is_repair_definition_turn`, watcher-path included). **Wave-5 review addenda:** (6) I-1 repair
   carve-out taxonomy — `is_repair_definition_turn` allowlists only special-form heads so macro-mediated
@@ -471,7 +370,7 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
   re-emitted in seq position (design §5.3); benign for reload, acknowledge the cut or require position
   preservation.
 - **Re-entry trigger** — the S103 module-grain redefinition cure / memory-model implementation sprint
-  that reactivates the session-transaction + repl §18.1.1 surfaces. Issues 1–2 gate the §18.1.1
+  that reactivates the session-transaction + REPL redefinition surfaces. Issues 1–2 gated the former §18.1.1
   `[Tested+Neg]` annotation (a small `/design`(src/) disposition then `/qa` cells + a possible one-line
   `/dev` predicate change).
 - **Reversibility** — design-argument dispositions (mostly doc); the one code touch is a one-line
@@ -518,29 +417,19 @@ Recorded here so it re-enters with the perf track.
 
 #### 0499 / L-M1 — reference × referent × instantiation-count e2e matrix (perf-parked half)
 - **Origin** — the **L-M1 note** within FIXME 0499 · filed_by `/sprint` · target `/qa` · sprint 101.
-  **The 0499 *file* closes under S106 WS-G once L-S1 lands — it is NOT deleted from this doc; only the
-  L-M1 note migrates here.**
 - **`refers_to`** — `tests/plan/coverage-audit-s101.md` §2.4 (lanes) + §2.5 (drafting rules);
-  `tests/CLAUDE.md` §Plan documents; `tests/plan/s103-test-plan.md` §1.6 (L-M1 growth); backend §13.3
-  (the `fn_as_value` seam).
+  `tests/CLAUDE.md` §Plan documents; `tests/plan/s103-test-plan.md` §1.6 (L-M1 growth); the `fn_as_value` seam
+  ([ownership codegen](../../backend/ownership-codegen.md)).
 - **Pinned analysis** — L-M1 is the **reference-shape × referent × instantiation-count** e2e matrix,
   one of the 7 named lanes from the S101 coverage audit. It **grows with the `fn_as_value` seam
-  rework** (backend §13.3): the 0483/0474 guards flipped GREEN in S102, so growth = corpus **EXTENSION**
+  rework**: the 0483/0474 guards flipped GREEN in S102, so growth = corpus **EXTENSION**
   with the newly-green shapes + the new value-use × ≥2-instantiation cells the reuse-token/R5 seam
   introduces. Its growth is paced by (blocked on) the **parked backend `fn_as_value` seam**, so it
   re-enters WITH the perf/memory-model track rather than on 0499's own S106 close schedule. The other
-  six lanes (L-U1/L-S2/L-S3/L-N1/L-N2/L-S1) exist or close under 0499's own WS-G schedule and are NOT
+  six lanes (L-U1/L-S2/L-S3/L-N1/L-N2/L-S1) are NOT
   perf-parked — only this L-M1 growth axis is captured here.
-- **Re-entry trigger** — the parked backend `fn_as_value` seam (backend §13.3) reactivating: the
+- **Re-entry trigger** — the parked backend `fn_as_value` seam reactivating: the
   reference×referent×instantiation cells grow as the value-use × ≥2-instantiation shapes the
   reuse-token/R5 seam introduces come back into scope.
 - **Reversibility** — pure test-authorship growth (corpus extension, no compiler change); the guards
   it extends are already green. Additive.
-
----
-
-**AUTHORED S106 WS-J.** Every entry above carries its five-field provenance migrated from the FIXME
-file. `/arch` deleted its own FIXME files (0521, 0526) once their §1 entries were confirmed complete;
-each remaining owner deletes ITS file once it confirms the substance is captured here (deletion table
-above). Consolidating the arc is NOT re-entering it — re-entry is a future sprint's measured-trigger
-decision (Principle 8).

@@ -48,7 +48,7 @@ against, and checkable against, its conservative fallback.
    `unasserted` status is an open item against `/arch`.
 
 **Relationship to existing principles.** This is the **enforcement arm of
-monotone soundness**: `ownership-inference.md` §2.1 makes the conservative
+monotone soundness**: [ownership inference](../ownership-inference.md) §2.1 makes the conservative
 point permanently safe; P25 makes it the reference every departure is
 measured against. It is Principle 18's genus applied to the
 *dynamic-judgment* case (where no dep-ban or visibility rule can bite),

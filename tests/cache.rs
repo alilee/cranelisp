@@ -1195,8 +1195,8 @@ fn cache_repl_writer_survives_slash_reset() {
 //   cache-hit prelude restoration is broken for EVERY binding type — not
 //   just operator/trait machinery.
 //
-// REGRESSION-GUARD: Sprint 59 Workstream A. The legacy test header documents
-//   `design/int/cache-prelude-restoration-repro.md` as the diagnosis anchor.
+// A cache-restored prelude establishes the same fallback as a fresh one:
+//   design/int/int.md §6.5.
 //
 // (carry: legacy/sprint59_cache_repro.rs::s59_cache_hit_plain_prelude_fn_not_restored)
 #[test]

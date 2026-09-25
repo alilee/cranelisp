@@ -18,7 +18,7 @@ The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`,
 |---|---|---|---|
 | REPL | `cranelisp [target]` | Interactive REPL (default when no mode flag) | [Tested] |
 | Run | `cranelisp --run [target]` | Compile and execute `main`, then exit | [Tested] |
-| Link | `cranelisp --link [target]` | Compile and produce linkable object file | [Tested] |
+| Link | `cranelisp --link [target]` | Compile and produce a standalone executable (§0.2.1) | [Tested] |
 | Version | `cranelisp --version` | Print version string and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
 | Help | `cranelisp --help` | Print usage summary and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
 
@@ -49,36 +49,25 @@ If the resolved entry module source file does not exist, the binary MUST print a
 
 `cranelisp --link [target]` MUST compile the module graph rooted at the resolved entry module and produce a linked, standalone **executable**. It MUST NOT execute any code and MUST NOT produce output to stdout (beyond the `; Linking: …` progress line). [R4 S52]
 
-> **Object-file → standalone-executable wording (SETTLED [S106], FIXME 0550).** The pre-S106 text
-> said `--link` produces "a linkable **object file**", but the implementation (and
-> `user/cli-reference.md`) produce a **standalone executable** — `--link` invokes `cc` to link the
-> object files into a runnable binary. The wording above is corrected to "standalone executable" to
-> match the shipped behaviour. [S106]
-
 `--run` and `--link` MUST NOT be used together. If both are present, the binary MUST print an error to stderr and exit with status code 1.
 
 #### 0.2.1.1 Output-Artifact Name and Location [S106]
 
-The output executable's **name** and **location** were previously an unspecified default: the impl named the artifact after the **entry module stem** and wrote it into the **current working directory** (`src/session_v4/lifecycle.rs`). For a directory-project target (§0.5.1 rule 3) the entry module defaults to `user`, so the artifact was `./user` — the least distinctive name possible — and `--link .proj6` from the repo root **collided** with the `user/` docs directory, failing with a raw `ld` "cannot open output file user: Is a directory" (FIXME 0550, reproduced). This subsection pins the corrected contract.
-
-**Name and location — the uniform rule (SETTLED [S106], FIXME 0550).** The output executable MUST
+**Name and location — the uniform rule [S106].** The output executable MUST
 be named after the **entry (root) module's source-file stem** and MUST be written **into the same
 directory as that module's source file** — not the project-directory name, not the current working
 directory. One rule covers both the file-target and directory-project cases:
 
-- **File target** (`examples/hello.cl`, or bare `mymod` resolving to `mymod.cl`): the entry module's
-  source is `examples/hello.cl` / `mymod.cl`, so the artifact is `examples/hello` / `mymod` — the
+- **File target** (`dir/hello.cl`, or bare `mymod` resolving to `mymod.cl`): the entry module's
+  source is `dir/hello.cl` / `mymod.cl`, so the artifact is `dir/hello` / `mymod` — the
   stem, beside the source. [S106]
 - **Directory-project target** (§0.5.1 rule 3 — `cranelisp --link myproject`, where `myproject/`
   exists and no `myproject.cl` beside it, entry module `user`): the entry module's source is
   `myproject/user.cl`, so the artifact is `myproject/user` — the stem, beside the source. **Not**
   `myproject/myproject`, **not** `./user`. [S106]
 
-Because the artifact lands **next to its source** rather than in the CWD, the original
-CWD-collision (FIXME 0550: `--link .proj6` from the repo root writing `./user` and colliding with
-the `user/` docs directory) is resolved — the write target is the module's own directory, which the
-`user/` docs directory in an unrelated CWD can no longer shadow. On platforms with an executable
-suffix (Windows), the platform suffix applies: `myproject/user.exe`, `examples/hello.exe`. [S106]
+On platforms with an executable suffix (Windows), the platform suffix applies:
+`myproject/user.exe`, `dir/hello.exe`. [S106]
 
 **`-o <path>` override (SETTLED [S106]):** an optional `-o <path>` flag sets the output path
 explicitly, overriding the derivation above. This is the standard CLI escape hatch (`cc -o`,
@@ -137,10 +126,13 @@ The project root MUST be resolved to an absolute path. If a relative path is giv
 
 A target "has a directory component" when it contains at least one `/` separator. This includes:
 
-- `dir/mymod` — project root `dir/`, entry module `mymod`
-- `path/to/mymod` — project root `path/to/`, entry module `mymod`
-- `./mymod` — project root `.` (cwd), entry module `mymod`
-- `../other/mymod` — project root `../other/`, entry module `mymod`
+```text
+target           project root   entry module
+dir/mymod        dir/           mymod
+path/to/mymod    path/to/       mymod
+./mymod          . (cwd)        mymod
+../other/mymod   ../other/      mymod
+```
 
 A bare name like `mymod` does NOT have a directory component, even if a directory named `mymod` exists. The directory-existence check (rule 3) is a separate, lower-priority rule, and rule 3 only fires when there is no same-named `.cl` file beside the directory (the file wins on ambiguity — see §0.5.1 rule 4 and §0.5.5).
 

@@ -948,7 +948,7 @@ When resolving a platform name to a DLL (§8.9.3), the implementation MUST searc
 
 The file extension `.{ext}` is platform-dependent (`.dylib` on macOS, `.so` on Linux, `.dll` on Windows). The implementation SHOULD also accept the Cargo library naming convention (`libcranelisp_{name}.{ext}`) as an alternative filename at each search location.
 
-Platform resolution mirrors module resolution: project root is checked first, then lib directories in order. This means a project can ship platform DLLs alongside its source (`myproject/platforms/custom-io.dylib`), and a standard library can ship platforms alongside its modules (`stdlib/platforms/stdio.dylib`).
+Platform resolution mirrors module resolution: project root is checked first, then lib directories in order. This means a project can ship platform DLLs alongside its source (`{project_root}/platforms/custom-io.dylib`), and a standard library can ship platforms alongside its modules (`{lib_dir}/platforms/stdio.dylib`).
 
 ### 8.11.4 Lib Directory Configuration [Tested tests/spec_platforms::cranelisp_toml_lib_dirs_resolves_module]
 
@@ -978,7 +978,7 @@ Special forms (`defn`, `let`, `if`, `match`, etc.) are not module names and have
 
 [S70]
 
-> **Practical implication.** The project root is the directory containing the entry file. A project at `exemplar/solver.cl` has project root `exemplar/`. If `exemplar/stdlib/` does not exist and `CRANELISP_LIB` is not set, the prelude will not load. To use the standard library from a subdirectory project, either:
+> **Practical implication.** The project root is the directory containing the entry file. A project at `myapp/main.cl` has project root `myapp/`. If `myapp/stdlib/` does not exist and no other source contributes a lib directory, the prelude will not load. To use the standard library from a subdirectory project, either:
 > - Set `CRANELISP_LIB` to point to the stdlib location (e.g., `CRANELISP_LIB=../stdlib`), or
 > - Create a project configuration file that specifies the lib path, or
 > - Symlink or copy `stdlib/` into the project root.

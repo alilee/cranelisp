@@ -36,7 +36,7 @@ for table realization identity.
 Keep three concepts distinct:
 
 - **Authored binding:** the name users write, export, redefine and inspect, such
-  as `user/f`. An overloaded binding owns its whole clause family.
+  as `app/f`. An overloaded binding owns its whole clause family.
 - **Declaration selector:** today's `CallableTarget` selects a binding or a
   generation-local arm for checking and compilation. An old ordinal must still
   be matched to the unique new arm by the existing language-signature comparison.

@@ -19,7 +19,7 @@
 //   - Internal Bind constructor / pattern rejection (§10.1 — Bind is internal,
 //     not user-invocable per the runtime representation)
 //   - IO type inference / propagation (§10.7)
-//   - REPL eval unwraps Pure inline (§10.6.2 — REPL Mode entry point)
+//   - REPL display of an executed IO result (repl/spec/01-display-format.md §1.2)
 //   - --run mode: main returns IO, exit code from Pure / from bind chain (§10.6.1)
 //   - Closure-capture inc regression (Sprint 61 Wave 4 — `emit_capture_return_inc`)
 //   - bind! desugaring (§10.5 macro form)
@@ -62,12 +62,6 @@ fn pure_int_unwraps_inline() {
 #[test]
 fn pure_bool_unwraps_inline() {
     repl("(Pure true)\n").assert_stdout_contains(":primitives/Bool true");
-}
-
-// spec: spec/10-io.md §10.2.3 — Pure wraps String
-#[test]
-fn pure_string_unwraps_inline() {
-    repl("(Pure \"hello\")\n").assert_stdout_contains(":primitives/String");
 }
 
 fn platform_pure_program(body: &str) -> Child {
@@ -415,27 +409,61 @@ fn bind_polymorphic_inference() {
 }
 
 // =============================================================================
-// REPL eval inline trampoline — spec/10-io.md §10.6.2
+// REPL display of an executed IO result — repl/spec/01-display-format.md §1.2
 // =============================================================================
 //
-// Sprint 57 Wave 6 + Sprint 61 Wave 4 fixes: REPL eval trampolines IO inline
-// before returning, so `(Pure 42)` produces `:primitives/Int 42` at the REPL,
-// not a raw IO heap pointer with type `(IO Int)`. The closure-capture-inc
-// (§5.6 "Capture-return inc") fix landed in S61 Wave 4 prevents the
-// double-free that surfaced as SIGBUS pre-fix.
+// The REPL forces an `IO` result through the trampoline (spec/10-io.md
+// §10.6.2), then displays it with its `IO` type and `IO.Pure` value, e.g.
+// `:(IO primitives/Int) (IO.Pure 42)`. The compiler currently displays only
+// the inner result (`:primitives/Int 42`), so these cells are RED until that
+// defect is corrected. The earlier §10.6.2 text required that inner-only
+// display; the user ruled on 2026-09-25 that §1.2 governs.
+//
+// Head-spelling limit: §1.2's example writes `IO`, but its rule that the type
+// prefix is always fully qualified implies `primitives/IO`. That conflict is
+// open, so these cells accept either head and do not decide it.
 
-// spec: spec/10-io.md §10.6.2 — Pure(42) evaluates to Int 42 at REPL (regression
-// guard for Sprint 57 Wave 6 SIGBUS cluster).
-#[test]
-fn repl_pure_int_unwraps() {
-    repl("(Pure 42)\n").assert_stdout_contains(":primitives/Int 42");
+/// Assert that the REPL displayed an executed `IO` result as
+/// `:(IO <inner_type>) (IO.Pure <inner_value>)`, accepting `IO` or
+/// `primitives/IO` as the type head (see the head-spelling limit above).
+fn assert_io_result_envelope(out: helpers::e2e::CrOutput, inner_type: &str, inner_value: &str) {
+    let envelope = regex::Regex::new(&format!(
+        r":\((?:primitives/)?IO {}\) \(IO\.Pure {}\)",
+        regex::escape(inner_type),
+        regex::escape(inner_value)
+    ))
+    .unwrap();
+    out.assert_stdout_matches(&envelope);
 }
 
-// spec: spec/10-io.md §10.6.2 — bind+Pure regression guard
-// (Sprint 61 Wave 4 capture-return-inc: `emit_capture_return_inc` rule.)
+// spec: repl/spec/01-display-format.md §1.2 — Expression Results (IO, Ring 4)
+// defect: class=requirement-conflict locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev
 #[test]
-fn repl_bind_pure_lambda_no_double_free() {
-    repl("(bind (Pure 42) (fn [x] (Pure x)))\n").assert_stdout_contains(":primitives/Int 42");
+fn repl_pure_int_result_displays_io_envelope() {
+    let out = repl("(Pure 42)\n").assert_stdout_does_not_contain(":primitives/Int 42");
+    assert_io_result_envelope(out, "primitives/Int", "42");
+}
+
+// spec: repl/spec/01-display-format.md §1.2 — Expression Results (IO, Ring 4)
+// spec: spec/10-io.md §10.2.3 — Pure wraps String
+// defect: class=requirement-conflict locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev
+#[test]
+fn repl_pure_string_result_displays_io_envelope() {
+    assert_io_result_envelope(repl("(Pure \"hello\")\n"), "primitives/String", "\"hello\"");
+}
+
+// spec: repl/spec/01-display-format.md §1.2 — Expression Results (IO, Ring 4)
+// defect: class=requirement-conflict locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev
+// The input is also the S61 capture-return-inc double-free guard
+// (`emit_capture_return_inc`), and its result comes from `bind`, not from a
+// literal `(Pure …)` form.
+#[test]
+fn repl_bind_pure_lambda_result_displays_io_envelope_without_double_free() {
+    assert_io_result_envelope(
+        repl("(bind (Pure 42) (fn [x] (Pure x)))\n"),
+        "primitives/Int",
+        "42",
+    );
 }
 
 // =============================================================================

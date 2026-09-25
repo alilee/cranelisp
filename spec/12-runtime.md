@@ -429,7 +429,7 @@ When the display format is used in a context that includes a type prefix (e.g., 
 :(user/Option primitives/Int) (Option.Some 42)
 ```
 
-Here `user/Option` and `primitives/Int` are in the type prefix; `Option.Some` and `42` are in the value display.
+Here the type prefix is `(user/Option primitives/Int)` and the value display is `(Option.Some 42)`.
 
 ### 12.9.3 Elision [Tested tests/repl_introspection::display_int_result]
 

@@ -25,8 +25,9 @@ run time — the reactor, async trampoline, `consume_io_tree`, permit pools, RC/
 lifetime-across-suspension — is a runtime-library implementation detail encapsulated in
 **`cranelisp-intrinsics`** (`design/intrinsics/reactor.md`), which `cranelisp-backend` emits
 calls into (`design/arch/bounded-contexts.md` §4b). `/int`'s only contact with that runtime is the **thin host-client seam**
-(`design/intrinsics/reactor.md` §0): it drives IO through the single C-ABI entry `cranelisp_run_io` for `--run`/REPL
-and propagates the loader ABI refusal. Reactor construction and execution remain
+(`design/intrinsics/reactor.md` §0): it runs every program through the single C-ABI driver
+`cranelisp_run_program` for `--run`, the REPL and the linked stub, and propagates the loader
+ABI refusal (`io-integration.md`). Reactor construction and execution remain
 inside intrinsics. It never reaches into reactor internals.
 `bind-chain-analysis.md` — the *compile-time* IO-scheduling pass — is int's: it is a
 pipeline transform, while execution of the nodes it emits is the runtime library's.
@@ -61,12 +62,14 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `signature-body-prepass.md` | The S93 two-phase barrier — the durable race cure. |
 | `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification (including trait-implementation redefinition, §2.5), slot versioning, the retention pool and persistence. Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
 | `session-persistence.md` | Save/regenerate. The cache artefact, cache-hit flow, restoration parity and `Code` carrier are `int.md` §§5 and 7. |
-| `io-integration.md` | Host-side IO forcing and platform-DLL load wiring. |
+| `io-integration.md` | The host program driver, `main` validation, and platform-DLL load orchestration (search, ABI gate, registration, layout-hash gate). |
 | `result-owner.md` | The one program-result owner across REPL, `--run`, cache-hit and linked startup: observe, then release exactly once through canonical type glue. |
 | `macro-turn-ownership.md` | The macro-clause invocation protocol: the declared all-Owned clause ABI, single-owner argument transfer by ABI crossing, and exactly-once result discharge through `consume_sexp`. |
 | `bind-chain-analysis.md` | The compile-time automatic-IO-scheduling pass (`spec/10-io.md` §10.12), including how it reads a platform function's scheduling class (`design/int/bind-chain-analysis.md` §4). |
+| `step9-error-cascade.md` | Module failure: scheduler cascade, the user-visible error chain and REPL recovery. Spec-traced tests cite §4.1 and §4.2. |
 | `observability.md` | The trace and event sinks. |
-| `cranelisp-toml.md`, `repl-lifecycle.md` | Project configuration, REPL lifecycle and project-root resolution. Pass-1 macro recognition and execution are `int.md` §6.8. |
+| `cranelisp-toml.md` | `Cranelisp.toml`, library and platform directory assembly, and the scaffold writer. |
+| `repl-lifecycle.md` | The file watcher, `/reset`, `/sh`, REPL cache use, `--link` wiring and project-root resolution. |
 | `agent.md` | The embedded agent (dispatch, turn loop, harvest, write gates, rendering, log and trace), `/refs`, `/tests-for`, `/syntax` and the interim `/search` index. Section numbers are pinned by live source. |
 | `terminal-styling.md` | The layered styling interior below the `styled::render` role-span seam, and the pretty-printer layout. |
 | `concurrency/` | As-built structural, protocol and lifecycle diagrams for the scheduling axis. |
@@ -79,8 +82,8 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `index-worker-isolation.md` | The index-feed isolation contract (background half; the foreground export-closure gate is `int.md` §6.7). |
 | `macro-diagnostic-reanchoring.md` | Synthetic-span diagnostics over macro output relocate to the origin form; paired with `design/frontend/binder-head-reject.md`. |
 | `expansion-qualification-scope.md` | `qualify_expanded_sexp` is scope-aware, skipping value-level binder slots. |
-| `multi-sig-introspection.md` | Multi-signature introspection, with the D1 constraint-display read-follow (§2.4). |
-| `private-submodule-import.md` | Private submodule imports. |
+| `multi-sig-introspection.md` | Multi-signature introspection: one line per arm, each with its own constraints (§2.4). |
+| `private-submodule-import.md` | Private submodule import refusal, with its open unloaded-parent case. |
 
 ### Reference lineage
 
@@ -88,8 +91,6 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 |---|---|
 | `heisenbug-race-closure.md` | The S61 per-interleaving treadmill. Precedent for race-class investigation and the rationale for live instruments; `index-worker-isolation.md` and `signature-body-prepass.md` cite it. Section numbers are pinned by live source. |
 | `s102-defect-wave.md` | The S102 Block-A defect-wave cluster designs. Cited section-precisely by live source and tests. |
-| `step9-error-cascade.md` | The failure/cascade design; §4.1 and §4.2 are cited by spec-traced tests. |
-| `cache-prelude-restoration-repro.md` | The diagnosis anchor `tests/cache.rs` names. |
 
 Landed-migration and superseded-slice records were deleted during the S122
 consolidation; Git retains them, and their substance lives in `int.md`.

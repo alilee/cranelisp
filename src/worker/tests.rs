@@ -2550,7 +2550,7 @@ fn save_generate_module_source_reads_structural_decls_from_symbol_table() {
 
 // §G.10 (5) — submodule writer records `(mod- internal …)` with
 // `is_private: true`. Confirms the writer preserves the source-of-truth
-// for the privacy check (Step 5d (i) — `private-submodule-import.md` §4).
+// for the privacy check (Step 5d (i) — `private-submodule-import.md` §2).
 #[test]
 fn writer_records_private_submodule_with_is_private_true() {
     use cranelisp_types::ModDecl;

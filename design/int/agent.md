@@ -715,10 +715,11 @@ compiler in an isolated realm. Until then this section describes what is built.
 - **Current branch-(c) cache write.** A clean branch (c) on a macro-free
   module writes a `.meta` (no `.o`) and, once its
   [dependency record](int.md#76-dependency-record-and-validity) settles, a
-  manifest entry, so a later real import is a cache hit. `design/int/index-worker-isolation.md` §3.3 proposes
-  retiring that write, and ACT-0952 forbids it for the future semantic index;
-  its removal must be a coordinated design and test change, because
-  `tests/search.rs` pins the current behaviour.
+  manifest entry, so a later real import is a cache hit. The write is a
+  tolerated interim with a named reopen trigger
+  (`design/int/index-worker-isolation.md` §3.3), and ACT-0952 forbids it for
+  the future semantic index. Its removal must be a coordinated design and test
+  change, because `tests/search.rs` pins the current behaviour.
 
 ### 25.2 Private substrate
 

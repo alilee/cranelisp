@@ -429,8 +429,7 @@ directly.
 ## 7. Next skills
 
 - `/arch` — maintain the approved two-function intrinsics surface and its
-  public-api/rustdoc contract in `design/arch/bounded-contexts.md` §4b
-  invariant 17 (FIXME 0860 resolved); arbitrate only if R-2 is required to
+  public-api/rustdoc contract in `design/arch/bounded-contexts.md` §4b, invariant 17 (FIXME 0860 resolved); arbitrate only if R-2 is required to
   distinguish `ProjectionOf` from `AliasOf` in interprocedural production RC.
 - `/qa` — reconcile the R-2 plan with the verified consumer graph and the
   explicit partial-evidence boundary.

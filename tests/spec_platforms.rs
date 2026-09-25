@@ -118,8 +118,8 @@ fn platform_read_line_via_test_capture() {
 // Sprint 58 Wave 5 — Cranelisp.toml E2E coverage.
 //
 // `/int` Wave 4 landed Step 5d (iii) — `Cranelisp.toml` project config
-// lookup in `src/session.rs::load_project_config_lib_dirs` +
-// `assemble_lib_dirs`. Unit tests in `src/session.rs` cover the helper
+// lookup in `src/session_setup.rs::load_project_config_lib_dirs` +
+// `assemble_lib_dirs`. Unit tests in `src/session_setup.rs` cover the helper
 // directly; these E2E tests exercise the full binary path (config
 // discovered + applied to module resolution) per spec/08 §8.11.4 item 2.
 //

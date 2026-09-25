@@ -1055,7 +1055,7 @@ the definition result is:
 ; [] -> Sexp
 ```
 
-`/info n` and `/sig n` continue to describe `user/n` as `defmacro`. Entering
+`/info n` and `/sig n` continue to describe the binding `n` as `defmacro`. Entering
 bare `n` invokes the zero-argument macro, expands to `(n-def)`, and evaluates
 to `:primitives/Int 42`. No binding changes classification between those
 surfaces.

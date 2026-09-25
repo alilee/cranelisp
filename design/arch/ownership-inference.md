@@ -822,24 +822,31 @@ inline-`vec-get` shapes.
 
 ## §5. Mode summaries, module caching, and the R3 redefinition model (part 4)
 
-### 5.1 Batch (`--run`/`--link`): already conservatively covered
+### 5.1 Batch (`--run`/`--link`): summaries persist; invalidation is the cache's dependency record
 
 The `.meta.json` **is** a serialised `SymbolTable`
-([cache rewrite](../backend/module-caching.md#14-persisted-module-record));
-the per-callable `ModeSummary` joins the serde-visible payload of the concrete callable state
-(§3.3), gated by
-the existing `CACHE_SCHEMA_VERSION` bump discipline — old caches deserialise summaries as `None`
-= Decision 24 and, being pre-bump, are invalidated wholesale anyway.
+([persisted module record](../backend/module-caching.md#14-persisted-module-record));
+the per-callable `ModeSummary` is part of the serde-visible payload of the concrete callable state
+(§3.3). A summary shape change follows the existing `CACHE_SCHEMA_VERSION` bump discipline; an
+absent summary reads as `None`, which compiles at the Decision 24 conservative point.
 
-**Invalidation needs no new key.** Two existing mechanisms compose to keep summaries transitively
-fresh: (1) an importer is invalidated when any **direct import's source hash** changes
-(`module-caching.md` §3) — over-approximating "callee summary changed" for direct edges; and
-(2) the session **`recompiled`-set cascade** (`src/session_setup.rs`: "if a dependency was
-recompiled, all its dependents must also recompile") makes it transitive — if C's change recompiles
-B (B's summaries may change with B's source unchanged), B's membership in the recompiled set
-recompiles A in turn. Any upstream change therefore transitively recompiles all dependents before
-their compiled inc/dec schedules could disagree with a callee summary. Conservative, correct,
-zero new machinery — exactly the §6 "invalidation is conservative" discipline.
+**Invalidation adds no summary key.** A compiled caller's inc/dec schedule depends on its callees'
+summaries, and a callee's summary can change while the callee's own source does not (C's edit
+changes B's summary). The cache covers this by whole-source hashing of the transitive closure: each
+manifest entry records the source hash of every module reachable through its dependency edges, so
+an edit anywhere in the closure invalidates the caller
+([dependency record and validity](../int/int.md#76-dependency-record-and-validity);
+[cache keys](../backend/module-caching.md#3-cache-key-design)). This over-approximates "a callee
+summary changed" — the §6 conservative-invalidation discipline — with no ownership-specific
+machinery.
+
+**Limit: the closure covers only the edges int records.** A callee module reached solely through a
+qualified reference is not yet an edge, so a caller can restore against a callee whose summary has
+changed. That would be a calling-convention disagreement — a leak or double-free, not merely a stale
+value — though no executed observation covers the ownership face. This is int's open *Known gap* 1,
+whose failing guards in `tests/cache.rs` observe stale values; its correction and disposition are
+owned there, not here. The session's `recompiled` set is written
+but not read, so it supplies no cascade.
 
 ### 5.2 The REPL hazard — and the R3 ruling (BINDING, user-directed 2026-07-02)
 

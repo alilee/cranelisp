@@ -13,8 +13,10 @@
 > below names the guards it flips. Master design: `design/int/int.md` (§8 REPL flow,
 > §8.3 regeneration, §8.6 transaction).
 >
-> Normative UX inputs: `repl/spec.md` §18.1.1 (downgrade report — /repl landed the
-> wording this phase), §18.5 (trap presentation), [startup load failure, section 15.2.3](../../repl/spec/15-session-persistence.md) (restart floor), [error-blocked state, section 14.4](../../repl/spec/14-file-watching.md), §15.4 (regeneration invariants, authorship fidelity), §3.6
+> Normative UX inputs: sections 18.1.1 (downgrade report) and 18.5 (trap presentation)
+> of the S102 REPL specification, readable with `git show 4c1f76f0:repl/spec.md`. The S121
+> redefinition chapter (`repl/spec/18-redefinition.md`) replaced both, and `int.md`
+> §16.0 lists the downgrade machinery for deletion. Also [startup load failure, section 15.2.3](../../repl/spec/15-session-persistence.md) (restart floor), [error-blocked state, section 14.4](../../repl/spec/14-file-watching.md), §15.4 (regeneration invariants, authorship fidelity), §3.6
 > (/info source). Where /repl or /spec work is still in flight (0484 precedence,
 > 0492 arbitration), the design is conditional and says so.
 
@@ -27,9 +29,9 @@ amendment); this section is the change-set plan.
 
 Mechanism recap: the §2.2 `!per_symbol` classification arm (prior `Def` exists, target
 kind outside concrete-single-sig precision, not gate-exempt) is the T1 route. The turn
-gains the `repl/spec.md` §18.1.1 `stale:` section: header line
-`; stale: compiled callers keep the previous definition of {cause}` + §1.1-layout caller
-names. The **trigger is the route, not the surface diff** — even a scheme-equal
+gains the S102 §18.1.1 `stale:` section: header line
+`; stale: compiled callers keep the previous definition of {cause}` followed by the caller
+names in the universal display layout. The **trigger is the route, not the surface diff** — even a scheme-equal
 redefinition of a polymorphic template leaves previously-minted mono instances (and their
 compiled callers) stale. The **set** is the direct reverse-edge callers of the target and
 its `$`-mangled variants, restricted to compiled (`code: Some`) entries, excluding

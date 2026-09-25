@@ -37,18 +37,6 @@ reporting, timing via `trace` — is in-language code in the stdlib
 (`stdlib/testing/runner.cl`). The `/run-tests` slash commands are a convenience
 over the same core, not the capability itself.
 
-### Document map
-
-| Section | Contents |
-|---|---|
-| §2 | The settled rulings and the fork-join ferry obligation |
-| §3 | The requirement |
-| §4 | The user experience — defining, running, the in-language runner, the combinator, `--link` |
-| §5 | The language constructs — signatures, eligibility, capture scope, visibility |
-| §6 | The implementation — publication kinds, the extern, the combinator, the ferry, seeding, per-crate obligations |
-| §7 | Data structures and sequence walk |
-| §8 | Retired section remaps |
-
 ## 2. Settled rulings + the fork-join ferry
 
 The user's rulings, recorded as decided. Each carries the reason a competent
@@ -499,23 +487,3 @@ sequenceDiagram
 
 Freshness lives in the wrapper (late-bound through the live GOT) and in
 re-calling `discover-tests` (a rescan) — never in expansion timing.
-
-## 8. Retired section remaps
-
-Earlier revisions carried the four-convergence deliberation, an as-built
-archaeology and a dated change history; Git holds them. For readers holding an
-old citation:
-
-| Old citation | Now |
-|---|---|
-| §1 "Why the names-only / macro-runner design fell (ruling 1)"; §8d | §2 "Return shape" |
-| §1 "What `catch-runtime-error` becomes (ruling 2)" | §2 "`catch-runtime-error`" and §5 |
-| §2 q-scope / q-overload / q-rte-name / q-eligibility / q-cascade | §2 bullets (the spec cascade is landed; see the normative surface in Status) |
-| §2 / §5 / §6 "the fork-join error-slot ferry obligation" | §2 "The fork-join error-slot ferry obligation" (rationale) and §6 "The fork-join error-slot ferry" (mechanism) |
-| §4.5 "S86 D5a ruling" and FIXME 0406 | §4.5 (the friendly rejection is landed) |
-| §5 "scope item 5" (trace-guard cleanup) | §5 "Trace-guard cleanup" |
-| §5 "The Pair tradeoff"; §6 "Pair + Result seeding delta" | §5 `discover-tests` bullet and §6 "`Pair` and `Result` seeding" |
-| §6 "`DefKind::PrimitiveExtern`" | §6 "Two publication kinds" (host-promised `RustPrimitive`) |
-| §6 "Spec — the cascade" | landed; normative homes listed in Status |
-| §8 superseded explorations; §9 as-built archaeology; §10 change history | Git history |
-| Line-number citations `§150` (q-overload), `§162` (q-eligibility) | §2 "One extern taking `(Vec String)`", §2 "Eligibility" |

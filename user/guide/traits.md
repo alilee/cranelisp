@@ -8,7 +8,7 @@ This is Cranelisp's mechanism for ad-hoc polymorphism (the `Num`, `Eq`, `Ord`,
 
 This guide teaches the shapes you write and verifies each against the compiler.
 The normative rules live in [`spec/07-traits.md`](../../spec/07-traits.md) and
-[`spec/05-definitions.md §5.3`–`§5.4`](../../spec/05-definitions.md); reach for
+[Trait declarations and implementations, sections 5.3–5.4](../../spec/05-definitions.md); reach for
 them at the edges.
 
 > **About the transcripts.** Every `user>` transcript on this page was checked
@@ -525,7 +525,7 @@ ones; the rule is [spec §5](../../spec/05-definitions.md)'s binder-positions ta
 
 - [`spec/07-traits.md`](../../spec/07-traits.md) — traits, `self`, HKT, impl
   kind-checking, method-import dispatch, deriving.
-- [`spec/05-definitions.md §5.3`–`§5.4`](../../spec/05-definitions.md) —
+- [Trait declarations and implementations, sections 5.3–5.4](../../spec/05-definitions.md) —
   `deftrait`/`impl` as definition forms; the binder-positions table (§5).
 - [Errors catalogue — trait/impl diagnostics](../errors/trait-impl-diagnostics.md)
   — every rejection message this guide points at, with its remedy.

@@ -28,7 +28,7 @@ Classes: A acceptance evidence; S safety fence; D diagnostic observer; M mainten
 | Q3 A — public IO | Public sequence-IO composition completes with ordered values and correct empty result across REPL/run/link. A stale RC abort or wrong order fails. `spec/10-io.md`, public core.io contract. | Reuse aggregate RED and explicit-bind control; test reduces to the smallest differing composition, retaining the public aggregate as acceptance. Dev owns the reduced internal seam witness. | `tests/stdlib_conformance.rs::stdlib_core_io_public_scalar_driver_across_modes`; scalar result does not imply scalar-only allocation. Do not infer old Pure teardown as cause. |
 | Q4 A/S — macro discharge | A successful expansion retains no argument/result tree; aliasing does not double release; after argument transfer a trap causes no host double-cleanup, and executable owners remain live through invocation. The retained [macro-turn contract, Rule 3](../../design/int/macro-turn-ownership.md#rule-3--the-argument-tree-is-discharged-by-crossing-the-abi), reconciled by approved S122 architecture item 4, expressly permits forfeiture of the transferred argument tree on a failed expansion; zero-leak acceptance is not extended to that path. `spec/12-runtime.md` §12.3.1 and macro-turn design. | Test changes existing +1/+2 marginal residual witnesses to balanced expectations, first recording their intended pre-fix failure. Reuse interior-alias run/link/armed cases. Dev pins all-Owned clause production (no inferred mode summary plus the existing D0 CLIF check), argument transfer before protected invocation, successful result copy/consume once, and absence of host argument cleanup after transferred-call failure. Intrinsics handle misuse detection remains at its own unit seam after D3. | `tests/macro_turn_marshal_leak_0889.rs`, `tests/macro_expansion_interior_alias_double_free.rs`, marginal helper. A newtype alone proves neither correct JIT consumption nor trap cleanup. |
 | Q5 D — original workload | Reconcile the claimed prelude/session residual on the same library/input/configuration before and after macro repair; distinguish changed fixed overhead from per-expansion slope. | QA allocates one paired original prelude/session measurement using current binary and corrected binary, recording actual residuals. Test retains existing marginal workload guards unchanged where common residue cancels. | S118 1143 is historical, not a current acceptance constant. Existing +1/+2 passing pins establish present marginal leak. No threshold around historical fixed overhead. |
-| Q6 A — /mem | Report the expression observation after its returned owner is released, including heap values; no phantom retained result in delta. `repl/spec.md` §3.7 and `design/int/result-owner.md`. | Test extends current /mem process witness with a heap-result/control and separately verifies rendered value. Dev pins sampling order around owner lifetime. | `tests/repl_introspection.rs`; `src/repl/commands.rs::handle_mem` samples before formatting/drop. Use warmed/paired setup so macro/bootstrap work is not mislabeled result leakage. |
+| Q6 A — /mem | Report the expression observation after its returned owner is released, including heap values; no phantom retained result in delta. `repl/spec/03-slash-commands.md` §3.7 and `design/int/result-owner.md`. | Test extends current /mem process witness with a heap-result/control and separately verifies rendered value. Dev pins sampling order around owner lifetime. | `tests/repl_introspection.rs`; `src/repl/commands.rs::handle_mem` samples before formatting/drop. Use warmed/paired setup so macro/bootstrap work is not mislabeled result leakage. |
 | Q7 A — reload demand recovery | Capture all required concrete instances, including complete result-context substitutions; settled reload remints them without replaying stale source expressions. Current session-transaction §10 contract. | Reuse typecheck instantiate_demands unit battery; dev(src) tests set capture and correct forwarding at its private consumer. Test extends existing reload e2e with two distinct realizations and an unrelated stale expression, observing correct post-reload calls. | `crates/cranelisp-typecheck/src/form/tests.rs`, `src/redefine.rs`, `tests/repl_persist_redefine.rs`. Do not duplicate every producer unit via subprocess. |
 | Q8 A/M — ACT-0954 removal | Unsafe unused public wrapper is unavailable; synchronous watcher/reload followed by evaluation observes current module. | Remove obsolete row-45 source-presence assertion; use existing synchronous reload process evidence. Arch checks exact approved root-library removal and retained scheduler operation. | `tests/facade_pif_rows.rs`; no runtime test through a deleted API and no new publication clock. Seven generated baselines do not cover root library. |
 | Q9 S/M — bounded convergence | Quote shields, IO result-root interpretation and Vec tag polarity retain their contract through shared derivation. | Dev retains/extents the existing shared-helper units and changed call-site unit only where a wrong argument/branch survives them. Test reuses quote/shield, result-owner and threshold public guards; no new e2e merely for code deduplication. | 0789,0898,0906; shared APIs already exist. CLIF golden change is a scoped diagnostic/maintenance consequence, not authority for semantics. |
@@ -152,7 +152,7 @@ Q3 module attribution settled (2026-09-10): `crates/cranelisp-intrinsics/src/io/
 
 This is sufficient to attribute a current intrinsics defect: `crates/cranelisp-intrinsics/src/io.rs::run_io_trampoline_inner_async` marks a continuation result fresh, then treats a fresh Bind's child and continuation as consuming transfers. `crates/cranelisp-intrinsics/src/drop.rs::dec_shallow_io` leaves a non-last-reference parent allocated; its still-owned fields therefore cannot be consumed solely because the trampoline owns another reference to that parent. The module pair discriminates shared-parent ownership from unique-parent transfer. It does not directly correlate the public sequence reduction's exact parent identity with this fixture, so do not claim complete public-root-cause proof or assign a backend/stdlib correction from the abort label.
 
-Next allocation is bounded intrinsics corrective design for preserving the live shared Bind's field ownership while retaining correct unique transfer and normal teardown. Design determines the mechanism under the existing runtime ownership contract; QA prescribes no new API or algorithm. Reuse this module RED/control and final exact-balance assertions, then rerun the existing public two-nested-Bind sequence reduction, aggregate and existing explicit-bind/one-action/empty controls across their already-allocated REPL/run/link modes. Public acceptance must complete with the exact ordered values and no stale-RC abort; if it remains RED, retain that public gap and reattribute rather than declaring Q3 fixed or expanding correction by guesswork. Scoped review covers the shared/unique ownership distinction and affected normal/cleanup paths; no extra matrix or independent failure framework is allocated. In the retained source visit, repair the module pair's trace to `spec/12-runtime.md` §12.3.1 normal lifetime requirements: its current §10.12.9 cancellation citation does not mean this fixture exercises cancellation.
+Next allocation is bounded intrinsics corrective design for preserving the live shared Bind's field ownership while retaining correct unique transfer and normal teardown. Design determines the mechanism under the existing runtime ownership contract; QA prescribes no new API or algorithm. Reuse this module RED/control and final exact-balance assertions, then rerun the existing public two-nested-Bind sequence reduction, aggregate and existing explicit-bind/one-action/empty controls across their already-allocated REPL/run/link modes. Public acceptance must complete with the exact ordered values and no stale-RC abort; if it remains RED, retain that public gap and reattribute rather than declaring Q3 fixed or expanding correction by guesswork. Scoped review covers the shared/unique ownership distinction and affected normal/cleanup paths; no extra matrix or independent failure framework is allocated. In the retained source visit, repair the module pair's trace to `spec/12-runtime.md` §12.3.1 normal lifetime requirements: its current `spec/10-io.md` §10.12.9 cancellation citation does not mean this fixture exercises cancellation.
 
 Q12 next test handoff: the static collision `platform.hx` / ordinary `platform-x` at `__cranelisp_got_platform_hx` needs a loaded executable witness. Allocate one minimal `platforms/hx/` test-platform fixture to a separately reserved platform-fixture dev invocation, following existing platform fixture conventions; sprint coordinates necessary workspace registration/build wiring. Test owns temporary `platform-x.cl` via the existing harness and cases in `tests/spec_platforms_adt.rs` / `tests/link.rs`. The fixture and ordinary module return distinct values (for example 7 and 3); invoke both and encode their ordered results as 73, so mere load success or wrong dispatch cannot pass. Run the same pair through REPL, `--run`, and `--link` with actual execution of the linked binary. Record acceptance/load/link/execution separately, retaining the first failure diagnostic. One otherwise identical noncolliding ordinary-module rename is the initial control. If the collision pair refuses before coexistence, test the original ordinary name alone to distinguish name admissibility from collision. Reuse the existing dual-platform and run/link harness patterns; add no stdlib dependency or broad platform matrix. This allocation authorizes the already-scoped fixture under Phase-5 reservations, not a naming correction or a static-only defect attribution. No source/build activity occurred during this allocation.
 
@@ -3153,3 +3153,154 @@ question.
 - Report the results to QA through `sprint`.
 
 QA adds a spec-side annotation only after reading the executed evidence.
+
+## REPL display of an `IO` result — evidence delta (2026-09-25)
+
+**Authority.** [`repl/spec/01-display-format.md` §1.2](../../repl/spec/01-display-format.md)
+(Ring 4) is the requirement: after the trampoline runs the effect chain, an
+`IO`-typed result displays as `:(IO InnerType) (IO.Pure inner_value)`.
+[`spec/12-runtime.md` §12.9.1](../../spec/12-runtime.md)
+agrees on the value, `(IO.Pure 42)`. The user ruled on 2026-09-25 that the
+REPL specification governs. `spec` removed the contrary display text from
+[`spec/10-io.md` §10.6.2](../../spec/10-io.md). No behaviour beyond the
+existing REPL requirement is approved.
+
+**Observed defect.** `(Pure 42)` displays `:primitives/Int 42`, and
+the former inner-only assertion pinned that output. Its replacement,
+`tests/spec_10_io.rs::repl_pure_int_result_displays_io_envelope`, records the
+required IO envelope as a failing regression guard.
+
+- **Entry: a requirement conflict that coverage followed.** §10.6.2 said the
+  REPL shows the inner result. The spec_10_io tests cite §10.6.2 for their
+  display assertions, and [`io-integration.md` §3](../../design/int/io-integration.md#3-open-gaps)
+  item 2 records the conflict.
+- **Implementation seam: a provisional source reading, not confirmed by a
+  control.** `pipeline::program_outcome_to_result` (clean arm) and the
+  equivalent `--run` arm in `session_v4/lifecycle.rs` strip `IO a` to `a`
+  before the result owner is built. The owner refuses `IO a`
+  (`src/CLAUDE.md` §Program-result ownership), so the formatter never receives
+  the `IO` fact.
+  - Refuter: a display path that receives the original `IO` type and drops it.
+  - `design`(int) decides where the fact is carried. No correction is selected.
+- **No language type change is involved.** The expression is already typed
+  `IO`: `io_propagates_into_inferred_return_type` displays
+  `(Fn [] (primitives/IO primitives/Int))`. Typecheck is not implicated.
+- **No execution change is involved.** The driver forces the tree once, and
+  the word it returns is the correct `inner_value`. A correction must not
+  re-force the effect at display, must not give the owner an `IO a` type, and
+  must not change `--run` or `--link` exit handling.
+
+**Ambiguity routed to `spec`.** The §1.2 example writes `:(IO primitives/Int)`,
+but the same section says the type prefix is always fully qualified. The
+type renderer writes `primitives/IO`. Until the user settles which is
+required, cells accept either spelling of the type head and fix everything
+else.
+
+**Conditions.**
+
+| Id | Condition and observable | Plausible wrong outcome it discriminates | Class |
+|---|---|---|---|
+| IOD-1 | `(Pure 42)` → the envelope `:(IO primitives/Int) (IO.Pure 42)`, with an optional `primitives/` before `IO`; no `:primitives/Int 42` line | Current inner-only display; both lines printed; a raw word or unqualified inner type | Acceptance evidence, RED now |
+| IOD-2 | `(Pure "hello")` → `:(IO primitives/String) (IO.Pure "hello")`, head spelling as IOD-1 | A correction that handles only scalar inner values, or hands an owning result to the owner as `IO a` (refused → error) | Acceptance evidence, RED now |
+| IOD-3 | `(bind (Pure 42) (fn [x] (Pure x)))` → the IOD-1 envelope | Display keyed on a literal `(Pure …)` form rather than the result type | Acceptance evidence, RED now |
+
+**Existing evidence:**
+
+- **Effect runs exactly once.** `tests/output_equivalence.rs` evaluates
+  `(main)` with `print` at the REPL. It strips every `:`-prefixed echo line
+  and compares the effect stream with `--run` and `--link`. A display that
+  re-forces the effect prints twice and fails there. It stays a safety fence
+  and needs no change.
+- **Non-`IO` results keep their envelope.** The `repl_introspection`
+  `display_*` cells cover this.
+- **Exit codes are unchanged.** The §10.6.1 cells cover this.
+
+**Delegation to `test`**, in `tests/spec_10_io.rs` only:
+
+- **IOD-1.** Replace `repl_pure_int_unwraps` with a behaviour-named cell that
+  cites `// spec: repl/spec/01-display-format.md §1.2 — Expression Results
+  (IO, Ring 4)`.
+- **IOD-2.** Rewrite `pure_string_unwraps_inline`.
+- **IOD-3.** Rewrite `repl_bind_pure_lambda_no_double_free`'s assertion and
+  keep its input, which is the S61 capture-return guard.
+- **Defect line.** Each cell carries a `// defect:` line with
+  `locus=src/pipeline.rs::program_outcome_to_result found=S122 owner=/dev`.
+  QA supplies the class token (see the open item). Do not commit until it
+  is present.
+- **§10.6.2 citations.** After `spec` lands its edit, run
+  `tests/plan/spec_link_check.py` and re-point any `§10.6.2` citation whose
+  anchor or retained prose no longer supports it. That covers the header
+  line 22 and the section comment above the cells.
+
+**Coupled assertions are not display authority.** These sites pin
+the inner-only display for an `IO`-typed REPL result. They stay unchanged now,
+because turning them RED would repeat IOD-1 to IOD-3 without discriminating
+anything more. `test` updates them in the correction's change-set,
+sequenced by `sprint` immediately after `dev`:
+
+- `tests/spec_10_io.rs`: `pure_int_unwraps_inline`, `pure_bool_unwraps_inline`,
+  `bind_pure_to_pure_plus_one`, `bind_identity_continuation`,
+  `bind_nested_chain`, `bind_triple_chain`, `bind_named_defn_continuation` and
+  `bind_polymorphic_inference`. Assert the envelope, and replace the
+  `unwraps` names.
+- `tests/helpers/e2e.rs::parse_repl_int`: the REPL legs of every
+  `run_through_all_modes` caller, 13 files, evaluate an `IO`-typed
+  `(main)`. The parser must read the inner `Int` from the envelope. Update its
+  doc comments, which describe a `:primitives/Int N` echo.
+- `tests/same_form_rebinding.rs::parse_repl_int`, with the same change.
+- Literal `(main)` echoes: `shadowing_scope_lookup.rs` (two),
+  `spec_03_types.rs` (one), `regression.rs` (one) and
+  `spec_07_traits.rs::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches`.
+  `stdlib_conformance.rs` `(main)` sites are within the correction-time
+  census.
+- Excluded: `pure_pattern_accepted` has an `Int` result and remains the
+  FIXME 0907 guard.
+
+**Correction-time classification rule.** A RED is a display
+expectation update only when its failing assertion is the echo of an
+`IO`-typed REPL result, and the type argument and value are identical to
+the prior `:T v`. Every other RED is a regression. `test` reports the census it
+applied.
+
+**Limits:**
+
+- No allocator cell: a formatting-only correction constructs and releases
+  nothing. If the correction adds a heap construction or release on the
+  display path, QA reassesses, and `dev` owns the module witness.
+- No `--link` cell: nothing is displayed there.
+
+**Spec-side annotation, which QA applies only after reading executed
+evidence:**
+
+- **When `spec` releases the files:**
+  - The §1.2 Ring 4 `IO` line gets `[S122 — tests/spec_10_io.rs::<IOD-1>,
+    <IOD-2>, <IOD-3> RED]`.
+  - The §1.2 heading drops from `[Tested]` to its lowest child.
+  - §10.6.2 carries `spec`'s invalidation; QA re-evaluates it against the
+    retained prose.
+- **After a verified correction:**
+  - The Ring 4 line becomes
+    `[Tested+Neg tests/spec_10_io.rs::<IOD-1>, …<IOD-3>]`. IOD-1's absence
+    assertion is the negative.
+  - The §1.2 heading returns to `[Tested]`.
+  - The `IO` row of §12.9.1 gains the same citation.
+
+**Open items**, for `sprint` to route:
+
+- The head-spelling question goes to `spec` and the user.
+- The `// defect:` class needs a QA vocabulary addition to
+  `tests/CLAUDE.md`, proposed as `requirement-conflict`. That file is outside
+  this dispatch's write scope.
+- `design`(int) must mark `io-integration.md` §3 item 2 as ruled and open.
+
+**Execution (2026-09-25).** Test Opus5.5/high
+`07ea9aa7-e6eb-4249-af21-ca6a9985477f` replaced the three allocated assertions.
+Two foreground `cargo nextest run --no-fail-fast --test spec_10_io` runs each
+report69 run,66PASS/3FAIL, no skips. IOD-1 observes `:primitives/Int 42`,
+IOD-2 `:primitives/String "hello"`, IOD-3 `:primitives/Int 42`; all fail on
+inner-only display. No other cell changed result. The QA-proposed
+requirement-conflict vocabulary row is installed; source attribution remains
+provisional. Root applied the allocated RED annotation with the replacement
+names and removed the obsolete test-name citation from language§10.6.2's
+cleared coverage. No production correction or new coverage acceptance is
+claimed; type-head spelling remains outside the guards' discrimination.

@@ -1111,8 +1111,8 @@ Callers are responsible for ensuring the `Module` they pass can resolve `__crane
 ### Why uniform
 
 1. **Principle 7 (single source of truth)**: one CLIF emission path for every GOT reference. No possibility of JIT-path and object-path IR drifting.
-2. **Principle 11 (single pipeline, mode parameters)**: the difference between JIT and object is a mode-appropriate `Module` impl, not a fork inside the backend. Decision 22 in `design/arch/CLAUDE.md` recorded this after the dual-wrapper / crate-private-core design was rejected.
-3. **No behaviour-carrying parameters**: §2.1's 4-parameter signature stays data-only. No trait object, no env, no runtime dispatch on mode.
+2. **Principle 11 (single pipeline, mode parameters)**: the difference between JIT and object is a mode-appropriate `Module` impl, not a fork inside the backend. Decision 23 in the [label index](../arch/decisions/README.md) records this after the dual-wrapper / crate-private-core design was rejected.
+3. **No behaviour-carrying parameters**: this document's [exact signature](#21-exact-signature) stays data-only. No trait object, no env, no runtime dispatch on mode.
 4. **Testability (Principle 5)**: a fake `Module` or fake `symbol_lookup_fn` is all a test needs to exercise GOT emission — no environment scaffolding per-mode.
 
 ## 13. Migration Steps
@@ -1278,7 +1278,7 @@ If a name resolves to a non-`Def` variant (`Import`, `Constructor`, `Macro`, `Ty
 
 ### 16.5 GOT emission is uniform (§2.4, §12) — no mode fork
 
-The signature change touches **what** to compile. Mode handling — **how** GOT base addresses materialise — is uniform across JIT and object modes per Decision 23 (`design/arch/CLAUDE.md`) and §12 of this document. The backend emits the same CLIF for every GOT reference (`global_value` against a `Linkage::Import` data symbol named `__cranelisp_got_{module}`); mode differences live entirely in the `Module` implementation at finalize time. Earlier drafts of this doc described a `CompilationEnv` fork that has since been withdrawn.
+The signature change touches **what** to compile. Mode handling — **how** GOT base addresses materialise — is uniform across JIT and object modes per Decision 23 ([label index](../arch/decisions/README.md)) and [GOT reference emission](#12-got-reference-emission). The backend emits the same CLIF for every GOT reference (`global_value` against a `Linkage::Import` data symbol named `__cranelisp_got_{module}`); mode differences live entirely in the `Module` implementation at finalize time. Earlier drafts of this doc described a `CompilationEnv` fork that has since been withdrawn.
 
 ### 16.6 Deletions (Wave 1 — backend side)
 

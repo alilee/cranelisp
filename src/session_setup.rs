@@ -350,7 +350,7 @@ fn render_scaffold_contents(env_lib: Option<&str>) -> String {
 /// caller (the REPL §0.5-rule-3 path only) renders the `[created …]` notice
 /// from an `Ok(true)` return.
 ///
-/// Invariants (per `design/int/cranelisp-toml.md §12.3`):
+/// Invariants (per `design/int/cranelisp-toml.md §4`):
 /// - **Never overwrite** — the exists-check is the first statement; an existing
 ///   file (any content) is left verbatim. Idempotent.
 /// - **Never write outside the resolved project root** — a single

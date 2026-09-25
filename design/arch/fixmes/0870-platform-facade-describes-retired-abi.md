@@ -4,32 +4,46 @@ target: /dev
 filed_by: /sprint
 filed_at: 2026-07-25
 sprint_filed: 118
-refers_to: https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md §R1;
+refers_to: crates/cranelisp-platform/src/lib.rs;
   crates/cranelisp-platform/src/concurrency.rs;
   crates/cranelisp-platform/src/poll_support.rs;
   crates/cranelisp-platform/src/declare.rs;
-  crates/cranelisp-platform/src/lib.rs;
+  crates/cranelisp-platform/src/tests.rs;
   crates/cranelisp-platform/CLAUDE.md
 status: open
 ---
 
-# Platform source facade describes retired architectures (audit R1)
+# Platform facade rustdoc describes a retired ABI — repaired except two test comments
 
-Crate in scope: `cranelisp-platform`.
+Crate in scope: `cranelisp-platform`. Documentation repair only; no API
+change is authorised. The originating recommendation is the S117 platform
+audit's R1, accepted by the user at S118 Phase 1; the audit report is in Git
+history.
 
-User-accepted S117 platform-audit recommendation R1 (2026-07-25, S118 Phase 1).
-Quoting the assessment:
+## Current state (verified 2026-09-25)
 
-> All crate-root and module rustdoc describes ABI v9, core/ungated poll
-> support, layout-hash validation, and the permanently two-field
-> `HostCallbacks`. The retired closure-callback promise is absent. The local
-> memory no longer needs a "known stale phrasing" warning. Add a narrow
-> source-text/doc guard only if the owner judges version drift likely to
-> recur; do not add another manually maintained surface inventory.
+The crate-root and module rustdoc now match the source:
 
-Evidence rows in the audit cite `concurrency.rs:4,21`, `poll_support.rs:1`,
-`declare.rs:132-135`, `lib.rs:16-19,585-595,893-898`, and `CLAUDE.md:142-145`,
-each contradicted by `lib.rs:298` and `bounded-contexts.md:567-568,597-599`.
+- `ABI_VERSION` is 11, and `concurrency.rs` states the host-reactor types are
+  core (ungated) at that version;
+- `poll_support.rs` describes the core, ungated poll-leaf suite;
+- schema validation is the layout-hash gate (`declare.rs`);
+- `HostCallbacks` is documented under "Current shape (ABI v11)" as permanently
+  two fields, `alloc` and `alloc_with_tag`, with the former
+  `validate_schema` channel removed;
+- the crate memory carries no stale-phrasing warning.
 
-Cost: small. Scheduled: S118 platform slice (with 0873/0874). Documentation
-repair only — no semantic API delta is authorized.
+The version history in the `ABI_VERSION` rustdoc is a bump log, not a stale
+claim.
+
+## Remaining obligation (`dev`, platform)
+
+Two unit-test comments in `crates/cranelisp-platform/src/tests.rs` still
+describe the current shape as ABI v3: the `HostCallbacks::alloc` spec comment
+cites the rustdoc section as `§"Current shape (ABI v3)"`, and the T27 comment
+calls the two-field struct "ABI v3". Re-point both to the current section and
+version.
+
+## Closure
+
+Both comments are corrected; `dev` deletes this filing.

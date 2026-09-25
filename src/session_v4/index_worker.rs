@@ -18,14 +18,9 @@
 // "typecheck-into-live then REMOVE the residue (R13)" model). The feed's
 // primary output is the in-memory `importable_indices` rows.
 //
-// The DISK cache half (the §25.5 index→import `.meta` cache-hit) is NOT yet
-// severed: branch (c) still writes a benign `.meta` + manifest entry. Its
-// retirement is proposed by `index-worker-isolation.md` §3.3 but is DEFERRED —
-// it (a) does NOT fix the FIXME-0604 phantom (the index feed is inert under the
-// `--run` recipe; the writer is FOREGROUND — re-scoped, see 0604's S110
-// disposition) and (b) breaks the committed §25.5 e2e pins in `tests/search.rs`,
-// so the §25.5 retirement must be a /design-coordinated wave (agent.md §25 +
-// /qa test updates), not a unilateral /dev severance (FIXME 0626).
+// Branch (c) writes a `.meta` and manifest entry for later import reuse.
+// This is the tolerated interim in `index-worker-isolation.md` §3.3;
+// that section owns the reopen trigger and required evidence.
 //
 // The three per-module branches (§25.1):
 //   (a) module present in the scheduler ModuleState registry  -> read its rows
@@ -1036,11 +1031,9 @@ fn index_branch_c(
 /// index typechecked and, like every writer's, its dependency closure
 /// (`design/int/int.md` §7.6).
 ///
-/// (This benign-`.meta` write is the §25.5 index→import cache-hit optimization.
-/// Its retirement is proposed by `index-worker-isolation.md` §3.3 but is NOT
-/// landed here — it re-scopes with FIXME 0604; see that FIXME's S110 disposition.
-/// The in-memory isolation the contract ratifies IS in place: the typecheck runs
-/// against `checked_typecheck_module`'s private snapshot, never live.)
+/// This disk write is the tolerated interim in
+/// `design/int/index-worker-isolation.md` §3.3. Typechecking uses a private
+/// snapshot; that section owns the disk-write reopen trigger.
 fn write_index_meta(
     shared: &SharedState,
     module: &ModuleFullPath,
