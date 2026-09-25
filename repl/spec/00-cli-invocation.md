@@ -152,7 +152,7 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
 | `cranelisp app` (both `app.cl` and `app/` exist) | cwd | `app` | **File wins** — entry is `app.cl`; `app/` holds submodules |
 | `cranelisp dir/mymod` | `dir/` | `mymod` | Directory component present |
 | `cranelisp ./mymod` | cwd | `mymod` | Explicit cwd via `./` |
-| `cranelisp ../other/app` | `../other/` | `app` | Relative parent path |
+| `cranelisp ../other/app` | `../other/` | `app` | Relative parent path | <!-- doc-check: literal reason="Hypothetical CLI paths" -->
 | `cranelisp --run` | cwd | `user` | Run mode, default target |
 | `cranelisp --run mymod` | cwd | `mymod` | Run mode with target |
 | `cranelisp --run dir/mymod` | `dir/` | `mymod` | Run mode with path |

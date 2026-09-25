@@ -1,7 +1,7 @@
 //! Ring 0 inline-substitution table — a name-keyed dispatch optimisation.
 //!
-//! Per Decision 43 + `design/arch/facades/backend.md` §"Non-goals / forbidden
-//! patterns": this file holds ONLY the name-keyed inline-Cranelift-IR emission
+//! Per Decision 43 (forbidden pattern: no trait knowledge, one dispatch path —
+//! `crates/cranelisp-backend/CLAUDE.md`): this file holds ONLY the name-keyed inline-Cranelift-IR emission
 //! table for the Ring 0 primitives. It is **not** a dispatch path — the
 //! dispatch path is the standard `compile_direct_call` keyed entry fetch
 //! (`entry_at` → `callable_got_slot()`) -> GOT-indirect call that every user
@@ -51,7 +51,7 @@ use cranelisp_types::{CranelispError, ErrorLocation, Span};
 /// All values are i64 at the Cranelift boundary; floats are bitcast to/from
 /// i64 as needed.
 ///
-/// Forbidden-patterns clause (`facades/backend.md`): callers MUST handle the
+/// Forbidden-patterns clause (Decision 43): callers MUST handle the
 /// `None` case by falling through to GOT-indirect dispatch — they MUST NOT
 /// raise an error on `None`. Returning an error on `None` would re-introduce
 /// the name-keyed dispatch-only shape that this rename eliminated.

@@ -169,7 +169,7 @@ these streams, not separate ticket-shaped waves.
 | Typecheck | 0762, 0776, 0777, 0779, 0794, 0799, 0869, 0913, 0924, 0929, 0935 |
 | Backend | 0747, 0781, 0782, 0891, 0900, 0903, 0906, 0907, 0915, 0916, 0917 |
 | Types / public contracts | 0931, ACT-0954 |
-| Intrinsics | 0835, 0848, 0857, 0928, 0934, ACT-0956 |
+| Intrinsics | 0835, 0848, 0857, 0934, ACT-0956; 0928 rustdoc remainder in `design/runtime/s119-typed-consume-funnel.md` §9 |
 | Primitives | 0859, 0932, 0936 |
 | Platform | 0870, 0871, 0873, 0874 |
 | Language-facing closure | 0815, 0841 (0821/0823 closed: examples-local library ruling established) |
@@ -4139,3 +4139,115 @@ The affected nextest filter reports3run/3expected failures, still inner-only
 display. QA accepts the filtered evidence because only those three cells call
 the changed helper; bare-head rejection is structural in its literal regex.
 No coverage is marked green and production display remains uncorrected.
+
+Checkpoint `eac3c1be` commits the standing-document consolidation and IO
+qualification ruling. The user directs continuation within Phase5. Finding0917
+is now retired: its final annotation/comment obligations are committed; the
+separate QA residue-threshold obligation remains in PLAN.
+
+The next document-only batch starts from34 findings. Claude Opus5.5/high design
+sessions: frontend `a97392f1-8ec2-4a35-96d2-e0db3e3e733a`, typecheck
+`e34efdb9-a3fe-4e48-94e4-d555485a7924`, intrinsics/runtime pair
+`de45be2e-b50c-45d7-90bf-dac2690a83d6`. Their writable design surfaces are
+disjoint; historical crate plans are read-only assessment inputs. No source
+change, runtime test or new behavior is allocated.
+
+Runtime design pass completed: all five allocated findings repaired, one
+superseded S117 design retired, current contracts preserved. Finding0928's
+rulings are recorded, so its filing is retired; the missing debug-only Drop
+rustdoc remains explicit in the current consume-funnel design §9.
+Arch Opus5.5/high `bd34daf8-9e54-492d-aa63-75f132e03095` now assesses the
+implicit-reference false positives read-only across the shared checker and
+consumer conventions. No shared-package edit or exception is authorized by
+that assessment.
+
+Frontend and typecheck design passes completed. Their superseded Ring0 plans
+are retired after checking canonical coverage; frontend's retained annotation
+design has a subject-based filename and repaired declaration/incoming link.
+Qualified-symbol examples remain unchanged where the checker misclassifies
+them. The runtime/frontend/typecheck batch resolves13 of the original34
+identities after integration. Current auto-curry and settlement-window counts
+are reflected in filing0776 without deciding its proposed general policy.
+Dev(backend) Opus5.5/high `b658a038-0a2f-4da7-afa6-3cea74ea5477` owns backend
+memory/plan and comment-only ACT-0964 repairs; training
+`b8314ed9-ea42-4354-9ba3-739d12fcb0df` owns examples Markdown. Arch's checker
+assessment continues read-only. No runtime runner is active.
+
+Training retained and streamlined both examples documents; root applied their
+explicit declarations. Test Opus5.5/high `6bb8a074-2b14-45d0-b85a-189470797db6`
+owns the remaining REPL Markdown, and docs `006f5e90-40f8-4ff6-8e7e-4f48789bf80c`
+owns the user-guide findings. Backend remains the sole source-comment writer.
+
+Arch's checker assessment proposes a shared bare-name extraction correction
+(R1) with explicit detection tradeoff, plus optional duplicate deduplication.
+The package remains untouched. Root's read-only sibling follow-up found Magic's
+legacy declaration/exemption format and no feedback-dev standing declaration;
+no fully migrated three-consumer result is claimed. Exact exceptions for the
+ambiguous dotted-name and illustrative relative-directory examples have been presented
+to the user under the standing contract's explicit exception gate. None is
+applied pending that answer.
+
+Docs and REPL-document passes completed. The nonexistent tutorial promise is
+removed; ACT-0951 still owns the unspecified /learn feature. Redefinition links
+now target their real spec section, although the checker misassociates a section
+marker inside a link label with the preceding document. This is an additional
+shared-checker extraction defect, not a remaining broken guide citation.
+Three old REPL reports are retired after extracting their open obligations
+into demo guidance; the Haiku baseline and ACT-0960 are unchanged. Root corrects
+the demo memory's declared owner to test. Its one obsolete demo-script comment
+will be removed after the backend source-comment writer finishes.
+
+Integrated continuation outcome after checkpoint eac3c1be: checker34→12,
+22 baseline identities resolved and zero new identities. Remaining findings
+are eight qualified-name extraction false positives, one section-marker/link
+misassociation, and three findings on the two ambiguous example spellings
+presented for user approval. No exception or baseline has been applied. The
+shared-tool corrections remain proposed, not installed; the current package
+and sibling repositories are unchanged.
+
+The active Markdown surface loses approximately27,600 net words in this
+continuation, including the new frontend design filename in the calculation.
+The three Ring0 crate plans, S117 runtime design, three old REPL records and
+completed filings0917/0928 are retired with unresolved obligations retained in
+current designs/plans. Backend ACT-0964 item3 is complete; items1/2 stay open.
+The demo's citation to its retired verification record is removed.
+
+Verification: `.local/s122-doc-third-final.json`; `git diff --check` clean;
+16 backend Rust files have identical non-comment tokens and comment-only diff
+lines, independently rerun by root. The demo diff removes comments only.
+Backend's format check passed; no runtime tests were needed or run in this
+document/comment continuation. NOTES.md retains its original hash; the index
+is clean. All dispatched roles completed successfully. Changes after eac3c1be
+remain uncommitted, including the new
+`design/frontend/annotation-and-declaration-shape.md`, which must be added
+alongside its old-path deletion at the next checkpoint. Phase5 continues; no
+push or phase advancement.
+
+The user approved a trailing, physical-line-scoped HTML annotation for the
+binder design's illustrative symbols and the CLI table's hypothetical paths:
+`doc-check: literal` with a required reason. It excludes implicit path detection
+on that line while preserving explicit Markdown-link and establishment checks.
+Central reference exceptions are not the selected solution. Shared checker
+implementation and regression evidence are being prepared in an isolated copy
+by dev, Claude Opus5.5/high, session
+`1e439b95-e413-4985-b874-722dbc8b0ed4`; the independently moved package checkpoint
+is preserved. The bare-name heuristic and section-marker fix remain separate
+proposals, not approved implementation in this annotation change.
+
+Line annotations are implemented and integrated in the shared package working
+tree; its existing eda9132 checkpoint is unchanged. Only the two approved
+example lines are annotated. Dev's broader diagnostic overlay is not the
+integrated scope. Independent review, Claude Opus5.5/high session
+`f0bb77ab-83aa-4eb5-bf6e-ec9f7465f479`, accepts the change and confirms table
+rendering. Integrated verification: 27 shared unit tests and 21 consumer CLI
+acceptance tests pass; the ordinary checker reports 12→9 findings, three
+removed identities and none added. Explicit-link, adjacent-line and orphan
+checks remain active. Evidence: `.local/s122-literal-final.json` and
+`.local/s122-literal-review-result.md`. No compiler runtime behavior changed;
+the known-red citation-drift gate is not claimed green.
+
+Review's low-risk advisory remains: an HTML-comment terminator inside a reason
+is accepted and would prematurely close the rendered comment. The two applied
+reasons contain no such terminator. A cosmetic contract reflow advisory is also
+unresolved. Package changes and consumer changes are uncommitted; no push or
+phase transition occurred. NOTES.md is unchanged.

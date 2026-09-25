@@ -318,13 +318,11 @@ where
 
     /// Wrap a Ring 0 primitive as a zero-capture closure for operator-as-value.
     ///
-    /// Per FIXME 0183 + `facades/backend.md` §"REV-5 audit": the wrapper
-    /// function `(env_ptr, a, b) -> i64` resolves the primitive through the
-    /// standard GOT-indirect path — `resolve_got_target` for the primitive
-    /// name yields `(primitives, slot)`, then emit `global_value` against
-    /// `__cranelisp_got_primitives` + `load(slab_base + slot * 8)` + `call_indirect`.
-    /// The closure shape is unchanged; only the load mechanism shifts from
-    /// pre-D43 `Linkage::Import` + extern-name to the uniform dispatch path.
+    /// Per FIXME 0183: the wrapper function `(env_ptr, a, b) -> i64` calls the
+    /// primitive through the standard GOT-indirect path — a direct keyed
+    /// `got_entry_at` fetch in `primitives` yields `(primitives, slot)`, then
+    /// emit `global_value` against `__cranelisp_got_primitives` +
+    /// `load(slab_base + slot * 8)` + `call_indirect`.
     fn compile_operator_as_value(
         &mut self,
         primitive_name: &str,

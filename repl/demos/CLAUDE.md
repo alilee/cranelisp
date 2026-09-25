@@ -1,6 +1,8 @@
 # REPL Demo Scripts
 
-Owned by `/repl`. A curated set of demos that showcase **the language**, played
+Owned by `test`: the `.demo` scripts, `demo-player.py` and `../showcase`. The
+REPL behaviour they display is specified by the [REPL specification](../spec.md),
+owned by `spec`. A curated set of demos that showcase **the language**, played
 live through the REPL.
 
 ## Purpose
@@ -46,6 +48,13 @@ The language arc deliberately ends at `08-sudoku.demo`, which reuses every conce
 the prior demos introduced. The demos after it showcase the development *workflow*
 around that language — library discovery, live redefinition.
 
+Known-defect output in the active set stays visible and attributed. The
+`def` echoes in `08-sudoku.demo` show the singular definition result that
+[FIXME 0800](../../design/arch/fixmes/0800-def-macro-expansion-leaks-internal-thunk-name-and-blocks-call.md)
+records as non-conformant. Do not filter, respell or narrate them as intended
+output. Do not add a segment that triggers a known defect merely to show
+recovery from it; the permanent e2e guards carry that evidence.
+
 ## Under-the-hood demo (not part of the guided arc)
 
 `optimization.demo` (un-numbered, so it sorts *after* the numbered arc in `--list`)
@@ -55,11 +64,14 @@ does today (loop scalars → registers, single-field ADTs → words, mutate-in-p
 borrow-elision, escape→stack) and where it stops (multi-field aggregates never
 register-promote; gate 3 declines the stack path in loops; heap-field and Vec
 locals stay on the heap). It is deliberately outside the "demonstrate the language,
-not the changelog" arc — its subject is the IR, not a language feature — and its
-narration is verified line-by-line against emitted CLIF in
-`optimization-clif-verification.md`. Replay: `DEMO_FAST=1 ./repl/showcase optimization`.
-It uses bare `primitives` (like the perf fixtures) rather than the curated surface,
-so each function's IR isolates one optimization.
+not the changelog" arc — its subject is the IR, not a language feature. Each
+step's narration sits beside the `/clif` output it describes, so replay is the
+verification: read every narrated IR claim against the output above it. A
+mismatch is a narration fix when the IR change was intended and a defect
+otherwise; route an unexplained change to `qa` intake. Replay:
+`DEMO_FAST=1 ./repl/showcase optimization`. It uses bare `primitives` (like the
+perf fixtures) rather than the curated surface, so each function's IR isolates
+one optimization.
 
 `memory-lifecycle.demo` (un-numbered, sorts after the numbered arc) is a
 runtime-behaviour demo, not a language-capability one: its subject is the
@@ -239,5 +251,14 @@ git-ignored.
 The REPL loads `stdlib/prelude.cl` at startup, providing the core traits, the
 common types, the operators, and the standard macros. If a change breaks prelude
 loading, operators fail with unresolved-trait errors. The fix belongs in the
-compiler pipeline (`/int` / `/qa`), not in the demos — file a FIXME, do not add
+compiler pipeline, not in the demos — route it to `qa` defect intake; do not add
 inline trait boilerplate as a workaround.
+
+## The embedded agent
+
+The showcase has no agent demo: the agent exists only in a `--features agent`
+build, and its probe traffic is deliberately not echoed into the session
+([§17.2.1](../spec/17-embedded-agent.md)). Its deterministic evidence is the
+agent lane and its live-model quality evidence is the eval runner, both in
+[tests/CLAUDE.md](../../tests/CLAUDE.md#the-agent-lane---features-agent--isolated-target-dir).
+`/syntax`, which the agent also pulls, is shown in `01-tour.demo`.

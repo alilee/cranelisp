@@ -249,8 +249,9 @@ slot move is a stale-call or use-after-free defect class.
 
 - **Dispatch settlement queues** (`pending_auto_curry`, `deferred_auto_curry`,
   `pending_overload_resolutions`, `deferred_self_call_dispatch`) stay explicit.
-  Their drains differ: candidate work is body-local; auto-curry has a deferrable
-  pre-settlement drain and one settled retry; top-level overload work survives
+  Their drains differ: candidate work is body-local; auto-curry drains deferrably
+  in source bodies, finally in isolated rechecks, and has one settled retry
+  (`auto-curry.md` §1.2); top-level overload work survives
   to the sole global drain while mono rechecks drain only their own; deferred
   self-call dispatch is an internal phase of overload settlement. A field bag
   would add a name without preventing an illegal drain order. An aggregate is

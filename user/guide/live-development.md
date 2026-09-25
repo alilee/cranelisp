@@ -3,7 +3,7 @@
 The REPL keeps the latest **successful** definition of each name. You can edit a
 function while callers are already loaded; the result depends on whether its
 language type changes. The complete contract, including the exceptional forms,
-is [`repl/spec.md §18`](../../repl/spec.md).
+is [`repl/spec.md §18`](../../repl/spec/18-redefinition.md).
 
 ## Edit a body without changing its type
 
@@ -92,13 +92,13 @@ A successful repair clears the block. The requirement is
 implementation currently uses a zero-argument `name-def` function together with
 a zero-argument macro named `name`: bare `name` expands to `(name-def)` each
 time, while `(name ...)` with arguments is parsed as a macro call and currently
-fails its zero-argument clause. Whether a function obtained through `def`
-supports direct application is an explicitly deferred API decision for a future
-sprint; no workaround or new calling contract is selected here. See
+fails its zero-argument clause. Whether a function obtained through `def` can be
+applied directly is not yet decided, so this guide offers no workaround; the open
+question is tracked in
 [FIXME 0800](../../design/arch/fixmes/0800-def-macro-expansion-leaks-internal-thunk-name-and-blocks-call.md).
 
 ## See also
 
 - [`getting-started.md`](../getting-started.md) — opening and using the REPL.
 - [`guide/traits.md`](traits.md) — traits, defaults, and implementations.
-- [`repl/spec.md §18`](../../repl/spec.md) — the normative redefinition rules.
+- [`repl/spec.md §18`](../../repl/spec/18-redefinition.md) — the normative redefinition rules.

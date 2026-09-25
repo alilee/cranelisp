@@ -2,7 +2,7 @@
 
 use crate::test_support::*;
 
-// spec: facades/backend.md §"Free functions" — produce_disasm reads the
+// spec: design/backend/compile-to-module.md §11 — produce_disasm reads the
 // live GOT-slot code pointer, reads caller-supplied `code_size` bytes, and
 // capstone-disassembles them (S75 W3 Finding-C — real body, not a stub).
 #[test]
@@ -62,7 +62,7 @@ fn produce_disasm_returns_nonempty_for_jit_compiled_fn() {
     );
 }
 
-// spec: design/arch/facades/backend.md — `capture_clif` flag (FIXME 0325)
+// spec: design/backend/compile-to-module.md §8 — `capture_clif` flag (FIXME 0325)
 //
 // The `capture_clif: bool` parameter (FIXME 0325) gates whether
 // `compile_to_module` populates `CompilationArtifacts.clif_ir` with the

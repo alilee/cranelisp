@@ -1419,7 +1419,7 @@ fn decision_36_function_linkage_is_local_uniformly() {
 }
 
 // spec: design/arch/CLAUDE.md Decision 23 (updated) — `__cranelisp_got_{M}`
-// is defined as Linkage::Export data with `slot_count * 8` bytes inside
+// is defined as Linkage::Export data of at least `GOT_TABLE_SIZE` slots inside
 // the .o emitted by compile_to_module<ObjectModule>.
 #[test]
 fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
@@ -1509,7 +1509,7 @@ fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
 }
 
 // spec: design/arch/CLAUDE.md Decision 23 — JIT-mode GOT-data definition
-// remains the integration layer's responsibility (`Jit::define_got_data`).
+// lives outside compile_to_module (`Jit::new`'s symbol binding).
 // compile_to_module<JITModule>'s `define_module_got_data` is a no-op and
 // does NOT redundantly declare/define the symbol on the JIT module.
 #[test]

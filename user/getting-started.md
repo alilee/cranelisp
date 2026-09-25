@@ -1,10 +1,9 @@
 # Getting started
 
-> **Stub.** This page covers the essentials — building the binary, opening the
-> REPL, running your first program, and where to find the showcase. The
-> progressive tutorial lives under `user/tutorial/` (not yet authored — see
-> [Where to go next](#where-to-go-next)). For the full command line see
-> [`cli-reference.md`](cli-reference.md).
+This page covers the essentials: building the binary, opening the REPL, running
+your first program, platforms and automatic parallelism. [Where to go
+next](#where-to-go-next) points to the learning sequence, the showcase and the
+feature guides. For the full command line see [`cli-reference.md`](cli-reference.md).
 
 ## Build the binary
 
@@ -210,6 +209,8 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
 
 ## Where to go next
 
+- [`examples/`](../examples/) — the numbered learning sequence, starting at
+  `01-integers`. Work through it in order.
 - **The showcase — Sudoku solver.** The [`exemplar/`](../exemplar/) project is the
   headline program: it parses a puzzle, solves it, and renders the solution as both
   ASCII and HTML, exercising ADTs, traits, modules, and IO together. It needs the
@@ -220,37 +221,41 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
     cranelisp exemplar/user.cl --run
   ```
 
-- [`examples/`](../examples/) — the numbered learning sequence, from
-  `01-integers` through `30-parallel-map-reduce`. Work through it in order.
+- **Guide** — feature-by-feature pages:
+  - [`guide/live-development.md`](guide/live-development.md) — redefining
+    functions in a live session: late binding and guarded type changes.
+  - [`guide/functions.md`](guide/functions.md) — `fn` is single-arity; multi-arity
+    `defn` and how its clauses infer like separate mutually-recursive functions.
+  - [`guide/constructors.md`](guide/constructors.md) — `Type.Ctor` constructors, the
+    bare-name alias, and disambiguating two types that share a constructor name, in
+    value and pattern position.
+  - [`guide/field-accessors.md`](guide/field-accessors.md) — `Type.field` accessors
+    and the bare-name alias.
+  - [`guide/traits.md`](guide/traits.md) — declaring and implementing traits,
+    default methods, return-type dispatch, higher-kinded traits and importing
+    trait methods.
+  - [`guide/bitwise.md`](guide/bitwise.md) — bit-level arithmetic and the
+    `num.bits` module.
+  - [`guide/parallel-collections.md`](guide/parallel-collections.md) — `par-map`,
+    `par-reduce`, `par-map-reduce`.
+  - [`guide/concurrency.md`](guide/concurrency.md) — the two-halves concurrency
+    model: inferred fan-out plus the `sleep`/`race`/`select`/`timeout` control
+    combinators.
+  - [`guide/using-platforms.md`](guide/using-platforms.md) — consuming a platform:
+    the `(platform <name>)` + `(import [platform.<name> [*]])` two-step and the
+    `platform.<name>` naming.
+  - [`guide/writing-platforms.md`](guide/writing-platforms.md) — authoring a
+    platform DLL: poll-shape effect leaves, the poll-in / wake-out reactor
+    boundary, the handle model.
+- **Errors** — [`errors/trait-impl-diagnostics.md`](errors/trait-impl-diagnostics.md)
+  explains the diagnostics for traits, impls, method dispatch and definition
+  binders, with the fix each one names.
+- [`syntax-cheatsheet-plan.md`](syntax-cheatsheet-plan.md) — the `/syntax`
+  command for recalling a language form at the REPL, and reader annotations for
+  macro authors.
 - [`cli-reference.md`](cli-reference.md) — every command-line mode and option, how
   the entry-module target is resolved, how the lib search path / `Cranelisp.toml`
   works, and the `/search` command for finding an importable function.
-- **Guide** — feature-by-feature pages:
-  [`guide/live-development.md`](guide/live-development.md) (redefining functions
-  in a live session: late binding and guarded type changes),
-  [`guide/bitwise.md`](guide/bitwise.md)
-  (bit-level arithmetic and the `num.bits` module),
-  [`guide/field-accessors.md`](guide/field-accessors.md) (`Type.field` accessors and
-  the bare-name alias),
-  [`guide/constructors.md`](guide/constructors.md) (`Type.Ctor` constructors, the
-  bare-name alias, and disambiguating two types that share a constructor name — in
-  value and pattern position),
-  [`guide/functions.md`](guide/functions.md) (`fn` is single-arity; multi-arity
-  `defn` and how its clauses infer like separate mutually-recursive functions),
-  [`guide/parallel-collections.md`](guide/parallel-collections.md) (`par-map`,
-  `par-reduce`, `par-map-reduce`),
-  [`guide/concurrency.md`](guide/concurrency.md) (the two-halves concurrency model:
-  inferred fan-out + the `sleep`/`race`/`select`/`timeout` control combinators),
-  [`guide/using-platforms.md`](guide/using-platforms.md) (consuming a platform:
-  the `(platform <name>)` + `(import [platform.<name> [*]])` two-step and the
-  `platform.<name>` naming), and
-  [`guide/writing-platforms.md`](guide/writing-platforms.md) (authoring a platform
-  DLL: poll-shape effect leaves, the poll-in / wake-out reactor boundary, the
-  handle model).
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display
   formats, slash commands, errors, caching.
 - [`spec/`](../spec/) — the language specification.
-- **Progressive tutorial (forthcoming).** A guided `/learn` tutorial is planned: an
-  in-REPL, step-by-step introduction that parallels the `examples/` sequence and
-  will be published under `user/tutorial/`. It is not yet authored — until then, the
-  numbered examples and the Sudoku showcase are the recommended learning path.

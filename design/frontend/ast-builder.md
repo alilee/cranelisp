@@ -16,16 +16,18 @@ set of AST-entry chokepoints:
 
 | Entry | Shape | Driven by |
 |---|---|---|
-| `build_forms(&[Sexp]) -> Vec<TopLevel>` | the whole form sequence, with top-level `:Type` pairing | int's universal build path |
-| `build_form(&Sexp) -> Vec<ParsedEntry>` | one top-level form | int's persisted-source re-parse |
-| `build_expr(&Sexp) -> Expr` | one expression | the internal recursion primitive; no production direct caller |
-| `parse_type_expr(&str) -> TypeExpr` | one type-expression string | the platform loader (§4) |
+| `build_forms(&[Sexp]) -> Vec<TopLevel>` | the whole form sequence, including top-level annotated expressions | int's one form-build path (`src/worker.rs`) |
+| `build_form(&Sexp) -> Vec<ParsedEntry>` | one top-level form | test helpers only; production reaches the same dispatch through `build_forms` |
+| `build_expr(&Sexp) -> Expr` | one expression | the internal recursion primitive, and typecheck's §7.1 method-tail judgment |
+| `parse_type_expr(&str) -> TypeExpr` | one type-expression string | the platform loader, REPL `/search`, and typecheck's §7.1 method-tail judgment (§4) |
 
 `build_forms` and `build_form` are the two forms-entry chokepoints, and each
 desugars the reader-quote family as its first step so no caller can forget it
 (`quasiquote-fold.md` §1). `build_expr` does not fold: folding there would re-walk
 each subtree once per level of depth, so it trusts its input and keeps the
-surviving-quote-head backstop as the structural guard instead.
+surviving-quote-head backstop as the structural guard instead. Typecheck's
+direct calls are safe under that contract because the method tail it builds is a
+subtree of a form `build_forms` has already desugared.
 
 There is no batch-versus-REPL split at this boundary. One classifier decides what
 a top-level head is, and the policy difference — the REPL accepts a bare
@@ -78,10 +80,10 @@ each means an orchestration step was skipped:
 - **Bare expressions** — top-level forms have a defined vocabulary; anything else
   is either an already-peeled declaration or an expression for `build_expr`.
 
-The same rejection discipline covers the unexpanded-macro case: macro expansion
-must precede AST building, and an unexpanded macro call would otherwise become a
-silent generic application that fails much later with a confusing diagnostic. The
-rejection surfaces the missing step where it can still be attributed.
+Macro expansion is also a caller precondition, but the builder cannot enforce it:
+it consults no symbol table, so it cannot tell a macro call from a function call.
+An unexpanded macro call builds as an ordinary `Expr::Apply` and fails later in
+typecheck. Keeping expansion ahead of building is int's orchestration contract.
 
 ### 2.4 Clusters are the orchestrator's, not the builder's
 
@@ -141,20 +143,23 @@ other frontend parse. It returns `TypeExpr` (syntactic) and never `Type`
 (resolved): the int platform loader chains it into typecheck's resolution entry,
 which does the second half.
 
-Annotation consumption itself is `try_consume_annotation` over the read-time
-`Sexp::Annotated` node; `s116-syntax-and-annotation.md` §2 owns that judgment, and
-a run of stacked annotations on one binder is peeled as a run because `:` binds
-the immediately-following form.
+Annotations arrive already folded into `Sexp::Annotated` by the reader
+(`annotation-and-declaration-shape.md` §2). `build_expr` lowers the node to
+`Expr::Annotate`, building its annotation half through `build_type_expr`. In a
+parameter binder, a stacked run such as `:Eq :Display a` is peeled as one run
+because `:` binds the immediately following form. A run of length one stays the
+single `TypeExpr`, so typecheck can try type then trait resolution; a longer run
+can only be trait bounds and becomes `TypeExpr::Bounds`.
 
 ## 5. Operand positions and bodies
 
 Every single-body operand position — `let` body, impl-method body, trait-default
 body, `trace` operand — routes through one `build_body_to_end` seam, which pairs
-the annotation via `build_one_expr_at` and rejects any form left after the body.
-Multi-operand positions route through `build_args_with_annotations`. A raw
-`build_expr` call for a *body* silently drops annotation support and silently
-drops trailing forms, so the routing is the invariant, not a convention;
-`enforcement-matrices.md` §1 states it and the acceptance criterion.
+the body via `build_one_expr_at` and rejects any form left after it.
+Multi-operand positions route through `build_args_with_annotations`. A body built
+without that tail check silently drops trailing forms, so the routing is the
+invariant, not a convention; `enforcement-matrices.md` §1 states it and the
+acceptance criterion.
 
 ## 6. Docstrings
 
@@ -180,7 +185,7 @@ monomorphic type, a parenthesized head declares the complete type-parameter list
 and every field is written `:Type name`. A missing field type, or a field type
 variable the head does not declare, is a located error before any entry is
 emitted — so an invalid declaration can never half-register its type,
-constructors or accessors. `s116-syntax-and-annotation.md` §3.1 records the
+constructors or accessors. `annotation-and-declaration-shape.md` §3.1 records the
 enforcement design and §3.2 the constructor and field uniqueness rules.
 
 ## 8. Patterns
@@ -199,7 +204,7 @@ there is legal and splits; the binding symbols are binders and reject.
 
 - `design/arch/bounded-contexts.md` §1 — invariants 3, 9, 10.
 - `crates/cranelisp-types/src/parsed.rs` — `ParsedEntry` and its variants.
-- `design/frontend/s116-syntax-and-annotation.md` — annotation fold, `deftype` enforcement, the trait tail specified in [trait declarations](../../spec/07-traits.md#71-trait-declaration-testedneg-testsspec07traitsdeftraitdeclarationsucceeds-testsnondispatchabletraitmethod0709nondispatchablemethodrejectedatdeclarationwithoccurrencereason).
+- `design/frontend/annotation-and-declaration-shape.md` — annotation fold, `deftype` enforcement, the trait tail specified in [trait declarations](../../spec/07-traits.md#71-trait-declaration-testedneg-testsspec07traitsdeftraitdeclarationsucceeds-testsnondispatchabletraitmethod0709nondispatchablemethodrejectedatdeclarationwithoccurrencereason).
 - `design/frontend/binder-head-reject.md` — the binder reject and its sites.
 - `design/frontend/enforcement-matrices.md` — the body seam and the reader rejects.
 - `design/frontend/trait-impl-head-parse.md` — `deftrait`/`impl` head shape.

@@ -995,8 +995,8 @@ where
         // Inline Ring 0 primitive (arithmetic, comparison, boolean).
         // All operands are NeverHeap (Int/Bool/Float) — no dec work.
         //
-        // Per FIXME 0174 + `facades/backend.md` §"Non-goals / forbidden
-        // patterns": `try_emit_inline_primitive` returns `None` for
+        // Per FIXME 0174 + Decision 43's forbidden pattern:
+        // `try_emit_inline_primitive` returns `None` for
         // names outside the inline table — the caller MUST fall
         // through to the GOT-indirect path. `is_known_builtin` is
         // checked above so by this point the name IS in the table,
@@ -1936,7 +1936,7 @@ where
     ///   JIT:    `__cranelisp_got_{M}` registered via `JITBuilder::symbol()`
     ///           with `GotTable.base_ptr()`; lookup returns slab base directly.
     ///   Object: `__cranelisp_got_{M}` defined as `Linkage::Export` data
-    ///           sized `slot_count * 8` with function-address relocations at
+    ///           of at least `GOT_TABLE_SIZE` slots with function-address relocations at
     ///           each slot — the symbol's load address IS the slab base.
     ///
     /// Codegen (one indirection at the literal-pool / system-GOT layer):

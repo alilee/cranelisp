@@ -68,8 +68,7 @@ works. Record which you did, and why, in the report.
 
 ## The standing question
 
-The `training` contract asks it against the whole sequence every increment, not
-against the delta: coverage (what is unteachable from the sequence today?),
-order, nuance (does it teach boundaries, traps and negative space?), and
-readability as reading material. Answer it whether or not the brief asked, and
-keep `plan-examples.md` §4 current with the answer.
+Here the [`training` contract's](../.agents/skills/training/SKILL.md#the-standing-question)
+cadence is every increment, against the whole sequence rather than the delta.
+Report the answer whether or not the brief asked, and keep
+`plan-examples.md` §4 current with it.

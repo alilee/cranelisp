@@ -5,10 +5,10 @@ into the AST chokepoints. Spec: `spec/09-macros.md` §9.4.
 
 Quote and quasiquote are legal **wherever an expression is legal** — a template
 in an ordinary `defn` body or at top level is as valid as one in a `defmacro`
-clause (user ruling, S111; spec §9.4.1 makes quasiquote reader-level sugar with
-no macro-body restriction). Desugaring is therefore a property of every form, not
-of one call site, and the design's whole job is to make that structural rather
-than remembered.
+clause (spec §9.4.1 makes quasiquote reader-level sugar with no macro-body
+restriction). Desugaring is therefore a property of every form, not of one call
+site, and the design's whole job is to make that structural rather than
+remembered.
 
 ## 1. The fold point
 
@@ -17,24 +17,25 @@ caller can forget it** (Principle 7, Principle 18):
 
 | Chokepoint | Production callers |
 |---|---|
-| `build_forms(sexps)` | int's universal build path — REPL, `--run`, `--link`, cluster processing, agent, index worker, save-regen |
-| `build_form(sexp)` | int's persisted-source re-parse of a single top-level form |
+| `build_forms(sexps)` | int's one form-build path (`src/worker.rs`) |
+| `build_form(sexp)` | test helpers; the single-form public entry |
 
-`build_expr` has **no** production direct caller: it is the internal
-expression-recursion primitive and the bare-expression branch of `build_forms`.
-It does not fold. Folding there would re-walk each subtree once per level of
-nesting; instead it trusts its input and keeps the backstop (§3) as the
-structural guard.
+`build_expr` is the internal expression-recursion primitive and the
+bare-expression branch of `build_forms`. Its one production direct caller outside
+the crate is typecheck's §7.1 method-tail judgment, which builds a subtree of a
+form `build_forms` has already desugared. `build_expr` does not fold: folding
+there would re-walk each subtree once per level of nesting, so it trusts its input
+and keeps the backstop (§3) as the structural guard.
 
 ### 1.1 Placement within each chokepoint
 
 Both chokepoints desugar the **whole** tree they receive before any head-shape
-dispatch or `:Type` pairing.
+dispatch or annotated-node consumption.
 
 - `build_forms` maps the desugar over the input slice once, up front, then runs
-  the pairing and dispatch loop over the desugared vector. `expand_quasiquotes`
-  preserves structure — each slice element maps to exactly one element, and an
-  `Sexp::Annotated` remains one node — so desugar-then-pair is order-safe and BC
+  the dispatch loop over the desugared vector. `expand_quasiquotes` preserves
+  structure — each slice element maps to exactly one element, and an
+  `Sexp::Annotated` remains one node — so desugar-then-build is order-safe and BC
   §1 invariant 9 is unaffected.
 - `build_form` desugars its one form, then dispatches.
 
@@ -105,9 +106,8 @@ greater depth; standalone unquotes fall through to §3.
 
 Membership is decided once, by `cranelisp_types::quote_head`
 (`design/arch/interfaces.md` §"Reader-quote structural predicate"). The frontend
-carries **no** local notion of what a quote is; the four crate-private predicates
-it once had are gone, and re-creating an `is_quote`/`is_quasiquote` helper here is
-a review reject. Int's two scope-aware shields consume the same function, so the
+carries **no** local notion of what a quote is; creating an
+`is_quote`/`is_quasiquote` helper here is a review reject. Int's two scope-aware shields consume the same function, so the
 fold and the shields cannot disagree about which subtree is data — the divergence
 that would double-desugar or mis-qualify a quoted subtree is unrepresentable
 rather than merely tested for.
@@ -141,15 +141,7 @@ closed sum.
 
 ## 5. The pipeline chain
 
-```
-reader (' ` ~ ~@ → (quote …)/(quasiquote …)/(unquote …)/(unquote-splicing …))
-  → int Pass-1 macro expansion  [quote-shielded, §6]
-  → build_forms / build_form  ── DESUGAR FOLD (§1) ──┐
-       ├─ :Type pairing (BC §1 invariant 9)          │ one fixpoint pass
-       ├─ build_form_inner  (top-level forms)        │ over the whole tree
-       └─ build_expr        (bare exprs; §3 guards)  ┘
-```
-
+The chain is drawn in [the master design](frontend.md#3-form-classification-and-dispatch).
 Desugar runs **after** macro expansion and **before** per-form build. That
 ordering is load-bearing for §6.
 

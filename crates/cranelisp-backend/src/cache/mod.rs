@@ -29,9 +29,8 @@
 //! This crate-internal root holds the genuine multi-submodule orchestration
 //! helpers ([`CachedModule`], [`module_cache_path`], [`try_load_cached_module`],
 //! [`load_cached_object`]) and the version consts ([`CACHE_SCHEMA_VERSION`],
-//! [`CACHE_FORMAT_VERSION`], [`BUILD_ID`]). The pre-S67 doubled root-level
-//! re-export layer was retired in S67 Wave 4 (see the routing note below); the
-//! canonical home of every cache type is exactly one submodule.
+//! [`CACHE_FORMAT_VERSION`], [`BUILD_ID`]). The canonical home of every cache
+//! type is exactly one submodule.
 //!
 //! # Cache invariants (internal implementation invariants)
 //!
@@ -57,9 +56,10 @@
 //!    manifest invalidates all cached modules atomically; a mismatched sidecar
 //!    invalidates only that one module.
 //! 5. **No re-codegen on cache-hit.** Cache-hit modules skip
-//!    `compile_to_module` entirely; backend reads the pre-built `.o` via
-//!    `linker::Linker::load_object` and writes `Code::Linker` lifecycle owners
-//!    plus per-symbol GOT slots. The `.o` byte content is authoritative; no
+//!    `compile_to_module` entirely; [`load_cached_object`] maps the pre-built
+//!    `.o` into the caller's `Linker` and returns one address per target, and
+//!    int writes the GOT slots and `Code::Linker` lifecycle owners. The `.o`
+//!    byte content is authoritative; no
 //!    per-symbol re-emission ever happens.
 //!
 //! # Forbidden patterns
@@ -78,26 +78,9 @@ pub mod manifest;
 pub mod object;
 pub mod serialize;
 
-// Doubled root re-export layer retired (Sprint 67 Wave 4 narrowing per
-// `design/arch/facades/backend-cache.md` §"Wave 4 checklist"). Every item
-// formerly re-exported here has a canonical home in a submodule
-// (`manifest`, `serialize`, `object`, `linker`); the root-level
-// re-exports were a pre-S67 convenience layer that doubled the published
-// surface. External callers route through the canonical submodule paths:
-//
-//   - `cranelisp_backend::cache::manifest::{CacheManifest, CachedModuleRef,
-//      CacheInvalidReason, check_manifest, hash_source, read_manifest,
-//      write_manifest, binary_fingerprint}`
-//   - `cranelisp_backend::cache::serialize::{CacheStale,
-//      serialise_meta, deserialise_meta, write_meta, load_meta}`
-//   - `cranelisp_backend::cache::object::{CacheWritePacket,
-//      ObjectCompileInput, IntrinsicTable, IntrinsicEntry, FnSlotInfo,
-//      build_cache_packet, process_cache_packet, got_data_symbol_name,
-//      build_isa}`
-//   - `cranelisp_backend::cache::linker::Linker`
-//
-// In-crate use sites within `cranelisp-backend` itself use the submodule
-// paths directly (`crate::cache::linker::Linker`, …).
+// No root re-export layer: each item has one canonical path in its submodule
+// (`manifest`, `serialize`, `object`, `linker`), and callers use that path.
+// `public-api.txt` is the evidence of the published paths.
 
 /// Cache schema version (Decision 34, Sprint 58 §14.2).
 ///

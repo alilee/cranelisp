@@ -1,42 +1,22 @@
 // cranelisp-backend / src/error.rs — typed error DTOs for the backend public surface
 //
-// Per Decisions 37 + 41 and `design/arch/facades/backend.md` §"Errors":
+// Per Decisions 37 + 41: callers match on typed variants rather than parse
+// messages. `CompilationError` is the typed result of `compile_to_module`;
+// `LinkerError` is the typed result of `Linker::get_symbol` (Decision 36 —
+// bare-name lookup) and other per-symbol cache-load operations. Both are
+// `#[non_exhaustive]`, so variants may be added without a public-API break.
 //
-// - `CompilationError` is the typed result of `compile_to_module`. Replaces
-//   ad-hoc `CranelispError::CodegenError { message: "..." }` strings at the
-//   backend boundary; callers (today: `int`) match on the variant rather
-//   than parse messages. Per §2.7 of the facade — `SymbolNotCompilable` is
-//   the typed signal for the Decision-37 failure mode (a caller passed a
-//   `names` entry that does not satisfy `defined_symbols()` or was evicted
-//   between schedule and call).
-//
-// - `LinkerError` is the typed result of `Linker::get_symbol` (Decision 36
-//   — bare-name lookup) and other per-symbol cache-load operations. Per
-//   Decision 37, asking for a symbol that isn't there is a typed error,
-//   not a bare `Option<*const u8>`. The two-variant baseline is the
-//   minimum surface acceptable at S67 close per the facade — additional
-//   variants extend as evidence accrues (`MmapFailed`, `MachOParseError`,
-//   `AbiMismatch` are foreseeable additions). The `#[non_exhaustive]`
-//   attribute admits future additions without a public-API break.
-//
-// Placement (REV-4 of S67 Phase 2 review): both enums live in
-// `cranelisp-backend` rather than `cranelisp-types` per Principle 15
-// (single-consumer per error type). Backend is the sole constructor;
-// `int` is the sole matcher. There is no multi-consumer pull that would
-// justify hoisting these into `cranelisp-types`. `types.md` §"Errors and
-// warnings" loses its `LinkerError` entry as part of the S67 close-out
-// (see §"Errors" in `facades/backend.md` for the canonical definition).
+// Placement: both enums live in `cranelisp-backend` rather than
+// `cranelisp-types` per Principle 15 — backend is the sole constructor and
+// `int` the sole matcher, so nothing justifies hoisting them.
 
 use cranelisp_types::{ErrorLocation, LinkerSymbol, ModuleFullPath, Symbol};
 
 /// Typed result of `compile_to_module`.
 ///
-/// Replaces the pre-S67 ad-hoc `CranelispError::CodegenError { message: "..." }`
-/// strings at the backend boundary. Per Decision 37, callers match on the
-/// variant rather than parse messages.
-///
-/// Per facade `backend.md` §"Errors" — `#[non_exhaustive]` admits future
-/// variants without breaking match exhaustiveness at the boundary.
+/// Per Decision 37, callers match on the variant rather than parse messages.
+/// `#[non_exhaustive]` admits future variants without breaking match
+/// exhaustiveness at the boundary.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum CompilationError {
@@ -44,10 +24,8 @@ pub enum CompilationError {
     /// the symbol table. Indicates either a stale caller (the entry was
     /// evicted between `defined_symbols()` and the call) or a contract
     /// violation (caller passed a name that was never compilable —
-    /// e.g., `kind == Overloaded` or `ast: None`).
-    ///
-    /// Per §2.7 of `facades/backend.md` — this is the typed signal for the
-    /// Decision-37 failure mode.
+    /// e.g., `kind == Overloaded` or `ast: None`). This is the typed signal
+    /// for the Decision-37 failure mode.
     SymbolNotCompilable {
         module: ModuleFullPath,
         symbol: Symbol,
@@ -84,11 +62,8 @@ pub enum CompilationError {
 /// failure surfaced by `int`'s `--link` orchestration.
 ///
 /// Per Decision 37, asking for a symbol that's not there is a typed
-/// result, not a bare `Option`. Per the facade — the two-variant baseline
-/// is the minimum surface acceptable at S67 close; additional variants
-/// extend as evidence accrues from production traces. `#[non_exhaustive]`
-/// admits future additions (e.g., `MmapFailed`, `MachOParseError`,
-/// `AbiMismatch`) without a public-API break.
+/// result, not a bare `Option`. `#[non_exhaustive]` admits future variants
+/// without a public-API break.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum LinkerError {
@@ -148,8 +123,7 @@ impl std::fmt::Display for CompilationError {
 impl std::error::Error for CompilationError {}
 
 /// Bridge `CranelispError` produced inside backend codegen to the typed
-/// `CompilationError` at the boundary. Per Decision 37 + facade §"Errors":
-/// callers match on `CompilationError` variants rather than parsing message
+/// `CompilationError` at the boundary. Per Decision 37: callers match on `CompilationError` variants rather than parsing message
 /// strings. Backend's internal flow still produces `CranelispError`
 /// (workspace-wide error type); this `From` impl converts at the boundary.
 ///

@@ -159,6 +159,3 @@
 ; promote such locals into registers, never onto the heap — to close the gap.
 ; It is the identified next direction, not a defect: the IR here is correct and
 ; conservative at every step.
-;
-; Every claim above is verified against the emitted IR in
-; optimization-clif-verification.md (this directory).

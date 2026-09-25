@@ -14,23 +14,38 @@ span tracking.
 Every `Sexp` node carries a `Span`. Downstream stages — AST builder, typecheck,
 codegen — propagate spans for user-facing diagnostics, and a node without a real
 span degrades every error that reaches it, so span assignment is not optional
-anywhere in the reader.
+anywhere in the reader. Spans are `u32` byte offsets narrowed from the reader's
+`usize` cursor without a check; a source unit of 4 GiB or more would wrap its
+spans. That limit is accepted rather than guarded.
+
+Symbol tokens carry their written text. The reader does not know whether a token
+names a variable, a type, a module path or an operator; the AST builder mints the
+identifier newtypes when it classifies the position.
 
 ## Token precedence
 
-Atoms are tried in a fixed order (spec §1.7), and the order is load-bearing:
+`read_form` dispatches on the first byte of each form, and the order inside that
+dispatch realises the spec §1.7 precedence. The load-bearing cases:
 
-1. float before integer, so the decimal point is captured;
-2. integer before operator, so `-3` is an integer rather than `-` applied to `3`;
-3. boolean before symbol, so `true` is not a symbol;
-4. string (double-quoted, with `\\`, `\"`, `\n`, `\t`, `\r` escapes; an
-   unterminated string is a located parse error);
-5. the prefix sigils `'`, `` ` ``, `~`, `~@`, `#(`, `$`, `%`, `&`;
-6. colon-introduced annotations;
-7. plain symbols.
+1. a number reads the fraction before settling on an integer, so the decimal
+   point is captured;
+2. `-` or `+` immediately followed by a digit is a number, so `-3` is an integer
+   rather than `-` applied to `3`;
+3. `true` and `false` are booleans only at a symbol boundary, so `trueness` is a
+   symbol.
 
-`(` … `)` reads as `Sexp::List` and `[` … `]` as `Sexp::Bracket`. Commas are
-whitespace (Clojure convention) and `;` runs to end of line.
+Strings take the spec §1.3.4 escapes; an unknown escape or an unterminated string
+is a located parse error. `(` … `)` reads as `Sexp::List` and `[` … `]` as
+`Sexp::Bracket`. Commas are whitespace (Clojure convention) and `;` runs to end of
+line.
+
+The reader accepts the whole spec §1 lexical grammar, including syntax the AST
+builder does not yet lower. `%` parameters, `$name`, `&name` in expression
+position, trailing-`#` auto-gensyms and `#(…)` all read as ordinary tokens or
+forms, and the builder rejects each at its span with a "not yet supported"
+diagnostic naming the explicit spelling. Keeping the grammar complete at the
+reader means a later lowering changes one builder arm, and unsupported syntax is
+reported where it was written rather than as a lexical failure.
 
 ## Reader macros
 
@@ -51,7 +66,7 @@ fold (`quasiquote-fold.md`), not by the reader.
 `:` is the annotation introducer and is **not** a sigil producing a list form.
 `read_colon_prefix` reads the annotation half and the following subject and
 constructs one `Sexp::Annotated` node; the fold is recursive, so every position
-that can hold a form can hold an annotated form. `s116-syntax-and-annotation.md`
+that can hold a form can hold an annotated form. `annotation-and-declaration-shape.md`
 §2 owns that judgment, including the located rejection when the introducer is
 followed by `)`, `]` or EOF.
 
@@ -112,4 +127,4 @@ the stream.
 - `spec/01-lexical.md` §1.4.5, §1.7 — colon-prefixed symbols and atom precedence.
 - `design/arch/interfaces.md` §"Reader Output" — the `Sexp` carrier and its variants.
 - `design/frontend/enforcement-matrices.md` §3 — the dangling-qualifier rejects.
-- `design/frontend/s116-syntax-and-annotation.md` §2 — the read-time annotation fold.
+- `design/frontend/annotation-and-declaration-shape.md` §2 — the read-time annotation fold.

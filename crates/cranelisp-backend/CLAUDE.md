@@ -10,11 +10,12 @@ Pinned to **Cranelift 0.116** across `cranelift`, `-module`, `-jit`, `-native`,
 `-codegen` (with `disas`), `-object` (`Cargo.toml`); `target-lexicon 0.12`,
 `object 0.36` are `/arch`-blessed direct deps already transitive via cranelift's
 `disas`. This is the ONLY crate that names Cranelift types — everything upstream
-flows in through `cranelisp-types` (`lib.rs` rustdoc).
+flows in through `cranelisp-types` (`crates/cranelisp-backend/src/lib.rs` rustdoc).
 
 **Mode is the `Module` instance, never a parameter.** `compile_to_module` is
 generic over `M: Module + CodeFinalizer` and emits **byte-identical CLIF**
-whether `M` is `JITModule` or `ObjectModule` (`lib.rs` §"codegen boundary"). Any
+whether `M` is `JITModule` or `ObjectModule` (crate-root rustdoc, "The codegen
+boundary"). Any
 env-gated codegen change (RC gates below) is written to be *byte-identical when
 the gate is off* — that phrase in a gate's rustdoc is a load-bearing contract,
 not a comment. There is no object-compile entry point; the object path is
@@ -100,7 +101,7 @@ consistent. Provenance in each gate's rustdoc.
 | `CRANELISP_NO_LENIENT` / `CRANELISP_SPARK_ADMIT` / `CRANELISP_SPARK_DENSITY_MAX` / `CRANELISP_CAPTURE_BORROW` / `CRANELISP_SPARK_STATS` | lenient-eval spark admission tuning + tally | `compiler/control_flow/sparkability.rs`, `utilization.rs` |
 
 **`CRANELISP_CODEGEN_DUMP`** dumps CLIF to stderr per symbol. Filter grammar
-(`lib.rs::clif_dump_matches`, pure + unit-tested): `*` = all; `module::symbol`
+(`crates/cranelisp-backend/src/lib.rs::clif_dump_matches`, pure + unit-tested): `*` = all; `module::symbol`
 = exact pair; bare string = exact module match. This is the codegen-layer
 inspection hook (the S66/CLAUDE-cited `CRANELISP_CODEGEN_TRACE` role); pairs with
 REPL `/clif <name>` and `/disasm` (`produce_disasm`, on-demand — disassembly is
@@ -148,7 +149,7 @@ pub-to-boundary item under `compiler::`; everything else is `pub(crate)`.
   global scan + the ten `resolve_*` entry points + `lookup_constructor`) is
   DELETED; `resolution.rs` now holds ONLY fixed name-composition schemes (no
   scan/precedence walk): the two symbol-naming primitives (`got_data_symbol_name`
-  / `inner_fn_discriminator_for`) plus the three drop-glue naming fns
+  / `inner_fn_discriminator_for`) plus the two capture-glue naming fns
   (`closure_drop_glue_name` / `curry_drop_glue_name` — the S111 R6 §4.1 ONE
   naming-identity home, never re-composed inline). These name capture
   ENVELOPES, not type glue: **type-glue identity is `cranelisp_types::
@@ -203,8 +204,7 @@ aux entries into the `symbol_tables` it also builds and calls the helper. The
 (`apply.rs`) is one method per `ResolvedCall` variant (S111 R5 §2). Drop-glue for
 the two span-keyed mirrors (closure + auto-curry) shares ONE envelope
 (`emit_capture_dec_glue`, `lambda.rs`) owning idempotency + declare/build/define;
-the ADT builder keeps its own multi-ctor-body envelope but shares the naming fn
-(S111 R6 §4.3 fallback).
+type glue, including ADT glue, is built by `DropGlueRegistry` (below).
 
 ## Canonical drop glue — ONE named body per concrete owning type (S118 W3)
 
@@ -250,31 +250,23 @@ Gotchas the next reader will hit:
 - Capture-env bodies build in their own context and cannot reach the registry,
   so the enclosing compiler requests their glue FIRST
   (`request_capture_glue`) and the body emits the resolved call.
-- The only *sanctioned* non-concrete release site is the **ctor template's own
-  parameter** (`design/backend/transitive-drop-glue.md` §4.1 — the authority; it
-  covers BOTH a declared type parameter and an undeclared field, because a ctor
-  `Def` is compiled once per declaration, not per instantiation). Its licence is
-  invariant **I-CT** — the dec balances the guarded consuming inc on a word
-  `emit_adt_construct` published into the box the frame returns, so it can never
-  be the last reference. Balance pinned by
-  `compiler/fn_compiler/ctor_template_admission_tests.rs`. Standing obligation:
-  a `ModeSummary` with a `Borrowed` parameter reaching a ctor template drops the
-  dec while the inc still fires — that breaks I-CT in the leak direction and
-  must revisit §4.1.
-- **But the live gate in `emit_heap_binding_decs` is keyed on the TYPE, not the
-  frame — knowingly, and it is NOT the whole story** (FIXME 0903; 0891 deferred
-  on it). §4.1 rules the gate must be the frame and §11 makes a type-keyed gate
-  a `/review` REJECT; implementing exactly that (an `is_ctor_template` boolean
-  from `compile_body`, a two-state verdict threaded to the shared body, both
-  tail-jump flushes rejecting) was measured at **+16 hard codegen refusals over
-  the `spec_*` corpus**. Two further families reach the arm in ordinary
-  `defn`-shaped frames I-CT does not cover: synthetic **field accessors** of a
-  generic/undeclared-field product (`Box.v`'s `self: ADT(user/Box, [Var(0)])` —
-  `concrete-boundary-type.md` §3.1.1 pairs the ctor *and accessor* signature
-  paths; `design/backend/transitive-drop-glue.md` §4.1 named only the ctor half) and **generic trait-method instances**
-  (`Functor.fmap$primitives/Option`'s `Fn([Var(9)], Var(8))` parameter). Those
-  leak today. Do not re-run the narrowing on its own — the experiment is done and
-  the census is in the function's rustdoc; the class needs one ruling.
+- **Non-concrete release is governed by
+  `design/backend/non-concrete-release-contract.md`** (the five faces, §7.4,
+  §8 reject list); `transitive-drop-glue.md` §4.1 is only the superseded S118 record. A
+  residual-parameter constructor is a slotless `Life::Template`, so its frame
+  never reaches codegen in production (I-CT′).
+  `compiler/fn_compiler/ctor_template_admission_tests.rs` still constructs such
+  a frame directly and pins the old I-CT balance until the arm below is
+  disposed.
+- **The non-concrete arm in `emit_heap_binding_decs` is keyed on the TYPE, not
+  the frame — knowingly** (FIXME 0903; 0891 deferred on it). Synthetic **field
+  accessors** of a generic product (`Box.v`'s `self: ADT(user/Box, [Var(0)])`)
+  and **generic trait-method instances**
+  (`Functor.fmap$primitives/Option`'s `Fn([Var(9)], Var(8))` parameter) reach it
+  in ordinary `defn`-shaped frames and leak today; they are producer
+  obligations. A frame key was measured at **+16 hard codegen refusals over the
+  `spec_*` corpus** — do not re-run the narrowing on its own; the census is in
+  the function's rustdoc.
 
 ## RC-emission gates that are ONE predicate, not per-site syntax (S115 W3/W4c)
 

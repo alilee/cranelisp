@@ -1,4 +1,4 @@
-# Syntax and Annotation
+# Annotation and Declaration Shape
 
 > Interior design for `cranelisp-frontend`, elaborating the master design
 > (`frontend.md` §3). `design/arch/annotated-sexp-node.md` owns the cross-crate
@@ -18,19 +18,15 @@ representation is admissible.
 
 **A trailing `:Type` with nothing to bind is a reader error.** Because the fold is
 universal, the introducer in `(dp [x] :Int)` is followed by `)` rather than by a
-form and rejects at the introducer span with `annotation missing expression`.
-§7.1.1 always stated the rule; nothing enforced it, which is what let the invalid
-spelling spread through the corpus. The enforcement is **structural** — the shape
-does not survive reading — so no predicate, position table or corpus discipline
-has to keep holding it.
+form and rejects at the introducer span with `annotation missing expression` (spec
+§7.1.1). The enforcement is **structural** — the shape does not survive reading —
+so no predicate, position table or corpus discipline has to keep holding it.
 
-One residue is worth naming because it will otherwise read as design intent. The
-annotation-pairing helpers still return `(Expr, usize)` and their callers still
-do `consumed` arithmetic, but `build_one_expr_at` now always consumes exactly one
-item — the width belonged to the sibling-scanning mirror, and that mirror is
-gone. Collapsing the pair to a plain `Expr` is a simplification the crate has
-earned; nothing schedules it, and it is recorded here so a later reader does not
-mistake vestigial arithmetic for a variable-width contract.
+One residue would otherwise read as design intent. `build_one_expr_at` still
+returns `(Expr, usize)` and its callers still do `consumed` arithmetic, but it
+always consumes exactly one item: the width belonged to a sibling-scanning
+annotation mirror that no longer exists. Collapsing the pair to a plain `Expr` is
+an available simplification; it is not a variable-width contract.
 
 ## 2. Read-time annotation fold
 
@@ -59,10 +55,6 @@ raw half through the existing type-expression production, builds the subject,
 and emits the existing `Expr::Annotate`; it never scans siblings. Qualified types
 and stacked bounds retain their existing semantics. Quasiquote recurses into both
 halves and emits `SexpAnnotated` without flattening or discarding the node.
-
-No frontend public function changes. The `Sexp::Annotated` baseline delta and its
-persistence window belong to `cranelisp-types`; frontend is regenerated only if
-tooling observes an incidental re-export delta.
 
 ## 3. `deftype` enforcement
 
@@ -135,16 +127,18 @@ and its span, and does not invoke the type-expression parser merely because the
 element follows parameters.
 
 Typecheck owns the try-resolve judgment: resolvable type expression means a
-required method; otherwise the same element is a default body. The shared carrier
-chosen by `/arch` is the only handoff representation. Frontend must not encode an
-early `Result<TypeExpr, Expr>` guess or recover from `invalid type expression`.
-The deleted `[params] return-type body` spelling rejects as trailing input. An
+required method; otherwise the same element is a default body. The raw tail on the
+types-owned method carrier is the only handoff representation. Frontend must not
+encode an early `Result<TypeExpr, Expr>` guess or recover from `invalid type
+expression` to anticipate that judgment. The three-element
+`[params] return-type body` spelling rejects as trailing input. An
 annotated default body arrives as one `Sexp::Annotated`, so the tail is always
 exactly one element and no special arity case exists.
 
 ## 5. Unit scenarios: submodule × class
 
-Per Principle 23, `/dev(frontend)` locates tests beside each strategy submodule.
+Module tests sit beside each submodule (Principle 23). Each row names the
+scenario classes whose absence would leave a mechanism unpinned.
 
 | Submodule | Complexity | Edge | Negative |
 |---|---|---|---|
@@ -155,10 +149,6 @@ Per Principle 23, `/dev(frontend)` locates tests beside each strategy submodule.
 | `ast_builder::deftype` explicit types (§3.1) | written polymorphic head with reused and concrete parameters | bare monomorphic head with concrete field types | missing field type in product and sum arms; undeclared standalone and nested type variables; parenthesized head with no parameters; every reject asserts the field/head span and emits no `ParsedEntry` |
 | `ast_builder::patterns` | nested binding pattern | bare nullary and fielded controls | `(Ctor)` zero-binding pattern |
 | `ast_builder::traits` | application-shaped default body | required bare type; docstring; annotated default | missing tail; deleted three-element form; trailing `:Type` reader error |
-
-E2e acceptance remains `/qa`/`/testing` owned and includes the complete
-constructor matrix, duplicate field location, macro fold, round-trip/schema, and
-§7.1 mode-equivalence cells.
 
 ## 6. Quality attributes
 
@@ -182,13 +172,10 @@ constructor matrix, duplicate field location, macro fold, round-trip/schema, and
   declaration-shape reject is the frontend's and exclusive. A concrete-type
   resolution failure is a different diagnostic at a different seam, and
   duplicating the shape check there would split the rule across two owners.
-- **The evidence instrument is `qa`'s.** The frontend supplies the rejects and
-  their unit pins; the `{parameter, return}` × `{annotated, bare}` ×
-  `{deftrait method, defn, deftype field}` matrix and any corpus lint are
-  evidence questions against a rule the reader already enforces.
-- **The §7.1 tail carrier is `arch`'s.** The frontend must not encode an early
-  `Result<TypeExpr, Expr>` guess, nor recover from an invalid-type-expression
-  error, to anticipate typecheck's judgment.
+- **Solution-level evidence is `qa`'s.** The frontend supplies the rejects and
+  their unit pins; e2e matrices and any corpus lint are evidence questions
+  against a rule the reader already enforces.
+- **The §7.1 tail carrier is `arch`'s** (§4).
 
 Five shapes are defects in this surface, and each has been built at least once:
 an annotation mirror that scans siblings; partial `ParsedEntry` emission before

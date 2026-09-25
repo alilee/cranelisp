@@ -173,8 +173,8 @@ established_by = "CLAUDE.md"
 [[document]]
 path = "repl/demos/CLAUDE.md"
 kind = "memory"
-owner = "spec"
-purpose = "State specification ownership and guidance for repl/demos."
+owner = "test"
+purpose = "Demo script, player and showcase ownership and maintenance guidance for repl/demos."
 established_by = "repl/CLAUDE.md"
 
 [[document]]
@@ -409,7 +409,7 @@ disposition = "established"
 
 [[document_class]]
 name = "frontend-designs"
-patterns = ["design/frontend/ast-builder.md", "design/frontend/binder-head-reject.md", "design/frontend/defmacro-synthesis.md", "design/frontend/enforcement-matrices.md", "design/frontend/frontend.md", "design/frontend/module-preamble.md", "design/frontend/modules.md", "design/frontend/quasiquote-fold.md", "design/frontend/reader.md", "design/frontend/s116-syntax-and-annotation.md", "design/frontend/trait-impl-head-parse.md"]
+patterns = ["design/frontend/ast-builder.md", "design/frontend/binder-head-reject.md", "design/frontend/defmacro-synthesis.md", "design/frontend/enforcement-matrices.md", "design/frontend/frontend.md", "design/frontend/module-preamble.md", "design/frontend/modules.md", "design/frontend/quasiquote-fold.md", "design/frontend/reader.md", "design/frontend/annotation-and-declaration-shape.md", "design/frontend/trait-impl-head-parse.md"]
 owner = "design"
 purpose = "Frontend interior designs."
 established_by = "design/frontend/CLAUDE.md"
@@ -516,3 +516,18 @@ owner = "test"
 purpose = "Capture and run contracts for golden-CLIF fixture corpora and the checking-allocator fence lane."
 established_by = "tests/CLAUDE.md"
 disposition = "established"
+
+
+[[document]]
+path = "examples/plan-examples.md"
+kind = "standing"
+owner = "training"
+purpose = "Learning-sequence design: what each example teaches, sequence rules, library direction and the standing assessment of open gaps."
+established_by = "examples/CLAUDE.md"
+
+[[document]]
+path = "examples/lib/README.md"
+kind = "standing"
+owner = "training"
+purpose = "Examples-local library rules, exclusions, mechanics and current contents."
+established_by = "examples/CLAUDE.md"

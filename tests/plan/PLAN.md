@@ -222,8 +222,9 @@ reconciliations and the S120 0917 provenance delta. No current source, test,
 design or filing cited them. Every filing the S106, S107 and S110 records
 planned against is closed, the agent-lane provenance race they attributed is
 stated in [test conventions](../CLAUDE.md#the-agent-lane---features-agent--isolated-target-dir),
-open filing 0917 carries its own subject, and the harness limits S106 and S107
-named are in §Strategy above. The Sprint-116 changed-test audit listed module
+the delivered 0917 contract lives in
+`design/backend/non-concrete-release-contract.md` §6, and the harness limits
+S106 and S107 named are in the [current strategy](#strategy--two-tiers-no-middle). The Sprint-116 changed-test audit listed module
 tests without `// spec:` comments; that list was not re-measured here and is
 not a current finding.
 

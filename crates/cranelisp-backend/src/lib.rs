@@ -6,10 +6,11 @@
 //! intrinsics the emitted CLIF calls). This crate is the only one that names Cranelift types; everything
 //! upstream of it flows in through `cranelisp-types`.
 //!
-//! # The codegen boundary — exactly three free functions
+//! # The codegen boundary — crate-root free functions
 //!
-//! The entire public codegen surface consumed by the integration layer
-//! (`int`) is three free functions plus the ISA constructor:
+//! The crate-root codegen entries (the cache-hit loader is
+//! [`cache::load_cached_object`]; `design/arch/bounded-contexts.md` §3 owns
+//! what crosses the boundary):
 //!
 //! - [`compile_to_module`] — the sole CLIF emission path. Generic over
 //!   `M: Module + CodeFinalizer`: the same body emits byte-identical CLIF
@@ -20,10 +21,11 @@
 //!   `compile_to_module::<ObjectModule>` followed by the **caller** finalising
 //!   (`obj_module.finish().emit()`); see the §"Object file contract" notes in
 //!   this source and the [`CodeFinalizer`] trait.
-//! - [`load_object`] — the JIT-mode cache-hit entry. Constructs a fresh
-//!   `cache::linker::Linker`, loads `.o` bytes into it, and returns a
-//!   [`LinkerArtefact`] (the `Arc<Linker>` retention root + per-symbol address
-//!   map).
+//! - [`load_object`] — loads `.o` bytes into a fresh `cache::linker::Linker`
+//!   and returns a [`LinkerArtefact`] (the `Arc<Linker>` retention root +
+//!   per-symbol address map). It has no production caller: the live JIT-mode
+//!   cache hit is [`cache::load_cached_object`], driven by int against its own
+//!   linker.
 //! - [`produce_disasm`] — on-demand machine-code disassembly (REPL `/disasm`).
 //!   The caller supplies `code_size` (it received it in [`CompilationArtifacts`]);
 //!   backend never re-derives it. Factored out of the always-created path
@@ -53,7 +55,8 @@
 //! construct the [`Code`] lifecycle owner — it cannot, because it never owns
 //! the `Arc<Jit>`. The caller composes `Code::Jit` from its owned `Arc<Jit>`
 //! after the call, symmetric with the cache-hit path where the caller composes
-//! `Code::Linker` from the [`LinkerArtefact`] [`load_object`] returns. The GOT
+//! `Code::Linker` from the linker it drove through
+//! [`cache::load_cached_object`]. The GOT
 //! is the single source of truth for callable addresses; [`Code`] carries
 //! lifecycle ownership only (no `ptr` field).
 //!
@@ -169,20 +172,16 @@ mod rc_site_stats;
 // with the trace `DisplayDescriptor` baker (`compiler::trace_codegen`).
 pub mod schema;
 
-// Per-symbol lifecycle owner (Decision 35 + Decision 41). Moved here from
-// `src/code.rs` in Sprint 67 Wave 3 per the facade's S67 close-out — the
-// enum's variants reference backend-owned `Arc<Jit>` / `Arc<Linker>`, so
-// the enum belongs in backend. The integration layer imports it as
-// `cranelisp_backend::Code` and uses it to instantiate
+// Per-symbol lifecycle owner (Decision 35 + Decision 41). The enum's variants
+// reference backend-owned `Arc<Jit>` / `Arc<Linker>`, so it lives here; the
+// integration layer imports it as `cranelisp_backend::Code` to instantiate
 // `SymbolTable<Code, ()>`.
 pub mod code;
 pub use code::Code;
 
-// Typed error DTOs for the backend public surface (Sprint 67 Wave 0 — REV-4).
-// Per `facades/backend.md` §"Errors". `CompilationError` is the typed result of
-// `compile_to_module`; `LinkerError` is the typed result of
-// `Linker::get_symbol`. Consumer wiring lands in Wave 3 — these are authored
-// here at Wave 0 so /dev (backend) and /dev (int) have a stable target type.
+// Typed error DTOs for the backend public surface: `CompilationError` is the
+// typed result of `compile_to_module`; `LinkerError` is the typed result of
+// `Linker::get_symbol`.
 pub mod error;
 pub use error::{CompilationError, LinkerError};
 
@@ -254,8 +253,8 @@ pub(crate) fn callable_arm_slot<C: cranelisp_types::CodeStore>(
 // JIT/object divergence and codegen-layer bugs (drop glue, RC, GOT) where
 // source-level reduction plateaus and only the emitted IR distinguishes
 // correct vs broken output. Cache-hit paths do NOT re-codegen and so have
-// nothing to dump; for those, use `/clif <name>` from the REPL to view the
-// stored `FunctionArtifacts.clif_ir`.
+// nothing to dump; for those, use `/clif <name>` from the REPL, which reads
+// the CLIF int retained in its introspection store.
 //
 // Filter grammar (value of `CRANELISP_CODEGEN_DUMP`):
 //   unset/empty → disabled (no dump)
@@ -371,7 +370,7 @@ pub struct DropGlueArtifact {
 /// implementation — not a mode parameter on `compile_to_module`. This trait
 /// provides that capability: `JITModule` implements it with the real
 /// operations; `ObjectModule` implements it with no-ops that surface `None`
-/// so the G6 write loop skips the per-entry pointer store in object mode.
+/// so the GOT-slot write phase stores no pointer in object mode.
 ///
 /// Any new `Module` implementation that `compile_to_module` is asked to
 /// target must provide an impl — either the "real" one (if it has runtime
@@ -389,8 +388,8 @@ pub trait CodeFinalizer {
 
     /// Read a finalized code pointer for the given `FuncId`, if this module
     /// exposes runtime pointers. Returns `None` on implementations that have
-    /// no such concept (`ObjectModule`), which gates the G6 write loop to JIT
-    /// mode only (per §9.1.6).
+    /// no such concept (`ObjectModule`), which confines the GOT-slot write
+    /// phase to JIT mode (per §9.1.6).
     ///
     /// Only valid after `finalize_for_code_read()` has returned `Ok`.
     fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8>;
@@ -404,20 +403,21 @@ pub trait CodeFinalizer {
     /// - `name`: the `__cranelisp_got_{flat_path}` data symbol name
     ///   (single source of truth: `compiler::got_data_symbol_name`).
     /// - `slot_count`: total slot count = `max(slot_index) + 1`. The data
-    ///   symbol is sized as `slot_count * 8` bytes (zero-initialized).
+    ///   symbol is sized as `max(GOT_TABLE_SIZE, slot_count) * 8` bytes
+    ///   (zero-initialized), matching the runtime `GotTable`.
     /// - `slot_funcs`: `(slot_index, FuncId)` pairs for every defined
     ///   function in this module. Each slot's 8-byte entry receives a
     ///   relocation initializer pointing to that function's local symbol.
     ///   Slots with no entry remain zero (empty slots are not currently
     ///   produced by typecheck — every defined function gets a slot).
     ///
-    /// For `JITModule`: no-op. The JIT-mode `__cranelisp_got_{M}` data is
-    /// defined by the integration layer via `Jit::define_got_data` directly,
-    /// pointing at the runtime `SymbolTable.got.base_ptr()`. The `.o` data
-    /// definition is irrelevant in JIT mode (no `.o` is emitted).
+    /// For `JITModule`: no-op. `Jit::new` binds each module's
+    /// `__cranelisp_got_{M}` symbol to the runtime `SymbolTable.got.base_ptr()`
+    /// in the JIT symbol lookup. The `.o` data definition is irrelevant in JIT
+    /// mode (no `.o` is emitted).
     ///
-    /// For `ObjectModule`: declares the symbol as `Linkage::Export`,
-    /// allocates `slot_count * 8` bytes initialized to zero, and writes a
+    /// For `ObjectModule`: declares the symbol as a writable, 8-byte-aligned
+    /// `Linkage::Export` slab of the size above, explicitly zeroed, and writes a
     /// function-address relocation at byte offset `slot_index * 8` for each
     /// `(slot_index, FuncId)` pair. The system linker (`--link` mode) and
     /// our cache `Linker` (`--run` mode after cache-hit) materialise these
@@ -426,9 +426,9 @@ pub trait CodeFinalizer {
     /// Per Decision 23: the same CLIF emitted by `compile_to_module<M>`
     /// references `__cranelisp_got_{M}` symmetrically as `Linkage::Import`
     /// in both modes; the *definition* differs by `Module` impl. JIT mode's
-    /// definition lives outside `compile_to_module` (in the integration
-    /// layer's `Jit::define_got_data` call); object mode's definition lives
-    /// in this trait method, called from inside `compile_to_module`.
+    /// definition lives outside `compile_to_module` (the `Jit::new` symbol
+    /// binding); object mode's definition lives in this trait method, called
+    /// from inside `compile_to_module`.
     fn define_module_got_data(
         &mut self,
         name: &str,
@@ -456,11 +456,10 @@ impl CodeFinalizer for cranelift_jit::JITModule {
         _slot_count: usize,
         _slot_funcs: &[(usize, FuncId)],
     ) -> Result<(), CranelispError> {
-        // No-op: the JIT-mode `__cranelisp_got_{M}` data symbol is defined
-        // by the integration layer's `Jit::define_got_data` call (which
-        // points the symbol at the runtime SymbolTable.got.base_ptr()). The
-        // `.o` data section GOT shape is unused in JIT mode — no `.o` is
-        // emitted. See `/arch` Decision 23 (two-GOT model).
+        // No-op: `Jit::new` binds the JIT-mode `__cranelisp_got_{M}` symbol
+        // to the runtime SymbolTable.got.base_ptr(). The `.o` data section
+        // GOT shape is unused in JIT mode — no `.o` is emitted. See `/arch`
+        // Decision 23 (two-GOT model).
         Ok(())
     }
 }
@@ -474,8 +473,8 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
     }
 
     fn try_get_finalized_function(&self, _func_id: FuncId) -> Option<*const u8> {
-        // No runtime pointer exists for object-mode compilation. The G6 write
-        // loop skips the per-entry code write when this returns None.
+        // No runtime pointer exists for object-mode compilation. The GOT-slot
+        // write phase stores nothing when this returns None.
         None
     }
 
@@ -595,8 +594,10 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 ///
 /// Parameters derived internally:
 /// - Intrinsics: declared on the module internally
-/// - Defn bodies: read from `symbol_tables[module_path].get(name).ast`
-/// - GOT slots: read from `ModuleEntry::Def.got_slot`
+/// - Bodies: each target's `Life::Concrete` arm with a `Realization::Body`;
+///   the walked body is its concrete `MonoExpr` view, and the arm's `ast`
+///   variant supplies only the signature (name, params, span)
+/// - GOT slots: the target arm's `Life::Concrete` slot
 /// - GOT base resolution: uniform — emits `global_value` against a
 ///   `Linkage::Import` data symbol `__cranelisp_got_{module}`; `Module`
 ///   implementations resolve at finalize time (linker relocations for Object;
@@ -620,16 +621,15 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// symbol-table pollution. See Decision 36 in `design/arch/CLAUDE.md` and
 /// `design/backend/compile-to-module.md` §7 for the full rationale.
 ///
-/// # G6 write path
+/// # GOT-slot write
 ///
-/// After `define_function` completes for every name in `names`, the function
-/// calls `module.finalize_for_code_read()` and — for JIT-capable modules —
-/// reads each finalized code pointer and writes it onto the corresponding
-/// `ModuleEntry::Def.code` in `symbol_tables[module_path]` before returning.
-/// For `ObjectModule`, the capability call returns `None` and the write loop
-/// is skipped (no runtime pointer exists). See §9.1 of
-/// `design/backend/compile-to-module.md` and `/arch` Decision 25 for the
-/// architectural statement.
+/// After every body is defined, the function calls
+/// `module.finalize_for_code_read()` and — for JIT-capable modules — reads
+/// each finalized code pointer and stores it into the target's GOT slot
+/// (`got.store_slot(slot, ptr)`) before returning. It does not write the
+/// `Code` lifecycle owner; the caller composes that. For `ObjectModule`, the
+/// capability call returns `None` and no slot is written (no runtime pointer
+/// exists). See §9.1 of `design/backend/compile-to-module.md`.
 ///
 /// # GOT data symbol emission (`/arch` Decision 23 Bug B fix)
 ///
@@ -637,12 +637,11 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// `module.define_module_got_data(...)` to emit the per-module
 /// `__cranelisp_got_{M}` data symbol. The implementation is `Module`-impl-
 /// specific:
-/// - `JITModule`: no-op (the JIT path defines this symbol externally via
-///   `Jit::define_got_data` pointing at the runtime
+/// - `JITModule`: no-op (`Jit::new` binds this symbol to the runtime
 ///   `SymbolTable.got.base_ptr()`).
 /// - `ObjectModule`: declares the symbol as `Linkage::Export` with a
-///   zero-initialized slab of `slot_count * 8` bytes and writes a function-
-///   address relocation at byte offset `slot * 8` for each defined
+///   zero-initialized slab of at least `GOT_TABLE_SIZE` slots and writes a
+///   function-address relocation at byte offset `slot * 8` for each defined
 ///   function. The system linker (`--link`) and the cache `Linker` (`--run`
 ///   after cache-hit) resolve the relocations at load time.
 pub fn compile_to_module<M, C, L>(
@@ -1306,41 +1305,18 @@ fn write_finalized_got_slots<M, C, L>(
 }
 
 // =========================================================================
-// Free function — `load_object` (Sprint 67 Wave 3 row 3)
+// Free function — `load_object`
 // =========================================================================
-//
-// Per `facades/backend.md` §"Free functions": the cache-hit entry point for
-// reading a `.o` produced by an earlier `compile_to_object` (or `--link`)
-// invocation. Wraps the existing `Linker::load_object` method shape into a
-// free-function boundary so the public API matches the facade's three-entry
-// shape (`compile_to_module`, `load_object`, `compile_to_object`).
-//
-// The free-function shape constructs a fresh `Linker`, populates it with
-// the object's defined symbols, and returns a `LinkerArtefact` carrying the
-// `Arc<Linker>` retention root + per-symbol address map. `int` walks the
-// artefact's `ptrs` map and writes each address to the matching entry's
-// GOT slot via `got().store_slot(slot, ptr)`.
-//
-// The full `int`-side cache-hit orchestration (registering intrinsic
-// symbols, GOT base externals, etc.) does NOT live in this free function —
-// callers needing the broader workflow continue to drive `Linker` directly.
 
-/// Free-function entry point for cache-hit object loading.
+/// Load object bytes into a fresh `Linker` and return a `LinkerArtefact`
+/// containing the `Arc<Linker>` retention root + per-symbol pointer map for
+/// the module's GOT-slotted callables.
 ///
-/// Per `facades/backend.md` §"Free functions". Constructs a fresh `Linker`,
-/// loads the supplied object bytes into it, and returns a `LinkerArtefact`
-/// containing the `Arc<Linker>` retention root + per-symbol pointer map.
-///
-/// `int` walks `artefact.ptrs` and for each `(symbol, ptr)` writes the
-/// ptr into the matching entry's GOT slot via `got().store_slot(slot, ptr)`
-/// and stores `Code::Linker(linker.clone())` as the lifecycle owner on the
-/// `ModuleEntry::Def`.
-///
-/// The thin wrapper here registers no externals — callers that need the
-/// full cache-hit workflow (intrinsic symbol registration, GOT base
-/// externals, multi-module resolution) continue to drive `cache::Linker`
-/// directly. This entry exists for facade-compliance + future migration
-/// of the full workflow into backend.
+/// **No production caller.** It registers no externals (intrinsic symbols,
+/// GOT base symbols, multi-module resolution), so it cannot serve the live
+/// cache hit; int drives its own `Linker` through
+/// [`cache::load_cached_object`] instead. Its public-API fate is an open
+/// `arch`/user question (`design/backend/compile-to-module.md` §10, §14).
 pub fn load_object<C, L>(
     module: &ModuleFullPath,
     object_bytes: &[u8],
@@ -1377,18 +1353,15 @@ where
 // Free function — `produce_disasm` (S75 W2 — D41 rotation; FIXME 0221)
 // =========================================================================
 
-/// On-demand machine-code disassembly entry — the third codegen-boundary
-/// free function (with `compile_to_module` + `load_object`).
+/// On-demand machine-code disassembly entry.
 ///
-/// Per `facades/backend.md` §"Free functions": invoked lazily by the
-/// integration layer when a REPL `/disasm <fn>` request arrives, NOT eagerly
-/// per-compile (disassembly is significantly more expensive than the CLIF
-/// capture that `CompilationArtifacts` carries unconditionally, so it is
-/// factored out of the always-created path).
+/// Invoked lazily by the integration layer when a REPL `/disasm <fn>` request
+/// arrives, NOT eagerly per-compile (disassembly is significantly more
+/// expensive than the CLIF capture that `CompilationArtifacts` carries
+/// unconditionally, so it is factored out of the always-created path).
 ///
 /// Resolves `fq` to its symbol-table entry, reads the live post-compile code
-/// pointer from the entry's GOT slot
-/// (`symbol_table.got().load_slot(entry.got_slot.unwrap())`), reads `code_size`
+/// pointer from the entry's GOT slot (`got.load_slot`), reads `code_size`
 /// bytes at that address, and capstone-disassembles them for the host
 /// architecture.
 ///
@@ -1719,14 +1692,9 @@ mod trap_stub_tests {
     }
 }
 
-// NOTE: `compile_to_object` was retracted in S75 W2 (`/dev backend`) per the
-// facade §"Free functions" tombstone + PIF Row 4 retraction. It was a
-// Sprint-67 facade-compliance scaffold returning `unimplemented!()` and
-// citing the never-filed FIXME 0184 (a dangling citation). The codegen
-// boundary is the THREE free functions `compile_to_module<M>` + `load_object`
-// + `produce_disasm`; the object path is `compile_to_module::<ObjectModule>`
-// + caller `finish().emit()` (the §2.5 caller-finalize contract), NOT a
-// separate object-compile entry.
+// NOTE: there is no object-compile entry. The object path is
+// `compile_to_module::<ObjectModule>` + caller `finish().emit()`; do not
+// reintroduce a separate `compile_to_object`.
 
 // NOTE: `resolve_cross_module_refs` was removed in Sprint 58 Wave 2 per
 // `/arch` Decision 36 + 31. Under all-GOT calling, cross-module function

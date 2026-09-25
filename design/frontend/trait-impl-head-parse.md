@@ -106,10 +106,8 @@ correctly for both callers, rather than each caller wrapping the shared error.
 
 **con_var lowercase is enforced at parse.** Spec §7.2 says
 `con_var = lowercase_symbol`, and the shared seam is the one place where a single
-check covers `deftrait` and `impl` together — so enforcing it here closes the
-two-parser drift window rather than deferring into it. This deliberately
-*narrows* acceptance: `(deftrait (Functor F) …)` and `(impl (Functor F) …)` were
-previously parse-accepted. The corpus was verified clean at landing.
+check covers `deftrait` and `impl` together, so the two forms cannot drift:
+`(deftrait (Functor F) …)` and `(impl (Functor F) …)` both reject at parse.
 
 ## 5. The carrier
 

@@ -49,13 +49,11 @@ allocation with `got_exhaustion_surfaces_error_not_ub`). What remains is
    skeleton was not re-assessed after ADT glue moved to `drop_glue.rs`.
    `design` (backend) states converge-or-keep with a reason.
 3. **Retired-facade citations and stale source rustdoc (R4/R8 residue, S87
-   F9).** Backend source still cites the retired architecture-facade directory,
-   including the four `jit.rs` sites identified by the audit. The crate-root
-   rustdoc also needs reconciliation with current GOT publication, body access
-   and object-loading behavior. The S122 design-side cleanup is complete:
-   backend designs no longer cite retired facades, and
-   `design/backend/compile-to-module.md` §8 describes the surviving private
-   `FunctionArtifacts` carrier. The source-side obligation remains open.
+   F9): complete in S122.** Backend source and designs no longer cite retired
+   facade files. Crate-root rustdoc now matches GOT publication, body access
+   and object loading; `FunctionArtifacts` is correctly described as a
+   surviving private carrier. The source pass changed comments only, verified
+   against the checkpoint's non-comment Rust. Items 1 and 2 remain open.
 
 ## Completion evidence
 

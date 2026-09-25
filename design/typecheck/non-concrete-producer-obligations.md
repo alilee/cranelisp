@@ -250,7 +250,7 @@ reaches this seam.
   settles it `Template`. The bare candidate carries no state of its own.
 - Declarations are explicit (spec §5.2.4), and the frontend rejects missing field types
   and undeclared type variables before typecheck sees them
-  (`design/frontend/s116-syntax-and-annotation.md` §3.1). Typecheck adds no compensating
+  (`design/frontend/annotation-and-declaration-shape.md` §3.1). Typecheck adds no compensating
   shape check.
 - Typecheck owns two things here:
   - a written field type naming a concrete type that does not resolve is its own

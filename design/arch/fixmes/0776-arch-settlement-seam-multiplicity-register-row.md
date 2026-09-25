@@ -4,10 +4,9 @@ target: /arch
 filed_by: /review
 filed_at: 2026-07-21
 sprint_filed: 115
-refers_to: design/typecheck/monomorphisation.md §11.8.10 (the three-window
-  standing rule) + crates/cranelisp-typecheck/src/program/mono_collect.rs
-  (`AutoCurryDrain`, the 6+1-seam auto-curry drain) — the recurring class
-  question routed from the S115 W4 review
+refers_to: design/typecheck/monomorphisation.md §3.3 (settlement windows);
+  design/typecheck/auto-curry.md §1.2 (current drain census);
+  crates/cranelisp-typecheck/src/program/mono_collect.rs
 status: open
 ---
 
@@ -27,13 +26,17 @@ The delivered function-polarity unit exercises `Deferrable` and `Final` on the
 same unresolved trait carrier. Its deliberately planted function fault failed
 and its restored control passed (the exact test and evidence are retained in
 `design/typecheck/auto-curry.md` §3.2). That function behavior is **Measured**.
-The one plant does not establish six independent caller-seam proofs. The
-seam-to-polarity mapping and three-window taxonomy remain
+The one plant does not establish independent caller-seam proofs. The
+seam-to-polarity mapping and settlement-window taxonomy remain
 **Asserted-with-a-named-falsifier**: a current invocation omitted from the
 owning tables, or a call's variant inconsistent with its documented settlement
 state, refutes the claim; review compares the current invocation census and
 settlement context against those tables. This is the existing grade vocabulary,
-not a new control category or a mandate for six new tests.
+not a new control category or a mandate for per-seam duplicate tests.
+
+S122 source reconciliation: the auto-curry design §1.2 now records three
+production drain seams, and monomorphisation §3.3 records two settlement
+windows. The S115 counts in the historical motivation below are not current.
 
 **Exact remaining decision:** the proposed universal rule below would make an
 explicit seam taxonomy and architectural approval for growth mandatory beyond
@@ -48,7 +51,7 @@ architectural policy is inferred by this factual reconciliation.
 
 **Important** (register-row candidate; no in-wave blocking effect).
 
-## Issue — and the class /review believes is real
+## Historical S115 motivation — the class /review proposed
 
 `/dev`(typecheck) proposed a standing rule from the S115 W4 work: *"every
 deferral has a drain that discharges the SAME obligations as its inline twin"*,

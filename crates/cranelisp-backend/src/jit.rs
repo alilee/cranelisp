@@ -123,12 +123,9 @@ pub fn jit_free_memory_call_count() -> u64 {
 /// returns. See Decision 31 in `design/arch/CLAUDE.md` for the full
 /// invariant and REPL-redefinition discussion.
 ///
-// FIXME(W4/S77): several fields read only inside the now-`pub(crate)`
-// JIT-orchestration methods, whose only production driver is int's parallel
-// `pipeline.rs` path (out-of-crate). When S77 folds that path into the
-// in-crate `compile_to_module`, these gain real in-crate readers and the
-// allow is removed. The narrowing surfaces the dead-code as the expected
-// signal (see `facades/backend.md` §Row 9).
+// Several fields are read only inside the `pub(crate)` JIT-orchestration
+// methods below, which in-crate unit tests alone reach; the `dead_code`
+// allow covers them.
 #[allow(dead_code)]
 pub struct Jit {
     /// Always `Some` during the JIT's useful life. `take()`n in `Drop` to
@@ -165,10 +162,9 @@ impl Drop for Jit {
             // `free_memory` requires that no fn pointer derived from this JIT
             // is called after this point. The invariant is upheld by the
             // owner of the `Jit` (typically `Arc<Jit>` cloned per-entry into
-            // `Code::Jit { jit, ptr }` on `ModuleEntry::Def.code` — Sprint 58
-            // Wave 3b dissolved the pre-existing `SharedState.kept_jits`
-            // side-store — or a stack-local `Jit` whose compiled function
-            // was already invoked synchronously). See the struct docs above
+            // `Code::Jit(Arc<Jit>)` in each compiled arm's realization, or a
+            // stack-local `Jit` whose compiled function was already invoked
+            // synchronously). See the struct docs above
             // and Decision 31 in `design/arch/CLAUDE.md` for the full
             // argument.
             unsafe {
@@ -178,13 +174,11 @@ impl Drop for Jit {
     }
 }
 
-// FIXME(S77): the JIT-orchestration methods below narrowed to `pub(crate)`
-// (S75 W3-follow, `facades/backend.md` §Row 9). Their only production caller is
-// int's parallel `pipeline.rs` path (out-of-crate); in-crate they are reached
-// only from unit tests. They gain in-crate readers when S77 folds the parallel
-// path into `compile_to_module`. The allow holds the gate green while the
-// narrowing signal stands. (W4 deleted the two methods that had NO in-crate
-// caller at all: `build_shared_isa` + `declare_functions_prefixed`.)
+// The `pub(crate)` JIT-orchestration methods below (`declare_*`, `finalize*`,
+// `get_*ptr*`) are reached only from in-crate unit tests; production codegen
+// goes through `compile_to_module`. `new_with_symbols` also serves the
+// production trap-stub compiler. The `dead_code` allow covers the test-only
+// methods.
 #[allow(dead_code)]
 impl Jit {
     /// Construct a JIT whose entire symbol set is derived from `symbol_tables`
@@ -560,13 +554,10 @@ impl Jit {
 
 /// FuncIds for declared runtime intrinsics.
 ///
-/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
-/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)") — returned from the
-/// now-`pub(crate)` `Jit::declare_intrinsics`.
+/// Internal (`pub(crate)`) — returned from `Jit::declare_intrinsics`.
 ///
-// FIXME(W4/S77): constructed/read only by the now-`pub(crate)`
-// `Jit::declare_intrinsics` whose production caller is int's parallel
-// `pipeline.rs` path (out-of-crate). Allow holds the gate; W4/S77 folds.
+// Constructed and read only through the test-only `Jit::declare_intrinsics`;
+// the `dead_code` allow covers it.
 #[allow(dead_code)]
 pub(crate) struct IntrinsicIds {
     pub alloc: FuncId,
@@ -583,9 +574,7 @@ pub(crate) struct IntrinsicIds {
 /// individual Jit fields and ad-hoc lookup maps. This is the single
 /// source of truth for intrinsic function IDs across all module types.
 ///
-/// Internal (`pub(crate)`) per the S75 W3-follow narrowing
-/// (`facades/backend.md` §"`jit` shape DTOs (Row 15)") — returned from the
-/// now-`pub(crate)` `declare_intrinsics_generic`.
+/// Internal (`pub(crate)`) — returned from `declare_intrinsics_generic`.
 #[derive(Default)]
 pub(crate) struct IntrinsicFuncIds {
     /// All intrinsics indexed by JIT symbol name.

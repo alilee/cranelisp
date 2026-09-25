@@ -75,15 +75,9 @@ declaration category is a non-breaking addition.
 **The append contract is the `pub` structural `Vec` fields on `SymbolTable`.**
 There is no bulk-load method and no append helper: int's form handlers push
 directly onto `imports` / `exports` / `platforms` / `submodules` in source order,
-append-only and without dedup, as each field's own documentation states.
-
-Two names that a reader may look for do not exist.
-`SymbolTable::append_structural_decl` and its `StructuralDeclEntry` carrier were
-deleted at S119 with zero callers, settling the Decision-39 append-carrier
-question; `SymbolTable::write_structural_decls` never existed anywhere in the
-tree. Do not reintroduce either into a design, a rustdoc or a diagram — naming a
-method that does not exist is what sent readers looking for a carrier the tree
-had already decided against.
+append-only and without dedup, as each field's own documentation states. The
+direct field append is the settled design; do not describe a bulk-load or
+append-carrier method on `SymbolTable`.
 
 The preamble is captured separately and is **not** a field on this DTO. It needs
 the raw source head (for blank-line awareness and `;;` markers) while extraction

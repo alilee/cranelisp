@@ -34,8 +34,9 @@ the judgments that hold it, not the migration that produced it.
   per-clause definition synthesis.
 - [quasiquote-fold.md](quasiquote-fold.md) — quote-family desugaring and its
   fold into the AST chokepoints.
-- [s116-syntax-and-annotation.md](s116-syntax-and-annotation.md) — the read-time
-  annotation fold and `deftype` declaration-shape enforcement.
+- [annotation-and-declaration-shape.md](annotation-and-declaration-shape.md) —
+  the read-time annotation fold, `deftype` declaration-shape enforcement and
+  the §7.1 trait-method tail.
 - [binder-head-reject.md](binder-head-reject.md) — the one reject for a
   qualified or dotted spelling in any binder position.
 - [enforcement-matrices.md](enforcement-matrices.md) — the operand-position body

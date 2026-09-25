@@ -87,6 +87,16 @@ assertions enumerable and detects a moved adoption, but it does not prove the
 provenance of the permitted raw words or semantic correctness inside an allowed
 function.
 
+**The Vec-of-String boundary.** `vec_runtime::{vec_strings_from_owned,
+with_vec_strings}` are the purpose-specific crossing of
+[intrinsics bounded context](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics),
+invariant 17; their rustdoc states the caller obligations. Construction owns the
+transferred String references and every unpublished allocation from entry,
+writes `len` last, and its unwind guard releases each exactly once. The read
+view validates `len`/`cap`/`data_ptr` before forming a callback-scoped slice and
+performs no RC action. A generic erased-`i64` Vec builder is rejected: partial
+cleanup cannot recover the element drop operation from a word.
+
 The primitives half of the pair — its produced-owner adapter, its
 parent-lifetime child borrow and its owner-into-raw-storage exits — is designed
 in `design/primitives/` against the same cross-pair contract and is not

@@ -1,38 +1,24 @@
 # Examples Plan — Learning Sequence Design
 
-`training` owns this plan. It records what each example teaches, the design
-rules the sequence follows, and the unresolved gaps between the sequence and
-the language. Git history holds the sprint-by-sprint assessment records this
-plan formerly carried.
+`training` owns this plan: what each example teaches, the rules the sequence
+follows, and the open gaps between the sequence and the language. The files on
+disk are the sequence of record. `tests/examples.rs` (owned by `test`) pins
+their exits. [`CLAUDE.md`](CLAUDE.md) holds the operating rules and the
+verification gate. [`lib/README.md`](lib/README.md) holds the library rules.
+Where this plan and `spec/` disagree, the spec governs and this plan is repaired.
 
-Canonical homes this plan cites rather than repeats:
-
-- **Sequence of record** — the numbered files and the two directory projects
-  on disk.
-- **Documented exit codes** — `expected_exits()` and the directory-project
-  tests in `tests/examples.rs` (owned by `test`).
-- **Operating rules and the verification gate** — [`CLAUDE.md`](CLAUDE.md).
-- **Library rules, exclusions and current contents** —
-  [`lib/README.md`](lib/README.md).
-- **Language behaviour** — `spec/`. Where this plan and the spec disagree, the
-  spec governs and this plan is repaired.
-
-Evidence is dated where it appears. A dated observation is evidence of that
-date, not a present claim. Undated statements describe the current tree.
+A dated observation is evidence of that date. Undated statements describe the
+current tree.
 
 ## 1. Design principles
 
-1. **One new capability per example.** Each example introduces one concept
-   in the simplest program that makes it clear.
+1. **One new capability per example**, in the simplest program that makes it
+   clear.
 2. **Cumulative.** An example uses only what earlier examples taught, plus
-   what the examples-local library provides after its earning lesson.
-3. **Free-standing.** No example depends on `stdlib/`. Examples use compiler
-   primitives, special forms, platforms, and the examples-local library.
-4. **The library follows the lessons.** Section 3 records its direction;
-   `lib/README.md` states its rules.
-5. **Comments explain the capability**, not the syntax. The code and its
+   library modules whose earning lesson precedes it.
+3. **Comments explain the capability**, not the syntax. The code and its
    results teach the syntax.
-6. **Boundaries are taught, not only happy paths.** Where a boundary can run,
+4. **Boundaries are taught, not only happy paths.** Where a boundary can run,
    it runs as a sub-test. Where it cannot, the comment quotes a verified
    diagnostic or describes a spec-stated contract.
 
@@ -111,20 +97,12 @@ These notes prevent plausible but wrong edits.
   The element type must be concrete: `:Vec` and `:(Vec a)` are rejected.
 - **37.** The impls live in `main/traits.cl` because declaring an impl needs
   the trait head in scope. The entry module imports the methods only.
-- **14.** The comment limits each generic HOF to one vec primitive and cites
-  FIXME 0483. That filing was deleted as cured in S103. Whether the
-  constraint still holds has not been re-verified (see §4.6).
 
 ## 3. The examples-local library
 
-The user ruled on 2026-07-21 that `examples/` has its own minimal library
-derived from the lessons ([root guidance](../CLAUDE.md#design-principles)). `lib/README.md`
-states the earning rule, the exclusions, the two-tier split and the current
-contents. The prelude stays definition-free. Only `operators.cl`, earned by
-15, has shipped.
-
-The candidate modules are unscheduled direction, not commitments. None may
-land before its earning lesson exists.
+[`lib/README.md`](lib/README.md) states the rules and the current contents.
+The candidate modules below are unscheduled direction, not commitments. None
+may land before its earning lesson exists.
 
 | Candidate | Provides | Earned by | Relieves |
 |---|---|---|---|
@@ -231,67 +209,35 @@ approves the phase. Each step should leave the sequence green:
 
 **Anti-goal:** do not close gaps by appending files 38, 39 and so on.
 
-### 4.6 Candidate beats awaiting a prerequisite check
+### 4.6 Pending example edits
 
-- **37: qualified `impl` reference from a sibling module.** An `impl` may name
-  `main.traits/Describe` without importing it. The S117 attempt exited 5 fresh
-  and failed warm-cache (FIXME 0869). 0869 was deleted in the S122 checkpoint.
-  The guard is `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.
-  Ship the beat only after a fresh and warm run and link matrix passes. Add no
-  separate HKT spelling beat.
-- **37: no-impl diagnostic comment.** S115 recorded the codegen leak (0672) as
-  fixed. Quote the diagnostic only after verifying it.
-- **14: vec primitives as values at two instantiations.** Re-verify the
-  constraint left behind by cured FIXME 0483. Then replace the comment or
-  update its citation.
+Each item needs an authorized example edit. Include it in the next change to
+the file it names.
+
+- **21 and 23: remove the refusal-era text.** Both open with "KNOWN RED since
+  Sprint 118" headers and carry Part-4 refusal markers. The S121 close
+  observed them at their documented exits, 243 and 178
+  ([record](../sprints/archive/sprint-121.md)). FIXME 0907 owns the trigger
+  ([remaining obligation 2](../design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md#remaining-obligation)).
+  When it fires, delete the headers and markers, and restore 21's opening as
+  the start of the IO chapter.
+- **14: vec primitives as values at two instantiations.** The comment cites
+  FIXME 0483 as an open SIGBUS, but that filing was deleted as cured in S103.
+  Re-verify the constraint, then remove it or update the citation.
 - **25: heap captures in curried partials.** The comment cites FIXME 0796 as
   open, but that filing was deleted in S118. Re-verify, then update.
-- **26: "IO is a Functor".** Blocked. S118 measured the trait-method spelling
-  of an IO combinator leaking about 68 bytes per call (FIXME 0907 §3, open). Do
-  not offer it to readers as a workaround.
+- **29 and 37: sprint tags.** Remove `S114` and `S113` from reader-facing
+  comments.
+- **37: qualified `impl` reference from a sibling module.** An `impl` may name
+  `main.traits/Describe` without importing it. The S117 attempt exited 5 fresh
+  and failed warm-cache under FIXME 0869, since deleted. The guard is
+  `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.
+  Ship the beat only after the fresh and warm run and link matrix passes. Add
+  no separate HKT spelling beat.
+- **37: no-impl diagnostic comment.** S115 recorded the codegen leak (0672) as
+  fixed. Quote the diagnostic only after verifying it.
+- **26: "IO is a Functor" stays out.** S118 measured the trait-method spelling
+  of an IO combinator retaining about 68 bytes per call. FIXME 0907 still
+  carries that balance cell. Do not offer it to readers as a workaround.
 - **Not a beat: a non-`Int` program result.** It is legal, but an example
   whose `main` does not return `Int` cannot verify itself.
-
-### 4.7 Stale example text
-
-Repairing these comments needs an authorized example edit. They are recorded
-here so the next change to the example code includes them.
-
-- 21 and 23 still open with "KNOWN RED since Sprint 118" headers and Part-4
-  refusal markers. The S121 acceptance run (2026-09) observed both at their
-  documented exits. Remove the headers and markers, and restore 21's opening
-  as the start of the IO chapter.
-- 14 and 25 cite deleted filings (§4.6).
-- 29 and 37 carry sprint tags (`S114`, `S113`) in reader-facing comments.
-
-## 5. Spec feature coverage
-
-This table lists coverage only. Absence is shown in §4.1.
-
-| Feature area | Example(s) |
-|---|---|
-| Literals (Int, Float, Bool) | 01, 02, 08 |
-| `let`, `if`, `defn` | 03, 04 |
-| Recursion and tail calls | 05 |
-| ADTs and pattern matching | 06, 10, 11 |
-| Let-polymorphism at several instantiations | 07 |
-| Strings (basic operations) | 09 |
-| Closures, higher-order functions | 12, 13 |
-| `Vec`, including primitives as values | 14 |
-| Traits, operator dispatch, constrained polymorphism, default methods | 15, 17, 20 |
-| Modules: `mod`, specific import, qualified reference | 16, 37 |
-| Method-import dispatch (§7.11.2) | 37 |
-| Macros, threading macros | 18, 19 |
-| IO model, test capture, `read-line` | 21–24 |
-| Auto-currying of a `defn`, a closure value and a trait operator | 25 |
-| Higher-kinded traits | 26, 30 |
-| Lazy sequences | 27 |
-| Lenient evaluation (bindings and apply arguments) | 28, 30 |
-| `:Type` annotation model | 29 |
-| Bitwise primitives | 31 |
-| Concurrency combinators; fatal empty `select` | 32 |
-| Definition ordering within a cluster | 33 |
-| Poll-shape platform leaf | 34 |
-| Dotted constructors; binder versus reference | 35 |
-| Multi-signature `defn` | 36 |
-| Importing an examples-library module | 25 |

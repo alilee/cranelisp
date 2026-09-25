@@ -1,13 +1,14 @@
-//! S118 — `design/backend/transitive-drop-glue.md` §4.1 (the ruling) and §10
-//! row 4: the ONE sanctioned non-concrete release site is the **constructor
-//! template's own parameter**, and §4.1 rules that the gate admitting it must be
-//! keyed on the **frame**, never on the type. That ruling has NOT shipped — the
-//! live gate is type-keyed, knowingly; see the measurement below.
+//! S118 — `design/backend/transitive-drop-glue.md` §4.1 and §10 fourth row, the
+//! **superseded** record of the constructor-template admission. The live
+//! disposition is `design/backend/non-concrete-release-contract.md` §4.1
+//! (I-CT′): in production a residual-parameter constructor is a slotless
+//! `Life::Template` and never reaches codegen. These cells construct such a
+//! frame directly and pin the S118 balance of the still type-keyed arm; they
+//! change when that arm's disposition lands (FIXME 0903).
 //!
-//! A constructor `Def` is compiled ONCE per declaration, so its parameter types
-//! come from the entry's `scheme` and two legal declaration shapes hand that
-//! scheme a non-concrete parameter — a generic field (`(deftype (Option a)
-//! (Some [:a v]))`). In that
+//! A directly constructed constructor frame takes its parameter types from the
+//! entry's `scheme`, so a generic field (`(deftype (Option a) (Some [:a v]))`)
+//! hands it a non-concrete parameter. In that
 //! frame the scope-exit release is not a teardown: it is the balancing half of
 //! the guarded consuming inc `compile_consuming_arg_list` emitted on the same
 //! value, on a word the returned box now also holds (invariant **I-CT**), so the
@@ -27,9 +28,9 @@
 //! exactly while breaking the invariant (FIXME 0905; §10's own standard, "assert
 //! emitted call identity and control-flow ordering, not only text presence").
 //!
-//! Row 4's **negative** half — "a non-concrete binding in a NON-ctor-template
-//! frame is a located error" — is **not landed here**, and the reason is a
-//! measurement, not an omission. §4.1's gate was implemented as ruled (a
+//! The S118 row's **negative** half — "a non-concrete binding in a
+//! NON-ctor-template frame is a located error" — is **not landed here**, and
+//! the reason is a measurement, not an omission. The S118 gate was implemented as ruled (a
 //! frame-level `is_ctor_template` boolean computed in `compile_body` from the
 //! body node, threaded to the shared release body as a two-state
 //! `NonConcreteRelease` verdict, with both tail-jump flushes passing the
@@ -46,14 +47,13 @@
 //! I-CT does not cover: synthetic **field accessors** of a generic or
 //! undeclared-field product (`Box.v`'s `self: ADT(user/Box, [Var(0)])`) and
 //! generic **trait-method instances** (`Functor.fmap$primitives/Option`'s
-//! `Fn([Var(9)], Var(8))` parameter). So §4.1's premise — "the migration
-//! measured exactly one class" — is false, and the narrowing cannot land until
-//! the whole measured class is ruled: FIXME 0903 → `/design`(backend), which
-//! carries the implemented gate and both negative cells verbatim for re-landing.
+//! `Fn([Var(9)], Var(8))` parameter). The contract assigns both to the
+//! producer (§4.2, §7.4) under FIXME 0903; the implemented gate and its
+//! negative cells were reverted and are not in the tree.
 //!
 //! The consequence for a reader of THIS file: the cells below pass under the
-//! type-keyed gate that is still in place *and* under the frame key that will
-//! replace it. They are not evidence that the key is right.
+//! type-keyed gate that is still in place. They are not evidence that the key
+//! is right, nor that such a frame reaches codegen in production.
 
 use std::collections::HashMap;
 

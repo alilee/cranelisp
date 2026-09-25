@@ -41,7 +41,7 @@ and is kept because it is cited.
 - Value and pattern positions reach the canonical binding through one member
   resolver (§3), so they agree by construction.
 
-## 1. Registration — `adt.rs::register_type_def_with_ctor_infos`
+## 1. Registration — `crates/cranelisp-typecheck/src/adt.rs::register_type_def_with_ctor_infos`
 
 ### 1.1 The canonical key and the bare candidate (sum constructors)
 
@@ -263,10 +263,10 @@ Typecheck's own readers and their disposition:
   §7 and §9; implementation is `dev`'s under that design, with no further
   design decision owed here.
 - **Stale rationale in source.** Comments and rustdoc on the constructor path
-  still describe superseded shapes: `Ambiguous` and "poison" in
-  `check_constructor_pattern`, a bare-keyed seeded `Bind` in the §4.2 probe
-  comment, and `Def`/`DefKind::Constructor` in `committed_member_owner` and
-  `resolve_constructor_entry`. Repair is `dev`'s.
+  still name the retired `Def`/`DefKind::Constructor` shape where source now
+  reads `CallableOrigin::Ctor`: the `CtorBuild` rustdoc and the §4.2 probe
+  comment in `adt.rs`, and the constructor-to-type lookup rustdoc in
+  `checker.rs`. Repair is `dev`'s.
 
 ## 9. Cross-references
 

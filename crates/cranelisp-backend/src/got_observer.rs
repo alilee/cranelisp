@@ -1,6 +1,6 @@
 //! GOT-population observation extension point per Decision 40-pattern + FIXME
-//! 0099 and `facades/backend.md` §"GOT-population observation (extension
-//! point)".
+//! 0099 (`design/arch/bounded-contexts.md` §3: the observer is an extension
+//! point; observer state is the binary's).
 //!
 //! Backend defines the observation taxonomy and a registration API; all
 //! consumer-side state (ring buffer, env-var activation, panic-safe formatter,
@@ -12,10 +12,10 @@
 //! The events fire from `compile_to_module`'s post-finalize code-pointer
 //! collection site (where each defined function's fresh-build address is in
 //! hand — `JitWrite`) and from `Linker::load_object`'s symbol-resolution loop
-//! (`LinkerWrite`). The `Redefinition` variant is published here for the
-//! consumer (int) to emit when its symbol-table write detects an existing
-//! `Code::Jit` for the entry — that site lives outside backend today and is
-//! wired in Wave 3b-2.
+//! (`LinkerWrite`). The `Redefinition` variant is published for int, which
+//! detects the redefinition at its own write site; because `GotEvent` has no
+//! public constructor, int records that event directly into its consumer ring
+//! rather than through [`emit`].
 //!
 //! Production batch (`--link`, non-trace `--run`) does NOT register an
 //! observer and pays one relaxed-load null check per emit site (one
@@ -42,7 +42,7 @@ use cranelisp_types::{ModuleFullPath, Symbol};
 /// GOT-population event tag — names the lifecycle moment that produced the
 /// slot write.
 ///
-/// `#[non_exhaustive]` per facade — adding a new tag is a minor revision
+/// `#[non_exhaustive]` — adding a new tag is a minor revision
 /// (consumers must not match-exhaustively on this enum without a default
 /// arm).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,11 +60,8 @@ pub enum GotEventTag {
     LinkerWrite,
     /// A GOT slot already populated by an earlier `JitWrite` or
     /// `LinkerWrite` was overwritten by a fresh address (REPL
-    /// redefinition). Backend publishes this tag for the consumer to
-    /// emit when its symbol-table write site detects the prior
-    /// population — that detection lives in `int` (Decision-41 future
-    /// state moves the detection here, but it is not the Wave 3b-1
-    /// state).
+    /// redefinition). Backend publishes this tag; the detection and the
+    /// recording live in `int`.
     Redefinition,
 }
 
@@ -73,7 +70,7 @@ pub enum GotEventTag {
 /// (`Linker`) — the same per-symbol address may flow through either
 /// origin over the symbol's lifetime.
 ///
-/// `#[non_exhaustive]` per facade.
+/// `#[non_exhaustive]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum GotProvenance {
@@ -94,8 +91,7 @@ pub enum GotProvenance {
 /// `symbol` newtypes are passed by reference fields (not owned) for the
 /// same reason.
 ///
-/// `#[non_exhaustive]` per facade — adding new fields is a minor
-/// revision.
+/// `#[non_exhaustive]` — adding new fields is a minor revision.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct GotEvent {

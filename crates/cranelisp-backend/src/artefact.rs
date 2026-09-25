@@ -1,6 +1,6 @@
 //! Return shapes for the backend's codegen entry points.
 //!
-//! Backend's three codegen free functions return:
+//! Backend's crate-root codegen free functions return:
 //!
 //! - `compile_to_module` returns `CompilationArtifacts` (defined in `lib.rs`,
 //!   not here) by value, and writes the compiled fn pointer directly into the
@@ -9,9 +9,8 @@
 //!   from its own `Arc<Jit>` after the call.
 //!
 //! - `load_object` returns a [`LinkerArtefact`]: the per-module retention root
-//!   for cache-hit code (`Arc<Linker>`) plus a per-symbol address map `int`
-//!   walks to populate `Code::Linker` lifecycle owners and write each
-//!   per-symbol address into the entry's GOT slot via `got().store_slot`.
+//!   for loaded code (`Arc<Linker>`) plus a per-symbol address map. It has no
+//!   production caller; the live cache hit is `cache::load_cached_object`.
 //!
 //! - `produce_disasm` returns a `String` (not an artefact).
 //!
@@ -38,13 +37,11 @@ use crate::cache::linker::Linker;
 
 /// Return shape of `load_object`.
 ///
-/// Per `facades/backend.md` §"Return shapes" — `int` consumes the artefact
-/// per-symbol: for each `(symbol, ptr)` in `ptrs`, the integration layer
-/// stores `Code::Linker(linker.clone())` as the lifecycle owner on the
-/// matching `ModuleEntry::Def`, and writes `ptr` into the entry's GOT
-/// slot via `symbol_table.got().store_slot(entry.got_slot.unwrap(), ptr)`.
-/// The GOT (post-rollback `1dc57ae`) is the single source of truth for
-/// callable addresses — `ptr` does not live on the entry itself.
+/// A consumer would, per `(symbol, ptr)` in `ptrs`, store
+/// `Code::Linker(linker.clone())` as the lifecycle owner and write `ptr` into
+/// the callable's GOT slot; the GOT is the single source of truth for
+/// callable addresses. No production path consumes it today (see
+/// `load_object`).
 ///
 /// Per-module cardinality: one `Linker` holds many symbols, so a single
 /// `LinkerArtefact` covers the whole cache-hit module's defined symbols.
@@ -57,8 +54,7 @@ pub struct LinkerArtefact {
     /// object alive for as long as any per-symbol `Code::Linker` clone
     /// references it. Reclaim fires when the last clone drops.
     pub linker: Arc<Linker>,
-    /// Per-symbol code addresses. `int` walks this map per the
-    /// per-symbol direct-write pattern described above.
+    /// Per-symbol code addresses, keyed by binding name.
     pub ptrs: HashMap<Symbol, *const u8>,
 }
 

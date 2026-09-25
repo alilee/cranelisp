@@ -1,11 +1,12 @@
 //! Per-function compiled-code handle (Decision 35 + Decision 41).
 //!
-//! `Code` is the per-symbol lifecycle owner — carried on
-//! `ModuleEntry::Def.code` in the integration layer's `SymbolTable<Code, ()>`.
-//! It unifies fresh-build (JIT-backed) and cache-hit (Linker-backed) code
-//! into one shape so the same field carries either provenance.
+//! `Code` is the per-symbol lifecycle owner — carried as the `code` of a
+//! concrete arm's `Realization::Body` in the integration layer's
+//! `SymbolTable<Code, ()>`. It unifies fresh-build (JIT-backed) and cache-hit
+//! (Linker-backed) code into one shape so the same field carries either
+//! provenance.
 //!
-//! # Placement (Decision 41 + facade `design/arch/facades/backend.md`)
+//! # Placement (Decision 41; `design/arch/bounded-contexts.md` §3)
 //!
 //! The enum lives in `cranelisp-backend` because both variants reference
 //! backend-owned types (`Jit`, `cache::Linker`). Principle 3's protection
@@ -16,10 +17,9 @@
 //!
 //! # Design
 //!
-//! `Code` carries **lifecycle ownership ONLY** (S75 W2 slim per
-//! `facades/backend.md` §"Code"). The fn ptr for an indirect call lives in
-//! the per-module `GotTable` — read via
-//! `symbol_table.got().load_slot(entry.got_slot.unwrap())`. The GOT is the
+//! `Code` carries **lifecycle ownership ONLY**. The fn ptr for an indirect
+//! call lives in the per-module `GotTable` — read via `got.load_slot` at the
+//! callable's slot. The GOT is the
 //! single source of truth for callable addresses; there is no per-variant
 //! `ptr` field and no `ptr()` accessor (the S66 same-day `fn_ptr` unification
 //! rollback `1dc57ae` settled the GOT as authoritative).
@@ -59,8 +59,9 @@ use std::sync::Arc;
 use crate::cache::linker::Linker;
 use crate::jit::Jit;
 
-/// Per-function compiled-code handle. Lives on `ModuleEntry::Def.code` in
-/// the integration layer's `SymbolTable<Code, ()>` (Decision 35).
+/// Per-function compiled-code handle. Lives in a concrete arm's
+/// `Realization::Body` in the integration layer's `SymbolTable<Code, ()>`
+/// (Decision 35).
 ///
 /// See the module-level docs for the full safety + reclaim contract.
 ///
@@ -71,10 +72,8 @@ use crate::jit::Jit;
 /// `Arc<Linker>` is opaque (would dump JIT internals which is noise at the
 /// `:?` debug-print level).
 ///
-/// S75 W2 slim per `facades/backend.md` §"Code": variants carry the
-/// lifecycle owner ONLY (no per-variant `ptr`); the `Code::Primitive`
-/// marker is deleted (primitive-ness reads from `kind: DefKind::Primitive`;
-/// primitives entries carry `code: None`).
+/// Variants carry the lifecycle owner ONLY (no per-variant `ptr`); there is
+/// no primitive marker — primitives carry no `Code`.
 #[non_exhaustive]
 #[derive(Clone)]
 pub enum Code {

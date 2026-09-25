@@ -19,7 +19,7 @@
 // Object code references them via `__cranelisp_got_{module}` data symbols.
 // Decision 23 (Sprint 58 Wave 2 follow-on): the symbol address IS the GOT
 // slab base directly — no extra pointer-cell indirection. In `.o` files the
-// symbol is defined as `Linkage::Export` data sized `slot_count * 8` with
+// symbol is defined as `Linkage::Export` data of at least `GOT_TABLE_SIZE` slots with
 // function-address relocations at each slot (`define_module_got_data`); in
 // JIT mode the symbol is registered via `JITBuilder::symbol()` with
 // `GotTable.base_ptr()`. Either way `global_value(__cranelisp_got_{M})`
@@ -203,8 +203,7 @@ impl Linker {
 
     /// Get a defined symbol's address (from a loaded .o file or registered externals).
     ///
-    /// Per Decisions 36 + 37 (and `facades/backend.md` §"Linker — the cache-load
-    /// retention newtype"): bare-name lookup; returns a typed `LinkerError`
+    /// Per Decisions 36 + 37: bare-name lookup; returns a typed `LinkerError`
     /// (not a bare `Option`) when the symbol is absent. This makes the
     /// pre-S58 silent-NULL regression net visible at the type level — callers
     /// match on `LinkerError::SymbolNotFound` rather than seeing `None` and
@@ -222,10 +221,9 @@ impl Linker {
     /// Load an object file: parse sections, copy code to executable memory,
     /// resolve relocations, and register defined symbols.
     ///
-    /// `pub(crate)` per S75 W2 (facade PIF Row 3): the public cache-hit entry
-    /// is the free function `cranelisp_backend::load_object`, which owns
-    /// `Linker` construction and returns a `LinkerArtefact`. This method is
-    /// the in-crate primitive that free function (and the cache module) drive.
+    /// `pub(crate)`: the public cache-hit entry is `cache::load_cached_object`
+    /// (the crate-root `load_object` also drives it but has no production
+    /// caller).
     pub(crate) fn load_object(
         &mut self,
         module_name: &str,
@@ -320,10 +318,8 @@ impl Linker {
                             module: cranelisp_types::ModuleFullPath::from(module_name),
                             symbol: cranelisp_types::Symbol::from(clean_name),
                             // Slot index is not visible at the linker
-                            // boundary; consumer correlates by name. We
-                            // publish 0 as a placeholder per facade — the
-                            // canonical slot will be added when int's write
-                            // site emits.
+                            // boundary; consumer correlates by name. `0` is
+                            // a placeholder, not a slot.
                             slot: 0,
                             ptr: addr as *const u8,
                             provenance: crate::got_observer::GotProvenance::Linker {

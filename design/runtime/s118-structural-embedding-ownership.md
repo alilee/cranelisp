@@ -7,9 +7,9 @@ unit-tier detector the profile can actually arm, with the general rule stated at
 **Scope:** the runtime pair — producer `cranelisp-primitives::marshal`,
 consumer/authority `cranelisp-intrinsics::drop`.
 **Authority:** elaborates `design/arch/bounded-contexts.md` §4a (primitives) /
-§4b (intrinsics); sibling of `design/runtime/s117-primitives-integrity.md`,
-which established this directory as the home for a contract that spans the pair
-rather than sitting inside one crate's interior.
+§4b (intrinsics); sibling of `design/runtime/s119-typed-consume-funnel.md`, the
+other contract that spans the pair rather than sitting inside one crate's
+interior.
 **Inputs:** FIXME 0835 (+ the S118 `/qa` attribution ruling and the ambient
 prelude-load scope note); `tests/slist_sconcat_ownership_0835.rs` (the committed
 repros A + B); `tests/plan/s118-test-plan.md` §2.5 / §4.5;

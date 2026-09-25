@@ -9,17 +9,17 @@ published flat `name → (signature, ptr)` catalog of backend-emitted-call targe
 
 The catalog makes the crate self-describing so the single JIT-setup boundary
 derives its whole symbol set from one source per owner: GOT data symbols from
-`symbol_tables`, and intrinsic Import targets from here. Before it, backend
-enumerated this crate's targets by Rust path, which required backend to name
-`cranelisp_intrinsics::*` paths and left three consumer sites free to diverge.
+`symbol_tables`, and intrinsic Import targets from here. No consumer names a
+`cranelisp_intrinsics::*` Rust path to find a target, so the three resolution
+points of §4 cannot diverge on the set.
 
 ## 2. Shape
 
 `pub fn intrinsics_table() -> &'static [IntrinsicEntry]` — a function returning a
 `'static` slice literal, **not** a `pub static`. `IntrinsicEntry` carries a raw
 `*const u8`, so a `pub static` of them would require an `unsafe impl Sync`,
-while a function handing out a shared `&'static` needs none (the S76 seam-3
-`!Sync` ruling, recorded at `catalog.rs:24-32`). Consumers iterate; no keyed
+while a function handing out a shared `&'static` needs none (recorded in the
+`crates/cranelisp-intrinsics/src/catalog.rs` module rustdoc). Consumers iterate; no keyed
 lookup is needed at any resolution point, because all of them register every
 entry unconditionally.
 
@@ -44,8 +44,8 @@ surface for zero codegen gain.
 
 The entries are this crate's backend-emitted-call targets, each naming an
 in-crate Rust path. **The inventory lives in source, pinned by the closed-set
-guard `catalog/tests.rs::name_set_is_exactly_the_expected_38`** — do not keep a
-second copy here.
+guard `crates/cranelisp-intrinsics/src/catalog/tests.rs::name_set_is_exactly_the_expected_38`**
+— do not keep a second copy here.
 
 Deliberately excluded:
 
@@ -92,23 +92,19 @@ recurring error:
 
 | Half | What it holds | Home | Closure |
 |---|---|---|---|
-| **Runtime targets** | this catalog's `name → (arity, ptr)` rows, emitted as `Linkage::Import` | `cranelisp-intrinsics` | **measured, and it exists**: the closed-set guard REDs on a silent addition |
-| **Slot-less polymorphic user callables** | `bind`, `race`, `select`, `catch-runtime-error` — declared in `src/bootstrap.rs`, backend-intercepted by name | `src/` plus the primitives declaration table | **ungraded**: no cell asserts closure, so a silent fifth member lands green |
+| **Runtime targets** | this catalog's `name → (arity, ptr)` rows, emitted as `Linkage::Import` | `cranelisp-intrinsics` | **measured**: the §3 closed-set guard fails on a silent addition |
+| **Slot-less generic user callables** | `bind`, `race`, `select`, `catch-runtime-error` — host-promised, mounted in the synthetic `primitives` module by `src/bootstrap.rs`, backend-intercepted by name | `src/` | **measured**: `src/bootstrap.rs::bootstrap_generic_uniform_body_roster_is_closed` fails on an added or reclassified member |
 
-This catalog contributes two things to roster work, neither of them new
-construction: the closure of its own half, already measured — the shape for the
-second half to copy — and its **declared representation dependencies**. Each row
-assumes facts about the layouts it reads (the uniform `i64` value word, the IO
-node tag discipline, the closure drop-glue offset, the `Result` tag order, the
-Vec header offsets). Those constants are intrinsics-owned and already
-structurally pinned by `const _: () = assert!(…)` layout locks, so recording a
-dependency is a citation, not a new guard.
+Each catalog row also carries **declared representation dependencies**: facts
+about the layouts it reads (the uniform `i64` value word, the IO node tag
+discipline, the closure drop-glue offset, the `Result` tag order, the Vec header
+offsets). Those constants are intrinsics-owned and structurally pinned by
+`const _: () = assert!(…)` layout locks, so recording a dependency is a
+citation, not a new guard.
 
-**`vec-len` joins neither half, under either de-slot spelling.** Its body is
-`cranelisp-primitives::vec::vec_len` — one length-word load through
-`vec_runtime::LEN_OFFSET` — and this catalog excludes it by design. Reclassified
-inline it has no runtime target at all; kept by-name its body is in the sibling
-crate, which is not this catalog's. A `vec-len` row here is a `/review` reject.
+**`vec-len` belongs to neither half.** It is an inline primitive declaration
+that backend lowers to one length-word load; it has no runtime target and no
+by-name import. A `vec-len` row here is a `/review` reject.
 
 ## 7. Cross-references
 

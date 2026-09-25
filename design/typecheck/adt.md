@@ -1,262 +1,144 @@
-# ADT Type Checking
+# ADT typing
 
-Solution design for algebraic data type (ADT) type checking in Cranelisp. Covers type definition registration, constructor scheme generation, pattern matching inference, and exhaustiveness checking.
+Owner: `design` narrow-deployed to typecheck. Subordinate to `typecheck.md` §9.4.
+Covers type-definition registration, constructor schemes, the product dual facet,
+constructor-pattern inference and exhaustiveness. Required behaviour:
+`spec/05-definitions.md` §5.2 and `spec/06-pattern-matching.md`.
 
-## Type Definition Registration
+Neighbouring designs this one uses without restating:
 
-Registration happens in `adt.rs` via `TypeChecker::register_type_def`. The process handles both nullary enums (Ring 0) and parameterized ADTs with data constructor fields (Ring 1).
+| Subject | Design |
+|---|---|
+| Canonical `Type.Ctor` keys, the bare candidate, the member resolver and exhaustiveness normalisation | [`dotted-ctor-registration.md`](dotted-ctor-registration.md) |
+| Field accessors: keying, candidates and which fields get one | [`fixme-0365-field-accessor-dotted.md`](fixme-0365-field-accessor-dotted.md) |
+| Concrete versus template constructors and accessors, and re-synthesis | [`non-concrete-producer-obligations.md`](non-concrete-producer-obligations.md) |
+| Bare constructor selection in value and pattern position | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §5, §7 |
+| `TypeExpr → Type` resolution and type-argument arity | [`type-expr-resolver-convergence.md`](type-expr-resolver-convergence.md) |
+| Internal constructors (`IO`'s `Bind`, `Pure`, `Effect`) | [`io-types.md`](io-types.md) §1 |
 
-### Registration Pipeline
+## 1. Registration
 
-```
-register_type_def(name, type_params, constructors, ...)
-  1. allocate_type_params     → (var_map, type_var_ids)
-  2. build ADT result type   → Type::ADT(name, [Var(id) for id in type_var_ids])
-  3. build_constructor_infos  → Vec<ConstructorInfo> with resolved field types
-  4. register_constructors    → symbol table + constructor_to_type map
-  5. find_same_name_ctor      → handle product type case
-  6. register TypeDef entry   → symbol table
-```
+A source `deftype` enters through
+`crates/cranelisp-typecheck/src/adt.rs::register_type_def`:
 
-> **Dotted `Type.Ctor` canonical keys.** A **sum** constructor's one callable
-> binding is keyed `member_key(Type, Ctor)` (`Maybe.Some`), settled through the
-> lifecycle funnels; the bare constructor name is a `NameCandidate` reference to
-> it, as a field accessor's bare name is to `Type.field`. Same-named
-> constructors across in-scope types coexist as candidates selected at each use;
-> the dotted form is always valid in value and pattern position. A **product**
-> constructor keeps its single type-name key (the dual facet below); its dotted
-> form is degenerate. Full design:
-> **`design/typecheck/dotted-ctor-registration.md`**.
+1. Allocate a fresh type variable per type parameter.
+2. Pre-seed a type-only binding for the type name, so a recursive field such as
+   `:(List a) tail` resolves. If a field fails to resolve, the placeholder is
+   removed before the error returns.
+3. Resolve each field's `TypeExpr` through the one resolver, which also checks
+   type-argument arity.
+4. Hand the resolved constructors to `register_type_def_with_ctor_infos`.
 
-> **Field-accessor synthesis is slot-gated (S119, FIXME 0924).**
-> `synthesise_one_accessor` (`adt.rs:618-637`) mints the canonical `Type.field`
-> `Def` as `UserFnState::Concrete { got_slot }` **unconditionally** — including for
-> a polymorphic product, whose scheme `∀a. (Fn [(Bx a)] a)` is not
-> `Type::is_concrete()`. That is the pairing `monomorphisation.md` §2.1 declares
-> unconstructable, and the compiled frame is memory-unsafe at the
-> `NULLARY_TAG_THRESHOLD` boundary (`design/backend/non-concrete-release-contract.md`
-> §2.4). Ruled: the mint takes the universal gate (**P-1**), a non-concrete accessor
-> becomes slot-less `Polymorphic`, and its instances are produced by **re-running
-> this synthesiser at concrete type arguments** (**A-MINT**) rather than by a body
-> re-check — the body is `Span::SYNTHETIC` and outside span-keyed carrier transport.
-> The bare accessor candidate and the §8.6.5 use-site contest are **untouched**:
-> they key on the canonical entry, not its lifecycle. The impl-time collision
-> pre-flight also survives as built, but spec §7.3.1 makes it obsolete; its
-> removal is pending defect intake ([accessor-design obligation](fixme-0365-field-accessor-dotted.md#21-unresolved-obligation--the-source-still-rejects-the-overlap),
-> `ACT-0983`). The former **Rider 0867** widening is retired by the 2026-09-02
-> language ruling: sum payload labels mint no accessors. Full lifecycle statement:
-> **`non-concrete-producer-obligations.md`**.
+`register_type_def_with_ctor_infos` is also the synthetic-bootstrap entry: a
+synthetic module has no imports, so its caller supplies fully qualified field types
+already resolved. It stays thin:
 
-### Type Parameter Allocation
+- `cranelisp_types::build_adt_entries` derives the ordered `(key, entry)` set once.
+  The binary's bootstrap calls the same builder, so bootstrap and typecheck
+  registration cannot disagree (Principle 24).
+- A non-callable entry installs as a binding. A callable recipe settles through one
+  lifecycle funnel chosen by scheme concreteness: concrete with a synthesised body,
+  or a slotless template for re-synthesis. An existing template is kept; an
+  existing concrete or broken entry is retired before re-settlement.
+- A sum constructor's bare spelling is exposed as a candidate onto its canonical
+  key ([canonical key and bare candidate](dotted-ctor-registration.md#11-the-canonical-key-and-the-bare-candidate-sum-constructors)).
+- A product then synthesises its field accessors (§4).
 
-Each type parameter (e.g., `a` in `(deftype (Option a) ...)`) gets a fresh type variable via `fresh_var_id`. The `var_map` (HashMap<Symbol, TypeId>) maps parameter names to their allocated IDs, used by `resolve_type_expr` when processing field type annotations.
+A type is a **product** when it has exactly one constructor and that constructor's
+name equals the type's name. A single differently named constructor is a sum
+variant.
 
-### Field Type Resolution
+## 2. Constructor Scheme Generation
 
-Field types are `TypeExpr` values from the frontend. Resolution via `resolve_type_expr`:
+Each constructor's scheme is quantified over the type's parameters:
 
-| TypeExpr | Resolution |
-|----------|-----------|
-| `Named("Int")` | `Type::Int` (primitive lookup) |
-| `Named("Color")` | `Type::ADT("Color", [])` (known types lookup) |
-| `TypeVar("a")` | `Type::Var(id)` (var_map lookup) |
-| `Applied("Option", [Named("Int")])` | `Type::ADT("Option", [Type::Int])` (recursive + arity check) |
-| `FnType(params, ret)` | `Type::Fn(resolved_params, resolved_ret)` |
+| Constructor | Scheme |
+|---|---|
+| Nullary: `None` in `(deftype (Option a) None (Some [:a val]))` | `∀a. (Option a)` |
+| Data: `Some` in the same type | `∀a. (Fn [a] (Option a))` |
+| Monomorphic product: `(deftype Point [:Int x :Int y])` | `(Fn [Int Int] Point)` |
 
-### Arity Validation
+The scheme lives on the constructor's own callable binding, which is its single
+source; no type entry holds a copy.
 
-`KnownTypes` is `HashMap<TypeName, usize>` — maps type names to their expected type parameter count. When resolving `TypeExpr::Applied(name, args)`:
+## 3. Product Type Handling — the dual facet
 
-- Look up expected arity in `KnownTypes`
-- Compare `args.len()` against expected arity
-- Return `TypeError` on mismatch: "type Option expects 1 type argument(s), got 2"
+A product's type name and constructor name are one key, so one binding carries both
+facets: the constructor callable, with the completed `TypeDefInfo` on
+`CallableOrigin::Ctor { type_def: Some(..) }`. A sum registers a separate type
+binding, and its constructors carry `type_def: None`. Registration retires the
+provisional type-only binding before settling the product constructor, so the
+facet is never registered twice.
 
-**Rejected alternative**: Using `HashMap<TypeName, ()>` (Ring 0 design) and looking up `TypeDefInfo` for arity. Changed to `HashMap<TypeName, usize>` because the arity is the only information needed, and this avoids a dependency on `TypeDefInfo` in the resolution path.
+- **One "entry as a type" reader.** `checker::type_def_view_of` answers for a type
+  binding or a product constructor's facet. Every site that needs an entry as a
+  type goes through it, including type-position resolution of `:Box` and
+  `(Box Int)`. Do not pattern-match the type binding directly where a product
+  must also answer.
+- **Products do not auto-curry.** A product constructor's scheme is curry-shaped,
+  so `(Point 1)` would otherwise become a closure; the constructor guard in
+  `try_auto_curry` reports an arity error instead (spec §5.2.7;
+  `auto-curry.md` §1.1).
+- **No product special case downstream.** Constructor-to-type lookups and pattern
+  resolution read the constructor origin's `type_name` for products and sums
+  alike.
 
-## Constructor Scheme Generation
+Considered: renaming a product's constructor (a `Mk` prefix). Rejected because
+`(Point 1 2)` must construct a `Point` (spec §5.2).
 
-`build_constructor_scheme` produces a polymorphic type scheme for each constructor:
+## 4. Field accessors
 
-### Nullary Constructors
+Only product fields get accessors; a sum payload label is positional metadata
+extracted by `match` (`fixme-0365-field-accessor-dotted.md` §1.6.7). A concrete
+product's accessors settle concrete. A generic product's settle as templates with a
+synthesis recipe, and each instance is re-synthesised at concrete type arguments
+rather than produced by re-checking a body
+(`non-concrete-producer-obligations.md` §2.3).
 
-```
-(deftype (Option a) None ...)
+## 5. Constructor-pattern inference
 
-None :: forall [a]. (Option a)
-```
+`infer.rs::check_constructor_pattern`:
 
-Scheme: `{ vars: [a_id], ty: ADT("Option", [Var(a_id)]) }`
+1. Rejects an internal constructor.
+2. Resolves a dotted, bare or module-qualified name to one constructor through
+   `resolve_constructor_entry`. A bare name with several candidates is selected by
+   the scrutinee type, or held as a pending pattern use until inference settles it
+   (`dotted-ctor-registration.md` §3.3; `use-site-candidate-selection.md` §7).
+3. Instantiates the constructor afresh for the arm (`instantiate_ctor`) and records
+   the resolved storage identity for the pattern span in
+   `MethodResolutions.pattern_ctors`.
+4. Unifies with the scrutinee: a nullary constructor takes no bindings and its type
+   unifies with the scrutinee; a data constructor needs one binding per field, its
+   result type unifies with the scrutinee, and each binding takes its field type.
 
-### Data Constructors
+A fresh instantiation per arm lets `(Some x)` in one arm and `None` in another
+constrain the scrutinee without sharing constructor variables:
 
-```
-(deftype (Option a) ... (Some [:a val]))
-
-Some :: forall [a]. (Fn [a] (Option a))
-```
-
-Scheme: `{ vars: [a_id], ty: Fn([Var(a_id)], ADT("Option", [Var(a_id)])) }`
-
-### Monomorphic Constructors
-
-```
-(deftype Point (Point [:Int x :Int y]))
-
-Point :: (Fn [Int Int] Point)
-```
-
-Scheme: `{ vars: [], ty: Fn([Int, Int], ADT("Point", [])) }`
-
-## Product Type Handling — the dual-facet constructor (S79 Option 3a, FIXME 0319)
-
-When a single constructor has the same name as the type (e.g., `(deftype Rectangle [:Int w :Int h])`), a name collision occurs in the symbol table: the type name and the constructor name are one key.
-
-**Design**: The surviving `"Rectangle"` entry is the **got-slotted constructor
-`Def`** (exactly like a sum ctor) carrying a **type facet** —
-`DefKind::Constructor { type_def: Some(Box<TypeDefInfo>), .. }`. A **sum/enum**
-type instead registers a separate `ModuleEntry::TypeDef`, and its ctors carry
-`type_def: None`. A product ctor's scheme lives canonically on its own
-`Def.scheme` and its field names on `Def.param_names`. `is_product` is computed
-in `adt.rs::register_type_def_with_ctor_infos` (`ctors.len()==1 &&
-ctor-name==type-name`), which either registers a separate `TypeDef` (sum/enum)
-OR attaches the facet to the lone ctor `Def` (product) — never both.
-
-- **`checker::type_def_view_of(&ModuleEntry) -> Option<&TypeDefInfo>`** is the
-  single "entry as a type" reader: `Some` for a `TypeDef`, OR for a product
-  ctor's `type_def: Some(td)`. Every site needing an entry *as a type* routes
-  through it (`ModuleReadView::lookup_type_def`, `resolve_type`,
-  `concrete_type_for_impl_target`, and the `resolve.rs` source-annotation
-  resolvers `resolve_named`/`resolve_applied` so a product type in TYPE position
-  — `:Box`, `(Box Int)` — answers). Do NOT re-pattern `TypeDef` directly when a
-  product type must also answer.
-- **Product ctors do NOT auto-curry.** A product ctor's `Def.scheme` is
-  curry-shaped (`Fn([Int,Int], Point)`), so an under-applied `(Point 1)` would
-  otherwise fall into `infer.rs::try_auto_curry` and silently return a closure
-  instead of an arity error. The guard at the top of `try_auto_curry` returns a
-  `TypeError` ("constructor X expects N arguments but got M", spec §5.2.7) when
-  the callee resolves to a `DefKind::Constructor` Def. Sum ctors hit the same
-  guard.
-- **Ctor → parent-type** lookups and **pattern-ctor resolution** read the `Def {
-  kind: Constructor }.type_name` arm for products too — no product special-case.
-
-**Retired smuggling**: the pre-S79 approach extracted the ctor scheme into a
-`ModuleEntry::TypeDef.constructor_scheme` field, with `lookup_constructor_scheme`
-and ~six bespoke fallback legs keyed on it. That field and its fallback legs are
-**gone** — the scheme lives on the ctor's own `Def.scheme`, so type and ctor no
-longer smuggle each other's data through a shared entry.
-
-**Rejected alternative**: Renaming the constructor (e.g., `Mk` prefix). This would break the user-facing syntax where `(Point 1 2)` creates a `Point` value. The same-name convention is idiomatic for product types.
-
-## Field-accessor synthesis — where the design lives
-
-Two questions, two homes; neither is restated here.
-
-- **What an accessor entry is, and how it is keyed.** The canonical `Type.field`
-  binding, the bare `field` candidate reference to it, and selection among a
-  shared bare spelling's candidates at each use:
-  `fixme-0365-field-accessor-dotted.md` §1.6. [The trait requirement](../../spec/07-traits.md) permits an impl
-  method named like an accessor of its target; the rejection that source
-  still applies is obsolete ([accessor-design obligation](fixme-0365-field-accessor-dotted.md#21-unresolved-obligation--the-source-still-rejects-the-overlap), `ACT-0983`).
-- **Which fields get one.** Only product fields. A product is the lone
-  same-name-constructor shape; its fields mint total accessors. A differently
-  named constructor arm is a sum variant even when it is the only arm, and its
-  payload labels are positional metadata extracted by `match` — they mint no
-  callable names. `fixme-0365-field-accessor-dotted.md` §1.6.7 records the
-  S121 correction and the retirement of FIXME 0867's widening proposal.
-- **What lifecycle state the entry takes.** A concrete type's constructor and
-  accessors settle concrete; a generic type's are templates carrying a `SynthSpec`
-  recipe, and their instances are re-synthesised at concrete type arguments —
-  `non-concrete-producer-obligations.md` §2.3 (A-MINT), governed by
-  `design/arch/symbol-table-lifecycle.md` §5.8.
-
-## Pattern Matching Inference
-
-Constructor patterns in `match` expressions are checked by `check_constructor_pattern` in `infer.rs`.
-
-### Algorithm
-
-```
-check_constructor_pattern(ctor_name, bindings, scrutinee_type, span)
-  1. lookup_constructor_scheme(ctor_name)         → Scheme
-  2. instantiate(scheme)                          → fresh instance
-  3. Classify: nullary (Type::ADT) vs data (Type::Fn)
-  4. For nullary: unify(ctor_type, scrutinee_type)
-  5. For data (Fn [field_types...] result_type):
-     a. Validate bindings.len() == field_types.len()
-     b. unify(result_type, scrutinee_type)
-     c. Bind each pattern var to apply_subst(field_type)
-```
-
-### Constructor Scheme Lookup
-
-`lookup_constructor_scheme` searches these sources:
-
-1. `type_defs.constructor_type(name)` → `type_defs.get(type_name)` → find constructor in `TypeDefInfo`
-2. Symbol table: `ModuleEntry::Constructor { scheme, .. }` — this arm now serves **product ctors too**, since a product ctor is a got-slotted `Constructor` `Def` carrying its scheme on `Def.scheme` (see §"Product Type Handling"). The retired product-specific fallback leg keyed on `ModuleEntry::TypeDef.constructor_scheme` (S79, FIXME 0319) is deleted.
-
-### Type Instantiation and Unification
-
-Each match arm gets a fresh instantiation of the constructor's scheme. This ensures that pattern matching against a polymorphic constructor (like `Some`) correctly constrains the type variable for that arm.
-
-Example:
-```
+```clojure
 (match opt
-  [(Some x) x]       ;; instantiate Some: Fn [t42] (Option t42), unify (Option t42) with scrutinee
-  [None default])     ;; instantiate None: (Option t43), unify with scrutinee
+  [(Some x) x]      ;; Some: (Fn [t1] (Option t1)); (Option t1) unifies with the scrutinee
+  [None default])   ;; None: (Option t2); unifies with the scrutinee
 ```
 
-After unification, `x` has type `apply_subst(t42)` which resolves to the concrete element type.
+Pattern-position selection does not yet follow the approved candidate lifecycle
+in every branch; that obligation is recorded among the
+[constructor design's unresolved obligations](dotted-ctor-registration.md#8-unresolved-obligations).
 
-## Exhaustiveness Checking
+## 6. Exhaustiveness
 
-`check_exhaustiveness` verifies that a match covers all constructors of an ADT.
+After the arm bodies have constrained the scrutinee and pending constructor uses
+have settled, `infer_match` checks a match whose scrutinee is a concrete ADT:
 
-### Algorithm
+- the covered constructors are the settled `pattern_ctors` identities belonging to
+  the scrutinee's type, never the as-written names;
+- a wildcard or variable pattern covers everything;
+- internal constructors are excluded, so user code need not cover them;
+- `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module` compares
+  by constructor name within the
+  type's home module and reports the missing constructors sorted, for
+  deterministic diagnostics.
 
-```
-check_exhaustiveness(type_name, covered_ctors, has_wildcard, span)
-  if has_wildcard → ok (wildcard covers everything)
-  all_ctors = type_def.constructors.map(name)
-  missing = all_ctors - covered_ctors
-  if missing.is_empty() → ok
-  else → TypeError("non-exhaustive: missing X, Y")
-```
-
-### Properties
-
-- Name-based: coverage is tracked by constructor name, not by pattern structure
-- Works identically for nullary and data constructors (Ring 0 and Ring 1)
-- Wildcard (`_`) or variable patterns bypass the constructor coverage check
-- Missing constructors are sorted alphabetically in error messages for determinism
-
-### Limitations (Ring 0-1)
-
-- No nested pattern checking (e.g., `(Some (Some x))`)
-- No literal pattern coverage (integers, strings)
-- No guard analysis
-- These are deferred to Ring 3+ or may not be needed depending on language evolution
-
-## Per-Ring Evolution
-
-### Ring 0
-
-- Nullary enum constructors only (`(deftype Color Red Green Blue)`)
-- Monomorphic constructor schemes
-- Basic exhaustiveness checking
-- Pattern matching on constructor name only (no bindings)
-
-### Ring 1 — Current
-
-- Polymorphic type parameters (`(deftype (Option a) ...)`)
-- Data constructors with typed fields (`(Some [:a val])`)
-- Constructor pattern bindings (`[(Some x) ...]`)
-- `TypeExpr::Applied` resolution with arity validation
-- Product type handling (same-name constructor/type)
-- Explicit polymorphic products (`(deftype (Pair a b) [:a first :b second])`)
-
-### Ring 2 — Planned
-
-- Trait-constrained type parameters
-- Polymorphic ADT trait implementations
-- Monomorphisation of polymorphic ADT operations
-- Field accessor functions
+A non-exhaustive match on an ADT is a located type error, not a warning
+(spec §6.5.1). Coverage is by constructor name only: the language has no nested,
+literal, or- or guarded patterns (spec §6.6), so no pattern-structure analysis is
+needed.

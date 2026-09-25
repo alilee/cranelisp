@@ -26,15 +26,16 @@ operations and nothing else.
    (`module_extract.rs`).
 
 It performs **no macro recognition and no macro execution** (BC §1 invariant 2).
-Recognition is the `cranelisp_types::resolve_macro_head` primitive, driven by
+Recognition is `cranelisp_types::ResolutionScope::resolve_macro_head`, driven by
 typecheck's within-form descent and int's Pass-1 loop; execution is int's, behind
 the `cranelisp_types::MacroExpander` callback. Quasiquote desugaring is the
 entirety of the frontend's remaining macro-adjacent role, and it is syntactic.
 
 The frontend is the only crate that touches raw source bytes, names no `Type`,
 `Scheme` or `TypeId`, and depends only on `cranelisp-types` (Principle 3 —
-dependency flows toward stability). Everything crossing the boundary is passed by
-value; the sole `&` parameter on the surface is a read-only slice.
+dependency flows toward stability). Public functions borrow their input
+immutably — `flatten_begin` alone consumes its `Sexp` — and return owned values,
+so nothing the frontend returns aliases caller state.
 
 Because the crate is stateless apart from one atomic counter, every public
 function is callable in isolation from a source string with no session — the
@@ -71,18 +72,16 @@ re-exported here; consumers import it directly (Principle 15).
 
 ### 2.1 Interior modules
 
-| File | LOC | Responsibility |
-|---|---|---|
-| `lib.rs` | 397 | Public re-exports, the `parse` wrappers, and the surface narrative |
-| `reader.rs` | 1059 | Hand-written recursive descent: bytes → `Vec<Sexp>`, spans, comment mode |
-| `ast_builder.rs` | 2396 | `Sexp` → AST: head classification, form lowering, type expressions, patterns, traits and impls |
-| `module_extract.rs` | 497 | Peels `mod`/`mod-`/`import`/`export`/`platform`; resolves `super` |
-| `defmacro.rs` | 624 | `defmacro` shape parse → `DefmacroInfo`; per-clause `Defn` synthesis |
-| `quasiquote.rs` | 424 | Quote-family desugaring; the monotonic synthetic-span counter |
-| `preamble.rs` | 269 | Leading `;;` comment-block capture (spec §8.16) |
-| `synth.rs` | 130 | `pub(crate)` synthetic-`Sexp` primitives shared by `quasiquote` and `defmacro` |
-
-Counts verified at S122; the sibling `{module}/tests.rs` files are excluded.
+| File | Responsibility |
+|---|---|
+| `lib.rs` | Public re-exports, the `parse` wrappers, and the surface narrative |
+| `reader.rs` | Hand-written recursive descent: bytes → `Vec<Sexp>`, spans, comment mode |
+| `ast_builder.rs` | `Sexp` → AST: head classification, form lowering, type expressions, patterns, traits and impls |
+| `module_extract.rs` | Peels `mod`/`mod-`/`import`/`export`/`platform`; resolves `super` |
+| `defmacro.rs` | `defmacro` shape parse → `DefmacroInfo`; per-clause `Defn` synthesis |
+| `quasiquote.rs` | Quote-family desugaring; the monotonic synthetic-span counter |
+| `preamble.rs` | Leading `;;` comment-block capture (spec §8.16) |
+| `synth.rs` | `pub(crate)` synthetic-`Sexp` primitives shared by `quasiquote` and `defmacro` |
 
 `synth` is the single synthetic-`Sexp` construction kit: both `quasiquote` and
 `defmacro` compose their module-specific shapes on top of its primitives rather
@@ -96,10 +95,7 @@ spans are unique) hold across threads.
 `parse_defmacro`, `synthesize_macro_clause_defn`, `is_defmacro`, `is_begin` and
 `flatten_begin` are internal-but-exposed: public at the crate root, not part of
 the form-by-form boundary, and consumed directly by int's macro pipeline. They
-stand on those consumers. **There is no "narrow back to `pub(crate)`"** — the
-event the older rustdoc conditioned that on was the migration of `expand` into
-this crate, and S76 deleted `expand` rather than migrating it, so the condition
-can never occur.
+stand on those consumers; no planned change narrows them back to `pub(crate)`.
 
 ---
 
@@ -121,12 +117,11 @@ frontend's contribution to each unit of source is:
    inside the chokepoints, so no caller can bypass it.
 
 ```
-reader ── '/`/~/~@ lowered to (quote …)/(quasiquote …)/…
+reader ── '/`/~/~@ lowered to (quote …)/(quasiquote …)/…; :Type folded to Sexp::Annotated
   → int Pass-1 macro expansion (quote-shielded)
   → build_forms / build_form  ── quasiquote desugar fold ──┐
-       ├─ :Type pairing (BC §1 invariant 9)                │ one fixpoint pass
-       ├─ build_form_inner  (top-level forms)              │ over the whole tree
-       └─ build_expr        (bare expressions)             ┘
+       ├─ build_form_inner  (top-level forms)              │ one fixpoint pass
+       └─ build_expr        (bare and annotated exprs)     ┘ over the whole tree
 ```
 
 There is **no defmacro pre-pass**: a macro is available only to forms after its
@@ -137,7 +132,7 @@ Four interior judgments elaborate this chain, each in its own document:
 
 - **Annotation and declaration shape** — the read-time `Sexp::Annotated` fold,
   `deftype` explicit parameters and field types, constructor and field
-  uniqueness, and the one §7.1 trait-method tail: `s116-syntax-and-annotation.md`.
+  uniqueness, and the one §7.1 trait-method tail: `annotation-and-declaration-shape.md`.
 - **Quasiquote fold** — the chokepoint set, the idempotence contract, the
   surviving-quote-head backstop, and the paired int quote shield:
   `quasiquote-fold.md`.
@@ -164,14 +159,13 @@ every new language form lands in the same file — so it is a blast-radius conce
 not a defect. See §6.
 
 **Observability.** The frontend produces error values and never logs. Every
-`CranelispError` carries an `ErrorLocation` with `span` populated; parse errors
-additionally populate `context` with surrounding lines, so they remain
-self-contained after the source string drops. Post-parse errors leave `context`
-empty and let the formatter resolve it through introspection (Decision 39). The
-crate has no internal tracing surface and does not need one: debugging-time
-observability is int's `CRANELISP_CODEGEN_TRACE` plus the REPL slash commands,
-whose only requirement of the frontend is that its functions be callable in
-isolation and return inspectable data.
+`CranelispError` it returns carries an `ErrorLocation` whose `span` is populated;
+file, line/column and source context stay empty for the caller and formatter to
+attach (Decision 39); the frontend never holds a file identity. The crate has no
+internal tracing surface and does not need one: debugging-time observability is
+int's `CRANELISP_CODEGEN_TRACE` plus the REPL slash commands, whose only
+requirement of the frontend is that its functions be callable in isolation and
+return inspectable data.
 
 **Concurrency.** The frontend has no internal concurrency and no shared mutable
 state except the synthetic-span counter, which is a process-monotonic `AtomicU32`
@@ -187,27 +181,14 @@ cost, not the frontend's — the frontend lexes once per source unit.
 
 ---
 
-## 5. Decision register (frontend-relevant)
+## 5. Decisions
 
-**Active.**
-
-| # | Decision | Frontend takeaway |
-|---|---|---|
-| 30 | Form-by-form scheduler; mutual-import deadlock | The frontend produces no gaps and never blocks, because it is syntactic-only. Macro recognition, execution and the gap-orchestration retry belong to typecheck and int. |
-
-**Legacy — embodied in the architecture.**
-
-| # | Decision | Frontend takeaway |
-|---|---|---|
-| 1 | 7+1 crate DAG | One crate, depending only on `cranelisp-types` |
-| 2 | `cranelisp-types` is data-only | Every AST and `Sexp` type lives there. `ExtractedDeclarations` is the allowed exception — the frontend's own DTO, named for a frontend call rather than a domain concept |
-| 6 | `Type::from_name` / `type_name` | The frontend uses `TypeName` (syntactic) and never `Type`; the lift happens in typecheck |
-| 21 | Typecheck-sourced call graph on `ModuleEntry` | The frontend extracts `MacroClauseInfo` shapes; it never computes callees |
-| 23 | Uniform codegen; two-GOT model | Macro invocation runs through the GOT; the frontend never names `Jit` or `Linker` |
-| 32 | `CodeStore` / `LinkerStore` marker traits | The frontend stays C/L-blind |
-| 33 | Structural declarations as fields on `SymbolTable` | `extract_module_declarations` returns the bundle int appends directly onto those fields |
-| 38 | `SharedState`; per-symbol mutability discipline | The frontend holds no scheduler or session reference |
-| 39 | `ErrorLocation`; per-defn source on introspection | Spans are always populated; synthetic spans come from the monotonic allocator |
+Under Decision 30's form-by-form scheduler the frontend produces no gaps and
+never blocks, because it is syntactic-only; macro recognition, execution and the
+gap-orchestration retry belong to typecheck and int. Decisions 1, 2, 6, 21, 23,
+32, 33, 38 and 39 are embodied in the boundary stated in §1–§2 and in
+`modules.md` §4; the [decision label index](../arch/decisions/README.md) resolves
+each label to its current home.
 
 ---
 
