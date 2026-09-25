@@ -2921,7 +2921,9 @@ Pending, in order:
 2. `test` writes F1 and DV3 RED first.
 3. `design`(int) records the deferral rule, F3, F4 and the index-writer entry
    in §7.6. It replaces §7.6's as-built paragraph and the §16.0 CD-1 entry, and
-   it decides the F1 edge carrier after the F1 repro.
+   it makes the F1 correction consume `callees` (`arch` reassessment). Any
+   further carrier waits for the
+   [remaining-kinds evidence](#remaining-qualified-reference-kinds--evidence-allocation-2026-09-25).
 4. The user decides whether an F1 correction lands in S122 or F1 is disposed
    of as a residual. QA records no acceptance on the user's behalf.
 
@@ -2994,11 +2996,160 @@ Test's two F1 guards are RED in two complete cache-target runs (56run,
 54PASS/2FAIL). With main also importing b, the qualified-only cached a
 returns99 where no-cache returns11 after a compatible insertion in b. With
 main's import removed, the unchanged warm run fails resolving b's GOT; its
-cold run succeeds. The six earlier CD-1 guards remain GREEN. Cell2's
-enumeration-miss tag is provisional for QA; the design identifies the same
-missing qualified-reference provenance behind both faces.
+cold run succeeds. The six earlier CD-1 guards remain GREEN. The `arch`
+reassessment (`.local/s122-callee-cache-reassessment-result.md`) attributes
+both faces to missing consumption of the persisted `callees`, not to missing
+information, and withdraws the `int.md` §7.6.1 carrier. Cell 2's
+`enumeration-miss` class is ratified under
+[remaining qualified-reference kinds](#remaining-qualified-reference-kinds--evidence-allocation-2026-09-25).
 
 Both allocated DV3 shapes are GREEN: an edited test child imports a restored
 declared child successfully, with and without a super import. The original
 exemplar assertion lookup failure remains unreproduced outside its first
 full-run observation; these smaller shapes do not establish its mechanism.
+
+### Remaining qualified-reference kinds — evidence allocation (2026-09-25)
+
+**Authority.** The governing requirements are these:
+
+- `spec/08-modules.md` §8.5.4 edge 1: auto-load covers every position and
+  symbol kind.
+- The opening rule of [`int.md` §7.6](../../design/int/int.md#76-dependency-record-and-validity):
+  a cached module restores only if every source it was derived from is
+  unchanged.
+- [Module caching §1 goals 1–2](../../design/backend/module-caching.md).
+
+§7.6's "no carrier records it" and §7.6.1 are stale; `design`(int) owns that
+repair. No new mechanism or semantics is approved.
+
+**Question.** After the callee-consumption correction, does any other
+qualified-reference kind still let a cached module restore stale, or fail to
+load? Is the missing fact one that nothing records?
+
+**Source reading** (QA, at `94486f24`; no build or run):
+
+- `checker.rs::record_reference_target` adds a callee only for `Plain` and
+  `TraitMethod` callables.
+- `Ctor` (with its positional `tag`) and accessor origins record nothing.
+  Type names, macro heads and mono-instance rechecks also record nothing
+  (typecheck `CLAUDE.md`).
+- A re-exported name records only its terminal home.
+- `drop_glue_symbol_name` mints glue under the demanding module, so an
+  importer holds its own glue for a foreign type.
+
+**Construction rules for every cell:**
+
+- **Placement.** Every cell goes in the F1 section of `tests/cache.rs`.
+  Cells are stdlib-free, run under `--run`, and use the legs of
+  `edit_after_warm_restore`:
+  - cold oracle;
+  - warm arming: `a` restores, and the warm run behaves as the cold run;
+  - a `--no-cache` control on the edited sources, which leaves the cache
+    untouched;
+  - the cached run, compared with the control by exit code and stdout.
+
+  `--run` alone suffices, for the reason given at CL-B.
+- **No callable path into the module under test.** `a` has no callable
+  reference into that module. Consuming `callees` therefore cannot add the
+  module to `a`'s record, and a RED as built predicts a RED after that
+  correction.
+- **Edge-supplied sibling.** This leg runs before the subject.
+  - The module under test defines an unused `(defn anchor [] 0)` in both
+    versions.
+  - The sibling differs from the subject only in that `a` adds
+    `(import [<module> [anchor]])`.
+  - Expected: GREEN. That result rules out every stale mechanism except the
+    absence of the module from `a`'s edges. Keep the sibling as a permanent
+    leg.
+
+| Cell | Dependency fact | Fixture: `before` → `after`, edit only the named module | Oracle; prediction as built |
+|---|---|---|---|
+| QR-1 first-hop re-export | `callees` holds the terminal home, not the module the spelling names | `main` imports `[a [g]]` and `[c [f]]` (`c` is loaded only by this import). `a`: `(defn g [] (r/f))`. `r`: `(export [c [f]])` → `(export [d [f]])`. `c` defines `f` = 11; `d` defines `f` = 99 | 99; predicted 11 (the record gains `c` after the correction; `c` is unchanged) |
+| QR-2 constructor tag, value and pattern | Constructor references record nothing; the tag is positional | `b`: `(deftype T Lo Hi)` → `(deftype T Hi Lo)`, each with `(defn mk-hi [] Hi)` and `(defn code [t] (match t [Lo 1 Hi 2]))`. `a`: `(defn make [] b/Hi)` and `(defn classify [t] (match t [b/Lo 1 b/Hi 2]))`. `main` imports `[a [make classify]]` and `[b [mk-hi code]]` and returns `classify(mk-hi) + 10 × code(make)` | 22; the face tells which positions are stale: 11 (both), 12 (value only), 21 (pattern only) |
+| QR-3 dotted accessor | Accessor and dotted-member references record nothing | `b`: `(deftype Box [:Int v :Int w])` with `(defn mk [] (Box 11 99))` → `(deftype Box [:Int w :Int v])` with `(defn mk [] (Box 99 11))`. `a`: `(defn g [bx] (b/Box.v bx))`. `main` imports `[a [g]]` and `[b [mk]]` and returns `(g (mk))` | 11; predicted 99 |
+| QR-4 type-only | Type names record nothing; `a` mints its own glue for `b/T` | `b`: `(deftype T [:Int n])` with `(defn mk [] (T 7))` → `(deftype T [:String s])`, with `mk` building a heap-allocated `String`. `a`: `(deftype W [:b/T inner])` and `(defn g [:b/T t] :Int (match (W t) [(W _) 7]))`. `main` imports `[a [g]]` and `[b [mk]]` and returns `(g (mk))` | Exit 7 on both paths. The observable is the `[RC_STATS]` `allocs`/`deallocs` pair: predicted one fewer dealloc on the cached run |
+| QR-5 qualified macro head | A macro use is not a callee, and a literal expansion names nothing in `b` | `b` defines a macro `m` whose expansion changes from 11 to 99 (shape of `s76_macro_availability::fq_macro_reference_expands_without_import`). `a`: `(defn g [] (b/m))`. `main` imports only `[a [g]]` | 99; predicted 11 |
+| QR-6 constructor-only home, never loaded | Restore loads only edge targets | `d`: `(deftype K [:Int n])`. `a`: `(defn g [] (match (d/K 7) [(d/K n) n]))`. `main` imports only `[a [g]]`. The warm run is the observation and no edit is needed | Cold 7. Warm: unknown, and RED only if `a.o` binds something of `d` (the F1 cell 2 face). Run the sibling only if RED |
+
+**Limits on individual legs:**
+
+- **QR-2 and QR-3.** Use nullary constructors and scalar fields only. A stale
+  tag or offset then produces a wrong value and never a payload read. Do not
+  probe the memory-safety consequence: a wrong value already establishes the
+  defect.
+- **QR-4, edit direction.** Edit in the direction `Int` → `String` only. Stale
+  glue then under-releases. The reverse direction would release an `Int` as a
+  pointer.
+- **QR-4, instrumentation.**
+  - Set `CRANELISP_RC_STATS=1` on every run, cold included, so every object
+    is compiled under the same codegen gate.
+  - The assertion is a pair that differs only in cache use, which satisfies
+    the marginal rule in `tests/CLAUDE.md`. Use no absolute balance and no
+    threshold.
+- **QR-4, arming.** Two more checks apply:
+  - the warm unchanged counts equal the cold counts;
+  - the edited control allocates more than the unedited program, which proves
+    the `String` is a real allocation.
+- **QR-4, credit limit.** A GREEN protects nothing unless `a` releases the
+  value. QA credits no QR-4 GREEN as protection.
+- **QR-5.** Invalidate through source-file edits only.
+  [ACT-0970](../../sprints/actions/ACT-0970-macro-redefinition-persistence-intake.md)
+  and the D1 hold remain separate.
+
+**Leads held for `spec`; no cell until the user rules.** `sprint` routes each
+question.
+
+- **Mount-alias first hop.** Take `r.cc/f` written in a module that does not
+  import `r`. §8.4.4 describes only downstream importers. §8.5.4 edge 2 and
+  §8.6.6 step 2 do not settle whether an unloaded prefix module is
+  auto-loaded.
+- **Instance-mediated implementation dispatch.** This is `arch` falsifier 4.
+  §5.11.1 makes an implementation visible through the import closure, and
+  §8.5.4 edge 10 says auto-load is not an import. Neither says whether a
+  qualified-only `d/K` brings `d`'s implementations into scope.
+  - If the ruling is "no", the current acceptance becomes wrong-accept
+    intake, not a cache observation.
+  - If the ruling is "yes", QA allocates the cell.
+
+**Classification after execution:**
+
+- **RED with the sibling GREEN.**
+  - Validity face: `class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges`.
+  - Load face: `class=enumeration-miss locus=src/process_form/cache_restore.rs::try_cache_hit_load`.
+    The restore walk is a reach-set enumeration that omits a module the
+    restored object binds. That ratifies F1 cell 2's class.
+  - Both take `found=S122 owner=/dev`.
+- **RED with the sibling also RED.** The mechanism is unattributed. Tag the
+  face class, add a comment that names the unknown, and return the case to QA.
+- **GREEN with the arming legs passing.** Keep the cell as a guard without
+  `// defect:` and report it as GREEN.
+- **Cold failure or an unarmable fixture.** This is not a cache observation.
+  A spec-valid program that fails fresh is §8.5.4 intake: keep the minimal
+  shape and report it. Do not force a result.
+
+**Separating consumption from information:**
+
+- **Prediction.** From source, QA predicts every QR RED survives callee
+  consumption.
+- **Discriminator.** At the acceptance of that correction, `test` reruns the
+  F1 and QR cells.
+  - The F1 cells must turn GREEN; they are that correction's acceptance
+    evidence.
+  - A QR cell that turns GREEN is reclassified as missing consumption.
+  - A QR cell that stays RED is missing information. It is the only evidence
+    on which `arch` may bring a carrier to the user.
+- **Refuter.** A QR RED that turns GREEN after consumption alone refutes
+  QA's prediction.
+
+**Completion for `test`:**
+
+- Run two complete `tests/cache.rs` target runs.
+- Report each leg: sibling, arming, control and cached run, each with its exit
+  code, stdout and, for QR-4, the stats line.
+- Trace every cell with
+  `// spec: design/int/int.md §7.6 — Dependency record and validity (<kind>; spec/08-modules.md §8.5.4 edge 1)`.
+- Make no edits to production code, to helpers outside `tests/cache.rs`, to
+  REPL persistence or to cache files. Make no commit.
+- Report the results to QA through `sprint`.
+
+QA adds a spec-side annotation only after reading the executed evidence.

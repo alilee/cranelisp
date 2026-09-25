@@ -3924,34 +3924,59 @@ The last integrated checker remains179 findings/525documents, no introduced
 identities; net Markdown reduction approximately28,200 words before final
 proposal/evidence adjustments.
 
-### Pending user approval: qualified-reference cache carrier
+### Qualified-reference cache correction: consume existing callees
 
-Arch Opus5.5/high `e143eb83-5320-41af-9c7d-66e0f4d2bc92` recommends the
-following exact F1 delta. This is proposed, not approved or implemented.
+Checkpoint `94486f24` contains the private cache corrections and retained F1
+guards. The user challenged the proposed additional carrier because `callees`
+should support cascading module load. Arch Opus5.5/high
+`5e3d1ae5-819c-4031-9672-3adef76583b1` completed a read-only reassessment.
 
-- Types: private persisted `SymbolTable<C,L>` field
-  `qualified_reference_modules: BTreeSet<ModuleFullPath>`, initialized empty,
-  carried by into_concrete, no serde default.
-- Two new public methods:
+The additional `qualified_reference_modules` field and two-method public API
+proposal are withdrawn. For both F1 reproductions, typecheck already records
+`b/f` in the callable's persisted callees; cache validity and restoration omit
+that existing information. The historical Decision 21 traversal served codegen
+readiness among loaded modules, rather than documenting cache restoration,
+but the stored dependency fact supports this use.
 
-```rust
-pub fn record_qualified_reference(&mut self, module: ModuleFullPath)
-pub fn qualified_reference_modules(&self) -> impl Iterator<Item = &ModuleFullPath>
-```
+Recommended correction: derive callee modules from all callable arms through
+one shared int helper, and consume them alongside declared dependencies in
+cache record building, the index worker and cached-module restoration. No
+inter-crate API or schema change is needed. Design(int) must correct §7.6's
+claim that no carrier exists and replace the withdrawn §7.6.1 proposal before
+implementation. The two existing F1 REDs remain acceptance evidence; this
+read-only assessment did not execute a fix.
 
-- Recorder inserts successful first-hop resolutions and ignores self.
-  Typecheck and int's macro recogniser produce records; int's cache builder,
-  restore walk and index worker consume them. No new crate dependency edges.
-- Both publication methods union staged records atomically; failed publication
-  leaves live records unchanged. Their signatures are unchanged.
-- Typecheck check_forms gains the documented recording guarantee, no signature
-  change. Typecheck interior design follows approval.
-- Backend cache schema29→30 invalidates older sidecars and paired objects for
-  rebuild. No platform ABI or language syntax change; manifest shape unchanged.
-- Expected generated API delta: two methods in the types baseline. The actual
-  generated delta must return for user confirmation before the wave passes.
+First-hop re-exports, constructor/accessor/type references and macro-use edges
+remain unmeasured completeness questions. QA must distinguish existing
+resolved facts from genuinely missing information before proposing another
+carrier. D1 macro-deferral acceptance and ACT0970 remain separately open.
 
-The two permanent F1 guards remain RED until the full producer/consumer cascade
-lands. D1 acceptance remains separately held because its macro-restart probe
-was unarmed; ACT0970 now carries the restart observations. The API proposal
-does not accept or silently close that residual.
+The user requests failing tests for the remaining reference kinds now.
+QA Opus5.5/high `6899cc19-3604-42a8-a25e-08c1f0ea0f14` allocates one
+focused batch before test execution. Leads are not presumed defects; retain
+discriminating reproductions and distinguish green controls from unarmed
+fixtures. Source-file edits avoid conflating cache invalidation with ACT0970.
+
+QA's settled allocation supplies QR-1 through QR-6: re-export first hop,
+constructor tag, dotted accessor, type-only glue, macro expansion and
+constructor-only warm loading. Test Opus5.5/high
+`607c57fa-1a2d-40b6-baeb-c550957a1bcc` implements and runs the batch in
+`tests/cache.rs`. Mount-alias autoload and instance-mediated implementation
+visibility are withheld as separate normative questions, not cache failures.
+
+QR execution completed: test added seven permanent cells. QR-1 through QR-5
+are RED with explicit-import siblings GREEN: stale re-export target (11 vs
+99), constructor tags (11 vs 22), accessor offset (99 vs 11), type-only
+allocation/deallocation counts ((5,3) vs (6,6)), and macro expansion (11 vs
+99). QR-6 constructor-only warm loading is GREEN. A separate new fresh-compile
+guard rejects a module named only in a fully-qualified type annotation;
+loading that module first succeeds. This is not a cache failure, and its
+attribution remains provisional for QA.
+
+The final foreground cache target run is 63 tests: 55 PASS, 8 FAIL (the two
+existing F1 guards plus six new REDs), no skips; repeated runs agree. All prior
+CD-1 and DV3 controls remain GREEN. No production code changed. QR-4's fixture
+loads b before a to bypass the independently retained fresh-compile defect;
+QA must confirm this evidence adjustment and classify that fresh failure.
+The prediction that QR-1–5 survive callee consumption remains unexecuted
+until that correction is implemented. Tests and this evidence are uncommitted.

@@ -2273,25 +2273,35 @@ impl Observed {
     }
 }
 
+/// `--run main.cl` with the module trace and every `env` pair set.
+fn run_main(c: Cranelisp, env: &[(&str, &str)]) -> Cranelisp {
+    env.iter()
+        .fold(c.env("CRANELISP_MODULE_TRACE", "1"), |c, (k, v)| {
+            c.env(k, v)
+        })
+        .run("main.cl")
+}
+
 /// Runs `files` cold, then warm with nothing changed, asserting that the warm
 /// run behaves as the cold one and that every module in `restored` is served
-/// from cache. Then replaces one file and returns the uncached oracle and the
-/// cached `--run` for the edited sources.
-fn edit_after_warm_restore(
+/// from cache. Returns the cold observation and the warm output.
+fn warm_restore(
     files: &[(&str, &str)],
     before_exit: i32,
     restored: &[&str],
-    (edited_path, edited_src): (&str, &str),
-) -> (Observed, Observed) {
-    let run = |c: Cranelisp| c.env("CRANELISP_MODULE_TRACE", "1").run("main.cl");
-    let cold = run(project(files)).output().assert_exit(before_exit);
-    let cold_stdout = cold.stdout.clone();
-    let warm = run(cold.run_again()).output();
+    env: &[(&str, &str)],
+) -> (Observed, helpers::e2e::CrOutput) {
+    let cold = run_main(project(files), env)
+        .output()
+        .assert_exit(before_exit);
+    let cold_observed = Observed::of(&cold);
+    let warm = run_main(cold.run_again(), env).output();
     assert!(
-        warm.status.code() == Some(before_exit) && warm.stdout == cold_stdout,
+        warm.status.code() == Some(before_exit) && warm.stdout == cold_observed.stdout,
         "with nothing changed, the warm run must behave as the cold run\n\
-         cold: exit={before_exit} stdout={cold_stdout:?}\nwarm: exit={:?} stdout={:?}\n\
+         cold: exit={before_exit} stdout={:?}\nwarm: exit={:?} stdout={:?}\n\
          warm stderr:\n{}",
+        cold_observed.stdout,
         warm.status.code(),
         warm.stdout,
         warm.stderr
@@ -2303,9 +2313,32 @@ fn edit_after_warm_restore(
             warm.stderr
         );
     }
+    (cold_observed, warm)
+}
+
+struct EditLegs {
+    cold: Observed,
+    warm: Observed,
+    /// `--run --no-cache` on the edited sources.
+    control: Observed,
+    /// `--run` on the edited sources over the warm cache.
+    cached: Observed,
+}
+
+/// [`warm_restore`], then replaces one file and runs the uncached oracle and
+/// the cached `--run` for the edited sources.
+fn edit_after_warm_restore(
+    files: &[(&str, &str)],
+    before_exit: i32,
+    restored: &[&str],
+    (edited_path, edited_src): (&str, &str),
+    env: &[(&str, &str)],
+) -> EditLegs {
+    let (cold, warm) = warm_restore(files, before_exit, restored, env);
+    let warm_observed = Observed::of(&warm);
     let cache_before = cache_snapshot(&warm.tmpdir);
 
-    let control = run(warm.run_again().file(edited_path, edited_src))
+    let control = run_main(warm.run_again().file(edited_path, edited_src), env)
         .cli_flag("--no-cache")
         .output();
     assert!(
@@ -2313,8 +2346,13 @@ fn edit_after_warm_restore(
         "the uncached control must leave the cache untouched"
     );
     let observed_control = Observed::of(&control);
-    let cached = Observed::of(&run(control.run_again()).output());
-    (observed_control, cached)
+    let cached = Observed::of(&run_main(control.run_again(), env).output());
+    EditLegs {
+        cold,
+        warm: warm_observed,
+        control: observed_control,
+        cached,
+    }
 }
 
 // F1: `a` reaches `b` only through the qualified reference `b/f`, which
@@ -2323,7 +2361,9 @@ fn edit_after_warm_restore(
 const FQ_ONLY_A: &str = "(defn g [] (b/f))\n";
 
 fn fq_only_dependency_change(main_src: &str) -> (Observed, Observed) {
-    let (control, cached) = edit_after_warm_restore(
+    let EditLegs {
+        control, cached, ..
+    } = edit_after_warm_restore(
         &[
             ("main.cl", main_src),
             ("a.cl", FQ_ONLY_A),
@@ -2332,6 +2372,7 @@ fn fq_only_dependency_change(main_src: &str) -> (Observed, Observed) {
         11,
         &["a"],
         ("b.cl", DEP_CHANGE_LAYOUT_B_AFTER),
+        &[],
     );
     assert_eq!(
         control.exit,
@@ -2371,6 +2412,367 @@ fn cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run() 
     assert_cached_matches_uncached(&control, &cached);
 }
 
+// Remaining qualified-reference kinds. In each subject `a` reaches the module
+// under test only through a qualified reference that is not a call, so `a`'s
+// callees cannot name that module. The module under test defines an unused
+// `anchor` in both versions. The edge-supplied sibling differs from the subject
+// only in `a` importing `anchor`, which gives `a` an ordinary edge; it runs
+// first, and its agreement leaves the missing edge as the subject's only stale
+// mechanism.
+
+/// Runs `check` over the edge-supplied sibling's legs, then over the
+/// subject's. `files` holds `a.cl`; `module` is the module under test.
+fn qualified_reference_change(
+    module: &str,
+    files: &[(&str, &str)],
+    before_exit: i32,
+    edit: (&str, &str),
+    env: &[(&str, &str)],
+    check: impl Fn(&str, &EditLegs),
+) {
+    let sibling_a = files
+        .iter()
+        .find(|(path, _)| *path == "a.cl")
+        .map(|(_, src)| format!("(import [{module} [anchor]])\n{src}"))
+        .expect("the fixture defines a.cl");
+    let sibling: Vec<(&str, &str)> = files
+        .iter()
+        .map(|&(path, src)| {
+            (
+                path,
+                if path == "a.cl" {
+                    sibling_a.as_str()
+                } else {
+                    src
+                },
+            )
+        })
+        .collect();
+    let restored = ["a"];
+    check(
+        "edge-supplied sibling",
+        &edit_after_warm_restore(&sibling, before_exit, &restored, edit, env),
+    );
+    check(
+        "qualified-only subject",
+        &edit_after_warm_restore(files, before_exit, &restored, edit, env),
+    );
+}
+
+/// The uncached run on the edited sources exits `expected`, and the cached run
+/// behaves as it does.
+fn matches_uncached(expected: i32) -> impl Fn(&str, &EditLegs) {
+    move |leg: &str, legs: &EditLegs| {
+        assert_eq!(
+            legs.control.exit,
+            Some(expected),
+            "{leg}: uncached oracle:\n{}",
+            legs.control.stderr
+        );
+        assert!(
+            legs.cached.exit == legs.control.exit && legs.cached.stdout == legs.control.stdout,
+            "{leg}: after the edit, the cached run must behave as the uncached run\n\
+             uncached: exit={:?} stdout={:?}\ncached:   exit={:?} stdout={:?}\n\
+             cached stderr:\n{}",
+            legs.control.exit,
+            legs.control.stdout,
+            legs.cached.exit,
+            legs.cached.stdout,
+            legs.cached.stderr
+        );
+    }
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (first hop of a
+// qualified re-export; spec/08-modules.md §8.5.4 edge 1)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_qualified_reexport_first_hop_change_matches_uncached_run() {
+    // `r` re-exports `f` from `c` (11), then from `d` (99). `main` loads `c`
+    // so that an `a.o` still bound to `c/f` links.
+    qualified_reference_change(
+        "r",
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [a [g]])\n\
+                 (import [c [f]])\n\
+                 (defn main [] (Pure (g)))\n",
+            ),
+            ("a.cl", "(defn g [] (r/f))\n"),
+            ("r.cl", "(export [c [f]])\n(defn anchor [] 0)\n"),
+            ("c.cl", "(defn f [] 11)\n"),
+            ("d.cl", "(defn f [] 99)\n"),
+        ],
+        11,
+        ("r.cl", "(export [d [f]])\n(defn anchor [] 0)\n"),
+        &[],
+        matches_uncached(99),
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (constructor
+// tag in value and pattern position; spec/08-modules.md §8.5.4 edge 1)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_qualified_constructor_tag_change_matches_uncached_run() {
+    // `b` swaps its nullary variants' order, and so their tags. The result is
+    // `classify(mk-hi) + 10 × code(make)` = 22. A stale `a` shows which of its
+    // positions is stale: 11 both, 12 the value `b/Hi`, 21 the patterns.
+    let b = |variants: &str| {
+        format!(
+            "(deftype T {variants})\n\
+             (defn mk-hi [] Hi)\n\
+             (defn code [t] (match t [Lo 1 Hi 2]))\n\
+             (defn anchor [] 0)\n"
+        )
+    };
+    qualified_reference_change(
+        "b",
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure add-i64 mul-i64]])\n\
+                 (import [a [make classify]])\n\
+                 (import [b [mk-hi code]])\n\
+                 (defn main [] (Pure (add-i64 (classify (mk-hi)) (mul-i64 10 (code (make))))))\n",
+            ),
+            (
+                "a.cl",
+                "(defn make [] b/Hi)\n\
+                 (defn classify [t] (match t [b/Lo 1 b/Hi 2]))\n",
+            ),
+            ("b.cl", b("Lo Hi").as_str()),
+        ],
+        22,
+        ("b.cl", b("Hi Lo").as_str()),
+        &[],
+        matches_uncached(22),
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (dotted field
+// accessor; spec/08-modules.md §8.5.4 edge 1)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_qualified_accessor_field_order_change_matches_uncached_run() {
+    // `b` swaps `Box`'s scalar fields; `v` stays 11 and `w` 99.
+    qualified_reference_change(
+        "b",
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [a [g]])\n\
+                 (import [b [mk]])\n\
+                 (defn main [] (Pure (g (mk))))\n",
+            ),
+            ("a.cl", "(defn g [bx] (b/Box.v bx))\n"),
+            (
+                "b.cl",
+                "(import [primitives [Int]])\n\
+                 (deftype Box [:Int v :Int w])\n\
+                 (defn mk [] (Box 11 99))\n\
+                 (defn anchor [] 0)\n",
+            ),
+        ],
+        11,
+        (
+            "b.cl",
+            "(import [primitives [Int]])\n\
+             (deftype Box [:Int w :Int v])\n\
+             (defn mk [] (Box 99 11))\n\
+             (defn anchor [] 0)\n",
+        ),
+        &[],
+        matches_uncached(11),
+    );
+}
+
+/// `(allocs, deallocs)` from the run's `[RC_STATS]` line.
+fn alloc_pair(observed: &Observed) -> (u64, u64) {
+    let line = observed
+        .stderr
+        .lines()
+        .find(|line| line.starts_with("[RC_STATS]"))
+        .unwrap_or_else(|| panic!("no [RC_STATS] line:\n{}", observed.stderr));
+    let field = |name: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("no `{name}` in {line}"))
+    };
+    (field("allocs"), field("deallocs"))
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (type-only
+// reference; `a` mints its own drop glue for `b/T`; spec/08-modules.md §8.5.4
+// edge 1)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_qualified_type_only_field_change_matches_uncached_allocator_counts() {
+    // `T`'s field changes from `Int` to a heap `String`. Both runs exit 7; the
+    // observable is the allocation pair, compared between two runs that differ
+    // only in cache use. `main` imports `b` ahead of `a` because a type-only
+    // reference does not yet load `b`; see the fresh-compile cell below.
+    qualified_reference_change(
+        "b",
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [b [mk]])\n\
+                 (import [a [g]])\n\
+                 (defn main [] (Pure (g (mk))))\n",
+            ),
+            (
+                "a.cl",
+                "(import [primitives [Int]])\n\
+                 (deftype W [:b/T inner])\n\
+                 (defn g [:b/T t] :Int (match (W t) [(W _) 7]))\n",
+            ),
+            (
+                "b.cl",
+                "(import [primitives [Int]])\n\
+                 (deftype T [:Int n])\n\
+                 (defn mk [] (T 7))\n\
+                 (defn anchor [] 0)\n",
+            ),
+        ],
+        7,
+        (
+            "b.cl",
+            "(import [primitives [String str-concat]])\n\
+             (deftype T [:String s])\n\
+             (defn mk [] (T (str-concat \"ab\" \"cd\")))\n\
+             (defn anchor [] 0)\n",
+        ),
+        &[("CRANELISP_RC_STATS", "1")],
+        |leg, legs| {
+            let cold = alloc_pair(&legs.cold);
+            assert_eq!(
+                alloc_pair(&legs.warm),
+                cold,
+                "{leg}: with nothing changed, the warm counts must equal the cold counts"
+            );
+            let control = alloc_pair(&legs.control);
+            assert!(
+                control.0 > cold.0,
+                "{leg}: the edited `mk` must allocate its String: uncached {control:?}, before {cold:?}"
+            );
+            assert_eq!(legs.control.exit, Some(7), "{leg}: {}", legs.control.stderr);
+            assert_eq!(
+                legs.cached.exit, legs.control.exit,
+                "{leg}: {}",
+                legs.cached.stderr
+            );
+            assert_eq!(
+                alloc_pair(&legs.cached),
+                control,
+                "{leg}: (allocs, deallocs) of the cached run must equal the uncached run's"
+            );
+        },
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 — a fully-qualified type name in an
+// annotation loads its module, whatever loaded it before
+// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev
+#[test]
+fn fq_type_only_reference_loads_its_module_on_a_fresh_compile() {
+    // Found arming the type-only cache cell, whose allocated shape (`main`
+    // importing `a` before `b`) fails before any cache use. In each module
+    // below `b` is named only in a type position; compiled fresh, the program
+    // is rejected with "module `b` referenced by `b/T` is not loaded". Loading
+    // `b` first (an earlier import, or a value reference such as `b/mk` in `a`)
+    // makes it compile. The locus is provisional: which layer should turn the
+    // unloaded type home into a load is not yet attributed.
+    let b = "(import [primitives [Int]])\n(deftype T [:Int n])\n";
+    let mut rejected = Vec::new();
+    for (position, a) in [
+        ("deftype field", "(deftype W [:b/T inner])\n(defn g [] 7)\n"),
+        (
+            "defn parameter annotation",
+            "(import [primitives [Int]])\n(defn h [:b/T t] :Int 7)\n(defn g [] 7)\n",
+        ),
+    ] {
+        let out = project(&[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n(import [a [g]])\n(defn main [] (Pure (g)))\n",
+            ),
+            ("a.cl", a),
+            ("b.cl", b),
+        ])
+        .run("main.cl")
+        .cli_flag("--no-cache")
+        .output();
+        if out.status.code() != Some(7) {
+            rejected.push(format!(
+                "{position}: exit={:?}\n{}",
+                out.status.code(),
+                out.stderr
+            ));
+        }
+    }
+    assert!(
+        rejected.is_empty(),
+        "`b/T` must load `b`:\n{}",
+        rejected.join("\n")
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (qualified
+// macro head; spec/08-modules.md §8.5.4 edge 1)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_qualified_macro_head_expansion_change_matches_uncached_run() {
+    qualified_reference_change(
+        "b",
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [a [g]])\n\
+                 (defn main [] (Pure (g)))\n",
+            ),
+            ("a.cl", "(defn g [] (b/m))\n"),
+            ("b.cl", "(defmacro m [] `11)\n(defn anchor [] 0)\n"),
+        ],
+        11,
+        ("b.cl", "(defmacro m [] `99)\n(defn anchor [] 0)\n"),
+        &[],
+        matches_uncached(99),
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (constructor-only
+// home that nothing else loads; spec/08-modules.md §8.5.4 edge 1)
+#[test]
+fn cache_qualified_constructor_only_home_restores_warm() {
+    // Restoring `a` loads only its edges, and `a` names `d` only through the
+    // constructor `d/K`. The warm run must still behave as the cold run.
+    warm_restore(
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [a [g]])\n\
+                 (defn main [] (Pure (g)))\n",
+            ),
+            ("a.cl", "(defn g [] (match (d/K 7) [(d/K n) n]))\n"),
+            (
+                "d.cl",
+                "(import [primitives [Int]])\n(deftype K [:Int n])\n",
+            ),
+        ],
+        7,
+        &["a"],
+        &[],
+    );
+}
+
 // DV3: a declared test child `lib.test` imports from `grp.asserts`, itself a
 // declared child. Editing only `lib.test` re-typechecks it over a restored
 // `grp.asserts`.
@@ -2381,7 +2783,9 @@ const DV3_LIB: &str = "(mod- test)\n(defn v [] 7)\n";
 
 fn fresh_test_child_over_restored_declared_child(lib_test: &str) {
     let touched = format!("{lib_test};; touched\n");
-    let (control, cached) = edit_after_warm_restore(
+    let EditLegs {
+        control, cached, ..
+    } = edit_after_warm_restore(
         &[
             ("main.cl", DV3_MAIN),
             ("lib.cl", DV3_LIB),
@@ -2392,6 +2796,7 @@ fn fresh_test_child_over_restored_declared_child(lib_test: &str) {
         7,
         &["grp.asserts", "lib.test"],
         ("lib/test.cl", &touched),
+        &[],
     );
     assert_eq!(control.exit, Some(7), "uncached: {}", control.stderr);
     assert!(
