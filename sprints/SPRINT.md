@@ -1,14 +1,18 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
 **Status:** PHASE 5, final acceptance reconciliation: not yet ready for acceptance.
-Latest consumer checkpoint: `293534ee`; local shared-package checkpoint:
+Latest consumer checkpoint: `bc675d86`; local shared-package checkpoint:
 `c339fa7`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
 Document consolidation continues: the last integrated check has zero findings
 across 508 documents. Historical audit reports are retired to Git with
 open points preserved. Current reservations appear at the end of this plan.
-C-A cache-corruption hardening is user-deferred; no API approval is pending.
+C-A cache-corruption hardening is user-deferred. The cache dependency direction
+and exact API/schema are approved; implementation, independent review and QA
+adequacy are complete. The full suite passed 6,144 tests with one skipped.
+The user confirmed the generated three-line API addition; changes remain
+uncommitted. DB-1, R1-V and LD-9 remain allocated for follow-up reproduction.
 No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
@@ -4443,3 +4447,277 @@ Final document gate rerun passes1/1 (two unselected tests); standalone checker
 confirms508 documents with zero findings. Diff whitespace check is clean and
 NOTES.md retains its protected hash. No second full-suite run was needed for
 these document-only repairs.
+
+User authorized checkpoint commit and continuation. Commit bc675d86 contains
+F1/callee consumption, alias-only registration, the IO notice and their current
+records/tests. NOTES.md and the unpublished package gitlink were excluded.
+Next private correction: fresh qualified-type module loading. Design(typecheck)
+`29ea95e4-ebb1-4623-8c8c-ab3259b6f96e` owns its design; review(src)
+`4ad4cb5a-932d-4c51-a476-065716bd1008` closes the alias-fix inspection; QA
+assesses loading evidence. The broader cache-edge/public CheckResult field
+proposal has been presented to the user and remains pending, not authorized by
+this checkpoint. All roles continue Claude Opus5.5/high in Phase5.
+QA loading readiness/alias adequacy `58d7f0e2-d169-4937-90a8-5d8df02815c4`
+accepts the alias correction and allocates FT-3/4 plus typecheck module units.
+Test `af4cd527-2528-4e1b-be66-b73bfadc7f6e` owns the source/Cargo reservation;
+design(int) `e48948c2-a597-404e-bec2-f699f5ac8159` designs the private span
+preservation and reconciles alias status. Preserving a required diagnostic is
+inside the approved fix scope; no new residual or extra approval is inferred.
+
+The user's callee-identity question prompted arch reassessment
+`627d1858-6b8b-4b1d-b69a-aa18a582f765`. It withdraws the earlier transient
+CheckResult/session-set proposal: cache restoration followed by rewriting could
+lose those edges. Terminal callees remain necessary. The replacement proposal
+persists qualified lookup modules on SymbolTable and returns the lookup module
+in Resolved, with two public fields and a cache-schema bump. It awaits explicit
+user approval; no API/schema implementation is authorized yet.
+FT preimplementation evidence:12 focused tests run,9 pass, FT-1/2/3 fail for
+the missing qualified-type load request; FT-4's diagnostic-location fence passes.
+Alias status comments and citation handoffs are reconciled by test. Dev(typecheck)
+`3a42b860-7fa1-4a52-95b8-3088e999037f` now owns the sole source/Cargo reservation;
+no full-suite rerun until the dependent int diagnostic repair is complete.
+Typecheck dev completes the private producer:909/909 crate tests,3/3 public-API
+gates, and101/102 focused tests pass. FT-1/2/3 turn green; FT-4 now measures the
+predicted location loss. Dev(src) `0dc719fd-8621-4262-8d17-d55811a9862a` owns the
+next source/Cargo reservation for that repair and one integrated full run.
+Review(typecheck) `aca04ecb-5e56-4691-9cce-0ceb7563340c` is read-only. The
+allocated impl-target unit exposed a discarded qualifier, repaired privately
+with the same producer. Two additional annotation/trait-fallback observations
+remain QA intake, not silently accepted as residuals. Arch record cleanup
+`70110964-85c1-4f51-b8ed-41f9a2aea122` retired0798 after preserving its remaining
+facts; root applied its exact inventory-link handoff.
+Integrated A2 verification:182/182 focused tests pass; full default suite
+6,093 executed,6,088 passed,5 known QR cache failures,one skip in110.251s.
+FT-4 now passes. Review(typecheck) accepts source with required QA classification
+of the uncovered value-annotation/trait fallback and design-record repair;
+design has reconciled the implemented mechanism. QA
+`559a6468-9af8-4a65-a562-319345cf7bc5` owns classification and adequacy, and
+review(src) `7f836ed9-fbe8-450a-9450-e409991bbed3` inspects the span repair.
+The broader dependency representation still awaits the user's decision.
+Review(src) identifies R1: member-absent value gaps retain the written alias,
+so the new canonical-only location match regresses that path. Design(int)
+`d5c9ee7c-e7b7-4e06-88a8-3f9426ce6bca` corrects the premise; dev(src)
+`018df75d-1e08-4ef1-8b2f-8a3a1f84586d` owns failing unit then narrow repair.
+A finding-scoped review and affected tests suffice; no blanket gate replay.
+QA classifies F-a/F-b against existing requirements: no normative decision is
+needed, and the initial FT correction can be accepted independently, but edge1
+coverage must remain open. Permanent FA/FB probes are allocated next; no carry
+or silently accepted residual. The persisted-dependency API proposal remains
+pending with the user.
+R1 re-review `10dc6f4a-eb88-41d1-9ba1-ed1f169e18cf` passes after184/184 focused
+verification. Root applied design's exact int delivered-status handoff. FA/FB
+design `ae9bcb4f-3e4b-4eb7-bbcd-bf226e56f2ed` is private; test
+`734a531b-97bd-4e5d-95bf-6de8a25f6619` measured10 focused tests:8 pass and the
+two new cells fail exactly as QA predicted, all controls green. Dev(typecheck)
+`efe2d13f-9883-43e3-a34f-e9b6da8fe259` owns their repair and Cargo reservation.
+The observed REDs authorize the private repair under the user's standing scope;
+root's same-change-set test/fix rule does not require an intermediate RED-only
+commit. No extra commit or public API change has been authorized.
+
+
+### Cache dependency direction — 2026-09-26
+
+User approved conservative module-hash invalidation now, keeping terminal
+callees distinct from qualified lookup dependencies recorded during compilation
+and persisted with module metadata. Imports and exports already supply declared
+edges. Lookup dependencies serve cache validation and namespace restoration;
+they do not by themselves justify loading intermediate executable objects.
+Incremental compilation must maintain the recorded dependencies; exact ownership
+and replacement granularity remain architecture/design work, not a prescribed
+per-form public representation. No selective terminal-body reuse is required now.
+Future inlining and constant folding must account for embedded implementation
+dependencies; [ACT-0992](actions/ACT-0992-optimisation-aware-cache-invalidation.md)
+records that deliberate next increment. Restricting optimisation to release
+compilation is a candidate, not a new CLI requirement.
+
+The previous two-field proposal needs reconciliation with this direction before
+its exact API/schema approval. Architecture is assigned that bounded revision;
+no API implementation or phase transition is implied by the direction approval.
+The preceding private loading/annotation correction is independently accepted
+by review `3e24375b-7ef4-41a7-a19e-db98b34d3def` and QA
+`0f814fe1-a96a-41e3-93ad-42a1badc93cf` (Claude Opus5.5/high).
+Latest full evidence: 6,103 executed, 6,098 passed, five known cache-dependency
+failures, one skipped. QA's exact record handoffs are reconciled; code is uncommitted.
+Architecture revision dispatch: Claude Opus5.5/high, session
+`67f4d43b-b7b2-4862-ab13-e8cafd0a5307`; returned the revised proposal in
+[interfaces](../design/arch/interfaces.md#qualified-lookup-dependencies).
+It proposes a private persisted set, two public access/record methods and one
+Resolved provenance field (three added API baseline lines), plus schema29→30.
+Lookup dependencies are validity edges only; REPL compilation loads on demand.
+Insert-only module-level granularity is proposed for this conservative increment;
+obsolete edges clear on fresh compilation. That granularity and the exact API
+remain pending user approval. No compiler changes were made by this revision.
+
+
+### Lookup dependency implementation approval — 2026-09-26
+
+User approved module-wide insert-only maintenance, then explicitly approved the
+exact API: `Resolved.lookup_module: Option<ModuleFullPath>`,
+`SymbolTable::lookup_dependencies(&self) -> impl Iterator<Item = &ModuleFullPath>`
+and `SymbolTable::record_lookup_dependency(&mut self, ModuleFullPath)` backed by a
+private persisted set. Schema29→30 is approved. Three added public baseline
+entries are expected, no removals or other public deltas. The generated baseline
+returns for confirmation after implementation; no phase advancement or commit
+is implied. Source checkpoint remains bc675d86 plus the reviewed private fixes.
+The earlier pending statements above describe superseded checkpoints.
+
+Design(typecheck), design(int) and QA prepare disjoint bounded handoffs in
+parallel; no source/Cargo writer is active during preparation. All dispatched
+roles use the user-authorized Claude Opus5.5/high allocation.
+
+Preparation dispatches (Claude Opus5.5/high): typecheck design
+`45c2fa49-3d4b-412d-8c73-8637c238928e`, integration design
+`389995ef-3b04-419b-bdea-2d6adbcd22a2`, QA
+`f6cfb977-1559-4dc7-80b0-7db016c04854`.
+
+Typecheck design completed its producer census. QA readiness is clear; test
+`c26f5520-7e78-4a2d-9346-e20428a141f0` (Claude Opus5.5/high) owns the source/Cargo
+reservation for LD-2 through LD-5. New source-read trait-bound and pattern
+resolution leads are retained, not accepted residuals; QA classifies them
+independently of implementing the already-approved carrier.
+
+Integration design completed: macro lookup facts travel with expanded retry
+continuations and survive macro checkpoint publication. Lookup edges do not
+change restore/object loading. Rewrites with unloaded lookup members can defer
+cache writes, retaining the earlier entry under existing validity checks.
+QA follow-up `e27bd21e-8889-4714-862f-53c2168c1f12` classifies the source-read
+trait/pattern leads. The new integration-specific evidence requests await QA
+allocation alongside the already-running test work.
+
+LD pre-fix verification: cache target67 run/60PASS/7FAIL (the five QR guards
+plus LD-2 re-export chain and LD-3 REPL rewrite); LD-4/5 controls pass. Dev(types)
+`0f36af9a-3ec3-4db7-8d3e-123375e851a6` now owns source/Cargo. QA source-read
+classification finds the trait/pattern leads are conformance candidates, not
+blockers for the approved cache claim; LB-1/2 and LP-1/2/3 repros are allocated
+before the typecheck source visit to avoid revisiting the same resolution code.
+QA integration supplement `99507f97-8ecd-447b-9630-b58de698e16a` is read-only.
+
+Types implementation:290/290 crate tests and3/3 API gates pass; exactly three
+approved API additions. Root's canonical generator output byte-matches the
+baseline, resolving the developer's transport-level regeneration limitation.
+Test `d58a3389-d8af-4ac0-a0dd-0297eb8c17ff` owns source/Cargo for the combined
+LB/LP conformance repros and LD-6/7/8 cache delta before producers are wired.
+
+Types review `30222c49-1762-4aa2-9ea6-00b97e718278` accepts source and exact API,
+with required R1 coverage for the private-ancestor resolver fallback. Route
+directly to dev(types) as an extension of the existing T5 module witness; no
+new independent acceptance condition or requirement is inferred. QA will judge
+the supplemented evidence at adequacy. Types implementation remains unchanged.
+
+Interrupted-turn recovery: test d58a3389 completed successfully. LB1/2 and
+LP1/2/3 all have discriminating RED subjects and GREEN controls. LB1 uses a
+REPL scheme oracle; LP3 isolates pattern-only loading. A separate unused-bound
+enforcement observation is QA intake, not an assumed semantic ruling. LD6..8
+cache results match predictions; no fixture is unarmable. Source/Cargo is
+released to the narrow types R1 witness, then the schema bump.
+
+Recovery dispatches (Claude Opus5.5/high): dev(types) R1 witness
+`3464cbdb-2ee3-431d-b4d2-65b489026444` owns source/Cargo; design(typecheck)
+`c6ce826d-38b0-4b78-b657-005c87f4937f` combines confirmed conformance repairs
+with the producer design; QA `04faae41-990a-429a-8d5b-dc9bfa2a421d` reconciles
+the repro deviations and classifies the separate unused-bound observation.
+
+R1 witness passes5/5 with a discriminating fallback-only fault detected and
+restored; production types source/API are unchanged. Backend schema bump is
+now the sole source/Cargo reservation.
+
+Backend dev `45baa8e2-da05-4c4f-bc6a-77bbacbd5b8a` delivered schema30;80/80
+backend cache units and3/3 API guards pass. Seven schema integration cells pass;
+one historical schema28 test hard-codes current29 and needs a test-only update.
+QA accepts LB1/LP3 repro adjustments, with a narrow order-independent LB1 oracle
+repair required. These two test repairs precede producer implementation. DB1
+unused-bound enforcement remains recorded/allocated after this cache chain; it
+does not gate the approved correction and is not accepted as residual.
+
+Oracle repair test `b012466b-13d8-4dc3-935d-4639f10f9df9` completed: schema28
+refusal/warm-reuse passes under live schema30; order-independent LB1 remains
+RED for the expected wrong canonical identity. Backend review
+`4e084c64-baf2-47f0-a31f-9a0139d7bfcd` is read-only. Typecheck dev now owns
+source/Cargo for the combined §3.4 producer and §3.5 conformance fixes.
+
+Typecheck dev session `4ff66834-720b-4135-b270-d4bf37adf992` owns source/Cargo.
+Backend review passes behavior/API with one mechanical version-log correction:
+schema29 is refused by the version gate, not payload decoding. Apply its exact
+wording handoff at the next source-reservation boundary; no retest is required.
+
+Typecheck dev completes:929/929 crate tests,323/323 focused conformance/macro/API
+cells and189/189 remaining quasiquote/regression cells pass. LB/LP all GREEN;
+public typecheck API unchanged. Collector is borrowed through the private
+staging carrier to retain TypeCheckEnv auto-traits. Integration now owns
+source/Cargo; typecheck review and exact as-built design reconciliation run
+read-only/document-only in parallel. Backend review's mechanical wording
+correction remains queued for the next source reservation boundary.
+
+Integration dev session `87ad2a51-1498-4ed5-95e9-1ecf852cb80f`; typecheck review
+`a2fe2610-2078-4e50-bbec-1e9eec4e942d`; typecheck design record
+`42b9916a-e6f1-4f8d-82f6-66fbad35a765` (Claude Opus5.5/high).
+
+Typecheck review accepts implementation with no blocker. Required record/evidence
+findings: a pre-existing qualified-value early lookup defeats a broad structural
+parity claim; per-family alias coverage is overstated. QA classifies these and
+design narrows claims while integration continues. No automatic acceptance or
+expansion into the pre-existing value-path defect is inferred.
+
+QA bfecdb39 disposes R2 by shared-path coverage, no new module row required, and
+accepts types R1 proof. R1 is narrowed to undeclared registered path-children;
+(mod)-declared children have aliases. R1-V is allocated after this cache chain
+with DB1; A4 is retained as a candidate hygiene lead. Design reconciles scope,
+not implementation. No carry is accepted.
+
+Integration focused1151/1151 passes including cache regressions and API guard;
+the single full suite is running. Independent integration review begins on
+completed source and will check final evidence/hashes.
+
+Integration full suite:6144/6144 passed,1 skipped,213.510s. Source is functionally
+verified; int report/review and final QA reconciliation remain. Typecheck scope
+record 62baa7ee reconciles the undeclared-child qualification and R2 disposition.
+Integration review session a4af5dd7 is active; no phase transition or commit.
+
+Integration dev released source/Cargo; full report confirms69/69 cache cells and
+6144/6144 full tests. Root applied the exact backend version-gate comment and
+P4 scoped-comment handoffs after release; no behavior changed or retest needed.
+Final QA session `3f8ac0ac-abf5-4ee9-9c8d-39264572e8d7` consumes evidence and
+classifies integration's source-read empty-expansion publication lead.
+
+Integration review a4af5dd7 reports no blocking or required implementation
+finding. Root refreshed LD8 against the final binary (SHA recorded in the
+local evidence log): all legs pass, including the exact r-unsettled deferral
+trace, unchanged-source warm hit and rebuilt99/warm99 after export change.
+This supersedes the earlier one-off trace's imprecise source-hash header.
+Evidence: .local/s122-lookup-ld8-final-trace.log. Arch final classification
+`5af21fa4-e127-4ba7-8a1c-6d1161a2cd6f` checks root-only helper signatures;
+int design reconciliation `2ce8741c-f9b2-4083-8025-65682088257e` updates records.
+
+### Lookup dependency final reconciliation — 2026-09-26
+
+- Final QA (`3f8ac0ac-abf5-4ee9-9c8d-39264572e8d7`, Claude Opus 5.5/high) judged all allocated LD and LB/LP evidence adequate: 6144 passed, one skipped. No blocking or required review findings remain.
+- Final arch (`5af21fa4-e127-4ba7-8a1c-6d1161a2cd6f`, Claude Opus 5.5/high) confirmed the approved three-line types API delta and classified the root cluster helpers as having no inter-crate consumer or additional gate.
+- Design(int) record (`2ce8741c-f9b2-4083-8025-65682088257e`, Claude Opus 5.5/high) reconciled the delivered design; root applied its mechanical QA-status handoff and QA's citation correction.
+- Root independently regenerated the types public API into a temporary file: byte-for-byte equality with the baseline. This supersedes the role reports' earlier regeneration limitation.
+- Final-binary LD-8 replay passed every leg and observed the required deferred-entry trace; provenance and output are in `.local/s122-lookup-ld8-final-trace.log`. No executable source changed after the full run.
+- Remaining user gate: confirm the generated baseline additions. This does not imply Phase-5 acceptance, commit or closure. Follow-up reproductions remain allocated in the QA plan.
+- Final mechanical checks: standing-document checker 508 documents / zero findings; `git diff --check` clean; NOTES hash unchanged. The separate test-citation checker cleared the repaired LB-1 citation but still reports 18 mis-cited and five malformed citations elsewhere. These remain documentation-maintenance intake; the standing-document check does not cover them.
+
+### Generated lookup API baseline confirmed — 2026-09-26
+
+- User explicitly confirmed the generated baseline: exactly the three approved types additions, no removals or other baseline changes. The post-implementation API gate is satisfied. No commit, phase transition or closure is inferred.
+- Citation cleanup is assigned to `test`, Claude Opus 5.5/high, session `363d7e5a-6616-4591-9fa8-ec84494704f5`: repair current test-comment destinations and report substantive mismatches, preserving executable behavior.
+
+### Test-citation batch complete — 2026-09-26
+
+- `test` session `363d7e5a-6616-4591-9fa8-ec84494704f5` (Claude Opus 5.5/high) repaired comments in nine test files. Root verified comment-only diffs and no changes to assertions or execution.
+- Test-citation checker: 2,588 citations scanned, 2,575 valid, 13 free-form notes skipped, zero mis-cited or malformed. Standing-document checker: 508 documents, zero findings. Diff whitespace check clean; NOTES unchanged. No Cargo rerun for comment-only changes.
+- Same-sprint QA intake, not accepted residuals, from the citation pass:
+  - H1: `tests/facade_pif_rows.rs` pins backend DTOs whose retention is not required by current design; reconcile with arch before any public-API removal.
+  - H2: `platform_repr_c_field_order_frozen` reads alphabetically ordered baseline fields and cannot detect field reordering. Only `PlatformFn` has an offset fence; the broader layout claim for `PlatformManifest` and `HostCallbacks` needs assessment.
+  - H3: platform auto-trait baseline assertions will be affected by ACT-0955. Positive obligations need direct evidence when that action is implemented; negative assertions have no identified standing requirement.
+  - H4: `process_form_dispatch_function_gap_does_not_speculatively_jit` uses impossible trace substrings (`JitWrite g` / `JitWrite user/g`), and its same-cluster fixture may legitimately compile `g`. QA must allocate a valid observation before test behavior changes.
+- Next: QA assess this evidence basket together with the already allocated DB-1, R1-V and LD-9 reproductions. No phase transition or commit authorized.
+
+### Checkpoint and QA batch authorized — 2026-09-26
+
+The user approved the proposed checkpoint commit and consolidated QA batch.
+The commit includes the verified lookup dependency correction and citation
+cleanup; NOTES and the unpublished shared-package revision remain excluded.
+QA will assess DB-1, R1-V, LD-9 and citation-pass H1–H4 together.
+No phase transition, push or sprint closure is authorized.

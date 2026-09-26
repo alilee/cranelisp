@@ -155,8 +155,9 @@ const PRE_SIGNATURE_IDENTITY_SCHEMA: u32 = 28;
 
 // spec: design/arch/s122-overload-reorder-publication.md §"Verification
 // boundary" — schema-28 sidecar/object pairs use the retired executable-key
-// identity. Version 29 must reject them with the current compiler fingerprint,
-// rebuild the pair, and then serve the rebuilt current pair on a warm run.
+// identity. The current schema must reject them with the current compiler
+// fingerprint, rebuild the pair, and then serve the rebuilt pair on a warm run.
+// The current schema is read from the cold run's stamp, so later bumps keep it.
 #[test]
 fn schema28_identity_cache_refused_rebuilt_and_reused_warm() {
     let cold = project(&[("main.cl", SCHEMA_MAIN), ("util.cl", SCHEMA_UTIL)])
@@ -170,16 +171,16 @@ fn schema28_identity_cache_refused_rebuilt_and_reused_warm() {
     let object_path = cache_dir.join("util.o");
     let manifest = fs::read_to_string(&manifest_path).expect("read manifest.json");
     let meta = fs::read_to_string(&meta_path).expect("read util.meta.json");
-    let current_schema = PRE_SIGNATURE_IDENTITY_SCHEMA + 1;
-    assert_eq!(
-        extract_manifest_format_version(&manifest),
-        Some(current_schema),
-        "the identity migration must stamp cache format 29"
+    let current_schema = extract_manifest_format_version(&manifest)
+        .expect("manifest must carry the current cache format version");
+    assert!(
+        current_schema > PRE_SIGNATURE_IDENTITY_SCHEMA,
+        "the current cache format {current_schema} must postdate the identity migration"
     );
     assert_eq!(
         extract_schema_version(&meta),
         Some(current_schema),
-        "the identity migration must stamp sidecar schema 29"
+        "the sidecar must stamp the manifest's current schema"
     );
     let compiler_fingerprint = extract_json_string_field(&manifest, "compiler_mtime")
         .expect("manifest must carry the current compiler fingerprint")
@@ -249,7 +250,7 @@ fn schema28_identity_cache_refused_rebuilt_and_reused_warm() {
         .assert_exit(42);
     assert!(
         warm.stderr.contains("cache hit (.meta valid) for util"),
-        "the rebuilt schema-29 pair must be reusable on the next warm run:\n{}",
+        "the rebuilt current pair must be reusable on the next warm run:\n{}",
         warm.stderr
     );
     assert_eq!(
@@ -2420,11 +2421,9 @@ fn cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run() 
 
 // spec: design/int/int.md §7.6.1 — Callee-module edges (alias-only import target
 // reached by a qualified call; spec/08-modules.md §8.3.6, §8.5.4)
-// defect: class=wrong-reject locus=src/process_form/dependency.rs::handle_import found=S115 owner=/dev
-// FIXME 0798: the cold leg fails because a fresh compile does not register an
-// alias-only import's alias, so `bb/f` names an unknown module `bb` (locus
-// provisional; tests/plan/s122-evidence-delta.md, FN-1 cold rejection). Until
-// 0798 is repaired this fence is unarmed. It then guards the restore: `a`'s
+// defect: class=wrong-reject locus=src/process_form/dependency.rs::handle_import found=S115 owner=/dev fixed=S122/bc675d86
+// FIXME 0798: the cold leg once failed because a fresh compile registered no
+// alias for an alias-only import. The cell guards the restore: `a`'s
 // alias-only import is a null import, which the restore walk's import step
 // skips, so only the callee walk loads `b` for the restored `a.o`. A warm
 // `unresolved symbol: __cranelisp_got_b` means that skip reached callee modules.
@@ -2444,6 +2443,9 @@ fn cache_alias_only_import_target_reached_by_qualified_call_restores_and_matches
 // only in `a` importing `anchor`, which gives `a` an ordinary edge; it runs
 // first, and its agreement leaves the missing edge as the subject's only stale
 // mechanism.
+
+const EDGE_SUPPLIED_SIBLING: &str = "edge-supplied sibling";
+const QUALIFIED_ONLY_SUBJECT: &str = "qualified-only subject";
 
 /// Runs `check` over the edge-supplied sibling's legs, then over the
 /// subject's. `files` holds `a.cl`; `module` is the module under test.
@@ -2475,11 +2477,11 @@ fn qualified_reference_change(
         .collect();
     let restored = ["a"];
     check(
-        "edge-supplied sibling",
+        EDGE_SUPPLIED_SIBLING,
         &edit_after_warm_restore(&sibling, before_exit, &restored, edit, env),
     );
     check(
-        "qualified-only subject",
+        QUALIFIED_ONLY_SUBJECT,
         &edit_after_warm_restore(files, before_exit, &restored, edit, env),
     );
 }
@@ -2488,24 +2490,28 @@ fn qualified_reference_change(
 /// behaves as it does.
 fn matches_uncached(expected: i32) -> impl Fn(&str, &EditLegs) {
     move |leg: &str, legs: &EditLegs| {
-        assert_eq!(
-            legs.control.exit,
-            Some(expected),
-            "{leg}: uncached oracle:\n{}",
-            legs.control.stderr
-        );
-        assert!(
-            legs.cached.exit == legs.control.exit && legs.cached.stdout == legs.control.stdout,
-            "{leg}: after the edit, the cached run must behave as the uncached run\n\
-             uncached: exit={:?} stdout={:?}\ncached:   exit={:?} stdout={:?}\n\
-             cached stderr:\n{}",
-            legs.control.exit,
-            legs.control.stdout,
-            legs.cached.exit,
-            legs.cached.stdout,
-            legs.cached.stderr
-        );
+        edited_sources_match_uncached(leg, expected, &legs.control, &legs.cached)
     }
+}
+
+fn edited_sources_match_uncached(leg: &str, expected: i32, control: &Observed, cached: &Observed) {
+    assert_eq!(
+        control.exit,
+        Some(expected),
+        "{leg}: uncached oracle:\n{}",
+        control.stderr
+    );
+    assert!(
+        cached.exit == control.exit && cached.stdout == control.stdout,
+        "{leg}: after the edit, the cached run must behave as the uncached run\n\
+         uncached: exit={:?} stdout={:?}\ncached:   exit={:?} stdout={:?}\n\
+         cached stderr:\n{}",
+        control.exit,
+        control.stdout,
+        cached.exit,
+        cached.stdout,
+        cached.stderr
+    );
 }
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (first hop of a
@@ -2515,25 +2521,195 @@ fn matches_uncached(expected: i32) -> impl Fn(&str, &EditLegs) {
 fn cache_qualified_reexport_first_hop_change_matches_uncached_run() {
     // `r` re-exports `f` from `c` (11), then from `d` (99). `main` loads `c`
     // so that an `a.o` still bound to `c/f` links.
+    let edited_sources_agree = matches_uncached(99);
     qualified_reference_change(
         "r",
         &[
-            (
-                "main.cl",
-                "(import [primitives [Pure]])\n\
-                 (import [a [g]])\n\
-                 (import [c [f]])\n\
-                 (defn main [] (Pure (g)))\n",
-            ),
+            ("main.cl", REEXPORT_MAIN),
             ("a.cl", "(defn g [] (r/f))\n"),
-            ("r.cl", "(export [c [f]])\n(defn anchor [] 0)\n"),
+            ("r.cl", REEXPORT_R_BEFORE),
             ("c.cl", "(defn f [] 11)\n"),
             ("d.cl", "(defn f [] 99)\n"),
         ],
         11,
-        ("r.cl", "(export [d [f]])\n(defn anchor [] 0)\n"),
+        ("r.cl", REEXPORT_R_AFTER),
+        &[],
+        |leg, legs| {
+            // Lookup dependencies are validity edges, not load edges
+            // (design/arch/interfaces.md §Qualified lookup dependencies): the
+            // warm restore of `a` loads `r` only through the sibling's import.
+            assert_eq!(
+                legs.warm.hit("r"),
+                leg == EDGE_SUPPLIED_SIBLING,
+                "{leg}: the warm run restores `r` only when an import of `r` loads it:\n{}",
+                legs.warm.stderr
+            );
+            edited_sources_agree(leg, legs);
+        },
+    );
+}
+
+// QR-1's fixture: `main` loads `c` so that an `a.o` still bound to `c/f` links.
+const REEXPORT_MAIN: &str = "(import [primitives [Pure]])\n\
+                             (import [a [g]])\n\
+                             (import [c [f]])\n\
+                             (defn main [] (Pure (g)))\n";
+const REEXPORT_R_BEFORE: &str = "(export [c [f]])\n(defn anchor [] 0)\n";
+const REEXPORT_R_AFTER: &str = "(export [d [f]])\n(defn anchor [] 0)\n";
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (a re-export
+// chain behind a qualified reference; spec/08-modules.md §8.5.4 edge 1)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_qualified_reexport_chain_inner_hop_change_matches_uncached_run() {
+    // `r1` re-exports `f` from `r2`, which re-exports it from `c` (11), then
+    // from `d` (99). Only `r2` is edited, so `a`'s record must walk the
+    // spelled hop `r1`'s own edges, not keep it as a leaf.
+    qualified_reference_change(
+        "r1",
+        &[
+            ("main.cl", REEXPORT_MAIN),
+            ("a.cl", "(defn g [] (r1/f))\n"),
+            ("r1.cl", "(export [r2 [f]])\n(defn anchor [] 0)\n"),
+            ("r2.cl", "(export [c [f]])\n"),
+            ("c.cl", "(defn f [] 11)\n"),
+            ("d.cl", "(defn f [] 99)\n"),
+        ],
+        11,
+        ("r2.cl", "(export [d [f]])\n"),
         &[],
         matches_uncached(99),
+    );
+}
+
+/// A REPL session over a restored `a`: its stdin and what it must leave.
+struct ReplTurn<'a> {
+    input: &'a str,
+    expectation: &'a str,
+    /// Holds for the session output, given the cold run's `a.cl`.
+    holds: fn(&helpers::e2e::CrOutput, &str) -> bool,
+}
+
+/// QR-1's fixture with `a_src` as `a.cl`: a cold `--run`, then the REPL
+/// `turn`, which must restore `a`, then an optional unchanged `--run` that must
+/// hit `a`, then an edit of `r` and the uncached oracle and cached `--run`
+/// reported as `leg`, then an unchanged `--run` that must hit `a`.
+fn repl_turn_in_restored_module_then_lookup_change(
+    a_src: &str,
+    turn: &ReplTurn,
+    leg: &str,
+    hit_after_rewrite: bool,
+) {
+    let cold = run_main(
+        project(&[
+            ("main.cl", REEXPORT_MAIN),
+            ("a.cl", a_src),
+            ("r.cl", REEXPORT_R_BEFORE),
+            ("c.cl", "(defn f [] 11)\n"),
+            ("d.cl", "(defn f [] 99)\n"),
+        ]),
+        &[],
+    )
+    .output()
+    .assert_exit(11);
+
+    let cold_a = cold.read_tmp("a.cl");
+    let session = cold
+        .run_again()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .repl()
+        .stdin(turn.input)
+        .output();
+    assert!(
+        trace_hit(&session, "a") && (turn.holds)(&session, &cold_a),
+        "the REPL session must restore `a` and {}\n\
+         a.cl:\n{}\nstdout:\n{}\nstderr:\n{}",
+        turn.expectation,
+        session.read_tmp("a.cl"),
+        session.stdout,
+        session.stderr
+    );
+
+    let before_edit = if hit_after_rewrite {
+        let unchanged = run_main(session.run_again(), &[]).output().assert_exit(11);
+        assert!(
+            trace_hit(&unchanged, "a"),
+            "the REPL rewrite must leave a restorable entry for `a`:\n{}",
+            unchanged.stderr
+        );
+        unchanged
+    } else {
+        session
+    };
+
+    let cache_before = cache_snapshot(&before_edit.tmpdir);
+    let control = run_main(before_edit.run_again().file("r.cl", REEXPORT_R_AFTER), &[])
+        .cli_flag("--no-cache")
+        .output();
+    assert!(
+        cache_snapshot(&control.tmpdir) == cache_before,
+        "the uncached control must leave the cache untouched"
+    );
+    let control_observed = Observed::of(&control);
+    let cached = run_main(control.run_again(), &[]).output();
+    edited_sources_match_uncached(leg, 99, &control_observed, &Observed::of(&cached));
+
+    let unchanged = run_main(cached.run_again(), &[]).output().assert_exit(99);
+    assert!(
+        trace_hit(&unchanged, "a"),
+        "an unchanged run after the rebuild must hit `a`, not miss for ever:\n{}",
+        unchanged.stderr
+    );
+}
+
+const DEFINE_H: ReplTurn = ReplTurn {
+    input: "(import [a [g]])\n/mod a\n(defn h [] 5)\n/quit\n",
+    expectation: "persist `h` into a.cl",
+    holds: |session, _| session.read_tmp("a.cl").contains("(defn h"),
+};
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (a REPL rewrite
+// of a restored module keeps its recorded lookup dependencies, §7.6.2)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_repl_rewrite_of_restored_module_then_lookup_change_matches_uncached_run() {
+    // The edge-supplied sibling runs first and proves the REPL turn writes an
+    // entry for `a` that the next session restores. The subject must not run
+    // an unchanged `--run` between the rewrite and the edit.
+    repl_turn_in_restored_module_then_lookup_change(
+        "(import [r [anchor]])\n(defn g [] (r/f))\n",
+        &DEFINE_H,
+        EDGE_SUPPLIED_SIBLING,
+        true,
+    );
+    repl_turn_in_restored_module_then_lookup_change(
+        "(defn g [] (r/f))\n",
+        &DEFINE_H,
+        QUALIFIED_ONLY_SUBJECT,
+        false,
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (an expression
+// turn and the quit-time persist of a restored module keep a sound warm hit,
+// §7.6.2)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_repl_expression_turn_in_restored_module_keeps_warm_hit_and_matches_uncached_run() {
+    // The session only evaluates `(g)` in `a`, so `a.cl` is unchanged, yet the
+    // `/quit` persist rewrites `a`'s entry. The unchanged run after it must
+    // hit `a`, and the run after editing `r` must not be served stale.
+    repl_turn_in_restored_module_then_lookup_change(
+        "(defn g [] (r/f))\n",
+        &ReplTurn {
+            input: "(import [a [g]])\n/mod a\n(g)\n/quit\n",
+            expectation: "show 11 with a.cl unchanged",
+            holds: |session, cold_a| {
+                session.stdout.contains("Int 11") && session.read_tmp("a.cl") == cold_a
+            },
+        },
+        "expression-turn subject",
+        true,
     );
 }
 
@@ -2708,11 +2884,10 @@ fn cache_qualified_type_only_field_change_matches_uncached_allocator_counts() {
 fn fq_type_only_reference_loads_its_module_on_a_fresh_compile() {
     // Found arming the type-only cache cell, whose allocated shape (`main`
     // importing `a` before `b`) fails before any cache use. In each module
-    // below `b` is named only in a type position; compiled fresh, the program
-    // is rejected with "module `b` referenced by `b/T` is not loaded". Loading
+    // below `b` is named only in a type position; compiled fresh before the S122
+    // correction, the program was rejected with "module `b` referenced by `b/T` is not loaded". Loading
     // `b` first (an earlier import, or a value reference such as `b/mk` in `a`)
-    // makes it compile. The locus is provisional: which layer should turn the
-    // unloaded type home into a load is not yet attributed.
+    // made it compile.
     let b = "(import [primitives [Int]])\n(deftype T [:Int n])\n";
     let mut rejected = Vec::new();
     for (position, a) in [
@@ -2749,10 +2924,14 @@ fn fq_type_only_reference_loads_its_module_on_a_fresh_compile() {
 }
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (qualified
-// macro head; spec/08-modules.md §8.5.4 edge 1)
+// macro head; spec/08-modules.md §8.5.4 edge 1; carried across a later
+// dependency gap, §7.6.2)
 // defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
 #[test]
 fn cache_qualified_macro_head_expansion_change_matches_uncached_run() {
+    // `k` is a later form whose reference to `e`, which nothing else loads,
+    // gaps after `g`'s expansion, so `b` must survive the continuation. The
+    // head stays in its own earlier form.
     qualified_reference_change(
         "b",
         &[
@@ -2762,11 +2941,42 @@ fn cache_qualified_macro_head_expansion_change_matches_uncached_run() {
                  (import [a [g]])\n\
                  (defn main [] (Pure (g)))\n",
             ),
-            ("a.cl", "(defn g [] (b/m))\n"),
+            ("a.cl", "(defn g [] (b/m))\n(defn k [] (e/f))\n"),
             ("b.cl", "(defmacro m [] `11)\n(defn anchor [] 0)\n"),
+            ("e.cl", "(defn f [] 0)\n"),
         ],
         11,
         ("b.cl", "(defmacro m [] `99)\n(defn anchor [] 0)\n"),
+        &[],
+        matches_uncached(99),
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (qualified
+// reference in a macro clause body, §7.6.2; spec/08-modules.md §8.5.4 edge 1)
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+#[test]
+fn cache_qualified_reference_in_macro_clause_body_change_matches_uncached_run() {
+    // `m`'s clause body calls `r/f` at expansion time; `r` re-exports `f` from
+    // `c` (syntax 11), then from `d` (99). Only the expanded literal reaches
+    // `g`, so `a` names `r` nowhere but the clause body.
+    let expands_to = |n: i32| format!("(import [macros [SexpInt]])\n(defn f [] (SexpInt {n}))\n");
+    qualified_reference_change(
+        "r",
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [a [g]])\n\
+                 (defn main [] (Pure (g)))\n",
+            ),
+            ("a.cl", "(defmacro m [] (r/f))\n(defn g [] (m))\n"),
+            ("r.cl", REEXPORT_R_BEFORE),
+            ("c.cl", expands_to(11).as_str()),
+            ("d.cl", expands_to(99).as_str()),
+        ],
+        11,
+        ("r.cl", REEXPORT_R_AFTER),
         &[],
         matches_uncached(99),
     );
@@ -2794,6 +3004,35 @@ fn cache_qualified_constructor_only_home_restores_warm() {
         ],
         7,
         &["a"],
+        &[],
+    );
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (qualified
+// spellings that record no other module's source: a compiler-owned qualifier,
+// the module's own qualifier and a declared child; spec/08-modules.md §8.5.4)
+#[test]
+fn cache_compiler_self_and_child_qualified_references_restore_warm() {
+    // A recorded member that validation cannot resolve would make every run
+    // miss `a`; only the warm hits can see that.
+    warm_restore(
+        &[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [a [g]])\n\
+                 (defn main [] (Pure (g)))\n",
+            ),
+            (
+                "a.cl",
+                "(mod util)\n\
+                 (defn k [] 3)\n\
+                 (defn g [] (primitives/add-i64 (util/two) (a/k)))\n",
+            ),
+            ("a/util.cl", "(defn two [] 2)\n"),
+        ],
+        5,
+        &["a", "a.util"],
         &[],
     );
 }

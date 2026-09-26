@@ -107,9 +107,11 @@ impl TestFixture {
         module_path: &ModuleFullPath,
         name: &str,
     ) -> Result<Option<Scheme>, CranelispError> {
-        self.env()
-            .resolve_qualified(&self.state, module_path, name)
-            .map(|(scheme, _gap)| scheme)
+        let env = self.env();
+        env.resolve_qualified(&self.state, module_path, name)
+            .map(|(resolved, _gap)| {
+                resolved.and_then(|resolved| env.extract_scheme_from_entry_owned(&resolved.entry))
+            })
     }
 
     /// Register a type definition (test convenience).
@@ -529,12 +531,14 @@ impl TestFixture {
         &self,
         texpr: &cranelisp_types::TypeExpr,
     ) -> Result<Type, cranelisp_types::ResolveError> {
-        self.env().resolve_type_expr_in_module(
-            texpr,
-            &std::collections::HashMap::new(),
-            &ModuleFullPath::from("user"),
-            Span::SYNTHETIC,
-        )
+        self.env()
+            .resolve_type_expr_in_module(
+                texpr,
+                &std::collections::HashMap::new(),
+                &ModuleFullPath::from("user"),
+                Span::SYNTHETIC,
+            )
+            .map_err(|failure| failure.0)
     }
 
     /// Resolve a `TypeExpr` in an arbitrary module (test convenience). Used by
@@ -546,12 +550,14 @@ impl TestFixture {
         texpr: &cranelisp_types::TypeExpr,
         module: &ModuleFullPath,
     ) -> Result<Type, cranelisp_types::ResolveError> {
-        self.env().resolve_type_expr_in_module(
-            texpr,
-            &std::collections::HashMap::new(),
-            module,
-            Span::SYNTHETIC,
-        )
+        self.env()
+            .resolve_type_expr_in_module(
+                texpr,
+                &std::collections::HashMap::new(),
+                module,
+                Span::SYNTHETIC,
+            )
+            .map_err(|failure| failure.0)
     }
 
     /// Cluster-atomic resolution of a self-qualified type ref (FIXME 0362).
@@ -580,6 +586,7 @@ impl TestFixture {
         // Build `Box` into a freestanding staging table (NOT committed).
         let mut staging = SymbolTable::new(t.clone());
         let staging_cell = std::cell::RefCell::new(&mut staging);
+        let lookup_dependencies = LookupDependencyCollector::default();
         let prev = self.state.current_module.clone();
         self.state.current_module = t.clone();
         {
@@ -588,6 +595,7 @@ impl TestFixture {
                 &self.next_id,
                 t.clone(),
                 &staging_cell,
+                &lookup_dependencies,
                 &self.module_aliases,
                 &self.prelude_fallback,
             );
@@ -620,6 +628,7 @@ impl TestFixture {
                 &self.next_id,
                 t.clone(),
                 &staging_cell,
+                &lookup_dependencies,
                 &self.module_aliases,
                 &self.prelude_fallback,
             );
@@ -629,6 +638,7 @@ impl TestFixture {
                 &t,
                 Span::SYNTHETIC,
             )
+            .map_err(|failure| failure.0)
         };
         self.state.current_module = prev;
         result

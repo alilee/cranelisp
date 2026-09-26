@@ -10,6 +10,8 @@
 //! head and ensure its clause code is in memory, then expand. The clause
 //! *codegen* lives in `macro_clause.rs`; this module drives it.
 
+use std::collections::BTreeSet;
+
 use cranelisp_types::{
     CranelispError, Decl, FQSymbol, Life, ModuleFullPath, Realization, Sexp, Span, Symbol,
 };
@@ -60,6 +62,10 @@ pub(super) struct SymbolTableMacroResolver<'a> {
     /// the duration of this aborted walk), so the captured module is the
     /// only signal that a block is needed.
     pub(super) blocked_on_fq_module: Option<ModuleFullPath>,
+    /// The alias-substituted module of every qualified head recognised as a
+    /// macro (`design/int/int.md` §7.6.2): the expansion leaves no reference
+    /// to it, so typecheck cannot record it.
+    pub(super) macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
 }
 
 impl MacroResolver for SymbolTableMacroResolver<'_> {
@@ -83,6 +89,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
         // contaminating resolution (the field type then fails with
         // `unknown type 'primitives' (from module '')`). The sibling
         // `qualify_expanded_sexp` already guards this exact case (FIXME 0322).
+        let mut qualifier = None;
         if !name.starts_with(':')
             && let Some((mod_part, _sym_part)) = name.split_once('/')
         {
@@ -104,6 +111,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
                 self.blocked_on_fq_module = Some(dep);
                 return Ok(None);
             }
+            qualifier = Some(dep);
         }
 
         // Step 1: RECOGNITION via the LOCKED types primitive
@@ -130,6 +138,7 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
             Some((clauses, _docstring)) => clauses,
             None => return Ok(None),
         };
+        self.macro_lookup_dependencies.extend(qualifier);
 
         // Record the defining module for post-expansion symbol qualification.
         if defining_module != self.current_module {
@@ -185,12 +194,17 @@ fn read_macro_meta(
 
 /// Outcome of attempting macro expansion on a single Pass-2 form.
 pub(super) enum ExpandOutcome {
-    /// Expansion ran to fixpoint. `Some(sexp)` = expanded result (differs from
-    /// input); `None` = no expansion (input was not a macro call).
-    Expanded(Option<Sexp>),
+    /// Expansion ran to fixpoint. `sexp` is `Some` when the result differs
+    /// from the input and `None` when the input was not a macro call.
+    /// `macro_lookup_dependencies` are the qualified heads' modules.
+    Expanded {
+        sexp: Option<Sexp>,
+        macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+    },
     /// Expansion encountered an FQ macro head `mod/macro` whose module is not
     /// yet loaded (FIXME 0268). The caller loads `dep_module` and resumes the
-    /// referencing form. No partial expansion is committed.
+    /// referencing form. No partial expansion is committed, and the modules
+    /// recognised by the aborted walk are discarded with it.
     BlockedOnFqModule(ModuleFullPath),
 }
 
@@ -206,7 +220,7 @@ pub(super) fn try_expand_sexp(
 ) -> Result<ExpandOutcome, CranelispError> {
     // The resolver borrows only the symbol tables + resolution scope (macro
     // recognition/drive); it does not touch `CheckState` or the accumulator.
-    let (result, defining_modules, blocked_on) = {
+    let (result, defining_modules, blocked_on, macro_lookup_dependencies) = {
         let mut resolver = SymbolTableMacroResolver {
             symbol_tables: ctx.symbol_tables,
             current_module: module.clone(),
@@ -216,12 +230,14 @@ pub(super) fn try_expand_sexp(
             shared_state: ctx.shared_state,
             macro_defining_modules: Vec::new(),
             blocked_on_fq_module: None,
+            macro_lookup_dependencies: BTreeSet::new(),
         };
 
         let r = expander::expand_sexp_recursive(sexp.clone(), &mut resolver, 0, None);
         let dms = std::mem::take(&mut resolver.macro_defining_modules);
         let blocked = resolver.blocked_on_fq_module.take();
-        (r, dms, blocked)
+        let recognised = std::mem::take(&mut resolver.macro_lookup_dependencies);
+        (r, dms, blocked, recognised)
         // resolver dropped here, releasing its borrows of `ctx`
     };
 
@@ -235,17 +251,20 @@ pub(super) fn try_expand_sexp(
 
     let expanded = result?;
 
-    if expanded == *sexp {
-        Ok(ExpandOutcome::Expanded(None))
+    let expanded = if expanded == *sexp {
+        None
     } else {
         // Qualify bare symbols from defining modules (cross-module macro hygiene).
-        let qualified = if defining_modules.is_empty() {
+        Some(if defining_modules.is_empty() {
             expanded
         } else {
             qualify_expanded_sexp(ctx.symbol_tables, module, &defining_modules, expanded)
-        };
-        Ok(ExpandOutcome::Expanded(Some(qualified)))
-    }
+        })
+    };
+    Ok(ExpandOutcome::Expanded {
+        sexp: expanded,
+        macro_lookup_dependencies,
+    })
 }
 
 /// Qualify bare symbols in macro-expanded sexp with their defining module paths.
@@ -738,7 +757,7 @@ pub(super) fn compile_macro_if_needed(
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     macro_sexp: &Sexp,
-    span: Span,
+    macro_lookup_dependencies: &BTreeSet<ModuleFullPath>,
 ) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
     // S76 W-Macro (fire B): the dead `block_for_macro_codegen` dep-walk
     // (`collect_transitive_uncompiled_deps` + the notify-loop) is DELETED, not
@@ -755,7 +774,7 @@ pub(super) fn compile_macro_if_needed(
         prelude_fallback: ctx.prelude_fallback,
         shared_state: ctx.shared_state,
     };
-    match compile_macro_checkpoint(&env, module, info, macro_sexp, span)? {
+    match compile_macro_checkpoint(&env, module, info, macro_sexp, macro_lookup_dependencies)? {
         MacroCheckpoint::Published => Ok(None),
         MacroCheckpoint::Gap(gap) => Ok(Some(gap)),
     }

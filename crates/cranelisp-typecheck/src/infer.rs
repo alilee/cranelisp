@@ -654,7 +654,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         &mut var_map,
                         &state.current_module,
                         span,
-                    )?
+                    )
+                    .map_err(|failure| failure.into_form_error(state))?
                 } else {
                     self.fresh_var()
                 };
@@ -1378,7 +1379,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // got-slotted ctor `Def` whose function-type scheme is curry-
                 // shaped, so it would otherwise fall through to the generic
                 // curry path here; reject it with a clear arity diagnostic.
-                if let Some(entry) = self.resolve_constructor_entry(state, name.as_ref())
+                // A probe: its gap is dropped.
+                if let (Some(entry), _) = self.resolve_constructor_entry(state, name.as_ref())
                     && let Some(callable) = entry.callable()
                     && let CallableOrigin::Ctor { field_count, .. } = &callable.origin
                 {
@@ -1850,7 +1852,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // S109), **bare** (`SCons`, current-module + prelude fallback), or
         // **module-qualified** (`macros/SCons`, FQ, load-bearing for every
         // quasiquote macro). `resolve_constructor_entry` dispatches all three.
-        if let Some(entry) = self.resolve_constructor_entry(state, name.as_ref())
+        let (entry, qualified_gap) = self.resolve_constructor_entry(state, name.as_ref());
+        if let Some(entry) = entry
             && let Some(callable) = entry.callable()
             && let CallableOrigin::Ctor { type_name, tag, .. } = &callable.origin
         {
@@ -1969,7 +1972,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // The name does not resolve to a constructor `Def`.
+        // The name does not resolve to a constructor `Def`. A qualified miss
+        // has no scrutinee-directed fallback, so it is the form's failure and
+        // its walk's gap is recorded here, as `infer_var` records the value
+        // twin's (`design/typecheck/typecheck.md` §3.5, §7.3.1).
+        if name.as_ref().contains('/') {
+            state.pending_gap = qualified_gap;
+        }
         Err(CranelispError::TypeError {
             message: format!("unknown constructor in pattern: {name}"),
             location: ErrorLocation::from_span(span),
@@ -2151,81 +2160,74 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 self.record_expr_type(state, span, resolved.clone());
                 Ok(resolved)
             }
-            // (2)/(3) No such TYPE. If the annotation is a single bare name that
+            // (2)/(3) No such TYPE. If the annotation is a single name that
             // resolves as a TRAIT, this is a value-position CONSTRAINT — a pure
             // SATISFACTION CHECK (spec §3.3.3 MUST (c)/(e)): it verifies the
             // expr's already-known type implements the trait and changes NOTHING
             // (no unification, no held-abstract). It does NOT disambiguate a
             // return-type-polymorphic form — only a concrete type does (row 17),
-            // so a residual var is left for the §3.11 gate.
+            // so a residual var is left for the §3.11 gate. Otherwise the type
+            // failure is the form's failure (typecheck.md §7.3.2 step F).
             Err(type_err) => {
                 state.body_frame.written_var_scope = Some(var_map);
-                if let Some(tref) = crate::program::single_trait_bound_from_annotation(annotation) {
-                    // Resolve the trait's HOME, honouring a qualified module ref
-                    // (`:fmt/Display`) DIRECTLY — mirroring `resolve_bound_param`,
-                    // so a value-position constraint and a parameter constraint
-                    // (the two entrances to the same constraint shape) resolve
-                    // identically (0597 secondary; the §L consistency lens). A
-                    // bare ref resolves via current-module-or-prelude.
-                    let trait_home = match &tref.module {
-                        Some(m) => Some(m.clone()),
-                        None => self.resolve_trait(state, tref.name.as_ref(), span).ok(),
-                    };
-                    if let Some(home) = trait_home {
-                        let expr_ty = self.infer_expr(state, expr)?;
-                        let resolved = self.apply_subst(state, &expr_ty);
-                        let tn = cranelisp_types::TraitName::from(tref.name.as_ref());
-                        // Satisfaction check (§3.3.3 MUST (c), "accepted IFF the
-                        // expression's type implements the trait"). Three cases on
-                        // the resolved expr type:
-                        //
-                        //  - NOMINAL concrete (`concrete_type_name` = Some): it
-                        //    MUST implement the trait (row 12 pos accepts
-                        //    `:Num2 5`; the neg rejects `:Num2 "s"`).
-                        //  - CONCRETE but NON-NOMINAL (`Fn`, …): impls are keyed
-                        //    by TYPE NAME, so a function type implements NOTHING —
-                        //    it MUST be rejected, not silently accepted. `None`
-                        //    from `concrete_type_name` on a concrete type was the
-                        //    0596-sibling false accept (`(defn g1 [] :NumT
-                        //    (fn [:Int y] y))`), FIXME 0597.
-                        //  - still a `Type::Var` (unresolved return-type dispatch,
-                        //    `:Zeroable (zed)`): the constraint does NOT resolve it
-                        //    — leave the residual var for the §3.11 ambiguity gate
-                        //    (row 17).
-                        match crate::traits::concrete_type_name(&resolved) {
-                            Some(impl_ty) => {
-                                if !self.has_impl_in_home(&home, &tn, &impl_ty) {
-                                    return Err(CranelispError::TypeError {
-                                        message: format!(
-                                            "type {impl_ty} does not implement trait {} \
-                                             — a value-position constraint is a \
-                                             satisfaction check (spec §3.3.3)",
-                                            tref.name
-                                        ),
-                                        location: ErrorLocation::from_span(span),
-                                    });
-                                }
-                            }
-                            None if resolved.is_concrete() => {
+                // The parameter route reads the trait through the same step,
+                // so the two entrances to this constraint shape resolve
+                // identically.
+                if let Some(fq_trait) = self.resolve_annotation_trait(state, annotation, span) {
+                    let home = &fq_trait.module;
+                    let tn = &fq_trait.name;
+                    let expr_ty = self.infer_expr(state, expr)?;
+                    let resolved = self.apply_subst(state, &expr_ty);
+                    // Satisfaction check (§3.3.3 MUST (c), "accepted IFF the
+                    // expression's type implements the trait"). Three cases on
+                    // the resolved expr type:
+                    //
+                    //  - NOMINAL concrete (`concrete_type_name` = Some): it
+                    //    MUST implement the trait (row 12 pos accepts
+                    //    `:Num2 5`; the neg rejects `:Num2 "s"`).
+                    //  - CONCRETE but NON-NOMINAL (`Fn`, …): impls are keyed
+                    //    by TYPE NAME, so a function type implements NOTHING —
+                    //    it MUST be rejected, not silently accepted. `None`
+                    //    from `concrete_type_name` on a concrete type was the
+                    //    0596-sibling false accept (`(defn g1 [] :NumT
+                    //    (fn [:Int y] y))`), FIXME 0597.
+                    //  - still a `Type::Var` (unresolved return-type dispatch,
+                    //    `:Zeroable (zed)`): the constraint does NOT resolve it
+                    //    — leave the residual var for the §3.11 ambiguity gate
+                    //    (row 17).
+                    match crate::traits::concrete_type_name(&resolved) {
+                        Some(impl_ty) => {
+                            if !self.has_impl_in_home(home, tn, &impl_ty) {
                                 return Err(CranelispError::TypeError {
                                     message: format!(
-                                        "type {resolved} does not implement trait {} — a \
-                                         value-position constraint is a satisfaction \
-                                         check (spec §3.3.3); a function type implements \
-                                         no trait",
-                                        tref.name
+                                        "type {impl_ty} does not implement trait {} \
+                                         — a value-position constraint is a \
+                                         satisfaction check (spec §3.3.3)",
+                                        tn
                                     ),
                                     location: ErrorLocation::from_span(span),
                                 });
                             }
-                            None => {}
                         }
-                        // The type is UNCHANGED (satisfaction check only).
-                        self.record_expr_type(state, span, resolved.clone());
-                        return Ok(resolved);
+                        None if resolved.is_concrete() => {
+                            return Err(CranelispError::TypeError {
+                                message: format!(
+                                    "type {resolved} does not implement trait {} — a \
+                                     value-position constraint is a satisfaction \
+                                     check (spec §3.3.3); a function type implements \
+                                     no trait",
+                                    tn
+                                ),
+                                location: ErrorLocation::from_span(span),
+                            });
+                        }
+                        None => {}
                     }
+                    // The type is UNCHANGED (satisfaction check only).
+                    self.record_expr_type(state, span, resolved.clone());
+                    return Ok(resolved);
                 }
-                Err(type_err.into())
+                Err(type_err.into_form_error(state))
             }
         }
     }

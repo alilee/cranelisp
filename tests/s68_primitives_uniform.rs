@@ -256,21 +256,18 @@ fn s68_ring0_jit_symbols_free_fn_is_retired() {
 // =============================================================================
 // #8 — `cranelisp_init_primitives()` exists in exe-bundle.
 //
-// Failing-now. Wave 3 (int slice — exe-bundle is its delivery target) adds
-// the explicit `LazyLock::force(&PRIMITIVES_TABLE)` startup hook called
-// from `cranelisp_init_platform`. Replaces the implicit `pub use` force-link.
+// The explicit `LazyLock::force(&PRIMITIVES_TABLE)` startup hook replaced the
+// implicit `pub use` force-link in S68 Wave 3.
 // =============================================================================
 
-// spec: crates/cranelisp-exe-bundle/src/lib.rs crate rustdoc §"Startup-hook
-//       discipline — primitives" — the force-link `pub use` lines are replaced
-//       by the `cranelisp_init_primitives()` startup hook.
+// spec: crates/cranelisp-exe-bundle/CLAUDE.md §"Two force-link mechanisms" —
+//       primitives are anchored by the `cranelisp_init_primitives()` startup
+//       hook, not force-link `pub use` lines. The authority is the crate
+//       rustdoc section "Startup-hook discipline — primitives" in `src/lib.rs`.
 #[test]
 fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
     let lib = read_source("crates/cranelisp-exe-bundle/src/lib.rs");
 
-    // Failing-now: the explicit startup hook is not yet authored. Will pass
-    // when Wave 3 adds `pub extern "C" fn cranelisp_init_primitives()` and
-    // wires it from `cranelisp_init_platform`.
     assert!(
         lib.contains("pub extern \"C\" fn cranelisp_init_primitives"),
         "cranelisp-exe-bundle MUST publish `pub extern \"C\" fn cranelisp_init_primitives` \
@@ -278,8 +275,8 @@ fn s68_exe_bundle_publishes_cranelisp_init_primitives_hook() {
          replaces the implicit force-link `pub use cranelisp_primitives::*` incantation."
     );
 
-    // Negative: the force-link `pub use cranelisp_primitives::*` re-exports
-    // must NOT survive Wave 3 (they exist today and retire in Wave 3).
+    // Negative: the retired force-link `pub use cranelisp_primitives::*`
+    // re-exports must not return.
     // Spot-check three of the most distinctive `pub use` lines.
     for forced in [
         "pub use cranelisp_primitives::bool;",

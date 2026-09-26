@@ -219,7 +219,7 @@ pub enum ClusterOutcome {
     },
     Gap {
         dep: ModuleFullPath,
-        continuation: Vec<cranelisp_types::Sexp>,
+        continuation: crate::scheduler::SourceContinuation,
         generation_started: bool,
     },
 }
@@ -245,7 +245,7 @@ pub enum ClusterOutcome {
 /// become scheduler calls.
 pub fn process_cluster(
     shared: &crate::session_v4::SharedState,
-    forms: std::sync::Arc<[cranelisp_types::Sexp]>,
+    continuation: &crate::scheduler::SourceContinuation,
     reload_demands: std::sync::Arc<[cranelisp_types::MonoDemand]>,
     scope: &ModuleFullPath,
     generation_started: bool,
@@ -295,7 +295,7 @@ pub fn process_cluster(
     match process_form::process_cluster_once(
         &mut ctx,
         scope,
-        &forms,
+        continuation,
         cranelisp_types::ModuleStrategy::Replace,
         generation_started,
         None,

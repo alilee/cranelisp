@@ -1928,7 +1928,7 @@ impl CompilerSession {
         use cranelisp_typecheck::CheckState;
 
         const MAX_DEP_RETRIES: usize = 100;
-        let mut pending = sexps.to_vec();
+        let mut pending = crate::scheduler::SourceContinuation::source(sexps.to_vec());
         let mut generation_started = false;
 
         for _retry in 0..MAX_DEP_RETRIES {

@@ -364,7 +364,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Build CtorBuild entries with resolved field types.
     fn build_constructor_infos(
         &self,
-        state: &CheckState,
+        state: &mut CheckState,
         type_name: &TypeName,
         constructors: &[ConstructorDef],
         var_map: &HashMap<Symbol, TypeId>,
@@ -381,7 +381,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `CtorBuild` carries no tag.
     fn build_single_ctor_info(
         &self,
-        state: &CheckState,
+        state: &mut CheckState,
         _type_name: &TypeName,
         ctor: &ConstructorDef,
         var_map: &HashMap<Symbol, TypeId>,
@@ -391,12 +391,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .fields
             .iter()
             .map(|field| {
-                let ty = self.resolve_type_expr_in_module(
-                    &field.type_expr,
-                    var_map,
-                    &state.current_module,
-                    span,
-                )?;
+                let ty = self
+                    .resolve_type_expr_in_module(
+                        &field.type_expr,
+                        var_map,
+                        &state.current_module,
+                        span,
+                    )
+                    .map_err(|failure| failure.into_form_error(state))?;
                 Ok(FieldInfo {
                     name: field.name.clone(),
                     ty,

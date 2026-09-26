@@ -25,10 +25,13 @@
 //! callers) and are reached here via `crate::worker::*`.
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, Expr, FQSymbol, MatchArm, ModuleFullPath, ModuleStrategy, Sexp,
-    Span, TopLevel,
+    CranelispError, ErrorLocation, Expr, FQSymbol, MatchArm, ModuleAliases, ModuleFullPath,
+    ModuleStrategy, Sexp, Span, TopLevel, TypeExpr, TypeRef,
 };
 
+use std::collections::BTreeSet;
+
+use crate::scheduler::SourceContinuation;
 use crate::worker::{
     ClusterOnce, ModuleCompiler, build_program_compat, check_program_compat, leading_annotation_len,
 };
@@ -134,16 +137,17 @@ use std::path::Path;
 pub fn process_cluster_once(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
-    sexps: &[Sexp],
+    continuation: &SourceContinuation,
     strategy: ModuleStrategy,
     generation_started: bool,
     mut turn_definitions: Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<ClusterOnce, CranelispError> {
-    // In-call-stack working state — rebuilt from `sexps` every pass, dropped on
-    // a gap. Never lands in a shared map (the S60–S62 heisenbug substrate is
-    // gone). `expanded_program` accumulates within THIS pass only.
+    // In-call-stack working state — rebuilt from the continuation every pass,
+    // dropped on a gap. Never lands in a shared map (the S60–S62 heisenbug
+    // substrate is gone). `expanded_program` accumulates within THIS pass only.
+    let sexps = continuation.forms();
     let mut expanded_program: Vec<TopLevel> = Vec::new();
-    let mut ordinary_sexps: Vec<Sexp> = Vec::new();
+    let mut prefix = ExpandedPrefix::resuming(continuation);
 
     // §8.6.4 (FIXME 0514) — the definition-over-(import|export|prelude)
     // rejection is no longer mode-gated here: it moved to the shared typecheck
@@ -160,7 +164,7 @@ pub fn process_cluster_once(
     if !generation_started && let Some(dep) = run_cluster_prologue(ctx, module, sexps, strategy)? {
         return Ok(ClusterOnce::Gap {
             dep,
-            continuation: sexps.to_vec(),
+            continuation: continuation.clone(),
             generation_started: false,
         });
     }
@@ -171,7 +175,7 @@ pub fn process_cluster_once(
         module,
         sexps,
         &mut expanded_program,
-        &mut ordinary_sexps,
+        &mut prefix,
         &mut turn_definitions,
     )?;
 
@@ -180,10 +184,35 @@ pub fn process_cluster_once(
         module,
         sexps,
         &expanded_program,
-        &ordinary_sexps,
+        &prefix,
         pass2_result,
         &mut turn_definitions,
     )
+}
+
+/// What a cluster attempt has expanded so far: the ordinary forms and the
+/// modules whose qualified macro heads that expansion recognised
+/// (`design/int/int.md` §7.6.2). A resumed attempt starts from the set its
+/// continuation carried and re-walks the continuation's forms.
+struct ExpandedPrefix {
+    forms: Vec<Sexp>,
+    macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+}
+
+impl ExpandedPrefix {
+    fn resuming(continuation: &SourceContinuation) -> Self {
+        ExpandedPrefix {
+            forms: Vec::new(),
+            macro_lookup_dependencies: continuation.macro_lookup_dependencies().clone(),
+        }
+    }
+
+    /// The continuation of a gap: this prefix, then `rest`, not yet expanded.
+    fn continuation_with(&self, rest: impl IntoIterator<Item = Sexp>) -> SourceContinuation {
+        let mut forms = self.forms.clone();
+        forms.extend(rest);
+        SourceContinuation::resumed(forms, self.macro_lookup_dependencies.clone())
+    }
 }
 
 /// Cluster prologue: strategy-specific setup (active module, static import
@@ -331,7 +360,7 @@ fn finish_pass2(
     module: &ModuleFullPath,
     origin_sexps: &[Sexp],
     expanded_program: &[TopLevel],
-    ordinary_sexps: &[Sexp],
+    prefix: &ExpandedPrefix,
     pass2_result: Pass2Result,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<ClusterOnce, CranelispError> {
@@ -341,7 +370,7 @@ fn finish_pass2(
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
             let mut outcome =
-                finalize_cluster(ctx, module, origin_sexps, expanded_program, ordinary_sexps)?;
+                finalize_cluster(ctx, module, origin_sexps, expanded_program, prefix)?;
             if let ClusterOnce::Done { processed, .. } = &mut outcome
                 && let Some(shared) = ctx.shared_state
             {
@@ -371,11 +400,12 @@ fn finish_pass2(
             // (`cluster::process_cluster`) and the REPL entry
             // (`session_v4::process_single_form`) drive this same core.
             if matches!(outcome, ClusterOnce::Done { .. }) {
-                store_pool_continuation(ctx, module, &[], true);
+                let published = SourceContinuation::source(Vec::new());
+                store_pool_continuation(ctx, module, &published, true);
                 if let Some(dep) = drive_submodules(ctx, module)? {
                     return Ok(ClusterOnce::Gap {
                         dep,
-                        continuation: Vec::new(),
+                        continuation: published,
                         generation_started: true,
                     });
                 }
@@ -435,7 +465,7 @@ fn finalize_cluster(
     module: &ModuleFullPath,
     origin_sexps: &[Sexp],
     expanded_program: &[TopLevel],
-    ordinary_sexps: &[Sexp],
+    prefix: &ExpandedPrefix,
 ) -> Result<ClusterOnce, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
@@ -484,6 +514,7 @@ fn finalize_cluster(
                 Ok(Some(Err(gap))) => (Some(gap), Vec::new(), Vec::new(), Vec::new()),
                 Ok(Some(Ok((mut turn, check)))) => {
                     turn.unresolved_dispatch = check.unresolved_dispatch.clone();
+                    turn.record_lookup_dependencies(&prefix.macro_lookup_dependencies);
                     prepared = Some(turn);
                     (None, check.warnings, check.unresolved_dispatch, Vec::new())
                 }
@@ -525,6 +556,17 @@ fn finalize_cluster(
         // NOT a re-grown int shim.
         if let Some(dep) = gap_target_module(&gap) {
             let member = gap_member(&gap);
+            // Both decisions below report at this one reference site (int.md
+            // §6.3.1); the typed gap alone chooses what to load.
+            let ref_span = gap_reference_span(
+                expanded_program,
+                &GapReference {
+                    module: &dep,
+                    member: &member,
+                    referring_module: module,
+                    module_aliases: ctx.module_aliases,
+                },
+            );
             // Module present AND terminal (`fq_module_is_loaded`) ⇒ its
             // signatures are fully published, so the member GENUINELY does not
             // exist ⇒ the honest "module X has no member Y" at the reference
@@ -533,7 +575,7 @@ fn finalize_cluster(
             // sole caller). Never re-drive a terminal module (the member stays
             // absent on every retry — an infinite loop).
             if fq_module_is_loaded(ctx, &dep) {
-                return Err(module_has_no_member_error(expanded_program, &dep, &member));
+                return Err(module_has_no_member_error(&dep, &member, ref_span));
             }
             // Absent OR present-but-non-terminal ⇒ drive it (register + park): a
             // not-yet-loaded module loads then re-drives; a present-but-non-
@@ -542,15 +584,12 @@ fn finalize_cluster(
             // converts a genuine FQ cycle into the honest circular-dependency
             // error (B4/B5). A missing-module file surfaces `drive_module_dep`'s
             // "module not found" at the reference span (AL-3).
-            let ref_span = expanded_program
-                .iter()
-                .find_map(|tl| find_named_var_span_in_toplevel(tl, &format!("{dep}/{member}")))
-                .unwrap_or(Span::SYNTHETIC);
-            store_pool_continuation(ctx, module, ordinary_sexps, true);
+            let continuation = prefix.continuation_with([]);
+            store_pool_continuation(ctx, module, &continuation, true);
             drive_module_dep(ctx, module, &dep, ref_span)?;
             return Ok(ClusterOnce::Gap {
                 dep,
-                continuation: ordinary_sexps.to_vec(),
+                continuation,
                 generation_started: true,
             });
         }
@@ -597,47 +636,172 @@ fn finalize_cluster(
 
 /// The single author of the §8.5.4 "module X has no member Y" diagnostic (I4,
 /// 0571.2). The FQ-gap decision arm (`finalize_cluster`, a member-absent
-/// terminal module) is its sole caller and routes the message + reference-span
-/// lookup through here, so the diagnostic has exactly one authoring site — no
-/// display-envelope mirror (Principle 7). Locates the user's verbatim
-/// `<module>/<member>` reference span so the error carries a real source
-/// location, falling back to `Span::SYNTHETIC` when the var name is not found in
-/// the program.
-fn module_has_no_member_error(
-    program: &[TopLevel],
-    module: &ModuleFullPath,
-    member: &str,
-) -> CranelispError {
-    let referenced = format!("{module}/{member}");
-    let span = program
-        .iter()
-        .find_map(|tl| find_named_var_span_in_toplevel(tl, &referenced))
-        .unwrap_or(Span::SYNTHETIC);
+/// terminal module) is its sole caller, so the diagnostic has exactly one
+/// authoring site — no display-envelope mirror (Principle 7). `span` is the
+/// arm's [`gap_reference_span`].
+fn module_has_no_member_error(module: &ModuleFullPath, member: &str, span: Span) -> CranelispError {
     CranelispError::ModuleError {
         message: format!("module '{module}' has no member '{member}'"),
         location: ErrorLocation::from_span_file(span, None),
     }
 }
 
-/// Find the span of an `Expr::Var` named `target` inside a top-level form (a
-/// bare expression or a defn body). Used by `module_has_no_member_error` and the
-/// FQ-gap decision arm to attribute the member-not-found diagnostic to the
-/// user's reference.
-fn find_named_var_span_in_toplevel(tl: &TopLevel, target: &str) -> Option<Span> {
-    match tl {
-        TopLevel::Expr(e) => find_named_var_span(e, target),
-        TopLevel::Defn(d) => d
-            .variants
-            .iter()
-            .find_map(|v| find_named_var_span(&v.body, target)),
-        _ => None,
+/// A gap's `module/member` identity together with the scope the cluster wrote
+/// its reference in.
+struct GapReference<'a> {
+    module: &'a ModuleFullPath,
+    member: &'a str,
+    referring_module: &'a ModuleFullPath,
+    module_aliases: &'a ModuleAliases,
+}
+
+impl GapReference<'_> {
+    /// The gap's module is the qualifier as written (a member missing from a
+    /// present module) or its alias substitution (an absent module, spec
+    /// §8.6.6), and the gap does not say which, so either form matches.
+    fn is_written_as(&self, written: WrittenRef<'_>) -> bool {
+        written.qualified().is_some_and(|(qualifier, member)| {
+            let qualifier = ModuleFullPath::from(qualifier);
+            member == self.member
+                && (qualifier == *self.module
+                    || cranelisp_types::substitute_module_alias(
+                        self.module_aliases,
+                        self.referring_module,
+                        &qualifier,
+                    ) == *self.module)
+        })
     }
 }
 
-/// Recursively search `expr` for an `Expr::Var` whose name equals `target`,
-/// returning its span. Covers every child-bearing `Expr` variant.
-fn find_named_var_span(expr: &Expr, target: &str) -> Option<Span> {
-    find_var_span_matching(expr, &|name| name == target)
+/// A reference as the program wrote it, offered to a reference-site predicate.
+#[derive(Clone, Copy)]
+enum WrittenRef<'a> {
+    /// A symbol spelling: an `Expr::Var` name or a trait-signature tail symbol.
+    Spelled(&'a str),
+    /// A type-position head with its as-written qualification.
+    Type(&'a TypeRef),
+}
+
+impl<'a> WrittenRef<'a> {
+    /// `(qualifier, member)` when the reference is qualified. A spelling splits
+    /// at its first `/` with both halves non-empty, the value resolver's grammar
+    /// (`cranelisp_types` `resolve::split_qualified`, Principle 16).
+    fn qualified(self) -> Option<(&'a str, &'a str)> {
+        match self {
+            WrittenRef::Spelled(name) => name
+                .split_once('/')
+                .filter(|(qualifier, member)| !qualifier.is_empty() && !member.is_empty()),
+            WrittenRef::Type(type_ref) => type_ref
+                .module
+                .as_ref()
+                .map(|qualifier| (qualifier.as_ref(), type_ref.name.as_ref())),
+        }
+    }
+}
+
+/// The span of the first reference to `reference` in `program`, in value or
+/// type position, or `Span::SYNTHETIC` when nothing matches (int.md §6.3.1).
+fn gap_reference_span(program: &[TopLevel], reference: &GapReference<'_>) -> Span {
+    let pred = |written: WrittenRef<'_>| reference.is_written_as(written);
+    program
+        .iter()
+        .find_map(|tl| find_reference_span_in_toplevel(tl, &pred))
+        .unwrap_or(Span::SYNTHETIC)
+}
+
+/// The first matching reference in a top-level form. A type reference carries
+/// no span, so it reports its innermost spanned carrier. Trait references
+/// (an impl's trait, bounds, constraints) raise no gap and are not searched.
+fn find_reference_span_in_toplevel(
+    tl: &TopLevel,
+    pred: &impl Fn(WrittenRef<'_>) -> bool,
+) -> Option<Span> {
+    match tl {
+        TopLevel::Expr(e) => find_reference_span(e, pred),
+        TopLevel::Defn(d) => find_reference_span_in_defn(d, pred),
+        TopLevel::TypeDef { constructors, .. } => constructors
+            .iter()
+            .flat_map(|ctor| &ctor.fields)
+            .find(|field| type_expr_mentions(&field.type_expr, pred))
+            .map(|field| field.span),
+        TopLevel::TraitDecl(decl) => decl.methods.iter().find_map(|method| {
+            if method
+                .params
+                .iter()
+                .any(|(_, ty)| type_expr_mentions(ty, pred))
+            {
+                Some(method.span)
+            } else {
+                find_symbol_span(&method.tail, pred)
+            }
+        }),
+        TopLevel::TraitImpl(impl_) => {
+            if type_expr_mentions(&impl_.target, pred) {
+                Some(impl_.span)
+            } else {
+                impl_
+                    .methods
+                    .iter()
+                    .find_map(|method| find_reference_span_in_defn(method, pred))
+            }
+        }
+    }
+}
+
+fn find_reference_span_in_defn(
+    defn: &cranelisp_types::Defn,
+    pred: &impl Fn(WrittenRef<'_>) -> bool,
+) -> Option<Span> {
+    defn.variants.iter().find_map(|variant| {
+        if annotations_mention(&variant.params, pred) {
+            Some(variant.span)
+        } else {
+            find_reference_span(&variant.body, pred)
+        }
+    })
+}
+
+fn annotations_mention(
+    params: &[(cranelisp_types::Symbol, Option<TypeExpr>)],
+    pred: &impl Fn(WrittenRef<'_>) -> bool,
+) -> bool {
+    params
+        .iter()
+        .filter_map(|(_, annotation)| annotation.as_ref())
+        .any(|annotation| type_expr_mentions(annotation, pred))
+}
+
+fn type_expr_mentions(ty: &TypeExpr, pred: &impl Fn(WrittenRef<'_>) -> bool) -> bool {
+    match ty {
+        TypeExpr::Named(head) => pred(WrittenRef::Type(head)),
+        TypeExpr::Applied(head, args) => {
+            pred(WrittenRef::Type(head)) || args.iter().any(|arg| type_expr_mentions(arg, pred))
+        }
+        TypeExpr::FnType(params, ret) => {
+            params.iter().any(|param| type_expr_mentions(param, pred))
+                || type_expr_mentions(ret, pred)
+        }
+        TypeExpr::SelfType | TypeExpr::TypeVar(_) | TypeExpr::Bounds(_) => false,
+    }
+}
+
+/// A trait method's still-unclassified tail: a matching symbol reports its own
+/// span.
+fn find_symbol_span(sexp: &Sexp, pred: &impl Fn(WrittenRef<'_>) -> bool) -> Option<Span> {
+    match sexp {
+        Sexp::Symbol(name, span) => pred(WrittenRef::Spelled(name)).then_some(*span),
+        Sexp::List(items, _) | Sexp::Bracket(items, _) => {
+            items.iter().find_map(|item| find_symbol_span(item, pred))
+        }
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => find_symbol_span(annotation, pred).or_else(|| find_symbol_span(subject, pred)),
+        Sexp::Int(..) | Sexp::Float(..) | Sexp::Bool(..) | Sexp::Str(..) | Sexp::Comment(..) => {
+            None
+        }
+    }
 }
 
 /// The span of the FIRST `Expr::Var` whose name is qualified by `module` (i.e.
@@ -646,21 +810,45 @@ fn find_named_var_span(expr: &Expr, target: &str) -> Option<Span> {
 /// the seam (the expand-time `BlockedOnFqModule`).
 fn find_module_qualified_ref_span(expr: &Expr, module: &str) -> Option<Span> {
     let prefix = format!("{module}/");
-    find_var_span_matching(expr, &|name| name.starts_with(&prefix))
+    find_reference_span(
+        expr,
+        &|written| matches!(written, WrittenRef::Spelled(name) if name.starts_with(&prefix)),
+    )
 }
 
-/// The span of the first `Expr::Var` whose name satisfies `pred`. The single
-/// AST-walk both the exact-name ([`find_named_var_span`]) and module-prefix
-/// ([`find_module_qualified_ref_span`]) reference-site lookups share (P7).
-fn find_var_span_matching(expr: &Expr, pred: &impl Fn(&str) -> bool) -> Option<Span> {
-    let arm = |e: &Expr| find_var_span_matching(e, pred);
+/// The span of the first reference in `expr` that satisfies `pred`, in program
+/// order. The single expression walk both the gap ([`gap_reference_span`]) and
+/// module-prefix ([`find_module_qualified_ref_span`]) lookups share (P7). A
+/// lambda-parameter or inline annotation reports the lambda or annotation.
+fn find_reference_span(expr: &Expr, pred: &impl Fn(WrittenRef<'_>) -> bool) -> Option<Span> {
+    let arm = |e: &Expr| find_reference_span(e, pred);
     match expr {
-        Expr::Var { name, span, .. } if pred(name.as_ref()) => Some(*span),
+        Expr::Var { name, span, .. } => pred(WrittenRef::Spelled(name.as_ref())).then_some(*span),
         Expr::IntLit { .. }
         | Expr::FloatLit { .. }
         | Expr::BoolLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::Var { .. } => None,
+        | Expr::StringLit { .. } => None,
+        Expr::Lambda {
+            params, body, span, ..
+        } => {
+            if annotations_mention(params, pred) {
+                Some(*span)
+            } else {
+                arm(body)
+            }
+        }
+        Expr::Annotate {
+            annotation,
+            expr: body,
+            span,
+            ..
+        } => {
+            if type_expr_mentions(annotation, pred) {
+                Some(*span)
+            } else {
+                arm(body)
+            }
+        }
         Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => bindings
             .iter()
             .find_map(|(_, e)| arm(e))
@@ -673,9 +861,7 @@ fn find_var_span_matching(expr: &Expr, pred: &impl Fn(&str) -> bool) -> Option<S
         } => arm(cond)
             .or_else(|| arm(then_branch))
             .or_else(|| arm(else_branch)),
-        Expr::Lambda { body, .. }
-        | Expr::Annotate { expr: body, .. }
-        | Expr::Trace { body, .. } => arm(body),
+        Expr::Trace { body, .. } => arm(body),
         Expr::Apply { callee, args, .. } => arm(callee).or_else(|| args.iter().find_map(&arm)),
         Expr::Match {
             scrutinee, arms, ..
@@ -703,7 +889,7 @@ enum Pass2Result {
     /// resume index to honour.
     BlockedOnFqModule {
         dep_module: ModuleFullPath,
-        continuation: Vec<Sexp>,
+        continuation: SourceContinuation,
         ref_span: Span,
     },
 }
@@ -786,7 +972,7 @@ fn pass2_check_bodies_with_expansion(
     module: &ModuleFullPath,
     sexps: &[Sexp],
     expanded_program: &mut Vec<TopLevel>,
-    ordinary_sexps: &mut Vec<Sexp>,
+    prefix: &mut ExpandedPrefix,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<Pass2Result, CranelispError> {
     let mut idx = 0;
@@ -805,13 +991,17 @@ fn pass2_check_bodies_with_expansion(
             }
             FormKind::Defmacro => {
                 let info = cranelisp_frontend::parse_defmacro(sexp)?;
-                if let Some(gap) = compile_macro_if_needed(ctx, module, &info, sexp, sexp.span())? {
-                    let mut continuation = ordinary_sexps.clone();
-                    continuation.extend_from_slice(&sexps[idx..]);
+                if let Some(gap) = compile_macro_if_needed(
+                    ctx,
+                    module,
+                    &info,
+                    sexp,
+                    &prefix.macro_lookup_dependencies,
+                )? {
                     let dep_module = macro_checkpoint_gap_target(ctx, &gap, sexp.span())?;
                     return Ok(Pass2Result::BlockedOnFqModule {
                         dep_module,
-                        continuation,
+                        continuation: prefix.continuation_with(sexps[idx..].iter().cloned()),
                         ref_span: sexp.span(),
                     });
                 }
@@ -844,7 +1034,7 @@ fn pass2_check_bodies_with_expansion(
                 // following form passes through as a one-sexp group so the
                 // frontend surfaces `annotation missing expression`.
                 let ann_len = leading_annotation_len(&sexps[idx..]);
-                let (prefix, form_idx) = if ann_len > 0 && idx + ann_len < sexps.len() {
+                let (annotation_prefix, form_idx) = if ann_len > 0 && idx + ann_len < sexps.len() {
                     (&sexps[idx..idx + ann_len], idx + ann_len)
                 } else {
                     (&sexps[idx..idx], idx)
@@ -853,23 +1043,22 @@ fn pass2_check_bodies_with_expansion(
                 match process_regular_form(
                     ctx,
                     module,
-                    prefix,
+                    annotation_prefix,
                     &sexps[form_idx],
                     expanded_program,
+                    &mut prefix.macro_lookup_dependencies,
                     turn_definitions,
                 )? {
-                    RegularFormResult::Complete(forms) => ordinary_sexps.extend(forms),
+                    RegularFormResult::Complete(forms) => prefix.forms.extend(forms),
                     RegularFormResult::Blocked {
                         dep_module,
                         continuation: local,
                         ref_span,
                     } => {
-                        let mut continuation = ordinary_sexps.clone();
-                        continuation.extend(local);
-                        continuation.extend_from_slice(&sexps[next..]);
+                        let rest = local.into_iter().chain(sexps[next..].iter().cloned());
                         return Ok(Pass2Result::BlockedOnFqModule {
                             dep_module,
-                            continuation,
+                            continuation: prefix.continuation_with(rest),
                             ref_span,
                         });
                     }
@@ -902,15 +1091,12 @@ fn macro_checkpoint_gap_target(
 fn store_pool_continuation(
     ctx: &ModuleCompiler,
     module: &ModuleFullPath,
-    continuation: &[Sexp],
+    continuation: &SourceContinuation,
     generation_started: bool,
 ) {
     if !ctx.eval_driven {
-        ctx.scheduler.set_source_continuation(
-            module,
-            std::sync::Arc::from(continuation.to_vec()),
-            generation_started,
-        );
+        ctx.scheduler
+            .set_source_continuation(module, continuation.clone(), generation_started);
     }
 }
 
@@ -1061,6 +1247,7 @@ fn process_regular_form(
     annotation_prefix: &[Sexp],
     sexp: &Sexp,
     expanded_program: &mut Vec<TopLevel>,
+    macro_lookup_dependencies: &mut BTreeSet<ModuleFullPath>,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<RegularFormResult, CranelispError> {
     process_regular_form_with_origin(
@@ -1070,10 +1257,12 @@ fn process_regular_form(
         sexp,
         sexp,
         expanded_program,
+        macro_lookup_dependencies,
         turn_definitions,
     )
 }
 
+#[allow(clippy::too_many_arguments)] // within the src/ eight-parameter budget
 fn process_regular_form_with_origin(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -1081,6 +1270,7 @@ fn process_regular_form_with_origin(
     sexp: &Sexp,
     authored_origin: &Sexp,
     expanded_program: &mut Vec<TopLevel>,
+    macro_lookup_dependencies: &mut BTreeSet<ModuleFullPath>,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<RegularFormResult, CranelispError> {
     // A literal top-level `begin` is itself an ordinary syntactic form, but
@@ -1095,7 +1285,9 @@ fn process_regular_form_with_origin(
         for (index, form) in forms.iter().enumerate() {
             if cranelisp_frontend::is_defmacro(form) {
                 let info = cranelisp_frontend::parse_defmacro(form)?;
-                if let Some(gap) = compile_macro_if_needed(ctx, module, &info, form, form.span())? {
+                if let Some(gap) =
+                    compile_macro_if_needed(ctx, module, &info, form, macro_lookup_dependencies)?
+                {
                     let mut continuation = ordinary;
                     continuation.extend_from_slice(&forms[index..]);
                     return Ok(RegularFormResult::Blocked {
@@ -1129,6 +1321,7 @@ fn process_regular_form_with_origin(
                 form,
                 authored_origin,
                 expanded_program,
+                macro_lookup_dependencies,
                 turn_definitions,
             )? {
                 RegularFormResult::Complete(forms) => ordinary.extend(forms),
@@ -1166,7 +1359,13 @@ fn process_regular_form_with_origin(
     // invariant 9, and is prepended below so the frontend's `build_forms`
     // performs the `Expr::Annotate` pairing).
     let effective_sexp = match try_expand_sexp(ctx, module, sexp)? {
-        ExpandOutcome::Expanded(opt) => opt,
+        ExpandOutcome::Expanded {
+            sexp: expanded,
+            macro_lookup_dependencies: recognised,
+        } => {
+            macro_lookup_dependencies.extend(recognised);
+            expanded
+        }
         ExpandOutcome::BlockedOnFqModule(dep) => {
             // Nothing has been appended to `expanded_program` for this form —
             // the caller will resume it after loading `dep`.
@@ -1208,7 +1407,9 @@ fn process_regular_form_with_origin(
             // the ORIGINAL outer form `sexp`, exactly what the sibling defn
             // records below — one turn, one authored form, one emission.
             let authored_source = verbatim_source_slice(ctx, module, authored_origin);
-            if let Some(gap) = compile_macro_if_needed(ctx, module, &info, form, form.span())? {
+            if let Some(gap) =
+                compile_macro_if_needed(ctx, module, &info, form, macro_lookup_dependencies)?
+            {
                 let built_prefix = if emission_markers
                     .iter()
                     .any(|marker| matches!(marker, DefinitionEmissionMarker::Ordinary))

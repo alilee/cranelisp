@@ -68,10 +68,9 @@ fn strip_attr_prefix(line: &str) -> &str {
 // Row 1 — `Code` enum lives in cranelisp-backend (Decision 41 close-out)
 // =============================================================================
 
-// spec: design/backend/backend.md §2.3
-// FIXME(/dev backend Wave 3): physically relocate `Code` from src/code.rs to
-// crates/cranelisp-backend; the pub-api line should appear in cranelisp-backend's
-// baseline, not in cranelisp-types or as an int-only type.
+// spec: design/int/int.md §5.1 — `Code` lives in `cranelisp-backend` beside the
+// `Jit` and `Linker` its variants own; int only re-exports it, and
+// `cranelisp-types` never names it.
 #[test]
 fn row_01_code_enum_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
@@ -96,10 +95,9 @@ fn row_01_code_enum_named_in_backend_pub_api() {
 // ObjectArtefact) in cranelisp-backend per REV-4
 // =============================================================================
 
-// spec: design/backend/backend.md §2.4 — CompilationError enum
-// FIXME(/dev backend Wave 3 rows 2–5): introduce typed error enums in
-// cranelisp-backend; retire stringly-typed `CodegenError { message }` at the
-// backend boundary.
+// spec: design/backend/compile-to-module.md §16 — every refusal is a located
+// `CodegenError` or `CompilationError`; Principle 15 keeps the error type with
+// its producer, so the enum is named in the backend baseline.
 #[test]
 fn rows_02_03_compilation_error_enum_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
@@ -116,8 +114,10 @@ fn rows_02_03_compilation_error_enum_named_in_backend_pub_api() {
     );
 }
 
-// spec: design/backend/backend.md §2.4 — LinkerError enum (REV-4 in backend, not types)
-// FIXME(/dev backend Wave 3 row 5): add LinkerError to cranelisp-backend.
+// spec: design/arch/principles/15-facade-types-live-with-behavior.md — the
+// linker's error type lives with its producer in `cranelisp-backend`, not in
+// `cranelisp-types`. No standing design requires `LinkerError` to exist; this
+// row pins the surface its source rustdoc currently publishes.
 #[test]
 fn row_05_linker_error_enum_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
@@ -136,9 +136,11 @@ fn row_05_linker_error_enum_named_in_backend_pub_api() {
     );
 }
 
-// spec: design/backend/backend.md §6.1 — ObjectArtefact
-// spec: design/backend/backend.md §6.2 — LinkerArtefact
-// FIXME(/dev backend Wave 3 rows 3, 4): introduce the DTOs in backend.
+// spec: design/backend/compile-to-module.md §10 — `load_object` returns a
+// `LinkerArtefact`; keeping or removing that entry is an open arch/user decision.
+// spec: design/arch/principles/15-facade-types-live-with-behavior.md —
+// `ObjectArtefact` is backend-owned; no standing design requires it, and its
+// rustdoc records that nothing currently produces it.
 #[test]
 fn rows_03_04_linker_and_object_artefact_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
@@ -190,15 +192,13 @@ fn row_06_primitive_for_trait_method_absent_from_backend_pub_api() {
 // =============================================================================
 
 // spec: design/arch/bounded-contexts.md §4a invariants 4 and 5 — name-keyed inline substitution only
-// What the facade actually forbids (S69 audit F-6 + F-7, grounded in Decision
-// 43 §"Status pointer — Sprint 67 FULL CLOSE"): the TRAIT-KEYED substitution
-// — `primitive_for_trait_method(TraitName, Symbol, TypeName) -> Option<&str>`
-// and the old `operators.rs` home. The NAME-KEYED inline shortcut that
-// survives in `primitives_inline.rs` (`is_known_builtin` +
-// `try_emit_inline_primitive`, keyed by primitive Symbol only) is EXPLICITLY
-// AUTHORISED as a code-size/dispatch-cost optimisation over the standard
-// GOT-indirect path (F-7 — "the reframe stands"). It is live codegen, called
-// from compiler/apply.rs + control_flow.rs — deleting the file would break it.
+// Invariant 4 forbids the TRAIT-KEYED substitution —
+// `primitive_for_trait_method(TraitName, Symbol, TypeName) -> Option<&str>`
+// and its old `operators.rs` home. Invariant 5 permits the NAME-KEYED inline
+// shortcut in `primitives_inline.rs` (`is_known_builtin` +
+// `try_emit_inline_primitive`, keyed by primitive Symbol only). It is live
+// codegen, called from compiler/apply.rs and
+// compiler/control_flow/fn_as_value.rs — deleting the file would break it.
 // So this row asserts the forbidden pattern is gone, NOT that the file is.
 #[test]
 fn row_07_trait_keyed_substitution_retired_from_backend() {
@@ -617,12 +617,12 @@ fn rev3_describe_symbol_resolves_primitive_via_facade_method() {
 // receiver, a `#[repr(C)]`) without the baseline + facade catching it.
 // =============================================================================
 
-// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C1 (FIXME 0224)
-// CLHeap method receiver/arity drift: every `CLHeap`-impl type's `inc_rc` /
-// `dec_rc` must take `&self` (a by-value `self` receiver would break the RC
-// trampoline's ability to call through a borrowed reference). `cargo
-// public-api` emits the receiver, so the baseline distinguishes
-// `inc_rc(&self)` from `inc_rc(self)`.
+// spec: design/platform/platform.md §2 — the facade is the source rustdoc,
+// `public-api.txt` is its drift witness, and `CLHeap` marks the
+// RC-participating subset. Every `CLHeap`-impl type's `inc_rc` / `dec_rc`
+// takes `&self` today; `cargo public-api` emits the receiver, so the baseline
+// distinguishes `inc_rc(&self)` from `inc_rc(self)` and a receiver change
+// surfaces here as a facade change.
 #[test]
 fn platform_clheap_inc_dec_rc_take_ref_self() {
     let api = read_pub_api("cranelisp-platform");
@@ -653,12 +653,12 @@ fn platform_clheap_inc_dec_rc_take_ref_self() {
     }
 }
 
-// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C2 (FIXME 0225)
-// `#[non_exhaustive]` presence: `OwnedPlatformFnDescriptor` MUST carry
-// `#[non_exhaustive]` (Principle 14 — post-load owned descriptor field-set
-// evolution discipline); CLOwned MUST NOT (a `#[repr(transparent)]` /
-// owned-handle type, not an evolving struct). `cargo public-api` emits the
-// attribute prefix, so the baseline is the mechanical witness.
+// spec: design/arch/CLAUDE.md §"Facade convention" — public DTOs use
+// `#[non_exhaustive]` except explicit ABI layouts (Principle 14).
+// `OwnedPlatformFnDescriptor` is plain host-side Rust, so it carries the marker;
+// `CLOwned<T>` deliberately does not — its rustdoc records the exemption
+// (constructed through `new`, read through `Deref`). `cargo public-api` emits
+// the attribute prefix, so the baseline is the mechanical witness.
 #[test]
 fn platform_non_exhaustive_present_on_owned_descriptor_only() {
     let api = read_pub_api("cranelisp-platform");
@@ -688,26 +688,22 @@ fn platform_non_exhaustive_present_on_owned_descriptor_only() {
     }
 }
 
-// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C4 (FIXME 0227)
-// `#[repr(C)]` field-order mechanical check. cargo-public-api emits fields as
-// an unordered set, so it cannot catch a field reshuffle that changes byte
-// offsets. We assert via `std::mem::offset_of!` against a frozen offset table
-// — the (b) option the audit enumerated, chosen over (a) cbindgen-diff because
-// it is self-contained in the test suite (no external header-generation step).
-// The protected set: `PlatformFn`, `PlatformManifest`, `HostCallbacks` (the
-// `#[repr(C)]` layout-contract types per Principle 14).
+// spec: design/platform/platform.md §4.3 — the `#[repr(C)]` boundary types are
+// layout contracts governed by `ABI_VERSION` (Principle 14): a field-order
+// change moves byte offsets and requires a version bump. The protected set is
+// `PlatformFn`, `PlatformManifest` and `HostCallbacks`.
 //
-// This needs the real Rust types, so it lives as a compile-time fixture using
-// `cranelisp_platform` as a dependency — but tests/ is a binary, so we assert
-// via the baseline that the `#[repr(C)]` attribute is present AND the field
-// COUNT + ORDER (as emitted top-to-bottom in the baseline) matches a frozen
-// expectation. cargo-public-api emits fields in source-declaration order, so a
-// reshuffle changes the emitted line order — which this test pins.
+// The check reads the baseline: the `#[repr(C)]` attribute is present AND the
+// emitted field-name list matches a frozen expectation. cargo-public-api emits
+// field lines alphabetically, so this pins each type's field SET, not its
+// declaration order or byte offsets; the `PlatformFn` offsets are pinned by the
+// platform unit test `platform_fn_repr_c_field_order_v8`. The PlatformManifest
+// and HostCallbacks assertion messages below still say "ORDER".
 #[test]
 fn platform_repr_c_field_order_frozen() {
     let api = read_pub_api("cranelisp-platform");
-    // Helper: collect the ordered field names for a given struct, in the order
-    // cargo-public-api emits them (source-declaration order).
+    // Helper: collect a struct's field names in the order cargo-public-api
+    // emits them (alphabetical).
     fn fields_in_order<'a>(api: &'a str, type_path: &str) -> Vec<&'a str> {
         let field_prefix = format!("pub {type_path}::");
         api.lines()
@@ -732,8 +728,7 @@ fn platform_repr_c_field_order_frozen() {
             "FIXME 0227 (audit C4): `#[repr(C)]` dropped from {ty}. Line: `{decl}`"
         );
     }
-    // Frozen field-order tables (source-declaration order). A reshuffle that
-    // changes byte offsets reorders these lines in the baseline → mismatch.
+    // Frozen field-set tables, in the baseline's alphabetical emission order.
     let platform_fn_fields = fields_in_order(&api, "cranelisp_platform::PlatformFn");
     // Frozen field-set introduced at ABI_VERSION = 8 (Sprint 96, the SINGLE-ABI CUTOVER,
     // platform-interface.md §6.8.0): the unified `PlatformFn` absorbs the former
@@ -791,13 +786,12 @@ fn platform_repr_c_field_order_frozen() {
     );
 }
 
-// spec: design/arch/facades/cranelisp-platform-audit-s69.md §4 C5 (FIXME 0228)
-// `unsafe impl Send/Sync` presence. `unsafe impl Send for PlatformFn` +
-// `unsafe impl Sync for PlatformFn` are load-bearing (the IO trampoline holds
-// platform-fn pointers across threads). `OwnedPlatformFnDescriptor` +
-// `PlatformManifest` must conversely project `!Send + !Sync` (raw pointers /
-// owned strings that must not silently cross threads). cargo-public-api emits
-// both the positive `impl Send/Sync` and the negative `impl !Send/!Sync`.
+// spec: design/platform/platform.md §7 — DLL handles are session-global
+// (invariant 6), which is what justifies the `unsafe impl Send + Sync` on
+// `PlatformFn`. The negative legs pin the current `!Send + !Sync` projection of
+// `OwnedPlatformFnDescriptor` and `PlatformManifest`; no standing design states
+// that obligation. cargo-public-api emits both the positive `impl Send/Sync`
+// and the negative `impl !Send/!Sync`.
 #[test]
 fn platform_send_sync_claims_match_invariants() {
     let api = read_pub_api("cranelisp-platform");

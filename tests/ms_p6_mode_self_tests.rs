@@ -85,7 +85,7 @@ fn run_with(prog: &str, envs: &[(&str, &str)]) -> helpers::e2e::CrOutput {
 
 // M3 (parity) — does NOT false-fire on a clean program (byte-identical-off for a
 // balanced program): CLEAN + parity exits with the correct value 20.
-// spec: design/intrinsics/diagnostic-modes.md §"§3. The three diagnostic modes (mode inventory)" M3 — no abort when balanced.
+// spec: design/intrinsics/diagnostic-modes.md §"M3 — alloc/free parity" — no abort when balanced.
 #[test]
 fn m3_parity_no_false_abort_on_clean() {
     run_with(CLEAN_PROG, &[("CRANELISP_ALLOC_PARITY", "1")]).assert_exit(20);
@@ -93,7 +93,7 @@ fn m3_parity_no_false_abort_on_clean() {
 
 // M1 (quarantine) — preserves a clean program (the mode is byte-identical-off for
 // correct code; it only changes the fate of freed blocks).
-// spec: design/intrinsics/diagnostic-modes.md §"§3. The three diagnostic modes (mode inventory)" M1 — clean programs unaffected.
+// spec: design/intrinsics/diagnostic-modes.md §"M1 — no-reuse quarantine" — clean programs unaffected.
 #[test]
 fn m1_quarantine_preserves_clean_program() {
     run_with(CLEAN_PROG, &[("CRANELISP_QUARANTINE_FREED", "1")]).assert_exit(20);
@@ -101,7 +101,7 @@ fn m1_quarantine_preserves_clean_program() {
 
 // M2 (scrub) — preserves a clean program (scrub only poisons freed memory; a
 // correct program never reads freed memory, so it is unaffected).
-// spec: design/intrinsics/diagnostic-modes.md §"§3. The three diagnostic modes (mode inventory)" M2 — clean programs unaffected.
+// spec: design/intrinsics/diagnostic-modes.md §"M2 — scrub on free" — clean programs unaffected.
 #[test]
 fn m2_scrub_preserves_clean_program() {
     run_with(CLEAN_PROG, &[("CRANELISP_SCRUB_FREED", "1")]).assert_exit(20);

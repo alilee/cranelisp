@@ -67,7 +67,7 @@ pub(crate) use type_resolve::*;
 /// **Grain: receiver-type HEAD, not arg-recursed.** The suffix carries the
 /// receiver type's FQ HEAD only; ADT type-args are NOT recursed (unlike the
 /// mono-instance sig). This MATCHES the trait-impl registration grain — the
-/// definition side names by `impl_target_name_or_panic` (the head), so the two
+/// definition side names by the impl target head (`impl_target_head_spelling`), so the two
 /// impls `(impl T (Vec Int))` / `(impl T (Vec String))` already share one head
 /// key on BOTH sides. Arg-distinguishing the trait-method grain would require a
 /// coordinated change to impl registration too; it is out of scope here.

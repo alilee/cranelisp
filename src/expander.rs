@@ -1852,6 +1852,48 @@ mod tests {
         assert!(r.is_none());
     }
 
+    // spec: design/int/int.md §7.6.2 — `/expand` records nothing: expanding a
+    // qualified macro head changes no table's lookup dependencies.
+    #[test]
+    fn expand_command_of_qualified_macro_head_changes_no_table() {
+        use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+        let dir = tempfile::tempdir().unwrap();
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: cranelisp_types::CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        };
+        let mut session = CompilerSession::new(settings, dir.path().to_path_buf(), "user")
+            .expect("test session bootstrap");
+        session.set_lib_dirs(Vec::new());
+        session
+            .register_module_with_source("b", "(defmacro m [] `11)\n", &dir.path().join("b.cl"))
+            .unwrap();
+        let recorded = |session: &CompilerSession| -> Vec<(String, Vec<String>)> {
+            let mut all: Vec<_> = session
+                .shared
+                .symbol_tables
+                .iter()
+                .map(|table| {
+                    let modules = table.lookup_dependencies().map(|m| m.to_string()).collect();
+                    (table.key().to_string(), modules)
+                })
+                .collect();
+            all.sort();
+            all
+        };
+        let before = recorded(&session);
+
+        let expanded = session.expand_form_sexp("(b/m)").unwrap();
+
+        assert!(matches!(expanded, Sexp::Int(11, _)), "{expanded:?}");
+        assert_eq!(recorded(&session), before);
+        session.shutdown();
+    }
+
     // spec: macro-expansion-ownership.md §1 "Binary" / §2 — JitMacroExpander surfaces a clear
     // Aborted diagnostic when a recognized macro's clause code is not in memory
     // (an orchestrator-sequencing condition), rather than misbehaving silently.

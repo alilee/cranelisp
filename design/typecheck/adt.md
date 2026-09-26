@@ -101,8 +101,10 @@ rather than produced by re-checking a body
 
 1. Rejects an internal constructor.
 2. Resolves a dotted, bare or module-qualified name to one constructor through
-   `resolve_constructor_entry`. A bare name with several candidates is selected by
-   the scrutinee type, or held as a pending pattern use until inference settles it
+   `resolve_constructor_entry`. A module-qualified name resolves by the qualified
+   walk value position uses (`typecheck.md` §3.5). A bare name with several
+   candidates is selected by the scrutinee type, or held as a pending pattern use
+   until inference settles it
    (`dotted-ctor-registration.md` §3.3; `use-site-candidate-selection.md` §7).
 3. Instantiates the constructor afresh for the arm (`instantiate_ctor`) and records
    the resolved storage identity for the pattern span in

@@ -134,6 +134,251 @@ the fallback those seams apply.
 A centralised lookup index is not planned: it would be a bookkeeping change with
 no measured performance need.
 
+### 3.4 Qualified lookup dependencies
+
+Status: **implemented 2026-09-26 against the user-approved API, uncommitted;
+the int consumer is implemented (2026-09-26); full suite green; uncommitted.** The fact, its carriers and its consumers are
+`arch`'s [qualified lookup dependencies](../arch/interfaces.md#qualified-lookup-dependencies).
+This section is typecheck's producer.
+
+Typecheck records, for the module it checks, every other module whose table
+answered a qualified reference. It reads that module from
+`Resolved.lookup_module` and never re-derives it (Principle 24). It does not
+filter compiler-owned modules and loads nothing; exclusion and use are `int`'s
+([dependency record](../int/int.md#76-dependency-record-and-validity)).
+
+- **One recording seam.** The scope seam (§3.3) records `lookup_module` from
+  every successful result it returns, whether a single terminal or a candidate
+  set, and whatever the root module. Recording belongs to the one private
+  scope-construction step, not to its wrappers or their callers, so a new
+  wrapper cannot resolve without recording. That step accepts only answer
+  shapes that expose their answering modules through one private trait, so a
+  new answer shape cannot bypass recording either.
+- **Outcomes.**
+  - *Success* is recorded, including a probe whose caller discards it: a type
+    attempt that found a trait, a pre-check, a diagnostic render, or the child
+    probe of the child-then-absolute pair. A discarded answer still shaped the
+    result, and an extra member costs at most a cache miss. Gap recording
+    (§7.3.1) differs deliberately: there a discarded failure would become a
+    load request.
+  - *Failure* records nothing, because the carrier names only a table that
+    answered. The absent module of `QualifiedModuleUnknown` is a gap, not an
+    edge.
+  - *Self-qualified, alias-to-self and bare* references carry no
+    `lookup_module`. Bare references reach other modules through declared
+    edges.
+- **Sink and rollback.**
+  - Each entry call collects its modules apart from the staging table. Each
+    entry that runs with staging — `check_forms`, `instantiate_demands` and
+    `check_type_expr` in cluster mode — writes them into the cluster's staging
+    table through `record_lookup_dependency` once, on success. No production
+    caller runs `check_type_expr` in cluster mode today; it writes for
+    consistency, so no entry collects and then discards on success. Writing
+    during resolution would need a mutable staging borrow while a caller may
+    hold a shared one (§7.5).
+  - A type error or gap discards the collection with the call. `int`'s retry
+    reruns from the top and records afresh, so nothing unsettled reaches
+    staging (Principle 26) and no rollback is needed beyond §7.4.
+  - Without staging (the `Live` access mode, which platform signatures and REPL
+    search use through `check_type_expr`) there is no sink, so nothing is
+    recorded. Typecheck never writes the set to a live table.
+  - The entry call owns the collector, and the environment's private staging
+    carrier borrows it. Every seam wrapper reaches the environment, including
+    the root-taking wrappers that have no `CheckState`, and a collector exists
+    only with staging. The seam is read-only, so the collector is
+    interior-mutable. The construction step inserts and releases the borrow
+    before returning, so no borrow spans a resolution.
+  - The carrier holds the collector by reference, under its existing
+    single-threaded `Send`/`Sync` precondition. An owned interior-mutable field
+    on `TypeCheckEnv` would remove its public `Sync` and `Freeze`, which is a
+    public-API change; the reference leaves this crate's `public-api.txt`
+    unchanged.
+
+**Route census** (source read at `bc675d86` plus the uncommitted loading fixes;
+the pattern and stacked-bound rows are the §3.5 routes):
+
+| Reference kind | Route | Recorded by |
+|---|---|---|
+| Value, value-position constructor, qualified dotted member `m/T.x` | `lookup`: the full spelling first (the alias target — `<current>.q` for a `(mod q)` child — or the absolute module), then the §3.5 walk, child then absolute. Reference recording: the walk's order. Every probe goes through the seam | Seam |
+| Type positions: annotations, `deftype` fields, aliases, trait and HKT signatures, HKT impl signatures | The type-expression resolver, through the candidate seam | Seam |
+| Impl target head | The type lookups, qualifier kept (§7.3.1) | Seam |
+| Trait: impl trait slot, pairing head, constraint slot, type-or-trait step R (§7.3.2) | `resolve_trait` and the impl trait resolver | Seam |
+| Trait in a stacked bound, `:Eq :m/Tr a` | `resolve_trait` as written, the step R resolution (§3.5) | Seam |
+| Qualified pattern constructor `m/C` or `m/T.C` | The qualified walk alone (§3.5) | Seam |
+| Bare dotted member `T.x`, value or pattern | Head resolved bare; member read by key in the type's home | Nothing: the home is reached through the closure |
+| Keyed reads at a resolved home: impl discovery, trait declarations, method-to-trait, ownership facts, the reach of a monomorphisation re-check to its generic body | Not spelled references | Nothing: the home is reached through the closure |
+| Qualified spelling inside a cross-module monomorphisation re-check ([monomorphisation](monomorphisation.md#37-cross-module-body-recheck-scoping)) | The seam, relative to the defining module, in the checked module's staging environment | Seam, as a dependency of the module being checked; only that module's own path is excluded. Conservative: an extra member costs at most a cache miss |
+| Macro heads | `int`'s recogniser | `int` |
+
+**Grades.**
+
+- *A qualified spelling resolved through the seam is recorded*:
+  **structural** within the crate, for every wrapper and answer shape.
+  Falsifier: a second `ResolutionScope` construction in the crate (today there
+  is one).
+- *Every qualified reference kind is recorded*: **measured** for the census
+  families by the census cell below; **asserted with a named falsifier**
+  beyond them. Falsifier: a qualified spelling that reaches a table without
+  the seam, such as a new rooted route. No caller records a module itself; the
+  seam is the only recording point.
+- *An unrecorded miss cannot change a cached answer*: **asserted with a named
+  falsifier, for a `(mod)`-declared child and for no child.** A qualified
+  spelling otherwise reads one module, and that module's absence is the
+  form's gap. `(mod q)` installs the private alias `q → <current>.q`, so every
+  reading, value or pattern, reaches the declared child first and never
+  consults absolute `q`; the `mod` declaration is already the declared edge.
+  Falsifier: a cached module resolves `q/x` to `q` while a fresh compile of the
+  same sources resolves it to `<current>.q`.
+- **Not held for an undeclared registered child.** The walk's synthesised
+  candidate `<current>.q` answers wherever some other module has registered
+  that path, and its miss is unrecorded; value position also reads absolute
+  `q` first. Either answer can therefore change with what else is loaded.
+  This is the §11 R-1 lead, source-read and not executed.
+
+**Evidence** (`crates/cranelisp-typecheck/src/form/tests.rs`):
+
+- `lookup_dependency_census_records_answering_module`: one row per census
+  family through the seam; one alias row per distinct path by which a spelled
+  qualifier reaches the seam — value, type resolution, step R, the stacked
+  bound and patterns; and child-relative rows, which seed an undeclared child
+  and so observe the walk's synthesised candidate (§11 R-1). A declared child
+  reaches the seam through its alias.
+- Negative cells: `lookup_dependency_census_bare_and_self_qualified_record_nothing`,
+  `lookup_dependency_rejected_cluster_writes_nothing_neg` and
+  `lookup_dependency_live_mode_records_nothing`.
+
+### 3.5 Qualified stacked bounds and constructor patterns
+
+Status: **implemented 2026-09-26, uncommitted.** This corrects the confirmed
+defects LB-1, LB-2 and LP-1 to LP-3
+([S122 evidence delta](../../tests/plan/s122-evidence-delta.md#source-read-lookup-leads--classification-2026-09-26)).
+Each route resolved a qualified spelling without the qualified path. Each now
+takes the route its annotation twin already takes, or value position's
+qualified walk, so existing semantics decide. The public surface does not change.
+
+**Stacked trait bound** (`[:Ts :m/Tr x]`, spec §3.9.2):
+
+- Every trait in the stack resolves as written through `resolve_trait`, the
+  §7.3.2 step R resolution. It applies alias substitution (§9.8) and the
+  existence, visibility and kind checks, and returns the canonical home. No
+  arm takes the spelled qualifier as the home, so bare and qualified members
+  take the same step.
+- Step R and the stack share one crate-private step, which returns its
+  failure. Step R drops that failure, because the type failure decides that
+  route. A stack has no other reading, so its failure is the form's failure
+  and goes through the one projection (§7.3.1):
+  - an absent module records `Type(module/Tr)`, and `int` loads and retries
+    (§7.3.2 "The gap requests a load");
+  - a present module without the trait, a private trait, or a non-trait is a
+    located error with no gap.
+- Unchanged:
+  - pairing the home with the spelled trait name (see the renamed-import lead
+    in §11);
+  - how a constraint is used after registration
+    ([inference](inference.md), rigid seeding);
+  - enforcement of a declared bound that the body does not use. `qa` is
+    classifying that separately, and this correction does not depend on it:
+    LB-1 pins the scheme's canonical identity.
+
+**Qualified constructor pattern** (`(m/C x)` or `(m/T.C x)`, spec §6.2.1):
+
+- Spec §8.6.5 gives constructors the same rule in value and pattern
+  positions. The pattern route's qualified arm does not resolve the bare name
+  inside the spelled module, where that module's private names and
+  non-re-exported imports would be visible. It uses the qualified walk that
+  `lookup` uses:
+  - the child-then-absolute candidate order from the one source (§3.3);
+  - each candidate resolved through the scope seam as the composed
+    `module/name`, with alias substitution, the public-only filter and no
+    prelude retry;
+  - `lookup`'s gap selection when no candidate wins.
+- **One walk.** `lookup`'s qualified block is a crate-private step. Its
+  callers pass what counts as a winning terminal: one with a scheme for a
+  value, and a constructor for a pattern. Extracting it left value-position
+  results unchanged. The rooted helper stays for its other callers, which are
+  not qualified references.
+- **The walk is not value position's only qualified step.** Before the walk,
+  `infer_var` and `lookup` resolve the full spelling through the seam, which
+  reads only the alias target or the absolute module. The walk decides a value
+  only when that probe fails, while the pattern route calls the walk alone.
+  For a `(mod q)`-declared child both positions agree: the alias sends the
+  full spelling, and the walk's absolute candidate, to `<current>.q`. They
+  diverge only when an undeclared `<current>.q` is registered and both it and
+  absolute `q` export the member: the pattern takes the walk's synthesised
+  child, and the value types against `q`. That divergence predates §3.5; see
+  §11 R-1.
+- **Pattern outcomes.**
+  - A constructor terminal is instantiated and recorded in `pattern_ctors`
+    as before.
+  - With no winning candidate, the pattern fails with its located "unknown
+    constructor in pattern" error. At that point a qualified name writes the
+    walk's gap, or no gap, as the pending gap, as `infer_var` always writes
+    for the value twin; bare and dotted names leave it untouched. The
+    qualified arm has no scrutinee-directed fallback, so the miss is always
+    the form's failure and this is the §7.3.1 recording point. `int` then loads, retries or reports exactly as it does for the
+    value twin. For example, LP-3's unloaded module is loaded, and LP-2's
+    private constructor reports what `(shapes/Hid 8)` reports.
+  - The auto-curry arity guard reads the same resolution for a callee that
+    has already been typed as a value. It drops the gap, because it is a
+    probe.
+- The dotted and bare arms are unchanged. The internal-constructor gate still
+  reads the name with its qualifier removed; see §11.
+- Quasiquote templates lower to `macros/SCons` and `macros/SNil` in both
+  positions (`crates/cranelisp-frontend/src/synth.rs`). A pattern template
+  therefore resolves as its value-position template does, including through
+  an import alias or a `(mod macros)` spelled `macros` (review A-4, a `qa`
+  candidate hygiene lead), except for an undeclared registered child
+  `<current>.macros`, as above.
+
+**Lookup dependencies.** Both routes reach tables only through the seam, so
+§3.4 records them there; neither records a module itself.
+
+**Grades.**
+
+- *The pattern route and value position's qualified fallback share the
+  walk's candidate order, seam and gap choice*: **structural**, because both
+  call one step. Falsifier: a second qualified candidate-order source in the
+  crate.
+- *A qualified constructor resolves the same way in pattern and value
+  position*: for a `(mod)`-declared child, **asserted with a named
+  falsifier** — both reach the child through its installed alias; falsifier:
+  R1-V's declared-child control naming two declarations. **Not held** for an
+  undeclared registered child whose
+  member the absolute module also exports (above); elsewhere it follows from
+  the shared walk and is not separately graded. Falsifier of the known
+  divergence: R1-V (§11).
+- *No qualified trait or pattern spelling reaches a table outside the seam*:
+  **asserted with a named falsifier**, the §3.4 census.
+
+**Evidence.**
+
+- E2E (`tests/spec_08_modules.rs`):
+  - `fq_stacked_bound_trait_through_alias_resolves_in_aliased_module`;
+  - `fq_stacked_bound_trait_to_missing_module_rejected_neg`;
+  - `fq_ctor_pattern_through_alias_resolves_in_aliased_module`;
+  - `fq_ctor_pattern_private_constructor_rejected_neg`;
+  - `fq_ctor_pattern_as_only_reference_loads_its_module`.
+
+  The quasiquote suites and `tests/spec_06_pattern_matching.rs` guard the
+  unchanged routes.
+- Unit cells beside the §7.3 cells in
+  `crates/cranelisp-typecheck/src/form/tests.rs`:
+
+  | Cell | Setup and reference | Expected |
+  |---|---|---|
+  | `stacked_bound_through_alias_constrains_target_home` | Seeded `b` declares `Tr`; alias `bb` names `b`; `[:T1 :bb/Tr x]` | Accepted; the parameter's constraints include `b/Tr` |
+  | `stacked_bound_absent_module_is_type_gap` | `[:T1 :nosuch/Tr x]`, no `nosuch` | `Gap(Type(nosuch/Tr))` |
+  | `stacked_bound_present_module_without_trait_is_type_error_neg` | Seeded `b` without `Tr`; `[:T1 :b/Tr x]` | Located error, no gap |
+  | `stacked_bound_bare_members_unchanged` | Control: bare `[:T1 :T2 x]` | Unchanged |
+  | `qualified_ctor_pattern_through_alias_resolves_in_target` | Seeded `b` with public `C`; alias `bb`; pattern `(bb/C v)` | Accepted; `pattern_ctors` records `b`'s constructor |
+  | `qualified_ctor_pattern_private_constructor_matches_value_twin_neg` | `b` declares `C` private; pattern `(b/C v)` from another module | Not accepted; the same `CheckError` as the value twin `(b/C 1)` |
+  | `qualified_ctor_pattern_absent_module_is_value_twin_gap` | Pattern `(b/C v)`, no `b` | The gap the value twin `(b/C 1)` returns |
+  | `qualified_ctor_pattern_prefers_child_module` | Registered but undeclared child `q` (no alias) and absolute `q`, both with `C`; pattern `(q/C v)` | Resolves to the child through the walk's synthesised candidate. Pins current behaviour, which `qa` reads as non-conforming (§11 R-1) |
+  | `qualified_non_constructor_pattern_is_located_error_neg` | Control: `b/f` is a function; pattern `(b/f v)` | Located "unknown constructor in pattern", no gap |
+  | `qualified_macros_scons_pattern_resolves` | Control: seeded `macros` with `SCons`; pattern `(macros/SCons h t)` | Accepted |
+
+- The §3.4 census cells cover the stacked-bound and pattern families.
+
 ---
 
 ## 4. Quality attributes
@@ -247,6 +492,8 @@ whole-table write lock.
   callable's lifecycle state (`Life`) is set only by those funnels
   (`design/arch/symbol-table-lifecycle.md`); typecheck consumes that vocabulary
   and never grows a local variant beside it.
+- The checked module's lookup dependencies go to staging once, when the entry
+  succeeds ([lookup dependencies](#34-qualified-lookup-dependencies)).
 
 ### 6.4 Staging-versus-live dispatch
 
@@ -278,18 +525,190 @@ nor waits on them.
 
 | Gap | Raised when | `int` response |
 |---|---|---|
-| `ResolutionGap::SymbolTypechecked(fq)` | An FQ value reference names a module not yet typechecked. | Typecheck that module, then retry the whole cluster. |
-| `ResolutionGap::Type(fqt)` | An FQ type reference names a module not yet typechecked. | As above. |
+| `ResolutionGap::SymbolTypechecked(fq)` | A qualified value, constructor or pattern reference names a module absent from the session tables, or a member absent from a present module. | Typecheck that module, then retry the whole cluster; a member still absent from a terminal module is `int`'s "no member" error. |
+| `ResolutionGap::Type(fqt)` | A qualified name in a type position or a stacked trait bound (§3.5) names a module absent from the session tables. | As above. |
 
 Typecheck asks for `SymbolTypechecked`, not `SymbolInMemory`: it needs a scheme,
 not compiled code, so a gap never waits on codegen. `ResolutionGap` is shared
 with frontend, which alone raises `MacroInMem`.
+
+#### 7.3.1 Producing the type gap
+
+Status: **implemented 2026-09-25 in this crate, uncommitted; integration and QA
+acceptance pending** (see *Evidence* below).
+
+`spec/08-modules.md` §8.5.4 edge 1 makes an unresolved qualified type a
+resolution-layer `Type` gap, and invariant 8 of
+[bounded contexts §2](../arch/bounded-contexts.md#2-typecheck-cratescranelisp-typecheck)
+makes a missing module a `Gap`. Both typecheck gaps reach `int` through one
+carrier: the pending gap on `CheckState`, which the `check_forms` boundary lifts
+when the form fails with a type error.
+
+- **Source.** A type expression resolves through the one `TypeExpr` resolver
+  behind the checker's type-expression entries (§3.1). An impl head's target
+  resolves through the kind-specific type lookups: its FQ type name, and its
+  concrete type with arguments. An absent module fails either route with the
+  resolution primitive's `QualifiedModuleUnknown`, which carries the
+  alias-substituted module (§9.8) and the member name.
+- **Impl targets keep their qualifier.** The frontend preserves the module on an
+  impl target's head, and every impl-target lookup resolves the head as written:
+  - a head qualified by another module keeps `module/name`, so that module
+    decides it and an absent one becomes the gap;
+  - a bare or self-qualified head resolves as the bare name, the same collapse
+    the type-expression resolver applies, so an in-cluster target stays visible
+    through staging;
+  - a qualified intrinsic target is named by its canonical symbol, not its
+    spelling, so `primitives/Int` names `primitives/Int` once.
+
+  Resolving only the bare head name is the rejected shape: an impl on an
+  unloaded module's type could never gap, `(impl Tr b/T …)` was rejected when
+  `b/T` was reachable only by qualification, and a same-named local type could
+  capture the target. The head's bare name remains for diagnostic text only.
+- **Recording point.** The gap is recorded where a type-position failure becomes
+  the form's failure, not where resolution fails. A gap recorded by a discarded
+  attempt would turn a later, unrelated type error into a load request, and the
+  retry would misreport it as a missing member. These callers try a type and
+  discard the failure, so they record nothing:
+  - the type-or-trait annotation (§7.3.2), in both the parameter and
+    value-annotation routes, when the trait arm is taken;
+  - the trait-tail recognizer;
+  - the impl arity pre-check and the impl accessor-collision pre-flight, which
+    leave an unresolvable target to the impl's own lookup.
+- **One projection.** The type-expression entries and both impl-target lookups
+  return a private type-position failure with no implicit conversion into the
+  per-form error. Its conversion into the form's failure is one projection: for
+  an absent module it records `Type(module/name)`; for every failure it returns
+  the same located error that the plain `ResolveError` conversion produces. A
+  caller of these entries cannot bypass the gap with `?` (**structural**: the
+  bypass does not compile), and that includes the impl-target route.
+- **Limits of the structural grade** (asserted, with falsifiers):
+  - `check_type_expr` leaves through one named exit that returns the located
+    error without recording, because its callers, platform signatures and REPL
+    search, run no gap loop. The type does not stop a gap-loop caller from
+    using that exit.
+  - The general resolution primitive stays crate-visible for other kinds. A new
+    type lookup written directly against it bypasses the projection.
+  - Falsifier for both: a qualified type position in a checked form whose
+    module is absent reports "not loaded" instead of a `Type` gap.
+- **Residual leads** (from review; not executed, no cell scheduled):
+  - *HK impl heads drop the constructor's qualifier.* In
+    `traits/impl_check.rs`, the higher-kinded path's primitive-name check and
+    its arity kind-check read the constructor's bare name, so a qualified
+    constructor is kind-checked against a same-named local type, or not at
+    all. Both are discarding probes: they record no gap. A cell needs `sprint`
+    scheduling.
+  - *The two named type lookups name an intrinsic differently.*
+    `resolve_type` names an intrinsic terminal by its canonical symbol;
+    `resolve_type_in_module` names it by the spelled name. No divergence was
+    found. Converge them when either is next changed.
+- **Unchanged.** The carrier, the lift and the public surface are unchanged;
+  this produces the gap that `lib.rs` already documents. A missing member of a
+  present module stays a located "unknown type" error. That result does not
+  depend on load order, because both orders resolve against the loaded module.
+
+**Evidence.** Reported by `dev` on 2026-09-25 and not re-executed here:
+
+- Unit cells sit beside `gap_on_missing_module_plain` in `form/tests.rs`: the
+  parameter annotation, `deftype` field, alias and impl-target routes each
+  return the gap, and a present module without the type stays a type error.
+  The projection's own cell is in `checker/tests.rs`. The route cells were
+  observed RED before the change. The impl-target cell first failed with the
+  bare-name face, which exposed the dropped qualifier. A planted
+  record-every-failure fault failed the negative cells.
+- The spec 7 trait suite, including the qualified impl-target canonical
+  controls, stays GREEN.
+- E2E: `tests/spec_08_modules.rs::fq_type_annotation_alone_loads_its_module`,
+  its alias-only sibling,
+  `tests/cache.rs::fq_type_only_reference_loads_its_module_on_a_fresh_compile`
+  and `fq_type_annotation_to_missing_module_errors_at_reference_site_neg`
+  are GREEN in the integrated full suite. The last one's location leg
+  depends on int's reference-site walk
+  ([int §6.3.1](../int/int.md#631-locating-a-gap-at-its-reference-site)).
+- An independent review found no blocking issue, and QA judged the
+  evidence adequate
+  ([S122 evidence delta](../../tests/plan/s122-evidence-delta.md#fresh-fq-type-only-loading--evidence-delta-2026-09-25)).
+
+#### 7.3.2 Type-or-trait annotations
+
+Status: **implemented 2026-09-25.** It corrects the defects F-a (value
+route) and F-b (parameter route) described below
+([S122 evidence delta](../../tests/plan/s122-evidence-delta.md#annotation-trait-fallbacks-f-a-f-b--intake-and-allocation-2026-09-25)).
+
+A single named annotation on a parameter (`[:X x]`) or a value (`:X e`) is a
+type if a type candidate exists, otherwise a trait (spec §3.9.3). A qualified
+`X` resolves in its named module, which is loaded first (§8.6.1, §8.6.6). Both
+routes decide the reading in the same three steps:
+
+- **Step T — type first.** The annotation resolves through the
+  type-expression entry. Success is the type reading.
+- **Step R — trait reading as written.** If the type attempt fails, a single
+  named reference is resolved as a trait through `resolve_trait`, spelled as
+  written (`module/name` when qualified). An impl's constraint slot and an HK
+  pairing head already resolve a trait reference this way
+  (`traits/impl_check.rs`). That resolution applies alias substitution, the
+  existence, visibility and kind checks, and yields the trait's canonical home.
+  The trait arm is taken only when it succeeds, and its constraint or
+  satisfaction check uses that home.
+- **Step F — otherwise the type failure becomes the form's failure.** The
+  failed trait attempt is discarded and records nothing. The type failure goes
+  through the one projection (§7.3.1), so an absent module records
+  `Type(module/name)`.
+
+- **The gap requests a load; it does not decide the kind.** `int` loads the
+  gap's module and retries the cluster (§7.3); it reads the gap's member name
+  only to locate and word its diagnostic. The retry repeats steps T and R
+  against the loaded module. A trait there takes step R, a type takes step T,
+  and a name that is neither is a located "unknown type" error. No trait gap
+  variant is needed.
+- **Why the as-written spelling.** The former fallbacks showed the failures of
+  the alternatives:
+  - Taking the qualifier as the home without resolving it accepted a reference
+    to an absent module, or to a missing member of a present one (F-a, value
+    route). The type attempt's failure was dropped, and a still-variable expression passed the satisfaction check.
+  - Testing the bare name (F-b, parameter route) let a local or prelude trait
+    of the same spelling take the trait arm for `:zz/Tr`. It also rejected a
+    trait reachable only by qualification.
+  - Either shape also recorded an alias qualifier as the home, so the impl
+    lookup in the home missed.
+- **One step for both routes.** The two routes are entrances to one constraint
+  shape. A single crate-private trait-reading step replaces the syntax-only
+  `single_trait_bound_from_annotation`, whose only callers are these two
+  routes. Both routes call the step, so the decision cannot diverge between
+  them again. The parameter route constrains its fresh variable with the
+  resolved home. The stacked bound (§3.5) resolves each member through the
+  same step and projects its failure instead of dropping it.
+- **Unchanged.** The public surface, `ResolutionGap`, `TypePositionFailure` and
+  its projection. Also unchanged: the impl constraint slot and the
+  satisfaction-check rules
+  ([inference §4.5](inference.md#45-value-position-annotations)). The trait
+  name paired with the home stays the spelled name, as in the bare arm today
+  (see the renamed-import lead in §11).
+
+**Evidence.**
+
+- E2E: `tests/spec_08_modules.rs::fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted`
+  (FA-1) and `fq_param_trait_annotation_resolves_in_named_module_neg_not_captured_by_bare_trait`
+  (FB-1) were RED for their predicted reasons before the change and are
+  GREEN after it.
+- Unit: these cells sit in `form/tests.rs` beside the §7.3.1 cells
+  (`type_or_trait_*`). Every cell was observed RED before the change and
+  is GREEN after it.
+
+  | Cell | Route | Setup and annotation | Expected | Before the fix |
+  |---|---|---|---|---|
+  | U1 | Value | `(defn h [t] :some.mod/T t)`, no `some.mod` | `Gap(Type(some.mod/T))` | RED: accepted |
+  | U2 | Parameter | Current module declares trait `Tr`; `[:some.mod/Tr x]`, no `some.mod` | `Gap(Type(some.mod/Tr))` | RED: accepted |
+  | U3 | Parameter | Seeded module `b` declares trait `Tr` and is not imported; `[:b/Tr x]` | Accepted; the parameter's constraint is `b/Tr` | RED: type error |
+  | U4 | Value | Alias `bb` names `b`; `b` declares `Tr` with an impl for `Int`; `:bb/Tr 5` | Accepted | RED: rejected, because the home is `bb` |
+  | U5 | Parameter | As U4; `[:bb/Tr x]` | Accepted; the constraint is `b/Tr` | RED: type error |
+  | U6 | Value | Seeded `b` has no `X` of either kind; `:b/X t` | Located `TypeError`, no gap | RED: accepted. The unresolved home also accepted a present module's missing member |
 
 ### 7.4 Rollback
 
 A failed cluster leaves no live mutation: `int` drops the staging table. The
 type-variable counter is monotonic and deliberately not rolled back, so ids
 minted by a failed attempt are abandoned rather than reused (BC §2 invariant 7).
+A failed call's collected lookup dependencies never reach staging (§3.4).
 There is no snapshot/restore primitive.
 
 ### 7.5 Guard discipline — hold one table guard at a time
@@ -495,6 +914,47 @@ are listed in `design/typecheck/CLAUDE.md` §"Redirections".
   and §8.2. The spec text and that test disagree, and this design takes neither
   side. `spec` owns the reconciliation and `qa` the intake; typecheck's design
   follows the ruling. (Source-read and test-read lead; not executed here.)
+- **A type position naming a present but non-terminal module** (§7.3.1): a
+  cycle or in-flight load through a type-only reference (spec §8.5.4 edges
+  6–7). It fails as "unknown type", not as the value path's member-absent gap.
+  The trigger is a failing cell of that shape.
+- **A qualified trait in an impl's trait or constraint slot whose module is
+  not loaded.** Spec §8.6.1 requires the module to be loaded, or an
+  unknown-module error (§8.6.6 step 5), for every kind of name. The slot
+  resolves through `resolve_trait` and returns a located error with no gap.
+  This is a source-read lead, not executed and not allocated. The trigger is a
+  failing cell. The repair would project the failure through the §3.5 stacked
+  bound's step; no new gap variant is needed, because the `Type` gap only
+  requests a load (§7.3.2).
+- **The internal-constructor gate reads a qualified pattern's bare name.**
+  `check_constructor_pattern` first asks whether the name, with its qualifier
+  removed, names an internal constructor in the current module's scope. It
+  does not use the constructor that §3.5 resolves. A qualified `(m/Bind v)` of
+  an ordinary constructor could therefore be rejected because the prelude's
+  internal `Bind` is in scope. The resolved constructor's origin already
+  carries the flag. This is a source-read lead, not executed. The trigger is a
+  failing cell.
+- **R-1: the qualified walk synthesises a child reading for an undeclared
+  child** (§3.4, §3.5). `qualified_candidate_modules` always offers
+  `<current>.q`. The types resolver has no child reading: a `(mod q)` child is
+  reached through its alias, so declared children agree in every position.
+  With a registered but undeclared `<current>.q` and an absolute `q` both
+  exporting `x`, the value types against `q` but records the child as its
+  reference target, and the pattern twin resolves to the child. Whether the
+  child answers also depends on whether an unrelated module registered it.
+  `qa` classifies this `resolver-mirror`
+  ([intake](../../tests/plan/s122-evidence-delta.md#producer-review-r-1-and-a-4--classification-2026-09-26))
+  and reads spec §8.11.2 item 1 and §8.5.4 item 2 as confining step 3 to
+  declared submodules, so absolute `q` is the conforming answer; the refuter
+  is a `spec` reading of §8.1.1 into step 3. Source-read, not executed;
+  product reachability is unobserved. The trigger is R1-V, allocated to
+  `test`. The repair — retiring the synthesised candidate so the alias is the
+  one child reading, or bounding it — is settled with R1-V's outcome.
+- **A trait reached through a renamed import** (spec §8.3.5). Both
+  type-or-trait routes (§7.3.2) and the stacked bound (§3.5) pair the resolved
+  home with the spelled name. A renamed trait would therefore get
+  an identity that does not exist. This is a source-read lead, not executed.
+  The trigger is a failing cell.
 - Subject-level open items are in their subject documents: [trait open items](traits.md#11-open-items),
   `inference.md` §6 and [checked-body open items](checked-body-publication.md#10-open-items),
   for example.

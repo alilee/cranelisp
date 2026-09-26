@@ -131,11 +131,13 @@ fn staged_layout_cases(mut observe: impl FnMut(&TypeCheckEnv, &ConcreteType, boo
         }
         let mut staging = cranelisp_types::SymbolTable::new(ModuleFullPath::from("user"));
         let cell = std::cell::RefCell::new(&mut staging);
+        let lookup_dependencies = crate::checker::LookupDependencyCollector::default();
         let env = TypeCheckEnv::new_with_staging(
             &tf.modules,
             &tf.next_id,
             ModuleFullPath::from("user"),
             &cell,
+            &lookup_dependencies,
             &tf.module_aliases,
             &tf.prelude_fallback,
         );
@@ -156,11 +158,13 @@ fn staged_layout_cases(mut observe: impl FnMut(&TypeCheckEnv, &ConcreteType, boo
     register_layout_type(&tf.env(), "other", "Inner", fq("primitives", "Int"));
     let mut staging = cranelisp_types::SymbolTable::new(ModuleFullPath::from("user"));
     let cell = std::cell::RefCell::new(&mut staging);
+    let lookup_dependencies = crate::checker::LookupDependencyCollector::default();
     let env = TypeCheckEnv::new_with_staging(
         &tf.modules,
         &tf.next_id,
         ModuleFullPath::from("user"),
         &cell,
+        &lookup_dependencies,
         &tf.module_aliases,
         &tf.prelude_fallback,
     );

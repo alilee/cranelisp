@@ -31,6 +31,20 @@ pub(crate) struct PreparedCommit {
     pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
 }
 
+impl PreparedCommit {
+    /// Record lookup dependencies that int, not typecheck, observed for this
+    /// publication (`design/int/int.md` §7.6.2). They reach the live table
+    /// only if the prepared staging is published.
+    pub(crate) fn record_lookup_dependencies<'a>(
+        &mut self,
+        modules: impl IntoIterator<Item = &'a ModuleFullPath>,
+    ) {
+        for module in modules {
+            self.staging.record_lookup_dependency(module.clone());
+        }
+    }
+}
+
 struct PreparedCompilation {
     jit: std::sync::Arc<cranelisp_backend::jit::Jit>,
     clif_ir: String,
@@ -1795,7 +1809,7 @@ pub enum ClusterOnce {
     /// issued so the scheduler requeues this module.)
     Gap {
         dep: ModuleFullPath,
-        continuation: Vec<Sexp>,
+        continuation: crate::scheduler::SourceContinuation,
         generation_started: bool,
     },
 }
@@ -3067,7 +3081,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
         match work {
             Some(PriorityWork::Typecheck {
                 module,
-                sexps,
+                continuation,
                 instantiation_demands,
                 generation_started,
             }) => {
@@ -3083,7 +3097,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                     handle_typecheck_work_shared(
                         shared,
                         &module,
-                        &sexps,
+                        &continuation,
                         instantiation_demands,
                         generation_started,
                     )
@@ -3305,7 +3319,7 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 /// Handle a Typecheck work item on a persistent priority worker (S78
 /// in-call-stack restructure).
 ///
-/// The cluster sexps arrive ON the work packet (`sexps`), not from a shared
+/// The source continuation arrives ON the work packet, not from a shared
 /// `module_sexps` map. Drives the single live orchestration
 /// (`cluster::process_cluster`) and:
 ///
@@ -3322,13 +3336,13 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 fn handle_typecheck_work_shared(
     shared: &crate::session_v4::SharedState,
     module: &ModuleFullPath,
-    sexps: &std::sync::Arc<[Sexp]>,
+    continuation: &crate::scheduler::SourceContinuation,
     instantiation_demands: std::sync::Arc<[MonoDemand]>,
     generation_started: bool,
 ) -> Result<(), CranelispError> {
     match crate::cluster::process_cluster(
         shared,
-        std::sync::Arc::clone(sexps),
+        continuation,
         instantiation_demands,
         module,
         generation_started,
@@ -3373,11 +3387,9 @@ fn handle_typecheck_work_shared(
             // The dependency was registered + blocked on inside the cluster
             // pass; this worker frees back to the pool. The scheduler requeues
             // `module` (sexps persist on its ModuleState) when `dep` completes.
-            shared.scheduler.set_source_continuation(
-                module,
-                std::sync::Arc::from(continuation),
-                generation_started,
-            );
+            shared
+                .scheduler
+                .set_source_continuation(module, continuation, generation_started);
             let _ = dep;
         }
     }

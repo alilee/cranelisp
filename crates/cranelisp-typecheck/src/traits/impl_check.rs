@@ -338,8 +338,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 cranelisp_types::TypeExpr::Applied(_, args) => args.len(),
                 _ => 0,
             };
+            let head_spelling = impl_target_head_spelling(&impl_.target, &state.current_module);
             if let Some(td) = self
-                .scope_resolve(state, head.as_ref(), impl_.span)
+                .scope_resolve(state, head_spelling.as_ref(), impl_.span)
                 .ok()
                 .as_ref()
                 .and_then(|r| crate::checker::type_def_view_of(&r.entry))
@@ -385,9 +386,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (`Option`), not the pairing. `fq_trait_name`/`trait_home` are resolved
         // ONCE at the top of this function (Principle 24 — the sole minting site,
         // reused by the B1 pairing-head compare and the registry key below).
+        let head_spelling = impl_target_head_spelling(&impl_.target, &state.current_module);
         let fq_impl_type = self
-            .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
-            .map_err(cranelisp_types::CranelispError::from)?;
+            .resolve_type(state, &head_spelling, impl_.span)
+            .map_err(|failure| failure.into_form_error(state))?;
 
         // Generate default method implementations for missing methods
         let default_defns =
@@ -614,7 +616,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // the downstream method-body checks to diagnose.
         let target_ty = match self.concrete_type_for_impl_target(
             state,
-            impl_target_name_or_panic(&impl_.target),
+            &impl_target_head_spelling(&impl_.target, &state.current_module),
             Vec::new(),
             impl_.span,
         ) {
@@ -811,17 +813,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .iter()
             .map(|arg| {
                 self.resolve_annotation_type_expr_in_module(arg, &mut var_map, &module, impl_.span)
-                    .map_err(cranelisp_types::CranelispError::from)
+                    .map_err(|failure| failure.into_form_error(state))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let concrete_self = self
             .concrete_type_for_impl_target(
                 state,
-                impl_target_name_or_panic(&impl_.target),
+                &impl_target_head_spelling(&impl_.target, &module),
                 resolved_type_args,
                 impl_.span,
             )
-            .map_err(cranelisp_types::CranelispError::from)?;
+            .map_err(|failure| failure.into_form_error(state))?;
 
         // FIXME 0590: route method sigs through the ONE resolver via the trait-sig
         // wrapper. `Self` and every trait type-parameter name (`decl.type_params`)
@@ -842,7 +844,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     &decl.type_params,
                     method_defn.span,
                 )
-                .map_err(cranelisp_types::CranelispError::from)
+                .map_err(|failure| failure.into_form_error(state))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -855,7 +857,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 &decl.type_params,
                 method_defn.span,
             )
-            .map_err(cranelisp_types::CranelispError::from)?
+            .map_err(|failure| failure.into_form_error(state))?
         } else {
             self.fresh_var()
         };
@@ -1122,8 +1124,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Still use the centralised resolver to get a typed error if the
         // target is unknown.
         let target_fqtn = self
-            .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
-            .map_err(cranelisp_types::CranelispError::from)?;
+            .resolve_type(
+                state,
+                &impl_target_head_spelling(&impl_.target, &state.current_module),
+                impl_.span,
+            )
+            .map_err(|failure| failure.into_form_error(state))?;
         let concrete_self = Type::ADT(target_fqtn.clone(), type_arg_vars);
         let module = state.current_module.clone();
 
@@ -1142,7 +1148,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     &target_fqtn,
                     impl_.span,
                 )
-                .map_err(cranelisp_types::CranelispError::from)
+                .map_err(|failure| failure.into_form_error(state))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1155,7 +1161,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 &target_fqtn,
                 impl_.span,
             )
-            .map_err(cranelisp_types::CranelispError::from)?;
+            .map_err(|failure| failure.into_form_error(state))?;
 
         // Pre-unify the dispatch parameter with the concrete self type
         if let Some(param_idx) = method_sig.hkt_param_index

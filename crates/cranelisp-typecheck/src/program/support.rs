@@ -512,25 +512,6 @@ pub(super) fn is_trait_impl_mangled_name(name: &str) -> bool {
     false
 }
 
-/// Convert a single param annotation `TypeExpr` into the `TraitRef` it would
-/// denote as a trait bound, for the try-type-then-trait fallback (spec §3.9.3,
-/// S86 D4). A trait bound is a bare or qualified trait NAME with no type
-/// arguments (spec §3.9.2), so only `TypeExpr::Named` qualifies — `Applied`
-/// (e.g. `(Option Int)`) carries type arguments and is a concrete type, never a
-/// single trait bound; `TypeVar`/`SelfType`/`FnType`/`Bounds` are not bare
-/// names. The as-written module qualification is preserved (`:fmt/Display`).
-pub(crate) fn single_trait_bound_from_annotation(
-    ann: &cranelisp_types::TypeExpr,
-) -> Option<cranelisp_types::TraitRef> {
-    match ann {
-        cranelisp_types::TypeExpr::Named(tref) => Some(cranelisp_types::TraitRef::new(
-            tref.module.clone(),
-            cranelisp_types::TraitName::from(tref.name.as_ref()),
-        )),
-        _ => None,
-    }
-}
-
 /// Returns true if `name` is a synthesised macro-clause defn — the
 /// `__macro_{macro}_clause_{idx}` shape produced by
 /// `cranelisp_frontend::synthesize_macro_clause_defn`. Typecheck checks each

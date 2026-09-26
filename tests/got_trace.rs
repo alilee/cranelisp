@@ -23,11 +23,8 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // FIXME 0099 — GotObserver: JitWrite event
 // =============================================================================
 
-// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
-// (`CRANELISP_GOT_TRACE` reservation, parallel to `CRANELISP_IO_TRACE`).
-// FIXME(/dev backend FIXME 0099 Phase 1 + /dev int FIXME 0099 Phase 2) —
-// fails until backend authors GotObserver trait + int wires the ring
-// buffer + flush guard + register call.
+// spec: design/int/observability.md §3.3 — `CRANELISP_GOT_TRACE=1` surfaces
+// backend's `JitWrite` event.
 #[test]
 fn got_trace_emits_jit_write_event() {
     // A simple `--run` program — produces at least one JitWrite event
@@ -42,9 +39,8 @@ fn got_trace_emits_jit_write_event() {
     out.assert_stderr_contains("JitWrite");
 }
 
-// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
-// FIXME(/dev backend FIXME 0099 Phase 1 + /dev int FIXME 0099 Phase 2) —
-// fails identically until the observer extension point exists.
+// spec: design/int/observability.md §3.3 — `CRANELISP_GOT_TRACE=1` surfaces
+// backend's `LinkerWrite` event.
 #[test]
 fn got_trace_emits_linker_write_event_on_cache_hit() {
     // LinkerWrite fires ONLY when a cached *dependency* module is loaded
@@ -71,9 +67,8 @@ fn got_trace_emits_linker_write_event_on_cache_hit() {
     out.assert_stderr_contains("LinkerWrite");
 }
 
-// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
-// FIXME(/dev backend FIXME 0099 Phase 1 + /dev int FIXME 0099 Phase 2) —
-// fails until the observer surfaces redefinition events.
+// spec: design/int/observability.md §3.3 — int's GOT sink records a REPL
+// redefinition's slot rewrite as a `Redefinition` event.
 #[test]
 fn got_trace_emits_redefinition_event_on_repl_redefn() {
     // REPL defines `foo` then redefines `foo` — the GOT slot rewrite
@@ -91,12 +86,9 @@ fn got_trace_emits_redefinition_event_on_repl_redefn() {
     out.assert_stderr_contains("Redefinition");
 }
 
-// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)" — zero-overhead claim
-// (negative test).
-// FIXME(/dev backend FIXME 0099 Phase 1) — fails until the observer
-// extension point exists; this test asserts ABSENCE of trace lines when
-// the env var is unset, validating the relaxed-load null check zero-cost
-// path.
+// spec: design/int/observability.md §3.3 — any value other than `1` or `*`,
+// including an unset variable, leaves the GOT trace off (negative test). This
+// observes absent trace output only; the off-path cost budget is §9's.
 #[test]
 fn got_trace_off_path_zero_overhead_neg() {
     // Run the same program WITHOUT the env var — no got-trace lines

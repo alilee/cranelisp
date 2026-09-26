@@ -375,6 +375,11 @@ pub struct Resolved<C: CodeStore = ()> {
     pub entry: Binding<C>,
     /// The one terminal storage identity for the declaration.
     pub canonical: FQSymbol,
+    /// For a qualified spelling answered by another module's table, that
+    /// module after alias substitution; otherwise `None`. It names the table
+    /// that was probed, which may be a re-exporter rather than
+    /// `canonical.module`. Provenance, not an identity.
+    pub lookup_module: Option<ModuleFullPath>,
 }
 
 /// The single general resolution primitive: resolve `name` from
@@ -509,7 +514,8 @@ where
         if public_only && candidate.visibility != Visibility::Public {
             continue;
         }
-        if let Some(candidate) = resolve_candidate(symbol_tables, view, exposure_module, candidate)
+        if let Some(candidate) =
+            resolve_candidate(symbol_tables, view, exposure_module, candidate, None)
         {
             resolved.push(candidate);
         }
@@ -526,6 +532,7 @@ fn resolve_candidate<C, L>(
     view: &View<'_, C, L>,
     exposure_module: &ModuleFullPath,
     candidate: NameCandidate,
+    lookup_module: Option<&ModuleFullPath>,
 ) -> Option<Resolved<C>>
 where
     C: CodeStore,
@@ -541,6 +548,7 @@ where
     Some(Resolved {
         entry,
         canonical: candidate.source,
+        lookup_module: lookup_module.cloned(),
     })
 }
 
@@ -583,7 +591,9 @@ where
         if candidate.visibility != Visibility::Public {
             continue;
         }
-        if let Some(candidate) = resolve_candidate(symbol_tables, &view, &module, candidate) {
+        if let Some(candidate) =
+            resolve_candidate(symbol_tables, &view, &module, candidate, Some(&module))
+        {
             visibility_check(
                 &candidate.entry,
                 &candidate.canonical.module,
@@ -606,9 +616,10 @@ where
         return Ok(vec![Resolved {
             entry,
             canonical: FQSymbol {
-                module,
+                module: module.clone(),
                 symbol: Symbol::from(symbol_part),
             },
+            lookup_module: Some(module),
         }]);
     } else {
         return Err(not_found(symbol_part, &module, span));

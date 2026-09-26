@@ -540,8 +540,11 @@ cycle error at the import site, not a deadlock.
 never leaves the frame that orchestrates it:
 
 - staging is stack-local; a gap or failure drops it and live is unchanged;
-- the cluster's forms ride the work packet (`PriorityWork::Typecheck`), kept on the
-  scheduler's own `ModuleState` for requeue; no shared map parks forms or suspended state;
+- the cluster's continuation rides the work packet (`PriorityWork::Typecheck`), kept on
+  the scheduler's own `ModuleState` for requeue. It holds the forms still to process and
+  the macro-head lookup dependencies recognised while expanding its already-expanded
+  prefix ([lookup dependencies](#762-lookup-dependencies)); no shared map parks forms or
+  suspended state;
 - a retry re-derives from the packet's uncommitted continuation against committed live
   state; nothing half-checked is saved.
 
@@ -571,6 +574,111 @@ dependency's typecheck and codegen, and nothing is speculatively JIT-compiled.
 
 **Termination** — each gap advances dependency state monotonically, so each retry sees
 strictly more committed state. The loop ends on success, a non-gap error, or a cycle error.
+
+#### 6.3.1 Locating a gap at its reference site
+
+Status: **implemented 2026-09-25**, with the review R1 match-rule correction.
+This is int's half of S122 fresh
+FQ type-only loading. Typecheck's half produces the `Type` gap
+([typecheck §7.3.1](../typecheck/typecheck.md)).
+
+- **Obligation.** When a gap cannot be satisfied by loading, int reports the
+  error at the reference that raised it (spec §8.5.4 edge 3). Two cases apply:
+  the module's file is missing, or a terminal module lacks the member.
+- **Why int searches.** `ResolutionGap` is public and span-free, so int
+  recovers the site from the cluster's built program.
+- **One lookup.** Both gap-arm decisions take their location from one
+  reference-site lookup (Principle 7): the missing-member error and the
+  dependency drive.
+  - The typed gap supplies the dependency identity. The lookup only places the
+    diagnostic and never chooses what to load (Principle 24).
+- **Match rule.** A reference matches when both hold:
+  - its name is the gap's member;
+  - its qualifier is the gap's module, either as written or after
+    `cranelisp_types::substitute_module_alias` from the cluster's module.
+- **Why both forms.** The gap's module has two provenances, and the gap does
+  not say which one applies:
+  - an absent module (every `Type` gap and the absent-module value gap) names
+    the alias-substituted module (spec §8.6.6);
+  - a member missing from a present module (value gaps only) names the
+    qualifier as written.
+  - Matching one form alone loses a reference that is located today. Before
+    the `Type` producer, an alias-spelled type reference to a missing module
+    was a located type error, and a spelling match leaves it unlocated. The
+    spelling search that preceded this lookup located `z/f` when `z` is an
+    alias of a loaded module that lacks `f`, and a substituted-only match
+    loses that.
+  - A qualifier whose written form names one module and whose substituted
+    form names another needs an alias named like a module. Where that happens
+    and the cluster writes both spellings, the location may fall on the other
+    reference to the same member. Only the location is affected.
+- **Positions.** The lookup searches every reference position for every gap
+  kind, in program order. It has no per-kind branch; any match is a reference
+  to the same qualified name.
+  - Variable references in expressions, including defn and impl method bodies.
+  - Type positions that typecheck resolves:
+    - defn and lambda parameter annotations;
+    - inline annotations;
+    - `deftype` fields;
+    - trait method signatures, including their still-unclassified tail;
+    - an impl's target type.
+  - Trait references are excluded: bounds, an impl's trait and constraints.
+    They raise no gap.
+- **Span.** A type expression carries no span, so a type match reports the
+  innermost spanned node containing it. That node is the field, defn variant,
+  lambda, annotation, method signature or impl. A symbol in a signature tail
+  reports its own span.
+  - That node is at or inside the form that typecheck located before the gap
+    existed.
+  - The rejection keeps a real location. It takes the load-failure text that
+    value references already produce.
+- **Fallback.** `Span::SYNTHETIC` remains the fallback when nothing matches,
+  for example when only a macro synthesised the reference.
+- **Unchanged:**
+  - public API, carriers, schema and the `ResolutionGap` variants;
+  - the expand-time module-prefix lookup for an FQ macro head.
+
+**Rejected:**
+
+- *Carry the span in the gap.* This would locate every gap exactly, but it
+  changes the public `ResolutionGap` surface. That change is user-gated and
+  outside this correction.
+- *A separate type-only lookup.* It would duplicate the match rule.
+
+**Grade: asserted, with a named falsifier.** FT-4
+([evidence delta](../../tests/plan/s122-evidence-delta.md#fresh-fq-type-only-loading--evidence-delta-2026-09-25))
+renders `at 0..0` for `(defn h [:zz/T t] :Int 7)` when there is no `zz.cl`.
+Row 5 below falsifies the match rule's written-qualifier leg.
+The lookup re-derives what the producer recorded (Principle 24), so a new
+producer arm whose module takes a third form is caught only by a failing row.
+Nothing structurally forces a newly added type position into the lookup; the
+unit rows pin each carrier.
+
+**Residual (unexecuted; `qa`).** A `Type` gap reaches the member-absent arm
+only when its module becomes terminal between typecheck's miss and int's
+check, which needs a concurrent load. Int would then report "no member" for a
+type that may exist. Value gaps raised for an absent module share this window.
+Falsifier: two modules that load concurrently, where one names the other's
+type and loads it.
+
+**Unit rows,** in
+`src/process_form/tests.rs` beside
+`find_named_var_span_in_toplevel_recurses_defn_body`:
+
+1. A defn parameter annotation `:zz/T` locates at its defn variant for a
+   `Type(zz/T)` gap. This is FT-4's seam.
+2. A `deftype` field `:zz/T` locates at the field.
+3. With the alias `z → zz` registered for the referring module, `:z/T`
+   locates for `Type(zz/T)`, and a value reference `z/f` locates for a value
+   gap on `zz/f`.
+4. Negative:
+   - without that alias, `:z/T` does not match `Type(zz/T)`;
+   - `:zz/U` does not match `Type(zz/T)`.
+5. With the alias `z → zz` registered for the referring module, a value
+   reference `z/f` in `(z/f 1)` locates at its var span for the value gap on
+   `z/f`. This is the member-absent gap, whose module is the written qualifier.
+
+Every row and the existing variable-search rows are GREEN; FT-4 is GREEN on every leg.
 
 ### 6.4 `notify_*` cadence
 
@@ -717,6 +825,12 @@ driven by `process_form/macro_resolution.rs::try_expand_sexp`) keeps these rules
   `:`-prefixed symbol is a type annotation, never a macro head or load candidate.
 - **Hygiene.** Recognition records each foreign defining module. Post-expansion
   qualification then uses them (`expansion-qualification-scope.md`).
+- **Lookup-dependency producer.** When the cluster recogniser recognises a
+  qualified head as a macro, it adds the head's module after alias substitution
+  to the attempt's lookup dependencies. That is the module whose table answered,
+  and the recogniser already computes it for the unloaded-head check. A bare head,
+  an unrecognised head, a blocked head and `/expand` record nothing
+  ([lookup dependencies](#762-lookup-dependencies)).
 
 ---
 
@@ -743,7 +857,7 @@ register dependency M:
     re-resolve M's platform declarations
     register M with the scheduler as typechecked-from-cache  # enqueues LoadObject(M)
     recurse into M's imports, re-export targets, declared children
-      and callee modules (§7.6.1)
+      and callee modules (§7.6.1); never its lookup dependencies (§7.6.2)
   else:
     register M for a fresh typecheck
 
@@ -835,6 +949,7 @@ returns `Result<bool, CranelispError>`:
 | Module aliases | Session `ModuleAliases`, keyed by `cranelisp_types::module_alias_key` (`design/arch/module-alias-scoped-lookup.md`) | Rebuilt from the persisted `imports` and `submodules` by the same writers. The map is unserialized session state, so aliases add no cache field. |
 | Monomorphic instances | `Concrete` entries in the demanding module's table, each with its `minted_from` link | Restored with that table; no separate step. |
 | Platform functions | Platform load wraps the DLL's GOT (`design/arch/platform-interface.md` §6.4) | The persisted declarations re-run the same load; a failure is a miss ([cache-hit flow](#71-cache-hit-flow-inside-register_module)). |
+| Lookup dependencies | Typecheck and the macro recogniser record into staging, and publication unions them into the table ([lookup dependencies](#762-lookup-dependencies)) | Restored with the table; no separate step. They are validity edges only, so restore loads none of them. A later compilation that needs one loads it on demand (`spec/08-modules.md` §8.5.4). |
 
 The types crate defines lifecycle legality of a decoded table. The backend
 decoder maps only an instance-key mismatch from `validate_lifecycle` to
@@ -866,11 +981,13 @@ graph changes, even though the direct dependency's own source does not.
   - every declared child;
   - the prelude, when the module's prelude-fallback bit is set;
   - every callee module: the storage home of each callable M's bindings
-    call ([callee-module edges](#761-callee-module-edges)).
+    call ([callee-module edges](#761-callee-module-edges));
+  - every lookup dependency: each module whose table answered a qualified
+    reference while M compiled ([lookup dependencies](#762-lookup-dependencies)).
 
-  This is the set the restore walk loads ([cache-hit flow](#71-cache-hit-flow-inside-register_module)),
-  plus the name-less imports that walk skips and the implicit prelude. Define
-  it once (Principle 7). The fallback bit has one structural rule, shared by
+  The restore walk loads a subset of these edges ([cache-hit flow](#71-cache-hit-flow-inside-register_module)).
+  It skips name-less imports, the implicit prelude and lookup dependencies.
+  Define the edge set once (Principle 7). The fallback bit has one structural rule, shared by
   the restore environment and the index writer. Two kinds of module are
   excluded:
   - `primitives` and `macros`, which are compiler-owned and keyed by the build
@@ -902,8 +1019,12 @@ graph changes, even though the direct dependency's own source does not.
   - **Defer, retry once, then drop.** If any member is unsettled when M is
     written, M's entry is deferred. The deferred entries are retried once
     object codegen has drained, immediately before the manifest flush. An
-    entry still unsettled then is not written, so the next session rebuilds
-    M: a miss, never stale service.
+    entry still unsettled then is not written. If M has no earlier manifest
+    entry, the next session rebuilds M. Otherwise the earlier entry stays and
+    still keys the rewritten `.meta` and `.o`
+    ([rewritten restored modules](#762-lookup-dependencies)). The intended
+    outcome is a miss or a sound hit, never stale service. §7.6.2 grades the
+    retained-entry case.
   - **Why deferral is needed.** A declared child that imports `super`
     typechecks while its parent still waits on it, so its writer meets an
     unfinished parent.
@@ -927,53 +1048,25 @@ graph changes, even though the direct dependency's own source does not.
     (Principle 18).
   - Session cache state keeps each restored module's validated record for the
     builder. A fresh registration of that module supersedes it.
-- **Compatibility.** The record changes the shape of neither the manifest nor
-  `.meta.json`, and neither do callee-module edges, which read an existing
-  persisted fact. The record reuses the existing module-to-hash map, which now
-  holds the closure.
-  Entries written before this change hold empty records, and the corrected
-  compiler never reads them: its new build identity invalidates every `.meta`
-  (§7.3), and its compiler fingerprint discards the manifest. No schema bump
-  is needed.
-- **Known gaps.** Each gap below can serve a stale artefact silently. Only
-  gap 1 has executed observations.
-  - **Status.** No user ruling accepts gaps 1–6; their disposition is open
-    (§16.0). QA's evidence plan lists gaps 4 and 5 as unallocated accepted
-    residuals. This design does not accept them on the user's behalf.
+- **Compatibility.** The manifest's shape is unchanged. Its module-to-hash map
+  holds the closure, which lookup dependencies enlarge. Callee-module edges
+  read an existing persisted fact. Lookup dependencies add one persisted
+  `SymbolTable` field to `.meta.json` under cache schema 30. Backend owns that
+  bump (§7.3). A schema-29 sidecar is stale and its module rebuilds. Any new
+  build identity already invalidates every older `.meta` and discards the
+  manifest.
+- **Known gaps.** Each open gap below can serve a stale artefact silently.
+  - **Status.** Gap 1's correction is built and reviewed; QA judged the evidence adequate on 2026-09-26 (§7.6.2). No user ruling accepts gaps 2–6; their disposition is
+    open (§16.0). QA's evidence plan
+    lists gaps 4 and 5 as unallocated accepted residuals. This design does not
+    accept them on the user's behalf.
   - **Gap 7 (C-A)** is the only user ruling.
 
   The gaps:
-  1. **Qualified-reference dependencies.** A module can reach another only
-     through a qualified reference, whose target auto-loads
-     (`spec/08-modules.md` §8.5.4). A qualified callable target is an edge
-     through [callee-module edges](#761-callee-module-edges). No other
-     qualified target is an edge. Failing guards in `tests/cache.rs` (`--run`)
-     measure the remainder, and this gap is the one with executed
-     observations.
-     - **Kinds `callees` does not carry.** Each guard below is RED while its
-       explicit-import sibling is GREEN.
-
-       | Kind | Guard | Cached / uncached |
-       |---|---|---|
-       | Re-export first hop (`b/f`, where `b` re-exports `c/f`) | `cache_qualified_reexport_first_hop_change_matches_uncached_run` | 11 / 99 |
-       | Constructor, value and pattern positions | `cache_qualified_constructor_tag_change_matches_uncached_run` | 11 / 22 |
-       | Dotted accessor | `cache_qualified_accessor_field_order_change_matches_uncached_run` | 99 / 11 |
-       | Type-only reference | `cache_qualified_type_only_field_change_matches_uncached_allocator_counts` | (allocs, deallocs) (5, 3) / (6, 6) |
-       | FQ macro head | `cache_qualified_macro_head_expansion_change_matches_uncached_run` | 11 / 99 |
-
-       - The faces above are unchanged with callee-module edges built: `dev`
-         measured the five guards in two cache-target runs and a full-suite
-         run (2026-09-25). QA classified each as RED with the edge-supplied
-         sibling GREEN: the depended-on module is absent from the record after
-         `callees` is consumed. Whether an existing or new fact should supply
-         the edge is not measured.
-       - Whether and how they become edges is open for `arch` and the user.
-         Type and constructor homes are first assessed against resolved
-         schemes and concrete views; no further carrier is designed here.
-       - The type-only row is a memory-safety exposure: the stale importer
-         under-releases.
-       - A constructor-only home that the importer's object does not bind
-         restores correctly (`cache_qualified_constructor_only_home_restores_warm`).
+  1. **Qualified references outside `callees`.** Before
+     [lookup dependencies](#762-lookup-dependencies), only a qualified
+     callable target was an edge. The user approved the carrier for the
+     other kinds on 2026-09-26; §7.6.2 records int's half and its status.
   2. **Version conflicts in one closure.** The builder resolves a member
      reached both through a walked edge and through a restored member's record
      to the walked (loaded) hash. Between two restored records, the first one
@@ -1067,7 +1160,8 @@ Evidence and limits: [F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-
   - The validated record is never used as the restore list: it is the
     staleness key, and it holds null-import targets that §8.3.7 never loads.
   - The builder's settlement, deferral and prelude rules (Principle 26).
-  - The manifest and `.meta.json` shapes.
+  - The manifest and `.meta.json` shapes. This correction changed neither;
+    lookup dependencies later add one `.meta.json` field (§7.6.2).
 - **Failure direction.** An unresolvable or unloaded callee module makes the
   record unsettled, or makes validation miss. Either way the next session
   rebuilds the module. The correction can lose a cache hit; it cannot serve a
@@ -1078,8 +1172,9 @@ Evidence and limits: [F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-
   loading, as well as redefinition blocking. A missed callee becomes stale
   service or an unresolved GOT, not only a missed blocker.
 - **Limits.** The correction covers only references recorded in `callees`.
-  The five kinds in *Known gaps* 1 stayed RED with unchanged faces. That
-  measurement is not acceptance evidence for this correction.
+  The five kinds in [lookup dependencies](#762-lookup-dependencies) stayed RED
+  with unchanged faces. That measurement is not acceptance evidence for this
+  correction.
 - **Evidence.** Independent review accepted the change, and QA judged the
   evidence adequate ([F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-acceptance-and-qr-classification-2026-09-25)).
   - **Acceptance.** Both callable guards in `tests/cache.rs` failed for the
@@ -1104,8 +1199,214 @@ Evidence and limits: [F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-
     through a qualified call records that module among its edges.
   - **`redefine`.** The existing blocking-dependent units stay GREEN.
   - The restore walk has no unit tier; the second guard is its measurement.
-    The null-import fence FN-1 is unarmed until FIXME 0798 is repaired.
+    The null-import rule is fenced by FN-1, which runs its restore leg since the
+    alias-only registration repair (`bc675d86`).
     The callee-cycle rule is asserted with a falsifier.
+
+#### 7.6.2 Lookup dependencies
+
+**Status: built, uncommitted (2026-09-26); reviewed with no blocking or
+required finding; [QA judged the evidence adequate](../../tests/plan/s122-evidence-delta.md#adequacy-2026-09-26).** The int unit rows, the QR and LD
+cells and one full suite pass on the delivered source. The LD-6 fault arming
+was observed before the final lint edits; the LD-8 deferral trace was
+re-observed on the final binary ([evidence plan](../../tests/plan/s122-evidence-delta.md#qualified-lookup-dependencies--evidence-delta-2026-09-26)).
+Int adds no public API: it consumes the approved types recorder unchanged.
+The user approved module-wide insert-only maintenance, the exact types API and
+cache schema 30 (`sprints/SPRINT.md` §"Lookup dependency implementation
+approval — 2026-09-26"). [Qualified lookup dependencies](../arch/interfaces.md#qualified-lookup-dependencies)
+defines the fact, carriers and maintenance. This section designs int's
+producer, consumers and lifecycle within them.
+
+- **Int's producer: qualified macro heads.** Typecheck records every other
+  qualified kind. Int records the macro-head module (§6.8), for two reasons:
+  - macro recognition runs before typecheck;
+  - a head's expansion leaves no reference to the head's module in the
+    expanded form.
+
+  Int records the module after alias substitution, never the alias. It records
+  nothing for `/expand`.
+- **Attempt state until publication.** Expansion runs before the cluster's
+  staging table exists. The recognised modules therefore accumulate in the
+  cluster attempt, beside the expanded forms.
+  - A dependency gap returns the already-expanded prefix as its continuation,
+    and a retry does not re-expand that prefix (§6.2;
+    `s117-conformance-recovery.md` §2.1). The accumulated modules therefore
+    travel in the continuation.
+  - The continuation is one value, the remaining forms plus the set. The
+    pool worker, the eval retry loop and the redefinition re-check loop each
+    store and return it whole. Its only empty-set constructor is the one for
+    unexpanded source, so a holder cannot drop the set while keeping an
+    expanded prefix without rebuilding the value from source.
+  - A retry from the top starts empty, because its source is unexpanded. A
+    gap after the attempt's final publication continues from empty source,
+    because that publication already recorded the set.
+  - A failure drops the attempt, so nothing unsettled is recorded
+    (Principle 26).
+- **Recording at publication.** Every staged publication an attempt makes
+  records the attempt's accumulated modules into that publication's prepared
+  staging after its check succeeds, through the types recorder. Live
+  publication consumes that staging and unions the set into the table.
+  - Recording follows the publication plan. The plan dry-runs publication on
+    a cloned table map, which codegen reads; that clone lacks the recorded
+    set. Neither the plan nor codegen reads lookup dependencies, so the order
+    changes no outcome. A new reader of lookup dependencies between plan and
+    publication must read the prepared staging, not the plan's tables.
+  - An attempt that makes no staged publication records nothing. §16.0
+    carries the open lead this raises.
+  - The finalize path without a session commits directly and records no
+    macro heads. Only unit harnesses reach it; every production compiler
+    context carries the session.
+
+  Two kinds of publication exist:
+  - **The final cluster check.** Every mode reaches it through
+    `process_cluster_once`, so there is one site (Principle 11).
+  - **Macro checkpoints** (`s117-conformance-recovery.md` §2.1). A checkpoint
+    publishes before the final cluster and survives that cluster's failure.
+    It therefore records the modules accumulated so far. This can include a
+    module recognised for an unrelated earlier form. Module-wide granularity
+    makes that harmless.
+  - **Clause staging.** A checkpoint typechecks its clause bodies in a
+    scratch staging table, then publishes a separately assembled table.
+    Typecheck's lookup dependencies land in the scratch table, so the
+    checkpoint must carry them into the published table with its retained
+    instances. Otherwise every qualified reference in a macro body is lost.
+- **Consumers.**
+  - **One table-recorded edge set.** A table's recorded edges are its
+    callee modules plus its lookup dependencies, filtered by the same edge
+    rule as every other edge (own module and compiler-owned modules
+    excluded). `ModuleEdges::of_table` and the index worker's post-publish
+    step both take this one union (Principle 7). Recording is unfiltered
+    apart from the types recorder's own-module rule, so a clause body records
+    the compiler-owned `macros`; the filter belongs to the consumer.
+  - The index worker expands no macros. Typecheck's records reach its
+    private table through the same staged publication.
+  - **Not a load, link or restore edge.** The restore walk, the object load
+    and `--link` ignore lookup dependencies (§7.1, §7.5). A warm `--link`
+    therefore omits a lookup-only module's object, while a fresh one includes
+    it because the fresh compile loaded it. Nothing binds that object, so the
+    difference is not observable.
+  - **Not a redefinition blocker.** Blocking-dependent detection still reads
+    `callees` only.
+- **Table lifecycle.** Census of 2026-09-26 (production `src/`):
+  - The session never removes or swaps a live module table.
+  - A table starts in one of three ways:
+    - empty, at first fresh registration, followed by a full compile;
+    - decoded by a cache restore, carrying the persisted set of the compile
+      that wrote it;
+    - decoded by the REPL entry-slot preload, followed by a full compile from
+      source.
+  - A reload recompiles every form onto the existing table (`Replace`
+    preserves slots). A REPL turn compiles its forms onto it. Both union into
+    the set.
+  - Consequences:
+    - no path installs a table and then compiles only part of its module, so
+      a table's set covers every form compiled into it;
+    - within a session no set shrinks. A qualified reference dropped by
+      redefinition or reload stays recorded;
+    - a stale member costs misses only. It heals once a session misses the
+      module's entry and compiles it onto a new empty table. The preload runs
+      only on a valid entry, so it skips that session.
+- **Rewritten restored modules.** A restored module's set can name a module
+  this session never loaded, because restore loads no lookup dependency. If
+  the module is rewritten, its record reaches that member and stays
+  unsettled.
+  - Rewrites include a REPL turn, the quit-time final persist and a
+    dependent re-check.
+  - The entry is deferred, then dropped. The earlier entry remains
+    (§7.6, *Defer, retry once, then drop*).
+  - **Defining turn.** The persisted source changes, so the earlier entry's
+    own hash misses next session. The module rebuilds.
+  - **Dependent re-check.** It follows a dependency whose source changed. The
+    earlier record holds that dependency's older hash, so it misses.
+  - **Expression turns and the quit-time persist.** Source and dependencies
+    are unchanged, and the earlier entry was validated this session. It
+    restores the rewritten artefact, which adds only session-local expression
+    wrappers.
+  - A module compiled on an empty table never reaches this state, because a
+    qualified lookup answers only from a loaded table. A preloaded entry
+    module reaches it only through a stale member, and the outcomes above
+    apply.
+  - **Accepted cost.** A defining turn in a restored module with a
+    lookup-only member forces one rebuild of that module next session. No
+    object is loaded to avoid it.
+- **Assurance.** Grades follow QA's allocation; QA's adequacy judgment is
+  pending.
+  - **Carried across a gap.** *Measured* for the pool worker by the carry row
+    and LD-6: seeding the resumed set empty turned both RED while LD-7 stayed
+    GREEN. *Asserted* for the eval and redefinition holders, which hold the
+    same value. Falsifier: a REPL turn expands an FQ macro head, gaps on an
+    unloaded module, and the next session serves the old expansion after the
+    head's macro changes.
+  - **Macro heads recorded: asserted, with a named falsifier.** All compiling
+    recognition passes through the one cluster recogniser, whose path QR-5
+    and LD-6 measure. Falsifier: a qualified macro head expanded outside that
+    recogniser whose home change leaves a cached run equal to the pre-change
+    run.
+  - **Retained earlier entry is sound.** *Measured* for the expression turn
+    and the quit-time persist by LD-8, which passes on the delivered source.
+    Its arming, the observed deferral of the restored module's entry, was
+    re-observed on the final binary (see the evidence plan adequacy record).
+    *Asserted* for the dependent re-check. Falsifier:
+    a rewrite of a restored module that leaves its source and every recorded
+    member unchanged, yet whose rewritten artefact executes code compiled
+    against a module version its earlier record does not hold.
+- **Acceptance guards.** One `tests/cache.rs` cell (`--run`) per kind was RED
+  with its explicit-import sibling GREEN before this change
+  ([QR classification](../../tests/plan/s122-evidence-delta.md#f1-acceptance-and-qr-classification-2026-09-25)).
+  The type-only kind is a memory-safety exposure: a stale importer
+  under-releases. A constructor-only home the importer's object does not bind
+  already restored correctly (`cache_qualified_constructor_only_home_restores_warm`).
+  LD-2 to LD-8 cover re-export chains, rewrites of restored modules, the
+  load fence, warm spellings, the carry and clause bodies.
+
+  | Kind | Guard |
+  |---|---|
+  | Re-export first hop (`b/f`, where `b` re-exports `c/f`) | `cache_qualified_reexport_first_hop_change_matches_uncached_run` |
+  | Constructor, value and pattern positions | `cache_qualified_constructor_tag_change_matches_uncached_run` |
+  | Dotted accessor | `cache_qualified_accessor_field_order_change_matches_uncached_run` |
+  | Type-only reference | `cache_qualified_type_only_field_change_matches_uncached_allocator_counts` |
+  | FQ macro head | `cache_qualified_macro_head_expansion_change_matches_uncached_run` |
+
+- **Int unit rows** (submodule × scenario; Principle 23):
+  - `cache/dependency_record`:
+    - the table-recorded edges of a table carrying both callees and lookup
+      dependencies are their union, without its own or compiler-owned
+      modules;
+    - a decoded table yields the same set;
+    - a fresh member whose only link is a lookup dependency brings that
+      module into the closure;
+    - a lookup member with no loaded source leaves the record unsettled;
+    - a restored member settles from its record without its lookup members
+      being loaded.
+  - `session_v4/index_worker`: a module that reaches a loaded module only
+    through a qualified type reference records it among its edges.
+  - `process_form`:
+    - an alias-qualified macro head publishes the target module, not the
+      alias;
+    - a bare head publishes nothing;
+    - a cluster whose check fails publishes nothing;
+    - **the carry row:** an FQ macro-head expansion, then a later reference to
+      an unloaded module (gap, then retry), publishes the head's module;
+    - **the checkpoint row:** a qualified reference inside a macro clause
+      body reaches the published macro table.
+  - `expander`: `/expand` of a qualified macro head changes no table.
+- **Rejected.**
+  - *Walking schemes and concrete views for type and constructor homes*
+    (formerly B1). It would enumerate one relation a second time, beside
+    resolution's record (Principle 7).
+  - *A session-side, unpersisted set of macro homes* (formerly C1). A restored
+    module's rewrite would drop it, which is the original under-keying.
+  - *Recording at recognition directly into the live table.* It would record
+    from unsettled state. It would also write the table the recogniser is
+    reading.
+  - *Loading lookup dependencies on restore.* Validity needs only their
+    hashes (the user's 2026-09-26 direction).
+  - *Settling an unloaded member from the module's own earlier record.* This
+    keeps a hit after a defining turn. It needs the earlier record retained
+    past the source refresh, plus a second settlement rule. Build it only if
+    the rebuild cost is measured to matter.
+  - Optimisation-aware selectivity is
+    [ACT-0992](../../sprints/actions/ACT-0992-optimisation-aware-cache-invalidation.md).
 
 ---
 
@@ -1563,8 +1864,8 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   printer unit row that fails before the deletion — a hand-built
   `(:Int 42)`-shaped list with a colon-spelled head symbol takes no
   type-annotation span — plus colour-off identity and colour-on span rows.
-- **Import-alias key mint (FIXME 0798 residue).** The fresh and restore
-  import-alias writers in `src/imports.rs` still key through the private
+- **Import-alias key mint.** The one import-alias writer,
+  `src/imports.rs::install_import_alias`, still keys through the private
   `alias_key` helper. The key value equals
   `cranelisp_types::module_alias_key`'s, but the private mint must delete so the
   one types-owned mint is the only key source (§12.1 reject 4).
@@ -1593,19 +1894,36 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     ([callee-module edges](#761-callee-module-edges)); both callable guards
     pass on the delivered source. QA judged the evidence adequate as a bounded
     correction ([F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-acceptance-and-qr-classification-2026-09-25)). CD-1 discharges §7.6's opening sentence for
-    qualified callable references only. Open: the FN-1 null-import fence, unarmed until FIXME 0798 is repaired,
-    and the user's Phase-5 acceptance.
-  - **Qualified-reference kinds outside `callees`.** Five guards (*Known
-    gaps* 1) stayed RED with unchanged faces after the callee correction.
-    QA classified them as measured missing dependency edges, which does not
-    show that a new carrier is necessary. They await `arch`'s and the user's
-    disposition.
+    qualified callable references only. The FN-1 null-import fence is armed.
+    Open: the user's Phase-5 acceptance.
+  - **Qualified-reference kinds outside `callees`.** Int's half of
+    [lookup dependencies](#762-lookup-dependencies) is built on the
+    uncommitted source and its guards pass. Review found no blocking or
+    required finding. QA judged the evidence adequate on 2026-09-26. Open: the user's Phase-5 acceptance.
+  - **LD-9:** QA allocated the source-read lead below for a subsequent reproduction; it is not an accepted residual ([allocation](../../tests/plan/s122-evidence-delta.md#adequacy-2026-09-26)).
+  - **Lead: an attempt with nothing to publish (source read, 2026-09-26;
+    `qa` classifying).** If a cluster's expansion leaves no form to check and
+    carries no reload demand, the finalize check returns no prepared
+    publication, so a qualified macro head recognised in that cluster is
+    never recorded. A later change making the macro expand to a definition
+    could then leave a cached importer stale. The no-publication arm is
+    confirmed in source; the stale outcome is not observed. Falsifier: cache
+    `a` whose cluster is `(b/m)`, with no other edge to `b` and `m`
+    expanding to an empty `(begin)`;
+    change `m` to expand to a `defn` that `main` calls, and compare the cached
+    run with `--no-cache`. Review confirmed the arm by source reading. An
+    expansion that yields only macro definitions is covered, because its
+    checkpoint publishes. If confirmed, the arm falls short of the
+    [interfaces fact](../arch/interfaces.md#qualified-lookup-dependencies)
+    that the set covers macro heads. This is not an accepted residual. `qa`
+    owns the classification; no correction is designed until it returns.
   - **Unaccepted gaps 2–6** (version conflict, write-time stash, same-session
     disk edit, platform signatures, absent prelude). These need a disposition
     through `sprint`.
   - **Deferred-entry drop (review F2).** A deferred entry is retried before the
     flush, so a child that imports `super` is recorded once its parent
-    settles. An entry still unsettled then is only a miss. No `tests/cache.rs`
+    settles. An entry still unsettled then is not written; an earlier entry
+    for the module stays (§7.6.2 grades that case). No `tests/cache.rs`
     cell covers a `super`-importing child or a mutual-import pair; that is
     `qa`'s fence gap.
   - **Index `.meta` structural fields.** The index-written table has empty
@@ -1630,15 +1948,6 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   table and reports the load error, and whether a second importer's
   already-installed guard takes the stale table as satisfied. Attribution
   belongs to `qa`.
-- **FQ type reference does not auto-load its module (S122 intake).** A module
-  named only in fully-qualified type positions, and not yet loaded, is
-  rejected on a fresh compile (``module `b` referenced by `b/T` is not
-  loaded``) instead of auto-loading (`spec/08-modules.md` §8.5.4 edge 1). The
-  failing guard is `tests/cache.rs::fq_type_only_reference_loads_its_module_on_a_fresh_compile`;
-  it is not a cache failure. Int's gap consumer already maps a type gap to a
-  load (`process_form/dependency.rs::gap_target_module`), so the refusal
-  probably arises before any gap reaches int. That is unconfirmed, and `qa`
-  owns the attribution.
 - **Superseded dependent-recompilation machinery.** `src/redefine.rs` still
   contains the S101–S103 transaction (`run_transaction`, `mark_broken` and trap
   stubs, the T1 end-of-turn reload and its error block, `TransactionReport`

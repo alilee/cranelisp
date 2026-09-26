@@ -1935,13 +1935,14 @@ fn fq_sum_ctor_resolves_in_pattern_from_unimporting_module() {
     // fallback) — proving the qualified arm, not an ambient import, is what
     // makes the resolution succeed.
     assert!(
-        env.resolve_constructor_entry(&state, "SCons").is_none(),
+        env.resolve_constructor_entry(&state, "SCons").0.is_none(),
         "bare `SCons` must NOT resolve from a module that has not imported macros"
     );
 
     // Qualified `macros/SList.SCons` probes the SUM ctor's canonical key.
     let entry = env
         .resolve_constructor_entry(&state, "macros/SList.SCons")
+        .0
         .expect("qualified canonical constructor must resolve via the FQ module split");
     match entry.callable().map(|callable| &callable.origin) {
         Some(CallableOrigin::Ctor {
@@ -2248,4 +2249,78 @@ fn self_qualified_type_resolves_against_in_cluster_staging() {
         "self-qualified `:t/Box` MUST resolve to the in-cluster staged local \
              type when current module is `t` (FIXME 0362); got {r:?}"
     );
+}
+
+// spec: spec/08-modules.md §8.5.4 edges 1 and 4 — the type-position projection
+// (design/typecheck/typecheck.md §7.3.1): only an absent module records the
+// `Type` gap, and every failure keeps the located error `From` produces.
+#[test]
+fn type_position_failure_projection_records_gap_only_for_absent_module() {
+    use cranelisp_types::{FQSymbol, TypeName};
+
+    let module = ModuleFullPath::from("user");
+    let span = Span::new(3, 9);
+    let absent = ResolveError::QualifiedModuleUnknown {
+        module: ModuleFullPath::from("some.mod"),
+        name: Symbol::from("T"),
+        span,
+    };
+    let mut state = CheckState::new(module.clone());
+    let error = TypePositionFailure(absent.clone()).into_form_error(&mut state);
+    assert_eq!(
+        format!("{error:?}"),
+        format!("{:?}", CranelispError::from(absent)),
+        "the gap-recording projection returns the same located error"
+    );
+    match state.pending_gap {
+        Some(ResolutionGap::Type(fqt)) => {
+            assert_eq!(fqt.module.as_ref(), "some.mod");
+            assert_eq!(fqt.name.as_ref(), "T");
+        }
+        other => panic!("expected a pending Type(some.mod/T) gap, got {other:?}"),
+    }
+
+    let gapless = [
+        ResolveError::TypeNotFound {
+            name: TypeName::from("T"),
+            from_module: module.clone(),
+            span,
+        },
+        ResolveError::PrivateInaccessible {
+            name: Symbol::from("T"),
+            defining_module: ModuleFullPath::from("other"),
+            from_module: module.clone(),
+            visibility_found: Visibility::Private,
+            span,
+        },
+        ResolveError::Ambiguous {
+            name: Symbol::from("T"),
+            from_module: module.clone(),
+            candidates: vec![
+                FQSymbol {
+                    module: ModuleFullPath::from("a"),
+                    symbol: Symbol::from("T"),
+                },
+                FQSymbol {
+                    module: ModuleFullPath::from("b"),
+                    symbol: Symbol::from("T"),
+                },
+            ],
+            span,
+        },
+    ];
+    for failure in gapless {
+        let mut state = CheckState::new(module.clone());
+        let error = TypePositionFailure(failure.clone()).into_form_error(&mut state);
+        assert_eq!(
+            format!("{error:?}"),
+            format!("{:?}", CranelispError::from(failure.clone())),
+            "the projection keeps today's located error for {failure:?}"
+        );
+        assert!(
+            state.pending_gap.is_none(),
+            "{failure:?} must record no gap, got {:?}",
+            state.pending_gap
+        );
+    }
 }

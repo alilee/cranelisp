@@ -23,7 +23,7 @@
 //! by the caller, not by the typechecker.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
@@ -189,7 +189,9 @@ pub struct CheckState {
     /// Pending cross-module resolution gap, recorded by the `&mut`-holding
     /// resolution caller (`infer_var` / `infer_pattern_constructor`) when a
     /// qualified-name `lookup` fails AND reported a gap in-band (an
-    /// alias-resolved target module absent from the session symbol tables).
+    /// alias-resolved target module absent from the session symbol tables),
+    /// or by [`TypePositionFailure::into_form_error`] for a type position
+    /// naming an absent module.
     /// `check_forms` reads this after the per-form dispatcher returns an
     /// error and lifts the resulting `TypeError` to `CheckError::Gap`.
     ///
@@ -461,6 +463,13 @@ where
 /// Two lifetimes: `'a` is the borrow of the `RefCell` (lives for the env's
 /// lifetime); `'b` is the lifetime of the `&mut SymbolTable` inside the cell
 /// (the orchestrator's mutable borrow of staging — outlives `'a`).
+///
+/// `lookup_dependencies` collects, apart from the staging table, the modules
+/// whose tables answered a qualified reference during this entry call
+/// (`design/typecheck/typecheck.md` §3.4). It is separate because a resolution
+/// may run while the caller holds a shared staging borrow; the entry writes it
+/// to staging once, on success. It is held by reference so the env's public
+/// auto-traits do not change.
 pub(crate) struct TypeCheckStaging<'a, 'b, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -468,10 +477,41 @@ where
 {
     pub(crate) module: ModuleFullPath,
     pub(crate) cell: &'a RefCell<&'b mut SymbolTable<C, L>>,
+    pub(crate) lookup_dependencies: &'a LookupDependencyCollector,
+}
+
+/// The per-entry-call collector of lookup dependencies (see
+/// [`TypeCheckStaging`]).
+pub(crate) type LookupDependencyCollector = RefCell<BTreeSet<ModuleFullPath>>;
+
+/// A scope-seam answer, whose successful candidates name the module that
+/// answered a qualified reference, if any.
+trait ScopeAnswer {
+    fn lookup_modules(&self) -> impl Iterator<Item = &ModuleFullPath>;
+}
+
+impl<C: cranelisp_types::CodeStore> ScopeAnswer
+    for Result<cranelisp_types::Resolved<C>, ResolveError>
+{
+    fn lookup_modules(&self) -> impl Iterator<Item = &ModuleFullPath> {
+        self.iter()
+            .filter_map(|resolved| resolved.lookup_module.as_ref())
+    }
+}
+
+impl<C: cranelisp_types::CodeStore> ScopeAnswer
+    for Result<Vec<cranelisp_types::Resolved<C>>, ResolveError>
+{
+    fn lookup_modules(&self) -> impl Iterator<Item = &ModuleFullPath> {
+        self.iter()
+            .flatten()
+            .filter_map(|resolved| resolved.lookup_module.as_ref())
+    }
 }
 
 // SAFETY: `TypeCheckStaging`'s fields do not automatically implement the
-// required `Send + Sync` pair because it carries a `&RefCell<&mut SymbolTable>`.
+// required `Send + Sync` pair because it carries a `&RefCell<&mut SymbolTable>`
+// and a `&RefCell` lookup-dependency collector.
 // The staging variant is constructed only by `check_forms` on the
 // orchestrator's single thread (the entire `check_forms` call frame is a
 // per-cluster, single-threaded ownership of staging). Concurrent workers
@@ -630,14 +670,18 @@ where
     /// staging.
     ///
     /// The unsafe implementation above preserves `TypeCheckEnv`'s `Send + Sync`
-    /// bounds despite the `RefCell` reference. Cluster mode remains
+    /// bounds despite the `RefCell` references. Cluster mode remains
     /// single-threaded by construction: sharing this staging env would violate
     /// the safety precondition. Concurrent workers use `new` without staging.
+    ///
+    /// `lookup_dependencies` is the entry call's collector; the entry writes it
+    /// to staging through [`Self::record_lookup_dependencies`] on success.
     pub(crate) fn new_with_staging(
         modules: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
         next_id: &'a AtomicU32,
         staging_module: ModuleFullPath,
         staging_cell: &'a RefCell<&'a mut SymbolTable<C, L>>,
+        lookup_dependencies: &'a LookupDependencyCollector,
         module_aliases: &'a ModuleAliases,
         prelude_fallback: &'a PreludeFallback,
     ) -> Self {
@@ -647,6 +691,7 @@ where
             staging: Some(TypeCheckStaging {
                 module: staging_module,
                 cell: staging_cell,
+                lookup_dependencies,
             }),
             module_aliases,
             prelude_fallback,
@@ -1042,7 +1087,12 @@ where
     /// passed INTO `f` rather than returned: its `first_hop` borrows the `View`
     /// guard, which must outlive the scope — a `ResolutionScope` cannot escape
     /// the borrow of the table it views.
-    fn with_scope<R>(
+    ///
+    /// It is also the one lookup-dependency recording point
+    /// (`design/typecheck/typecheck.md` §3.4): every successful answer's
+    /// `lookup_module` is collected, whichever wrapper asked and whatever the
+    /// caller then does with it. A failure records nothing.
+    fn with_scope<R: ScopeAnswer>(
         &self,
         read: &SymbolTableRead<'_, '_, C, L>,
         module: &ModuleFullPath,
@@ -1057,7 +1107,30 @@ where
             module,
             prelude.as_ref(),
         );
-        f(&scope)
+        let answer = f(&scope);
+        if let Some(staging) = &self.staging {
+            let mut collected = staging.lookup_dependencies.borrow_mut();
+            for lookup_module in answer.lookup_modules() {
+                if !collected.contains(lookup_module) {
+                    collected.insert(lookup_module.clone());
+                }
+            }
+        }
+        answer
+    }
+
+    /// Write the lookup dependencies this entry call collected into the
+    /// cluster's staging table (`design/typecheck/typecheck.md` §3.4). An entry
+    /// calls it once, when it succeeds; on an error or gap the collection is
+    /// discarded with the call. Without staging there is no sink.
+    pub(crate) fn record_lookup_dependencies(&self) {
+        if let Some(staging) = &self.staging {
+            let collected = staging.lookup_dependencies.take();
+            let mut table = staging.cell.borrow_mut();
+            for module in collected {
+                table.record_lookup_dependency(module);
+            }
+        }
     }
 
     /// THE typecheck reference lookup for a bare (unqualified) `name` against
@@ -1183,21 +1256,21 @@ where
         })
     }
 
-    /// Resolve a bare type name to its `FQTypeName` via symbol-table
-    /// chain-follow from `state.current_module`. Phase B Part 5 successor
-    /// to the retired `fqtn_for_bare_type_name`: returns
-    /// `Result<FQTypeName, ResolveError>` and never silently falls back to
-    /// `current_module` or a hard-coded `primitives` map.
+    /// Resolve a type name (bare, or `module/name`) to its `FQTypeName` via
+    /// symbol-table chain-follow from `state.current_module`. It never silently
+    /// falls back to `current_module` or a hard-coded `primitives` map; a
+    /// failure is a type-position failure, so an absent qualified module can
+    /// become the form's `Type` gap.
     ///
     /// Both `TypeDef` and `IntrinsicType` terminals resolve successfully —
-    /// the FQ identity for the latter is `(home, type_name)` where `home`
-    /// is the terminal module (typically `primitives`).
+    /// the FQ identity for the latter is its canonical `(home, name)`, where
+    /// `home` is the terminal module (typically `primitives`).
     pub(crate) fn resolve_type(
         &self,
         state: &CheckState,
         type_name: &TypeName,
         span: Span,
-    ) -> Result<cranelisp_types::FQTypeName, ResolveError> {
+    ) -> Result<cranelisp_types::FQTypeName, TypePositionFailure> {
         let type_not_found = || ResolveError::TypeNotFound {
             name: type_name.clone(),
             from_module: state.current_module.clone(),
@@ -1205,7 +1278,7 @@ where
         };
         let resolved = self
             .scope_resolve(state, type_name.as_ref(), span)
-            .map_err(|e| project_not_found(e, type_not_found))?;
+            .map_err(|e| TypePositionFailure(project_not_found(e, type_not_found)))?;
         if let Some(info) = type_def_view_of(&resolved.entry) {
             return Ok(info.name.clone());
         }
@@ -1215,9 +1288,9 @@ where
                 ..
             } => Ok(cranelisp_types::FQTypeName::new(
                 resolved.canonical.module,
-                type_name.clone(),
+                TypeName::from(resolved.canonical.symbol.as_ref()),
             )),
-            _ => Err(type_not_found()),
+            _ => Err(TypePositionFailure(type_not_found())),
         }
     }
 
@@ -1277,7 +1350,7 @@ where
         type_name: &TypeName,
         type_args: Vec<Type>,
         span: Span,
-    ) -> Result<Type, ResolveError> {
+    ) -> Result<Type, TypePositionFailure> {
         let type_not_found = || ResolveError::TypeNotFound {
             name: type_name.clone(),
             from_module: state.current_module.clone(),
@@ -1285,7 +1358,7 @@ where
         };
         let resolved = self
             .scope_resolve(state, type_name.as_ref(), span)
-            .map_err(|e| project_not_found(e, type_not_found))?;
+            .map_err(|e| TypePositionFailure(project_not_found(e, type_not_found)))?;
         if let Some(info) = type_def_view_of(&resolved.entry) {
             return Ok(Type::ADT(info.name.clone(), type_args));
         }
@@ -1294,7 +1367,7 @@ where
                 declaration: Decl::Type(cranelisp_types::TypeRecord::Intrinsic { ty, .. }),
                 ..
             } => Ok(ty),
-            _ => Err(type_not_found()),
+            _ => Err(TypePositionFailure(type_not_found())),
         }
     }
 
@@ -1326,6 +1399,54 @@ where
             } => Ok(resolved.canonical.module),
             _ => Err(trait_not_found()),
         }
+    }
+
+    /// Resolve a trait reference as written (`design/typecheck/typecheck.md`
+    /// §7.3.2 step R, §3.5): a qualifier names the module that decides it,
+    /// after alias substitution, and the result pairs the trait's canonical
+    /// home with the spelled name. Shared by the type-or-trait annotation and
+    /// every member of a stacked bound, so the two cannot diverge.
+    ///
+    /// The failure records nothing until its caller makes it the form's
+    /// failure through [`TypePositionFailure::into_form_error`].
+    pub(crate) fn resolve_trait_as_written(
+        &self,
+        state: &CheckState,
+        module: Option<&ModuleFullPath>,
+        name: &str,
+        span: Span,
+    ) -> Result<cranelisp_types::FQTraitName, TypePositionFailure> {
+        let spelled = match module {
+            Some(module) => format!("{module}/{name}"),
+            None => name.to_string(),
+        };
+        let home = self
+            .resolve_trait(state, &spelled, span)
+            .map_err(TypePositionFailure)?;
+        Ok(cranelisp_types::FQTraitName::new(
+            home,
+            TraitName::from(name),
+        ))
+    }
+
+    /// The trait reading of a single named parameter or value annotation whose
+    /// type reading failed (spec §3.9.3; `design/typecheck/typecheck.md`
+    /// §7.3.2 step R).
+    ///
+    /// `None` when the annotation is not a single name or does not resolve to
+    /// a trait; the caller then projects its type failure. The trait failure is
+    /// dropped, so an absent module becomes the type attempt's gap.
+    pub(crate) fn resolve_annotation_trait(
+        &self,
+        state: &CheckState,
+        annotation: &cranelisp_types::TypeExpr,
+        span: Span,
+    ) -> Option<cranelisp_types::FQTraitName> {
+        let cranelisp_types::TypeExpr::Named(tref) = annotation else {
+            return None;
+        };
+        self.resolve_trait_as_written(state, tref.module.as_ref(), tref.name.as_ref(), span)
+            .ok()
     }
 
     /// Best-effort fully-qualified render of a bare `TypeName` for a diagnostic
@@ -1507,67 +1628,85 @@ where
             return (Some(scheme), None);
         }
 
-        // Try qualified name resolution: "module/name" -> resolve_qualified.
+        // Qualified name resolution: "module/name" through the one qualified
+        // walk a qualified constructor pattern also takes (§3.5).
+        self.resolve_qualified_walk(state, name, |resolved| {
+            self.extract_scheme_from_entry_owned(&resolved.entry)
+        })
+        .unwrap_or((None, None))
+    }
+
+    /// The qualified walk for a two-part `module/name` reference (spec §8.6.6;
+    /// `design/typecheck/typecheck.md` §3.5). Value position ([`Self::lookup`])
+    /// and a qualified constructor pattern ([`Self::resolve_constructor_entry`])
+    /// both take it, so they cannot diverge in candidate order, alias handling,
+    /// visibility or gap choice. `winner` projects a resolved candidate to the
+    /// caller's result — a scheme for a value, a constructor for a pattern — or
+    /// rejects it so the walk continues.
+    ///
+    /// Returns `None` when `name` is not a two-part qualified form; otherwise
+    /// `(winner, gap)`, where a winning candidate carries no gap.
+    fn resolve_qualified_walk<T>(
+        &self,
+        state: &CheckState,
+        name: &str,
+        winner: impl Fn(&cranelisp_types::Resolved<C>) -> Option<T>,
+    ) -> Option<(Option<T>, Option<ResolutionGap>)> {
         // The candidate order (child-of-current before absolute) is the ONE
         // `qualified_candidate_modules` source `resolve_ref_target` also walks
         // (Principle 7).
-        if let Some((name_part, [child_path, abs_path])) =
-            self.qualified_candidate_modules(state, name)
-        {
-            {
-                // Try child-of-current-module first: "util" in module "main"
-                // resolves to "main.util" (submodule reference).
-                let child = self.resolve_qualified(state, &child_path, name_part);
-                if let Ok((Some(scheme), _)) = child {
-                    // A winning candidate carries no gap, even if it probed a
-                    // missing child path first.
-                    return (Some(scheme), None);
-                }
+        let (name_part, [child_path, abs_path]) = self.qualified_candidate_modules(state, name)?;
+        let win = |probe: &Result<_, CranelispError>| match probe {
+            Ok((Some(resolved), _)) => winner(resolved),
+            _ => None,
+        };
 
-                // Fall back to absolute module path. Alias substitution is
-                // handled inside `resolve_qualified` (§8.6.6 longest-prefix).
-                // The absolute path is the module the user actually named, so
-                // its gap (if any) supersedes the child probe's — last-writer-
-                // wins, matching the prior side-slot semantics.
-                let abs = self.resolve_qualified(state, &abs_path, name_part);
-                if let Ok((Some(scheme), _)) = abs {
-                    return (Some(scheme), None);
-                }
-
-                // Neither candidate resolved a scheme. Choose which cause to
-                // surface (FIXME 0513, spec §8.6.4 order-independence):
-                let gap = match abs {
-                    // The absolute probe carried its own gap. Post-0571 this is
-                    // the member-absent case too: `resolve_qualified` yields the
-                    // abs `module/name` gap UNCONDITIONALLY when the module is
-                    // present but the member is absent (as well as when the module
-                    // itself is unknown). Surfacing it here MUST win over the
-                    // child probe's phantom `<current>.<qualifier>` gap so the
-                    // resolution is order-independent (a loaded absolute module
-                    // always beats an unloaded child probe — FIXME 0513, spec
-                    // §8.6.4); INT authors the honest "module X has no member Y"
-                    // from this gap's live state (`module_has_no_member_error`).
-                    Ok((_, Some(g))) => Some(g),
-                    // Abs probe resolved cleanly with NEITHER scheme nor gap. This
-                    // is NOT the member-absent case (that yields a gap above,
-                    // post-0571); it is reachable only via `resolve_qualified`'s
-                    // conservative fall-through for a future non-exhaustive
-                    // `ResolveError` variant (treated as recoverable not-found, no
-                    // gap). Return no gap — the phantom child gap stays suppressed.
-                    Ok((_, None)) => None,
-                    // A hard error from the absolute probe (e.g. a visibility
-                    // violation) is not a member-absent verdict — preserve the
-                    // prior last-writer-wins fall-through to the child probe's gap.
-                    Err(_) => match child {
-                        Ok((_, gap)) => gap,
-                        Err(_) => None,
-                    },
-                };
-                return (None, gap);
-            }
+        // Try child-of-current-module first: "util" in module "main" resolves
+        // to "main.util" (submodule reference). A winning candidate carries no
+        // gap, even if it probed a missing child path first.
+        let child = self.resolve_qualified(state, &child_path, name_part);
+        if let Some(found) = win(&child) {
+            return Some((Some(found), None));
         }
 
-        (None, None)
+        // Fall back to absolute module path. Alias substitution is handled
+        // inside `resolve_qualified` (§8.6.6 longest-prefix). The absolute path
+        // is the module the user actually named, so its gap (if any) supersedes
+        // the child probe's — last-writer-wins, matching the prior side-slot
+        // semantics.
+        let abs = self.resolve_qualified(state, &abs_path, name_part);
+        if let Some(found) = win(&abs) {
+            return Some((Some(found), None));
+        }
+
+        // Neither candidate won. Choose which cause to surface (FIXME 0513,
+        // spec §8.6.4 order-independence):
+        let gap = match abs {
+            // The absolute probe carried its own gap. Post-0571 this is the
+            // member-absent case too: `resolve_qualified` yields the abs
+            // `module/name` gap UNCONDITIONALLY when the module is present but
+            // the member is absent (as well as when the module itself is
+            // unknown). Surfacing it here MUST win over the child probe's
+            // phantom `<current>.<qualifier>` gap so the resolution is
+            // order-independent (a loaded absolute module always beats an
+            // unloaded child probe — FIXME 0513, spec §8.6.4); INT authors the
+            // honest "module X has no member Y" from this gap's live state
+            // (`module_has_no_member_error`).
+            Ok((_, Some(g))) => Some(g),
+            // Abs probe resolved with no gap but no winner: a present member of
+            // the wrong kind, or `resolve_qualified`'s conservative
+            // fall-through for a future non-exhaustive `ResolveError` variant.
+            // Return no gap — the phantom child gap stays suppressed.
+            Ok((_, None)) => None,
+            // A hard error from the absolute probe (e.g. a visibility
+            // violation) is not a member-absent verdict — preserve the prior
+            // last-writer-wins fall-through to the child probe's gap.
+            Err(_) => match child {
+                Ok((_, gap)) => gap,
+                Err(_) => None,
+            },
+        };
+        Some((None, gap))
     }
 
     /// Record a bare/qualified reference's storage identity into the two
@@ -1989,11 +2128,17 @@ where
     ///   implicit-prelude fallback (Principle 17) —
     ///   [`Self::resolve_entry_scoped`]. A spelling with several candidates
     ///   resolves to none here; the caller then selects among them.
-    /// - **Qualified** (`macros/SCons`): an FQ reference that bypasses import
-    ///   scope (spec §8.6.6) and roots directly in the named module via
-    ///   [`Self::resolve_entry_in_module`]. Quasiquote macros lower their
-    ///   templates into qualified `macros/SCons`/`macros/SNil` patterns, so this
-    ///   arm is load-bearing for every macro.
+    /// - **Qualified** (`macros/SCons`, `m/T.C`): the qualified walk value
+    ///   position takes ([`Self::resolve_qualified_walk`]; spec §8.6.5,
+    ///   `design/typecheck/typecheck.md` §3.5), winning only on a constructor.
+    ///   Quasiquote macros lower their templates into qualified
+    ///   `macros/SCons`/`macros/SNil` patterns, so this arm is load-bearing for
+    ///   every macro.
+    ///
+    /// Returns the constructor-candidate binding (dotted and bare arms: the
+    /// terminal whatever its kind) and, for a qualified miss, the walk's
+    /// in-band gap. Only a caller that makes the miss the form's failure
+    /// records the gap.
     ///
     /// No product special-case: a product constructor's binding carries
     /// `type_name`/`tag` on its `CallableOrigin::Ctor` like a sum
@@ -2002,21 +2147,26 @@ where
         &self,
         state: &CheckState,
         name: &str,
-    ) -> Option<Binding<C>> {
+    ) -> (Option<Binding<C>>, Option<ResolutionGap>) {
         // **Dotted `Type.Ctor` (`dotted-ctor-registration.md` §3.3).** A dotted
         // head (`.` and no `/`) is a canonical constructor reference — resolve it
         // through the SAME member core the value seam uses, so value and pattern
         // agree by construction, for same-module and imported types alike.
         if name.contains('.') && !name.contains('/') {
-            return self.resolve_dotted_member_entry(state, name);
+            return (self.resolve_dotted_member_entry(state, name), None);
         }
-        if let Some(slash_pos) = name.find('/') {
-            let module_str = &name[..slash_pos];
-            let bare_name = &name[slash_pos + 1..];
-            let module_path = ModuleFullPath::from(module_str);
-            self.resolve_entry_in_module(&module_path, bare_name)
+        if name.contains('/') {
+            let is_constructor = |resolved: &cranelisp_types::Resolved<C>| {
+                resolved
+                    .entry
+                    .callable()
+                    .is_some_and(|callable| matches!(callable.origin, CallableOrigin::Ctor { .. }))
+                    .then(|| resolved.entry.clone())
+            };
+            self.resolve_qualified_walk(state, name, is_constructor)
+                .unwrap_or((None, None))
         } else {
-            self.resolve_entry_scoped(state, name)
+            (self.resolve_entry_scoped(state, name), None)
         }
     }
 
@@ -2151,8 +2301,9 @@ where
     /// Bypasses local scope. Checks visibility — private names are inaccessible
     /// from outside the defining module's subtree (spec §8.7.3).
     ///
-    /// Returns `(scheme, gap)`: `scheme` is the resolved type scheme (or
-    /// `None` if not found). `gap` is `Some(..)` when the alias-resolved
+    /// Returns `(resolved, gap)`: `resolved` is the terminal candidate (or
+    /// `None` if not found), whatever its kind; the caller projects the kind it
+    /// needs. `gap` is `Some(..)` when the alias-resolved
     /// target module is absent from the session symbol tables — a cross-module
     /// resolution gap. The gap is reported in-band (not via a `&CheckState`
     /// side-slot) so the `lookup` fallback chain can still satisfy the name
@@ -2163,7 +2314,7 @@ where
         state: &CheckState,
         module_path: &ModuleFullPath,
         name: &str,
-    ) -> Result<(Option<Scheme>, Option<ResolutionGap>), CranelispError> {
+    ) -> Result<(Option<cranelisp_types::Resolved<C>>, Option<ResolutionGap>), CranelispError> {
         // Compose the qualified `module/symbol` form the scope resolve consumes;
         // it applies §8.6.6 longest-prefix alias substitution to the module part,
         // chain-follows the symbol within the resolved module, and runs the
@@ -2173,7 +2324,7 @@ where
         // bare `cranelisp_types::resolve` call.
         let qualified = format!("{module_path}/{name}");
         match self.scope_resolve(state, &qualified, Span::SYNTHETIC) {
-            Ok(resolved) => Ok((self.extract_scheme_from_entry_owned(&resolved.entry), None)),
+            Ok(resolved) => Ok((Some(resolved), None)),
             // Module present, symbol absent (S109 0571 B4/B5). Yield the gap
             // UNCONDITIONALLY (supersedes FIXME 0513's gap-less arm): typecheck
             // reports "the qualified reference `module/name` did not resolve"
@@ -2852,7 +3003,7 @@ where
         var_map: &std::collections::HashMap<Symbol, TypeId>,
         module_path: &ModuleFullPath,
         span: Span,
-    ) -> Result<Type, ResolveError> {
+    ) -> Result<Type, TypePositionFailure> {
         // Type-definition context (`deftype` field, platform sig): a `TypeVar`
         // that is not a declared parameter is an unbound reference and a miss is
         // an error (`mint_free_var: None`). The caller's `var_map` is read-only
@@ -2870,6 +3021,7 @@ where
             false,
             span,
         )
+        .map_err(TypePositionFailure)
     }
 
     /// Resolve an **annotation** type expression (`defn`/`fn` parameter, a value
@@ -2899,7 +3051,7 @@ where
         var_map: &mut std::collections::HashMap<Symbol, TypeId>,
         module_path: &ModuleFullPath,
         span: Span,
-    ) -> Result<Type, ResolveError> {
+    ) -> Result<Type, TypePositionFailure> {
         let mint = || self.fresh_var_id().1;
         self.resolve_type_expr_ctx(
             texpr,
@@ -2912,6 +3064,7 @@ where
             false,
             span,
         )
+        .map_err(TypePositionFailure)
     }
 
     /// Resolve a **trait/impl-method signature** type expression (FIXME 0590,
@@ -2928,7 +3081,7 @@ where
         self_type: &Type,
         self_params: &[Symbol],
         span: Span,
-    ) -> Result<Type, ResolveError> {
+    ) -> Result<Type, TypePositionFailure> {
         let mint = || self.fresh_var_id().1;
         self.resolve_type_expr_ctx(
             texpr,
@@ -2941,6 +3094,7 @@ where
             true,
             span,
         )
+        .map_err(TypePositionFailure)
     }
 
     /// Non-publishing trait-tail recognizer for spec §7.1 classification.
@@ -3055,7 +3209,7 @@ where
         module_path: &ModuleFullPath,
         con_var_map: &std::collections::HashMap<Symbol, TypeId>,
         span: Span,
-    ) -> Result<Type, ResolveError> {
+    ) -> Result<Type, TypePositionFailure> {
         let mint = || self.fresh_var_id().1;
         self.resolve_type_expr_ctx(
             texpr,
@@ -3068,6 +3222,7 @@ where
             true,
             span,
         )
+        .map_err(TypePositionFailure)
     }
 
     /// Resolve an **HKT impl-method** signature type expression (FIXME 0590,
@@ -3082,7 +3237,7 @@ where
         con_var_names: &[Symbol],
         target: &cranelisp_types::FQTypeName,
         span: Span,
-    ) -> Result<Type, ResolveError> {
+    ) -> Result<Type, TypePositionFailure> {
         let mint = || self.fresh_var_id().1;
         self.resolve_type_expr_ctx(
             texpr,
@@ -3098,6 +3253,7 @@ where
             true,
             span,
         )
+        .map_err(TypePositionFailure)
     }
 
     /// Shared resolution core: build the symbol-table `resolve_terminal` closure
@@ -3174,6 +3330,38 @@ where
             name.as_ref()
         };
         self.is_internal_constructor_check_with_state(state, bare_name)
+    }
+}
+
+/// A failed type-position resolution (`design/typecheck/typecheck.md` §7.3.1).
+///
+/// It has no `From` conversion, so `?` cannot turn it into a per-form error.
+/// [`Self::into_form_error`] is the conversion for a failure that becomes the
+/// form's failure; a caller that tries a type and then something else simply
+/// drops the value, so a discarded attempt never records a gap.
+#[derive(Debug)]
+pub(crate) struct TypePositionFailure(ResolveError);
+
+impl TypePositionFailure {
+    /// Make this the form's failure. A qualified reference whose module is
+    /// absent from the session tables records the `Type` gap that
+    /// `check_forms` lifts; every failure returns the located type error that
+    /// `From<ResolveError>` produces.
+    pub(crate) fn into_form_error(self, state: &mut CheckState) -> CranelispError {
+        if let ResolveError::QualifiedModuleUnknown { module, name, .. } = &self.0 {
+            state.pending_gap = Some(ResolutionGap::Type(cranelisp_types::FQTypeName::new(
+                module.clone(),
+                TypeName::from(name.as_ref()),
+            )));
+        }
+        CranelispError::from(self.0)
+    }
+
+    /// The located error for a caller outside any gap loop (a platform
+    /// signature or REPL search through `check_type_expr`), where an absent
+    /// module is terminal.
+    pub(crate) fn into_error_outside_gap_loop(self) -> ResolveError {
+        self.0
     }
 }
 

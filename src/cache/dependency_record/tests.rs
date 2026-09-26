@@ -481,7 +481,11 @@ mod callee_modules {
         (ast, view)
     }
 
-    fn concrete<C: CodeStore>(table: &mut SymbolTable<C, ()>, name: &str, modules: &[&str]) {
+    pub(super) fn concrete<C: CodeStore>(
+        table: &mut SymbolTable<C, ()>,
+        name: &str,
+        modules: &[&str],
+    ) {
         let (ast, view) = body(name);
         table
             .install_concrete(
@@ -661,6 +665,99 @@ mod callee_modules {
         assert_eq!(
             session.build("m", &["d"]),
             RecordOutcome::Unsettled { member: m("e") }
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lookup dependencies (`design/int/int.md` §7.6.2)
+// ---------------------------------------------------------------------------
+
+mod lookup_dependencies {
+    use cranelisp_types::{CodeStore, SymbolTable};
+
+    use super::*;
+
+    /// Callee edges to `c-callee` and `shared`, lookup dependencies on
+    /// `l-lookup` and `shared`, plus records the union must filter out.
+    fn record_both<C: CodeStore>(table: &mut SymbolTable<C, ()>) {
+        callee_modules::concrete(table, "g", &["c-callee", "shared", "primitives"]);
+        for module in ["l-lookup", "shared", "macros", "platform.io", "m"] {
+            table.record_lookup_dependency(m(module));
+        }
+    }
+
+    const UNION: [&str; 3] = ["c-callee", "l-lookup", "shared"];
+
+    #[test]
+    fn recorded_edges_are_the_union_of_callee_modules_and_lookup_dependencies() {
+        let mut table = SessionSymbolTable::new_with_params(m("m"));
+        record_both(&mut table);
+        let ModuleEdges(edges) = ModuleEdges::of_table(&m("m"), &table, false);
+        let edges: Vec<String> = edges.iter().map(ToString::to_string).collect();
+        assert_eq!(edges, UNION);
+    }
+
+    #[test]
+    fn a_decoded_table_yields_the_same_recorded_edges() {
+        let mut table = SymbolTable::<(), ()>::new_with_params(m("m"));
+        record_both(&mut table);
+        let edges: Vec<String> = recorded_edges(&m("m"), &table)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(edges, UNION);
+    }
+
+    #[test]
+    fn a_fresh_member_linked_only_by_a_lookup_dependency_is_in_the_closure() {
+        let session = Session::new();
+        session.fresh("f", "hash-f", &[]);
+        session.fresh("e", "hash-e", &["f"]);
+        session.fresh("d", "hash-d", &[]);
+        session
+            .shared
+            .symbol_tables
+            .get_mut(&m("d"))
+            .unwrap()
+            .record_lookup_dependency(m("e"));
+        assert_eq!(
+            record_of(session.build("m", &["d"])),
+            pairs(&[("d", "hash-d"), ("e", "hash-e"), ("f", "hash-f")])
+        );
+    }
+
+    #[test]
+    fn unsettled_when_a_lookup_dependency_has_no_loaded_source() {
+        let session = Session::new();
+        session.fresh("d", "hash-d", &[]);
+        session
+            .shared
+            .symbol_tables
+            .get_mut(&m("d"))
+            .unwrap()
+            .record_lookup_dependency(m("e"));
+        assert_eq!(
+            session.build("m", &["d"]),
+            RecordOutcome::Unsettled { member: m("e") }
+        );
+    }
+
+    // Restore loads no lookup dependency, so a restored member's table may
+    // name one this session never loaded; its validated record stands in.
+    #[test]
+    fn a_restored_member_settles_without_its_lookup_dependencies_loaded() {
+        let session = Session::new();
+        session.restored("d", "hash-d", &[("e", "hash-e")]);
+        session
+            .shared
+            .symbol_tables
+            .get_mut(&m("d"))
+            .unwrap()
+            .record_lookup_dependency(m("e"));
+        assert_eq!(
+            record_of(session.build("m", &["d"])),
+            pairs(&[("d", "hash-d"), ("e", "hash-e")])
         );
     }
 }

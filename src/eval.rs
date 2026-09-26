@@ -292,7 +292,7 @@ impl CompilerSession {
             Some(s) => s,
             None => return Ok(None),
         };
-        let mut pending = cluster.to_vec();
+        let mut pending = crate::scheduler::SourceContinuation::source(cluster.to_vec());
         let mut generation_started = false;
         let mut turn_definitions = crate::session_v4::TurnDefinitions::default();
 
@@ -303,14 +303,13 @@ impl CompilerSession {
             // absent ⇒ `None`). Re-check each pass so the bare FQ display takes
             // the introspection path (no codegen) the moment the module loads,
             // instead of compiling a value-position FQ ref to a codegen leak.
-            if pending.len() == 1
-                && let Some(result) = self.check_bare_symbol_introspection(&pending[0])
+            if let [form] = pending.forms()
+                && let Some(result) = self.check_bare_symbol_introspection(form)
             {
                 return Ok(Some(result));
             }
 
             let module = self.current_module_path();
-            let single_sexp = pending.clone();
 
             let result = {
                 // Extract REPL check_state for worker use, restore after.
@@ -352,7 +351,7 @@ impl CompilerSession {
                 let res = process_form::process_cluster_once(
                     &mut wctx,
                     &module,
-                    &single_sexp,
+                    &pending,
                     ModuleStrategy::Additive,
                     generation_started,
                     Some(&mut turn_definitions),

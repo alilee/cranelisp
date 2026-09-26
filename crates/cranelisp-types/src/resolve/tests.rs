@@ -643,3 +643,96 @@ fn union_view_same_module_candidate_resolves_terminal() {
     assert_eq!(resolved.canonical.module, current_path);
     assert_eq!(resolved.canonical.symbol, Symbol::from("terminal"));
 }
+
+// spec: design/arch/interfaces.md §Qualified lookup dependencies — T5
+//   (tests/plan/s122-evidence-delta.md LD-T).
+#[test]
+fn lookup_module_names_the_table_that_answered_a_foreign_qualified_spelling() {
+    let current_path = ModuleFullPath::from("client");
+    let prelude_path = ModuleFullPath::from("prelude");
+    let mut current = table("client", vec![("k", declared(Visibility::Private))]);
+    expose(
+        &mut current,
+        "renamed",
+        "dep",
+        "actual",
+        Visibility::Private,
+    );
+    let mut reexporter = table("r", vec![]);
+    expose(&mut reexporter, "f", "c", "f", Visibility::Public);
+    let tables = SymbolTables::new();
+    tables.insert(current_path.clone(), current.clone());
+    for (path, names) in [
+        ("dep", vec!["f", "actual"]),
+        ("c", vec!["f"]),
+        ("client.util", vec!["two"]),
+        ("util", vec!["three"]),
+        ("prelude", vec!["px"]),
+    ] {
+        let entries = names
+            .into_iter()
+            .map(|name| (name, declared(Visibility::Public)))
+            .collect();
+        tables.insert(ModuleFullPath::from(path), table(path, entries));
+    }
+    tables.insert(ModuleFullPath::from("r"), reexporter);
+    let aliases = ModuleAliases::new();
+    aliases.insert(
+        module_alias_key(&current_path, "u"),
+        alias_entry("dep", Visibility::Private),
+    );
+    let view = View::single(&current);
+    let scope = ResolutionScope::new(&tables, &aliases, &view, &current_path, Some(&prelude_path));
+    let answered = |name: &str| {
+        let resolved = scope.resolve(name, Span::SYNTHETIC).unwrap();
+        (
+            resolved.canonical.module.to_string(),
+            resolved.lookup_module.map(|module| module.to_string()),
+        )
+    };
+    let named = |canonical: &str, lookup: &str| (canonical.to_string(), Some(lookup.to_string()));
+    let unrecorded = |canonical: &str| (canonical.to_string(), None);
+
+    assert_eq!(
+        answered("u/f"),
+        named("dep", "dep"),
+        "alias target, not alias"
+    );
+    assert_eq!(
+        answered("r/f"),
+        named("c", "r"),
+        "spelled hop, not terminal home"
+    );
+    assert_eq!(
+        answered("client.util/two"),
+        named("client.util", "client.util")
+    );
+    assert!(scope.resolve("client.util/three", Span::SYNTHETIC).is_err());
+    assert_eq!(
+        answered("util/three"),
+        named("util", "util"),
+        "absolute after child miss"
+    );
+
+    assert_eq!(answered("k"), unrecorded("client"));
+    assert_eq!(answered("client/k"), unrecorded("client"));
+    assert_eq!(answered("renamed"), unrecorded("dep"));
+    assert_eq!(answered("px"), unrecorded("prelude"));
+
+    let descendant_path = ModuleFullPath::from("client.util");
+    let descendant = table("client.util", vec![]);
+    let descendant_view = View::single(&descendant);
+    let descendant_scope =
+        ResolutionScope::new(&tables, &aliases, &descendant_view, &descendant_path, None);
+    let private_ancestor = descendant_scope
+        .resolve("client/k", Span::SYNTHETIC)
+        .unwrap();
+    assert_eq!(
+        (
+            private_ancestor.canonical.module,
+            private_ancestor.lookup_module
+        ),
+        (current_path.clone(), Some(current_path)),
+        "descendant's qualified spelling of an ancestor-private binding"
+    );
+}

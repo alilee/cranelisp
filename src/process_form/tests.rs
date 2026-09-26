@@ -112,15 +112,22 @@ fn gap_target_module_symbol_typechecked_names_module() {
 // spec: spec/08-modules.md §8.5.4 — I4 (0571.2). `module_has_no_member_error`
 // is the SINGLE author of the "module X has no member Y" diagnostic (called
 // only by the FQ-gap decision arm — no display-envelope mirror, Principle 7).
-// It formats the message and locates the user's verbatim `<module>/<member>`
-// reference span.
+// It formats the message at the arm's located `<module>/<member>` reference.
 #[test]
 fn module_has_no_member_error_authors_message_and_locates_ref_span() {
-    let sexps = cranelisp_frontend::parse("(mathx/helper 1)").unwrap();
-    let program = crate::worker::build_program_compat(&sexps).unwrap();
+    let program = build("(mathx/helper 1)");
     let module = ModuleFullPath::from("mathx");
+    let span = gap_reference_span(
+        &program,
+        &GapReference {
+            module: &module,
+            member: "helper",
+            referring_module: &user_module(),
+            module_aliases: &ModuleAliases::default(),
+        },
+    );
 
-    let err = module_has_no_member_error(&program, &module, "helper");
+    let err = module_has_no_member_error(&module, "helper", span);
     assert!(
         err.to_string()
             .contains("module 'mathx' has no member 'helper'"),
@@ -140,7 +147,17 @@ fn module_has_no_member_error_authors_message_and_locates_ref_span() {
 // program falls back to the SYNTHETIC span (still a well-formed message).
 #[test]
 fn module_has_no_member_error_falls_back_to_synthetic_span_when_ref_absent() {
-    let err = module_has_no_member_error(&[], &ModuleFullPath::from("m"), "x");
+    let module = ModuleFullPath::from("m");
+    let span = gap_reference_span(
+        &[],
+        &GapReference {
+            module: &module,
+            member: "x",
+            referring_module: &user_module(),
+            module_aliases: &ModuleAliases::default(),
+        },
+    );
+    let err = module_has_no_member_error(&module, "x", span);
     assert!(err.to_string().contains("module 'm' has no member 'x'"));
     assert_eq!(err.span(), Span::SYNTHETIC);
 }
@@ -198,6 +215,7 @@ fn recognize_captures_unloaded_fq_macro_module() {
         shared_state: None,
         macro_defining_modules: Vec::new(),
         blocked_on_fq_module: None,
+        macro_lookup_dependencies: Default::default(),
     };
 
     // `mac` is not loaded — recognising an FQ head `mac/twice` captures it.
@@ -237,6 +255,7 @@ fn recognize_bare_head_is_not_fq_block() {
         shared_state: None,
         macro_defining_modules: Vec::new(),
         blocked_on_fq_module: None,
+        macro_lookup_dependencies: Default::default(),
     };
 
     let r = resolver
@@ -279,6 +298,7 @@ fn recognize_skips_colon_prefixed_type_annotation() {
         shared_state: None,
         macro_defining_modules: Vec::new(),
         blocked_on_fq_module: None,
+        macro_lookup_dependencies: Default::default(),
     };
 
     // The FQ type annotation `:primitives/Int` must NOT be mis-split into a
@@ -764,7 +784,7 @@ fn null_import_registers_no_alias_and_loads_nothing() {
 
 // -----------------------------------------------------------------------
 // 0571 member-not-found diagnostic: the span-attribution walker
-// (`find_named_var_span`) that gives the "module X has no member Y" error a
+// (`gap_reference_span`) that gives the "module X has no member Y" error a
 // real source location at the user's reference site instead of `0..0`.
 // -----------------------------------------------------------------------
 
@@ -785,10 +805,23 @@ fn int_lit(value: i64) -> Expr {
     }
 }
 
+/// Locate the value gap `module/member` in `program` from an alias-free `user`.
+fn unaliased_value_span(program: &[TopLevel], module: &str, member: &str) -> Span {
+    gap_reference_span(
+        program,
+        &GapReference {
+            module: &ModuleFullPath::from(module),
+            member,
+            referring_module: &user_module(),
+            module_aliases: &ModuleAliases::default(),
+        },
+    )
+}
+
 // The reference-span is found through the `Apply` callee — the exact
 // `(primitives/nosuchfn 1 2)` shape 0490 diagnoses.
 #[test]
-fn find_named_var_span_locates_qualified_callee() {
+fn gap_reference_span_locates_qualified_callee() {
     let apply = Expr::Apply {
         callee: Box::new(var("primitives/nosuchfn", 1, 20)),
         args: vec![int_lit(1), int_lit(2)],
@@ -797,15 +830,15 @@ fn find_named_var_span_locates_qualified_callee() {
         inferred_type: None,
     };
     assert_eq!(
-        find_named_var_span(&apply, "primitives/nosuchfn"),
-        Some(Span::new(1, 20)),
+        unaliased_value_span(&[TopLevel::Expr(apply)], "primitives", "nosuchfn"),
+        Span::new(1, 20),
     );
 }
 
-// A non-matching name yields None (the diagnostic then falls back to the
-// cluster's synthetic span rather than mis-attributing).
+// A non-matching name yields the SYNTHETIC fallback rather than
+// mis-attributing.
 #[test]
-fn find_named_var_span_none_for_absent_name() {
+fn gap_reference_span_synthetic_for_absent_name() {
     let apply = Expr::Apply {
         callee: Box::new(var("primitives/nosuchfn", 1, 20)),
         args: vec![int_lit(1)],
@@ -813,13 +846,16 @@ fn find_named_var_span_none_for_absent_name() {
         resolved_call: None,
         inferred_type: None,
     };
-    assert_eq!(find_named_var_span(&apply, "some/other"), None);
+    assert_eq!(
+        unaliased_value_span(&[TopLevel::Expr(apply)], "some", "other"),
+        Span::SYNTHETIC,
+    );
 }
 
-// The walker recurses through a defn body via the top-level wrapper (the
-// reference need not be a bare top-level expression).
+// The walker recurses through a defn body (the reference need not be a bare
+// top-level expression).
 #[test]
-fn find_named_var_span_in_toplevel_recurses_defn_body() {
+fn gap_reference_span_recurses_defn_body() {
     let body = Expr::If {
         cond: Box::new(var("cond", 0, 4)),
         then_branch: Box::new(var("core/absent", 10, 21)),
@@ -839,9 +875,233 @@ fn find_named_var_span_in_toplevel_recurses_defn_body() {
         span: Span::new(0, 40),
     });
     assert_eq!(
-        find_named_var_span_in_toplevel(&defn, "core/absent"),
-        Some(Span::new(10, 21)),
+        unaliased_value_span(&[defn], "core", "absent"),
+        Span::new(10, 21),
     );
+}
+
+// -----------------------------------------------------------------------
+// Gap reference site (design/int/int.md §6.3.1): one lookup over value and
+// type positions, matching the written qualifier after alias substitution.
+// -----------------------------------------------------------------------
+
+fn build(src: &str) -> Vec<TopLevel> {
+    crate::worker::build_program_compat(&cranelisp_frontend::parse(src).unwrap()).unwrap()
+}
+
+fn user_module() -> ModuleFullPath {
+    ModuleFullPath::from("user")
+}
+
+fn type_gap(module: &str, name: &str) -> cranelisp_types::ResolutionGap {
+    cranelisp_types::ResolutionGap::Type(cranelisp_types::FQTypeName::new(
+        ModuleFullPath::from(module),
+        cranelisp_types::TypeName::from(name),
+    ))
+}
+
+/// `user` registers `(import [(zz z) …])`: the alias `z → zz`.
+fn z_alias_for_user() -> ModuleAliases {
+    let aliases = ModuleAliases::default();
+    aliases.insert(
+        cranelisp_types::module_alias_key(&user_module(), "z"),
+        cranelisp_types::ModuleAliasEntry::new(
+            ModuleFullPath::from("zz"),
+            Visibility::Private,
+            Span::SYNTHETIC,
+        ),
+    );
+    aliases
+}
+
+/// Locate `gap` in `program` as the gap arm does, from module `user`.
+fn locate(
+    program: &[TopLevel],
+    gap: &cranelisp_types::ResolutionGap,
+    aliases: &ModuleAliases,
+) -> Span {
+    let module = gap_target_module(gap).unwrap();
+    let member = gap_member(gap);
+    gap_reference_span(
+        program,
+        &GapReference {
+            module: &module,
+            member: &member,
+            referring_module: &user_module(),
+            module_aliases: aliases,
+        },
+    )
+}
+
+fn text(src: &str, span: Span) -> &str {
+    &src[span.start as usize..span.end as usize]
+}
+
+fn only_defn_variant_span(program: &[TopLevel]) -> Span {
+    match program {
+        [TopLevel::Defn(d)] => d.variants[0].span,
+        other => panic!("expected one defn, got {other:?}"),
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 — edge 3 (FT-4's seam): a type-only
+// reference to a missing module is reported at the defn variant that carries
+// the parameter annotation.
+#[test]
+fn gap_reference_span_locates_type_param_annotation_at_defn_variant() {
+    let src = "(defn h [:zz/T t] 7)";
+    let program = build(src);
+    let span = locate(&program, &type_gap("zz", "T"), &ModuleAliases::default());
+    assert_eq!(span, only_defn_variant_span(&program));
+    assert!(text(src, span).contains(":zz/T"), "{span:?}");
+}
+
+// spec: spec/08-modules.md §8.5.4 — edge 3: a `deftype` field type is
+// reported at its field, the innermost spanned carrier.
+#[test]
+fn gap_reference_span_locates_type_in_deftype_field() {
+    let src = "(deftype Box [:Int n :zz/T v])";
+    let program = build(src);
+    let TopLevel::TypeDef {
+        constructors, span, ..
+    } = &program[0]
+    else {
+        panic!("expected a deftype, got {:?}", program[0]);
+    };
+    let field_span = constructors[0].fields[1].span;
+    assert_ne!(field_span, *span, "the field is inside the deftype");
+
+    let located = locate(&program, &type_gap("zz", "T"), &ModuleAliases::default());
+    assert_eq!(located, field_span);
+    // The frontend spans a field by its name.
+    assert_eq!(text(src, located), "v");
+}
+
+// spec: spec/08-modules.md §8.6.6 — the gap names the alias-substituted
+// module, so an alias-spelled reference is located through the same walk,
+// in type and value position alike.
+#[test]
+fn gap_reference_span_resolves_alias_qualifier_for_type_and_value() {
+    let aliases = z_alias_for_user();
+
+    let type_src = "(defn h [:z/T t] 7)";
+    let type_program = build(type_src);
+    let span = locate(&type_program, &type_gap("zz", "T"), &aliases);
+    assert_eq!(span, only_defn_variant_span(&type_program));
+
+    let value_src = "(defn g [] (z/f 1))";
+    let value_gap = cranelisp_types::ResolutionGap::SymbolTypechecked(FQSymbol {
+        module: ModuleFullPath::from("zz"),
+        symbol: Symbol::from("f"),
+    });
+    let span = locate(&build(value_src), &value_gap, &aliases);
+    assert_eq!(text(value_src, span), "z/f");
+}
+
+// spec: spec/08-modules.md §8.5.4 — edge 3: the member-absent value gap names
+// the qualifier as written, so an alias-spelled reference to a missing member
+// of a loaded module is located at that reference.
+#[test]
+fn gap_reference_span_locates_alias_spelled_member_absent_value_gap() {
+    let src = "(defn g [] (z/f 1))";
+    let gap = cranelisp_types::ResolutionGap::SymbolTypechecked(FQSymbol {
+        module: ModuleFullPath::from("z"),
+        symbol: Symbol::from("f"),
+    });
+    let span = locate(&build(src), &gap, &z_alias_for_user());
+    assert_eq!(text(src, span), "z/f", "{span:?}");
+}
+
+// spec: spec/08-modules.md §8.5.4 — negative: a reference matches only when
+// its resolved qualifier AND its member are the gap's; otherwise the
+// diagnostic falls back to SYNTHETIC rather than mis-attributing.
+#[test]
+fn gap_reference_span_neg_unaliased_qualifier_or_other_member_does_not_match() {
+    let gap = type_gap("zz", "T");
+    let no_aliases = ModuleAliases::default();
+
+    let unaliased = build("(defn h [:z/T t] 7)");
+    assert_eq!(locate(&unaliased, &gap, &no_aliases), Span::SYNTHETIC);
+
+    let other_member = build("(defn h [:zz/U t] 7)");
+    assert_eq!(locate(&other_member, &gap, &no_aliases), Span::SYNTHETIC);
+}
+
+// spec: spec/08-modules.md §8.5.4 — edge 3 over the remaining type carriers:
+// each reports its innermost spanned node; a signature-tail symbol reports
+// its own span.
+#[test]
+fn gap_reference_span_locates_each_remaining_type_carrier() {
+    let gap = type_gap("zz", "T");
+    let no_aliases = ModuleAliases::default();
+    let cases = [
+        (
+            "lambda parameter",
+            "(defn g [] (fn [:zz/T t] t))",
+            "(fn [:zz/T t] t)",
+        ),
+        ("inline annotation", "(defn g [x] :zz/T x)", ":zz/T x"),
+        ("trait signature tail", "(deftrait Tr (m [x] zz/T))", "zz/T"),
+        (
+            "impl target",
+            "(impl Tr zz/T (defn m [x] 1))",
+            "(impl Tr zz/T (defn m [x] 1))",
+        ),
+    ];
+    for (carrier, src, expected) in cases {
+        let span = locate(&build(src), &gap, &no_aliases);
+        assert_eq!(text(src, span), expected, "{carrier}: {span:?}");
+    }
+
+    let param_src = "(deftrait Tr (m [:zz/T x] Int))";
+    let param_program = build(param_src);
+    let TopLevel::TraitDecl(decl) = &param_program[0] else {
+        panic!("expected a deftrait, got {:?}", param_program[0]);
+    };
+    assert_eq!(
+        locate(&param_program, &gap, &no_aliases),
+        decl.methods[0].span
+    );
+
+    let applied = build("(defn h [:(Vec zz/T) t] 7)");
+    assert_eq!(
+        locate(&applied, &gap, &no_aliases),
+        only_defn_variant_span(&applied)
+    );
+
+    let fn_typed = build("(defn h [:(Fn [zz/T] Int) t] 7)");
+    assert_eq!(
+        locate(&fn_typed, &gap, &no_aliases),
+        only_defn_variant_span(&fn_typed)
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 — edge 3: a value reference inside an impl
+// method body is located at the reference itself.
+#[test]
+fn gap_reference_span_locates_value_reference_in_impl_method_body() {
+    let src = "(impl Tr Int (defn m [x] (zz/f x)))";
+    let gap = cranelisp_types::ResolutionGap::SymbolTypechecked(FQSymbol {
+        module: ModuleFullPath::from("zz"),
+        symbol: Symbol::from("f"),
+    });
+    let span = locate(&build(src), &gap, &ModuleAliases::default());
+    assert_eq!(text(src, span), "zz/f", "{span:?}");
+}
+
+// spec: spec/08-modules.md §8.5.4 — negative: trait references (an impl's
+// trait, stacked bounds) raise no gap and are not reference sites.
+#[test]
+fn gap_reference_span_neg_trait_references_are_not_sites() {
+    let gap = type_gap("zz", "T");
+    let no_aliases = ModuleAliases::default();
+    for src in ["(impl zz/T Int (defn m [x] 1))", "(defn h [:zz/T :Eq t] 7)"] {
+        assert_eq!(
+            locate(&build(src), &gap, &no_aliases),
+            Span::SYNTHETIC,
+            "{src}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -1019,4 +1279,138 @@ fn reanchor_finalize_multi_form_falls_back_to_first_origin() {
         forms[0].span(),
         "synthetic multi-form error falls back to the first origin form's span"
     );
+}
+
+// -----------------------------------------------------------------------
+// Qualified lookup dependencies — int's macro-head producer and the
+// checkpoint and finalize publications (design/int/int.md §7.6.2).
+// Each row compiles a module from files in a scratch project through a real
+// session, so the pool worker's continuation holder is on the path.
+// -----------------------------------------------------------------------
+
+mod lookup_dependencies {
+    use std::path::PathBuf;
+
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, ModuleFullPath};
+
+    struct Project {
+        session: CompilerSession,
+        root: PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Project {
+        fn new(files: &[(&str, &str)]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            for (name, source) in files {
+                std::fs::write(root.join(name), source).unwrap();
+            }
+            let settings = SessionSettings {
+                no_color: true,
+                no_cache: true,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 0,
+                run_mode: RunMode::Repl,
+            };
+            let mut session = CompilerSession::new(settings, root.clone(), "user")
+                .expect("test session bootstrap");
+            session.set_lib_dirs(Vec::new());
+            Project {
+                session,
+                root,
+                _dir: dir,
+            }
+        }
+
+        /// Compile `module` from `source`; an error is returned rendered.
+        fn compile(&mut self, module: &str, source: &str) -> Result<(), String> {
+            let path = self.root.join(format!("{module}.cl"));
+            self.session
+                .register_module_with_source(module, source, &path)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+
+        fn lookup_dependencies(&self, module: &str) -> Vec<String> {
+            self.session
+                .shared
+                .symbol_tables
+                .get(&ModuleFullPath::from(module))
+                .map(|table| table.lookup_dependencies().map(|m| m.to_string()).collect())
+                .unwrap_or_default()
+        }
+    }
+
+    impl Drop for Project {
+        fn drop(&mut self) {
+            self.session.shutdown();
+        }
+    }
+
+    const MACRO_B: (&str, &str) = ("b.cl", "(defmacro m [] `11)\n");
+
+    // spec: design/int/int.md §7.6.2 — int records a qualified macro head's
+    // module after alias substitution, never the alias.
+    #[test]
+    fn alias_qualified_macro_head_publishes_the_target_module() {
+        let mut project = Project::new(&[MACRO_B]);
+        project
+            .compile("a", "(import [(b bb) []])\n(defn g [] (bb/m))\n")
+            .unwrap();
+        assert_eq!(project.lookup_dependencies("a"), ["b"]);
+    }
+
+    // spec: design/int/int.md §7.6.2 — a bare macro head records nothing.
+    #[test]
+    fn bare_macro_head_publishes_nothing() {
+        let mut project = Project::new(&[MACRO_B]);
+        project
+            .compile("a", "(import [b [m]])\n(defn g [] (m))\n")
+            .unwrap();
+        assert!(project.lookup_dependencies("a").is_empty());
+    }
+
+    // spec: design/int/int.md §7.6.2 — the carry: `g`'s head is expanded,
+    // then `k`'s reference to the unloaded `e` gaps. The retry resumes the
+    // expanded prefix, which no longer names `b`.
+    #[test]
+    fn macro_head_module_survives_a_later_dependency_gap() {
+        let mut project = Project::new(&[MACRO_B, ("e.cl", "(defn f [] 0)\n")]);
+        project
+            .compile("a", "(defn g [] (b/m))\n(defn k [] (e/f))\n")
+            .unwrap();
+        assert_eq!(project.lookup_dependencies("a"), ["b", "e"]);
+    }
+
+    // spec: design/int/int.md §7.6.2 — clause staging: a qualified reference
+    // in a macro clause body reaches the published macro table.
+    #[test]
+    fn qualified_reference_in_macro_clause_body_reaches_the_macro_table() {
+        let mut project = Project::new(&[(
+            "r.cl",
+            "(import [macros [SexpInt]])\n(defn f [] (SexpInt 7))\n",
+        )]);
+        project.compile("a", "(defmacro m [] (r/f))\n").unwrap();
+        // The synthesized clause also names the compiler-owned `macros`;
+        // recording is unfiltered and the edge consumer drops it.
+        let recorded = project.lookup_dependencies("a");
+        assert!(recorded.iter().any(|module| module == "r"), "{recorded:?}");
+    }
+
+    // spec: design/int/int.md §7.6.2 — a failed cluster check drops the
+    // attempt, so nothing is published (Principle 26).
+    #[test]
+    fn failed_cluster_check_publishes_no_lookup_dependency() {
+        let mut project = Project::new(&[MACRO_B]);
+        let result = project.compile(
+            "a",
+            "(import [primitives [Int]])\n(defn g [] (b/m))\n(defn h [:Int x] :Int true)\n",
+        );
+        let error = result.expect_err("the cluster must fail its check");
+        assert!(error.contains("type mismatch"), "{error}");
+        assert!(project.lookup_dependencies("a").is_empty());
+    }
 }

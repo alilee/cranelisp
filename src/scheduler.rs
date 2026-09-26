@@ -5,7 +5,7 @@
 // condvars for nice worker parking (Step 10) and future priority worker
 // parking (Step 11).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
 use cranelisp_types::{
@@ -13,6 +13,46 @@ use cranelisp_types::{
 };
 
 use crate::observability::{self, SchedulerTraceTag};
+
+/// The source a cluster attempt resumes from, together with the modules whose
+/// qualified macro heads were recognised while expanding its already-expanded
+/// prefix (`design/int/int.md` §7.6.2). The expanded prefix no longer names
+/// those modules, so the two travel as one value through every holder; only
+/// [`SourceContinuation::source`] starts from an empty set.
+#[derive(Debug, Clone)]
+pub struct SourceContinuation {
+    forms: std::sync::Arc<[Sexp]>,
+    macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+}
+
+impl SourceContinuation {
+    /// Unexpanded source: a first attempt or a retry from the top.
+    pub fn source(forms: impl Into<std::sync::Arc<[Sexp]>>) -> Self {
+        SourceContinuation {
+            forms: forms.into(),
+            macro_lookup_dependencies: BTreeSet::new(),
+        }
+    }
+
+    /// The remainder of an attempt that expanded part of its source.
+    pub(crate) fn resumed(
+        forms: Vec<Sexp>,
+        macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+    ) -> Self {
+        SourceContinuation {
+            forms: forms.into(),
+            macro_lookup_dependencies,
+        }
+    }
+
+    pub fn forms(&self) -> &[Sexp] {
+        &self.forms
+    }
+
+    pub(crate) fn macro_lookup_dependencies(&self) -> &BTreeSet<ModuleFullPath> {
+        &self.macro_lookup_dependencies
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -131,22 +171,21 @@ pub struct ModuleState {
     /// current cluster.
     pub static_closure_memo: Option<(u64, ClosureOrder)>,
 
-    /// The cluster sexps this module typechecks from (S78 packet model). Held
-    /// here so the requeue path (`try_unblock_locked`) can reconstruct the
-    /// `PriorityWork::Typecheck { module, sexps }` packet after the dep this
-    /// module blocked on completes — the worker re-runs the cluster from the
-    /// top with no saved suspend state. `None` for cache-restored modules
-    /// (registered at `TypecheckDone`, never typechecked from source).
-    pub sexps: Option<std::sync::Arc<[Sexp]>>,
+    /// The source continuation this module typechecks from (S78 packet model).
+    /// Held here so the requeue path (`try_unblock_locked`) can reconstruct the
+    /// `PriorityWork::Typecheck` packet after the dep this module blocked on
+    /// completes. `None` for cache-restored modules (registered at
+    /// `TypecheckDone`, never typechecked from source).
+    pub continuation: Option<SourceContinuation>,
 
     /// Historical concrete instantiations that a persisted-source reload must
-    /// recreate in this generation. Stored beside `sexps` so dependency
+    /// recreate in this generation. Stored beside `continuation` so dependency
     /// retries carry the same immutable request packet.
     pub instantiation_demands: std::sync::Arc<[MonoDemand]>,
 
     /// True after this generation's structural/prologue work has completed.
-    /// A dependency retry then consumes only `sexps`, which is the remaining
-    /// source continuation, without repeating generation setup.
+    /// A dependency retry then consumes only `continuation`, without repeating
+    /// generation setup.
     pub generation_started: bool,
 
     /// Module this module is currently blocked on (forward edge).
@@ -169,7 +208,7 @@ pub struct ModuleState {
 }
 
 impl ModuleState {
-    fn new(pool: ModulePool, sexps: Option<std::sync::Arc<[Sexp]>>) -> Self {
+    fn new(pool: ModulePool, continuation: Option<SourceContinuation>) -> Self {
         Self {
             pool,
             waiters: HashMap::new(),
@@ -182,7 +221,7 @@ impl ModuleState {
             object_claimed_gen: 0,
             error: None,
             static_closure_memo: None,
-            sexps,
+            continuation,
             instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
@@ -206,7 +245,7 @@ impl ModuleState {
             object_claimed_gen: 0,
             error: None,
             static_closure_memo: None,
-            sexps: None,
+            continuation: None,
             instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
@@ -233,7 +272,7 @@ impl ModuleState {
             object_claimed_gen: 0,
             error: None,
             static_closure_memo: None,
-            sexps: None,
+            continuation: None,
             instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
@@ -268,16 +307,14 @@ pub enum WaitKind {
 pub enum PriorityWork {
     /// Typecheck a module (from TypecheckFirst or TypecheckNext).
     ///
-    /// S78 in-call-stack restructure: the cluster's parsed sexps ride ON the
-    /// work packet (`Arc<[Sexp]>`), replacing the former cross-thread
-    /// `SharedState.module_sexps` parking map. The worker reads them off the
-    /// packet; on a dependency gap the worker frees back to the pool and the
-    /// scheduler requeues the SAME packet (sexps included) via
-    /// `try_unblock_locked` — the worker re-runs the cluster from the top
-    /// against now-larger live state with no saved suspend state.
+    /// S78 in-call-stack restructure: the source continuation rides ON the
+    /// work packet, replacing the former cross-thread
+    /// `SharedState.module_sexps` parking map. On a dependency gap the worker
+    /// stores the gap's continuation and frees back to the pool; the scheduler
+    /// requeues it via `try_unblock_locked` against now-larger live state.
     Typecheck {
         module: ModuleFullPath,
-        sexps: std::sync::Arc<[Sexp]>,
+        continuation: SourceContinuation,
         instantiation_demands: std::sync::Arc<[MonoDemand]>,
         generation_started: bool,
     },
@@ -286,7 +323,7 @@ pub enum PriorityWork {
 }
 
 // `PartialEq`/`Eq` were derived pre-S78 (the queue held bare `ModuleFullPath`).
-// With `Arc<[Sexp]>` on the packet, structural equality would require
+// With the source continuation on the packet, structural equality would require
 // `Sexp: Eq` AND a deep slice compare on every requeue — neither is wanted.
 // No call site compares whole `PriorityWork` values; tests assert on `.module`
 // / the variant shape. Manual `PartialEq` compares only the discriminant +
@@ -471,9 +508,10 @@ impl CompileScheduler {
         } else {
             ModulePool::TypecheckNext
         };
-        state
-            .modules
-            .insert(module.clone(), ModuleState::new(pool, Some(sexps)));
+        state.modules.insert(
+            module.clone(),
+            ModuleState::new(pool, Some(SourceContinuation::source(sexps))),
+        );
         if delays_other {
             state.typecheck_first.push_back(module);
         } else {
@@ -664,7 +702,7 @@ impl CompileScheduler {
                 error: None,
                 // Source changed — the static closure must be re-walked.
                 static_closure_memo: None,
-                sexps: Some(sexps),
+                continuation: Some(SourceContinuation::source(sexps)),
                 instantiation_demands,
                 generation_started: false,
                 blocked_on: None,
@@ -754,11 +792,11 @@ impl CompileScheduler {
             SchedulerTraceTag::ModuleStateTypechecking,
             module.as_ref(),
         );
-        let sexps = state
+        let continuation = state
             .modules
             .get(&module)
-            .and_then(|ms| ms.sexps.clone())
-            .unwrap_or_else(|| std::sync::Arc::from(Vec::new()));
+            .and_then(|ms| ms.continuation.clone())
+            .unwrap_or_else(|| SourceContinuation::source(Vec::new()));
         let generation_started = state
             .modules
             .get(&module)
@@ -770,7 +808,7 @@ impl CompileScheduler {
             .unwrap_or_else(|| std::sync::Arc::from([]));
         PriorityWork::Typecheck {
             module,
-            sexps,
+            continuation,
             instantiation_demands,
             generation_started,
         }
@@ -782,12 +820,12 @@ impl CompileScheduler {
     pub fn set_source_continuation(
         &self,
         module: &ModuleFullPath,
-        sexps: std::sync::Arc<[Sexp]>,
+        continuation: SourceContinuation,
         generation_started: bool,
     ) {
         let mut state = self.lock();
         if let Some(module_state) = state.modules.get_mut(module) {
-            module_state.sexps = Some(sexps);
+            module_state.continuation = Some(continuation);
             module_state.generation_started = generation_started;
         }
     }
@@ -1976,7 +2014,7 @@ impl CompileScheduler {
     pub fn release_entry_sexps(&self, module: &ModuleFullPath) {
         let mut state = self.lock();
         if let Some(ms) = state.modules.get_mut(module) {
-            ms.sexps = None;
+            ms.continuation = None;
         }
     }
 
@@ -2164,7 +2202,7 @@ impl CompileScheduler {
                 ms.object_done,
                 ms.object_working,
                 cached,
-                ms.sexps.is_some(),
+                ms.continuation.is_some(),
                 ms.error.is_some(),
             );
             for (sym, waiters) in &ms.waiters {

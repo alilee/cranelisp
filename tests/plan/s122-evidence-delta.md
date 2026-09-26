@@ -2851,7 +2851,7 @@ that CD-1 is closed.
 
 | ID / priority | Risk | State | Smallest next evidence |
 |---|---|---|---|
-| F1 — FQ-reference dependency (required) | A module whose only use of `b` is a qualified reference has no edge to `b`, which §8.5.4 admits without an import. An ordinary edit to `b` then restores it stale (`artifact-underkey`), or nothing loads `b` for the restored object (`enumeration-miss`). This is a source edit, not cache corruption, so C-A does not cover it | Qualified **callable** references: corrected by [callee-module edges](../../design/int/int.md#761-callee-module-edges) and adequate as a bounded correction ([F1 acceptance](#f1-acceptance-and-qr-classification-2026-09-25)). Every other qualified-reference kind: the measured QR REDs below | FN-1 fence, unarmed until FIXME 0798 is repaired; QR disposition by `arch` and the user |
+| F1 — FQ-reference dependency (required) | A module whose only use of `b` is a qualified reference has no edge to `b`, which §8.5.4 admits without an import. An ordinary edit to `b` then restores it stale (`artifact-underkey`), or nothing loads `b` for the restored object (`enumeration-miss`). This is a source edit, not cache corruption, so C-A does not cover it | Qualified **callable** references: corrected by [callee-module edges](../../design/int/int.md#761-callee-module-edges) and adequate as a bounded correction ([F1 acceptance](#f1-acceptance-and-qr-classification-2026-09-25)). Every other qualified-reference kind: the measured QR REDs below | FN-1 fence, armed ([alias-only correction](#alias-only-import-registration-fixme-0798--correction-adequacy-2026-09-25)); QR disposition by `arch` and the user |
 | DV3 — fresh module over a restored module (required intake) | A spec-valid program failed on a warm run. A freshly re-typechecked declared test child reported `'assert-true' not found in module 'testing.assertions'` while that module restored (first full run, both `exemplar_ownership_residue_s116` warm cells). Deferral removed this trigger, not the mechanism. Editing only such a child reaches the same shape | Observed once; mechanism unknown; no minimal repro | `test`, one stdlib-free `tests/cache.rs` cell. `grp.cl` declares `(mod asserts)`, and `grp/asserts.cl` defines `one`. `lib.cl` declares `(mod- test)`, and `lib/test.cl` imports `[grp.asserts [one]]` and calls it. `main` imports `lib`. Run cold, then warm with nothing changed (arming: `grp.asserts` and `lib.test` hit). Append a comment to `lib/test.cl` only and compare with `--run --no-cache`. If GREEN, add one variant whose child also imports `super` (the exemplar shape) and report. If RED, add the sibling that differs only in `asserts` being a top-level module, to control the declared-child cause |
 
 Advisory and unallocated; each awaits its owner:
@@ -3184,73 +3184,10 @@ so a callable reference that typecheck does not record is served stale.
 
 | ID | Class | Evidence | Expected and limits |
 |---|---|---|---|
-| FN-1: an alias-only import target reached by a qualified call restores | Safety fence for the §7.6.1 null-import rule. **Unarmed** until FIXME 0798 is repaired | `test`'s cell `cache_alias_only_import_target_reached_by_qualified_call_restores_and_matches_uncached_run` in the F1 section of `tests/cache.rs`. It is F1 cell 2 with `a` replaced by `(import [(b bb) []])` and `(defn g [] (bb/f))`. Legs as cell 2: cold 11; warm arming hits `a` and behaves as cold, which is the discriminating leg; the `--no-cache` control gives 11 after the edit; the cached run matches the control | **RED on the cold leg**, the known-defect face of FIXME 0798 ([FN-1 cold rejection](#fn-1-cold-rejection-intake-2026-09-25)). The warm leg has never run, so the fence has detected nothing yet. After 0798 is repaired the cold leg is predicted GREEN and the warm leg arms the fence. From then on, a warm `unresolved symbol: __cranelisp_got_b` is F1 defect intake and reopens this acceptance. Limit: the warm face is predicted, not observed. Before the F1 fix, both walks skipped the spec and no callee walk existed. No revert run is required |
+| FN-1: an alias-only import target reached by a qualified call restores | Safety fence for the §7.6.1 null-import rule. **Armed** | `test`'s cell `cache_alias_only_import_target_reached_by_qualified_call_restores_and_matches_uncached_run` in the F1 section of `tests/cache.rs`. It is F1 cell 2 with `a` replaced by `(import [(b bb) []])` and `(defn g [] (bb/f))`. Legs as cell 2: cold 11; warm arming hits `a` (trace-asserted) and behaves as cold, which is the discriminating leg; the `--no-cache` control gives 11 after the edit; the cached run matches the control | GREEN on every leg since the alias-only correction, in `dev`'s focused run and in the full run (`.local/s122-io-notice-dev-full.log`). A warm `unresolved symbol: __cranelisp_got_b` is F1 defect intake and reopens this acceptance. No planted-fault proof is owed: the warm leg's detection is its asserted restore of `a` plus an exit comparison with the cold run, and F1 cell 2 observed exactly that failure face RED before the F1 fix. Limit: FN-1's own warm failure face is predicted, not observed |
 
 FN-1 does not gate F1 acceptance. Source establishes present conformance, and
-the fence protects later change. Its cell is authored; arming waits on the
-0798 repair, which S122 has not approved.
-
-### FN-1 cold rejection: intake (2026-09-25)
-
-**Classification: a known defect, not an F1 regression and not a requirement
-question.** The fresh compile rejects the FN-1 program before anything is
-cached. The error is `module 'bb' referenced by 'bb/...' not found (referenced
-by 'a')` (`.local/s122-fn1-cache-run.log`). FIXME 0798 (S115, `wrong-reject`,
-deferred) records the same face for the same construct. F1 cells 1 and 2 are
-GREEN in that run, and no `__cranelisp_got_b` face appeared.
-
-**The requirement is unambiguous.**
-
-- `spec/08-modules.md` §8.3.6: the alias-only import registers the alias, "for
-  qualified access".
-- §8.6.6 step 1: a qualifier that matches an import alias resolves in the
-  aliased module.
-- §8.5.4: a qualified reference to an unloaded module must load it. Edge 2
-  applies already-registered aliases.
-- §8.3.7's no-loading rule governs `(import [b []])`, which has no alias. It
-  does not cancel §8.3.6's alias.
-- The spec does not say whether an alias-only import loads its target eagerly
-  or leaves it to §8.5.4. Both readings give exit 11 here, so the observable is
-  settled and no user ruling is needed.
-
-**Mechanism: a provisional hypothesis from source, with no seam
-observation.**
-
-- `src/process_form/dependency.rs::handle_import` skips every
-  `ImportNames::None` spec before `install_imports`. On a fresh compile,
-  `install_imports` is the only writer of an import alias into the live alias
-  table. The alias `a.bb` is therefore never registered.
-- `substitute_module_alias` then returns `bb` unchanged.
-- The typecheck gap carries the substituted module. That module is `bb`, and
-  `drive_module_dep` finds no file for it.
-- The cache-restore route (`install_module_session_env`) does install
-  alias-only aliases. The defect is therefore in the fresh path only.
-
-**Falsifiers.** Each control is a sibling of the FN-1 program, run as a fresh
-`--run --no-cache` compile. None has been executed: this dispatch's harness
-refused scratch writes outside the repository and execution of the prebuilt
-binary.
-
-| Control | Prediction | Result that refutes the hypothesis |
-|---|---|---|
-| `a` = `(import [(b bb) [f]])` and `(bb/f)` | Exit 11 | The same face. That would mean alias registration fails beyond the null-import skip, as 0798's S115 row 2 recorded. The locus would then widen |
-| The entry also imports `[b [f]]`, and `a` is FN-1's | The same `bb` face | Exit 11. That would make load order, not alias registration, the mechanism |
-| One module: `main` has `(import [(b bb) []])` and calls `(bb/f)` | The same `bb` face | Exit 11. That would tie the fault to the importer being a dependency |
-
-**Disposition.**
-
-- F1 acceptance is unchanged.
-- The FN-1 cell stays permanently as a composed, cache-target reproduction of
-  0798. It is not 0798's narrow repro, which is still owed (0798 ask 1).
-- Owner of the repair: `dev` on the binary/int surface, with the provisional
-  locus above. The first act is to observe the alias table at typecheck,
-  or to run the first control. The repair must keep §8.3.7: a plain
-  `[m []]` loads nothing and still suppresses the implicit prelude.
-- The repair is pending. 0798 is a deferred legacy filing with no approved
-  schedule, and the S122 approval covers F1 only. `sprint` schedules it with
-  the user.
-- No new action is filed. 0798 is the open record, and a second filing would
-  duplicate it.
+the fence protects later change.
 
 **QR classification: measured.** QR-1 to QR-5 are RED with unchanged faces
 under callee consumption in all four runs. Every panic is at the subject's
@@ -3264,17 +3201,14 @@ unrefuted.
   still absent from the importer's dependency record, and restore serves the
   stale object. For QR-1 the absent member is the spelled re-exporter `r`; the
   terminal home `c` is now recorded.
-- **Not measured.** Whether another fact already persisted can supply these
-  edges without a new carrier; for example resolved schemes, concrete views,
-  export chains or expansion provenance. Which carrier, field or API would be
-  needed, and whether any is necessary. The REDs are the evidence on which
-  `arch` may assess this with the user; they approve nothing.
+- The approved carrier and its evidence are
+  [qualified lookup dependencies](#qualified-lookup-dependencies--evidence-delta-2026-09-26).
 - QR-4 remains a memory-safety exposure: the stale importer under-releases.
 - QR-6 is GREEN: a constructor-only home that the object does not bind
   restores.
 - Outside F1 and unchanged by it:
   `fq_type_only_reference_loads_its_module_on_a_fresh_compile` (a cold
-  `wrong-reject`).
+  `wrong-reject`; [allocation](#fresh-fq-type-only-loading--evidence-delta-2026-09-25)).
 
 **F1 items still open, none an evidence gate:**
 
@@ -3282,10 +3216,329 @@ unrefuted.
    correction. If that correction commits separately, `test` appends `/<sha>`.
 2. `design`(int) marks F1 accepted in `int.md` §7.6.1 and §16.0 and in the
    `s122-closure.md` row.
-3. `test` tags the FN-1 cell as a reproduction of FIXME 0798
-   ([FN-1 cold rejection](#fn-1-cold-rejection-intake-2026-09-25)). Arming
-   waits on the 0798 repair.
+3. `test` stamps the FN-1 cell `fixed=S122/bc675d86` and restates it as the
+   armed fence ([alias-only correction](#alias-only-import-registration-fixme-0798--correction-adequacy-2026-09-25)).
 4. The user accepts what ships at the Phase-5 checkpoint.
+
+### Alias-only import registration (FIXME 0798) — correction adequacy (2026-09-25)
+
+**Requirement** (unambiguous; no user ruling): `spec/08-modules.md` §8.3.6
+registers the alias for qualified access; §8.6.6 step 1 resolves through it;
+§8.5.4 loads the unloaded target. §8.3.7's no-loading rule governs only the
+alias-less `[m []]`. Eager or lazy loading of the alias target is unspecified
+and not pinned.
+
+**Attribution: confirmed at the seam.** `handle_import`'s `ImportNames::None`
+arm returned before the only fresh-path import-alias writer ran. `test`'s
+executed controls refute the widened locus (an explicit-name alias resolves,
+so 0798's S115 row 2 is not live) and exclude load order (the alias-only form
+fails with `b` already loaded). `dev`'s Pass-0 module witness observed no alias
+registered before the fix. Class `wrong-reject`; locus
+`src/process_form/dependency.rs::handle_import`.
+
+**Correction** (`bc675d86`, private to `src/`): one import-alias writer,
+`imports.rs::install_import_alias`, serves the named, name-less and restore
+routes; the name-less arm registers the alias and still loads nothing.
+
+| Condition | Class | Evidence | Judgment |
+|---|---|---|---|
+| Alias-only alias resolves a qualified call, whether or not the target is loaded | Acceptance | `tests/spec_08_modules.rs::alias_only_import_alias_resolves_qualified_call` (explicit-name control first; two subjects). RED for the intended face before the fix, GREEN after | Adequate |
+| Registration without loading | Acceptance (module) | `process_form::tests::alias_only_import_registers_alias_without_loading`, keyed by the public `module_alias_key`. RED before, GREEN after | Adequate |
+| Plain null import registers nothing and loads nothing (§8.3.7) | Safety fence | `null_import_does_not_load_its_module` (named-import control over a broken `b`) and `null_import_registers_no_alias_and_loads_nothing`. GREEN before and after | Adequate; never RED because no fault existed |
+| No blanket qualifier acceptance | Safety fence | `undeclared_alias_qualifier_is_not_resolved_neg`. GREEN before and after | Adequate |
+| Restore path parity | Safety fence | FN-1 (above), GREEN on every leg | Adequate |
+| No regression | Safety fence | Full run over the committed Rust sources (all mtimes precede the run's end): 6079 run, 6071 passed, 8 failed. The failures are the five QR cells, the two fresh type-only cells and the since-repaired `citation_drift` citations | Adequate |
+
+Independent `review`(src) passed the source with no blocking or required
+source finding (`.local/s122-alias-review-result.md`).
+
+**Verdict: adequate.** Limits, none gating:
+
+- REPL and `--link` are not observed. All modes reach the same
+  `handle_import`, so mode parity is structural, not measured.
+- No cell asserts that an alias-only import binds no bare name. The arm
+  returns before any binding is written.
+- The alias key is still minted by the private `alias_key` (`int.md` §16.0
+  residue, owned by `design`(int)).
+
+**0798 disposition** (for its target role): asks 1 and 3 and the repair are
+delivered. Ask 2's matrix reduces to what the single writer does not make
+structural: the type-annotation column `:u/T`, allocated with
+[fresh FQ type-only loading](#fresh-fq-type-only-loading--evidence-delta-2026-09-25),
+and the bare-submodule alias target (lead R-A3 below). Nothing else
+remains for 0798 to carry.
+
+#### Review leads — candidates, not defects
+
+Source readings from the alias review, none executed, none introduced by the
+correction and none gating. Each needs `sprint` scheduling with the user
+before any cell is written; a RED becomes defect intake.
+
+- **R-A1 — qualified reference into a private submodule** (§8.2.3: other
+  modules "MUST NOT … reference names in a private submodule"). Neither the
+  name-less arm nor `drive_module_dep` appears to check §8.2.3; a direct
+  `p.priv/f` seems to take the same route, so the alias adds a spelling, not a
+  capability. Smallest probe: `p` declares `(mod- priv)`; a peer calls
+  `(p.priv/f)` and must be rejected; control: `p` itself calls it and runs.
+- **R-A2 — duplicate import alias overwrites** (§8.6.4: two import aliases
+  binding one local alias "remain compile-time errors"). The writer is a plain
+  insert, as it was before. Probe: `(import [(b u) [f]])` then
+  `(import [(c u) [g]])` must be rejected; control: distinct aliases run.
+- **R-A3 — bare-submodule alias target** (§8.11.2.1). The alias target is
+  recorded as written, while the named-import bindings resolve
+  current-module-relative. Probe: in `main` with `main/util.cl`,
+  `(import [(util u) [f]])` then `(u/f)`; a top-level `util.cl` with a
+  different `f` turns a wrong target into a wrong value. Control: the full
+  path `(main.util u)`.
+- **Run-dependent dependency-failure wrapping.** The same fixture
+  (`fq_type_only_reference_loads_its_module_on_a_fresh_compile`) reported
+  either the chained form (`module 'main' failed: … dependency 'a' failed`) or
+  the direct form (`module 'a' failed`, with `a.cl`'s span 28..52 rendered as
+  `main.cl:1:29`) across three runs. Both name the failed module and its
+  error, so §8.5.4 edge 5 holds as far as observed; the span joins the
+  retained dependency-location observation held for `spec`. Not allocated.
+
+### Fresh FQ type-only loading — evidence delta (2026-09-25)
+
+**Authority.** `spec/08-modules.md` §8.5.4 edge 1: a fully-qualified type
+name in an annotation participates in auto-load, and an unresolved FQ type is
+a resolution-layer `Type` gap. Edge 2 applies registered aliases; edge 3
+makes a missing file a located error. Design guard: the public
+`ResolutionGap::Type` contract, which int already consumes
+(`process_form::tests::gap_target_module_type_names_module`). The approved
+correction is a private typecheck producer; no API or schema change
+(`.local/s122-remaining-arch-result.md` A2).
+
+**Attribution: the typecheck producer, `wrong-reject`.** `test`'s executed
+controls show that loading `b` by an import or by any value reference makes
+the same annotation resolve, and the face is the `QualifiedModuleUnknown`
+display raised as a type error. `design`(typecheck) confirmed from source that
+only the value path records the pending gap that `lift_error` promotes
+(`.local/s122-fq-type-design-result.md`). The seam observation is unit row 1's
+pre-fix RED. Falsifier: if that row shows the checker already returns the
+`Type` gap, the loss is in int's lift or consumer and the locus moves to
+`src/`.
+
+**Coverage miss.** `spec_08_modules::fq_type_annotation_triggers_autoload`
+claims the type trigger, but its body also references `shapes/Circle.r` and
+`(shapes/Circle 9)` in value positions, which load `shapes` on their own. It
+passed a non-conforming build. The one-module cell below isolates the type
+trigger.
+
+| ID | Condition; plausible wrong outcome | Class | Evidence | State |
+|---|---|---|---|---|
+| FT-1 | A `defn` parameter annotation `:b/T` alone loads `b` (exit 7); wrong: the "not loaded" type error | Acceptance | `spec_08_modules::fq_type_annotation_alone_loads_its_module`, named-import control first | RED before the fix (`test` log); GREEN in the integrated full run |
+| FT-2 | In a dependency module, a `deftype` field and a parameter annotation each load `b`; wrong: one entry route still refuses | Acceptance | `cache::fq_type_only_reference_loads_its_module_on_a_fresh_compile` | As FT-1 |
+| FT-3 | Through an alias-only import, `:bb/T` loads the alias target; wrong: the gap carries the spelled `bb` (`module 'bb' … not found`) | Acceptance | `spec_08_modules::fq_type_annotation_through_alias_only_import_loads_its_target`: control `(import [(b bb) [mk]])`, subject `(import [(b bb) []])`, each exit 7 | Subject RED before the fix, control GREEN; both GREEN in the integrated full run |
+| FT-4 | An annotation in the entry module naming a module with no file is rejected at the reference site (§8.5.4 edge 3), naming the module, and terminates; wrong: silent acceptance of an unused function's annotation, a retry loop, or an unlocated (`at 0..0`) rejection | Safety fence | `spec_08_modules::fq_type_annotation_to_missing_module_errors_at_reference_site_neg`: `(defn h [:zz/T t] :Int 7)`, `:Int` control exit 7; subject non-zero, names `zz`, no `at 0..0`, within the default timeout | Location leg RED after the typecheck fix alone (`at 0..0`), as predicted; GREEN on every leg with the int reference-site repair, in the integrated full run |
+| FT-U | The producer reports the gap only for an absent module, through the one projection | Acceptance (module) | `dev` unit rows below | Rows 1–3 and 6 RED before, all GREEN after; the negative legs failed under a planted record-every-failure fault. Observed in session, no log file |
+| FT-L | The reference-site walk locates a gap under either spelling of its module: the written qualifier (a member-absent gap) and its alias substitution (an absent-module or `Type` gap); wrong: an alias-spelled member-absent reference reported `at 0..0` (review R1) | Acceptance (module) | `dev`(src) rows in `src/process_form/tests.rs`: `gap_reference_span_locates_alias_spelled_member_absent_value_gap` (the written leg), `gap_reference_span_resolves_alias_qualifier_for_type_and_value` (the substituted leg), and the two `…_neg_…` rows | R1 row RED before its fix (`left: ""`), GREEN after; planted faults detected by the impl-method-body, `Fn`-carrier and trait-reference rows. Logs in `.local/s122-fq-span-r1-dev-evidence/`; finding-scoped review passed |
+
+**FT-4 location.** A `Type` gap reaches int with no span, so FT-4's location
+depends on int's reference-site walk
+([`int.md` §6.3.1](../../design/int/int.md#631-locating-a-gap-at-its-reference-site)),
+which FT-L pins at the unit layer. FT-L has no e2e: the e2e shape for the
+written leg reaches lead H1's load decision before any location is reported
+([open leads](#open-leads-from-the-loading-group--candidates-not-defects)).
+Revisit the e2e need when H1 is attributed.
+
+**`dev` unit obligation** ([`typecheck.md` §7.3.1](../../design/typecheck/typecheck.md)),
+beside `gap_on_missing_module_plain` in `form/tests.rs` unless noted. Rows 1–3
+and 6 must be observed RED before the fix:
+
+1. A `defn` parameter annotation `:some.mod/T`, with `some.mod` absent, returns
+   `Gap(Type)` naming `some.mod` and `T`.
+2. The same for a `deftype` field (the ADT route and its `&CheckState`
+   threading).
+3. Beside `gap_on_missing_module_via_alias`: `:r/T` with alias
+   `r → real.target` and `real.target` absent; the gap names `real.target`.
+4. Negative: `some.mod` present without `T` is a type error, not a gap.
+5. `checker/tests.rs`, the projection: `QualifiedModuleUnknown` records
+   `Type(module/name)`; `TypeNotFound`, `PrivateInaccessible` and `Ambiguous`
+   record nothing; every returned error equals today's conversion.
+6. An impl whose target type is `some.mod/T`, with `some.mod` absent, returns
+   the same gap. The impl-target lookups return the same private failure, so
+   this route is structural too; the row is its regression guard and the
+   evidence that an impl head keeps its qualifier.
+
+The projection is structural for every caller of the type-expression entries
+and impl-target lookups: a bypassing `?` does not compile. A caller that
+discards the type failure to try a trait reading is outside it; the two
+annotation routes that do so now share one resolving step, evidenced
+separately under
+[annotation trait fallbacks](#annotation-trait-fallbacks-f-a-f-b--intake-and-allocation-2026-09-25).
+
+**Completion criteria:**
+
+- Pre-fix REDs are recorded for FT-1, FT-2, FT-3's subject, FT-4's location
+  leg, unit rows 1–3 and 6 and the FT-L R1 row. Met.
+- FT-1 to FT-4, FT-U, FT-L, every control and
+  `fq_type_annotation_triggers_autoload` are GREEN. Met in the integrated
+  full run.
+- `cargo nextest run --no-fail-fast` fails only the five QR cells, and
+  `public_api_relocations` passes with no `public-api.txt` changed. Met.
+- The `dev` release gate is met for `cranelisp-typecheck` and `cranelisp`,
+  and `review` of each touched surface reports no blocking finding. Met for
+  both FT surfaces.
+- After the commit: `test` appends `fixed=S122/<sha>` (handoffs below).
+
+**`test` record handoffs.** Apply the tense corrections now; the stamps wait
+for the commit (`<sha>` is that commit). Keep every `locus=` token as written.
+
+- `tests/spec_08_modules.rs`, `fq_type_annotation_alone_loads_its_module`:
+  - now: replace "The subject fails with the type error … nothing turns the
+    unloaded type home into a load." with "Before the S122 correction the
+    subject failed with the type error "module `b` referenced by `b/T` is not
+    loaded", not the loader's module-not-found error: nothing turned the
+    unloaded type home into a load."; delete "Which layer should is not
+    attributed.";
+  - after the commit: append ` fixed=S122/<sha>` to the `// defect:` line.
+- `tests/spec_08_modules.rs`,
+  `fq_type_annotation_through_alias_only_import_loads_its_target`:
+  - now: "a gap that names the spelled `bb` instead of `b` fails as an unknown
+    module `bb`" is a conditional wrong outcome and stays; "(§8.3.6)" is
+    correct (alias-only import);
+  - after the commit: append ` fixed=S122/<sha>`.
+- `tests/cache.rs`, `fq_type_only_reference_loads_its_module_on_a_fresh_compile`:
+  - now: "compiled fresh, the program is rejected with …" becomes "compiled
+    fresh before the S122 correction, the program was rejected with …";
+    "makes it compile" becomes "made it compile"; delete "The locus is
+    provisional: which layer should turn the unloaded type home into a load
+    is not yet attributed.";
+  - after the commit: append ` fixed=S122/<sha>`.
+- The FA-1 and FB-1 handoffs are with
+  [their section](#annotation-trait-fallbacks-f-a-f-b--intake-and-allocation-2026-09-25).
+- `tests/spec_08_modules.rs` null-import assertion messages in
+  `null_import_module_resolves_all_names_via_explicit_imports` and
+  `null_import_module_neg_unimported_name_is_undefined`: "spec §8.3.6" becomes
+  "spec §8.3.7", matching their `// spec:` lines (the banner is already
+  corrected).
+
+**Owning record.** The REDs trace to this section and the user-approved S122
+loading group. No action is needed while S122 carries the fix; a carry past
+close needs one.
+
+**Limits, not allocated:**
+
+- REPL and `--link`: every mode reaches the same typecheck producer and int
+  consumer. The agent validator and the generic worker translation render any
+  gap as text (`worker.rs`), as they already do for value references.
+- A type reference to a present but non-terminal module (spec §8.5.4 edges
+  6–7; open item in `typecheck.md` §11). Not exercised by this correction.
+- Warm restore of a type-only importer, reachable once it compiles fresh. Its
+  object binds nothing of `b`, whose glue it mints itself, and QR-6's
+  constructor-only analogue restores GREEN. Falsifier: an unchanged warm run
+  of the FT-2 fixture that fails or differs from the cold run. Staleness after
+  an edit to `b` is QR-4 under
+  [qualified lookup dependencies](#qualified-lookup-dependencies--evidence-delta-2026-09-26).
+
+#### Annotation trait fallbacks (F-a, F-b) — intake and allocation (2026-09-25)
+
+**Authority; no normative question.** A single annotation name is a type if a
+type candidate exists, otherwise a trait (§3.9.3). Qualified names resolve in
+the named module, auto-loading it first (§8.6.1); an unknown module is a
+compile-time error (§8.6.6 step 5), located at the reference when no file
+exists (§8.5.4 edge 3). The obligation to load depends only on the module
+being unloaded, not on the kind the name turns out to have, which can only be
+known after loading. Both defects violate these rules under any reading of
+edge 1's list of kinds, so no `spec` ruling is needed.
+
+**Mechanism: confirmed.** Before the correction both trait fallbacks ran
+after the type attempt failed and took `tref.module` as the trait home as
+written, with no §8.6.6 resolution. The value route (`infer_annotate`) did so
+directly; the parameter route did so after `register_defn_signature` gated
+the fallback on the **bare** name resolving as a trait. The FA-1 and FB-1
+controls discriminate it: adding a same-spelled bare `Tr` turns FB-1's
+located unknown-module rejection into an acceptance. The correction is one
+crate-private step, `checker.rs::resolve_annotation_trait`, that both routes
+call, and it resolves the reference as written through `resolve_trait`
+([`typecheck.md` §7.3.2](../../design/typecheck/typecheck.md#732-type-or-trait-annotations)).
+No public API, `ResolutionGap` or schema changed.
+
+| ID | Condition; plausible wrong outcome | Class | Evidence | State |
+|---|---|---|---|---|
+| FA-1 | A value annotation `:zz/T t`, with no `zz.cl`, is rejected, names `zz` and is located (§8.5.4 edges 1 and 3; §8.6.6 step 5); a value annotation `:b/Tr t` naming a trait in an unloaded, present `b` is accepted (§3.9.3). Wrong: the first is accepted (F-a); a fix rejects the second or forces the type reading | Acceptance; defect repro `class=wrong-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate found=S122 owner=/dev` | `spec_08_modules::fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted`: control `:Int`, exit 7; subject A `:zz/T`, non-zero, names `zz`, no `at 0..0`; subject B `:b/Tr` with `b` not imported, exit 7 | Subject A RED before the fix (accepted, exit 7), control and subject B GREEN (`.local/s122-annotation-fallback-test-run1.log`); every leg GREEN in the integrated full run. The location leg discriminates only once subject A is rejected |
+| FB-1 | A parameter annotation's qualified trait resolves in the named module (§8.6.1, §3.9.3). Wrong: a same-spelled bare trait captures `:zz/Tr` so a missing module is accepted, or a trait reachable only by qualification is rejected | Acceptance; defect repro `class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/program/register.rs::register_defn_signature found=S122 owner=/dev` | `spec_08_modules::fq_param_trait_annotation_resolves_in_named_module_neg_not_captured_by_bare_trait`: subject 1 adds a local `Tr` to control 1 (`:zz/Tr`, no `zz.cl`), both rejected naming `zz`; subject 2 omits control 2's `(import [b [Tr]])` from `:b/Tr`, both exit 7 | Subject 1 RED (accepted) and subject 2 RED (``unknown type `Tr` (from module `b`)``) before the fix, both controls GREEN, as predicted (same log); every leg GREEN in the integrated full run |
+| FU | The shared step takes the trait reading only when the reference resolves as a trait, at its canonical home; otherwise the type failure is the form's failure | Acceptance (module) | `dev` cells U1–U6 in `crates/cranelisp-typecheck/src/form/tests.rs` (`type_or_trait_*`; table in `typecheck.md` §7.3.2): absent module gaps on both routes (U1, U2), qualified and alias-spelled traits resolve at the target home (U3–U5), a present module without the member is a type error, neither a gap nor an acceptance (U6) | All six RED before the fix (`.local/s122-annotation-fallback-dev-prefix-units.log`), GREEN after (`…-postfix-units.log`). U6 was predicted GREEN; it was RED because the unresolved-home fallback also accepted `:b/X` for a present `b` without `X`. The same correction repairs it, and U6 is its discriminating cell |
+
+- **Layer.** FA-1 and FB-1 are the permanent e2e guards, because the defects
+  are observable end to end on the edge-1 contract FT-4 fences; FU pins the
+  shared step. U6's face needs no e2e: with `b` loaded, no gap or int
+  consumer is involved and the unit cell observes the whole failure. With `b`
+  present but unloaded, the path is the load-and-retry FA-1 subject B
+  exercises followed by U6's check; that composition is not observed end to
+  end. REPL and `--link` stay unallocated for the reason given for FT-1 to
+  FT-4.
+- **Detection sequence.** An executed RED for the predicted reason, logged
+  before the fix, establishes each cell; the test and the fix land in one
+  change-set (root `CLAUDE.md` §Testing). A separate RED-only commit is not
+  required.
+- **Scope.** Trait-only positions, a renamed trait import and the other
+  [open leads](#open-leads-from-the-loading-group--candidates-not-defects)
+  are outside this correction.
+
+**`test` record handoffs.** Apply once the change-set is committed (`<sha>`
+is that commit); keep every `locus=` token as written. The FA-1 and FB-1
+comments carry no present-tense failure, so nothing changes before then.
+
+- `fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted`
+  and
+  `fq_param_trait_annotation_resolves_in_named_module_neg_not_captured_by_bare_trait`:
+  append ` fixed=S122/<sha>` to each `// defect:` line.
+
+#### Open leads from the loading group — candidates, not defects
+
+None is executed, allocated or accepted as a residual. Each becomes intake when
+a failing cell of its shape exists; scheduling a cell is `sprint`'s.
+
+- **H1 — member-absent load decision follows the written qualifier.** With
+  alias `z → zz`, `zz` loaded and lacking `f`, `(z/f 1)` records
+  `SymbolTypechecked(z/f)`; int then drives a module named `z` instead of
+  reporting "module 'zz' has no member 'f'" (§8.5.4 edge 4; §8.6.6 step 1).
+  Source-derived by `design`(int); candidate owners are the typecheck
+  producer's member-absent arm and int's gap arm. FT-L's e2e waits on it.
+- **Child-probe gap after a private absolute hit.** When the absolute probe
+  returns `PrivateInaccessible`, `lookup` surfaces the child probe's gap for
+  `<current>.<qualifier>`; neither spelling matches it, so the location is
+  `SYNTHETIC`. Whether the reported error is edge 9's private-access error is
+  unexecuted.
+- **Qualified trait in an impl trait or constraint slot** naming an unloaded
+  module. §8.6.1 requires the load for every kind of name. The impl
+  constraint slot returns a located error with no gap. The stacked-bound
+  position is a confirmed defect under
+  [lookup leads](#source-read-lookup-leads--classification-2026-09-26). The as-written
+  trait spelling is now composed in two places (`impl_check.rs` and
+  `resolve_annotation_trait`), with `resolve_bound_param` a third reader
+  ([`typecheck.md` §11](../../design/typecheck/typecheck.md#11-open-design-items)).
+- **Trait through a renamed import** (`spec/08-modules.md` §8.3.5). Both
+  type-or-trait routes and the bare arm of `resolve_bound_param` pair the
+  resolved home with the spelled name, an identity that may not exist; recorded
+  in the same `typecheck.md` open items.
+- **A-1 — HKT impl heads drop the qualifier** in the primitive-name check and
+  the arity kind-check (`traits/impl_check.rs`); wrong outcome: a kind check
+  against a same-named local type, or none (`typecheck.md` §7.3.1).
+- **A-3 — the two type resolvers name an intrinsic differently**; no
+  divergence found (`typecheck.md` §7.3.1).
+- **Module maintenance, not QA leads:** typecheck review A-2 and A-4, and
+  the fallback review's A-1 (U6 asserts the `TypeError` variant, which
+  discriminates, but not the location or member name its name promises), for
+  `dev`(typecheck); int re-review A4 and A5 (two `src/process_form/tests.rs`
+  comments that still state the substituted-only match rule) for the next
+  `dev`(src) visit.
+
+#### Adequacy (2026-09-25)
+
+Evidence is judged on the uncommitted tree. The integrated full run
+(`.local/s122-annotation-fallback-dev-full.log`, started after the last source
+change) ran 6103 tests: 6098 passed and 5 failed, the five QR cells only.
+`public_api_relocations` passed and no `public-api.txt` changed.
+
+| Condition | Judgment |
+|---|---|
+| FT-1 to FT-4, FT-U, FT-L | Adequate. Pre-fix REDs are logged, every leg is GREEN in the full run, and the typecheck review and the int finding-scoped re-review report no blocking finding |
+| FA-1, FB-1, FU | Adequate. Pre-fix REDs are logged, every leg is GREEN in the full run, and `review`(typecheck) passed the shared step with no blocking finding |
+| No regression | Adequate: only the five QR cells fail |
+| §8.5.4 edge 1 for annotations | Evidenced for parameter, `deftype`-field and value annotations, including alias-only spellings and qualified traits in the two type-or-trait routes. Not evidenced for trait-only positions (open lead) |
 
 ## REPL execution notice for `IO` expressions — evidence delta (2026-09-25)
 
@@ -3372,3 +3625,565 @@ unstripped batch legs give IOT-B its authority.
   - multi-form lines, which the spec leaves open;
   - agent submit;
   - the design-accepted degraded-startup residual.
+
+## Qualified lookup dependencies — evidence delta (2026-09-26)
+
+**Authority.**
+
+- The user's approval of the exact API and schema, and of module-wide
+  insert-only maintenance
+  ([sprint record](../../sprints/SPRINT.md#lookup-dependency-implementation-approval--2026-09-26)).
+- The boundary design, [interfaces §Qualified lookup dependencies](../../design/arch/interfaces.md#qualified-lookup-dependencies):
+  the recorded modules are validity edges, not load edges.
+- The opening rule of [`int.md` §7.6](../../design/int/int.md#76-dependency-record-and-validity).
+- [Module caching §1](../../design/backend/module-caching.md) goals 1–2, and
+  `repl/spec/14-file-watching.md` §14.7: unchanged modules keep their cached
+  objects.
+
+The producer census belongs to `design`(typecheck). `design`(int) settled the
+rewritten-restored-module rule in
+[`int.md` §7.6.2](../../design/int/int.md#762-lookup-dependencies): the
+rewritten entry is deferred, then dropped, and the earlier entry remains.
+Every condition below also holds under the rejected own-record alternative.
+
+**Baseline.** In `.local/s122-annotation-fallback-dev-full.log`, 6103 tests
+ran: 6098 passed, 1 was skipped, and 5 failed. The failures are QR-1 to QR-5.
+Their pre-fix REDs are recorded under
+[F1 acceptance](#f1-acceptance-and-qr-classification-2026-09-25).
+
+| ID | Condition; plausible wrong outcome | Class | Lowest layer and owner | Before the fix (observed unless stated) |
+|---|---|---|---|---|
+| LD-1 | QR-1 to QR-5 pass on every leg. Wrong: any kind that stays unrecorded, or any recorded member that validation cannot read (the warm arming leg then misses `a`) | Acceptance | Existing `tests/cache.rs` cells, unchanged | RED, recorded |
+| LD-2 | Re-export chain: `a` writes `r1/f`; `r1` re-exports `f` from `r2`; `r2` re-exports it from `c` (11), and the edit changes that to `d` (99). Only `r2` is edited. Wrong: the lookup member is kept as a leaf and its own edges are not walked, or only the terminal is recorded | Acceptance | New e2e cell (`test`) using the QR helper. The anchor sits in `r1`, so the sibling's `a` imports `[r1 [anchor]]` and has a declared edge | Subject RED: cached 11, uncached 99; the trace hits `a` and `c`. Sibling GREEN |
+| LD-3 | A REPL rewrite of a restored module keeps its recorded dependencies, and the result is not a perpetual miss. Wrong: restore, the concrete conversion or REPL publication drops the restored set, and the rewritten entry then restores stale | Acceptance | New e2e cell (`test`) over the QR-1 fixture; legs below | Subject RED through the rewrite-written entry: cached 11, uncached 99. Sibling GREEN, and its unchanged run after the rewrite hits `a` |
+| LD-4 | A warm run does not load a module that is a lookup dependency only. Wrong: the restore walk consumes the set, as the withdrawn proposal did | Safety fence | A warm-leg assertion added to QR-1 (`test`). The subject's warm run has no `cache hit (.meta valid) for r`; the sibling's warm run has one, which proves the observation fires. Assert it before the final comparison | GREEN on both legs: the sibling's warm run hits `r`; the subject's does not |
+| LD-5 | Unchanged sources hit the warm cache for the spellings that no existing trace leg covers: a compiler-owned qualifier (`primitives/…`), the module's own qualifier, and a declared child reached as `child/f`. Wrong: a member that validation cannot resolve gives a perpetual miss, which no behavioural oracle can see | Safety fence | New cold→warm e2e cell (`test`). The warm run hits `a` and the child and behaves as the cold run | GREEN: exits 5 cold and warm; the warm run hits `a` and `a.util` |
+| LD-6 | A macro head's module stays recorded when a later form gaps after expansion. Wrong: a continuation holder drops the attempt's set | Acceptance | QR-5 extended with a later reference to an unloaded `e` (`test`). Armed once by `dev`(src): with the resumed set seeded empty, QR-5 is RED and LD-7 GREEN | Subject cold and warm legs GREEN; edit leg RED: cached 11, uncached 99. Sibling GREEN. The carry itself has no pre-fix state; the arming control observes it |
+| LD-7 | A qualified reference in a macro clause body keys the defining module. Wrong: the checkpoint publishes without `clause_staging`'s lookup dependencies | Acceptance | New e2e cell (`test`), with a re-export hop in the clause body; module row I7 | Subject warm leg hits `a`, so the cell is armable; edit leg RED: cached 11, uncached 99. Sibling GREEN |
+| LD-8 | An expression turn and the `/quit` persist of a restored module keep a sound warm hit, and a later lookup edit is not served stale. Wrong: a perpetual miss, a retained entry that serves a broken rewritten artefact, or a rewrite that loses the restored set | Acceptance | New e2e cell (`test`); legs in §"LD-8 legs". Armed once post-fix by the session's `manifest entry for a deferred: r unsettled` trace line | Legs 1–3 GREEN, with `a.cl` byte-identical after the session; leg 4 RED: cached 11, uncached 99; leg 5 unreached |
+| LD-T | Types carrier rows, listed below | Acceptance (module); T4 is a safety fence | `dev`(types) | T1–T5 GREEN; each planted fault turned one witness RED (`.local/s122-lookup-types-dev-faults.log`). The T5 fallback row went RED under the planted `lookup_module: None`, with the canonical module unchanged, and GREEN restored (`.local/s122-lookup-types-r1-fault.log`, `.local/s122-lookup-types-r1-green.log`) |
+| LD-C | Typecheck producer rows, listed below | Acceptance (module) | `dev`(typecheck) | All 16 census rows recorded `[]` before the producer (`.local/s122-lookup-typecheck-dev-mid.log`); GREEN after (`.local/s122-lookup-typecheck-dev-unit.log`) |
+| LD-I | Int consumer and macro-producer rows, listed below | Acceptance (module) | `dev`(src) | I1 (both rows), I2, I3, I4 (alias), I5 (unsettled), I6 and I7 RED before wiring; the bare-head, restored-member, I8 and I9 rows GREEN (`.local/s122-lookup-int-dev-red.log`) |
+| LD-M | `CACHE_SCHEMA_VERSION` moves from 29 to 30, and the existing schema-refusal cells stay GREEN. `public_api_relocations` passes against the regenerated types baseline, whose diff is exactly the three approved lines | Maintenance | `dev`(backend) and `dev`(types). The user confirms the baseline under the existing gate | The bump turned `schema28_identity_cache_refused_rebuilt_and_reused_warm` RED on its epoch pin, not its refusal logic (`.local/s122-lookup-backend-dev-schema.log`). `test` now reads the stamped schema from the binary (`.local/s122-lookup-oracles-test.log`). The version gate already refuses a schema-29 sidecar, so no schema-29 leg is allocated |
+
+**LD-3 legs.**
+
+1. Cold `--run`.
+2. A REPL session in the same directory. It imports `a`, and the trace shows
+   that `a` restored. It then runs `/mod a`, defines an unrelated `h` and
+   quits. `a.cl` now contains `h`.
+3. Edit `r`. A `--no-cache` control, which leaves the cache untouched, gives
+   99. The cached `--run` matches it.
+4. An unchanged `--run` hits `a`.
+
+The sibling adds `(import [r [anchor]])` to `a`. After leg 2 it runs an
+unchanged `--run` that hits `a`, which proves that the rewrite wrote a
+restorable entry. The subject must not run between legs 2 and 3.
+
+The sibling arms the cell: its unchanged run after the rewrite hits `a`.
+After the fix, the subject's defining turn defers and drops its entry.
+The cached run on the edited sources rebuilds `a`, and the next unchanged
+run hits it.
+
+**LD-8 legs.**
+
+1. Cold `--run` of the QR-1 fixture.
+2. A REPL session restores `a`, runs `/mod a`, evaluates a pure expression
+   and quits. Assert the trace hit and that `a.cl` remains byte-identical.
+3. An unchanged `--run` exits 11 and hits `a`.
+4. Edit `r`; the cache-preserving `--no-cache` control exits 99 and the cached
+   run matches it.
+5. An unchanged `--run` exits 99 and hits `a`.
+
+The sibling supplies the import edge as in LD-3. Before the fix, legs 1–3
+pass and the subject fails at leg 4 (cached 11, uncached 99). Post-fix arming
+quotes the subject session's `manifest entry for a deferred: r unsettled`
+trace once; it is not a permanent implementation-specific assertion.
+
+**Module rows.**
+
+- **`dev`(types).**
+  - T1. The recorder ignores the table's own path, and duplicate records
+    collapse.
+  - T2. Both publish funnels union the staged set into the live set. A live
+    member that is absent from staging survives.
+  - T3. `into_concrete` and `Clone` carry the set. `new_with_params` starts
+    it empty.
+  - T4. A serde round trip preserves the set. A sidecar without
+    `lookup_dependencies` fails to decode; an empty default would under-key.
+  - T5. `Resolved.lookup_module` names:
+    - the alias target, not the alias;
+    - the spelled re-export hop, not the terminal home;
+    - the child, for a child-relative spelling;
+    - the absolute module after a child-probe miss, not the child candidate.
+
+    - the ancestor, when a descendant qualifies the ancestor's private
+      binding and resolution takes the direct-lookup fallback in
+      `resolve.rs` (review R1). The canonical module is the ancestor too.
+
+    It is `None` for a bare name, including a prelude fallback, and for a
+    qualified spelling of the current module.
+  - **Detection.** No pre-fix state exists. Observe T2 and T4 failing once,
+    against a replace-on-publish variant and a defaulted-field variant
+    respectively, and then revert. Observe the fallback row failing once with
+    `lookup_module: None` planted at the fallback's `Resolved` literal, then
+    revert.
+  - The fallback row is a module extension of T5. It adds no `test` cell and
+    no separate gate. `qa` consumes its planted-fault log at adequacy and does
+    not request a re-review for it.
+- **`dev`(typecheck).**
+  - Each route in the design's census has one row. After a successful check,
+    the cluster's staging holds the answering module. The plain row proves
+    that the route reaches the one recording seam.
+  - Alias substitution is single-sourced in the types resolver (T5, first
+    bullet), so an alias row is required only for each distinct path by which
+    a spelled qualifier reaches the seam: the value path, type resolution,
+    step R, the stacked bound and the pattern walk. The value constructor and
+    `b/T.C` share the value path. The `deftype` field shares type resolution.
+    The impl target passes its spelling to the seam unchanged
+    (`traits/type_resolve.rs::impl_target_head_spelling`).
+  - A `(mod q)` declaration installs the alias `q → <current>.q`, so a
+    declared child is reached through alias substitution. The child-relative
+    rows observe the walk's own child candidate, which R-1 below classifies.
+  - The dotted member core has no qualified reading and is not a family. A
+    bare `T.C` resolves through an import, which is a declared edge.
+  - Observe every row RED before the producer is wired.
+  - The census is the falsifier's enumeration. A route missing from it is
+    graded as asserted. Falsifier for a shared-path grade: a successful
+    cluster whose aliased spelling of a census route leaves the staging set
+    without the alias target while its plain spelling records it.
+- **`dev`(src).** I1–I9 are the unit rows in
+  [`int.md` §7.6.2](../../design/int/int.md#762-lookup-dependencies), in order:
+  - I1: the union, including from a decoded table;
+  - I2: the lookup-only closure;
+  - I3: the index worker;
+  - I4: alias-qualified and bare macro heads;
+  - I5: an unloaded member is unsettled, and a restored member settles
+    without loading its lookup members;
+  - I6: the carry;
+  - I7: the checkpoint;
+  - I8: a failed check publishes nothing;
+  - I9: `/expand`.
+
+  Observe I1, I3, I4, I6 and I7 RED before wiring. I8 and I9 are safety
+  rows with no pre-fix state. Forms and the set cross every continuation
+  holder as one value. The restore walk has no unit tier; LD-4 measures it.
+  Arm LD-6 once by seeding the resumed dependency set empty: QR-5 must fail
+  while LD-7 stays GREEN, then revert the fault.
+
+**Completion criteria.**
+
+- `test` logs the pre-fix results before any consumer lands. Met:
+  - LD-2 and the LD-3 subject are RED for the predicted reason, with their
+    siblings GREEN, and LD-4 and LD-5 are GREEN
+    (`.local/s122-lookup-test-cache-target.log`);
+  - LD-6 and LD-7 subjects are RED with siblings GREEN, and LD-8 is RED at
+    leg 4 only (`.local/s122-lookup-int-test-cache.log`).
+- After implementation:
+  - LD-1 to LD-8 pass on every leg;
+  - the LD-6 arming control is observed and the LD-8 deferral trace quoted;
+  - the module rows pass, with the REDs stated above logged;
+  - `cargo nextest run --no-fail-fast` has zero failures;
+  - LD-M holds.
+- The `dev` release gate is met on each touched surface, and `review` of each
+  surface reports no blocking finding.
+- `test` then marks the QR-1 to QR-5, LD-2, LD-3, LD-7 and LD-8 `// defect:` lines as
+  fixed (`artifact-underkey`, `ModuleEdges`, found in S122, owner `/dev`),
+  using the commit's SHA.
+
+**Limits, not allocated.**
+
+- `--link` and the REPL for QR-1 to QR-5 are not observed separately. They
+  use the same record builder and restore walk.
+  - Fresh and warm `--link` link different objects; nothing binds a
+    lookup-only module.
+  - Falsifier: a warm `--link` that fails or differs where `--run` agrees.
+- A watcher reload recompiles onto the existing table and unions into its
+  set. A dependent re-check of a restored module with an unloaded lookup
+  member defers and drops its entry. The earlier record holds the changed
+  dependency's older hash, so the module misses. Neither path is observed
+  separately.
+  - Falsifier: a restored module rewritten by a dependent re-check, with an
+    unloaded lookup member, restores stale in the next session after that
+    member changes.
+- A spurious member left by a redefinition or a failed turn costs a miss,
+  never stale service. This follows from the approved insert-only rule.
+- Instance-mediated dispatch stays held for `spec`.
+- Selective reuse is deferred to
+  [ACT-0992](../../sprints/actions/ACT-0992-optimisation-aware-cache-invalidation.md).
+- No spec band changes here. The LD conditions trace to design; §14.7 is
+  revisited at adequacy.
+
+- The eval and redefinition retry loops carry the same continuation value
+  as the pool worker, which LD-6 measures. They are not observed separately.
+  Falsifier: a REPL turn expands an FQ macro head, gaps on an unloaded module,
+  and the next session serves the old expansion after the head's macro changes.
+
+#### Adequacy (2026-09-26)
+
+**Verdict.** Every allocated LD condition and the LB/LP cells are met on the
+uncommitted tree below. The evidence is adequate for the allocated
+conditions. Every surface review reports no blocking finding; `review`(src)
+reports no required finding either. This is not phase acceptance. The user confirmed the generated baseline on
+2026-09-26; the change remains uncommitted.
+
+**Tree.** The full run is `.local/s122-lookup-int-dev-full.log`
+(sha256 `8f20d11a…6c72`): 6144 run, 6144 passed and 1 skipped, in 213.5 s. No
+source file changed after it except comment corrections. The root then applied:
+
+- the backend R-1 wording at the constant's rustdoc
+  (`crates/cranelisp-backend/src/cache/mod.rs`), a doc-only diff against
+  `HEAD` apart from the value 30 that the run tested;
+- the P4 comment in `crates/cranelisp-typecheck/src/form/tests.rs`. Reversing
+  that one comment restores the tested hash `09c7732b…`.
+
+The LB-1 comment citation was subsequently repaired without changing executable code. Every other source file hashes to its dev and review record.
+
+| Condition | Evidence |
+|---|---|
+| LD-1 to LD-8 | All `tests/cache.rs` cells GREEN in the full run. LD-4 is inside QR-1. The LD-6 arming control ran with the resumed set seeded empty: QR-5 was RED (cached 11, uncached 99), LD-7 GREEN and I6 RED. The fault was then reverted (`.local/s122-lookup-int-dev-ld6-fault.log`). The LD-8 subject session printed `manifest entry for a deferred: r unsettled`, and legs 3–5 exited 11, 99 and 99 (`.local/s122-lookup-int-dev-ld8-trace.log`) |
+| LD-T | T1–T5 and the fallback row GREEN; the planted faults are recorded in the LD-T row |
+| LD-C | Census and negative rows GREEN. The R-2 criterion is met |
+| LD-I | I1–I9 GREEN. I7 asserts membership, because clause bodies also record the compiler-owned `macros`, which the consumer filters. It was `[]` before wiring, so it still discriminates |
+| LD-M | Schema 30; tripwire at 30; the schema-refusal cells and `public_api_relocations` GREEN; types baseline +3/−0, matching the packet |
+| LB-1, LB-2, LP-1 to LP-3 | GREEN. The LB-1 oracle repair landed before the typecheck fix |
+
+**Remaining before delivery.**
+
+- The user confirmed the types baseline diff on 2026-09-26; that gate is satisfied.
+- `arch` confirmed review(src) A3 on 2026-09-26: the changed root-crate
+  items have no inter-crate consumer and require no additional API gate.
+- At commit, `test` adds `fixed=S122/<sha>` and past-tense framing to the
+  QR-1 to QR-5, LD-2, LD-3, LD-7, LD-8 and five LB/LP `// defect:` lines.
+
+**Evidence limits.**
+
+- The `dev` clippy gate for `src/` compares by reading each site. No
+  pre-change count was captured.
+- `crates/cranelisp-exe-bundle` was not gated; it was not touched.
+- The eval and redefinition continuation holders remain asserted, as the
+  limit above states. The pool-worker holder is measured.
+- The LD-6 fault run and the LD-8 deferral trace ran on source that preceded
+  the last edits to `src/scheduler.rs`, `src/process_form.rs` and its tests,
+  made between 10:51 and 10:52 (review(src) A1). The only lints `dev` reports
+  fixing there are in a test helper and a parameter allow. The LD-6 planted
+  site is unchanged. The full run on the final bytes passes QR-5, LD-7 and
+  every LD-8 leg. Root subsequently re-observed the deferral on the final
+  binary, with all LD-8 legs passing; `.local/s122-lookup-ld8-final-trace.log`
+  records the binary hash, unchanged cache hit, edited re-export rebuild and
+  subsequent warm hit. This resolves the trace timing limit.
+
+**Baseline verification.** Root ran `cargo +nightly public-api -s --omit auto-derived-impls -p cranelisp-types` into a temporary file and confirmed byte-for-byte equality with the checked-in baseline using `cmp`. The generated diff contains exactly the three approved additions.
+
+**Empty-publication lead (`dev`(src) §7 item 3): a confirmed source-read
+lead, class `artifact-underkey`, mechanism a hypothesis.**
+
+- Recording happens only at a staged publication. Two paths skip it:
+  `worker.rs::check_cluster_to_staging` returns `None` when the expanded
+  cluster has no checkable entry, and `prepare_cluster_commit_with_demands`
+  then returns `Ok(None)`. So a cluster whose qualified macro head expands to
+  nothing publishable records the head's module nowhere.
+- review(src) A2 confirms this by source reading. It conforms to int.md
+  §7.6.2's *record at publication*, but falls short of the approved fact in
+  `interfaces.md`, which covers every macro head. It falsifies no allocated
+  LD condition. The *macro heads recorded* grade holds only for attempts that
+  publish.
+- Reaching it needs a module whose whole checked cluster is empty after
+  expansion. Whether such a module writes a cache entry at all is
+  unobserved.
+- Plausible wrong outcome: `a.cl` holds only `(b/m)`, and `m` expands to
+  `(begin)`. `main` loads `a` without naming a member, for example through a
+  glob import. After a cached run, `m` changes to expand to `(defn g [] 99)`
+  and `main` starts calling `a/g`. The cached run then rejects or misbehaves
+  where `--no-cache` exits 99.
+- **Allocation LD-9 (`test`, e2e `--run`, stdlib-free, RED-first,
+  `tests/cache.rs`, QR helper).** It runs on the first free `test` visit with
+  DB-1 and R1-V.
+  - Subject: the scenario above, cold then edited, compared with the
+    cache-preserving `--no-cache` control.
+  - Sibling: `a` also defines `(defn anchor [] 1)`. The cluster then
+    publishes and records `b`, so the sibling is GREEN.
+  - If the subject's cold run writes no cache entry for `a`, or it passes,
+    `test` reports that. The lead then closes as unreachable and the design
+    grade stands.
+  - If RED, add
+    `class=artifact-underkey locus=src/worker.rs::prepare_cluster_commit_with_demands found=S122 owner=/dev`.
+    The locus is provisional, and `design`(int) settles the recording point.
+- It is not an accepted residual. It does not gate the adequacy above,
+  because it is outside the allocated conditions.
+
+### Source-read lookup leads — classification (2026-09-26)
+
+Source: [typecheck design §11](../../design/typecheck/typecheck.md#11-open-design-items)
+and its §3.4 census. All five leads are **confirmed conformance defects**.
+Each subject is RED for the predicted mechanism and its control GREEN
+(`.local/s122-lookup-leads-test.log`, `tests/spec_08_modules.rs`). None is an
+accepted residual. `design`(typecheck) is settling the correction.
+
+**Effect on the lookup-dependency claim.** Neither route obstructs it, and no
+LD condition changes.
+
+- *Stacked bound.* `program/register.rs::resolve_bound_param` builds
+  `FQTraitName(m, Tr)` from the spelled qualifier. Nothing in the defining
+  module's check reads `m`'s table for it, and spec §7.12.1 rules out
+  supertraits. The artifact is therefore a function of its own source, and a
+  cache entry cannot go stale through this bound. The approved fact records
+  only tables that answered, so it holds as written.
+- *Pattern constructor.* The design's caller-side record names the module
+  whose table answered for every accepted program. A rejected program writes
+  no entry.
+- The pattern cell in `dev`(typecheck)'s census holds for both the current
+  route and a route converged onto the seam.
+- Falsifier: a module-hash change to `m` makes a cached run differ from an
+  uncached one, where `m` is reached only through a stacked bound or a
+  qualified pattern.
+
+**Requirement decision.** None. Spec §8.6.6 steps 1, 3 and 5, §8.6.1,
+§8.5.4 edges 1, 3 and 9, §8.7.3 and §8.6.5 ("constructors use the same rule
+in value and pattern positions") decide every cell. Accepting the
+stacked-bound residual would retain a spec violation. Each is a Phase 5
+defect under [METHOD §2.4](../../sprints/METHOD.md#24-deferral).
+
+**Repro cells (`test`, e2e, stdlib-free).** Each subject differs from its
+control only in the claimed cause. The `// defect:` lines carry
+`class=resolver-mirror found=S122 owner=/dev` and the locus shown.
+
+| ID | Subject; spec | Control | Observed before the fix | Locus; face |
+|---|---|---|---|---|
+| LB-1 | REPL, `PrimitivesOnly`: alias `(zz z)`, a trait `Tr` in `zz` and a local trait `Ts`, `(defn f [:Ts :z/Tr x] 7)`. The published scheme must constrain `a` by `Tr` in `zz` and by the local `Ts`; §8.6.6 step 1, §3.4.1 | Stack length 1, `[:z/Tr x]` | RED: displays `[:user/Ts :z/Tr a]`, an identity built from the alias. Control GREEN: `[:zz/Tr a]` | `register.rs::resolve_bound_param`; wrong constraint identity |
+| LB-2 | `--run`: `[:Ts :nosuch/Tr x]`, with no file backing `nosuch`, must be a reference-site error; §8.5.4 edge 3, §8.6.6 step 5 | `[:nosuch/Tr x]` | RED: accepted, exits 7. Control GREEN: rejected, naming `nosuch` | same; `wrong-accept` |
+| LP-1 | `--run`: alias `(shapes s)`, `(match c [(s/Circle r) r])` must match as `shapes/Circle`; §8.6.6 step 1 | The same program with the pattern spelled `shapes/Circle`; the value `(s/Circle 8)` is common to both | RED: "unknown constructor in pattern: s/Circle". Control GREEN: exits 8 | `checker.rs::resolve_constructor_entry`; `wrong-reject` |
+| LP-2 | `--run`: `shapes` declares `(deftype- Secret (Hid [:Int v]))` and a public `mk`; `(match (shapes/mk) [(shapes/Hid v) v])` from `main` must be a compile-time error; §8.7.3 | The value twin `(shapes/Hid 8)` from `main` | RED: accepted, exits 8. Control GREEN: "module 'shapes' has no member 'Hid'" | same; `wrong-accept` |
+| LP-3 | `--run`: the pattern in an uncalled `(defn radius [c] (match c [(shapes/Circle r) r]))` is the program's only reference to `shapes`; `main` is `(Pure 8)`; §8.5.4 edge 1 (pattern position) | `radius`'s parameter annotated `:shapes/Circle`, which loads through the type gap | RED: "unknown constructor in pattern: shapes/Circle". Control GREEN: exits 8 | same; `wrong-reject` |
+
+- **LB-1 observes the published scheme, not a call.** A `--run` call cannot
+  discriminate: a declared bound that the body does not use is not checked at
+  the call site in any spelling (DB-1 below). The REPL scheme is the scheme
+  every caller instantiates, so it carries the identity condition in every
+  mode. Limit: call-site acceptance through the bound is unobserved until DB-1
+  is repaired. No `--run` twin is allocated then, because the call-site check
+  reads this scheme.
+- **LB-1 oracle repair (`test`, before `dev`(typecheck) runs the fix).** The
+  subject asserts `[:user/Ts :zz/Tr a]` exactly. §3.4.1 and
+  [REPL display §1.4](../../repl/spec/01-display-format.md#14-type-display) fix neither the
+  constraint order nor any other rule that order would follow. The assertion
+  must accept both constraints in either order, on `f`'s scheme line, and
+  must reject the alias spelling `:z/Tr`. The cell's comment states the
+  unchecked bound as current behaviour. It should name DB-1 as an open
+  defect instead, so that the comment does not outlive the repair.
+- **LP-3 makes the pattern the only reference, not the first in form order.**
+  Any later value reference in the same file, such as
+  `(radius (shapes/Circle 8))` in `main`, loads `shapes` before `radius`'s
+  pattern is checked. The cell as first allocated was GREEN on both legs for
+  that reason.
+- Each cell discriminates a distinct partial fix:
+  - alias substitution added to the rooted route (LP-1 green, LP-2 red);
+  - convergence without a gap (LP-3 red);
+  - resolving the bound without alias substitution (LB-1 red), and resolving
+    it without rejecting an unbacked module (LB-2 red).
+- Child-relative and prelude-fallback spellings of the pattern route are not
+  allocated. They share the one bypass, and a repair converged onto the seam
+  covers them. Falsifier: after the repair, a `(mod q)`-declared child's `q/C`
+  pattern resolves to an absolute `q`, or `m/C` resolves where `m` only
+  imports `C`. An undeclared registered child is R-1's subject below.
+- No `--link` or REPL parity legs are allocated for LB-2 or LP-1 to LP-3.
+  Every mode reaches the same typecheck routes.
+
+**Why coverage missed them.**
+
+- `tests/spec_06_pattern_matching.rs::fq_ctor_pattern_position_autoloads`
+  claims pattern-position auto-load. In it, the parameter annotation and the
+  value reference load `shapes` before the pattern is checked. The pattern is
+  never the only reference, so it cannot discriminate. LP-3 is the missing
+  condition.
+- The other qualified-pattern cells use only `user/`, where the rooted and
+  qualified routes coincide.
+- The FT and FA cells covered the two type-or-trait routes only. The
+  trait-only positions were already a recorded open lead.
+- No broader variant matrix is allocated.
+
+**Correction and completion.**
+
+- `design`(typecheck) settles the routes: the bound resolves through
+  `resolve_trait`, and the pattern route converges onto the qualified seam,
+  including the gap for an unloaded module. The quasiquote `macros/SCons`
+  lowering stays GREEN.
+- `dev`(typecheck) repairs with a module cell for each face, and adds the
+  census cell `[:Eq :b/Tr x]` giving `{b}`.
+- Converging the pattern route retires the caller-side record. `sprint`
+  decides whether that repair precedes the record's implementation.
+- Done when the five cells pass, the LB-1 oracle repair has landed first, and
+  `test` has marked each `// defect:` line fixed with past-tense framing.
+- State, 2026-09-26: the first two conditions are met; see the lookup
+  adequacy above. The `fixed=` marking waits for the commit SHA. None of the
+  five comments frames its own defect as open; LB-1's names DB-1, which is
+  open. `qa` has therefore restored the
+  §8.5.4 edge 1 pattern-position band with LP-3, and cited LB-2's refusal
+  there. It also cited LB-1 and LP-1 at §8.6.6 step 1, LB-2 at step 5 and
+  LP-2 at §8.7.3. These bands land in the same change-set as the fix.
+
+#### Producer review R-1 and A-4 — classification (2026-09-26)
+
+Source: `review`(typecheck) of the lookup-dependency producer. Neither
+finding was introduced by that change-set, and neither gates LD, the cache
+correction or LB/LP. Neither is an accepted residual.
+
+**R-1: undeclared registered child — a confirmed source-read lead, class
+`resolver-mirror`, mechanism a hypothesis.**
+
+- Value position reads a qualified spelling twice:
+  - the types resolver first, which applies alias substitution and then the
+    absolute path, with no child reading;
+  - then the typecheck walk, whose `qualified_candidate_modules` synthesises
+    `<current>.<q>` before the absolute path. `resolve_ref_target` records
+    through the walk; the pattern route reads only the walk.
+- `(mod q)` registers the alias `q → <current>.q`
+  (`src/process_form/dependency.rs::register_submodule_alias`; the
+  cache-restore mirror is in `src/imports.rs`). A declared child therefore
+  wins in both positions through the first reading, and the absolute module
+  is never consulted.
+- The two readings can diverge only for a registered `<current>.q` that the
+  current module did not declare. The unit census world seeds exactly that
+  shape. Reaching it in the product has not been observed.
+- Spec reading: §8.11.2 item 1 defines the current module's submodule as one
+  "registered via `(mod name)` in the current module". §8.5.4 item 2 confines
+  child-of-current resolution to such submodules and to aliases, and
+  §8.11.2.1 forbids a bare module name reaching the submodule in one
+  position and the root module in another. For an undeclared `a.q`, §8.6.6
+  step 3 does not apply, and the walk's synthesised candidate is the
+  non-conforming reading. Its answer also depends on whether an unrelated
+  module registered `a.q`, which is the face behind review's §3.4
+  unrecorded-miss scenario.
+- Refuter: `spec` reads §8.1.1's "a submodule of `foo`" into §8.6.6 step 3.
+  The value leg below then expects the child; the pattern leg is unaffected.
+
+**Allocation R1-V (`test`, e2e `--run`, stdlib-free, RED-first,
+`tests/spec_08_modules.rs`), on the first free `test` visit after the cache
+chain, with DB-1.**
+
+- Construction: `a.cl` imports `[b [anchor]]`. `b.cl` imports from `a.q` and
+  from the root `q`, so both are registered before `a` is checked. `a/q.cl`
+  and `q.cl` each declare `(deftype T (C [:Int v]))` and `g`, returning 11
+  and 99 respectively. `a` declares no `(mod q)`.
+
+| Leg | `a`'s subject | Required | Predicted before the fix |
+|---|---|---|---|
+| Pattern | `(match (q/C 9) [(q/C v) v])` | Exits 9 under either reading (§8.6.5) | RED: a type mismatch between `q/T` and `a.q/T` |
+| Value | `(q/g)` | Exits 99 (§8.11.2 item 1) | RED at 11 if the call follows the walk-recorded target; 99 means the divergence stops at the recorded identity, which `test` reports |
+| Control | Both subjects, with `(mod q)` added to `a` | Exits 9 and 11 | GREEN |
+
+- The control differs only in declaring the child.
+- If the undeclared `a.q` cannot be registered before `a` is checked, `test`
+  stops and reports that. R-1 is then product-unreachable, and the walk's
+  synthesised candidate is a latent mirror that `design`(typecheck) settles.
+- After the RED is observed, add
+  `class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::qualified_candidate_modules found=S122 owner=/dev`.
+  The locus is provisional until `design`(typecheck) settles the route.
+- The fix's module cell (`dev`(typecheck)) is P4's value twin in the census
+  world. It asserts that value and pattern agree, and that the scheme and
+  the recorded target name one declaration.
+- No REPL or `--link` legs: every mode reaches the same typecheck routes.
+
+**A-4: quasiquote `macros/…` capture — a candidate lead, not a defect of this
+change.**
+
+- Compiler-lowered quasiquote spellings (`macros/SCons`) resolve through the
+  qualified seam in value position, and now in pattern position too, so a
+  module alias or `(mod macros)` spelled `macros` redirects them.
+- §9 promises that qualified `macros/…` access is available without an import.
+  It does not say whether a user alias may shadow the compiler's own
+  lowering; that is a hygiene question, and nothing observes it.
+- No cell is allocated. Falsifier: a module that declares `(mod macros)` or
+  imports an alias `macros`, and uses a quasiquote template or pattern,
+  is rejected or matches the user's constructor.
+
+#### Declared bound not checked at the call site — intake (2026-09-26)
+
+**Observation.** `test` observed this in diagnostic cells while shaping
+LB-1. Those cells have since been removed; no committed cell reproduces it
+yet.
+
+- `(deftrait Ts (ts [self] Int))`, `(impl Ts Int …)`, `(deftype U [:Int n])`,
+  `(defn f [:Ts x] 7)` and `(defn main [] (Pure (f (U 1))))`: accepted,
+  exits 7. `U` has no `Ts` impl.
+- The same with body `(ts x)`: rejected with "no impl of trait main/Ts for
+  type main/U".
+- Qualification makes no difference: `[:z/Tr x]`, `[:zz/Tr x]`,
+  `[:Ts :z/Tr x]` and `[:Ts :zz/Tr x]` with body `7` are all accepted at a
+  type that lacks the `Tr` impl.
+
+**Classification: a confirmed lead, face `wrong-accept`. The spec decides it,
+and it is not a requirement ambiguity.**
+
+- §3.9.2: a trait annotation restricts the parameter "to types that
+  implement the named trait".
+- §3.3.2: a constraint is "a claim the compiler checks", and "the caller
+  relies on the constraint".
+- §3.4 and §3.6.2: the constraint is part of the scheme, and instantiation
+  copies it to the fresh variables. The REPL already publishes it: LB-1's
+  scheme shows the unused `:user/Ts`.
+- Two passages might appear to permit acceptance. Neither does:
+  - §3.3.2 MUST (b)'s "a caller instantiating the variable at a concrete type
+    MUST NOT be an error" is scoped to skolem escape ("The escape MUST arise
+    only from the body").
+  - §7.8.2's "identical results" compares an asserted constraint with the
+    same constraint inferred. It does not exempt a constraint the body leaves
+    unused.
+- It is not a qualification defect. It belongs to neither the LB/LP routes
+  nor the cache work, and it changes no LD condition.
+  - A repaired check reads the trait home's impls at the call site. That is
+    the instance-mediated limit already held for `spec` above, and it is not
+    a new lookup-dependency case.
+
+**Mechanism: a hypothesis, read from source and not observed at its seam.**
+
+- `traits/monomorphise.rs::instantiate_constrained` carries the scheme's
+  constraints onto the fresh variables as active constraints.
+- The no-impl error is raised only where a trait method is dispatched
+  (`traits/dispatch.rs`, and the monomorphisation resolution).
+- Nothing appears to discharge an active constraint when its variable is
+  pinned to a concrete type.
+- The body-use control separates a declared-only constraint from a
+  body-inferred one at the symptom. It does not observe the discharge seam.
+- Refuter: a module test shows the caller's instantiation lacks the declared
+  constraint, for example because the scheme used at instantiation differs
+  from the displayed one. The locus then moves.
+
+**Allocation DB-1 (`test`, e2e `--run`, stdlib-free, RED-first,
+`tests/spec_03_types.rs`).** One cell, three legs:
+
+| Leg | Program | Required | Before the fix |
+|---|---|---|---|
+| Subject | `(defn f [:Ts x] 7)`, called as `(f (U 1))` | Rejected, naming `Ts` and `U` | Predicted RED: accepted, exits 7 |
+| Control | The body is `(ts x)`; the call is the same | Rejected, naming `Ts` and `U` | Predicted GREEN |
+| Positive | `(defn f [:Ts x] 7)` with `impl Ts Int`, called as `(f 3)` | Exits 7 | Predicted GREEN |
+
+- The control differs from the subject only in whether the body uses the
+  constraint.
+- The positive leg guards against an over-fix that rejects the definition or
+  every call.
+- Add the `// defect:` line only after the RED is observed:
+  `class=wrong-accept locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::instantiate_constrained found=S122 owner=/dev`.
+  The locus is provisional. If `design`(typecheck) places the discharge
+  elsewhere, `test` updates the locus before the fix lands.
+- If the control or the positive leg fails, `test` stops and reports it as a
+  separate intake.
+- No REPL or `--link` legs: the check lies in the typecheck judgment, and
+  every mode reaches it.
+
+**Disposition.**
+
+- `sprint` schedules DB-1 on the next free `test` visit, together with the
+  LB-1 oracle repair above.
+- It does not gate the lookup-dependency work, the cache correction or LB/LP.
+- Once DB-1 is RED, the lead is a Phase 5 defect under
+  [METHOD §2.4](../../sprints/METHOD.md#24-deferral).
+  - `design`(typecheck) settles where the declared constraint is discharged.
+    `sprint` chooses whether that shares the current route design.
+  - `dev`(typecheck) repairs with a module cell.
+  - The full suite at that fix is the regression check for any program,
+    fixture or example that calls through an unused declared constraint.
+- The §3.9 `[Tested+Neg …]` band does not evidence §3.9.2's restriction. `qa`
+  revises it when DB-1 exists.
+- This subsection is the open record until DB-1 is committed. After that, the
+  failing cell is the record.

@@ -184,11 +184,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// spec §3.9.2) to a fresh constrained type variable (spec §3.9.3
     /// try-type-then-trait; FIXME 0346 / 0341 typecheck half).
     ///
-    /// Allocates a fresh `Type::Var`, resolves each `TraitRef` to its
-    /// `FQTraitName` (a qualified ref names its module directly; a bare ref is
-    /// resolved via the current-module-or-prelude chain), and records the
-    /// (var, trait) pairs on `state.active_constraints`. `generalize` then lifts
-    /// these onto the defn's `Scheme.constraints` when the var is quantified.
+    /// Allocates a fresh `Type::Var`, resolves each `TraitRef` as written
+    /// through the step the type-or-trait annotation shares
+    /// (`design/typecheck/typecheck.md` §3.5), and records the (var, trait)
+    /// pairs on `state.active_constraints`. `generalize` then lifts these onto
+    /// the defn's `Scheme.constraints` when the var is quantified. A member that
+    /// does not resolve is the form's failure, so an absent module records its
+    /// `Type` gap.
     ///
     /// The binder is deliberately NOT unified with any concrete type here — it
     /// is a fresh constrained var, and any concrete shape is contributed by the
@@ -202,15 +204,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<Type, CranelispError> {
         let (var_ty, var_id) = self.fresh_var_id();
         for tref in bounds {
-            let home = match &tref.module {
-                // Qualified ref (`:fmt/Display`) names its module directly.
-                Some(m) => m.clone(),
-                // Bare ref (`:Display`) resolves via current-module-or-prelude.
-                None => self
-                    .resolve_trait(state, tref.name.as_ref(), span)
-                    .map_err(CranelispError::from)?,
-            };
-            let fqtn = cranelisp_types::FQTraitName::new(home, tref.name.clone());
+            let fqtn = self
+                .resolve_trait_as_written(state, tref.module.as_ref(), tref.name.as_ref(), span)
+                .map_err(|failure| failure.into_form_error(state))?;
             state.active_constraints.add(var_id, fqtn);
         }
         Ok(var_ty)
@@ -302,31 +298,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         // rigidity — `check_defn_body` seeds `rigid_vars` from
                         // asserted-constraint param vars, not from `var_map`.
                         Ok(ty) => ty,
-                        // Try-type-then-trait (spec §3.9.3, S86 D4). A SINGLE
-                        // annotation `:Eq a` is ambiguous between a concrete-type
-                        // annotation and a single trait bound. The frontend leaves
-                        // a run-of-length-1 as the resolved `TypeExpr::Named`
-                        // (`annotation_run_carrier`), delegating disambiguation to
-                        // here: when no TYPE with that name exists, resolve it as a
-                        // trait constraint. We funnel it through `resolve_bound_param`
-                        // (the same single-trait → fresh constrained var path as a
-                        // `Bounds([..])` of length 1) iff the annotation's head
-                        // resolves as a trait; otherwise the original type error
+                        // Try-type-then-trait (spec §3.9.3). A SINGLE annotation
+                        // `:Eq a` is ambiguous between a concrete-type annotation
+                        // and a single trait bound; the frontend leaves it as a
+                        // `TypeExpr::Named`. When no TYPE exists, a name that
+                        // resolves as a trait (read by the step the value route
+                        // shares, typecheck.md §7.3.2) constrains a fresh var with
+                        // the trait's resolved home. Otherwise the type failure
                         // (the genuine "neither type nor trait" case) propagates.
-                        Err(type_err) => match single_trait_bound_from_annotation(ann) {
-                            Some(tref)
-                                if self
-                                    .resolve_trait(state, tref.name.as_ref(), defn.span)
-                                    .is_ok() =>
-                            {
-                                self.resolve_bound_param(
-                                    state,
-                                    std::slice::from_ref(&tref),
-                                    defn.span,
-                                )?
+                        Err(type_err) => {
+                            match self.resolve_annotation_trait(state, ann, defn.span) {
+                                Some(fq_trait) => {
+                                    let (var_ty, var_id) = self.fresh_var_id();
+                                    state.active_constraints.add(var_id, fq_trait);
+                                    var_ty
+                                }
+                                None => return Err(type_err.into_form_error(state)),
                             }
-                            _ => return Err(type_err.into()),
-                        },
+                        }
                     }
                 }
                 None => self.fresh_var(),

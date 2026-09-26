@@ -360,7 +360,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 ///
 /// **Grain: receiver HEAD only.** ADT type-args are intentionally dropped (the
 /// `_` below) — the trait-impl registration grain names by the impl target head
-/// (`impl_target_name_or_panic`), so both `(impl T (Vec Int))` and
+/// (`impl_target_head_spelling`), so both `(impl T (Vec Int))` and
 /// `(impl T (Vec String))` share the head key `T.m$…/Vec` on BOTH the dispatch
 /// and definition sides. Distinguishing them would require changing impl
 /// registration too; out of scope for this cure. Keeping the head-only grain is

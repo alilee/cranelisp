@@ -216,7 +216,7 @@ Imports `concat` as local `join-strings`, imports `chars` unchanged, AND registe
 - `(import [m [(Some X)] n [Y X]])` is likewise permitted when the two sources have distinct canonical identities.
 - After `(import [m [(Option.None X)]])`, writing `:Option` MUST be a compile-time error — the parent type `Option` is NOT in bare scope (only local `X` is).
 
-### 8.3.6 Alias-Only Import
+### 8.3.6 Alias-Only Import [Tested tests/spec_08_modules::alias_only_import_alias_resolves_qualified_call, src/process_form/tests.rs::alias_only_import_registers_alias_without_loading]
 
 ```clojure
 (import [(core.option opt) []])
@@ -224,7 +224,7 @@ Imports `concat` as local `join-strings`, imports `chars` unchanged, AND registe
 
 Registers `opt` as an alias for `core.option` without importing any bare names. Useful when you only want qualified access: `opt/Some`.
 
-### 8.3.7 Null Import
+### 8.3.7 Null Import [Tested+Neg tests/spec_08_modules::null_import_does_not_load_its_module, tests/spec_08_modules::null_import_module_resolves_all_names_via_explicit_imports, tests/spec_08_modules::null_import_module_neg_unimported_name_is_undefined, src/process_form/tests.rs::null_import_registers_no_alias_and_loads_nothing]
 
 ```clojure
 (import [core.option []])
@@ -597,7 +597,7 @@ When a qualified name references a module that has not yet been loaded, the impl
 
 The load-on-reference obligation is subject to the following normative edges.
 
-1. **Scope of the MUST — all modes, all positions, all symbol kinds.** Load-on-reference applies uniformly in every mode (REPL, `--run`, `--link`) and in every position a qualified name may appear: value position, call position, and **pattern** position (a qualified constructor pattern, §6.2.1). It applies to every kind of symbol the qualified name may resolve to — functions, **macros**, and **types** (a fully-qualified type name in an annotation participates: an unresolved FQ type is a resolution-layer `Type` gap, not a later failure). A qualified name MAY resolve to a **macro**; when it does, the compiler invokes its expansion at the qualified call site exactly as for a bare-name macro, and the auto-load MAY trigger registration and typechecking-and-compilation of the defining module (see §9.3.6 for the macro-specific mechanics).
+1. **Scope of the MUST — all modes, all positions, all symbol kinds.** Load-on-reference applies uniformly in every mode (REPL, `--run`, `--link`) and in every position a qualified name may appear: value position, call position, and **pattern** position (a qualified constructor pattern, §6.2.1). It applies to every kind of symbol the qualified name may resolve to — functions, **macros**, and **types** (a fully-qualified type name in an annotation participates: an unresolved FQ type is a resolution-layer `Type` gap, not a later failure). A qualified name MAY resolve to a **macro**; when it does, the compiler invokes its expansion at the qualified call site exactly as for a bare-name macro, and the auto-load MAY trigger registration and typechecking-and-compilation of the defining module (see §9.3.6 for the macro-specific mechanics). [Tested+Neg tests/spec_08_modules::fq_type_annotation_alone_loads_its_module, tests/spec_08_modules::fq_type_annotation_through_alias_only_import_loads_its_target, tests/cache::fq_type_only_reference_loads_its_module_on_a_fresh_compile, tests/spec_08_modules::fq_type_annotation_to_missing_module_errors_at_reference_site_neg, tests/spec_08_modules::fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted, tests/spec_08_modules::fq_param_trait_annotation_resolves_in_named_module_neg_not_captured_by_bare_trait, tests/spec_08_modules::fq_ctor_pattern_as_only_reference_loads_its_module, tests/spec_08_modules::fq_stacked_bound_trait_to_missing_module_rejected_neg — types and type-or-trait names in parameter, value and `deftype`-field annotations, and a qualified constructor pattern as a module's only reference, `--run` only; a qualified trait in a trait-only position is observed only for its missing-module refusal, and its load is unexecuted, tests/plan/s122-evidence-delta.md FT-1 to FT-4, FA-1, FB-1, LB-2, LP-3]
 
 2. **Search rules — same resolution as `import`, no new semantics.** Auto-load uses the SAME module-file resolution that `import` uses (§8.11.2: project root plus configured library directories); it introduces no new search semantics. The `module_path` of a qualified name is resolved as an **absolute** module path. Child-of-current resolution (a bare qualifier read as `<current-module>.<qualifier>`) applies only to already-registered submodules and aliases (per §8.6.6 / §8.11.2.1), NOT to auto-load — auto-load never invents a phantom child module from an unqualified segment. This keeps §8.5.4 consistent with §8.6.1's "qualified names bypass layers 1 and 2": the bypass targets the named absolute module, auto-loading it first if necessary.
 
@@ -712,11 +712,11 @@ Diagnostics for ambiguity MUST list the surviving canonical alternatives. Explic
 
 For a qualified name `module_path/local_name` (per §1.4.3, where `module_path` is one or more dot-separated segments and `local_name` is a single symbol, dotted symbol, or operator symbol), resolution proceeds:
 
-1. If `module_path` matches a module alias (from an aliased import, §8.3.4), resolve in the aliased module.
+1. If `module_path` matches a module alias (from an aliased import, §8.3.4), resolve in the aliased module. [Tested+Neg tests/spec_08_modules::alias_only_import_alias_resolves_qualified_call, tests/spec_08_modules::undeclared_alias_qualifier_is_not_resolved_neg, tests/spec_08_modules::fq_stacked_bound_trait_through_alias_resolves_in_aliased_module, tests/spec_08_modules::fq_ctor_pattern_through_alias_resolves_in_aliased_module]
 2. If `module_path` (or one of its dot-separated prefixes) matches a module that declares a public mount alias (from an aliased export, §8.4.4) for the next unmatched segment, follow the alias chain through the mounted source module.
 3. If `module_path` matches a child module of the current module, resolve there.
 4. If `module_path` is a full module path matching a known module, resolve directly.
-5. Otherwise, it is a compile-time error: unknown module.
+5. Otherwise, it is a compile-time error: unknown module. [Tested tests/spec_08_modules::undeclared_alias_qualifier_is_not_resolved_neg, tests/spec_08_modules::qualified_ref_to_missing_module_errors_neg, tests/spec_08_modules::fq_stacked_bound_trait_to_missing_module_rejected_neg]
 
 **Alias substitution operates on dot-separated segments of `module_path` (per §1.4.3), NOT across `/`.** The resolver walks `module_path` segment-by-segment, looking for the longest dot-separated prefix that resolves to a known module. At that hit, it checks the resolved module's alias table for the next segment; on hit, the alias's target replaces the matched segment, and resolution restarts on the rewritten `module_path`. This continues until either a full `module_path` match resolves, the chain-follow depth limit is reached, or no further substitution is possible (unknown module). The single `/` in the qualified name is reached only AFTER `module_path` resolves to a known module; the `/` is never crossed during alias substitution.
 
@@ -752,7 +752,7 @@ Private variants of definition forms use a `-` suffix on the form name:
 
 These are special forms, not macros.
 
-### 8.7.3 Private Name Semantics [Tested+Neg tests/spec_08_modules::glob_import_excludes_private_neg]
+### 8.7.3 Private Name Semantics [Tested+Neg tests/spec_08_modules::glob_import_excludes_private_neg, tests/spec_08_modules::fq_ctor_pattern_private_constructor_rejected_neg]
 
 A private name:
 

@@ -20,6 +20,12 @@ the backend's `.meta.json` sidecars.
 - The one exempt class is a `#[serde(default)]` addition whose default equals
   the fresh-build value; the rule is stated on `CACHE_SCHEMA_VERSION` and on
   `SymbolTable.schema_version`.
+- `SymbolTable.lookup_dependencies` is not in that exempt class although a
+  fresh table's set is empty: a defaulted pre-carrier sidecar would under-key
+  cache validity, so absence is a decode error. The set is insert-only; write
+  it only through `record_lookup_dependency` into staging, which both publish
+  funnels union into the live table
+  ([qualified lookup dependencies](../../design/arch/interfaces.md#qualified-lookup-dependencies)).
 - `#[serde(skip)]` runtime fields: `got`, `linker` and `Realization::Body.code`.
   Caches deserialise as `SymbolTable<(), ()>`; int rehydrates through
   `SymbolTable::into_concrete`, which leaves every `code` as `None`.
@@ -120,7 +126,9 @@ Use the read-throughs; never re-pattern the lifecycle set:
 
 - **`Resolved` carries one identity.** `canonical` is the terminal `FQSymbol`
   that direct-probes its table; `entry` is that binding. Never compose a
-  storage identity from the written spelling.
+  storage identity from the written spelling. `lookup_module` is provenance:
+  the table probed after alias substitution, possibly a re-exporter rather
+  than `canonical.module`. Never key storage on it.
   `ResolutionScope::resolve_candidates` returns the complete set; `resolve` is
   the unique-candidate convenience and the sole public resolution entry.
 - **The prelude fallback is decided at scope construction.** `resolve` retries

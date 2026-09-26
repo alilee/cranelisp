@@ -376,7 +376,9 @@ No receipt is stored in `SharedState`, `ModuleState`, the scheduler, a parking
 map, or a source continuation. In particular, a scheduler receipt mailbox is
 rejected: it would duplicate an already-settled fact, add reset/drain ordering,
 and buy no observable behavior. Retry continues to store only the uncommitted
-source/emitted suffix and the generation-started bit.
+source/emitted suffix, the generation-started bit and the macro-head lookup
+dependencies recognised while emitting that suffix
+([lookup dependencies](int.md#762-lookup-dependencies)).
 
 ### 1.2 Recovery scenario matrix
 

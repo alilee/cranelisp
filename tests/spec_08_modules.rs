@@ -757,10 +757,9 @@ fn run_main_with_b(main: &str, b: &str) -> helpers::e2e::CrOutput {
 // defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev
 // One-module form of tests/cache.rs::fq_type_only_reference_loads_its_module_on_a_fresh_compile.
 // The control differs only in a named import that loads `b` first, so `b/T`
-// resolves once `b` is loaded. The subject fails with the type error
+// resolves once `b` is loaded. Before the S122 correction the subject failed with the type error
 // "module `b` referenced by `b/T` is not loaded", not the loader's
-// module-not-found error: nothing turns the unloaded type home into a load.
-// Which layer should is not attributed.
+// module-not-found error: nothing turned the unloaded type home into a load.
 #[test]
 fn fq_type_annotation_alone_loads_its_module() {
     let b = "(import [primitives [Int]])\n(deftype T [:Int n])\n(defn mk [] (T 7))\n";
@@ -784,6 +783,398 @@ fn fq_type_annotation_alone_loads_its_module() {
     );
 }
 
+// spec: spec/08-modules.md §8.5.4 edge 1 (type) and edge 2 — a qualified type
+// spelled through an alias-only import (§8.3.6) loads the alias target
+// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev
+// The control's named import loads `b`, so `:bb/T` resolves through the alias.
+// In the subject only the annotation can load `b`; a gap that names the spelled
+// `bb` instead of `b` fails as an unknown module `bb`.
+#[test]
+fn fq_type_annotation_through_alias_only_import_loads_its_target() {
+    let b = "(import [primitives [Int]])\n(deftype T [:Int n])\n(defn mk [] (T 7))\n";
+    let rest = "(defn h [:bb/T t] :Int 7)\n(defn main [] (Pure 7))\n";
+    let prefix = "(import [primitives [Pure Int]])\n";
+    let control = run_main_with_b(&format!("{prefix}(import [(b bb) [mk]])\n{rest}"), b);
+    assert_eq!(
+        control.status.code(),
+        Some(7),
+        "control: with `b` loaded, `:bb/T` must resolve through the alias:\n{}",
+        control.stderr
+    );
+    let subject = run_main_with_b(&format!("{prefix}(import [(b bb) []])\n{rest}"), b);
+    assert_eq!(
+        subject.status.code(),
+        Some(7),
+        "`:bb/T` alone must load the alias target `b`:\n{}",
+        subject.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 3 — a qualified type naming a module with
+// no backing file is a compile-time error at the reference site
+// The control replaces only the annotation, so the rejection is the annotation's.
+// A synthetic span renders `at 0..0`; `output` panics if the compile never ends.
+#[test]
+fn fq_type_annotation_to_missing_module_errors_at_reference_site_neg() {
+    let program = |param: &str| {
+        Cranelisp::new()
+            .file(
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure Int]])\n(defn h [{param} t] :Int 7)\n(defn main [] (Pure 7))\n"
+                ),
+            )
+            .run("main.cl")
+            .output()
+    };
+    program(":Int").assert_exit(7);
+    let out = program(":zz/T");
+    assert!(
+        !out.status.success() && out.stderr.contains("zz"),
+        "`:zz/T` with no `zz.cl` must be rejected naming `zz`: exit={:?}\n{}",
+        out.status.code(),
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("at 0..0"),
+        "the rejection must be located at the reference, not `at 0..0`:\n{}",
+        out.stderr
+    );
+}
+
+/// Asserts once every leg has run, reporting each leg's verdict and output, so
+/// an early failure cannot hide a later leg's outcome.
+fn assert_all_legs(legs: &[(&str, bool, &helpers::e2e::CrOutput)]) {
+    let report: Vec<String> = legs
+        .iter()
+        .map(|(name, ok, out)| {
+            format!(
+                "[{}] {name}: exit={:?}\n{}",
+                if *ok { "ok" } else { "FAIL" },
+                out.status.code(),
+                out.stderr.trim_end()
+            )
+        })
+        .collect();
+    assert!(legs.iter().all(|(_, ok, _)| *ok), "{}", report.join("\n"));
+}
+
+const TRAIT_TR: &str = "(deftrait Tr (tr [x] self))\n";
+
+/// `--run main.cl`, with `b.cl` beside it when given.
+fn run_main_with_optional_b(main: &str, b: Option<&str>) -> helpers::e2e::CrOutput {
+    let project = Cranelisp::new().file("main.cl", main);
+    match b {
+        Some(b) => project.file("b.cl", b),
+        None => project,
+    }
+    .run("main.cl")
+    .output()
+}
+
+// spec: spec/08-modules.md §8.5.4 edges 1 and 3; §3.9.3 — a qualified value
+// annotation resolves in the named module: a missing module is rejected at the
+// reference, and a trait in an unloaded module is accepted
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate found=S122 owner=/dev
+// Subject B guards the repair's shape: rejecting every unloaded qualifier, or
+// forcing the type reading, fails it. FT-4 fences the parameter route.
+#[test]
+fn fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted() {
+    let program = |annotation: &str, b: Option<&str>| {
+        run_main_with_optional_b(
+            &format!(
+                "(import [primitives [Pure Int]])\n(defn h [t] {annotation} t)\n(defn main [] (Pure 7))\n"
+            ),
+            b,
+        )
+    };
+    let control = program(":Int", None);
+    let missing = program(":zz/T", None);
+    let unloaded_trait = program(":b/Tr", Some(TRAIT_TR));
+    assert_all_legs(&[
+        (
+            "control `:Int` exits 7",
+            control.status.code() == Some(7),
+            &control,
+        ),
+        (
+            "subject A `:zz/T`, no `zz.cl`: rejected naming `zz`",
+            !missing.status.success() && missing.stderr.contains("zz"),
+            &missing,
+        ),
+        (
+            "subject A: located, not `at 0..0`",
+            !missing.stderr.contains("at 0..0"),
+            &missing,
+        ),
+        (
+            "subject B `:b/Tr`, `b` not imported: exits 7",
+            unloaded_trait.status.code() == Some(7),
+            &unloaded_trait,
+        ),
+    ]);
+}
+
+// spec: spec/08-modules.md §8.6.1; §3.9.3 — a parameter annotation's qualified
+// trait resolves in the named module, not by its bare name
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/program/register.rs::register_defn_signature found=S122 owner=/dev
+// Each subject differs from its control in one thing: subject 1 adds a local
+// `Tr`, subject 2 omits the named import of `b`.
+#[test]
+fn fq_param_trait_annotation_resolves_in_named_module_neg_not_captured_by_bare_trait() {
+    let program = |main_body: &str, b: Option<&str>| {
+        run_main_with_optional_b(
+            &format!("(import [primitives [Pure]])\n{main_body}(defn main [] (Pure 7))\n"),
+            b,
+        )
+    };
+    let missing = "(defn h [:zz/Tr x] 7)\n";
+    let control_1 = program(missing, None);
+    let subject_1 = program(&format!("{TRAIT_TR}{missing}"), None);
+    let qualified = "(defn h [:b/Tr x] 7)\n";
+    let control_2 = program(&format!("(import [b [Tr]])\n{qualified}"), Some(TRAIT_TR));
+    let subject_2 = program(qualified, Some(TRAIT_TR));
+    let rejected_naming_zz =
+        |out: &helpers::e2e::CrOutput| !out.status.success() && out.stderr.contains("zz");
+    assert_all_legs(&[
+        (
+            "control 1 `:zz/Tr`, no local `Tr`: rejected naming `zz`",
+            rejected_naming_zz(&control_1),
+            &control_1,
+        ),
+        (
+            "subject 1 `:zz/Tr` beside a local `Tr`: rejected naming `zz`",
+            rejected_naming_zz(&subject_1),
+            &subject_1,
+        ),
+        (
+            "control 2 `:b/Tr` with `(import [b [Tr]])`: exits 7",
+            control_2.status.code() == Some(7),
+            &control_2,
+        ),
+        (
+            "subject 2 `:b/Tr`, `b` not imported: exits 7",
+            subject_2.status.code() == Some(7),
+            &subject_2,
+        ),
+    ]);
+}
+
+// Qualified names in a stacked trait bound and in a constructor pattern.
+// Each subject differs from its control only in the claimed cause: the
+// bound's stack length, the pattern's qualifier spelling, the constructor's
+// position (pattern versus value), or the parameter's annotation.
+
+/// `--run main.cl` over `files`.
+fn run_project(files: &[(&str, &str)]) -> helpers::e2e::CrOutput {
+    files
+        .iter()
+        .fold(Cranelisp::new(), |c, (path, src)| c.file(path, src))
+        .run("main.cl")
+        .output()
+}
+
+// spec: spec/08-modules.md §8.6.6 step 1; spec/03-types.md §3.9.2 — an
+// alias-qualified trait in a stacked bound resolves in the aliased module
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_bound_param found=S122 owner=/dev
+// The REPL displays the published scheme, whose constraint must name `zz/Tr`;
+// the spec fixes no constraint order, so either order is accepted. The scheme
+// is observed because `--run` cannot see an unused bound: the open defect DB-1
+// (tests/plan/s122-evidence-delta.md, "Declared bound not checked at the call
+// site") leaves a declared bound unchecked at the call site.
+#[test]
+fn fq_stacked_bound_trait_through_alias_resolves_in_aliased_module() {
+    let scheme = |bound: &str| {
+        Cranelisp::new()
+            .repl()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .file(
+                "zz.cl",
+                "(import [primitives [Int]])\n(deftrait Tr (tr [self] Int))\n",
+            )
+            .stdin(&format!(
+                "(import [(zz z) []])\n\
+                 (deftrait Ts (ts [self] Int))\n\
+                 (defn f [{bound} x] 7)\n/quit\n"
+            ))
+            .output()
+    };
+    let control = scheme(":z/Tr");
+    let subject = scheme(":Ts :z/Tr");
+    let control_ok = control
+        .stdout
+        .contains(":(Fn [:zz/Tr a] primitives/Int) user/f");
+    let subject_ok = subject
+        .stdout
+        .lines()
+        .find(|line| line.contains(") user/f"))
+        .is_some_and(|line| {
+            [
+                ":(Fn [:user/Ts :zz/Tr a] primitives/Int) user/f",
+                ":(Fn [:zz/Tr :user/Ts a] primitives/Int) user/f",
+            ]
+            .iter()
+            .any(|scheme| line.contains(scheme))
+                && !line.contains(":z/Tr")
+        });
+    assert!(
+        control_ok && subject_ok,
+        "control `[:z/Tr x]` must display `[:zz/Tr a]` (ok={control_ok}):\n{}\n\
+         subject `[:Ts :z/Tr x]` must display `user/Ts` and `zz/Tr`, in either order, \
+         and not `z/Tr` (ok={subject_ok}):\n{}",
+        control.stdout.trim_end(),
+        subject.stdout.trim_end()
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 3; §8.6.6 step 5 — a stacked bound
+// naming a module with no backing file is a compile-time error
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_bound_param found=S122 owner=/dev
+#[test]
+fn fq_stacked_bound_trait_to_missing_module_rejected_neg() {
+    let program = |bound: &str| {
+        run_project(&[(
+            "main.cl",
+            &format!(
+                "(import [primitives [Pure Int]])\n\
+                 (deftrait Ts (ts [self] Int))\n\
+                 (defn f [{bound} x] 7)\n\
+                 (defn main [] (Pure 7))\n"
+            ),
+        )])
+    };
+    // An accepted program exits 7.
+    let rejected_naming_nosuch = |out: &helpers::e2e::CrOutput| {
+        out.status.code() != Some(7) && out.stderr.contains("nosuch")
+    };
+    let control = program(":nosuch/Tr");
+    let subject = program(":Ts :nosuch/Tr");
+    assert_all_legs(&[
+        (
+            "control `[:nosuch/Tr x]`, no `nosuch.cl`: rejected naming `nosuch`",
+            rejected_naming_nosuch(&control),
+            &control,
+        ),
+        (
+            "subject `[:Ts :nosuch/Tr x]`, no `nosuch.cl`: rejected naming `nosuch`",
+            rejected_naming_nosuch(&subject),
+            &subject,
+        ),
+    ]);
+}
+
+const PATTERN_SHAPES: &str = "(import [primitives [Int]])\n(deftype Circle [:Int r])\n";
+
+// spec: spec/08-modules.md §8.6.6 step 1; §8.6.5 — an alias-qualified
+// constructor pattern resolves in the aliased module, as its value twin does
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev
+#[test]
+fn fq_ctor_pattern_through_alias_resolves_in_aliased_module() {
+    let program = |pattern: &str| {
+        run_project(&[
+            (
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure]])\n\
+                     (import [(shapes s) []])\n\
+                     (defn radius [c] (match c [({pattern} r) r]))\n\
+                     (defn main [] (Pure (radius (s/Circle 8))))\n"
+                ),
+            ),
+            ("shapes.cl", PATTERN_SHAPES),
+        ])
+    };
+    let control = program("shapes/Circle");
+    let subject = program("s/Circle");
+    assert_all_legs(&[
+        (
+            "control: value `(s/Circle 8)`, pattern `(shapes/Circle r)`: exits 8",
+            control.status.code() == Some(8),
+            &control,
+        ),
+        (
+            "subject: value `(s/Circle 8)`, pattern `(s/Circle r)`: exits 8",
+            subject.status.code() == Some(8),
+            &subject,
+        ),
+    ]);
+}
+
+// spec: spec/08-modules.md §8.7.3; §8.6.6 — a private constructor is
+// inaccessible through a qualified pattern, as through a qualified value
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev
+#[test]
+fn fq_ctor_pattern_private_constructor_rejected_neg() {
+    let program = |body: &str| {
+        run_project(&[
+            (
+                "main.cl",
+                &format!("(import [primitives [Pure]])\n(defn main [] (Pure {body}))\n"),
+            ),
+            (
+                "shapes.cl",
+                "(import [primitives [Int]])\n\
+                 (deftype- Secret (Hid [:Int v]))\n\
+                 (defn mk [] (Hid 8))\n",
+            ),
+        ])
+    };
+    // An accepted control exits 7 and an accepted subject 8.
+    let rejected_naming_hid = |out: &helpers::e2e::CrOutput| {
+        !matches!(out.status.code(), Some(7 | 8)) && out.stderr.contains("Hid")
+    };
+    let control = program("(match (shapes/Hid 8) [_ 7])");
+    let subject = program("(match (shapes/mk) [(shapes/Hid v) v])");
+    assert_all_legs(&[
+        (
+            "control: value `(shapes/Hid 8)` from `main`: rejected naming `Hid`",
+            rejected_naming_hid(&control),
+            &control,
+        ),
+        (
+            "subject: pattern `(shapes/Hid v)` from `main`: rejected naming `Hid`",
+            rejected_naming_hid(&subject),
+            &subject,
+        ),
+    ]);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 (pattern position) — a qualified
+// constructor pattern that is the only reference to its module loads it
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev
+// `radius` is never called: a later value reference such as
+// `(radius (shapes/Circle 8))` loads `shapes` before the pattern is checked.
+#[test]
+fn fq_ctor_pattern_as_only_reference_loads_its_module() {
+    let program = |param: &str| {
+        run_project(&[
+            (
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure]])\n\
+                     (defn radius [{param}] (match c [(shapes/Circle r) r]))\n\
+                     (defn main [] (Pure 8))\n"
+                ),
+            ),
+            ("shapes.cl", PATTERN_SHAPES),
+        ])
+    };
+    let control = program(":shapes/Circle c");
+    let subject = program("c");
+    assert_all_legs(&[
+        (
+            "control: `radius`'s parameter annotated `:shapes/Circle`: exits 8",
+            control.status.code() == Some(8),
+            &control,
+        ),
+        (
+            "subject: the pattern is the only reference to `shapes`: exits 8",
+            subject.status.code() == Some(8),
+            &subject,
+        ),
+    ]);
+}
+
 // =============================================================================
 // §8.3.6 Alias-Only Import / §8.3.7 Null Import
 // =============================================================================
@@ -792,12 +1183,12 @@ const ALIAS_TARGET_B: &str = "(defn f [] 11)\n";
 
 // spec: spec/08-modules.md §8.3.6 — Alias-Only Import (the alias serves
 // qualified access, §8.6.6 step 1, whether or not its target is already loaded)
-// defect: class=wrong-reject locus=src/process_form/dependency.rs::handle_import found=S115 owner=/dev
-// FIXME 0798. The explicit-name alias control resolves `bb/f`. Both subjects
-// fail with "module 'bb' referenced by 'bb/...' not found", the face of an
-// undeclared qualifier, even when an earlier named import has loaded `b`. So
-// the alias of the empty-name form is not registered; loading its target is
-// not the missing step. The locus is a source reading, not a seam observation.
+// defect: class=wrong-reject locus=src/process_form/dependency.rs::handle_import found=S115 owner=/dev fixed=S122/bc675d86
+// FIXME 0798. A fresh compile registered no alias for the empty-name form, so
+// `bb/f` failed as an undeclared qualifier ("module 'bb' referenced by
+// 'bb/...' not found"), even when an earlier named import had loaded `b`.
+// The explicit-name alias control resolves `bb/f`; the already-loaded subject
+// guards against a repair that registers the alias only when it loads.
 #[test]
 fn alias_only_import_alias_resolves_qualified_call() {
     let prefix = "(import [primitives [Pure]])\n";
@@ -1184,10 +1575,10 @@ fn defmacro_dash_private_not_importable_neg() {
 }
 
 // =============================================================================
-// Null-import resolution (§8.3.6) — free-standing
+// Null-import resolution (§8.3.7) — free-standing
 // =============================================================================
 //
-// Spec subject: §8.3.6 Null Import — a module that suppresses the implicit
+// Spec subject: §8.3.7 Null Import — a module that suppresses the implicit
 // prelude glob via `(import [prelude []])` MUST resolve EVERY referenced name
 // through explicit imports; any name it leaves unimported is `undefined
 // variable`, not silently picked up from the prelude.
@@ -1209,7 +1600,7 @@ fn defmacro_dash_private_not_importable_neg() {
 // it defines its own ADT in one module and explicitly imports the constructor
 // into the null-importing leaf.
 
-// spec: spec/08-modules.md §8.3.6 — Null Import: a module that suppresses
+// spec: spec/08-modules.md §8.3.7 — Null Import: a module that suppresses
 //       the prelude glob via `(import [prelude []])` resolves every referenced
 //       name through explicit imports (positive path).
 #[test]
@@ -1242,13 +1633,13 @@ fn null_import_module_resolves_all_names_via_explicit_imports() {
     assert!(
         !combined.contains("undefined variable"),
         "a null-importing module (`(import [prelude []])`) that EXPLICITLY \
-         imports every name it references MUST resolve cleanly (spec §8.3.6); \
+         imports every name it references MUST resolve cleanly (spec §8.3.7); \
          got:\n{combined}"
     );
     out.assert_exit(42);
 }
 
-// spec: spec/08-modules.md §8.3.6 — Null Import (negative): a name a
+// spec: spec/08-modules.md §8.3.7 — Null Import (negative): a name a
 //       null-importing module references but does NOT explicitly import is
 //       `undefined variable` — the prelude glob is suppressed, so there is no
 //       implicit fallback that would silently resolve it.
@@ -1279,7 +1670,7 @@ fn null_import_module_neg_unimported_name_is_undefined() {
     assert!(
         !out.status.success(),
         "a null-importing module that references a name it did NOT explicitly \
-         import MUST fail (no prelude fallback, spec §8.3.6); exit={:?}\n{}\n{}",
+         import MUST fail (no prelude fallback, spec §8.3.7); exit={:?}\n{}\n{}",
         out.status.code(),
         out.stdout,
         out.stderr
@@ -2559,8 +2950,10 @@ fn fq_macro_ref_expands_at_qualified_site() {
 }
 
 // spec: spec/08-modules.md §8.5.4 edge 1 (type, A4) — a fully-qualified type
-// name in an annotation participates in auto-load: referencing `shapes/Circle`
-// as an annotation triggers loading `shapes`. Verify-first.
+// annotation composed with value references to the same unloaded module
+// (`shapes/Circle.r`, `(shapes/Circle 9)`). The value references load `shapes`
+// on their own, so this cell does not isolate the type trigger;
+// `fq_type_annotation_alone_loads_its_module` does.
 #[test]
 fn fq_type_annotation_triggers_autoload() {
     let aux = "(import [primitives [Int]])\n\

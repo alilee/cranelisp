@@ -5511,3 +5511,89 @@ fn cross_class_publication_does_not_admit_non_plain_origins() {
         assert_eq!(serde_json::to_value(&live).unwrap(), before);
     }
 }
+
+// --- Qualified lookup dependencies (tests/plan/s122-evidence-delta.md LD-T) ---
+
+fn lookup_set<C: CodeStore, L: LinkerStore>(table: &SymbolTable<C, L>) -> Vec<&str> {
+    table
+        .lookup_dependencies()
+        .map(|module| module.as_ref())
+        .collect()
+}
+
+// spec: design/arch/interfaces.md §Qualified lookup dependencies — T1 recorder
+#[test]
+fn lookup_recorder_ignores_own_path_and_collapses_duplicates() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table.record_lookup_dependency(ModuleFullPath::from("r"));
+    table.record_lookup_dependency(ModuleFullPath::from("m"));
+    table.record_lookup_dependency(ModuleFullPath::from("r"));
+    table.record_lookup_dependency(ModuleFullPath::from("m.child"));
+
+    assert_eq!(lookup_set(&table), vec!["m.child", "r"]);
+}
+
+// spec: design/arch/interfaces.md §Qualified lookup dependencies — T2 publish union
+#[test]
+fn both_publish_funnels_union_staged_lookup_dependencies_into_live() {
+    let live_with = |members: &[&str]| {
+        let mut live = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+        for member in members {
+            live.record_lookup_dependency(ModuleFullPath::from(*member));
+        }
+        live
+    };
+    let staging = || {
+        let mut staging = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+        staging.record_lookup_dependency(ModuleFullPath::from("new"));
+        staging.record_lookup_dependency(ModuleFullPath::from("both"));
+        staging
+    };
+
+    let mut plain = live_with(&["kept", "both"]);
+    plain.publish_staged(staging(), &[]).unwrap();
+    assert_eq!(lookup_set(&plain), vec!["both", "kept", "new"]);
+
+    let mut compiled = live_with(&["kept", "both"]);
+    if let Err(rejection) = compiled.publish_compiled_staged(staging(), &[], HashMap::new()) {
+        panic!("empty compiled publication refused: {}", rejection.reason());
+    }
+    assert_eq!(lookup_set(&compiled), vec!["both", "kept", "new"]);
+}
+
+// spec: design/arch/interfaces.md §Qualified lookup dependencies — T3 conversions
+#[test]
+fn lookup_dependencies_survive_clone_and_concrete_conversion_and_start_empty() {
+    let fresh = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    assert!(lookup_set(&fresh).is_empty());
+    assert!(lookup_set(&SymbolTable::new(ModuleFullPath::from("m"))).is_empty());
+
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table.record_lookup_dependency(ModuleFullPath::from("r"));
+    assert_eq!(lookup_set(&table.clone()), vec!["r"]);
+    let concrete: SymbolTable<String, ()> = table.into_concrete();
+    assert_eq!(lookup_set(&concrete), vec!["r"]);
+}
+
+// spec: design/arch/interfaces.md §Qualified lookup dependencies — T4 schema fence
+#[test]
+fn lookup_dependencies_round_trip_and_absence_fails_to_decode() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("m"));
+    table.record_lookup_dependency(ModuleFullPath::from("r"));
+    table.record_lookup_dependency(ModuleFullPath::from("q"));
+
+    let serialized = serde_json::to_value(&table).unwrap();
+    let restored: SymbolTable = serde_json::from_value(serialized.clone()).unwrap();
+    assert_eq!(lookup_set(&restored), vec!["q", "r"]);
+
+    let mut without = serialized;
+    without
+        .as_object_mut()
+        .unwrap()
+        .remove("lookup_dependencies")
+        .expect("lookup dependencies serialize under their field name");
+    assert!(
+        serde_json::from_value::<SymbolTable>(without).is_err(),
+        "a sidecar without lookup dependencies must not decode as an empty set"
+    );
+}

@@ -178,9 +178,13 @@ fn process_form_dispatch_bare_forward_ref_errors_clearly() {
         .assert_stdout_does_not_contain("f ");
 }
 
-// spec: design/backend/backend.md §"FIXME 0099 — GotObserver implementation (was: GOT-slot population log gap)"
-// (`CRANELISP_GOT_TRACE` reservation) + orchestration invariant per
-// the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
+// spec: design/int/int.md §6.3 — resolving a gap forces only the dependency's
+// typecheck and codegen; nothing is speculatively JIT-compiled. Observed
+// through the GOT trace (design/int/observability.md, `CRANELISP_GOT_TRACE`).
+// Known gap (routed to qa, S122): trace lines read `JitWrite\tmodule=…
+// symbol=g`, so the `JitWrite g` / `JitWrite user/g` needles below cannot
+// match and the negative leg cannot fail.
+// Origin: the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
 // FIXME 0098 — process_form gap-orchestration.
 #[test]
 fn process_form_dispatch_function_gap_does_not_speculatively_jit() {

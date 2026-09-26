@@ -777,6 +777,777 @@ fn gap_on_missing_module_plain() {
     ));
 }
 
+fn qualified_type(module: &str, name: &str) -> TypeExpr {
+    TypeExpr::Named(cranelisp_types::TypeRef::new(
+        Some(ModuleFullPath::from(module)),
+        TypeName::from(name),
+    ))
+}
+
+fn defn_with_param_annotation(name: &str, annotation: TypeExpr) -> ParsedEntry {
+    ParsedEntry::Def {
+        name: Symbol::from(name),
+        variants: vec![DefnVariant {
+            params: vec![(Symbol::from("t"), Some(annotation))],
+            body: unit_body(),
+            span: Span::new(10, 40),
+        }],
+        visibility: Visibility::Private,
+        docstring: None,
+        span: Span::new(0, 41),
+    }
+}
+
+fn assert_type_gap(result: Result<CheckResult, CheckError>, module: &str, name: &str) {
+    match result {
+        Err(CheckError::Gap(cranelisp_types::ResolutionGap::Type(fqt))) => {
+            assert_eq!(fqt.module.as_ref(), module, "gap names the absent module");
+            assert_eq!(fqt.name.as_ref(), name, "gap names the referenced type");
+        }
+        other => panic!("expected Gap(Type({module}/{name})), got {other:?}"),
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 — an unresolved FQ type in an
+// annotation is a resolution-layer `Type` gap (design/typecheck/typecheck.md §7.3.1).
+#[test]
+fn type_gap_on_missing_module_param_annotation() {
+    let modules = modules();
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    let parsed = vec![defn_with_param_annotation(
+        "takes_missing",
+        qualified_type("some.mod", "T"),
+    )];
+    let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
+    assert_type_gap(r, "some.mod", "T");
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 — the `deftype` field route
+// (design/typecheck/typecheck.md §7.3.1).
+#[test]
+fn type_gap_on_missing_module_deftype_field() {
+    let modules = modules();
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    let parsed = vec![ParsedEntry::TypeDef {
+        name: TypeName::from("Holder"),
+        type_params: vec![],
+        constructors: vec![ConstructorDef {
+            name: Symbol::from("Holder"),
+            docstring: None,
+            fields: vec![FieldDef {
+                name: Symbol::from("held"),
+                type_expr: qualified_type("some.mod", "T"),
+                span: Span::new(5, 20),
+            }],
+            span: Span::new(1, 25),
+        }],
+        visibility: Visibility::Private,
+        docstring: None,
+        span: Span::new(0, 26),
+    }];
+    let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
+    assert_type_gap(r, "some.mod", "T");
+}
+
+// spec: spec/08-modules.md §8.5.4 edges 1–2 — the type gap carries the
+// alias-substituted module (§8.6.6), never the spelled alias.
+#[test]
+fn type_gap_on_missing_module_via_alias() {
+    let modules = modules();
+    let aliases = ModuleAliases::new();
+    aliases.insert(
+        cranelisp_types::module_alias_key(&module_path(), "r"),
+        cranelisp_types::ModuleAliasEntry::new(
+            ModuleFullPath::from("real.target"),
+            Visibility::Public,
+            Span::SYNTHETIC,
+        ),
+    );
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    let parsed = vec![defn_with_param_annotation(
+        "takes_aliased",
+        qualified_type("r", "T"),
+    )];
+    let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &aliases, &no_fallback());
+    assert_type_gap(r, "real.target", "T");
+}
+
+// spec: spec/08-modules.md §8.5.4 edges 1 and 4 — only an ABSENT module is a
+// gap; a present module without the member stays a located type error.
+#[test]
+fn no_type_gap_when_module_present_but_type_absent_neg() {
+    let modules = modules();
+    seed_module(&modules, "some.mod", "thing");
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    let parsed = vec![defn_with_param_annotation(
+        "takes_unknown",
+        qualified_type("some.mod", "T"),
+    )];
+    let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
+    match r {
+        Err(CheckError::TypeError { message, .. }) => assert!(
+            message.contains('T'),
+            "the type error names the missing type: {message}"
+        ),
+        other => panic!("expected a located TypeError, got {other:?}"),
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 — an impl target naming an absent
+// module (design/typecheck/typecheck.md §7.3.1: the impl-target route through
+// the one projection).
+#[test]
+fn type_gap_on_missing_module_impl_target() {
+    let modules = modules();
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    let ParsedEntry::TraitImpl { mut impl_ } = minimal_traitimpl("MyTr", "T") else {
+        unreachable!("minimal_traitimpl builds a TraitImpl");
+    };
+    impl_.target = qualified_type("some.mod", "T");
+    let parsed = vec![minimal_traitdecl("MyTr"), ParsedEntry::TraitImpl { impl_ }];
+    let r = check_forms::<(), ()>(parsed, &mut ctx, &modules, &no_aliases(), &no_fallback());
+    assert_type_gap(r, "some.mod", "T");
+}
+
+// ---- Type-or-trait annotations (design/typecheck/typecheck.md §7.3.2, U1–U6) ----
+
+fn source_entries(source: &str) -> Vec<ParsedEntry> {
+    cranelisp_frontend::parse(source)
+        .expect("source parses")
+        .iter()
+        .flat_map(|sexp| cranelisp_frontend::build_form(sexp).expect("source builds"))
+        .collect()
+}
+
+fn check_source_in(
+    modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    module: ModuleFullPath,
+    aliases: &ModuleAliases,
+    source: &str,
+) -> Result<CheckResult, CheckError> {
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(modules, module);
+    check_forms::<(), ()>(
+        source_entries(source),
+        &mut ctx,
+        modules,
+        aliases,
+        &no_fallback(),
+    )
+}
+
+/// Module `b` declares the public trait `Tr`; with `int_impl`, it also
+/// implements `Tr` for `Int`, so only a lookup rooted at `b` finds the impl.
+fn seed_trait_module_b(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>, int_impl: bool) {
+    let b = ModuleFullPath::from("b");
+    let mut table = SymbolTable::<(), ()>::new_with_params(b.clone());
+    if int_impl {
+        table
+            .install_binding(
+                Symbol::from("Int"),
+                Binding::new(
+                    Decl::Type(TypeRecord::Intrinsic {
+                        ty: cranelisp_types::Type::Int,
+                        docstring: None,
+                    }),
+                    Visibility::Public,
+                ),
+            )
+            .unwrap();
+    }
+    modules.insert(b.clone(), table);
+    let source = if int_impl {
+        "(deftrait Tr (tr [x] self)) (impl Tr Int (defn tr [x] x))"
+    } else {
+        "(deftrait Tr (tr [x] self))"
+    };
+    check_source_in(modules, b, &no_aliases(), source).expect("module b checks");
+}
+
+fn alias_bb_to_b() -> ModuleAliases {
+    let aliases = ModuleAliases::new();
+    aliases.insert(
+        cranelisp_types::module_alias_key(&module_path(), "bb"),
+        cranelisp_types::ModuleAliasEntry::new(
+            ModuleFullPath::from("b"),
+            Visibility::Public,
+            Span::SYNTHETIC,
+        ),
+    );
+    aliases
+}
+
+fn param_constraints_of(
+    modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    name: &str,
+) -> Vec<String> {
+    let guard = modules.get(&module_path()).expect("module exists");
+    let callable = guard
+        .get(name)
+        .and_then(Binding::callable)
+        .expect("defn is registered");
+    callable
+        .arm
+        .scheme
+        .constraints
+        .values()
+        .flatten()
+        .map(ToString::to_string)
+        .collect()
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1; spec/03-types.md §3.9.3 — U1: a
+// value annotation naming an absent module is the type gap, not a trait.
+#[test]
+fn type_or_trait_value_annotation_absent_module_is_type_gap() {
+    let modules = modules();
+    let r = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(defn h [t] :some.mod/T t)",
+    );
+    assert_type_gap(r, "some.mod", "T");
+}
+
+// spec: spec/08-modules.md §8.6.1; spec/03-types.md §3.9.3 — U2: a local
+// trait of the same bare spelling does not capture a qualified parameter
+// annotation.
+#[test]
+fn type_or_trait_param_annotation_absent_module_not_captured_by_local_trait() {
+    let modules = modules();
+    let r = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(deftrait Tr (tr [x] self)) (defn h [:some.mod/Tr x] 7)",
+    );
+    assert_type_gap(r, "some.mod", "Tr");
+}
+
+// spec: spec/08-modules.md §8.6.1; spec/03-types.md §3.9.3 — U3: a qualified
+// trait resolves in its named module without an import.
+#[test]
+fn type_or_trait_param_annotation_resolves_trait_in_named_module() {
+    let modules = modules();
+    seed_trait_module_b(&modules, false);
+    check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(defn h [:b/Tr x] 7)",
+    )
+    .expect("`:b/Tr` names the trait in `b`");
+    assert_eq!(
+        param_constraints_of(&modules, "h"),
+        vec!["b/Tr".to_string()]
+    );
+}
+
+// spec: spec/08-modules.md §8.6.6; spec/03-types.md §3.3.3 — U4: the
+// satisfaction check looks up the impl in the alias target, not the alias.
+#[test]
+fn type_or_trait_value_annotation_through_alias_checks_impl_in_target() {
+    let modules = modules();
+    seed_trait_module_b(&modules, true);
+    check_source_in(
+        &modules,
+        module_path(),
+        &alias_bb_to_b(),
+        "(defn h [] :bb/Tr 5)",
+    )
+    .expect("`b` implements `Tr` for `Int`");
+}
+
+// spec: spec/08-modules.md §8.6.6; spec/03-types.md §3.9.3 — U5: the
+// parameter constraint records the alias target as the trait's home.
+#[test]
+fn type_or_trait_param_annotation_through_alias_constrains_target_home() {
+    let modules = modules();
+    seed_trait_module_b(&modules, false);
+    check_source_in(
+        &modules,
+        module_path(),
+        &alias_bb_to_b(),
+        "(defn h [:bb/Tr x] 7)",
+    )
+    .expect("`:bb/Tr` names the trait in `b`");
+    assert_eq!(
+        param_constraints_of(&modules, "h"),
+        vec!["b/Tr".to_string()]
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4 — U6: a present module with neither
+// a type nor a trait of that name is a located type error, not a gap.
+#[test]
+fn type_or_trait_value_annotation_present_module_without_member_is_type_error_neg() {
+    let modules = modules();
+    seed_module(&modules, "b", "thing");
+    let r = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(defn h [t] :b/X t)",
+    );
+    assert_located_type_error_naming(r, "X");
+}
+
+/// A `TypeError` located at a source span (not synthetic) whose message names
+/// `member`, with no gap.
+fn assert_located_type_error_naming(result: Result<CheckResult, CheckError>, member: &str) {
+    match result {
+        Err(CheckError::TypeError { message, location }) => {
+            assert_ne!(
+                location.span,
+                Span::SYNTHETIC,
+                "the error is located at the reference: {message}"
+            );
+            assert!(
+                message.contains(member),
+                "the type error names `{member}`: {message}"
+            );
+        }
+        other => panic!("expected a located TypeError naming `{member}`, got {other:?}"),
+    }
+}
+
+// ---- Qualified stacked bounds and constructor patterns (typecheck.md §3.5) ----
+
+/// A module whose table carries the intrinsic `Int`, then `source`.
+fn seed_module_with_int(
+    modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    module: &str,
+    source: &str,
+) {
+    let path = ModuleFullPath::from(module);
+    let mut table = SymbolTable::<(), ()>::new_with_params(path.clone());
+    table
+        .install_binding(
+            Symbol::from("Int"),
+            Binding::new(
+                Decl::Type(TypeRecord::Intrinsic {
+                    ty: cranelisp_types::Type::Int,
+                    docstring: None,
+                }),
+                Visibility::Public,
+            ),
+        )
+        .unwrap();
+    modules.insert(path.clone(), table);
+    check_source_in(modules, path, &no_aliases(), source).expect("seeded module checks");
+}
+
+/// Module `b` declares the public type `T` with constructor `C` (or, with
+/// `private`, the private type `T` whose constructor `C` is private).
+fn seed_ctor_module(
+    modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    module: &str,
+    private: bool,
+) {
+    let deftype = if private { "deftype-" } else { "deftype" };
+    seed_module_with_int(
+        modules,
+        module,
+        &format!("({deftype} T (C [:Int v])) (defn mk [] (C 1))"),
+    );
+}
+
+/// The module that defines the ADT of `name`'s first parameter.
+fn first_param_adt_module(
+    modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    name: &str,
+) -> String {
+    let guard = modules.get(&module_path()).expect("module exists");
+    let callable = guard
+        .get(name)
+        .and_then(Binding::callable)
+        .expect("defn is registered");
+    match &callable.arm.scheme.ty {
+        cranelisp_types::Type::Fn(params, _) => match params.first() {
+            Some(cranelisp_types::Type::ADT(fqtn, _)) => fqtn.module.to_string(),
+            other => panic!("expected an ADT parameter, got {other:?}"),
+        },
+        other => panic!("expected a function scheme, got {other:?}"),
+    }
+}
+
+const PATTERN_ON_PARAM: &str = "(defn f [x] (match x [(PAT v) v]))";
+
+fn pattern_source(constructor: &str) -> String {
+    PATTERN_ON_PARAM.replace("PAT", constructor)
+}
+
+// spec: spec/08-modules.md §8.6.6 step 1; spec/03-types.md §3.9.2 — B1: each
+// member of a stacked bound resolves as written, so an alias qualifier names
+// the aliased module.
+#[test]
+fn stacked_bound_through_alias_constrains_target_home() {
+    let modules = modules();
+    seed_trait_module_b(&modules, false);
+    check_source_in(
+        &modules,
+        module_path(),
+        &alias_bb_to_b(),
+        "(deftrait T1 (t1 [x] self)) (defn f [:T1 :bb/Tr x] 7)",
+    )
+    .expect("`:bb/Tr` names the trait in `b`");
+    let constraints = param_constraints_of(&modules, "f");
+    assert!(
+        constraints.contains(&"b/Tr".to_string()),
+        "the stacked member's home is the alias target: {constraints:?}"
+    );
+    assert!(
+        !constraints.iter().any(|c| c.starts_with("bb/")),
+        "no constraint names the alias: {constraints:?}"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1; spec/03-types.md §3.9.2 — B2: a
+// stacked member naming an absent module is the form's `Type` gap.
+#[test]
+fn stacked_bound_absent_module_is_type_gap() {
+    let modules = modules();
+    let r = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(deftrait T1 (t1 [x] self)) (defn f [:T1 :nosuch/Tr x] 7)",
+    );
+    assert_type_gap(r, "nosuch", "Tr");
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4; spec/03-types.md §3.9.2 — B3: a
+// present module without the trait is a located error, not a gap.
+#[test]
+fn stacked_bound_present_module_without_trait_is_type_error_neg() {
+    let modules = modules();
+    seed_module(&modules, "b", "thing");
+    let r = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(deftrait T1 (t1 [x] self)) (defn f [:T1 :b/Tr x] 7)",
+    );
+    assert_located_type_error_naming(r, "Tr");
+}
+
+// spec: spec/03-types.md §3.9.2 — B4 (control): bare stacked members keep
+// their current-module homes.
+#[test]
+fn stacked_bound_bare_members_unchanged() {
+    let modules = modules();
+    check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(deftrait T1 (t1 [x] self)) (deftrait T2 (t2 [x] self)) (defn f [:T1 :T2 x] 7)",
+    )
+    .expect("bare stacked bound");
+    let mut constraints = param_constraints_of(&modules, "f");
+    constraints.sort();
+    assert_eq!(
+        constraints,
+        vec![
+            "test_form_mod/T1".to_string(),
+            "test_form_mod/T2".to_string()
+        ]
+    );
+}
+
+// spec: spec/08-modules.md §8.6.5, §8.6.6 step 1; spec/06-pattern-matching.md
+// §6.2.1 — P1: an alias-qualified constructor pattern resolves in the aliased
+// module, as its value twin does.
+#[test]
+fn qualified_ctor_pattern_through_alias_resolves_in_target() {
+    let modules = modules();
+    seed_ctor_module(&modules, "b", false);
+    check_source_in(
+        &modules,
+        module_path(),
+        &alias_bb_to_b(),
+        &pattern_source("bb/C"),
+    )
+    .expect("`(bb/C v)` names `b`'s constructor");
+    assert_eq!(first_param_adt_module(&modules, "f"), "b");
+}
+
+// spec: spec/08-modules.md §8.6.5, §8.7.3 — P2: a private constructor is not
+// reachable by a qualified pattern; the outcome is the value twin's.
+#[test]
+fn qualified_ctor_pattern_private_constructor_matches_value_twin_neg() {
+    let modules = modules();
+    seed_ctor_module(&modules, "b", true);
+    let value = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(defn g [] (b/C 1))",
+    );
+    let pattern = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        &pattern_source("b/C"),
+    );
+    match (&value, &pattern) {
+        (Err(CheckError::Gap(value_gap)), Err(CheckError::Gap(pattern_gap))) => {
+            assert_eq!(
+                pattern_gap, value_gap,
+                "the pattern requests the value twin's gap"
+            )
+        }
+        (Err(CheckError::TypeError { .. }), Err(CheckError::TypeError { .. })) => {}
+        _ => panic!("pattern {pattern:?} must be rejected as the value twin {value:?} is"),
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 1 (pattern position) — P3: a qualified
+// pattern naming an absent module returns the value twin's gap.
+#[test]
+fn qualified_ctor_pattern_absent_module_is_value_twin_gap() {
+    let modules = modules();
+    let value = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(defn g [] (b/C 1))",
+    );
+    let pattern = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        &pattern_source("b/C"),
+    );
+    let Err(CheckError::Gap(value_gap)) = value else {
+        panic!("value twin gaps: {value:?}");
+    };
+    match pattern {
+        Err(CheckError::Gap(pattern_gap)) => assert_eq!(pattern_gap, value_gap),
+        other => panic!("expected the value twin's gap {value_gap:?}, got {other:?}"),
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 item 2, §8.6.5 — P4: pins the qualified
+// walk's synthesised child candidate for an undeclared child `q` (no alias).
+// Spec §8.11.2 item 1 reads absolute `q` here; the expectation changes with
+// the R-1 repair in design/typecheck/typecheck.md §11.
+#[test]
+fn qualified_ctor_pattern_prefers_child_module() {
+    let modules = modules();
+    seed_ctor_module(&modules, "test_form_mod.q", false);
+    seed_ctor_module(&modules, "q", false);
+    check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        &pattern_source("q/C"),
+    )
+    .expect("`(q/C v)` resolves");
+    assert_eq!(first_param_adt_module(&modules, "f"), "test_form_mod.q");
+}
+
+// spec: spec/06-pattern-matching.md §6.2.1 — P5 (control): a qualified
+// non-constructor is a located pattern error with no gap.
+#[test]
+fn qualified_non_constructor_pattern_is_located_error_neg() {
+    let modules = modules();
+    seed_module(&modules, "b", "f");
+    let r = check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        &pattern_source("b/f"),
+    );
+    assert_located_type_error_naming(r, "unknown constructor in pattern: b/f");
+}
+
+// spec: spec/09-macros.md §9.3 — P6 (control): the quasiquote lowering's
+// qualified `macros/SCons` pattern resolves from a module without an import.
+#[test]
+fn qualified_macros_scons_pattern_resolves() {
+    let modules = modules();
+    seed_module_with_int(
+        &modules,
+        "macros",
+        "(deftype SList SNil (SCons [:Int h :SList t]))",
+    );
+    check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(defn f [x] (match x [(macros/SCons h t) h macros/SNil 0]))",
+    )
+    .expect("`macros/SCons` resolves in pattern position");
+    assert_eq!(first_param_adt_module(&modules, "f"), "macros");
+}
+
+// ---- Lookup-dependency producer census (typecheck.md §3.4; LD-C) ----
+
+/// A world with `b` (trait `Tr` with an `Int` impl, type `T` with
+/// constructor `C`, function `f`) and the child `test_form_mod.q` (function
+/// `g`, type `T` with constructor `C`).
+fn census_world() -> Arc<DashMap<ModuleFullPath, SymbolTable<(), ()>>> {
+    let modules = modules();
+    seed_module_with_int(
+        &modules,
+        "b",
+        "(deftrait Tr (tr [x] self)) (impl Tr Int (defn tr [x] x)) \
+         (deftype T (C [:Int v])) (defn f [] 1)",
+    );
+    seed_module_with_int(
+        &modules,
+        "test_form_mod.q",
+        "(deftype T (C [:Int v])) (defn g [] 2)",
+    );
+    modules
+}
+
+/// Check `source` as one cluster and return the lookup dependencies its
+/// staging table received, or the rendered check error.
+fn staged_lookup_dependencies(
+    modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    aliases: &ModuleAliases,
+    source: &str,
+) -> Result<Vec<String>, String> {
+    let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+    {
+        let mut ctx = SymbolTableAccess::cluster(modules, &mut staging, module_path());
+        check_forms::<(), ()>(
+            source_entries(source),
+            &mut ctx,
+            modules,
+            aliases,
+            &no_fallback(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    }
+    Ok(staging
+        .lookup_dependencies()
+        .map(ToString::to_string)
+        .collect())
+}
+
+// spec: design/typecheck/typecheck.md §3.4 route census; spec/08-modules.md
+// §8.6.6 — every census route records the module whose table answered, after
+// alias substitution, for a successful cluster.
+#[test]
+fn lookup_dependency_census_records_answering_module() {
+    let rows: &[(&str, &str, &str)] = &[
+        ("value", "(defn h [] (b/f))", "b"),
+        ("value, alias", "(defn h [] (bb/f))", "b"),
+        (
+            "value, child-relative",
+            "(defn h [] (q/g))",
+            "test_form_mod.q",
+        ),
+        ("value-position constructor", "(defn h [] (b/C 1))", "b"),
+        ("qualified dotted member", "(defn h [] (b/T.C 1))", "b"),
+        ("type annotation", "(defn h [:b/T x] x)", "b"),
+        ("type annotation, alias", "(defn h [:bb/T x] x)", "b"),
+        (
+            "deftype field",
+            "(deftype W (W0 [:b/T w])) (defn h [] 0)",
+            "b",
+        ),
+        (
+            "impl target",
+            "(deftrait L (l [x] self)) (impl L b/T (defn l [x] x))",
+            "b",
+        ),
+        ("trait, step R", "(defn h [:b/Tr x] 7)", "b"),
+        ("trait, step R, alias", "(defn h [:bb/Tr x] 7)", "b"),
+        (
+            "stacked bound",
+            "(deftrait T1 (t1 [x] self)) (defn h [:T1 :b/Tr x] 7)",
+            "b",
+        ),
+        (
+            "stacked bound, alias",
+            "(deftrait T1 (t1 [x] self)) (defn h [:T1 :bb/Tr x] 7)",
+            "b",
+        ),
+        ("pattern", "(defn h [x] (match x [(b/C v) v]))", "b"),
+        ("pattern, alias", "(defn h [x] (match x [(bb/C v) v]))", "b"),
+        (
+            "pattern, child-relative",
+            "(defn h [x] (match x [(q/C v) v]))",
+            "test_form_mod.q",
+        ),
+    ];
+    let aliases = alias_bb_to_b();
+    let mut failures = Vec::new();
+    for (route, source, expected) in rows {
+        let modules = census_world();
+        match staged_lookup_dependencies(&modules, &aliases, source) {
+            Ok(recorded) if recorded == vec![expected.to_string()] => {}
+            other => failures.push(format!("{route}: `{source}` recorded {other:?}")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "census rows failed:\n{}",
+        failures.join("\n")
+    );
+}
+
+// spec: design/typecheck/typecheck.md §3.4 "Outcomes" — bare and
+// self-qualified references carry no lookup module.
+#[test]
+fn lookup_dependency_census_bare_and_self_qualified_record_nothing() {
+    let modules = census_world();
+    let recorded = staged_lookup_dependencies(
+        &modules,
+        &no_aliases(),
+        "(defn h [] 1) (defn k [] (h)) (defn m [] (test_form_mod/h))",
+    )
+    .expect("bare and self-qualified references check");
+    assert!(recorded.is_empty(), "recorded {recorded:?}");
+}
+
+// spec: design/typecheck/typecheck.md §3.4 "Sink and rollback" — a cluster
+// rejected by a later form writes nothing, though an earlier form's
+// reference was answered.
+#[test]
+fn lookup_dependency_rejected_cluster_writes_nothing_neg() {
+    let modules = census_world();
+    let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+    let result = {
+        let mut ctx = SymbolTableAccess::cluster(&modules, &mut staging, module_path());
+        check_forms::<(), ()>(
+            source_entries(
+                "(defn h [x] (match x [(b/C v) v])) (defn k [x] (match x [(b/Nope v) v]))",
+            ),
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &no_fallback(),
+        )
+    };
+    assert!(
+        result.is_err(),
+        "the unknown constructor rejects the cluster"
+    );
+    assert_eq!(staging.lookup_dependencies().count(), 0);
+}
+
+// spec: design/typecheck/typecheck.md §3.4 "Sink and rollback" — live mode
+// has no sink, so the live table's set is untouched.
+#[test]
+fn lookup_dependency_live_mode_records_nothing() {
+    let modules = census_world();
+    let mut ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
+    check_forms::<(), ()>(
+        source_entries("(defn h [] (b/f))"),
+        &mut ctx,
+        &modules,
+        &no_aliases(),
+        &no_fallback(),
+    )
+    .expect("live-mode check");
+    let guard = modules.get(&module_path()).expect("module exists");
+    assert_eq!(guard.lookup_dependencies().count(), 0);
+}
+
 /// Gap on a missing module reached VIA an alias: an alias `m/real`
 /// (owner-prefixed key `<owner>.real`) targeting `real.target`, where
 /// `real.target` is ABSENT. A reference through the alias must FOLLOW the

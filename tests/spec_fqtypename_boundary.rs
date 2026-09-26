@@ -16,6 +16,7 @@
 // spec: spec/08-modules.md §8.5 — Qualified Names (a name resolves to exactly
 // one definition, identified by `module_path '/' local_name`; two modules with
 // the same short name are distinct).
+//
 // design basis: Decision 47 — resolved-stage type identity is module-qualified
 // (design/arch/interfaces.md §"Type System").
 

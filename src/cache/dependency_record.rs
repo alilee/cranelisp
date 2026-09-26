@@ -50,9 +50,10 @@ impl DependencyRecord {
 
 /// A module's direct dependency edges: every import (including alias-only and
 /// null imports), every re-export target, every declared child, the prelude
-/// when the module's prelude-fallback bit is set, and every callee module.
-/// Compiler-owned modules are excluded — the build identity keys `primitives`
-/// and `macros`, and platform modules are §7.6 *Known gaps* 5.
+/// when the module's prelude-fallback bit is set, every callee module and
+/// every lookup dependency. Compiler-owned modules are excluded — the build
+/// identity keys `primitives` and `macros`, and platform modules are §7.6
+/// *Known gaps* 5.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleEdges(BTreeSet<ModuleFullPath>);
 
@@ -91,17 +92,34 @@ impl ModuleEdges {
             &table.submodules,
             prelude_fallback,
         )
-        .with_callee_modules(module, table)
+        .with_recorded_edges(module, table)
     }
 
-    pub(crate) fn with_callee_modules(
+    pub(crate) fn with_recorded_edges(
         mut self,
         module: &ModuleFullPath,
         table: &SessionSymbolTable,
     ) -> Self {
-        self.0.extend(callee_modules(module, table));
+        self.0.extend(recorded_edges(module, table));
         self
     }
+}
+
+/// The edges `table` records from its compile: callee modules and lookup
+/// dependencies (§7.6.1, §7.6.2), filtered like every other edge. Generic
+/// over the code store so a decoded table can be read before it is installed.
+pub(crate) fn recorded_edges<C: CodeStore, L: LinkerStore>(
+    module: &ModuleFullPath,
+    table: &SymbolTable<C, L>,
+) -> BTreeSet<ModuleFullPath> {
+    let mut edges = callee_modules(module, table);
+    edges.extend(
+        table
+            .lookup_dependencies()
+            .filter(|target| is_edge(module, target))
+            .cloned(),
+    );
+    edges
 }
 
 /// The module of every callee recorded on `table`'s callables, overload arms

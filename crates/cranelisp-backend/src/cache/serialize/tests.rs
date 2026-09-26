@@ -81,7 +81,7 @@ fn result_context_instances_round_trip_complete_links() {
     // Bump tripwire: the round trip below is version-agnostic, so this literal
     // exists only to make a `CACHE_SCHEMA_VERSION` change re-read this cell.
     // Advance it once the version-log entry for the new epoch is written.
-    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 29);
+    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 30);
     let table = result_context_instances();
     let bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = deserialise_meta(

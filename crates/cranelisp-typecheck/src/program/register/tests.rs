@@ -63,11 +63,13 @@ fn signature_registration_does_not_infer_origin_from_macro_family() {
 
     {
         let staging_cell = RefCell::new(&mut staging);
+        let lookup_dependencies = crate::checker::LookupDependencyCollector::default();
         let env = TypeCheckEnv::new_with_staging(
             &modules,
             &next_id,
             module.clone(),
             &staging_cell,
+            &lookup_dependencies,
             &aliases,
             &fallback,
         );

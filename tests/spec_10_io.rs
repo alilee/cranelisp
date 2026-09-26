@@ -138,7 +138,7 @@ fn platform_pure_int_unforced_discard_balances_without_disposer() {
 // spec: spec/10-io.md §10.8.1 — one heap-payload `Pure`, bound once and forced
 // twice, hands its live String to each force; spec/12-runtime.md §12.3.1 — and
 // leaks nothing its fresh-node twin does not (IOR-2; allocation:
-// `tests/plan/s122-evidence-delta.md` §"Reuse of an IO value — defect allocation").
+// `tests/plan/s122-evidence-delta.md`, "Reuse of an IO value — defect allocation").
 // defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev fixed=S122/57253cf2
 // The cured reuse refusal lived at
 // `crates/cranelisp-intrinsics/src/io.rs::force_pure_node`.

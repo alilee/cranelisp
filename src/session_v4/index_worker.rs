@@ -1260,7 +1260,7 @@ fn index_typecheck_into_private(
                 .publish_staged(staging, &[])
                 .map_err(|error| format!("private index publication error: {error}"))?;
             Ok(IndexedDeclarations {
-                edges: declarations.edges.with_callee_modules(module, &private),
+                edges: declarations.edges.with_recorded_edges(module, &private),
                 ..declarations
             })
         }
@@ -2163,6 +2163,46 @@ mod tests {
             indexed.edges,
             ModuleEdges::of_declarations(&m("a"), &[null_import_of_b], &[], &[], fallback_bit),
             "`b` is an edge of `a` only through the recorded callee `b/f`"
+        );
+    }
+
+    // spec: design/int/int.md §7.6.2 — the index writer's edges include the
+    // lookup dependencies of its private table after typecheck, so a module
+    // that reaches a loaded module only through a qualified type records it.
+    #[test]
+    fn index_edges_include_a_module_reached_only_through_a_qualified_type() {
+        let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        crate::bootstrap::mount_synthetic_modules(&tables, &std::sync::atomic::AtomicU32::new(0))
+            .unwrap();
+        let aliases = cranelisp_types::ModuleAliases::default();
+        let fallback = cranelisp_typecheck::PreludeFallback::default();
+        let index = |module: &ModuleFullPath, source: &str| {
+            tables.insert(
+                module.clone(),
+                crate::code::SessionSymbolTable::new_with_params(module.clone()),
+            );
+            let sexps = cranelisp_frontend::parse(source).unwrap();
+            index_typecheck_into_private(&tables, &aliases, &fallback, module, &sexps).unwrap()
+        };
+        index(
+            &m("b"),
+            "(import [primitives [Int]])\n(deftype T (K [:Int v]))",
+        );
+
+        let indexed = index(&m("a"), "(defn g [:b/T x] 1)");
+
+        let fallback_bit = crate::imports::gets_prelude_fallback(&m("a"), &[], &[]);
+        let null_import_of_b = cranelisp_types::ImportSpec {
+            module_path: m("b"),
+            alias: None,
+            names: cranelisp_types::ImportNames::None,
+            span: cranelisp_types::Span::SYNTHETIC,
+        };
+        assert_eq!(
+            indexed.edges,
+            ModuleEdges::of_declarations(&m("a"), &[null_import_of_b], &[], &[], fallback_bit),
+            "`b` is an edge of `a` only through the recorded lookup of `b/T`"
         );
     }
 

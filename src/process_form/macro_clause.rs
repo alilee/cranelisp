@@ -21,13 +21,17 @@ pub(super) enum MacroCheckpoint {
 }
 
 /// Compile and immediately publish one complete parent-plus-clause generation.
+///
+/// The publication records the attempt's macro-head modules and the clause
+/// bodies' own lookup dependencies (`design/int/int.md` §7.6.2).
 pub(super) fn compile_macro_checkpoint(
     env: &MacroClauseEnv<'_>,
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     macro_sexp: &cranelisp_types::Sexp,
-    span: Span,
+    macro_lookup_dependencies: &std::collections::BTreeSet<ModuleFullPath>,
 ) -> Result<MacroCheckpoint, CranelispError> {
+    let span = macro_sexp.span();
     let shared = env.shared_state.ok_or_else(|| CranelispError::MacroError {
         message: format!(
             "macro checkpoint for '{}/{}' has no live publication owner",
@@ -122,6 +126,13 @@ pub(super) fn compile_macro_checkpoint(
         &[],
     )?;
     prepared.unresolved_dispatch = checked.unresolved_dispatch;
+    // The clause bodies were checked in the scratch table, which is not
+    // published, so their lookup dependencies move to the macro's table here.
+    prepared.record_lookup_dependencies(
+        clause_staging
+            .lookup_dependencies()
+            .chain(macro_lookup_dependencies),
+    );
     let mut processed =
         crate::cluster::ProcessedCluster::from_parts(Vec::new(), Vec::new(), Vec::new());
     processed.set_prepared(prepared);

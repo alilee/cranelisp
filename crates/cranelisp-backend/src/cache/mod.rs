@@ -415,7 +415,13 @@ pub mod serialize;
 /// S122 changes persisted generic-instance keys from substitution suffixes to
 /// their canonical full concrete signatures. Schema-28 sidecars and paired
 /// objects therefore cannot be mixed with the current symbol-table identity.
-pub const CACHE_SCHEMA_VERSION: u32 = 29;
+///
+/// **29 → 30 (S122 lookup dependencies).** `SymbolTable` persists
+/// `lookup_dependencies`, the modules whose tables answered a qualified
+/// reference, deliberately without `#[serde(default)]`: an empty default would
+/// under-key the module's cache-validity edges. The version gate refuses a
+/// schema-29 sidecar and its paired object wholesale.
+pub const CACHE_SCHEMA_VERSION: u32 = 30;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

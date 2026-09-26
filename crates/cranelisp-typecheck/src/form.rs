@@ -48,7 +48,7 @@ use cranelisp_types::{
     MonoDemand, ParsedEntry, ResolutionGap, Span, SymbolTable, SymbolTables, TopLevel,
 };
 
-use crate::checker::{CheckState, PreludeFallback, TypeCheckEnv};
+use crate::checker::{CheckState, LookupDependencyCollector, PreludeFallback, TypeCheckEnv};
 use crate::cluster::SymbolTableAccess;
 use crate::program::{CheckPass, ModuleCheckAccumulator};
 use crate::result::{CheckError, CheckResult};
@@ -148,12 +148,14 @@ where
         SymbolTableAccess::Live { .. } => None,
     };
 
+    let lookup_dependencies = LookupDependencyCollector::default();
     let env = match &staging_cell {
         Some(cell) => TypeCheckEnv::<C, L>::new_with_staging(
             symbol_tables,
             &next_id,
             current_module.clone(),
             cell,
+            &lookup_dependencies,
             module_aliases,
             prelude_fallback,
         ),
@@ -376,6 +378,7 @@ where
         )
         .map_err(|e| lift_error(e, &state))?;
 
+    env.record_lookup_dependencies();
     Ok(result)
 }
 
@@ -431,12 +434,14 @@ where
         }
         SymbolTableAccess::Live { .. } => None,
     };
+    let lookup_dependencies = LookupDependencyCollector::default();
     let env = match &staging_cell {
         Some(cell) => TypeCheckEnv::<C, L>::new_with_staging(
             symbol_tables,
             &next_id,
             current_module.clone(),
             cell,
+            &lookup_dependencies,
             module_aliases,
             prelude_fallback,
         ),
@@ -461,6 +466,7 @@ where
         .instantiate_demand_roots(&mut state, demands)
         .map_err(|error| lift_error(error, &state))?;
     crate::ownership::run_pass5(&env, &state);
+    env.record_lookup_dependencies();
     Ok(result)
 }
 
@@ -537,12 +543,14 @@ where
         }
         SymbolTableAccess::Live { .. } => None,
     };
+    let lookup_dependencies = LookupDependencyCollector::default();
     let env = match &staging_cell {
         Some(cell) => TypeCheckEnv::<C, L>::new_with_staging(
             symbol_tables,
             &next_id,
             current_module.clone(),
             cell,
+            &lookup_dependencies,
             module_aliases,
             prelude_fallback,
         ),
@@ -562,8 +570,11 @@ where
     let mut var_map: std::collections::HashMap<cranelisp_types::Symbol, cranelisp_types::TypeId> =
         std::collections::HashMap::new();
 
-    env.resolve_annotation_type_expr_in_module(expr, &mut var_map, current_module, span)
-        .map_err(CheckError::from)
+    let ty = env
+        .resolve_annotation_type_expr_in_module(expr, &mut var_map, current_module, span)
+        .map_err(|failure| CheckError::from(failure.into_error_outside_gap_loop()))?;
+    env.record_lookup_dependencies();
+    Ok(ty)
 }
 
 /// Lift a failed inner-dispatcher `CranelispError` to `CheckError`, promoting

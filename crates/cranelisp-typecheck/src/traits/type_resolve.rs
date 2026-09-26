@@ -7,9 +7,8 @@ use cranelisp_types::{
 // Impl-target name extraction + trait-decl identity
 // ---------------------------------------------------------------------------
 
-/// Extract the head `TypeName` from an impl's `target: TypeExpr`. Used for
-/// diagnostics + lookup at sites that previously consumed the retired
-/// `TraitImpl.target_type: TypeName` field. Returns `None` for `SelfType`,
+/// Extract the head `TypeName` from an impl's `target: TypeExpr` for
+/// diagnostics; lookups use [`impl_target_head_spelling`]. Returns `None` for `SelfType`,
 /// `FnType`, and bare `TypeVar` targets — these have no single head name.
 /// Per spec §5.4 EBNF, an impl `target` always resolves to `Named` or
 /// `Applied`, so callers may `.expect()` in production paths.
@@ -21,6 +20,26 @@ pub(super) fn impl_target_name(target: &cranelisp_types::TypeExpr) -> Option<&Ty
 /// §5.4 guarantees a head name on the impl target.
 pub(super) fn impl_target_name_or_panic(target: &cranelisp_types::TypeExpr) -> &TypeName {
     impl_target_name(target).expect("spec §5.4: impl target lowers to Named or Applied")
+}
+
+/// The spelling under which an impl target's head resolves from
+/// `current_module`. A head qualified by another module keeps `module/name`,
+/// so that module decides it and an absent one becomes a `Type` gap (spec
+/// §8.5.4 edge 1). A bare or self-qualified head is the bare name, which keeps
+/// an in-cluster type visible through staging, as `resolve_type_expr_ctx` does.
+pub(super) fn impl_target_head_spelling(
+    target: &TypeExpr,
+    current_module: &cranelisp_types::ModuleFullPath,
+) -> TypeName {
+    let head = target
+        .head_ref()
+        .expect("spec §5.4: impl target lowers to Named or Applied");
+    match &head.module {
+        Some(module) if module != current_module => {
+            TypeName::from(format!("{module}/{}", head.name).as_str())
+        }
+        _ => head.name.clone(),
+    }
 }
 
 /// Whether an already-registered `TraitDeclInfo` is the SAME declaration as an

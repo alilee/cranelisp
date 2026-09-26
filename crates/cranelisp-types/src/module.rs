@@ -351,6 +351,16 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// this change-set (the ONE S119 window).
     pub written_trait_impls: Vec<WrittenTraitImpl>,
 
+    /// Modules whose tables answered a qualified reference while this module
+    /// compiled (`design/arch/interfaces.md` §Qualified lookup dependencies).
+    /// Private so the set is insert-only: it has no removal and is rebuilt
+    /// only when the module's table is rebuilt from source.
+    ///
+    /// **Deliberately no `#[serde(default)]`**: an empty default for a
+    /// pre-carrier sidecar would under-key cache validity, so absence is a
+    /// decode error.
+    lookup_dependencies: BTreeSet<ModuleFullPath>,
+
     // --- Cache schema version (Sprint 58 Step 5b; Decision 34) ---
     /// Schema version of the serialised symbol table. Bumped on every
     /// shape-changing field addition / deletion / type change (additions of
@@ -687,6 +697,7 @@ impl SymbolTable<(), ()> {
             platforms: Vec::new(),
             submodules: Vec::new(),
             written_trait_impls: Vec::new(),
+            lookup_dependencies: BTreeSet::new(),
             schema_version: 0,
             linker: None,
             transactions: TableTransactions::default(),
@@ -729,6 +740,7 @@ impl SymbolTable<(), ()> {
             platforms: self.platforms,
             submodules: self.submodules,
             written_trait_impls: self.written_trait_impls,
+            lookup_dependencies: self.lookup_dependencies,
             schema_version: self.schema_version,
             linker: None,
             transactions: TableTransactions::default(),
@@ -744,9 +756,10 @@ impl<C: CodeStore> SymbolTable<C, ()> {
     /// prior and staged callable generations carry slots. All other slot moves
     /// are derived by the table. An explicit [`StagedPublicationDecision::ChangeAbi`]
     /// may also retire a slotted live callable whose key is wholly absent from
-    /// staging; omission alone never removes a live binding. The transaction
-    /// validates a cloned result before replacing live state, so every refusal
-    /// leaves `self` unchanged.
+    /// staging; omission alone never removes a live binding. Staged lookup
+    /// dependencies are unioned into the live set, which never loses a member.
+    /// The transaction validates a cloned result before replacing live state,
+    /// so every refusal leaves `self` unchanged.
     pub fn publish_staged(
         &mut self,
         staging: SymbolTable<C, ()>,
@@ -764,7 +777,8 @@ impl<C: CodeStore> SymbolTable<C, ()> {
     /// owner map through [`CompiledPublicationRejection::into_parts`]. A live
     /// slotted callable may be retired without a replacement only through an
     /// explicit [`StagedPublicationDecision::ChangeAbi`]; omitted live keys are
-    /// otherwise preserved.
+    /// otherwise preserved. Staged lookup dependencies are unioned into the
+    /// live set, as for [`Self::publish_staged`].
     pub fn publish_compiled_staged(
         &mut self,
         staging: SymbolTable<C, ()>,
@@ -909,6 +923,7 @@ impl<C: CodeStore> SymbolTable<C, ()> {
 
         let staged_next_seq = staging.next_seq;
         let staged_written_impls = staging.written_trait_impls;
+        let staged_lookup_dependencies = staging.lookup_dependencies;
         let mut staged_entries: Vec<_> = staging.symbols.into_iter().collect();
         staged_entries.sort_by(|(left_name, left), (right_name, right)| {
             let left_slot = left.binding.as_ref().and_then(binding_first_claimed_slot);
@@ -999,6 +1014,9 @@ impl<C: CodeStore> SymbolTable<C, ()> {
         }
 
         merge_written_trait_impls(&mut candidate, staged_written_impls)?;
+        candidate
+            .lookup_dependencies
+            .extend(staged_lookup_dependencies);
         candidate.next_seq = candidate.next_seq.max(staged_next_seq);
         candidate.validate_lifecycle()?;
 
@@ -1020,6 +1038,7 @@ impl<C: CodeStore> SymbolTable<C, ()> {
         self.symbols = plan.candidate.symbols;
         self.retired_slots = plan.candidate.retired_slots;
         self.written_trait_impls = plan.candidate.written_trait_impls;
+        self.lookup_dependencies = plan.candidate.lookup_dependencies;
         self.next_seq = plan.candidate.next_seq;
         for name in plan.mutated {
             self.note_symbol_mutation(&name);
@@ -1410,9 +1429,29 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             platforms: Vec::new(),
             submodules: Vec::new(),
             written_trait_impls: Vec::new(),
+            lookup_dependencies: BTreeSet::new(),
             schema_version: 0,
             linker: None,
             transactions: TableTransactions::default(),
+        }
+    }
+
+    /// Modules whose tables answered a qualified reference while this module
+    /// compiled, after module-alias substitution, in path order.
+    ///
+    /// These are cache-validity edges only, not a load obligation.
+    pub fn lookup_dependencies(&self) -> impl Iterator<Item = &ModuleFullPath> {
+        self.lookup_dependencies.iter()
+    }
+
+    /// Record one lookup dependency.
+    ///
+    /// Insert-only: duplicates collapse and this table's own path is ignored.
+    /// Producers record into the cluster's staging table; staged publication
+    /// unions the set into the live table.
+    pub fn record_lookup_dependency(&mut self, module: ModuleFullPath) {
+        if module != self.path {
+            self.lookup_dependencies.insert(module);
         }
     }
 

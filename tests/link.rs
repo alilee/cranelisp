@@ -150,7 +150,8 @@ fn link_output_long_form_writes_named_path_not_default() {
     );
 }
 
-// spec: tests/plan/helpers-api.md — `link_then_run` executes the artifact where
+// spec: tests/plan/helpers-api.md §"`CrOutput` — captured outcome" —
+// `link_then_run` executes the artifact where
 // repl/spec/00-cli-invocation.md §0.2.1.1 places it: the entry stem beside its
 // source, including a source in a subdirectory (S122 harness condition H1).
 #[test]

@@ -1863,6 +1863,7 @@ impl<'a, C, L> !core::panic::unwind_safe::UnwindSafe for cranelisp_types::Resolu
 #[non_exhaustive] pub struct cranelisp_types::Resolved<C: cranelisp_types::CodeStore>
 pub cranelisp_types::Resolved::canonical: cranelisp_types::FQSymbol
 pub cranelisp_types::Resolved::entry: cranelisp_types::Binding<C>
+pub cranelisp_types::Resolved::lookup_module: core::option::Option<cranelisp_types::ModuleFullPath>
 impl<C> core::marker::Freeze for cranelisp_types::Resolved<C> where C: core::marker::Freeze
 impl<C> core::marker::Send for cranelisp_types::Resolved<C>
 impl<C> core::marker::Sync for cranelisp_types::Resolved<C>
@@ -2020,6 +2021,7 @@ pub fn cranelisp_types::SymbolTable<C, L>::install_overloaded(&mut self, craneli
 pub fn cranelisp_types::SymbolTable<C, L>::install_platform(&mut self, cranelisp_types::Symbol, cranelisp_types::Scheme, alloc::vec::Vec<cranelisp_types::Symbol>, core::option::Option<alloc::string::String>, u64, cranelisp_types::SchedulingClass, bool, usize, cranelisp_types::Visibility) -> core::result::Result<cranelisp_types::CallableSlot, cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::install_template(&mut self, cranelisp_types::Symbol, cranelisp_types::Scheme, alloc::vec::Vec<cranelisp_types::Symbol>, core::option::Option<alloc::string::String>, u64, cranelisp_types::CallableOrigin, cranelisp_types::TemplateBody, cranelisp_types::TemplateKind, alloc::vec::Vec<cranelisp_types::FQSymbol>, cranelisp_types::Visibility) -> core::result::Result<(), cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::install_trait_method(&mut self, cranelisp_types::Symbol, cranelisp_types::TraitMethodRecord, cranelisp_types::Visibility) -> core::result::Result<(), cranelisp_types::LifecycleError>
+pub fn cranelisp_types::SymbolTable<C, L>::lookup_dependencies(&self) -> impl core::iter::traits::iterator::Iterator<Item = &cranelisp_types::ModuleFullPath>
 pub fn cranelisp_types::SymbolTable<C, L>::mark_broken(&mut self, &cranelisp_types::Symbol, cranelisp_types::BrokenProvenance) -> core::result::Result<cranelisp_types::BrokenTransition<C>, cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::name_candidates(&self, &cranelisp_types::Symbol) -> alloc::vec::Vec<cranelisp_types::NameCandidate>
 pub fn cranelisp_types::SymbolTable<C, L>::new_with_params(cranelisp_types::ModuleFullPath) -> Self
@@ -2027,6 +2029,7 @@ pub fn cranelisp_types::SymbolTable<C, L>::public_name_candidates(&self) -> impl
 pub fn cranelisp_types::SymbolTable<C, L>::public_symbols(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&cranelisp_types::Symbol, &cranelisp_types::Binding<C>)>
 pub fn cranelisp_types::SymbolTable<C, L>::publish_body_ownership(&mut self, &cranelisp_types::CallableTarget, cranelisp_types::ModeSummary, cranelisp_types::MonoDefnVariant) -> core::result::Result<(), cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::publish_compiled_owner(&mut self, &cranelisp_types::CallableTarget, C) -> core::result::Result<core::option::Option<C>, cranelisp_types::CompiledOwnerRejection<C>>
+pub fn cranelisp_types::SymbolTable<C, L>::record_lookup_dependency(&mut self, cranelisp_types::ModuleFullPath)
 pub fn cranelisp_types::SymbolTable<C, L>::remove_non_callable(&mut self, &cranelisp_types::Symbol) -> core::result::Result<core::option::Option<cranelisp_types::Binding<C>>, cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::replace_callees(&mut self, &cranelisp_types::Symbol, alloc::vec::Vec<cranelisp_types::FQSymbol>) -> core::result::Result<(), cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::replace_unpublished_synthesized_concrete(&mut self, cranelisp_types::Symbol, cranelisp_types::Scheme, alloc::vec::Vec<cranelisp_types::Symbol>, core::option::Option<alloc::string::String>, cranelisp_types::CallableOrigin, cranelisp_types::SynthSpec, cranelisp_types::MonoDefnVariant, cranelisp_types::Visibility) -> core::result::Result<cranelisp_types::CallableSlot, cranelisp_types::LifecycleError>

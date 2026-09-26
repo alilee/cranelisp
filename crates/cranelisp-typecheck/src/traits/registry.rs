@@ -323,7 +323,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         &con_var_map,
                         decl.span,
                     )
-                    .map_err(cranelisp_types::CranelispError::from)
+                    .map_err(|failure| failure.into_form_error(state))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let ret_ty = self
@@ -334,7 +334,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     &con_var_map,
                     decl.span,
                 )
-                .map_err(cranelisp_types::CranelispError::from)?;
+                .map_err(|failure| failure.into_form_error(state))?;
 
             // Collect all var IDs (constructor + regular)
             let mut all_vars: Vec<TypeId> = con_var_map.values().copied().collect();
@@ -450,7 +450,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// other TypeVars get fresh type variables (I3 fix).
     fn build_method_type(
         &self,
-        state: &CheckState,
+        state: &mut CheckState,
         method: &TraitMethodSig,
         type_var_id: TypeId,
         trait_type_params: &[Symbol],
@@ -478,7 +478,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     trait_type_params,
                     span,
                 )
-                .map_err(cranelisp_types::CranelispError::from)
+                .map_err(|failure| failure.into_form_error(state))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -491,7 +491,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_type_params,
                 span,
             )
-            .map_err(cranelisp_types::CranelispError::from)?
+            .map_err(|failure| failure.into_form_error(state))?
         } else {
             self.fresh_var()
         };

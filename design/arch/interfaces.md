@@ -428,6 +428,41 @@ for trait-implementation registration.
 - A serde-visible change to this tree takes a `CACHE_SCHEMA_VERSION` bump
   (`crates/cranelisp-backend/src/cache/mod.rs`); older sidecars are rejected and rebuilt.
 
+### Qualified lookup dependencies
+
+**Status: implemented 2026-09-26, uncommitted; QA evidence adequate; phase acceptance pending.**
+- The exact three-entry types API and cache schema 30 match the user's approval
+  (`sprints/SPRINT.md` §"Lookup dependency implementation approval — 2026-09-26").
+  The user confirmed the generated types baseline diff (+3/−0) on 2026-09-26.
+- One full suite passed on the delivered source (6,144 of 6,144). Independent types
+  and int reviews leave no open blocking or required finding, and QA's evidence
+  adequacy is recorded in the [evidence plan](../../tests/plan/s122-evidence-delta.md#adequacy-2026-09-26).
+- Open lead, not an accepted residual: an attempt that makes no staged publication
+  records no macro head ([int §7.6.2](../int/int.md#762-lookup-dependencies)). QA
+  owns its classification (plan allocation LD-9).
+- This realizes the user's conservative module-hash direction. Selective reuse and
+  optimisation-aware invalidation are [ACT-0992](../../sprints/actions/ACT-0992-optimisation-aware-cache-invalidation.md).
+
+- **Fact.** A module's lookup dependencies are the modules whose tables answered a qualified
+  reference while that module compiled, after spec §8.6.6 alias substitution. They cover every
+  reference kind, including constructors, patterns, accessors, types, traits and macro heads.
+  Terminal `callees` keep their meaning.
+- **Carriers.** `Resolved.lookup_module` names the answering module for a qualified spelling
+  resolved outside the current module. It is provenance, not an identity. Each `SymbolTable`
+  persists its set, read through `lookup_dependencies` and written only through
+  `record_lookup_dependency`.
+- **Maintenance.** Producers record into the cluster's staging table, and staged publication
+  unions the set into the live table. A gap or failure discards staging, and restore
+  installs the persisted set. No removal exists: the set is rebuilt only when the module is
+  recompiled from source into a new table. A stale member after redefinition costs a cache
+  miss, never a stale restore.
+- **Use.** The dependency record's edges include the set, so it governs cache validity.
+  It is not a load edge. Restore does not load these modules; a later compilation that needs
+  one loads it on demand (spec §8.5.4). Object loading and `--link` contents still follow
+  declared and callee edges ([dependency record](../int/int.md#76-dependency-record-and-validity)).
+- **Schema.** The field has no `#[serde(default)]`, and its addition bumps
+  `CACHE_SCHEMA_VERSION`.
+
 ### Module aliases
 
 `ModuleAliases` is a separate session-level namespace keyed only by `module_alias_key`. It
@@ -471,8 +506,9 @@ symbol-table data; nothing scans.
 - `substitute_module_alias` takes the alias table, the referring module and the path. The
   leading segment may use the referring module's alias at either visibility; later segments
   traverse public mounts only. Every step is a keyed probe under the shared chain-depth cap.
-  FIXME 0798 is the open filing behind this signature; its disposition against source is
-  owed.
+  `module_alias_key` is the one alias-key mint; the binary's import-alias writer still keys
+  through a private copy
+  ([outstanding obligation](module-alias-scoped-lookup.md#5-outstanding-obligation--import-alias-key-mint)).
 - Contracts: [prelude and explicit imports](prelude-import-convergence.md),
   [scoped module aliases](module-alias-scoped-lookup.md) and
   [resolve home before enumeration](resolve-home-enumeration.md).

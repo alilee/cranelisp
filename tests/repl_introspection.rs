@@ -3377,10 +3377,10 @@ fn display_format_eval_result_after_relocation_unchanged() {
     );
 }
 
-// spec: design/backend/backend.md §"FIXME 0108 — Relocate `display.rs` to `int`" — backend's public surface MUST NOT
-// list `display::*` post-relocation. Negative test verified via the
-// committed `cargo public-api` baseline.
-// FIXME(/dev int FIXME 0108 + /dev backend baseline regenerated post-relocation).
+// spec: design/int/int.md §"Bounded-context recap" — REPL display, including the
+// relocated `display.rs`, is int's; backend's public surface therefore lists
+// no `display::*`. Negative test over the committed `cargo public-api`
+// baseline.
 #[test]
 fn public_api_check_backend_display_absent_neg() {
     use std::path::PathBuf;
