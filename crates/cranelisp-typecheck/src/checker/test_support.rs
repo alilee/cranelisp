@@ -9,6 +9,55 @@ use dashmap::DashMap;
 
 use super::*;
 
+/// Bare-name-rooted impl-existence predicates for the chain-follow unit cells.
+/// They re-resolve a bare trait name from a module and match a bare type name,
+/// so they exist only here. Production resolves the trait once and probes by
+/// receiver identity ([`TypeCheckEnv::impl_shell`]; typecheck §9.1.1).
+impl TypeCheckEnv<'_> {
+    /// Chain-follow `trait_name` from `user` (no prelude fallback) and match
+    /// `impl_type` by bare name in the trait's home.
+    pub(crate) fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
+        self.resolve_terminal_entry_and_home(&ModuleFullPath::from("user"), trait_name.as_ref())
+            .is_some_and(|(terminal, home)| {
+                matches!(terminal.declaration, Decl::Trait(_))
+                    && self.has_bare_named_impl_in_home(&home, trait_name, impl_type)
+            })
+    }
+
+    /// Chain-follow `trait_name` from `state.current_module`, with the
+    /// implicit-prelude fallback, and match `impl_type` by bare name in the
+    /// trait's home.
+    pub(crate) fn has_impl_with_state(
+        &self,
+        state: &CheckState,
+        trait_name: &TraitName,
+        impl_type: &TypeName,
+    ) -> bool {
+        self.resolve_terminal_entry_scoped(state, trait_name.as_ref())
+            .is_some_and(|(terminal, home)| {
+                matches!(terminal.declaration, Decl::Trait(_))
+                    && self.has_bare_named_impl_in_home(&home, trait_name, impl_type)
+            })
+    }
+
+    fn has_bare_named_impl_in_home(
+        &self,
+        home: &ModuleFullPath,
+        trait_name: &TraitName,
+        impl_type: &TypeName,
+    ) -> bool {
+        let mut found = false;
+        self.for_each_in_module(home, |_key, entry| {
+            found |= matches!(
+                &entry.declaration,
+                Decl::ImplShell(shell)
+                    if &shell.trait_name.name == trait_name && &shell.impl_type.name == impl_type
+            );
+        });
+        found
+    }
+}
+
 /// Test helper that owns the backing stores and provides a `TypeCheckEnv`
 /// plus a `CheckState` for test methods. Replaces the old `TypeChecker::new()`.
 pub(crate) struct TestFixture {

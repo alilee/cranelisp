@@ -128,9 +128,11 @@ the symptom is a spurious `no impl of trait T for type X`:
 1. The body recheck switches `state.current_module` to the defining module.
 2. Constraint verification maps through the instantiation's original→fresh
    var mapping, never raw scheme var ids.
-3. Impl lookup roots at the trait's home (`traits/dispatch.rs::has_impl_in_home`).
-   `has_impl_with_state` is test-only; it re-resolves the bare trait name in
-   the caller's scope.
+3. Impl lookup is one keyed read at the trait's home, keyed by the receiver's
+   identity (`checker.rs::impl_shell`, fed by `traits::receiver_identity`;
+   [typecheck §9.1.1](../../design/typecheck/typecheck.md#911-impl-existence-is-keyed-by-the-receivers-identity)).
+   Never match an impl by bare type name. The bare-name predicates in
+   `checker/test_support.rs` exist only for the chain-follow unit cells.
 
 ## Ownership inference seams
 

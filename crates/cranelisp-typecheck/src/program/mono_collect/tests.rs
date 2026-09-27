@@ -1149,10 +1149,10 @@ fn find_trait_method_decl_home_hop_finds_self_returning_method_d2() {
 // `try_resolve_trait_method` building the impl type's `FQTypeName`: pre-fix it
 // re-resolved the dispatch type's NAME (`Int`) in the CALLER's scope
 // (`resolve_type`) → "unknown type Int (from module user)" when user imported
-// only `sh`. The fix roots that resolution at the trait's HOME (zlib, where
-// the trait was declared and its impl mangle formed) via
-// `resolve_type_in_module` (D2/§7.0.1 P24). `check_src` panics on the
-// wrong-reject; a clean check is the assertion.
+// only `sh`. The dispatch type's identity now comes from the type itself
+// (`receiver_identity`, typecheck §9.1.1), with no name resolution in any
+// scope. `check_src` panics on the wrong-reject; a clean check is the
+// assertion.
 #[test]
 fn method_only_import_foreign_dispatch_type_resolves_at_home_d2() {
     let mut tc = tc_with_prims();

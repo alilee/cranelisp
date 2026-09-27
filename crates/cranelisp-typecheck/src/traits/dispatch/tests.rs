@@ -9,6 +9,7 @@ use cranelisp_types::{
 };
 
 use super::*;
+use crate::checker::TestFixture;
 use crate::traits::test_helpers::*;
 
 // FIXME 0185 — verify the primitive-trait-method dispatch table mirrors
@@ -180,9 +181,9 @@ fn resolved_target_cross_module_trait_method_records_impl_writer_module() {
     tc.register_trait_decl_self(&decl).unwrap();
 
     // Insert the discovery shell into the trait's home ("test") with an
-    // `impl_module` pointing at a distinct writer module. (Canonical key +
-    // bare-name fallback both reach it; the writer module carries the mangled
-    // method Defs in production.)
+    // `impl_module` pointing at a distinct writer module, keyed by the
+    // receiver's identity `primitives/Int`. (The writer module carries the
+    // mangled method Defs in production.)
     let record = cranelisp_types::WrittenTraitImpl::new(
         cranelisp_types::FQTraitName::new(
             cranelisp_types::ModuleFullPath::from("test"),
@@ -440,7 +441,7 @@ fn test_try_resolve_with_inline_trait() {
 // S102 — trait-method FQ-key mangle (4th lossy-head cure). Strategy-matrix
 // unit cells for `mangle_trait_method` (the shared mint used by BOTH the
 // dispatch site here and the definition/writeback site in `impl_check`) and
-// the dispatch-side FQ derivation `fq_type_for_dispatch_mangle`. The collision
+// the receiver identity it mangles with (`receiver_identity`). The collision
 // + lock-step cells are written FAILING-FIRST against the pre-cure bare-head
 // grammar (they would collide/diverge under `$Widget`).
 //
@@ -485,52 +486,50 @@ fn mangle_trait_method_distinct_for_same_bare_name_different_home() {
     );
 }
 
-// (b-support) The dispatch derivation takes the receiver's OWN home from an ADT
-// argument — NOT a caller-scope re-resolution (the `fallback`). A deliberately
-// WRONG fallback (a caller-local `caller/Widget`) must be IGNORED when the
-// argument is a genuine `a/Widget`; otherwise a caller-local same-named type
-// would capture the dispatch (the home-erasing bug).
+// (b-support) The receiver identity of an ADT is its OWN `FQTypeName`; no
+// caller-scope or trait-home re-resolution of the bare head participates, so
+// a caller-local or home-local same-named type cannot capture the dispatch.
 // spec: spec/03-types.md §3.8.4 — receiver identity is authoritative.
 #[test]
-fn dispatch_derivation_uses_adt_receiver_home_not_caller_fallback() {
-    let receiver = Type::ADT(fqtn("a", "Widget"), vec![]);
-    let wrong_caller_fallback = fqtn("caller", "Widget");
-    let got = fq_type_for_dispatch_mangle(&receiver, &wrong_caller_fallback);
-    assert_eq!(
-        got,
-        fqtn("a", "Widget"),
-        "must use the ADT receiver's own home"
-    );
-    assert_ne!(got, wrong_caller_fallback);
+fn receiver_identity_of_adt_is_its_own_home() {
+    let got = receiver_identity(&Type::ADT(fqtn("a", "Widget"), vec![]));
+    assert_eq!(got, Some(fqtn("a", "Widget")));
 }
 
-// (b-support, negative) An intrinsic receiver has no `FQTypeName` of its own,
-// so the derivation uses the fallback — which for an intrinsic is the single
-// canonical `primitives/Int`, unambiguous by construction. This is the ordinary
-// single-home path (`Show.show$primitives/Int`) preserved.
+// (b-support, scalar) A built-in scalar's identity is its canonical
+// `primitives` home, where bootstrap installs it (spec §8.9.1); a non-nominal
+// head has none.
 // spec: spec/07-traits.md §7.4 — intrinsic impl-type dispatch.
 #[test]
-fn dispatch_derivation_intrinsic_uses_canonical_fallback_home() {
-    let got = fq_type_for_dispatch_mangle(&Type::Int, &fqtn("primitives", "Int"));
-    assert_eq!(got, fqtn("primitives", "Int"));
-    let got_bool = fq_type_for_dispatch_mangle(&Type::Bool, &fqtn("primitives", "Bool"));
-    assert_eq!(got_bool, fqtn("primitives", "Bool"));
+fn receiver_identity_of_scalar_is_primitives_and_non_nominal_has_none() {
+    assert_eq!(
+        receiver_identity(&Type::Int),
+        Some(fqtn("primitives", "Int"))
+    );
+    assert_eq!(
+        receiver_identity(&Type::Bool),
+        Some(fqtn("primitives", "Bool"))
+    );
+    assert_eq!(receiver_identity(&Type::Var(0)), None);
+    assert_eq!(
+        receiver_identity(&Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+        None
+    );
 }
 
 // (e) ADT-arg trait-method GRAIN determination: the receiver HEAD is sufficient
-// and correct for lock-step. The derivation drops the ADT type-args (`Vec Int`
+// and correct for lock-step. The identity drops the ADT type-args (`Vec Int`
 // and `Vec String` both yield the head `primitives/Vec`), MATCHING the
 // definition side which names by the impl target head — so the two agree. This
 // pins that arg-recursion is NOT applied at this grain (it would break
 // lock-step unless impl registration also recursed; out of scope).
 // spec: spec/07-traits.md §7.4 — dispatch keyed on the impl (receiver) type.
 #[test]
-fn dispatch_derivation_receiver_head_grain_drops_type_args() {
-    let vec_int = Type::ADT(fqtn("primitives", "Vec"), vec![Type::Int]);
-    let vec_str = Type::ADT(fqtn("primitives", "Vec"), vec![Type::String]);
-    let fallback = fqtn("primitives", "Vec");
-    let a = fq_type_for_dispatch_mangle(&vec_int, &fallback);
-    let b = fq_type_for_dispatch_mangle(&vec_str, &fallback);
+fn receiver_identity_head_grain_drops_type_args() {
+    let a =
+        receiver_identity(&Type::ADT(fqtn("primitives", "Vec"), vec![Type::Int])).expect("nominal");
+    let b = receiver_identity(&Type::ADT(fqtn("primitives", "Vec"), vec![Type::String]))
+        .expect("nominal");
     assert_eq!(
         a,
         fqtn("primitives", "Vec"),
@@ -556,8 +555,34 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
     let mut tc = tc_with_prims();
     let decl = make_test_trait_decl();
     tc.register_trait_decl_self(&decl).unwrap();
+    tc.register_trait_impl_self(&test_trait_int_impl()).unwrap();
 
-    let impl_ = TraitImpl {
+    let result = tc
+        .try_resolve_trait_method_self(
+            &Symbol::from("test-op"),
+            &[Type::Int, Type::Int],
+            Span::SYNTHETIC,
+        )
+        .expect("should not error");
+    let dispatch_key = match result {
+        Some(ResolvedCall::TraitMethod { mangled_name, .. }) => mangled_name.as_ref().to_string(),
+        other => panic!("expected TraitMethod, got {other:?}"),
+    };
+    assert_eq!(dispatch_key, "TestTrait.test-op$primitives/Int");
+    // The definition side must have written a Def entry under the SAME key.
+    // Probe the symbol table directly by exact key: bare-name `lookup` would
+    // mis-split the `/` in the FQ suffix as a module separator (the documented
+    // `/`-split gotcha), so it is not a valid probe for a mangled key.
+    assert!(
+        tc.symbol_table().get(dispatch_key.as_str()).is_some(),
+        "definition-side writeback must exist under the dispatch key `{dispatch_key}` \
+         (lock-step: name-path == definition-path)",
+    );
+}
+
+/// `(impl TestTrait Int (defn test-op [lhs rhs] (add-i64 lhs rhs)))`.
+fn test_trait_int_impl() -> TraitImpl {
+    TraitImpl {
         head_con_var: None,
         trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("TestTrait")),
         target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
@@ -586,8 +611,171 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
             span: Span::SYNTHETIC,
         }],
         span: Span::SYNTHETIC,
+    }
+}
+
+// ===========================================================================
+// BN-1 — impl existence is keyed by the receiver's identity
+// (`design/typecheck/typecheck.md` §9.1.1). Each twin stages impl shells in
+// the trait's home (`test`) and judges receivers that share a bare name but
+// not an identity.
+//
+// spec: spec/07-traits.md §7.3 (an impl is for one type); spec/08-modules.md
+// §8.1 and spec/03-types.md §3.8.4 (a type's identity includes its module).
+// ===========================================================================
+
+fn test_trait_fq() -> cranelisp_types::FQTraitName {
+    cranelisp_types::FQTraitName::new(
+        cranelisp_types::ModuleFullPath::from("test"),
+        TraitName::from("TestTrait"),
+    )
+}
+
+/// `TestTrait` declared in `test`, with one impl shell per receiver, each
+/// written by `writermod`.
+fn trait_home_with_shells(receivers: &[cranelisp_types::FQTypeName]) -> TestFixture {
+    let mut tc = tc_with_prims();
+    tc.register_trait_decl_self(&make_test_trait_decl())
+        .unwrap();
+    for receiver in receivers {
+        let record = cranelisp_types::WrittenTraitImpl::new(
+            test_trait_fq(),
+            receiver.clone(),
+            cranelisp_types::ModuleFullPath::from("writermod"),
+            vec![Symbol::from("test-op")],
+            Visibility::Public,
+        );
+        tc.symbol_table_mut()
+            .stage_trait_impl_shell(&record)
+            .unwrap()
+            .commit();
+    }
+    tc
+}
+
+fn adt(module: &str, name: &str) -> Type {
+    Type::ADT(fqtn(module, name), vec![])
+}
+
+// spec: spec/07-traits.md §7.3; spec/08-modules.md §8.1 — `a/U`'s impl
+// satisfies `a/U` only; same-named `b/U` has none.
+#[test]
+fn impl_for_same_named_type_in_another_module_does_not_satisfy_trait() {
+    let tc = trait_home_with_shells(&[fqtn("a", "U")]);
+    let env = tc.env();
+    assert_eq!(
+        env.trait_satisfaction(&test_trait_fq(), &adt("a", "U")),
+        TraitSatisfaction::Satisfied
+    );
+    assert_eq!(
+        env.trait_satisfaction(&test_trait_fq(), &adt("b", "U")),
+        TraitSatisfaction::Unsatisfied,
+        "`a/U`'s impl must not satisfy `b/U`"
+    );
+}
+
+// spec: spec/07-traits.md §7.3; spec/08-modules.md §8.9.1 — an impl for an
+// ADT named `Int` is not an impl for the scalar `Int`.
+#[test]
+fn impl_for_adt_named_int_does_not_satisfy_scalar_int() {
+    let tc = trait_home_with_shells(&[fqtn("test", "Int")]);
+    let env = tc.env();
+    assert_eq!(
+        env.trait_satisfaction(&test_trait_fq(), &adt("test", "Int")),
+        TraitSatisfaction::Satisfied
+    );
+    assert_eq!(
+        env.trait_satisfaction(&test_trait_fq(), &Type::Int),
+        TraitSatisfaction::Unsatisfied,
+        "`test/Int`'s impl must not satisfy `primitives/Int`"
+    );
+}
+
+// spec: spec/07-traits.md §7.3; spec/08-modules.md §8.9.1 — an impl for the
+// scalar `Int` is not an impl for an ADT named `Int`.
+#[test]
+fn impl_for_scalar_int_does_not_satisfy_adt_named_int() {
+    let tc = trait_home_with_shells(&[fqtn("primitives", "Int")]);
+    let env = tc.env();
+    assert_eq!(
+        env.trait_satisfaction(&test_trait_fq(), &Type::Int),
+        TraitSatisfaction::Satisfied
+    );
+    assert_eq!(
+        env.trait_satisfaction(&test_trait_fq(), &adt("test", "Int")),
+        TraitSatisfaction::Unsatisfied,
+        "`primitives/Int`'s impl must not satisfy `test/Int`"
+    );
+}
+
+// spec: spec/07-traits.md §7.3, §7.4.3 — dispatch at `b/U` is the located
+// no-impl error, not a resolution through `a/U`'s shell; dispatch at `a/U`
+// resolves to its own writer.
+#[test]
+fn dispatch_at_same_named_type_without_impl_is_no_impl_error() {
+    let mut tc = trait_home_with_shells(&[fqtn("a", "U")]);
+    let located = Span::new(40, 52);
+    let err = tc
+        .try_resolve_trait_method_self(
+            &Symbol::from("test-op"),
+            &[adt("b", "U"), adt("b", "U")],
+            located,
+        )
+        .expect_err("`b/U` has no impl of `TestTrait`");
+    let CranelispError::TypeError { message, location } = err else {
+        panic!("expected a no-impl TypeError, got {err:?}");
     };
-    tc.register_trait_impl_self(&impl_).unwrap();
+    assert!(
+        message.contains("no impl of trait test/TestTrait for type"),
+        "{message}"
+    );
+    assert_eq!(location.span, located);
+
+    let resolved = tc
+        .try_resolve_trait_method_self(
+            &Symbol::from("test-op"),
+            &[adt("a", "U"), adt("a", "U")],
+            Span::SYNTHETIC,
+        )
+        .expect("`a/U` has an impl");
+    match resolved {
+        Some(ResolvedCall::TraitMethod {
+            mangled_name,
+            impl_module,
+            ..
+        }) => {
+            assert_eq!(mangled_name.as_ref(), "TestTrait.test-op$a/U");
+            assert_eq!(impl_module.as_ref(), "writermod");
+        }
+        other => panic!("expected a TraitMethod resolution, got {other:?}"),
+    }
+}
+
+// spec: spec/07-traits.md §7.4; spec/08-modules.md §8.9.1 — the trait's home
+// declares its own unimplemented ADT named `Int`. Dispatch on the scalar still
+// mints the scalar impl's `primitives/Int` symbol, in lock-step with the
+// definition-side writeback.
+#[test]
+fn dispatch_of_scalar_beside_home_local_int_adt_mints_primitives_key_lockstep() {
+    let mut tc = tc_with_prims();
+    tc.register_trait_decl_self(&make_test_trait_decl())
+        .unwrap();
+    tc.register_trait_impl_self(&test_trait_int_impl()).unwrap();
+    tc.register_type_def_self(
+        &TypeName::from("Int"),
+        &None,
+        &[],
+        &[cranelisp_types::ConstructorDef {
+            name: Symbol::from("LocalInt"),
+            docstring: None,
+            fields: vec![],
+            span: Span::SYNTHETIC,
+        }],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .expect("a home-local ADT may share the spelling `Int`");
+    tc.clear_transient_state();
 
     let result = tc
         .try_resolve_trait_method_self(
@@ -595,19 +783,19 @@ fn dispatch_mangle_equals_definition_writeback_key_lockstep() {
             &[Type::Int, Type::Int],
             Span::SYNTHETIC,
         )
-        .expect("should not error");
-    let dispatch_key = match result {
-        Some(ResolvedCall::TraitMethod { mangled_name, .. }) => mangled_name.as_ref().to_string(),
-        other => panic!("expected TraitMethod, got {other:?}"),
+        .expect("the scalar impl exists");
+    let (mangled_name, impl_type) = match result {
+        Some(ResolvedCall::TraitMethod {
+            mangled_name,
+            impl_type,
+            ..
+        }) => (mangled_name.as_ref().to_string(), impl_type),
+        other => panic!("expected a TraitMethod resolution, got {other:?}"),
     };
-    assert_eq!(dispatch_key, "TestTrait.test-op$primitives/Int");
-    // The definition side must have written a Def entry under the SAME key.
-    // Probe the symbol table directly by exact key: bare-name `lookup` would
-    // mis-split the `/` in the FQ suffix as a module separator (the documented
-    // `/`-split gotcha), so it is not a valid probe for a mangled key.
+    assert_eq!(mangled_name, "TestTrait.test-op$primitives/Int");
+    assert_eq!(impl_type, fqtn("primitives", "Int"));
     assert!(
-        tc.symbol_table().get(dispatch_key.as_str()).is_some(),
-        "definition-side writeback must exist under the dispatch key `{dispatch_key}` \
-         (lock-step: name-path == definition-path)",
+        tc.symbol_table().get(mangled_name.as_str()).is_some(),
+        "the definition side wrote `{mangled_name}`"
     );
 }

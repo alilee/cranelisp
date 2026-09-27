@@ -262,7 +262,10 @@ fn qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches() {
 // spec: spec/07-traits.md §7.3; spec/08-modules.md §8.1 — an impl is for one
 // type, whose identity includes its module: `m`'s impl for `m/U` does not make
 // `main`'s own `U` implement the trait
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home found=S122 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home found=S122 owner=/dev fixed=S122
+// The locus was deleted by the fix. Impl existence is now one keyed read,
+// `checker.rs::impl_shell` over `traits/monomorphise.rs::receiver_identity`
+// (design/typecheck/typecheck.md §9.1.1).
 #[test]
 fn impl_for_same_named_type_in_another_module_does_not_satisfy_trait_neg() {
     // `m`'s impl returns 5, so an accepted call through it exits 5. `main`'s

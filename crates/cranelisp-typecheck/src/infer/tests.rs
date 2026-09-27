@@ -286,6 +286,180 @@ fn candidate_settlement_does_not_search_cross_site_combinations() {
     );
 }
 
+// BN-1 route twins (`design/typecheck/typecheck.md` §9.1.1). `TestTrait` is
+// declared in `test` and implemented only for `a/U`; `b/U` shares the bare
+// name but not the identity.
+
+fn test_trait_fq() -> cranelisp_types::FQTraitName {
+    cranelisp_types::FQTraitName::new(
+        ModuleFullPath::from("test"),
+        cranelisp_types::TraitName::from("TestTrait"),
+    )
+}
+
+fn same_named_receiver_world() -> TestFixture {
+    let mut fixture = tc();
+    fixture
+        .register_trait_decl_self(&crate::traits::test_helpers::make_test_trait_decl())
+        .unwrap();
+    let record = cranelisp_types::WrittenTraitImpl::new(
+        test_trait_fq(),
+        FQTypeName::new(ModuleFullPath::from("a"), TypeName::from("U")),
+        ModuleFullPath::from("a"),
+        vec![Symbol::from("test-op")],
+        Visibility::Public,
+    );
+    fixture
+        .symbol_table_mut()
+        .stage_trait_impl_shell(&record)
+        .unwrap()
+        .commit();
+    fixture
+}
+
+fn bind_receiver(fixture: &mut TestFixture, module: &str) {
+    fixture.bind_local_self(
+        Symbol::from("x"),
+        crate::scheme::mono(Type::ADT(
+            FQTypeName::new(ModuleFullPath::from(module), TypeName::from("U")),
+            vec![],
+        )),
+    );
+}
+
+/// `pick` is contested between `ca/pick`, constrained `TestTrait => (Fn [t]
+/// Int)`, and `cb/pick : (Fn [Bool] Int)`.
+fn constrained_candidate_world(receiver_module: &str) -> TestFixture {
+    use cranelisp_types::{ConstrainedMeta, DefnVariant};
+    let mut fixture = same_named_receiver_world();
+    let t = 9_000;
+    let scheme = Scheme {
+        type_vars: vec![t],
+        constraints: HashMap::from([(t, vec![test_trait_fq()])]),
+        ty: Type::Fn(vec![Type::Var(t)], Box::new(Type::Int)),
+    };
+    fixture.set_current_module(ModuleFullPath::from("ca"));
+    fixture
+        .symbol_table_mut()
+        .install_template(
+            Symbol::from("pick"),
+            scheme.clone(),
+            vec![Symbol::from("v")],
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(DefnVariant {
+                params: vec![(Symbol::from("v"), None)],
+                body: Expr::IntLit {
+                    value: 0,
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                },
+                span: Span::SYNTHETIC,
+            }),
+            TemplateKind::Constrained(Box::new(ConstrainedMeta::new(scheme.constraints.clone()))),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    install_candidate_callable(&mut fixture, "cb", "pick", Type::Bool);
+    fixture.set_current_module(ModuleFullPath::from("test"));
+    for module in ["ca", "cb"] {
+        fixture
+            .symbol_table_mut()
+            .expose_candidate(
+                Symbol::from("pick"),
+                FQSymbol {
+                    module: ModuleFullPath::from(module),
+                    symbol: Symbol::from("pick"),
+                },
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    bind_receiver(&mut fixture, receiver_module);
+    fixture
+}
+
+fn pick_x() -> Expr {
+    Expr::Apply {
+        callee: Box::new(Expr::var(Symbol::from("pick"), span(300, 304))),
+        args: vec![Expr::var(Symbol::from("x"), span(305, 306))],
+        span: span(299, 307),
+        resolved_call: None,
+        inferred_type: None,
+    }
+}
+
+// spec: spec/07-traits.md §7.3; spec/08-modules.md §8.1, §8.6.5 — a candidate
+// trial's constraint is judged at the argument's identity: `ca/pick` is viable
+// at `a/U` and eliminated at same-named `b/U`, where no candidate remains.
+#[test]
+fn candidate_trial_constraint_is_keyed_by_receiver_identity() {
+    let mut accepted = constrained_candidate_world("a");
+    assert_eq!(
+        accepted.infer_expr_for_test(&mut pick_x()).unwrap(),
+        Type::Int
+    );
+    assert_eq!(
+        accepted
+            .state
+            .method_resolutions
+            .var_refs
+            .get(&span(300, 304)),
+        Some(&VarRef::Global(FQSymbol {
+            module: ModuleFullPath::from("ca"),
+            symbol: Symbol::from("pick"),
+        }))
+    );
+
+    let mut rejected = constrained_candidate_world("b");
+    let message = rejected
+        .infer_expr_for_test(&mut pick_x())
+        .expect_err("`b/U` satisfies no candidate of `pick`")
+        .message()
+        .to_string();
+    assert!(
+        message.contains("no matching declaration for 'pick'"),
+        "{message}"
+    );
+}
+
+fn test_trait_annotation_of_x() -> Expr {
+    Expr::Annotate {
+        annotation: TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("TestTrait"),
+        )),
+        expr: Box::new(Expr::var(Symbol::from("x"), span(405, 406))),
+        span: span(400, 407),
+        inferred_type: None,
+    }
+}
+
+// spec: spec/03-types.md §3.3.3; spec/07-traits.md §7.3 — a value-position
+// trait annotation is satisfied at `a/U` and rejected at same-named `b/U`.
+#[test]
+fn value_position_trait_annotation_is_keyed_by_receiver_identity() {
+    let mut accepted = same_named_receiver_world();
+    bind_receiver(&mut accepted, "a");
+    accepted
+        .infer_expr_for_test(&mut test_trait_annotation_of_x())
+        .expect("`a/U` implements `TestTrait`");
+
+    let mut rejected = same_named_receiver_world();
+    bind_receiver(&mut rejected, "b");
+    let message = rejected
+        .infer_expr_for_test(&mut test_trait_annotation_of_x())
+        .expect_err("`b/U` does not implement `TestTrait`")
+        .message()
+        .to_string();
+    assert!(
+        message.contains("does not implement trait TestTrait"),
+        "{message}"
+    );
+}
+
 /// Register a simple enum type for testing.
 fn register_color(tc: &mut TestFixture) {
     tc.register_type_def_self(

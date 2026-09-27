@@ -1453,6 +1453,34 @@ fn declared_bound_on_multi_signature_clause_satisfied_in_cluster_accepted() {
     }
 }
 
+// spec: spec/03-types.md §3.9.2; spec/05-definitions.md §5.1.2 — a
+// multi-signature clause whose declared bound its sibling-pinned type does not
+// satisfy is rejected. The failure names the authored family `f`, never an
+// internal clause name, and is located within `f`'s definition.
+#[test]
+fn declared_bound_on_multi_signature_clause_unsatisfied_in_cluster_rejected() {
+    let mut tc = tc_with_prims();
+    let src = format!(
+        "{DECLARED_BOUND_WORLD} (impl Tr U (defn tr [u] 1)) \
+         (defn f ([:Ts x] 7) ([:Ts x y] (f 3)) ([a b c] (f (U 1) 2)))"
+    );
+    let Err(CranelispError::TypeError { message, location }) = check_cluster(&mut tc, &src) else {
+        panic!("`U` does not implement the second clause's `Ts` bound");
+    };
+    assert!(
+        message.contains("no impl of trait test/Ts for type test/U")
+            && message.contains("`x`")
+            && message.contains("of `f`)"),
+        "{message}"
+    );
+    assert!(!message.contains("__v"), "{message}");
+    let definition = src.find("(defn f").expect("f is defined") as u32;
+    assert!(
+        (definition..src.len() as u32).contains(&location.span.start),
+        "located within `f`'s definition: {message}"
+    );
+}
+
 // spec: spec/03-types.md §3.9.2, §3.5.2 — negative leg: with no caller the
 // parameter stays a variable, so `f` settles as a constrained template and
 // nothing is rejected.

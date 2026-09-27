@@ -63,6 +63,24 @@ Confirmed defects need narrow unignored spec-traced reproductions and controls;
 no assertion or runtime change is authorized by this filing alone. Any unsettled
 language choice returns to the user through spec, one decision at a time.
 
+## Approved carry: ordinary-run discovery
+
+On 2026-09-27 the user approved carrying DT-1's confirmed `--run` defect
+with the explicit test-harness work in
+[ACT-0988](ACT-0988-project-regression-discovery.md). Enabling discovery in
+ordinary `--run` now would add capability that the approved `--test`
+direction relocates. This carry applies only to DT-1, not the other intake
+items in this action.
+
+Source rechecked on approval: `discover_tests_extern` in
+`src/session_v4/test_runner.rs` returns an empty vector when its runner state
+is absent. The unignored regression
+`tests/spec_12_runtime.rs::discover_tests_named_module_under_run_counts_its_tests`
+expects three tests and observes zero. Keep that guard failing until the
+approved harness requirements and implementation settle its replacement.
+The carry neither accepts silent empty discovery as correct nor selects new
+REPL or CLI semantics.
+
 Provenance: arch session `d96c6803-f6bb-41af-9b27-55ce03ad1d30`; sprint reopened
 both discovery scans, the slash-command handler and Appendix A before filing.
 

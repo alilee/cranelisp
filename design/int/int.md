@@ -845,6 +845,200 @@ driven by `process_form/macro_resolution.rs::try_expand_sexp`) keeps these rules
   an unrecognised head, a blocked head and `/expand` record nothing
   ([lookup dependencies](#762-lookup-dependencies)).
 
+### 6.9 Bare module names in `import` and `export`
+
+Status: **implemented, independently reviewed and QA-adequate 2026-09-27.**
+All six end-to-end legs pass in the final workspace run; the adjacent cache
+crash replay passed 800 sessions. Private to `src/`.
+
+**Rule.** Inside module `M`, a bare (undotted) module name in an `import` or
+`export` spec names `M.name` exactly when `M` declares `(mod name)` or
+`(mod- name)`. Otherwise it names the absolute module `name`, found by the
+root-then-lib search. Every int stage that reads the spec reaches the same
+module (spec §8.11.2 item 1, §8.11.2.1; §8.5.4 edge 2 forbids inventing a
+child). A dotted spelling is always absolute.
+
+**Corrected defect (IR-1).** Neither former stage applied the rule:
+
+- *Discovery* (`handle_import`, `handle_export`) took `M.name` when any module
+  had registered it or a file backed it.
+- *Installation* (`install_imports`, `install_exports`) took `name` when that
+  table existed, else `M.name`.
+- The other readers read the spelling as absolute:
+  - the static import closure;
+  - the restore walk;
+  - the import-alias writer's target;
+  - the dependency record;
+  - the watcher.
+- **Observed:** in
+  `tests/spec_08_modules.rs::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module`,
+  both undeclared subjects bound `a.q`; all four legs now pass.
+- **Module evidence:** pre-fix rows observed a raw-spelling alias target and
+  a false cycle through root `q`. The installer rows detected a planted
+  as-is-first fallback. The final test visit adds the root-first and alias
+  end-to-end legs; their pre-fix end-to-end outcomes remain unobserved.
+
+**One resolver.** A crate-private pure function in `src/imports.rs` takes
+three inputs:
+
+- the referring module;
+- that module's declared child names;
+- the written spelling.
+
+It returns `M.name` for a declared bare name inside a non-root module, and the
+spelling unchanged otherwise. The child path is the one `<parent>.<name>` that
+declared-child enrollment derives. The resolver has no symbol-table,
+filesystem or load-state input. A registered or file-backed undeclared child
+therefore cannot capture a name (Principle 24).
+
+The as-built private type is `imports::DeclaredChildren`; its `resolve`
+method performs that pure resolution. `ResolvedSpec` pairs the written spec
+with its resolved module, and only the resolver constructs that pair.
+Installers accept the pair rather than a raw spec.
+
+**Declared children come from settled state (Principle 26).**
+
+- **A cluster:** the `mod` forms among the cluster's own forms, together with
+  the declarations already recorded on the module's table from earlier REPL
+  turns. The set is computed once per pass, before the static closure and Pass
+  0. `(import [q …])` written before `(mod q)` therefore resolves as it does
+  after it.
+- **A module walked from its file** (the static closure's transitive walk):
+  the `mod` forms of its parsed file.
+- **A settled table:** its recorded `submodules`.
+
+**Resolve once per pass.** Pass 0 resolves each spec once. That module then
+feeds the private-submodule check, the fast path, the load, and installation.
+The installer takes each spec paired with its resolved module and does no
+module-path resolution. A missing table for that module is a hard error that
+names it. The import-alias writer records the resolved module as its target.
+
+| Stage | Consumer | Declared children from |
+|---|---|---|
+| Dependency discovery | `handle_import` (including the alias-only path) and `handle_export` | The cluster |
+| Signature barrier and cycle check | `static_import_closure` and its transitive walk | The cluster for the root; each walked module's parsed file |
+| Installation | `install_imports`, `install_exports` and the import-alias writer | Pass 0's resolved module |
+| Restore ([restoration parity](#75-restoration-parity)) | The import and re-export walk; the alias rebuild in `install_module_session_env` | The restored table |
+| Settled-table readers | Dependency-record edges ([§7.6](#76-dependency-record-and-validity)); the watcher's dependent closure and reload ordering in `session_v4/lifecycle.rs` | The table |
+| Background index | The installer in `session_v4/index_worker.rs` | The parsed declarations |
+
+The restore walk's `register_transitive_cached_imports` is private to its
+module; no external caller requires its former parent-module visibility.
+
+**Unchanged:**
+
+- `ImportSpec`, `ExportSpec` and the persisted spelling, so source
+  regeneration still writes what the user wrote;
+- the cache schema;
+- `super` rewriting;
+- qualified-name resolution through `(mod q)`'s alias (R1-V, typecheck);
+- the private-submodule rule.
+
+**Behaviour changes:**
+
+- A declared child whose file is missing now fails at the import, naming
+  `M.name`. Before, the import could silently bind root `name` until
+  enrollment failed. Both outcomes are §8.2.5 compile errors.
+- An import of a declared child loads it before `drive_submodules` does, as
+  today. Enrollment then finds it loaded.
+- Suppose a parent imports its declared child, and the child imports `super`.
+  The static closure now reports the cycle before any load. Today
+  `block_for_typecheck` reports the same cycle when the child waits on the
+  parent. The error class is unchanged, but its location may differ; spec
+  §8.3.8 permits the rejection.
+- **Census, 2026-09-27.** No `.cl` source under `stdlib/`, `exemplar/`,
+  `examples/`, `repl/`, `user/` or `platforms/` imports or exports an
+  undeclared file-backed child. The four bare child references, in
+  `stdlib/core.cl` and `stdlib/seq.cl`, are all declared. A heuristic scan of
+  the fixtures in `tests/*.rs` found only lib-directory modules and the
+  declared-child cells. The full suite remains the census of record.
+
+**Rejected:**
+
+- *Read the declarations from the module-alias map.* The alias is written
+  only when Pass 0 reaches the `mod` form, so the answer would depend on form
+  order. The map also holds import aliases.
+- *Keep file probing and add a declaration test.* The resolver would keep two
+  inputs, and a stage could consult the wrong one.
+- *Persist the resolved module on the spec.* This is the complete form of
+  Principle 24. It changes the types-owned public spec and the cache schema,
+  which is user-gated, and IR-1 does not need it. Potential extension. Trigger:
+  a reader that needs the identity but lacks the module's declarations.
+
+**Assurance.**
+
+- *Structural:*
+  - the resolver cannot consult load state or files;
+  - the installer receives the resolved module and cannot re-resolve it.
+- *Measured:* the IR-1 cell's four legs and the unit rows below.
+- *Asserted, with named falsifiers:*
+  - Every reader of a spec's module identity uses the resolver. Falsifier: an
+    int reader in `src/` that uses a spec's `module_path` as a module key
+    without going through the resolver (a review check).
+  - The watcher readers have no row. Falsifier: `a` declares `(mod q)` and
+    imports `[q …]`, and an edit to `a/q.cl` fails to reload `a`, or an edit to
+    root `q.cl` reloads it.
+
+**Residuals (for `qa` intake; not designed here):**
+
+- *`super` capture.* The frontend rewrites `super` to the parent's path, which
+  is bare for a top-level parent. A child that declares a submodule named like
+  its parent would capture it. Today any file-backed child captures it; this
+  correction narrows the case. Falsifier: `a.q` declares `(mod a)` and imports
+  `[super [x]]`.
+- *Prelude test by spelling.* The fallback-bit test treats `(import [prelude
+  …])` as naming the prelude even where `M` declares `(mod prelude)`.
+- *REPL turn order.* A turn that imports root `q` keeps that binding after a
+  later turn declares `(mod q)`. Whether §8.11.2.1's uniformity spans REPL
+  turns and how persistence preserves the outcome are deferred by the user
+  to the next increment under [ACT-0995](../../sprints/actions/ACT-0995-repl-later-submodule-declaration-resolution.md).
+  No behavior was selected. Within one cluster, form order does not change
+  the chosen module. Loading an inline child body remains a separate lead:
+  an import before its inline `mod` can reach the child before its backing
+  file is written. This is unobserved; its falsifier is that ordering in a
+  fresh project. QA routes it to design(int), without selecting a remedy.
+- *Stale declarations.* The resolver inherits the lifetime of the recorded
+  declarations, like enrollment. A reload that keeps a removed `(mod q)`
+  affects both the same way.
+- *Pre-fix caches.* A cache written before the fix may hold a wrong binding.
+  Its shape is unchanged, and a committed build's `BUILD_ID` separates the
+  two, so no schema bump is needed (§7.3). An uncommitted build shares the
+  prior `BUILD_ID`. E2e cells use fresh projects.
+
+**Unit rows (`dev`).** Arm each row RED against the pre-fix source where its
+seam exists. Arm the resolver rows by planting file-backed capture.
+
+1. `src/imports/tests.rs`, the resolver:
+   - a declared `(mod q)` gives `M.q`;
+   - a declared `(mod- q)` gives `M.q`;
+   - an undeclared name gives `q`;
+   - `q.r`, whose first segment is declared, is unchanged;
+   - a root-level referring module leaves the name unchanged.
+2. `src/imports/tests.rs`, the installers. Tables for both `q` and `a.q` exist:
+   - a spec resolved to `a.q` installs from `a.q`;
+   - a spec resolved to `q` installs from `q`;
+   - an import alias records the resolved target;
+   - a resolved module with no table errors, naming it.
+
+   These rows replace
+   `install_imports_resolves_bare_submodule_current_module_relative` and
+   `install_imports_bare_name_without_submodule_errors`.
+3. `src/process_form/dependency.rs`. Retire `current_module_relative_tests`:
+   its registered-child and file-backed rows assert the defect. Add cluster
+   rows:
+   - `(import [q …])` before `(mod q)` in one cluster resolves to the child;
+   - a declaration recorded by an earlier turn does the same;
+   - with neither, the name resolves to root `q` even when `a/q.cl` exists.
+4. The static closure, over a temporary project:
+   - with `(mod q)`, the closure names `a.q`, and a root `q.cl` importing `a`
+     is no cycle;
+   - without it, the same files report the cycle.
+5. `install_module_session_env`: a restored table with `(mod q)` and
+   `(import [(q qq) []])` maps `qq` to `a.q`; without the declaration, `qq`
+   maps to `q`.
+6. The dependency-record edges: a declared child adds no root `q` edge; an
+   undeclared `q` adds one.
+
 ---
 
 ## 7. Cache + linker orchestration (Decisions 34, 37)
@@ -1132,7 +1326,8 @@ returns `Result<bool, CranelispError>`:
 |---|---|---|
 | Declared children | `dependency.rs::enrol_declared_submodule` after the parent's cluster commits | The same registrar, over the persisted `submodules`, after the parent table installs, so a child's `super` import sees it. Private and public children take one path, and an existing child is a no-op. |
 | Trait impls the module wrote | The typecheck producer appends `WrittenTraitImpl` records (`design/arch/trait-impl-cache-carrier.md`) | Restore each foreign trait home first. After the writer table installs, re-enrol every record through the types-owned `enrol_written_trait_impl`. `Enrolled` and `AlreadyEnrolled` succeed; a divergence is an error, never a silent pick. An empty record vector is trusted as written: never default it, rescan the trait home or rebuild it from mangled names. |
-| Module aliases | Session `ModuleAliases`, keyed by `cranelisp_types::module_alias_key` (`design/arch/module-alias-scoped-lookup.md`) | Rebuilt from the persisted `imports` and `submodules` by the same writers. The map is unserialized session state, so aliases add no cache field. |
+| Module aliases | Session `ModuleAliases`, keyed by `cranelisp_types::module_alias_key` (`design/arch/module-alias-scoped-lookup.md`) | Rebuilt from the persisted `imports` and `submodules` by the same writers. The resolver in [§6.9](#69-bare-module-names-in-import-and-export) resolves each import alias's target. The map is unserialized session state, so aliases add no cache field. |
+| Import and re-export targets | The resolver in [§6.9](#69-bare-module-names-in-import-and-export), over the cluster's declared children | The same resolver, over the restored table's `submodules`. The restore walk never reads a persisted bare spelling as an absolute module. |
 | Monomorphic instances | `Concrete` entries in the demanding module's table, each with its `minted_from` link | Restored with that table; no separate step. |
 | Platform functions | Platform load wraps the DLL's GOT (`design/arch/platform-interface.md` §6.4) | The persisted declarations re-run the same load; a failure is a miss ([cache-hit flow](#71-cache-hit-flow-inside-register_module)). |
 | Lookup dependencies | Typecheck and the macro recogniser record into staging, and publication unions them into the table ([lookup dependencies](#762-lookup-dependencies)) | Restored with the table; no separate step. They are validity edges only, so restore loads none of them. A later compilation that needs one loads it on demand (`spec/08-modules.md` §8.5.4). |
@@ -2061,6 +2256,11 @@ carries the rule; this list is the review checklist.
 18. **A second program-result releaser or an unguarded release target** — a
     release key re-derived from the observed type, a raw glue address without
     its `Code` owner, or an `IO` branch in a formatter (`result-owner.md` §7).
+19. **A second bare-module-name rule** — deciding what a bare `import` or
+    `export` module name refers to from symbol-table registration, a file probe
+    or form order. Reading a persisted spelling as an absolute module outside
+    the one resolver is also rejected
+    ([§6.9](#69-bare-module-names-in-import-and-export)).
 
 ---
 
@@ -2171,18 +2371,17 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     to that now-completed review repair.
   - **RR-1 (REPL cache-restore race).** The user prioritised it on
     2026-09-27.
-    - Face (i): §7.1's *restore before load* and its claim are implemented
-      and reviewed in the uncommitted tree. QA's remeasure found zero face (i)
-      sessions in 2000.
+    - Face (i): §7.1's *restore before load* and its claim are committed at
+      `236aa44d`. QA's remeasure found zero face (i) sessions in 2000.
     - Face (ii), a REPL SIGSEGV at the first call, is attributed by a
       discriminating control: a REPL turn executes into a restored module
       whose load is outstanding. Its correction is §7.1's *load before
       execution*. The same `src` visit makes the claim a scheduler-minted
       value that ends on every path (*one load entry*), closing review R-1
-      and R-2. Implemented and reviewed in the uncommitted tree, with no blocking
-      finding. `test`'s stress found zero failures of any face in 2000
-      sessions, and QA judged the evidence adequate on 2026-09-27. Open: the
-      commit's `fixed=` sha stamps and the user's Phase-5 acceptance.
+      and R-2. Committed at `236aa44d`; review found no blocking finding.
+      `test`'s stress found zero failures of any face in 2000 sessions, and QA
+      judged the evidence adequate on 2026-09-27. Open: the `fixed=` sha
+      stamps and the user's Phase-5 acceptance.
     - All of it is private to `src/`, with no public API, carrier, schema or
       ABI change.
     - Open residuals: §7.1's fresh-dependency residual and the five
@@ -2211,6 +2410,13 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   - **`dev` cleanup (review F5, F6).** `introduce_module` is an uncalled
     cache-install path that skips validity. Two compiler-owned module lists
     are duplicated.
+- **Bare import and export module names (IR-1; implemented 2026-09-27).**
+  The private correction applies §8.11.2's declared-child rule through one
+  resolver. The former RED cell now passes:
+  `tests/spec_08_modules.rs::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module`.
+  [§6.9](#69-bare-module-names-in-import-and-export) is the correction. It is
+  built, independently reviewed and QA-adequate, with no public API, carrier,
+  schema or ABI change. The residuals in §6.9 retain their QA intake status.
 - **Abandoned restore after platform failure (verified 2026-09-24).**
   `reresolve_cached_platforms` runs after `install_cached_table`, so a
   platform-load miss returns `Ok(false)` with the decoded table installed

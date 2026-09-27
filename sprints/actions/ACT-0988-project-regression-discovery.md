@@ -44,6 +44,16 @@ loaded project modules, or project test modules including those not yet loaded.
 Then establish the discovery/loading requirements. No choice among those
 scopes, detailed harness API, or change to empty-vector semantics is approved.
 
+## Confirmed defect carried with this work
+
+On 2026-09-27 the user explicitly approved carrying DT-1 from
+[ACT-0986](ACT-0986-test-discovery-contract-and-eligibility-intake.md) with this
+increment. Ordinary `--run` silently discovers zero tests in a module that
+contains eligible tests. Resolve this when establishing the explicit harness
+boundary, rather than adding temporary discovery capability to `--run`.
+Retain the unignored failing regression named in ACT-0986. The carry does not
+approve the empty result or decide the outstanding harness and REPL policy.
+
 ## Completion evidence
 
 User-approved requirements define the normal-execution/test-harness boundary,
@@ -57,4 +67,5 @@ test-child limitation from filing0868 without claiming an unverified workaround.
 
 Source verification: sprint read `discover_tests_extern`,
 `discover_eligible_tests`, `handle_run_all_tests`, and the library runner before
-filing. This records a deferred enhancement, not a reproduced defect.
+filing. The original filing recorded a deferred enhancement; DT-1 is the
+subsequently reproduced defect explicitly carried with it.

@@ -234,6 +234,9 @@ fn run_cluster_prologue(
     // The same `ClosureOrder` is reused by the body-boundary signature barrier
     // (Invariant PP) below. `None` when the cluster declares no imports.
     let closure;
+    // The children this cluster's bare `import`/`export` names may reach,
+    // settled once for the closure and Pass 0 (`design/int/int.md` §6.9).
+    let declared = dependency::cluster_declared_children(ctx, module, sexps);
 
     if strategy == ModuleStrategy::Replace {
         // Set active module. Symbol table is preserved for slot reuse
@@ -241,7 +244,7 @@ fn run_cluster_prologue(
         ctx.set_current_module(module.clone());
 
         // Static cycle gate — fast-exits when the cluster has no imports.
-        closure = dependency::static_import_closure(ctx, module, sexps)?;
+        closure = dependency::static_import_closure(ctx, module, sexps, &declared)?;
 
         // Zero GOT slots and clear codegen artifacts for this module's
         // symbols. Slot assignments are preserved so re-compiled code
@@ -273,11 +276,11 @@ fn run_cluster_prologue(
         // thread is the genuine barrier waiter; a REPL `(import …)` whose static
         // closure is cyclic is rejected up front, and the closure is reused by
         // the body-boundary barrier below.
-        closure = dependency::static_import_closure(ctx, module, sexps)?;
+        closure = dependency::static_import_closure(ctx, module, sexps, &declared)?;
     }
 
     // --- Pass 0: structural-form peel (import/export/mod/platform) ---
-    if let Some(dep) = pass0_peel_structural(ctx, module, sexps)? {
+    if let Some(dep) = pass0_peel_structural(ctx, module, sexps, &declared)? {
         return Ok(Some(dep));
     }
 
@@ -311,6 +314,7 @@ fn pass0_peel_structural(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
+    declared: &crate::imports::DeclaredChildren,
 ) -> Result<Option<ModuleFullPath>, CranelispError> {
     for sexp in sexps.iter() {
         match classify_form(sexp, module)? {
@@ -322,13 +326,13 @@ fn pass0_peel_structural(
             // regenerated backing `.cl`. (`Block` is not a failure: the dep must
             // load and the cluster retries from the top, where the successful
             // resume records it.) Applied uniformly across all four forms.
-            FormKind::Import(specs) => match handle_import(ctx, module, specs.clone())? {
+            FormKind::Import(specs) => match handle_import(ctx, module, specs.clone(), declared)? {
                 BlockAction::Continue => {
                     record_imports_on_symbol_table(ctx, module, &specs);
                 }
                 BlockAction::Block { dep_module } => return Ok(Some(dep_module)),
             },
-            FormKind::Export(specs) => match handle_export(ctx, module, &specs)? {
+            FormKind::Export(specs) => match handle_export(ctx, module, &specs, declared)? {
                 BlockAction::Continue => {
                     record_exports_on_symbol_table(ctx, module, &specs);
                 }

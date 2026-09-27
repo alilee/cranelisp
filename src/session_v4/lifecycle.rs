@@ -1040,14 +1040,14 @@ impl CompilerSession {
                         return None;
                     }
                     let table = entry.value();
+                    let declared =
+                        crate::imports::DeclaredChildren::of(&dependent, &table.submodules);
                     let explicit = table
                         .imports
                         .iter()
-                        .any(|spec| reached.contains(&spec.module_path))
-                        || table
-                            .exports
-                            .iter()
-                            .any(|spec| reached.contains(&spec.module_path));
+                        .map(|spec| &spec.module_path)
+                        .chain(table.exports.iter().map(|spec| &spec.module_path))
+                        .any(|spelling| reached.contains(&declared.resolve(spelling)));
                     let through_prelude = reached.contains(&prelude)
                         && self
                             .shared
@@ -1136,12 +1136,13 @@ impl CompilerSession {
             let Some(table) = self.shared.symbol_tables.get(consumer) else {
                 continue;
             };
+            let declared = crate::imports::DeclaredChildren::of(consumer, &table.submodules);
             let mut dependencies = table
                 .imports
                 .iter()
                 .map(|spec| &spec.module_path)
                 .chain(table.exports.iter().map(|spec| &spec.module_path))
-                .filter_map(|dependency| index.get(dependency).copied())
+                .filter_map(|spelling| index.get(&declared.resolve(spelling)).copied())
                 .collect::<Vec<_>>();
             if self
                 .shared

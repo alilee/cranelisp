@@ -420,13 +420,11 @@ defect R1-V
 **structural**, because the crate has one candidate source and it yields one
 module. Falsifier: a second qualified candidate source in the crate.
 
-**Outside this crate.** `int`'s bare-name import and export resolution
-(`src/process_form/dependency.rs::resolve_current_module_relative`) also
-synthesises `<current>.<name>`. It does so whenever that module is registered
-or has a backing file, whether or not the current module declared it. The
-same undeclared child can therefore be the submodule in an `import` and the
-root module in a qualified reference, which §8.11.2.1 forbids. This is
-source-read and routed to `design`(int) and `qa`.
+**Outside this crate.** `int`'s bare-name import and export resolution uses
+declared children rather than registered modules or backing files
+([int §6.9](../int/int.md#69-bare-module-names-in-import-and-export)).
+This is IR-1's correction of the same undeclared-child capture in import and
+export positions; its evidence and status belong to that surface.
 
 **Evidence.**
 
@@ -667,10 +665,6 @@ when the form fails with a type error.
     constructor is kind-checked against a same-named local type, or not at
     all. Both are discarding probes: they record no gap. A cell needs `sprint`
     scheduling.
-  - *The two named type lookups name an intrinsic differently.*
-    `resolve_type` names an intrinsic terminal by its canonical symbol;
-    `resolve_type_in_module` names it by the spelled name. No divergence was
-    found. Converge them when either is next changed.
 - **Unchanged.** The carrier, the lift and the public surface are unchanged;
   this produces the gap that `lib.rs` already documents. A missing member of a
   present module stays a located "unknown type" error. That result does not
@@ -846,15 +840,14 @@ do not add a local type printer.
   record is built from the values the impl shell is built from, inside
   `register_trait_impl`'s transaction, and upserts per `(type, trait)`
   ([trait implementation](traits.md#3-trait-implementation).0.1; `design/arch/trait-impl-cache-carrier.md`).
-- Impl existence is checked only at the trait's resolved home
-  (`has_impl_in_home`; [dispatch roots](traits.md#701-dispatch-roots-at-the-methods-home-spec-7112)).
-  The bare-name-rooted predicates in `checker.rs` (`has_impl`,
-  `has_impl_in_module`, `ModuleReadView::has_impl`, `has_impl_with_state`)
-  have no production caller and re-resolve a trait name that production has
-  already resolved; two wrong-rejects came from using one. They belong in
-  `#[cfg(test)]` support with their chain-follow unit cells. Until
-  [ACT-0989](../../sprints/actions/ACT-0989-has-impl-with-state-production-dead-helper.md)
-  moves them, they compile in production under `#[allow(dead_code)]`.
+- Impl existence is one keyed probe at the trait's resolved home, keyed by
+  the receiver's canonical identity
+  ([receiver identity](#911-impl-existence-is-keyed-by-the-receivers-identity);
+  [dispatch roots](traits.md#701-dispatch-roots-at-the-methods-home-spec-7112)).
+  Bare-name-rooted predicates live only in `checker/test_support.rs`, behind
+  `#[cfg(test)]`, with their chain-follow unit cells. Production callers use
+  the resolved identity; they cannot call these test predicates.
+  The former module-specific and read-view predicates are deleted.
 - A deferred trait call retried from settled state that reaches a concrete type
   with no impl propagates the located no-impl error naming the owning trait; a
   nullary return-dispatched method pinned to a type without an impl is rejected
@@ -865,6 +858,130 @@ do not add a local type printer.
 
 `traits.md` carries the subsystem; `hkt.md` the constructor-variable path.
 
+#### 9.1.1 Impl existence is keyed by the receiver's identity
+
+Status: **implemented, independently reviewed and QA-adequate 2026-09-27.**
+The final workspace run passes this surface's evidence. It corrects the confirmed
+defect BN-1
+(`tests/spec_07_traits.rs::impl_for_same_named_type_in_another_module_does_not_satisfy_trait_neg`).
+The former home-rooted step scanned the trait's home and compared each
+shell's bare type name, so `m`'s impl for `m/U` also satisfied `main/U`.
+The permanent regression now rejects that program during typechecking.
+
+**Requirement.** A type's identity includes its home module (spec §8.1,
+§3.8.4), and an impl is for that one type (§7.3). Decision 47 permits bare-name
+recognition only for the built-in scalar types
+([interfaces](../arch/interfaces.md), "Resolved-stage type identity").
+
+**Rule.**
+
+- *Receiver identity.* One crate-private derivation maps a settled type's head
+  to its canonical `FQTypeName`:
+  - an ADT gives its own `FQTypeName`, with its arguments dropped (the
+    registration grain, [mangling](traits.md#31-mangling--mangle_trait_method));
+  - a built-in scalar gives its identity in the synthetic `primitives` module,
+    where bootstrap installs it (spec §8.9.1). Principle 19 permits the literal
+    at this construction site;
+  - any other head has none. Each route keeps its own classification of those
+    heads.
+
+  Any bare name the crate still reads (for the primitive short-circuit or a
+  diagnostic) is this identity's `name`, not a second classification.
+- *Probe.* Impl existence is the binding at
+  `trait_impl_key(receiver, trait)` in the trait's home, read through the
+  staging-aware keyed probe. It returns the shell, so existence and
+  `impl_module` come from one read. The home is never scanned, and
+  no route matches by bare name.
+- The probe accepts only an `FQTypeName`, so a bare-name caller does not
+  compile.
+
+**Routes.** Every production route to impl existence uses the derivation and
+the probe:
+
+| Route | Site | Unchanged |
+|---|---|---|
+| Call-site dispatch | `traits/dispatch.rs`, method resolution | Deferral on a non-nominal head; the no-impl diagnostic |
+| The shared satisfaction step (§9.2.1) | `traits/dispatch.rs::trait_satisfaction` | Its head classification. Its callers, the declared-bound check and `verify_constraints`, need no change |
+| Candidate trials | `candidate_selection.rs` | A non-nominal head stays viable ([candidate trials](use-site-candidate-selection.md#53-isolated-candidate-trials)) |
+| Value-position trait annotation | `infer.rs::infer_annotate` | Its function-head and variable-head arms and messages (§11) |
+
+**What the correction removes.**
+
+- Dispatch re-resolved a scalar's bare name in the trait's home to build its
+  `FQTypeName`. The pre-fix module cell with a home-local ADT named `Int`
+  observed a wrong rejection: `unknown type Int (from module test)`.
+  The derivation replaces that re-resolution; the cell now dispatches to
+  the scalar's implementation. The unused type-in-module lookup is deleted.
+- The bare-name fallback that read `impl_module`, and its degrade to
+  `current_module`, are deleted. The dispatch mangle's `FQTypeName` is the
+  receiver identity.
+
+**Considered.**
+
+- Keep scalar re-resolution in the trait's home: rejected. It re-derives an
+  identity the type already carries (Principle 24) and produced the confusion
+  above.
+- Put the derivation on `Type` in `cranelisp-types`: rejected. It would change
+  the public API for one consumer crate. Potential extension: move it through
+  `arch` and the user gate when a second crate needs this identity.
+- Change the shell key: rejected. That changes the persisted key, and the
+  registration side is already correct.
+
+**Not changed.** Public API, persisted shape and cache schema. Impl registration,
+the `impl$` key and the mangle grammar. The trait side of the key: every route
+already supplies the trait's resolved home. The renamed-trait lead in §11 is
+unaffected. The bare-name-rooted predicates of §9.1 are test-only.
+The primitive short-circuit's keying and the no-impl renderers stay open
+([traits open items](traits.md#11-open-items); §11).
+
+**Grade.** *An impl satisfies only its own receiver type*: **structural** for
+the routes, because the probe accepts only an `FQTypeName` and has one key
+constructor. The scalar derivation must equal the identity that registration
+resolves. That is **measured** by
+`crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::dispatch_mangle_equals_definition_writeback_key_lockstep`
+at `Int`. In the suite, a mismatch would appear as a new no-impl rejection, not
+as a silent acceptance. The bare-name test predicates are structurally
+excluded from production by `#[cfg(test)]`.
+
+Review notes that `Float`, `Bool` and `String` rely on the full suite for
+registration/dispatch alignment; the module lock-step cells exercise `Int`.
+Potential simplification: derive registration and dispatch identity through
+one function. This is a design lead, not part of the delivered correction.
+
+**Open review leads (not executed or accepted as residuals).**
+
+- The no-impl renderer can re-resolve a bare type name to the wrong home.
+  Falsifier: a caller importing `a/U` dispatches a trait at a `b/U` value and
+  receives a diagnostic naming `a/U`. The dispatch site already holds the
+  receiver identity. This is the renderer issue retained above, not a failure
+  of the keyed existence probe.
+- Two unused enumeration pairs in `checker.rs` retain bare-name shell scans:
+  the `get_impls_for_type_with_state` and `get_implementing_types_with_state`
+  entry points and their module helpers. They have no production consumer;
+  review recommends removing the speculative helpers when this surface is
+  next changed. They are not the production existence routes graded above.
+
+**Evidence delivered** (`dev`, module; confirmed in the final workspace run):
+
+- The shared step, as a twin: `a/U` has an impl and same-named `b/U` has none.
+  `a/U` is satisfied and `b/U` is not.
+- Scalar and ADT twins, in both directions:
+  - an impl for an ADT named `Int` does not satisfy `Int`;
+  - an impl for `Int` does not satisfy that ADT.
+- Dispatch at `b/U` gives the located no-impl error, not a resolution to
+  `a/U`'s writer.
+- The trait home declares its own unimplemented ADT named `Int`, and `Int` has
+  an impl. `(tr 5)` dispatches to that impl's `…$primitives/Int` symbol.
+- One twin each for the candidate-trial and value-position routes. Each route
+  supplies its own type to the derivation, so each needs a twin.
+- Detection: seven module cells were RED on the original code and GREEN
+  after correction, with their accepted legs preserved. Under QA's RED-first
+  allocation, no equivalent bare-name matching plant was repeated.
+- The BN-1 e2e cell is GREEN, and its control stays GREEN.
+- The alias-target annotation fixture now installs intrinsic `Int` in
+  `primitives` and imports it into its trait module, matching production.
+  Independent review confirms that its original lookup subject is preserved.
+
 ### 9.2 Constraint propagation (Decision 19)
 
 `generalize` collects trait constraints from active type variables into
@@ -873,8 +990,8 @@ are produced by call-site monomorphisation.
 
 #### 9.2.1 Declared bounds are discharged at settlement
 
-Status: **implemented 2026-09-26; uncommitted. Two allocated evidence items
-are open (see Evidence).** It corrects the confirmed defect DB-1
+Status: **implemented and committed; AD-6's clause-arm rejection cell is
+delivered.** It corrects the confirmed defect DB-1
 ([intake](../../tests/plan/s122-evidence-delta.md#declared-bound-not-checked-at-the-call-site--intake-2026-09-26)).
 
 **Requirement.**
@@ -928,8 +1045,8 @@ are open (see Evidence).** It corrects the confirmed defect DB-1
 settled type satisfies a trait, by the type's head:
 
 - A nominal head, a scalar or an ADT, satisfies the trait if and only if the
-  trait's home holds an impl shell for it (`has_impl_in_home`; every shell is
-  written to the trait's home).
+  trait's home holds an impl shell keyed by that head's identity (§9.1.1).
+  Every shell is written to the trait's home.
 - A function head never satisfies a trait, whatever its arguments: the
   impl-target grammar (spec §7.3) admits no function type.
 - A variable or constructor-variable head is undetermined.
@@ -949,8 +1066,9 @@ The declared-bound check and `verify_constraints` both call this step.
   ``no impl of trait <FQ trait> for type <type> (declared bound of parameter
   `x` of `f`)`` (§8.3). The settled type renders through `render_type`, so a
   parametric ADT shows its arguments.
-- It is located at the declaring definition's registration span; for a
-  multi-signature clause it names the authored family.
+- It is located at the declaring registration's span. A multi-signature
+  clause's registration span is the clause's own. Its error names the authored
+  family, never the internal clause name.
 - The pinning call site is not located, because finding it would need a scan
   of the cluster's call sites (Principle 24). Potential extension: locate it
   there if the REPL error-presentation spec or a user ruling requires it.
@@ -965,8 +1083,9 @@ The declared-bound check and `verify_constraints` both call this step.
 
 - Generalisation, and the same-cluster monotype rule.
 - Rigid seeding ([inference](inference.md)).
-- Candidate selection's trial constraint filter.
-- The value-position satisfaction check (see §11).
+- Candidate selection's trial constraint filter, and the value-position
+  satisfaction check (see §11). Both use the same keyed impl probe (§9.1.1),
+  but neither uses this step's head classification.
 
 **Grade.** *A declared parameter bound holds at every concrete type the program
 gives the parameter*: **measured**. The same-cluster route is measured by this
@@ -1001,7 +1120,18 @@ on its own parameter would be one.
 - RQ-1's multi-signature positive cell is GREEN and joined the silent leg of
   the detection proof. The HKT cell followed its allocated stop rule: no
   supported parameter syntax binds a constructor variable (spec §7.8.3).
-  Finding-scoped review accepted that evidence; QA owns final disposition.
+  Finding-scoped review accepted it, and `qa` retired the HKT cell.
+- **AD-6:** `declared_bound_on_multi_signature_clause_unsatisfied_in_cluster_rejected`
+  in the same file is GREEN. Only a
+  rejected program reaches the arm that names the authored family.
+  - Subject: the multi-signature world with clause 1's bound changed from
+    `:Tr` to `:Ts`.
+  - Required: rejected, naming `test/Ts`, `test/U`, parameter `x` and `f`,
+    not the internal clause name. The location must lie within `f`'s
+    definition.
+  - Detection is already recorded: under the discard mutant, the program was
+    accepted ([QA allocation](../../tests/plan/s122-evidence-delta.md#corrections)).
+    The permanent cell reuses that detection evidence.
 - RQ-2's super-import fixture now supplies its required `Eq Int` impl. The
   missing-impl contrast was RED, and the repaired fixture GREEN; its D4
   resolution subject is preserved. Finding-scoped review resolved RQ-2.
@@ -1153,18 +1283,22 @@ are listed in `design/typecheck/CLAUDE.md` §"Redirections".
   back to the bare name when the type is not in scope, contrary to §8.3. The
   same requirement at the same type can therefore print differently by route.
   Decide whether to converge on `render_type`, which changes existing message
-  text. Source-read (S122 review AD-4), not executed.
-- **The impl-existence step matches the impl type by bare name.**
-  `has_impl_in_home` compares the shell's bare type name. A trait home holding
-  an impl for `m/U` therefore also satisfies a same-named `n/U`. Dispatch, the
-  mint, the value-position check, candidate selection and §9.2.1 all
-  inherit this wrong-accept. Source-read, not executed. The trigger is a
-  failing cell with two same-named ADTs, one of which implements the trait.
+  text. Source-read (S122 review AD-4). One instance was observed: DB-1's
+  cross-cluster leg X1 renders `main/U` as bare `U`. §9.1.1 leaves these
+  renderers unchanged.
 - **The value-position satisfaction check differs on a function head.** It
   rejects only a fully concrete function type, while §9.2.1's shared step
-  rejects any function head. Converge the value check onto the shared step
-  when it is next changed, or when a cell accepts `:Tr` on a function with a
-  residual variable.
+  rejects any function head. When the value check's head classification next
+  changes, or a cell accepts `:Tr` on a function with a residual variable,
+  converge it onto the shared step. §9.1.1 changes only its nominal arm.
+- **Candidate trials treat a function head as viable.** The trial filter
+  passes any head without a nominal identity. So a trait obligation settled
+  at a function type does not eliminate the candidate, although
+  [candidate trials](use-site-candidate-selection.md#53-isolated-candidate-trials)
+  make a concrete unsatisfied obligation incompatible. Changing this could
+  change which candidate a use selects. It is a source-read lead and has not
+  been executed. The trigger is a failing cell. §9.1.1 keeps the current
+  behaviour.
 - **A trait reached through a renamed import** (spec §8.3.5). Both
   type-or-trait routes (§7.3.2) and the stacked bound (§3.5) pair the resolved
   home with the spelled name. A renamed trait would therefore get

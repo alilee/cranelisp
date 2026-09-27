@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{
     ApplyRef, CallableOrigin, CallableTarget, ConcreteType, CranelispError, Defn, DefnVariant,
-    ErrorLocation, Expr, FQSymbol, InstanceLink, JitSymbol, Life, MethodResolutions,
+    ErrorLocation, Expr, FQSymbol, FQTypeName, InstanceLink, JitSymbol, Life, MethodResolutions,
     ModuleFullPath, MonoDefn, MonoDefnVariant, MonoDemand, MonoExpr, NotConcrete, Realization,
     ResolvedCall, Scheme, Span, Symbol, TemplateBody, Type, TypeName, VarRef, ViewBuildError,
     Visibility, apply, concrete_callable_key, free_vars,
@@ -453,9 +453,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// live in the DEFINING module's scope, so switch `current_module` to
     /// `home` for the impl lookup (mirrors `recheck_body_for_mono`'s module
     /// switch). The switch is **restored unconditionally** BEFORE the result is
-    /// `?`-propagated. Without this, `has_impl_with_state` roots the trait
-    /// resolution in the caller's scope and a home-local (non-prelude) impl is
-    /// invisible — a spurious "no impl of trait T for type Int".
+    /// `?`-propagated. The impl probe itself is keyed at the constraint's trait
+    /// home and reads no `current_module`; the switch now affects only how the
+    /// no-impl diagnostic renders the type.
     fn verify_mono_constraints(
         &self,
         state: &mut CheckState,
@@ -1412,18 +1412,34 @@ pub(super) fn collect_self_apply_calls(
     });
 }
 
-/// Extract the bare TypeName from a concrete (non-Var) type.
-/// For ADTs, returns the bare name without module qualification.
-/// This is used for nominal trait dispatch and impl registry lookup.
-pub(crate) fn concrete_type_name(ty: &Type) -> Option<TypeName> {
+/// The canonical identity of a settled type's nominal head: the key an impl
+/// for it is registered under (`design/typecheck/typecheck.md` §9.1.1).
+///
+/// An ADT gives its own `FQTypeName` with its arguments dropped (the
+/// registration grain). A built-in scalar gives its identity in the synthetic
+/// `primitives` module, where bootstrap installs it (spec §8.9.1). Any other
+/// head has no identity; each caller classifies those heads itself.
+pub(crate) fn receiver_identity(ty: &Type) -> Option<FQTypeName> {
+    let scalar = |name: &str| {
+        Some(FQTypeName::new(
+            ModuleFullPath::from("primitives"),
+            TypeName::from(name),
+        ))
+    };
     match ty {
-        Type::Int => Some(TypeName::from("Int")),
-        Type::Float => Some(TypeName::from("Float")),
-        Type::Bool => Some(TypeName::from("Bool")),
-        Type::String => Some(TypeName::from("String")),
-        Type::ADT(fqtn, _) => Some(fqtn.name.clone()),
-        _ => None,
+        Type::Int => scalar("Int"),
+        Type::Float => scalar("Float"),
+        Type::Bool => scalar("Bool"),
+        Type::String => scalar("String"),
+        Type::ADT(fqtn, _) => Some(fqtn.clone()),
+        Type::Var(_) | Type::Fn(..) | Type::TyConApp(..) => None,
     }
+}
+
+/// The bare name of [`receiver_identity`], for the primitive short-circuit and
+/// diagnostics. Never an impl-existence key.
+pub(crate) fn concrete_type_name(ty: &Type) -> Option<TypeName> {
+    receiver_identity(ty).map(|identity| identity.name)
 }
 
 #[cfg(test)]

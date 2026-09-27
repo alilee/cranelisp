@@ -4577,9 +4577,11 @@ reached only through the callee walk.**
 
 **IR-1: a bare import or export name reaches an undeclared child.**
 
-- **Source, verified.** `src/process_form/dependency.rs::resolve_current_module_relative`
-  returns `<current>.<name>` when any module has registered it or a file
-  backs it. [Spec §8.11.2](../../spec/08-modules.md#8112-module-resolution-search-order)
+- **Source at intake, verified.** The former relative resolver in
+  `src/process_form/dependency.rs` returned `<current>.<name>` when any module
+  had registered it or a file backed it. The delivered IR-1 correction uses
+  `src/imports.rs::DeclaredChildren` instead.
+  [Spec §8.11.2](../../spec/08-modules.md#8112-module-resolution-search-order)
   tier 1 requires that the current module declared `(mod name)`.
 - **Classification: a confirmed source-read lead; not executed.**
   - The spec decides it: §8.11.2 item 1, and §8.5.4 item 2's rule against
@@ -4611,9 +4613,11 @@ reached only through the callee walk.**
 
 **BN-1: impl existence matches a type by its bare name.**
 
-- **Source, verified.** `crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home`
-  compares `shell.impl_type.name` with a bare `TypeName`. Every satisfaction
-  site, including §9.2.1's shared step, inherits it.
+- **Source at intake, verified.** The former bare-name impl-existence helper
+  in `crates/cranelisp-typecheck/src/checker.rs` compared `shell.impl_type.name`
+  with a bare `TypeName`. Every satisfaction site inherited it. The delivered
+  BN-1 correction replaces that helper with the canonical-identity probe
+  `crates/cranelisp-typecheck/src/checker.rs::impl_shell`.
 - **Classification: a confirmed source-read lead, face `wrong-accept`; not
   executed.** The spec decides it: a type's identity includes its module
   (§8.1), and an impl is for that type (§7.3).
@@ -5090,5 +5094,210 @@ the subject. Observed, the subject was RED in 7 of 20 runs alone and 24 of
 | FA-1: a claim is not bound to its registration | QA intake, a candidate residual. It is not RR-1 work. Checked at source: `re_register_module` resets a `TypecheckDone` module that may still be claimed. The loaded completion is unguarded and sets `inmem_done` on the fresh registration, which satisfies the named-module and all-module in-memory waits. The unguarded completion predates RR-1, which does not introduce this path, and A-RC includes no watcher edit. Unobserved. It is recorded as the fifth §7.1 exclusion, with its falsifier. Lowest discriminating layer when scheduled: a `dev`(src) scheduler row that re-registers a claimed module and then completes the stale claim as loaded. The row pins the state transition, but it cannot show harm; harm needs the watcher e2e in the falsifier. Allocate neither row until `design`(int) decides whether completions are bound to the registration |
 | FA-2: a parked waiter is inferred from 100 ms | Advisory. No evidence allocated. A lost wake alone escapes detection only when the waiter fails to park within 100 ms. `dev` may acknowledge it |
 
-**Commit step.** Append `/<sha>` to the two `fixed=S122` stamps on the RR-1
-cells in `tests/cache.rs`.
+**Stamps.** The correction is committed at `236aa44d`; the
+[final `test` visit](#final-test-visit-t-f) appends it to both RR-1 stamps.
+
+## Final basket — BN-1, IR-1, AD-6 and cleared coverage (2026-09-27)
+
+Governs the user-approved batch after checkpoint `236aa44d`. Basis:
+`.local/s122-rr1-final-full.log` (6185 run, 6183 passed, 1 skipped; only the
+BN-1 and IR-1 cells fail) and the RED records in
+`.local/s122-batch-followup-test-result.md`. Designs:
+[typecheck §9.1.1](../../design/typecheck/typecheck.md#911-impl-existence-is-keyed-by-the-receivers-identity)
+(`.local/s122-bn1-design-result.md`) and
+[int §6.9](../../design/int/int.md#69-bare-module-names-in-import-and-export)
+(`.local/s122-ir1-design-result.md`). Neither changes a public API, schema or
+ABI. No residual is accepted here.
+
+**RED-first and plants.** A module row that runs on the pre-fix source is
+observed RED there, and that run is its detection record. A planted fault is
+required only for a row whose seam does not exist before the fix. A plant
+that recreates behaviour a RED-first row already observed adds nothing.
+
+### BN-1 — impl identity across modules
+
+**Condition BN.** A trait is satisfied at a type only by an impl whose target
+is that type's canonical identity, module included (spec §7.3, §8.1). This
+holds on every satisfaction route and for dispatch's impl home.
+
+| ID | Class | Condition | Wrong outcome it discriminates | Layer, owner |
+|---|---|---|---|---|
+| BN-a | Acceptance | The committed cell `spec_07_traits::impl_for_same_named_type_in_another_module_does_not_satisfy_trait_neg`: the subject is rejected as a type error naming `Tr` and `main/U`; control `V` stays a type error | `m`'s impl satisfies `main/U` (today accepted, then a codegen entry-miss) | Existing e2e; red recorded |
+| BN-u | Acceptance (mechanism) | §9.1.1's module cells: the step twin, scalar and ADT twins both ways, the located no-impl dispatch error, the home-local `Int` lock-step cell, and route twins for candidate trials and value-position annotations | A route still compares bare names; the scalar identity diverges from registration | `dev`(typecheck); RED before the fix where the program runs on the pre-fix source |
+| BN-s | Structural | The keyed probe accepts only an `FQTypeName`, so a bare-name caller does not compile. The scan and the bare-name `impl_module` fallback are deleted | A future caller reintroduces a bare comparison | `review` confirms the signature and the deletions; no committed compile-fail test |
+| AD-6 | Acceptance (unchanged, [allocation](#correction-basket--closing-qa-judgment-2026-09-26)) | The clause-arm rejection cell, in the same visit: rejected, naming `Ts`, `U`, `x` and `f`, not `f__v1`; no clause span pinned | The settlement check stops visiting clause registrations | `dev`(typecheck). Detection is the recorded variant, accepted under the discard mutant and rejected on the real source (`.local/s122-batch-typecheck-rq1-dev-mutant.log`); no rerun |
+
+- **No new e2e.** Every route converges on the one probe (BN-s), and a
+  rejected program never reaches codegen, so a declared-bound or value e2e leg
+  would repeat BN-u through a costlier layer.
+- **R1, scalar drift** (a wrong-reject of every scalar impl): loud; measured
+  by the lock-step cell and the full suite's `stdlib_conformance`, examples and
+  exemplar cells.
+- **Lead, not allocated:** `cranelisp-types`' `get_impls_for_type_chain`
+  compares bare names, so `/info main/U` may list `m/U`'s impl. Display
+  face, unexecuted. Falsifier: that listing in a session holding both types.
+
+### IR-1 — bare module names in `import` and `export`
+
+**Condition IR.** In `import` and `export`, a bare module name reaches the
+current module's child only when that module declares `(mod name)`, whatever
+else is loaded; otherwise it resolves as the qualified position does (spec
+§8.11.2 item 1, §8.11.2.1, §8.5.4 item 2).
+
+| ID | Class | Condition | Wrong outcome it discriminates | Layer, owner |
+|---|---|---|---|---|
+| IR-a | Acceptance | The committed cell `spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module`: both subjects exit 99; both `(mod q)` controls exit 11. R1-V's cell and §6.9's named controls stay GREEN | The undeclared file-backed child wins | Existing e2e; red recorded |
+| IR-u | Acceptance (mechanism) | §6.9 rows 1–6. The resolver rows are new seams, armed by planting file-backed capture; rows 2–6 run RED-first where their pre-fix seam exists | A reader keeps the raw spelling or the installer ladder | `dev`(src) |
+| IR-s | Structural | The resolver takes only the referring module, its declared children and the spelling. With no table, filesystem or load-state input, a registered or file-backed child cannot capture a name | A registered-arm survivor | `review` confirms the signature and the deletions |
+| IR-o | Acceptance | Two legs in IR-a's cell, both in the declared shape (`a` declares `(mod q)`, required exit 11): **root first**, `main` imports `[q [anchor-99]]` before `[a [h]]`; **alias**, `a` imports `[(q qq) [g]]` and calls `(qq/g)` | Silent binding of the wrong module, predicted today (exit 99): the installer ladder binds a loaded root `q`, or the alias keeps the raw spelling. IR-a's controls never have root `q` loaded or an alias | `test`, final visit; about 0.1 s each. Pre-fix e2e state unobserved; rows 2 and 5 carry it |
+
+- **Not allocated at e2e:** §6.9's false-cycle lead (a loud wrong-reject;
+  row 4 pins it) and the watcher readers (asserted with §6.9's falsifier).
+- **Candidates, not allocated:** `super` capture by a child declaring its
+  parent's name; the prelude test by spelling; `handle_export`'s fast path
+  without `is_typechecked`. Each stays open with §6.9's falsifier. Whether
+  §8.11.2.1 spans REPL turns is a `spec` question through `sprint`.
+
+### Cleared coverage — re-judged
+
+| Row | Judgment | Band (applied unless stated) |
+|---|---|---|
+| spec §10.12.8 item 4 | **Restored.** The unchanged first sentence is evidenced on direct branches. The changed contrast clause is §10.12.7 item 5's obligation, which stays uncovered under ACT-0977 | `[Tested+Neg …]` naming the two side-effect-absence cells and the permit-release cell |
+| spec §10.12.10 cancel-on-disconnect | **Not restorable; carried.** No platform provides a disconnect-detection effect, so no legitimate program can construct the pattern. The web survivor test observes only continued service | `[Uncovered S122 — … carried by ACT-0977]` |
+| spec §10.12.10 graceful shutdown | **Not restorable; carried.** No shutdown-signal effect exists, and the pattern composes §10.12.7 item 5, which is unevidenced and not realised | As above |
+| Appendix A `discover-tests` | **Not restorable from existing tests.** Evidenced: the direct-vector result, pair shape and callables, and signature exclusion. Unevidenced: empty-vector scope, named-only search, no import traversal, the FQ name string, `--run`, and the absence of sugar forms. Two clauses stay open outside this batch: the discovery-time warning (source-read absent; ACT-0986) and the `--link` clause, where the spec and the committed link test disagree and the user holds the correction (ACT-0988) | Stays cleared until DT-1 passes; then `[Tested+Neg …]` naming the existing and DT-1 cells, with those two clauses named as unevidenced |
+
+**DT-1 (`test`, e2e, `tests/spec_12_runtime.rs`, predicted GREEN).**
+A file module `h` defines an eligible `test-h` and `(defn find [] (discover-tests []))`;
+the REPL's `user` imports `h` and defines an eligible `test-u`.
+
+| Leg | Required | Wrong outcome |
+|---|---|---|
+| `(find)` from `user` | exactly `"user/test-u"` | lexical scope (`h`), every module, or a bare name |
+| `(discover-tests ["h"])` | exactly `"h/test-h"` | the current module is added |
+| `(discover-tests ["user"])` | `h/test-h` absent | scope follows imports |
+| `--run`, named module | the entry program's count as its exit code | the extern resolves only in the REPL |
+| `(discover-tests)` and `(discover-tests "user")` | each a type error, no value | a retired special-form or sugar arm |
+
+- **Stop.** Any RED is defect intake under ACT-0986, reported and not fixed in
+  this batch; the row then stays cleared.
+- **Not allocated:** the warning and `--link` clauses (above), and REPL §16.3,
+  whose `[Uncovered S122]` tag QA may re-judge once DT-1 exists.
+
+### Final `test` visit (T-F)
+
+One visit after both `dev` visits release the tree:
+
+1. IR-o and DT-1.
+2. Append `fixed=S122/<sha>`, keeping every `locus=` token. Provenance was
+   derived from Git and the recorded REDs:
+
+   | Commit | Cells |
+   |---|---|
+   | `94486f24` (dependency record) | `tests/cache.rs`: the `cache_dep_{signature,layout}_change_under_cached_importer_matches_uncached_{run,link}` cells (committed RED at `5b1a843b`), `cache_dep_change_through_unchanged_reexporter_matches_uncached_run`, `cache_dep_change_after_importer_rebuilt_over_restored_reexporter_matches_uncached_run` |
+   | `bc675d86` (callee walk; stamped `fixed=S122` there) | `cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run`, `cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run` |
+   | `56e4d2e1` (FT-1 and FT-2 committed RED through `bc675d86`; FT-3, FA-1 and FB-1 added with the fix, pre-fix REDs logged) | `tests/cache.rs::fq_type_only_reference_loads_its_module_on_a_fresh_compile`; `tests/spec_08_modules.rs`: `fq_type_annotation_alone_loads_its_module`, `fq_type_annotation_through_alias_only_import_loads_its_target`, `fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted`, `fq_param_trait_annotation_resolves_in_named_module_neg_not_captured_by_bare_trait` |
+   | `236aa44d` | RR-1's two cells; LD-9 `cache_qualified_macro_head_with_empty_expansion_change_matches_uncached_run`; R1-V `qualified_name_to_undeclared_registered_child_resolves_to_root_module`; DB-1 `declared_trait_bound_is_checked_at_the_call_site` |
+
+   BN-1 and IR-1 take `fixed=S122` once GREEN; the commit step appends the
+   sha. The two `tests/agent.rs` S122 lines are not stamped: the agent lane is
+   absent from the default log and their provenance is unverified.
+3. Move remaining present-tense defect framing to the past tense. AD-7's
+   residue is the §8.2 D3/D4 banner in `tests/spec_08_modules.rs` ("FAILING-NOT-IGNORED",
+   the owning-crate guess), D3's "Today this FAILS" and its superseded inline
+   FIXME token. Both cells pass.
+4. `spec_link_check.py` and `spec_coverage_reconcile.py` report no new finding.
+
+### Replay and gates
+
+- **`dev`**: the release gate for each touched crate; module REDs logged
+  before each fix; `public_api_relocations` unchanged unless the user gate
+  approved a delta.
+- **One full `cargo nextest run --no-fail-fast`** on the final tree, after
+  T-F: zero failures. Any RED is a regression.
+- **RR-1 replay (`test`, about 1 min).** §6.9 changes Pass 0 in
+  `handle_import`'s module and the restore walk in `cache_restore.rs`, beside
+  RR-1's cache-hit arm. After `dev`(src), rerun E-1 (`--stress-count 20` over
+  the RR-1 cell and S-2): zero failures of any face. A single full run detects
+  a regression with about 53% (subject) and 95% (S-2) probability; at the
+  pre-correction rates, E-1's 20 runs miss one with probability below 10⁻⁶.
+- **Bands, `qa`, after the full run:** §7.3 cites BN-a and §8.11.2 cites IR-a,
+  each dropping its `[S122 …]` tag; §8.11.2.1 cites IR-a and R1-V. Appendix A
+  and REPL §16.3 carry partial bands while DT-1's `--run` leg is RED
+  ([adequacy](#final-basket--adequacy-2026-09-27)).
+
+### Final basket — adequacy (2026-09-27)
+
+Basis: `.local/s122-final-test-result.md` and its logs (`full.log`
+`8e572320…`, `e1.log` `43f1f99e…`); the dev and review results for BN-1 and
+IR-1. The tree hashed before the full run matches the reviewed sources.
+
+**Judgment: adequate for BN-1, IR-1 and AD-6.** No acceptance blocker in the
+approved batch. One discovered defect (DT-1 `--run`, below) needs the user's
+Phase 5 disposition; it does not trace to the batch.
+
+| Condition | Class | Result |
+|---|---|---|
+| BN-a | Acceptance | GREEN; the `V` control stays rejected |
+| BN-u | Acceptance (mechanism) | Seven cells RED on the pre-fix source for the stated reason, GREEN after. The plant was not run: it recreates what those REDs observed |
+| BN-s | Structural | Confirmed by review, with its limit: a new hand-written scan still compiles. The nearest such code is review AD-c's two dead enumeration pairs |
+| AD-6 | Acceptance | GREEN; detection is the recorded discard-mutant variant |
+| R1 (scalar drift) | Safety fence | The `Int` lock-step cells and the full suite's `stdlib_conformance` 17/17, `examples` 4/4 and `exemplar` 4/4 are GREEN. `Float`, `Bool` and `String` are measured by the full suite only |
+| IR-a, IR-o | Acceptance | All six legs GREEN. IR-o's pre-fix e2e state is unobserved; IR-u rows 2 and 5 carry detection |
+| IR-u | Acceptance (mechanism) | Six rows RED first; the resolver and installer rows detected plants A and B; 139/139 after |
+| IR-s | Structural | Confirmed by review. Which declarations each caller passes is asserted, checked against §6.9's table |
+| RR-1 replay (E-1) | Safety fence | 800 sessions, zero failures of any face |
+| Full suite | Acceptance gate | 6201 run, 6200 passed, 1 failed, 1 skipped. The failure is DT-1 `--run`, a guard traced to ACT-0986. The skip is the ignored `concurrency_spark` CPU-floor benchmark, a diagnostic observer outside this batch |
+| Stamps and tense | Maintenance | 19 stamps and IR-1's `fixed=S122` applied with byte-identical `locus=` tokens; BN-1 and IR-1 take the commit sha |
+| `spec_link_check.py`, `spec_coverage_reconcile.py`, `check_documents.py` | Maintenance | 0 mis-cited; 0 unresolved and 0 cleared; 0 findings |
+
+**DT-1 `--run` — defect intake (ACT-0986).**
+
+- **Observed.** `--run` of an entry module with three eligible tests returns
+  an empty vector: exit 0, no diagnostic. The same file in the REPL
+  discovers its tests (same binary, `test`'s mode control). The REPL legs
+  and negatives are GREEN.
+- **Authority.** Appendix A (since S76) and REPL §16.6 state that the
+  extern resolves in REPL and `--run`. The later approved direction
+  (ACT-0988) moves test-harness capability to an explicit `--test` mode and
+  gives `--run` release capabilities; release (`--link`) refuses discovery by
+  name. It is unimplemented and not yet specified.
+- **Classification: a confirmed `mode-divergence` defect against current
+  text.** A silent empty vector conforms to neither authority: the current
+  text requires discovery; the approved direction's analogue is a named
+  refusal. The divergence is not the batch's: neither diff touches
+  `src/eval.rs`, `src/pipeline.rs` or `src/session_v4/test_runner.rs`.
+- **Mechanism: provisional.** The extern's null-state empty return is designed
+  and unit-pinned (`extern_returns_empty_vec_when_no_session`); the sole
+  runner-state install is the REPL eval arm (`src/eval.rs`). Falsifier: a
+  `--run` in which the runner state is installed and the result is still
+  empty. The `locus=` token stays provisional until the remedy is chosen.
+- **Remedy is a user choice, not QA's.** Installing runner state for `--run`
+  conforms to current text but builds a capability the approved direction
+  relocates. A `--run` refusal needs a `spec` amendment and ACT-0988's
+  harness and REPL policy first.
+- **Coverage attribution.** The `--run` clause never had an executing cell;
+  the S77 tag was a schedule. Clearing and re-judgment exposed it as designed.
+- **Band.** Appendix A is re-judged to an explicit partial carry naming the RED
+  and both open clauses; REPL §16.3 likewise.
+
+**IR-1 review intake.**
+
+| Item | Classification | Route |
+|---|---|---|
+| A1: row 1's `(mod q)` leg is `Private` | Weak `dev` module witness; low risk. The resolver ignores visibility, and a public `(mod q)` is exercised by parsed rows 3–4 and IR-a | `dev`(src), carryable |
+| A2, A3 | Memory accuracy and fixture duplication | `dev`(src), carryable |
+| A4: stale declarations | Candidate residual, unobserved. Resolution and enrollment read one declaration list, so IR-1 adds no divergence between them. Whether a reload or failed turn drops a declaration is unsettled. Falsifier: a reload that removes `(mod q)` and still binds `a.q` | Carried with L2 |
+| A4: pre-fix caches | Residual, bounded. `CRANELISP_BUILD_ID` is `<version>+<git sha>` (`crates/cranelisp-backend/build.rs`), so only uncommitted builds on `236aa44d` share a pre-fix cache. No released artefact is exposed | Recorded; no evidence |
+| L1: inline-body `mod` after its `import` | Unobserved lead. Resolution conforms; the load may fail loudly (`module 'a.q' not found`) on first compilation. Not a regression. Spec §8.2.2 does not settle same-cluster order for an inline body. Falsifier: review's `--run` fixture | `design`(int): confine §6.9's "form order has no effect" to resolution, or record the load edge |
+| L2: a failed turn's `(mod q)` persists | Unobserved lead. REPL §18 atomicity covers callable units and impls, not module declarations. IR-1 makes a leaked declaration decide import resolution; the face is loud when the child file is absent. Falsifier: review's two-turn fixture | `spec` via `sprint`, beside ACT-0995; no behaviour chosen |
+
+**BN-1 review leads.** AD-a (now measured by the full suite; a structural
+registration key is optional), AD-b (renderer face, unexecuted; falsifier in
+the review), AD-c (dead bare-name scans) and AD-d stay leads for
+`design`(typecheck) and `dev`(typecheck).
+
+**Maintenance lead (`test`).** Present-tense defect framing remains on passing
+cells in `tests/spec_08_modules.rs`, at the lines listed in the `test`
+report. It lets a future regression pose as a known guard. Bounded cleanup;
+not an acceptance condition.

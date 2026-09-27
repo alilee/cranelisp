@@ -1484,7 +1484,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// is still a `Var` until a later annotation (`:Widget (zed)`) or call context
     /// pins it. By this pass the return type is SETTLED (P26 — derive from settled
     /// state), so `try_resolve_trait_method`'s nullary branch reaches
-    /// `has_impl_in_home` with the concrete return type — and if there is NO impl,
+    /// the keyed impl probe with the concrete return type — and if there is NO impl,
     /// returns the located "no impl of trait X for type Y" error naming the owning
     /// trait. That `Err` is now PROPAGATED (the pre-S114 `if let Ok(Some(..))`
     /// SWALLOWED it, leaking the unresolved Apply to codegen as `undefined
@@ -2174,7 +2174,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // so the two entrances to this constraint shape resolve
                 // identically.
                 if let Some(fq_trait) = self.resolve_annotation_trait(state, annotation, span) {
-                    let home = &fq_trait.module;
                     let tn = &fq_trait.name;
                     let expr_ty = self.infer_expr(state, expr)?;
                     let resolved = self.apply_subst(state, &expr_ty);
@@ -2182,28 +2181,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     // expression's type implements the trait"). Three cases on
                     // the resolved expr type:
                     //
-                    //  - NOMINAL concrete (`concrete_type_name` = Some): it
+                    //  - NOMINAL concrete (`receiver_identity` = Some): it
                     //    MUST implement the trait (row 12 pos accepts
                     //    `:Num2 5`; the neg rejects `:Num2 "s"`).
                     //  - CONCRETE but NON-NOMINAL (`Fn`, …): impls are keyed
-                    //    by TYPE NAME, so a function type implements NOTHING —
-                    //    it MUST be rejected, not silently accepted. `None`
-                    //    from `concrete_type_name` on a concrete type was the
+                    //    by the receiver's nominal identity, so a function
+                    //    type implements NOTHING — it MUST be rejected, not
+                    //    silently accepted. `None` on a concrete type was the
                     //    0596-sibling false accept (`(defn g1 [] :NumT
                     //    (fn [:Int y] y))`), FIXME 0597.
                     //  - still a `Type::Var` (unresolved return-type dispatch,
                     //    `:Zeroable (zed)`): the constraint does NOT resolve it
                     //    — leave the residual var for the §3.11 ambiguity gate
                     //    (row 17).
-                    match crate::traits::concrete_type_name(&resolved) {
-                        Some(impl_ty) => {
-                            if !self.has_impl_in_home(home, tn, &impl_ty) {
+                    match crate::traits::receiver_identity(&resolved) {
+                        Some(receiver) => {
+                            if self.impl_shell(&fq_trait, &receiver).is_none() {
                                 return Err(CranelispError::TypeError {
                                     message: format!(
-                                        "type {impl_ty} does not implement trait {} \
+                                        "type {} does not implement trait {} \
                                          — a value-position constraint is a \
                                          satisfaction check (spec §3.3.3)",
-                                        tn
+                                        receiver.name, tn
                                     ),
                                     location: ErrorLocation::from_span(span),
                                 });

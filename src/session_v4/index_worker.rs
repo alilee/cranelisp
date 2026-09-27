@@ -1185,26 +1185,31 @@ fn index_typecheck_into_private(
         crate::imports::gets_prelude_fallback(module, &decls.import_specs, &decls.export_specs),
     );
 
+    let declared = crate::imports::DeclaredChildren::of(module, &decls.mod_decls);
+    let imports: Vec<_> = decls
+        .import_specs
+        .iter()
+        .map(|spec| declared.resolve_import(spec))
+        .collect();
+    let exports: Vec<_> = decls
+        .export_specs
+        .iter()
+        .map(|spec| declared.resolve_export(spec))
+        .collect();
     crate::imports::install_imports(
         priv_tables,
         module,
         priv_aliases,
         prelude_fallback,
-        &decls.import_specs,
+        &imports,
     )
     .map_err(|e| format!("import install error: {e}"))?;
     // FIXME 0604 §2.2: the BACKGROUND index typecheck is isolated (R13 — never
     // writes live session state), so it passes `None` for `declared_exports` — it
     // records no `D(M)` into the live map. (Its private tables are discarded; the
     // gate here is a no-op over `D(M) == None`.)
-    crate::imports::install_exports(
-        priv_tables,
-        module,
-        prelude_fallback,
-        None,
-        &decls.export_specs,
-    )
-    .map_err(|e| format!("export install error: {e}"))?;
+    crate::imports::install_exports(priv_tables, module, prelude_fallback, None, &exports)
+        .map_err(|e| format!("export install error: {e}"))?;
 
     // Sprint 121 interim index rule: macros are not an index subject. Drop each
     // direct `defmacro` from the isolated source before build/typecheck; do not

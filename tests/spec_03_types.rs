@@ -220,7 +220,7 @@ fn names(text: &str, name: &str) -> bool {
 // types that implement the trait, and a stacked bound is a conjunction; the
 // restriction binds the caller whether or not the body uses the trait, and a
 // function type implements no trait (spec/07-traits.md §7.3)
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S122 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S122 owner=/dev fixed=S122/236aa44d
 #[test]
 fn declared_trait_bound_is_checked_at_the_call_site() {
     // `Ts` is implemented for `Int`, and for `U` only when `u_impl` says so.

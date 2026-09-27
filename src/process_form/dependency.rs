@@ -19,6 +19,7 @@ use cranelisp_types::{
     Symbol, Visibility,
 };
 
+use crate::imports::DeclaredChildren;
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
 
 use super::cache_restore::try_cache_hit_load;
@@ -130,37 +131,29 @@ pub(crate) fn check_private_submodule_import(
 /// `block_for_typecheck` is called INSIDE this function (F1 fix).
 /// The function is idempotent on resume: already-loaded specs are re-registered
 /// (register_imports is idempotent), and new deps trigger blocking (F2 fix).
+///
+/// Each spec is resolved once against the cluster's `declared` children
+/// (`design/int/int.md` §6.9); that module feeds the privacy check, the fast
+/// path, the load and installation.
 pub(super) fn handle_import(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     specs: Vec<ImportSpec>,
+    declared: &DeclaredChildren,
 ) -> Result<BlockAction, CranelispError> {
     for spec in &specs {
-        // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
-        // (`<module>.<name>`) BEFORE the root/lib file search, SYMMETRIC with
-        // `handle_export` (the shared helper's own doc names BOTH `handle_export`
-        // and `handle_import` as afflicted; only the export side was wired). Without
-        // it a bare `(import [child …])` in a `(mod child)`-declaring shell resolves
-        // `child` only as a ROOT module and errors "module 'child' not found". Bare
-        // non-submodule names and dotted deps pass through unchanged, so no genuine
-        // root/lib import regresses. NOTE: the late (registration) stage
-        // `install_imports` applies the SAME relative resolution (it is called with
-        // the raw spec here), mirroring `install_exports` — the two together close
-        // the bare-submodule-import mirror.
-        let dep_owned = resolve_current_module_relative(
-            ctx.symbol_tables,
-            ctx.project_root,
-            ctx.lib_dirs,
-            module,
-            &spec.module_path,
-        );
-        let dep = &dep_owned;
+        let resolved = declared.resolve_import(spec);
+        let dep = resolved.module();
 
         // A name-less import loads nothing (§8.3.7); an alias-only one still
         // registers its alias (§8.3.6), and a qualified reference through it
         // auto-loads the target (§8.5.4).
         if matches!(&spec.names, ImportNames::None) {
-            crate::imports::install_import_alias(&ctx.current_module, ctx.module_aliases, spec);
+            crate::imports::install_import_alias(
+                &ctx.current_module,
+                ctx.module_aliases,
+                &resolved,
+            );
             continue;
         }
 
@@ -205,7 +198,7 @@ pub(super) fn handle_import(
                 &ctx.current_module,
                 ctx.module_aliases,
                 ctx.prelude_fallback,
-                std::slice::from_ref(spec),
+                std::slice::from_ref(&resolved),
             )?;
             continue;
         }
@@ -235,7 +228,7 @@ pub(super) fn handle_import(
                 &ctx.current_module,
                 ctx.module_aliases,
                 ctx.prelude_fallback,
-                std::slice::from_ref(spec),
+                std::slice::from_ref(&resolved),
             )?;
             continue;
         }
@@ -563,13 +556,46 @@ pub(super) fn register_dep(
 // (the is_typechecked fast-path reading a half-published sibling).
 // ---------------------------------------------------------------------------
 
-/// Extract the directly-imported module paths from a module's parsed forms (its
-/// Pass-0 `(import …)` declarations). Null imports (`ImportNames::None`,
-/// §8.3.6 — suppress loading) contribute no edge. Returns the dep paths plus the
-/// span of the first import form (for the cycle diagnostic).
+/// The `(mod …)` and `(mod- …)` declarations among `module`'s forms. A form
+/// that fails to classify declares nothing here; Pass 0 reports it.
+fn mod_declarations(sexps: &[Sexp], module: &ModuleFullPath) -> Vec<cranelisp_types::ModDecl> {
+    sexps
+        .iter()
+        .filter_map(
+            |sexp| match super::form_dispatch::classify_form(sexp, module) {
+                Ok(super::form_dispatch::FormKind::Mod(decl)) => Some(decl),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// The children a cluster of `module` may name in its `import` and `export`
+/// specs: the cluster's own `mod` forms together with the declarations earlier
+/// turns recorded on the module's table (`design/int/int.md` §6.9). Computed
+/// once per pass, before the static closure and Pass 0, so an `import` written
+/// before its `(mod …)` resolves as it does after it.
+pub(super) fn cluster_declared_children(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    sexps: &[Sexp],
+) -> DeclaredChildren {
+    let mut declarations = mod_declarations(sexps, module);
+    if let Some(table) = ctx.symbol_tables.get(module) {
+        declarations.extend(table.submodules.iter().cloned());
+    }
+    DeclaredChildren::of(module, &declarations)
+}
+
+/// Extract the directly-imported modules from a module's parsed forms (its
+/// Pass-0 `(import …)` declarations), each resolved against `declared`. Null
+/// imports (`ImportNames::None`, §8.3.6 — suppress loading) contribute no
+/// edge. Returns the dep paths plus the span of the first import form (for the
+/// cycle diagnostic).
 fn direct_import_deps(
     sexps: &[Sexp],
     module: &ModuleFullPath,
+    declared: &DeclaredChildren,
 ) -> (Vec<ModuleFullPath>, Option<Span>) {
     let mut deps = Vec::new();
     let mut first_span: Option<Span> = None;
@@ -582,7 +608,7 @@ fn direct_import_deps(
                     continue;
                 }
                 first_span.get_or_insert(spec.span);
-                deps.push(spec.module_path.clone());
+                deps.push(declared.resolve(&spec.module_path));
             }
         }
     }
@@ -605,12 +631,16 @@ fn direct_import_deps(
 /// resolved or parsed is treated as an edge-free leaf (conservative — the gate
 /// reports a cycle only when one is definitively present in the declared import
 /// graph, never a false positive that would block a legitimate build).
+///
+/// The root's imports resolve against the cluster's `declared` children; each
+/// walked module's imports resolve against the `mod` forms of its own file.
 pub(super) fn static_import_closure(
     ctx: &ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
+    declared: &DeclaredChildren,
 ) -> Result<Option<crate::scheduler::ClosureOrder>, CranelispError> {
-    let (root_deps, first_span) = direct_import_deps(sexps, module);
+    let (root_deps, first_span) = direct_import_deps(sexps, module, declared);
     if root_deps.is_empty() {
         return Ok(None); // no imports → no closure → no cycle (fast exit).
     }
@@ -655,7 +685,8 @@ pub(super) fn static_import_closure(
         let Ok(parsed) = cranelisp_frontend::parse(&source) else {
             continue;
         };
-        let (dep_deps, _) = direct_import_deps(&parsed, &dep);
+        let dep_declared = DeclaredChildren::of(&dep, &mod_declarations(&parsed, &dep));
+        let (dep_deps, _) = direct_import_deps(&parsed, &dep, &dep_declared);
         for d in &dep_deps {
             if !visited.contains(d) {
                 queue.push_back(d.clone());
@@ -773,7 +804,6 @@ pub(super) fn gate_body_on_signature_barrier(
         .block_on_first_unready_closure_member(module, &deps)
 }
 
-/// Handle export forms: register export metadata in the typechecker.
 /// Handle export forms: ensure source modules are loaded, then register re-exports.
 ///
 /// Export forms like `(export [compare.eq [Eq = !=]])` re-export symbols from
@@ -781,62 +811,22 @@ pub(super) fn gate_body_on_signature_barrier(
 /// `register_exports` can read its symbol table. If the source module isn't
 /// loaded, we trigger dependency loading via the same path as `handle_import`
 /// and return `BlockAction::Block`.
-/// §8.11.2 step 1 — current-module-relative module resolution. A **bare**
-/// (single-component) module reference inside `module` first resolves as a
-/// submodule of `module` (`<module>.<dep>`, declared via `(mod dep)`) BEFORE the
-/// project-root / lib-dir search-order fallthrough. Returns the effective module
-/// path: the `<module>.<dep>` submodule when it is already registered OR has a
-/// backing file (`<module-dir>/<dep>.cl`); the original `dep` otherwise (a genuine
-/// root/lib module, or a name with no current-module-relative candidate).
 ///
-/// This mirrors the current-module-relative resolution `imports::install_exports`
-/// already applies at the LATE (re-export-registration) stage — without it the
-/// EARLY (dep-load) stage in `handle_export`/`handle_import` resolves a bare
-/// submodule name only as a ROOT module and errors "module 'name' not found"
-/// (bare-submodule-reexport defect). Dotted `dep`s (FQ / ancestor-qualified) and a
-/// root-level `module` (empty path) have no current-module-relative candidate and
-/// pass through unchanged.
-fn resolve_current_module_relative<V>(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, V>,
-    project_root: &Path,
-    lib_dirs: &[PathBuf],
-    module: &ModuleFullPath,
-    dep: &ModuleFullPath,
-) -> ModuleFullPath {
-    // Only a bare name inside a non-root module is a current-module-relative
-    // candidate; a dotted `dep` is already an explicit path.
-    if dep.as_ref().contains('.') || module.as_ref().is_empty() {
-        return dep.clone();
-    }
-    let candidate = ModuleFullPath::from(format!("{}.{}", module.as_ref(), dep.as_ref()));
-    if symbol_tables.contains_key(&candidate)
-        || crate::pipeline::resolve_module_file(&candidate, project_root, lib_dirs).is_some()
-    {
-        candidate
-    } else {
-        dep.clone()
-    }
-}
-
+/// Each spec is resolved once against the cluster's `declared` children
+/// (`design/int/int.md` §6.9); that module feeds the load and installation.
 pub(super) fn handle_export(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     specs: &[ExportSpec],
+    declared: &DeclaredChildren,
 ) -> Result<BlockAction, CranelispError> {
-    for spec in specs {
-        // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
-        // (`<module>.<name>`) BEFORE the root/lib file search, symmetric with the
-        // FQ path and with `install_exports`'s late-stage resolution. Without this
-        // a bare `(export [child …])` in a `(mod child)`-declaring shell resolves
-        // `child` only as a ROOT module and errors "module 'child' not found".
-        let dep_owned = resolve_current_module_relative(
-            ctx.symbol_tables,
-            ctx.project_root,
-            ctx.lib_dirs,
-            module,
-            &spec.module_path,
-        );
-        let dep = &dep_owned;
+    let resolved_specs: Vec<_> = specs
+        .iter()
+        .map(|spec| declared.resolve_export(spec))
+        .collect();
+    for resolved in &resolved_specs {
+        let spec = resolved.spec();
+        let dep = resolved.module();
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
@@ -845,7 +835,7 @@ pub(super) fn handle_export(
                 &ctx.current_module,
                 ctx.prelude_fallback,
                 ctx.shared_state.map(|s| &s.declared_exports),
-                std::slice::from_ref(spec),
+                std::slice::from_ref(resolved),
             )?;
             continue;
         }
@@ -907,7 +897,7 @@ pub(super) fn handle_export(
         &ctx.current_module,
         ctx.prelude_fallback,
         ctx.shared_state.map(|s| &s.declared_exports),
-        specs,
+        &resolved_specs,
     )?;
     Ok(BlockAction::Continue)
 }
@@ -984,7 +974,7 @@ pub(super) fn handle_mod(
     }
 
     // Compute submodule path: "main" + "util" → "main.util"
-    let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
+    let sub_path = crate::imports::declared_child_path(module, decl.name.as_ref());
 
     // Register a module-path alias so the short submodule name is usable as a
     // qualified reference (spec §8.2.6 / §8.5.1 — `(mod util)` makes
@@ -1035,7 +1025,7 @@ pub(super) fn enrol_declared_submodule(
     module: &ModuleFullPath,
     decl: &cranelisp_types::ModDecl,
 ) -> Result<DeclaredSubmoduleEnrollment, CranelispError> {
-    let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
+    let sub_path = crate::imports::declared_child_path(module, decl.name.as_ref());
 
     // Already loaded — resolution chain handles qualified references.
     if ctx.symbol_tables.contains_key(&sub_path) {
@@ -1515,104 +1505,159 @@ pub(super) fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
     false
 }
 
+// spec: spec/08-modules.md §8.11.2 item 1, §8.11.2.1 — a bare module name in
+// `import` names the current module's child only when that module declares
+// `(mod name)`, wherever the declaration sits in the cluster or in an earlier
+// turn; a file-backed `a/q.cl` alone does not make `q` a child.
+#[cfg(test)]
+mod bare_module_name_tests {
+    use super::*;
+    use crate::code::SessionSymbolTable;
+    use crate::scheduler::CompileScheduler;
+    use cranelisp_types::{ModDecl, ModuleName, ModuleStrategy};
+
+    /// A project directory holding `files`, and the session state one cluster
+    /// prologue for module `a` runs against.
+    struct Project {
+        dir: tempfile::TempDir,
+        tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+        next_type_id: std::sync::atomic::AtomicU32,
+        scheduler: CompileScheduler,
+        products: dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+        aliases: cranelisp_types::ModuleAliases,
+        fallback: cranelisp_typecheck::PreludeFallback,
+    }
+
+    impl Project {
+        fn new(files: &[(&str, &str)]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            for (path, source) in files {
+                let path = dir.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, source).unwrap();
+            }
+            Project {
+                dir,
+                tables: dashmap::DashMap::new(),
+                next_type_id: std::sync::atomic::AtomicU32::new(0),
+                scheduler: CompileScheduler::new(),
+                products: dashmap::DashMap::new(),
+                aliases: Default::default(),
+                fallback: Default::default(),
+            }
+        }
+
+        /// Record `(mod name)` on `a`'s table, as an earlier turn would.
+        fn record_earlier_declaration(&self, name: &str) {
+            let a = ModuleFullPath::from("a");
+            cranelisp_types::ensure_module_exists(&self.tables, &a);
+            self.tables.get_mut(&a).unwrap().submodules.push(ModDecl {
+                name: ModuleName::from(name),
+                visibility: Visibility::Public,
+                inline_body: None,
+                span: Span::SYNTHETIC,
+            });
+        }
+
+        /// Run `a`'s cluster prologue over `source`: `Ok(Some(dep))` names the
+        /// dependency its import blocked on.
+        #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+        fn prologue(&self, source: &str) -> Result<Option<ModuleFullPath>, CranelispError> {
+            let a = ModuleFullPath::from("a");
+            let mut ctx = ModuleCompiler {
+                symbol_tables: &self.tables,
+                next_type_id: &self.next_type_id,
+                module_aliases: &self.aliases,
+                prelude_fallback: &self.fallback,
+                check_state: cranelisp_typecheck::CheckState::new(a.clone()),
+                current_module: a.clone(),
+                scheduler: &self.scheduler,
+                typecheck_products: &self.products,
+                introspection: None,
+                lib_dirs: &[],
+                platform_dirs: &[],
+                project_root: self.dir.path(),
+                shared_state: None,
+                reload_demands: std::sync::Arc::from([]),
+                eval_driven: true,
+            };
+            let sexps = cranelisp_frontend::parse(source).unwrap();
+            super::super::run_cluster_prologue(&mut ctx, &a, &sexps, ModuleStrategy::Additive)
+        }
+    }
+
+    fn module(path: &str) -> ModuleFullPath {
+        ModuleFullPath::from(path)
+    }
+
+    fn expect_missing_child(outcome: Result<Option<ModuleFullPath>, CranelispError>) {
+        match outcome {
+            Err(CranelispError::ModuleError { message, .. }) => assert!(
+                message.contains("'a.q' not found"),
+                "the error names the declared child: {message}"
+            ),
+            other => panic!("expected the declared child `a.q` to be missing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_before_mod_in_one_cluster_names_the_child() {
+        let source = "(import [q [g]])\n(mod q)\n";
+        let with_file =
+            Project::new(&[("a/q.cl", "(defn g [] 11)\n"), ("q.cl", "(defn g [] 99)\n")]);
+        assert_eq!(with_file.prologue(source).unwrap(), Some(module("a.q")));
+        let without_file = Project::new(&[("q.cl", "(defn g [] 99)\n")]);
+        expect_missing_child(without_file.prologue(source));
+    }
+
+    #[test]
+    fn declaration_recorded_by_an_earlier_turn_names_the_child() {
+        let project = Project::new(&[("q.cl", "(defn g [] 99)\n")]);
+        project.record_earlier_declaration("q");
+        expect_missing_child(project.prologue("(import [q [g]])\n"));
+    }
+
+    #[test]
+    fn undeclared_name_is_the_root_module_even_with_a_child_file() {
+        let project = Project::new(&[("a/q.cl", "(defn g [] 11)\n"), ("q.cl", "(defn g [] 99)\n")]);
+        assert_eq!(
+            project.prologue("(import [q [g]])\n").unwrap(),
+            Some(module("q"))
+        );
+    }
+
+    /// Root `q.cl` imports `a`; `a/q.cl` imports nothing.
+    fn root_q_importing_a() -> Project {
+        Project::new(&[
+            ("a/q.cl", "(defn g [] 11)\n"),
+            ("q.cl", "(import [a [h]])\n(defn g [] 99)\n"),
+        ])
+    }
+
+    #[test]
+    fn static_closure_follows_the_declared_child_and_finds_no_cycle() {
+        let outcome = root_q_importing_a().prologue("(mod q)\n(import [q [g]])\n(defn h [] (g))\n");
+        assert_eq!(outcome.unwrap(), Some(module("a.q")));
+    }
+
+    #[test]
+    fn static_closure_of_an_undeclared_name_reaches_the_root_cycle() {
+        match root_q_importing_a().prologue("(import [q [g]])\n(defn h [] (g))\n") {
+            Err(CranelispError::ModuleError { message, .. }) => assert!(
+                message.contains("circular dependency detected: a -> q -> a"),
+                "{message}"
+            ),
+            other => panic!("expected the root `q` cycle, got {other:?}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FIXME 0423 — `(mod …)` extraction write path is lib-dir-relative, not CWD.
 // The source fix landed S88 (commit 5833bd1); this is the owed `/dev`
 // acceptance unit test (design/int/session-persistence.md §10.3).
 // spec: 08-modules.md §8.2.2
 // ---------------------------------------------------------------------------
-#[cfg(test)]
-mod current_module_relative_tests {
-    use super::*;
-
-    // spec: spec/08-modules.md §8.11.2 (step 1 — submodule of current module) —
-    // a bare name matching a REGISTERED `<module>.<name>` submodule resolves
-    // current-module-relative (the `(mod child)` load ran before the export/import).
-    #[test]
-    fn bare_name_resolves_to_registered_submodule() {
-        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
-        tables.insert(ModuleFullPath::from("shell.child"), ());
-        let td = tempfile::tempdir().unwrap();
-        let got = resolve_current_module_relative(
-            &tables,
-            td.path(),
-            &[],
-            &ModuleFullPath::from("shell"),
-            &ModuleFullPath::from("child"),
-        );
-        assert_eq!(
-            got,
-            ModuleFullPath::from("shell.child"),
-            "a bare `child` inside `shell` with a registered `shell.child` submodule \
-             must resolve current-module-relative (§8.11.2 step 1)"
-        );
-    }
-
-    // spec: spec/08-modules.md §8.11.2 (step 1) — a bare name with a backing file
-    // `<module-dir>/<name>.cl` resolves current-module-relative even before the
-    // submodule is registered (the `(mod child)` load has not run yet).
-    #[test]
-    fn bare_name_resolves_to_file_backed_submodule() {
-        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
-        let td = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(td.path().join("shell")).unwrap();
-        std::fs::write(td.path().join("shell/child.cl"), "(defn foo [x] x)\n").unwrap();
-        let got = resolve_current_module_relative(
-            &tables,
-            td.path(),
-            &[],
-            &ModuleFullPath::from("shell"),
-            &ModuleFullPath::from("child"),
-        );
-        assert_eq!(got, ModuleFullPath::from("shell.child"));
-    }
-
-    // spec: spec/08-modules.md §8.11.2 — NEGATIVE: a bare name with NO
-    // current-module-relative candidate (neither registered nor file-backed) passes
-    // through unchanged, so the root/lib search-order fallthrough still resolves a
-    // genuine root module.
-    #[test]
-    fn bare_name_without_candidate_passes_through() {
-        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
-        let td = tempfile::tempdir().unwrap();
-        let got = resolve_current_module_relative(
-            &tables,
-            td.path(),
-            &[],
-            &ModuleFullPath::from("shell"),
-            &ModuleFullPath::from("other"),
-        );
-        assert_eq!(
-            got,
-            ModuleFullPath::from("other"),
-            "a bare name with no submodule candidate must pass through to the \
-             root/lib search-order fallthrough"
-        );
-    }
-
-    // spec: spec/08-modules.md §8.11.2 — NEGATIVE: a DOTTED (FQ / ancestor-qualified)
-    // dep is already an explicit path and is never re-rooted current-module-relative
-    // (no double-prefixing `shell.a.b`).
-    #[test]
-    fn dotted_dep_passes_through_unchanged() {
-        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
-        tables.insert(ModuleFullPath::from("shell.a.b"), ());
-        let td = tempfile::tempdir().unwrap();
-        let got = resolve_current_module_relative(
-            &tables,
-            td.path(),
-            &[],
-            &ModuleFullPath::from("shell"),
-            &ModuleFullPath::from("a.b"),
-        );
-        assert_eq!(
-            got,
-            ModuleFullPath::from("a.b"),
-            "a dotted dep is explicit — unchanged"
-        );
-    }
-}
-
 #[cfg(test)]
 mod inline_mod_write_tests {
     use super::*;

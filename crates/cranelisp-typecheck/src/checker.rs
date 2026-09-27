@@ -594,39 +594,6 @@ where
             _ => None,
         }
     }
-
-    /// Check whether a trait impl exists for `(trait_name, impl_type)` reachable
-    /// from this module (Decision 45 Pattern B): chain-follow the trait
-    /// reference to its defining module H, then scan H's symbol table for a
-    /// matching `TraitImpl`. No universe scan; only H is touched.
-    pub(crate) fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
-        // Chain-follow trait reference to its defining module.
-        let (terminal, trait_home) = match self
-            .env
-            .resolve_terminal_entry_and_home(self.module_path, trait_name.as_ref())
-        {
-            Some(t) => t,
-            None => return false,
-        };
-        // Terminal must be a TraitDecl for this to be a valid trait reference.
-        if !matches!(terminal.declaration, Decl::Trait(_)) {
-            return false;
-        }
-        // Scan the trait's home only (Principle 17 shape 3). Staging-aware.
-        let mut found = false;
-        self.env.for_each_in_module(&trait_home, |_key, entry| {
-            if found {
-                return;
-            }
-            if let Decl::ImplShell(shell) = &entry.declaration
-                && &shell.trait_name.name == trait_name
-                && &shell.impl_type.name == impl_type
-            {
-                found = true;
-            }
-        });
-        found
-    }
 }
 
 impl<'a, C, L> TypeCheckEnv<'a, C, L>
@@ -981,8 +948,8 @@ where
     ///
     /// The read view ([`ModuleReadView`]) is the single home for the
     /// per-module symbol-table probe logic that the kind-specific lookup
-    /// helpers (`lookup_type_def_in_module`, `lookup_trait_decl_in_module`,
-    /// `has_impl_in_module`) share. Each helper routes through this view so the
+    /// helpers (`lookup_type_def_in_module`, `lookup_trait_decl_in_module`)
+    /// share. Each helper routes through this view so the
     /// staging-aware chain-follow discipline (Principle 17, FIXME 0179) lives in
     /// one place.
     pub(crate) fn read_view<'v>(
@@ -1291,45 +1258,6 @@ where
                 TypeName::from(resolved.canonical.symbol.as_ref()),
             )),
             _ => Err(TypePositionFailure(type_not_found())),
-        }
-    }
-
-    /// Module-rooted variant of [`Self::resolve_type`] — resolves a bare type
-    /// name in `module_path`'s scope rather than `state.current_module`.
-    ///
-    /// D2 (§7.0.1 / W2a Important 3): trait-method dispatch builds the impl
-    /// type's `FQTypeName` by resolving the dispatch type's name in the trait's
-    /// HOME (where the trait was declared and its impls written), NOT the caller's
-    /// scope — a method-only import has no in-scope name for a foreign dispatch
-    /// type (`Int` in a user module that imported only the method), and the
-    /// impl-definition mangle was itself formed in the home's scope, so the
-    /// dispatch mangle must match it (P24 — resolve once, at the home).
-    pub(crate) fn resolve_type_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        type_name: &TypeName,
-        span: Span,
-    ) -> Result<cranelisp_types::FQTypeName, ResolveError> {
-        let type_not_found = || ResolveError::TypeNotFound {
-            name: type_name.clone(),
-            from_module: module_path.clone(),
-            span,
-        };
-        let resolved = self
-            .scope_resolve_in(module_path, type_name.as_ref(), span)
-            .map_err(|e| project_not_found(e, type_not_found))?;
-        if let Some(info) = type_def_view_of(&resolved.entry) {
-            return Ok(info.name.clone());
-        }
-        match resolved.entry {
-            Binding {
-                declaration: Decl::Type(cranelisp_types::TypeRecord::Intrinsic { .. }),
-                ..
-            } => Ok(cranelisp_types::FQTypeName::new(
-                resolved.canonical.module,
-                type_name.clone(),
-            )),
-            _ => Err(type_not_found()),
         }
     }
 
@@ -2085,21 +2013,19 @@ where
     /// scope" as a language concept (spec §8.6.4 / §8.8.1).
     ///
     /// This is the `(entry, home)`-returning sibling of
-    /// [`Self::resolve_entry_scoped`]. The trait-method dispatch
-    /// path (`method_to_trait_with_state`) and the impl-discovery path
-    /// (`has_impl_with_state` via [`ModuleReadView::has_impl`]) both root the
-    /// trait/method reference at `state.current_module` and chain-follow per
-    /// Decision 45 Pattern B; when the trait + impl live in the prelude (the
-    /// current module misses, bit ON), the chain-follow head must be sought in
-    /// the prelude's own table first. Routing those sites through this helper
-    /// mirrors the value/type/constructor fallback the other chokepoints
-    /// already perform — a bare operator (`+`, `==`, …) backed by a prelude
-    /// `deftrait`/`impl` resolves through the fallback, not a name-key.
+    /// [`Self::resolve_entry_scoped`]. The trait-method dispatch path
+    /// (`method_to_trait_with_state`) roots the method reference at
+    /// `state.current_module` and chain-follows per Decision 45 Pattern B;
+    /// when the trait lives in the prelude (the current module misses, bit
+    /// ON), the chain-follow head must be sought in the prelude's own table
+    /// first. Routing through this helper mirrors the value/type/constructor
+    /// fallback the other chokepoints already perform — a bare operator (`+`,
+    /// `==`, …) backed by a prelude `deftrait` resolves through the fallback,
+    /// not a name-key.
     ///
-    /// The recorded `home` is the module that hosts the **terminal** entry, so
-    /// downstream impl scans (`for_each_in_module(home, …)`) land on the trait's
-    /// true defining module regardless of which scope (current or prelude)
-    /// supplied the head reference.
+    /// The recorded `home` is the module that hosts the **terminal** entry:
+    /// the trait's true defining module, where its impl shells are keyed
+    /// ([`Self::impl_shell`]), whichever scope supplied the head reference.
     pub(crate) fn resolve_terminal_entry_scoped(
         &self,
         state: &CheckState,
@@ -2648,132 +2574,24 @@ where
         self.method_to_trait(method).as_ref() == Some(trait_name)
     }
 
-    /// Check if a trait impl exists for the given (trait_name, impl_type) pair.
-    ///
-    /// Per Decision 45 (Pattern B) — chain-follow the trait reference from
-    /// the (default `user`) module to its defining module, then probe that
-    /// one module's symbol table for the synthetic key
-    /// `impl$<FQTypeName>$<FQTraitName>`. No universe scan.
-    #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
-    pub(crate) fn has_impl(&self, trait_name: &TraitName, impl_type: &TypeName) -> bool {
-        let user_path = ModuleFullPath::from("user");
-        self.has_impl_in_module(&user_path, trait_name, impl_type)
-    }
-
-    /// Module-rooted variant of [`Self::has_impl`].
-    pub(crate) fn has_impl_in_module(
+    /// The impl shell of `fq_trait` for `receiver`: the binding at
+    /// `trait_impl_key(receiver, fq_trait)` in the trait's home, where every
+    /// shell is written (Decision 45). Staging-aware. Impl existence and the
+    /// impl writer's module come from this one keyed read; there is no scan
+    /// and no bare-name match (`design/typecheck/typecheck.md` §9.1.1).
+    pub(crate) fn impl_shell(
         &self,
-        module_path: &ModuleFullPath,
-        trait_name: &TraitName,
-        impl_type: &TypeName,
-    ) -> bool {
-        self.read_view(module_path).has_impl(trait_name, impl_type)
-    }
-
-    /// State-rooted variant of [`Self::has_impl`].
-    ///
-    /// Chain-follows the trait reference from `state.current_module`, with the
-    /// implicit-prelude fallback on an inner miss when the
-    /// module's fallback bit is ON (S78 §2.7.5 / FIXME 0315). Once the trait's
-    /// defining module is located (whether the head reference came from the
-    /// current module or the prelude), the `TraitImpl` scan runs over that home
-    /// only (Decision 45 Pattern B) — so a prelude `impl Num Int` is discovered
-    /// for a bare `(+ …)` in a user module that misses the trait locally.
-    ///
-    /// The production dispatch/verify paths now root at the trait's threaded HOME
-    /// (`has_impl_in_home`, D2/§7.0.1 + Important 2 — reaching the method reaches
-    /// the home, no bare re-resolution); this bare-name-rooted variant is retained
-    /// for the chain-follow coverage tests (`checker::tests`, `TestFixture::has_impl`).
-    #[allow(dead_code)] // exercised via TestFixture chain-follow tests in `#[cfg(test)]`.
-    pub(crate) fn has_impl_with_state(
-        &self,
-        state: &CheckState,
-        trait_name: &TraitName,
-        impl_type: &TypeName,
-    ) -> bool {
-        // Chain-follow the trait reference to its defining module, with the
-        // prelude fallback for bare prelude-backed traits.
-        let (terminal, trait_home) =
-            match self.resolve_terminal_entry_scoped(state, trait_name.as_ref()) {
-                Some(t) => t,
-                None => return false,
-            };
-        if !matches!(terminal.declaration, Decl::Trait(_)) {
-            return false;
-        }
-        self.has_impl_in_home(&trait_home, trait_name, impl_type)
-    }
-
-    /// Does the trait's ALREADY-RESOLVED home module carry an impl of
-    /// `trait_name` for `impl_type`? The home-rooted core of
-    /// [`Self::has_impl_with_state`]: a caller that already holds the trait's
-    /// defining module — e.g. `infer_annotate`'s value-position satisfaction
-    /// check, which resolves a QUALIFIED constraint's module directly (mirroring
-    /// `resolve_bound_param`) — checks the impl here without a second bare-name
-    /// resolution. Impls are written to the trait's defining module (Decision
-    /// 45), so scanning the home only is complete (Principle 17 shape 3).
-    /// Staging-aware.
-    pub(crate) fn has_impl_in_home(
-        &self,
-        trait_home: &ModuleFullPath,
-        trait_name: &TraitName,
-        impl_type: &TypeName,
-    ) -> bool {
-        let mut found = false;
-        self.for_each_in_module(trait_home, |_key, entry| {
-            if found {
-                return;
-            }
-            if let Decl::ImplShell(shell) = &entry.declaration
-                && &shell.trait_name.name == trait_name
-                && &shell.impl_type.name == impl_type
-            {
-                found = true;
-            }
-        });
-        found
-    }
-
-    /// Read the `impl_module` (storage of the mangled method `Def`s — the
-    /// impl-WRITER's module) off the `ModuleEntry::TraitImpl` shell in the
-    /// trait's ALREADY-RESOLVED home (S110 W0.1b,
-    /// `design/arch/backend-keyed-consumer.md` §1.1.1). Probes the exact
-    /// canonical shell key first (a direct staging-aware keyed get), then falls
-    /// back to a bare-name match (mirroring [`Self::has_impl_in_home`]) for an
-    /// intrinsic-receiver head skew between the dispatch-site `fq_for_mangle`
-    /// and the definition-site `fq_impl_type`. Returns `None` only if no shell
-    /// exists — the caller (which has already proven the impl exists via
-    /// `has_impl_with_state`) degrades to `current_module`.
-    pub(crate) fn impl_module_in_home(
-        &self,
-        trait_home: &ModuleFullPath,
-        impl_key: &str,
-        trait_name: &TraitName,
-        impl_type: &TypeName,
-    ) -> Option<ModuleFullPath> {
-        // Exact canonical-key probe (staging-aware).
-        if let Some(Binding {
-            declaration: Decl::ImplShell(shell),
-            ..
-        }) = self.probe_module_entry_owned(trait_home, impl_key)
+        fq_trait: &cranelisp_types::FQTraitName,
+        receiver: &cranelisp_types::FQTypeName,
+    ) -> Option<cranelisp_types::ImplShell> {
+        let key = cranelisp_types::trait_impl_key(receiver, fq_trait);
+        match self
+            .probe_module_entry_owned(&fq_trait.module, key.as_ref())?
+            .declaration
         {
-            return Some(shell.impl_module);
+            Decl::ImplShell(shell) => Some(shell),
+            _ => None,
         }
-        // Bare-name fallback for a head skew (intrinsic receiver), mirroring
-        // `has_impl_in_home`.
-        let mut found = None;
-        self.for_each_in_module(trait_home, |_key, entry| {
-            if found.is_some() {
-                return;
-            }
-            if let Decl::ImplShell(shell) = &entry.declaration
-                && &shell.trait_name.name == trait_name
-                && &shell.impl_type.name == impl_type
-            {
-                found = Some(shell.impl_module.clone());
-            }
-        });
-        found
     }
 
     /// Module-rooted variant of trait-impl-type enumeration (Decision 45 Pattern B).

@@ -735,7 +735,8 @@ fn run_null_import(spec: cranelisp_types::ImportSpec) -> ModuleAliasProbe {
         &typecheck_products,
         module.clone(),
     );
-    let action = handle_import(&mut ctx, &module, vec![spec])
+    let declared = crate::imports::DeclaredChildren::of(&module, std::iter::empty());
+    let action = handle_import(&mut ctx, &module, vec![spec], &declared)
         .expect("a name-less import must not attempt to load its target");
     ModuleAliasProbe {
         continued: matches!(action, BlockAction::Continue),

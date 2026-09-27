@@ -285,7 +285,7 @@ An implementation MUST validate that the impl target's type parameter count matc
 
 Primitive types (`Int`, `Bool`, `String`, `Float`) MUST be rejected as HKT impl targets.
 
-## 7.3 Trait Implementation [Tested+Neg tests/spec_07_traits::trait_impl_concrete_type, tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_multiple_impls, tests/spec_07_traits::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name]
+## 7.3 Trait Implementation [Tested+Neg tests/spec_07_traits::trait_impl_concrete_type, tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_multiple_impls, tests/spec_07_traits::qualified_impl_trait_reference_resolves_canonical_home_and_dispatches, tests/spec_07_traits::qualified_impl_trait_reference_neg_does_not_mint_written_qualifier_into_method_name, tests/spec_07_traits::impl_for_same_named_type_in_another_module_does_not_satisfy_trait_neg]
 
 The `impl` form provides method bodies for a trait applied to a specific type (conventional trait) or type constructor (higher-kinded trait).
 

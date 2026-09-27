@@ -160,7 +160,8 @@ are enforced elsewhere:
 - a bare name that resolves to a trait (`:Num 5`) is a satisfaction check only and
   changes nothing. A nominal concrete type must have an impl; a concrete
   non-nominal type such as a function is rejected, because impls are keyed by
-  type name; a still-variable type is left for the ambiguity backstop.
+  a nominal type's identity (`typecheck.md` §9.1.1). A still-variable type is
+  left for the ambiguity backstop.
 
 ## 5. Expression types
 

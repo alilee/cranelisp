@@ -22,6 +22,7 @@ use cranelisp_types::{
 use crate::cache::dependency_record::{
     DependencyRecord, ModuleSources, callee_modules, is_compiler_owned,
 };
+use crate::imports::DeclaredChildren;
 use crate::scheduler::{CachedLoadHold, CompileScheduler};
 use crate::session_setup::CacheValidity;
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
@@ -111,10 +112,13 @@ fn walk_restored_module(
     specs: &CachedSpecs,
     _load_hold: Option<&CachedLoadHold<'_>>,
 ) -> Result<(), CranelispError> {
-    register_transitive_cached_imports(ctx, &specs.imports)?;
+    // Import and re-export targets resolve against the restored table's own
+    // declared children, as on the fresh path (`design/int/int.md` §6.9).
+    let declared = DeclaredChildren::of(dep, &specs.submodules);
+    register_transitive_cached_imports(ctx, &specs.imports, &declared)?;
     // Re-export targets are transitive deps too (FIXME 0387 — prelude's
     // `(export [text.string [str]])` etc.). Walk them through the same path.
-    register_transitive_cached_imports(ctx, &specs.reexport_deps)?;
+    register_transitive_cached_imports(ctx, &specs.reexport_deps, &declared)?;
     // Callee modules: the restored object binds their GOTs even when no
     // import names them (§7.6.1). The walk installs no names in `dep`.
     for callee_module in &specs.callee_modules {
@@ -553,18 +557,20 @@ fn register_cached_with_scheduler<'a>(
     load_hold
 }
 
-/// Walk a cached module's `imports` and ensure each transitive dep is
-/// installed. A null import (§8.3.6) loads nothing and is skipped here only;
-/// the same module reached as a callee still loads.
-pub(super) fn register_transitive_cached_imports(
+/// Walk a cached module's `imports`, resolved against its `declared`
+/// children, and ensure each transitive dep is installed. A null import
+/// (§8.3.6) loads nothing and is skipped here only; the same module reached as
+/// a callee still loads.
+fn register_transitive_cached_imports(
     ctx: &mut ModuleCompiler,
     imports: &[ImportSpec],
+    declared: &DeclaredChildren,
 ) -> Result<(), CranelispError> {
     for spec in imports {
         if matches!(&spec.names, ImportNames::None) {
             continue;
         }
-        register_cached_dependency(ctx, &spec.module_path)?;
+        register_cached_dependency(ctx, &declared.resolve(&spec.module_path))?;
     }
     Ok(())
 }

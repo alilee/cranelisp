@@ -1,6 +1,6 @@
 use cranelisp_types::{
     CranelispError, Decl, ErrorLocation, FQTraitName, JitSymbol, ModuleFullPath, ResolvedCall,
-    Span, Symbol, TraitMethodSig, TraitName, TraitRecord, Type, TypeName, trait_impl_key,
+    Span, Symbol, TraitMethodSig, TraitName, TraitRecord, Type, TypeName,
 };
 
 use super::*;
@@ -124,42 +124,36 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     return Ok(None);
                 };
                 let ret_ty = self.apply_subst(state, recorded);
-                if !self_in_return || concrete_type_name(&ret_ty).is_none() {
+                if !self_in_return || receiver_identity(&ret_ty).is_none() {
                     return Ok(None);
                 }
                 ret_ty
             }
         };
 
-        let impl_type_name = match concrete_type_name(&resolved_arg) {
-            Some(tn) => tn,
-            // Type is still a variable — defer resolution (batch mode will
-            // catch this during monomorphisation).
-            None => return Ok(None),
+        // A non-nominal head (still a variable) defers resolution; batch mode
+        // catches it during monomorphisation.
+        let Some(receiver) = receiver_identity(&resolved_arg) else {
+            return Ok(None);
         };
+        let impl_type_name = receiver.name.clone();
 
-        // Check if an impl exists — if the name IS a trait method and the
-        // type IS concrete but the impl DOESN'T exist, that's a type error.
-        // D2: root the impl lookup at the trait's chain-followed HOME (the
-        // discarded `trait_origin` module), where D45 writes every `TraitImpl`
-        // shell — reaching the method reaches the home reaches the impl by keyed
-        // lookup, no second bare-name re-resolution. When only the method is
-        // imported, `has_impl_with_state`'s bare re-resolution missed and this
-        // wrong-rejected a spec-valid dispatch (§7.11.2(e)); `has_impl_in_home`
-        // succeeds.
-        if !self.has_impl_in_home(trait_defining_module, trait_name, &impl_type_name) {
+        // D2: the method reference already names the trait's home, where D45
+        // writes every impl shell, so the impl is one keyed read there — no
+        // bare re-resolution of the trait (a method-only import has no
+        // in-scope trait name, §7.11.2(e)).
+        let fq_trait_name = FQTraitName::new(trait_defining_module.clone(), trait_name.clone());
+        let Some(shell) = self.impl_shell(&fq_trait_name, &receiver) else {
             // Render both halves fully-qualified so the message disambiguates
             // a missing impl under two same-named ADTs from different modules
             // (S87-1). The trait name is on `trait_origin` and thus available
             // even when the trait itself is not in scope (§7.11.2(c), F-D2-7).
-            let fq_trait =
-                FQTraitName::new(trait_defining_module.clone(), trait_name.clone()).to_string();
             let fq_impl_type = self.fq_type_name_for_diagnostics(state, &impl_type_name, span);
             return Err(CranelispError::TypeError {
-                message: format!("no impl of trait {} for type {}", fq_trait, fq_impl_type),
+                message: format!("no impl of trait {fq_trait_name} for type {fq_impl_type}"),
                 location: ErrorLocation::from_span(span),
             });
-        }
+        };
 
         // Primitive trait-method short-circuit (FIXME 0185).
         //
@@ -171,68 +165,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // optimisation while keeping backend trait-free (the dispatch is
         // monomorphisation-keyed in typecheck, not trait-keyed in backend).
         if let Some(builtin) =
-            resolved_builtin_for_trait_method(&trait_name, callee_name, &impl_type_name)
+            resolved_builtin_for_trait_method(trait_name, callee_name, &impl_type_name)
         {
             return Ok(Some(PendingDispatch::Builtin(builtin)));
         }
 
-        // Build FQTraitName from the trait's already-threaded HOME (D2 — the
-        // `trait_origin` module), NOT a bare re-resolution: a method-only import
-        // has no in-scope trait name to re-resolve, so `resolve_trait` would fail
-        // exactly on the cell D2 must accept.
-        let fq_trait_name = FQTraitName::new(trait_defining_module.clone(), trait_name.clone());
-
-        // Build FQTypeName for the impl type WITHOUT re-resolving the bare name in
-        // the CALLER's scope (D2/§7.0.1, W2a Important 3 — a method-only import has
-        // no in-scope name for a foreign dispatch type, `Int` → "unknown type
-        // Int"). Two cases, each P24 "resolve once":
-        //  - ADT: the resolved dispatch arg ALREADY carries its `FQTypeName` — use
-        //    it directly (a user ADT `Widget` impl'd on a prelude trait lives in
-        //    the USER module, NOT the trait home, so home-rooting would wrong-miss
-        //    it; the fqtn is authoritative and needs no resolution).
-        //  - intrinsic scalar (`Int`/…): no embedded fqtn — resolve in the trait's
-        //    HOME, which reaches `primitives` (the home declared the trait using
-        //    these types, and the impl mangle was formed there).
-        let fq_impl_type = match &resolved_arg {
-            Type::ADT(fqtn, _) => fqtn.clone(),
-            _ => self
-                .resolve_type_in_module(&trait_defining_module, &impl_type_name, span)
-                .map_err(cranelisp_types::CranelispError::from)?,
-        };
-
-        // FQ type identity for the dispatch mangle (S102 — 4th lossy-head cure,
-        // extends the 0519 unification to the trait-method grain), then mangle
-        // in lock-step with the impl-method definition symbol minted in
-        // `impl_check` — both route through `mangle_trait_method` against the
-        // same canonical `FQTypeName` (name-path == definition-path).
-        let fq_for_mangle = fq_type_for_dispatch_mangle(&resolved_arg, &fq_impl_type);
-        let mangled =
-            mangle_trait_method(trait_name.as_ref(), callee_name.as_ref(), &fq_for_mangle);
-
-        // S110 W0.1b (§1.1.1): the STORAGE module of the selected mangled
-        // method `Def` is the impl-WRITER's module, recorded on the
-        // `ModuleEntry::TraitImpl` shell at the trait's home (`impl_module`).
-        // Read it off the shell via the exact canonical key (bare-name fallback
-        // for an intrinsic-receiver head skew). `has_impl_in_home` succeeded
-        // above, so the shell exists; degrade to `current_module` only on a
-        // pathological miss. Consumers (`dispatch_target_fq`,
-        // `resolved_call_to_fqsymbol`) READ this — never re-derive.
-        let impl_key = trait_impl_key(&fq_for_mangle, &fq_trait_name);
-        let impl_module = self
-            .impl_module_in_home(
-                &trait_defining_module,
-                impl_key.as_ref(),
-                &trait_name,
-                &impl_type_name,
-            )
-            .unwrap_or_else(|| state.current_module.clone());
+        // The receiver identity is the mangle's `FQTypeName`, so dispatch and
+        // the impl-method definition in `impl_check` mint the same symbol
+        // (name-path == definition-path). The storage module of that `Def` is
+        // the impl writer's, read off the shell (S110 W0.1b, §1.1.1);
+        // consumers (`dispatch_target_fq`, `resolved_call_to_fqsymbol`) read
+        // it, never re-derive.
+        let mangled = mangle_trait_method(trait_name.as_ref(), callee_name.as_ref(), &receiver);
 
         Ok(Some(PendingDispatch::Resolved(ResolvedCall::TraitMethod {
             trait_name: fq_trait_name,
             method_name: callee_name.clone(),
-            impl_type: fq_impl_type,
+            impl_type: receiver,
             mangled_name: JitSymbol::from(mangled.as_str()),
-            impl_module,
+            impl_module: shell.impl_module,
         })))
     }
 }
@@ -345,29 +296,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
     /// Whether a settled type satisfies `fq_trait`, judged by the type's head
     /// (`design/typecheck/typecheck.md` §9.2.1). A nominal head satisfies it
-    /// exactly when the trait's home holds an impl shell for that head; a
-    /// function type implements no trait (spec §3.3.3); a variable or
-    /// constructor-variable head is not yet determined. The declared-bound
-    /// settlement check and instance verification both judge through this step.
+    /// exactly when the trait's home holds an impl shell keyed by that head's
+    /// identity (§9.1.1); a function type implements no trait (spec §3.3.3); a
+    /// variable or constructor-variable head is not yet determined. The
+    /// declared-bound settlement check and instance verification both judge
+    /// through this step.
     pub(crate) fn trait_satisfaction(
         &self,
         fq_trait: &FQTraitName,
         ty: &Type,
     ) -> TraitSatisfaction {
-        let impl_type = match ty {
+        match ty {
             Type::Int | Type::Bool | Type::String | Type::Float | Type::ADT(..) => {
-                concrete_type_name(ty)
+                match receiver_identity(ty)
+                    .and_then(|receiver| self.impl_shell(fq_trait, &receiver))
+                {
+                    Some(_) => TraitSatisfaction::Satisfied,
+                    None => TraitSatisfaction::Unsatisfied,
+                }
             }
-            Type::Fn(..) => return TraitSatisfaction::Unsatisfied,
-            Type::Var(_) | Type::TyConApp(..) => return TraitSatisfaction::Undetermined,
-        };
-        match impl_type {
-            Some(impl_type)
-                if self.has_impl_in_home(&fq_trait.module, &fq_trait.name, &impl_type) =>
-            {
-                TraitSatisfaction::Satisfied
-            }
-            _ => TraitSatisfaction::Unsatisfied,
+            Type::Fn(..) => TraitSatisfaction::Unsatisfied,
+            Type::Var(_) | Type::TyConApp(..) => TraitSatisfaction::Undetermined,
         }
     }
 }
@@ -379,37 +328,6 @@ pub(crate) enum TraitSatisfaction {
     Unsatisfied,
     /// The head is still a variable; an instantiation decides it later.
     Undetermined,
-}
-
-/// The FQ type identity to embed in a trait-method dispatch mangle (S102 — 4th
-/// lossy-head cure). The mangled linker symbol MUST carry the receiver's FULL
-/// nominal identity so `a/Widget` and `b/Widget` (§3.8.4: distinct types)
-/// dispatch to their own impls rather than colliding on one bare-head symbol.
-///
-/// **The authoritative source is the resolved argument's OWN type.** An ADT
-/// receiver carries its home directly in the `FQTypeName` head — use it. This is
-/// deliberately NOT a re-resolution of the bare head in the CALLER's module (the
-/// `fallback`, computed via `resolve_type`): that re-resolution is exactly the
-/// home-erasing bug, since a caller-local same-named type would capture the
-/// dispatch. The `fallback` is used only for an intrinsic receiver (`Type::Int`
-/// etc.), whose bare head is globally unambiguous (one canonical
-/// `primitives/Int`) so caller-scope re-resolution is safe there.
-///
-/// **Grain: receiver HEAD only.** ADT type-args are intentionally dropped (the
-/// `_` below) — the trait-impl registration grain names by the impl target head
-/// (`impl_target_head_spelling`), so both `(impl T (Vec Int))` and
-/// `(impl T (Vec String))` share the head key `T.m$…/Vec` on BOTH the dispatch
-/// and definition sides. Distinguishing them would require changing impl
-/// registration too; out of scope for this cure. Keeping the head-only grain is
-/// what preserves the lock-step invariant.
-pub(super) fn fq_type_for_dispatch_mangle(
-    resolved_arg: &Type,
-    fallback: &cranelisp_types::FQTypeName,
-) -> cranelisp_types::FQTypeName {
-    match resolved_arg {
-        Type::ADT(fqtn, _) => fqtn.clone(),
-        _ => fallback.clone(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +413,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let resolved = self.apply_subst(state, recorded);
         // Only dispatch when the return type is concrete; a residual var means
         // the call context has not fixed it yet — defer.
-        concrete_type_name(&resolved)?;
+        receiver_identity(&resolved)?;
         Some(resolved)
     }
 

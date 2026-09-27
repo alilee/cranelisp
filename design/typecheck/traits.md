@@ -51,9 +51,11 @@ visibility.
   of that key, for both registration and the dispatch-side probe.
 - **Contents.** The trait, the implementing type, `impl_module` (the writer, where
   the method definitions live) and the method storage keys.
-- **Discovery.** To answer "does `(Trait, Type)` have an impl", follow the chain to
-  the trait's home and probe that one key. There is no universe scan and no
-  closure walk.
+- **Discovery.** To answer "does `(Trait, Type)` have an impl", take the trait's
+  resolved home and the settled type's own identity, then probe that one key
+  ([typecheck §9.1.1](typecheck.md#911-impl-existence-is-keyed-by-the-receivers-identity)).
+  The home is not scanned, no bare-name match is used, and no closure is
+  walked.
 - **Visibility.** Shells are always public (spec §5.11.1). Impl coherence is
   global.
 
@@ -260,7 +262,7 @@ crate decides only where the record is staged: exactly where the shell is.
   definition site (explicit, HKT and default methods) mint through
   `mangle_trait_method` against the same `FQTypeName`. The definition side uses
   the target resolved once at registration. The dispatch side takes the type from
-  the resolved argument's own type (`fq_type_for_dispatch_mangle`) and never
+  the resolved argument's own type (`receiver_identity`) and never
   re-resolves a bare head in the caller's module.
 - **Grain is the receiver head.** Type arguments are not part of the suffix, which
   matches impl registration's grain. `Vec Int` and `Vec String` share a head.
@@ -348,11 +350,11 @@ which case resolution is deferred.
    argument 0. With no argument at that position, a method whose signature
    returns `self` dispatches on the call's recorded return type. Any other
    signature defers.
-3. **Concrete type.** `concrete_type_name` of the resolved dispatch type. The
-   scalars and ADTs have one; a variable or function type returns `None`, and
-   the call defers.
-4. **Impl lookup at the trait's home.** `has_impl_in_home` probes the shell key
-   (§1.3). A concrete type with no impl is the located error
+3. **Receiver identity.** Take the identity of the resolved dispatch type
+   (typecheck §9.1.1). A scalar or an ADT has one; if the type is a variable
+   or a function type, the call defers.
+4. **Impl lookup at the trait's home.** Probe the shell key for that identity
+   (§1.3). A concrete type with no impl produces the located error
    `no impl of trait <FQ trait> for type <FQ type>`.
 5. **Primitive short-circuit.** A `(trait, method, type)` in
    `primitive_for_trait_method`'s table becomes `ResolvedCall::BuiltinFn`, and
@@ -360,10 +362,10 @@ which case resolution is deferred.
    lives here. See §11 for how it is keyed.
 6. **Otherwise** build `ResolvedCall::TraitMethod`:
    - the trait: its canonical name at its home;
-   - the implementing type: an ADT's own `FQTypeName`, or a scalar resolved in the
-     trait's home;
+   - the implementing type: the receiver identity from step 3;
    - the mangled symbol (§3.1);
-   - `impl_module`, read from the shell. Consumers read it and never re-derive it.
+   - `impl_module`, read from the shell that step 4 returned. Consumers read it
+     and never re-derive it.
 
 **Deferred resolution.** A call whose dispatch type is still a variable has no
 entry. `resolve_deferred_trait_calls` walks a body and retries each trait-method
@@ -380,17 +382,17 @@ reference carries its trait's canonical identity, and that identity names the
 trait's home, so every step above roots at that home and none re-resolves a
 bare trait name in the caller's scope:
 
-- the impl lookup (`has_impl_in_home`);
+- the impl lookup (the keyed probe, typecheck §9.1.1);
 - the `FQTraitName` in the resolved call;
 - the declaration scan behind `method_self_in_return` and `hkt_param_index`,
   which reads the method from its own trait at that home (`find_trait_method_decl`
   with a trait filter);
 - constraint verification during monomorphisation (`verify_constraints`).
 
-The dispatch type follows the same rule. An ADT argument supplies its own
-`FQTypeName`: a user ADT that implements a prelude trait keeps its impl in the
-user's module, so rooting it at the trait's home would miss it. A scalar has no
-embedded home and resolves in the trait's home, which reaches `primitives`.
+The dispatch type follows the same rule: its identity comes from the type and
+is never re-resolved in any scope. An ADT argument supplies its own
+`FQTypeName`, so a same-named type elsewhere cannot capture its dispatch. A
+scalar's identity is in `primitives` (typecheck §9.1.1).
 
 The same rule has three consequences:
 
@@ -518,12 +520,12 @@ Violating any of these is an implementation bug.
   `primitive_for_trait_method` (§7 step 5) matches the bare trait, method and type
   names. It ignores the trait's home and the selected impl. A trait named `Num`
   declared in any module, with an `Int` impl of `+`, would dispatch to `add-i64`
-  and silently skip the written body; a type named `Int` in another module would
-  match too, because `concrete_type_name` returns only the ADT's bare name. That
-  contradicts canonical identity (Principle 19; spec §3.8.4 and §7.11.2). This is
+  and silently skip the written body. An ADT named `Int` with its own `Num`
+  impl would also match, because the table reads only the bare name. Both
+  contradict canonical identity (Principle 19; spec §3.8.4 and §7.11.2). This is
   a source-read lead that has not been executed. `qa` takes intake and decides on
-  a discriminating repro; if it is confirmed, the fix keys the table on the
-  canonical trait and type (`dev`, typecheck).
+  a discriminating repro. If it is confirmed, `dev` (typecheck) keys the table on
+  the canonical trait and on the receiver identity from typecheck §9.1.1.
 - **Constraint rigidity in impl-method bodies:** `inference.md` §6.
 
 ## 12. Cross-references
@@ -536,7 +538,7 @@ Violating any of these is an implementation bug.
   `fixme-0365-field-accessor-dotted.md` — the neighbouring subjects listed at the
   top.
 - Sources: `crates/cranelisp-typecheck/src/traits/`; `checker.rs`
-  (`method_to_trait_with_state`, `has_impl_in_home`, `generalize`);
+  (`method_to_trait_with_state`, the home-rooted impl probe, `generalize`);
   `program/register.rs`; `program/mono_collect.rs`.
 
 ---

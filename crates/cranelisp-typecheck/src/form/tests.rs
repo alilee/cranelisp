@@ -935,13 +935,16 @@ fn check_source_in(
     )
 }
 
-/// Module `b` declares the public trait `Tr`; with `int_impl`, it also
-/// implements `Tr` for `Int`, so only a lookup rooted at `b` finds the impl.
+/// Module `b` declares `Tr`; with `int_impl`, it imports the scalar `Int` from
+/// `primitives`, where bootstrap installs it (spec §8.9.1), and implements
+/// `Tr` for it.
 fn seed_trait_module_b(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>, int_impl: bool) {
     let b = ModuleFullPath::from("b");
     let mut table = SymbolTable::<(), ()>::new_with_params(b.clone());
     if int_impl {
-        table
+        let primitives = ModuleFullPath::from("primitives");
+        let mut primitives_table = SymbolTable::<(), ()>::new_with_params(primitives.clone());
+        primitives_table
             .install_binding(
                 Symbol::from("Int"),
                 Binding::new(
@@ -951,6 +954,17 @@ fn seed_trait_module_b(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>, i
                     }),
                     Visibility::Public,
                 ),
+            )
+            .unwrap();
+        modules.insert(primitives.clone(), primitives_table);
+        table
+            .expose_candidate(
+                Symbol::from("Int"),
+                cranelisp_types::FQSymbol {
+                    module: primitives,
+                    symbol: Symbol::from("Int"),
+                },
+                Visibility::Private,
             )
             .unwrap();
     }

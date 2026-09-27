@@ -23,8 +23,8 @@ use std::collections::HashSet;
 
 use cranelisp_typecheck::PreludeFallback;
 use cranelisp_types::{
-    CranelispError, ErrorLocation, ExportSpec, FQSymbol, ImportNames, ImportSpec, ModuleAliasEntry,
-    ModuleAliases, ModuleFullPath, Span, Symbol, Visibility,
+    CranelispError, ErrorLocation, ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl,
+    ModuleAliasEntry, ModuleAliases, ModuleFullPath, ModuleName, Span, Symbol, Visibility,
 };
 
 /// The session-side declared-export closure map (FIXME 0604 §2.2): `M → D(M)`,
@@ -46,9 +46,92 @@ struct CandidateExposure {
     visibility: Visibility,
 }
 
+/// The children one module declares with `(mod name)` or `(mod- name)` — the
+/// only fact that makes a bare module name in its `import` and `export` specs
+/// name a child (spec §8.11.2 item 1, §8.11.2.1; `design/int/int.md` §6.9).
+///
+/// Built from declarations alone. The resolver has no symbol-table, filesystem
+/// or load-state input, so a registered or file-backed child that the module
+/// does not declare cannot capture a name.
+#[derive(Debug, Clone)]
+pub(crate) struct DeclaredChildren {
+    parent: ModuleFullPath,
+    names: HashSet<ModuleName>,
+}
+
+/// An `import` or `export` spec paired with the module it names. Only
+/// [`DeclaredChildren`] constructs one, so an installer receives the resolved
+/// module and cannot re-resolve the spelling.
+#[derive(Debug)]
+pub(crate) struct ResolvedSpec<'s, S> {
+    spec: &'s S,
+    module: ModuleFullPath,
+}
+
+impl<S> ResolvedSpec<'_, S> {
+    pub(crate) fn spec(&self) -> &S {
+        self.spec
+    }
+
+    pub(crate) fn module(&self) -> &ModuleFullPath {
+        &self.module
+    }
+}
+
+impl DeclaredChildren {
+    pub(crate) fn of<'d>(
+        parent: &ModuleFullPath,
+        declarations: impl IntoIterator<Item = &'d ModDecl>,
+    ) -> Self {
+        DeclaredChildren {
+            parent: parent.clone(),
+            names: declarations
+                .into_iter()
+                .map(|decl| decl.name.clone())
+                .collect(),
+        }
+    }
+
+    /// The module `spelling` names inside the parent: its declared child
+    /// `<parent>.<spelling>` for a bare declared name in a non-root module,
+    /// otherwise the absolute module `spelling`.
+    pub(crate) fn resolve(&self, spelling: &ModuleFullPath) -> ModuleFullPath {
+        let name: &str = spelling.as_ref();
+        let names_child =
+            !self.parent.as_ref().is_empty() && !name.contains('.') && self.names.contains(name);
+        if names_child {
+            declared_child_path(&self.parent, name)
+        } else {
+            spelling.clone()
+        }
+    }
+
+    pub(crate) fn resolve_import<'s>(&self, spec: &'s ImportSpec) -> ResolvedSpec<'s, ImportSpec> {
+        ResolvedSpec {
+            spec,
+            module: self.resolve(&spec.module_path),
+        }
+    }
+
+    pub(crate) fn resolve_export<'s>(&self, spec: &'s ExportSpec) -> ResolvedSpec<'s, ExportSpec> {
+        ResolvedSpec {
+            spec,
+            module: self.resolve(&spec.module_path),
+        }
+    }
+}
+
+/// The module path of `parent`'s declared child `name`.
+pub(crate) fn declared_child_path(parent: &ModuleFullPath, name: &str) -> ModuleFullPath {
+    ModuleFullPath::from(format!("{parent}.{name}"))
+}
+
 /// Install resolved import bindings for `specs` into `current_module`'s symbol
 /// table, plus any module-path aliases into `module_aliases`. Replaces the
 /// struck `cranelisp_typecheck::register_imports`.
+///
+/// Each spec's source is the module it was resolved to; a missing table for
+/// that module is an error naming it.
 ///
 /// `prelude_fallback` remains part of the orchestration call shape; the shared
 /// resolver owns union with implicit-prelude candidates. This installer records
@@ -58,42 +141,24 @@ pub(crate) fn install_imports(
     current_module: &ModuleFullPath,
     module_aliases: &ModuleAliases,
     _prelude_fallback: &PreludeFallback,
-    specs: &[ImportSpec],
+    specs: &[ResolvedSpec<'_, ImportSpec>],
 ) -> Result<(), CranelispError> {
-    for spec in specs {
-        install_import_alias(current_module, module_aliases, spec);
-
-        // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
-        // (try as-is, then `<current>.<name>`), SYMMETRIC with `install_exports`
-        // (which already does this). Without it a bare `(import [child …])` in a
-        // `(mod child)`-declaring shell fails "unknown module 'child'": the source
-        // table is registered as `<current>.child`, not root `child`. Bare names
-        // with no child candidate + dotted paths fall through to `spec.module_path`
-        // unchanged (the `.get(&resolved_path).ok_or_else(…)` below still errors for
-        // a genuinely-missing module).
-        let resolved_path = if symbol_tables.contains_key(&spec.module_path) {
-            spec.module_path.clone()
-        } else {
-            let child = ModuleFullPath::from(format!("{current_module}.{}", spec.module_path));
-            if symbol_tables.contains_key(&child) {
-                child
-            } else {
-                spec.module_path.clone()
-            }
-        };
+    for resolved in specs {
+        let spec = resolved.spec;
+        install_import_alias(current_module, module_aliases, resolved);
 
         let to_add = {
             let source_guard =
                 symbol_tables
-                    .get(&resolved_path)
+                    .get(&resolved.module)
                     .ok_or_else(|| CranelispError::TypeError {
-                        message: format!("unknown module '{}' in import", spec.module_path),
+                        message: format!("unknown module '{}' in import", resolved.module),
                         location: ErrorLocation::from_span(spec.span),
                     })?;
             collect_bindings(
                 &source_guard,
                 current_module,
-                &resolved_path,
+                &resolved.module,
                 &spec.names,
                 spec.span,
                 Visibility::Private,
@@ -122,9 +187,9 @@ pub(crate) fn install_imports(
 
 /// Install re-export bindings for `specs` into `current_module`'s symbol
 /// table. Replaces the struck `cranelisp_typecheck::register_exports`.
-/// Re-export edges resolve their source module via try-as-is then
-/// child-of-current (spec §8.6.x relative form) and install `Public`-visible
-/// public candidate exposures.
+/// Each re-export installs `Public`-visible candidate exposures from the module
+/// its spec was resolved to; a missing table for that module is an error
+/// naming it.
 ///
 /// `export` populates the inner scope identically to `import` (§8.4.0), so it
 /// runs through the same candidate-install path as `import`.
@@ -141,32 +206,22 @@ pub(crate) fn install_exports(
     current_module: &ModuleFullPath,
     _prelude_fallback: &PreludeFallback,
     declared_exports: Option<&DeclaredExports>,
-    specs: &[ExportSpec],
+    specs: &[ResolvedSpec<'_, ExportSpec>],
 ) -> Result<(), CranelispError> {
-    for spec in specs {
-        // Resolve module path: try as-is, then as child-of-current.
-        let resolved_path = if symbol_tables.contains_key(&spec.module_path) {
-            spec.module_path.clone()
-        } else {
-            let child = ModuleFullPath::from(format!("{current_module}.{}", spec.module_path));
-            if symbol_tables.contains_key(&child) {
-                child
-            } else {
-                return Err(CranelispError::TypeError {
-                    message: format!("unknown module '{}' in export", spec.module_path),
-                    location: ErrorLocation::from_span(spec.span),
-                });
-            }
-        };
-
+    for resolved in specs {
+        let spec = resolved.spec;
         let to_add = {
-            let source_guard = symbol_tables
-                .get(&resolved_path)
-                .unwrap_or_else(|| unreachable!("module existence verified above"));
+            let source_guard =
+                symbol_tables
+                    .get(&resolved.module)
+                    .ok_or_else(|| CranelispError::TypeError {
+                        message: format!("unknown module '{}' in export", resolved.module),
+                        location: ErrorLocation::from_span(spec.span),
+                    })?;
             collect_bindings(
                 &source_guard,
                 current_module,
-                &resolved_path,
+                &resolved.module,
                 &spec.names,
                 spec.span,
                 Visibility::Public,
@@ -381,9 +436,11 @@ pub(crate) fn install_module_session_env(
     // (b) Import `as`-aliases (`(import [(target alias) …])`) → `<module>.<alias>`
     //     — the alias half of `install_imports` (the per-symbol Import bindings
     //     themselves were serialized in the restored table; only the session-side
-    //     alias map needs re-populating).
+    //     alias map needs re-populating). The target resolves against the
+    //     table's own declared children, as on the fresh path.
+    let declared = DeclaredChildren::of(module, &table.submodules);
     for spec in &table.imports {
-        install_import_alias(module, module_aliases, spec);
+        install_import_alias(module, module_aliases, &declared.resolve_import(spec));
     }
 
     // (c) Submodule short-name aliases (`(mod util)` → bare `util/…` resolves to
@@ -392,7 +449,7 @@ pub(crate) fn install_module_session_env(
     //     module sessions. The resolver supplies that scope for §8.6.6
     //     longest-prefix substitution.
     for decl in &table.submodules {
-        let sub_path = ModuleFullPath::from(format!("{module}.{}", decl.name));
+        let sub_path = declared_child_path(module, decl.name.as_ref());
         module_aliases.insert(
             cranelisp_types::module_alias_key(module, decl.name.as_ref()),
             ModuleAliasEntry::new(sub_path, Visibility::Private, decl.span),
@@ -415,18 +472,20 @@ pub(crate) fn gets_prelude_fallback(
         && !exports.iter().any(|s| is_prelude(&s.module_path))
 }
 
-/// Register `spec`'s module-path alias (§8.3.4, §8.3.6), if it has one. This is
-/// the one import-alias writer, and it needs no loaded target: a name-less
-/// alias-only import registers its alias without loading anything.
+/// Register a resolved spec's module-path alias (§8.3.4, §8.3.6), if it has
+/// one, targeting the module the spec names. This is the one import-alias
+/// writer, and it needs no loaded target: a name-less alias-only import
+/// registers its alias without loading anything.
 pub(crate) fn install_import_alias(
     current_module: &ModuleFullPath,
     module_aliases: &ModuleAliases,
-    spec: &ImportSpec,
+    resolved: &ResolvedSpec<'_, ImportSpec>,
 ) {
+    let spec = resolved.spec;
     if let Some(alias) = &spec.alias {
         module_aliases.insert(
             alias_key(current_module, alias.as_ref()),
-            ModuleAliasEntry::new(spec.module_path.clone(), Visibility::Private, spec.span),
+            ModuleAliasEntry::new(resolved.module.clone(), Visibility::Private, spec.span),
         );
     }
 }

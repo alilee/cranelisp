@@ -51,6 +51,40 @@ fn sole_candidate(table: &SessionSymbolTable, name: &str) -> cranelisp_types::Na
     candidates.into_iter().next().expect("length checked")
 }
 
+/// Install `specs` into `module` with no declared children, so each spelling
+/// names the absolute module.
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+fn install_import_specs(
+    tables: &SessionTables,
+    module: &str,
+    aliases: &ModuleAliases,
+    specs: &[ImportSpec],
+) -> Result<(), CranelispError> {
+    let module = ModuleFullPath::from(module);
+    let declared = DeclaredChildren::of(&module, std::iter::empty());
+    let resolved: Vec<_> = specs
+        .iter()
+        .map(|spec| declared.resolve_import(spec))
+        .collect();
+    install_imports(tables, &module, aliases, &no_pf(), &resolved)
+}
+
+/// The re-export counterpart of [`install_import_specs`].
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+fn install_export_specs(
+    tables: &SessionTables,
+    module: &str,
+    specs: &[ExportSpec],
+) -> Result<(), CranelispError> {
+    let module = ModuleFullPath::from(module);
+    let declared = DeclaredChildren::of(&module, std::iter::empty());
+    let resolved: Vec<_> = specs
+        .iter()
+        .map(|spec| declared.resolve_export(spec))
+        .collect();
+    install_exports(tables, &module, &no_pf(), None, &resolved)
+}
+
 fn glob_spec(module: &str) -> ImportSpec {
     ImportSpec {
         module_path: ModuleFullPath::from(module),
@@ -89,14 +123,7 @@ fn glob_import_does_not_re_expose_private_imports() {
     );
 
     // prelude does `(import [primitives [*]])` → Private bindings in prelude.
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("prelude"),
-        &aliases,
-        &no_pf(),
-        &[glob_spec("primitives")],
-    )
-    .unwrap();
+    install_import_specs(&tables, "prelude", &aliases, &[glob_spec("primitives")]).unwrap();
 
     // The prelude binding is present but Private.
     {
@@ -109,14 +136,7 @@ fn glob_import_does_not_re_expose_private_imports() {
     }
 
     // user does the implicit `(import [prelude [*]])`.
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("user"),
-        &aliases,
-        &no_pf(),
-        &[glob_spec("prelude")],
-    )
-    .unwrap();
+    install_import_specs(&tables, "user", &aliases, &[glob_spec("prelude")]).unwrap();
 
     // user MUST NOT have received add-i64 — prelude's binding was Private.
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
@@ -146,14 +166,7 @@ fn glob_picks_up_re_exported_public_names() {
     );
 
     // prelude does `(export [primitives [*]])` → Public re-export bindings.
-    install_exports(
-        &tables,
-        &ModuleFullPath::from("prelude"),
-        &no_pf(),
-        None,
-        &[glob_export("primitives")],
-    )
-    .unwrap();
+    install_export_specs(&tables, "prelude", &[glob_export("primitives")]).unwrap();
 
     {
         let prelude = tables.get(&ModuleFullPath::from("prelude")).unwrap();
@@ -165,14 +178,7 @@ fn glob_picks_up_re_exported_public_names() {
     }
 
     // user's implicit prelude glob now picks it up.
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("user"),
-        &aliases,
-        &no_pf(),
-        &[glob_spec("prelude")],
-    )
-    .unwrap();
+    install_import_specs(&tables, "user", &aliases, &[glob_spec("prelude")]).unwrap();
 
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     let entry = sole_candidate(&user, "add-i64");
@@ -219,11 +225,10 @@ fn import_then_export_same_source_upgrades_to_public() {
     );
 
     // relay: (import [base [base-val]]) → Private binding (source base/base-val).
-    install_imports(
+    install_import_specs(
         &tables,
-        &ModuleFullPath::from("relay"),
+        "relay",
         &aliases,
-        &no_pf(),
         &[specific_spec("base", "base-val")],
     )
     .unwrap();
@@ -236,14 +241,7 @@ fn import_then_export_same_source_upgrades_to_public() {
     }
 
     // relay: (export [base [base-val]]) → same source, Public. MUST upgrade.
-    install_exports(
-        &tables,
-        &ModuleFullPath::from("relay"),
-        &no_pf(),
-        None,
-        &[specific_export("base", "base-val")],
-    )
-    .unwrap();
+    install_export_specs(&tables, "relay", &[specific_export("base", "base-val")]).unwrap();
     {
         let relay = tables.get(&ModuleFullPath::from("relay")).unwrap();
         assert!(
@@ -255,11 +253,10 @@ fn import_then_export_same_source_upgrades_to_public() {
     }
 
     // Downstream module can now import the re-exported name from relay.
-    install_imports(
+    install_import_specs(
         &tables,
-        &ModuleFullPath::from("downstream"),
+        "downstream",
         &aliases,
-        &no_pf(),
         &[specific_spec("relay", "base-val")],
     )
     .expect(
@@ -285,20 +282,12 @@ fn export_then_import_same_source_stays_public() {
     );
 
     // Public re-export first.
-    install_exports(
-        &tables,
-        &ModuleFullPath::from("relay"),
-        &no_pf(),
-        None,
-        &[specific_export("base", "base-val")],
-    )
-    .unwrap();
+    install_export_specs(&tables, "relay", &[specific_export("base", "base-val")]).unwrap();
     // Then a (redundant) private import of the same source.
-    install_imports(
+    install_import_specs(
         &tables,
-        &ModuleFullPath::from("relay"),
+        "relay",
         &aliases,
-        &no_pf(),
         &[specific_spec("base", "base-val")],
     )
     .unwrap();
@@ -333,34 +322,14 @@ fn same_terminal_two_paths_dedup_no_ambiguity() {
     );
 
     // reexp re-exports prim/Foo (Public Import edge → prim).
-    install_exports(
-        &tables,
-        &ModuleFullPath::from("reexp"),
-        &no_pf(),
-        None,
-        &[specific_export("prim", "Foo")],
-    )
-    .unwrap();
+    install_export_specs(&tables, "reexp", &[specific_export("prim", "Foo")]).unwrap();
 
     // main globs prim (brings Foo, source prim) ...
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("main"),
-        &aliases,
-        &no_pf(),
-        &[glob_spec("prim")],
-    )
-    .expect("glob of prim installs Foo");
+    install_import_specs(&tables, "main", &aliases, &[glob_spec("prim")])
+        .expect("glob of prim installs Foo");
 
     // ... and specifically imports Foo from reexp (source reexp, terminal prim/Foo).
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("main"),
-        &aliases,
-        &no_pf(),
-        &[specific_spec("reexp", "Foo")],
-    )
-    .expect(
+    install_import_specs(&tables, "main", &aliases, &[specific_spec("reexp", "Foo")]).expect(
         "a glob + a re-export of the same terminal definition MUST dedup \
              silently (spec §8.6.4 terminal-source comparison) — NOT error",
     );
@@ -398,99 +367,163 @@ fn distinct_terminals_coexist_for_use_site_selection() {
     );
 
     // main imports a/Bar bare (no collision yet).
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("main"),
-        &aliases,
-        &no_pf(),
-        &[specific_spec("a", "Bar")],
-    )
-    .expect("first bare import of Bar installs cleanly");
+    install_import_specs(&tables, "main", &aliases, &[specific_spec("a", "Bar")])
+        .expect("first bare import of Bar installs cleanly");
 
     // main imports b/Bar bare: both canonical candidates remain until the
     // type-directed use-site selector can choose or diagnose ambiguity.
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("main"),
-        &aliases,
-        &no_pf(),
-        &[specific_spec("b", "Bar")],
-    )
-    .expect("distinct candidates may coexist until use-site selection");
+    install_import_specs(&tables, "main", &aliases, &[specific_spec("b", "Bar")])
+        .expect("distinct candidates may coexist until use-site selection");
 
     // Both terminal candidates remain for use-site type-directed selection.
     let main = tables.get(&ModuleFullPath::from("main")).unwrap();
     assert_eq!(main.name_candidates(&Symbol::from("Bar")).len(), 2);
 }
 
-// spec: 08-modules.md §8.11.2 (step 1) — install_imports resolves a BARE submodule
-// name current-module-relative (try as-is, then `<current>.<name>`), SYMMETRIC with
-// install_exports. A bare `(import [child [foo]])` inside a `(mod child)`-declaring
-// `shell` registers `foo` sourced from `shell.child`, not a root `child` (which
-// errored "unknown module 'child'"). This closes the import half of the mirror the
-// dependency.rs current-module-relative helper's own doc names (only the export
-// side was wired before). RED-on-revert: dropping the relative resolution in
-// install_imports makes this error.
+// spec: 08-modules.md §8.11.2 item 1, §8.11.2.1 — a bare module name inside `a`
+// names the child `a.q` only when `a` declares `(mod q)` or `(mod- q)`; an
+// undeclared name, a dotted name and a name inside the root module are absolute.
 #[test]
-fn install_imports_resolves_bare_submodule_current_module_relative() {
-    let tables = tables();
-    ensure(&tables, "shell");
-    ensure(&tables, "shell.child");
-    let aliases = ModuleAliases::default();
-
-    // The child submodule defines a public `foo`.
-    install_primitive(
-        &mut tables
-            .get_mut(&ModuleFullPath::from("shell.child"))
-            .unwrap(),
-        "foo",
-    );
-
-    // shell does `(import [child [foo]])` — module_path is the BARE `child`.
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("shell"),
-        &aliases,
-        &no_pf(),
-        &[specific_spec("child", "foo")],
-    )
-    .expect(
-        "a bare submodule import must resolve current-module-relative to \
-             shell.child (§8.11.2 step 1) — not error 'unknown module child'",
-    );
-
-    let shell = tables.get(&ModuleFullPath::from("shell")).unwrap();
-    assert_eq!(
-        sole_candidate(&shell, "foo").source.module,
-        ModuleFullPath::from("shell.child"),
-        "foo must be sourced from the shell.child submodule, not root child",
-    );
+fn resolver_names_a_child_only_for_a_declared_bare_name() {
+    let a = ModuleFullPath::from("a");
+    let public = DeclaredChildren::of(&a, &[mod_decl("q")]);
+    let private_decl = cranelisp_types::ModDecl {
+        visibility: Visibility::Private,
+        ..mod_decl("q")
+    };
+    let private = DeclaredChildren::of(&a, &[private_decl]);
+    let root = ModuleFullPath::from("");
+    let root_declared = DeclaredChildren::of(&root, &[mod_decl("q")]);
+    let cases = [
+        ("(mod q)", &public, "q", "a.q"),
+        ("(mod- q)", &private, "q", "a.q"),
+        ("undeclared", &public, "r", "r"),
+        ("dotted, first segment declared", &public, "q.r", "q.r"),
+        ("root-level referrer", &root_declared, "q", "q"),
+    ];
+    for (case, declared, spelling, expected) in cases {
+        assert_eq!(
+            declared.resolve(&ModuleFullPath::from(spelling)).as_ref(),
+            expected,
+            "{case}"
+        );
+    }
 }
 
-// spec: 08-modules.md §8.11.2 — NEGATIVE: a bare import name with NO
-// current-module-relative candidate (no `<current>.<name>` table) still errors
-// "unknown module" — the relative resolution is a fallback that never masks a
-// genuinely-missing module.
-#[test]
-fn install_imports_bare_name_without_submodule_errors() {
+/// Tables for both the root `q` and the child `a.q`, each defining a public
+/// `g`, plus the importing module `a`.
+fn root_and_child_q() -> SessionTables {
     let tables = tables();
-    ensure(&tables, "shell");
-    let aliases = ModuleAliases::default();
-    let err = install_imports(
-        &tables,
-        &ModuleFullPath::from("shell"),
-        &aliases,
-        &no_pf(),
-        &[specific_spec("nope", "foo")],
-    )
-    .expect_err("a bare name with no submodule candidate must still error");
-    match err {
-        CranelispError::TypeError { message, .. } => assert!(
-            message.contains("unknown module 'nope'"),
-            "the error must name the genuinely-missing module; got: {message}",
-        ),
-        other => panic!("expected a TypeError, got {other:?}"),
+    for module in ["a", "q", "a.q"] {
+        ensure(&tables, module);
     }
+    for module in ["q", "a.q"] {
+        install_primitive(
+            &mut tables.get_mut(&ModuleFullPath::from(module)).unwrap(),
+            "g",
+        );
+    }
+    tables
+}
+
+fn aliased_spec(module: &str, alias: &str) -> ImportSpec {
+    ImportSpec {
+        alias: Some(cranelisp_types::ModuleName::from(alias)),
+        ..specific_spec(module, "g")
+    }
+}
+
+// spec: 08-modules.md §8.11.2 item 1, §8.3.4 — with tables for both `q` and
+// `a.q`, an import installs from, and its alias targets, the module its spec
+// was resolved to; neither table's existence redirects it.
+#[test]
+fn import_installs_from_its_resolved_module() {
+    let a = ModuleFullPath::from("a");
+    for (declarations, expected) in [(vec![mod_decl("q")], "a.q"), (vec![], "q")] {
+        let tables = root_and_child_q();
+        let aliases = ModuleAliases::default();
+        let declared = DeclaredChildren::of(&a, &declarations);
+        let spec = aliased_spec("q", "qq");
+        install_imports(
+            &tables,
+            &a,
+            &aliases,
+            &no_pf(),
+            &[declared.resolve_import(&spec)],
+        )
+        .expect("the resolved module's table exists");
+        let table = tables.get(&a).unwrap();
+        assert_eq!(sole_candidate(&table, "g").source.module.as_ref(), expected);
+        let alias = aliases.get(&ModuleFullPath::from("a.qq")).unwrap();
+        assert_eq!(alias.target.as_ref(), expected, "the alias target");
+    }
+}
+
+// spec: 08-modules.md §8.11.2 item 1, §8.4 — a re-export installs from the
+// module its spec was resolved to.
+#[test]
+fn export_installs_from_its_resolved_module() {
+    let a = ModuleFullPath::from("a");
+    for (declarations, expected) in [(vec![mod_decl("q")], "a.q"), (vec![], "q")] {
+        let tables = root_and_child_q();
+        let declared = DeclaredChildren::of(&a, &declarations);
+        let spec = specific_export("q", "g");
+        install_exports(
+            &tables,
+            &a,
+            &no_pf(),
+            None,
+            &[declared.resolve_export(&spec)],
+        )
+        .expect("the resolved module's table exists");
+        let table = tables.get(&a).unwrap();
+        assert_eq!(sole_candidate(&table, "g").source.module.as_ref(), expected);
+    }
+}
+
+// spec: 08-modules.md §8.11.2 item 1, §8.5.4 edge 2 — a spec resolved to the
+// declared child `a.q` whose table is missing is an error naming `a.q`; the root
+// `q` table does not stand in for it.
+#[test]
+fn missing_resolved_module_is_an_error_naming_it() {
+    let a = ModuleFullPath::from("a");
+    let tables = root_and_child_q();
+    tables.remove(&ModuleFullPath::from("a.q"));
+    let declared = DeclaredChildren::of(&a, &[mod_decl("q")]);
+    let import = specific_spec("q", "g");
+    let export = specific_export("q", "g");
+    let outcomes = [
+        install_imports(
+            &tables,
+            &a,
+            &ModuleAliases::default(),
+            &no_pf(),
+            &[declared.resolve_import(&import)],
+        ),
+        install_exports(
+            &tables,
+            &a,
+            &no_pf(),
+            None,
+            &[declared.resolve_export(&export)],
+        ),
+    ];
+    for outcome in outcomes {
+        match outcome {
+            Err(CranelispError::TypeError { message, .. }) => {
+                assert!(message.contains("unknown module 'a.q'"), "{message}")
+            }
+            other => panic!("expected an error naming `a.q`, got {other:?}"),
+        }
+    }
+    assert!(
+        tables
+            .get(&a)
+            .unwrap()
+            .name_candidates(&Symbol::from("g"))
+            .is_empty(),
+        "nothing is installed from the root `q`"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -590,6 +623,45 @@ fn session_env_reregisters_import_alias() {
     );
 }
 
+// spec: spec/08-modules.md §8.3.4, §8.11.2 item 1 — a restored table's import
+// alias targets the module its spec names: the declared child `a.q` under
+// `(mod q)`, the root `q` otherwise.
+#[test]
+fn session_env_import_alias_targets_the_resolved_module() {
+    let alias_target = |declared: bool| {
+        let tables = tables();
+        ensure(&tables, "a");
+        {
+            let mut table = tables.get_mut(&ModuleFullPath::from("a")).unwrap();
+            table.imports = vec![ImportSpec {
+                module_path: ModuleFullPath::from("q"),
+                alias: Some(cranelisp_types::ModuleName::from("qq")),
+                names: ImportNames::None,
+                span: Span::SYNTHETIC,
+            }];
+            if declared {
+                table.submodules = vec![mod_decl("q")];
+            }
+        }
+        let (aliases, fallback) = env_maps();
+        install_module_session_env(&tables, &ModuleFullPath::from("a"), &aliases, &fallback);
+        aliases
+            .get(&ModuleFullPath::from("a.qq"))
+            .map(|entry| entry.target.to_string())
+    };
+    assert_eq!(alias_target(true).as_deref(), Some("a.q"), "declared");
+    assert_eq!(alias_target(false).as_deref(), Some("q"), "undeclared");
+}
+
+fn mod_decl(name: &str) -> cranelisp_types::ModDecl {
+    cranelisp_types::ModDecl {
+        name: cranelisp_types::ModuleName::from(name),
+        visibility: Visibility::Private,
+        inline_body: None,
+        span: Span::SYNTHETIC,
+    }
+}
+
 // Submodule short-name aliases are re-registered under their declaring-module
 // scope → `<module>.<name>` — mirror of `register_submodule_alias`.
 #[test]
@@ -650,11 +722,10 @@ fn import_over_local_def_retains_both_use_site_candidates() {
         "measure",
     );
 
-    install_imports(
+    install_import_specs(
         &tables,
-        &ModuleFullPath::from("user"),
+        "user",
         &aliases,
-        &no_pf(),
         &[specific_spec("base", "measure")],
     )
     .expect("local and imported callables coexist until use-site selection");
@@ -683,14 +754,8 @@ fn export_over_local_def_retains_both_use_site_candidates() {
         "measure",
     );
 
-    install_exports(
-        &tables,
-        &ModuleFullPath::from("user"),
-        &no_pf(),
-        None,
-        &[specific_export("base", "measure")],
-    )
-    .expect("local and exported callables coexist until use-site selection");
+    install_export_specs(&tables, "user", &[specific_export("base", "measure")])
+        .expect("local and exported callables coexist until use-site selection");
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     assert!(matches!(
         user.get("measure").map(|binding| &binding.declaration),
@@ -733,14 +798,8 @@ fn import_over_local_trait_decl_retains_both_use_site_candidates() {
         .install_binding(Symbol::from("Show"), trait_decl("Show"))
         .expect("local trait fixture installs");
 
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("user"),
-        &aliases,
-        &no_pf(),
-        &[specific_spec("base", "Show")],
-    )
-    .expect("local and imported traits coexist until use-site selection");
+    install_import_specs(&tables, "user", &aliases, &[specific_spec("base", "Show")])
+        .expect("local and imported traits coexist until use-site selection");
     // The local trait stays terminal and both canonical traits remain visible.
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     assert!(matches!(
@@ -768,14 +827,7 @@ fn export_only_binds_name_in_exporting_module_scope() {
     );
 
     // user does ONLY `(export [base [helper]])` — no import of `helper`.
-    install_exports(
-        &tables,
-        &ModuleFullPath::from("user"),
-        &no_pf(),
-        None,
-        &[specific_export("base", "helper")],
-    )
-    .unwrap();
+    install_export_specs(&tables, "user", &[specific_export("base", "helper")]).unwrap();
 
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     assert_eq!(
@@ -799,23 +851,11 @@ fn redundant_import_then_export_dedups_to_public() {
         "x",
     );
 
-    install_imports(
-        &tables,
-        &ModuleFullPath::from("user"),
-        &aliases,
-        &no_pf(),
-        &[specific_spec("base", "x")],
-    )
-    .expect("import installs cleanly");
+    install_import_specs(&tables, "user", &aliases, &[specific_spec("base", "x")])
+        .expect("import installs cleanly");
     // The SAME name via export — redundant, must dedup+upgrade, not reject.
-    install_exports(
-        &tables,
-        &ModuleFullPath::from("user"),
-        &no_pf(),
-        None,
-        &[specific_export("base", "x")],
-    )
-    .expect("redundant import+export of the same terminal must NOT collide");
+    install_export_specs(&tables, "user", &[specific_export("base", "x")])
+        .expect("redundant import+export of the same terminal must NOT collide");
 
     let user = tables.get(&ModuleFullPath::from("user")).unwrap();
     assert_eq!(sole_candidate(&user, "x").visibility, Visibility::Public);

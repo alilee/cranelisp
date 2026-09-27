@@ -51,7 +51,7 @@ user> /run-all-tests
 2 passed, 1 failed in 5.67ms
 ```
 
-### 16.3 The Primitives [Uncovered S122]
+### 16.3 The Primitives [Uncovered S122 — partial: the direct-vector result, eligibility, module scope, FQ names and the vector-only call shape are evidenced as recorded on [Appendix A](../../spec/appendix-a-builtins.md#test-discovery-and-error-capture); `catch-runtime-error`'s `Ok` and `Err` arms by tests/spec_12_runtime::catch_runtime_error_ok_arm_run, tests/spec_12_runtime::catch_runtime_error_err_arm_run and tests/spec_12_runtime::catch_runtime_error_err_arm_link; freshness across a later definition or redefinition, the `["a" "b"]` union and absence without an import are unevidenced end to end]
 
 `discover-tests` and `catch-runtime-error` are ordinary `primitives`-module symbols — imported (or FQ-referenced) like any other primitive, not special forms and not always-in-scope root names.
 

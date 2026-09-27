@@ -16,6 +16,7 @@ use cranelisp_types::{
 
 use crate::callee_edges::binding_callees;
 use crate::code::SessionSymbolTable;
+use crate::imports::{DeclaredChildren, declared_child_path};
 use crate::session_v4::SharedState;
 
 const PRELUDE: &str = "prelude";
@@ -59,7 +60,8 @@ pub(crate) struct ModuleEdges(BTreeSet<ModuleFullPath>);
 
 impl ModuleEdges {
     /// The declared edges alone, for a writer whose table does not carry the
-    /// structural declarations.
+    /// structural declarations. Import and re-export targets resolve against
+    /// `children` (`design/int/int.md` §6.9).
     pub(crate) fn of_declarations(
         module: &ModuleFullPath,
         imports: &[ImportSpec],
@@ -67,14 +69,19 @@ impl ModuleEdges {
         children: &[ModDecl],
         prelude_fallback: bool,
     ) -> Self {
+        let declared = DeclaredChildren::of(module, children);
         let targets = imports
             .iter()
-            .map(|spec| spec.module_path.clone())
-            .chain(exports.iter().map(|spec| spec.module_path.clone()))
+            .map(|spec| declared.resolve(&spec.module_path))
+            .chain(
+                exports
+                    .iter()
+                    .map(|spec| declared.resolve(&spec.module_path)),
+            )
             .chain(
                 children
                     .iter()
-                    .map(|decl| ModuleFullPath::from(format!("{module}.{}", decl.name))),
+                    .map(|decl| declared_child_path(module, decl.name.as_ref())),
             )
             .chain(prelude_fallback.then(|| ModuleFullPath::from(PRELUDE)));
         ModuleEdges(targets.filter(|target| is_edge(module, target)).collect())

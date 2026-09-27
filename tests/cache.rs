@@ -2087,7 +2087,7 @@ fn assert_uncached_rejects_int_argument(control: &Observed) {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes; §8 cache-load/fresh-compile equivalence under `--run`.
-// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev fixed=S122/94486f24
 #[test]
 fn cache_dep_signature_change_under_cached_importer_matches_uncached_run() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2102,7 +2102,7 @@ fn cache_dep_signature_change_under_cached_importer_matches_uncached_run() {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes; §11 quick build links cached objects.
-// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev fixed=S122/94486f24
 #[test]
 fn cache_dep_signature_change_under_cached_importer_matches_uncached_link() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2117,7 +2117,7 @@ fn cache_dep_signature_change_under_cached_importer_matches_uncached_link() {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes (GOT layout); §8 equivalence under `--run`.
-// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev fixed=S122/94486f24
 #[test]
 fn cache_dep_layout_change_under_cached_importer_matches_uncached_run() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2137,7 +2137,7 @@ fn cache_dep_layout_change_under_cached_importer_matches_uncached_run() {
 
 // spec: design/backend/module-caching.md §3 — Secondary key: transitive
 // dependency hashes (GOT layout); §11 quick build links cached objects.
-// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev fixed=S122/94486f24
 #[test]
 fn cache_dep_layout_change_under_cached_importer_matches_uncached_link() {
     let (control, cached) = dep_change_under_cached_importer(
@@ -2226,7 +2226,7 @@ fn closure_change_under_cached_importer(rebuild_c: bool) -> (Observed, Observed)
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (the record is
 // the transitive closure; a re-export target is an edge).
-// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev fixed=S122/94486f24
 #[test]
 fn cache_dep_change_through_unchanged_reexporter_matches_uncached_run() {
     let (control, cached) = closure_change_under_cached_importer(false);
@@ -2236,7 +2236,7 @@ fn cache_dep_change_through_unchanged_reexporter_matches_uncached_run() {
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (a restored
 // member contributes its own validated record to a rebuilt importer's record).
-// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/process_form/cache_restore.rs::cache_validity_check found=S122 owner=/dev fixed=S122/94486f24
 #[test]
 fn cache_dep_change_after_importer_rebuilt_over_restored_reexporter_matches_uncached_run() {
     let (control, cached) = closure_change_under_cached_importer(true);
@@ -2393,7 +2393,7 @@ fn fq_only_dependency_change(main_src: &str, a_src: &str) -> (Observed, Observed
 // reached only through a qualified reference, spec/08-modules.md §8.5.4).
 // The defect: `a`'s dependency record omitted `b`, so after the edit the
 // restored `a` ran against the new `b` and exited 99 where uncached gave 11.
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/bc675d86
 #[test]
 fn cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run() {
     let (control, cached) = fq_only_dependency_change(
@@ -2412,7 +2412,7 @@ fn cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run() 
 // so the restored `a.o` is observed before any edit. The defect: the restore
 // walk did not load `b`, so the unchanged warm run failed with
 // `unresolved symbol: __cranelisp_got_b` where the cold run exited 11.
-// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev fixed=S122
+// defect: class=enumeration-miss locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev fixed=S122/bc675d86
 #[test]
 fn cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run() {
     let (control, cached) = fq_only_dependency_change(FQ_ONLY_MAIN_WITHOUT_B, FQ_ONLY_A);
@@ -2781,7 +2781,7 @@ fn rr1_sessions_show_11(stdin: &str) {
 // spec: repl/spec/14-file-watching.md §14.7 — Interaction with Object Cache;
 // design/int/int.md §7.6.1 — Callee-module edges (a restored module that
 // reaches `c` only through a callee behaves in the REPL as under `--run`)
-// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev fixed=S122
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev fixed=S122/236aa44d
 // RR-1. Face (i): the import printed `module 'a' failed: … unresolved symbol:
 // __cranelisp_got_c`, then `(g)` died by SIGSEGV, because `a`'s object was
 // loaded before `c` was registered. Face (ii): `(g)` died by SIGSEGV with no
@@ -2799,7 +2799,7 @@ fn cache_repl_import_of_restored_module_reaching_callee_only_module_evaluates() 
 // spec: repl/spec/14-file-watching.md §14.7 — Interaction with Object Cache;
 // design/int/int.md §7.1 — Cache-hit flow inside register_module (a REPL turn
 // runs only after every restored module it can reach has loaded)
-// defect: class=shared-state-write-race locus=src/process_form/dependency.rs::handle_import found=S122 owner=/dev fixed=S122
+// defect: class=shared-state-write-race locus=src/process_form/dependency.rs::handle_import found=S122 owner=/dev fixed=S122/236aa44d
 // RR-1 face (ii), `c`-first: the cache-hit import arm returned with `a`'s and
 // `r`'s loads outstanding, and `(g)` ran into them. Before the readiness wait,
 // 14.0% of sessions died by SIGSEGV alone and 10.3% under the whole binary, so
@@ -2976,7 +2976,7 @@ fn cache_qualified_type_only_field_change_matches_uncached_allocator_counts() {
 
 // spec: spec/08-modules.md §8.5.4 edge 1 — a fully-qualified type name in an
 // annotation loads its module, whatever loaded it before
-// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev
+// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn fq_type_only_reference_loads_its_module_on_a_fresh_compile() {
     // Found arming the type-only cache cell, whose allocated shape (`main`
@@ -3123,7 +3123,7 @@ fn empty_expansion_then_definition(leg: &str, a_src: &str) {
 // spec: design/int/int.md §7.6 — Dependency record and validity (a qualified
 // macro head whose expansion leaves the module nothing to publish;
 // spec/08-modules.md §8.5.4 edge 1, §8.3.2)
-// defect: class=artifact-underkey locus=src/worker.rs::prepare_cluster_commit_with_demands found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/worker.rs::prepare_cluster_commit_with_demands found=S122 owner=/dev fixed=S122/236aa44d
 #[test]
 fn cache_qualified_macro_head_with_empty_expansion_change_matches_uncached_run() {
     // The sibling's `anchor` gives `a` a checkable entry, so its cluster

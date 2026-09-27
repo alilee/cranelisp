@@ -776,6 +776,89 @@ fn discover_tests_excludes_mistyped_test_neg() {
     .assert_stdout_contains(":primitives/Int 1");
 }
 
+/// A file module `h` with one eligible test and a helper whose body calls
+/// `(discover-tests [])`, so the helper's lexical module differs from the
+/// session's current module when `user` calls it.
+const DISCOVERY_MODULE_H: &str = "(import [primitives [discover-tests None Some]])\n\
+     (defn test-h [] (if true None (Some \"h\")))\n\
+     (defn find [] (discover-tests []))\n";
+
+/// `(names "Ln:" 0 pairs)` renders a discovery result as `"Ln:" ++ "name;"` per
+/// pair, so each leg's exact name set is one displayed string.
+const DISCOVERY_NAMES: &str = "(defn names [acc i pairs]\n\
+       (if (eq-i64 i (vec-len pairs))\n\
+           acc\n\
+           (match (vec-get pairs i)\n\
+             [(Pair n r) (names (str-concat acc (str-concat n \";\")) (add-i64 i 1) pairs)])))\n";
+
+// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
+// `discover-tests` searches only the named modules; an empty vector means the
+// session's current module, not the module lexically containing the call; scope
+// does not extend through imports; each name is the FQ `"module/test-name"`
+// (REPL §16.3 Module scope)
+#[test]
+fn discover_tests_scope_is_current_module_named_modules_only_not_through_imports() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("h.cl", DISCOVERY_MODULE_H)
+        .stdin(&format!(
+            "(import [h [find]])\n\
+             (defn test-u [] (if true None (Some \"u\")))\n\
+             {DISCOVERY_NAMES}\
+             (names \"L1:\" 0 (find))\n\
+             (names \"L2:\" 0 (discover-tests [\"h\"]))\n\
+             (names \"L3:\" 0 (discover-tests [\"user\"]))\n"
+        ))
+        .output()
+        .assert_ok()
+        // L1: `h/find`'s empty vector is `user`, not `h`, nor both, nor bare.
+        // L2: a named module alone; `user` is not added.
+        // L3: `user` imports `h`, but `h/test-h` is not searched.
+        .assert_stdout_contains_all(&[
+            "\"L1:user/test-u;\"",
+            "\"L2:h/test-h;\"",
+            "\"L3:user/test-u;\"",
+        ]);
+}
+
+// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
+// `discover-tests` resolves in `--run`, where a named module's eligible tests
+// are discovered as in the REPL
+// defect: class=mode-divergence locus=src/session_v4/test_runner.rs::discover_tests_extern found=S122 owner=/dev
+// DT-1 (ACT-0986 intake). Under `--run` the extern resolves but returns an
+// empty vector, so `main` exits 0; the REPL discovers the same named module.
+// The extern falls back to an empty result while no REPL eval has installed
+// its session state; attribution is QA's.
+#[test]
+fn discover_tests_named_module_under_run_counts_its_tests() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [discover-tests vec-len None Some Pure]])\n\
+             (defn test-a [] (if true None (Some \"a\")))\n\
+             (defn test-b [] (if true None (Some \"b\")))\n\
+             (defn test-c [] (if true None (Some \"c\")))\n\
+             (defn main [] (Pure (vec-len (discover-tests [\"main\"]))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(3);
+}
+
+// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" — the
+// primitive takes exactly one `(Vec String)`; it has no no-argument or
+// single-`String` form (REPL §16.3). NEGATIVE: each shape is a type error and
+// displays no value.
+#[test]
+fn discover_tests_neg_no_argument_and_string_forms_are_type_errors() {
+    for form in ["(discover-tests)\n", "(discover-tests \"user\")\n"] {
+        repl_prims(form)
+            .assert_stdout_contains("Error: type error")
+            .assert_stdout_does_not_contain("> :");
+    }
+}
+
 // =============================================================================
 // §12.7.2 / §12.7.3 Arithmetic policy — Wave 5.5 GAP-COVER
 //

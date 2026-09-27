@@ -332,12 +332,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .chain(active_constraints)
             .all(|(id, traits)| {
                 let resolved = apply(subst, &Type::Var(id));
-                let Some(type_name) = crate::traits::concrete_type_name(&resolved) else {
+                let Some(receiver) = crate::traits::receiver_identity(&resolved) else {
                     return true;
                 };
-                traits.iter().all(|required| {
-                    self.has_impl_in_home(&required.module, &required.name, &type_name)
-                })
+                traits
+                    .iter()
+                    .all(|required| self.impl_shell(required, &receiver).is_some())
             })
     }
 

@@ -108,6 +108,16 @@ fn every_edge_kind_is_a_member() {
     }
 }
 
+// spec: spec/08-modules.md §8.11.2 item 1 — a bare import or re-export target
+// names the declared child `m.q`, never the root `q`; undeclared, it names `q`.
+#[test]
+fn bare_target_is_an_edge_to_the_declared_child_only() {
+    let declared = edges_of(&[named_import("q")], &[reexport("q")], &[child("q")], false);
+    assert_eq!(declared, ["m.q"], "declared `(mod q)`");
+    let undeclared = edges_of(&[named_import("q")], &[reexport("q")], &[], false);
+    assert_eq!(undeclared, ["q"], "no `(mod q)`");
+}
+
 #[test]
 fn prelude_is_not_an_edge_when_the_fallback_bit_is_clear() {
     assert!(

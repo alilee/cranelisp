@@ -906,7 +906,7 @@ main.cl                 ; depends on prelude (implicit)
 
 The **project root** is the directory containing the entry file (the `.cl` file passed to the compiler or the REPL's working directory). It anchors all relative path resolution for both modules and platform DLLs.
 
-### 8.11.2 Module Resolution Search Order [Tested tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module] [S122 — tier 1's restriction to `(mod name)`-declared submodules: import and export positions RED, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module (IR-1)]
+### 8.11.2 Module Resolution Search Order [Tested tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module]
 
 When resolving a module name to a file, the implementation MUST search in this order:
 
@@ -916,7 +916,7 @@ When resolving a module name to a file, the implementation MUST search in this o
 
 A module in the project root shadows a module with the same name in a lib directory. This is intentional -- it allows projects to override library modules.
 
-#### 8.11.2.1 Bare-Name Precedence: Current-Module-Relative Submodule Wins [Tested tests/spec_08_modules::project_root_shadows_stdlib]
+#### 8.11.2.1 Bare-Name Precedence: Current-Module-Relative Submodule Wins [Tested+Neg tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module — within one compilation unit; a declaration in a later REPL turn is unsettled (ACT-0995)]
 
 The search order above is **first-match**: the first tier that yields a file resolves the name, and later tiers are not consulted. This is normative in the one shape where two tiers can both match a bare name — the **dual-name shape**:
 

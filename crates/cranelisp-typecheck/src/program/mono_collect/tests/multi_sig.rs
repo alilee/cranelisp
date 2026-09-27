@@ -314,9 +314,9 @@ fn multi_sig_dispatch_in_d3_harvested_body_drained_r2b() {
 // W2a /review Important 2 (P24 mirror in `verify_constraints`). A constrained
 // fn whose bound trait is imported METHOD-ONLY (not the trait) must
 // monomorphise: `verify_constraints` roots the impl lookup at the trait's HOME
-// (`fq_trait.module`, held on the constraint) via `has_impl_in_home`, NOT a
-// bare re-resolve of the trait NAME in the caller's scope (`has_impl_with_state`)
-// — the caller has no in-scope trait name. Pre-fix: `(wrap 1)` monomorphises
+// (`fq_trait.module`, held on the constraint) through the keyed impl probe,
+// NOT a bare re-resolve of the trait NAME in the caller's scope — the caller
+// has no in-scope trait name. Pre-fix: `(wrap 1)` monomorphises
 // wrap$Int → `verify_constraints` → "no impl of trait blib/Bump for type Int".
 // `check_src` panics on that wrong-reject.
 #[test]

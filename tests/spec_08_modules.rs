@@ -754,7 +754,7 @@ fn run_main_with_b(main: &str, b: &str) -> helpers::e2e::CrOutput {
 
 // spec: spec/08-modules.md §8.5.4 edge 1 — a fully-qualified type name in an
 // annotation loads its module
-// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev
+// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev fixed=S122/56e4d2e1
 // One-module form of tests/cache.rs::fq_type_only_reference_loads_its_module_on_a_fresh_compile.
 // The control differs only in a named import that loads `b` first, so `b/T`
 // resolves once `b` is loaded. Before the S122 correction the subject failed with the type error
@@ -785,7 +785,7 @@ fn fq_type_annotation_alone_loads_its_module() {
 
 // spec: spec/08-modules.md §8.5.4 edge 1 (type) and edge 2 — a qualified type
 // spelled through an alias-only import (§8.3.6) loads the alias target
-// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev
+// defect: class=wrong-reject locus=cranelisp-typecheck::fq-type-reference-resolution found=S122 owner=/dev fixed=S122/56e4d2e1
 // The control's named import loads `b`, so `:bb/T` resolves through the alias.
 // In the subject only the annotation can load `b`; a gap that names the spelled
 // `bb` instead of `b` fails as an unknown module `bb`.
@@ -875,7 +875,7 @@ fn run_main_with_optional_b(main: &str, b: Option<&str>) -> helpers::e2e::CrOutp
 // spec: spec/08-modules.md §8.5.4 edges 1 and 3; §3.9.3 — a qualified value
 // annotation resolves in the named module: a missing module is rejected at the
 // reference, and a trait in an unloaded module is accepted
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate found=S122 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/infer.rs::infer_annotate found=S122 owner=/dev fixed=S122/56e4d2e1
 // Subject B guards the repair's shape: rejecting every unloaded qualifier, or
 // forcing the type reading, fails it. FT-4 fences the parameter route.
 #[test]
@@ -917,7 +917,7 @@ fn fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted() {
 
 // spec: spec/08-modules.md §8.6.1; §3.9.3 — a parameter annotation's qualified
 // trait resolves in the named module, not by its bare name
-// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/program/register.rs::register_defn_signature found=S122 owner=/dev
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/program/register.rs::register_defn_signature found=S122 owner=/dev fixed=S122/56e4d2e1
 // Each subject differs from its control in one thing: subject 1 adds a local
 // `Tr`, subject 2 omits the named import of `b`.
 #[test]
@@ -1189,7 +1189,8 @@ fn q_returning(n: i32) -> String {
 // current module's submodule only when that module declares `(mod q)`; an
 // undeclared `a.q` that another module loaded is not a submodule of `a`, so
 // `q/…` in `a` names the root `q` in value and pattern position alike
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::qualified_candidate_modules found=S122 owner=/dev
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::qualified_candidate_modules found=S122 owner=/dev fixed=S122/236aa44d
+// The locus was deleted by the fix (design/typecheck/typecheck.md §3.6).
 #[test]
 fn qualified_name_to_undeclared_registered_child_resolves_to_root_module() {
     // `b` loads both `a.q` (11) and the root `q` (99) before `a` is checked,
@@ -1250,18 +1251,22 @@ fn qualified_name_to_undeclared_registered_child_resolves_to_root_module() {
 // spec: spec/08-modules.md §8.11.2 item 1; §8.11.2.1 — a bare module name in
 // `import` or `export` reaches the current module's submodule only when that
 // module declares `(mod q)`; a file-backed `a/q.cl` that nothing declares is
-// not a submodule of `a`, so the name resolves to the root `q`
-// defect: class=resolver-mirror locus=src/process_form/dependency.rs::resolve_current_module_relative found=S122 owner=/dev
+// not a submodule of `a`, so the name resolves to the root `q`; a declared
+// child is reached whatever else is loaded, and through an import alias
+// defect: class=resolver-mirror locus=src/process_form/dependency.rs::resolve_current_module_relative found=S122 owner=/dev fixed=S122
+// The locus was deleted by the fix; the single resolver is now
+// `src/imports.rs::DeclaredChildren` (design/int/int.md §6.9).
 #[test]
 fn import_and_export_of_undeclared_file_backed_child_resolve_to_root_module() {
     // `a/q.cl` returns 11 and the root `q.cl` 99; nothing imports `a.q`.
-    // `main` calls `a`'s `entry`.
-    let program = |a_src: &str, entry: &str| {
+    // `main` runs `main_imports`, then calls `a`'s `entry`.
+    let program = |main_imports: &str, a_src: &str, entry: &str| {
         run_project(&[
             (
                 "main.cl",
                 &format!(
                     "(import [primitives [Pure]])\n\
+                     {main_imports}\
                      (import [a [{entry}]])\n\
                      (defn main [] (Pure ({entry})))\n"
                 ),
@@ -1271,13 +1276,40 @@ fn import_and_export_of_undeclared_file_backed_child_resolve_to_root_module() {
             ("q.cl", &q_returning(99)),
         ])
     };
-    let import = |decl: &str| program(&format!("{decl}(import [q [g]])\n(defn h [] (g))\n"), "h");
-    let export = |decl: &str| program(&format!("{decl}(export [q [g]])\n"), "g");
+    let import = |decl: &str| {
+        program(
+            "",
+            &format!("{decl}(import [q [g]])\n(defn h [] (g))\n"),
+            "h",
+        )
+    };
+    let export = |decl: &str| program("", &format!("{decl}(export [q [g]])\n"), "g");
     let import_subject = import("");
     let export_subject = export("");
     let import_control = import("(mod q)\n");
     let export_control = export("(mod q)\n");
+    // The root `q` is loaded before `a` declares and imports its child.
+    let root_first = program(
+        "(import [q [anchor-99]])\n",
+        "(mod q)\n(import [q [g]])\n(defn h [] (g))\n",
+        "h",
+    );
+    let alias = program(
+        "",
+        "(mod q)\n(import [(q qq) [g]])\n(defn h [] (qq/g))\n",
+        "h",
+    );
     assert_all_legs(&[
+        (
+            "root first: `main` loads the root `q`, then `a` declares `(mod q)` and imports `[q [g]]`: exits 11 (the child `a.q`)",
+            root_first.status.code() == Some(11),
+            &root_first,
+        ),
+        (
+            "alias: `a` declares `(mod q)` and calls `(qq/g)` through `(import [(q qq) [g]])`: exits 11 (the child `a.q`)",
+            alias.status.code() == Some(11),
+            &alias,
+        ),
         (
             "import subject `(import [q [g]])`, `a` declares no `(mod q)`: exits 99 (the root `q`)",
             import_subject.status.code() == Some(99),
@@ -2508,32 +2540,24 @@ fn self_qualified_type_reference_resolves_to_local_type() {
 // =============================================================================
 // §8.2 Submodules — `(mod test)` inside a TRAIT-DEFINING module
 //
-// FAILING-NOT-IGNORED defect repros for S86 D3 + D4 (the self-test-rollout
-// blockers). Both are isolated, fully stdlib-free, single-tree repros of the
-// `(mod test …)`-inside-a-trait-module path that `/stdlib` could not roll out.
-// Owning crate guess: /typecheck (submodule trait-environment seeding /
-// parent-trait re-processing under submodule load). The visible errors are
-// typecheck "trait already defined" / "unknown type" — but the proximate cause
-// is module-load ordering, so /int (worker module-load) may co-own; see
-// tests/CLAUDE.md §"Isolating Cross-Crate Failures". Same defect family as the
-// (now-green) 0342 super-import guards above and the impl-body-scope D1.
+// Regression guards for S86 D3 and D4, the self-test-rollout blockers: isolated,
+// stdlib-free, single-tree repros of the `(mod test …)`-inside-a-trait-module
+// path that `/stdlib` could not roll out. Both pass. Same family as the 0342
+// super-import guards above and the impl-body-scope D1.
 // =============================================================================
 
 // spec: spec/08-modules.md §8.2 — a `(mod name)` child submodule MUST load
 //   WITHOUT re-processing (re-defining) the parent module's top-level forms.
 //
-// D3 (S86): a trait-defining module that declares a `(mod test)` child errors
-// "trait <T> already defined" — adding ANY child submodule (even a trivial one
-// that imports nothing from the parent) causes the parent's `(deftrait …)` to be
-// processed twice. The `(mod test)` child is the entire trigger: dropping it
-// makes the same module load clean. This blocks rolling self-tests into the
-// trait-defining foundation modules (compare.eq, num.num, …) — the headline
-// self-test-rollout goal.
+// D3 (S86): a trait-defining module that declared a `(mod test)` child errored
+// "trait <T> already defined": adding any child submodule, even a trivial one
+// that imports nothing from the parent, processed the parent's `(deftrait …)`
+// twice. The `(mod test)` child was the entire trigger. It blocked rolling
+// self-tests into the trait-defining foundation modules (compare.eq, num.num).
 //
 // Minimal, stdlib-free: `eqmod.cl` defines a one-method trait + one impl and
 // declares `(mod test)`; `eqmod/test.cl` is a trivial test fn that touches
 // NOTHING in the parent. `entry.cl` imports the trait so the project compiles.
-// FIXME(/typecheck — D3).
 #[test]
 fn mod_test_child_in_trait_module_does_not_redefine_parent_trait() {
     Cranelisp::new()
@@ -2557,9 +2581,9 @@ fn mod_test_child_in_trait_module_does_not_redefine_parent_trait() {
         .run("entry.cl")
         .output()
         // CORRECT: the child submodule loads without re-processing the parent's
-        // `(deftrait Eq …)`; the project compiles and main exits 0. Today this
-        // FAILS with `type error … trait Eq already defined` (the parent's
-        // deftrait span), exit 1.
+        // `(deftrait Eq …)`; the project compiles and main exits 0. D3 failed
+        // with `type error … trait Eq already defined` (the parent's deftrait
+        // span), exit 1.
         .assert_exit(0);
 }
 

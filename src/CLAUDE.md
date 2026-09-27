@@ -122,6 +122,7 @@ Every **successful** execution result crosses from generated typed code into exa
 - **`src/imports.rs`** hosts the int-side import/export installer (`install_imports`/`install_exports`). Records terminal `NameCandidate` exposures (`Private` for `import`, `Public` for `export`) + module-path aliases into `SharedState.module_aliases`. typecheck reads `module_aliases` read-only.
   - **`export` brings the name into the exporting module's OWN bare scope** (§8.4.0): `import`/`export` is the same bring-into-scope operation, visibility apart.
   - **§8.6.4 candidate registration.** A definition over an imported, exported or prelude-provided spelling registers another candidate; it is neither rejected nor a shadow. The installer does not decide ambiguity eagerly; the shared resolver unions the candidates and decides at each use (§8.6.5).
+  - **One bare-module-name resolver** (`design/int/int.md` §6.9). Discovery, the static closure, installation, the alias writer, cache restore, dependency-record edges and the watcher resolve an `import`/`export` module through `imports::DeclaredChildren`, built from the module's declared `mod` children. Installers take only a `ResolvedSpec`. Do not consult symbol tables, files or load state to decide whether a bare name is a child. Prelude-fallback selection still reads the written spelling; §6.9 retains that residual.
 
 ## Prelude as a resolution FALLBACK (not flattened, not an "outer scope")
 

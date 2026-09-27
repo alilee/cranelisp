@@ -198,7 +198,9 @@ module as `home`. Three facts are load-bearing. Getting one wrong produces a spu
    variable map**, never through raw scheme variable identifiers. Across modules those
    are stale and can collide with a caller variable.
 3. **Impl lookup for verification roots at the trait's home**
-   (`crates/cranelisp-typecheck/src/traits/dispatch.rs::has_impl_in_home`). Every trait
+   through the shared satisfaction step
+   (`crates/cranelisp-typecheck/src/traits/dispatch.rs::trait_satisfaction`;
+   [typecheck §9.1.1](typecheck.md#911-impl-existence-is-keyed-by-the-receivers-identity)). Every trait
    implementation is recorded in the trait's defining module.
 
 The implementation-level statement, and the unit test that guards these facts, are in

@@ -1,22 +1,24 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5, REPL cache crash prioritised; DLL alignment deferred by user.
-Latest consumer checkpoint: `56e4d2e1`; local shared-package checkpoint:
-`c339fa7`. The compiler corrections,
-bounded Haiku eval and IO reuse corrections have executing evidence. The
-generated-inner-name collision fix is verified and committed.
-Document consolidation continues: the last integrated check has zero findings
-across 508 documents. Historical audit reports are retired to Git with
-open points preserved. Current reservations appear at the end of this plan.
-C-A cache-corruption hardening is user-deferred. The cache dependency direction
-and exact API/schema are approved; implementation, independent review and QA
-adequacy are complete. The full suite passed 6,144 tests with one skipped.
-The user confirmed the generated three-line API addition; the verified
-correction and citation cleanup are committed at `56e4d2e1`. DB-1, R1-V and LD-9 corrections are implemented and reviewed in the working
-tree. QA accepts R1-V and LD-9; DB-1 needs the final AD-6 rejection cell.
-New reproduced defects RR-1 (including SIGSEGV), IR-1 and BN-1 remain open.
-The last full run was 6,158/6,161, with later focused evidence recorded below.
-No phase transition or publication is authorized.
+**Status:** PHASE 5, final correction batch verified; DT-1 carry approved.
+Latest consumer checkpoint: `236aa44d`; local shared-package checkpoint:
+`c339fa7`. The REPL cache crash repair is committed, independently reviewed
+and QA-adequate, with 2000 successful stress sessions. BN-1 and IR-1 are
+implemented and independently reviewed; all 948 typecheck tests pass, and
+AD-6 is delivered. Final verification is complete and QA judges this batch
+adequate. The user approved carrying the RED discovery test under `--run`
+with ACT-0988's explicit test-harness work; its unignored guard is retained.
+
+The latest full run passed 6200 tests, with only the newly retained DT-1
+`--run` discovery case failing and one skipped. The standing-document checker
+reports zero findings across 510 documents. Historical audits are retired to
+Git with open points retained. The bounded Haiku eval, earlier compiler and
+cache-dependency corrections have recorded evidence below.
+
+C-A cache-corruption hardening, DLL version alignment (ACT-0993) and the
+later-REPL-turn child declaration question (ACT-0995) are user-deferred.
+ACT-0994 remains open QA intake. Reservations and dispatch provenance appear
+at the end of this plan. No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
 issue records truthful, and deliver a repeatable REPL-agent evaluation baseline.
@@ -5011,3 +5013,124 @@ only record/comment changes followed those runs. Keep `.agents` and NOTES
 out of the commit. Continue Claude Opus5.5/high for subordinate roles, with
 one source/Cargo owner at a time. DLL version alignment stays deferred;
 ACT-0994 remains open intake outside the selected correction batch.
+
+### Checkpoint 236aa44d and final correction batch — 2026-09-27
+
+Committed the verified correction basket at `236aa44d` (47 files), including
+RR-1, declared-bound settlement, resolution and coverage repairs, and
+ACT-0993/ACT-0994. `.agents` and NOTES were excluded. No push. The retained
+RED guards are BN-1 and IR-1; their correction is now active.
+
+Active Claude Opus5.5/high roles, with separate document reservations:
+- design(typecheck) `8d1dacd6-d4c9-4ba6-b6a0-7cabd50f9659`: BN-1 design and
+  AD-6 grouping; `design/typecheck/`.
+- design(int) `76ea9a99-d1f0-4ed0-b06c-7f794400d391`: IR-1 design;
+  `design/int/`.
+- QA `ae57ef46-5f82-4699-80eb-cf0317a3bc98`: one evidence delta, four
+  cleared-coverage rows and final test-side maintenance.
+
+No source/Cargo writer is active. Implementation follows settled per-surface
+handoffs serially. RR-1's `fixed=` sha is `236aa44d`; test owns stamping it
+in the final maintenance visit.
+
+Both designs are ready and private: typecheck §9.1.1 (BN-1) and int §6.9
+(IR-1). QA's final-basket allocation retains the existing RED evidence,
+adds IR-o's root-first/alias legs and DT-1, and replays RR-1 E-1 beside the
+import-loading change. One final workspace run follows both source visits.
+
+ACT-0989 joins the BN-1 visit: source verified in `checker.rs` and its
+callers on 2026-09-27, its four bare-name helpers have only test consumers.
+The existing action's test-only change belongs to the same lookup-function
+family that BN-1 changes; no public API or new language behavior is added.
+
+QA `ae57ef46-5f82-4699-80eb-cf0317a3bc98` completed the reconciled delta
+with no handoff blocker. The §10.12.8 coverage row is restored. Disconnect
+and shutdown rows remain explicitly uncovered under ACT-0977 and must be
+presented as carries at close; no new platform capability is selected.
+Appendix A awaits DT-1; its warning and link-mode clauses remain separately
+open. No normative requirement changed.
+
+Dev(typecheck) `cdea72ee-d086-4ecb-b039-b457cc6b3f14` (Opus5.5/high) owns
+source/Cargo for BN-1, AD-6 and ACT-0989. A read-only spec clarification
+checks whether existing requirements already settle IR-1's separate-REPL-turn
+question; it does not authorize new behavior or block this correction.
+
+### Remaining corrections in implementation and review — 2026-09-27
+
+BN-1, AD-6 and ACT-0989 are implemented; dev(typecheck) released source/Cargo.
+All 948 typecheck tests pass, BN-1's permanent regression is green, and IR-1
+is the only remaining failure in the focused run. Independent review and
+the final integrated evidence are pending.
+
+- dev(src) `f313251e-660c-46b6-b1ec-9a5610f885e4` owns IR-1 and Cargo.
+- review(typecheck) `c8e9ded8-6a49-46ef-9844-d360b80288d2` independently
+  assesses BN-1, AD-6 and ACT-0989 read-only, without Cargo.
+- Both use Claude Opus5.5/high. Final test and QA follow source release.
+
+The user explicitly deferred the later-REPL-turn child declaration question
+to the next increment: [ACT-0995](actions/ACT-0995-repl-later-submodule-declaration-resolution.md).
+No behavior was selected for that case. Same-cluster IR-1 continues.
+
+Review(typecheck) found no blocking implementation issue and confirmed BN-s
+and ACT-0989. Its mechanical design and QA citation repairs are applied;
+the standing-document checker reports 510 documents and zero findings.
+The allocated test-stamp repair remains in T-F. Advisory design leads are
+retained in typecheck §9.1.1; they do not authorize additional source work.
+
+IR-1 is implemented and source/Cargo released. Its crate run passed 3383
+tests with one skipped; the sole failure was the document check's two
+references to the deleted resolver. Those mechanical references are repaired.
+All compiler-behavior tests, including the original IR-1 regression, passed.
+
+- test `2ef62c92-3110-45d9-a1c2-3a78c84e8699` owns T-F and Cargo.
+- review(src) `f5354351-99ce-43a1-9e01-23bf3e42c054` is read-only.
+- Both use Claude Opus5.5/high. Final QA follows their completed evidence.
+
+Review(src) completed with no blocking or required finding. Its mechanical
+status handoffs and the source-memory wording correction are applied.
+IR-o and the REPL discovery legs pass; DT-1's named-module `--run` leg is
+retained RED (zero rather than three). Test is completing the full suite;
+the allocated RR-1 replay passed all 800 sessions with no failure.
+
+QA `49af91e8-246e-43e8-acd0-dbe809ef867a` (Claude Opus5.5/high) assesses
+the completed evidence and discovery authority concurrently, without Cargo.
+Its final judgment must use the completed test report. Review A4/L1/L2
+join its intake; no new runtime work or semantic choice is authorized.
+
+Final test released tests/Cargo: 6201 run, 6200 passed, one failed (DT-1
+under `--run`), one skipped. BN-1, IR-1 with both IR-o legs, AD-6 and all
+72 cache tests pass. The 800-session RR-1 replay has zero failures. Public
+API relocation checks pass; no API, schema or ABI change occurred. Reference
+checks report no mis-citations, unresolved citations or document findings.
+Appendix A's discovery row remains cleared pending QA's requirement judgment.
+No executable source changed during or after these runs.
+
+Final QA judges BN-1, IR-1 and AD-6 adequate; the discovery defect does not
+trace to their changes. Coverage bands are reconciled: 893 live citations,
+zero unresolved or cleared-awaiting-QA rows, and zero document findings.
+Discovery remains explicitly partial, with its RED and open clauses named.
+
+DT-1 returns an empty vector silently under `--run`. QA finds this conforms
+to neither the current discovery text nor the user-approved direction of an
+explicit test harness and release-like `--run`. On 2026-09-27 the user approved
+handling the remedy with ACT-0988 while retaining the RED under ACT-0986.
+The rationale is to avoid adding temporary discovery capability to ordinary
+`--run` before the explicit harness boundary is implemented. This specific
+carry changes no semantics and approves no other residual. No phase
+transition or further commit is inferred.
+
+Mechanical review repairs are complete, including BN-1 AD-d's duplicated
+fixture comment and IR-1 A2's memory wording. The related unobserved
+declaration-lifetime question is retained beside ACT-0995 without extending
+its approved deferral. Other advisory review leads remain in the owning
+design or QA record, without approval to expand implementation.
+
+### Checkpoint and whole-sprint acceptance reconciliation authorised — 2026-09-27
+
+The user approved committing the verified BN-1/IR-1 correction batch and
+recorded carries, excluding `.agents` and NOTES, then reconciling the whole
+sprint's Phase 5 acceptance position. Reuse the completed full-suite and
+stress evidence: only records changed afterward. The reconciliation must
+separate delivered outcomes, approved carries, unresolved obligations and
+work belonging to the later user-facing phases. This is not approval to
+advance to Phase 6a, close the sprint or push.

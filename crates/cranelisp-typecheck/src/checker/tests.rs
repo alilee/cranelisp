@@ -1027,7 +1027,7 @@ fn test_trait_impl_write_lands_in_trait_home_not_writer() {
 // pointing at M's `Reexport` pointing at L's `TraitDecl`). Place the
 // impl at L (trait's home, per Pattern B). Place "decoy" TraitImpl
 // entries in two unrelated modules (D1 and D2) that a universe scan
-// would erroneously pick up. From N's view, `has_impl_in_module(N, T,
+// would erroneously pick up. From N's view, `has_impl_with_state(T,
 // Int)` MUST return true (chain-follow finds the L-resident impl), and
 // the decoys MUST be ignored.
 #[test]
