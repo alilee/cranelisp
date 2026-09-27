@@ -906,7 +906,7 @@ main.cl                 ; depends on prelude (implicit)
 
 The **project root** is the directory containing the entry file (the `.cl` file passed to the compiler or the REPL's working directory). It anchors all relative path resolution for both modules and platform DLLs.
 
-### 8.11.2 Module Resolution Search Order [Tested tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs]
+### 8.11.2 Module Resolution Search Order [Tested tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module] [S122 — tier 1's restriction to `(mod name)`-declared submodules: import and export positions RED, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module (IR-1)]
 
 When resolving a module name to a file, the implementation MUST search in this order:
 

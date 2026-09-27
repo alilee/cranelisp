@@ -580,10 +580,13 @@ impl CompilerSession {
             // `ExprOutcome::Trap` and becomes an `EvalResult::RuntimeError` the
             // printer renders per repl/spec.md §18.5 (`runtime error: {payload}`,
             // no wrapper chain). Genuine compiler/platform faults still `?`.
+            // A failed cached load refuses the turn (`design/int/int.md` §7.1).
+            let ready = self.shared.scheduler.wait_cached_loads_settled()?;
             match crate::pipeline::execute_compiled_expr(
                 check.display.as_ref(),
                 &self.shared,
                 module,
+                ready,
             )? {
                 crate::pipeline::ExprOutcome::Value(result) => Ok(EvalResult::Val {
                     result,

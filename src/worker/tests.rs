@@ -434,6 +434,78 @@ fn ordinary_replacement_preparation_rematerializes_prior_instance() {
     session.shutdown();
 }
 
+fn owed_facts_session() -> (tempfile::TempDir, crate::session_v4::CompilerSession) {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::CodegenBehaviour;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    (root, session)
+}
+
+fn prepare_uncheckable_cluster(
+    session: &crate::session_v4::CompilerSession,
+    lookup_dependencies: &std::collections::BTreeSet<ModuleFullPath>,
+) -> Option<PreparedCommit> {
+    prepare_cluster_commit_with_demands(
+        &session.shared.symbol_tables,
+        &session.shared.module_aliases,
+        &session.shared.prelude_fallback,
+        &ModuleFullPath::from("user"),
+        &[],
+        &[],
+        OwedFacts {
+            reload_demands: &[],
+            lookup_dependencies,
+        },
+        &session.shared,
+    )
+    .unwrap()
+    .map(|prepared| prepared.unwrap().0)
+}
+
+// spec: design/int/int.md §7.6.2.1 — an attempt whose only owed fact is its
+// lookup dependencies still prepares a publication, and its staging holds them.
+#[test]
+fn lookup_dependencies_alone_prepare_a_publication_holding_them() {
+    let (_root, mut session) = owed_facts_session();
+    let lookup = std::collections::BTreeSet::from([ModuleFullPath::from("b")]);
+    let prepared = prepare_uncheckable_cluster(&session, &lookup)
+        .expect("owed lookup dependencies require a publication");
+    assert_eq!(
+        prepared.staging.lookup_dependencies().collect::<Vec<_>>(),
+        [&ModuleFullPath::from("b")]
+    );
+    assert!(
+        prepared.targets.is_empty(),
+        "an empty publication has no JIT"
+    );
+    session.shutdown();
+}
+
+// spec: design/int/int.md §7.6.2.1 — an attempt owing nothing still makes no
+// publication.
+#[test]
+fn attempt_owing_nothing_prepares_no_publication() {
+    let (_root, mut session) = owed_facts_session();
+    let prepared = prepare_uncheckable_cluster(&session, &std::collections::BTreeSet::new());
+    assert!(prepared.is_none());
+    session.shutdown();
+}
+
 // spec: design/int/s122-closure.md §2 — an admitted same-language-type
 // generic edit rematerializes every prior instance in the original candidate,
 // preserving an ABI-compatible instance's exact slot.

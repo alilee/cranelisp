@@ -101,7 +101,7 @@ Error-locked modules (§14.4) are cleared when the offending file is fixed and s
 
 File watching and the object cache work together:
 - Recompilation invalidates and replaces cache entries for changed modules.
-- Unchanged modules continue to use their cached `.o` files.
+- Unchanged modules continue to use their cached `.o` files. [Tested tests/cache::cache_repl_import_of_restored_module_reaching_callee_only_module_evaluates, tests/cache::cache_repl_import_of_callee_module_then_restored_caller_evaluates]
 - Failed recompilations do NOT update the cache — the stale cache entry remains until a successful recompilation replaces it.
 
 This means that after editing one file, only that file and its dependents are recompiled — unchanged modules load instantly from cache.

@@ -45,6 +45,25 @@ impl PreparedCommit {
     }
 }
 
+/// What a cluster attempt owes the live table beyond its checkable entries
+/// (`design/int/int.md` §7.6.2.1). A fact later added to what an attempt owes
+/// joins this value; `is_empty` destructures it exhaustively, so the
+/// publication decision cannot compile without accounting for the new fact.
+pub(crate) struct OwedFacts<'a> {
+    pub(crate) reload_demands: &'a [MonoDemand],
+    pub(crate) lookup_dependencies: &'a std::collections::BTreeSet<ModuleFullPath>,
+}
+
+impl OwedFacts<'_> {
+    fn is_empty(&self) -> bool {
+        let Self {
+            reload_demands,
+            lookup_dependencies,
+        } = self;
+        reload_demands.is_empty() && lookup_dependencies.is_empty()
+    }
+}
+
 struct PreparedCompilation {
     jit: std::sync::Arc<cranelisp_backend::jit::Jit>,
     clif_ir: String,
@@ -435,7 +454,10 @@ pub(crate) fn prepare_cluster_commit(
         module,
         working_program,
         codegen_program,
-        &[],
+        OwedFacts {
+            reload_demands: &[],
+            lookup_dependencies: &std::collections::BTreeSet::new(),
+        },
         shared,
     )
 }
@@ -449,7 +471,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     module: &ModuleFullPath,
     working_program: &[TopLevel],
     codegen_program: &[TopLevel],
-    reload_demands: &[MonoDemand],
+    owed: OwedFacts<'_>,
     shared: &crate::session_v4::SharedState,
 ) -> Result<
     Option<
@@ -466,7 +488,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     )?;
     let checked = match checked {
         Some(checked) => checked,
-        None if reload_demands.is_empty() => return Ok(None),
+        None if owed.is_empty() => return Ok(None),
         None => Ok(PreparedCheck {
             staging: cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(
                 module.clone(),
@@ -488,10 +510,10 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         symbol_tables,
         module,
         &checked.staging,
-        reload_demands,
+        owed.reload_demands,
         &mut demands,
     )?;
-    finish_prepared_commit(
+    let prepared = finish_prepared_commit(
         symbol_tables,
         module_aliases,
         prelude_fallback,
@@ -500,7 +522,13 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         checked,
         &demands,
         shared,
-    )
+    )?;
+    Ok(prepared.map(|prepared| {
+        prepared.map(|(mut commit, check)| {
+            commit.record_lookup_dependencies(owed.lookup_dependencies);
+            (commit, check)
+        })
+    }))
 }
 
 #[allow(clippy::type_complexity)]
@@ -1684,7 +1712,7 @@ pub(crate) fn check_error_to_cranelisp_error(
     }
 }
 
-use crate::scheduler::{CompileScheduler, PriorityWork};
+use crate::scheduler::{CachedLoadClaim, CompileScheduler, PriorityWork};
 
 // ---------------------------------------------------------------------------
 // ModuleCompiler — bundled worker parameters (G-1)
@@ -2987,44 +3015,22 @@ fn load_cached_module_via_linker(
         .collect())
 }
 
-/// Handle a cache-hit codegen work item: check if the module is cached
-/// and load it via Linker, then notify the scheduler.
-///
-/// Called by `priority_worker_loop_shared` and by the cluster macro
-/// recognizer. Returns `Ok(true)` if the module was loaded. Returns
-/// `Ok(false)` if it was not cached (no-op), or if the load failed; the
-/// failure is then reported to the scheduler as the module's failure.
+/// Load a cache-restored module's object under the scheduler's claim
+/// (`design/int/int.md` §7.1, *one load entry*) and end the claim as loaded
+/// or failed. A panic drops the claim, which fails the module.
 pub(crate) fn handle_cached_codegen(
-    module: &ModuleFullPath,
-    shared_state: Option<&crate::session_v4::SharedState>,
-    scheduler: &CompileScheduler,
-) -> Result<bool, CranelispError> {
-    // Sprint 67 Cluster B sub-fire 2e: read via scheduler facade method.
-    let is_cached = shared_state
-        .map(|s| s.scheduler.cached_module_contains(module))
-        .unwrap_or(false);
-
-    if !is_cached {
-        return Ok(false);
-    }
-
-    let shared = shared_state.ok_or_else(|| CranelispError::ModuleError {
-        message: format!("no shared state for cache-hit loading of '{}'", module),
-        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-    })?;
-
-    match load_cached_module_via_linker(module, shared) {
-        Ok(symbols) => {
-            scheduler.notify_inmem_codegen_batch_complete(module, &symbols);
-            Ok(true)
-        }
+    claim: CachedLoadClaim<'_>,
+    shared: &crate::session_v4::SharedState,
+) {
+    let module = claim.module().clone();
+    match load_cached_module_via_linker(&module, shared) {
+        Ok(symbols) => claim.complete_loaded(&symbols),
         Err(e) => {
-            scheduler.notify_module_failed(module, e);
+            claim.complete_failed(e);
             // E3 failure-edge hook (FIXME 0562): complete the `/search` burn-down
             // for a module that fails at cache-hit `.o` loading after the index
             // was armed (armed-gated no-op otherwise).
-            crate::session_v4::index_worker::on_module_failed(shared, module);
-            Ok(false)
+            crate::session_v4::index_worker::on_module_failed(shared, &module);
         }
     }
 }
@@ -3129,26 +3135,15 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                     }
                 }
             }
-            Some(PriorityWork::JitCodegen(module, _symbol)) => {
-                // Cache-hit module: load entire .o via Linker (batch load).
-                // Sprint 57 Wave 3 G8: no PlatformRegistry lock — platform
-                // symbols are read from the symbol tables inside the cache
-                // loader. Same panic→Failed robustness (FIXME 0285 defect 2).
+            Some(PriorityWork::JitCodegen(claim)) => {
+                // Cache-hit module: load its whole object. A panic unwinds
+                // through the claim, which fails the module; the guard only
+                // keeps this worker alive (FIXME 0285 defect 2).
+                let module = claim.module().clone();
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_cached_codegen(&module, Some(shared), &shared.scheduler)
+                    handle_cached_codegen(claim, shared)
                 }));
-                if let Err(panic) = result {
-                    let msg = panic_message(&panic);
-                    shared.scheduler.notify_module_failed(
-                        &module,
-                        CranelispError::CodegenError {
-                            message: format!(
-                                "worker thread panicked while loading cached \
-                                 module '{module}': {msg}"
-                            ),
-                            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                        },
-                    );
+                if result.is_err() {
                     // E3 failure-edge hook (FIXME 0562) — armed-gated no-op in batch.
                     crate::session_v4::index_worker::on_module_failed(shared, &module);
                 }

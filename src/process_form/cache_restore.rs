@@ -22,6 +22,7 @@ use cranelisp_types::{
 use crate::cache::dependency_record::{
     DependencyRecord, ModuleSources, callee_modules, is_compiler_owned,
 };
+use crate::scheduler::{CachedLoadHold, CompileScheduler};
 use crate::session_setup::CacheValidity;
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
 
@@ -44,8 +45,8 @@ use super::register_dep;
 /// any dep is not cached. This ensures cache-hit modules' transitive
 /// `__cranelisp_got_{transitive_dep}` symbols are registerable when the
 /// codegen-phase worker walks `symbol_tables` (per Decision 37 §3.2).
-pub(super) fn try_cache_hit_load(
-    ctx: &mut ModuleCompiler,
+pub(super) fn try_cache_hit_load<'a>(
+    ctx: &mut ModuleCompiler<'a>,
     dep: &ModuleFullPath,
     dep_file: &Path,
 ) -> Result<bool, CranelispError> {
@@ -70,7 +71,7 @@ pub(super) fn try_cache_hit_load(
 
     // Phase 4: extract all data BEFORE moving the symbol table (avoids clone /
     // honours the extract-before-move ordering invariant).
-    let specs = extract_cached_specs(dep, &cached);
+    let mut specs = extract_cached_specs(dep, &cached);
 
     // A writer-side impl record publishes its discovery shell into the trait's
     // HOME table. Make those homes available before consuming/installing the
@@ -90,10 +91,26 @@ pub(super) fn try_cache_hit_load(
     }
 
     // Phases 5–8: scheduler register + typecheck-product + record-hit +
-    // cached-module insert + file_to_module.
-    register_cached_with_scheduler(ctx, dep, dep_file, specs.symbols, source, needs_inmem_load);
+    // cached-module insert + file_to_module. The object load stays held until
+    // the walk, which installs the tables `dep`'s object links against, has
+    // returned by any path (`design/int/int.md` §7.1).
+    let symbols = std::mem::take(&mut specs.symbols);
+    let load_hold =
+        register_cached_with_scheduler(ctx, dep, dep_file, symbols, source, needs_inmem_load);
+    walk_restored_module(ctx, dep, &specs, load_hold.as_ref())?;
 
-    // Phase 9: recurse on transitive imports + re-export targets.
+    Ok(true)
+}
+
+/// Phase 9 of `try_cache_hit_load`: restore or register everything `dep`'s
+/// object and declarations reach. Borrowing the hold keeps `dep`'s object
+/// load held until this walk returns.
+fn walk_restored_module(
+    ctx: &mut ModuleCompiler,
+    dep: &ModuleFullPath,
+    specs: &CachedSpecs,
+    _load_hold: Option<&CachedLoadHold<'_>>,
+) -> Result<(), CranelispError> {
     register_transitive_cached_imports(ctx, &specs.imports)?;
     // Re-export targets are transitive deps too (FIXME 0387 — prelude's
     // `(export [text.string [str]])` etc.). Walk them through the same path.
@@ -108,9 +125,7 @@ pub(super) fn try_cache_hit_load(
     // are private and never imported. A fresh parent enrolls them after its
     // own cluster commits; cache restore must mirror that structural walk or
     // commands such as `/run-tests parent.test` cannot see the child at all.
-    register_cached_submodules(ctx, dep, &specs.submodules)?;
-
-    Ok(true)
+    register_cached_submodules(ctx, dep, &specs.submodules)
 }
 
 /// A cache entry that passed every restore gate.
@@ -473,30 +488,28 @@ fn reresolve_cached_platforms(
 
 /// Phases 5–8 of `try_cache_hit_load`: scheduler register (object / no-object),
 /// typecheck-product create, record-cache-hit, cached-module insert, and the
-/// file_to_module mapping.
-fn register_cached_with_scheduler(
-    ctx: &ModuleCompiler,
+/// file_to_module mapping. Returns the object-load hold, if one was placed.
+fn register_cached_with_scheduler<'a>(
+    ctx: &ModuleCompiler<'a>,
     dep: &ModuleFullPath,
     dep_file: &Path,
     symbols: std::collections::HashSet<Symbol>,
     source: RestoredSource,
     needs_inmem_load: bool,
-) {
-    let shared = match ctx.shared_state {
-        Some(s) => s,
-        None => return,
-    };
+) -> Option<CachedLoadHold<'a>> {
+    let shared = ctx.shared_state?;
+    let scheduler: &'a CompileScheduler = ctx.scheduler;
 
     // 5. Register with scheduler at TypecheckDone. A generic-only module with no
     //    `.o` (FIXME 0387) registers as already-inmem-done (no codegen load to
-    //    schedule); any other cached module registers normally and its `.o` is
-    //    loaded by the Level-4 `JitCodegen` worker.
-    if needs_inmem_load {
-        ctx.scheduler.register_module_cached(dep.clone(), symbols);
+    //    schedule); any other cached module registers with its `.o` load held
+    //    for the caller to release.
+    let load_hold = if needs_inmem_load {
+        scheduler.register_module_cached(dep.clone(), symbols)
     } else {
-        ctx.scheduler
-            .register_module_cached_no_object(dep.clone(), symbols);
-    }
+        scheduler.register_module_cached_no_object(dep.clone(), symbols);
+        None
+    };
 
     // 6. Create typecheck product with GOT table for cached module, and make
     //    `file_path` authoritative (S102 CS-D3a, §6.2.1): the restore is keyed
@@ -537,6 +550,7 @@ fn register_cached_with_scheduler(
             .unwrap_or_else(|e| e.into_inner())
             .insert(canonical, dep.clone());
     }
+    load_hold
 }
 
 /// Walk a cached module's `imports` and ensure each transitive dep is

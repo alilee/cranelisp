@@ -75,10 +75,14 @@ pub(crate) fn discover_test_names(
 ///
 /// Sprint 57 Wave 2 G6: reads `ModuleEntry::Def.code` (replaces the deleted
 /// `CodegenProduct` DashMap).
+///
+/// `_ready` shows that every cached object load the test could call has
+/// ended (`design/int/int.md` §7.1, *load before execution*).
 pub(crate) fn run_test_by_name(
     tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     fq_name: &str,
     default_module: &ModuleFullPath,
+    _ready: &crate::scheduler::ExecutionReadiness,
 ) -> TestOutcome {
     use cranelisp_types::NULLARY_TAG_THRESHOLD;
 

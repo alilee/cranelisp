@@ -342,6 +342,43 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(crate) fn is_trait_method_with_state(&self, state: &CheckState, name: &Symbol) -> bool {
         self.method_to_trait_with_state(state, name).is_some()
     }
+
+    /// Whether a settled type satisfies `fq_trait`, judged by the type's head
+    /// (`design/typecheck/typecheck.md` §9.2.1). A nominal head satisfies it
+    /// exactly when the trait's home holds an impl shell for that head; a
+    /// function type implements no trait (spec §3.3.3); a variable or
+    /// constructor-variable head is not yet determined. The declared-bound
+    /// settlement check and instance verification both judge through this step.
+    pub(crate) fn trait_satisfaction(
+        &self,
+        fq_trait: &FQTraitName,
+        ty: &Type,
+    ) -> TraitSatisfaction {
+        let impl_type = match ty {
+            Type::Int | Type::Bool | Type::String | Type::Float | Type::ADT(..) => {
+                concrete_type_name(ty)
+            }
+            Type::Fn(..) => return TraitSatisfaction::Unsatisfied,
+            Type::Var(_) | Type::TyConApp(..) => return TraitSatisfaction::Undetermined,
+        };
+        match impl_type {
+            Some(impl_type)
+                if self.has_impl_in_home(&fq_trait.module, &fq_trait.name, &impl_type) =>
+            {
+                TraitSatisfaction::Satisfied
+            }
+            _ => TraitSatisfaction::Unsatisfied,
+        }
+    }
+}
+
+/// The verdict of [`TypeCheckEnv::trait_satisfaction`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TraitSatisfaction {
+    Satisfied,
+    Unsatisfied,
+    /// The head is still a variable; an instantiation decides it later.
+    Undetermined,
 }
 
 /// The FQ type identity to embed in a trait-method dispatch mangle (S102 — 4th

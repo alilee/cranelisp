@@ -1566,31 +1566,6 @@ where
         }
     }
 
-    /// The ordered qualified-candidate module paths for a two-part `module/name`
-    /// reference (spec §8.6.6): child-of-current-module first (`util/x` in `main`
-    /// names the submodule `main.util`), then the absolute path the user wrote
-    /// (alias substitution is applied by the downstream resolver). The ONE source
-    /// of the child-before-absolute candidate order both the scheme lookup
-    /// ([`Self::lookup`]) and the reference-recording resolver
-    /// ([`Self::resolve_ref_target`]) walk (Principle 7 — the former hand-rolled
-    /// mirror on `resolve_ref_target` is retired). Returns `(name_part, [child,
-    /// abs])`, or `None` when `name` is not a two-part qualified form (a bare
-    /// name, or a Principle-16 literal `/`-name).
-    pub(crate) fn qualified_candidate_modules<'n>(
-        &self,
-        state: &CheckState,
-        name: &'n str,
-    ) -> Option<(&'n str, [ModuleFullPath; 2])> {
-        let slash_pos = name.find('/')?;
-        let (module_part, name_part) = (&name[..slash_pos], &name[slash_pos + 1..]);
-        if module_part.is_empty() || name_part.is_empty() {
-            return None;
-        }
-        let child = ModuleFullPath::from(format!("{}.{}", state.current_module, module_part));
-        let abs = ModuleFullPath::from(module_part);
-        Some((name_part, [child, abs]))
-    }
-
     /// Resolution order per spec §8.6.1:
     /// 1. Local environment (let bindings, fn params, match vars)
     /// 2. Module scope (current module's defs + imports, following chains)
@@ -1637,12 +1612,12 @@ where
     }
 
     /// The qualified walk for a two-part `module/name` reference (spec §8.6.6;
-    /// `design/typecheck/typecheck.md` §3.5). Value position ([`Self::lookup`])
-    /// and a qualified constructor pattern ([`Self::resolve_constructor_entry`])
-    /// both take it, so they cannot diverge in candidate order, alias handling,
-    /// visibility or gap choice. `winner` projects a resolved candidate to the
-    /// caller's result — a scheme for a value, a constructor for a pattern — or
-    /// rejects it so the walk continues.
+    /// `design/typecheck/typecheck.md` §3.5–§3.6). Value position
+    /// ([`Self::lookup`]) and a qualified constructor pattern
+    /// ([`Self::resolve_constructor_entry`]) both take it, so they cannot
+    /// diverge in module choice, alias handling, visibility or gap choice.
+    /// `winner` projects the resolved terminal to the caller's result — a
+    /// scheme for a value, a constructor for a pattern — or rejects it.
     ///
     /// Returns `None` when `name` is not a two-part qualified form; otherwise
     /// `(winner, gap)`, where a winning candidate carries no gap.
@@ -1652,61 +1627,16 @@ where
         name: &str,
         winner: impl Fn(&cranelisp_types::Resolved<C>) -> Option<T>,
     ) -> Option<(Option<T>, Option<ResolutionGap>)> {
-        // The candidate order (child-of-current before absolute) is the ONE
-        // `qualified_candidate_modules` source `resolve_ref_target` also walks
-        // (Principle 7).
-        let (name_part, [child_path, abs_path]) = self.qualified_candidate_modules(state, name)?;
-        let win = |probe: &Result<_, CranelispError>| match probe {
-            Ok((Some(resolved), _)) => winner(resolved),
-            _ => None,
-        };
-
-        // Try child-of-current-module first: "util" in module "main" resolves
-        // to "main.util" (submodule reference). A winning candidate carries no
-        // gap, even if it probed a missing child path first.
-        let child = self.resolve_qualified(state, &child_path, name_part);
-        if let Some(found) = win(&child) {
-            return Some((Some(found), None));
-        }
-
-        // Fall back to absolute module path. Alias substitution is handled
-        // inside `resolve_qualified` (§8.6.6 longest-prefix). The absolute path
-        // is the module the user actually named, so its gap (if any) supersedes
-        // the child probe's — last-writer-wins, matching the prior side-slot
-        // semantics.
-        let abs = self.resolve_qualified(state, &abs_path, name_part);
-        if let Some(found) = win(&abs) {
-            return Some((Some(found), None));
-        }
-
-        // Neither candidate won. Choose which cause to surface (FIXME 0513,
-        // spec §8.6.4 order-independence):
-        let gap = match abs {
-            // The absolute probe carried its own gap. Post-0571 this is the
-            // member-absent case too: `resolve_qualified` yields the abs
-            // `module/name` gap UNCONDITIONALLY when the module is present but
-            // the member is absent (as well as when the module itself is
-            // unknown). Surfacing it here MUST win over the child probe's
-            // phantom `<current>.<qualifier>` gap so the resolution is
-            // order-independent (a loaded absolute module always beats an
-            // unloaded child probe — FIXME 0513, spec §8.6.4); INT authors the
-            // honest "module X has no member Y" from this gap's live state
-            // (`module_has_no_member_error`).
-            Ok((_, Some(g))) => Some(g),
-            // Abs probe resolved with no gap but no winner: a present member of
-            // the wrong kind, or `resolve_qualified`'s conservative
-            // fall-through for a future non-exhaustive `ResolveError` variant.
-            // Return no gap — the phantom child gap stays suppressed.
-            Ok((_, None)) => None,
-            // A hard error from the absolute probe (e.g. a visibility
-            // violation) is not a member-absent verdict — preserve the prior
-            // last-writer-wins fall-through to the child probe's gap.
-            Err(_) => match child {
-                Ok((_, gap)) => gap,
-                Err(_) => None,
-            },
-        };
-        Some((None, gap))
+        let (module, name_part) = qualified_candidate_module(name)?;
+        // A hard error (a visibility violation) is not a member-absent verdict,
+        // so it requests no load; the caller reports the miss.
+        let (resolved, gap) = self
+            .resolve_qualified(state, &module, name_part)
+            .unwrap_or((None, None));
+        Some(match resolved.as_ref().and_then(winner) {
+            Some(found) => (Some(found), None),
+            None => (None, gap),
+        })
     }
 
     /// Record a bare/qualified reference's storage identity into the two
@@ -1826,7 +1756,7 @@ where
         }
         // Ordinary bare/qualified language-value reference: resolve ONCE,
         // record its carrier, then project user functions into `callees`.
-        if let Some(resolved) = self.resolve_ref_target(state, name, span) {
+        if let Some(resolved) = self.def_resolved(state, name, span) {
             let canonical = resolved.canonical.clone();
             state
                 .method_resolutions
@@ -1847,36 +1777,13 @@ where
         }
     }
 
-    /// Resolve `name` to its terminal storage `Resolved` for the
-    /// reference-recording feeds, walking [`Self::lookup`]'s qualified candidate
-    /// order (child-of-current-module before absolute path) through the ONE
-    /// shared [`Self::qualified_candidate_modules`] source (Principle 7 — the
-    /// former hand-rolled mirror is retired) so the recorded identity agrees with
-    /// the scheme the reference type-checked against. Resolves ONCE (Principle
-    /// 24). Returns `None` for an expansion-only declaration, another non-value
-    /// terminal, a local, or an unresolved name.
-    fn resolve_ref_target(
-        &self,
-        state: &CheckState,
-        name: &str,
-        span: Span,
-    ) -> Option<cranelisp_types::Resolved<C>> {
-        if let Some((name_part, candidates)) = self.qualified_candidate_modules(state, name) {
-            for module in &candidates {
-                let qualified = format!("{module}/{name_part}");
-                if let Some(r) = self.def_resolved(state, &qualified, span) {
-                    return Some(r);
-                }
-            }
-            return None;
-        }
-        self.def_resolved(state, name, span)
-    }
-
-    /// One chain-follow + prelude-fallback resolution of a single candidate
-    /// spelling, kept only when it terminates at a language-value declaration.
-    /// Expansion-only macro parents and clauses never acquire a backend
-    /// reference carrier through this path.
+    /// One chain-follow + prelude-fallback resolution of a spelling through the
+    /// scope seam, kept only when it terminates at a language-value
+    /// declaration. A qualified spelling takes the same chain as value
+    /// position's first probe, so a recorded reference and its scheme name one
+    /// declaration (`design/typecheck/typecheck.md` §3.6). Expansion-only macro
+    /// parents and clauses never acquire a backend reference carrier through
+    /// this path.
     pub(crate) fn def_resolved(
         &self,
         state: &CheckState,
@@ -2333,10 +2240,9 @@ where
             // FQ cycle then converts to the honest circular-dependency error via
             // `block_for_typecheck`'s acyclicity check), terminal ⇒ the honest
             // "module X has no member Y" diagnostic. The gap carries the referenced
-            // `module/name` so INT need not re-probe. The `lookup` gap-selection
-            // (abs probe wins over the phantom child) keeps the 0513
-            // order-independence: the abs member-absent gap is preferred, so the
-            // phantom `<current>.<qualifier>` child gap never surfaces.
+            // `module/name` so INT need not re-probe. A qualified spelling
+            // probes only its written module (§3.6), so no
+            // `<current>.<qualifier>` child gap exists to compete with it.
             Err(ResolveError::TypeNotFound { .. })
             | Err(ResolveError::TraitNotFound { .. })
             | Err(ResolveError::ConstructorNotFound { .. }) => Ok((
@@ -3389,6 +3295,21 @@ fn project_not_found(
         // addition) re-labels with the caller's kind-specific not-found.
         _ => kind_specific(),
     }
+}
+
+/// The one module a two-part `module/name` reference names: the written
+/// module path, to which the downstream resolver applies alias substitution
+/// (spec §8.6.6; `design/typecheck/typecheck.md` §3.6). A declared child
+/// `(mod q)` is reached through the alias it installs; a registered child the
+/// current module never declared is not a reading of `q` (§8.11.2 item 1).
+/// Returns `(module, name_part)`, or `None` when `name` is not a two-part
+/// qualified form (a bare name, or a Principle-16 literal `/`-name).
+pub(crate) fn qualified_candidate_module(name: &str) -> Option<(ModuleFullPath, &str)> {
+    let (module_part, name_part) = name.split_once('/')?;
+    if module_part.is_empty() || name_part.is_empty() {
+        return None;
+    }
+    Some((ModuleFullPath::from(module_part), name_part))
 }
 
 /// Advance `next_id` past the maximum TypeId found in `table`'s schemes.

@@ -1119,8 +1119,8 @@ fn u_c2_minted_mono_scheme_return_is_concrete() {
 
 // ---- S113 0655 (user ruling (a)): qualified own-module self-reference is
 // another spelling of the bare local. Normalization at the ONE Var entry
-// (`normalize_self_qualified`) + the collapsed candidate-order twin
-// (`qualified_candidate_modules`). ----
+// (`normalize_self_qualified`) + the one qualified-module source
+// (`qualified_candidate_module`). ----
 
 #[test]
 fn find_trait_method_decl_home_hop_finds_self_returning_method_d2() {

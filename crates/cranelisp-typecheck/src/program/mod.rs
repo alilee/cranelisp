@@ -91,6 +91,44 @@ pub(crate) enum BodyTarget {
     MultiSignatureClause { group: Symbol, clause: usize },
 }
 
+/// A parameter's declared trait bound (`[:Ts x]`, spec §3.9.2), recorded at
+/// Pass 1 from the resolution that seeds its active constraint and discharged
+/// at settlement (`design/typecheck/typecheck.md` §9.2.1).
+#[derive(Clone, Debug)]
+pub(crate) struct DeclaredBound {
+    pub(crate) param_index: usize,
+    pub(crate) param: Symbol,
+    pub(crate) trait_ref: cranelisp_types::FQTraitName,
+}
+
+/// A definition's Pass-1 signature facts, carried into its ledger record.
+struct DefnSignature {
+    param_types: Vec<Type>,
+    ret_ty: Type,
+    written_var_scope: HashMap<Symbol, TypeId>,
+    /// In parameter order, then written order.
+    declared_bounds: Vec<DeclaredBound>,
+}
+
+impl DefnSignature {
+    fn into_registration(
+        self,
+        target: BodyTarget,
+        publication_name: Symbol,
+        span: Span,
+    ) -> RegisteredBody {
+        RegisteredBody {
+            target,
+            publication_name,
+            param_types: self.param_types,
+            ret_ty: self.ret_ty,
+            written_var_scope: self.written_var_scope,
+            declared_bounds: self.declared_bounds,
+            span,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RegisteredBody {
     pub(crate) target: BodyTarget,
@@ -98,6 +136,8 @@ pub(crate) struct RegisteredBody {
     pub(crate) param_types: Vec<Type>,
     pub(crate) ret_ty: Type,
     pub(crate) written_var_scope: HashMap<Symbol, TypeId>,
+    /// In parameter order, then written order.
+    pub(crate) declared_bounds: Vec<DeclaredBound>,
     pub(crate) span: Span,
 }
 
@@ -507,6 +547,7 @@ mod ledger_tests {
             param_types: vec![Type::Int],
             ret_ty: Type::Int,
             written_var_scope: HashMap::new(),
+            declared_bounds: Vec::new(),
             span,
         }
     }

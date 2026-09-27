@@ -381,35 +381,36 @@ fn drop_wakes_parked_worker() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Sprint 58 Wave 2c: split inmem_claimed from inmem_done so
+// Sprint 58 Wave 2c: split the claim from inmem_done so
 // wait_inmem_complete only sees inmem_done after the cache-hit worker
 // actually finishes loading the .o.
 // ──────────────────────────────────────────────────────────────────────
 
 // spec: design/int/int.md §7.1 — claim guard does not
-// pre-set `inmem_done`; only the worker's
-// `notify_inmem_codegen_batch_complete` does.
+// pre-set `inmem_done`; only the claim's completion does.
 #[test]
 fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
     let sched = CompileScheduler::new();
     let m = mod_path("cached.dep");
     // Cached module enters TypecheckDone with object_done=true,
-    // inmem_done=false, inmem_claimed=false.
-    sched.register_module_cached(m.clone(), HashSet::new());
+    // inmem_done=false, unclaimed.
+    drop(sched.register_module_cached(m.clone(), HashSet::new()));
     {
         let state = sched.lock();
         let ms = state.modules.get(&m).unwrap();
         assert!(!ms.inmem_done, "cached module starts with inmem_done=false");
-        assert!(
-            !ms.inmem_claimed,
-            "cached module starts with inmem_claimed=false"
+        assert_eq!(
+            ms.cached_load_state(),
+            CachedLoadState::Claimable,
+            "cached module starts unclaimed"
         );
         assert!(ms.object_done, "cached module starts with object_done=true");
     }
 
     // Take level-4 work — should claim, NOT mark done.
-    let work = sched.take_priority_work();
-    assert!(matches!(work, Some(PriorityWork::JitCodegen(_, _))));
+    let Some(PriorityWork::JitCodegen(claim)) = sched.take_priority_work() else {
+        panic!("expected a cache-load work item");
+    };
     {
         let state = sched.lock();
         let ms = state.modules.get(&m).unwrap();
@@ -418,9 +419,10 @@ fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
             "claim guard MUST NOT pre-set inmem_done — that races against \
                  wait_inmem_complete (Sprint 58 Wave 2c regression guard)"
         );
-        assert!(
-            ms.inmem_claimed,
-            "claim guard sets inmem_claimed so other workers skip this module"
+        assert_eq!(
+            ms.cached_load_state(),
+            CachedLoadState::Claimed,
+            "claim guard marks the load claimed so other workers skip this module"
         );
     }
 
@@ -428,17 +430,18 @@ fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
     let second = sched.take_priority_work();
     assert!(
         second.is_none(),
-        "second take_priority_work must skip the inmem_claimed module"
+        "second take_priority_work must skip the claimed module"
     );
 
     // Worker reports completion → inmem_done set, claim cleared.
-    sched.notify_inmem_codegen_batch_complete(&m, &[]);
+    claim.complete_loaded(&[]);
     {
         let state = sched.lock();
         let ms = state.modules.get(&m).unwrap();
         assert!(ms.inmem_done, "completion sets inmem_done");
-        assert!(
-            !ms.inmem_claimed,
+        assert_eq!(
+            ms.cached_object_load,
+            CachedObjectLoad::Released,
             "completion releases the claim atomically with setting done"
         );
     }
@@ -484,7 +487,7 @@ fn register_module_cached_no_object_enters_inmem_done_no_jitcodegen() {
 fn wait_inmem_complete_does_not_pass_on_claimed_but_unfinished_module() {
     let sched = CompileScheduler::new();
     let m = mod_path("cached.dep");
-    sched.register_module_cached(m.clone(), HashSet::new());
+    drop(sched.register_module_cached(m.clone(), HashSet::new()));
 
     // Take work — claims the module.
     let _work = sched.take_priority_work();
@@ -507,16 +510,17 @@ fn level4_multiple_cached_modules_each_claim_independently() {
     let sched = CompileScheduler::new();
     let m1 = mod_path("dep.one");
     let m2 = mod_path("dep.two");
-    sched.register_module_cached(m1.clone(), HashSet::new());
-    sched.register_module_cached(m2.clone(), HashSet::new());
+    drop(sched.register_module_cached(m1.clone(), HashSet::new()));
+    drop(sched.register_module_cached(m2.clone(), HashSet::new()));
 
     // Two takes — each claims one module.
-    let w1 = sched.take_priority_work();
-    let w2 = sched.take_priority_work();
+    let Some(PriorityWork::JitCodegen(c1)) = sched.take_priority_work() else {
+        panic!("the first take must claim a cache load");
+    };
+    let Some(PriorityWork::JitCodegen(c2)) = sched.take_priority_work() else {
+        panic!("the second take must claim a cache load");
+    };
     let w3 = sched.take_priority_work();
-
-    assert!(matches!(w1, Some(PriorityWork::JitCodegen(_, _))));
-    assert!(matches!(w2, Some(PriorityWork::JitCodegen(_, _))));
     assert!(w3.is_none(), "third take must return None — both claimed");
 
     // Both modules must be claimed but not done.
@@ -524,21 +528,21 @@ fn level4_multiple_cached_modules_each_claim_independently() {
         let state = sched.lock();
         for path in [&m1, &m2] {
             let ms = state.modules.get(path).unwrap();
-            assert!(ms.inmem_claimed);
+            assert_eq!(ms.cached_load_state(), CachedLoadState::Claimed);
             assert!(!ms.inmem_done);
         }
     }
 
     // Complete one. wait_inmem_complete must still fail (the other is
     // still claimed-but-not-done).
-    sched.notify_inmem_codegen_batch_complete(&m1, &[]);
+    c1.complete_loaded(&[]);
     assert!(
         sched.wait_inmem_complete().is_err(),
         "wait_inmem_complete must fail while ANY module is claimed-but-not-done"
     );
 
     // Complete the other. Now wait succeeds.
-    sched.notify_inmem_codegen_batch_complete(&m2, &[]);
+    c2.complete_loaded(&[]);
     assert!(
         sched.wait_inmem_complete().is_ok(),
         "wait_inmem_complete passes after every claim is resolved"
@@ -631,7 +635,7 @@ fn harvest_register_module_cached_does_not_appear_as_typecheck_work() {
     let symbols = [Symbol::from("foo"), Symbol::from("bar")]
         .into_iter()
         .collect();
-    sched.register_module_cached(m.clone(), symbols);
+    drop(sched.register_module_cached(m.clone(), symbols));
     if let Some(PriorityWork::Typecheck { module, .. }) = sched.take_priority_work() {
         panic!("cached module must NOT appear as Typecheck work, got {module:?}");
     }
@@ -1670,4 +1674,561 @@ fn re_register_clears_static_closure_memo() {
         None,
         "a source change re-walks the closure (no stale memo)"
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Restore before load and one load entry (`design/int/int.md` §7.1).
+// A restorer registers a cached module with its object load held; no claim
+// is granted until the hold drops.
+// ──────────────────────────────────────────────────────────────────────
+
+/// Take the ladder's next cache-load claim. Only cache-load work may be
+/// queued.
+fn take_cache_load(sched: &CompileScheduler) -> Option<CachedLoadClaim<'_>> {
+    match sched.take_priority_work() {
+        Some(PriorityWork::JitCodegen(claim)) => Some(claim),
+        Some(other) => panic!("expected only cache-load work, got {other:?}"),
+        None => None,
+    }
+}
+
+/// What a claim request answered, observed across a thread.
+#[derive(Debug, PartialEq, Eq)]
+enum Answered {
+    Claimed,
+    Loaded,
+    Pending,
+    Unavailable,
+}
+
+/// Record the answer; a claimed load is completed as loaded.
+fn settle(answer: CachedLoadAnswer<'_>) -> Answered {
+    match answer {
+        CachedLoadAnswer::Claimed(claim) => {
+            claim.complete_loaded(&[]);
+            Answered::Claimed
+        }
+        CachedLoadAnswer::Loaded => Answered::Loaded,
+        CachedLoadAnswer::Pending => Answered::Pending,
+        CachedLoadAnswer::Unavailable => Answered::Unavailable,
+    }
+}
+
+fn spawn_claim_waiter(
+    sched: &std::sync::Arc<CompileScheduler>,
+    module: &ModuleFullPath,
+) -> (
+    std::sync::mpsc::Receiver<Answered>,
+    std::thread::JoinHandle<()>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sched = std::sync::Arc::clone(sched);
+    let module = module.clone();
+    let handle = std::thread::spawn(move || {
+        let _ = tx.send(settle(sched.claim_or_await_cached_load(&module)));
+    });
+    (rx, handle)
+}
+
+type Settled = Result<ExecutionReadiness, SchedulerError>;
+
+/// Run the execution wait on its own thread, so a planted fault turns a row
+/// RED by timeout instead of hanging the suite.
+fn spawn_execution_wait(
+    sched: &std::sync::Arc<CompileScheduler>,
+) -> std::sync::mpsc::Receiver<Settled> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sched = std::sync::Arc::clone(sched);
+    std::thread::spawn(move || {
+        let _ = tx.send(sched.wait_cached_loads_settled());
+    });
+    rx
+}
+
+/// Run the named-module in-memory wait on its own thread.
+fn spawn_module_wait(
+    sched: &std::sync::Arc<CompileScheduler>,
+    module: &ModuleFullPath,
+) -> std::sync::mpsc::Receiver<Result<(), SchedulerError>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sched = std::sync::Arc::clone(sched);
+    let module = module.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(sched.wait_module_inmem_complete_blocking(&module));
+    });
+    rx
+}
+
+const WAITER_STAYS_PARKED: std::time::Duration = std::time::Duration::from_millis(100);
+const WAITER_WAKES: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Register `module` from cache with its hold released and its load claimed
+/// by the ladder.
+fn claimed_cached_module<'s>(
+    sched: &'s CompileScheduler,
+    module: &ModuleFullPath,
+) -> CachedLoadClaim<'s> {
+    drop(sched.register_module_cached(module.clone(), HashSet::new()));
+    let claim = take_cache_load(sched).expect("a released load is claimable");
+    assert_eq!(claim.module(), module);
+    claim
+}
+
+// spec: design/int/int.md §7.1 — restore before load: a held load is not
+// claimable, while typecheck readiness is published at registration.
+#[test]
+fn held_cached_load_is_not_claimable_while_signatures_are_ready() {
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    let waiter = mod_path("user");
+    let _hold = sched
+        .register_module_cached(cached.clone(), HashSet::new())
+        .expect("first registration places the hold");
+
+    sched.register_module(waiter.clone(), no_sexps(), false);
+    assert!(matches!(
+        sched.take_priority_work(),
+        Some(PriorityWork::Typecheck { .. })
+    ));
+    sched
+        .block_for_typecheck(&waiter, &cached, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap();
+    match sched.take_priority_work() {
+        Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, waiter),
+        other => panic!("the whole-module waiter must be satisfied under the hold, got {other:?}"),
+    }
+    assert!(
+        take_cache_load(&sched).is_none(),
+        "a held load must not be claimed"
+    );
+}
+
+// spec: design/int/int.md §7.1 — releasing the hold makes the load claimable
+// exactly once.
+#[test]
+fn released_cached_load_is_claimed_exactly_once() {
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+    drop(hold);
+
+    let claim = take_cache_load(&sched).expect("the released load is claimable");
+    assert_eq!(claim.module(), &cached);
+    assert!(
+        take_cache_load(&sched).is_none(),
+        "a claimed load is not re-issued"
+    );
+}
+
+// spec: design/int/int.md §7.1 — one load entry: the direct claim honours the
+// hold and reports a completed load.
+#[test]
+fn direct_claim_is_pending_while_held_and_loaded_after_completion() {
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+
+    assert!(matches!(
+        sched.try_claim_cached_load(&cached),
+        CachedLoadAnswer::Pending
+    ));
+    drop(hold);
+    let CachedLoadAnswer::Claimed(claim) = sched.try_claim_cached_load(&cached) else {
+        panic!("a released load must be claimed");
+    };
+    claim.complete_loaded(&[]);
+    assert!(matches!(
+        sched.try_claim_cached_load(&cached),
+        CachedLoadAnswer::Loaded
+    ));
+}
+
+// spec: design/int/int.md §7.1 — one load entry: a load the ladder claimed is
+// never claimed a second time.
+#[test]
+fn direct_claim_after_ladder_claim_is_pending() {
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    let _claim = claimed_cached_module(&sched, &cached);
+
+    assert!(matches!(
+        sched.try_claim_cached_load(&cached),
+        CachedLoadAnswer::Pending
+    ));
+}
+
+// spec: design/int/int.md §7.1 — every exit from a restore releases its hold,
+// including an early error return.
+#[test]
+fn hold_released_on_restore_error_path() {
+    fn failing_restore(sched: &CompileScheduler, module: &ModuleFullPath) -> Result<(), ()> {
+        let _hold = sched.register_module_cached(module.clone(), HashSet::new());
+        Err(())?;
+        Ok(())
+    }
+
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    assert!(failing_restore(&sched, &cached).is_err());
+    let claim = take_cache_load(&sched).expect("the error exit released the hold");
+    assert_eq!(claim.module(), &cached);
+}
+
+// spec: design/int/int.md §7.1 — a caller waiting on a held load takes the
+// claim itself once the hold drops, so the load never depends on another
+// worker being free.
+#[test]
+fn awaiting_caller_claims_the_load_when_the_hold_drops() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+
+    let (rx, waiter) = spawn_claim_waiter(&sched, &cached);
+    assert!(
+        rx.recv_timeout(WAITER_STAYS_PARKED).is_err(),
+        "the waiter must not claim a held load"
+    );
+    drop(hold);
+    let answered = rx
+        .recv_timeout(WAITER_WAKES)
+        .expect("releasing the hold must wake the waiter");
+    assert_eq!(answered, Answered::Claimed);
+    waiter.join().unwrap();
+    assert!(
+        take_cache_load(&sched).is_none(),
+        "the ladder must not load it again"
+    );
+}
+
+// spec: design/int/int.md §7.1 — a waiter on another caller's claim returns
+// when that load completes, without loading a second copy.
+#[test]
+fn awaiting_caller_on_claimed_load_returns_loaded() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let claim = claimed_cached_module(&sched, &cached);
+
+    let (rx, waiter) = spawn_claim_waiter(&sched, &cached);
+    assert!(rx.recv_timeout(WAITER_STAYS_PARKED).is_err());
+    claim.complete_loaded(&[]);
+    let answered = rx
+        .recv_timeout(WAITER_WAKES)
+        .expect("completion must wake the waiter");
+    assert_eq!(answered, Answered::Loaded);
+    waiter.join().unwrap();
+}
+
+// spec: design/int/int.md §7.1 — a waiter parked on another caller's claim
+// wakes without a claim when that load completes as failed.
+#[test]
+fn awaiting_caller_on_failed_load_returns_unavailable() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let claim = claimed_cached_module(&sched, &cached);
+
+    let (rx, waiter) = spawn_claim_waiter(&sched, &cached);
+    assert!(rx.recv_timeout(WAITER_STAYS_PARKED).is_err());
+    claim.complete_failed(dummy_error("unresolved symbol"));
+    let answered = rx
+        .recv_timeout(WAITER_WAKES)
+        .expect("a failed completion must wake the waiter");
+    assert_eq!(answered, Answered::Unavailable);
+    waiter.join().unwrap();
+}
+
+// spec: design/int/int.md §7.1 — a failed cached module is never claimed and
+// does not stop the ladder from claiming the next load.
+#[test]
+fn ladder_skips_failed_cached_module_and_claims_the_next() {
+    let sched = CompileScheduler::new();
+    let failed = mod_path("a");
+    let next = mod_path("b");
+    drop(sched.register_module_cached(failed.clone(), HashSet::new()));
+    drop(sched.register_module_cached(next.clone(), HashSet::new()));
+    sched.notify_module_failed(&failed, dummy_error("restore failed"));
+
+    let claim = take_cache_load(&sched).expect("the next load is claimable");
+    assert_eq!(claim.module(), &next);
+    assert!(take_cache_load(&sched).is_none());
+}
+
+// spec: design/int/int.md §7.1 — negative: the hold changes neither an
+// uncached module nor a cached module with no object.
+#[test]
+fn hold_leaves_uncached_and_objectless_modules_unchanged() {
+    let sched = CompileScheduler::new();
+    let fresh = mod_path("fresh");
+    let objectless = mod_path("generic.only");
+
+    sched.register_module(fresh.clone(), no_sexps(), false);
+    match sched.take_priority_work() {
+        Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, fresh),
+        other => panic!("expected Typecheck(fresh), got {other:?}"),
+    }
+    sched.notify_typecheck_done(&fresh);
+    sched.notify_inmem_codegen_complete(&fresh, &Symbol::from("main"), true);
+
+    sched.register_module_cached_no_object(objectless.clone(), HashSet::new());
+    assert!(take_cache_load(&sched).is_none());
+    assert!(matches!(
+        sched.try_claim_cached_load(&fresh),
+        CachedLoadAnswer::Loaded
+    ));
+    assert!(matches!(
+        sched.try_claim_cached_load(&objectless),
+        CachedLoadAnswer::Loaded
+    ));
+    assert!(sched.wait_inmem_complete().is_ok());
+    assert!(matches!(
+        sched.try_claim_cached_load(&mod_path("unregistered")),
+        CachedLoadAnswer::Unavailable
+    ));
+}
+
+// spec: design/int/int.md §7.1 — one classification: a fresh registration
+// that also sits in the cached set is not a cached-object load, so a claim
+// request finds it unavailable and the execution wait ignores it.
+#[test]
+fn fresh_registration_in_the_cached_set_is_not_a_cached_load() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let fresh = mod_path("fresh");
+    sched.register_module(fresh.clone(), no_sexps(), false);
+    sched.cached_module_insert(fresh.clone());
+    assert!(matches!(
+        sched.take_priority_work(),
+        Some(PriorityWork::Typecheck { .. })
+    ));
+
+    assert!(matches!(
+        sched.try_claim_cached_load(&fresh),
+        CachedLoadAnswer::Unavailable
+    ));
+    let (rx, waiter) = spawn_claim_waiter(&sched, &fresh);
+    assert_eq!(
+        rx.recv_timeout(WAITER_WAKES)
+            .expect("a claim request on fresh work must not wait"),
+        Answered::Unavailable
+    );
+    waiter.join().unwrap();
+    assert!(
+        spawn_execution_wait(&sched)
+            .recv_timeout(WAITER_WAKES)
+            .expect("the execution wait must not wait on fresh work")
+            .is_ok()
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Load before execution (`design/int/int.md` §7.1): the REPL runs compiled
+// code only after no cached-object load is held, claimable or claimed, and
+// never after one has failed.
+// ──────────────────────────────────────────────────────────────────────
+
+// spec: design/int/int.md §7.1 — U-RC (a): the execution wait does not
+// return while a load is held or claimed, and returns ready once it loads.
+#[test]
+fn execution_wait_blocks_while_a_cached_load_is_held_or_claimed() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+
+    let settled = spawn_execution_wait(&sched);
+    assert!(
+        settled.recv_timeout(WAITER_STAYS_PARKED).is_err(),
+        "the wait must not return while the load is held"
+    );
+    drop(hold);
+    let claim = take_cache_load(&sched).expect("the released load is claimable");
+    assert!(
+        settled.recv_timeout(WAITER_STAYS_PARKED).is_err(),
+        "the wait must not return while the load is claimed"
+    );
+    claim.complete_loaded(&[]);
+    assert!(
+        settled
+            .recv_timeout(WAITER_WAKES)
+            .expect("completing the load must wake the wait")
+            .is_ok(),
+        "a loaded cached module is ready"
+    );
+}
+
+// spec: design/int/int.md §7.1 — U-RC (b): the wait covers every outstanding
+// load, not only the latest or a named one.
+#[test]
+fn execution_wait_covers_an_earlier_load_after_a_later_one_completes() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let earlier = mod_path("x");
+    let later = mod_path("y");
+    let earlier_claim = claimed_cached_module(&sched, &earlier);
+    claimed_cached_module(&sched, &later).complete_loaded(&[]);
+
+    let settled = spawn_execution_wait(&sched);
+    assert!(
+        settled.recv_timeout(WAITER_STAYS_PARKED).is_err(),
+        "the earlier claimed load is still outstanding"
+    );
+    earlier_claim.complete_loaded(&[]);
+    assert!(
+        settled
+            .recv_timeout(WAITER_WAKES)
+            .expect("completing the earlier load must wake the wait")
+            .is_ok()
+    );
+}
+
+// spec: design/int/int.md §7.1 — U-RC (c): a failed cached load refuses
+// every later step with that module's failure; no readiness is returned.
+#[test]
+fn execution_wait_reports_a_failed_cached_load_on_every_call() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("x");
+    claimed_cached_module(&sched, &cached).complete_failed(dummy_error("unresolved symbol"));
+
+    for call in ["first", "second"] {
+        match spawn_execution_wait(&sched).recv_timeout(WAITER_WAKES) {
+            Ok(Err(SchedulerError::ModuleFailed { module, .. })) => {
+                assert_eq!(module, cached, "the {call} call names the failed module");
+            }
+            other => panic!("the {call} call must refuse with the load failure, got {other:?}"),
+        }
+    }
+}
+
+// spec: design/int/int.md §7.1 — U-RC (d, neg): nothing outstanding means
+// ready at once, whatever fresh, objectless or loaded modules exist.
+#[test]
+fn execution_wait_is_ready_at_once_when_no_cached_load_is_outstanding() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let ready_now = |sched: &std::sync::Arc<CompileScheduler>, case: &str| {
+        let settled = spawn_execution_wait(sched)
+            .recv_timeout(WAITER_WAKES)
+            .unwrap_or_else(|_| panic!("{case}: the wait must return at once"));
+        assert!(settled.is_ok(), "{case}: expected ready, got {settled:?}");
+    };
+    ready_now(&sched, "no modules");
+
+    let fresh = mod_path("fresh");
+    sched.register_module(fresh.clone(), no_sexps(), false);
+    assert!(matches!(
+        sched.take_priority_work(),
+        Some(PriorityWork::Typecheck { .. })
+    ));
+    ready_now(&sched, "fresh module mid-typecheck");
+
+    sched.register_module_cached_no_object(mod_path("generic.only"), HashSet::new());
+    ready_now(&sched, "cached module with no object");
+
+    claimed_cached_module(&sched, &mod_path("loaded")).complete_loaded(&[]);
+    ready_now(&sched, "loaded cached module");
+}
+
+// spec: design/int/int.md §7.1 — U-RC (e): shutdown ends the wait on a held
+// load, which is reported as incomplete rather than ready.
+#[test]
+fn execution_wait_returns_at_shutdown() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let _hold = sched.register_module_cached(cached.clone(), HashSet::new());
+
+    let settled = spawn_execution_wait(&sched);
+    assert!(settled.recv_timeout(WAITER_STAYS_PARKED).is_err());
+    sched.shutdown();
+    match settled.recv_timeout(WAITER_WAKES) {
+        Ok(Err(SchedulerError::InmemIncomplete { module })) => assert_eq!(module, cached),
+        other => panic!("shutdown must end the wait without readiness, got {other:?}"),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// A claim always ends (`design/int/int.md` §7.1): dropping it uncompleted
+// fails the module and wakes a waiter parked before the drop.
+// ──────────────────────────────────────────────────────────────────────
+
+/// A load claimed by the ladder with a claim waiter already parked on it.
+fn claimed_load_with_parked_waiter<'s>(
+    sched: &'s std::sync::Arc<CompileScheduler>,
+    module: &ModuleFullPath,
+) -> (CachedLoadClaim<'s>, std::sync::mpsc::Receiver<Answered>) {
+    let claim = claimed_cached_module(sched, module);
+    let (rx, _waiter) = spawn_claim_waiter(sched, module);
+    assert!(
+        rx.recv_timeout(WAITER_STAYS_PARKED).is_err(),
+        "the waiter parks on the claimed load"
+    );
+    (claim, rx)
+}
+
+/// After an abandoned claim: the waiter wakes without a claim, the module is
+/// failed and unclaimed, and the named-module wait reports the failure.
+fn assert_abandoned_load_failed(
+    sched: &std::sync::Arc<CompileScheduler>,
+    module: &ModuleFullPath,
+    waiter: std::sync::mpsc::Receiver<Answered>,
+) {
+    assert_eq!(
+        waiter
+            .recv_timeout(WAITER_WAKES)
+            .expect("an abandoned claim must wake the parked waiter"),
+        Answered::Unavailable
+    );
+    {
+        let state = sched.lock();
+        let ms = &state.modules[module];
+        assert_eq!(ms.cached_load_state(), CachedLoadState::Failed);
+        assert_ne!(ms.cached_object_load, CachedObjectLoad::Claimed);
+    }
+    assert!(matches!(
+        spawn_module_wait(sched, module).recv_timeout(WAITER_WAKES),
+        Ok(Err(SchedulerError::ModuleFailed { .. }))
+    ));
+}
+
+// spec: design/int/int.md §7.1 — U-R1 (i): a claim dropped by unwinding out
+// of a panicking load fails the module instead of stranding the claim.
+#[test]
+fn claim_dropped_by_a_panicking_load_fails_the_module() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let (claim, waiter) = claimed_load_with_parked_waiter(&sched, &cached);
+
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _claim = claim;
+        panic!("planted: the load panics while holding its claim");
+    }));
+    assert!(unwound.is_err());
+    assert_abandoned_load_failed(&sched, &cached, waiter);
+}
+
+// spec: design/int/int.md §7.1 — U-R1 (ii): a plain drop without completion
+// fails the module the same way.
+#[test]
+fn claim_dropped_without_completion_fails_the_module() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let (claim, waiter) = claimed_load_with_parked_waiter(&sched, &cached);
+
+    drop(claim);
+    assert_abandoned_load_failed(&sched, &cached, waiter);
+}
+
+// spec: design/int/int.md §7.1 — U-R1 (iii, neg): a completed claim does not
+// fail its module when it goes out of scope.
+#[test]
+fn completed_claim_does_not_fail_the_module() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let cached = mod_path("a");
+    let (claim, waiter) = claimed_load_with_parked_waiter(&sched, &cached);
+
+    claim.complete_loaded(&[]);
+    assert_eq!(
+        waiter
+            .recv_timeout(WAITER_WAKES)
+            .expect("completion must wake the parked waiter"),
+        Answered::Loaded
+    );
+    let state = sched.lock();
+    let ms = &state.modules[&cached];
+    assert_eq!(ms.cached_load_state(), CachedLoadState::Loaded);
+    assert_ne!(ms.pool, ModulePool::Failed);
 }

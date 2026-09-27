@@ -2516,7 +2516,7 @@ fn edited_sources_match_uncached(leg: &str, expected: i32, control: &Observed, c
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (first hop of a
 // qualified re-export; spec/08-modules.md §8.5.4 edge 1)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_qualified_reexport_first_hop_change_matches_uncached_run() {
     // `r` re-exports `f` from `c` (11), then from `d` (99). `main` loads `c`
@@ -2559,7 +2559,7 @@ const REEXPORT_R_AFTER: &str = "(export [d [f]])\n(defn anchor [] 0)\n";
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (a re-export
 // chain behind a qualified reference; spec/08-modules.md §8.5.4 edge 1)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_qualified_reexport_chain_inner_hop_change_matches_uncached_run() {
     // `r1` re-exports `f` from `r2`, which re-exports it from `c` (11), then
@@ -2620,21 +2620,27 @@ fn repl_turn_in_restored_module_then_lookup_change(
         .repl()
         .stdin(turn.input)
         .output();
-    assert!(
-        trace_hit(&session, "a") && (turn.holds)(&session, &cold_a),
-        "the REPL session must restore `a` and {}\n\
-         a.cl:\n{}\nstdout:\n{}\nstderr:\n{}",
-        turn.expectation,
+    let session_report = format!(
+        "REPL session: status={:?}\na.cl:\n{}\nstdout:\n{}\nstderr:\n{}",
+        session.status,
         session.read_tmp("a.cl"),
         session.stdout,
         session.stderr
     );
+    assert!(
+        trace_hit(&session, "a") && (turn.holds)(&session, &cold_a),
+        "the REPL session must restore `a` and {}\n{session_report}",
+        turn.expectation,
+    );
 
     let before_edit = if hit_after_rewrite {
-        let unchanged = run_main(session.run_again(), &[]).output().assert_exit(11);
+        let unchanged = run_main(session.run_again(), &[]).output();
         assert!(
-            trace_hit(&unchanged, "a"),
-            "the REPL rewrite must leave a restorable entry for `a`:\n{}",
+            unchanged.status.code() == Some(11) && trace_hit(&unchanged, "a"),
+            "the unchanged run after the REPL session must exit 11 and hit `a`\n\
+             unchanged run: status={:?}\nstdout:\n{}\nstderr:\n{}\n{session_report}",
+            unchanged.status,
+            unchanged.stdout,
             unchanged.stderr
         );
         unchanged
@@ -2670,7 +2676,7 @@ const DEFINE_H: ReplTurn = ReplTurn {
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (a REPL rewrite
 // of a restored module keeps its recorded lookup dependencies, §7.6.2)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_repl_rewrite_of_restored_module_then_lookup_change_matches_uncached_run() {
     // The edge-supplied sibling runs first and proves the REPL turn writes an
@@ -2693,7 +2699,7 @@ fn cache_repl_rewrite_of_restored_module_then_lookup_change_matches_uncached_run
 // spec: design/int/int.md §7.6 — Dependency record and validity (an expression
 // turn and the quit-time persist of a restored module keep a sound warm hit,
 // §7.6.2)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_repl_expression_turn_in_restored_module_keeps_warm_hit_and_matches_uncached_run() {
     // The session only evaluates `(g)` in `a`, so `a.cl` is unchanged, yet the
@@ -2713,9 +2719,99 @@ fn cache_repl_expression_turn_in_restored_module_keeps_warm_hit_and_matches_unca
     );
 }
 
+/// Independent cold-then-REPL sessions in one run of each RR-1 cell.
+const RR1_SESSIONS: usize = 20;
+
+/// Runs `RR1_SESSIONS` cold-then-REPL sessions of the RR-1 fixture with `stdin`
+/// and fails with a per-face count unless every session restores `a` and shows
+/// 11. Face (i): stdout has `unresolved symbol`. Face (ii): killed by a signal
+/// without it. A hang panics through the harness timeout.
+fn rr1_sessions_show_11(stdin: &str) {
+    use std::os::unix::process::ExitStatusExt;
+    let mut failures = Vec::new();
+    for _ in 0..RR1_SESSIONS {
+        let cold = run_main(
+            project(&[
+                ("main.cl", REEXPORT_MAIN),
+                ("a.cl", "(import [r [anchor]])\n(defn g [] (r/f))\n"),
+                ("r.cl", REEXPORT_R_BEFORE),
+                ("c.cl", "(defn f [] 11)\n"),
+            ]),
+            &[],
+        )
+        .output()
+        .assert_exit(11);
+        let session = cold
+            .run_again()
+            .env("CRANELISP_MODULE_TRACE", "1")
+            .env("CRANELISP_SCHEDULER_TRACE", "1")
+            .repl()
+            .stdin(stdin)
+            .output();
+        let evaluated = session.status.success()
+            && trace_hit(&session, "a")
+            && session.stdout.contains("Int 11")
+            && !session.stdout.contains("Error");
+        if !evaluated {
+            failures.push(session);
+        }
+    }
+    let unresolved = failures
+        .iter()
+        .filter(|s| s.stdout.contains("unresolved symbol"))
+        .count();
+    let signalled = failures
+        .iter()
+        .filter(|s| !s.stdout.contains("unresolved symbol") && s.status.signal().is_some())
+        .count();
+    let other = failures.len() - unresolved - signalled;
+    assert!(
+        failures.is_empty(),
+        "{} of {RR1_SESSIONS} REPL sessions over the restored `a` with stdin {stdin:?} \
+         did not show 11: face (i) {unresolved} (`unresolved symbol`), face (ii) \
+         {signalled} (signal, no `unresolved symbol`), other {other}; first:\n\
+         status={:?}\nstdout:\n{}\nstderr:\n{}",
+        failures.len(),
+        failures[0].status,
+        failures[0].stdout,
+        failures[0].stderr
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.7 — Interaction with Object Cache;
+// design/int/int.md §7.6.1 — Callee-module edges (a restored module that
+// reaches `c` only through a callee behaves in the REPL as under `--run`)
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev fixed=S122
+// RR-1. Face (i): the import printed `module 'a' failed: … unresolved symbol:
+// __cranelisp_got_c`, then `(g)` died by SIGSEGV, because `a`'s object was
+// loaded before `c` was registered. Face (ii): `(g)` died by SIGSEGV with no
+// `unresolved symbol`, because the cache-hit import returned before the
+// restored modules' in-memory loads completed. int §7.1 restores before
+// loading and waits for cached loads before any REPL step runs code. Before
+// that wait, face (ii) failed 3.75% of sessions alone and 6.0% under the whole
+// binary, so a run of this cell was RED about half the time; the `c`-first
+// sibling below carries detection.
+#[test]
+fn cache_repl_import_of_restored_module_reaching_callee_only_module_evaluates() {
+    rr1_sessions_show_11("(import [a [g]])\n(g)\n/quit\n");
+}
+
+// spec: repl/spec/14-file-watching.md §14.7 — Interaction with Object Cache;
+// design/int/int.md §7.1 — Cache-hit flow inside register_module (a REPL turn
+// runs only after every restored module it can reach has loaded)
+// defect: class=shared-state-write-race locus=src/process_form/dependency.rs::handle_import found=S122 owner=/dev fixed=S122
+// RR-1 face (ii), `c`-first: the cache-hit import arm returned with `a`'s and
+// `r`'s loads outstanding, and `(g)` ran into them. Before the readiness wait,
+// 14.0% of sessions died by SIGSEGV alone and 10.3% under the whole binary, so
+// a run was RED 20 of 20 times alone and 25 of 30 under load.
+#[test]
+fn cache_repl_import_of_callee_module_then_restored_caller_evaluates() {
+    rr1_sessions_show_11("(import [c [f]])\n(import [a [g]])\n(g)\n/quit\n");
+}
+
 // spec: design/int/int.md §7.6 — Dependency record and validity (constructor
 // tag in value and pattern position; spec/08-modules.md §8.5.4 edge 1)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_qualified_constructor_tag_change_matches_uncached_run() {
     // `b` swaps its nullary variants' order, and so their tags. The result is
@@ -2755,7 +2851,7 @@ fn cache_qualified_constructor_tag_change_matches_uncached_run() {
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (dotted field
 // accessor; spec/08-modules.md §8.5.4 edge 1)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_qualified_accessor_field_order_change_matches_uncached_run() {
     // `b` swaps `Box`'s scalar fields; `v` stays 11 and `w` 99.
@@ -2810,13 +2906,14 @@ fn alloc_pair(observed: &Observed) -> (u64, u64) {
 // spec: design/int/int.md §7.6 — Dependency record and validity (type-only
 // reference; `a` mints its own drop glue for `b/T`; spec/08-modules.md §8.5.4
 // edge 1)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_qualified_type_only_field_change_matches_uncached_allocator_counts() {
     // `T`'s field changes from `Int` to a heap `String`. Both runs exit 7; the
     // observable is the allocation pair, compared between two runs that differ
-    // only in cache use. `main` imports `b` ahead of `a` because a type-only
-    // reference does not yet load `b`; see the fresh-compile cell below.
+    // only in cache use. `main` imports `b` ahead of `a` because, when this
+    // cell was written, a type-only reference did not load `b`; see the
+    // fresh-compile cell below.
     qualified_reference_change(
         "b",
         &[
@@ -2926,7 +3023,7 @@ fn fq_type_only_reference_loads_its_module_on_a_fresh_compile() {
 // spec: design/int/int.md §7.6 — Dependency record and validity (qualified
 // macro head; spec/08-modules.md §8.5.4 edge 1; carried across a later
 // dependency gap, §7.6.2)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_qualified_macro_head_expansion_change_matches_uncached_run() {
     // `k` is a later form whose reference to `e`, which nothing else loads,
@@ -2954,7 +3051,7 @@ fn cache_qualified_macro_head_expansion_change_matches_uncached_run() {
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (qualified
 // reference in a macro clause body, §7.6.2; spec/08-modules.md §8.5.4 edge 1)
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::ModuleEdges found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn cache_qualified_reference_in_macro_clause_body_change_matches_uncached_run() {
     // `m`'s clause body calls `r/f` at expansion time; `r` re-exports `f` from
@@ -2980,6 +3077,59 @@ fn cache_qualified_reference_in_macro_clause_body_change_matches_uncached_run() 
         &[],
         matches_uncached(99),
     );
+}
+
+// LD-9: `a` is the qualified macro head `(b/m)`. `m` first expands to an empty
+// `(begin)`, then to `(defn g [] 99)`, while `main` goes from ignoring `a` to
+// calling `a/g`. `main` loads `a` through a glob import, which names no member.
+const EMPTY_EXPANSION_MAIN_BEFORE: &str = "(import [primitives [Pure]])\n\
+                                           (import [a [*]])\n\
+                                           (defn main [] (Pure 7))\n";
+const EMPTY_EXPANSION_MAIN_AFTER: &str = "(import [primitives [Pure]])\n\
+                                          (import [a [*]])\n\
+                                          (defn main [] (Pure (a/g)))\n";
+
+/// Cold then warm with `m` expanding to `(begin)`, then the uncached oracle and
+/// the cached run after the edit of `b` and `main`, compared as `leg`.
+fn empty_expansion_then_definition(leg: &str, a_src: &str) {
+    let (_, warm) = warm_restore(
+        &[
+            ("main.cl", EMPTY_EXPANSION_MAIN_BEFORE),
+            ("a.cl", a_src),
+            ("b.cl", "(defmacro m [] `(begin))\n"),
+        ],
+        7,
+        &["a"],
+        &[],
+    );
+    let cache_before = cache_snapshot(&warm.tmpdir);
+    let control = run_main(
+        warm.run_again()
+            .file("main.cl", EMPTY_EXPANSION_MAIN_AFTER)
+            .file("b.cl", "(defmacro m [] `(defn g [] 99))\n"),
+        &[],
+    )
+    .cli_flag("--no-cache")
+    .output();
+    assert!(
+        cache_snapshot(&control.tmpdir) == cache_before,
+        "the uncached control must leave the cache untouched"
+    );
+    let control_observed = Observed::of(&control);
+    let cached = run_main(control.run_again(), &[]).output();
+    edited_sources_match_uncached(leg, 99, &control_observed, &Observed::of(&cached));
+}
+
+// spec: design/int/int.md §7.6 — Dependency record and validity (a qualified
+// macro head whose expansion leaves the module nothing to publish;
+// spec/08-modules.md §8.5.4 edge 1, §8.3.2)
+// defect: class=artifact-underkey locus=src/worker.rs::prepare_cluster_commit_with_demands found=S122 owner=/dev
+#[test]
+fn cache_qualified_macro_head_with_empty_expansion_change_matches_uncached_run() {
+    // The sibling's `anchor` gives `a` a checkable entry, so its cluster
+    // publishes and records `b`; it runs first.
+    empty_expansion_then_definition("anchored sibling", "(b/m)\n(defn anchor [] 1)\n");
+    empty_expansion_then_definition("empty-expansion subject", "(b/m)\n");
 }
 
 // spec: design/int/int.md §7.6 — Dependency record and validity (constructor-only

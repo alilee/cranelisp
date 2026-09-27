@@ -507,14 +507,16 @@ fn finalize_cluster(
                 module,
                 &final_working,
                 expanded_program,
-                &ctx.reload_demands,
+                crate::worker::OwedFacts {
+                    reload_demands: &ctx.reload_demands,
+                    lookup_dependencies: &prefix.macro_lookup_dependencies,
+                },
                 shared,
             ) {
                 Ok(None) => (None, Vec::new(), Vec::new(), Vec::new()),
                 Ok(Some(Err(gap))) => (Some(gap), Vec::new(), Vec::new(), Vec::new()),
                 Ok(Some(Ok((mut turn, check)))) => {
                     turn.unresolved_dispatch = check.unresolved_dispatch.clone();
-                    turn.record_lookup_dependencies(&prefix.macro_lookup_dependencies);
                     prepared = Some(turn);
                     (None, check.warnings, check.unresolved_dispatch, Vec::new())
                 }

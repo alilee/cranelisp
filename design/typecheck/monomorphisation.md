@@ -125,7 +125,8 @@ the driver:
    drain;
 4. `regeneralize_only_polymorphic`, then test-function roots;
 5. the ambiguity scan (§4) and the unresolved-dispatch signal;
-6. `finalize_multi_sig_variant_types` (§11.3);
+6. `finalize_multi_sig_variant_types` (§11.3), then the declared-bound check
+   ([typecheck §9.2.1](typecheck.md#921-declared-bounds-are-discharged-at-settlement));
 7. **window 1:** `pass4_monomorphise` over the `MultiSig` family;
 8. **window 2:** `pass4_monomorphise` over the `SingleSig` family;
 9. the sweep and `finalize_annotations_and_publish`, then ownership inference.

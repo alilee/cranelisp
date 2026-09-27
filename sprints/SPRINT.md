@@ -1,7 +1,7 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5, final acceptance reconciliation: not yet ready for acceptance.
-Latest consumer checkpoint: `bc675d86`; local shared-package checkpoint:
+**Status:** PHASE 5, REPL cache crash prioritised; DLL alignment deferred by user.
+Latest consumer checkpoint: `56e4d2e1`; local shared-package checkpoint:
 `c339fa7`. The compiler corrections,
 bounded Haiku eval and IO reuse corrections have executing evidence. The
 generated-inner-name collision fix is verified and committed.
@@ -11,8 +11,11 @@ open points preserved. Current reservations appear at the end of this plan.
 C-A cache-corruption hardening is user-deferred. The cache dependency direction
 and exact API/schema are approved; implementation, independent review and QA
 adequacy are complete. The full suite passed 6,144 tests with one skipped.
-The user confirmed the generated three-line API addition; changes remain
-uncommitted. DB-1, R1-V and LD-9 remain allocated for follow-up reproduction.
+The user confirmed the generated three-line API addition; the verified
+correction and citation cleanup are committed at `56e4d2e1`. DB-1, R1-V and LD-9 corrections are implemented and reviewed in the working
+tree. QA accepts R1-V and LD-9; DB-1 needs the final AD-6 rejection cell.
+New reproduced defects RR-1 (including SIGSEGV), IR-1 and BN-1 remain open.
+The last full run was 6,158/6,161, with later focused evidence recorded below.
 No phase transition or publication is authorized.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
@@ -4721,3 +4724,290 @@ The commit includes the verified lookup dependency correction and citation
 cleanup; NOTES and the unpublished shared-package revision remain excluded.
 QA will assess DB-1, R1-V, LD-9 and citation-pass H1–H4 together.
 No phase transition, push or sprint closure is authorized.
+
+Checkpoint `56e4d2e1` created successfully; only the excluded `.agents` gitlink
+remained dirty immediately afterward. Consolidated QA is active, Claude Opus
+5.5/high, session `88b7476b-ccfd-4e2f-88ba-7aaf85935d29`.
+
+### Post-checkpoint QA allocation — 2026-09-26
+
+QA `88b7476b-ccfd-4e2f-88ba-7aaf85935d29` (Claude Opus 5.5/high) completed
+the consolidated assessment. Checkpoint evidence stands; no authority decision
+is needed. The authoritative batch lives in the QA plan's post-checkpoint
+section: T1–T3 reproduce DB-1/R1-V/LD-9 under explicit stop rules; T4 retires
+or repairs unsupported/vacuous observations; T5 applies 14 proven fix stamps.
+P-1 separately adds a platform module layout fence with a planted-swap proof.
+`test` session `a2b27a40-0301-48b9-b26f-4b73d45258b9` (Claude Opus 5.5/high)
+is active for T1–T5 and owns Cargo exclusively. No additional commit or phase
+transition is inferred.
+
+### Post-checkpoint reproductions — 2026-09-26
+
+Test session `a2b27a40-0301-48b9-b26f-4b73d45258b9` completed T1–T5: 299
+focused tests, 296 passed and exactly DB-1/R1-V/LD-9 failed with controls
+green. All three are now reproduced defects; none hit its stop rule.
+H1/H3/H4 test repairs and 14 checkpoint fix stamps are applied. Checkers
+remain clean. Repros and follow-up edits are uncommitted.
+
+Concurrent independent owners (all Claude Opus 5.5/high):
+- design(typecheck) `81d2a235-afb1-43e3-952d-88002ef9731d`: DB-1 and R1-V.
+- design(int) `1d1704bb-300b-480f-9f8f-c89b89fe783d`: LD-9.
+- dev(platform) `3e32b086-13a3-48d8-9c88-7bae9bcfbadb`: P-1 tests and detection proof; sole source/Cargo owner.
+
+The earlier 6144-pass result remains checkpoint evidence, not a green claim
+for the current tree with these three new failing reproductions.
+
+### Correction handoffs and interim evidence — 2026-09-26
+
+- P-1 dev `3e32b086-13a3-48d8-9c88-7bae9bcfbadb`: 88/88 platform tests; planted field swaps failed the two new pins and were reverted. Independent review `e672096b-fc4a-4bf5-a41f-dcb133b87061`: no blocking/required findings. QA retains a pre-existing source-read manifest-by-value growth risk for classification; not a P-1 regression.
+- LD-9 design `1d1704bb-300b-480f-9f8f-c89b89fe783d` and dev `60903fce-7f8d-4149-a35e-e871f2259f0f`: empty expansion dependency publication implemented; new units and unchanged LD-9 RED→GREEN. No public API/schema change.
+- Int control runs exposed intermittent failures in the existing REPL restored-module rewrite and expression-turn cache tests, both with and without LD-9's decision fix. Mechanism unclassified; retain as QA intake, not an accepted residual. Logs and limits are in the int dev result.
+- Typecheck design `81d2a235-afb1-43e3-952d-88002ef9731d` supplied one correction handoff for DB-1/R1-V. New source-read leads (bare-name impl matching and import/export undeclared-child lookup) remain in typecheck §11 for QA classification.
+- dev(typecheck) `c63e69b9-ab30-410a-a419-19a61e93c17f` owns source/Cargo for both corrections and the final combined suite. review(int) `1ca6e576-b643-4297-9e4b-b8c877945619` independently inspects LD-9 read-only. Both Claude Opus 5.5/high.
+- The two document findings seen during concurrent typecheck design writing no longer reproduce: final document checker 508 documents, zero findings.
+
+LD-9 independent review `1ca6e576-b643-4297-9e4b-b8c877945619` found no
+blocking finding and one required local correction: `OwedFacts::is_empty`
+must use exhaustive field destructuring to justify its completeness claim.
+Schedule it with dev(src) after typecheck releases source/Cargo. Review also
+retains the controlled REPL flakes for QA attribution and a source-read
+module-level unresolved-dispatch overwrite lifecycle lead for design(int).
+No new authority decision is required.
+
+### Typecheck correction delivered for review — 2026-09-26
+
+DB-1/R1-V developer `c63e69b9-ab30-410a-a419-19a61e93c17f` released source:
+939/939 crate tests and both independent reproductions pass. Combined full
+workspace: 6161 run, 6158 passed, three failed, one skipped. Failures are the
+known intermittent REPL cache rewrite, a plan citation to the removed plural
+lookup helper, and an older `super` trait fixture with no required Int impl.
+The fixture attribution awaits QA; do not silently weaken the new check.
+
+Active Claude Opus5.5/high roles:
+- review(typecheck) `3881f1fc-c131-4d86-a9b1-9eee3a3f7bf1`, read-only.
+- dev(src) `e5936a0e-c1ce-40dd-93d6-a1b14af1834a`, sole source/Cargo owner for cache R-1 only.
+- QA `317e68cb-54e4-4fe3-84c4-7e94eb9bbdca`, completed-evidence and new-lead classification.
+
+### QA intake completed — 2026-09-26
+
+QA `317e68cb-54e4-4fe3-84c4-7e94eb9bbdca` closed P-1 as adequate and
+judged T1–T5 as allocated. LD-9 adequacy waits only on R-1 review; the exact
+exhaustive-destructure correction is now delivered with 5/5 focused checks.
+
+Canonical new-lead dispositions are in the QA plan batch-intake section:
+RR-1 is a confirmed intermittent REPL cache restore symptom (provisional
+shared-state-write-race), with a discriminating reproduction allocated; IR-1
+and BN-1 remain source-read lookup/impl-identity leads with RED-first cells
+allocated. PM-1 is the out-of-tree newer manifest growth risk, disposition
+asked of the user (future release action versus investigation now). A-3
+unresolved-dispatch overwrite remains a future lifecycle question. None is
+accepted as a residual.
+
+QA added cross-cluster DB-1 solution legs X1/X2 and two positive module
+controls. These arrived after typecheck implementation and are outstanding
+evidence handoffs, not failures of the completed module run.
+
+### Independent review reconciliation — 2026-09-26
+
+- review(typecheck) `3881f1fc-c131-4d86-a9b1-9eee3a3f7bf1` found no implementation correctness defect. Required: RQ-1 late QA positive module cells, RQ-2 invalid older fixture repair, RQ-3 current design reconciliation. RQ-1 arrived after the dev brief, so it remains a follow-up evidence allocation.
+- dev(src) R-1 `e5936a0e-c1ce-40dd-93d6-a1b14af1834a` added exhaustive destructuring, passed 5/5 focused checks and demonstrated E0027 with a planted field/control. re-review `112b35ff-a9f0-4bd1-bde8-7c129eba05fe` resolved R-1 with no new finding. Root applied its exact mechanical grade/status handoff.
+- test `c85f0d6d-093c-48c6-b20d-0e6d6c1dd45c` owns source/Cargo for QA's follow-up batch and the fixture contrast; design(typecheck) `779a44c3-9915-4e0c-8317-8b6329fdc5b2` owns RQ-3 records. All roles Claude Opus5.5/high.
+- PM-1 user scope question remains pending; no ABI redesign started.
+
+### Follow-up reproductions and review point — 2026-09-26
+
+Test `c85f0d6d-093c-48c6-b20d-0e6d6c1dd45c` finished the allocated batch:
+- DB-1 all six solution legs pass; the super-import fixture's missing-impl contrast establishes its omission and the repaired fixture passes. RQ-2 is implemented; stale inline D4 wording remains to verify in final review.
+- IR-1 is RED for both undeclared-child import/export subjects, with declared-child controls GREEN.
+- BN-1 is RED: the same-named foreign impl passes typechecking and fails in codegen; distinct-name control correctly gives a type error.
+- RR-1 now has a partial reduction and traced controls. Face (i) is supported by traces showing cached `a` failed before callee `c` registration; the `c`-first control removes that face. Face (ii) is SIGSEGV and persists at a lower rate with `c` loaded first, so the sole-mechanism hypothesis is refuted for it. Buffered traces do not survive the signal. QA attribution is needed before a correction.
+- Focused final: 18 run, 14 passed, four failed (IR-1, BN-1, RR-1 partial reduction and one older RR-1 session cell). These are open defects, not accepted residuals.
+- The v11 pin comment is repaired; citation/document checks remain clear. No new commit.
+
+RQ-1 late positive module evidence is assigned to dev(typecheck)
+`5a3eb644-6eb1-42bb-a4c6-95137c54148c`, Claude Opus5.5/high, sole source/Cargo
+owner. This completes the original correction evidence before returning the
+new findings basket for prioritisation; no additional compiler repair is
+started for IR-1/BN-1/RR-1 in this step. PM-1 scope question is still pending.
+
+### Correction basket returned for prioritisation — 2026-09-26
+
+- RQ-1 dev `5a3eb644-6eb1-42bb-a4c6-95137c54148c`: multi-signature positive cell added; 940/940 typecheck tests. HKT cell followed the stop rule.
+- Finding-scoped review `9396def4-6b94-4fbc-8c7d-7450eb2d006b`: RQ-1/RQ-2 resolved, no required review findings. Root applied the exact mechanical record handoffs and reduced AD-7's obsolete fixture narrative.
+- Closing QA `040ca06d-684b-4b0c-8c21-c05004f09242`: R1-V, LD-9, P-1 adequate; fixture attribution closed; HKT stop rule accepted. DB-1 needs one permanent clause-rejection module cell (AD-6), using the already observed mutant evidence; no new mutant run needed.
+- Next planned repair work returns for prioritisation: finish AD-6, fix RR-1 face (i), then measure face (ii)'s remaining SIGSEGV rate before choosing further observation tools; IR-1 and BN-1 also remain Phase5 defects. No residual is accepted. HKT annotation meaning requires spec/user framing separately. PM-1 scope question remains unanswered.
+- No further implementation is running. No post-checkpoint commit was made. Before another commit, QA requires one full suite with only the named IR-1/BN-1/RR-1 REDs allowed. Current evidence is the recorded full run plus later focused checks, not a fully green current workspace.
+
+### User priority and DLL protocol disposition — 2026-09-27
+
+The user directs prioritising the REPL crash (RR-1) now. The version-alignment
+protocol is deferred to a future sprint in
+[ACT-0993](actions/ACT-0993-platform-dll-version-alignment-protocol.md).
+This resolves the PM-1 scope question; no ABI implementation is authorised.
+
+RR-1 work proceeds from the established face-(i) evidence and then remeasures
+face (ii), without claiming one mechanism explains both. AD-6, IR-1, BN-1 and
+the HKT question remain recorded; they do not take priority over this crash.
+No commit, phase transition or sprint closure is inferred.
+
+RR-1 design(int) is active on Claude Opus5.5/high, session
+`d68580dd-5761-41b2-96c7-0c7c2b10fcab`. No source/Cargo writer is active.
+
+### RR-1 implementation underway — 2026-09-27
+
+Design(int) `d68580dd-5761-41b2-96c7-0c7c2b10fcab` completed the private
+restore-before-load / exclusive-claim design in int §7.1. It covers attributed
+face(i) and the recogniser bypass; face(ii) remains separate with a source-read
+readiness-wait hypothesis and existing `/run-tests` control suggestion. No
+public API/schema change or true blocker is reported.
+
+Active Claude Opus5.5/high roles:
+- dev(src) `a1756824-300c-4d31-aa48-4e22560d6917`, sole source/Cargo owner.
+- QA `fe90700c-fa27-4f3f-8469-2ac57d69aba3`, post-fix measurement allocation.
+
+Independent implementation review will cover the design obligations against
+the delivered source. Post-fix stress/control measurements belong to test
+under QA's allocation. No unrelated defect correction is started.
+
+### Defensive debugging context — 2026-09-27
+
+The user clarified that RR-1 work is authorised defensive debugging of our
+own compiler. Handoffs must state repository ownership, local synthetic
+fixtures and the objective of fixing memory-safety failures. Reproduction,
+traces and debugger observations serve diagnosis and regression prevention;
+no exploitation, third-party targeting or weakening of security protections
+is requested.
+
+### RR-1 post-fix investigation — 2026-09-27
+
+Dev(src) and QA have completed and released their surfaces. The cache-load
+correction passed 225 scoped module tests; the final workspace run was
+6172 passed, 3 failed, 1 skipped. RR-1 still failed in 3 of 20 sessions, all
+SIGSEGV with no unresolved-symbol output. BN-1 and IR-1 are the other known
+failures. These results do not close RR-1.
+
+Active Claude Opus5.5/high roles, under the existing user allocation:
+- test `e2f4192e-76df-4250-a1b3-f3a411c93ce3`, sole tests/cache.rs and Cargo
+  owner, executing [QA's allocation](../tests/plan/s122-evidence-delta.md#rr-1-correction--evidence-allocation-2026-09-27).
+- review(src) `badf3398-9c32-4ec3-8b04-29f101b11fde`, independent read-only
+  inspection of the delivered cache-load correction.
+
+Both briefs include the user's defensive-debugging context. No commit,
+phase transition or unrelated correction is authorised by this dispatch.
+
+### RR-1 controls completed; readiness correction — 2026-09-27
+
+Test and review completed. E-1/E-2 observed zero unresolved-symbol failures
+in 1000 subject sessions and 1000 callee-first sessions; the rewrite cell
+passed 30/30. The remaining SIGSEGV appeared in 51/1000 subject sessions.
+C-1 observed 0/1000 crashes with explicit readiness waits versus 31/1000
+with two non-waiting control turns. No hangs or other failures occurred.
+The permanent test keeps its failure predicate and now classifies failures.
+Temporary controls were removed; tests and Cargo are released.
+
+Review identified a recogniser-load panic path that can strand its claim,
+and an overstated assurance claim about every loader taking a claim. These
+join the readiness correction in one source visit; unconfirmed adjacent
+leads remain QA intake. No crash closure is claimed.
+
+Active Claude Opus5.5/high roles:
+- QA `0f6b062f-61fa-4f02-965e-52f1cf9c2979`, attribution, adequacy and the
+  next evidence delta in the existing QA plan.
+- design(int) `aa1c5e2f-cb79-4cdf-ad6c-157965eb7aeb`, the bounded readiness
+  correction and review findings. Their settled handoffs precede dev.
+
+### RR-1 readiness design delivered — 2026-09-27
+
+QA confirmed the readiness-race attribution and previous stress counts.
+Design(int) completed the private cached-load readiness wait and scheduler
+claim ownership design in [int §7.1](../design/int/int.md#71-cache-hit-flow-inside-register_module).
+The wait precedes REPL code execution and test discovery. A failed cached
+load refuses subsequent code-running steps until re-registration or restart;
+this conservative global effect was surfaced to the user. No public API,
+cache schema or ABI change is proposed.
+
+QA `ff30a23f-0a11-466e-9e96-3ecaffef3ce3` (Claude Opus5.5/high) is reconciling
+one evidence substitution for the new wait seam before dev starts. The
+existing observed crash baseline is retained. Design exclusions remain open
+QA intake, not accepted residuals. All source and Cargo are currently free.
+
+QA reconciliation is **READY**: the existing e2e baseline is reused, and
+new wait rows are proven by bounded planted faults. Two temporary, reverted
+compile errors establish the claim/readiness construction checks; no
+committed compile-fail suite is added. No user decision blocks the fix.
+
+Dev(src) `7b9c18b9-025c-4165-81a4-df831b72eb36` (Claude Opus5.5/high) now owns
+source/module tests and Cargo for the readiness and claim-lifetime repair.
+Independent test will run the settled stress allocation after source release.
+No other implementation stream is active.
+
+### RR-1 implementation complete; independent verification — 2026-09-27
+
+Dev(src) `7b9c18b9-025c-4165-81a4-df831b72eb36` completed and released
+source/Cargo. All allocated scheduler rows pass, with the wait/claim-drop
+faults and constructor compile-error observations detected and reverted.
+The library tier passed 854/854; the full suite passed 6182/6184 with
+1 skipped. Only BN-1 and IR-1 remained RED; RR-1 and the expression-turn
+cache regression passed. No public API/schema/ABI change.
+
+Active Claude Opus5.5/high roles:
+- test `0de985bd-fd7c-4fe7-8887-a5d7c8cfb089`, sole tests/cache.rs and
+  Cargo owner, adding S-2 and executing A-RC plus the final full suite.
+- review(src) `48d1c4bc-fb9c-4e16-9c9a-7239080fde15`, finding-scoped
+  independent review of readiness, R-1/R-2 and implementation refinements.
+
+The single green RR-1 run is not statistical closure; QA adequacy follows
+independent results. All changes remain uncommitted.
+
+### RR-1 verification delivered — 2026-09-27
+
+Independent A-RC passed all 2000 sessions (1000 original, 1000 callee-first),
+with zero unresolved symbols, signals, hangs or other failures. E-2 passed
+all 72 cache tests in each of 30 iterations; expression-turn and rewrite
+cells passed 30/30. The final full suite, including permanent S-2, passed
+6183/6185 with 1 skipped. Only the known BN-1 and IR-1 failures remain.
+
+Review closed R-1/R-2 structurally with no blocking implementation finding.
+FR-1/FR-2 exact mechanical design handoffs are applied; FR-1's scheduler
+doc comment was corrected after test released source/Cargo. This changed
+no executable behavior. The failure-refusal record now acknowledges existing
+failed-module resets, rather than promising refusal until re-registration.
+
+QA `ce806cb9-4649-464d-b3cc-936935eed6fb` (Claude Opus5.5/high) owns the final
+adequacy judgment, test evidence/traceability and FA-1 intake classification.
+FA-1 concerns an unobserved stale claim during watcher re-registration.
+No residual has been accepted and no commit or phase transition is inferred.
+
+### RR-1 evidence adequate — 2026-09-27
+
+QA `ce806cb9-4649-464d-b3cc-936935eed6fb` judged the bounded RR-1 repair
+**adequate**, with no blocker. A-RC, F-1, U-RC/U-R1, S-2 and M-2 are met;
+source review is complete and its mechanical record repairs are applied.
+QA updated §14.7's traceability for both permanent regressions. Final
+verification remains 2000/2000 REPL sessions and 6183 passed, 2 known failures,
+1 skipped in the workspace. No production code changed after that evidence;
+only FR-1's source documentation comment was corrected.
+
+[ACT-0994](actions/ACT-0994-cached-load-claim-reregistration-intake.md) retains
+FA-1 as open QA intake. The five design exclusions remain open and unaccepted.
+The four pre-existing cleared-coverage rows in `spec/10-io.md` and
+`spec/appendix-a-builtins.md` still need QA disposition before sprint close.
+BN-1, IR-1 and the earlier AD-6 requirement remain outside this crash repair.
+PM-1 remains deferred under ACT-0993.
+
+No commit, phase transition or sprint closure has occurred. On committing
+the correction, append the commit sha to both RR-1 `fixed=S122` stamps.
+The user has not yet accepted Phase 5.
+
+### Checkpoint and remaining correction batch authorised — 2026-09-27
+
+The user approved the proposed checkpoint commit, then BN-1 and IR-1
+correction, AD-6's missing multi-signature rejection evidence, and QA
+disposition of the four cleared-coverage annotations. This continues Phase 5;
+its acceptance and the next phase still require a separate checkpoint.
+
+The checkpoint reuses the final RR-1 full-suite and stress evidence above:
+only record/comment changes followed those runs. Keep `.agents` and NOTES
+out of the commit. Continue Claude Opus5.5/high for subordinate roles, with
+one source/Cargo owner at a time. DLL version alignment stays deferred;
+ACT-0994 remains open intake outside the selected correction batch.

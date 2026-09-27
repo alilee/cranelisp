@@ -3853,8 +3853,10 @@ The LB-1 comment citation was subsequently repaired without changing executable 
 - The user confirmed the types baseline diff on 2026-09-26; that gate is satisfied.
 - `arch` confirmed review(src) A3 on 2026-09-26: the changed root-crate
   items have no inter-crate consumer and require no additional API gate.
-- At commit, `test` adds `fixed=S122/<sha>` and past-tense framing to the
-  QR-1 to QR-5, LD-2, LD-3, LD-7, LD-8 and five LB/LP `// defect:` lines.
+- The correction was committed at `56e4d2e1`. The `fixed=S122/56e4d2e1`
+  marking of the QR-1 to QR-5, LD-2, LD-3, LD-7, LD-8 and five LB/LP
+  `// defect:` lines is still owed; it is item T5 of the
+  [post-checkpoint `test` visit](#post-checkpoint-qa-batch--db-1-r1-v-ld-9-and-citation-pass-h1h4-2026-09-26).
 
 **Evidence limits.**
 
@@ -3897,17 +3899,22 @@ lead, class `artifact-underkey`, mechanism a hypothesis.**
   and `main` starts calling `a/g`. The cached run then rejects or misbehaves
   where `--no-cache` exits 99.
 - **Allocation LD-9 (`test`, e2e `--run`, stdlib-free, RED-first,
-  `tests/cache.rs`, QR helper).** It runs on the first free `test` visit with
-  DB-1 and R1-V.
+  `tests/cache.rs`, QR helper).** It runs in the
+  [post-checkpoint `test` visit](#post-checkpoint-qa-batch--db-1-r1-v-ld-9-and-citation-pass-h1h4-2026-09-26)
+  with DB-1 and R1-V.
   - Subject: the scenario above, cold then edited, compared with the
-    cache-preserving `--no-cache` control.
+    cache-preserving `--no-cache` control. `main` loads `a` through a glob
+    import (§8.3.2); a null import (§8.3.7) does not load it.
+  - `(begin)` stands for any legitimate expansion that leaves the cluster no
+    checkable entry. If no such expansion is accepted, `test` reports the
+    subject unconstructable and the lead closes as unreachable.
   - Sibling: `a` also defines `(defn anchor [] 1)`. The cluster then
     publishes and records `b`, so the sibling is GREEN.
   - If the subject's cold run writes no cache entry for `a`, or it passes,
     `test` reports that. The lead then closes as unreachable and the design
     grade stands.
   - If RED, add
-    `class=artifact-underkey locus=src/worker.rs::prepare_cluster_commit_with_demands found=S122 owner=/dev`.
+    `class=artifact-underkey locus=src/worker.rs::prepare_cluster_commit_with_demands found=S122 owner=/dev`. <!-- doc-check: literal reason="Defect-notation locus token; records where the defect lived" -->
     The locus is provisional, and `design`(int) settles the recording point.
 - It is not an accepted residual. It does not gate the adequacy above,
   because it is outside the allocated conditions.
@@ -4015,7 +4022,8 @@ control only in the claimed cause. The `// defect:` lines carry
 - Done when the five cells pass, the LB-1 oracle repair has landed first, and
   `test` has marked each `// defect:` line fixed with past-tense framing.
 - State, 2026-09-26: the first two conditions are met; see the lookup
-  adequacy above. The `fixed=` marking waits for the commit SHA. None of the
+  adequacy above. The fix is committed at `56e4d2e1`; the `fixed=` marking is
+  owed as item T5 of the post-checkpoint `test` visit. None of the
   five comments frames its own defect as open; LB-1's names DB-1, which is
   open. `qa` has therefore restored the
   §8.5.4 edge 1 pattern-position band with LP-3, and cited LB-2's refusal
@@ -4058,8 +4066,9 @@ correction or LB/LP. Neither is an accepted residual.
   The value leg below then expects the child; the pattern leg is unaffected.
 
 **Allocation R1-V (`test`, e2e `--run`, stdlib-free, RED-first,
-`tests/spec_08_modules.rs`), on the first free `test` visit after the cache
-chain, with DB-1.**
+`tests/spec_08_modules.rs`), in the
+[post-checkpoint `test` visit](#post-checkpoint-qa-batch--db-1-r1-v-ld-9-and-citation-pass-h1h4-2026-09-26),
+with DB-1.**
 
 - Construction: `a.cl` imports `[b [anchor]]`. `b.cl` imports from `a.q` and
   from the root `q`, so both are registered before `a` is checked. `a/q.cl`
@@ -4077,7 +4086,7 @@ chain, with DB-1.**
   stops and reports that. R-1 is then product-unreachable, and the walk's
   synthesised candidate is a latent mirror that `design`(typecheck) settles.
 - After the RED is observed, add
-  `class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::qualified_candidate_modules found=S122 owner=/dev`.
+  `class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::qualified_candidate_modules found=S122 owner=/dev`. <!-- doc-check: literal reason="Defect-notation locus token; the R1-V repair removes the synthesised candidate" -->
   The locus is provisional until `design`(typecheck) settles the route.
 - The fix's module cell (`dev`(typecheck)) is P4's value twin in the census
   world. It asserts that value and pattern agree, and that the scheme and
@@ -4135,46 +4144,69 @@ and it is not a requirement ambiguity.**
     the instance-mediated limit already held for `spec` above, and it is not
     a new lookup-dependency case.
 
-**Mechanism: a hypothesis, read from source and not observed at its seam.**
+**Mechanism: settled by `design`(typecheck) from source, consistent with all
+four recorded legs; observed at its seam only when `dev`'s cross-cluster
+control runs** ([typecheck §9.2.1](../../design/typecheck/typecheck.md#921-declared-bounds-are-discharged-at-settlement)).
 
-- `traits/monomorphise.rs::instantiate_constrained` carries the scheme's
-  constraints onto the fresh variables as active constraints.
-- The no-impl error is raised only where a trait method is dispatched
-  (`traits/dispatch.rs`, and the monomorphisation resolution).
-- Nothing appears to discharge an active constraint when its variable is
-  pinned to a concrete type.
-- The body-use control separates a declared-only constraint from a
-  body-inferred one at the symptom. It does not observe the discharge seam.
-- Refuter: a module test shows the caller's instantiation lacks the declared
-  constraint, for example because the scheme used at instantiation differs
-  from the displayed one. The locus then moves.
+- DB-1 is cluster-local. A same-cluster caller pins the declared-bound
+  variable through the shared substitution, generalisation then drops the
+  bound, and no instance is minted, so nothing checks it.
+- The control's rejection is located in `f`'s body at `(ts x)`, not at a
+  call-site verification, so it discriminates this mechanism from the
+  instantiation hypothesis this intake first recorded.
+- A caller in another cluster reaches the mint's verification, which holds
+  for nominal types and skips a function-typed argument. That skip is a
+  second face of the same requirement on the other route.
+- Refuter: the cross-cluster nominal control is accepted before the fix. The
+  defect is then not cluster-local, and `design` revisits the route.
 
 **Allocation DB-1 (`test`, e2e `--run`, stdlib-free, RED-first,
-`tests/spec_03_types.rs`).** One cell, three legs:
+`tests/spec_03_types.rs`).** One cell, six legs. X1 and X2 cover the
+cross-cluster route:
 
 | Leg | Program | Required | Before the fix |
 |---|---|---|---|
-| Subject | `(defn f [:Ts x] 7)`, called as `(f (U 1))` | Rejected, naming `Ts` and `U` | Predicted RED: accepted, exits 7 |
-| Control | The body is `(ts x)`; the call is the same | Rejected, naming `Ts` and `U` | Predicted GREEN |
-| Positive | `(defn f [:Ts x] 7)` with `impl Ts Int`, called as `(f 3)` | Exits 7 | Predicted GREEN |
+| Subject | `(defn f [:Ts x] 7)`, called as `(f (U 1))` | Rejected, naming `Ts` and `U` | RED: accepted, exits 7 (observed) |
+| Control | The body is `(ts x)`; the call is the same | Rejected, naming `Ts` and `U` | GREEN (observed) |
+| Stacked | `(defn f [:Ts :z/Tr x] 7)`, alias `(zz z)`, `U` implements `Ts` but not `zz/Tr`, called as `(f (U 1))` | Rejected, naming `Tr` and `U` | RED: accepted, exits 7 (observed) |
+| Positive | `(defn f [:Ts :z/Tr x] 7)` with both traits implemented for `Int`, called as `(f 3)` | Exits 7 | GREEN (observed) |
+| X1 | `Ts`, its `Int` impl and `(defn f [:Ts x] 7)` live in `zz.cl`; `main` defines `U` without a `Ts` impl and calls `(z/f (U 1))` | Rejected, naming `Ts` and `U` | Predicted GREEN, through the mint |
+| X2 | As X1, called with a function value, such as `(z/f g)` for a `defn g` in `main` | Rejected, naming `Ts` | Predicted RED: accepted, exits 7. Not observable at e2e before the fix; see the batch intake |
 
 - The control differs from the subject only in whether the body uses the
   constraint.
+- The stacked leg discriminates a partial repair that discharges only the
+  first constraint of a chain (§3.9.2: the chain is a conjunction), or only a
+  trait homed in the calling module. `test` chooses a legitimate home for
+  `zz/Tr`'s `Int` impl; if none is constructible without an orphan
+  violation, it reports that instead of dropping the leg.
 - The positive leg guards against an over-fix that rejects the definition or
   every call.
-- Add the `// defect:` line only after the RED is observed:
-  `class=wrong-accept locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::instantiate_constrained found=S122 owner=/dev`.
-  The locus is provisional. If `design`(typecheck) places the discharge
-  elsewhere, `test` updates the locus before the fix lands.
+- If the subject is GREEN at `56e4d2e1`, `test` reports it and commits the
+  cell as a regression guard without a `// defect:` line. `qa` then checks
+  whether that checkpoint's typecheck changes discharged the constraint
+  before closing the lead.
+- The `// defect:` line's locus becomes
+  `crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner`,
+  where `design`(typecheck) places the missing settlement check. `test`
+  changes it before the fix is committed.
 - If the control or the positive leg fails, `test` stops and reports it as a
   separate intake.
-- No REPL or `--link` legs: the check lies in the typecheck judgment, and
-  every mode reaches it.
+- X1 is the discriminating control for the cluster-local mechanism, and it
+  fences the `verify_constraints` convergence. X2 is the function-head face:
+  the impl-target grammar ([spec §7.3](../../spec/07-traits.md#73-trait-implementation))
+  admits no function type, so no function type implements a trait and
+  §3.9.2 requires rejection.
+- No REPL or `--link` legs. Every mode reaches the same judgment within one
+  cluster, and X1 and X2 cover the other route.
 
 **Disposition.**
 
-- `sprint` schedules DB-1 on the next free `test` visit, together with the
-  LB-1 oracle repair above.
+- `sprint` schedules DB-1 in the
+  [post-checkpoint `test` visit](#post-checkpoint-qa-batch--db-1-r1-v-ld-9-and-citation-pass-h1h4-2026-09-26).
+  The LB-1 oracle repair it once accompanied landed in `56e4d2e1`.
+- When DB-1 is repaired, LB-1's comment in `tests/spec_08_modules.rs`, which
+  names DB-1 as open, moves to the past tense in the same change-set.
 - It does not gate the lookup-dependency work, the cache correction or LB/LP.
 - Once DB-1 is RED, the lead is a Phase 5 defect under
   [METHOD §2.4](../../sprints/METHOD.md#24-deferral).
@@ -4183,7 +4215,880 @@ and it is not a requirement ambiguity.**
   - `dev`(typecheck) repairs with a module cell.
   - The full suite at that fix is the regression check for any program,
     fixture or example that calls through an unused declared constraint.
-- The §3.9 `[Tested+Neg …]` band does not evidence §3.9.2's restriction. `qa`
-  revises it when DB-1 exists.
+- The §3.9 and §3.9.2 bands now carry `[S122 …]` for the call-site
+  restriction. `qa` restores them from DB-1's cells once the repair passes.
 - This subsection is the open record until DB-1 is committed. After that, the
   failing cell is the record.
+
+## Post-checkpoint QA batch — DB-1, R1-V, LD-9 and citation-pass H1–H4 (2026-09-26)
+
+**Basis.** Checkpoint `56e4d2e1`: 6144 passed and 1 skipped
+(`.local/s122-lookup-int-dev-full.log`), with independent reviews clear and the
+generated types API delta user-confirmed. This batch reopens none of that
+evidence. The limits recorded under
+[lookup adequacy](#adequacy-2026-09-26) stand unchanged. H1–H4 come from the
+`test` citation pass (`.local/s122-citation-cleanup-test-result.md`), which
+changed comments only.
+
+**The three leads.** No cell exists for any of them at `56e4d2e1`, and no new
+evidence bears on them. Each stays open; none is an accepted residual.
+
+| Lead | Allocation | Change in this batch |
+|---|---|---|
+| DB-1 | [Declared bound not checked at the call site](#declared-bound-not-checked-at-the-call-site--intake-2026-09-26) | Adds the stacked, alias-qualified leg and the GREEN-at-checkpoint stop rule |
+| R1-V | [Producer review R-1](#producer-review-r-1-and-a-4--classification-2026-09-26) | None. The value leg's expected 99 rests on §8.11.2 item 1, which defines a registered submodule as one declared by `(mod name)` in the current module, and on §8.11.2.1's uniformity rule. The recorded refuter stands |
+| LD-9 | [Empty-publication lead](#adequacy-2026-09-26) | Names the glob import and the unconstructable-subject stop rule |
+
+**H1 — backend DTO presence rows (`tests/facade_pif_rows.rs`).**
+
+- `rows_03_04_linker_and_object_artefact_named_in_backend_pub_api` is a
+  maintenance check stricter than its authority.
+  - No standing design requires `ObjectArtefact`, and nothing produces it.
+  - [Compile-to-module §10](../../design/backend/compile-to-module.md#10-cache-hit-loading)
+    leaves keeping or removing `load_object` and `LinkerArtefact` to `arch`
+    and the user.
+  - `tests/public_api_relocations.rs` already fails on any divergence between
+    the live surface and the committed baseline, and the user gate governs
+    every regeneration. So the row's only unique failure is a false refusal
+    after an approved removal.
+  - **Retire the test.** No product or API change follows. The open
+    `load_object` decision stays with `arch` and the user, untriggered by QA.
+- `row_05_linker_error_enum_named_in_backend_pub_api` stays as a maintenance
+  check.
+  - `LinkerError` is the typed result of the public `Linker::get_symbol`,
+    which `src/result_owner.rs` consumes across the crate boundary. Its
+    placement follows Principle 15.
+  - The test's comment claims that no standing design requires the type.
+    That claim is false, so `test` rewords it to cite `Linker::get_symbol`'s
+    typed result (`crates/cranelisp-backend/src/error.rs` rustdoc).
+
+**H2 — `platform_repr_c_field_order_frozen`.**
+
+- Authority: [platform §4.3](../../design/platform/platform.md#43-version-discipline).
+  The JIT and DLLs read these structs by hard-coded byte offsets.
+  `PlatformManifest` is DLL-constructed and `HostCallbacks` is DLL-read, so
+  both are ABI-governed.
+- Plausible wrong outcome: two fields of either type are reordered without an
+  `ABI_VERSION` bump. In-workspace platforms rebuild against the same source
+  and still pass. An out-of-tree DLL built at the same version then misreads
+  the boundary, which is memory-unsafe.
+- Nothing catches that today. The baseline emits fields alphabetically, and
+  only `PlatformFn` has an offset pin
+  (`crates/cranelisp-platform/src/tests.rs::platform_fn_repr_c_field_order_v8`).
+  Platform §7's claim that the layout pins make a field-order change
+  conspicuous is false for these two types.
+- **Allocation P-1 (`dev`(platform), module, safety fence).**
+  - Mirror the `PlatformFn` pin for `PlatformManifest` and `HostCallbacks`:
+    offsets strictly increasing in declaration order, the leading field at 0,
+    and the type naming the `ABI_VERSION` it freezes.
+  - A compile-time assertion is an acceptable alternative, at `dev`'s choice.
+  - Detection proof in the same change-set: swap two fields, observe the pin
+    fail, then revert.
+  - Platform §7's claim then holds as written, and no design edit is needed.
+- The e2e test remains a maintenance check of the `#[repr(C)]` attribute and
+  the field set. `test` changes its two "ORDER" assertion messages to "SET",
+  and names P-1's pins once they exist.
+
+**H3 — `platform_send_sync_claims_match_invariants`.**
+
+- **Current scope: retire the four negative legs.**
+  - They cover `!Send`/`!Sync` on `OwnedPlatformFnDescriptor` and
+    `PlatformManifest`, and no design or spec requires those properties.
+  - An auto-derived `Send` is checked by the compiler and is sound by
+    construction. An explicit `unsafe impl` is visible in the baseline and
+    passes the user gate.
+- The positive `PlatformFn` legs stay. They are a safety fence for platform
+  §7's `unsafe impl Send + Sync`, justified by invariant 6.
+- **Future scope ([ACT-0955](../../sprints/actions/ACT-0955-omit-auto-traits-from-public-api-baselines.md), Q13), not this batch.**
+  - ACT-0955 states that explicit impls remain visible under
+    `--omit auto-trait-impls`.
+  - Its owner confirms the two `PlatformFn` rows survive the regeneration.
+    If they do not, the owner adds a direct compile-time `Send + Sync`
+    witness.
+  - The negative legs are already gone, so ACT-0955 need not carry them.
+
+**H4 — `process_form_dispatch_function_gap_does_not_speculatively_jit`.**
+
+- The fixture `(begin (defn f [] (g 1)) (defn g [x] x))` produces no gap. `g`
+  is defined in the same cluster, and the
+  [§6.2 codegen batch](../../design/int/int.md#62-cluster-orchestration)
+  legitimately JIT-compiles it.
+- The needles `JitWrite g` and `JitWrite user/g` cannot match the trace
+  format `JitWrite\tmodule=… symbol=g` (`src/got_trace.rs`). So the negative
+  leg cannot fail, and its premise is wrong.
+- Its remaining leg only proves the trace exists. That duplicates
+  `tests/got_trace.rs::got_trace_emits_jit_write_event`.
+- [Int §6.3](../../design/int/int.md#63-gap-production)'s "nothing is
+  speculatively JIT-compiled" is supported by source ordering, not measured.
+  In `src/worker.rs::prepare_cluster_commit_with_demands`, both gap returns
+  precede codegen planning, and failure publishes nothing (Q2, LD-I I8).
+- The residual has low impact: duplicated work, not published state. No
+  e2e replacement is allocated.
+- **Retire the test.** The claim's grade is *asserted with a named
+  falsifier*: a GOT trace that shows a `JitWrite` for a definition of a
+  cluster whose check returned a gap, before that cluster's successful retry.
+
+**Traceability bands (`qa`, applied).**
+
+- [Spec §3.9.2](../../spec/03-types.md#392-trait-constraint-annotations)
+  cites LB-1 for the published conjunction.
+- §3.9.2 and the §3.9 heading carry `[S122 …]` for the unevidenced
+  call-site restriction.
+- No other band changes. R1-V and LD-9 touch no annotated row.
+
+### Handoff
+
+**`test` — one visit.** Items T1–T3 are RED-first and follow their
+allocations. T4 and T5 change no behaviour.
+
+- **T1** DB-1 (four legs).
+- **T2** R1-V.
+- **T3** LD-9.
+- **T4** Test retirements and repairs:
+  - retire `rows_03_04_linker_and_object_artefact_named_in_backend_pub_api` (H1);
+  - reword `row_05`'s comment (H1);
+  - change the two "ORDER" assertion messages to "SET" (H2);
+  - remove H3's four negative legs and their comment claim;
+  - retire `process_form_dispatch_function_gap_does_not_speculatively_jit` (H4).
+- **T5** Add `fixed=S122/56e4d2e1` to the 14 `// defect:` lines, and move
+  any present-tense framing to the past tense.
+  - `tests/cache.rs`, nine lines:
+    - `cache_qualified_reexport_first_hop_change_matches_uncached_run`;
+    - `cache_qualified_constructor_tag_change_matches_uncached_run`;
+    - `cache_qualified_accessor_field_order_change_matches_uncached_run`;
+    - `cache_qualified_type_only_field_change_matches_uncached_allocator_counts`.
+      Its "does not yet load `b`" also goes to the past tense.
+    - `cache_qualified_macro_head_expansion_change_matches_uncached_run`;
+    - `cache_qualified_reexport_chain_inner_hop_change_matches_uncached_run`;
+    - `cache_repl_rewrite_of_restored_module_then_lookup_change_matches_uncached_run`;
+    - `cache_repl_expression_turn_in_restored_module_keeps_warm_hit_and_matches_uncached_run`;
+    - `cache_qualified_reference_in_macro_clause_body_change_matches_uncached_run`.
+  - `tests/spec_08_modules.rs`, the five LB/LP cells.
+- Completion:
+  - each RED is observed for the predicted reason with its control GREEN;
+  - each stop rule is reported rather than worked around;
+  - `spec_link_check.py` and `spec_coverage_reconcile.py` report no new
+    finding;
+  - the focused run lists exactly the intended REDs.
+
+**`dev`(platform).** P-1 (H2), with its detection proof and the `dev`
+release gate.
+
+**Mechanical record updates.** No decision is needed; each owner verifies
+against source first.
+
+- **`arch`:** the `design/arch/interfaces.md` §"Qualified lookup
+  dependencies" status becomes "committed at `56e4d2e1`".
+- **`design`(typecheck):** the `typecheck.md` status lines at §3.4, §3.5 and
+  §7.3.1 still read "uncommitted".
+- **`design`(int):**
+  - the `int.md` §7.6.2 status and the §16.0 lookup items still read
+    "uncommitted"; the empty-publication lead is classified as LD-9;
+  - add H4's falsifier beside §6.3's speculative-JIT sentence.
+
+**Routing after the REDs.** Each confirmed RED is a Phase 5 defect under
+[METHOD §2.4](../../sprints/METHOD.md#24-deferral):
+
+- DB-1 goes to `design`(typecheck), then `dev`(typecheck);
+- R1-V goes to `design`(typecheck), which settles the synthesised candidate,
+  then `dev`(typecheck);
+- LD-9 goes to `design`(int), which settles the recording point, then
+  `dev`(src).
+
+**Authority decisions.** None is needed now.
+
+- The spec decides DB-1.
+- R1-V's value reading has a recorded refuter. If `spec` or the user adopts
+  it, only the value leg's expected exit changes.
+- No public-API change is proposed.
+- The open `load_object` decision is not triggered.
+
+**Observed, not allocated.** Several S122 repros that pass at `56e4d2e1`
+lack a complete `fixed=` token:
+
+- `tests/cache.rs`:
+  - the `cache_validity_check` cells;
+  - `fq_type_only_reference_loads_its_module_on_a_fresh_compile`;
+  - two lines stamped `fixed=S122` without a SHA;
+- `tests/spec_08_modules.rs` lines 757, 788, 878 and 920.
+
+The notation then misreports them as open. `sprint` may fold them into T5 if
+`test` derives each fixing commit from Git. `test` must not guess a SHA.
+
+## Batch intake — completed evidence, DB-1 refinement and new leads (2026-09-26)
+
+**Basis.** The reports are `.local/s122-post-checkpoint-test-result.md`,
+`.local/s122-batch-platform-dev-result.md` and its review,
+`.local/s122-batch-int-dev-result.md` and its review, and
+`.local/s122-batch-typecheck-design-result.md`, with the logs they cite. The
+DB-1 and R1-V implementation is in progress and is not judged here.
+
+### Completed evidence
+
+| Item | Verdict | Remaining |
+|---|---|---|
+| T1–T3 | Adequate pre-fix records. DB-1, R1-V and LD-9 each failed for the predicted reason, with every control GREEN. No stop rule fired | None |
+| T4 (H1–H4) | Applied as allocated. The reconciler reports no dead citation | `test`: `platform_repr_c_field_order_frozen`'s comment names the two v11 pins beside `_v8` (comment only) |
+| T5 | Exactly 14 stamps, with present-tense framing removed | The unallocated `fixed=` tokens listed above remain `sprint`'s choice |
+| P-1 | **Closed, adequate.** A safety fence, *measured*: the planted swap failed both new pins through their intended assertions, the `_v8` control stayed GREEN, the restore is byte-verified and the final run is 88 of 88 | None. Residual map: a reorder is caught by the pins; an added, removed or renamed field, or a changed field type or width, is caught by `tests/public_api_relocations.rs` under the user gate; a dropped `#[repr(C)]` is caught by the e2e maintenance check. The out-of-tree DLL scenario remains unobserved by construction |
+| LD-9 | **Adequate for its condition; closure waits on R-1.** The two positive unit rows and the e2e cell were RED before the decision change and GREEN after it; both negative rows stayed GREEN. The 30-iteration control shows the REPL failures below are independent of this change | R-1, then a finding-scoped re-review, then `design`(int) confirms the §7.6.2.1 grade sentence and status lines. The `fixed=` stamp follows the commit |
+
+- **R-1.** An exhaustive destructure in `OwedFacts::is_empty` makes the
+  completeness claim true through Rust's own rule that a struct pattern
+  without `..` must name every field. No planted-field run is required. The
+  re-review confirms that the pattern has no rest pattern. A-1 (the rename) is
+  optional.
+- **LD-9 REPL turn.** It stays *asserted* with the §7.6.2.1 falsifier, and no
+  cell is allocated. Review verified that `finalize_cluster` is the one
+  production caller, and every mode reaches it. A REPL cache cell would also
+  inherit RR-1 until that is repaired.
+
+### DB-1 — mechanism refinement consumed
+
+- The [intake](#declared-bound-not-checked-at-the-call-site--intake-2026-09-26)
+  now carries the settled mechanism, the settled locus and legs X1 and X2.
+- **X1 and X2 timing and limit.** `test` adds them after `dev`(typecheck)
+  releases the tree and before the commit. Neither can be run against the
+  pre-fix source at e2e, because the fix is in progress and no isolated
+  pre-fix build is available. Their pre-fix states are established at the
+  same seam by `dev`'s cross-cluster control cell and function-type module
+  cell (typecheck §9.2.1 *Evidence*). `dev` must log them GREEN and RED
+  respectively before the fix.
+- **`dev`(typecheck): two added positive module cells,** guarding the false
+  rejections that the design names:
+  - a multi-signature definition whose selected arm's declared bound is
+    satisfied by a same-cluster caller is accepted;
+  - a higher-kinded bound pinned in the same cluster at a constructor that
+    implements it is accepted.
+
+  Both cells are GREEN before and after the fix, and they join the negative
+  leg of the detection proof. If `dev` cannot write the second through a
+  legitimate program, it reports that instead. The first is delivered; the
+  second stopped by that rule and is retired (see
+  [closing judgment](#correction-basket--closing-qa-judgment-2026-09-26)).
+- **Design citation (advisory, `design`(typecheck)).** §9.2.1 grounds "a
+  function head implements nothing" in spec §3.3.3. The governing text is the
+  impl-target grammar in spec §7.3, which admits no function type. Correct it
+  when the section is next touched.
+- **Bands.** Restored once all six legs passed; see the
+  [closing judgment](#correction-basket--closing-qa-judgment-2026-09-26).
+
+### R1-V
+
+`design`(typecheck) §3.6 changes no allocation. The §8.11.2 heading cites
+R1-V's GREEN cell and carries IR-1's RED positions; `qa` restores it fully
+when IR-1 passes.
+
+### New leads — classification
+
+**RR-1: a REPL session over a restored module whose object binds a module
+reached only through the callee walk.**
+
+- **Observed.** Both builds show the same failures, and so do the earlier
+  8-iteration pairs:
+
+  | Build | Rewrite cell | Expression-turn cell |
+  |---|---|---|
+  | Fix (`.local/s122-batch-int-dev-fix-stress30.log`) | 10 of 30 | 2 of 30 |
+  | Control (`.local/s122-batch-int-dev-control-stress30.log`) | 9 of 30 | 4 of 30 |
+
+- **Faces.**
+  - (i) One expression-turn failure prints `module 'a' failed: codegen error
+    at 0..0: unresolved symbol: __cranelisp_got_c` at `(import [a [g]])`.
+    `a.o` binds `c`, which the session reaches only through the callee walk.
+  - (ii) The other five expression-turn failures print nothing after the
+    `a>` prompt: `(g)` shows no result, and the assertion does not report the
+    exit status.
+  - (iii) In the rewrite cell's sibling leg, the unchanged `--run` after the
+    session misses `a`. The assertion does not print the session's output.
+- **No stale service.** The cached-versus-uncached comparison
+  (`tests/cache.rs:2504`) failed only in LD-9's cell in the control build. No
+  leg that compares a cached run with an uncached one failed in either cell.
+- **Mechanism: a hypothesis, not observed at its seam.**
+  - `try_cache_hit_load` registers the restored module with the scheduler,
+    making its object loadable, before phase 9 installs that module's
+    imports, re-export targets and callee modules. A concurrent load of
+    `a.o` can therefore bind `__cranelisp_got_c` before `c` is installed.
+  - Circumstantial support: the rewrite sibling's `a` imports `r`, which the
+    walk visits before the callee `c`. That sibling fails about three to five
+    times as often as the expression-turn cell, whose `a` imports nothing.
+  - The `--run` callee-only cell,
+    `cache_fq_only_dependency_change_not_imported_by_entry_matches_uncached_run`,
+    passed all 60 iterations.
+  - Face (iii) may instead come from a quit-time persist that is not drained
+    before the process exits.
+  - Refuter: the failures persist at the same rate when the session installs
+    `c` before `a`, or a failing run's trace shows `c` installed before `a.o`
+    loads.
+- **Classification: a confirmed defect symptom; the attribution is
+  provisional.**
+  - Face (i) is a spec-valid program failing in the REPL where `--run`
+    succeeds, over unchanged sources that `repl/spec/14-file-watching.md`
+    §14.7 serves from cache.
+  - The provisional owner is `design`(int), then `dev`(src). The class is
+    `shared-state-write-race`.
+  - It is a Phase 5 defect under
+    [METHOD §2.4](../../sprints/METHOD.md#24-deferral), and it is not an
+    accepted residual.
+- **Why coverage missed it.** F1 accepted the callee walk on `--run` evidence
+  alone, and this plan held that every mode shares the restore walk. The walk
+  is shared, but the concurrency around loading a restored object is not.
+  Until LD-3 and LD-8, no REPL leg restored a module that reaches another
+  only through a callee.
+- **Grade implications.**
+  - [int §7.6.2](../../design/int/int.md#762-lookup-dependencies) *retained
+    earlier entry is sound* stays *measured*. Every iteration that reached the
+    comparison agreed. A failure before the comparison observes nothing; it
+    is not a counter-example.
+  - [int §7.6.1](../../design/int/int.md#761-callee-module-edges)'s callee
+    walk is *measured* for `--run` and falsified intermittently in the REPL.
+  - A full `cargo nextest run --no-fail-fast` can fail on exactly three
+    cells, and such a failure traces to RR-1: the committed RR-1 cell
+    `cache_repl_import_of_restored_module_reaching_callee_only_module_evaluates`
+    (reliably RED while RR-1 is open); the expression-turn cell at its
+    session assertion; and the rewrite cell at its session or unchanged-run
+    assertion (`tests/cache.rs:2630` and `:2638` in the current tree). A
+    failure at any other site does not trace to RR-1. A single green run of
+    the two older cells does not show that RR-1 is absent.
+- **Allocation (`test`, then `design`(int) and `dev`(src)).**
+  1. Repair the instrument. Both cells' failure messages report the REPL
+     session's exit status, stdout and stderr. This is a maintenance check
+     of the cell.
+  2. Capture. Run the `cache` binary with `--stress-count 30` and add
+     `CRANELISP_SCHEDULER_TRACE=1` to the session leg. For each failing
+     iteration, record the exit status or signal and the order of `c`'s
+     installation and `a.o`'s load.
+  3. Control, under the same load: the session runs `(import [c [f]])`
+     before `(import [a [g]])`, and is otherwise identical. It is predicted
+     never to fail.
+  4. Commit the smallest REPL cell that reproduces face (i) or (ii). Repeat
+     the session within the cell if a single session rarely fails, and
+     report the rate alone and under load. If it does not fail alone, commit
+     it as a partial reduction that names what is unknown. The provisional
+     `// defect:` line is
+     `class=shared-state-write-race locus=src/process_form/cache_restore.rs::try_cache_hit_load found=S122 owner=/dev`. <!-- doc-check: literal reason="Defect-notation locus token" -->
+  - **Stop rule.** If the control fails at a similar rate, the hypothesis is
+    refuted. `test` reports that, writes no `// defect:` line, and `qa`
+    re-attributes.
+  - `design`(int) then settles when a restored module's object may load
+    relative to its dependencies' installation, and the quit-time drain if
+    the capture implicates it. `dev`(src) repairs it with a deterministic
+    module row at that seam.
+
+**IR-1: a bare import or export name reaches an undeclared child.**
+
+- **Source, verified.** `src/process_form/dependency.rs::resolve_current_module_relative`
+  returns `<current>.<name>` when any module has registered it or a file
+  backs it. [Spec §8.11.2](../../spec/08-modules.md#8112-module-resolution-search-order)
+  tier 1 requires that the current module declared `(mod name)`.
+- **Classification: a confirmed source-read lead; not executed.**
+  - The spec decides it: §8.11.2 item 1, and §8.5.4 item 2's rule against
+    inventing a child. It shares R1-V's recorded refuter.
+  - After R1-V's repair, a module that imports `q` and names `q/g` resolves
+    the two positions to different modules, which §8.11.2.1 forbids. Before
+    the repair, both positions take the non-conforming child.
+- **Allocation IR-1 (`test`, e2e `--run`, stdlib-free, RED-first,
+  `tests/spec_08_modules.rs`, beside R1-V and reusing its files).** `a/q.cl`
+  exists, and no other module imports `a.q`.
+
+  | Leg | `a` | Required | Predicted |
+  |---|---|---|---|
+  | Import | `(import [q [g]])` and `(defn h [] (g))`, with no `(mod q)` | Exits 99 | RED: exits 11 |
+  | Export | `(export [q [g]])`, and `main` calls `g` imported from `a` | Exits 99 | RED: exits 11 |
+  | Controls | Each leg with `(mod q)` added | Exits 11 | GREEN |
+
+  - The route is in `src/`, so the RED is predicted both before and after
+    R1-V's repair.
+  - If a subject exits 99, `test` reports it, and the lead closes for that
+    position.
+  - The provisional `// defect:` line is
+    `class=resolver-mirror locus=src/process_form/dependency.rs::resolve_current_module_relative found=S122 owner=/dev`. <!-- doc-check: literal reason="Defect-notation locus token" -->
+- **Route.** `design`(int) settles both stages — the import and export
+  handlers and the late installer in `src/imports.rs` — because §8.11.2.1
+  requires them to agree. `dev`(src) then repairs.
+- It does not block R1-V. If IR-1 is deferred, the deferral must name the
+  divergence that R1-V's repair exposes.
+
+**BN-1: impl existence matches a type by its bare name.**
+
+- **Source, verified.** `crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home`
+  compares `shell.impl_type.name` with a bare `TypeName`. Every satisfaction
+  site, including §9.2.1's shared step, inherits it.
+- **Classification: a confirmed source-read lead, face `wrong-accept`; not
+  executed.** The spec decides it: a type's identity includes its module
+  (§8.1), and an impl is for that type (§7.3).
+- **Allocation BN-1 (`test`, e2e `--run`, stdlib-free, RED-first,
+  `tests/spec_07_traits.rs`).**
+  - `zz` declares `Tr`. Module `m` implements it for its own `U`. `main`
+    loads `m`, defines its own `U` with a different field type and no `Tr`
+    impl, and calls `tr` at `main`'s `U`.
+  - Required: rejected, naming `Tr` and `main/U`.
+  - Control: the same program with `main`'s type named `V`. It is predicted
+    GREEN.
+  - Predicted RED: accepted. `test` reports the face, whether an exit value,
+    a crash or a codegen error.
+  - The `// defect:` line is
+    `class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home found=S122 owner=/dev`. <!-- doc-check: literal reason="Defect-notation locus token" -->
+- **Route.** `design`(typecheck) settles the canonical identity through the
+  shared step, then `dev`(typecheck). It becomes a Phase 5 defect once RED.
+
+**PM-1: `PlatformManifest` is returned by value.**
+
+- **Source.** Review cites the host's call signature in `src/platform.rs`
+  and the struct in `crates/cranelisp-platform/src/lib.rs`.
+- **Reasoning.** The host sizes the return slot from its own definition. A
+  DLL built against a larger manifest therefore writes past that slot before
+  the host reads `abi_version`.
+  [Platform §4.3](../../design/platform/platform.md#43-version-discipline)
+  states that a version mismatch fails the load. That holds for an older
+  DLL, but not for a newer DLL whose manifest grew.
+- **Classification: a design-claim defect established by ABI reasoning, and
+  unmeasured.**
+  - Only an out-of-tree DLL built for a later ABI and loaded by an earlier
+    host reaches it; no in-workspace path does.
+  - It is future, release-relevant work, not S122 acceptance evidence, and
+    `qa` accepts no residual for it.
+- **Route.** `design`(platform) with `arch`. Any correction changes the
+  host–DLL boundary and passes the user gate. `qa` allocates evidence once a
+  shape is chosen. `sprint` and the user decide whether it is filed or
+  deferred.
+
+### Maintenance and future items
+
+- **Maintenance.**
+  - The `clippy -D warnings` failures in `cranelisp-types` and the three
+    warnings in `cranelisp-platform/src/lib.rs` are in files that P-1 left
+    byte-identical to `56e4d2e1`. They are not P-1 gate failures, because
+    that gate is "no new lint". They route to `dev`(types) and
+    `dev`(platform).
+  - `cargo fmt --check` reports drift in the files `test` listed, including
+    committed `tests/spec_08_modules.rs`. It is not a gate; each owner
+    formats the file when next touching it.
+  - The `_v8` pin can converge onto P-1's helper when `dev`(platform) next
+    touches the file (review advisory 3).
+- **Future.** Per-publication overwriting of `unresolved_dispatch` in REPL
+  sessions (int review A-3) is a `design`(int) lifecycle question. It has no
+  observed failure, and `qa` allocates evidence when a condition is stated.
+
+## Correction basket — closing QA judgment (2026-09-26)
+
+**Basis.** `.local/s122-batch-typecheck-dev-result.md` and its review,
+`.local/s122-batch-typecheck-rq1-dev-result.md`,
+`.local/s122-batch-followup-test-result.md`,
+`.local/s122-batch-int-r1-review-result.md`,
+`.local/s122-batch-typecheck-rq-review-result.md`, and the logs they cite.
+This is correction-basket adequacy, not sprint acceptance. The
+finding-scoped re-review resolved RQ-1 and RQ-2, accepted the HKT stop rule,
+and left advisories AD-6 (below, allocated) and AD-7 (`test`).
+
+### Corrections
+
+| Item | Verdict | Remaining before closure |
+|---|---|---|
+| DB-1 | **Adequate for the single-signature routes and both clusters.** Module cells RED-first with the detection proof; the e2e cell passes all six legs, each as a type error. X1 and X2 have no pre-fix e2e observation; their pre-fix states rest on the module control (GREEN) and function-type cell (RED). The multi-signature positive cell is a verified negative-leg member | The clause-arm rejection cell below |
+| R1-V | **Adequate.** RED-first 4 of 4 with the detection proof; e2e RED before the fix, GREEN with its control after | None for evidence. Review AD-1 (stale comments, `dev`) and AD-2 (`design`) are not evidence items |
+| LD-9 | **Adequate; the evidence closes.** R-1 is structural: the exhaustive destructure fails with E0027 on a planted field, and the pre-fix body did not. The re-check found no new finding, and [int §7.6.2.1](../../design/int/int.md)'s grade carries the reviewed wording. The REPL-turn path stays *asserted* with its falsifier | The `fixed=` stamp after the commit (`sprint`) |
+| P-1 | Closed and adequate, unchanged. The `_v11` pins are named in the e2e comment | None |
+| RQ-2 fixture | **Attribution closed: a fixture defect**, entered when the D4 cell was written. It required acceptance of a same-cluster pin that §3.9.2 rejects, and DB-1 hid it. The repaired fixture has its contrast: without the impl, a type error naming `eqmod/Eq`; with it, exit 0. D4's old face would fail the cell either way. Limit: a D4 regression cannot be planted. Re-review resolved | AD-7 comment repair (`test`, not a gate) |
+
+**Multi-signature clause-arm rejection (review AD-6) — allocated to
+`dev`(typecheck), module.**
+
+- Plausible wrong outcome: the settlement check stops visiting
+  multi-signature clause registrations. Every present cell stays GREEN, and
+  an unimplemented bound on a clause is accepted, which is DB-1's own
+  `wrong-accept`.
+- The positive clause cell cannot see it, because an accepted program never
+  reaches the arm that builds the failure.
+- Condition: `DECLARED_BOUND_WORLD` with clause 1's bound changed from `:Tr`
+  to `:Ts`, as in the RQ-1 visit's temporary variant. It is rejected, naming
+  `Ts`, `U`, the parameter, and the authored family `f`, not an internal
+  clause name. The location lies within `f`'s definition; the cell does not
+  require a particular clause span (§9.2.1 does not state one).
+- Detection is already recorded: that program was accepted under the
+  discard mutant and rejected on the real source
+  (`.local/s122-batch-typecheck-rq1-dev-mutant.log`). No new mutant run is
+  required.
+
+**HKT stop rule — accepted; the allocated cell is retired.** A declared
+bound is written only from parameter-position annotations on a kind-`*`
+variable. The only candidate, `(defn h [:Functor x] 7)` called as
+`(h (Some 1))`, is outside the language: spec §7.8.3 excludes functions
+polymorphic over all instances of an HKT trait, and §3.7 has kind-`* -> *`
+constructors implement such traits. The current acceptance of that program
+is a characterization, and no cell pins it. Its meaning is a normative
+question below.
+
+**Bands (applied).** [Spec §3.9.2](../../spec/03-types.md#392-trait-constraint-annotations)
+is `[Tested+Neg]`, citing the DB-1 e2e cell beside LB-1, and the §3.9
+heading's `[S122 …]` tag is removed.
+[§8.11.2](../../spec/08-modules.md#8112-module-resolution-search-order)
+cites R1-V's cell and keeps `[S122 …]` for IR-1's RED import and export
+positions.
+
+### Defects and questions for the user
+
+None of these is an accepted residual. Each Phase 5 defect is fixed,
+deferred with a rationale the user approves, or Phase 5 closes short
+([METHOD §2.4](../../sprints/METHOD.md#24-deferral)).
+
+| ID | Classification | Evidence | Route |
+|---|---|---|---|
+| RR-1 face (i) | **Phase 5 defect**, acceptance, `mode-divergence` face; class `shared-state-write-race`. **Attribution supported:** the `c`-first control never showed it (0 of 460 sessions), and in all 5 captured failures the scheduler trace orders `a` failed before `c` registered | Committed RED cell; about 24% of sessions alone, 32% under load | `design`(int), then `dev`(src) |
+| RR-1 face (ii) | **Phase 5 defect, memory-safety face:** a REPL SIGSEGV at `(g)` over unchanged cached sources. **Mechanism unknown.** The control cuts it about tenfold (9 of 400 sessions) but does not remove it. Face (i) sessions also end in SIGSEGV at `(g)` after the failed import, so a call through an unpopulated slot is a hypothesis for both, not an observation | No trace survives the signal; the scheduler and GOT traces are flushed at drop | See the decision below |
+| IR-1 | **Phase 5 defect**, `resolver-mirror`. Both subjects RED as predicted, both controls GREEN | Committed RED cell | `design`(int) for both resolution stages, then `dev`(src). A deferral must name the §8.11.2.1 divergence R1-V now exposes: `(import [q …])` reaches the undeclared child while `q/…` reaches the root |
+| BN-1 | **Phase 5 defect**, `wrong-accept`. Typecheck accepts `tr` at `main/U` through `m`'s impl for `m/U`; the observed face is a loud codegen entry-miss (`m/Tr.tr$main/U`). No silent wrong dispatch is observed. The control (`V`) is rejected as a type error | Committed RED cell | `design`(typecheck), then `dev`(typecheck). §9.2.1's shared step inherits it |
+| HKT annotation | **Normative loose end.** Whether a parameter annotation naming a higher-kinded trait is rejected as a kind mismatch. Today it is silently accepted, with unspecified meaning. It does not bear on DB-1 | Source read and one deleted probe | `spec` frames it; the user decides |
+| PM-1 | Unchanged: future versus now is pending with the user | — | `sprint` and the user |
+
+**RR-1 face (ii) decision (user, through `sprint`).** QA recommends
+sequencing, not a new capability. Repair face (i) first. Then re-run the
+same stress capture on the corrected build and on the current control, with
+the same input, and state face (ii)'s residual rate as a number. Only if it
+stays non-zero is an observation that survives the signal needed. The
+options, not decided here, are core-dump capture (environment) or an
+unbuffered trace mode (`dev`(src), a product diagnostic). Either is the
+user's choice.
+
+**Not allocated.**
+
+- The rewrite cell's session assertion does not require the import to
+  succeed, so face (i) appears there as face (iii). The committed RR-1 cell
+  already carries face (i). Revisit only if the rewrite cell stays
+  intermittent after RR-1 is repaired.
+- X1's bare `U` rendering is an instance of review AD-4, already a
+  `design`(typecheck) lead ([typecheck §11](../../design/typecheck/typecheck.md#11-open-design-items)).
+- Review AD-7: the D4 fixture's header (`tests/spec_08_modules.rs`, above
+  the cell) still describes D4 in the present tense, and its claim that a
+  single `:Eq a` annotation is read only as a type is now false. This is
+  maintenance for `test` on its next visit, not a gate.
+
+### Evidence limits
+
+- **No full suite on the current tree.** The last full run (6158 of 6161)
+  preceded the fixture repair, the `test` cells, and the RQ-1 cell. Since
+  then there has been one focused run of 18 tests, with 4 intended REDs, and
+  the typecheck crate tier (940 of 940).
+- Before the commit, one `cargo nextest run --no-fail-fast` must show exactly:
+  - IR-1, BN-1 and the RR-1 cell RED;
+  - the two older REPL cache cells either GREEN or RED only at their RR-1
+    trace sites.
+
+  Any other RED is a regression.
+- DB-1's X1 and X2, and the clause-arm rejection, have module-seam pre-fix
+  evidence only.
+
+### User disposition of PM-1 — 2026-09-27
+
+The user deferred the host–DLL version-alignment protocol to a future sprint
+and prioritised RR-1 now. [ACT-0993](../../sprints/actions/ACT-0993-platform-dll-version-alignment-protocol.md)
+carries the requirement, risk and completion evidence. This supersedes the
+earlier pending future-versus-now question; it does not establish safe loading
+of incompatible DLL layouts.
+
+## RR-1 correction — evidence allocation (2026-09-27)
+
+Governs the face (i) correction in [int §7.1](../../design/int/int.md#71-cache-hit-flow-inside-register_module)
+(*restore before load*, *one load entry*) and the face (ii) remeasurement that
+the [face (ii) decision](#defects-and-questions-for-the-user) sequences after
+it. No residual is accepted here.
+
+**Pre-fix baseline (reused, not re-run).** Recorded in
+`.local/s122-batch-followup-test-result.md` §RR-1 on the same fixture and
+harness: committed cell RED in 10 of 10 runs; subject sessions alone 97 of
+400 failed (a classified 200: 20 face (i), 21 face (ii)); `c`-first control
+9 of 400, all face (ii); under whole-binary load 27 of 200 face (i); rewrite
+cell 5 of 30 at `cache.rs:2638`. No isolated pre-fix build exists, so
+post-fix runs compare with these counts; timing and machine load are not held
+constant.
+
+**Session faces.** Every allocation below classifies each REPL session:
+
+| Face | Observation |
+|---|---|
+| (i) | stdout contains `unresolved symbol` |
+| (ii) | terminated by a signal, with no `unresolved symbol` |
+| hang | the harness timeout fires; a stranded hold is the plausible cause |
+| other | any other failure of the cell's session predicate |
+
+**Allocations.**
+
+| ID | Class | Condition | Wrong outcome it discriminates | Layer and cost |
+|---|---|---|---|---|
+| M-1 | Maintenance | The committed RR-1 cell's failure message counts faces (ii), hang and other beside (i). Its pass predicate is unchanged | A face (ii)-only RED read as a face (i) regression | `test`, one message change |
+| A-1 | Acceptance, face (i) | Zero face (i) sessions across E-1 and E-2, and the rewrite cell passes 30 of 30 under E-2 | The claim ignores the hold, or a path still loads before the walk | `test`, e2e stress, about 1 min |
+| F-1 | Safety fence | Zero hang sessions across E-1, E-2 and C-1 | A hold stranded on some exit path hangs the REPL or `--run` | Same runs; U5 is the module seam |
+| O-1 | Diagnostic observer | Face (ii) counts and rates on the corrected build, for the subject, the expression-turn cell and the `c`-first control | — (decides whether C-1 runs) | Same runs |
+| C-1 | Diagnostic observer, conditional | Runs only when O-1 records at least one face (ii) session. See *C-1* below | A readiness-independent crash taken for the readiness lead | `test`, e2e, about 1 min |
+
+- **E-1 (alone).** The RR-1 subject and a temporary `c`-first control cell,
+  run together, `--stress-count 20`: 400 sessions each.
+- **E-2 (under load).** The whole `cache` binary, including that temporary
+  control, `--stress-count 30`: 600 subject sessions, and 30 runs each of the
+  rewrite and expression-turn cells.
+- **A-1 strength.** At the pre-fix face (i) rate of about 10%, zero in 1000
+  sessions has probability below 10⁻⁴⁰; zero rewrite failures in 30 at 1 in 6
+  has probability about 0.004.
+- **Module evidence (`dev`, as designed).** U1–U6 and the planted-hold
+  detection proof at `src/scheduler/tests.rs` discriminate the claim
+  predicate. They are the red-to-green record for the hold, because the
+  committed cell cannot turn GREEN while face (ii) remains.
+- **One load entry.** No e2e cell is allocated. The RR-1 fixture defines no
+  macro, so it never reaches the recogniser, and no recogniser failure has been
+  observed. A claim-operation unit row cannot show that every loader calls the
+  claim. `design`(int) and `dev`(src) settle that grade; a loader that accepts
+  only a scheduler-minted claim value makes a bypass fail to compile.
+
+**C-1 — readiness-wait control.** It tests the source-read lead in
+[int §16.0](../../design/int/int.md): a cache-hit import returns without
+waiting for in-memory readiness, and the next turn calls through the restored
+module's GOT.
+
+| Session | Stdin |
+|---|---|
+| Subject | `(import [a [g]])`, `/run-tests a`, `/run-tests c`, `(g)`, `/quit` |
+| Timing control | the same, with both `/run-tests` naming a module that is not registered, so the `is_registered` guard skips the wait |
+
+- **Size.** 1000 sessions each, alone.
+- **Supported:** subject 0 face (ii) and control at least 5. Route the
+  attribution *REPL execution before in-memory readiness* to `design`(int).
+  **Refuter:** any subject face (ii).
+- **Not discriminated:** both below 5. The delay of two added turns explains as
+  much as the wait.
+- **Refuted** or **not discriminated:** face (ii) stays unattributed.
+  Observation that survives the signal becomes the user's choice through
+  `sprint` (core-dump capture or an unbuffered trace mode).
+- **Seam observation, when it costs nothing.** If the kernel log is already
+  readable without a setup change, record each face (ii) crash's faulting
+  instruction address. An address near zero is consistent with a call through
+  an unpopulated slot; an address in a mapped JIT or object range is not.
+
+**Not allocated.** The fresh-dependency residual (int §7.1), the
+`contains_key` over an empty seeded table, and the rewrite cell's assertion
+of import success stay open and unaccepted. The last is revisited only if the
+rewrite cell fails in E-2.
+
+**Before commit.** [Readiness correction — before commit](#readiness-correction--before-commit)
+governs.
+
+## RR-1 face (ii) — attribution and readiness-correction evidence (2026-09-27)
+
+Governs the next `src/` correction: the face (ii) readiness fix plus review
+R-1 and R-2 of the restore-before-load change. Authority: [int §7.1](../../design/int/int.md#71-cache-hit-flow-inside-register_module)
+and §16.0 RR-1, `repl/spec/14-file-watching.md` §14.7 (the cell's trace),
+and the REPL/`--run` parity rule. `design`(int) chooses the seam and covering
+set; the conditions below do not.
+
+### Executed evidence — adequacy
+
+QA matched the three log hashes to `test`'s report and re-tallied each log.
+The counts agree.
+
+| Population (corrected build) | Sessions | Face (i) | Face (ii) | Hang | Other |
+|---|---|---|---|---|---|
+| Subject, alone (E-1) | 400 | 0 | 15 | 0 | 0 |
+| `c`-first, alone (E-1) | 400 | 0 | 56 | 0 | 0 |
+| Subject, under load (E-2) | 600 | 0 | 36 | 0 | 0 |
+| `c`-first, under load (E-2) | 600 | 0 | 62 | 0 | 0 |
+| Expression-turn cell (E-2) | 30 runs | 0 | 4 runs | 0 | 0 |
+| C-1 subject, waits on `a` and `c` | 1000 | 0 | 0 | 0 | 0 |
+| C-1 timing control | 1000 | 0 | 31 | 0 | 0 |
+
+- **A-1 met.** Zero face (i) in 1000 subject and 1000 `c`-first sessions.
+  The rewrite cell passed 30 of 30 runs.
+- **F-1 met.** Zero hangs in 4000 RR-1-fixture sessions.
+- **M-1 delivered.** The RR-1 cell's assertion is at `tests/cache.rs:2779`.
+- **C-1 supported.** Both sessions have the same number of turns. At the
+  control's rate, zero in 1000 has probability about 2 × 10⁻¹⁴.
+
+**Attribution — supported by a discriminating control, not observed at its
+seam.**
+
+- **Mechanism:** a REPL turn executes into a cache-restored module before
+  that module's in-memory load has completed.
+- **Source:** the cache-hit import arm (`src/process_form/dependency.rs`,
+  `try_cache_hit_load` then `install_imports` then `continue`) returns with no
+  wait. The fresh path waits through `register_dep_for_eval`, and `--run`
+  waits for every module.
+- **Limit:** no fault address was captured. The seam state, such as an
+  unpopulated slot or unloaded code, is inferred rather than observed.
+- **Refuter:** any face (ii) session in the corrected populations of
+  [Readiness correction — evidence delta](#readiness-correction--evidence-delta).
+- **Entry point:** the §7.1 cache-hit flow has no readiness step before a REPL
+  turn continues, and the import arm realizes that flow.
+- **Defect class:** `shared-state-write-race`, as for face (i).
+
+**Double-restore lead — observed absent.** `CRANELISP_MODULE_TRACE` writes
+unbuffered, so its output survives the signal. Across the 104 first-failure
+face (ii) sessions in the three logs, each module logged exactly one
+`cache hit` line. Review lead 1 is therefore not the mechanism of these
+crashes.
+
+**`test` observations.**
+
+1. **`c`-first rate reversed after face (i)'s fix.**
+   - Pre-fix and post-fix runs had different timing and load, so the change
+     is not attributed.
+   - The reversal is consistent with a readiness window that the hold moved.
+   - No evidence is added; the correction must drive both populations to
+     zero.
+2. **The committed cell is no longer reliably RED.**
+   - At 3.75% per session, 20 sessions detect a regression about half the
+     time.
+   - S-2 and M-2 below resolve this.
+3. **Line numbers.** Superseded by M-1's location above.
+
+### Review findings — classification
+
+| Finding | Class and risk | Disposition |
+|---|---|---|
+| R-1: an unwinding loader strands the recogniser's claim | Safety fence (F-1's hang invariant). Confirmed at source: the recogniser calls `handle_cached_codegen` with no `catch_unwind`, while the ladder has one. The loader's `Err` path already reports failure. Low likelihood, REPL or `--run` hang. It regresses uncommitted work | Required in this `src` visit. Evidence U-R1 |
+| R-2: *one load entry* is graded beyond its evidence | Grade truthfulness, not an observed defect. Both production loaders take the claim today | QA decides. Allocate no recogniser row and no e2e. The grade must be either structural or asserted with a falsifier. **Structural:** a loader accepts only a claim value that the scheduler mints. `review` confirms the constructor's privacy; a compile-fail test is not allocated. **Asserted:** use review's `CRANELISP_GOT_TRACE` falsifier, recorded as debt. Structural is preferred because the same value can close R-1 |
+| A-1: the hold spans the walk only by a named binding | Maintenance | `dev`'s discretion. M-1's face count detects a face (i) regression, as the green cell will once face (ii) is fixed |
+| A-2: the failed-load wait row never waits | Weak `dev` module witness | U-R1 parks the waiter first. If U-R1 does not cover it, `dev` repairs the row or narrows its name |
+| A-3: *Pending* for a state that is not a cached object | Unreachable, per review | No evidence. The bound's wording belongs to `design`(int) |
+| A-4: `try_claim_cached_load` has no production caller | Maintenance | `dev`'s discretion |
+| Lead 1: a concurrent double restore replaces a table | Intake candidate | Absent from every inspected crash (above). Not in this fix |
+| Lead 2: a failed load leaves GOT slots pointing into freed memory | Intake candidate, unobserved | Not in this fix |
+
+### Readiness correction — evidence delta
+
+**Condition RC.** A REPL turn that reaches code in a cache-restored module
+executes only after the in-memory load of every module that code can reach
+has completed. If one of those loads fails, the turn reports the failure and
+executes nothing.
+
+| ID | Class | Condition | Wrong outcome it discriminates | Layer, owner, cost |
+|---|---|---|---|---|
+| U-RC | Acceptance (mechanism) | Rows at the seam that carries the wait, each waiting row bounded by a timed receive: (a) a held or claimed load blocks the wait until that load completes; (b) the same holds for a load outstanding from an earlier registration after a later one has completed; (c) a failed load returns its error and no readiness, on every call; (d) control: no outstanding cached load, including a fresh registration, causes no wait. The wait has no pre-fix form, so planted faults arm the rows: treating held and claimed loads as settled turns (a) and (b) RED with (d) GREEN; ignoring failure turns (c) RED | The wait covers only the newest or named load, or execution proceeds after a failure | `dev`(src) module rows |
+| E-RC | Design record | `design`(int) enumerates every eval-path cache-hit entry and states whether the wait covers it. Entries include import, qualified-reference autoload (`drive_module_dep`, which awaits only the named module), export, submodule and prelude. U-RC grades one convergent seam. An entry left uncovered is a named residual | A per-entry correction misses an entry | `design`(int); no test |
+| A-RC | Acceptance, face (ii) | Rerun E-1 and E-2 with `c`-first as S-2. Face (ii), face (i), hang and other must all be zero across 2000 sessions. The expression-turn cell must pass 30 of 30 in E-2 | The fix closes the named window but not the mechanism | `test`, about 2 min, the same commands |
+| S-2 | Safety fence | A permanent `c`-first sibling of the RR-1 cell: the subject with `(import [c [f]])` prepended, the same predicate and 20 sessions, and a face-counting message. It carries `class=shared-state-write-race` and its locus is the cache-hit import arm | A regression that waits only for newly restored modules. The sibling detects about 95% per run, against the subject's 53% | `test`, about 1 s per run |
+| M-2 | Maintenance | Restate `RR1_SESSIONS`' "one in four" claim as the measured rates. At closure, add `fixed=` and use the past tense | A stale reliability claim hides the detection gap | `test`, comment only |
+| U-R1 | Safety fence | A claimed load that fails, including by unwinding, leaves the module failed and unclaimed, and a waiter parked beforehand wakes with *Unavailable*. The shared path that both entries use carries it | The claim is stranded, and later waits hang | `dev`(src) module row. A red on the current source, via a waiter timeout, or a planted fault on the new mechanism |
+
+- **Red record reused.** The E-1, E-2 and C-1 counts above come from the
+  build that this correction changes. They are the pre-correction baseline
+  for condition RC and A-RC, and no pre-correction rerun is needed. U-RC and
+  U-R1 test new mechanism that cannot run on the current source; their
+  planted faults are their detection record. S-2's red is the temporary cell's
+  (20 of 20 iterations in E-1, 25 of 30 in E-2), provided that S-2 matches
+  its specified fixture, stdin, predicate and count.
+- **A-RC strength.** Zero in 2000 bounds the residual per session at about
+  0.15% (95%). The pre-correction rates were 3.75% to 14%.
+- **Stop.** On any face (ii) session, the attribution is incomplete: stop, and
+  make no further correction. The next observation tool is then the user's
+  choice through `sprint`, either core-dump capture (an environment change)
+  or an unbuffered trace. On any hang, F-1 has failed.
+- **Not allocated:**
+  - a recogniser row or e2e;
+  - a committed compile-fail test;
+  - an e2e for the failed-load refusal. Reaching it needs a forced loader
+    failure; the readiness value already prevents execution, and U-RC (c)
+    carries the refusal;
+  - a larger session count;
+  - fault-address capture;
+  - leads 1 and 2;
+  - the fresh-dependency residual and the other items above that remain
+    open and unaccepted.
+
+### Readiness correction — design reconciliation
+
+[int §7.1](../../design/int/int.md#71-cache-hit-flow-inside-register_module)
+*load before execution* realizes condition RC with one wait, global over
+cached loads, before every REPL code-running step.
+
+- **Condition RC stands.** The design waits and refuses more widely than RC
+  requires. The conditions above do not narrow it. Refusing unrelated steps
+  while a failed cached load stands is design behaviour, carried by U-RC (c)
+  and reported to the user; it is not an accepted residual.
+- **E-RC discharged.** The §7.1 coverage table covers all seven cache-hit
+  entries on both threads, including qualified-reference autoload. The
+  conditional autoload probe is not required.
+- **Structural grades.** R-2 (every load holds a claim) and every REPL
+  code-running step passing the wait are structural. `review` confirms that
+  the claim and readiness values have no constructor outside the scheduler.
+  `dev` records, then reverts, two compile errors in the change set: the
+  recogniser calling the loader without a claim, and expression execution
+  without readiness. These are detection observations, not committed tests.
+  The REPL's test commands execute only through `run_test_by_name`, whose
+  sole caller is `format_test_run`; readiness required at either holds the
+  grade for today's callers.
+- **Named exclusions.** The five *Not covered* residuals in §7.1 (fresh work
+  in flight, installed but not registered, forgotten failed load, macro
+  clause execution, claim and re-registration) are open, unaccepted and
+  unobserved. None is the
+  demonstrated RR-1 mechanism, and none changes this correction's
+  readiness. Each carries its §7.1 falsifier. Under *Stop*, a face (ii)
+  session in A-RC is checked against the second exclusion through its
+  module trace.
+- **Hang residual.** U-RC completes loads by hand. That the priority ladder
+  claims every claimable load in production is observed by F-1 through
+  A-RC and by the full suite's warm-cache REPL cells.
+
+### Readiness correction — before commit
+
+- Run one full suite on the final source. The only REDs allowed are BN-1 and
+  IR-1; the RR-1 cell, S-2 and the expression-turn cell must pass.
+- A single passing run is necessary but not sufficient; A-RC carries the
+  statistical acceptance.
+- Until the correction lands, the RR-1 cell may be RED only by face (ii), and
+  the expression-turn cell may fail only by face (ii) at `tests/cache.rs:2630`.
+
+### Readiness correction — adequacy (2026-09-27)
+
+**Adequate.** Condition RC, R-1 and R-2 are met on the delivered tree. No
+blocking finding and no failed condition remains. Opening the logs and
+sources confirmed every hash and count that `test` and `dev` reported.
+
+| ID | Class | Result | Evidence |
+|---|---|---|---|
+| A-RC | Acceptance, face (ii) | Met. Zero sessions of any face across 1000 subject and 1000 `c`-first sessions. The expression-turn and rewrite cells passed 30 of 30. Pre-correction: 15, 56, 36 and 62 face (ii) sessions in the same four populations | `.local/s122-rr1-final-e1.log` (20 of 20 iterations), `.local/s122-rr1-final-e2.log` (30 of 30, 72 cache tests each) |
+| F-1 | Safety fence | Met. Zero hangs. Production claim liveness is observed through these sessions, the expression-turn cell and the full suite's warm-cache REPL cells | Same logs |
+| U-RC, U-R1 | Acceptance, safety fence | Met. Plants 1–3 turned the predicted rows RED with the negative rows GREEN; all rows pass on the final source | `dev` plant logs; library tier 854 of 854 |
+| R-2, readiness | Structural | Met. The claim and readiness values have no constructor outside the scheduler. The recorded compile errors are plants 4a and 4b (`E0061`), and 4a′ and 4b′ (`E0451`) | Review; plant logs |
+| S-2 | Safety fence | Delivered. `tests/cache.rs::cache_repl_import_of_callee_module_then_restored_caller_evaluates` | See below |
+| M-2 | Maintenance | Delivered. The stamps have no sha until the commit | See below |
+| Before commit | — | Met. The full suite ran 6185 tests: 6183 passed, and only BN-1 and IR-1 failed. The RR-1 cell, S-2, the expression-turn cell and the rewrite cell passed | `.local/s122-rr1-final-full.log` |
+
+**S-2 and its reused red.**
+- The subject and sibling share one helper,
+  `rr1_sessions_show_11(stdin)`. The helper is the committed loop, fixture,
+  trace variables, predicate, count and face count, with the stdin passed in.
+  The diff changes only the stdin and the failure message.
+- The sibling's stdin is exactly the specified one. The temporary control was
+  a copy of the same committed loop with this stdin. The only differences are
+  the message and where the stdin comes from.
+- So the temporary cell's red is S-2's red: 20 of 20 iterations RED alone,
+  and 25 of 30 under load. This rests on the postfix report's description and
+  logs, because the temporary source was removed. No pre-correction rerun is
+  needed.
+- The sibling's locus, `dependency.rs::handle_import`, holds the cache-hit
+  import arm. The subject keeps its face (i) locus.
+
+**M-2 wording.** The stated rates match the recorded counts: 3.75%, 6.0%,
+14.0% and 10.3%. "RED about half the time" summarises the computed 53% for
+the subject. Observed, the subject was RED in 7 of 20 runs alone and 24 of
+30 under load.
+
+**Limits.**
+- The zero-in-2000 bound, about 0.15% per session at 95%, holds only under
+  this machine's timing.
+- The face (ii) mechanism is supported by a discriminating control and by
+  its removal: after the correction, no session failed. It is not observed at
+  its seam, because no fault address was captured.
+- The four earlier exclusions, the fresh-dependency residual and leads 1 and 2
+  remain open and unaccepted. This fixture reaches none of them.
+- The FR-1 doc-comment repair to `src/scheduler.rs` came after the executed
+  evidence. It changes no behavior and needs no rerun.
+
+**Review findings.**
+
+| Finding | Classification |
+|---|---|
+| FR-1, FR-2 | Record repairs. The mechanical handoffs are applied (`.local/s122-rr1-mechanical-repairs.md`). No evidence changes |
+| FA-1: a claim is not bound to its registration | QA intake, a candidate residual. It is not RR-1 work. Checked at source: `re_register_module` resets a `TypecheckDone` module that may still be claimed. The loaded completion is unguarded and sets `inmem_done` on the fresh registration, which satisfies the named-module and all-module in-memory waits. The unguarded completion predates RR-1, which does not introduce this path, and A-RC includes no watcher edit. Unobserved. It is recorded as the fifth §7.1 exclusion, with its falsifier. Lowest discriminating layer when scheduled: a `dev`(src) scheduler row that re-registers a claimed module and then completes the stale claim as loaded. The row pins the state transition, but it cannot show harm; harm needs the watcher e2e in the falsifier. Allocate neither row until `design`(int) decides whether completions are bound to the registration |
+| FA-2: a parked waiter is inferred from 100 ms | Advisory. No evidence allocated. A lost wake alone escapes detection only when the waiter fails to park within 100 ms. `dev` may acknowledge it |
+
+**Commit step.** Append `/<sha>` to the two `fixed=S122` stamps on the RR-1
+cells in `tests/cache.rs`.

@@ -41,6 +41,7 @@ fn same_module_mono_lookup_selects_the_exact_checked_publication() {
                 param_types: vec![Type::Var(var)],
                 ret_ty: Type::Int,
                 written_var_scope: HashMap::new(),
+                declared_bounds: Vec::new(),
                 span: Span::new(offset, offset + 20),
             })
             .unwrap();

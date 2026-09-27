@@ -1089,6 +1089,12 @@ impl CompilerSession {
         {
             return crate::style::error_line(&error.to_string());
         }
+        // Discovery lists only tests whose code is present, so it follows
+        // the cached-load wait (`design/int/int.md` §7.1).
+        let ready = match self.shared.scheduler.wait_cached_loads_settled() {
+            Ok(ready) => ready,
+            Err(error) => return crate::style::error_line(&error.to_string()),
+        };
         // Core discovery — shared with discover_tests_extern.
         let test_names = discover_test_names(&self.shared.symbol_tables, &module);
         if test_names.is_empty() {
@@ -1098,7 +1104,7 @@ impl CompilerSession {
                 format!("No test-* functions found in '{arg}'.")
             };
         }
-        self.format_test_run(&test_names)
+        self.format_test_run(&test_names, ready)
     }
 
     /// /run-all-tests handler: discover and run tests in all project-root modules.
@@ -1130,6 +1136,10 @@ impl CompilerSession {
     }
 
     pub(crate) fn handle_run_all_tests(&self) -> String {
+        let ready = match self.shared.scheduler.wait_cached_loads_settled() {
+            Ok(ready) => ready,
+            Err(error) => return crate::style::error_line(&error.to_string()),
+        };
         let mut all_names: Vec<String> = Vec::new();
         for entry in self.shared.typecheck_products.iter() {
             let module_path = entry.key();
@@ -1145,12 +1155,16 @@ impl CompilerSession {
         if all_names.is_empty() {
             return "No test-* functions found in any project module.".to_string();
         }
-        self.format_test_run(&all_names)
+        self.format_test_run(&all_names, ready)
     }
 
     /// Re-run a failing test with tracing by eval'ing `(trace (test-name))`.
     /// Format a test run: run all tests via shared core logic.
-    pub(crate) fn format_test_run(&self, test_names: &[String]) -> String {
+    pub(crate) fn format_test_run(
+        &self,
+        test_names: &[String],
+        ready: crate::scheduler::ExecutionReadiness,
+    ) -> String {
         let start = std::time::Instant::now();
         let mut passed = 0usize;
         let mut failed = 0usize;
@@ -1158,8 +1172,12 @@ impl CompilerSession {
 
         for name in test_names {
             // Core test execution — shared with run_test_extern.
-            let outcome =
-                run_test_by_name(&self.shared.symbol_tables, name, &self.current_repl_module);
+            let outcome = run_test_by_name(
+                &self.shared.symbol_tables,
+                name,
+                &self.current_repl_module,
+                &ready,
+            );
             let dots = ".".repeat(40usize.saturating_sub(name.len()));
             match &outcome {
                 TestOutcome::Pass { .. } => {

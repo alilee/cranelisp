@@ -1400,6 +1400,26 @@ mod lookup_dependencies {
         assert!(recorded.iter().any(|module| module == "r"), "{recorded:?}");
     }
 
+    const EMPTY_MACRO_B: (&str, &str) = ("b.cl", "(defmacro m [] `(begin))\n");
+
+    // spec: design/int/int.md §7.6.2.1 — a module whose only form is a
+    // qualified macro head expanding to nothing still publishes its module.
+    #[test]
+    fn qualified_macro_head_with_empty_expansion_publishes_its_module() {
+        let mut project = Project::new(&[EMPTY_MACRO_B]);
+        project.compile("a", "(b/m)\n").unwrap();
+        assert_eq!(project.lookup_dependencies("a"), ["b"]);
+    }
+
+    // spec: design/int/int.md §7.6.2.1 — a bare head with the same empty
+    // expansion owes nothing and publishes nothing.
+    #[test]
+    fn bare_macro_head_with_empty_expansion_publishes_nothing() {
+        let mut project = Project::new(&[EMPTY_MACRO_B]);
+        project.compile("a", "(import [b [m]])\n(m)\n").unwrap();
+        assert!(project.lookup_dependencies("a").is_empty());
+    }
+
     // spec: design/int/int.md §7.6.2 — a failed cluster check drops the
     // attempt, so nothing is published (Principle 26).
     #[test]

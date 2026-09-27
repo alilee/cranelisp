@@ -1372,6 +1372,57 @@ fn platform_fn_repr_c_field_order_v8() {
     );
 }
 
+/// Fails when `offs`, listed in the frozen declaration order, is not strictly
+/// increasing from 0 — i.e. when the `#[repr(C)]` declaration was reordered.
+fn assert_declaration_order_frozen(ty: &str, abi: u32, offs: &[usize]) {
+    assert_eq!(
+        offs[0], 0,
+        "{ty}: the ABI v{abi} leading field must sit at offset 0"
+    );
+    assert!(
+        offs.windows(2).all(|w| w[0] < w[1]),
+        "{ty} field order frozen at ABI v{abi}: offsets must be strictly \
+         increasing in declaration order, got {offs:?}"
+    );
+}
+
+// design: platform.md §4.3 — the DLL builds `PlatformManifest` and the host
+// reads it by byte offset; a reorder without an ABI_VERSION bump misreads an
+// out-of-tree DLL. `abi_version` must lead under every version, because the
+// host reads it before trusting any other field.
+#[test]
+fn platform_manifest_repr_c_field_order_v11() {
+    use core::mem::offset_of;
+    assert_declaration_order_frozen(
+        "PlatformManifest",
+        11,
+        &[
+            offset_of!(PlatformManifest, abi_version),
+            offset_of!(PlatformManifest, name),
+            offset_of!(PlatformManifest, name_len),
+            offset_of!(PlatformManifest, version),
+            offset_of!(PlatformManifest, version_len),
+            offset_of!(PlatformManifest, functions),
+            offset_of!(PlatformManifest, function_count),
+        ],
+    );
+}
+
+// design: platform.md §4.3 — the host builds `HostCallbacks` and the DLL
+// reads it by byte offset.
+#[test]
+fn host_callbacks_repr_c_field_order_v11() {
+    use core::mem::offset_of;
+    assert_declaration_order_frozen(
+        "HostCallbacks",
+        11,
+        &[
+            offset_of!(HostCallbacks, alloc),
+            offset_of!(HostCallbacks, alloc_with_tag),
+        ],
+    );
+}
+
 // A no-op poll-fn for the manifest-lift test (never called).
 unsafe extern "C" fn dummy_poll(
     _state: *mut core::ffi::c_void,

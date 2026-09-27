@@ -831,7 +831,7 @@ Type annotations constrain the inferred type of a parameter. They appear as colo
 
 A concrete type annotation (`:Int`, `:Bool`, `:String`, `:Float`, or a user-defined type name) unifies the parameter's type variable with the named type. This constrains inference and can catch type errors earlier.
 
-### 3.9.2 Trait Constraint Annotations
+### 3.9.2 Trait Constraint Annotations [Tested+Neg tests/spec_08_modules::fq_stacked_bound_trait_through_alias_resolves_in_aliased_module, tests/spec_03_types::declared_trait_bound_is_checked_at_the_call_site]
 
 A trait name annotation (`:Num`, `:Display`, `:Eq`, `:Ord`, etc.) adds a trait constraint to the parameter's type variable without fixing it to a concrete type. The parameter remains polymorphic but is restricted to types that implement the named trait.
 

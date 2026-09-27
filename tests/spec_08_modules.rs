@@ -976,12 +976,12 @@ fn run_project(files: &[(&str, &str)]) -> helpers::e2e::CrOutput {
 
 // spec: spec/08-modules.md §8.6.6 step 1; spec/03-types.md §3.9.2 — an
 // alias-qualified trait in a stacked bound resolves in the aliased module
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_bound_param found=S122 owner=/dev
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_bound_param found=S122 owner=/dev fixed=S122/56e4d2e1
 // The REPL displays the published scheme, whose constraint must name `zz/Tr`;
 // the spec fixes no constraint order, so either order is accepted. The scheme
-// is observed because `--run` cannot see an unused bound: the open defect DB-1
-// (tests/plan/s122-evidence-delta.md, "Declared bound not checked at the call
-// site") leaves a declared bound unchecked at the call site.
+// was observed because, when this cell was written, `--run` could not see an
+// unused bound: DB-1 (tests/plan/s122-evidence-delta.md, "Declared bound not
+// checked at the call site") left a declared bound unchecked at the call site.
 #[test]
 fn fq_stacked_bound_trait_through_alias_resolves_in_aliased_module() {
     let scheme = |bound: &str| {
@@ -1029,7 +1029,7 @@ fn fq_stacked_bound_trait_through_alias_resolves_in_aliased_module() {
 
 // spec: spec/08-modules.md §8.5.4 edge 3; §8.6.6 step 5 — a stacked bound
 // naming a module with no backing file is a compile-time error
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_bound_param found=S122 owner=/dev
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/register.rs::resolve_bound_param found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn fq_stacked_bound_trait_to_missing_module_rejected_neg() {
     let program = |bound: &str| {
@@ -1067,7 +1067,7 @@ const PATTERN_SHAPES: &str = "(import [primitives [Int]])\n(deftype Circle [:Int
 
 // spec: spec/08-modules.md §8.6.6 step 1; §8.6.5 — an alias-qualified
 // constructor pattern resolves in the aliased module, as its value twin does
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn fq_ctor_pattern_through_alias_resolves_in_aliased_module() {
     let program = |pattern: &str| {
@@ -1102,7 +1102,7 @@ fn fq_ctor_pattern_through_alias_resolves_in_aliased_module() {
 
 // spec: spec/08-modules.md §8.7.3; §8.6.6 — a private constructor is
 // inaccessible through a qualified pattern, as through a qualified value
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev fixed=S122/56e4d2e1
 #[test]
 fn fq_ctor_pattern_private_constructor_rejected_neg() {
     let program = |body: &str| {
@@ -1141,7 +1141,7 @@ fn fq_ctor_pattern_private_constructor_rejected_neg() {
 
 // spec: spec/08-modules.md §8.5.4 edge 1 (pattern position) — a qualified
 // constructor pattern that is the only reference to its module loads it
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::resolve_constructor_entry found=S122 owner=/dev fixed=S122/56e4d2e1
 // `radius` is never called: a later value reference such as
 // `(radius (shapes/Circle 8))` loads `shapes` before the pattern is checked.
 #[test]
@@ -1171,6 +1171,132 @@ fn fq_ctor_pattern_as_only_reference_loads_its_module() {
             "subject: the pattern is the only reference to `shapes`: exits 8",
             subject.status.code() == Some(8),
             &subject,
+        ),
+    ]);
+}
+
+/// Module `q`, or the file-backed `a.q`, whose `g` returns `n`.
+fn q_returning(n: i32) -> String {
+    format!(
+        "(import [primitives [Int]])\n\
+         (deftype T (C [:Int v]))\n\
+         (defn g [] {n})\n\
+         (defn anchor-{n} [] 0)\n"
+    )
+}
+
+// spec: spec/08-modules.md §8.11.2 item 1; §8.11.2.1; §8.6.5 — `q/…` reaches the
+// current module's submodule only when that module declares `(mod q)`; an
+// undeclared `a.q` that another module loaded is not a submodule of `a`, so
+// `q/…` in `a` names the root `q` in value and pattern position alike
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/checker.rs::qualified_candidate_modules found=S122 owner=/dev
+#[test]
+fn qualified_name_to_undeclared_registered_child_resolves_to_root_module() {
+    // `b` loads both `a.q` (11) and the root `q` (99) before `a` is checked,
+    // because `a` imports from `b`.
+    let q = q_returning;
+    let program = |a_decl: &str, subject: &str| {
+        run_project(&[
+            (
+                "main.cl",
+                "(import [primitives [Pure]])\n\
+                 (import [a [h]])\n\
+                 (defn main [] (Pure (h)))\n",
+            ),
+            (
+                "a.cl",
+                &format!("{a_decl}(import [b [anchor]])\n(defn h [] {subject})\n"),
+            ),
+            (
+                "b.cl",
+                "(import [a.q [anchor-11]])\n\
+                 (import [q [anchor-99]])\n\
+                 (defn anchor [] 0)\n",
+            ),
+            ("a/q.cl", &q(11)),
+            ("q.cl", &q(99)),
+        ])
+    };
+    let pattern = "(match (q/C 9) [(q/C v) v])";
+    let value = "(q/g)";
+    let pattern_subject = program("", pattern);
+    let value_subject = program("", value);
+    let pattern_control = program("(mod q)\n", pattern);
+    let value_control = program("(mod q)\n", value);
+    assert_all_legs(&[
+        (
+            "pattern subject, `a` declares no `(mod q)`: exits 9",
+            pattern_subject.status.code() == Some(9),
+            &pattern_subject,
+        ),
+        (
+            "value subject `(q/g)`, `a` declares no `(mod q)`: exits 99 (the root `q`)",
+            value_subject.status.code() == Some(99),
+            &value_subject,
+        ),
+        (
+            "pattern control, `a` declares `(mod q)`: exits 9",
+            pattern_control.status.code() == Some(9),
+            &pattern_control,
+        ),
+        (
+            "value control `(q/g)`, `a` declares `(mod q)`: exits 11 (the child `a.q`)",
+            value_control.status.code() == Some(11),
+            &value_control,
+        ),
+    ]);
+}
+
+// spec: spec/08-modules.md §8.11.2 item 1; §8.11.2.1 — a bare module name in
+// `import` or `export` reaches the current module's submodule only when that
+// module declares `(mod q)`; a file-backed `a/q.cl` that nothing declares is
+// not a submodule of `a`, so the name resolves to the root `q`
+// defect: class=resolver-mirror locus=src/process_form/dependency.rs::resolve_current_module_relative found=S122 owner=/dev
+#[test]
+fn import_and_export_of_undeclared_file_backed_child_resolve_to_root_module() {
+    // `a/q.cl` returns 11 and the root `q.cl` 99; nothing imports `a.q`.
+    // `main` calls `a`'s `entry`.
+    let program = |a_src: &str, entry: &str| {
+        run_project(&[
+            (
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure]])\n\
+                     (import [a [{entry}]])\n\
+                     (defn main [] (Pure ({entry})))\n"
+                ),
+            ),
+            ("a.cl", a_src),
+            ("a/q.cl", &q_returning(11)),
+            ("q.cl", &q_returning(99)),
+        ])
+    };
+    let import = |decl: &str| program(&format!("{decl}(import [q [g]])\n(defn h [] (g))\n"), "h");
+    let export = |decl: &str| program(&format!("{decl}(export [q [g]])\n"), "g");
+    let import_subject = import("");
+    let export_subject = export("");
+    let import_control = import("(mod q)\n");
+    let export_control = export("(mod q)\n");
+    assert_all_legs(&[
+        (
+            "import subject `(import [q [g]])`, `a` declares no `(mod q)`: exits 99 (the root `q`)",
+            import_subject.status.code() == Some(99),
+            &import_subject,
+        ),
+        (
+            "export subject `(export [q [g]])`, `a` declares no `(mod q)`: exits 99 (the root `q`)",
+            export_subject.status.code() == Some(99),
+            &export_subject,
+        ),
+        (
+            "import control, `a` declares `(mod q)`: exits 11 (the child `a.q`)",
+            import_control.status.code() == Some(11),
+            &import_control,
+        ),
+        (
+            "export control, `a` declares `(mod q)`: exits 11 (the child `a.q`)",
+            export_control.status.code() == Some(11),
+            &export_control,
         ),
     ]);
 }
@@ -1213,7 +1339,11 @@ fn alias_only_import_alias_resolves_qualified_call() {
     ] {
         let out = run_main_with_b(&format!("{prefix}{imports}{call}"), ALIAS_TARGET_B);
         if out.status.code() != Some(11) {
-            rejected.push(format!("{shape}: exit={:?}\n{}", out.status.code(), out.stderr));
+            rejected.push(format!(
+                "{shape}: exit={:?}\n{}",
+                out.status.code(),
+                out.stderr
+            ));
         }
     }
     assert!(
@@ -2437,31 +2567,18 @@ fn mod_test_child_in_trait_module_does_not_redefine_parent_trait() {
 //   the parent's TRAIT via `super` MUST resolve that trait as a usable
 //   constraint inside the child's scope.
 //
-// D4 (S86): a test submodule that does `(import [super [Eq]])` and then uses
-// `:Eq` as a parameter constraint fails to resolve the trait in the child's
-// scope. This single-annotation form errors `unknown type \`Eq\` (from module
-// \`\`)` at the child's defn — the bound-resolver roots in the child's
-// (empty/root) module and finds no `TraitDecl` for `Eq`, falling through to the
-// TYPE-resolution path (a single `:Eq a` annotation is read as a type
-// annotation, not a trait bound; only a STACK of 2+ — `:Eq :Eq a` — parses as
-// trait bounds, which under a `user` entry module yields the sprint's reported
-// `unknown trait \`Eq\` (from module \`user\`)`). Both are the same root cause:
-// a super-imported trait is not seeded into the child submodule's
-// constraint-resolution scope. The single-annotation form is the smallest
-// deterministic repro and is what this test pins; the stacked-bound variant is
-// noted for the resolver fix. Distinct from D3: the super-import reorders the
-// load so the parent is NOT re-processed (no "already defined"). Same defect
-// family as the impl-body-scope D1.
-//
-// Minimal, stdlib-free: trait-only parent + `(mod test)`; the child super-imports
-// `Eq` and annotates a parameter `:Eq`. FIXME(/typecheck — D4).
+// D4 (S86) failed to resolve the super-imported trait as a parameter bound.
+// The child must use the parent's Eq, whose Int impl satisfies its call.
 #[test]
 fn mod_test_child_super_imported_parent_trait_resolves_as_constraint() {
     Cranelisp::new()
+        // `Int` implements `Eq` because `(use-it 1)` binds `use-it`'s declared
+        // bound at `Int` (spec/03-types.md §3.9.2).
         .file(
             "eqmod.cl",
-            "(import [primitives [Bool]])\n\
+            "(import [primitives [Bool Int]])\n\
              (deftrait Eq (= [a b] Bool))\n\
+             (impl Eq Int (defn = [a b] true))\n\
              (mod test)",
         )
         .file(
@@ -2480,7 +2597,7 @@ fn mod_test_child_super_imported_parent_trait_resolves_as_constraint() {
         .run("entry.cl")
         .output()
         // CORRECT: the super-imported `Eq` resolves as a constraint inside the
-        // child; the project compiles and main exits 0. Today this FAILS with
+        // child; the project compiles and main exits 0. D4 failed with
         // `type error … unknown type `Eq` (from module ``)` at the child's
         // `use-it` defn, exit 1.
         .assert_exit(0);

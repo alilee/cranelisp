@@ -1327,12 +1327,11 @@ fn qualified_ctor_pattern_absent_module_is_value_twin_gap() {
     }
 }
 
-// spec: spec/08-modules.md §8.5.4 item 2, §8.6.5 — P4: pins the qualified
-// walk's synthesised child candidate for an undeclared child `q` (no alias).
-// Spec §8.11.2 item 1 reads absolute `q` here; the expectation changes with
-// the R-1 repair in design/typecheck/typecheck.md §11.
+// spec: spec/08-modules.md §8.11.2 item 1, §8.11.2.1, §8.6.5 — P4: a
+// registered child `test_form_mod.q` that the module never declared with
+// `(mod q)` is not a reading of `q`; the pattern names absolute `q`.
 #[test]
-fn qualified_ctor_pattern_prefers_child_module() {
+fn qualified_ctor_pattern_ignores_undeclared_child_module() {
     let modules = modules();
     seed_ctor_module(&modules, "test_form_mod.q", false);
     seed_ctor_module(&modules, "q", false);
@@ -1343,7 +1342,7 @@ fn qualified_ctor_pattern_prefers_child_module() {
         &pattern_source("q/C"),
     )
     .expect("`(q/C v)` resolves");
-    assert_eq!(first_param_adt_module(&modules, "f"), "test_form_mod.q");
+    assert_eq!(first_param_adt_module(&modules, "f"), "q");
 }
 
 // spec: spec/06-pattern-matching.md §6.2.1 — P5 (control): a qualified
@@ -1384,8 +1383,9 @@ fn qualified_macros_scons_pattern_resolves() {
 // ---- Lookup-dependency producer census (typecheck.md §3.4; LD-C) ----
 
 /// A world with `b` (trait `Tr` with an `Int` impl, type `T` with
-/// constructor `C`, function `f`) and the child `test_form_mod.q` (function
-/// `g`, type `T` with constructor `C`).
+/// constructor `C`, function `f`), absolute `q` and the registered but
+/// undeclared child `test_form_mod.q` (each with function `g`, type `T` with
+/// constructor `C`).
 fn census_world() -> Arc<DashMap<ModuleFullPath, SymbolTable<(), ()>>> {
     let modules = modules();
     seed_module_with_int(
@@ -1394,11 +1394,9 @@ fn census_world() -> Arc<DashMap<ModuleFullPath, SymbolTable<(), ()>>> {
         "(deftrait Tr (tr [x] self)) (impl Tr Int (defn tr [x] x)) \
          (deftype T (C [:Int v])) (defn f [] 1)",
     );
-    seed_module_with_int(
-        &modules,
-        "test_form_mod.q",
-        "(deftype T (C [:Int v])) (defn g [] 2)",
-    );
+    for module in ["q", "test_form_mod.q"] {
+        seed_module_with_int(&modules, module, "(deftype T (C [:Int v])) (defn g [] 2)");
+    }
     modules
 }
 
@@ -1435,11 +1433,7 @@ fn lookup_dependency_census_records_answering_module() {
     let rows: &[(&str, &str, &str)] = &[
         ("value", "(defn h [] (b/f))", "b"),
         ("value, alias", "(defn h [] (bb/f))", "b"),
-        (
-            "value, child-relative",
-            "(defn h [] (q/g))",
-            "test_form_mod.q",
-        ),
+        ("value, undeclared child", "(defn h [] (q/g))", "q"),
         ("value-position constructor", "(defn h [] (b/C 1))", "b"),
         ("qualified dotted member", "(defn h [] (b/T.C 1))", "b"),
         ("type annotation", "(defn h [:b/T x] x)", "b"),
@@ -1469,9 +1463,9 @@ fn lookup_dependency_census_records_answering_module() {
         ("pattern", "(defn h [x] (match x [(b/C v) v]))", "b"),
         ("pattern, alias", "(defn h [x] (match x [(bb/C v) v]))", "b"),
         (
-            "pattern, child-relative",
+            "pattern, undeclared child",
             "(defn h [x] (match x [(q/C v) v]))",
-            "test_form_mod.q",
+            "q",
         ),
     ];
     let aliases = alias_bb_to_b();
@@ -1488,6 +1482,118 @@ fn lookup_dependency_census_records_answering_module() {
         "census rows failed:\n{}",
         failures.join("\n")
     );
+}
+
+/// The module that defines the ADT `name` returns.
+fn return_adt_module(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>, name: &str) -> String {
+    let guard = modules.get(&module_path()).expect("module exists");
+    let callable = guard
+        .get(name)
+        .and_then(Binding::callable)
+        .expect("defn is registered");
+    match &callable.arm.scheme.ty {
+        cranelisp_types::Type::Fn(_, ret) => match ret.as_ref() {
+            cranelisp_types::Type::ADT(fqtn, _) => fqtn.module.to_string(),
+            other => panic!("expected an ADT return, got {other:?}"),
+        },
+        other => panic!("expected a function scheme, got {other:?}"),
+    }
+}
+
+/// The modules of `name`'s recorded callees.
+fn callee_modules(
+    modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    name: &str,
+) -> Vec<String> {
+    let guard = modules.get(&module_path()).expect("module exists");
+    guard
+        .get(name)
+        .expect("defn is registered")
+        .callees()
+        .iter()
+        .map(|callee| callee.module.to_string())
+        .collect()
+}
+
+// spec: spec/08-modules.md §8.11.2 item 1, §8.11.2.1, §8.6.5 —
+// design/typecheck/typecheck.md §3.6: a qualified spelling names one module in
+// every position. With an undeclared registered child and absolute `q` both
+// exporting `mk` and `C`, the value's scheme, its recorded callee and the
+// pattern all name `q`; with `(mod q)`'s alias installed, all name the child.
+#[test]
+fn qualified_value_and_pattern_name_one_module() {
+    const SOURCE: &str = "(defn h [] (q/mk)) (defn f [x] (match x [(q/C v) v]))";
+    let declared_child = ModuleAliases::new();
+    declared_child.insert(
+        cranelisp_types::module_alias_key(&module_path(), "q"),
+        cranelisp_types::ModuleAliasEntry::new(
+            ModuleFullPath::from("test_form_mod.q"),
+            Visibility::Private,
+            Span::SYNTHETIC,
+        ),
+    );
+    for (leg, aliases, expected) in [
+        ("undeclared child", no_aliases(), "q"),
+        ("declared child", declared_child, "test_form_mod.q"),
+    ] {
+        let modules = modules();
+        seed_ctor_module(&modules, "test_form_mod.q", false);
+        seed_ctor_module(&modules, "q", false);
+        check_source_in(&modules, module_path(), &aliases, SOURCE)
+            .unwrap_or_else(|error| panic!("{leg}: {error:?}"));
+        assert_eq!(
+            return_adt_module(&modules, "h"),
+            expected,
+            "{leg}: value scheme"
+        );
+        assert_eq!(
+            callee_modules(&modules, "h"),
+            vec![expected.to_string()],
+            "{leg}: recorded target"
+        );
+        assert_eq!(
+            first_param_adt_module(&modules, "f"),
+            expected,
+            "{leg}: pattern"
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.11.2 item 1, §8.5.4 edge 4 — a member only the
+// undeclared child exports is absent from `q`: the reference is `q`'s gap and
+// nothing is resolved in, or recorded for, the child.
+#[test]
+fn qualified_name_does_not_fall_back_to_undeclared_child_neg() {
+    let modules = census_world();
+    seed_module_with_int(
+        &modules,
+        "test_form_mod.q",
+        "(deftype K (OnlyChild [:Int n])) (defn only-child [] 3)",
+    );
+    for (source, member) in [
+        ("(defn h [] (q/only-child))", "only-child"),
+        ("(defn h [x] (match x [(q/OnlyChild n) n]))", "OnlyChild"),
+    ] {
+        let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+        let result = {
+            let mut ctx = SymbolTableAccess::cluster(&modules, &mut staging, module_path());
+            check_forms::<(), ()>(
+                source_entries(source),
+                &mut ctx,
+                &modules,
+                &no_aliases(),
+                &no_fallback(),
+            )
+        };
+        match result {
+            Err(CheckError::Gap(cranelisp_types::ResolutionGap::SymbolTypechecked(fq))) => {
+                assert_eq!(fq.module.as_ref(), "q", "`{source}`: the gap names `q`");
+                assert_eq!(fq.symbol.as_ref(), member);
+            }
+            other => panic!("`{source}`: expected `q`'s member gap, got {other:?}"),
+        }
+        assert_eq!(staging.lookup_dependencies().count(), 0, "`{source}`");
+    }
 }
 
 // spec: design/typecheck/typecheck.md §3.4 "Outcomes" — bare and

@@ -1259,28 +1259,25 @@ fn normalize_self_qualified_collapses_current_module_spelling() {
     assert_eq!(env.normalize_self_qualified(&tc.state, "/"), "/");
 }
 
-// spec: spec/08-modules.md §8.6.6 + S113 0655 — the ONE candidate-order source
-// both `lookup` and `resolve_ref_target` walk: child-of-current-module BEFORE
-// absolute (Principle 7 — the former hand-rolled `resolve_ref_target` mirror
-// is retired). Guards the twin collapse.
+// spec: spec/08-modules.md §8.6.6, §8.11.2 item 1 — design/typecheck/typecheck.md
+// §3.6: a qualified spelling yields exactly its written module, never a
+// synthesised `<current>.<qualifier>` child.
 #[test]
-fn qualified_candidate_modules_child_before_absolute() {
-    let tc = tc_with_prims(); // current module = "test"
-    let env = tc.env();
-    let (name_part, [child, abs]) = env
-        .qualified_candidate_modules(&tc.state, "util/helper")
-        .expect("a two-part qualified name yields candidates");
-    assert_eq!(name_part, "helper");
+fn qualified_candidate_module_is_the_written_module() {
     assert_eq!(
-        child,
-        ModuleFullPath::from("test.util"),
-        "child-of-current first"
+        crate::checker::qualified_candidate_module("util/helper"),
+        Some((ModuleFullPath::from("util"), "helper"))
     );
-    assert_eq!(abs, ModuleFullPath::from("util"), "absolute path second");
-    // A bare name / Principle-16 literal has no qualified candidates.
-    assert!(
-        env.qualified_candidate_modules(&tc.state, "helper")
-            .is_none()
+    assert_eq!(
+        crate::checker::qualified_candidate_module("a.b/helper"),
+        Some((ModuleFullPath::from("a.b"), "helper"))
     );
-    assert!(env.qualified_candidate_modules(&tc.state, "foo/").is_none());
+    // A bare name / Principle-16 literal is not a qualified form.
+    for name in ["helper", "foo/", "/bar", "/"] {
+        assert_eq!(
+            crate::checker::qualified_candidate_module(name),
+            None,
+            "{name}"
+        );
+    }
 }

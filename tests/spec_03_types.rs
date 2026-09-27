@@ -206,6 +206,135 @@ fn annotated_return_type_int() {
     repl_prims("(let [x 5] x)\n").assert_stdout_contains(":primitives/Int 5");
 }
 
+/// Whether `text` contains `name` as a whole identifier, so that `U` is not
+/// matched inside `Unknown` nor `Tr` inside `Trait`.
+fn names(text: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && !text[at + name.len()..].chars().next().is_some_and(ident)
+    })
+}
+
+// spec: spec/03-types.md §3.9.2 — a trait annotation restricts the parameter to
+// types that implement the trait, and a stacked bound is a conjunction; the
+// restriction binds the caller whether or not the body uses the trait, and a
+// function type implements no trait (spec/07-traits.md §7.3)
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S122 owner=/dev
+#[test]
+fn declared_trait_bound_is_checked_at_the_call_site() {
+    // `Ts` is implemented for `Int`, and for `U` only when `u_impl` says so.
+    // `zz/Tr` is implemented for `Int` in its home, and never for `U`.
+    let program = |u_impl: &str, f: &str, arg: &str| {
+        Cranelisp::new()
+            .file(
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure Int]])\n\
+                     (import [(zz z) []])\n\
+                     (deftrait Ts (ts [self] Int))\n\
+                     (impl Ts Int (defn ts [x] x))\n\
+                     (deftype U [:Int n])\n\
+                     {u_impl}\
+                     {f}\n\
+                     (defn main [] (Pure (f {arg})))\n"
+                ),
+            )
+            .file(
+                "zz.cl",
+                "(import [primitives [Int]])\n\
+                 (deftrait Tr (tr [self] Int))\n\
+                 (impl Tr Int (defn tr [x] x))\n",
+            )
+            .run("main.cl")
+            .output()
+    };
+    // `Ts`, its `Int` impl and `f` live in `zz`, so `main`'s call is checked in
+    // another cluster from `f`'s definition.
+    let cross_cluster = |arg: &str| {
+        Cranelisp::new()
+            .file(
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure Int]])\n\
+                     (import [(zz z) []])\n\
+                     (deftype U [:Int n])\n\
+                     (defn g [] 1)\n\
+                     (defn main [] (Pure (z/f {arg})))\n"
+                ),
+            )
+            .file(
+                "zz.cl",
+                "(import [primitives [Int]])\n\
+                 (deftrait Ts (ts [self] Int))\n\
+                 (impl Ts Int (defn ts [x] x))\n\
+                 (defn f [:Ts x] 7)\n",
+            )
+            .run("main.cl")
+            .output()
+    };
+    let u_implements_ts = "(impl Ts U (defn ts [u] 0))\n";
+    // An accepted program exits 7; a codegen failure is an accepted program
+    // failing later, not a rejection.
+    let rejected = |out: &helpers::e2e::CrOutput, tr: &str| {
+        out.status.code() != Some(7)
+            && !out.stderr.contains("codegen error")
+            && names(&out.stderr, tr)
+    };
+    let rejected_naming =
+        |out: &helpers::e2e::CrOutput, tr: &str| rejected(out, tr) && names(&out.stderr, "U");
+    let subject = program("", "(defn f [:Ts x] 7)", "(U 1)");
+    let control = program("", "(defn f [:Ts x] (ts x))", "(U 1)");
+    let stacked = program(u_implements_ts, "(defn f [:Ts :z/Tr x] 7)", "(U 1)");
+    let positive = program(u_implements_ts, "(defn f [:Ts :z/Tr x] 7)", "3");
+    let x1_nominal = cross_cluster("(U 1)");
+    let x2_function = cross_cluster("g");
+    let legs = [
+        (
+            "subject `[:Ts x]` body `7`, called at `U`: rejected naming `Ts` and `U`",
+            rejected_naming(&subject, "Ts"),
+            &subject,
+        ),
+        (
+            "control `[:Ts x]` body `(ts x)`, called at `U`: rejected naming `Ts` and `U`",
+            rejected_naming(&control, "Ts"),
+            &control,
+        ),
+        (
+            "stacked `[:Ts :z/Tr x]` body `7`, `U` implements only `Ts`: rejected naming `Tr` and `U`",
+            rejected_naming(&stacked, "Tr"),
+            &stacked,
+        ),
+        (
+            "positive `[:Ts :z/Tr x]` body `7`, called at `Int`: exits 7",
+            positive.status.code() == Some(7),
+            &positive,
+        ),
+        (
+            "X1 `zz`'s `[:Ts x]` body `7`, called from `main` at `U`: rejected naming `Ts` and `U`",
+            rejected_naming(&x1_nominal, "Ts"),
+            &x1_nominal,
+        ),
+        (
+            "X2 `zz`'s `[:Ts x]` body `7`, called from `main` with the function `g`: rejected naming `Ts`",
+            rejected(&x2_function, "Ts"),
+            &x2_function,
+        ),
+    ];
+    let report: Vec<String> = legs
+        .iter()
+        .map(|(name, ok, out)| {
+            format!(
+                "[{}] {name}: exit={:?}\n{}",
+                if *ok { "ok" } else { "FAIL" },
+                out.status.code(),
+                out.stderr.trim_end()
+            )
+        })
+        .collect();
+    assert!(legs.iter().all(|(_, ok, _)| *ok), "{}", report.join("\n"));
+}
+
 // =============================================================================
 // Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards (annotation as
 // standalone expression form, per spec/02-grammar.md §2.3.8).

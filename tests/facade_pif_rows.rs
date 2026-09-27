@@ -91,8 +91,8 @@ fn row_01_code_enum_named_in_backend_pub_api() {
 }
 
 // =============================================================================
-// Rows 2–5 — typed errors (CompilationError, LinkerError, LinkerArtefact,
-// ObjectArtefact) in cranelisp-backend per REV-4
+// Rows 2, 3 and 5 — typed errors (CompilationError, LinkerError) in
+// cranelisp-backend per REV-4
 // =============================================================================
 
 // spec: design/backend/compile-to-module.md §16 — every refusal is a located
@@ -116,8 +116,9 @@ fn rows_02_03_compilation_error_enum_named_in_backend_pub_api() {
 
 // spec: design/arch/principles/15-facade-types-live-with-behavior.md — the
 // linker's error type lives with its producer in `cranelisp-backend`, not in
-// `cranelisp-types`. No standing design requires `LinkerError` to exist; this
-// row pins the surface its source rustdoc currently publishes.
+// `cranelisp-types`. `LinkerError` is the typed result of the public
+// `Linker::get_symbol` (rustdoc in `crates/cranelisp-backend/src/error.rs`),
+// which `src/result_owner.rs` consumes across the crate boundary.
 #[test]
 fn row_05_linker_error_enum_named_in_backend_pub_api() {
     let api = read_pub_api("cranelisp-backend");
@@ -133,34 +134,6 @@ fn row_05_linker_error_enum_named_in_backend_pub_api() {
          not in baseline. Facade §\"Errors\" prescribes it; types.md \
          §\"Errors and warnings\" LinkerError entry is removed per REV-4. \
          /dev (backend) Wave 3."
-    );
-}
-
-// spec: design/backend/compile-to-module.md §10 — `load_object` returns a
-// `LinkerArtefact`; keeping or removing that entry is an open arch/user decision.
-// spec: design/arch/principles/15-facade-types-live-with-behavior.md —
-// `ObjectArtefact` is backend-owned; no standing design requires it, and its
-// rustdoc records that nothing currently produces it.
-#[test]
-fn rows_03_04_linker_and_object_artefact_named_in_backend_pub_api() {
-    let api = read_pub_api("cranelisp-backend");
-    let linker = api.lines().any(|line| {
-        let line = strip_attr_prefix(line);
-        line.starts_with("pub struct ")
-            && line.contains("cranelisp_backend::")
-            && line.trim_end().ends_with("::LinkerArtefact")
-    });
-    let object = api.lines().any(|line| {
-        let line = strip_attr_prefix(line);
-        line.starts_with("pub struct ")
-            && line.contains("cranelisp_backend::")
-            && line.trim_end().ends_with("::ObjectArtefact")
-    });
-    assert!(
-        linker && object,
-        "Decision 41 close: LinkerArtefact (found={linker}) + ObjectArtefact \
-         (found={object}) not in backend baseline. Facade §\"Return shapes\" \
-         prescribes both. /dev (backend) Wave 3."
     );
 }
 
@@ -696,9 +669,10 @@ fn platform_non_exhaustive_present_on_owned_descriptor_only() {
 // The check reads the baseline: the `#[repr(C)]` attribute is present AND the
 // emitted field-name list matches a frozen expectation. cargo-public-api emits
 // field lines alphabetically, so this pins each type's field SET, not its
-// declaration order or byte offsets; the `PlatformFn` offsets are pinned by the
-// platform unit test `platform_fn_repr_c_field_order_v8`. The PlatformManifest
-// and HostCallbacks assertion messages below still say "ORDER".
+// declaration order or byte offsets. The offsets are pinned by the platform
+// unit tests `platform_fn_repr_c_field_order_v8`,
+// `platform_manifest_repr_c_field_order_v11` and
+// `host_callbacks_repr_c_field_order_v11`.
 #[test]
 fn platform_repr_c_field_order_frozen() {
     let api = read_pub_api("cranelisp-platform");
@@ -769,11 +743,11 @@ fn platform_repr_c_field_order_frozen() {
             "version",
             "version_len",
         ],
-        "FIXME 0227 (audit C4): PlatformManifest field ORDER drifted — a \
+        "FIXME 0227 (audit C4): PlatformManifest field SET drifted — a \
          #[repr(C)] byte-offset change. ABI_VERSION bump + table update required."
     );
     let host_cb_fields = fields_in_order(&api, "cranelisp_platform::HostCallbacks");
-    // Frozen field-order table for ABI_VERSION = 3 (Sprint 76, FIXME 0288):
+    // Frozen field-set table for ABI_VERSION = 3 (Sprint 76, FIXME 0288):
     // `validate_schema` was removed — the v3 ABI surface is
     // `HostCallbacks { alloc, alloc_with_tag }` (see
     // crates/cranelisp-platform/src/lib.rs:185-190). The ABI_VERSION bump is
@@ -781,22 +755,18 @@ fn platform_repr_c_field_order_frozen() {
     assert_eq!(
         host_cb_fields,
         vec!["alloc", "alloc_with_tag"],
-        "FIXME 0227 (audit C4): HostCallbacks field ORDER drifted — a #[repr(C)] \
+        "FIXME 0227 (audit C4): HostCallbacks field SET drifted — a #[repr(C)] \
          byte-offset change. ABI_VERSION bump + frozen-table update required."
     );
 }
 
 // spec: design/platform/platform.md §7 — DLL handles are session-global
 // (invariant 6), which is what justifies the `unsafe impl Send + Sync` on
-// `PlatformFn`. The negative legs pin the current `!Send + !Sync` projection of
-// `OwnedPlatformFnDescriptor` and `PlatformManifest`; no standing design states
-// that obligation. cargo-public-api emits both the positive `impl Send/Sync`
-// and the negative `impl !Send/!Sync`.
+// `PlatformFn`.
 #[test]
 fn platform_send_sync_claims_match_invariants() {
     let api = read_pub_api("cranelisp-platform");
     let has = |needle: &str| api.lines().any(|l| l.trim() == needle);
-    // PlatformFn: positive Send + Sync (the unsafe impls).
     assert!(
         has("impl core::marker::Send for cranelisp_platform::PlatformFn"),
         "FIXME 0228 (audit C5): `Send` dropped from PlatformFn — the IO \
@@ -805,25 +775,6 @@ fn platform_send_sync_claims_match_invariants() {
     assert!(
         has("impl core::marker::Sync for cranelisp_platform::PlatformFn"),
         "FIXME 0228 (audit C5): `Sync` dropped from PlatformFn."
-    );
-    // OwnedPlatformFnDescriptor: negative !Send + !Sync (owned strings/ptr).
-    assert!(
-        has("impl !core::marker::Send for cranelisp_platform::OwnedPlatformFnDescriptor"),
-        "FIXME 0228 (audit C5): OwnedPlatformFnDescriptor unexpectedly became \
-         Send — the safety surface silently expanded."
-    );
-    assert!(
-        has("impl !core::marker::Sync for cranelisp_platform::OwnedPlatformFnDescriptor"),
-        "FIXME 0228 (audit C5): OwnedPlatformFnDescriptor unexpectedly became Sync."
-    );
-    // PlatformManifest: negative !Send + !Sync (raw pointers).
-    assert!(
-        has("impl !core::marker::Send for cranelisp_platform::PlatformManifest"),
-        "FIXME 0228 (audit C5): PlatformManifest unexpectedly became Send."
-    );
-    assert!(
-        has("impl !core::marker::Sync for cranelisp_platform::PlatformManifest"),
-        "FIXME 0228 (audit C5): PlatformManifest unexpectedly became Sync."
     );
 }
 

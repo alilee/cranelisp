@@ -430,16 +430,16 @@ for trait-implementation registration.
 
 ### Qualified lookup dependencies
 
-**Status: implemented 2026-09-26, uncommitted; QA evidence adequate; phase acceptance pending.**
+**Status: implemented at `56e4d2e1` (2026-09-26); QA evidence adequate; phase acceptance pending.**
 - The exact three-entry types API and cache schema 30 match the user's approval
   (`sprints/SPRINT.md` §"Lookup dependency implementation approval — 2026-09-26").
   The user confirmed the generated types baseline diff (+3/−0) on 2026-09-26.
 - One full suite passed on the delivered source (6,144 of 6,144). Independent types
   and int reviews leave no open blocking or required finding, and QA's evidence
   adequacy is recorded in the [evidence plan](../../tests/plan/s122-evidence-delta.md#adequacy-2026-09-26).
-- Open lead, not an accepted residual: an attempt that makes no staged publication
-  records no macro head ([int §7.6.2](../int/int.md#762-lookup-dependencies)). QA
-  owns its classification (plan allocation LD-9).
+- LD-9, the empty-expansion dependency loss, is corrected and independently
+  reviewed in the uncommitted tree ([int §7.6.2.1](../int/int.md#7621-empty-publication-correction));
+  its regression and allocated module evidence pass.
 - This realizes the user's conservative module-hash direction. Selective reuse and
   optimisation-aware invalidation are [ACT-0992](../../sprints/actions/ACT-0992-optimisation-aware-cache-invalidation.md).
 

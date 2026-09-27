@@ -28,11 +28,6 @@
 //     and must surface a clear, typed error to the user. Staging is
 //     dropped on the floor; the live `SymbolTable` remains byte-identical
 //     to its pre-cluster state — `f` does NOT commit.
-//   - Negative: when `wait_for_typecheck_symbol` returns a *function* (not
-//     a macro), the orchestrator must NOT speculatively JIT it. Verified
-//     via `CRANELISP_GOT_TRACE=1` showing no `JitWrite` event from the
-//     speculative path. (Re-shaped to use a `(begin ...)` cluster so the
-//     forward-reference path is exercisable per Decision 44.)
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -176,51 +171,4 @@ fn process_form_dispatch_bare_forward_ref_errors_clearly() {
     // `g` but NOT `f`.
     out.assert_stdout_contains("g")
         .assert_stdout_does_not_contain("f ");
-}
-
-// spec: design/int/int.md §6.3 — resolving a gap forces only the dependency's
-// typecheck and codegen; nothing is speculatively JIT-compiled. Observed
-// through the GOT trace (design/int/observability.md, `CRANELISP_GOT_TRACE`).
-// Known gap (routed to qa, S122): trace lines read `JitWrite\tmodule=…
-// symbol=g`, so the `JitWrite g` / `JitWrite user/g` needles below cannot
-// match and the negative leg cannot fail.
-// Origin: the [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md),
-// FIXME 0098 — process_form gap-orchestration.
-#[test]
-fn process_form_dispatch_function_gap_does_not_speculatively_jit() {
-    // Define a function (`g`) referenced ahead of its definition inside a
-    // `(begin ...)` cluster (per Decision 44 — the only spec-legal way to
-    // express forward refs at the REPL). The Pass-2 body-check resolves
-    // `g` as a *function* (not a macro). The orchestrator must NOT
-    // speculatively JIT `g` from the body-check resolution path — JIT must
-    // wait for an actual call.
-    //
-    // Observability: with CRANELISP_GOT_TRACE=1, no `JitWrite` event for
-    // `g` should fire from the orchestrator's body-check-resolution path.
-    let out = Cranelisp::new()
-        .repl()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .env("CRANELISP_GOT_TRACE", "1")
-        .stdin("(begin (defn f [] (g 1)) (defn g [x] x))\n")
-        .output();
-    // Negative assertion: no `JitWrite` for `g` should appear in the
-    // got-trace stderr after Pass-2 body-check resolves `g` as a
-    // function, only after an actual call. This is a structural
-    // assertion; the trace itself must exist (else it cannot prove zero
-    // speculative writes).
-    assert!(
-        out.stderr.contains("got_trace")
-            || out.stderr.contains("JitWrite")
-            || out.stderr.contains("LinkerWrite")
-            || out.stderr.contains("[GOT"),
-        "expected CRANELISP_GOT_TRACE=1 to produce got_trace stderr lines (per FIXME 0099); \
-         got stderr:\n{}",
-        out.stderr
-    );
-    assert!(
-        !out.stderr.contains("JitWrite g") && !out.stderr.contains("JitWrite user/g"),
-        "orchestrator MUST NOT speculatively JIT a body-check-resolved function; \
-         got stderr:\n{}",
-        out.stderr
-    );
 }

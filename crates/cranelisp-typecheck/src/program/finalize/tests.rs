@@ -1343,3 +1343,212 @@ fn deferred_overload_return_var_in_let_value_resolves_post_drain() {
         other => panic!("caller entry not a Def: {other:?}"),
     }
 }
+
+// ---- Declared bounds discharged at settlement (design/typecheck/typecheck.md
+// §9.2.1; DB-1) ----
+
+/// `Ts` and `Tr` implemented for `Int`, and the product type `U`.
+const DECLARED_BOUND_WORLD: &str = "(deftrait Ts (ts [self] Int)) \
+     (impl Ts Int (defn ts [x] x)) \
+     (deftrait Tr (tr [self] Int)) \
+     (impl Tr Int (defn tr [x] x)) \
+     (deftype U [:Int n])";
+
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+fn check_cluster(tc: &mut TestFixture, src: &str) -> Result<(), CranelispError> {
+    let sexps = cranelisp_frontend::parse(src).expect("parse");
+    let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+    tc.check_program_self(&program).map(|_| ())
+}
+
+/// A no-impl error naming `trait_fq` and `type_fq`, located at the first
+/// occurrence of `at` in `src`.
+fn assert_no_impl_at(
+    result: Result<(), CranelispError>,
+    src: &str,
+    at: &str,
+    trait_fq: &str,
+    type_fq: &str,
+) {
+    let Err(CranelispError::TypeError { message, location }) = result else {
+        panic!("expected a no-impl error for {trait_fq} at {type_fq}, got {result:?}");
+    };
+    assert!(
+        message.contains(&format!("no impl of trait {trait_fq} for type {type_fq}")),
+        "{message}"
+    );
+    let expected = src.find(at).expect("locator occurs in the source") as u32;
+    assert_eq!(
+        location.span.start, expected,
+        "located at `{at}`: {message}"
+    );
+}
+
+// spec: spec/03-types.md §3.9.2, §3.3.2, §3.5.2 — a same-cluster caller pins a
+// declared-bound parameter to a type without an impl; the unused bound is still
+// checked, at the declaring definition, naming the parameter.
+#[test]
+fn declared_bound_pinned_in_cluster_without_impl_rejected_at_definition() {
+    let mut tc = tc_with_prims();
+    let src = format!("{DECLARED_BOUND_WORLD} (defn f [:Ts x] 7) (defn main [] (f (U 1)))");
+    let result = check_cluster(&mut tc, &src);
+    if let Err(CranelispError::TypeError { message, .. }) = &result {
+        assert!(
+            message.contains("`x`") && message.contains("`f`"),
+            "{message}"
+        );
+    }
+    assert_no_impl_at(result, &src, "(defn f", "test/Ts", "test/U");
+}
+
+// spec: spec/03-types.md §3.9.2 — a stacked bound is a conjunction: the member
+// the pinned type does not satisfy is the one reported.
+#[test]
+fn declared_stacked_bound_second_member_unsatisfied_rejected() {
+    let mut tc = tc_with_prims();
+    let src = format!(
+        "{DECLARED_BOUND_WORLD} (impl Ts U (defn ts [u] 1)) \
+         (defn f [:Ts :Tr x] 7) (defn main [] (f (U 1)))"
+    );
+    let result = check_cluster(&mut tc, &src);
+    assert_no_impl_at(result, &src, "(defn f", "test/Tr", "test/U");
+}
+
+// spec: spec/03-types.md §3.9.2 — negative leg: a pinned type satisfying every
+// member is accepted.
+#[test]
+fn declared_bound_pinned_in_cluster_with_impls_accepted() {
+    let mut tc = tc_with_prims();
+    let src = format!("{DECLARED_BOUND_WORLD} (defn f [:Ts :Tr x] 7) (defn main [] (f 3))");
+    check_cluster(&mut tc, &src).expect("`Int` implements `Ts` and `Tr`");
+}
+
+// spec: spec/03-types.md §3.9.2; spec/05-definitions.md §5.1.2 — negative
+// leg: each multi-signature clause's declared bound is judged against its own
+// clause's settled parameter. Sibling self-calls pin the bounded clauses
+// (monomorphisation §11.3.1; an external call instantiates instead), at types
+// that satisfy only their own clause's bound: `U` has `Tr`, not `Ts`.
+#[test]
+fn declared_bound_on_multi_signature_clause_satisfied_in_cluster_accepted() {
+    let mut tc = tc_with_prims();
+    let src = format!(
+        "{DECLARED_BOUND_WORLD} (impl Tr U (defn tr [u] 1)) \
+         (defn f ([:Ts x] 7) ([:Tr x y] (f 3)) ([a b c] (f (U 1) 2)))"
+    );
+    check_cluster(&mut tc, &src).expect("each clause's bound is satisfied");
+    let table = tc.symbol_table();
+    let Some(Binding {
+        declaration: Decl::Overloaded(declaration),
+        ..
+    }) = table.get("f")
+    else {
+        panic!("f is a multi-signature definition");
+    };
+    for arm in &declaration.arms[..2] {
+        assert!(
+            matches!(arm.callable.life, Life::Concrete { .. }),
+            "a bounded clause is pinned concrete, so its bound was judged: {:?}",
+            arm.callable.life
+        );
+    }
+}
+
+// spec: spec/03-types.md §3.9.2, §3.5.2 — negative leg: with no caller the
+// parameter stays a variable, so `f` settles as a constrained template and
+// nothing is rejected.
+#[test]
+fn declared_bound_without_caller_stays_constrained_template() {
+    let mut tc = tc_with_prims();
+    let src = format!("{DECLARED_BOUND_WORLD} (defn f [:Ts x] 7)");
+    check_cluster(&mut tc, &src).expect("an unpinned bound is undetermined");
+    let table = tc.symbol_table();
+    let life = &table
+        .get("f")
+        .and_then(Binding::callable)
+        .expect("f registered")
+        .arm
+        .life;
+    assert!(
+        matches!(
+            life,
+            Life::Template {
+                kind: TemplateKind::Constrained(_),
+                ..
+            }
+        ),
+        "{life:?}"
+    );
+}
+
+// spec: spec/03-types.md §3.9.2 — the check is by the settled type's head: a
+// parametric ADT with no impl of the trait is rejected whatever its arguments.
+#[test]
+fn declared_bound_pinned_to_parametric_adt_without_impl_rejected() {
+    let mut tc = tc_with_prims();
+    let src = format!(
+        "{DECLARED_BOUND_WORLD} (deftype (Option a) None (Some [:a value])) \
+         (defn f [:Ts x] 7) (defn main [] (f (Some 1)))"
+    );
+    let result = check_cluster(&mut tc, &src);
+    assert_no_impl_at(
+        result,
+        &src,
+        "(defn f",
+        "test/Ts",
+        "(test/Option primitives/Int)",
+    );
+}
+
+// spec: spec/03-types.md §3.9.2, §3.3.3 — a function type implements no trait.
+#[test]
+fn declared_bound_pinned_to_function_type_rejected() {
+    let mut tc = tc_with_prims();
+    let src =
+        format!("{DECLARED_BOUND_WORLD} (defn f [:Ts x] 7) (defn main [] (f (fn [:Int y] y)))");
+    let result = check_cluster(&mut tc, &src);
+    assert_no_impl_at(
+        result,
+        &src,
+        "(defn f",
+        "test/Ts",
+        "(Fn [primitives/Int] primitives/Int)",
+    );
+}
+
+// spec: spec/03-types.md §3.9.2 — discriminating control: a caller in a later
+// cluster instantiates the committed template, and the mint rejects the
+// instance at the call site. The same-cluster defect is the pinning, not the
+// body use.
+#[test]
+fn declared_bound_cross_cluster_caller_rejected_at_call_site() {
+    let mut tc = tc_with_prims();
+    check_cluster(
+        &mut tc,
+        &format!("{DECLARED_BOUND_WORLD} (defn f [:Ts x] 7)"),
+    )
+    .expect("the template cluster checks");
+    let caller = "(defn main [] (f (U 1)))";
+    let result = check_cluster(&mut tc, caller);
+    assert_no_impl_at(result, caller, "(f (U 1))", "test/Ts", "test/U");
+}
+
+// spec: spec/03-types.md §3.9.2, §3.3.3 — the cross-cluster route rejects a
+// function-typed instantiation through the shared satisfaction step.
+#[test]
+fn declared_bound_cross_cluster_function_type_rejected_at_call_site() {
+    let mut tc = tc_with_prims();
+    check_cluster(
+        &mut tc,
+        &format!("{DECLARED_BOUND_WORLD} (defn f [:Ts x] 7)"),
+    )
+    .expect("the template cluster checks");
+    let caller = "(defn main [] (f (fn [:Int y] y)))";
+    let result = check_cluster(&mut tc, caller);
+    assert_no_impl_at(
+        result,
+        caller,
+        "(f (fn",
+        "test/Ts",
+        "(Fn [primitives/Int] primitives/Int)",
+    );
+}

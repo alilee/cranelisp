@@ -189,9 +189,11 @@ impl Session {
     /// A fresh registration whose typecheck has completed.
     fn fresh(&self, module: &str, hash: &str, imports: &[&str]) {
         self.install_table(module, imports);
-        self.shared
-            .scheduler
-            .register_module_cached(m(module), HashSet::new());
+        drop(
+            self.shared
+                .scheduler
+                .register_module_cached(m(module), HashSet::new()),
+        );
         self.shared
             .cache
             .record_source_hash(&m(module), hash.to_string());
@@ -201,9 +203,11 @@ impl Session {
     /// are deliberately unloaded, so walking them would be unsettled.
     fn restored(&self, module: &str, hash: &str, record: &[(&str, &str)]) {
         self.install_table(module, &["never-loaded"]);
-        self.shared
-            .scheduler
-            .register_module_cached(m(module), HashSet::new());
+        drop(
+            self.shared
+                .scheduler
+                .register_module_cached(m(module), HashSet::new()),
+        );
         let record = DependencyRecord(
             record
                 .iter()
@@ -405,10 +409,12 @@ fn unsettled_when_a_member_has_not_finished_typechecking() {
 fn unsettled_when_a_typechecked_member_has_no_stashed_hash() {
     let session = Session::new();
     session.install_table("d", &[]);
-    session
-        .shared
-        .scheduler
-        .register_module_cached(m("d"), HashSet::new());
+    drop(
+        session
+            .shared
+            .scheduler
+            .register_module_cached(m("d"), HashSet::new()),
+    );
     assert_eq!(
         session.build("m", &["d"]),
         RecordOutcome::Unsettled { member: m("d") }

@@ -121,16 +121,11 @@ pub struct ModuleState {
     /// All in-memory codegen complete for this module.
     pub inmem_done: bool,
 
-    /// A worker has claimed cache-hit inmem loading for this module but has
-    /// not yet finished. Set by `take_priority_work` when it dispatches the
-    /// JitCodegen work item; checked alongside `inmem_done` so other
-    /// workers skip the claimed module. Cleared on completion (via
-    /// `notify_inmem_codegen_batch_complete`) or failure (via
-    /// `notify_module_failed`). Sprint 58 Wave 2c — splits the
-    /// "claim-then-do" race that previously set `inmem_done = true` BEFORE
-    /// the worker ran, causing `wait_inmem_complete` to falsely report
-    /// readiness while the cache-hit `.o` was still loading.
-    pub inmem_claimed: bool,
+    /// Who owns this module's cached-object load, if it has one
+    /// (`design/int/int.md` §7.1). Read only through
+    /// [`ModuleState::cached_load_state`]. `inmem_done` is set only when a
+    /// claimed load completes, never at the claim.
+    pub cached_object_load: CachedObjectLoad,
 
     /// A nice worker is currently performing object codegen for this module.
     /// Set when `take_object_codegen` claims the module; cleared when
@@ -214,7 +209,7 @@ impl ModuleState {
             waiters: HashMap::new(),
             jit_reserved: HashSet::new(),
             inmem_done: false,
-            inmem_claimed: false,
+            cached_object_load: CachedObjectLoad::Absent,
             object_working: false,
             object_done: false,
             object_gen: 0,
@@ -238,7 +233,7 @@ impl ModuleState {
             waiters: HashMap::new(),
             jit_reserved: HashSet::new(),
             inmem_done: false,
-            inmem_claimed: false,
+            cached_object_load: CachedObjectLoad::Absent,
             object_working: false,
             object_done: true,
             object_gen: 0,
@@ -265,7 +260,7 @@ impl ModuleState {
             waiters: HashMap::new(),
             jit_reserved: HashSet::new(),
             inmem_done: true,
-            inmem_claimed: false,
+            cached_object_load: CachedObjectLoad::Absent,
             object_working: false,
             object_done: true,
             object_gen: 0,
@@ -277,6 +272,60 @@ impl ModuleState {
             generation_started: false,
             blocked_on: None,
         }
+    }
+
+    /// The one classification of this module's cached-object load, read by
+    /// the claim, the ladder's scan and the execution wait
+    /// (`design/int/int.md` §7.1).
+    fn cached_load_state(&self) -> CachedLoadState {
+        if self.inmem_done {
+            return CachedLoadState::Loaded;
+        }
+        match self.cached_object_load {
+            CachedObjectLoad::Absent => CachedLoadState::NotCachedObject,
+            _ if self.pool == ModulePool::Failed => CachedLoadState::Failed,
+            CachedObjectLoad::Held => CachedLoadState::Held,
+            CachedObjectLoad::Released => CachedLoadState::Claimable,
+            CachedObjectLoad::Claimed => CachedLoadState::Claimed,
+        }
+    }
+}
+
+/// Ownership of a module's cached-object load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachedObjectLoad {
+    /// No cached object to load: a fresh registration, or a restore with no
+    /// object.
+    Absent,
+    /// The restorer has not yet installed every table the object links
+    /// against (*restore before load*). Only [`CachedLoadHold`] sets and
+    /// lifts it.
+    Held,
+    /// No one owns the load. It is claimable unless it has already ended.
+    Released,
+    /// A [`CachedLoadClaim`] owns the load.
+    Claimed,
+}
+
+/// A module's cached-object-load state, derived by
+/// [`ModuleState::cached_load_state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedLoadState {
+    NotCachedObject,
+    Held,
+    Claimable,
+    Claimed,
+    Loaded,
+    Failed,
+}
+
+impl CachedLoadState {
+    /// Whether a load in this state has yet to end.
+    fn is_outstanding(self) -> bool {
+        matches!(
+            self,
+            CachedLoadState::Held | CachedLoadState::Claimable | CachedLoadState::Claimed
+        )
     }
 }
 
@@ -303,8 +352,8 @@ pub enum WaitKind {
 /// The cross-module-FQ macro/fn work that variant was retained for is now served
 /// by the synchronous dependency typecheck-and-compile in the worker loop; no
 /// speculative per-symbol JIT boost is needed.)
-#[derive(Debug, Clone)]
-pub enum PriorityWork {
+#[derive(Debug)]
+pub enum PriorityWork<'s> {
     /// Typecheck a module (from TypecheckFirst or TypecheckNext).
     ///
     /// S78 in-call-stack restructure: the source continuation rides ON the
@@ -318,8 +367,95 @@ pub enum PriorityWork {
         instantiation_demands: std::sync::Arc<[MonoDemand]>,
         generation_started: bool,
     },
-    /// JIT-compile a symbol from a TypecheckDone module.
-    JitCodegen(ModuleFullPath, Symbol),
+    /// Load a cache-restored module's object into memory.
+    JitCodegen(CachedLoadClaim<'s>),
+}
+
+/// The answer to a cached-object-load claim request (`design/int/int.md`
+/// §7.1).
+#[derive(Debug)]
+pub enum CachedLoadAnswer<'s> {
+    /// The caller now owns the load and must run it.
+    Claimed(CachedLoadClaim<'s>),
+    /// The object is already in memory.
+    Loaded,
+    /// The load is held by its restorer or claimed by another caller.
+    Pending,
+    /// No load will run: the module is unregistered, has no cached object,
+    /// or has failed, or the scheduler is shutting down.
+    Unavailable,
+}
+
+/// Exclusive ownership of one module's cached-object load, granted only by
+/// the scheduler (`design/int/int.md` §7.1, *one load entry*).
+///
+/// The claim ends exactly once: [`Self::complete_loaded`] or
+/// [`Self::complete_failed`]. Dropping it uncompleted, including while
+/// unwinding out of a panicking load, fails the module, because a partial
+/// load may already have written GOT slots or published code owners.
+#[must_use = "dropping the claim fails the module's load"]
+#[derive(Debug)]
+pub struct CachedLoadClaim<'s> {
+    scheduler: &'s CompileScheduler,
+    module: ModuleFullPath,
+    ended: bool,
+}
+
+impl CachedLoadClaim<'_> {
+    pub fn module(&self) -> &ModuleFullPath {
+        &self.module
+    }
+
+    /// The object is in memory: `symbols` are the callables it loaded.
+    pub fn complete_loaded(mut self, symbols: &[Symbol]) {
+        self.ended = true;
+        self.scheduler
+            .notify_inmem_codegen_batch_complete(&self.module, symbols);
+    }
+
+    /// The load failed with `error`.
+    pub fn complete_failed(mut self, error: CranelispError) {
+        self.ended = true;
+        self.scheduler.fail_claimed_load(&self.module, error);
+    }
+}
+
+impl Drop for CachedLoadClaim<'_> {
+    fn drop(&mut self) {
+        if !self.ended {
+            let error = CranelispError::CodegenError {
+                message: format!(
+                    "the cached object load for module '{}' was abandoned before it completed",
+                    self.module
+                ),
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            };
+            self.scheduler.fail_claimed_load(&self.module, error);
+        }
+    }
+}
+
+/// Proof that no cached-object load was outstanding or failed when the REPL
+/// last waited (`design/int/int.md` §7.1, *load before execution*). Only
+/// [`CompileScheduler::wait_cached_loads_settled`] constructs it, and every
+/// REPL step that runs compiled code requires it.
+#[derive(Debug)]
+pub struct ExecutionReadiness {
+    _private: (),
+}
+
+/// A cache restorer's hold on one module's object load, released on drop
+/// so that every exit from the restore releases it (`design/int/int.md` §7.1).
+#[must_use = "dropping the hold releases the object load at once"]
+pub struct CachedLoadHold<'s> {
+    scheduler: &'s CompileScheduler,
+    module: ModuleFullPath,
+}
+
+impl Drop for CachedLoadHold<'_> {
+    fn drop(&mut self) {
+        self.scheduler.release_cached_load(&self.module);
+    }
 }
 
 // `PartialEq`/`Eq` were derived pre-S78 (the queue held bare `ModuleFullPath`).
@@ -329,21 +465,19 @@ pub enum PriorityWork {
 // / the variant shape. Manual `PartialEq` compares only the discriminant +
 // module identity (cheap, sufficient for any "is this the same work item"
 // check), deliberately ignoring the sexps payload.
-impl PartialEq for PriorityWork {
+impl PartialEq for PriorityWork<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
                 PriorityWork::Typecheck { module: a, .. },
                 PriorityWork::Typecheck { module: b, .. },
             ) => a == b,
-            (PriorityWork::JitCodegen(am, asym), PriorityWork::JitCodegen(bm, bsym)) => {
-                am == bm && asym == bsym
-            }
+            (PriorityWork::JitCodegen(a), PriorityWork::JitCodegen(b)) => a.module == b.module,
             _ => false,
         }
     }
 }
-impl Eq for PriorityWork {}
+impl Eq for PriorityWork<'_> {}
 
 // ---------------------------------------------------------------------------
 // SchedulerState — all mutable state behind a Mutex.
@@ -527,7 +661,16 @@ impl CompileScheduler {
     /// Enters TypecheckDone with type info available but in-memory code
     /// not yet loaded. Object codegen is pre-satisfied.
     /// Satisfies any pending typecheck waiters on this module's symbols.
-    pub fn register_module_cached(&self, module: ModuleFullPath, symbols: HashSet<Symbol>) {
+    ///
+    /// The object load is held until the returned hold drops
+    /// (`design/int/int.md` §7.1, *restore before load*). `None` means the
+    /// module was already registered, so this call placed no hold.
+    #[must_use = "dropping the hold releases the object load at once"]
+    pub fn register_module_cached(
+        &self,
+        module: ModuleFullPath,
+        symbols: HashSet<Symbol>,
+    ) -> Option<CachedLoadHold<'_>> {
         observability::record_module_event(
             SchedulerTraceTag::RegisterModuleCached,
             module.as_ref(),
@@ -538,10 +681,11 @@ impl CompileScheduler {
         // (e.g., another worker registered it via register_module or a
         // concurrent cache-hit load), skip to avoid overwriting state.
         if state.modules.contains_key(&module) {
-            return;
+            return None;
         }
 
-        let ms = ModuleState::new_cached(symbols.clone());
+        let mut ms = ModuleState::new_cached(symbols.clone());
+        ms.cached_object_load = CachedObjectLoad::Held;
         state.modules.insert(module.clone(), ms);
         state.typecheck_done.push_back(module.clone());
         state.cached_modules.insert(module.clone());
@@ -568,6 +712,135 @@ impl CompileScheduler {
         drop(state);
         self.priority_work_available.notify_all();
         self.object_work_available.notify_all();
+        Some(CachedLoadHold {
+            scheduler: self,
+            module,
+        })
+    }
+
+    /// Lift the restorer's hold on a cached object load. Wakes priority
+    /// workers, which may now claim the load, and `completion` waiters in
+    /// [`Self::claim_or_await_cached_load`], which may claim it themselves.
+    fn release_cached_load(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module)
+            && ms.cached_object_load == CachedObjectLoad::Held
+        {
+            ms.cached_object_load = CachedObjectLoad::Released;
+        }
+        drop(state);
+        self.priority_work_available.notify_all();
+        self.completion.notify_all();
+    }
+
+    /// The one cached-object-load claim (`design/int/int.md` §7.1, *one load
+    /// entry*), shared by the priority ladder and the macro recogniser.
+    fn claim_cached_load_locked<'s>(
+        &'s self,
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+    ) -> CachedLoadAnswer<'s> {
+        let shutdown = state.shutdown;
+        let Some(ms) = state.modules.get_mut(module) else {
+            return CachedLoadAnswer::Unavailable;
+        };
+        match ms.cached_load_state() {
+            CachedLoadState::Loaded => CachedLoadAnswer::Loaded,
+            _ if shutdown => CachedLoadAnswer::Unavailable,
+            CachedLoadState::NotCachedObject | CachedLoadState::Failed => {
+                CachedLoadAnswer::Unavailable
+            }
+            CachedLoadState::Held | CachedLoadState::Claimed => CachedLoadAnswer::Pending,
+            CachedLoadState::Claimable => {
+                ms.cached_object_load = CachedObjectLoad::Claimed;
+                CachedLoadAnswer::Claimed(CachedLoadClaim {
+                    scheduler: self,
+                    module: module.clone(),
+                    ended: false,
+                })
+            }
+        }
+    }
+
+    /// Ask for `module`'s cached object load without waiting.
+    #[cfg(test)]
+    pub fn try_claim_cached_load(&self, module: &ModuleFullPath) -> CachedLoadAnswer<'_> {
+        let mut state = self.lock();
+        self.claim_cached_load_locked(&mut state, module)
+    }
+
+    /// Ask for `module`'s cached object load, waiting while it is held or
+    /// claimed elsewhere. Never answers [`CachedLoadAnswer::Pending`]. The wait
+    /// is bounded: a hold ends when its restorer's synchronous walk returns,
+    /// and a claim ends when its load does, neither waiting on this caller.
+    pub fn claim_or_await_cached_load(&self, module: &ModuleFullPath) -> CachedLoadAnswer<'_> {
+        let mut state = self.lock();
+        loop {
+            match self.claim_cached_load_locked(&mut state, module) {
+                CachedLoadAnswer::Pending => {
+                    state = self
+                        .completion
+                        .wait(state)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                settled => return settled,
+            }
+        }
+    }
+
+    /// End a claimed load as failed, unless the module has since left the
+    /// claimed state (a re-registration). Wakes every waiter.
+    fn fail_claimed_load(&self, module: &ModuleFullPath, error: CranelispError) {
+        let mut state = self.lock();
+        let Some(ms) = state.modules.get_mut(module) else {
+            return;
+        };
+        if ms.cached_load_state() != CachedLoadState::Claimed {
+            return;
+        }
+        ms.cached_object_load = CachedObjectLoad::Released;
+        Self::notify_module_failed_locked(&mut state, module, error);
+        drop(state);
+        self.priority_work_available.notify_all();
+        self.completion.notify_all();
+    }
+
+    /// Wait until no cached-object load is held, claimable or claimed, then
+    /// return the readiness that running compiled code requires
+    /// (`design/int/int.md` §7.1, *load before execution*).
+    ///
+    /// Returns the failure of a failed cached load, which stands until that
+    /// module is re-registered or a failed-module reset forgets it. At shutdown,
+    /// an outstanding load is returned as incomplete rather than waited for.
+    /// The caller must hold no
+    /// symbol-table guard or REPL check-state lock: the loads it waits for
+    /// take them.
+    pub fn wait_cached_loads_settled(&self) -> Result<ExecutionReadiness, SchedulerError> {
+        let mut state = self.lock();
+        loop {
+            let mut outstanding = None;
+            for (path, ms) in &state.modules {
+                match ms.cached_load_state() {
+                    CachedLoadState::Failed => return Err(module_failed_error(path, ms)),
+                    load if load.is_outstanding() => outstanding = Some(path),
+                    _ => {}
+                }
+            }
+            match outstanding {
+                None => return Ok(ExecutionReadiness { _private: () }),
+                Some(module) if state.shutdown => {
+                    return Err(SchedulerError::InmemIncomplete {
+                        module: module.clone(),
+                    });
+                }
+                Some(_) => {
+                    state = self
+                        .completion
+                        .wait(state)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+            }
+        }
     }
 
     /// Register a cache-hit module that has NO codegen object (S84 Phase 4B,
@@ -691,7 +964,7 @@ impl CompileScheduler {
                 waiters,
                 jit_reserved: HashSet::new(),
                 inmem_done: false,
-                inmem_claimed: false,
+                cached_object_load: CachedObjectLoad::Absent,
                 object_working: false,
                 object_done: false,
                 // S101 R18: bump the staleness generation so an in-flight
@@ -733,9 +1006,9 @@ impl CompileScheduler {
     ///   4. Cache-hit JitCodegen for typecheck_done modules needing inmem load.
     ///
     /// (Level 2 — the priority codegen queue scan — was deleted in S76 W3.)
-    pub fn take_priority_work(&self) -> Option<PriorityWork> {
+    pub fn take_priority_work(&self) -> Option<PriorityWork<'_>> {
         let mut state = self.lock();
-        Self::try_take_work_locked(&mut state)
+        self.try_take_work_locked(&mut state)
     }
 
     /// Return the highest-priority work item, blocking if none available.
@@ -755,14 +1028,14 @@ impl CompileScheduler {
     ///
     /// The inline single-threaded loop (`priority_worker_loop` in worker.rs)
     /// still uses the non-blocking `take_priority_work`.
-    pub fn take_priority_work_blocking(&self) -> Option<PriorityWork> {
+    pub fn take_priority_work_blocking(&self) -> Option<PriorityWork<'_>> {
         let mut state = self.lock();
         loop {
             if state.shutdown {
                 return None;
             }
 
-            if let Some(work) = Self::try_take_work_locked(&mut state) {
+            if let Some(work) = self.try_take_work_locked(&mut state) {
                 return Some(work);
             }
 
@@ -786,7 +1059,7 @@ impl CompileScheduler {
     fn dispatch_typecheck_locked(
         state: &mut SchedulerState,
         module: ModuleFullPath,
-    ) -> PriorityWork {
+    ) -> PriorityWork<'static> {
         Self::set_pool_locked(state, &module, ModulePool::TypecheckWorking);
         observability::record_module_event(
             SchedulerTraceTag::ModuleStateTypechecking,
@@ -833,7 +1106,7 @@ impl CompileScheduler {
     /// Try to take a work item from the priority ladder (locked).
     ///
     /// Shared implementation for both blocking and non-blocking variants.
-    fn try_take_work_locked(state: &mut SchedulerState) -> Option<PriorityWork> {
+    fn try_take_work_locked<'s>(&'s self, state: &mut SchedulerState) -> Option<PriorityWork<'s>> {
         if state.shutdown {
             return None;
         }
@@ -850,34 +1123,20 @@ impl CompileScheduler {
             return Some(Self::dispatch_typecheck_locked(state, module));
         }
 
-        // Level 4: JitCodegen for cached modules needing inmem loading.
-        // Scan typecheck_done for modules with inmem_done = false AND
-        // inmem_claimed = false (cache-hit modules that need Linker-based
-        // code loading and have not yet been claimed by another worker).
-        // Sprint 58 Wave 2c: split claim-vs-done so `wait_inmem_complete`
-        // only sees `inmem_done = true` after the worker actually finishes.
-        let cached_needing_inmem = state.typecheck_done.iter().find_map(|module| {
+        // Level 4: load a cached module's object. The claim rides on the work
+        // item; only its completion sets `inmem_done`, so
+        // `wait_inmem_complete` never passes a load still in flight.
+        let claimable = state.typecheck_done.iter().find_map(|module| {
             state
                 .modules
                 .get(module)
-                .filter(|ms| !ms.inmem_done && !ms.inmem_claimed && ms.object_done)
+                .filter(|ms| ms.cached_load_state() == CachedLoadState::Claimable)
                 .map(|_| module.clone())
         });
-        if let Some(module) = cached_needing_inmem {
-            // Claim guard: set inmem_claimed = true so other workers skip
-            // this module while the cache-hit worker loads its `.o`. The
-            // worker calls `notify_inmem_codegen_batch_complete` on success
-            // (which sets `inmem_done = true`) or `notify_module_failed`
-            // on error (which moves the module to `Failed`).
-            if let Some(ms) = state.modules.get_mut(&module) {
-                ms.inmem_claimed = true;
-            }
-            // Use a synthetic symbol name — the worker will batch-load the
-            // entire .o file regardless of which symbol triggered the item.
-            return Some(PriorityWork::JitCodegen(
-                module,
-                Symbol::from("__cache_load"),
-            ));
+        if let Some(module) = claimable
+            && let CachedLoadAnswer::Claimed(claim) = self.claim_cached_load_locked(state, &module)
+        {
+            return Some(PriorityWork::JitCodegen(claim));
         }
 
         None
@@ -1197,18 +1456,19 @@ impl CompileScheduler {
         self.completion.notify_all();
     }
 
-    /// Batch-mark multiple symbols as inmem-codegenned.
-    /// Used when a Linker load resolves all symbols in a cached .o at once.
-    /// Sprint 58 Wave 2c: clears `inmem_claimed` alongside setting
-    /// `inmem_done` so the claim and the completion are released atomically.
-    pub fn notify_inmem_codegen_batch_complete(&self, module: &ModuleFullPath, symbols: &[Symbol]) {
+    /// Batch-mark multiple symbols as inmem-codegenned: a cached object load
+    /// completed ([`CachedLoadClaim::complete_loaded`]). The claim ends in
+    /// the same step that sets `inmem_done`.
+    fn notify_inmem_codegen_batch_complete(&self, module: &ModuleFullPath, symbols: &[Symbol]) {
         let mut state = self.lock();
         if let Some(ms) = state.modules.get_mut(module) {
             for sym in symbols {
                 ms.jit_reserved.remove(sym);
             }
             ms.inmem_done = true;
-            ms.inmem_claimed = false;
+            if ms.cached_object_load == CachedObjectLoad::Claimed {
+                ms.cached_object_load = CachedObjectLoad::Released;
+            }
         }
         // Evaluate waiter satisfaction for codegen waiters. This may requeue
         // blocked waiter modules into the typecheck queues via
@@ -2192,13 +2452,13 @@ impl CompileScheduler {
             let cached = state.cached_modules.contains(path);
             let _ = writeln!(
                 s,
-                "  [{:?}] {} blocked_on={:?} inmem_done={} inmem_claimed={} \
+                "  [{:?}] {} blocked_on={:?} inmem_done={} cached_load={:?} \
                  object_done={} object_working={} cached={} sexps={} error={}",
                 ms.pool,
                 path.as_ref(),
                 ms.blocked_on.as_ref().map(|m| m.as_ref()),
                 ms.inmem_done,
-                ms.inmem_claimed,
+                ms.cached_load_state(),
                 ms.object_done,
                 ms.object_working,
                 cached,
@@ -2536,6 +2796,23 @@ impl std::fmt::Display for SchedulerError {
 }
 
 impl std::error::Error for SchedulerError {}
+
+/// The failure a waiter reports for a failed module.
+fn module_failed_error(module: &ModuleFullPath, ms: &ModuleState) -> SchedulerError {
+    SchedulerError::ModuleFailed {
+        module: module.clone(),
+        message: ms
+            .error
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string()),
+        span: ms
+            .error
+            .as_ref()
+            .map(|e| e.span())
+            .unwrap_or(Span::SYNTHETIC),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Signature/body pre-pass — static dependency closure + cycle error (S93)

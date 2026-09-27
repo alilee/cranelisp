@@ -259,6 +259,84 @@ fn qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches() {
     );
 }
 
+// spec: spec/07-traits.md §7.3; spec/08-modules.md §8.1 — an impl is for one
+// type, whose identity includes its module: `m`'s impl for `m/U` does not make
+// `main`'s own `U` implement the trait
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home found=S122 owner=/dev
+#[test]
+fn impl_for_same_named_type_in_another_module_does_not_satisfy_trait_neg() {
+    // `m`'s impl returns 5, so an accepted call through it exits 5. `main`'s
+    // type holds a `String` where `m/U` holds an `Int`.
+    let program = |ty: &str| {
+        Cranelisp::new()
+            .file(
+                "main.cl",
+                &format!(
+                    "(import [primitives [Pure String]])\n\
+                     (import [zz [tr]])\n\
+                     (import [m [anchor]])\n\
+                     (deftype {ty} [:String s])\n\
+                     (defn main [] (Pure (tr ({ty} \"x\"))))\n"
+                ),
+            )
+            .file(
+                "zz.cl",
+                "(import [primitives [Int]])\n(deftrait Tr (tr [self] Int))\n",
+            )
+            .file(
+                "m.cl",
+                "(import [primitives [Int]])\n\
+                 (import [zz [Tr]])\n\
+                 (deftype U [:Int n])\n\
+                 (impl Tr U (defn tr [_] 5))\n\
+                 (defn anchor [] 0)\n",
+            )
+            .run("main.cl")
+            .output()
+    };
+    let names = |text: &str, name: &str| {
+        let ident = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+        text.match_indices(name).any(|(at, _)| {
+            !text[..at].chars().next_back().is_some_and(ident)
+                && !text[at + name.len()..].chars().next().is_some_and(ident)
+        })
+    };
+    // A codegen failure is the accepted program failing later, not a rejection.
+    let rejected_naming = |out: &helpers::e2e::CrOutput, ty: &str| {
+        !out.status.success()
+            && out.status.code() != Some(5)
+            && !out.stderr.contains("codegen error")
+            && names(&out.stderr, "Tr")
+            && names(&out.stderr, ty)
+    };
+    let subject = program("U");
+    let control = program("V");
+    let legs = [
+        (
+            "subject: `main`'s own `U`, same name as `m/U`: rejected naming `Tr` and `main/U`",
+            rejected_naming(&subject, "main/U"),
+            &subject,
+        ),
+        (
+            "control: `main`'s type named `V`: rejected naming `Tr` and `main/V`",
+            rejected_naming(&control, "main/V"),
+            &control,
+        ),
+    ];
+    let report: Vec<String> = legs
+        .iter()
+        .map(|(name, ok, out)| {
+            format!(
+                "[{}] {name}: status={:?}\n{}",
+                if *ok { "ok" } else { "FAIL" },
+                out.status,
+                out.stderr.trim_end()
+            )
+        })
+        .collect();
+    assert!(legs.iter().all(|(_, ok, _)| *ok), "{}", report.join("\n"));
+}
+
 // spec: spec/07-traits.md §7.3 — multiple impls registered for distinct types
 #[test]
 fn trait_multiple_impls() {

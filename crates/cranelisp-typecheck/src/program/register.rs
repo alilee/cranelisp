@@ -72,7 +72,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         accumulator
             .bodies
             .reject_duplicate(&target, &defn.name, defn.span)?;
-        let (param_types, ret_ty, var_scope) = self.register_defn_signature(state, defn)?;
+        let signature = self.register_defn_signature(state, defn)?;
         let already_checked_trait_method = self
             .current_symbol_table(state)
             .view()
@@ -90,14 +90,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     )
             });
         if !already_checked_trait_method {
-            accumulator.bodies.register(RegisteredBody {
+            accumulator.bodies.register(signature.into_registration(
                 target,
-                publication_name: defn.name.clone(),
-                param_types,
-                ret_ty,
-                written_var_scope: var_scope,
-                span: defn.span,
-            })?;
+                defn.name.clone(),
+                defn.span,
+            ))?;
         }
         Ok(FormCheckResult::empty())
     }
@@ -133,16 +130,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 span: variant.span,
             };
             // Register each variant's signature
-            let (param_types, ret_ty, var_scope) =
-                self.register_defn_signature(state, &internal_defn)?;
-            accumulator.bodies.register(RegisteredBody {
+            let signature = self.register_defn_signature(state, &internal_defn)?;
+            accumulator.bodies.register(signature.into_registration(
                 target,
-                publication_name: internal_name,
-                param_types,
-                ret_ty,
-                written_var_scope: var_scope,
-                span: variant.span,
-            })?;
+                internal_name,
+                variant.span,
+            ))?;
         }
         state.overloads.insert(defn.name.clone(), overload_entries);
 
@@ -190,7 +183,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// pairs on `state.active_constraints`. `generalize` then lifts these onto
     /// the defn's `Scheme.constraints` when the var is quantified. A member that
     /// does not resolve is the form's failure, so an absent module records its
-    /// `Type` gap.
+    /// `Type` gap. Returns the var and the resolved traits in written order,
+    /// which the ledger keeps as the parameter's declared bounds (§9.2.1).
     ///
     /// The binder is deliberately NOT unified with any concrete type here — it
     /// is a fresh constrained var, and any concrete shape is contributed by the
@@ -201,21 +195,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &mut CheckState,
         bounds: &[cranelisp_types::TraitRef],
         span: Span,
-    ) -> Result<Type, CranelispError> {
+    ) -> Result<(Type, Vec<cranelisp_types::FQTraitName>), CranelispError> {
         let (var_ty, var_id) = self.fresh_var_id();
+        let mut traits = Vec::with_capacity(bounds.len());
         for tref in bounds {
             let fqtn = self
                 .resolve_trait_as_written(state, tref.module.as_ref(), tref.name.as_ref(), span)
                 .map_err(|failure| failure.into_form_error(state))?;
-            state.active_constraints.add(var_id, fqtn);
+            state.active_constraints.add(var_id, fqtn.clone());
+            traits.push(fqtn);
         }
-        Ok(var_ty)
+        Ok((var_ty, traits))
     }
 
     /// Create fresh type variables for a function's parameters and return type,
     /// respecting any annotations, and register the signature in the symbol table.
     ///
-    /// Returns `(param_types, return_type)` for use in body checking.
+    /// Returns the signature facts body checking and settlement read.
     /// Shared by the per-form registration path (`check_form_register_single_defn`)
     /// and the multi-sig variant registration to prevent the two paths from
     /// diverging as rings add complexity.
@@ -223,7 +219,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &mut CheckState,
         defn: &Defn,
-    ) -> Result<(Vec<Type>, Type, HashMap<Symbol, TypeId>), CranelispError> {
+    ) -> Result<DefnSignature, CranelispError> {
         // Fast path for trait impl (mangled) methods: if this symbol already
         // has a checked callable entry, AND its name matches the trait-impl mangled
         // form `Trait.method$Type`, it was already type-checked by
@@ -251,7 +247,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 )
                 && let Type::Fn(param_types, ret_ty) = &callable.arm.scheme.ty
             {
-                return Ok((param_types.clone(), (*ret_ty.clone()), HashMap::new()));
+                return Ok(DefnSignature {
+                    param_types: param_types.clone(),
+                    ret_ty: (*ret_ty.clone()),
+                    written_var_scope: HashMap::new(),
+                    declared_bounds: Vec::new(),
+                });
             }
         }
 
@@ -271,8 +272,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // vars, NOT from this map's values.
         let mut var_map: HashMap<Symbol, TypeId> = HashMap::new();
         let mut param_types = Vec::new();
-        for (_name, ann) in defn.params().iter() {
-            let param_ty = match ann {
+        let mut declared_bounds = Vec::new();
+        for (param_index, (param, ann)) in defn.params().iter().enumerate() {
+            let (param_ty, bounds) = match ann {
                 // Stacked trait-bound annotation (`:Eq :Display a`, spec §3.9.2):
                 // the binder is "an unspecified type satisfying these traits"
                 // (spec §3.9.3 try-type-then-trait). It resolves to a FRESH
@@ -297,7 +299,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         // (`var_map`) threads it to Pass-2 for CO-REFERENCE, not
                         // rigidity — `check_defn_body` seeds `rigid_vars` from
                         // asserted-constraint param vars, not from `var_map`.
-                        Ok(ty) => ty,
+                        Ok(ty) => (ty, Vec::new()),
                         // Try-type-then-trait (spec §3.9.3). A SINGLE annotation
                         // `:Eq a` is ambiguous between a concrete-type annotation
                         // and a single trait bound; the frontend leaves it as a
@@ -310,17 +312,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             match self.resolve_annotation_trait(state, ann, defn.span) {
                                 Some(fq_trait) => {
                                     let (var_ty, var_id) = self.fresh_var_id();
-                                    state.active_constraints.add(var_id, fq_trait);
-                                    var_ty
+                                    state.active_constraints.add(var_id, fq_trait.clone());
+                                    (var_ty, vec![fq_trait])
                                 }
                                 None => return Err(type_err.into_form_error(state)),
                             }
                         }
                     }
                 }
-                None => self.fresh_var(),
+                None => (self.fresh_var(), Vec::new()),
             };
             param_types.push(param_ty);
+            declared_bounds.extend(bounds.into_iter().map(|trait_ref| DeclaredBound {
+                param_index,
+                param: param.clone(),
+                trait_ref,
+            }));
         }
         let ret_ty = self.fresh_var();
 
@@ -346,7 +353,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
             .map_err(crate::result::lifecycle_error)?;
 
-        Ok((param_types, ret_ty, var_map))
+        Ok(DefnSignature {
+            param_types,
+            ret_ty,
+            written_var_scope: var_map,
+            declared_bounds,
+        })
     }
 
     /// Pass 4 (batch): scan all defn bodies for calls to constrained functions

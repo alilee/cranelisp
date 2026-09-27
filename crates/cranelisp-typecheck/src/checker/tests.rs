@@ -576,11 +576,9 @@ fn test_resolve_qualified_without_alias_unchanged() {
 // spec: 08-modules §8.6.4 — a qualified reference whose absolute module IS
 // loaded but whose MEMBER is absent yields an HONEST member-not-found: no
 // phantom `<current>.<qualifier>` child gap escapes `lookup` (FIXME 0513,
-// CS-II-0). `resolve_qualified("primitives", "nosuchfn")` returns
-// `Ok((None, None))` (module present, member absent — no gap); the child
-// probe hits the UNLOADED `user.primitives` and would produce a phantom
-// `SymbolTypechecked(user.primitives/nosuchfn)` gap — the absolute reality
-// MUST suppress it.
+// CS-II-0). A qualified spelling probes only its written module
+// (design/typecheck/typecheck.md §3.6), so the unloaded `user.primitives` is
+// never consulted.
 #[test]
 fn qualified_lookup_loaded_module_missing_member_has_no_phantom_child_gap() {
     let mut tf = tf();

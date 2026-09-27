@@ -17,7 +17,7 @@ use cranelisp_types::{
 };
 
 use crate::expander::{self, MacroResolver};
-use crate::scheduler::CompileScheduler;
+use crate::scheduler::{CachedLoadAnswer, CompileScheduler};
 use crate::worker::{ModuleCompiler, handle_cached_codegen};
 
 use super::macro_clause::{MacroCheckpoint, MacroClauseEnv, compile_macro_checkpoint};
@@ -32,7 +32,8 @@ use super::macro_clause::{MacroCheckpoint, MacroClauseEnv, compile_macro_checkpo
 /// `recognize` recognizes a macro head through `expander::recognize_macro_head`.
 /// It never compiles clauses from source. Its one side effect: when the
 /// macro's home module was restored from cache and its object is not yet
-/// loaded, it loads that object (`handle_cached_codegen`) before returning.
+/// loaded, it claims and runs that load, or waits for the restore or another
+/// claimant to finish it, before returning.
 /// Execution is the walk's single `JitMacroExpander`
 /// (`design/int/int.md` §6.8).
 pub(super) struct SymbolTableMacroResolver<'a> {
@@ -147,28 +148,20 @@ impl MacroResolver for SymbolTableMacroResolver<'_> {
 
         // Step 2: the executor reads clause code from the home module's GOT.
         // A published checkpoint compiled every clause, but a home module
-        // restored from cache has no bodies until its object loads, and the
-        // cached-codegen work item may not have run yet. Load it synchronously.
-        // Any clause still missing fails execution with
-        // `MacroInvokeError::Aborted`.
+        // restored from cache has no bodies until its object loads. Take that
+        // load through the scheduler's one claim, or wait for the restore or
+        // the claimed load to finish (`design/int/int.md` §7.1). Any clause
+        // still missing fails execution with `MacroInvokeError::Aborted`;
+        // resolution never recompiles a clause from source.
         let all_compiled = (0..clauses).all(|idx| has_code_ptr(self.symbol_tables, &fq, idx));
-
-        if !all_compiled {
-            if defining_module != self.current_module
-                && self.scheduler.cached_module_contains(&defining_module)
-            {
-                let _ = handle_cached_codegen(&defining_module, self.shared_state, self.scheduler);
-                let now_compiled =
-                    (0..clauses).all(|idx| has_code_ptr(self.symbol_tables, &fq, idx));
-                if now_compiled {
-                    return Ok(Some(fq));
-                }
-            }
-
-            // A published macro checkpoint always contains every active clause.
-            // Cache restore may populate those slots by loading its object, but
-            // resolution never recompiles a candidate generation from source.
-            return Ok(Some(fq));
+        if !all_compiled
+            && defining_module != self.current_module
+            && let Some(shared) = self.shared_state
+            && self.scheduler.cached_module_contains(&defining_module)
+            && let CachedLoadAnswer::Claimed(claim) =
+                self.scheduler.claim_or_await_cached_load(&defining_module)
+        {
+            handle_cached_codegen(claim, shared);
         }
 
         Ok(Some(fq))

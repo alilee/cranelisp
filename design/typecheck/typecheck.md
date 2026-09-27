@@ -136,8 +136,8 @@ no measured performance need.
 
 ### 3.4 Qualified lookup dependencies
 
-Status: **implemented 2026-09-26 against the user-approved API, uncommitted;
-the int consumer is implemented (2026-09-26); full suite green; uncommitted.** The fact, its carriers and its consumers are
+Status: **implemented against the user-approved API and committed, with the
+int consumer, at `56e4d2e1` (2026-09-26); full suite green.** The fact, its carriers and its consumers are
 `arch`'s [qualified lookup dependencies](../arch/interfaces.md#qualified-lookup-dependencies).
 This section is typecheck's producer.
 
@@ -156,9 +156,9 @@ filter compiler-owned modules and loads nothing; exclusion and use are `int`'s
   new answer shape cannot bypass recording either.
 - **Outcomes.**
   - *Success* is recorded, including a probe whose caller discards it: a type
-    attempt that found a trait, a pre-check, a diagnostic render, or the child
-    probe of the child-then-absolute pair. A discarded answer still shaped the
-    result, and an extra member costs at most a cache miss. Gap recording
+    attempt that found a trait, a pre-check or a diagnostic render. A
+    discarded answer still shaped the result, and an extra member costs at
+    most a cache miss. Gap recording
     (§7.3.1) differs deliberately: there a discarded failure would become a
     load request.
   - *Failure* records nothing, because the carrier names only a table that
@@ -194,12 +194,12 @@ filter compiler-owned modules and loads nothing; exclusion and use are `int`'s
     public-API change; the reference leaves this crate's `public-api.txt`
     unchanged.
 
-**Route census** (source read at `bc675d86` plus the uncommitted loading fixes;
-the pattern and stacked-bound rows are the §3.5 routes):
+**Route census** (source read at `56e4d2e1`; the pattern and stacked-bound rows
+are the §3.5 routes):
 
 | Reference kind | Route | Recorded by |
 |---|---|---|
-| Value, value-position constructor, qualified dotted member `m/T.x` | `lookup`: the full spelling first (the alias target — `<current>.q` for a `(mod q)` child — or the absolute module), then the §3.5 walk, child then absolute. Reference recording: the walk's order. Every probe goes through the seam | Seam |
+| Value, value-position constructor, qualified dotted member `m/T.x` | `lookup`: the full spelling first (the alias target — `<current>.q` for a `(mod q)` child — or the absolute module), then the §3.5 walk over that same one module (§3.6), which supplies the gap. Reference recording resolves the full spelling by the first probe's chain. Every probe goes through the seam | Seam |
 | Type positions: annotations, `deftype` fields, aliases, trait and HKT signatures, HKT impl signatures | The type-expression resolver, through the candidate seam | Seam |
 | Impl target head | The type lookups, qualifier kept (§7.3.1) | Seam |
 | Trait: impl trait slot, pairing head, constraint slot, type-or-trait step R (§7.3.2) | `resolve_trait` and the impl trait resolver | Seam |
@@ -222,34 +222,31 @@ the pattern and stacked-bound rows are the §3.5 routes):
   the seam, such as a new rooted route. No caller records a module itself; the
   seam is the only recording point.
 - *An unrecorded miss cannot change a cached answer*: **asserted with a named
-  falsifier, for a `(mod)`-declared child and for no child.** A qualified
-  spelling otherwise reads one module, and that module's absence is the
-  form's gap. `(mod q)` installs the private alias `q → <current>.q`, so every
-  reading, value or pattern, reaches the declared child first and never
-  consults absolute `q`; the `mod` declaration is already the declared edge.
-  Falsifier: a cached module resolves `q/x` to `q` while a fresh compile of the
-  same sources resolves it to `<current>.q`.
-- **Not held for an undeclared registered child.** The walk's synthesised
-  candidate `<current>.q` answers wherever some other module has registered
-  that path, and its miss is unrecorded; value position also reads absolute
-  `q` first. Either answer can therefore change with what else is loaded.
-  This is the §11 R-1 lead, source-read and not executed.
+  falsifier.** A qualified spelling reads one module, its written module after
+  alias substitution ([§3.6](#36-one-reading-of-a-qualified-module)), and that
+  module's absence is the form's gap. `(mod q)` installs the private alias
+  `q → <current>.q`, so every reading, value or pattern, reaches the declared
+  child and never consults absolute `q`; the `mod` declaration is already the
+  declared edge. An undeclared registered child is never consulted. Falsifier:
+  a cached module resolves `q/x` to one module while a fresh compile of the
+  same sources resolves it to another.
 
 **Evidence** (`crates/cranelisp-typecheck/src/form/tests.rs`):
 
 - `lookup_dependency_census_records_answering_module`: one row per census
   family through the seam; one alias row per distinct path by which a spelled
   qualifier reaches the seam — value, type resolution, step R, the stacked
-  bound and patterns; and child-relative rows, which seed an undeclared child
-  and so observe the walk's synthesised candidate (§11 R-1). A declared child
-  reaches the seam through its alias.
+  bound and patterns; and the value and pattern "undeclared child" rows, which
+  seed a registered `<current>.q` the module never declared and require
+  exactly `q` recorded (§3.6). A declared child reaches the seam through its
+  alias.
 - Negative cells: `lookup_dependency_census_bare_and_self_qualified_record_nothing`,
   `lookup_dependency_rejected_cluster_writes_nothing_neg` and
   `lookup_dependency_live_mode_records_nothing`.
 
 ### 3.5 Qualified stacked bounds and constructor patterns
 
-Status: **implemented 2026-09-26, uncommitted.** This corrects the confirmed
+Status: **implemented and committed at `56e4d2e1` (2026-09-26).** This corrects the confirmed
 defects LB-1, LB-2 and LP-1 to LP-3
 ([S122 evidence delta](../../tests/plan/s122-evidence-delta.md#source-read-lookup-leads--classification-2026-09-26)).
 Each route resolved a qualified spelling without the qualified path. Each now
@@ -276,9 +273,11 @@ qualified walk, so existing semantics decide. The public surface does not change
     in §11);
   - how a constraint is used after registration
     ([inference](inference.md), rigid seeding);
-  - enforcement of a declared bound that the body does not use. `qa` is
-    classifying that separately, and this correction does not depend on it:
-    LB-1 pins the scheme's canonical identity.
+  - enforcement of a declared bound that the body does not use. That is
+    DB-1, designed separately in
+    [declared bounds at settlement](#921-declared-bounds-are-discharged-at-settlement).
+    This correction does not depend on it: LB-1 pins the scheme's canonical
+    identity.
 
 **Qualified constructor pattern** (`(m/C x)` or `(m/T.C x)`, spec §6.2.1):
 
@@ -287,26 +286,21 @@ qualified walk, so existing semantics decide. The public surface does not change
   inside the spelled module, where that module's private names and
   non-re-exported imports would be visible. It uses the qualified walk that
   `lookup` uses:
-  - the child-then-absolute candidate order from the one source (§3.3);
-  - each candidate resolved through the scope seam as the composed
+  - the one written module from the one source (§3.6);
+  - that module resolved through the scope seam as the composed
     `module/name`, with alias substitution, the public-only filter and no
     prelude retry;
-  - `lookup`'s gap selection when no candidate wins.
-- **One walk.** `lookup`'s qualified block is a crate-private step. Its
-  callers pass what counts as a winning terminal: one with a scheme for a
-  value, and a constructor for a pattern. Extracting it left value-position
-  results unchanged. The rooted helper stays for its other callers, which are
-  not qualified references.
+  - that module's gap when it yields no winning terminal.
+- **One walk.** `lookup`'s qualified block is the crate-private
+  `resolve_qualified_walk`. Its callers pass what counts as a winning
+  terminal: one with a scheme for a value, and a constructor for a pattern.
+  The rooted helper stays for its other callers, which are not qualified
+  references.
 - **The walk is not value position's only qualified step.** Before the walk,
-  `infer_var` and `lookup` resolve the full spelling through the seam, which
-  reads only the alias target or the absolute module. The walk decides a value
-  only when that probe fails, while the pattern route calls the walk alone.
-  For a `(mod q)`-declared child both positions agree: the alias sends the
-  full spelling, and the walk's absolute candidate, to `<current>.q`. They
-  diverge only when an undeclared `<current>.q` is registered and both it and
-  absolute `q` export the member: the pattern takes the walk's synthesised
-  child, and the value types against `q`. That divergence predates §3.5; see
-  §11 R-1.
+  `lookup` resolves the full spelling through the seam. When that probe
+  fails, the walk probes the same module and supplies its gap; the pattern
+  route calls the walk alone. Both read the one written module after alias
+  substitution, so the two positions agree for every spelling (§3.6).
 - **Pattern outcomes.**
   - A constructor terminal is instantiated and recorded in `pattern_ctors`
     as before.
@@ -327,8 +321,7 @@ qualified walk, so existing semantics decide. The public surface does not change
   positions (`crates/cranelisp-frontend/src/synth.rs`). A pattern template
   therefore resolves as its value-position template does, including through
   an import alias or a `(mod macros)` spelled `macros` (review A-4, a `qa`
-  candidate hygiene lead), except for an undeclared registered child
-  `<current>.macros`, as above.
+  candidate hygiene lead).
 
 **Lookup dependencies.** Both routes reach tables only through the seam, so
 §3.4 records them there; neither records a module itself.
@@ -336,17 +329,12 @@ qualified walk, so existing semantics decide. The public surface does not change
 **Grades.**
 
 - *The pattern route and value position's qualified fallback share the
-  walk's candidate order, seam and gap choice*: **structural**, because both
-  call one step. Falsifier: a second qualified candidate-order source in the
-  crate.
+  walk's module, seam and gap choice*: **structural**, because both call one
+  step. Falsifier: a second qualified candidate source in the crate.
 - *A qualified constructor resolves the same way in pattern and value
-  position*: for a `(mod)`-declared child, **asserted with a named
-  falsifier** — both reach the child through its installed alias; falsifier:
-  R1-V's declared-child control naming two declarations. **Not held** for an
-  undeclared registered child whose
-  member the absolute module also exports (above); elsewhere it follows from
-  the shared walk and is not separately graded. Falsifier of the known
-  divergence: R1-V (§11).
+  position*: follows from §3.6's structural grade and is not separately
+  graded. R1-V and `qualified_value_and_pattern_name_one_module` (§3.6)
+  measure it.
 - *No qualified trait or pattern spelling reaches a table outside the seam*:
   **asserted with a named falsifier**, the §3.4 census.
 
@@ -373,11 +361,93 @@ qualified walk, so existing semantics decide. The public surface does not change
   | `qualified_ctor_pattern_through_alias_resolves_in_target` | Seeded `b` with public `C`; alias `bb`; pattern `(bb/C v)` | Accepted; `pattern_ctors` records `b`'s constructor |
   | `qualified_ctor_pattern_private_constructor_matches_value_twin_neg` | `b` declares `C` private; pattern `(b/C v)` from another module | Not accepted; the same `CheckError` as the value twin `(b/C 1)` |
   | `qualified_ctor_pattern_absent_module_is_value_twin_gap` | Pattern `(b/C v)`, no `b` | The gap the value twin `(b/C 1)` returns |
-  | `qualified_ctor_pattern_prefers_child_module` | Registered but undeclared child `q` (no alias) and absolute `q`, both with `C`; pattern `(q/C v)` | Resolves to the child through the walk's synthesised candidate. Pins current behaviour, which `qa` reads as non-conforming (§11 R-1) |
+  | `qualified_ctor_pattern_ignores_undeclared_child_module` | Registered but undeclared child `<current>.q` (no alias) and absolute `q`, both with `C`; pattern `(q/C v)` | Resolves to absolute `q` (§3.6) |
   | `qualified_non_constructor_pattern_is_located_error_neg` | Control: `b/f` is a function; pattern `(b/f v)` | Located "unknown constructor in pattern", no gap |
   | `qualified_macros_scons_pattern_resolves` | Control: seeded `macros` with `SCons`; pattern `(macros/SCons h t)` | Accepted |
 
 - The §3.4 census cells cover the stacked-bound and pattern families.
+
+### 3.6 One reading of a qualified module
+
+Status: **implemented 2026-09-26; uncommitted.** It corrects the confirmed
+defect R1-V
+([classification](../../tests/plan/s122-evidence-delta.md#producer-review-r-1-and-a-4--classification-2026-09-26)).
+
+**Requirement.**
+
+- Spec §8.6.6 step 3 resolves a qualifier in "a child module of the current
+  module".
+- §8.11.2 item 1 defines that child as one registered by `(mod name)` in the
+  current module.
+- §8.5.4 edge 2 confines child-of-current resolution to registered
+  submodules and aliases.
+- §8.11.2.1 forbids a bare module name reaching the submodule in one position
+  and the root module in another.
+- A recorded refuter would read §8.1.1 into step 3. Adopting it would change
+  only R1-V's value leg.
+
+**Design.**
+
+- A declared child already has exactly one reading. `(mod q)` installs the
+  private alias `q → <current>.q`, which `int` restores on a cache hit, so
+  §8.6.6 step 1 reaches the child in every position.
+- A synthesised `<current>.q` candidate would therefore add nothing for a
+  declared child and a non-conforming reading for an undeclared one, so none
+  exists.
+- A qualified `module/name` names exactly one module: the written module path
+  after alias substitution (§9.8). The one candidate source,
+  `checker.rs::qualified_candidate_module`, yields that module and no child.
+- The walk (§3.5) is the one qualified step for value position's fallback and
+  for patterns: it probes that module, projects the winner and otherwise
+  returns that module's gap. No child-versus-absolute gap precedence exists.
+- Reference recording (`record_reference_target`) resolves the full spelling
+  through `def_resolved`, the same seam chain value position's first probe
+  uses. Value position's scheme and its recorded target therefore come from
+  one resolution (Principle 24).
+
+**Consequences.**
+
+- Value and pattern positions agree for every spelling.
+- An undeclared registered child is never consulted, so what else is loaded
+  cannot change an answer, and a cached answer cannot rest on an unrecorded
+  miss (§3.4).
+- Quasiquote `macros/…` spellings are redirected only through an alias
+  (A-4 narrows).
+- Aliases, mount aliases, self-qualified normalisation, the scope seam,
+  lookup-dependency recording and gaps are unchanged.
+
+**Grade.** *A qualified spelling denotes one module, in every position*:
+**structural**, because the crate has one candidate source and it yields one
+module. Falsifier: a second qualified candidate source in the crate.
+
+**Outside this crate.** `int`'s bare-name import and export resolution
+(`src/process_form/dependency.rs::resolve_current_module_relative`) also
+synthesises `<current>.<name>`. It does so whenever that module is registered
+or has a backing file, whether or not the current module declared it. The
+same undeclared child can therefore be the submodule in an `import` and the
+root module in a qualified reference, which §8.11.2.1 forbids. This is
+source-read and routed to `design`(int) and `qa`.
+
+**Evidence.**
+
+- E2E: R1-V (`tests/spec_08_modules.rs::qualified_name_to_undeclared_registered_child_resolves_to_root_module`),
+  GREEN on all six legs.
+- Unit cells:
+  - `crates/cranelisp-typecheck/src/form/tests.rs`:
+    - `qualified_value_and_pattern_name_one_module`: with an undeclared
+      registered child and absolute `q`, the value's scheme, its recorded
+      callee and the pattern all name `q`; with `(mod q)`'s alias installed,
+      all three name the child;
+    - `qualified_name_does_not_fall_back_to_undeclared_child_neg`: a member
+      only the undeclared child exports is `q`'s member gap, in value and
+      pattern position, and records nothing;
+    - `qualified_ctor_pattern_ignores_undeclared_child_module` (§3.5 table);
+    - the §3.4 census's "undeclared child" rows.
+  - `crates/cranelisp-typecheck/src/program/register/tests.rs::qualified_candidate_module_is_the_written_module`.
+  - `crates/cranelisp-typecheck/src/checker/tests.rs::qualified_lookup_loaded_module_missing_member_has_no_phantom_child_gap`.
+- The census, value-twin, pattern and negative cells were RED before the
+  change. Detection proof: restoring a child-first probe in the walk failed
+  all four; reverted.
 
 ---
 
@@ -534,8 +604,8 @@ with frontend, which alone raises `MacroInMem`.
 
 #### 7.3.1 Producing the type gap
 
-Status: **implemented 2026-09-25 in this crate, uncommitted; integration and QA
-acceptance pending** (see *Evidence* below).
+Status: **implemented 2026-09-25 and committed at `56e4d2e1`; integrated and
+QA-accepted** (see *Evidence* below).
 
 `spec/08-modules.md` §8.5.4 edge 1 makes an unresolved qualified type a
 resolution-layer `Type` gap, and invariant 8 of
@@ -801,6 +871,141 @@ do not add a local type printer.
 `Scheme.constraints`. A constrained function is a template whose concrete bodies
 are produced by call-site monomorphisation.
 
+#### 9.2.1 Declared bounds are discharged at settlement
+
+Status: **implemented 2026-09-26; uncommitted. Two allocated evidence items
+are open (see Evidence).** It corrects the confirmed defect DB-1
+([intake](../../tests/plan/s122-evidence-delta.md#declared-bound-not-checked-at-the-call-site--intake-2026-09-26)).
+
+**Requirement.**
+
+- Spec §3.9.2 restricts an annotated parameter to types that implement the
+  trait, and a stacked bound is a conjunction.
+- §3.3.2 makes a constraint a claim that the compiler checks and the caller
+  relies on.
+
+**Why the mint alone does not discharge it.**
+
+- Within one cluster, a constrained definition keeps its un-generalised Pass-1
+  signature. A same-cluster caller therefore pins its parameter variables
+  through the shared substitution (spec §3.5.2;
+  `program/body.rs::determine_fn_state`).
+- When a caller pins a declared-bound variable to a concrete type,
+  generalisation drops the bound, because the variable is no longer
+  quantified. The definition then settles concrete, and no instance is
+  minted, so `verify_constraints` never runs.
+- A bound the body uses is caught by the deferred dispatch at the pinned
+  type, located in the body. An unused bound has no other check.
+- A caller in another cluster instantiates the published template, and the
+  mint verifies its instance at the call site.
+
+**Rule.**
+
+- After the cluster's substitution settles, check every declared parameter
+  bound of every registration in the cluster's body ledger against that
+  parameter's settled type, through the shared satisfaction step below.
+- The check runs after multi-signature variant settlement and before the first
+  monomorphisation window ([monomorphisation §3.3](monomorphisation.md#33-the-driver-and-its-settlement-windows)
+  step 6): `program/finalize.rs::check_declared_bounds`, called from
+  `finalize_check_result_inner`. It records nothing (Principle 26).
+- Visit registrations in ledger order, which is source order, and each
+  registration's bounds in parameter order and then in written order. The
+  first failure, which is the one reported, is then deterministic.
+
+**Carrier.**
+
+- Pass 1 records a registration's declared bounds on its ledger registration
+  (`RegisteredBody.declared_bounds`). It writes them from the same resolution
+  that seeds the active constraint (§3.5, §7.3.2). The trait-impl fast path
+  records none (see Grade).
+- The check reads that record, not `CheckState`'s active constraints. Those
+  are reset to the Pass-1 snapshot before each body, and at finalize they
+  still hold the last body's instantiation residue, so their content depends
+  on processing order.
+
+**Shared satisfaction step.** One crate-private step,
+`TypeCheckEnv::trait_satisfaction` (`traits/dispatch.rs`), judges whether a
+settled type satisfies a trait, by the type's head:
+
+- A nominal head, a scalar or an ADT, satisfies the trait if and only if the
+  trait's home holds an impl shell for it (`has_impl_in_home`; every shell is
+  written to the trait's home).
+- A function head never satisfies a trait, whatever its arguments: the
+  impl-target grammar (spec §7.3) admits no function type.
+- A variable or constructor-variable head is undetermined.
+
+The declared-bound check and `verify_constraints` both call this step.
+
+- In the declared-bound check, a still-variable parameter is undetermined and
+  is skipped. Generalisation lifts its bound into the scheme, and the mint
+  verifies each instance.
+- `verify_constraints` sees only concrete signatures. Through the shared step
+  it rejects a cross-cluster call of `(defn f [:Ts x] …)` at a function type,
+  at the call site. That is the other route's face of the same requirement.
+
+**Failure.**
+
+- The error is the located no-impl error, extended with the declaration:
+  ``no impl of trait <FQ trait> for type <type> (declared bound of parameter
+  `x` of `f`)`` (§8.3). The settled type renders through `render_type`, so a
+  parametric ADT shows its arguments.
+- It is located at the declaring definition's registration span; for a
+  multi-signature clause it names the authored family.
+- The pinning call site is not located, because finding it would need a scan
+  of the cluster's call sites (Principle 24). Potential extension: locate it
+  there if the REPL error-presentation spec or a user ruling requires it.
+
+**Diagnostics that do not move.**
+
+- Deferred-dispatch re-resolution (monomorphisation §3.3 step 1) runs first.
+  A bound the body uses therefore keeps its body-located error.
+- A cross-cluster call keeps the mint's call-site error.
+
+**Unchanged.**
+
+- Generalisation, and the same-cluster monotype rule.
+- Rigid seeding ([inference](inference.md)).
+- Candidate selection's trial constraint filter.
+- The value-position satisfaction check (see §11).
+
+**Grade.** *A declared parameter bound holds at every concrete type the program
+gives the parameter*: **measured**. The same-cluster route is measured by this
+check, through DB-1 and the module cells with their detection proof. The
+cross-cluster route is measured by the mint verification. Falsifier: a
+declared bound pinned by a route that is neither in the body ledger nor
+minted. None is known; an impl method checked at Pass 1 with a declared bound
+on its own parameter would be one.
+
+**Evidence.**
+
+- E2E: DB-1 (`tests/spec_03_types.rs::declared_trait_bound_is_checked_at_the_call_site`),
+  GREEN on all six legs.
+- Unit cells in `crates/cranelisp-typecheck/src/program/finalize/tests.rs`:
+
+  | Cell | Subject | Result |
+  |---|---|---|
+  | `declared_bound_pinned_in_cluster_without_impl_rejected_at_definition` | `(defn f [:Ts x] 7)` and a same-cluster caller at `U` | Rejected at `f`, naming the FQ trait and type, the parameter and `f` |
+  | `declared_stacked_bound_second_member_unsatisfied_rejected` | Stacked bound, second member unsatisfied | Rejected, naming that member |
+  | `declared_bound_pinned_in_cluster_with_impls_accepted` | Caller at `Int` with both impls | Accepted |
+  | `declared_bound_without_caller_stays_constrained_template` | No caller | A constrained template; nothing rejected |
+  | `declared_bound_pinned_to_parametric_adt_without_impl_rejected` | Caller at `(Option Int)`, no `Option` impl | Rejected, rendering the arguments |
+  | `declared_bound_pinned_to_function_type_rejected` | Same-cluster caller at a function type | Rejected |
+  | `declared_bound_cross_cluster_caller_rejected_at_call_site` | Discriminating control: `f` in a committed earlier cluster, the caller at `U` in a later one | Rejected by the mint at the call site; GREEN before the fix, so the defect is cluster-local pinning |
+  | `declared_bound_cross_cluster_function_type_rejected_at_call_site` | Cross-cluster call at a function type | Rejected by `verify_constraints` through the shared step |
+  | `declared_bound_on_multi_signature_clause_satisfied_in_cluster_accepted` | Sibling self-calls pin two clauses at types satisfying their respective bounds | Accepted; both bounded clauses are concrete |
+
+- Five cells were RED before the change; the accepted, template and control
+  legs were GREEN. Detection proof: discarding the check's result failed the
+  four same-cluster rejection cells, and the accepted, template, control and
+  cross-cluster function-type and multi-signature positive cells stayed silent; reverted.
+- RQ-1's multi-signature positive cell is GREEN and joined the silent leg of
+  the detection proof. The HKT cell followed its allocated stop rule: no
+  supported parameter syntax binds a constructor variable (spec §7.8.3).
+  Finding-scoped review accepted that evidence; QA owns final disposition.
+- RQ-2's super-import fixture now supplies its required `Eq Int` impl. The
+  missing-impl contrast was RED, and the repaired fixture GREEN; its D4
+  resolution subject is preserved. Finding-scoped review resolved RQ-2.
+
 ### 9.3 Monomorphisation
 
 No non-concrete type reaches codegen under any reachable instantiation:
@@ -934,22 +1139,32 @@ are listed in `design/typecheck/CLAUDE.md` §"Redirections".
   internal `Bind` is in scope. The resolved constructor's origin already
   carries the flag. This is a source-read lead, not executed. The trigger is a
   failing cell.
-- **R-1: the qualified walk synthesises a child reading for an undeclared
-  child** (§3.4, §3.5). `qualified_candidate_modules` always offers
-  `<current>.q`. The types resolver has no child reading: a `(mod q)` child is
-  reached through its alias, so declared children agree in every position.
-  With a registered but undeclared `<current>.q` and an absolute `q` both
-  exporting `x`, the value types against `q` but records the child as its
-  reference target, and the pattern twin resolves to the child. Whether the
-  child answers also depends on whether an unrelated module registered it.
-  `qa` classifies this `resolver-mirror`
-  ([intake](../../tests/plan/s122-evidence-delta.md#producer-review-r-1-and-a-4--classification-2026-09-26))
-  and reads spec §8.11.2 item 1 and §8.5.4 item 2 as confining step 3 to
-  declared submodules, so absolute `q` is the conforming answer; the refuter
-  is a `spec` reading of §8.1.1 into step 3. Source-read, not executed;
-  product reachability is unobserved. The trigger is R1-V, allocated to
-  `test`. The repair — retiring the synthesised candidate so the alias is the
-  one child reading, or bounding it — is settled with R1-V's outcome.
+- **A private qualified member yields a generic miss, not a visibility
+  error.** `resolve_qualified` returns a visibility violation as `Err`, but
+  its only production caller, the §3.5 walk, discards it; only unit tests
+  observe that arm. The behaviour predates §3.6. Decide whether to surface
+  the visibility error or collapse the channel. Source-read (S122 review
+  AD-2), not executed.
+- **One no-impl diagnostic has two type renderers.** The §9.2.1 check renders
+  the settled type through `render_type`. The nominal face of
+  `verify_constraints`, and the dispatch no-impl error in
+  `traits/dispatch.rs`, instead re-resolve the bare type name in the caller's
+  scope (`fq_type_name_for_diagnostics`), which drops type arguments and falls
+  back to the bare name when the type is not in scope, contrary to §8.3. The
+  same requirement at the same type can therefore print differently by route.
+  Decide whether to converge on `render_type`, which changes existing message
+  text. Source-read (S122 review AD-4), not executed.
+- **The impl-existence step matches the impl type by bare name.**
+  `has_impl_in_home` compares the shell's bare type name. A trait home holding
+  an impl for `m/U` therefore also satisfies a same-named `n/U`. Dispatch, the
+  mint, the value-position check, candidate selection and §9.2.1 all
+  inherit this wrong-accept. Source-read, not executed. The trigger is a
+  failing cell with two same-named ADTs, one of which implements the trait.
+- **The value-position satisfaction check differs on a function head.** It
+  rejects only a fully concrete function type, while §9.2.1's shared step
+  rejects any function head. Converge the value check onto the shared step
+  when it is next changed, or when a cell accepts `:Tr` on a function with a
+  residual variable.
 - **A trait reached through a renamed import** (spec §8.3.5). Both
   type-or-trait routes (§7.3.2) and the stacked bound (§3.5) pair the resolved
   home with the spelled name. A renamed trait would therefore get

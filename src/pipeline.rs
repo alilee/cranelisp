@@ -67,10 +67,14 @@ pub fn resolve_module_file(
 /// the `__expr` entry keeps those pages live for the duration of the call +
 /// trampoline. (Eval-result lifetime / reclaim is driven by the `Code::Jit`
 /// `Drop` when the entry is later replaced — `int.md` §5.3.)
+///
+/// `_ready` shows that every cached object load the code could call has
+/// ended (`design/int/int.md` §7.1, *load before execution*).
 pub fn execute_compiled_expr(
     display: Option<&cranelisp_types::DisplayInfo>,
     shared: &crate::session_v4::SharedState,
     current_module: &ModuleFullPath,
+    _ready: crate::scheduler::ExecutionReadiness,
 ) -> Result<ExprOutcome, CranelispError> {
     let symbol_tables = &shared.symbol_tables;
     // Read the GOT address + inferred type + code lifetime owner for the

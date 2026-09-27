@@ -983,28 +983,33 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // from the map (defensive) falls back to its original id.
             let effective_id = var_mapping.get(var_id).copied().unwrap_or(*var_id);
             let resolved_var = apply(&state.subst, &Type::Var(effective_id));
-            let impl_type = match concrete_type_name(&resolved_var) {
-                Some(tn) => tn,
-                None => continue,
-            };
             for fq_trait in traits {
-                // D2/§7.0.1 P24 — `fq_trait` already holds the trait's HOME
-                // (`.module`); root the impl lookup there via `has_impl_in_home`
-                // rather than re-resolving the BARE `.name` in the caller's scope
-                // (`has_impl_with_state`), which wrong-rejects a method-only import
-                // whose trait is not in caller scope ("no impl of trait blib/Bump
-                // for type Int"). Second "resolve once then throw the home away"
-                // instance this sprint.
-                if !self.has_impl_in_home(&fq_trait.module, &fq_trait.name, &impl_type) {
-                    // `fq_trait` is already FQ; render `impl_type` FQ too so the
-                    // message disambiguates two same-named ADTs (S87-1).
-                    let fq_impl_type =
-                        self.fq_type_name_for_diagnostics(state, &impl_type, call_span);
-                    return Err(CranelispError::TypeError {
-                        message: format!("no impl of trait {} for type {}", fq_trait, fq_impl_type),
-                        location: ErrorLocation::from_span(call_span),
-                    });
+                // D2/§7.0.1 P24 — `fq_trait` already holds the trait's HOME, so
+                // the shared step roots the impl lookup there rather than
+                // re-resolving the bare name in the caller's scope, which
+                // wrong-rejects a method-only import ("no impl of trait
+                // blib/Bump for type Int").
+                if self.trait_satisfaction(fq_trait, &resolved_var)
+                    != super::TraitSatisfaction::Unsatisfied
+                {
+                    continue;
                 }
+                // `fq_trait` is already FQ; render the impl type FQ too so the
+                // message disambiguates two same-named ADTs (S87-1).
+                let fq_impl_type = match concrete_type_name(&resolved_var) {
+                    Some(impl_type) => {
+                        self.fq_type_name_for_diagnostics(state, &impl_type, call_span)
+                    }
+                    None => cranelisp_types::render_type(
+                        &resolved_var,
+                        cranelisp_types::PrimitiveNaming::Qualified,
+                        cranelisp_types::VarNaming::Numbered,
+                    ),
+                };
+                return Err(CranelispError::TypeError {
+                    message: format!("no impl of trait {} for type {}", fq_trait, fq_impl_type),
+                    location: ErrorLocation::from_span(call_span),
+                });
             }
         }
         Ok(())

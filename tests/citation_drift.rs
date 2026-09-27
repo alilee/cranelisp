@@ -166,11 +166,9 @@ fn corpus_contains(report: &str, path: &str) -> bool {
 /// table header, so a field assertion cannot be satisfied by another class.
 fn document_class<'a>(declaration: &'a str, name: &str) -> Option<&'a str> {
     let name_line = format!("name = \"{name}\"");
-    declaration
-        .split("\n[[")
-        .find(|table| {
-            table.starts_with("document_class]]") && table.lines().any(|l| l.trim() == name_line)
-        })
+    declaration.split("\n[[").find(|table| {
+        table.starts_with("document_class]]") && table.lines().any(|l| l.trim() == name_line)
+    })
 }
 
 // The real project invocation is the gate. It must not reinterpret exit 1 as

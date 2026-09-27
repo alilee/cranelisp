@@ -572,6 +572,17 @@ auto-loads through the same `drive_module_dep` seam (`src/CLAUDE.md` §"FQ auto-
 The gap does not distinguish a macro from a function: the retry forces only the
 dependency's typecheck and codegen, and nothing is speculatively JIT-compiled.
 
+- **Grade: asserted, with a named falsifier.** The claim rests on source order.
+  In `worker::prepare_cluster_commit_with_demands`, both gap returns come before
+  publication planning. Codegen runs only for a cluster that reaches `Done`,
+  and a failure publishes nothing. A macro checkpoint's clause codegen is a
+  publication, not a speculative compile.
+- **Falsifier.** A GOT trace (`JitWrite`, [observability](observability.md))
+  shows a JIT write for a gapped cluster's definition before its successful
+  retry.
+- **Residual.** A violation would duplicate work, not publish state. No
+  end-to-end cell is allocated.
+
 **Termination** — each gap advances dependency state monotonically, so each retry sees
 strictly more committed state. The loop ends on success, a non-gap error, or a cycle error.
 
@@ -684,9 +695,8 @@ Every row and the existing variable-search rows are GREEN; FT-4 is GREEN on ever
 
 Per Decision 30 reframed by Decision 38 — scheduler notifications are *ordering* primitives (parallel macro-dep compilation, phased completion), not lock-safety primitives. Workers call:
 
-- `notify_symbol_typechecked(fq)` after `check_form` writes the entry.
 - `notify_typecheck_done(module)` after the last form in a module finishes.
-- `notify_typecheck_done_from_cache(module)` for cache-hit (Decision 37) — enqueues `LoadObject` not `Jit`.
+- `register_module_cached(module)` for a cache hit (Decision 37): the module is typecheck-done at once, and its `LoadObject` becomes claimable only when the restore releases it (§7.1).
 - `notify_inmem_codegen_complete(fq)` after JIT finalize writes the GOT slot.
 - `notify_inmem_codegen_batch_complete(module)` after `LoadObject` populates all GOT slots from cache.
 - `notify_object_codegen_complete(module)` after nice-worker `.o` write completes.
@@ -812,8 +822,11 @@ driven by `process_form/macro_resolution.rs::try_expand_sexp`) keeps these rules
 - **Recognition never compiles from source.** A macro's clauses compile when its
   checkpoint publishes (`s117-conformance-recovery.md` §2.1). The cluster
   recogniser has one side effect: when the home module was restored from cache
-  and its object is not yet loaded, it loads that object before returning.
-  `/expand` has no side effect. If a recognised clause is still not in memory,
+  and its object is not yet loaded, it asks the scheduler for that load's
+  claim ([one load entry](#71-cache-hit-flow-inside-register_module)). It runs
+  the load when it holds the claim. While the load is held or claimed
+  elsewhere it waits and asks again, and it proceeds once the object is
+  loaded or the module has failed. `/expand` has no side effect. If a recognised clause is still not in memory,
   execution fails with an aborted-expansion diagnostic. It is never skipped
   silently.
 - **Borrow scope.** The recogniser borrows only the committed tables and the
@@ -855,23 +868,181 @@ register dependency M:
   if try_cache_hit_load(M):           # valid record (§7.6), .meta.json (+ .o unless generic-only)
     install M's decoded table
     re-resolve M's platform declarations
-    register M with the scheduler as typechecked-from-cache  # enqueues LoadObject(M)
-    recurse into M's imports, re-export targets, declared children
-      and callee modules (§7.6.1); never its lookup dependencies (§7.6.2)
+    register M with the scheduler as typechecked-from-cache, its object load held
+    recurse into M's imports, re-export targets and callee modules (§7.6.1);
+      never its lookup dependencies (§7.6.2)
+    enrol M's written trait impls and declared children
+    release M's object load            # on every exit path of the restore
   else:
     register M for a fresh typecheck
 
-codegen worker, LoadObject(M):
+LoadObject(M) — run only by the holder of M's claim; claimable once M's load
+is released, unclaimed and M has not failed:
   map M.o through cache::load_cached_object -> per-target addresses
   store each address in its GOT slot
   attach Code::Linker(shared Arc<Linker>) to each restored entry
+  complete the claim: loaded, or failed with the load error
+
+REPL step that runs compiled code (expression turn, /run-tests, /run-all-tests):
+  wait until no cached object load is held, claimable or claimed
+  if a cached object load has failed: report it and run nothing
+  if shutting down with a load outstanding: report it incomplete and run nothing
+  run
 ```
 
-- **Order independence.** Typecheck, fresh or restored, fixes each module's GOT slot
-  layout. Codegen fills slot contents, and cross-module calls read another module's
-  GOT at run time, so modules load in any order.
+- **Tables before link; slot contents at run time.** Loading `M.o` binds each
+  `__cranelisp_got_X` data symbol its code references to `X`'s GOT base, so
+  `X`'s table must already be installed. The slot contents `X`'s own load or
+  JIT fills may arrive later, because calls read another module's GOT at run
+  time. Typecheck, fresh or restored, fixes each module's slot layout.
 - **Table before readiness.** The decoded table installs before the scheduler
   registration, because that registration releases waiters that read it.
+- **Restore before load.** The restorer holds `M`'s object load from `M`'s
+  registration until `M`'s restore returns.
+  - The walk restores every cache-hit dependency synchronously, so every table
+    that `M.o` references through a walked edge exists when the hold releases.
+  - The hold is scoped to the restore: every exit path releases it, including a
+    failed dependency registration. A table still missing then fails `M`'s load
+    loudly (*No swallowed failures*, below).
+  - The walk borrows the hold, so the hold cannot be released before the walk
+    returns. Binding it to an unused name would make that ordering depend on
+    the binding's spelling.
+  - Typecheck readiness keeps its position. Registration still releases
+    signature waiters at once, and every reader sees the same scheduler state as
+    before; only the load is deferred.
+  - The walk never processes a cluster or waits on another module, so a hold
+    always ends when its restorer's synchronous walk returns.
+  - RR-1 face (i) was the unheld form: a worker claimed `a.o` between `a`'s
+    registration and the walk's installation of its callee `c`
+    (`tests/plan/s122-evidence-delta.md`
+    [closing judgment](../../tests/plan/s122-evidence-delta.md#defects-and-questions-for-the-user)).
+- **One load entry.** The scheduler grants a cached-object load only as a
+  claim value that it alone can construct, and it grants none while the load
+  is held. The object loader accepts only that value, so a load without a
+  claim does not compile. The priority ladder's load item carries the claim;
+  the macro recogniser obtains one by asking the scheduler (§6.8).
+  - A claim request answers *claimed*, *loaded*, *pending* (held, or claimed
+    elsewhere) or *unavailable* (not a cached-object state, failed, or
+    shutting down). A caller that needs the object waits while the answer is
+    *pending*, then asks again. After a hold releases it may take the claim
+    itself; after another claimant's load ends it finds the object loaded, or
+    the module failed. It never loads a second copy.
+  - The wait is bounded: a hold ends with its restorer's walk, a claim with
+    its load, and neither waits on another module's progress.
+  - A claim ends exactly once. The loader completes it as loaded or failed.
+    Dropping it uncompleted, including by unwinding out of a panicking load,
+    fails the module with a load-abandoned error and wakes every waiter. No
+    claimant, on any thread, can therefore strand a claim and hang a later
+    wait. The scheduler failure is reported by the claim alone; the ladder's
+    panic guard only keeps its worker alive. A failure completion acts only
+    while the module is still claimed, so a claim that outlives a
+    re-registration cannot fail the new registration. A loaded completion
+    is not so guarded (*Claim and re-registration*, below).
+  - The claim, the ladder's scan and the execution wait (below) read one
+    classification of a module's cached-load state. A module that is not in a
+    cached-object state, such as a fresh registration, is never *pending*.
+    Whether a load is claimable depends only on this state, not on whether
+    the module's object file is current.
+  - A second concurrent load would also publish its own code owners over the
+    first load's, dropping one mapping while GOT slots may still address it.
+- **Load before execution.** A cache-restored module is typecheck-ready
+  before it is in memory: registration publishes its signatures, and its code
+  arrives only when its load ends. A fresh module is never in that state,
+  because its in-memory notification precedes its typecheck-done transition.
+  A REPL turn can therefore compile against a restored module whose load is
+  outstanding, and its code then calls an unfilled GOT slot. That was RR-1
+  face (ii)
+  ([QA attribution](../../tests/plan/s122-evidence-delta.md#rr-1-face-ii--attribution-and-readiness-correction-evidence-2026-09-27)).
+  - Before the REPL runs compiled code, it waits until no cached-object load
+    is held, claimable or claimed. At shutdown it returns an outstanding load
+    as incomplete, never as readiness. The steps that run code are an expression
+    turn's execution and the `/run-tests` and `/run-all-tests` commands. For
+    the test commands the wait precedes test discovery, which lists only
+    tests whose code is present.
+  - Running code requires a readiness value that only this wait returns, so
+    a REPL execution step that skips the wait does not compile.
+  - The wait is global over cached loads, not scoped to what the turn can
+    reach. It needs no enumeration of a turn's runtime reach, whose
+    completeness (§7.6.1) is only asserted, and it covers every cache-hit
+    entry (table below). A turn may wait for an unrelated outstanding load;
+    that wait is bounded as above.
+  - A failed cached load refuses the step: the REPL reports that module's
+    load failure and runs nothing (*No swallowed failures*). Because the REPL
+    does not know whether the step reaches the failed module, the refusal
+    repeats on every code-running step while the failure stands. It stands
+    until the module is re-registered, as when its source changes, until a
+    failed-module reset forgets it (*Forgotten failed load*, below), or until
+    the session restarts. Definition, import and introspection turns are
+    unaffected.
+  - The wait holds no symbol-table guard and no REPL check-state lock, because
+    the loads it waits for take them.
+  - `--run` already waits for every module before executing, which is
+    stronger. The linked stub links statically and needs no wait. REPL and
+    `--run` thus share one condition: no code runs before every cached load
+    it could reach has ended (Principle 11).
+  - Coverage by cache-hit entry. Every entry calls `try_cache_hit_load`, which
+    registers the module, held, before it returns. A restore on the eval
+    thread returns within the turn, before the turn's execution step. A
+    restore on a pool worker returns inside the typecheck of the fresh
+    dependency that reached it, which ends before the turn's typecheck can
+    use that dependency's signatures.
+
+    | Entry | Eval thread | Pool worker (fresh dependency) |
+    |---|---|---|
+    | `import` (`dependency::handle_import`) | covered | covered |
+    | Qualified-reference autoload (`dependency::drive_module_dep`) | covered | covered |
+    | `export` target (`dependency::handle_export`) | covered | covered |
+    | `mod` and declared children (`dependency::enrol_declared_submodule`) | covered | covered |
+    | Implicit prelude (`dependency::inject_prelude_if_needed`) | covered | covered |
+    | Walk-nested restore (`cache_restore::register_cached_dependency`) | covered | covered |
+    | Trait-home restore (`cache_restore::prepare_cached_trait_homes`) | covered | covered |
+
+  - **Not covered (open residuals).** None is observed.
+    - *Fresh work still in flight.* The wait does not cover a fresh module
+      that a restore walk registered after a cache miss and that no turn has
+      waited for. This is the execution half of the fresh-dependency residual
+      below, and its falsifier covers it.
+    - *Installed but not yet registered.* `try_cache_hit_load` installs a
+      table before it registers the module. A second restorer of the same
+      module in that window treats the table as satisfied (*Concurrent
+      discovery is idempotent*, below). A turn could then execute before the
+      first restorer registers the load. Falsifier: a face (ii) session on
+      the corrected build whose module trace shows that module restored by a
+      pool worker during the turn.
+    - *Forgotten failed load.* Every failed-module reset (after a failed
+      dependency wait, a T1 redefinition rollback, or degraded startup
+      recovery) also resets a failed cached load, but it leaves the
+      module's table installed, because the module was once terminal. A later
+      step then no longer refuses, and a call into that module can reach an
+      unfilled slot. This predates RR-1. Falsifier: force a cached load
+      failure, trigger a failing dependency wait, such as an import of a fresh
+      module that imports the failed one, then call into the failed module.
+    - *Macro clause execution.* The recogniser loads only the macro's home
+      module. A clause that calls a function in another restored module with
+      an outstanding load is outside this wait, and a pool worker cannot use
+      it without claiming loads itself. Trigger: an aborted expansion or a
+      crash in a clause that calls into another restored module.
+    - *Claim and re-registration.* A claim is not bound to the registration
+      it was granted for. Import turns do not wait for cached loads, so a
+      watcher reload can re-register a restored module while a pool
+      worker's claim is still loading it. The stale load keeps storing GOT
+      slots and publishing code owners into the live table, and its loaded
+      completion marks the fresh registration in memory, so an in-memory
+      wait covering that module can return before its fresh code is
+      compiled. This predates RR-1. Falsifier: edit a restored module's
+      source while its cached load is outstanding, then call into it, and
+      observe the pre-edit body or a signal.
+- **Fresh dependency of a restored module (open residual).** When the walk
+  registers a dependency fresh because its cache entry misses, that
+  dependency's table need not exist when the hold releases. `M`'s load can then
+  fail with an unresolved GOT symbol although the program is valid. `M.o` also
+  embeds slot indices from the build that wrote it, and nothing yet shows that
+  a fresh rebuild of unchanged source assigns the same ones.
+  - Not observed. Falsifier: after a cold run, delete only `c`'s cache entry,
+    then restore `a` warm in the REPL and under `--run`, and compare with
+    `--no-cache`.
+  - Holding the load until such a dependency leaves typecheck is not designed:
+    it deadlocks when that dependency expands a macro homed in `M`.
 - **Concurrent discovery is idempotent.** A dependency whose table is already
   installed, by a concurrent restore or the prelude preload, is satisfied
   without a re-read.
@@ -887,6 +1058,21 @@ codegen worker, LoadObject(M):
   fresh path replaces it, or that a later handler does not take it as satisfied
   (§16.0).
 - **Restoration parity.** A restored world must match a fresh one ([restoration parity](#75-restoration-parity)).
+- **Assurance.**
+  - *Structural:* the hold is released on every exit and spans the whole
+    walk; every cached-object load holds a claim; every claim ends, including
+    by unwinding; every REPL code-running step has passed the execution wait.
+    Review confirms that the claim value and the readiness value have no
+    constructor outside the scheduler.
+  - *Measured:* a claim honours the hold and is exclusive; an abandoned claim
+    fails its module and wakes a waiter parked before it; the execution wait
+    waits for held, claimable and claimed loads, reports a failed one, and
+    passes at once when none is outstanding. Scheduler rows with planted
+    faults carry these. End to end, the RR-1 cell, its `c`-first sibling and
+    the expression-turn cell show face (ii) as zero across QA's allocated
+    sessions.
+  - *Asserted, with the loader's unresolved-symbol hard error as falsifier:*
+    every table that `M.o` references is reached by the walk (§7.6.1 *Risk*).
 
 ### 7.2 Backend entry points
 
@@ -1056,7 +1242,9 @@ graph changes, even though the direct dependency's own source does not.
   build identity already invalidates every older `.meta` and discards the
   manifest.
 - **Known gaps.** Each open gap below can serve a stale artefact silently.
-  - **Status.** Gap 1's correction is built and reviewed; QA judged the evidence adequate on 2026-09-26 (§7.6.2). No user ruling accepts gaps 2–6; their disposition is
+  - **Status.** Gap 1's correction is committed at `56e4d2e1` and reviewed,
+    and QA judged the evidence adequate on 2026-09-26 (§7.6.2). Its
+    empty-publication defect, LD-9, is corrected and reviewed in the uncommitted tree (§7.6.2.1). No user ruling accepts gaps 2–6; their disposition is
     open (§16.0). QA's evidence plan
     lists gaps 4 and 5 as unallocated accepted residuals. This design does not
     accept them on the user's behalf.
@@ -1205,7 +1393,7 @@ Evidence and limits: [F1 acceptance](../../tests/plan/s122-evidence-delta.md#f1-
 
 #### 7.6.2 Lookup dependencies
 
-**Status: built, uncommitted (2026-09-26); reviewed with no blocking or
+**Status: built at `56e4d2e1` (2026-09-26); reviewed with no blocking or
 required finding; [QA judged the evidence adequate](../../tests/plan/s122-evidence-delta.md#adequacy-2026-09-26).** The int unit rows, the QR and LD
 cells and one full suite pass on the delivered source. The LD-6 fault arming
 was observed before the final lint edits; the LD-8 deferral trace was
@@ -1251,8 +1439,11 @@ producer, consumers and lifecycle within them.
     set. Neither the plan nor codegen reads lookup dependencies, so the order
     changes no outcome. A new reader of lookup dependencies between plan and
     publication must read the prepared staging, not the plan's tables.
-  - An attempt that makes no staged publication records nothing. §16.0
-    carries the open lead this raises.
+  - **An attempt that owes a fact publishes.** The final check makes no
+    staged publication only when the attempt owes the live table nothing.
+    The owed facts are its checkable entries, its reload demands and its
+    accumulated lookup dependencies. See
+    [the empty-publication correction](#7621-empty-publication-correction).
   - The finalize path without a session commits directly and records no
     macro heads. Only unit harnesses reach it; every production compiler
     context carries the session.
@@ -1329,8 +1520,9 @@ producer, consumers and lifecycle within them.
   - **Accepted cost.** A defining turn in a restored module with a
     lookup-only member forces one rebuild of that module next session. No
     object is loaded to avoid it.
-- **Assurance.** Grades follow QA's allocation; QA's adequacy judgment is
-  pending.
+- **Assurance.** Grades follow QA's allocation, whose evidence QA judged
+  adequate on 2026-09-26. LD-9 subsequently went RED to GREEN; its
+  correction and required review repair are complete (§7.6.2.1).
   - **Carried across a gap.** *Measured* for the pool worker by the carry row
     and LD-6: seeding the resumed set empty turned both RED while LD-7 stayed
     GREEN. *Asserted* for the eval and redefinition holders, which hold the
@@ -1407,6 +1599,78 @@ producer, consumers and lifecycle within them.
     the rebuild cost is measured to matter.
   - Optimisation-aware selectivity is
     [ACT-0992](../../sprints/actions/ACT-0992-optimisation-aware-cache-invalidation.md).
+
+##### 7.6.2.1 Empty-publication correction
+
+**Status: implemented and independently reviewed, uncommitted (2026-09-26).**
+LD-9 and its allocated module evidence pass. The required R-1 correction
+passed its finding-scoped re-review.
+
+- **Regression (LD-9, RED to GREEN).** Before correction, `(b/m)` expanded to `(begin)`, leaving
+  the cluster with no checkable entry and no reload demand. The final check
+  returned no prepared publication. `finalize_cluster` dropped the
+  attempt's accumulated set on that arm, so `a`'s entry was written without
+  `b`. After `m` changes to expand to a `defn` that `main` calls, the cached
+  run restores the stale `a` and fails, while the uncached run exits 99. The
+  anchored sibling, where `a` also defines `anchor`, is GREEN.
+  - Guard:
+    `tests/cache.rs::cache_qualified_macro_head_with_empty_expansion_change_matches_uncached_run`
+    ([allocation](../../tests/plan/s122-evidence-delta.md#post-checkpoint-qa-batch--db-1-r1-v-ld-9-and-citation-pass-h1h4-2026-09-26)).
+  - The same arm drops the set for any expansion that leaves no checkable
+    entry, such as one yielding only structural forms. An expansion yielding
+    only macro definitions records through its checkpoint.
+- **Correction: one publication decision over everything the attempt owes.**
+  - The prepare step already takes the decision "nothing to check, yet
+    something to publish" for reload demands. It starts from an empty
+    staging, and the demands add their targets. Extend that decision; do not
+    add a second one.
+  - The attempt's lookup dependencies travel into the prepare step beside
+    its reload demands, as one value holding both. The value's own emptiness
+    test is the whole no-publication condition. A fact later added to what an
+    attempt owes joins that value, so the decision cannot omit it (Principle
+    7, Principle 26).
+  - The prepare step records the set into every prepared publication it
+    returns, including the empty one. This replaces the caller's recording
+    after the call, so the final check has one recording site. Recording
+    still follows the publication plan; the note in §7.6.2 stands.
+  - An empty publication with no targets builds no JIT. Its scheduler
+    notification equals the one for no publication. Staged publication
+    unions the set into the live table, as the
+    [interfaces maintenance fact](../arch/interfaces.md#qualified-lookup-dependencies)
+    requires.
+  - An attempt owing nothing still makes no publication.
+- **Unchanged.** Public API, the types recorder, the cache schema, the macro
+  checkpoint's recording, the restore walk and every other mode path. All
+  three modes reach this through `process_cluster_once` (Principle 11).
+- **Grade.** *Structural* at the decision: the one emptiness test destructures
+  the owed value exhaustively, so a fact added to it does not compile (E0027)
+  until the decision names it. That an owed fact joins the value, and that
+  its term is correct, rest on this design rule and the unit rows below.
+  *Measured* by LD-9 and the positive unit rows observed RED then GREEN;
+  the negative rows remained GREEN.
+  - The REPL turn path shares the core, so it is *asserted*. Falsifier: a
+    REPL turn `(b/m)` with an empty expansion, whose persisted module
+    restores next session after `m` changes, differs from `--no-cache`.
+- **Unit rows** (Principle 23):
+  - `worker`:
+    - a cluster with no checkable entry, no reload demand and a lookup set
+      returns a prepared publication whose staging holds the set;
+    - the same cluster with an empty set returns no publication.
+  - `process_form`, beside the §7.6.2 rows: a module whose only form is an
+    FQ macro head expanding to `(begin)` publishes the head's module. The
+    negative leg is a bare head with the same expansion, which publishes
+    nothing.
+- **Rejected.**
+  - *Record into the live table on the no-publication arm.* This bypasses
+    staged publication, which the interfaces maintenance fact requires, and
+    adds a second recording site.
+  - *A caller-side empty commit in `finalize_cluster`.* This duplicates the
+    prepare step's empty-staging arm and its decision (Principle 7).
+  - *Always publish.* Imports-only modules and empty turns would pay a
+    publication plan for no owed fact. It would also overwrite their
+    unresolved-dispatch product. Neither cost is measured as acceptable.
+  - *Synthesise a placeholder form for an empty expansion.* This invents
+    source the program does not contain.
 
 ---
 
@@ -1565,8 +1829,8 @@ The old `module_sources: DashMap<ModuleFullPath, Arc<str>>` field on SharedState
 
 Per `facades/int.md` invariants 7 + 8 + bounded-context §6.2:
 
-1. REPL never calls `wait_for_*` at startup — the prompt is responsive immediately. The first iteration's STEP 4 `wait_for_inmem_codegen()` catches up the entry module's code.
-2. `set_repl_input_active(true)` opens the watcher window during `read_line`; `set_repl_input_active(false)` closes on input submission. STEP 4 catches up everything triggered during the prompt.
+1. REPL startup loads the entry module and waits for every registered module's in-memory readiness before the first prompt. Afterwards, a REPL step waits only for outstanding cached loads, and only before it runs compiled code ([load before execution](#71-cache-hit-flow-inside-register_module)).
+2. `set_repl_input_active(true)` opens the watcher window during `read_line`; `set_repl_input_active(false)` closes on input submission.
 3. Watcher events do NOT flow directly into compilation. They cross to the REPL cadence at a poll point and become `re_register_module` calls.
 
 `watch.rs` owns the `notify`-based watcher and the `WatcherChannel` mpsc. The REPL polls at prompt boundary; the prompt-window mechanism is the closure that prevents mid-input watcher interleave.
@@ -1897,26 +2161,33 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     qualified callable references only. The FN-1 null-import fence is armed.
     Open: the user's Phase-5 acceptance.
   - **Qualified-reference kinds outside `callees`.** Int's half of
-    [lookup dependencies](#762-lookup-dependencies) is built on the
-    uncommitted source and its guards pass. Review found no blocking or
-    required finding. QA judged the evidence adequate on 2026-09-26. Open: the user's Phase-5 acceptance.
-  - **LD-9:** QA allocated the source-read lead below for a subsequent reproduction; it is not an accepted residual ([allocation](../../tests/plan/s122-evidence-delta.md#adequacy-2026-09-26)).
-  - **Lead: an attempt with nothing to publish (source read, 2026-09-26;
-    `qa` classifying).** If a cluster's expansion leaves no form to check and
-    carries no reload demand, the finalize check returns no prepared
-    publication, so a qualified macro head recognised in that cluster is
-    never recorded. A later change making the macro expand to a definition
-    could then leave a cached importer stale. The no-publication arm is
-    confirmed in source; the stale outcome is not observed. Falsifier: cache
-    `a` whose cluster is `(b/m)`, with no other edge to `b` and `m`
-    expanding to an empty `(begin)`;
-    change `m` to expand to a `defn` that `main` calls, and compare the cached
-    run with `--no-cache`. Review confirmed the arm by source reading. An
-    expansion that yields only macro definitions is covered, because its
-    checkpoint publishes. If confirmed, the arm falls short of the
-    [interfaces fact](../arch/interfaces.md#qualified-lookup-dependencies)
-    that the set covers macro heads. This is not an accepted residual. `qa`
-    owns the classification; no correction is designed until it returns.
+    [lookup dependencies](#762-lookup-dependencies) is committed at
+    `56e4d2e1`, and its guards pass. Review found no blocking or required
+    finding. QA judged the evidence adequate on 2026-09-26. Open: the user's
+    Phase-5 acceptance.
+  - **LD-9:** [empty-publication correction](#7621-empty-publication-correction)
+    implemented and reviewed, uncommitted. Its regression and allocated unit
+    evidence pass; R-1 is resolved. QA judged the evidence adequate, subject
+    to that now-completed review repair.
+  - **RR-1 (REPL cache-restore race).** The user prioritised it on
+    2026-09-27.
+    - Face (i): §7.1's *restore before load* and its claim are implemented
+      and reviewed in the uncommitted tree. QA's remeasure found zero face (i)
+      sessions in 2000.
+    - Face (ii), a REPL SIGSEGV at the first call, is attributed by a
+      discriminating control: a REPL turn executes into a restored module
+      whose load is outstanding. Its correction is §7.1's *load before
+      execution*. The same `src` visit makes the claim a scheduler-minted
+      value that ends on every path (*one load entry*), closing review R-1
+      and R-2. Implemented and reviewed in the uncommitted tree, with no blocking
+      finding. `test`'s stress found zero failures of any face in 2000
+      sessions, and QA judged the evidence adequate on 2026-09-27. Open: the
+      commit's `fixed=` sha stamps and the user's Phase-5 acceptance.
+    - All of it is private to `src/`, with no public API, carrier, schema or
+      ABI change.
+    - Open residuals: §7.1's fresh-dependency residual and the five
+      *load before execution* exclusions, including *Claim and
+      re-registration* (review FA-1, QA intake).
   - **Unaccepted gaps 2–6** (version conflict, write-time stash, same-session
     disk edit, platform signatures, absent prelude). These need a disposition
     through `sprint`.

@@ -207,6 +207,51 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
+    /// Discharge every declared parameter bound in the cluster's body ledger
+    /// against the parameter's settled type (`design/typecheck/typecheck.md`
+    /// §9.2.1). A same-cluster caller pins a constrained definition's parameter
+    /// through the shared substitution; generalisation then drops the bound and
+    /// no instance is minted, so no other step checks it. A still-variable
+    /// parameter is left to generalisation and the mint. Visits the ledger in
+    /// source order, so the reported failure is deterministic; records nothing.
+    #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+    pub(super) fn check_declared_bounds(
+        &self,
+        state: &CheckState,
+        accumulator: &ModuleCheckAccumulator,
+    ) -> Result<(), CranelispError> {
+        for body in accumulator.bodies.checked_bodies() {
+            let registration = body.registration;
+            for bound in &registration.declared_bounds {
+                let settled = self.apply_subst(state, &registration.param_types[bound.param_index]);
+                if self.trait_satisfaction(&bound.trait_ref, &settled)
+                    != crate::traits::TraitSatisfaction::Unsatisfied
+                {
+                    continue;
+                }
+                let definition = match &registration.target {
+                    BodyTarget::Direct(name) => name,
+                    BodyTarget::MultiSignatureClause { group, .. } => group,
+                };
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "no impl of trait {} for type {} (declared bound of parameter `{}` of `{}`)",
+                        bound.trait_ref,
+                        cranelisp_types::render_type(
+                            &settled,
+                            cranelisp_types::PrimitiveNaming::Qualified,
+                            cranelisp_types::VarNaming::Numbered,
+                        ),
+                        bound.param,
+                        definition,
+                    ),
+                    location: ErrorLocation::from_span(registration.span),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Phase 3 (finalize): re-resolve deferred trait calls with the final
     /// substitution across every defn body (`design/typecheck/monomorphisation.md` §3.3 step 1).
     /// Per-defn resolution already ran in `check_form_body`, but cross-defn
@@ -462,6 +507,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             accumulator,
             &mut multi_sig_mangled_names,
         )?;
+
+        self.check_declared_bounds(state, accumulator)?;
 
         // §11.8.3 leg D3 — the SECOND mono-harvest settlement point. Now that
         // `finalize_multi_sig_variant_types` (Phase A) has settled every multi-sig
