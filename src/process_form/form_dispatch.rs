@@ -20,7 +20,7 @@ use crate::worker::ModuleCompiler;
 // ---------------------------------------------------------------------------
 
 /// Classification of a top-level sexp for Pass 2 dispatch.
-pub(super) enum FormKind {
+pub(crate) enum FormKind {
     Import(Vec<ImportSpec>),
     Export(Vec<ExportSpec>),
     Mod(cranelisp_types::ModDecl),
@@ -101,7 +101,7 @@ pub(crate) fn record_submodule_on_symbol_table(
 ///
 /// `containing_module` is the module path whose source contains this form;
 /// the frontend needs it to rewrite `super` imports per spec §8.3.7.
-pub(super) fn classify_form(
+pub(crate) fn classify_form(
     sexp: &Sexp,
     containing_module: &ModuleFullPath,
 ) -> Result<FormKind, CranelispError> {
@@ -179,6 +179,13 @@ pub(super) fn classify_form(
 /// clause-recompile authority — that role is unchanged); persisting it as
 /// regen source alongside the original was the D1 directory poison (the two
 /// forms do not co-load).
+///
+/// Every caller runs after the checkpoint published this generation, so the
+/// record's form, expansion and text are REPLACED: a replacement is what
+/// regeneration persists (`repl/spec/18-redefinition.md` §18.8), and an
+/// expansion the new generation lacks is cleared
+/// (`design/int/session-persistence.md` §2.4.1). A REPL turn's verbatim text
+/// still overrides `source` afterwards (`eval::record_defining_turn_source`).
 pub(crate) fn record_macro_introspection(
     introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
@@ -187,46 +194,18 @@ pub(crate) fn record_macro_introspection(
     authored: &Sexp,
     authored_source: Option<String>,
 ) {
-    // S77 W-MacroTrait (FIXME 0299): route the macro sexp into Introspection
-    // (REPL mode only — `introspection` is `Some` only when `--repl`). This is
-    // the single source the macro round-trip needs in two places:
-    //   1. `resolve_macro_sexp_from` — the on-demand clause recompile path
-    //      (`SymbolTableMacroResolver::recognize` step 3) reads it back to
-    //      rebuild the clause code when a recognised macro's GOT slot is empty.
-    //   2. `crate::save::generate_module_source` — `regenerate_backing_file`
-    //      writes the live session to `user.cl`; without the macro sexp the
-    //      regenerated file silently DROPS every `defmacro`, so on a cached
-    //      REPL restart a `(defn main [] (twice 21))` body fails with
-    //      `undefined variable: twice`. This was the `mode_equiv_macro_user_
-    //      defined` [repl_cached] + `persist_bug_macro_usage_in_defn` root.
-    // Mirrors the regular-defn introspection population in `process_regular_form`
-    // (worker.rs ~1670). Only sets `sexp`/`source` when absent so a later REPL
-    // eval that captures the verbatim input text can still override `source`.
-    //
-    // S102 CS-D1: the regen-facing `sexp` is the AUTHORED form; when the
-    // defmacro arrived via expansion (`authored` ≠ `sexp` — compared by span,
-    // expansion output carries synthetic rewritten spans) the expanded
-    // artifact rides `.expanded` for `/sexp` display.
+    // `introspection` is `Some` only in REPL mode. Expansion output carries
+    // synthetic rewritten spans, so a span difference marks an expansion.
     if let Some(intr_map) = introspection {
         let fq = FQSymbol {
             module: module.clone(),
             symbol: name.clone(),
         };
         let mut entry = intr_map.entry(fq).or_default();
-        if entry.sexp.is_none() {
-            entry.sexp = Some(authored.clone());
-        }
-        if entry.expanded.is_none() && authored.span() != sexp.span() {
-            entry.expanded = Some(sexp.clone());
-        }
-        if entry.source.is_none() {
-            // S102 CS-D2: prefer the verbatim authored text (the caller's
-            // consistency-gated `source_text` span slice — preserves reader
-            // shorthand like `` `(… ~e) ``); fall back to the pretty render.
-            entry.source = Some(
-                authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)),
-            );
-        }
+        entry.sexp = Some(authored.clone());
+        entry.expanded = (authored.span() != sexp.span()).then(|| sexp.clone());
+        entry.source =
+            Some(authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)));
     }
 }
 

@@ -3,9 +3,9 @@
 // `repl.rs` per `design/int/int.md` §3.3 (S110, FIXME 0606).
 // Pure relocation, behaviour-invariant.
 
-use super::commands::*;
 use super::format::*;
 use super::*;
+use crate::session_v4::{TestDefinition, classify_test_definition};
 
 /// Bounded wait for the importable-symbol burn-down to drain before a
 /// `/search` serves results (§25.5 — small projects index promptly; a large
@@ -442,8 +442,9 @@ impl CompilerSession {
     /// Scan every loaded module's definitions for bodies that reference `target`.
     ///
     /// Returns the fully-qualified names of referring definitions, sorted. When
-    /// `tests_only` is set, only test functions (the `test-` prefix +
-    /// nullary-test shape, §16.1) are considered (the `/tests-for` filter).
+    /// `tests_only` is set, only test functions are considered (the
+    /// `/tests-for` filter): the runner's own `classify_test_definition`
+    /// decides, and its mistyped-test warnings are not reported here.
     ///
     /// Reference detection (§9.2): a body references `target` if `target`
     /// appears as a whole symbol token in the definition's stored source. The
@@ -467,7 +468,12 @@ impl CompilerSession {
                 if name.as_ref() == target {
                     continue;
                 }
-                if tests_only && !is_test_function(name.as_ref(), entry) {
+                if tests_only
+                    && !matches!(
+                        classify_test_definition(name.as_ref(), entry),
+                        Some(TestDefinition::Test)
+                    )
+                {
                     continue;
                 }
                 let fq = FQSymbol {

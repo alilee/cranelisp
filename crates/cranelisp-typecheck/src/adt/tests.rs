@@ -1383,12 +1383,19 @@ fn dotted_accessor_nonfield_member_is_undefined() {
 }
 
 // =====================================================================
-// Impl-time field-accessor collision gate, AS BUILT. A trait `impl` whose
-// method name equals a field-accessor name of the target type is rejected
-// before the impl enters the symbol table. Spec §7.3.1 now permits the
-// overlap; these cases assert the superseded rejection and are replaced
-// after ACT-0983 intake (`fixme-0365-field-accessor-dotted.md` §2.1).
+// A trait `impl` whose method name equals a field-accessor name of the
+// target type registers beside the accessor; neither declaration replaces
+// the other (spec §7.3.1; `fixme-0365-field-accessor-dotted.md` §2).
 // =====================================================================
+
+/// Assert that `HasV`'s impl for `Box` registered its method under the
+/// canonical impl mangle, and that the accessor `Box.v` is still callable.
+fn assert_impl_method_beside_box_accessor(tc: &TestFixture) {
+    assert!(tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
+    let table = tc.symbol_table();
+    assert!(table.get("HasV.v$user/Box").is_some());
+    assert!(table.get("Box.v").and_then(Binding::callable).is_some());
+}
 
 fn collide_trait_decl(method: &str) -> cranelisp_types::TraitDecl {
     crate::traits::test_helpers::parse_trait_decl(&format!("(deftrait HasV ({method} [x] Int))"))
@@ -1420,12 +1427,13 @@ fn collide_impl(target: &str, method: &str) -> cranelisp_types::TraitImpl {
     }
 }
 
-// spec: 07-traits §7.3.1 — NEGATIVE (the load-bearing _neg): an impl method
-// `v` colliding with `Box`'s field accessor `v` is rejected at impl time,
-// with a diagnostic naming the collision, and produces NO symbol-table side
-// effect (no TraitImpl entry, no mangled method Def).
+// spec: 07-traits §7.3.1; 08-modules §8.6.5 — an impl method `v` for `Box`
+// registers beside `Box`'s field accessor `v`. Both declarations stay
+// candidates of the bare spelling, so an unconstrained bare use, and a call
+// on a `Box` that both declarations accept, are ambiguous rather than a
+// silent pick of one.
 #[test]
-fn impl_method_colliding_with_field_accessor_rejected() {
+fn impl_method_named_like_field_accessor_registers_beside_it() {
     let mut tc = tf_with_scalar_imports();
     tc.register_type_def_self(
         &TypeName::from("Box"),
@@ -1439,25 +1447,36 @@ fn impl_method_colliding_with_field_accessor_rejected() {
     tc.register_trait_decl_self(&collide_trait_decl("v"))
         .unwrap();
 
-    let err = tc
-        .register_trait_impl_self(&collide_impl("Box", "v"))
-        .expect_err("a colliding impl method `v` must be rejected");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("collides with the field accessor") && msg.contains("v"),
-        "the diagnostic must name the collision and the colliding name; got {msg}"
-    );
+    tc.register_trait_impl_self(&collide_impl("Box", "v"))
+        .expect("an impl method named like a field accessor registers");
+    tc.clear_transient_state();
+    assert_impl_method_beside_box_accessor(&tc);
 
-    // Structural rejection (Principle 18): no TraitImpl entry, no mangled
-    // method Def landed for the rejected impl.
-    assert!(
-        !tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")),
-        "the rejected impl MUST NOT register a TraitImpl entry"
-    );
-    // The rejected impl leaves both declaration candidates intact: the
-    // product accessor and the trait method. Packet B deliberately makes a
-    // bare collision a candidate set rather than preserving the former
-    // first-wins alias shape.
+    let mut call_on_box = Expr::Apply {
+        callee: Box::new(Expr::var(Symbol::from("v"), Span::new(50, 51))),
+        args: vec![Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("Box"), Span::new(53, 56))),
+            args: vec![Expr::IntLit {
+                value: 5,
+                span: Span::new(57, 58),
+                inferred_type: None,
+            }],
+            span: Span::new(52, 59),
+            resolved_call: None,
+            inferred_type: None,
+        }],
+        span: Span::new(49, 60),
+        resolved_call: None,
+        inferred_type: None,
+    };
+    let message = tc
+        .infer_expr_for_test(&mut call_on_box)
+        .expect_err("a call on Box compatible with both declarations is ambiguous")
+        .message()
+        .to_string();
+    assert!(message.contains("user/Box.v"), "{message}");
+    assert!(message.contains("user/HasV.v"), "{message}");
+
     let mut candidates: Vec<String> = tc
         .symbol_table()
         .name_candidates(&Symbol::from("v"))
@@ -1474,12 +1493,6 @@ fn impl_method_colliding_with_field_accessor_rejected() {
         .to_string();
     assert!(message.contains("user/Box.v"), "{message}");
     assert!(message.contains("user/HasV.v"), "{message}");
-    assert!(
-        tc.symbol_table()
-            .get("Box.v")
-            .and_then(Binding::callable)
-            .is_some()
-    );
 }
 
 // spec: 07-traits §7.4.1; design use-site-candidate-selection §§3.2, 3.8 —
@@ -1639,31 +1652,10 @@ fn impl_method_not_colliding_registers() {
     assert!(tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
 }
 
-// spec: 07-traits §7.3.1 — POSITIVE (primitive target): `Int` has no field
-// accessors, so the collision set is empty and the impl registers.
+// spec: 07-traits §7.3.1 — an impl method `v` for the polymorphic product
+// `(Box a)` registers beside its accessor `Box.v`.
 #[test]
-fn impl_on_primitive_target_unaffected_by_collision_check() {
-    let mut tc = tc_with_prims_for_collision();
-    tc.register_trait_decl_self(&collide_trait_decl("v"))
-        .unwrap();
-
-    tc.register_trait_impl_self(&collide_impl("Int", "v"))
-        .expect("Int has no field accessors — `v` impl method must register");
-    assert!(tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Int")));
-}
-
-/// Fixture for the primitive-target collision test: scalar imports plus the
-/// Ring 0 primitives the impl body (`99`) and trait decl need. `Int`/`Bool`
-/// type names are in scope via `tf_with_scalar_imports`.
-fn tc_with_prims_for_collision() -> TestFixture {
-    tf_with_scalar_imports()
-}
-
-// spec: 07-traits §7.3.1 — NEGATIVE (parameterized target): the collision
-// check resolves a polymorphic `(Box a)` target's FQTypeName the same way,
-// so an impl method `v` on `Box` is rejected for the poly product too.
-#[test]
-fn impl_method_colliding_on_polymorphic_target_rejected() {
+fn impl_method_named_like_field_accessor_registers_on_polymorphic_target() {
     use cranelisp_types::{Defn, DefnVariant, TraitImpl, TraitRef, TypeExpr, TypeRef};
     let mut tc = tf_with_scalar_imports();
     register_poly_box(&mut tc);
@@ -1672,7 +1664,7 @@ fn impl_method_colliding_on_polymorphic_target_rejected() {
 
     // Settled model (§7.3.5 Case 1): a conventional-trait target must be
     // kind `*`, so a polymorphic product is applied — `(Box a)`, not the
-    // bare (under-applied) `Box` — before the accessor-collision check runs.
+    // bare (under-applied) `Box`.
     let poly_impl = TraitImpl {
         head_con_var: None,
         trait_name: TraitRef::new(None, TraitName::from("HasV")),
@@ -1698,19 +1690,17 @@ fn impl_method_colliding_on_polymorphic_target_rejected() {
         }],
         span: Span::SYNTHETIC,
     };
-    let err = tc
-        .register_trait_impl_self(&poly_impl)
-        .expect_err("a colliding impl method `v` on (Box a) must be rejected");
-    assert!(format!("{err}").contains("collides with the field accessor"));
-    assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
+    tc.register_trait_impl_self(&poly_impl)
+        .expect("an impl method `v` on (Box a) registers beside the accessor");
+    tc.clear_transient_state();
+    assert_impl_method_beside_box_accessor(&tc);
 }
 
-// spec: 07-traits §7.3.1 (FIXME 0366 cross-cluster) — NEGATIVE: a field `v`
-// deftype'd in one cluster and a colliding impl in a LATER cluster is still
-// rejected, because `field_accessor_names_of` reads the committed-live union
-// view (the qualified `Box.v` accessor survives the cluster boundary).
+// spec: 07-traits §7.3.1 (FIXME 0366 cross-cluster) — an impl method `v` in a
+// later REPL cluster registers beside the accessor `Box.v` committed by an
+// earlier one.
 #[test]
-fn impl_method_colliding_cross_cluster_rejected() {
+fn impl_method_named_like_field_accessor_registers_across_clusters() {
     let mut tc = tf_with_scalar_imports();
     // Cluster 1: deftype Box (registers accessor `v` + `Box.v`).
     tc.register_type_def_self(
@@ -1727,22 +1717,17 @@ fn impl_method_colliding_cross_cluster_rejected() {
     new_cluster(&mut tc);
     tc.register_trait_decl_self(&collide_trait_decl("v"))
         .unwrap();
-    // Cluster 2: the colliding impl — rejected via the committed-live view.
-    let err = tc
-        .register_trait_impl_self(&collide_impl("Box", "v"))
-        .expect_err("cross-cluster colliding impl `v` must be rejected");
-    assert!(format!("{err}").contains("collides with the field accessor"));
-    assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
+    tc.register_trait_impl_self(&collide_impl("Box", "v"))
+        .expect("a later-cluster impl `v` registers beside the committed accessor");
+    tc.clear_transient_state();
+    assert_impl_method_beside_box_accessor(&tc);
 }
 
-// spec: 07-traits §7.3.1 — NEGATIVE (as built; superseded by §7.3.1, intake
-// ACT-0983): when bare `v` has candidates from a cross-type duplicate field
-// (`Box`/`Cup`), the field name `v`
-// is still recognised as a field accessor of `Box`, so an impl method `v`
-// for `Box` is rejected (the qualified `Box.v` accessor + the owner map both
-// contribute the bare name).
+// spec: 07-traits §7.3.1; 08-modules §8.6.4 — when bare `v` is already shared
+// by the accessors `Box.v` and `Cup.v`, an impl method `v` for `Box` registers
+// and joins the bare spelling as a third candidate.
 #[test]
-fn impl_method_colliding_with_poisoned_accessor_rejected() {
+fn impl_method_named_like_shared_field_accessor_registers() {
     let mut tc = tf_with_scalar_imports();
     tc.register_type_def_self(
         &TypeName::from("Box"),
@@ -1766,11 +1751,18 @@ fn impl_method_colliding_with_poisoned_accessor_rejected() {
     assert!(is_ambiguous(&tc.symbol_table(), "v"));
     tc.register_trait_decl_self(&collide_trait_decl("v"))
         .unwrap();
-    let err = tc
-        .register_trait_impl_self(&collide_impl("Box", "v"))
-        .expect_err("impl `v` colliding with a poisoned accessor must be rejected");
-    assert!(format!("{err}").contains("collides with the field accessor"));
-    assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
+    tc.register_trait_impl_self(&collide_impl("Box", "v"))
+        .expect("impl `v` registers beside a shared field accessor");
+    tc.clear_transient_state();
+    assert_impl_method_beside_box_accessor(&tc);
+    let mut candidates: Vec<String> = tc
+        .symbol_table()
+        .name_candidates(&Symbol::from("v"))
+        .into_iter()
+        .map(|candidate| candidate.source.to_string())
+        .collect();
+    candidates.sort();
+    assert_eq!(candidates, ["user/Box.v", "user/Cup.v", "user/HasV.v"]);
 }
 
 // spec: 06-pattern-matching §6.5.1 — all constructors covered passes exhaustiveness

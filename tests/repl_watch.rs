@@ -600,6 +600,47 @@ fn watch_clears_error_state_when_subsequent_edit_fixes_source() {
     );
 }
 
+// spec: repl/spec/14-file-watching.md §14.4 — a module that fails to recompile
+// is reported as `[errors: <file>]`, evaluation is refused, and slash commands
+// stay available. Here the edit makes a module the prelude imports fail
+// typecheck. RED when authored (S122): most sessions hung at the reload, with
+// no notification, every thread parked on a futex, and `/quit` never read.
+// Imports through a REPL turn hung too, with or without a `deftype`. Controls
+// that completed on every run: a parse error in the same shape
+// (watch_errors_block_evaluation_no_last_known_good), an accepted reload, and
+// a refused reload of the entry module. The importer's worker registered as a
+// waiter on the already-failed dependency after its failure cascade had drained
+// the waiters, so nothing woke it.
+// defect: class=lost-wakeup locus=src/scheduler.rs::block_on_first_unready_closure_member found=S122 owner=/dev fixed=S122
+#[test]
+fn watch_type_error_reload_of_imported_module_blocks_without_hanging() {
+    let stdin = "\
+/sh sleep 0.3
+/sh echo '(defn val [] (val 1))' > mymod.cl
+/sh sleep 0.5
+5
+/quit
+";
+    // The hang did not occur in every session, so all five must complete.
+    for session in 1..=5 {
+        let out = Cranelisp::new()
+            .repl()
+            .file("prelude.cl", "(import [mymod [val]])\n")
+            .file("mymod.cl", "(defn val [] 42)")
+            .stdin(stdin)
+            .timeout(std::time::Duration::from_secs(10))
+            .try_output()
+            .unwrap_or_else(|e| {
+                panic!("session {session}: the REPL MUST report the failed reload and read `/quit`; {e}")
+            });
+        assert!(
+            out.stdout.contains("[errors: mymod.cl]") && out.stdout.contains("Cannot evaluate"),
+            "session {session}: the type error MUST be reported and block evaluation; stdout:\n{}",
+            out.stdout
+        );
+    }
+}
+
 // =============================================================================
 // 6. Cache Interaction (§14.7)
 // =============================================================================

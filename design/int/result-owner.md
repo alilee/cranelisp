@@ -188,11 +188,14 @@ exports the glue body. Int:
 - `BUILD_ID` invalidation already prevents an older binary's object from being
   read, so a missing glue symbol is a genuine defect signal.
 
-#### 3.2.1 Production-unreached, kept as specified
+#### 3.2.1 Reach in production
 
 Cache-hit loading restores only dependency modules today, never the CLI target,
-so `main` and `__expr` always carry `Code::Jit`. The adapter is reached only by
-the §6 row-3 unit tier.
+so `main` and `__expr` always carry `Code::Jit`. The adapter's production
+caller is the test runner: a test defined in a cache-restored module releases
+its result through this adapter
+([test runner §6.2](test-runner.md#62-execute)). The §6 row-3 unit tier
+covers it directly.
 
 - Keep it. Without it the adapter selection would need a no-release or
   wrong-row fallback for `Code::Linker`, the two shapes §5 forbids. The day
@@ -308,7 +311,12 @@ close the counter window
   code pointer: `pipeline.rs` for REPL execution, `CompilerSession::trampoline`
   for `--run`, `link_by_name` for linking. The observed `Type` travels with the
   owner for formatting and `result_is_exit_code`; it is only the key's fallback.
-  A future seam acquires the key the same way.
+  A future seam acquires the key the same way. The test runner's preparation
+  read takes each test's code pointer, code owner and key together. It
+  resolves the release target before the first test runs, through the
+  crate-private `ReleasePlan`; `OwnedProgramResult::new` is itself
+  plan-then-own, so classification still has one implementation
+  ([test runner §6](test-runner.md#6-prepare-execute-and-report)).
 - `--run` reads `main`'s code pointer, result type and code owner in one entry
   read (`read_main_entry`); no separate return-type lookup can fall back. The
   REPL's observed-type default (`Type::Int` when neither a display nor an

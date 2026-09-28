@@ -117,6 +117,12 @@ Use the read-throughs; never re-pattern the lifecycle set:
 - **ADT construction is slotless until settlement.** `build_adt_entries`
   returns `AdtCallableSpec` recipes and `Binding<C>` values; callers submit
   each recipe to the table funnel.
+- **A synthesized member keeps its scheme across publication.**
+  `validate_publication_collision` refuses a staged constructor or accessor
+  whose scheme is not alpha-equivalent to the live member's, because values
+  built under the prior layout stay live. Do not relax it to admit a type
+  redefinition: the §18.5 structural policy is integration's redefinition
+  guard ([symbol-table lifecycle §5.8](../../design/arch/symbol-table-lifecycle.md#58-constructors-and-accessors)).
 - **Cleanup is state-specific.** `remove_non_callable` is the ADT pre-seed
   rollback; `discard_declared` accepts only `Declared { prior: None }`. There
   is no generic callable remove, rename, mutable binding projection or

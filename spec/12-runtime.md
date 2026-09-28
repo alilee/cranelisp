@@ -220,6 +220,8 @@ In batch mode, a program MUST define a function named `main` with no parameters 
   (print "hello"))   ; print returns IO Int
 ```
 
+This rule does not apply under `--test`, which neither requires nor calls `main`; a `main` that is present compiles as an ordinary definition ([REPL §0.2.2](../repl/spec/00-cli-invocation.md#022-test-mode---test-s122)). [S122]
+
 ## 12.7 Error Model [Tested]
 
 Cranelisp distinguishes two error categories: **compile-time errors** (detected before execution) and **runtime panics** (detected during execution). There is no exception mechanism, no user-exposed `try`/`catch`, and no `Result`-based error propagation for runtime faults. Runtime panics are **fatal to the current evaluation** but the execution environment (REPL session) survives.

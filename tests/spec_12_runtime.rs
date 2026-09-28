@@ -315,7 +315,7 @@ fn run_tests_reports_passes() {
     // for fail (per `appendix-a-builtins.md`, the test result protocol).
     repl(
         "(import [primitives [*]])\n\
-         (defn test-one [] None)\n\
+         (defn test-one [] (if true None (Some \"never\")))\n\
          /run-tests\n",
     )
     .assert_stdout_contains_all(&["ok", "1 passed"]);
@@ -339,7 +339,7 @@ fn run_tests_empty_module_reports_no_tests() {
         "(import [primitives [*]])\n\
          /run-tests\n",
     )
-    .assert_stdout_contains("No test-* functions found");
+    .assert_stdout_contains("No tests found");
 }
 
 // spec: design/arch/test-discovery.md §4.3 — `discover-tests` and
@@ -359,8 +359,9 @@ fn run_tests_empty_module_reports_no_tests() {
 //     stdlib-free (CLAUDE.md), so the bare extern is called with `["user"]`.
 //   - q-eligibility (test-discovery.md §2 "Eligibility"): a `test-*` fn is discovered only
 //     if its type is EXACTLY `(Fn [] (Option String))`. A bare `(defn test-x
-//     [] None)` infers the polymorphic `(Fn [] (Option a))` and is correctly
-//     excluded; `(if true None (Some "..."))` forces `(Option String)`.
+//     [] None)` is pinned by typecheck to that exact scheme
+//     (design/typecheck/monomorphisation.md §3.2) and is discovered;
+//     `(if true None (Some "..."))` is simply another exact-typed form.
 #[test]
 fn discover_tests_and_catch_runtime_error_user_composition() {
     repl_prims(
@@ -820,30 +821,6 @@ fn discover_tests_scope_is_current_module_named_modules_only_not_through_imports
             "\"L2:h/test-h;\"",
             "\"L3:user/test-u;\"",
         ]);
-}
-
-// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
-// `discover-tests` resolves in `--run`, where a named module's eligible tests
-// are discovered as in the REPL
-// defect: class=mode-divergence locus=src/session_v4/test_runner.rs::discover_tests_extern found=S122 owner=/dev
-// DT-1 (ACT-0986 intake). Under `--run` the extern resolves but returns an
-// empty vector, so `main` exits 0; the REPL discovers the same named module.
-// The extern falls back to an empty result while no REPL eval has installed
-// its session state; attribution is QA's.
-#[test]
-fn discover_tests_named_module_under_run_counts_its_tests() {
-    Cranelisp::new()
-        .file(
-            "main.cl",
-            "(import [primitives [discover-tests vec-len None Some Pure]])\n\
-             (defn test-a [] (if true None (Some \"a\")))\n\
-             (defn test-b [] (if true None (Some \"b\")))\n\
-             (defn test-c [] (if true None (Some \"c\")))\n\
-             (defn main [] (Pure (vec-len (discover-tests [\"main\"]))))\n",
-        )
-        .run("main.cl")
-        .output()
-        .assert_exit(3);
 }
 
 // spec: spec/appendix-a-builtins.md §"Test discovery and error capture" — the
@@ -1407,9 +1384,9 @@ fn tco_non_tail_recursion_unchanged() {
 fn run_tests_multiple_passes_count() {
     repl(
         "(import [primitives [*]])\n\
-         (defn test-a [] None)\n\
-         (defn test-b [] None)\n\
-         (defn test-c [] None)\n\
+         (defn test-a [] (if true None (Some \"never\")))\n\
+         (defn test-b [] (if true None (Some \"never\")))\n\
+         (defn test-c [] (if true None (Some \"never\")))\n\
          /run-tests\n",
     )
     .assert_stdout_contains("3 passed");
@@ -1424,8 +1401,8 @@ fn run_tests_multiple_passes_count() {
 fn run_tests_mixed_pass_and_fail_counts() {
     repl(
         "(import [primitives [*]])\n\
-         (defn test-pass-1 [] None)\n\
-         (defn test-pass-2 [] None)\n\
+         (defn test-pass-1 [] (if true None (Some \"never\")))\n\
+         (defn test-pass-2 [] (if true None (Some \"never\")))\n\
          (defn test-fail-1 [] (Some \"broken\"))\n\
          /run-tests\n",
     )
@@ -1442,7 +1419,7 @@ fn run_tests_neg_ignores_non_test_prefixed_fns() {
     let out = repl(
         "(import [primitives [*]])\n\
          (defn helper [] None)\n\
-         (defn test-one [] None)\n\
+         (defn test-one [] (if true None (Some \"never\")))\n\
          /run-tests\n",
     );
     assert!(

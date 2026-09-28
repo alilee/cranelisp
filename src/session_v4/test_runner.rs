@@ -1,171 +1,37 @@
-// session_v4::test_runner — test-discovery subsystem (S87 §2.1).
+// session_v4::test_runner — the shared test runner (`design/int/test-runner.md`).
 //
-// The host-promised `discover-tests` extern + its `TestRunnerState` + the
-// late-bound wrapper-closure machinery + the heap-marshalling helpers.
-// Self-contained per `src/CLAUDE.md §"Test discovery"`; the only session-side
-// coupling is the `tc_modules` raw pointer patched in `CompilerSession::new`
-// (which stays in `lifecycle.rs`) via the `set_tc_modules` setter below.
-// Moved verbatim from `session_v4.rs` (S87 §2.1).
+// `/run-tests`, `/run-all-tests` and `--test` are one runner: `discovery` is
+// the one eligibility scan, `selection` chooses modules, and `run` prepares,
+// executes and reports. This parent holds the REPL-only `discover-tests`
+// extern, its `TestRunnerState` and the heap marshalling it needs; the only
+// session-side coupling is the `tc_modules` raw pointer patched in
+// `CompilerSession::new` via `set_tc_modules`.
 
 use std::sync::Mutex;
 
-use cranelisp_types::{Life, ModuleFullPath, Realization};
+use cranelisp_types::ModuleFullPath;
 
 use crate::code::SessionSymbolTable;
 
-// ---------------------------------------------------------------------------
-// Test infrastructure: core logic + JIT-callable externs
-// ---------------------------------------------------------------------------
+mod discovery;
+mod run;
+mod selection;
 
-/// Result of running a single test (Rust-side, no heap allocation). Consumed by
-/// the `/run-tests` slash-command formatter (`format_test_run`); the test name
-/// is held by the caller (the FQ name being run) so it is not duplicated here.
-pub(crate) enum TestOutcome {
-    Pass,
-    Fail { reason: String },
-    Panic { reason: String },
-}
+pub(crate) use self::discovery::{TestDefinition, classify_test_definition};
+pub use self::run::TestRunReport;
 
-/// Core: discover test-* function names in a module. No heap allocation.
+/// Session state for the `discover-tests` extern, built once in
+/// `CompilerSession::new` and stored on `SharedState`.
 ///
-/// Returns fully-qualified names ("module/test-name") sorted alphabetically.
+/// The thread-local `TEST_RUNNER` cell holds a pointer derived from
+/// `SharedState.test_runner_state` (a `Box`, so the address is stable for the
+/// session lifetime); the REPL eval path sets it before invoking a compiled
+/// expression. The `current_module` field is a `Mutex` so the REPL `/mod`
+/// command may update it without re-allocating the state.
 ///
-/// Sprint 57 Wave 2 G6: reads `ModuleEntry::Def.code` (replaces the deleted
-/// `CodegenProduct` DashMap).
-pub(crate) fn discover_test_names(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-    module: &ModuleFullPath,
-) -> Vec<String> {
-    let mut names = Vec::new();
-    let symbols = match tc_modules.get(module) {
-        Some(st) => st,
-        None => return names,
-    };
-    for (name, entry) in symbols.all_symbols() {
-        if !name.as_ref().starts_with("test-") {
-            continue;
-        }
-        // The callable slot rides on the `DefKind` variant (S83 reshape,
-        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
-        let Some(callable) = entry.callable() else {
-            continue;
-        };
-        if callable.arm.param_names.is_empty()
-            && matches!(
-                callable.arm.life,
-                Life::Concrete {
-                    realization: Realization::Body { code: Some(_), .. },
-                    ..
-                }
-            )
-            && entry
-                .callable_got_slot()
-                .is_some_and(|slot| !symbols.got.load_slot(slot).is_null())
-        {
-            names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
-        }
-    }
-    names.sort();
-    names
-}
-
-/// Core: run a single test by fully-qualified name. No heap allocation.
-///
-/// Looks up the code pointer, calls it, interprets the (Option String) result.
-///
-/// Sprint 57 Wave 2 G6: reads `ModuleEntry::Def.code` (replaces the deleted
-/// `CodegenProduct` DashMap).
-///
-/// `_ready` shows that every cached object load the test could call has
-/// ended (`design/int/int.md` §7.1, *load before execution*).
-pub(crate) fn run_test_by_name(
-    tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-    fq_name: &str,
-    default_module: &ModuleFullPath,
-    _ready: &crate::scheduler::ExecutionReadiness,
-) -> TestOutcome {
-    use cranelisp_types::NULLARY_TAG_THRESHOLD;
-
-    // Parse "module/name" into module path and bare name. S78 §1.4: an
-    // unqualified name defaults to the current/entry module, NOT a hardcoded
-    // "user" — for a non-`user` entry program a hardcoded "user" mis-routes
-    // the lookup to a non-existent table.
-    let (module, bare_name) = match fq_name.rsplit_once('/') {
-        Some((m, n)) => (ModuleFullPath::from(m), n),
-        None => (default_module.clone(), fq_name),
-    };
-
-    // Look up the code pointer from the entry's GOT slot (D41/D35 — GOT is
-    // the single source of callable addresses; no `Code::ptr`).
-    let code_ptr = tc_modules.get(&module).and_then(|t| {
-        // The callable slot rides on the `DefKind` variant (S83 reshape,
-        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
-        let entry = t.get(bare_name)?;
-        let Some(callable) = entry.callable() else {
-            return None;
-        };
-        if !matches!(
-            callable.arm.life,
-            Life::Concrete {
-                realization: Realization::Body { code: Some(_), .. },
-                ..
-            }
-        ) {
-            return None;
-        }
-        let slot = entry.callable_got_slot()?;
-        let ptr = t.got.load_slot(slot);
-        if ptr.is_null() { None } else { Some(ptr) }
-    });
-
-    let code_ptr = match code_ptr {
-        Some(ptr) if !ptr.is_null() => ptr,
-        _ => {
-            return TestOutcome::Fail {
-                reason: "test function not found".to_string(),
-            };
-        }
-    };
-
-    // Call the test function.
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
-    let value = unsafe {
-        let func: extern "C" fn() -> i64 = std::mem::transmute(code_ptr);
-        func()
-    };
-
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        return TestOutcome::Panic { reason: msg };
-    }
-
-    if (value as usize) < NULLARY_TAG_THRESHOLD {
-        TestOutcome::Pass
-    } else {
-        let reason = unsafe {
-            let base = value as *const u8;
-            let string_ptr = *(base.add(cranelisp_backend::heap::HeapAdt::field_offset(0) as usize)
-                as *const i64);
-            cranelisp_intrinsics::heap_string::read_string_as_str(string_ptr).to_string()
-        };
-        TestOutcome::Fail { reason }
-    }
-}
-
-/// Session state for the `run-test` / `discover-tests` intrinsics.
-///
-/// Sprint 66 Wave 3a-γ: lifted from per-compilation construction to
-/// session-wide construction (built once in `CompilerSession::new`, stored on
-/// `SharedState`). The thread-local `TEST_RUNNER` cell holds a pointer derived
-/// from `SharedState.test_runner_state` (a `Box`, so the address is stable for
-/// the session lifetime); the REPL eval path sets it before invoking a
-/// compiled expression. The `current_module` field is a `Mutex` so the REPL
-/// `/mod` command may update it without re-allocating the state.
-///
-/// The intrinsics themselves dereference these pointers when JIT-emitted code
-/// invokes `run-test` / `discover-tests` — see `run_test_extern` /
-/// `discover_tests_extern` below. The state is only meaningful inside an
-/// active REPL eval; absent that, the intrinsics return harmless empty
-/// results (mirrors the prior null-pointer-guard behaviour).
+/// `discover_tests_extern` dereferences these pointers when JIT-emitted code
+/// calls `discover-tests`. The state is only meaningful inside an active REPL
+/// eval; absent that, the extern returns an empty list.
 pub struct TestRunnerState {
     /// TC modules for scanning symbol tables and reading compiled `code`.
     tc_modules: *const dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
@@ -240,13 +106,6 @@ pub(crate) fn set_test_runner_state(state: &TestRunnerState) {
     TEST_RUNNER.with(|c| c.set(state as *const _));
 }
 
-// `int_intrinsics()` + `run_test_extern` + the SList/IO/TestResult marshalling
-// helpers DELETED (S76 FIXME 0271). `run-test` is subsumed — running a test is
-// invoking a discovered late-bound wrapper under `catch-runtime-error`. The
-// surviving `discover-tests` extern is host-promised via `Jit::define_symbol`
-// (registered in `worker::build_session_jit`), not a parked-table entry. The
-// trace half of the old table left earlier (FIXME 0256); the table is now gone.
-
 /// Allocate a heap ADT with the given tag and fields.
 ///
 /// Layout: [alloc_size(8) | rc=1(8) | tag(8) | field0(8) | field1(8) | ...]
@@ -314,85 +173,47 @@ unsafe fn alloc_test_wrapper_closure(slot_addr: i64) -> i64 {
     }
 }
 
-/// An eligible test discovered for the fn-value return: the FQ name and the
-/// stable address of its GOT slot (for the late-bound wrapper capture).
+/// An eligible test for the fn-value return: its FQ name and the stable
+/// address of its GOT slot, which the late-bound wrapper captures.
 struct EligibleTest {
     fq_name: String,
     slot_addr: i64,
 }
 
-/// Scan a module for eligible `test-*` fns: prefix `test-` AND the EXACT scheme
-/// `(Fn [] (Option String))` (test-discovery.md q-eligibility). A mis-typed
-/// `test-*` is excluded; the warning is surfaced at the REPL/`--run` boundary
-/// (the extern runs in compiled code and cannot push a Warning, so the warn is
-/// the slash-command path's concern — here we silently exclude).
-///
-/// Returns the eligible tests sorted by FQ name. The slot address is
-/// `got.base_ptr() + slot*8` — stable for the module lifetime, contents updated
-/// in place on redefinition (late binding).
+/// The shared scan's tests in `modules` that have a GOT slot, with that
+/// slot's address (`got.base_ptr() + slot * 8`, stable for the module
+/// lifetime and updated in place on redefinition). The extern runs inside
+/// compiled code and has no warning channel, so the scan's warnings are
+/// dropped here (`design/int/test-runner.md` §12).
 fn discover_eligible_tests(
     tc_modules: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-    module: &ModuleFullPath,
+    modules: &[ModuleFullPath],
 ) -> Vec<EligibleTest> {
-    let mut out = Vec::new();
-    let Some(symbols) = tc_modules.get(module) else {
-        return out;
-    };
-    let got_base = symbols.got.base_ptr() as i64;
-    for (name, entry) in symbols.all_symbols() {
-        if !name.as_ref().starts_with("test-") {
-            continue;
-        }
-        // The callable slot rides on the `DefKind` variant (S83 reshape,
-        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
-        let Some(callable) = entry.callable() else {
-            continue;
-        };
-        let Some(slot) = entry.callable_got_slot() else {
-            continue;
-        };
-        if !test_scheme_is_eligible(&callable.arm.scheme) {
-            continue; // mis-typed test-* — excluded (q-eligibility).
-        }
-        out.push(EligibleTest {
-            fq_name: format!("{}/{}", module.as_ref(), name.as_ref()),
-            // slot address = base + slot * size_of::<AtomicPtr<u8>>() (8).
-            slot_addr: got_base + (slot as i64) * 8,
-        });
-    }
-    out.sort_by(|a, b| a.fq_name.cmp(&b.fq_name));
-    out
-}
-
-/// True iff `scheme` is exactly `(Fn [] (Option String))` — zero-arg returning
-/// `(Option String)` (test-discovery.md q-eligibility). Quantified vars are
-/// permitted only if they do not appear (a monomorphic test); the structural
-/// shape is what matters.
-fn test_scheme_is_eligible(scheme: &cranelisp_types::Scheme) -> bool {
-    let cranelisp_types::Type::Fn(params, ret) = &scheme.ty else {
-        return false;
-    };
-    if !params.is_empty() {
-        return false;
-    }
-    let cranelisp_types::Type::ADT(fqtn, args) = ret.as_ref() else {
-        return false;
-    };
-    fqtn.name.as_ref() == "Option"
-        && fqtn.module.as_ref() == "primitives"
-        && args.len() == 1
-        && matches!(args[0], cranelisp_types::Type::String)
+    discovery::scan_modules(tc_modules, modules)
+        .tests
+        .into_iter()
+        .filter_map(|id| {
+            let table = tc_modules.get(&id.module)?;
+            let slot = table.get(id.symbol.as_ref())?.callable_got_slot()?;
+            Some(EligibleTest {
+                fq_name: id.to_string(),
+                slot_addr: table.got.base_ptr() as i64 + (slot as i64) * 8,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod discover_tests_extern_tests;
 
+#[cfg(test)]
+mod session_tests;
+
 /// JIT-callable host-promised extern: discover eligible test functions across
 /// the given module paths and return fn-value pairs.
 ///
-/// Argument: a heap `(Vec String)` of module paths (the no-arg / single-String
-/// sugar shapes are normalised to this by the stdlib macro — FIXME 0273). A
-/// null/absent arg falls back to the current module.
+/// Argument: a heap `(Vec String)` of module paths. A null pointer or an empty
+/// vector falls back to the current module.
 ///
 /// Returns a heap `(Vec (Pair String (Fn [] (Option String))))`: each pair is a
 /// heap `Pair` ADT (tag 0, fields `[name_string, callable_closure]`); the
@@ -424,14 +245,8 @@ pub(crate) extern "C" fn discover_tests_extern(modules_vec: i64) -> i64 {
             module_paths
         };
 
-        // Union the eligible tests across the named modules.
-        let mut eligible: Vec<EligibleTest> = Vec::new();
-        for module in &module_paths {
-            eligible.extend(discover_eligible_tests(tc_modules, module));
-        }
-
         // Build the (Vec (Pair String callable)).
-        let pair_ptrs: Vec<i64> = eligible
+        let pair_ptrs: Vec<i64> = discover_eligible_tests(tc_modules, &module_paths)
             .into_iter()
             .map(|t| unsafe {
                 let name_str =

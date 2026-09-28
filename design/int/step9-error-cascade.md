@@ -49,6 +49,30 @@ dependency '<failed>' failed: <failed module's error text>
 The cascade recurses, so each level embeds the full text below it and the
 root-cause error survives to the top.
 
+The cascade drains the failed module's waiters once. A waiter registered on it
+afterwards would never be woken, because `Failed` is not a terminal typecheck
+pool and nothing notifies it again.
+
+- **Fail fast before registering.** Every path that would wait on a module
+  checks for `Failed` first, under the same lock, and returns that module's
+  error instead: `block_for_typecheck`, the worker's signature barrier
+  (`block_on_first_unready_closure_member`) and the eval thread's
+  `await_signature_barrier`. The two barriers share one predicate. The worker
+  fails its own module with the returned error, which wakes the completion
+  waits.
+- **Why it is load-bearing.** `wait_inmem_complete_blocking` and
+  `wait_object_complete` stop scanning at the first incomplete module. A
+  stranded waiter therefore hangs the foreground only when it is scanned
+  before the failed module. That is why the REPL hang after an imported
+  module failed to reload was intermittent. That order dependence
+  remains, and QA holds it as a residual. Falsifier: a hang whose scheduler
+  state shows a waiter on a `Failed` module, or a stranded module with no
+  `Failed` dependency.
+- **Guards.** The unit guard is
+  `scheduler::tests::atomic_barrier_gate_fails_importer_of_already_failed_member`.
+  The end-to-end guard is
+  `tests/repl_watch.rs::watch_type_error_reload_of_imported_module_blocks_without_hanging`.
+
 ### 4.2 User-visible message
 
 The user sees the top module's `module '<m>' failed:` wrapper followed by the

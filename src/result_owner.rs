@@ -165,29 +165,7 @@ impl OwnedProgramResult {
         C: CodeStore,
         L: LinkerStore,
     {
-        if ty.is_io() {
-            return Err(Self::invariant(format!(
-                "program result reached the result owner still wrapped in `{ty}` — the driver \
-                 boundary must transfer the `Pure` payload and unwrap `IO a` exactly once; \
-                 result glue is selected for the INNER type, never for `IO a`"
-            )));
-        }
-        // (1) the release key.
-        let concrete = release_key(codegen_result_ty, &ty, module)?;
-        // (2) classify with the SAME predicate backend's `request_if_owning`
-        // uses (§1.1). Absence from the artifact projection is ambiguous on its
-        // face, so int must ask this question BEFORE it demands a key.
-        let target = match HeapCategory::classify(&concrete, Some(symbol_tables)) {
-            // (3) inert arm — zero map reads.
-            HeapCategory::NeverHeap | HeapCategory::Value => None,
-            // (4) owning arm — `Mixed` included: glue exists for it and its
-            // body's `guard_nullary` handles the bare-tag case. Int does NOT
-            // replicate that guard.
-            HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
-                Some(resolver.resolve(module, &concrete)?)
-            }
-        };
-        Ok(Self { value, ty, target })
+        Ok(ReleasePlan::new(ty, codegen_result_ty, module, symbol_tables, resolver)?.own(value))
     }
 
     /// An INERT owner over a plain word — no release target, so finalization
@@ -287,6 +265,70 @@ impl OwnedProgramResult {
         CranelispError::CodegenError {
             message,
             location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }
+    }
+}
+
+/// The fallible half of result ownership, settled before the producing code
+/// runs: the release key, its classification and the resolved target.
+///
+/// A caller that must fail before executing anything — the test runner
+/// prepares every test first (`design/int/test-runner.md` §6.2) — plans here
+/// and then owns each word through the infallible [`Self::own`].
+/// [`OwnedProgramResult::new`] is plan-then-own, so classification has one
+/// implementation.
+#[derive(Debug)]
+pub(crate) struct ReleasePlan {
+    ty: Type,
+    target: Option<GlueTarget>,
+}
+
+impl ReleasePlan {
+    /// Plan the release of a clean result of `ty` produced by code homed in
+    /// `module`. The arguments and errors are those of
+    /// [`OwnedProgramResult::new`].
+    pub(crate) fn new<C, L>(
+        ty: Type,
+        codegen_result_ty: Option<ConcreteType>,
+        module: &ModuleFullPath,
+        symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+        resolver: &dyn ResultGlueResolver,
+    ) -> Result<Self, CranelispError>
+    where
+        C: CodeStore,
+        L: LinkerStore,
+    {
+        if ty.is_io() {
+            return Err(OwnedProgramResult::invariant(format!(
+                "program result reached the result owner still wrapped in `{ty}` — the driver \
+                 boundary must transfer the `Pure` payload and unwrap `IO a` exactly once; \
+                 result glue is selected for the INNER type, never for `IO a`"
+            )));
+        }
+        // (1) the release key.
+        let concrete = release_key(codegen_result_ty, &ty, module)?;
+        // (2) classify with the SAME predicate backend's `request_if_owning`
+        // uses (§1.1). Absence from the artifact projection is ambiguous on its
+        // face, so int must ask this question BEFORE it demands a key.
+        let target = match HeapCategory::classify(&concrete, Some(symbol_tables)) {
+            // (3) inert arm — zero map reads.
+            HeapCategory::NeverHeap | HeapCategory::Value => None,
+            // (4) owning arm — `Mixed` included: glue exists for it and its
+            // body's `guard_nullary` handles the bare-tag case. Int does NOT
+            // replicate that guard.
+            HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
+                Some(resolver.resolve(module, &concrete)?)
+            }
+        };
+        Ok(Self { ty, target })
+    }
+
+    /// Take ownership of the word the planned code produced.
+    pub(crate) fn own(self, value: i64) -> OwnedProgramResult {
+        OwnedProgramResult {
+            value,
+            ty: self.ty,
+            target: self.target,
         }
     }
 }

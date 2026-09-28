@@ -5575,6 +5575,167 @@ fn lookup_dependencies_survive_clone_and_concrete_conversion_and_start_empty() {
     assert_eq!(lookup_set(&concrete), vec!["r"]);
 }
 
+fn box_type() -> Type {
+    Type::ADT(
+        FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Box")),
+        Vec::new(),
+    )
+}
+
+fn box_ctor_origin() -> CallableOrigin {
+    CallableOrigin::Ctor {
+        type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Box")),
+        tag: 0,
+        field_count: 1,
+        internal: false,
+        type_def: None,
+    }
+}
+
+/// A concrete one-field product `Box` whose field `v` has type `field`,
+/// restricted to the synthesized members named in `members`.
+fn concrete_box_members(field: Type, members: &[&str]) -> SymbolTable<String, ()> {
+    let mut table = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    for &member in members {
+        let (ty, origin) = match member {
+            "Box" => (
+                Type::Fn(vec![field.clone()], Box::new(box_type())),
+                box_ctor_origin(),
+            ),
+            "Box.v" => (
+                Type::Fn(vec![box_type()], Box::new(field.clone())),
+                packet_a_accessor_origin("v"),
+            ),
+            other => panic!("no synthesized Box member {other}"),
+        };
+        table
+            .install_concrete(
+                Symbol::from(member),
+                scheme(ty),
+                vec![Symbol::from("v")],
+                None,
+                0,
+                origin,
+                Realization::Body {
+                    view: packet_a_view(member),
+                    code: None,
+                },
+                Some(ast()),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+    table
+}
+
+/// A generic `Box` constructor quantified over `var`, whose field has type
+/// `field`.
+fn generic_box_ctor(var: TypeId, field: Type) -> SymbolTable<String, ()> {
+    let mut table = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
+    let result = Type::ADT(
+        FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Box")),
+        vec![Type::Var(var)],
+    );
+    table
+        .install_template(
+            Symbol::from("Box"),
+            Scheme {
+                type_vars: vec![var],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![field], Box::new(result)),
+            },
+            vec![Symbol::from("v")],
+            None,
+            0,
+            box_ctor_origin(),
+            TemplateBody::Synth(SynthSpec::new(ast())),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    table
+}
+
+// spec: repl/spec/18-redefinition.md §18.5 — an existing value is never
+// reinterpreted under a changed layout; the types publication funnel refuses to
+// republish a synthesized constructor or accessor under a different scheme.
+#[test]
+fn staged_publication_refuses_synthesized_member_with_changed_scheme_atomically() {
+    for member in ["Box", "Box.v"] {
+        let mut live = concrete_box_members(Type::Int, &["Box", "Box.v"]);
+        let before = serde_json::to_string(&live).unwrap();
+        let refused = live
+            .publish_staged(
+                concrete_box_members(Type::String, &[member]),
+                &[StagedPublicationDecision::ChangeAbi {
+                    symbol: Symbol::from(member),
+                }],
+            )
+            .err();
+        assert!(
+            matches!(
+                &refused,
+                Some(LifecycleError::WrongState { symbol, .. }) if symbol.as_ref() == member
+            ),
+            "{member} field-type change must be refused, got {refused:?}"
+        );
+        assert_eq!(serde_json::to_string(&live).unwrap(), before, "{member}");
+    }
+
+    let mut live = generic_box_ctor(0, Type::Var(0));
+    let before = serde_json::to_string(&live).unwrap();
+    let refused = live
+        .publish_staged(generic_box_ctor(0, Type::Int), &[])
+        .err();
+    assert!(
+        matches!(
+            &refused,
+            Some(LifecycleError::WrongState { symbol, .. }) if symbol.as_ref() == "Box"
+        ),
+        "generic field-type change must be refused, got {refused:?}"
+    );
+    assert_eq!(serde_json::to_string(&live).unwrap(), before);
+}
+
+// spec: repl/spec/18-redefinition.md §18.5 — a structurally identical
+// redeclaration republishes its synthesized members.
+#[test]
+fn staged_publication_admits_synthesized_members_with_alpha_equivalent_schemes() {
+    let mut live = concrete_box_members(Type::Int, &["Box", "Box.v"]);
+    let slot = live.get("Box").unwrap().callable_got_slot();
+    let _ = live
+        .publish_staged(
+            concrete_box_members(Type::Int, &["Box", "Box.v"]),
+            &[
+                StagedPublicationDecision::PreserveAbi {
+                    symbol: Symbol::from("Box"),
+                },
+                StagedPublicationDecision::PreserveAbi {
+                    symbol: Symbol::from("Box.v"),
+                },
+            ],
+        )
+        .expect("an identical scheme republishes");
+    assert_eq!(live.get("Box").unwrap().callable_got_slot(), slot);
+
+    let mut live = generic_box_ctor(0, Type::Var(0));
+    let _ = live
+        .publish_staged(generic_box_ctor(7, Type::Var(7)), &[])
+        .expect("an alpha-renamed scheme republishes");
+    assert_eq!(
+        live.get("Box")
+            .unwrap()
+            .callable()
+            .unwrap()
+            .arm
+            .scheme
+            .type_vars,
+        vec![7]
+    );
+}
+
 // spec: design/arch/interfaces.md §Qualified lookup dependencies — T4 schema fence
 #[test]
 fn lookup_dependencies_round_trip_and_absence_fails_to_decode() {

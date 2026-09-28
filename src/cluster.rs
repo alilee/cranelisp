@@ -36,9 +36,9 @@
 //! `ClusterOutcome::Gap` so the worker frees back to the pool; the scheduler
 //! requeues the blocked module (retry-from-top) when the dep completes. The
 //! REPL eval path (`session_v4::process_single_form`) drives the same
-//! `process_cluster_once` core in its own retry loop. `insert_cluster` commits
-//! the cluster-level REPL/scheduler metadata; the per-symbol staging entries
-//! already committed to live inside `check_program_compat`.
+//! `process_cluster_once` core in its own retry loop. The prepared publication
+//! commits the cluster's staged entries and records; `insert_cluster` then
+//! releases the carrier and installs nothing.
 
 use crate::session_v4::Introspection;
 use cranelisp_types::{CranelispError, FQSymbol, ImportNames, ModuleFullPath, Symbol, Warning};
@@ -58,9 +58,8 @@ use cranelisp_types::{CranelispError, FQSymbol, ImportNames, ModuleFullPath, Sym
 /// `ProcessedCluster` is the **single** cluster-level carrier; the pre-S66
 /// `ModuleCheckAccumulator` (a separate typecheck-side / int-side struct) is
 /// retired. Per-symbol Pass-2 side products ride into live on each
-/// `ModuleEntry::Def` per `facades/typecheck.md` invariant 3a — the
-/// orchestrator's drain in `insert_cluster` carries those annotations with
-/// each entry.
+/// `ModuleEntry::Def` per `facades/typecheck.md` invariant 3a — the prepared
+/// publication carries those annotations with each entry.
 ///
 /// Opaque to callers; constructed inside `process_cluster`, consumed inside
 /// `insert_cluster`. Read accessors expose the cluster-level metadata for
@@ -77,9 +76,10 @@ pub struct ProcessedCluster {
     /// import installation is `int`'s call, not typecheck's.
     pub(crate) resolved_imports: Vec<(ModuleFullPath, ImportNames)>,
 
-    /// Cluster-level introspection records the orchestrator captured at
-    /// parse-time. Populated only when `shared.introspection.is_some()`.
-    /// Drained into `shared.introspection` during `insert_cluster`.
+    /// Authored-form records staged by form processing, one per built
+    /// definition. Populated only when `shared.introspection.is_some()`, and
+    /// installed only by the cluster's publication
+    /// ([`Self::install_published_records`]).
     pub(crate) introspection_records: Vec<(FQSymbol, Introspection)>,
 
     /// The commit gate's per-symbol redefinition classifications (S101,
@@ -127,10 +127,31 @@ impl ProcessedCluster {
         &self.resolved_imports
     }
 
-    /// Read-only access to the cluster's introspection records. Drained
-    /// into `shared.introspection` during `insert_cluster`.
+    /// Read-only access to the cluster's staged authored-form records.
     pub fn introspection_records(&self) -> &[(FQSymbol, Introspection)] {
         &self.introspection_records
+    }
+
+    /// Install the staged records once this cluster's generation has
+    /// published (`design/int/session-persistence.md` §2.4.1). Each replaces
+    /// its entry's authored carriers — form, expansion, AST and text — and
+    /// leaves the codegen facts publication wrote. The records are consumed,
+    /// so a repeated call installs nothing.
+    pub(crate) fn install_published_records(
+        &mut self,
+        introspection: Option<&dashmap::DashMap<FQSymbol, Introspection>>,
+    ) {
+        let records = std::mem::take(&mut self.introspection_records);
+        let Some(introspection) = introspection else {
+            return;
+        };
+        for (key, staged) in records {
+            let mut record = introspection.entry(key).or_default();
+            record.source = staged.source;
+            record.sexp = staged.sexp;
+            record.expanded = staged.expanded;
+            record.ast = staged.ast;
+        }
     }
 
     /// Read-only access to the commit gate's redefinition classifications
@@ -313,33 +334,21 @@ pub fn process_cluster(
     }
 }
 
-/// Commit a `ProcessedCluster`'s entries into the live `SymbolTable` for
-/// `target`. Per Decision 44 — drains staging entries under per-entry
-/// inner-DashMap locks; populates `shared.introspection` from the cluster's
-/// introspection records.
+/// Release a published `ProcessedCluster`'s cluster-level residue for
+/// `target`. Its per-symbol entries and authored-form records were installed
+/// by the prepared publication; this installs neither.
 ///
 /// Callers that want commit-side control (REPL defining forms; compilation
 /// worker) call this after a successful `process_cluster`. Eval-expression
 /// callers skip `insert_cluster` — the temp closure has no module commit
 /// target.
 pub fn insert_cluster(
-    shared: &crate::session_v4::SharedState,
+    _shared: &crate::session_v4::SharedState,
     processed: ProcessedCluster,
     _target: &ModuleFullPath,
 ) -> Result<(), cranelisp_types::CranelispError> {
     if processed.is_empty() {
         return Ok(());
-    }
-
-    // Drain introspection records: each merges into the shared introspection
-    // map (per Decision 38 — synchronously on commit). D1b: the store is
-    // REPL-only (`Option`, `None` in batch). Doubly a no-op in batch — the
-    // records vec is empty (population gate fed `None` to the ModuleCompiler)
-    // AND there is no store to drain into.
-    if let Some(m) = shared.introspection.as_ref() {
-        for (fq, intro) in processed.introspection_records {
-            m.insert(fq, intro);
-        }
     }
 
     // Warnings and resolved-import bindings flow back through the calling

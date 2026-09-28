@@ -1619,6 +1619,45 @@ fn atomic_block_never_strands_on_terminal_member() {
     }
 }
 
+// spec: repl/spec/14-file-watching.md §14.4 — ACT-1006. A failed module's
+// cascade has already drained its waiters, so a pool worker that reaches the
+// barrier afterwards must fail rather than wait on it: a waiter registered
+// then is never woken, and the reload's completion wait parks forever.
+#[test]
+fn atomic_barrier_gate_fails_importer_of_already_failed_member() {
+    let sched = CompileScheduler::new();
+    let dep = mod_path("mymod");
+    let importer = mod_path("prelude");
+    sched.register_module(dep.clone(), no_sexps(), false);
+    sched.register_module(importer.clone(), no_sexps(), false);
+    sched.notify_typecheck_done(&importer);
+    sched.notify_module_failed(
+        &dep,
+        CranelispError::ModuleError {
+            message: "val takes no arguments".to_string(),
+            location: ErrorLocation::from_span_file(Span::new(3, 9), None),
+        },
+    );
+    assert!(sched.re_register_module(&importer, no_sexps()));
+
+    let gate = sched.block_on_first_unready_closure_member(&importer, &closure_of(&["mymod"]));
+
+    let err = gate.expect_err("the gate must refuse a closure holding a failed member");
+    assert!(
+        err.to_string().contains("val takes no arguments"),
+        "the refusal carries the failed dependency's error: {err}"
+    );
+    assert_ne!(
+        sched.module_pool(&importer),
+        Some(ModulePool::TypecheckBlocked),
+        "the importer must not park on a member whose cascade already ran"
+    );
+    // The worker turns the gate's error into the importer's failure; the
+    // reload's completion wait then returns instead of parking.
+    sched.notify_module_failed(&importer, err);
+    assert!(sched.wait_inmem_complete_blocking().is_err());
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // S93 signature/body pre-pass — Task 3: per-cluster static-closure memo
 // (the body-boundary closure walk runs ONCE per cluster, not once per

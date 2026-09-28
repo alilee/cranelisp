@@ -84,7 +84,7 @@ authored in `helpers-api.md`; this section conveys intent.
 /// One Cranelisp invocation. Builder pattern: configure, then run.
 ///
 /// Defaults:
-///  - mode: REPL (no `--run`, no `--link`)
+///  - mode: REPL (no `--run`, `--test` or `--link`)
 ///  - prelude: NONE (no prelude file dropped; binary's auto-discovery
 ///    finds nothing in the fresh TempDir)
 ///  - stdin: empty
@@ -96,7 +96,7 @@ pub struct Cranelisp { /* ... */ }
 
 The full method set lives in `helpers-api.md`. Categories:
 
-- Mode: `repl()`, `run(file)`, `link(file)`, `link_then_run(file)`
+- Mode: `repl()`, `run(file)`, `test(file)`, `link(file)`, `link_then_run(file)`
 - Fixtures: `file(rel, contents)`, `user(contents)`, `prelude(contents)`,
   `with_prelude(variant)`, `fixture(src, dst)`, `fixture_tree(src, dst)`
 - Search paths: `lib_dir(dir)`, `use_workspace_stdlib_for_stdlib_conformance_only()`,

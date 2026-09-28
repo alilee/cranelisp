@@ -215,7 +215,7 @@ stored `callees`. They participate in §18.2 when an ordinary callable they use
 is proposed with a new language type. Only the source-level invocation of the
 macro disappears at expansion and creates no durable macro-use edge.
 
-### 18.5 Type Declaration Re-establishment [Uncovered S121]
+### 18.5 Type Declaration Re-establishment [Uncovered S122 — partial: a live field-count change (tests/repl_persist::persist_live_deftype_adding_product_field_rejected_and_not_written_neg) and a live field-type change with a prior value (tests/repl_persist::persist_live_deftype_changing_field_type_rejected_and_not_written_neg) are rejected, keep the prior type and prior values live and are not written; field order is refused on reload (tests/repl_persist::watch_imported_type_field_reorder_fails_requiring_restart); a docstring update is live (tests/repl_persist::persist_reloaded_docstring_edit_of_repl_entered_type_survives_regeneration); the other facets are unit-evidenced only]
 
 A committed nominal `deftype` may be re-established under the same canonical
 name only when its runtime and naming structure is identical. Structural
@@ -237,8 +237,9 @@ while preserving payload order and types is legal.
 Every other same-name `deftype` change is rejected atomically regardless of
 callers. The prior type, constructors, accessors, values and documentation
 remain live after rejection. A structurally different nominal type requires a
-new name; the implementation MUST NOT reinterpret existing values under an
-unversioned changed layout.
+new name, or a restart that compiles the changed persisted declaration; a
+watcher reload does not establish it (§14.8). The implementation MUST NOT
+reinterpret existing values under an unversioned changed layout.
 
 ### 18.6 Trait Declaration Re-establishment [Uncovered S121]
 
@@ -295,8 +296,8 @@ current impl for the pair, not its replacement history.
 
 The backing file contains only the latest **successful** source for each
 definition or declaration under §15.6, plus startup-failed source retained
-under §15.2.3 until a successful definition replaces it. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition] A
-rejected redefinition is never written. Reload and restart compile that current authored source; they do not
+under §15.2.3 until a successful definition replaces it. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition] [Tested tests/repl_persist::persist_function_replacement_persists_through_restart, tests/repl_persist::persist_macro_replacement_persists_through_restart] A
+rejected redefinition is never written. [Tested tests/repl_persist::persist_typecheck_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration] Reload and restart compile that current authored source; they do not
 replay the interactive edit history and do not restore obsolete callable
 generations, broken-symbol state, cascade reports, or trap stubs.
 

@@ -107,6 +107,7 @@ impl PreludeVariant {
 enum Mode {
     Repl,
     Run(String),
+    Test(String),
     Link(String),
     LinkThenRun(String),
 }
@@ -185,6 +186,12 @@ impl Cranelisp {
     /// Batch run via `--run <file>`.
     pub fn run(mut self, file: &str) -> Self {
         self.mode = Mode::Run(file.to_string());
+        self
+    }
+
+    /// Compiler-run tests via `--test <file>` (repl/spec/00-cli-invocation.md §0.2.2).
+    pub fn test(mut self, file: &str) -> Self {
+        self.mode = Mode::Test(file.to_string());
         self
     }
 
@@ -427,6 +434,11 @@ impl Cranelisp {
             Mode::Repl => None,
             Mode::Run(file) => {
                 args.push("--run".to_string());
+                args.push(file.clone());
+                None
+            }
+            Mode::Test(file) => {
+                args.push("--test".to_string());
                 args.push(file.clone());
                 None
             }

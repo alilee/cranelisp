@@ -504,7 +504,12 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         Ok(checked) => checked,
         Err(gap) => return Ok(Some(Err(gap))),
     };
-    validate_guarded_staging(symbol_tables, module, &checked.staging)?;
+    validate_guarded_staging(
+        symbol_tables,
+        module,
+        &checked.staging,
+        Some(&shared.scheduler),
+    )?;
     let mut demands = capture_affected_mono_demands(symbol_tables, module, &checked.staging)?;
     extend_reload_demands(
         symbol_tables,
@@ -1334,7 +1339,13 @@ fn plan_staging_commit_inner(
     use crate::redefine::{RedefKind, RedefinitionOutcome, classify_redefinition};
     use cranelisp_types::FQSymbol;
 
-    validate_guarded_staging_except(symbol_tables, module, &staging, rematerialized_instances)?;
+    validate_guarded_staging_except(
+        symbol_tables,
+        module,
+        &staging,
+        rematerialized_instances,
+        Some(&shared.scheduler),
+    )?;
 
     let tables = dashmap::DashMap::new();
     for row in symbol_tables.iter() {
@@ -1562,7 +1573,12 @@ fn commit_staging_to_live(
             declared.as_ref(),
         )?;
     }
-    validate_guarded_staging(symbol_tables, module, &staging)?;
+    validate_guarded_staging(
+        symbol_tables,
+        module,
+        &staging,
+        shared.map(|shared| &shared.scheduler),
+    )?;
     let Some(mut live) = symbol_tables.get_mut(module) else {
         return Ok(Vec::new());
     };
@@ -1611,19 +1627,34 @@ fn validate_guarded_staging(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: &crate::code::SessionSymbolTable,
+    scheduler: Option<&crate::scheduler::CompileScheduler>,
 ) -> Result<(), CranelispError> {
-    validate_guarded_staging_except(symbol_tables, module, staging, &[])
+    validate_guarded_staging_except(symbol_tables, module, staging, &[], scheduler)
 }
 
+/// The redefinition guard over a staged table. The type pass runs first, so a
+/// structural type refusal is reported (and recorded for a failed reload to
+/// read) ahead of any per-key refusal in the same cluster.
 fn validate_guarded_staging_except(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: &crate::code::SessionSymbolTable,
     rematerialized_instances: &[Symbol],
+    scheduler: Option<&crate::scheduler::CompileScheduler>,
 ) -> Result<(), CranelispError> {
     let Some(live) = symbol_tables.get(module).map(|table| table.clone()) else {
         return Ok(());
     };
+    let structural_change = staging
+        .all_symbols()
+        .find_map(|(name, _)| crate::redefine::structural_type_change(&live, staging, name));
+    if let Some(change) = structural_change {
+        let error = change.to_error();
+        if let Some(scheduler) = scheduler {
+            scheduler.record_structural_type_refusal(module, change);
+        }
+        return Err(error);
+    }
     for (name, staged) in staging.all_symbols() {
         if rematerialized_instances.contains(name) {
             continue;
@@ -1826,7 +1857,7 @@ pub enum ClusterOnce {
     /// Cluster fully typechecked. `program` is the expanded `Vec<TopLevel>`
     /// the caller feeds to codegen (`inline_jit_codegen_for_module`); the
     /// `ProcessedCluster` carries the cluster-level REPL/scheduler metadata
-    /// committed via `cluster::insert_cluster`.
+    /// the prepared publication commits.
     Done {
         processed: crate::cluster::ProcessedCluster,
         program: Vec<TopLevel>,
@@ -2184,7 +2215,29 @@ fn compile_and_publish_prepared(
     )
 }
 
+/// Publish the cluster's prepared generation, then install its staged
+/// authored-form records. A cluster with nothing to compile publishes too; an
+/// `Err` exit installs no record (`design/int/session-persistence.md` §2.4.1).
 fn compile_and_publish_prepared_with<Compile>(
+    processed: &mut crate::cluster::ProcessedCluster,
+    shared: &crate::session_v4::SharedState,
+    capture_clif: bool,
+    compile: Compile,
+) -> Result<(), CranelispError>
+where
+    Compile: FnOnce(
+        &PreparedCommit,
+        &mut cranelisp_backend::jit::Jit,
+        bool,
+    ) -> Result<cranelisp_backend::CompilationArtifacts, CranelispError>,
+{
+    publish_prepared_generation_with(processed, shared, capture_clif, compile)?;
+    processed.install_published_records(shared.introspection.as_ref());
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+fn publish_prepared_generation_with<Compile>(
     processed: &mut crate::cluster::ProcessedCluster,
     shared: &crate::session_v4::SharedState,
     capture_clif: bool,
@@ -2582,10 +2635,10 @@ fn notify_processed_ready(
 /// AOT symbol under `--link` (the standalone executable has no live session to
 /// scan). This is the single source of truth shared by two sites:
 ///
-///   1. `build_session_jit` — promises each one to the live-session JIT.
-///   2. `crate::exe::reject_dev_session_externs_in_link` — refuses a `--link`
-///      build that references any of them, with a friendly compile-time
-///      diagnostic instead of a raw `cc` `undefined reference` (FIXME 0406).
+///   1. `dev_session_extern_bodies` — promises each one to the live-session JIT
+///      and to the cache-restore `Linker`.
+///   2. `crate::exe::refuse_dev_session_externs` — refuses a `--run`, `--link`
+///      or `--test` program that references any of them (REPL §16.6).
 ///
 /// The list is the structural discriminator the friendly-rejection gate keys on
 /// (test-discovery.md §4.5): a `PrimitiveExtern` named here is dev-session-only;
@@ -2685,15 +2738,25 @@ pub(crate) fn build_session_jit(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> Result<cranelisp_backend::jit::Jit, CranelispError> {
     let jit = cranelisp_backend::jit::Jit::new(tc_modules)?;
-    for name in DEV_SESSION_ONLY_EXTERNS {
+    for (name, body) in dev_session_extern_bodies() {
+        jit.define_symbol(name, body);
+    }
+    Ok(jit)
+}
+
+/// The host body of each `DEV_SESSION_ONLY_EXTERNS` name. The fresh JIT and the
+/// cache-restore `Linker` both resolve through this, so restored code that
+/// references one loads exactly as fresh code does; the batch driver seams then
+/// refuse such a program before it runs (`crate::exe::refuse_dev_session_externs`).
+fn dev_session_extern_bodies() -> impl Iterator<Item = (&'static str, *const u8)> {
+    DEV_SESSION_ONLY_EXTERNS.iter().map(|name| {
         debug_assert_eq!(
             *name, "discover-tests",
             "the only dev-session-only extern body wired here is discover-tests; \
-             a new entry in DEV_SESSION_ONLY_EXTERNS needs its own define_symbol",
+             a new entry in DEV_SESSION_ONLY_EXTERNS needs its own body",
         );
-        jit.define_symbol(name, crate::session_v4::discover_tests_extern as *const u8);
-    }
-    Ok(jit)
+        (*name, crate::session_v4::discover_tests_extern as *const u8)
+    })
 }
 
 /// Read the runtime GOT address for `name` in `module`, following Import
@@ -2860,6 +2923,9 @@ fn load_cached_module_via_linker(
     // every `DefKind::Primitive` whose GOT slot is empty against the host's own
     // exported symbol and registering it with the linker.
     register_binary_exported_primitives(&mut linker, shared_state);
+    for (name, body) in dev_session_extern_bodies() {
+        linker.register_symbol(name, body);
+    }
 
     // Register platform symbols by walking symbol tables. Every
     // `PlatformEffect` entry carries its DLL function pointer in the owning
@@ -3318,9 +3384,8 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 /// `module_sexps` map. Drives the single live orchestration
 /// (`cluster::process_cluster`) and:
 ///
-/// - on `Done` — runs `inline_jit_codegen_for_module`, commits the
-///   cluster-level metadata via `cluster::insert_cluster`, and calls
-///   `notify_typecheck_done`;
+/// - on `Done` — compiles and publishes the prepared cluster (which commits
+///   its entries and records), then calls `notify_typecheck_done`;
 /// - on `Gap` — does NOTHING further. The dependency has already been
 ///   registered + blocked on inside `process_cluster`; this worker returns and
 ///   frees back to the pool. When `dep` completes,
@@ -3362,8 +3427,8 @@ fn handle_typecheck_work_shared(
             // post-publish InMemDone → TypecheckDone order one cadence.
             notify_processed_ready(&mut processed, shared, module);
 
-            // Commit the cluster-level REPL/scheduler metadata. (Per-symbol
-            // staging entries already published by the prepared turn.)
+            // Release the cluster; its entries and records were committed by
+            // the prepared publication above, so this installs nothing.
             crate::cluster::insert_cluster(shared, processed, module)?;
 
             // E3 publication-edge hook (`resolve-home-enumeration.md` §4): the

@@ -1,10 +1,11 @@
 use cranelisp_types::{
-    CranelispError, Decl, ErrorLocation, FQTraitName, JitSymbol, ModuleFullPath, ResolvedCall,
-    Span, Symbol, TraitMethodSig, TraitName, TraitRecord, Type, TypeName,
+    CranelispError, Decl, ErrorLocation, FQSymbol, FQTraitName, JitSymbol, ModuleFullPath,
+    ResolvedCall, Span, Symbol, TraitMethodRecord, TraitMethodSig, TraitName, TraitRecord, Type,
+    TypeName,
 };
 
 use super::*;
-use crate::checker::{CheckState, PendingDispatch, ResolvedBuiltin, TypeCheckEnv};
+use crate::checker::{CheckState, DottedMember, PendingDispatch, ResolvedBuiltin, TypeCheckEnv};
 
 // ---------------------------------------------------------------------------
 // Method Resolution
@@ -16,6 +17,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Returns Some(ResolvedCall::TraitMethod) if the callee is a trait method
     /// and the argument types resolve to a concrete impl.
     /// Returns None if the callee is not a trait method.
+    ///
+    /// Any written spelling of the method (`w`, `HasW.w`, `m/w`) resolves
+    /// once to its canonical declaration, and dispatch reads only that
+    /// declaration (spec §7.4.2a). A dotted spelling resolves only through the
+    /// dotted core, so a rejected parent (ambiguous or inaccessible) is an
+    /// error rather than a dispatch through the literal `Trait.method` key.
     pub(crate) fn try_resolve_trait_method(
         &self,
         state: &mut CheckState,
@@ -23,28 +30,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<PendingDispatch>, CranelispError> {
-        // Check if this name is a trait method (via trait_origin on ModuleEntry::Def).
-        // State-rooted: chain-follow from the current module's view per Principle 17.
-        //
-        // D2 (§7.0.1) — the method reference carries its FQ identity, which names
-        // the one trait that declares it AND that trait's HOME module. Thread the
-        // home (P24 "Resolve once") and root the impl lookup / FQ construction at
-        // it, instead of re-resolving the BARE trait name in current scope (which
-        // fails when only the METHOD is imported — the pre-D2 leak, §7.11.2(a)/(e)).
-        let (trait_name, trait_defining_module) =
-            match self.method_to_trait_with_state(state, callee_name) {
-                Some(pair) => pair,
-                None => return Ok(None),
-            };
-
-        self.try_resolve_trait_method_for_trait(
-            state,
-            callee_name,
-            arg_types,
-            span,
-            &trait_name,
-            &trait_defining_module,
-        )
+        let resolved = match DottedMember::parse(callee_name.as_ref()) {
+            Some(dotted) => self.dotted_member_identity(state, dotted, span)?,
+            None => self
+                .resolve_terminal_fq_scoped(state, callee_name.as_ref())
+                .map(|resolved| (resolved.canonical, resolved.entry)),
+        };
+        let Some((canonical, entry)) = resolved else {
+            return Ok(None);
+        };
+        let Decl::TraitMethod(record) = entry.declaration else {
+            return Ok(None);
+        };
+        self.try_resolve_trait_method_decl(state, &canonical, &record, arg_types, span)
     }
 
     /// Resolve an already-selected canonical trait-method declaration without
@@ -52,7 +50,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     pub(crate) fn try_resolve_selected_trait_method(
         &self,
         state: &mut CheckState,
-        selected: &cranelisp_types::FQSymbol,
+        selected: &FQSymbol,
         arg_types: &[Type],
         span: Span,
     ) -> Result<Option<PendingDispatch>, CranelispError> {
@@ -64,44 +62,54 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let Decl::TraitMethod(record) = binding.declaration else {
             return Ok(None);
         };
-        let method_name = Symbol::from(
-            selected
-                .symbol
-                .as_ref()
-                .rsplit('.')
-                .next()
-                .unwrap_or(selected.symbol.as_ref()),
-        );
-        self.try_resolve_trait_method_for_trait(
-            state,
-            &method_name,
-            arg_types,
-            span,
-            &record.trait_name.name,
-            &record.trait_name.module,
-        )
+        self.try_resolve_trait_method_decl(state, selected, &record, arg_types, span)
     }
 
-    fn try_resolve_trait_method_for_trait(
+    /// The member name and declared signature of the trait method stored at
+    /// `canonical`. The name is the member segment of its `Trait.method` key;
+    /// the signature is read off the trait declaration at the trait's home.
+    fn trait_method_member(
         &self,
-        state: &mut CheckState,
-        callee_name: &Symbol,
-        arg_types: &[Type],
-        span: Span,
-        trait_name: &TraitName,
-        trait_defining_module: &ModuleFullPath,
-    ) -> Result<Option<PendingDispatch>, CranelispError> {
-        // Use hkt_param_index for dispatch argument selection (defaults to 0)
-        let method_sig = self
-            .probe_module_entry_owned(trait_defining_module, trait_name.as_ref())
+        canonical: &FQSymbol,
+        record: &TraitMethodRecord,
+    ) -> (Symbol, Option<TraitMethodSig>) {
+        let trait_name = &record.trait_name.name;
+        let member_key = canonical.symbol.as_ref();
+        let member = Symbol::from(
+            member_key
+                .strip_prefix(trait_name.as_ref())
+                .and_then(|member| member.strip_prefix('.'))
+                .unwrap_or(member_key),
+        );
+        let sig = self
+            .probe_module_entry_owned(&record.trait_name.module, trait_name.as_ref())
             .and_then(|binding| match binding.declaration {
-                Decl::Trait(record) => record
+                Decl::Trait(trait_record) => trait_record
                     .info
                     .methods
                     .into_iter()
-                    .find(|method| method.name == *callee_name),
+                    .find(|method| method.name == member),
                 _ => None,
             });
+        (member, sig)
+    }
+
+    /// Dispatch the trait-method declaration stored at `canonical`. The method
+    /// name is the member segment of its `Trait.method` key, so the impl lookup
+    /// is rooted at the trait's home named by `record`, never re-resolved.
+    fn try_resolve_trait_method_decl(
+        &self,
+        state: &mut CheckState,
+        canonical: &FQSymbol,
+        record: &TraitMethodRecord,
+        arg_types: &[Type],
+        span: Span,
+    ) -> Result<Option<PendingDispatch>, CranelispError> {
+        let trait_name = &record.trait_name.name;
+        let trait_defining_module = &record.trait_name.module;
+        let (callee_name, method_sig) = self.trait_method_member(canonical, record);
+        let callee_name = &callee_name;
+        // Use hkt_param_index for dispatch argument selection (defaults to 0)
         let param_idx = method_sig
             .as_ref()
             .and_then(|method| method.hkt_param_index)
@@ -116,10 +124,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // method's signature actually puts `Self` in return position —
             // otherwise return-type dispatch would be unsound.
             None => {
-                let self_in_return = method_sig
-                    .as_ref()
-                    .and_then(method_result_constraint)
-                    .is_some_and(type_expr_references_self);
+                let self_in_return = method_sig.as_ref().is_some_and(returns_self);
                 let Some(recorded) = state.expr_types.get(&span) else {
                     return Ok(None);
                 };
@@ -352,6 +357,12 @@ pub(super) fn type_expr_references_self(texpr: &cranelisp_types::TypeExpr) -> bo
     }
 }
 
+/// Whether a trait method's declared result references `Self`, making a call
+/// with no dispatch argument return-type-polymorphic.
+fn returns_self(method: &TraitMethodSig) -> bool {
+    method_result_constraint(method).is_some_and(type_expr_references_self)
+}
+
 // ---------------------------------------------------------------------------
 // HKT Method Resolution Helpers (on TypeChecker)
 // ---------------------------------------------------------------------------
@@ -400,13 +411,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// here, defer". This is what lets the call-context type (`(add-i64 (z) 5)`
     /// fixing `(z)` to `Int`) select the concrete impl when there is no argument
     /// to dispatch on.
+    ///
+    /// `selected` is the canonical declaration the callee resolved to, so every
+    /// spelling of the method (`z`, `Zero.z`, `m/z`) reads the same declaration
+    /// (spec §8.6.5).
     pub(crate) fn method_return_dispatch_type(
         &self,
         state: &CheckState,
-        method_name: &Symbol,
+        selected: &FQSymbol,
         span: Span,
     ) -> Option<Type> {
-        if !self.method_self_in_return(state, method_name.as_ref()) {
+        if !self.method_self_in_return(selected) {
             return None;
         }
         let recorded = state.expr_types.get(&span)?;
@@ -417,16 +432,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Some(resolved)
     }
 
-    /// Whether the trait method `method_name` declares `Self` in its return
-    /// position. Reads `ret_type`'s `Self` reference off the first visible
-    /// `TraitDecl` declaring `method_name`, via the shared bulk trait-decl scan
-    /// ([`Self::find_trait_method_decl`]). "Method not found in any visible
-    /// trait decl" defaults to `false`.
-    pub(crate) fn method_self_in_return(&self, state: &CheckState, method_name: &str) -> bool {
-        self.find_trait_method_decl(state, method_name, |m| {
-            method_result_constraint(m).is_some_and(type_expr_references_self)
-        })
-        .unwrap_or(false)
+    /// Whether the trait-method declaration stored at `selected` has `Self` in
+    /// its return position. Any other declaration answers `false`.
+    pub(crate) fn method_self_in_return(&self, selected: &FQSymbol) -> bool {
+        self.probe_module_entry_owned(&selected.module, selected.symbol.as_ref())
+            .and_then(|binding| match binding.declaration {
+                Decl::TraitMethod(record) => self.trait_method_member(selected, &record).1,
+                _ => None,
+            })
+            .is_some_and(|method| returns_self(&method))
     }
 
     /// Walk trait declarations visible from `state.current_module` to find a
@@ -464,9 +478,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Returns `None` when no visible trait decl declares `method_name`. The
     /// caller decides the not-found default — `Self::find_hkt_param_index_in_registry`
     /// reads an `Option<usize>` field (so it sees `Option<Option<usize>>` and
-    /// distinguishes absent from field-`None`); `Self::method_self_in_return`
-    /// reads a `bool` and defaults not-found to `false` (`design/typecheck/traits.md` §1.6). The single
-    /// I-1 public-head filter lives here (one chokepoint, Principle 7).
+    /// distinguishes absent from field-`None`; `design/typecheck/traits.md` §1.6).
+    /// The single I-1 public-head filter lives here (one chokepoint, Principle 7).
     fn find_trait_method_decl<R>(
         &self,
         state: &CheckState,
@@ -500,10 +513,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `trait_origin` HOME, invisible to the current-module + prelude scan when
         // only the method (not its trait) is imported. Root the decl scan at that
         // home too (P24 — reaching the method reaches its trait's home), so a
-        // nullary return-type-dispatch method imported method-only still finds its
-        // `Self`-in-return decl and dispatches (else `method_self_in_return`
-        // defaults `false`, the call defers unresolved, and codegen leaks
-        // `undefined function` — the §7.11.2(e) accept-side leak).
+        // method imported method-only still finds its declaring trait's decl.
         let (tn, home) = self.method_to_trait_with_state(state, &Symbol::from(method_name))?;
         if home != state.current_module {
             // Tighten to the method's OWN trait `tn` (Suggestion 6): read the

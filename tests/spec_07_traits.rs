@@ -262,7 +262,7 @@ fn qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches() {
 // spec: spec/07-traits.md §7.3; spec/08-modules.md §8.1 — an impl is for one
 // type, whose identity includes its module: `m`'s impl for `m/U` does not make
 // `main`'s own `U` implement the trait
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home found=S122 owner=/dev fixed=S122
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::has_impl_in_home found=S122 owner=/dev fixed=S122/0272a5d9
 // The locus was deleted by the fix. Impl existence is now one keyed read,
 // `checker.rs::impl_shell` over `traits/monomorphise.rs::receiver_identity`
 // (design/typecheck/typecheck.md §9.1.1).
@@ -2757,4 +2757,92 @@ fn trait_head_qualified_convar_rejected_binder_neg() {
         "the qualified con_var head MUST NOT silently bind a trait; got:\n{}",
         out.stdout
     );
+}
+
+// =============================================================================
+// §7.4.2a — `Trait.method` qualification in call position
+// =============================================================================
+
+const HASW_FOR_BOX: &str = "(deftype Box [:primitives/Int v])\n\
+                            (deftrait HasW (w [x] primitives/Int))\n\
+                            (impl HasW Box (defn w [x] 99))\n";
+
+// spec: spec/07-traits.md §7.4.2a — `Trait.method` names the method declaration
+// and a call through it dispatches on its argument like the bare call. RED before
+// the S122 fix (ACT-0996): the call failed codegen with an entry miss on the
+// doubled target `user/HasW.HasW.w$user/Box`; the prelude's `(Num.+ 1 2)` and a
+// `--run` `main` failed the same way. Control: trait_method_bare_call_and_qualified_value_dispatch.
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs found=S122 owner=/dev fixed=S122
+// The qualified spelling resolved as a value, but `try_resolve_trait_method`
+// mangled the written `HasW.w` passed by call-position inference as the method
+// name.
+#[test]
+fn trait_qualified_method_call_dispatches() {
+    repl_prims(&format!("{HASW_FOR_BOX}(HasW.w (Box 5))\n"))
+        .assert_stdout_does_not_contain("Error")
+        .assert_stdout_contains(":primitives/Int 99");
+}
+
+// spec: spec/07-traits.md §7.4.2a — control for the qualified-call cell: the bare
+// call and the qualified name used as a value reach the same impl.
+#[test]
+fn trait_method_bare_call_and_qualified_value_dispatch() {
+    let out = repl_prims(&format!(
+        "{HASW_FOR_BOX}(w (Box 5))\n(let [f HasW.w] (f (Box 5)))\n"
+    ))
+    .assert_stdout_does_not_contain("Error");
+    assert_eq!(
+        out.stdout.matches(":primitives/Int 99").count(),
+        2,
+        "both the bare call and the qualified value MUST dispatch to the impl; \
+         stdout:\n{}",
+        out.stdout
+    );
+}
+
+const ZERO_FOR_INT_AND_FLOAT: &str = "(deftrait Zero (z [] self))\n\
+                                      (impl Zero Int (defn z [] 0))\n\
+                                      (impl Zero Float (defn z [] 0.0))\n";
+
+// spec: spec/07-traits.md §7.4.2a; spec/03-types.md §3.3.3 MUST (e) — row 16:
+// an unpinned return-type-polymorphic call is the §3.11 ambiguity error, and a
+// value-position constraint does not pin it. spec/08-modules.md §8.6.5 rule 1:
+// qualification selects the declaration without changing its type, so
+// `(Zero.z)` and `:Zero (Zero.z)` are rejected exactly as their bare twins are.
+// Bare twins run first in the same session as the fixture's self-check.
+// Control: trait_qualified_nullary_return_dispatch_pinned_dispatches.
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/finalize/ambiguity.rs found=S122 owner=/dev fixed=S122
+// ACT-0999 (fixed): the qualified spellings reached codegen and failed with
+// "`__expr` entry has no GOT slot" instead of the §3.11 error.
+#[test]
+fn trait_qualified_nullary_return_dispatch_unpinned_is_ambiguous_neg() {
+    let out = repl_prims(&format!(
+        "{ZERO_FOR_INT_AND_FLOAT}(z)\n:Zero (z)\n(Zero.z)\n:Zero (Zero.z)\n"
+    ))
+    .assert_stdout_contains("the return-type-polymorphic call to `z` selects no impl")
+    .assert_stdout_does_not_contain("codegen error")
+    .assert_stdout_does_not_contain(":primitives/");
+    assert_eq!(
+        out.stdout.matches("ambiguous type").count(),
+        4,
+        "the bare and qualified unpinned calls, with and without a `:Zero` \
+         constraint, MUST each be the §3.11 ambiguity error; stdout:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/07-traits.md §7.4.2a; spec/03-types.md §3.3.3 MUST (d) — control
+// for the qualified unpinned cell: an annotation or a consuming context pins
+// the qualified nullary call and selects the matching impl.
+#[test]
+fn trait_qualified_nullary_return_dispatch_pinned_dispatches() {
+    repl_prims(&format!(
+        "{ZERO_FOR_INT_AND_FLOAT}:Int (Zero.z)\n(add-i64 (Zero.z) 5)\n:Float (Zero.z)\n"
+    ))
+    .assert_stdout_does_not_contain("Error")
+    .assert_stdout_contains_all(&[
+        ":primitives/Int 0",
+        ":primitives/Int 5",
+        ":primitives/Float 0",
+    ]);
 }

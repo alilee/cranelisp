@@ -3471,3 +3471,252 @@ fn launch_continue_non_io_launched_is_type_error() {
         "a launched arm that is not an `IO a` effect must be a type error"
     );
 }
+
+// spec: spec/08-modules.md §8.5.2 — a dotted constructor PATTERN under an
+// ambiguous parent spelling is rejected like value position, and §8.6.5 lists
+// the surviving canonical parents (ACT-1001; spec §6.2.1 mirrors value
+// position).
+#[test]
+fn dotted_pattern_under_ambiguous_type_parent_is_rejected_listing_parents() {
+    let mut tc = TestFixture::with_content(crate::builtins::FixtureBuilder::new());
+    let ctor = |name: &str| ConstructorDef {
+        name: Symbol::from(name),
+        docstring: None,
+        fields: vec![],
+        span: Span::SYNTHETIC,
+    };
+    for home in [crate::checker::PRELUDE_MODULE, "dot_home"] {
+        tc.set_current_module(ModuleFullPath::from(home));
+        tc.register_type_def_self(
+            &TypeName::from("DotBox"),
+            &None,
+            &[],
+            &[ctor("DotC"), ctor("DotD")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    }
+    let user = ModuleFullPath::from("dot_user");
+    tc.set_current_module(user.clone());
+    tc.prelude_fallback.insert(user, true);
+    tc.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("DotBox"),
+            FQSymbol {
+                module: ModuleFullPath::from("dot_home"),
+                symbol: Symbol::from("DotBox"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+
+    // (match dot_home/DotBox.DotC [DotBox.DotC 1 _ 0])
+    let arm = |pattern: Pattern, value: i64, at: u32| MatchArm {
+        pattern,
+        body: Expr::IntLit {
+            value,
+            span: span(at + 12, at + 13),
+            inferred_type: None,
+        },
+        span: span(at, at + 13),
+    };
+    let mut expr = Expr::Match {
+        scrutinee: Box::new(Expr::var(Symbol::from("dot_home/DotBox.DotC"), span(7, 27))),
+        arms: vec![
+            arm(
+                Pattern::Constructor {
+                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("DotBox.DotC")),
+                    bindings: vec![],
+                    span: span(29, 40),
+                },
+                1,
+                29,
+            ),
+            arm(Pattern::Wildcard { span: span(43, 44) }, 0, 43),
+        ],
+        span: span(0, 60),
+        compiler_generated: false,
+        inferred_type: None,
+    };
+    let error = tc
+        .infer_expr_for_test(&mut expr)
+        .expect_err("pattern `DotBox.DotC` under an ambiguous parent must be rejected");
+    let message = format!("{error}");
+    assert!(
+        message.contains("prelude/DotBox") && message.contains("dot_home/DotBox"),
+        "the rejection must list both canonical parents, got: {message}"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.2, §8.6.5 rule 2 — the pattern head shares the
+// dotted parent filter: `Qtok.Qa` resolves at the one type parent although
+// another type's constructor shares the spelling `Qtok`.
+#[test]
+fn dotted_pattern_head_under_type_parent_contested_by_constructor_resolves_at_core() {
+    let mut tc = tc();
+    crate::program::test_support::check_src(
+        &mut tc,
+        "(deftype Qtok (Qa [:Int n]) Qb) (deftype Qwrap (Qtok [:Int x]))",
+    );
+    let mut candidates: Vec<String> = tc
+        .env()
+        .scope_resolve_candidates(&tc.state, "Qtok", Span::SYNTHETIC)
+        .expect("`Qtok` has candidates")
+        .into_iter()
+        .map(|candidate| candidate.canonical.to_string())
+        .collect();
+    candidates.sort();
+    assert_eq!(
+        candidates,
+        ["test/Qtok", "test/Qwrap.Qtok"],
+        "control: the type and the sum constructor share the bare spelling"
+    );
+    let (entry, gap) = tc
+        .env()
+        .resolve_constructor_entry(&tc.state, "Qtok.Qa", Span::SYNTHETIC)
+        .expect("`Qtok` has one type parent once non-parent roles are filtered");
+    assert!(gap.is_none());
+    let entry = entry.expect("`Qtok.Qa` names the type's constructor");
+    match entry.callable().map(|callable| &callable.origin) {
+        Some(CallableOrigin::Ctor { type_name, tag, .. }) => {
+            assert_eq!(type_name.to_string(), "test/Qtok");
+            assert_eq!(*tag, 0);
+        }
+        other => panic!("`Qtok.Qa` must be the `test/Qtok` constructor, got {other:?}"),
+    }
+}
+
+// spec: spec/08-modules.md §8.5.2, §8.6.5 rule 2 — pattern position shares the
+// dotted parent filter: a sum type whose spelling another type's constructor
+// shares is still the one parent of `Qtok.Qa`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122
+#[test]
+fn dotted_pattern_under_type_parent_contested_by_constructor_resolves() {
+    let mut tc = tc();
+    crate::program::test_support::check_src(
+        &mut tc,
+        "(deftype Qtok (Qa [:Int n]) Qb) (deftype Qwrap (Qtok [:Int x]))",
+    );
+    let mut candidates: Vec<String> = tc
+        .env()
+        .scope_resolve_candidates(&tc.state, "Qtok", Span::SYNTHETIC)
+        .expect("`Qtok` has candidates")
+        .into_iter()
+        .map(|candidate| candidate.canonical.to_string())
+        .collect();
+    candidates.sort();
+    assert_eq!(
+        candidates,
+        ["test/Qtok", "test/Qwrap.Qtok"],
+        "control: the type and the sum constructor share the bare spelling"
+    );
+
+    // (match Qb [(Qtok.Qa n) n _ 0])
+    let mut expr = Expr::Match {
+        scrutinee: Box::new(Expr::var(Symbol::from("Qb"), span(7, 9))),
+        arms: vec![
+            MatchArm {
+                pattern: Pattern::Constructor {
+                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("Qtok.Qa")),
+                    bindings: vec![Symbol::from("n")],
+                    span: span(11, 22),
+                },
+                body: Expr::var(Symbol::from("n"), span(23, 24)),
+                span: span(11, 24),
+            },
+            MatchArm {
+                pattern: Pattern::Wildcard { span: span(25, 26) },
+                body: Expr::IntLit {
+                    value: 0,
+                    span: span(27, 28),
+                    inferred_type: None,
+                },
+                span: span(25, 28),
+            },
+        ],
+        span: span(0, 30),
+        compiler_generated: false,
+        inferred_type: None,
+    };
+    let ty = tc
+        .infer_expr_for_test(&mut expr)
+        .expect("pattern `Qtok.Qa` names the type's constructor");
+    assert_eq!(ty, Type::Int);
+}
+
+/// Infer `(match Qb [pattern body …])` in the world where the type `Qtok`
+/// shares its spelling with the constructor `Qwrap.Qtok`. Each arm is
+/// `(constructor head, bindings)`; its body is its first binding, or `0`. A
+/// rejection is returned as its rendered message.
+fn infer_match_on_contested_qtok(arms: &[(&str, &[&str])]) -> Result<Type, String> {
+    let mut tc = tc();
+    crate::program::test_support::check_src(
+        &mut tc,
+        "(deftype Qtok (Qa [:Int n]) Qb) (deftype Qwrap (Qtok [:Int x]))",
+    );
+    let arms = arms
+        .iter()
+        .enumerate()
+        .map(|(i, (head, bindings))| {
+            let at = 20 + 20 * i as u32;
+            let body = match bindings.first() {
+                Some(binding) => Expr::var(Symbol::from(*binding), span(at + 15, at + 16)),
+                None => Expr::IntLit {
+                    value: 0,
+                    span: span(at + 15, at + 16),
+                    inferred_type: None,
+                },
+            };
+            MatchArm {
+                pattern: Pattern::Constructor {
+                    name: cranelisp_types::SymbolRef::new(None, Symbol::from(*head)),
+                    bindings: bindings.iter().map(|b| Symbol::from(*b)).collect(),
+                    span: span(at, at + 12),
+                },
+                body,
+                span: span(at, at + 16),
+            }
+        })
+        .collect();
+    let mut expr = Expr::Match {
+        scrutinee: Box::new(Expr::var(Symbol::from("Qb"), span(7, 9))),
+        arms,
+        span: span(0, 200),
+        compiler_generated: false,
+        inferred_type: None,
+    };
+    tc.infer_expr_for_test(&mut expr)
+        .map_err(|error| error.to_string())
+}
+
+// spec: spec/08-modules.md §8.6.4 — the bare constructor spelling `Qa` names
+// its type's constructor although another type's constructor shares the
+// type's spelling `Qtok`.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122
+#[test]
+fn bare_pattern_under_type_contested_by_constructor_resolves() {
+    let ty = infer_match_on_contested_qtok(&[("Qa", &["n"]), ("Qb", &[])])
+        .expect("pattern `(Qa n)` names `Qtok`'s constructor");
+    assert_eq!(ty, Type::Int);
+}
+
+// spec: spec/06-pattern-matching.md §6.5.1; spec/08-modules.md §8.5.2, §8.6.4
+// — a wildcard-free match covering every constructor of the
+// contested type is exhaustive, and one that omits `Qb` is rejected as
+// non-exhaustive rather than as an unknown type.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module found=S122 owner=/dev fixed=S122
+#[test]
+fn exhaustiveness_under_type_contested_by_constructor_reads_the_type() {
+    let ty = infer_match_on_contested_qtok(&[("Qtok.Qa", &["n"]), ("Qtok.Qb", &[])])
+        .expect("`Qtok.Qa` and `Qtok.Qb` cover `Qtok`");
+    assert_eq!(ty, Type::Int);
+
+    let message = infer_match_on_contested_qtok(&[("Qtok.Qa", &["n"])])
+        .expect_err("a match without `Qb` is not exhaustive");
+    assert!(
+        message.contains("non-exhaustive match on")
+            && message.ends_with("missing constructor(s) Qb"),
+        "the rejection must name only the missing `Qb`, got: {message}"
+    );
+}

@@ -730,9 +730,10 @@ fn persist_bug_macro_usage_in_defn_survives_session_restart() {
 //   cache-restored regular `UserFn` with NO REPL introspection record was
 //   silently dropped from the regenerated backing `user.cl` when the user
 //   edited a *different* symbol in the same module at the REPL. The fix is a
-//   lazy re-read + re-parse of the backing `.cl` in
-//   `src/save.rs::rehydrate_userfn_introspection_from_source`, driven from
-//   `session_v4::regenerate_backing_file`.
+//   lazy re-read + re-parse of the backing `.cl`, driven from
+//   `session_v4::regenerate_backing_file`; S122 generalised it from
+//   `rehydrate_userfn_introspection_from_source` to every definition kind as
+//   `src/save.rs::rehydrate_introspection_from_source`.
 //
 //   This e2e crosses cache-hit + REPL-edit + `.cl`-regen — the seam the
 //   in-crate unit test (`src/save.rs::tests::
@@ -1680,4 +1681,1128 @@ fn persist_startup_failed_source_survives_reset_then_other_definition() {
         "regeneration after /reset MUST retain the unrepaired failed source; \
          user.cl:\n{saved}"
     );
+}
+
+// =============================================================================
+// §18.8 — a successful replacement is what the backing file persists
+// =============================================================================
+
+/// Define `k` returning 1, replace it with a same-typed `k` returning 100, and
+/// call it from a new caller; then restart the REPL and run a no-cache batch
+/// program over the saved module. `define` renders one `k` whose body yields
+/// the given literal. Every leg observes 100 when the replacement persisted and
+/// 1 when the backing file kept the first generation.
+fn assert_replacement_persists_through_restart(define: fn(i64) -> String) {
+    let first = Cranelisp::new()
+        .repl()
+        .stdin(&format!(
+            "(import [primitives [*]])\n{}\n{}\n(defn new-caller [] (k))\n(new-caller)\n/quit\n",
+            define(1),
+            define(100)
+        ))
+        .output()
+        .assert_ok();
+    assert!(
+        first.stdout.contains(":primitives/Int 100") && !first.stdout.contains("Error"),
+        "precondition: the live replacement MUST be admitted and used by the new \
+         caller; stdout:\n{}",
+        first.stdout
+    );
+    let saved = first.read_tmp("user.cl");
+    let k_lines: Vec<&str> = saved
+        .lines()
+        .filter(|l| l.starts_with("(defmacro k ") || l.starts_with("(defn k "))
+        .collect();
+    assert!(
+        k_lines.len() == 1 && k_lines[0].contains("100"),
+        "the backing file MUST hold exactly the latest successful `k` (§18.8, \
+         §15.6); user.cl:\n{saved}"
+    );
+
+    let restarted = first
+        .run_again()
+        .repl()
+        .stdin("(k)\n(new-caller)\n/quit\n")
+        .output()
+        .assert_ok();
+    assert_eq!(
+        restarted.stdout.matches(":primitives/Int 100").count(),
+        2,
+        "restart MUST compile the saved latest `k`; stdout:\n{}",
+        restarted.stdout
+    );
+
+    restarted
+        .run_again()
+        .file(
+            "main.cl",
+            "(import [primitives [*]])\n(import [user [k]])\n\
+             (defn main [] (Pure (add-i64 7 (k))))\n",
+        )
+        .run("main.cl")
+        .cli_flag("--no-cache")
+        .output()
+        .assert_exit(107);
+}
+
+// spec: repl/spec/18-redefinition.md §18.8 — the backing file holds the latest
+// successful source of a replaced macro, so restart expands future invocations
+// with it (§18.4). RED when authored (S122, ACT-0970): the file keeps the first
+// body `(quasiquote 1)`; restart yields 1 and the batch program exits 8, not
+// 107. Control: persist_function_replacement_persists_through_restart.
+// defect: class=partial-record-update locus=src/process_form/form_dispatch.rs::record_macro_introspection found=S122 owner=/dev fixed=S122
+// The macro writer set the introspection `sexp` only when absent, so after the
+// replacement `/source k` showed the new text while `/sexp k`, which save
+// emits, still showed the first body. The writer now replaces the record.
+#[test]
+fn persist_macro_replacement_persists_through_restart() {
+    assert_replacement_persists_through_restart(|n| format!("(defmacro k [] `{n})"));
+}
+
+// spec: repl/spec/18-redefinition.md §18.8 — control for the macro cell: the
+// same session with a same-typed function replacement.
+#[test]
+fn persist_function_replacement_persists_through_restart() {
+    assert_replacement_persists_through_restart(|n| format!("(defn k [] {n})"));
+}
+
+// =============================================================================
+// §15.4 — cache-restored and file-loaded declarations survive regeneration
+// =============================================================================
+
+const DECLS: [&str; 3] = [
+    "(deftype Box [:primitives/Int v])",
+    "(deftrait Weigh (weigh [x] primitives/Int))",
+    "(impl Weigh Box (defn weigh [x] (add-i64 (Box.v x) 1)))",
+];
+
+// spec: repl/spec/15-session-persistence.md §15.4 — round-trip correctness: a
+// regeneration after a warm-cache restart MUST keep the type, trait and impl
+// restored from cache, so a cold restart still has them. RED when authored
+// (S122, ACT-0980): session 2's regeneration writes only the import and the new
+// function, and the cold restart reports `undefined variable: weigh`. Control
+// differing only in declaration kind:
+// persist_bug0220_cache_restored_userfns_survive_repl_edit_regen.
+// defect: class=enumeration-miss locus=src/save.rs::rehydrate_userfn_introspection_from_source found=S122 owner=/dev fixed=S122
+// Save renders these kinds only from introspection, which cache restore left
+// empty and the rehydrator refilled only for plain callables. That seam is
+// gone; read `src/save.rs::rehydrate_introspection_from_source`, which covers
+// every kind, and `generate_module_source`, which now refuses rather than
+// drops an unrendered entry.
+#[test]
+fn persist_cache_restored_declarations_survive_repl_edit_regen() {
+    let first = Cranelisp::new()
+        .repl()
+        .stdin(&format!(
+            "(import [primitives [*]])\n{}\n(weigh (Box 41))\n/quit\n",
+            DECLS.join("\n")
+        ))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 42");
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        DECLS.iter().all(|d| saved.contains(d)),
+        "precondition: session 1 MUST persist every declaration; user.cl:\n{saved}"
+    );
+    assert!(
+        first.tmp_exists(".cranelisp-cache"),
+        "precondition: session 1 MUST populate the cache"
+    );
+
+    let second = first
+        .run_again()
+        .repl()
+        .stdin("(defn added [] 3)\n(added)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3");
+    let regenerated = second.read_tmp("user.cl");
+    let missing: Vec<&str> = DECLS
+        .iter()
+        .copied()
+        .filter(|d| !regenerated.contains(d))
+        .collect();
+    assert!(
+        missing.is_empty() && regenerated.contains("(defn added [] 3)"),
+        "regeneration after a warm restart MUST keep the cache-restored \
+         declarations; missing {missing:?}; user.cl:\n{regenerated}"
+    );
+
+    // A cold restart makes the backing file the only authority.
+    std::fs::remove_dir_all(second.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    second
+        .run_again()
+        .repl()
+        .stdin("(weigh (Box 41))\n(Box.v (Box 5))\n(added)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_does_not_contain("Error")
+        .assert_stdout_contains_all(&[
+            ":primitives/Int 42",
+            ":primitives/Int 5",
+            ":primitives/Int 3",
+        ]);
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — round-trip correctness: a
+// regeneration after an uncached load of the backing file MUST keep the type,
+// trait and impl declarations that file authored, so a cold restart still has
+// them. Control differing only in declaration kind: `keep`, a function loaded
+// from the same file. RED before the fix (S122, PC-1): the regenerated file
+// held `keep` and `added` but none of the three declarations.
+// defect: class=enumeration-miss locus=src/save.rs::rehydrate_userfn_introspection_from_source found=S122 owner=/dev fixed=S122
+// A fresh load wrote no declaration record, and the rehydrator refilled only
+// plain callables. That seam is gone; read
+// `src/save.rs::rehydrate_introspection_from_source`, which covers every kind.
+#[test]
+fn persist_file_loaded_declarations_survive_repl_edit_regen() {
+    const KEEP: &str = "(defn keep [] 7)";
+    const ADDED: &str = "(defn added [] 3)";
+    // A fresh TempDir holds no cache, so session 1 loads user.cl from source.
+    let first = Cranelisp::new()
+        .user(&format!(
+            "(import [primitives [*]])\n{}\n{KEEP}\n",
+            DECLS.join("\n")
+        ))
+        .repl()
+        .stdin(&format!("(weigh (Box 41))\n{ADDED}\n/quit\n"))
+        .output()
+        .assert_ok();
+    assert!(
+        first.stdout.contains(":primitives/Int 42") && !first.stdout.contains("Error"),
+        "precondition: the uncached load MUST make the declarations usable; \
+         stdout:\n{}\nstderr:\n{}",
+        first.stdout,
+        first.stderr
+    );
+
+    let regenerated = first.read_tmp("user.cl");
+    let count = |form: &str| regenerated.matches(form).count();
+    assert_eq!(
+        count(ADDED),
+        1,
+        "defining `added` MUST regenerate the backing file; user.cl:\n{regenerated}"
+    );
+    assert_eq!(
+        count(KEEP),
+        1,
+        "control: the file-loaded function MUST survive regeneration; user.cl:\n{regenerated}"
+    );
+    let counts: Vec<(&str, usize)> = DECLS.iter().map(|d| (*d, count(d))).collect();
+    assert!(
+        counts.iter().all(|&(_, n)| n == 1),
+        "regeneration after an uncached load MUST keep each file-loaded \
+         declaration exactly once; counts {counts:?}; user.cl:\n{regenerated}"
+    );
+
+    // A cold restart makes the backing file the only authority.
+    std::fs::remove_dir_all(first.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    let restarted = first
+        .run_again()
+        .repl()
+        .stdin("(weigh (Box 41))\n(Box.v (Box 5))\n(keep)\n(added)\n/quit\n")
+        .output()
+        .assert_ok();
+    assert!(
+        !restarted.stdout.contains("Error") && !restarted.stderr.contains("Error"),
+        "cold restart MUST load the regenerated file cleanly; stdout:\n{}\nstderr:\n{}",
+        restarted.stdout,
+        restarted.stderr
+    );
+    let t = turns(&restarted.stdout);
+    let expected = [
+        ":primitives/Int 42",
+        ":primitives/Int 5",
+        ":primitives/Int 7",
+        ":primitives/Int 3",
+    ];
+    for (i, value) in expected.iter().enumerate() {
+        assert!(
+            t.get(i + 1).is_some_and(|turn| turn.contains(value)),
+            "cold restart turn {} MUST yield {value}; stdout:\n{}",
+            i + 1,
+            restarted.stdout
+        );
+    }
+}
+
+// =============================================================================
+// §15.4 — a `begin` spanning declaration sections is written once
+// =============================================================================
+
+const SHOW_TRAIT: &str = "(deftrait Show (show [self] primitives/Int))";
+/// One authored form whose members land in two regeneration sections: the
+/// type section and the impl section.
+const SPANNING_BEGIN: &str = "(begin (deftype Token MkToken) (impl Show Token (defn show [_] 41)))";
+const G: &str = "(defn g [] 1)";
+
+/// After `session` defined `g`, the backing file MUST hold the spanning
+/// `begin` exactly once, and a cold restart from that file alone MUST still
+/// dispatch `show` and call `g`. The restart discriminates a fix that drops
+/// the form instead of writing it once; a duplicate reloads cleanly, so the
+/// count, not the round trip, discriminates duplication.
+fn assert_spanning_begin_written_once(session: e2e::CrOutput) {
+    let saved = session.read_tmp("user.cl");
+    let count = |form: &str| saved.matches(form).count();
+    assert_eq!(
+        count(G),
+        1,
+        "control: defining `g` MUST regenerate the backing file; user.cl:\n{saved}"
+    );
+    assert_eq!(
+        count(SHOW_TRAIT),
+        1,
+        "control: the single-section trait MUST be written once; user.cl:\n{saved}"
+    );
+    assert_eq!(
+        (count("(begin"), count(SPANNING_BEGIN)),
+        (1, 1),
+        "a `begin` spanning the type and impl sections MUST be written once \
+         (design/int/session-persistence.md §1.4); user.cl:\n{saved}"
+    );
+
+    std::fs::remove_dir_all(session.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    let restarted = session
+        .run_again()
+        .repl()
+        .stdin("(show MkToken)\n(g)\n/quit\n")
+        .output()
+        .assert_ok();
+    assert!(
+        !restarted.stdout.contains("Error") && !restarted.stderr.contains("Error"),
+        "cold restart MUST load the regenerated file cleanly; stdout:\n{}\nstderr:\n{}",
+        restarted.stdout,
+        restarted.stderr
+    );
+    let t = turns(&restarted.stdout);
+    for (i, value) in [":primitives/Int 41", ":primitives/Int 1"]
+        .iter()
+        .enumerate()
+    {
+        assert!(
+            t.get(i + 1).is_some_and(|turn| turn.contains(value)),
+            "cold restart turn {} MUST yield {value}; stdout:\n{}",
+            i + 1,
+            restarted.stdout
+        );
+    }
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — rule 7 authorship fidelity
+// and rule 1 round trip: a REPL-entered `begin` whose members span the type and
+// impl sections is regenerated as the one form the user typed. PC-8, REPL leg.
+// RED before the S122 F2 fix: the file held the `begin` twice; the cold
+// restart still gave 41 and 1.
+// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122
+// The shared-authored-form dedup (design §1.4) was scoped to
+// `generate_fns_and_macros`, so the type and impl sections each rendered the
+// shared `begin`.
+#[test]
+fn persist_repl_begin_spanning_sections_written_once() {
+    let first = Cranelisp::new()
+        .repl()
+        .stdin(&format!("{SHOW_TRAIT}\n{SPANNING_BEGIN}\n{G}\n/quit\n"))
+        .output()
+        .assert_ok();
+    assert!(
+        first.stdout.contains("impl user/Show for user/Token") && !first.stdout.contains("Error"),
+        "precondition: the spanning `begin` MUST be admitted; stdout:\n{}",
+        first.stdout
+    );
+    assert_spanning_begin_written_once(first);
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — rule 6 over rules 7 and 1:
+// the same spanning `begin`, loaded uncached from the backing file rather than
+// entered at the REPL, is regenerated once. PC-8, seeded-file leg. RED before
+// the S122 F2 fix: the file held the `begin` twice; the cold restart still gave
+// 41 and 1.
+// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122
+// As for the REPL leg; `rehydrate_introspection_from_source` records the outer
+// `begin` under each member, which is the shape §1.4 dedups.
+#[test]
+fn persist_file_loaded_begin_spanning_sections_written_once() {
+    // A fresh TempDir holds no cache, so the session loads user.cl from source.
+    let first = Cranelisp::new()
+        .user(&format!("{SHOW_TRAIT}\n\n{SPANNING_BEGIN}\n"))
+        .repl()
+        .stdin(&format!("(show MkToken)\n{G}\n/quit\n"))
+        .output()
+        .assert_ok();
+    assert!(
+        turns(&first.stdout)
+            .get(1)
+            .is_some_and(|t| t.contains(":primitives/Int 41"))
+            && !first.stdout.contains("Error"),
+        "precondition: the uncached load MUST make `show` dispatch; stdout:\n{}\nstderr:\n{}",
+        first.stdout,
+        first.stderr
+    );
+    assert_spanning_begin_written_once(first);
+}
+
+// =============================================================================
+// §15.3, §14.2, §14.8 — an external edit to the backing file is reloaded
+// unless it changes a live type's structure
+// =============================================================================
+
+const T_ONE_FIELD: &str = "(deftype T [:primitives/Int v])";
+const T_TWO_FIELDS: &str = "(deftype T [:primitives/Int v :primitives/Int w])";
+const T_STRING_FIELD: &str = "(deftype T [:primitives/String v])";
+
+/// REPL input that lets the watcher settle, overwrites `file` with the
+/// one-line `source`, and waits for the reload: three turns.
+fn save(file: &str, source: &str) -> String {
+    format!("/sh sleep 0.3\n/sh echo '{source}' > {file}\n/sh sleep 0.5\n")
+}
+
+/// Each `[errors: <file>]` notification in `out`, with the lines after it up
+/// to the next prompt.
+fn error_blocks<'a>(out: &'a e2e::CrOutput, file: &str) -> Vec<&'a str> {
+    let marker = format!("[errors: {file}]");
+    [out.stdout.as_str(), out.stderr.as_str()]
+        .into_iter()
+        .flat_map(|stream| {
+            stream.match_indices(&marker).map(move |(i, _)| {
+                let rest = &stream[i..];
+                rest.find("user>").map_or(rest, |end| &rest[..end])
+            })
+        })
+        .collect()
+}
+
+/// Whether an error block states §14.8's diagnostic: it names the type `ty`
+/// as a whole symbol and says a restart is required. `restart` is matched
+/// case-insensitively; the name case-sensitively, since a one-letter name
+/// also occurs inside ordinary words.
+fn requires_restart_for(block: &str, ty: &str) -> bool {
+    let symbol_char = |c: char| c.is_alphanumeric() || "-_?!*".contains(c);
+    let names_ty = block.match_indices(ty).any(|(i, _)| {
+        !block[..i].chars().next_back().is_some_and(symbol_char)
+            && !block[i + ty.len()..].chars().next().is_some_and(symbol_char)
+    });
+    names_ty && block.to_lowercase().contains("restart")
+}
+
+/// The violated observations of a multi-leg cell, so that one run reports
+/// every failing leg rather than only the first.
+#[derive(Default)]
+struct Legs(Vec<&'static str>);
+
+impl Legs {
+    fn check(&mut self, holds: bool, leg: &'static str) {
+        if !holds {
+            self.0.push(leg);
+        }
+    }
+
+    fn assert_all(self, transcript: &str) {
+        assert!(
+            self.0.is_empty(),
+            "violated:\n- {}\n{transcript}",
+            self.0.join("\n- ")
+        );
+    }
+}
+
+fn transcript(out: &e2e::CrOutput) -> String {
+    format!(
+        "status: {}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    )
+}
+
+/// Load `seed` from `user.cl`, overwrite the file externally with the one-line
+/// `edited` source, then evaluate `probe`. The reload MUST succeed and `probe`
+/// MUST yield `value` from the edited source.
+fn assert_external_edit_reloads(seed: &str, edited: &str, probe: &str, value: &str) {
+    let out = Cranelisp::new()
+        .user(&format!("{seed}\n"))
+        .repl()
+        .stdin(&format!(
+            "/sh sleep 0.3\n/sh echo '{edited}' > user.cl\n/sh sleep 0.5\n{probe}\n/quit\n"
+        ))
+        .output();
+    let all = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.contains("[updated: user.cl]") && !all.contains("[errors:"),
+        "the edited backing file MUST reload without error (§14.2 steps 2–3); got:\n{all}"
+    );
+    assert!(
+        turns(&out.stdout).iter().any(|t| t.contains(value)),
+        "`{probe}` MUST yield {value} from the edited source; got:\n{all}"
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.8 — a reload that changes a live
+// product field's type, keeping the field count, fails: `[errors: user.cl]`
+// names `T` and says a restart is required, not that persisted source be
+// reloaded, and the edited layout is not established. RB-1. RED when authored
+// (S122): the reload is accepted and the probe yields "s".
+#[test]
+fn persist_external_edit_changing_field_type_fails_requiring_restart() {
+    let out = Cranelisp::new()
+        .user(&format!("{T_ONE_FIELD}\n"))
+        .repl()
+        .stdin(&format!(
+            "{}(T.v (T \"s\"))\n/quit\n",
+            save("user.cl", T_STRING_FIELD)
+        ))
+        .output();
+    let blocks = error_blocks(&out, "user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        !out.stdout.contains("[updated: user.cl]"),
+        "the reload fails: no `[updated: user.cl]`",
+    );
+    legs.check(
+        blocks.iter().any(|b| requires_restart_for(b, "T")),
+        "`[errors: user.cl]` names `T` and says a restart is required",
+    );
+    legs.check(
+        !blocks.iter().any(|b| b.contains("reload persisted source")),
+        "the refusal does not offer the reload remedy",
+    );
+    legs.check(
+        !out.stdout.contains(":primitives/String \"s\""),
+        "`(T.v (T \"s\"))` does not yield the edited layout's \"s\"",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/14-file-watching.md §14.8 — the failure stands until a later
+// save reloads successfully (§14.4 item 4): a save structurally identical to
+// the live `T` reloads, evaluation resumes, and a definition turn is accepted
+// and regenerates the file from the saved content. RB-4. RED when authored
+// (S122) at its precondition, the RB-1 failure.
+#[test]
+fn persist_compatible_save_after_structural_reload_failure_releases_the_file() {
+    let edited = format!("{T_STRING_FIELD} (defn g [] 1)");
+    let restored = format!("{T_ONE_FIELD} (defn g [] 5)");
+    // Turns: 1–3 save, 4 (g), 5–7 save, 8 (g), 9 (T.v (T 7)), 10 (defn h [] 2).
+    let out = Cranelisp::new()
+        .user(&format!("{T_ONE_FIELD} (defn g [] 1)\n"))
+        .repl()
+        .stdin(&format!(
+            "{}(g)\n{}(g)\n(T.v (T 7))\n(defn h [] 2)\n/quit\n",
+            save("user.cl", &edited),
+            save("user.cl", &restored)
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let failed_at = out.stdout.find("[errors: user.cl]");
+    let updated_at = out.stdout.rfind("[updated: user.cl]");
+    let mut legs = Legs::default();
+    legs.check(
+        error_blocks(&out, "user.cl")
+            .iter()
+            .any(|b| requires_restart_for(b, "T")),
+        "precondition: the field-type save fails under §14.8",
+    );
+    legs.check(
+        turn(4).contains("Cannot evaluate"),
+        "precondition: evaluation is blocked by the failure",
+    );
+    legs.check(
+        failed_at.zip(updated_at).is_some_and(|(f, u)| f < u),
+        "the compatible save reloads after the failure: `[updated: user.cl]`",
+    );
+    legs.check(
+        turn(8).contains(":primitives/Int 5"),
+        "evaluation resumes with the saved `g`",
+    );
+    legs.check(
+        turn(9).contains(":primitives/Int 7"),
+        "the live `T` reads its field",
+    );
+    legs.check(
+        turn(10).contains("user/h"),
+        "the definition turn is accepted",
+    );
+    let saved = out.read_tmp("user.cl");
+    legs.check(
+        saved.matches(T_ONE_FIELD).count() == 1
+            && saved.matches("(defn g [] 5)").count() == 1
+            && saved.matches("(defn h [] 2)").count() == 1
+            && !saved.contains(T_STRING_FIELD)
+            && !saved.contains("(defn g [] 1)"),
+        "the definition regenerates user.cl from the saved content",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/15-session-persistence.md §15.3 — control named by ACT-0998:
+// the same file with only a function body changed.
+#[test]
+fn persist_external_edit_changing_defn_body_reloads_control() {
+    assert_external_edit_reloads(
+        &format!("{T_ONE_FIELD} (defn g [] 1)"),
+        &format!("{T_ONE_FIELD} (defn g [] 5)"),
+        "(g)",
+        ":primitives/Int 5",
+    );
+}
+
+// =============================================================================
+// §15.6, §18.8 — a rejected redefinition is never written
+// =============================================================================
+
+/// Define `f` and its caller `k`, have `rejected` refused, then define `other`
+/// so the backing file regenerates. The file MUST keep the prior `f`, and a
+/// cold restart from it MUST run `k` against that `f`.
+fn assert_rejected_redefinition_not_written(rejected: &str) {
+    const F: &str = "(defn f [:Int x] (add-i64 x 1))";
+    let first = Cranelisp::new()
+        .repl()
+        .stdin(&format!(
+            "(import [primitives [*]])\n{F}\n(defn k [:Int y] (f y))\n{rejected}\n\
+             (defn other [] 3)\n/quit\n"
+        ))
+        .output()
+        .assert_ok();
+    let t = turns(&first.stdout);
+    assert!(
+        t.get(4).is_some_and(|t| t.contains("Error"))
+            && t.get(5).is_some_and(|t| t.contains("user/other")),
+        "precondition: turn 4 MUST be rejected and turn 5 accepted; stdout:\n{}",
+        first.stdout
+    );
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.matches(F).count() == 1 && !saved.contains(rejected),
+        "regeneration after a rejected redefinition MUST write the prior `f`, \
+         not the rejected form; user.cl:\n{saved}"
+    );
+
+    std::fs::remove_dir_all(first.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    let cold = first
+        .run_again()
+        .repl()
+        .stdin("(k 3)\n(other)\n/quit\n")
+        .output()
+        .assert_ok();
+    assert!(
+        !cold.stdout.contains("[errors:")
+            && cold.stdout.contains(":primitives/Int 4")
+            && cold.stdout.contains(":primitives/Int 3"),
+        "cold restart MUST resume the session's coherent state; stdout:\n{}",
+        cold.stdout
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.8 — a rejected redefinition is never
+// written; repl/spec/15-session-persistence.md §15.6. The redefinition fails
+// typecheck. RED when authored (S122, SL-3): the regeneration triggered by
+// `other` writes the rejected `f`, and the cold restart is blocked by its
+// error. Controls: rejected_change_does_not_write_an_incoherent_backing_file
+// (no later regeneration) and persist_function_replacement_persists_through_restart
+// (an accepted replacement).
+// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev — the pass-2 record writer runs before typecheck and the commit gate, and a rejection does not restore the record
+#[test]
+fn persist_typecheck_rejected_redefinition_not_written_by_later_regeneration() {
+    assert_rejected_redefinition_not_written("(defn f [:Int x] (nope x))");
+}
+
+// spec: repl/spec/18-redefinition.md §18.8 — as the typecheck cell, with the
+// redefinition refused at the commit gate because it changes `f`'s type under
+// the dependent `k`. RED when authored (S122, SL-3), as that cell.
+// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev — the pass-2 record writer runs before typecheck and the commit gate, and a rejection does not restore the record
+#[test]
+fn persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration() {
+    assert_rejected_redefinition_not_written("(defn f [:String s] (str-len s))");
+}
+
+// =============================================================================
+// §15.4 rule 6 — a `/mod` turn persists to a module restored from cache
+// =============================================================================
+
+/// `lib` defines `x-def` and the macro `x` through a top-level macro call.
+const MACRO_LIB: &str = "(defmacro mk [] `(begin (defn x-def [] 1) (defmacro x [] `(x-def))))\n\
+                         (mk)\n(defn base [] 5)\n";
+const IMPORT_LIB: &str = "(import [lib [base]])\n(base)\n";
+const MOD_LIB_TURN: &str = "/mod lib\n(defn later [] 2)\n/mod user\n/quit\n";
+
+/// After `session` defined `later` in `lib`, `lib.cl` MUST hold it beside the
+/// macro call and `base`, and a cold restart from the files MUST run all three.
+fn assert_mod_turn_persisted_to_lib(session: e2e::CrOutput) {
+    let lib = session.read_tmp("lib.cl");
+    let counts: Vec<(&str, usize)> = ["(mk)", "(defn base [] 5)", "(defn later [] 2)"]
+        .iter()
+        .map(|f| (*f, lib.matches(f).count()))
+        .collect();
+    assert!(
+        counts.iter().all(|&(_, n)| n == 1),
+        "the `/mod lib` definition MUST regenerate lib.cl with every form once; \
+         counts {counts:?}; lib.cl:\n{lib}\nstderr:\n{}",
+        session.stderr
+    );
+
+    std::fs::remove_dir_all(session.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    let cold = session
+        .run_again()
+        .repl()
+        .stdin("(lib/later)\n(lib/x-def)\n(base)\n/quit\n")
+        .output()
+        .assert_ok();
+    let t = turns(&cold.stdout);
+    for (i, value) in [
+        ":primitives/Int 2",
+        ":primitives/Int 1",
+        ":primitives/Int 5",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            t.get(i + 1).is_some_and(|turn| turn.contains(value)),
+            "cold restart turn {} MUST yield {value}; stdout:\n{}",
+            i + 1,
+            cold.stdout
+        );
+    }
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 rule 6 — rule 1 holds whether
+// the module was compiled from source or restored from cache;
+// repl/spec/03-slash-commands.md §3.9 names the `/mod M` file-backed dev loop.
+// RED when authored (S122, SL-1): with `lib` restored from cache, the turn warns
+// `no recorded source for `x-def`` and leaves lib.cl without `later`. The lead's
+// entry-module face did not reproduce, including through stdlib `def`. Control:
+// persist_mod_turn_on_fresh_macro_expanded_module_control.
+// defect: class=enumeration-miss locus=src/save.rs::authored_keys found=S122 owner=/dev — rehydration keys no top-level macro call, so definitions a cached module's macro call produced have no record
+#[test]
+fn persist_mod_turn_on_cache_restored_macro_expanded_module() {
+    let first = Cranelisp::new()
+        .repl()
+        .file("lib.cl", MACRO_LIB)
+        .stdin(&format!("{IMPORT_LIB}/quit\n"))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 5");
+    assert!(
+        first.tmp_exists(".cranelisp-cache/lib.meta.json"),
+        "precondition: session 1 MUST cache lib"
+    );
+    let second = first
+        .run_again()
+        .repl()
+        .stdin(MOD_LIB_TURN)
+        .output()
+        .assert_ok();
+    assert_mod_turn_persisted_to_lib(second);
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 rule 6 — control: the same
+// `/mod lib` turn in the session that compiled `lib` from source.
+#[test]
+fn persist_mod_turn_on_fresh_macro_expanded_module_control() {
+    let session = Cranelisp::new()
+        .repl()
+        .file("lib.cl", MACRO_LIB)
+        .stdin(&format!("{IMPORT_LIB}{MOD_LIB_TURN}"))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 5");
+    assert_mod_turn_persisted_to_lib(session);
+}
+
+// =============================================================================
+// §18.5, §15.6 — a live `deftype` layout change is rejected and never written
+// =============================================================================
+
+// spec: repl/spec/18-redefinition.md §18.5 — a live same-name `deftype` that adds
+// a product field is rejected atomically: the prior constructor and accessor
+// stay live and no part of the candidate is published;
+// repl/spec/15-session-persistence.md §15.6 — the rejection does not change the
+// regenerated source, and a cold restart yields the prior type. The same edit
+// arriving by reload also fails, under repl/spec/14-file-watching.md §14.8:
+// persist_structural_reload_failure_keeps_saved_edit_until_restart.
+#[test]
+fn persist_live_deftype_adding_product_field_rejected_and_not_written_neg() {
+    let first = Cranelisp::new()
+        .repl()
+        .stdin(&format!(
+            "{T_ONE_FIELD}\n{T_TWO_FIELDS}\n(T.v (T 7))\n(T.w (T 7 8))\n(defn other [] 3)\n/quit\n"
+        ))
+        .output()
+        .assert_ok();
+    let t = turns(&first.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    assert!(
+        turn(2).contains("Error") && !turn(2).contains("; deftype"),
+        "the field-adding redefinition MUST be rejected (§18.5); stdout:\n{}",
+        first.stdout
+    );
+    assert!(
+        turn(3).contains(":primitives/Int 7"),
+        "the prior constructor and accessor MUST stay live; stdout:\n{}",
+        first.stdout
+    );
+    assert!(
+        turn(4).contains("Error") && !turn(4).contains(":primitives/Int 8"),
+        "no part of the rejected candidate MAY be published; stdout:\n{}",
+        first.stdout
+    );
+    assert!(
+        turn(5).contains("user/other"),
+        "precondition: the later definition MUST be accepted; stdout:\n{}",
+        first.stdout
+    );
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.matches(T_ONE_FIELD).count() == 1
+            && !saved.contains(T_TWO_FIELDS)
+            && saved.contains("(defn other [] 3)"),
+        "regeneration after the rejection MUST write the prior `T` only; user.cl:\n{saved}"
+    );
+
+    std::fs::remove_dir_all(first.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    let cold = first
+        .run_again()
+        .repl()
+        .stdin("(T.v (T 7))\n(other)\n/quit\n")
+        .output()
+        .assert_ok();
+    let t = turns(&cold.stdout);
+    assert!(
+        !cold.stdout.contains("[errors:")
+            && t.get(1).is_some_and(|t| t.contains(":primitives/Int 7"))
+            && t.get(2).is_some_and(|t| t.contains(":primitives/Int 3")),
+        "cold restart MUST yield the prior one-field `T`; stdout:\n{}",
+        cold.stdout
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.5 — a live same-name `deftype` that
+// changes only a field's type is rejected atomically, under the same rule as a
+// reload (§14.8): values built earlier and the prior constructor and accessor
+// keep the `Int` layout, the next definition turn writes the `Int` declaration
+// once, and a cold restart gives 7. RB-6. Its value probe is `(T.v (x))`, where
+// `x` was compiled against the `Int` constructor, so a wrong accept would read
+// the `Int` payload under the `String` layout. RED when authored (S122): the
+// redefinition was accepted, and `(T.v (x))` ended the process with SIGSEGV.
+// defect: class=wrong-accept locus=src/redefine.rs::validate_guarded_redefinition found=S122 owner=/dev fixed=S122
+#[test]
+fn persist_live_deftype_changing_field_type_rejected_and_not_written_neg() {
+    // Turns: 1 T, 2 x, 3 redefinition, 4 (T.v (x)), 5 (T.v (T 7)), 6 other.
+    let first = Cranelisp::new()
+        .repl()
+        .stdin(&format!(
+            "{T_ONE_FIELD}\n(defn x [] (T 7))\n{T_STRING_FIELD}\n(T.v (x))\n(T.v (T 7))\n\
+             (defn other [] 3)\n/quit\n"
+        ))
+        .output();
+    let t = turns(&first.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(3).contains("Error") && !turn(3).contains("; deftype"),
+        "the field-type redefinition is rejected, with no `deftype` echo",
+    );
+    legs.check(
+        turn(4).contains(":primitives/Int 7"),
+        "a value built by the prior constructor still reads 7",
+    );
+    legs.check(
+        turn(5).contains(":primitives/Int 7"),
+        "the prior constructor and accessor stay live",
+    );
+    legs.check(
+        turn(6).contains("user/other"),
+        "precondition: the later definition is accepted",
+    );
+    let saved = first.read_tmp("user.cl");
+    legs.check(
+        saved.matches(T_ONE_FIELD).count() == 1 && !saved.contains(T_STRING_FIELD),
+        "the regeneration writes the prior `Int` declaration once and not the rejected one",
+    );
+    let first_log = format!("{}\nuser.cl:\n{saved}", transcript(&first));
+
+    std::fs::remove_dir_all(first.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    let cold = first
+        .run_again()
+        .repl()
+        .stdin("(T.v (T 7))\n/quit\n")
+        .output();
+    legs.check(
+        !cold.stdout.contains("[errors:")
+            && turns(&cold.stdout)
+                .get(1)
+                .is_some_and(|t| t.contains(":primitives/Int 7")),
+        "a cold restart gives 7 from the one-field `Int` declaration",
+    );
+    legs.assert_all(&format!(
+        "{first_log}\n--- cold restart ---\n{}",
+        transcript(&cold)
+    ));
+}
+
+// =============================================================================
+// §15.3, §15.4, §14.8 — a reloaded declaration edit survives the next
+// regeneration; a structural one is retained until restart
+// =============================================================================
+
+const T_DOC_PRIOR: &str = "(deftype T \"Prior doc.\" [:primitives/Int v])";
+const T_DOC_EDITED: &str = "(deftype T \"Edited doc.\" [:primitives/Int v])";
+
+/// `seed` is the initial `user.cl` (empty for none) and `before` the REPL
+/// turns entered before the edit. `edited` then overwrites `user.cl` on one
+/// line, the reload MUST make `probe` yield `value`, and `(defn h [] 2)`
+/// regenerates the file. That file MUST hold `edited_decl` once and not
+/// `stale_decl`, and a cold restart from it MUST yield `value` and 2.
+fn assert_reloaded_declaration_persists(
+    seed: &str,
+    before: &str,
+    edited: &str,
+    edited_decl: &str,
+    stale_decl: &str,
+    probe: &str,
+    value: &str,
+) {
+    const H: &str = "(defn h [] 2)";
+    let mut session = Cranelisp::new();
+    if !seed.is_empty() {
+        session = session.user(&format!("{seed}\n"));
+    }
+    let first = session
+        .repl()
+        .stdin(&format!(
+            "{before}/sh sleep 0.3\n/sh echo '{edited}' > user.cl\n/sh sleep 0.5\n\
+             {probe}\n{H}\n/quit\n"
+        ))
+        .output();
+    let all = format!("{}{}", first.stdout, first.stderr);
+    assert!(
+        first.stdout.contains("[updated: user.cl]")
+            && !all.contains("[errors:")
+            && turns(&first.stdout).iter().any(|t| t.contains(value)),
+        "precondition: the edit MUST reload and `{probe}` yield {value} (§14.2); got:\n{all}"
+    );
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.matches(edited_decl).count() == 1 && !saved.contains(stale_decl) && saved.contains(H),
+        "the regeneration after the reload MUST write the edited declaration, \
+         not the prior one; user.cl:\n{saved}"
+    );
+
+    std::fs::remove_dir_all(first.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
+    let cold = first
+        .run_again()
+        .repl()
+        .stdin(&format!("{probe}\n(h)\n/quit\n"))
+        .output();
+    let t = turns(&cold.stdout);
+    assert!(
+        !cold.stdout.contains("[errors:")
+            && t.get(1).is_some_and(|t| t.contains(value))
+            && t.get(2).is_some_and(|t| t.contains(":primitives/Int 2")),
+        "cold restart MUST yield the edited declaration; stdout:\n{}\nstderr:\n{}",
+        cold.stdout,
+        cold.stderr
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.8 — a structurally identical
+// redeclaration reloads; repl/spec/18-redefinition.md §18.5 — a docstring is
+// non-structural and updates live documentation;
+// repl/spec/15-session-persistence.md §15.4 rule 1 — the next regeneration
+// writes the edited declaration. RB-2(b), REPL-entered route. `T`'s record
+// holds the REPL text of the prior generation (design/int/session-persistence.md
+// §2.4.4, second limit). This is the safety fence for the S122 P5 correction,
+// transposed from a field-type edit that §14.8 now refuses. That field-type
+// form was RED before the fix (S122, PR-3): the reload succeeded, but defining
+// `h` wrote the old `T` over the edit. This docstring form was not observed RED.
+// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev fixed=S122 — the record writer recorded only functions, so a successful reload left the prior generation's declaration record to be regenerated
+#[test]
+fn persist_reloaded_docstring_edit_of_repl_entered_type_survives_regeneration() {
+    assert_reloaded_declaration_persists(
+        "",
+        &format!("{T_DOC_PRIOR}\n"),
+        T_DOC_EDITED,
+        T_DOC_EDITED,
+        T_DOC_PRIOR,
+        "/doc T",
+        "Edited doc.",
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.8, repl/spec/18-redefinition.md
+// §18.5, repl/spec/15-session-persistence.md §15.4 rule 1 — as the
+// REPL-entered cell, with `T` loaded from the backing file and a definition
+// turn regenerating the file before the edit, so `T`'s record is rehydrated
+// from the prior generation (design/int/session-persistence.md §2.4.4, second
+// limit). RB-2(b), file-loaded route. Transposed as the REPL-entered cell: the
+// field-type form was RED before the fix (S122, PR-3); this docstring form was
+// not observed RED.
+// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev fixed=S122 — the record writer recorded only functions, so a successful reload left the prior generation's declaration record to be regenerated
+#[test]
+fn persist_reloaded_docstring_edit_of_file_loaded_type_survives_regeneration() {
+    assert_reloaded_declaration_persists(
+        T_DOC_PRIOR,
+        "(defn g [] 1)\n",
+        &format!("{T_DOC_EDITED} (defn g [] 1)"),
+        T_DOC_EDITED,
+        T_DOC_PRIOR,
+        "/doc T",
+        "Edited doc.",
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.8 — after a file-loaded `T` gains a
+// field, the reload fails and the saved edit is retained: a definition turn
+// that would regenerate the file is rejected and leaves the session and the
+// file unchanged; evaluation stays blocked (§14.4); a second structurally
+// different save fails again. A restart that keeps the cache compiles the
+// saved source (§15.2) and establishes the two-field `T`; the next definition
+// regenerates the file with it (§15.1). RB-3. RED when authored (S122): the
+// definition turn is accepted and overwrites the saved edit (ACT-0998 p2a).
+#[test]
+fn persist_structural_reload_failure_keeps_saved_edit_until_restart() {
+    let first_save = format!("{T_TWO_FIELDS} (defn g [] 1)");
+    let second_save = format!("{T_TWO_FIELDS} (defn g [] 3)");
+    // Turns: 1 (defn g), 2–4 save, 5 (defn h), 6 /sig h, 7 (g), 8 snapshot of
+    // user.cl after the rejected turn, 9–11 save.
+    let first = Cranelisp::new()
+        .user(&format!("{T_ONE_FIELD}\n"))
+        .repl()
+        .stdin(&format!(
+            "(defn g [] 1)\n{}(defn h [] 2)\n/sig h\n(g)\n/sh cp user.cl after-rejected-turn.txt\n\
+             {}/quit\n",
+            save("user.cl", &first_save),
+            save("user.cl", &second_save)
+        ))
+        .output();
+    let t = turns(&first.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let blocks = error_blocks(&first, "user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        !first.stdout.contains("[updated: user.cl]"),
+        "neither structural save reloads: no `[updated: user.cl]`",
+    );
+    legs.check(
+        blocks.len() == 2 && blocks.iter().all(|b| requires_restart_for(b, "T")),
+        "each structural save fails with the §14.8 diagnostic",
+    );
+    legs.check(
+        !turn(5).contains("user/h"),
+        "the definition turn during the failure is rejected",
+    );
+    legs.check(
+        !turn(6).contains("user/h"),
+        "`/sig h` shows `h` undefined: the rejection left the session unchanged",
+    );
+    legs.check(
+        turn(7).contains("Cannot evaluate") && !turn(7).contains(":primitives/Int"),
+        "evaluation is blocked",
+    );
+    let after_rejected_turn = first.read_tmp("after-rejected-turn.txt");
+    legs.check(
+        after_rejected_turn == format!("{first_save}\n"),
+        "user.cl is byte-identical to the saved edit after the rejected turn",
+    );
+    let saved = first.read_tmp("user.cl");
+    legs.check(
+        saved == format!("{second_save}\n"),
+        "user.cl is byte-identical to the last save after the session ends",
+    );
+    let first_log = format!(
+        "{}\nuser.cl after the rejected turn:\n{after_rejected_turn}\nuser.cl at exit:\n{saved}",
+        transcript(&first)
+    );
+
+    let restarted = first
+        .run_again()
+        .repl()
+        .stdin("(T.w (T 1 2))\n(g)\n(defn h [] 2)\n/sig h\n/quit\n")
+        .output();
+    let t = turns(&restarted.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    legs.check(
+        !format!("{}{}", restarted.stdout, restarted.stderr).contains("[errors:"),
+        "the restart, keeping the cache, loads the saved source without `[errors:`",
+    );
+    legs.check(
+        turn(1).contains(":primitives/Int 2") && turn(2).contains(":primitives/Int 3"),
+        "the restart establishes the two-field `T` and the last saved `g`",
+    );
+    legs.check(
+        turn(3).contains("user/h") && turn(4).contains("user/h"),
+        "after the restart a definition is accepted and `/sig h` shows it",
+    );
+    let regenerated = restarted.read_tmp("user.cl");
+    legs.check(
+        regenerated.matches(T_TWO_FIELDS).count() == 1
+            && regenerated.matches("(defn g [] 3)").count() == 1
+            && regenerated.matches("(defn h [] 2)").count() == 1
+            && !regenerated.contains(T_ONE_FIELD),
+        "the definition regenerates user.cl with the two-field `T`",
+    );
+    legs.assert_all(&format!(
+        "{first_log}\n--- restart ---\n{}\nuser.cl:\n{regenerated}",
+        transcript(&restarted)
+    ));
+}
+
+// =============================================================================
+// §14.8 — a structural change to an imported type fails its reload
+// =============================================================================
+
+// spec: repl/spec/14-file-watching.md §14.8 — swapping the two fields of `T` in
+// `shapes.cl`, which `reader` and the REPL import, is structural, so the reload
+// fails: `[errors: shapes.cl]` names `T` and says a restart is required, the
+// dependent runs neither the old nor the new layout (§14.4 items 2–3), and
+// `/quit` is read. RB-5; QA accepts it after 15 consecutive passes. RED when
+// authored (S122): the reorder reloads and the dependent reads 2. The failure
+// path it requires is the hang shape of
+// tests/repl_watch.rs::watch_type_error_reload_of_imported_module_blocks_without_hanging.
+#[test]
+fn watch_imported_type_field_reorder_fails_requiring_restart() {
+    // Turns: 3 (read-a (T 1 2)), 4–6 save, 7 (read-a (T 1 2)).
+    let out = Cranelisp::new()
+        .file(
+            "shapes.cl",
+            "(deftype T [:primitives/Int a :primitives/Int b])\n",
+        )
+        .file(
+            "reader.cl",
+            "(import [shapes [T]])\n(defn read-a [t] (T.a t))\n",
+        )
+        .repl()
+        .stdin(&format!(
+            "(import [shapes [T]])\n(import [reader [read-a]])\n(read-a (T 1 2))\n\
+             {}(read-a (T 1 2))\n/quit\n",
+            save("shapes.cl", "(deftype T [:primitives/Int b :primitives/Int a])")
+        ))
+        .timeout(std::time::Duration::from_secs(10))
+        .try_output()
+        .unwrap_or_else(|e| panic!("the REPL MUST report the failed reload and read `/quit`; {e}"));
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(3).contains(":primitives/Int 1"),
+        "precondition: `read-a` reads `a` before the edit",
+    );
+    legs.check(
+        out.status.code().is_some(),
+        "the session exits after `/quit` (not by a signal)",
+    );
+    legs.check(
+        !out.stdout.contains("[updated: shapes.cl]"),
+        "the reload fails: no `[updated: shapes.cl]`",
+    );
+    legs.check(
+        error_blocks(&out, "shapes.cl")
+            .iter()
+            .any(|b| requires_restart_for(b, "T")),
+        "`[errors: shapes.cl]` names `T` and says a restart is required",
+    );
+    legs.check(
+        !turn(7).contains(":primitives/Int 1") && !turn(7).contains(":primitives/Int 2"),
+        "the dependent is refused and yields neither 1 nor 2",
+    );
+    legs.assert_all(&transcript(&out));
 }

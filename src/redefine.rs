@@ -41,6 +41,9 @@ use crate::code::{Code, SessionSymbolTable};
 use crate::session_v4::CompilerSession;
 use crate::styled::{Role, StyledDoc, render};
 
+mod type_structure;
+pub(crate) use type_structure::{StructuralTypeChange, structural_type_change};
+
 type SymbolTables = dashmap::DashMap<ModuleFullPath, SessionSymbolTable>;
 
 // ---------------------------------------------------------------------------
@@ -1649,7 +1652,7 @@ fn resolve_recheck_sexps(
                 ) {
                     let table = st.clone();
                     drop(st);
-                    crate::save::rehydrate_userfn_introspection_from_source(
+                    crate::save::rehydrate_introspection_from_source(
                         &table, intro, module, &source,
                     );
                     true

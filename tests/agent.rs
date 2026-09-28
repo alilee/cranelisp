@@ -408,6 +408,8 @@ fn refs_no_arg_usage_neg() {
 
 // spec: repl/spec.md §17.6.2 — `/tests-for <sym>` lists test functions whose
 // body references <sym>, and excludes non-test referers (+neg on the filter).
+// A test function has the §16.1 scheme, so `test-solve` is exactly
+// `(Fn [] (Option String))` while still referencing `solve`.
 #[test]
 fn tests_for_filters_to_test_functions() {
     let out = Cranelisp::new()
@@ -416,10 +418,16 @@ fn tests_for_filters_to_test_functions() {
         .stdin(
             "(defn solve [x] (add-i64 x 1))\n\
              (defn caller [y] (solve y))\n\
-             (defn test-solve [] (solve 1))\n\
+             (defn test-solve [] (if (eq-i64 (solve 1) 2) None (Some \"solve 1 is not 2\")))\n\
              /tests-for solve\n",
         )
         .output();
+    assert!(
+        out.stdout
+            .contains(":(Fn [] (primitives/Option primitives/String)) user/test-solve"),
+        "fixture premise: test-solve must have the exact test scheme, stdout={}",
+        out.stdout
+    );
     assert!(
         out.stdout.contains("tests referencing solve"),
         "stdout={}",

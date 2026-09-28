@@ -263,7 +263,9 @@ the fine-grained forward/back trace; this plan does not duplicate every name.
 ## Active allocation and unresolved evidence
 
 [S122 evidence](s122-evidence-delta.md) owns the current per-stream allocation,
-executing checkpoints, bounded closures and remaining gates. The [active sprint](../../sprints/SPRINT.md)
+executing checkpoints, bounded closures and remaining gates; its
+[acceptance reconciliation](s122-evidence-delta.md#phase-5-acceptance-reconciliation-2026-09-27)
+is the current gate disposition. The [active sprint](../../sprints/SPRINT.md)
 owns sequencing and user decisions. Neither a historical RED nor deletion of
 its old matrix changes current acceptance. Retained [S121 evidence](s121-test-plan.md)
 and [S118 evidence](s118-test-plan.md) supply specific prior witnesses when the

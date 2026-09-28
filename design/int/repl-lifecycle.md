@@ -37,9 +37,14 @@ that save by atomic rename would lose a per-file watch.
   ordered by strongly connected component and then topologically. A dependent
   is a module that imports or re-exports a reached module, or that has its
   prelude fallback on when the prelude is reached.
-- **Reload.** `reload_module` discards the module's typecheck products,
-  re-parses and re-registers it, then waits for in-memory completion.
-  Displaced code enters the retention pool (`session-transaction.md`).
+- **Reload.** `reload_module` replaces the module's typecheck product with the
+  file it re-read, keeping the backing path and recording that text for
+  verbatim slices. It then re-parses and re-registers the module and waits for
+  that module's own outcome (§1.3). Displaced code enters the retention pool
+  (`session-transaction.md`). Regeneration writes to the recorded path
+  (`session-persistence.md` §3.2), so a reload must not drop it.
+- **Other callers.** `/mod` into a cache-installed module uses the same
+  operation (`session-persistence.md` §2.4.5).
 
 ### 1.3 Failed reload
 
@@ -52,10 +57,127 @@ last-known-good restore and no module lock.
   (`15-session-persistence.md` §15.2.3).
 - A later successful reload clears the module's error and failed-form state.
 
+**Outcome.** A reload's outcome, success or failure, is the reloaded module's
+own terminal state, never another module's.
+
+- **Wait.** `reload_module` waits on the reloaded module alone, through the
+  scheduler's existing single-module in-memory wait. It fails with that
+  module's own error when the module stands `Failed`, and succeeds once the
+  module's in-memory publication is complete.
+- **Why not the every-module wait.** That wait returns the first `Failed`
+  module in map order. While another module still stands `Failed` from an
+  earlier plan, it reports that module's error, possibly before this module
+  settles, and turns a successful reload into a failure.
+- **Other failed modules.** A module that still stands `Failed` is not this
+  reload's outcome. It keeps its error-set membership until its own reload,
+  which the plan orders after its dependencies (§1.2).
+- **Ordering.** The wait cannot end before the reloaded module settles. The
+  worker publishes before it notifies in-memory completion, and it records a
+  structural refusal before it reports the module failed (§1.3.1).
+- **Coverage.** Every module the reload registers is a dependency of the
+  reloaded module. The module's body waits at the signature barrier until each
+  such dependency reaches a terminal typecheck pool. A source-compiled
+  dependency notifies in-memory completion before it reaches `TypecheckDone`,
+  so the single-module wait also covers it. Falsifier: a reload that adds an
+  import of an unloaded module returns while that module's in-memory codegen
+  is incomplete.
+  - **Limit: a cache-restored dependency is not covered.** It enters
+    `TypecheckDone` before its object is loaded into memory
+    (`ModuleState::new_cached` in `src/scheduler.rs`). The barrier therefore
+    opens, and the reload can return `Ok`, while that load is still pending.
+    The eval path's per-module dependency wait has the same shape for a
+    cache-restored transitive dependency. Grade: asserted with a named
+    falsifier. The window is observed from source; its consequence, a
+    `null-got-slot` crash, is unobserved. Falsifier: a reload that adds an
+    import of a cache-restored module, then immediately calls that module's
+    function through the reloaded module, crashes or observes an unloaded
+    slot.
+- **Liveness.** The wait ends because every path that would wait on a `Failed`
+  module fails fast
+  ([error cascade §4.1](step9-error-cascade.md#41-cascade-construction)). A
+  stranded reloaded module would hang the reload in every session, not only
+  in some map orders.
+- **Guards.** In `src/session_v4/persistence_tests.rs`,
+  `reload_beside_a_failed_module_succeeds_and_lifts_its_restart_marker`
+  is the deterministic discriminator: a successful reload beside a `Failed`
+  module succeeds and clears its marker.
+  `structural_reload_beside_a_failed_module_reports_its_own_refusal` checks
+  a refusal beside `Failed` modules. It detects the wrong outcome only when
+  map order puts another failed module first. Neither
+  exercises the coverage falsifier.
+
+#### 1.3.1 Restart-required failure
+
+A reload refused because it would change a live type's structure
+(`14-file-watching.md` §14.8; the guard is
+[session transaction §2.6](session-transaction.md#26-type-re-establishment-repl-185-148))
+also retains the module's saved file until the failure ends.
+
+- **Marker.** The session holds a crate-private map from each
+  restart-required module to its refused type. It is session state and is
+  never persisted.
+- **Set.** `reload_module` sets it on its failure branch, when the reloaded
+  module's scheduler refusal record names a type. It adds the module to the
+  error set in the same step. Every reload caller is covered: the watcher,
+  `/mod`'s cache-installed recompile and the superseded T1 residue.
+  - The read is keyed by the reloaded module and follows that module's own
+    `Failed` outcome (§1.3 Outcome), so it cannot precede the worker's record.
+  - The returned error is the module's own refusal, so the notification
+    names the type and the restart remedy (§14.8).
+  - A read or parse failure returns before re-registration and reads nothing.
+- **Stands.** A later failing reload of any cause leaves the marker, as do
+  `/reset` (§2.1) and `/mod`.
+- **Clears.** Only `reload_module`'s success branch clears it, beside the
+  existing error-set and failed-form clears, including while another module
+  stands `Failed` (§1.3 Outcome). Process exit also ends it.
+- **Invariant.** A restart-required module is always in the error set. The
+  set site maintains it, and `/reset` keeps such modules.
+- **Turn admission.** `process_commands` rejects, inside its §14.4 gate, a
+  definition or structural turn whose current module is restart-required.
+  The session and the file are unchanged. The message names the module, the
+  type and the restart remedy.
+  - A turn in a module that is not restart-required keeps the admission
+    rules above, even when another module is restart-required.
+  - This one site covers typed REPL input and the agent's submit, which
+    routes through it (`submit_clean_form`).
+  - The agent's document edits bypass it, so `run_document_edit` makes the
+    same refusal before asking for consent.
+- **Write chokepoint.** `regenerate_backing_file` returns before reading or
+  writing when the current module is restart-required. This covers every
+  regeneration caller, including any that admission does not enumerate:
+  `main.rs`, `agent/pull.rs` and the `redefine.rs` residue.
+- **Why both.** Admission keeps the session unchanged; the chokepoint keeps
+  the file intact whatever the caller.
+- **Scope.** A failure of any other cause sets no marker. What the file must
+  hold then is ACT-0998 face 2
+  (`session-persistence.md` §2.4.4).
+- **Imported modules.** A refusal in a non-entry module that another module
+  imports fails after parsing, inside a worker. Its importer fails through
+  the barrier's fail-fast on an already-failed member
+  ([error cascade §4.1](step9-error-cascade.md#41-cascade-construction)), so
+  the reload plan returns. The watcher prints its notifications only after
+  the whole plan returns, so any wait that never ends withholds the §14.8
+  diagnostic. The end-to-end guard is
+  `tests/repl_persist.rs::watch_imported_type_field_reorder_fails_requiring_restart`.
+  A `/mod` into a failed cache-installed module reaches the same barrier, so
+  the fail-fast covers it by construction. No cell exercises that route.
+- **Guards.** In `tests/repl_persist.rs`:
+  - `persist_external_edit_changing_field_type_fails_requiring_restart`
+    checks the refusal.
+  - `persist_structural_reload_failure_keeps_saved_edit_until_restart`
+    checks the retained file and the restart.
+  - `persist_compatible_save_after_structural_reload_failure_releases_the_file`
+    checks the clear.
+
+  The marker's lifecycle unit is
+  `restart_required_stands_until_a_successful_reload`, in
+  `src/session_v4/persistence_tests.rs`.
+
 ### 1.4 Notification
 
 Each reloaded module prints one dim metadata line: `[updated: <file>]`, or
-`[errors: <file>]` followed by the indented error. `<file>` is the file's bare
+`[errors: <file>]` followed by the reloaded module's own indented error
+(§1.3 Outcome). `<file>` is the file's bare
 name (§7, gap 1).
 
 ## 2. `/reset` Command
@@ -72,7 +194,9 @@ things:
   hashes and drains pending events. Watching resumes at the next
   `sync_watcher`, with hashes re-baselined.
 - **It keeps failed modules.** A module holding unrepaired failed source stays
-  in the error set, because `/reset` is not a repair (§15.2.3).
+  in the error set, because `/reset` is not a repair (§15.2.3). So does a
+  restart-required module (§1.3.1), whose failure stands until a successful
+  reload or restart (§14.8).
 
 Symbol tables, compiled code, macros, the prelude and the disk cache are
 untouched.
@@ -126,7 +250,9 @@ There is no separate cache-writer thread.
 Every dependency, prelude and submodule handler calls `try_cache_hit_load`
 before a fresh build ([cache-hit flow](int.md#71-cache-hit-flow-inside-register_module)).
 The restore recurses through the restored module's dependencies. The CLI
-target itself is always compiled fresh. `/reset` loads nothing (§2).
+target itself is always compiled fresh. `/reset` loads nothing (§2). A
+cache-installed module is recompiled from source before `/mod` makes it
+current (`session-persistence.md` §2.4.5).
 
 ## 5. `--link`
 

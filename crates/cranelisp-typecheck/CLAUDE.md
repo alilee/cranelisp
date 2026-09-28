@@ -83,6 +83,11 @@ Canonical: spec §8.6; [`use-site-candidate-selection.md`](../../design/typechec
   is rejected, shadowed or chosen by declaration order at registration.
 - The raw current-module `probe_module_entry_owned` answers same-module
   identity (idempotent re-registration, REPL redefinition), never scope.
+- A reader holding an `FQTypeName` reads its type with
+  `TypeCheckEnv::type_def_by_identity`. Never pass its halves to a scope
+  lookup such as `lookup_type_def_in_module`: another type's constructor may
+  share the spelling, and the scope resolve then reports it as ambiguous
+  ([typecheck §3.3](../../design/typecheck/typecheck.md#33-cross-module-lookups)).
 - An internal constructor (`IO`'s `Bind`) is rejected by its `internal: true`
   flag on `CallableOrigin::Ctor`, read through the fallback — not by
   visibility. It is Public, so the public-only filter must not hide it.
@@ -103,19 +108,26 @@ and `design/arch/dotted-ctor-canonical-keys.md` (constructors).
 - A product constructor keeps its type-name key and carries the type facet
   on `CallableOrigin::Ctor { type_def: Some(..) }`. Read an entry as a type
   only through `checker::type_def_view_of`. Constructors do not auto-curry.
-- `checker.rs::resolve_dotted_member_entry` is the one member resolver for
-  value and pattern positions; `adt::committed_member_owner` is the one
-  owner recogniser.
+- `checker.rs::dotted_member_identity` is the only resolver of a bare dotted
+  spelling (`checker::DottedMember`); no consumer reads the literal
+  `Parent.member` key through scope. Value position, pattern position and
+  trait dispatch branch on `DottedMember::parse` and take its
+  Member / Miss / Rejected outcome; a Rejected parent (several type/trait
+  candidates, or a walk error other than not-found) propagates its
+  `ResolveError`, never a fallback to the literal key. A type's members are recognised by `adt::committed_member_owner`, a
+  trait's methods by the record's owning trait. Do not widen
+  `committed_member_owner` to traits or add another recogniser
+  (see the [owner recognisers](../../design/typecheck/dotted-ctor-registration.md#12-the-committed-member-recogniser)
+  and `dotted-ctor-registration.md` §3.1, §3.5).
 - A constructor-key change reaches every crate's raw key probe, not just this
   one; audit readers workspace-wide (`dotted-ctor-canonical-keys.md` §3).
-- **Known divergences:**
-  - `traits/impl_check.rs::check_impl_method_accessor_collisions` still
-    rejects an impl method named like a field accessor, which
-    `spec/07-traits.md` §7.3.1 permits. It and its tests stay until `qa`
-    intake under [`ACT-0983`](../../sprints/actions/ACT-0983-accessor-impl-collision-intake.md).
-  - Pattern-position selection in `infer.rs::check_constructor_pattern` is not
-    yet the approved lifecycle (`dotted-ctor-registration.md`
-    §"Unresolved obligations").
+- An impl method named like a field accessor of its target registers beside
+  the accessor; both are candidates of the bare spelling
+  (`spec/07-traits.md` §7.3.1). Do
+  not add an accessor-name check at impl registration.
+- **Known divergence:** pattern-position selection in
+  `infer.rs::check_constructor_pattern` is not yet the approved lifecycle
+  (`dotted-ctor-registration.md` §"Unresolved obligations").
 
 ## Cross-module monomorphisation
 

@@ -1,12 +1,16 @@
 # Test discovery and error capture — `discover-tests` / `catch-runtime-error`
 
-**Status.** Adopted subsystem contract, landed. The surface was settled by the
-user across four convergences on 2026-06-06 and implemented S76–S77; the
-fork-join error-slot ferry landed S76 (BC §4b invariant 13) with its Par-boundary
-witness in S85; the friendly `--link` rejection landed S87. Owner `arch`.
-Companion: [execution tracing](tracing.md) (shares the runtime shape). Normative
-surface: `spec/appendix-a-builtins.md` §A.3, `spec/03-types.md` (`Result`,
-`Pair`), `spec/12-runtime.md` §12.4.3 and §12.7, `repl/spec/16-test-discovery.md`.
+**Status.** Owner `arch`. The language surface (§§1–7) is an adopted,
+landed contract: settled by the user on 2026-06-06, implemented S76–S77, with
+the fork-join error-slot ferry landed S76 (BC §4b invariant 13) and its
+Par-boundary witness S85. The compiler test runner and the batch refusal of
+`discover-tests` (§2, "Explicit test harness") were user-approved and
+implemented in S122 (`src/session_v4/test_runner/`).
+Companion: [execution tracing](tracing.md) (shares the runtime shape). Interior
+of the runner: [`--test` and the shared test runner](../int/test-runner.md).
+Normative surface: `spec/appendix-a-builtins.md` §A.3, `spec/03-types.md`
+(`Result`, `Pair`), `spec/12-runtime.md` §12.4.3 and §12.7,
+`repl/spec/16-test-discovery.md`, `repl/spec/00-cli-invocation.md` §0.2.2.
 
 ## 1. Overview
 
@@ -32,10 +36,15 @@ and zero typecheck special-casing.
   runtime error, else `(Ok result)`. It is the one capability a pure,
   `catch`-less language cannot compose for itself.
 
-Everything else — selection, filtering, iteration, result interpretation,
-reporting, timing via `trace` — is in-language code in the stdlib
-(`stdlib/testing/runner.cl`). The `/run-tests` slash commands are a convenience
-over the same core, not the capability itself.
+Everything a program builds over them — selection, filtering, iteration, result
+interpretation, reporting, timing via `trace` — is in-language code, such as
+the stdlib's `stdlib/testing/runner.cl`. `discover-tests` is available only in
+the REPL.
+
+Separately, the compiler owns **one test runner**. `/run-tests`,
+`/run-all-tests` and `--test` are argument adapters to it
+(`repl/spec/16-test-discovery.md` §16.2). It does not use the primitives or any
+library code.
 
 ## 2. Settled rulings + the fork-join ferry
 
@@ -78,11 +87,68 @@ contributor would otherwise be tempted to undo it.
 - **Visibility — binary.** The entries are ordinary `primitives` names:
   import-required or FQ, shadowable, not reserved. Whether the prelude
   re-exports them is a stdlib packaging choice.
-- **`--link` — discovery is dev-session-only; capture works everywhere.** A
-  linked executable has no live session to scan, so `discover-tests` is refused
-  under `--link` (§4.5); `catch-runtime-error` is a self-contained intrinsic and
-  resolves in every mode. Resolving `discover-tests` under `--link` (a stub or
-  elision) reopens a settled ruling and needs the user.
+- **Discovery is REPL-only; capture works everywhere.** `discover-tests` needs
+  a live dev session, so a program that references it is refused under
+  `--run`, `--link` and `--test` (§4.5). Under `--test` the compiler runner
+  discovers the tests; test code does not. `catch-runtime-error` is a
+  self-contained intrinsic and resolves in every mode. Making `discover-tests`
+  available outside the REPL, by a stub, an elision or installed runner state,
+  reopens a settled ruling and needs the user.
+
+### Explicit test harness — the compiler runner
+
+The requirements are [CLI invocation](../../repl/spec/00-cli-invocation.md)
+§0.2.2 and [test discovery](../../repl/spec/16-test-discovery.md) §16.2 and
+§16.6. The interior, including its module map, is [`--test` and the shared
+test runner](../int/test-runner.md).
+[ACT-0988](../../sprints/actions/ACT-0988-project-regression-discovery.md)
+retains only the deferred scope: configurable selection, discovery beyond the
+import chain, and option-controlled failure diagnostics.
+
+- **One runner; the modes are argument adapters.** `/run-tests`,
+  `/run-all-tests` and `--test` supply a module selection to one runner and
+  otherwise behave identically. Eligibility, warnings, execution, the report
+  (including the empty-run `No tests found`) and failure handling are the same
+  code ([Principle 7](principles/07-single-source-of-truth.md)): the REPL
+  commands and `run_tests` all call `CompilerSession::run_test_modules`, and
+  that runner and the `discover-tests` extern list tests through the one scan,
+  `discovery::scan_modules`. Only the host's use of the result differs: the
+  CLI writes the report to stdout, writes warnings to stderr and exits with the
+  report's status; the REPL displays both and continues. A mode-specific
+  message, report or failure policy is a defect.
+- **Selection is the only input that varies.** `/run-tests` selects the current
+  or named module and `/run-all-tests` every loaded module that is not a
+  library module ([test runner §4.1](../int/test-runner.md#41-classifier)). `--test`
+  selects the entry module's import chain over published symbol tables, and
+  traversal stops at library modules (§0.2.2).
+- **Binary-only, one public entry point.** Selection, running and reporting
+  stay in the root crate. The edges the chain needs are already on each
+  published symbol table, so no library crate, cache schema, ABI or
+  `public-api.txt` baseline changes. The binary target reaches the runner
+  through the user-approved `CompilerSession::run_tests(&self) ->
+  Result<TestRunReport, CranelispError>` and the report's `text`, `warnings`
+  and `exit_code` accessors. The report carries the verdict, so the binary
+  applies no policy of its own. The runner core, the eligibility scan and any
+  new session state stay crate-private.
+- **One compile path.** `--test` compiles exactly as `--run` does
+  ([Principle 11](principles/11-single-pipeline-mode-parameters.md)), in the
+  same batch run mode (there is no `RunMode::Test`). Only the post-compile
+  driver differs: it calls `run_tests` where `--run` calls `trampoline`.
+  `main` is neither required nor called; its shape checks sit at the `--run`
+  and `--link` driver seams, not in compilation.
+- **One refusal across the batch modes.** Each batch driver seam
+  (`trampoline`, `link_by_name`, `run_tests`) applies the one existing
+  compiled-reference detector before anything runs or is written (§4.5). The
+  REPL enters through none of them, so the refusal needs no mode test.
+- **Library classification comes from resolution.** Classify a module by the
+  search tier that resolved its file
+  ([Principle 24](principles/24-resolve-once.md)), not by a path prefix: the
+  default library directory `{project_root}/stdlib/` lies inside the project
+  root. `SelectionInputs::classify` compares the recorded file with the
+  resolver's own `pipeline::project_root_candidate`.
+- **The exact scheme is a soundness condition.** The runner reads a test's
+  return word as an `(Option String)`, so a `test-` function returning any
+  other type would be misread. Do not relax the predicate to the prefix.
 
 ### The fork-join error-slot ferry obligation
 
@@ -122,14 +188,17 @@ guards (S85) and the lenient-binding guard; a swallowed worker panic flips them.
   selecting, running and presenting are expressible as user code, and a
   composition stays aware of tests defined after its helpers were written —
   which is why discovery returns late-bound callables.
-- **Runtime observation instead of a `super` import.** `spec/08-modules.md`
-  §8 directs test submodules that would need their parent's symbols to
-  `discover-tests`, which observes the parent's symbol table at runtime through
-  the live GOT, so no parent↔child import cycle is constructed.
-- **Minimal surface, maximal in-language composition.** Nothing more is owed by
-  the compiler than the two entries. Every richer concept — a `TestCase`
+- **Runtime observation instead of a `super` import.** In the REPL,
+  `spec/08-modules.md` §8 directs test submodules that would need their
+  parent's symbols to `discover-tests`, which observes the parent's symbol
+  table at runtime through the live GOT, so no parent↔child import cycle is
+  constructed. Under `--test` the compiler runner selects the parent's tests
+  itself.
+- **Minimal language surface, maximal in-language composition.** The language
+  owes nothing beyond the two entries. Every richer concept — a `TestCase`
   carrier, tallies, progress dots, timing, substring selection — is stdlib code
-  over them.
+  over them. The compiler's own runner (§2) is a host facility, not language
+  surface.
 
 ## 4. The user experience
 
@@ -149,17 +218,17 @@ guards (S85) and the lenient-binding guard; a swallowed worker panic flips them.
 
 ```
 user> /run-tests
-  test-add ................................ ok
-  test-div-zero .......................... ok
+  user/test-add ........................... ok
+  user/test-div-zero ...................... ok
 
 2 passed, 0 failed in 2.34ms
 ```
 
 `/run-tests [module]` runs the current or named module; `/run-all-tests` runs
-every project-root module (`repl/spec/16-test-discovery.md` §16.2). *As built* they
-scan through `discover_test_names`, a separate walk from the extern's
-`discover_eligible_tests` that checks prefix, zero parameters and compiled code
-but not the return scheme (§6, source-read lead).
+the loaded project modules; `cranelisp --test` runs the entry module's import
+chain and prints the same report (`repl/spec/16-test-discovery.md` §16.2).
+A `test-` function excluded for its type produces one warning, shown before the
+report.
 
 ### 4.3 The in-language runner over discovered pairs
 
@@ -211,18 +280,24 @@ The combinator invokes the thunk on the calling thread, reads-and-clears the
 thread-local slot, and returns `(Err msg)` on a lowered `runtime_panic` (match
 non-exhaustion, division by zero, vec out-of-bounds) or `(Ok result)`.
 
-### 4.5 What `--link` users see
+### 4.5 What `--run`, `--link` and `--test` users see
 
-A `--link` build whose function bodies reference `discover-tests` — by bare
-imported name or FQ — is refused **before linking** with a diagnostic naming the
-symbol, the referencing site and the remedy
-(`src/exe.rs::reject_dev_session_externs_in_link`, S87). Detection is
+A program in which any compiled function references `discover-tests` — by bare
+imported name or FQ, called or not — is refused before any code runs or any
+artifact is written. The diagnostic names the symbol and a referencing
+function, and its remedy is the one `repl/spec/16-test-discovery.md` §16.6
+specifies. Detection is
 structural: a body reference whose terminal entry is a host-promised
 `RustPrimitive` named in `worker::DEV_SESSION_ONLY_EXTERNS`. An import alone
 is not a reference (the prelude glob re-exports every primitive), and a user
 `mod/discover-tests` definition is not caught.
 
-`catch-runtime-error` works in `--link`: it is a self-contained intrinsic that
+The one gate is `src/exe.rs::refuse_dev_session_externs`, called by
+`trampoline` (`--run`), `link_by_name` (`--link`) and `run_tests` (`--test`)
+with one mode-free diagnostic. Because the REPL enters through none of those
+seams, the primitive stays available there.
+
+`catch-runtime-error` works in every mode: it is a self-contained intrinsic that
 calls a closure already in the program and constructs a heap `Result`. This is
 the deliberate asymmetry — error capture is a runtime capability available
 everywhere; discovery is a dev-session capability.
@@ -230,10 +305,10 @@ everywhere; discovery is a dev-session capability.
 **History that binds.** The refusal replaced the interim raw `cc`
 `undefined reference to discover-tests`. When a S86 repro asserted that the
 linked build should resolve the extern and exit 0, `arch` rejected that oracle:
-resolving discovery at `--link` erases the asymmetry and needs a user
-re-convergence. The guard (`tests/link.rs`) asserts non-zero exit and a message
-naming `discover-tests`; only the channel and phrasing changed when the friendly
-diagnostic landed.
+resolving discovery outside the REPL erases the asymmetry and needs a user
+re-convergence. `--run` and the linked executable must also produce the same
+program output (`repl/spec/00-cli-invocation.md` §0.2.1), which is why both
+refuse identically rather than `--run` resolving what `--link` cannot.
 
 ## 5. The language constructs
 
@@ -252,7 +327,7 @@ name; an empty `Vec` means the session's current module.
   not a baked code pointer, so a redefinition the JIT writes into the same slot
   runs through the same wrapper.
 - **Eligibility** — `test-` prefix AND scheme exactly `(Fn [] (Option String))`
-  (`src/session_v4/test_runner.rs::test_scheme_is_eligible`). The wrapper's own
+  (`src/session_v4/test_runner/discovery.rs::is_test_scheme`). The wrapper's own
   type and the eligibility filter are the same contract.
 - **`Pair`** is the minimum product the two-field return needs. It is seeded in
   `primitives` by bootstrap (`register_pair_type`), as is `Result`; a richer
@@ -353,21 +428,13 @@ no normalisation.
 
 `discover_tests_extern` (`src/session_v4/test_runner.rs`) reads the
 `TEST_RUNNER` thread-local state, decodes the `(Vec String)` argument (empty →
-current module), scans each module's table for eligible entries and, per test,
-builds a heap `String` name and a heap closure `[header | code_ptr=wrapper |
-drop_glue_ptr=0 | slot-address]` whose wrapper loads the slot and calls the
-current body. A null `TEST_RUNNER` (no eval active) returns an empty `Vec`.
-
-*Source-read leads, unresolved (routed to `qa`):*
-
-- The discovery-time warning for a mis-typed `test-*` (§2 eligibility) has no
-  emission site found — the extern defers it to the slash-command path and
-  `handle_run_tests` emits none. Exclusion is implemented; the warning is not.
-- `/run-tests` discovers through `discover_test_names` (prefix, zero
-  parameters, compiled body), not `discover_eligible_tests` (which also
-  requires the exact scheme). Two scans with different eligibility can disagree
-  on a mis-typed `test-*`; `src/CLAUDE.md` §Test discovery states they share a
-  core.
+current module), lists each module's tests through the shared scan
+(`discovery::scan_modules`) and, per test, builds a heap `String` name and a
+heap closure `[header | code_ptr=wrapper | drop_glue_ptr=0 | slot-address]`
+whose wrapper loads the slot and calls the current body. A null `TEST_RUNNER`
+(no eval active) returns an empty `Vec`. The extern runs inside compiled code
+and has no warning channel, so it discards the scan's warnings; the slash
+commands show them ([test runner §12](../int/test-runner.md#12-residual-leads)).
 
 ### The combinator intrinsic — two-layer naming
 
@@ -433,20 +500,22 @@ codegen change: the closure call is inside the intrinsic body.
 additive host-symbol escape hatch — no forked constructor, no registry (BC §3
 invariant 8). `catch-runtime-error` does not use it.
 
-### Binary — bootstrap, the extern, the `--link` gate
+### Binary — bootstrap, the extern, the batch refusal gate
 
 `src/bootstrap.rs` seeds both entries and the two ADTs; `worker::build_session_jit`
 promises each name in `DEV_SESSION_ONLY_EXTERNS` (today `discover-tests`) via
-`define_symbol`; `src/exe.rs::reject_dev_session_externs_in_link` is the
-`--link` gate (§4.5). `TestRunnerState` lives on `SharedState`.
+`define_symbol`; `src/exe.rs::refuse_dev_session_externs` is the
+refusal gate at the three batch driver seams (§4.5). `TestRunnerState`
+lives on `SharedState` and serves only the REPL extern; the compiler runner
+does not install it.
 
 ### Stdlib and REPL
 
 `stdlib/testing/runner.cl` is the in-language runner over the pairs — ordinary
-functions, no macro. The `/run-tests` commands are a Rust path
-(`src/repl/commands.rs::handle_run_tests` → `run_test_by_name`, which brackets
-the GOT call with the same slot clear/read the combinator uses); the two leads
-above apply to it.
+functions, no macro. The `/run-tests` and `/run-all-tests` commands
+(`src/repl/commands.rs::handle_run_tests`, `handle_run_all_tests`) select
+modules and call the compiler runner (§2), which brackets each test call with
+the same slot clear/read (`take_runtime_error`) the combinator uses.
 
 ## 7. Data structures, functions & sequence
 

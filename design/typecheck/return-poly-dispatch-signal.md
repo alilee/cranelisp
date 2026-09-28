@@ -79,6 +79,10 @@ concreteness, so it is immune to the `(add2 3 4)` false positive: `add2` has a
 concrete `ResolvedCall`, so it is never in the signal set; `(add-i64 (zed) 5)`
 gets its `(zed)` pinned by unification before finalize, so it too is excluded.
 
+The §3.11 gates classify each call from the callee's recorded `var_refs`
+carrier and its canonical trait-method declaration. Qualification changes the
+written spelling, not this classification (§8.6.5).
+
 ### 3.1 Where the signal is COMPUTED (typecheck, finalize)
 
 At the finalisation boundary (`program/finalize.rs`, after the last

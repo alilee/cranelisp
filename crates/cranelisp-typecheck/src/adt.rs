@@ -640,43 +640,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
-    /// Enumerate the bare **field-accessor names** owned by `fqtn` (`Box.v` →
-    /// `v`), for the impl-time collision gate
-    /// `traits/impl_check.rs::check_impl_method_accessor_collisions`, its only
-    /// consumer.
-    ///
-    /// Both are superseded by spec §7.3.1 and are removed together once
-    /// `ACT-0983` intake completes
-    /// (`design/typecheck/fixme-0365-field-accessor-dotted.md` §2.1, §2.3).
-    ///
-    /// It walks the owning module's union view (staging then live) through
-    /// `for_each_in_module`, keeping entries `committed_accessor_kind`
-    /// classifies as accessors of `fqtn`, so an accessor from an earlier REPL
-    /// cluster counts.
-    pub(crate) fn field_accessor_names_of(
-        &self,
-        _state: &CheckState,
-        fqtn: &FQTypeName,
-    ) -> std::collections::HashSet<Symbol> {
-        let mut names = std::collections::HashSet::new();
-
-        // The recognizer over the owning module's union view: every canonical
-        // `Concrete(fqtn)` accessor `Def`. The field name is the terminal segment
-        // after the last `.` of the canonical key (`Box.v` → `v`); a defensively
-        // bare-keyed accessor (no `.`) contributes its whole key.
-        self.for_each_in_module(&fqtn.module, |name, entry| {
-            if matches!(
-                committed_accessor_kind(entry),
-                CommittedAccessor::Concrete(ref owner) if owner == fqtn
-            ) {
-                let field = name.as_ref().rsplit('.').next().unwrap_or(name.as_ref());
-                names.insert(Symbol::from(field));
-            }
-        });
-
-        names
-    }
-
     /// Reconstruct the canonical accessor alternatives (`Box.v`, `Cup.v`) for an
     /// ambiguous bare field spelling from the durable symbol table.
     ///
@@ -764,7 +727,7 @@ pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
 /// field accessor (`Box.v`, owner read from its `(Fn [ADT] _)` scheme) or a sum
 /// constructor (`Maybe.Some`, owner read from `CallableOrigin::Ctor.type_name`)
 /// (`dotted-ctor-registration.md` §1.2, §3.1). It is the one recogniser the
-/// dotted resolver (`resolve_dotted_member_entry`) and
+/// dotted resolver (`checker.rs::dotted_member_identity`) and
 /// `reconstruct_accessor_alternatives` use for both member kinds. Returns
 /// `None` for a non-member binding.
 pub(crate) fn committed_member_owner<C: cranelisp_types::CodeStore>(
@@ -840,12 +803,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         )
     }
 
-    /// Module-rooted variant of [`Self::check_exhaustiveness`].
-    ///
-    /// **FQTypeName migration (Sprint 67 Wave 3 — FIXME 0151).** Takes
-    /// `&FQTypeName` per `design/arch/facades/types.md` §"FQTypeName migration
-    /// plan (Sprint 67)" §"typecheck" — match-arm checks are post-resolution,
-    /// so the type identifier carries its module context binding.
+    /// Exhaustiveness of a match over the type `fq_type_name`, the scrutinee
+    /// type's resolved identity. The type is read by key through
+    /// [`Self::type_def_by_identity`].
     pub(crate) fn check_exhaustiveness_in_module(
         &self,
         fq_type_name: &cranelisp_types::FQTypeName,
@@ -857,12 +817,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(());
         }
 
-        let type_def = self
-            .lookup_type_def_in_module(&fq_type_name.module, &fq_type_name.name)
-            .ok_or_else(|| CranelispError::TypeError {
-                message: format!("unknown type in match: {}", fq_type_name.name),
-                location: ErrorLocation::from_span(span),
-            })?;
+        let type_def =
+            self.type_def_by_identity(fq_type_name)
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: format!("unknown type in match: {}", fq_type_name.name),
+                    location: ErrorLocation::from_span(span),
+                })?;
 
         // Exclude internal constructors from exhaustiveness — user code cannot
         // and need not cover them (design/typecheck/io-types.md §1). Per-ctor

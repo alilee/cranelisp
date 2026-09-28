@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
-use cranelisp_types::{FQSymbol, ModuleFullPath, Warning};
+use cranelisp_types::{FQSymbol, FQTypeName, ModuleFullPath, Warning};
 // Re-exported for the `#[cfg(test)] mod *_tests` siblings that reach it via
 // `use super::*` (they construct `SessionSettings`). The parent itself no
 // longer names it directly (the `SessionSettings` field moved to `types.rs`).
@@ -50,15 +50,14 @@ pub(crate) use self::types::{
     intrinsic_type_from_name, is_comment_only, parens_balanced, resolve_priority_worker_count,
 };
 
-// test_runner.rs — the `discover-tests` host-promised extern + `TestRunnerState`
-// + the late-bound wrapper-closure machinery (S87 §2.1). Re-exported to preserve
-// `session_v4::X` paths used by eval.rs / repl.rs / worker.rs / scheduler tests.
+// test_runner — the shared test runner behind `--test`, `/run-tests` and
+// `/run-all-tests`, plus the REPL-only `discover-tests` extern and its
+// `TestRunnerState` (`design/int/test-runner.md`).
 mod test_runner;
-pub use self::test_runner::TestRunnerState;
 pub(crate) use self::test_runner::{
-    TestOutcome, discover_test_names, discover_tests_extern, run_test_by_name,
-    set_test_runner_state,
+    TestDefinition, classify_test_definition, discover_tests_extern, set_test_runner_state,
 };
+pub use self::test_runner::{TestRunReport, TestRunnerState};
 
 // nice_worker.rs — the nice-worker object-codegen subsystem (S87 §2.1 / §3.3).
 // `nice_worker_loop` is called by `CompilerSession::new`; `spawn_nice_workers`
@@ -90,6 +89,7 @@ pub(crate) use self::shared_state::ReadOnlyMacroResolver;
 // module; the struct defs stay in this parent (§2.0). `populate_ring0_got_slots`
 // is module-internal to `lifecycle` (only `new` calls it), so no re-export.
 mod lifecycle;
+pub(crate) use lifecycle::ReloadNotice;
 
 // ---------------------------------------------------------------------------
 // CompilerSession (pipeline-v4.md §5)
@@ -402,6 +402,12 @@ pub struct CompilerSession {
     /// leaves `error_modules` and the next regen writes a green backing file.
     pub(crate) failed_forms: std::collections::HashMap<ModuleFullPath, Vec<FailedForm>>,
 
+    /// Modules whose reload failed because it would change a live type's
+    /// structure, with that type (`design/int/repl-lifecycle.md` §1.3.1).
+    /// Each is also in `error_modules`. Its saved file is not overwritten
+    /// until a successful reload of the module or a restart.
+    pub(crate) restart_required: HashMap<ModuleFullPath, FQTypeName>,
+
     /// File watcher for REPL mode. Initialized via `init_watcher()` after
     /// construction. None in batch/link modes or if OS watcher unavailable.
     pub watcher: Option<crate::watch::FileWatcher>,
@@ -558,3 +564,6 @@ mod info_source_tests;
 
 #[cfg(test)]
 mod list_classification_tests;
+
+#[cfg(test)]
+mod persistence_tests;

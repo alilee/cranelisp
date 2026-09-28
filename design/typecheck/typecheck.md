@@ -131,6 +131,24 @@ Registration rejects nothing for sharing a spelling with an import, export,
 prelude binding or derived member (`spec/08-modules.md` §8.6.4); the prelude participates only as
 the fallback those seams apply.
 
+**A reader that already holds a type's identity reads it by key.** An
+`FQTypeName` names its home module and the type's own key there, so its
+`TypeDefInfo` is the binding at that key, projected through `type_def_view_of`
+(staging-aware, no scope, no candidate set). Constructor instantiation and
+match exhaustiveness are such readers: they start from the scrutinee's type or
+the resolved constructor's origin. Re-resolving the type's bare spelling
+through the scope seam re-derives a settled identity ([Principle 24](../arch/principles/24-resolve-once.md))
+and fails whenever §8.6.4 lets another declaration share the spelling, such as
+another type's constructor. A miss at the key is a located error, never a
+retry by spelling. The keyed read records no lookup dependency, exactly as the
+bare route it replaces (§3.4).
+
+Assurance: asserted with a named falsifier. A production caller passing an
+`FQTypeName`'s halves to `lookup_type_def_in_module` or another scope reader
+would refute conformance. The ACT-1002 review census found none. Retiring the
+remaining spelling-reader production use would permit restricting that
+reader to tests and making this boundary structural.
+
 A centralised lookup index is not planned: it would be a bookkeeping change with
 no measured performance need.
 
@@ -205,7 +223,7 @@ are the §3.5 routes):
 | Trait: impl trait slot, pairing head, constraint slot, type-or-trait step R (§7.3.2) | `resolve_trait` and the impl trait resolver | Seam |
 | Trait in a stacked bound, `:Eq :m/Tr a` | `resolve_trait` as written, the step R resolution (§3.5) | Seam |
 | Qualified pattern constructor `m/C` or `m/T.C` | The qualified walk alone (§3.5) | Seam |
-| Bare dotted member `T.x`, value or pattern | Head resolved bare; member read by key in the type's home | Nothing: the home is reached through the closure |
+| Bare dotted member `T.x`, value or pattern | Head resolved bare; member read by key in the parent type's or trait's home | Nothing: the home is reached through the closure |
 | Keyed reads at a resolved home: impl discovery, trait declarations, method-to-trait, ownership facts, the reach of a monomorphisation re-check to its generic body | Not spelled references | Nothing: the home is reached through the closure |
 | Qualified spelling inside a cross-module monomorphisation re-check ([monomorphisation](monomorphisation.md#37-cross-module-body-recheck-scoping)) | The seam, relative to the defining module, in the checked module's staging environment | Seam, as a dependency of the module being checked; only that module's own path is excluded. Conservative: an extra member costs at most a cache miss |
 | Macro heads | `int`'s recogniser | `int` |
@@ -1240,6 +1258,14 @@ are listed in `design/typecheck/CLAUDE.md` §"Redirections".
 
 ## 11. Open design items
 
+- **Exhaustiveness internal-constructor fallback.** After a canonical member-key
+  miss, `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module`
+  still scope-resolves the
+  constructor spelling. Its default `internal = false` is correct for current
+  product constructors. Falsifier: an `internal: true` product constructor
+  with a contested spelling; users cannot construct one today. Convergence
+  can use the raw-key fallback already used by `instantiate_ctor`.
+
 - **Principle 26 classification of the remaining producer surface** (§9.7).
 - **Declaration-level forward reference within a cluster.** Spec §5.13.1 and
   §8.10.4 let non-macro definitions, including impls, reference types declared
@@ -1299,6 +1325,18 @@ are listed in `design/typecheck/CLAUDE.md` §"Redirections".
   change which candidate a use selects. It is a source-read lead and has not
   been executed. The trigger is a failing cell. §9.1.1 keeps the current
   behaviour.
+- **Some bare type positions do not filter to type candidates.** Spec §8.6.5
+  rule 2 keeps only types in a type position, and `resolve.rs` does
+  (`resolve_type_candidate`). `resolve_type`, `concrete_type_for_impl_target`,
+  the two impl-target arity checks in `traits/impl_check.rs` and the
+  scrutinee-in-scope gate of `check_constructor_pattern` instead take the
+  single-terminal scope resolve. A type whose spelling another type's
+  constructor shares is therefore predicted to be ambiguous there, for example
+  as an impl target. The arity checks and the gate discard the error, so they
+  would skip a check or fall through to candidate selection rather than
+  reject. This is a source-read lead (S122, ACT-1002 assessment), not
+  executed. The trigger is a failing cell; the repair would route these
+  readers through the type-filtered candidate resolution.
 - **A trait reached through a renamed import** (spec §8.3.5). Both
   type-or-trait routes (§7.3.2) and the stacked bound (§3.5) pair the resolved
   home with the spelled name. A renamed trait would therefore get

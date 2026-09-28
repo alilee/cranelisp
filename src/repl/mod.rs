@@ -22,8 +22,7 @@ pub(crate) use crate::code::{Code, SessionSymbolTable};
 pub(crate) use crate::display::format_type_qualified;
 pub(crate) use crate::session_v4::{
     CommandResult, CompilerSession, EvalResult, Introspection, ReadOnlyMacroResolver,
-    SymbolCategory, TestOutcome, discover_test_names, intrinsic_type_from_name, is_comment_only,
-    parens_balanced, run_test_by_name,
+    SymbolCategory, intrinsic_type_from_name, is_comment_only, parens_balanced,
 };
 pub(crate) use crate::styled::{Role, StyledDoc, render};
 use format_type::*;
@@ -498,9 +497,28 @@ impl CompilerSession {
             );
             return CommandResult::Final(msg);
         }
+        // A definition turn would regenerate the current module's file, which
+        // a restart-required failure retains (§14.8).
+        if let Some(refusal) = self.restart_required_refusal() {
+            return CommandResult::Final(refusal);
+        }
 
         // Source text to compile.
         CommandResult::Compile(trimmed.to_string())
+    }
+
+    /// The refusal of a turn that would regenerate the current module's file
+    /// while a restart-required failure retains it
+    /// (`design/int/repl-lifecycle.md` §1.3.1), or `None` when the module is
+    /// not restart-required.
+    pub(crate) fn restart_required_refusal(&self) -> Option<String> {
+        let module = self.current_module_path();
+        let type_name = self.restart_required.get(&module)?;
+        Some(format!(
+            "Cannot define in module '{module}': its saved file changes the structure of type \
+             {type_name}, which takes effect only after a restart. Restart the REPL to establish \
+             it, or save a declaration with the live structure."
+        ))
     }
 
     /// Dispatch a parsed slash command, returning a `CommandResult`.
@@ -527,10 +545,10 @@ impl CompilerSession {
                 let output = self.handle_list(filter);
                 CommandResult::Final(output)
             }
-            ReplCommand::Mod(name) => {
-                self.handle_mod(name);
-                CommandResult::Nothing
-            }
+            ReplCommand::Mod(name) => match self.handle_mod(name) {
+                Some(failure) => CommandResult::Final(crate::style::repl_metadata_line(&failure)),
+                None => CommandResult::Nothing,
+            },
             ReplCommand::Source(name) => CommandResult::Final(self.handle_source(name)),
             ReplCommand::SexpCmd(name) => CommandResult::Final(self.handle_sexp_cmd(name)),
             ReplCommand::Ast(name) => CommandResult::Final(self.handle_ast(name)),
@@ -614,9 +632,13 @@ impl CompilerSession {
                 // Startup-failed source and its error block leave together,
                 // only on repair (repl/spec/15-session-persistence.md
                 // §15.2.3); `/reset` is not a repair.
+                // A restart-required failure stands until a successful reload
+                // or a restart (§14.8).
                 let failed_forms = &self.failed_forms;
-                self.error_modules
-                    .retain(|module| failed_forms.contains_key(module));
+                let restart_required = &self.restart_required;
+                self.error_modules.retain(|module| {
+                    failed_forms.contains_key(module) || restart_required.contains_key(module)
+                });
                 CommandResult::Final("command not yet available in v4 REPL".to_string())
             }
         }

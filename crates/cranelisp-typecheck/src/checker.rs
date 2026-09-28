@@ -96,6 +96,33 @@ pub(crate) fn type_def_view_of<C: cranelisp_types::CodeStore>(
     entry.type_def_info()
 }
 
+/// A declaration that can occur in a type position (spec §8.6.5 rule 2).
+pub(crate) fn is_type_candidate<C: cranelisp_types::CodeStore>(entry: &Binding<C>) -> bool {
+    matches!(entry.declaration, Decl::Type(_)) || type_def_view_of(entry).is_some()
+}
+
+/// A bare dotted `Parent.member` spelling (spec §8.5.2): exactly one `.`,
+/// both sides non-empty, no `/`. Only [`DottedMember::parse`] constructs one,
+/// so every consumer asks "is this dotted?" the same way. A qualified
+/// `m/Parent.member` belongs to the qualified walk, and a punctuation name
+/// such as `.` has an empty side, so neither parses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DottedMember<'a> {
+    parent: &'a str,
+    member: &'a str,
+}
+
+impl<'a> DottedMember<'a> {
+    pub(crate) fn parse(name: &'a str) -> Option<Self> {
+        if name.contains('/') {
+            return None;
+        }
+        let (parent, member) = name.split_once('.')?;
+        (!parent.is_empty() && !member.is_empty() && !member.contains('.'))
+            .then_some(Self { parent, member })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedBuiltin {
     pub(crate) jit_name: Symbol,
@@ -561,13 +588,14 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    /// Probe this module for a type-def named `name`, chain-following
-    /// `Import`/`Reexport` entries to their terminal entry.
+    /// Resolve the bare spelling `name` as a type through this module's scope
+    /// ([`TypeCheckEnv::resolve_entry_in_module`]). `None` when the spelling is
+    /// unbound, is contested by several candidates, or names something other
+    /// than a type.
     ///
-    /// Yields the type-def view via [`type_def_view_of`] so a **single-ctor
-    /// product** type (whose surviving `"Rectangle"` entry is the got-slotted
-    /// ctor `Def` carrying `type_def: Some(..)`) resolves as a type just as a
-    /// sum/enum `TypeDef` does.
+    /// The entry is read through [`type_def_view_of`], so a product type, whose
+    /// type-name entry is its constructor carrying `type_def: Some(..)`,
+    /// resolves as a type just as a sum's `TypeDef` does.
     pub(crate) fn lookup_type_def(&self, name: &TypeName) -> Option<TypeDefInfo> {
         let entry = self
             .env
@@ -778,11 +806,11 @@ where
         crate::trace::emit_symbol_table_ensure(path, trace_outcome);
     }
 
-    /// Module-rooted lookup of a `TypeDefInfo` by bare `TypeName`.
-    ///
-    /// Probes `module_path`'s symbol table for `name`; if absent or if the
-    /// entry is an `Import`/`Reexport`, chain-follows per Principle 17. No
-    /// other modules are consulted.
+    /// Resolve the bare spelling `name` as a type through `module_path`'s scope
+    /// ([`Self::scope_resolve_in`]). `None` when the spelling is unbound, is
+    /// contested by several candidates, or names something other than a type.
+    /// A reader that already holds the type's identity uses
+    /// [`Self::type_def_by_identity`] instead.
     pub(crate) fn lookup_type_def_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -791,12 +819,24 @@ where
         self.read_view(module_path).lookup_type_def(name)
     }
 
-    /// Resolve a name in `module_path` to its terminal `ModuleEntry`, following
-    /// `Import`/`Reexport` chains by `source.module` references (Principle 17).
-    /// Returns an owned clone of the terminal entry.
+    /// The type definition stored under a resolved type identity's key in its
+    /// home module, or `None` when that key holds no type.
     ///
-    /// Staging-aware (FIXME 0179): consults staging first when
-    /// `module_path == staging.module`.
+    /// A reader that already holds an `FQTypeName` reads here rather than
+    /// re-resolving the type's bare spelling through scope (Principle 24): the
+    /// spelling may be contested by another type's constructor (spec §8.6.4),
+    /// which a scope resolve reports as ambiguous although the identity is
+    /// settled.
+    pub(crate) fn type_def_by_identity(
+        &self,
+        identity: &cranelisp_types::FQTypeName,
+    ) -> Option<TypeDefInfo> {
+        let binding = self.probe_module_entry_owned(&identity.module, identity.name.as_ref())?;
+        type_def_view_of(&binding).cloned()
+    }
+
+    /// The terminal entry of [`Self::resolve_terminal_entry_and_home`], without
+    /// its home module.
     pub(crate) fn resolve_entry_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -1496,9 +1536,13 @@ where
 
     /// Resolution order per spec §8.6.1:
     /// 1. Local environment (let bindings, fn params, match vars)
-    /// 2. Module scope (current module's defs + imports, following chains)
-    /// 3. Qualified name resolution: `module/name` splits on `/` and resolves
+    /// 2. A dotted `Parent.member` spelling ([`DottedMember`]) is answered by
+    ///    the dotted core alone (spec §8.5.2): its literal key is never read
+    ///    through scope, and a rejected or missing member yields no scheme.
+    /// 3. Module scope (current module's defs + imports, following chains)
+    /// 4. Qualified name resolution: `module/name` splits on `/` and resolves
     ///    via `resolve_qualified` (spec §8.6.6)
+    ///
     /// Returns `(scheme, gap)`: the resolved scheme (or `None`), plus an
     /// optional cross-module resolution gap reported in-band by qualified-name
     /// resolution. On a successful resolution the gap is always `None` (a
@@ -1516,18 +1560,17 @@ where
             return (Some(scheme.clone()), None);
         }
 
-        // Fall back to current module's symbol table (following import chains)
-        if let Some(scheme) = self.lookup_in_current_module(state, name) {
-            return (Some(scheme), None);
+        if let Some(dotted) = DottedMember::parse(name) {
+            let scheme = self
+                .dotted_member_identity(state, dotted, Span::default())
+                .ok()
+                .flatten()
+                .and_then(|(_, entry)| self.extract_scheme_from_entry_owned(&entry));
+            return (scheme, None);
         }
 
-        // Try the dotted `Type.member` form (spec §8.5.2). `Box.v` resolves the
-        // field accessor `v` of `Box`; `Maybe.Some` resolves the constructor
-        // `Some` of `Maybe` — both directly, whatever candidates the bare
-        // spelling has. The member is an ordinary callable binding; typing it is
-        // plain value-position scheme instantiation (the read here returns its
-        // `Scheme`; the caller instantiates with fresh vars).
-        if let Some(scheme) = self.resolve_dotted_member(state, name) {
+        // Fall back to current module's symbol table (following import chains)
+        if let Some(scheme) = self.lookup_in_current_module(state, name) {
             return (Some(scheme), None);
         }
 
@@ -1616,9 +1659,9 @@ where
     /// binding records `VarRef::Global` instead (a GOT-slot self-call is a table
     /// reference; see below). Self-edges stay OUT of `callees` (the documented
     /// cheap disposition — `save.rs::dependency_sort` filters them). Dotted
-    /// `Type.member` references are recorded by the dedicated
-    /// [`Self::resolve_dotted_member_fq`] leg in `infer_var` (they never
-    /// resolve through `scope_resolve`) and, per the S101 residue, feed only
+    /// `Type.member` references are recorded by `infer_var` from its one
+    /// [`Self::dotted_member_identity`] outcome (they never resolve through
+    /// `scope_resolve`) and, per the S101 residue, feed only
     /// `var_refs` (as `VarRef::Global`), never `callees`.
     pub(crate) fn record_reference_target(&self, state: &mut CheckState, name: &str, span: Span) {
         // Local scope shadows module scope (spec §8.6.1 resolution order).
@@ -1722,120 +1765,110 @@ where
         crate::candidate_selection::is_value_candidate(&resolved.entry).then_some(resolved)
     }
 
-    /// Resolve a dotted `Type.member` reference — a field accessor (`Box.v`) or
-    /// a sum constructor (`Maybe.Some`) — to its `Scheme` (spec §8.5.2;
-    /// `design/typecheck/fixme-0365-field-accessor-dotted.md` §1.1).
+    /// The one resolver of a bare dotted spelling (spec §8.5.2;
+    /// `design/typecheck/dotted-ctor-registration.md` §3.1): value position
+    /// ([`Self::lookup`], `infer_var`), pattern position
+    /// ([`Self::resolve_constructor_entry`]) and trait dispatch
+    /// (`try_resolve_trait_method`) all answer a [`DottedMember`] here, and
+    /// none of them reads the literal `Parent.member` key through scope.
     ///
-    /// `Box.v` is the canonical, always-Public accessor binding keyed
-    /// `Type.field` in `Box`'s home module. It resolves directly and never
-    /// ambiguously, whatever candidates the bare spelling `v` has. The split is
-    /// on the FIRST `.`: the head (`Box`) is a type name in bare scope, the tail
-    /// (`v`) the member.
+    /// The parent's bare-scope candidates are filtered to types
+    /// ([`is_type_candidate`]) and traits before they are counted (spec §8.6.5
+    /// rule 2), so a same-spelled value neither contests nor hides the parent.
+    /// The member is probed under the canonical `member_key(Parent, member)`
+    /// in the parent's home module (staging then live), so the dotted form
+    /// works cross-module and whatever candidates the bare member spelling
+    /// has. The identity is `(parent home, member_key(Parent, member))`; the
+    /// entry is that binding, the single source of the member's scheme.
     ///
-    /// The read is the canonical binding's scheme, the single source of the
-    /// member's type; `adt::committed_member_owner` is the single judgment of
-    /// which type owns the member. The caller (`lookup`) instantiates the
-    /// returned scheme with fresh vars, so the dotted form is an ordinary
-    /// first-class callable. A bare `v` reaches the same binding through
-    /// ordinary scope resolution and use-site candidate selection, not here.
+    /// Outcomes:
+    /// - `Ok(Some(..))` — **Member**: the one type or trait candidate owns the
+    ///   member (accessor or constructor of the type, per
+    ///   `adt::committed_member_owner`; method of the trait, per the record's
+    ///   owning trait).
+    /// - `Ok(None)` — **Miss**: the parent is not found, has no type or trait
+    ///   candidate, or does not own the member (a degenerate product
+    ///   `Point.Point` has no such key; an intrinsic type owns no members).
+    /// - `Err(..)` — **Rejected**: several type or trait candidates (the error
+    ///   lists them; spec §8.6.5), or a walk error other than not-found.
     ///
-    /// Returns `None` when `name` is not a `Type.member` form, the head does not
-    /// name a type in scope, or `member` is not a member of that type (the
-    /// caller then proceeds to the `/`-split / undefined-variable path).
-    fn resolve_dotted_member(&self, state: &CheckState, name: &str) -> Option<Scheme> {
-        let entry = self.resolve_dotted_member_entry(state, name)?;
-        self.extract_scheme_from_entry_owned(&entry)
-    }
-
-    /// Resolve a dotted `Type.member` reference to the terminal `ModuleEntry` of
-    /// the member it names — a field accessor (`Box.v`) OR a constructor
-    /// (`Maybe.Some`, S109). This is the ONE member-resolution core both value
-    /// position (`resolve_dotted_member` → scheme, via `lookup`) and pattern
-    /// position (`resolve_constructor_entry`'s dotted arm) consume, so the two
-    /// agree by construction (spec §6.2.1 "mirrors value position exactly";
-    /// `design/typecheck/dotted-ctor-registration.md` §3.1).
-    ///
-    /// The head (`Type`) resolves to its `FQTypeName` in bare scope, and the
-    /// member is probed under the canonical `member_key(Type, member)` in the
-    /// type's HOME module — rooting the probe there (not the current module) is
-    /// what makes the dotted form work cross-module. Accepted only when the
-    /// terminal is a member OWNED BY THAT EXACT type (accessor of `fqtn` or ctor
-    /// of `fqtn`), so a degenerate product form (`Point.Point`, no such key) and
-    /// a non-member head both yield `None`.
-    pub(crate) fn resolve_dotted_member_entry(
+    /// Like `ResolutionScope::resolve_macro_head`, the core filters by role
+    /// before counting and transports not-found as a Miss and every other
+    /// walk error as Rejected.
+    pub(crate) fn dotted_member_identity(
         &self,
         state: &CheckState,
-        name: &str,
-    ) -> Option<Binding<C>> {
-        self.dotted_member_identity(state, name)
-            .map(|(_, entry)| entry)
-    }
+        dotted: DottedMember<'_>,
+        span: Span,
+    ) -> Result<Option<(FQSymbol, Binding<C>)>, ResolveError> {
+        let candidates = match self.scope_resolve_candidates(state, dotted.parent, span) {
+            Ok(candidates) => candidates,
+            Err(
+                ResolveError::TraitNotFound { .. }
+                | ResolveError::TypeNotFound { .. }
+                | ResolveError::ConstructorNotFound { .. },
+            ) => return Ok(None),
+            Err(rejected) => return Err(rejected),
+        };
+        let mut parents: Vec<_> = candidates
+            .into_iter()
+            .filter(|candidate| {
+                is_type_candidate(&candidate.entry)
+                    || matches!(candidate.entry.declaration, Decl::Trait(_))
+            })
+            .collect();
+        let parent = match parents.len() {
+            0 => return Ok(None),
+            1 => parents.pop().expect("one parent"),
+            _ => {
+                return Err(ResolveError::Ambiguous {
+                    name: Symbol::from(dotted.parent),
+                    from_module: state.current_module.clone(),
+                    candidates: parents
+                        .into_iter()
+                        .map(|candidate| candidate.canonical)
+                        .collect(),
+                    span,
+                });
+            }
+        };
 
-    /// The STORAGE FQ of a dotted `Type.member` reference (S110 0583 leg 3,
-    /// FIXME 0616) — the canonical `(fqtn.module, member_key(Type, member))`
-    /// key `resolve_dotted_member_entry` probes, recorded into `var_refs` as
-    /// `VarRef::Global` (S114 carrier flip — was `resolved_targets`). The
-    /// reference resolves via the dotted core, NOT
-    /// `scope_resolve`, so the W0 bare-name re-probe missed it whenever only a
-    /// type-only import was present (`(import [m [Maybe]])` then
-    /// `(Maybe.Some 3)` — the always-works dotted spelling, S109). `None` when
-    /// `name` is not a dotted member of a type in scope. Feeds only `var_refs`
-    /// (as `VarRef::Global`; S114 carrier flip — was `resolved_targets`) — dotted
-    /// member refs are `callees` residue.
-    pub(crate) fn resolve_dotted_member_fq(
-        &self,
-        state: &CheckState,
-        name: &str,
-    ) -> Option<FQSymbol> {
-        self.dotted_member_identity(state, name).map(|(fq, _)| fq)
-    }
-
-    /// Shared core of [`Self::resolve_dotted_member_entry`] /
-    /// [`Self::resolve_dotted_member_fq`] (single source of truth, Principle 7):
-    /// resolve a dotted `Type.member` form to `(storage FQ, terminal entry)`.
-    /// The identity is `(fqtn.module, member_key(Type, member))` — exactly what
-    /// the entry probe hits.
-    fn dotted_member_identity(
-        &self,
-        state: &CheckState,
-        name: &str,
-    ) -> Option<(FQSymbol, Binding<C>)> {
-        // A `Type.member` form: exactly one `.`, both sides non-empty. A
-        // module-qualified `m/Type` head carries a `/`, which the `/`-split
-        // path owns — restrict the dotted member to a bare type head here.
-        let dot = name.find('.')?;
-        let type_part = &name[..dot];
-        let member_part = &name[dot + 1..];
-        if type_part.is_empty()
-            || member_part.is_empty()
-            || member_part.contains('.')
-            || type_part.contains('/')
-            || member_part.contains('/')
-        {
-            return None;
-        }
-
-        // Resolve the head to its `FQTypeName` (current-module-or-prelude). A
-        // non-type head (a value `Var`, an unknown name) yields `None` — not a
-        // member reference.
-        let resolved = self.scope_resolve(state, type_part, Span::default()).ok()?;
-        let fqtn = type_def_view_of(&resolved.entry)?.name.clone();
-
-        // Probe the CANONICAL key `Type.member` directly (the real Public member
-        // `Def`, inverted model) in the type's home module, union-view (staging
-        // then live). Accept it only when it is a member owned by this exact type.
-        let key = cranelisp_types::member_key(&fqtn.name, member_part);
-        let entry = self.probe_module_entry_owned(&fqtn.module, key.as_ref())?;
-        match crate::adt::committed_member_owner(&entry) {
-            Some(owner) if owner == fqtn => Some((
-                FQSymbol {
-                    module: fqtn.module,
-                    symbol: key,
-                },
-                entry,
-            )),
-            _ => None,
-        }
+        let (home, key, entry, owned) = match &parent.entry.declaration {
+            Decl::Trait(record) => {
+                let fq_trait = cranelisp_types::FQTraitName::new(
+                    parent.canonical.module.clone(),
+                    record.info.name.clone(),
+                );
+                let key = cranelisp_types::member_key(fq_trait.name.as_ref(), dotted.member);
+                let Some(entry) = self.probe_module_entry_owned(&fq_trait.module, key.as_ref())
+                else {
+                    return Ok(None);
+                };
+                let owned = entry
+                    .trait_method()
+                    .is_some_and(|method| method.trait_name == fq_trait);
+                (fq_trait.module, key, entry, owned)
+            }
+            _ => {
+                let Some(view) = type_def_view_of(&parent.entry) else {
+                    return Ok(None);
+                };
+                let fqtn = view.name.clone();
+                let key = cranelisp_types::member_key(&fqtn.name, dotted.member);
+                let Some(entry) = self.probe_module_entry_owned(&fqtn.module, key.as_ref()) else {
+                    return Ok(None);
+                };
+                let owned = crate::adt::committed_member_owner(&entry).as_ref() == Some(&fqtn);
+                (fqtn.module, key, entry, owned)
+            }
+        };
+        Ok(owned.then_some((
+            FQSymbol {
+                module: home,
+                symbol: key,
+            },
+            entry,
+        )))
     }
 
     /// Look up a name in the current module's symbol table, following
@@ -1958,7 +1991,7 @@ where
     /// `CallableOrigin::Ctor` callable.
     ///
     /// - **Dotted** (`Maybe.Some`): the member core shared with value position
-    ///   ([`Self::resolve_dotted_member_entry`]).
+    ///   ([`Self::dotted_member_identity`]).
     /// - **Bare** (`SCons`): rooted at `state.current_module` with the
     ///   implicit-prelude fallback (Principle 17) —
     ///   [`Self::resolve_entry_scoped`]. A spelling with several candidates
@@ -1973,7 +2006,8 @@ where
     /// Returns the constructor-candidate binding (dotted and bare arms: the
     /// terminal whatever its kind) and, for a qualified miss, the walk's
     /// in-band gap. Only a caller that makes the miss the form's failure
-    /// records the gap.
+    /// records the gap. `Err` is a dotted reference whose parent spelling is
+    /// rejected (ambiguous or inaccessible), located at `span`.
     ///
     /// No product special-case: a product constructor's binding carries
     /// `type_name`/`tag` on its `CallableOrigin::Ctor` like a sum
@@ -1982,13 +2016,11 @@ where
         &self,
         state: &CheckState,
         name: &str,
-    ) -> (Option<Binding<C>>, Option<ResolutionGap>) {
-        // **Dotted `Type.Ctor` (`dotted-ctor-registration.md` §3.3).** A dotted
-        // head (`.` and no `/`) is a canonical constructor reference — resolve it
-        // through the SAME member core the value seam uses, so value and pattern
-        // agree by construction, for same-module and imported types alike.
-        if name.contains('.') && !name.contains('/') {
-            return (self.resolve_dotted_member_entry(state, name), None);
+        span: Span,
+    ) -> Result<(Option<Binding<C>>, Option<ResolutionGap>), ResolveError> {
+        if let Some(dotted) = DottedMember::parse(name) {
+            let member = self.dotted_member_identity(state, dotted, span)?;
+            return Ok((member.map(|(_, entry)| entry), None));
         }
         if name.contains('/') {
             let is_constructor = |resolved: &cranelisp_types::Resolved<C>| {
@@ -1998,10 +2030,11 @@ where
                     .is_some_and(|callable| matches!(callable.origin, CallableOrigin::Ctor { .. }))
                     .then(|| resolved.entry.clone())
             };
-            self.resolve_qualified_walk(state, name, is_constructor)
-                .unwrap_or((None, None))
+            Ok(self
+                .resolve_qualified_walk(state, name, is_constructor)
+                .unwrap_or((None, None)))
         } else {
-            (self.resolve_entry_scoped(state, name), None)
+            Ok((self.resolve_entry_scoped(state, name), None))
         }
     }
 
@@ -2062,19 +2095,11 @@ where
         self.scope_resolve(state, name, Span::default()).ok()
     }
 
-    /// Chain-follow a name starting from `module_path` to its canonical home,
-    /// returning `(terminal_entry, terminal_module)`. Per Principle 17 and
-    /// Decision 45 — used by Pattern B impl resolution.
-    ///
-    /// Walks per-symbol `ModuleEntry::Import` / `ModuleEntry::Reexport`
-    /// bindings one edge at a time along `source.module` references until a
-    /// canonical (non-Import/non-Reexport) entry is reached. Returns the
-    /// terminal entry plus the module that hosts it (the defining module).
-    /// Returns `None` if no entry exists for `name` in `module_path`, the
-    /// chain is malformed, or the chain depth limit is exceeded.
-    ///
-    /// Staging-aware (FIXME 0179): consults staging first via
-    /// [`Self::probe_module_entry_owned`].
+    /// Resolve the bare spelling `name` through `module_path`'s scope
+    /// ([`Self::scope_resolve_in`]) to its terminal entry and home module, the
+    /// module of its canonical identity. `None` on any resolve error, including
+    /// a spelling contested by several candidates. A reader that already holds
+    /// an identity reads its key instead.
     pub(crate) fn resolve_terminal_entry_and_home(
         &self,
         module_path: &ModuleFullPath,
@@ -2088,34 +2113,13 @@ where
             })
     }
 
-    /// The **prelude-fallback-aware** `(terminal entry, home)` resolver the
-    /// ownership envs use (S111 §15.2, spine §3.7(a3) — the a3 reachability
-    /// leg). Unlike the raw [`Self::resolve_terminal_entry_and_home`] (a
-    /// fallback-less `probe_module_entry_owned` + `Import`-chain follow), this
-    /// delegates to the single scope resolve ([`Self::scope_resolve_in`]), so
-    /// the implicit-prelude **fallback** + `Import`-chain follow + the I-1
-    /// public-head filter + the qualified-never-retries guard are ALL intrinsic
-    /// to `ResolutionScope::resolve` (decided once at scope construction from
-    /// the [`PreludeFallback`](crate::checker::TypeCheckEnv) bit) — the helper
-    /// hand-rolls nothing (Principle 7; the CLAUDE.md "never re-thread
-    /// `prelude_fallback_target` at a new call site" rule).
+    /// The same scope resolve as [`Self::resolve_terminal_entry_and_home`],
+    /// called by the ownership fact lookups in `ownership/fixpoint.rs`.
     ///
-    /// **Why this exists (the vec-assoc COW UAF cure).** The ownership fact
-    /// lookups formerly used the raw fallback-less resolver, so in any module
-    /// reaching a primitive via the implicit prelude (essentially all user
-    /// code) the probe MISSED — the entire §3.1(a) declared-fact precision was
-    /// silently dead, and results defaulted to the anti-conservative `Fresh`
-    /// (the false-`Fresh` half of the §3.7 root). Routing all five
-    /// `ownership/fixpoint.rs` probes through this ONE helper makes `vec-set`'s
-    /// `MayAliasOf(0)` reachable from a prelude-fallback module. Home = the
-    /// terminal storage module ([`Resolved::canonical`](cranelisp_types::Resolved::canonical)`.module`),
-    /// keeping identity discipline uniform with the 0620/0621 flip. A resolve
-    /// error (not-found, private-prelude-filtered, qualified-unknown) maps to
-    /// `None` — the same graceful miss the raw helper returns.
-    ///
-    /// Staging-aware: [`Self::scope_resolve_in`] selects the cluster staging
-    /// view when `staging.module == module_path`, matching the ownership pass's
-    /// finalize-time staging visibility.
+    /// Those lookups depend on the scope's implicit-prelude fallback: without
+    /// it, a primitive reached through the prelude misses, its declared
+    /// ownership fact is lost, and the analysis defaults to an
+    /// anti-conservative `Fresh`.
     pub(crate) fn resolve_terminal_entry_and_home_scoped(
         &self,
         module_path: &ModuleFullPath,

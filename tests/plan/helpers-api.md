@@ -58,10 +58,13 @@ impl Cranelisp {
 
     // === Mode (mutually exclusive) ============================================
 
-    /// Run as REPL (default). Equivalent to no `--run`/`--link`.
+    /// Run as REPL (default). Equivalent to no `--run`/`--test`/`--link`.
     pub fn repl(self) -> Self;
     /// Batch run via `--run <file>`.
     pub fn run(self, file: &str) -> Self;
+    /// Compiler-run tests via `--test <file>` (REPL §0.2.2): runs the entry's
+    /// import-chain tests and prints the shared runner report; `main` is not called.
+    pub fn test(self, file: &str) -> Self;
     /// Link via `--link <file>` only — produces an executable, does not run it.
     pub fn link(self, file: &str) -> Self;
     /// Link via `--link <file>` and then exec the produced binary.

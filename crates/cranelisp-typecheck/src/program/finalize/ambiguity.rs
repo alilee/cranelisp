@@ -68,6 +68,16 @@ impl AmbiguousForm {
     }
 }
 
+/// How the §3.11 gates read a call: the dispatch outcome, not surface types.
+enum CallDispatch {
+    /// The callee is not a trait method.
+    NotTraitMethod,
+    /// An argument, annotation or context selected the impl.
+    Selected,
+    /// A `Self`-returning method whose return type nothing pinned.
+    UnresolvedReturn,
+}
+
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Find a CODEGEN-REACHING value position whose finalised type retains an
     /// unconstrained `Type::Var` that no reachable use site pins (spec §3.11.1 —
@@ -312,18 +322,47 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         child: &Expr,
         resolved: &Type,
     ) -> bool {
-        if let Expr::Apply { callee, span, .. } = child
-            && let Expr::Var { name, .. } = callee.as_ref()
-            && self.method_to_trait_with_state(state, name).is_some()
-        {
+        if let Expr::Apply { callee, span, .. } = child {
             // Dispatch position — the OUTCOME is the discriminator, not the
             // (possibly stale) surface type.
-            return self.method_self_in_return(state, name.as_ref())
-                && self
-                    .method_return_dispatch_type(state, name, *span)
-                    .is_none();
+            match self.call_dispatch(state, callee, *span) {
+                CallDispatch::Selected => return false,
+                CallDispatch::UnresolvedReturn => return true,
+                CallDispatch::NotTraitMethod => {}
+            }
         }
         self.is_codegen_ambiguous_type(resolved)
+    }
+
+    /// Classify a call for the §3.11 gates from the canonical declaration its
+    /// callee's recorded carrier names. Qualification selects a declaration
+    /// without changing its type (spec §8.6.5), so `z`, `Zero.z` and `m/z`
+    /// classify alike.
+    fn call_dispatch(&self, state: &CheckState, callee: &Expr, call_span: Span) -> CallDispatch {
+        let Expr::Var { span, .. } = callee else {
+            return CallDispatch::NotTraitMethod;
+        };
+        let Some(cranelisp_types::VarRef::Global(selected)) =
+            state.method_resolutions.var_refs.get(span)
+        else {
+            return CallDispatch::NotTraitMethod;
+        };
+        let is_trait_method = self
+            .probe_module_entry_owned(&selected.module, selected.symbol.as_ref())
+            .is_some_and(|binding| {
+                matches!(binding.declaration, cranelisp_types::Decl::TraitMethod(_))
+            });
+        if !is_trait_method {
+            CallDispatch::NotTraitMethod
+        } else if self.method_self_in_return(selected)
+            && self
+                .method_return_dispatch_type(state, selected, call_span)
+                .is_none()
+        {
+            CallDispatch::UnresolvedReturn
+        } else {
+            CallDispatch::Selected
+        }
     }
 
     /// Collect the free vars in the RESULT type of every RESOLVED trait-method
@@ -344,15 +383,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Apply { callee, span, .. } = expr {
             // A RESOLVED trait-method dispatch (arg-directed / context-pinned) —
             // NOT a genuinely-unresolved return-poly dispatch (RD-3, unchanged).
-            let resolved_trait_dispatch = if let Expr::Var { name, .. } = callee.as_ref() {
-                self.method_to_trait_with_state(state, name).is_some()
-                    && !(self.method_self_in_return(state, name.as_ref())
-                        && self
-                            .method_return_dispatch_type(state, name, *span)
-                            .is_none())
-            } else {
-                false
-            };
+            let resolved_trait_dispatch = matches!(
+                self.call_dispatch(state, callee, *span),
+                CallDispatch::Selected
+            );
             // S110 B1 — a RESOLVED multi-sig/overload call (sig-dispatch) is also
             // benign. The module-wide `resolve_pending_overloads` drain (run BEFORE this
             // POST-drain LEG-2 scan) unified the call's fresh return var with the
@@ -533,10 +567,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         } = expr
             && args.is_empty()
             && let Expr::Var { name, .. } = callee.as_ref()
-            && self.method_self_in_return(state, name.as_ref())
-            && self
-                .method_return_dispatch_type(state, name, *span)
-                .is_none()
+            && matches!(
+                self.call_dispatch(state, callee, *span),
+                CallDispatch::UnresolvedReturn
+            )
         {
             sites.push(UnresolvedDispatchSite {
                 span: *span,

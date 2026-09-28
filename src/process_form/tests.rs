@@ -93,6 +93,111 @@ fn record_direct_macro_has_no_expanded_artifact() {
     );
 }
 
+// Macro replacement (ACT-0970): each publication replaces the record's
+// authored form, expansion and text, so a replacement is what regeneration
+// persists. `record_macro_generation` publishes one generation of `k`.
+fn record_macro_generation(
+    introspection: &dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>,
+    authored_text: &str,
+    expanded_text: Option<&str>,
+) {
+    let authored = cranelisp_frontend::parse(authored_text).unwrap().remove(0);
+    let published = match expanded_text {
+        Some(text) => cranelisp_frontend::parse(text).unwrap().remove(0),
+        None => authored.clone(),
+    };
+    form_dispatch::record_macro_introspection(
+        Some(introspection),
+        &ModuleFullPath::from("user"),
+        &Symbol::from("k"),
+        &published,
+        &authored,
+        Some(authored_text.to_string()),
+    );
+}
+
+fn macro_record(
+    introspection: &dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let rec = introspection
+        .get(&FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("k"),
+        })
+        .expect("record created");
+    (
+        rec.sexp.as_ref().map(Sexp::format_flat),
+        rec.source.clone(),
+        rec.expanded.as_ref().map(Sexp::format_flat),
+    )
+}
+
+fn flat(text: &str) -> String {
+    cranelisp_frontend::parse(text)
+        .unwrap()
+        .remove(0)
+        .format_flat()
+}
+
+// spec: repl/spec/18-redefinition.md §18.8 — a replaced macro's record carries
+// the new generation's form and text.
+#[test]
+fn record_macro_replacement_replaces_form_and_text() {
+    let introspection = dashmap::DashMap::new();
+    record_macro_generation(&introspection, "(defmacro k [] 1)", None);
+    record_macro_generation(&introspection, "(defmacro k [] 100)", None);
+    assert_eq!(
+        macro_record(&introspection),
+        (
+            Some(flat("(defmacro k [] 100)")),
+            Some("(defmacro k [] 100)".to_string()),
+            None
+        )
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.8 — a direct replacement of an
+// expansion-produced macro clears the expansion the new generation lacks.
+#[test]
+fn record_macro_replacement_clears_stale_expansion() {
+    let introspection = dashmap::DashMap::new();
+    record_macro_generation(
+        &introspection,
+        "(mdef k 1)",
+        Some("      (defmacro k [] 1)"),
+    );
+    record_macro_generation(&introspection, "(defmacro k [] 100)", None);
+    assert_eq!(
+        macro_record(&introspection),
+        (
+            Some(flat("(defmacro k [] 100)")),
+            Some("(defmacro k [] 100)".to_string()),
+            None
+        )
+    );
+}
+
+// spec: repl/spec/18-redefinition.md §18.8 — an expansion-produced replacement
+// of a direct macro records its outer form and its expansion.
+#[test]
+fn record_macro_replacement_sets_new_expansion() {
+    let introspection = dashmap::DashMap::new();
+    record_macro_generation(&introspection, "(defmacro k [] 1)", None);
+    record_macro_generation(
+        &introspection,
+        "(mdef k 100)",
+        Some("        (defmacro k [] 100)"),
+    );
+    assert_eq!(
+        macro_record(&introspection),
+        (
+            Some(flat("(mdef k 100)")),
+            Some("(mdef k 100)".to_string()),
+            Some(flat("(defmacro k [] 100)"))
+        )
+    );
+}
+
 // -----------------------------------------------------------------------
 // FQ auto-loading gap→load→retry mechanism (FIXME 0268, spec §8.5.4/§9.3.6)
 // -----------------------------------------------------------------------

@@ -19,7 +19,7 @@ use cranelisp_types::{
     TypeId, TypeRecord, TypeRef,
 };
 
-use crate::checker::type_def_view_of;
+use crate::checker::{is_type_candidate, type_def_view_of};
 
 /// Head-resolution environment for the ONE `TypeExpr -> Type` walk (FIXME 0590).
 ///
@@ -219,9 +219,7 @@ fn resolve_type_candidate<C: CodeStore>(
     let candidates = (ctx.resolve_candidates)(name)?;
     let mut type_candidates = candidates
         .into_iter()
-        .filter(|(entry, _)| {
-            matches!(entry.declaration, Decl::Type(_)) || type_def_view_of(entry).is_some()
-        })
+        .filter(|(entry, _)| is_type_candidate(entry))
         .collect::<Vec<_>>();
     type_candidates.sort_by_key(|(_, canonical)| canonical.to_string());
     type_candidates.dedup_by(|(_, left), (_, right)| left == right);

@@ -107,23 +107,24 @@ fn is_private_module(components: &[&str], stdlib: &Path) -> bool {
     false
 }
 
-// spec: spec/11-stdlib.md §11 + spec/08-modules.md §8.2 — every PUBLIC stdlib
-// module MUST compile and run cleanly: a `--run` program that imports each
-// public module's full surface (`[*]`) and returns `0` from `main` exits 0. The
-// gate enumerates the module set RECURSIVELY (skipping `prelude.cl` and every
+/// Public modules that `--run` must refuse under REPL §16.6: `testing.runner`
+/// compiles functions that reference `discover-tests`, and `testing` declares
+/// it as a public child. A compiled reference spreading into any other module
+/// fails that module's exit-0 condition.
+const REFUSED_UNDER_RUN: [&str; 2] = ["testing", "testing.runner"];
+
+/// The §16.6 diagnostic names the reference (`src/exe.rs`
+/// `refuse_dev_session_externs`).
+const REFUSAL_WORDING: &str = "references `discover-tests`";
+
+// spec: repl/spec/16-test-discovery.md §16.6 Availability by Invocation Mode —
+// every public stdlib module compiles; one without a compiled `discover-tests`
+// reference also runs under `--run` (a program importing its full surface
+// `[*]` and returning `0` from `main` exits 0); §16.6 refuses the named set, so
+// for those modules the refusal is the pass and exit 0 is a failure. A module
+// that fails to compile reports its compile error, not the refusal. The gate
+// enumerates the module set RECURSIVELY (skipping `prelude.cl` and every
 // `(mod- …)` private subtree) and reports EVERY failing module in one run.
-//
-// NOTE (per PLAN §S110 SG-1): this should be GREEN once 0604 lands; if any
-// module is RED on HEAD today, that is SIGNAL (a real stdlib-compile break), not
-// noise — the aggregated report names the module(s), for triage.
-// defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
-//   — RED at S118 close on `core.io/when-io` (taking `core` and `core.io` down
-//   with it): FIXME 0907 hard-refuses the concrete-`IO T` release with
-//   `constructor 'Bind' disagrees on declared parameter identity for
-//   'primitives/IO'`. A spec-conforming module, rejected. The aggregated
-//   report names every failing module, so any module OUTSIDE that trio is a
-//   new finding, not this defect. Census: tests/plan/s118-test-plan.md §11.1;
-//   minimal repro: spec_10_io::pure_pattern_accepted.
 #[test]
 fn stdlib_all_public_modules_compile_and_run() {
     let stdlib = stdlib_dir();
@@ -173,9 +174,9 @@ fn stdlib_all_public_modules_compile_and_run() {
             .run("main.cl")
             .timeout(Duration::from_secs(90))
             .output();
-        if !out.status.success() {
-            let combined = format!("{}\n{}", out.stdout, out.stderr);
-            let first_err = combined
+        let combined = format!("{}\n{}", out.stdout, out.stderr);
+        let first_err = || {
+            combined
                 .lines()
                 .find(|l| {
                     let l = l.trim();
@@ -183,8 +184,16 @@ fn stdlib_all_public_modules_compile_and_run() {
                 })
                 .unwrap_or("<no error line captured>")
                 .trim()
-                .to_string();
-            failures.push((m.clone(), first_err));
+                .to_string()
+        };
+        if REFUSED_UNDER_RUN.contains(&m.as_str()) {
+            if out.status.success() {
+                failures.push((m.clone(), "exit 0; REPL §16.6 requires refusal".to_string()));
+            } else if !combined.contains(REFUSAL_WORDING) {
+                failures.push((m.clone(), format!("not the §16.6 refusal: {}", first_err())));
+            }
+        } else if !out.status.success() {
+            failures.push((m.clone(), first_err()));
         }
     }
 

@@ -412,6 +412,94 @@ fn default_method_body_resolves_in_trait_defining_module() {
     });
 }
 
+// ---------------------------------------------------------------------
+// Return-type dispatch ambiguity under every spelling of the method.
+// §8.6.5: qualification selects the declaration without changing its type,
+// so `Zero.z` must meet the same §3.11 gates as bare `z`.
+// ---------------------------------------------------------------------
+
+const ZERO: &str = "(deftrait Zero (z [] self))\n\
+     (impl Zero Int (defn z [] 0))\n\
+     (impl Zero Float (defn z [] 0.0))\n";
+
+fn zero_program(body: &str) -> Vec<TopLevel> {
+    let sexps = cranelisp_frontend::parse(&format!("{ZERO}{body}")).expect("parse");
+    cranelisp_frontend::build_forms(&sexps).expect("build_forms")
+}
+
+fn unresolved_gaps(body: &str) -> Vec<DispatchGap> {
+    tc_with_prims()
+        .check_program_self(&zero_program(body))
+        .unwrap_or_else(|error| panic!("`{body}` must type-check: {error:?}"))
+        .unresolved_dispatch
+        .into_iter()
+        .map(|site| site.gap)
+        .collect()
+}
+
+// spec: spec/03-types.md §3.3.3 MUST (e), §3.11.1; spec/08-modules.md §8.6.5
+// — an unpinned nullary return dispatch bound in a concrete defn, or in an
+// evaluated expression, is the located §3.11.1 ambiguity under either
+// spelling, never a later codegen-view failure.
+#[test]
+fn unpinned_return_dispatch_value_position_is_ambiguous_for_every_spelling() {
+    for spelling in ["z", "Zero.z"] {
+        for (body, message) in [
+            (
+                format!("(defn m [] (let [x ({spelling})] 0))"),
+                "polymorphic value bound in `m`",
+            ),
+            (
+                format!("(let [x ({spelling})] 0)"),
+                "pin the type of this expression",
+            ),
+        ] {
+            let error = tc_with_prims()
+                .check_program_self(&zero_program(&body))
+                .expect_err(&format!("`{body}` must be rejected as ambiguous (§3.11.1)"));
+            assert!(
+                format!("{error}").contains(message),
+                "`{body}`: expected the located §3.11.1 ambiguity, got: {error}"
+            );
+        }
+    }
+}
+
+// spec: spec/03-types.md §3.3.3 MUST (e) row 16 and §3.11; spec/08-modules.md
+// §8.6.5 — an unpinned return dispatch, with or without a trait constraint,
+// is published as unresolved under either spelling (int applies the signal
+// at its execution boundaries).
+#[test]
+fn unpinned_return_dispatch_is_signalled_for_every_spelling() {
+    for spelling in ["z", "Zero.z"] {
+        assert_eq!(
+            unresolved_gaps(&format!("(defn g [] ({spelling}))")),
+            vec![DispatchGap::ReturnTypePoly],
+            "`({spelling})`"
+        );
+        assert_eq!(
+            unresolved_gaps(&format!("(defn g [] :Zero ({spelling}))")),
+            vec![DispatchGap::ValuePositionConstraint],
+            "`:Zero ({spelling})`"
+        );
+    }
+}
+
+// spec: spec/03-types.md §3.3.3 MUST (d) — a concrete annotation or a pinned
+// binding selects the impl, so neither spelling is signalled or rejected.
+#[test]
+fn pinned_return_dispatch_is_admitted_for_every_spelling() {
+    for spelling in ["z", "Zero.z"] {
+        for body in [
+            format!(":Int ({spelling})"),
+            format!("(let [r :Float ({spelling})] r)"),
+            format!("(defn m [] (let [x :Int ({spelling})] x))"),
+        ] {
+            assert_eq!(unresolved_gaps(&body), vec![], "`{body}`");
+        }
+    }
+}
+
 // =====================================================================
 // `Def.callees` completeness contract (FIXME 0470, S101 Wave 2)
 //

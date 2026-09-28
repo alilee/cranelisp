@@ -37,12 +37,11 @@ subject name and is kept because it is cited.
 
 ### 1.1 Resolution routes
 
-- **Dotted `Type.field`.** The checker's dotted-member resolution
-  (`checker.rs::resolve_dotted_member`) resolves the head through ordinary
-  scope resolution, then probes `Type.field` in the type's home module through
-  the staging-then-live union view. It accepts the entry only when
-  `adt::committed_member_owner` names that exact type. A non-member such as
-  `Box.nonfield` does not resolve as an accessor.
+- **Dotted `Type.field`.** The shared dotted-member resolver
+  ([constructor design §3.1](dotted-ctor-registration.md#31-shared-core--checkerrsdotted_member_identity))
+  probes `Type.field` in the type's home module and accepts it only when the
+  entry is a member of that exact type. A non-member such as `Box.nonfield`
+  does not resolve as an accessor.
 - **Bare `field`.** Ordinary module-scope resolution yields the spelling's
   candidates. Use-site candidate selection settles which declaration a use
   denotes. Typecheck then types the selected canonical binding.
@@ -154,31 +153,6 @@ its target type. The two declarations remain distinct:
 Impl coherence continues to govern competing implementations of the same
 method. Accessor names add no impl-registration check.
 
-### 2.1 Unresolved obligation — the source still rejects the overlap
-
-`traits/impl_check.rs::check_impl_method_accessor_collisions` still rejects such
-an `impl` before registration. The following tests assert that superseded
-behaviour:
-
-- the four `impl_method_colliding_*` cases in `adt/tests.rs`;
-- `tests/spec_05_definitions.rs::impl_method_colliding_with_field_accessor_rejected_neg`.
-
-This is a spec violation awaiting defect intake by `qa` under
-[`ACT-0983`](../../sprints/actions/ACT-0983-accessor-impl-collision-intake.md).
-Once intake is complete:
-
-- `dev` deletes the gate and the helper in §2.3; and
-- `test` replaces the rejection tests with evidence for the permitted overlap
-  and its ambiguous-use diagnostic.
-
-### 2.3 Accessor enumeration
-
-`crates/cranelisp-typecheck/src/adt.rs::field_accessor_names_of` walks the owning module's union view and
-keeps the entries that `committed_accessor_kind` classifies as accessors of the
-target type. It returns each canonical key's terminal field segment
-(`Box.v` → `v`). Its only consumer is the gate in §2.1. Delete it with the gate
-rather than retain a helper with no consumer.
-
 ## 3. Public surface
 
 Accessors add no public typecheck item, `cranelisp-types` type or
@@ -203,9 +177,10 @@ operations already on that crate's approved surface.
 |---|---|
 | Inversion box; §0 "unifying insight" | §0 and §1.6.1 |
 | §1.1–§1.3 | §1.1–§1.2 |
-| §1.4, §1.6.6, §2.7 (test plans) | §4 and §2.1 |
+| §1.4, §1.6.6, §2.7 (test plans) | §4 and §2 |
 | §1.5–§1.5.3 (visibility-by-arm ruling) | Retired, never implemented as final; §1.6.1 records why |
 | §1.6.4 (rework edits) | Delivered; §1.6.1 states the result |
-| §2.1–§2.2, §2.4–§2.6 (impl-time rejection) | §2 and §2.1 — superseded by spec §7.3.1 |
+| §2.1–§2.2, §2.4–§2.6 (impl-time rejection) | §2 — superseded by spec §7.3.1 |
 | §3 zero-baseline disposition; §4 quality attributes | §3 and the rationale in §1.6.1 |
 | §5 cross-references | The authority table at the top |
+| §2.1 unresolved obligation; §2.3 accessor enumeration | Removed with the obsolete collision gate; §2 states the current rule |

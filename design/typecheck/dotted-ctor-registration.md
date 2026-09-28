@@ -4,12 +4,15 @@ Owner: `design` narrow-deployed to `cranelisp-typecheck`. Subordinate to
 [`typecheck.md`](typecheck.md) and [`adt.md`](adt.md); the constructor sibling
 of [`fixme-0365-field-accessor-dotted.md`](fixme-0365-field-accessor-dotted.md).
 Reader: anyone changing how typecheck registers, resolves, selects or
-exhaustiveness-checks constructors.
+exhaustiveness-checks constructors, or changing the dotted-member resolver
+that constructors share with field accessors and trait methods.
 
 Required behaviour is in `spec/08-modules.md` §8.5.2 (canonical constructor
 name; product dual-facet corner) and §8.6.5 (shared bare constructor names),
 and `spec/06-pattern-matching.md` §6.2.1, §6.2.2, §6.2.4 and the §6.2 EBNF
-(dotted constructor patterns). Neighbouring authorities this design uses
+(dotted constructor patterns). The shared resolver also realises derived
+dotted access to a trait's methods (`spec/08-modules.md` §8.3.11, §8.5.2;
+`spec/07-traits.md` §7.4.2a). Neighbouring authorities this design uses
 without restating:
 
 | Subject | Authority |
@@ -80,14 +83,21 @@ registration a question only the use site can answer.
 ### 1.2 The committed-member recogniser
 
 `adt::committed_member_owner` answers "which type owns the member under this
-key" for both member kinds:
+key" for both type-member kinds:
 
 - a constructor's owner is read directly from `CallableOrigin::Ctor.type_name`;
 - an accessor's owner is read from its `(Fn [ADT] _)` scheme through
   `committed_accessor_kind`.
 
-It is the one recogniser the dotted resolver (§3.1) and alternative
-reconstruction use, so same-cluster and cross-cluster reads agree.
+It is the one type-member recogniser the dotted resolver (§3.1) and
+alternative reconstruction use, so same-cluster and cross-cluster reads agree.
+
+A trait's method is recognised by its own record instead: the owning
+`FQTraitName` it carries ([traits §1.4](traits.md#14-method-declarations)).
+Each parent kind therefore has exactly one recogniser, and each reads the
+owner from the declaration. Do not widen `committed_member_owner` to trait
+methods: `reconstruct_accessor_alternatives` enumerates through it, so a trait
+method would enter the type-member alternatives it lists.
 
 ### 1.3 Diagnostic alternatives
 
@@ -127,31 +137,106 @@ double-registered.
 - The degenerate `Point.Point` does not resolve: the resolver probes a key
   that does not exist (§3.1).
 
-## 3. The one member resolver — value and pattern position
+## 3. The one member resolver — value, pattern and dispatch
 
-### 3.1 Shared core — `checker.rs::resolve_dotted_member_entry`
+### 3.1 Shared core — `checker.rs::dotted_member_identity`
 
-One private core, `dotted_member_identity`, resolves a dotted `Type.member`
-spelling to its storage identity and terminal binding:
+One crate-visible core, `dotted_member_identity`, resolves a dotted
+`Parent.member` spelling to its storage identity and terminal binding. The
+parent is a type or a trait in bare scope:
 
 1. accept exactly one `.`, both sides non-empty, and no `/` (a `/` form is
    module qualification);
-2. resolve the head through ordinary scope resolution to a type
-   (`type_def_view_of`);
-3. probe `member_key(Type, member)` in the **type's home module**, staging over
-   live;
-4. accept only when `committed_member_owner` names that exact type.
+2. collect the head's candidates once through ordinary scope resolution, and
+   keep only those that can be a parent: types, judged by the same predicate
+   type syntax uses, and traits (spec §8.6.5 rule 2). Then count what
+   remains. None is not a member reference, several is an ambiguous parent,
+   and one is the parent;
+3. probe `member_key(Parent, member)` in the **parent's home module**, staging
+   over live;
+4. accept only when the terminal is owned by that exact parent, judged by the
+   parent kind's recogniser (§1.2):
+
+| Parent | Home and key name | Owner recogniser |
+|---|---|---|
+| Type | Its `FQTypeName` | `adt::committed_member_owner` names that type |
+| Trait | Its canonical `FQTraitName` | The method record's owning trait equals that trait |
 
 Rooting the probe in the home module is what makes the dotted form work across
-modules. `resolve_dotted_member_entry` projects the binding;
-`resolve_dotted_member_fq` projects the storage identity recorded as
-`VarRef::Global`.
+modules. The key is built from the parent's canonical name, never the written
+head, so a renamed import still probes the home key. A method imported without
+its trait does not make `T.m` resolve: the trait head must itself be in bare
+scope (spec §8.3.11).
+
+**The core is the only authority for a dotted spelling.** A bare
+`Parent.member` spelling is always a member access: no binder may be dotted
+(spec §1.4.4, §5 binder table), and spec §8.5.2 resolves it from the parent,
+bypassing bare-name lookup. The core's answer therefore has three outcomes,
+and no consumer adds a fourth:
+
+| Outcome | When | Consumer action |
+|---|---|---|
+| Member | The head keeps exactly one type or trait, and it owns `member` | Use the storage identity and binding |
+| Rejected | The head keeps several types or traits (`Ambiguous`, listing them), or the head's candidate walk fails with an error that is not a not-found | Return that error, located at the reference |
+| Miss | The head is not found, keeps no type or trait, or its one parent does not own `member` | Report the position's ordinary miss |
+
+- No consumer resolves a dotted spelling as a literal key through bare scope,
+  candidate collection or selection. The literal `Parent.member` key is a
+  storage key in the parent's home module. Glob imports and the prelude expose
+  it, so a literal read bypasses the parent's own candidate contest. In
+  ACT-1001 P-1, prelude `T` and imported `T` made the parent ambiguous, yet
+  `T.m` reached the prelude impl through the prelude's literal key.
+- The core follows `ResolutionScope::resolve_macro_head` in two separate
+  respects:
+  - **Candidate filtering.** Candidates are filtered by role before they are
+    counted. A same-spelled declaration that cannot be a parent does not
+    contest the parent. An example is a sum constructor's bare projection
+    `Num` beside a product type `Num` (spec §8.6.4). Such a declaration also cannot
+    hide the parent.
+  - **Error transport.** A not-found error from the walk is a Miss. Every
+    other `ResolveError` propagates as Rejected.
+
+  The core selects nothing further: it never chooses among the parents it
+  keeps, and never falls back to the literal key. Its `Ambiguous` error lists
+  the canonical parents it kept, as §8.6.5 requires.
+- The type test is the one type syntax uses
+  (`crates/cranelisp-typecheck/src/resolve.rs::resolve_type_candidate`).
+  Both positions share one crate-private predicate beside `type_def_view_of`, so a spelling that is ambiguous as a
+  type annotation is also ambiguous as a dotted parent. An intrinsic type
+  counts as a parent candidate. It owns no members, so as the only parent it is
+  a Miss.
+- Resolving the head to a unique declaration first and then checking its role
+  was rejected. It rejects a legal parent whenever a value shares its
+  spelling.
+- A spelling containing `/` is not dotted in this sense. Module-qualified
+  `m/T.m` keeps the qualified walk, which selects the parent by its module
+  (spec §8.5.3, §8.6.6).
+- Self-qualification is normalised to the bare spelling before this core
+  (`normalize_self_qualified`, S113 ruling (a)). A self-qualified dotted member
+  therefore follows the bare rule.
+
+Its consumers, each taking the outcome above:
+
+- value position, including the recorded carrier (§3.2);
+- pattern position and the auto-curry guard (§3.3);
+- trait-method dispatch (§3.5).
 
 ### 3.2 Value position
 
-`checker.rs::lookup` calls `resolve_dotted_member`, which projects the
-terminal callable's scheme; `lookup` instantiates it as for any value.
-`Color.Red : Color`; `Maybe.Some : (Fn [a] (Maybe a))`. First-class use needs
+`infer.rs::infer_var` consults the core once for a dotted spelling that is not
+lexically bound, before any bare candidate collection. That one outcome
+supplies both the scheme and the `VarRef::Global` storage identity, so typing
+and the carrier cannot disagree ([Principle 24](../arch/principles/24-resolve-once.md)).
+A dotted spelling never records a gap, because it has no module qualifier.
+Like every value attempt, it still writes the empty pending gap before it
+returns any outcome ([`typecheck.md` §3.5](typecheck.md#35-qualified-stacked-bounds-and-constructor-patterns)).
+Otherwise a gap left by an earlier miss could turn a dotted Rejected or Miss
+into a module-load retry.
+`checker.rs::lookup` answers a dotted spelling from the core alone. Its
+module-scope step never reads the literal key, so no other `lookup` caller can
+bypass the parent.
+`Color.Red : Color`; `Maybe.Some : (Fn [a] (Maybe a))`; a trait head yields
+the method's constrained scheme, as its bare spelling would. First-class use needs
 no branch: the canonical binding is an ordinary callable whose lifecycle state
 is carried by `Life`, not inferred by the resolver. The internal-constructor
 and constrained-value guards in `infer_var` reach the same terminal and read
@@ -159,13 +244,19 @@ and constrained-value guards in `infer_var` reach the same terminal and read
 
 ### 3.3 Pattern position and the auto-curry guard
 
-`checker.rs::resolve_constructor_entry` takes a dotted spelling (`.` and no
-`/`) through `resolve_dotted_member_entry` before its bare and `/`-qualified
+`checker.rs::resolve_constructor_entry` takes a `DottedMember` spelling
+(exactly one `.`, both sides non-empty, no `/`) through
+`dotted_member_identity` before its bare and `/`-qualified
 arms. `check_constructor_pattern` and `try_auto_curry` consume it, so
 `(Maybe.Some x)` and nullary `Maybe.None` reach the same canonical callable as
 value position, for same-module and imported types. `instantiate_ctor`
 instantiates from the origin's type and tag and returns the storage identity
-recorded in `MethodResolutions.pattern_ctors`.
+recorded in `MethodResolutions.pattern_ctors`. Both consumers keep only a
+`CallableOrigin::Ctor` terminal, so a dotted trait method in pattern position
+is not a constructor. A Rejected outcome is the pattern's error.
+`check_constructor_pattern` returns it rather than its not-a-constructor miss.
+The auto-curry arity guard is only a probe and ignores it, because value
+position reports the same outcome for the callee.
 
 A **bare** constructor pattern with several candidates is selected by the
 scrutinee type ([`dotted-ctor-canonical-keys.md`](../arch/dotted-ctor-canonical-keys.md)
@@ -178,6 +269,27 @@ scrutinee type ([`dotted-ctor-canonical-keys.md`](../arch/dotted-ctor-canonical-
 parenthesised `(Maybe.Some x)` and a bare uppercase-initial `Maybe.None` both
 become constructor patterns carrying the dotted name (§6.2.4). The capability
 is entirely typecheck resolution.
+
+### 3.5 Trait-method dispatch
+
+`traits/dispatch.rs::try_resolve_trait_method` branches on the written
+callee's shape:
+
+- A dotted spelling goes to the §3.1 core alone. A Rejected outcome is
+  returned as the dispatch error, and a Miss or a non-method terminal is "not
+  a trait method".
+- A bare or qualified spelling uses ordinary scope resolution.
+
+A `T.m` call whose trait is in bare scope only through an import or the
+prelude therefore dispatches at the call, exactly as at the trait's home.
+Dispatch then reads only the canonical declaration
+([traits §7](traits.md#7-method-resolution)).
+
+Dispatch must consult the core itself. Deferred settlement reads the recorded
+`VarRef` carrier, but the immediate `infer_apply` dispatch and the auto-curry
+drains call this function by spelling. If dispatch read the literal key
+instead, those routes could reach a member the carrier route rejects
+([Principle 24](../arch/principles/24-resolve-once.md)).
 
 ## 4. Exhaustiveness — `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module`
 
@@ -230,7 +342,7 @@ Typecheck's own readers and their disposition:
 | Dotted value and pattern resolution | §3. |
 | Bare value and pattern selection | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §5, §7. |
 | Exhaustiveness | §4. |
-| `instantiate_ctor` | Tag-indexed on `TypeDefInfo`; records the storage identity it resolved into `pattern_ctors` (arch §10). |
+| `instantiate_ctor` | Reads `TypeDefInfo` at the origin's type identity, never by spelling ([typecheck §3.3](typecheck.md#33-cross-module-lookups)); tag-indexed on it; records the storage identity it resolved into `pattern_ctors` (arch §10). |
 | `public_symbols()` → listing, glob export and harvest | Bindings only: `Maybe.Some` is the one listed entry and bare `Some` a candidate reached through `public_name_candidates` (lifecycle §3, §5.8; accessor sibling §1.6.5). Rendering is `repl/spec.md`'s. |
 | Mono collection and `callees` | Constructors are not monomorphised, and dotted member references record no `callees` edge. |
 
@@ -238,11 +350,12 @@ Typecheck's own readers and their disposition:
 
 - **No feature-specific crossing type.** Typecheck consumes the published
   `AdtEntrySpec`, lifecycle vocabulary, settlement funnels and
-  `expose_candidate` unchanged; the member resolver and recogniser are
+  `expose_candidate` unchanged; the member resolver and recognisers are
   crate-private. Constructors add no `public-api.txt` line.
 - **Single source of truth (Principle 7).** One `member_key` grammar, one
-  shared builder, one member resolver for value and pattern, one recogniser;
-  the canonical callable is the sole scheme and metadata source.
+  shared builder, one member resolver for value, pattern and dispatch (the
+  only authority for a dotted spelling, §3.1), one recogniser per parent kind; the canonical callable is the
+  sole scheme and metadata source.
 - **Structural invariant (Principle 18).** "`Maybe.Some` names exactly one
   thing" holds by construction: the canonical binding is always minted and
   public, and contest is confined to the bare spelling's candidate set.
@@ -273,9 +386,10 @@ Typecheck's own readers and their disposition:
 - Source: `crates/cranelisp-typecheck/src/adt.rs`
   (`register_type_def_with_ctor_infos`, `committed_member_owner`,
   `check_exhaustiveness_in_module`); `checker.rs` (`lookup`,
-  `resolve_dotted_member_entry`, `resolve_constructor_entry`,
-  `type_def_view_of`); `infer.rs` (`check_constructor_pattern`,
-  `try_auto_curry`, `instantiate_ctor`);
+  `dotted_member_identity`, `DottedMember`,
+  `resolve_constructor_entry`, `type_def_view_of`, `is_type_candidate`); `infer.rs`
+  (`check_constructor_pattern`, `try_auto_curry`, `instantiate_ctor`);
+  `traits/dispatch.rs` (`try_resolve_trait_method`);
   `crates/cranelisp-types/src/adt_build.rs` (`build_adt_entries`).
 - Designs: the authority table at the top.
 

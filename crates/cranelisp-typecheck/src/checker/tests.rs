@@ -1933,13 +1933,17 @@ fn fq_sum_ctor_resolves_in_pattern_from_unimporting_module() {
     // fallback) — proving the qualified arm, not an ambient import, is what
     // makes the resolution succeed.
     assert!(
-        env.resolve_constructor_entry(&state, "SCons").0.is_none(),
+        env.resolve_constructor_entry(&state, "SCons", Span::SYNTHETIC)
+            .unwrap()
+            .0
+            .is_none(),
         "bare `SCons` must NOT resolve from a module that has not imported macros"
     );
 
     // Qualified `macros/SList.SCons` probes the SUM ctor's canonical key.
     let entry = env
-        .resolve_constructor_entry(&state, "macros/SList.SCons")
+        .resolve_constructor_entry(&state, "macros/SList.SCons", Span::SYNTHETIC)
+        .unwrap()
         .0
         .expect("qualified canonical constructor must resolve via the FQ module split");
     match entry.callable().map(|callable| &callable.origin) {
@@ -2321,4 +2325,447 @@ fn type_position_failure_projection_records_gap_only_for_absent_module() {
             state.pending_gap
         );
     }
+}
+
+// --- Dotted trait-method members ---
+
+/// Declare `(deftrait DotTrait (dot-op [lhs rhs] self))` in `home`, returning
+/// the method's canonical identity `home/DotTrait.dot-op`.
+fn declare_dot_trait(tf: &mut TestFixture, home: &ModuleFullPath) -> FQSymbol {
+    tf.set_current_module(home.clone());
+    seed_glob_import(tf, &ModuleFullPath::from("primitives"));
+    tf.register_trait_decl_self(&make_unary_trait_decl("DotTrait", "dot-op"))
+        .unwrap();
+    FQSymbol {
+        module: home.clone(),
+        symbol: Symbol::from("DotTrait.dot-op"),
+    }
+}
+
+/// The dotted core's Member-or-Miss answer for `name`, which must parse as a
+/// [`DottedMember`] and whose parent must not be rejected.
+fn dotted_member_fq(tf: &TestFixture, name: &str) -> Option<FQSymbol> {
+    let dotted = DottedMember::parse(name).expect("a dotted spelling");
+    tf.env()
+        .dotted_member_identity(&tf.state, dotted, Span::SYNTHETIC)
+        .expect("the parent spelling is not rejected")
+        .map(|(fq, _)| fq)
+}
+
+// spec: spec/08-modules.md §8.5.2 — `DottedMember` is exactly one `.` with
+// both sides non-empty and no `/`; qualified and punctuation spellings are not
+// dotted members.
+#[test]
+fn dotted_member_parses_only_bare_parent_member_spellings() {
+    assert!(DottedMember::parse("T.m").is_some());
+    assert!(DottedMember::parse("Num.+").is_some());
+    for not_dotted in [".", "..", ".m", "T.", "a.b.c", "m/T.m", "T.m/x", "plain"] {
+        assert_eq!(DottedMember::parse(not_dotted), None, "{not_dotted}");
+    }
+}
+
+// spec: spec/08-modules.md §8.5.2 — importing a trait into bare scope gives
+// dotted access to its methods, rooted at the trait's home (ACT-1000).
+#[test]
+fn dotted_trait_method_resolves_through_imported_trait_head() {
+    let mut tf = tf_prims();
+    let home = ModuleFullPath::from("dot_home");
+    let member = declare_dot_trait(&mut tf, &home);
+    tf.set_current_module(ModuleFullPath::from("dot_user"));
+    seed_specific_import(&mut tf, &home, &["DotTrait"]);
+
+    assert_eq!(
+        dotted_member_fq(&tf, "DotTrait.dot-op"),
+        Some(member),
+        "`DotTrait.dot-op` must resolve at the imported trait's home"
+    );
+    assert!(
+        tf.env().lookup(&tf.state, "DotTrait.dot-op").0.is_some(),
+        "value-position lookup must type the dotted trait method"
+    );
+    assert_eq!(
+        dotted_member_fq(&tf, "DotTrait.absent"),
+        None,
+        "a name the trait does not declare is not a member"
+    );
+}
+
+// spec: spec/08-modules.md §8.3.11 — dotted access derives from the PARENT
+// being in bare scope; importing only the method does not bring its trait in.
+#[test]
+fn dotted_trait_method_needs_its_trait_in_bare_scope() {
+    let mut tf = tf_prims();
+    let home = ModuleFullPath::from("dot_home");
+    declare_dot_trait(&mut tf, &home);
+    tf.set_current_module(ModuleFullPath::from("dot_user"));
+    seed_specific_import(&mut tf, &home, &["dot-op"]);
+
+    assert!(
+        tf.env().lookup(&tf.state, "dot-op").0.is_some(),
+        "control: the bare method is imported"
+    );
+    assert_eq!(
+        dotted_member_fq(&tf, "DotTrait.dot-op"),
+        None,
+        "`DotTrait` is not in bare scope, so `DotTrait.dot-op` must not resolve"
+    );
+    assert!(tf.env().lookup(&tf.state, "DotTrait.dot-op").0.is_none());
+}
+
+// spec: spec/07-traits.md §7.4.2a — in the trait's own module and through the
+// prelude fallback, the dotted route names the same declaration the literal
+// `Trait.method` scope key does.
+#[test]
+fn dotted_trait_method_identity_agrees_with_scope_at_home_and_via_prelude() {
+    let mut tf = tf_prims();
+    let prelude = ModuleFullPath::from(PRELUDE_MODULE);
+    let member = declare_dot_trait(&mut tf, &prelude);
+    let user = ModuleFullPath::from("dot_user");
+    tf.env().ensure_module_exists(&user);
+    tf.prelude_fallback.insert(user.clone(), true);
+
+    for module in [prelude, user] {
+        tf.set_current_module(module.clone());
+        let scoped = tf
+            .env()
+            .scope_resolve(&tf.state, "DotTrait.dot-op", Span::SYNTHETIC)
+            .unwrap_or_else(|error| panic!("{module}: literal key must resolve: {error:?}"))
+            .canonical;
+        assert_eq!(scoped, member, "{module}: literal-key route");
+        assert_eq!(
+            dotted_member_fq(&tf, "DotTrait.dot-op"),
+            Some(member.clone()),
+            "{module}: the dotted route must name the literal key's declaration"
+        );
+    }
+}
+
+/// `dot_user` sees two distinct `DotTrait`s: the prelude's through the
+/// fallback and `dot_home`'s through `(import [dot_home [DotTrait]])`. Only
+/// the prelude's literal `DotTrait.dot-op` key is visible in bare scope.
+fn ambiguous_dot_trait_parent() -> TestFixture {
+    let mut tf = tf_prims();
+    declare_dot_trait(&mut tf, &ModuleFullPath::from(PRELUDE_MODULE));
+    let home = ModuleFullPath::from("dot_home");
+    declare_dot_trait(&mut tf, &home);
+    let user = ModuleFullPath::from("dot_user");
+    tf.set_current_module(user.clone());
+    tf.prelude_fallback.insert(user, true);
+    seed_specific_import(&mut tf, &home, &["DotTrait"]);
+    tf
+}
+
+// spec: spec/08-modules.md §8.5.2 — an ambiguous parent spelling needs its
+// canonical module qualification before a dotted member resolves; §8.6.5
+// ambiguity diagnostics list the surviving canonical alternatives (ACT-1001).
+#[test]
+fn dotted_member_under_ambiguous_trait_parent_is_rejected_listing_parents() {
+    let mut tf = ambiguous_dot_trait_parent();
+    match tf
+        .env()
+        .scope_resolve(&tf.state, "DotTrait", Span::SYNTHETIC)
+    {
+        Err(ResolveError::Ambiguous { candidates, .. }) => assert_eq!(
+            candidates.len(),
+            2,
+            "control: the parent spelling has two canonical homes"
+        ),
+        other => panic!("control: bare `DotTrait` must be ambiguous, got {other:?}"),
+    }
+
+    let dotted = DottedMember::parse("DotTrait.dot-op").unwrap();
+    match tf
+        .env()
+        .dotted_member_identity(&tf.state, dotted, Span::SYNTHETIC)
+    {
+        Err(ResolveError::Ambiguous { candidates, .. }) => {
+            let homes: Vec<String> = candidates.iter().map(ToString::to_string).collect();
+            assert!(
+                homes.contains(&"prelude/DotTrait".to_string())
+                    && homes.contains(&"dot_home/DotTrait".to_string()),
+                "the core rejects with both canonical parents, got {homes:?}"
+            );
+        }
+        other => panic!(
+            "the dotted core must reject the ambiguous parent, got {:?}",
+            other.map(|member| member.map(|(fq, _)| fq))
+        ),
+    }
+
+    assert!(
+        tf.env().lookup(&tf.state, "DotTrait.dot-op").0.is_none(),
+        "`lookup` answered `DotTrait.dot-op` under an ambiguous parent (the \
+         literal key resolves to {:?})",
+        tf.env()
+            .scope_resolve(&tf.state, "DotTrait.dot-op", Span::SYNTHETIC)
+            .map(|resolved| resolved.canonical)
+    );
+    let mut reference = Expr::var(Symbol::from("DotTrait.dot-op"), Span::new(3, 17));
+    let error = tf
+        .infer_expr_for_test(&mut reference)
+        .expect_err("value-position `DotTrait.dot-op` must be rejected");
+    let message = format!("{error}");
+    assert!(
+        message.contains("prelude/DotTrait") && message.contains("dot_home/DotTrait"),
+        "the rejection must list both canonical parents, got: {message}"
+    );
+}
+
+/// Register the nullary sum `(deftype DotBox DotC DotD)` in `home`.
+fn declare_dot_box(tf: &mut TestFixture, home: &ModuleFullPath) {
+    tf.set_current_module(home.clone());
+    let ctor = |name: &str| cranelisp_types::ConstructorDef {
+        name: Symbol::from(name),
+        docstring: None,
+        fields: vec![],
+        span: Span::SYNTHETIC,
+    };
+    tf.register_type_def_self(
+        &cranelisp_types::TypeName::from("DotBox"),
+        &None,
+        &[],
+        &[ctor("DotC"), ctor("DotD")],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+}
+
+/// The type-parent twin of [`ambiguous_dot_trait_parent`]: `dot_user` sees
+/// the prelude's `DotBox` through the fallback and `dot_home`'s through
+/// `(import [dot_home [DotBox]])`.
+fn ambiguous_dot_box_parent() -> TestFixture {
+    let mut tf = tf();
+    declare_dot_box(&mut tf, &ModuleFullPath::from(PRELUDE_MODULE));
+    let home = ModuleFullPath::from("dot_home");
+    declare_dot_box(&mut tf, &home);
+    let user = ModuleFullPath::from("dot_user");
+    tf.set_current_module(user.clone());
+    tf.prelude_fallback.insert(user, true);
+    seed_specific_import(&mut tf, &home, &["DotBox"]);
+    tf
+}
+
+// spec: spec/08-modules.md §8.5.2 — the type-parent twin: `Type.Ctor` under an
+// ambiguous type spelling needs the parent's module qualification; §8.6.5
+// lists the surviving canonical alternatives (ACT-1001 U2).
+#[test]
+fn dotted_member_under_ambiguous_type_parent_is_rejected_listing_parents() {
+    let mut tf = ambiguous_dot_box_parent();
+    assert!(
+        matches!(
+            tf.env().scope_resolve(&tf.state, "DotBox", Span::SYNTHETIC),
+            Err(ResolveError::Ambiguous { .. })
+        ),
+        "control: bare `DotBox` must be ambiguous"
+    );
+
+    assert!(
+        tf.env().lookup(&tf.state, "DotBox.DotC").0.is_none(),
+        "`lookup` answered `DotBox.DotC` under an ambiguous parent (the literal \
+         key resolves to {:?})",
+        tf.env()
+            .scope_resolve(&tf.state, "DotBox.DotC", Span::SYNTHETIC)
+            .map(|resolved| resolved.canonical)
+    );
+    let mut reference = Expr::var(Symbol::from("DotBox.DotC"), Span::new(3, 14));
+    let error = tf
+        .infer_expr_for_test(&mut reference)
+        .expect_err("value-position `DotBox.DotC` must be rejected");
+    let message = format!("{error}");
+    assert!(
+        message.contains("prelude/DotBox") && message.contains("dot_home/DotBox"),
+        "the rejection must list both canonical parents, got: {message}"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.2 — over-reject guard: a parent that resolves
+// to one declaration reaches its member even though the prelude defines a
+// same-named type the parent does not refer to.
+#[test]
+fn dotted_member_under_unique_type_parent_resolves_at_that_parent() {
+    let mut tf = tf();
+    declare_dot_box(&mut tf, &ModuleFullPath::from(PRELUDE_MODULE));
+    let user = ModuleFullPath::from("dot_user");
+    tf.set_current_module(user.clone());
+    tf.prelude_fallback.insert(user, true);
+
+    let mut reference = Expr::var(Symbol::from("DotBox.DotC"), Span::new(3, 14));
+    tf.infer_expr_for_test(&mut reference)
+        .expect("the prelude's `DotBox` is the only parent, so `DotBox.DotC` resolves");
+    assert!(
+        tf.env().lookup(&tf.state, "DotBox.DotD").0.is_some(),
+        "`lookup` resolves a sibling member of the unique parent"
+    );
+}
+
+/// Check `src` as an ordinary program in module `m`, with `primitives`
+/// imported.
+fn tf_program_in_m(src: &str) -> TestFixture {
+    let mut tf = tf_prims();
+    tf.set_current_module(ModuleFullPath::from("m"));
+    seed_glob_import(&mut tf, &ModuleFullPath::from("primitives"));
+    crate::program::test_support::check_src(&mut tf, src);
+    tf
+}
+
+/// The sorted canonical candidates of the bare spelling `name`.
+fn bare_candidates(tf: &TestFixture, name: &str) -> Vec<String> {
+    let mut canonicals: Vec<String> = tf
+        .env()
+        .scope_resolve_candidates(&tf.state, name, Span::SYNTHETIC)
+        .unwrap_or_else(|error| panic!("`{name}` must have candidates: {error:?}"))
+        .into_iter()
+        .map(|candidate| candidate.canonical.to_string())
+        .collect();
+    canonicals.sort();
+    canonicals
+}
+
+// spec: spec/08-modules.md §8.5.2, §8.6.5 rule 2 — the dotted parent position
+// keeps only type and trait candidates before counting, so a product type
+// whose spelling a sum constructor shares is still the one parent (§8.6.4).
+#[test]
+fn dotted_member_under_type_parent_contested_by_constructor_resolves() {
+    let mut tf = tf_program_in_m("(deftype Qnum [:Int value]) (deftype Qtok (Qnum [:Int n]) Qend)");
+    assert_eq!(
+        bare_candidates(&tf, "Qnum"),
+        ["m/Qnum", "m/Qtok.Qnum"],
+        "control: the type and the sum constructor share the bare spelling"
+    );
+
+    assert_eq!(
+        dotted_member_fq(&tf, "Qnum.value"),
+        Some(FQSymbol {
+            module: ModuleFullPath::from("m"),
+            symbol: Symbol::from("Qnum.value"),
+        })
+    );
+    let mut reference = Expr::var(Symbol::from("Qnum.value"), Span::new(3, 13));
+    let ty = tf
+        .infer_expr_for_test(&mut reference)
+        .expect("`Qnum.value` names the type's accessor");
+    let qnum = Type::ADT(
+        cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from("m"),
+            cranelisp_types::TypeName::from("Qnum"),
+        ),
+        vec![],
+    );
+    assert_eq!(ty, Type::Fn(vec![qnum], Box::new(Type::Int)));
+}
+
+// spec: spec/08-modules.md §8.5.2, §8.6.5 rule 2 — the trait arm of the
+// parent filter: a trait whose spelling a sum constructor shares is still the
+// one parent of its methods.
+#[test]
+fn dotted_member_under_trait_parent_contested_by_constructor_resolves() {
+    let tf = tf_program_in_m("(deftrait Qshow (qshow [self] Int)) (deftype Qw (Qshow [:Int n]))");
+    assert_eq!(
+        bare_candidates(&tf, "Qshow"),
+        ["m/Qshow", "m/Qw.Qshow"],
+        "control: the trait and the sum constructor share the bare spelling"
+    );
+
+    assert_eq!(
+        dotted_member_fq(&tf, "Qshow.qshow"),
+        Some(FQSymbol {
+            module: ModuleFullPath::from("m"),
+            symbol: Symbol::from("Qshow.qshow"),
+        })
+    );
+}
+
+// spec: spec/08-modules.md §8.6.5 — an ambiguous parent's diagnostic lists
+// exactly the surviving type and trait alternatives, never a same-spelled
+// constructor the parent position discarded.
+#[test]
+fn dotted_member_ambiguity_lists_only_parent_candidates() {
+    let mut tf = ambiguous_dot_box_parent();
+    crate::program::test_support::check_src(&mut tf, "(deftype DotW DotBox DotZ)");
+    assert_eq!(
+        bare_candidates(&tf, "DotBox"),
+        ["dot_home/DotBox", "dot_user/DotW.DotBox", "prelude/DotBox"],
+        "control: two type parents and one sum constructor share the spelling"
+    );
+
+    let dotted = DottedMember::parse("DotBox.DotC").unwrap();
+    match tf
+        .env()
+        .dotted_member_identity(&tf.state, dotted, Span::SYNTHETIC)
+    {
+        Err(ResolveError::Ambiguous { candidates, .. }) => {
+            let mut parents: Vec<String> = candidates.iter().map(ToString::to_string).collect();
+            parents.sort();
+            assert_eq!(parents, ["dot_home/DotBox", "prelude/DotBox"]);
+        }
+        other => panic!(
+            "two type parents must be ambiguous, got {:?}",
+            other.map(|member| member.map(|(fq, _)| fq))
+        ),
+    }
+}
+
+// spec: design/typecheck/typecheck.md §3.5 — every value attempt writes the
+// pending gap, so a stale gap never turns a dotted Rejected or Miss into a
+// `CheckError::Gap`.
+#[test]
+fn dotted_value_outcome_clears_a_stale_pending_gap() {
+    let mut tf = ambiguous_dot_trait_parent();
+    for (spelling, outcome) in [("DotTrait.dot-op", "Rejected"), ("Absent.m", "Miss")] {
+        tf.state.pending_gap = Some(ResolutionGap::SymbolTypechecked(FQSymbol {
+            module: ModuleFullPath::from("stale"),
+            symbol: Symbol::from("x"),
+        }));
+        let mut reference = Expr::var(Symbol::from(spelling), Span::new(3, 17));
+        tf.infer_expr_for_test(&mut reference)
+            .expect_err("the dotted spelling does not resolve");
+        assert!(
+            tf.state.pending_gap.is_none(),
+            "{outcome} `{spelling}` left {:?}",
+            tf.state.pending_gap
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.6.4 — a type's identity names its own binding
+// while another type's constructor shares its bare spelling, for a sum type and
+// for a product type whose constructor carries the type facet.
+#[test]
+fn type_def_by_identity_reads_the_key_under_a_contested_spelling() {
+    let tf = tf_program_in_m(
+        "(deftype Qtok (Qa [:Int n]) Qb) (deftype Qwrap (Qtok [:Int x])) \
+         (deftype Qnum [:Int value]) (deftype Qalt (Qnum [:Int n]) Qend)",
+    );
+    let identity = |name: &str| {
+        cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from("m"),
+            cranelisp_types::TypeName::from(name),
+        )
+    };
+    for (name, contester, constructors) in [
+        ("Qtok", "m/Qwrap.Qtok", vec!["Qa", "Qb"]),
+        ("Qnum", "m/Qalt.Qnum", vec!["Qnum"]),
+    ] {
+        let mut expected = [format!("m/{name}"), contester.to_string()];
+        expected.sort();
+        assert_eq!(
+            bare_candidates(&tf, name),
+            expected,
+            "control: `{name}` is contested"
+        );
+        let info = tf
+            .env()
+            .type_def_by_identity(&identity(name))
+            .unwrap_or_else(|| panic!("`m/{name}` reads as its type"));
+        assert_eq!(info.name, identity(name));
+        let read: Vec<&str> = info.constructors.iter().map(|c| c.as_ref()).collect();
+        assert_eq!(read, constructors);
+    }
+    assert!(
+        tf.env()
+            .type_def_by_identity(&identity("Qwrap.Qtok"))
+            .is_none(),
+        "a key holding a sum constructor is not a type"
+    );
 }

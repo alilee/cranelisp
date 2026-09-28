@@ -1,47 +1,4 @@
 use super::*;
-use cranelisp_types::{FQTypeName, ModuleFullPath, Scheme, Type, TypeName};
-use std::collections::HashMap;
-
-fn option_string() -> Type {
-    Type::ADT(
-        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Option")),
-        vec![Type::String],
-    )
-}
-
-fn mono_scheme(ty: Type) -> Scheme {
-    Scheme {
-        type_vars: vec![],
-        constraints: HashMap::new(),
-        ty,
-    }
-}
-
-// spec: design/arch/test-discovery.md §5 — eligibility = test- prefix AND
-// the EXACT scheme (Fn [] (Option String)).
-#[test]
-fn eligible_only_for_exact_zero_arg_option_string() {
-    // The exact eligible shape.
-    assert!(test_scheme_is_eligible(&mono_scheme(Type::Fn(
-        vec![],
-        Box::new(option_string())
-    ))));
-    // Wrong arity (one param) — excluded.
-    assert!(!test_scheme_is_eligible(&mono_scheme(Type::Fn(
-        vec![Type::Int],
-        Box::new(option_string())
-    ))));
-    // Wrong return (Option Int) — excluded.
-    assert!(!test_scheme_is_eligible(&mono_scheme(Type::Fn(
-        vec![],
-        Box::new(Type::ADT(
-            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Option")),
-            vec![Type::Int],
-        )),
-    ))));
-    // Not a function (a value) — excluded.
-    assert!(!test_scheme_is_eligible(&mono_scheme(Type::Int)));
-}
 
 // spec: design/arch/test-discovery.md §6 — the wrapper closure reads its
 // captured GOT-slot address and indirects to the current code pointer.

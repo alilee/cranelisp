@@ -210,7 +210,7 @@ user> /refs unused-helper
 
 #### 17.6.2 `/tests-for <sym>` [S88]
 
-`/tests-for <sym>` lists the **test functions whose body references `<sym>`** — "what tests exercise this?" A test function is one recognized by the test convention (the `test-` prefix and the test signature, §16.1). [S88]
+`/tests-for <sym>` lists the **test functions whose body references `<sym>`** — "what tests exercise this?" A test function is one recognized by the test convention (the `test-` prefix and the test signature, §16.1). [Tested+Neg tests/agent.rs::tests_for_filters_to_test_functions — an exact-typed referencing test is listed and a non-test referer is not; the mistyped nullary `test-` referer's exclusion, beside an exact-typed sibling, with no warning in the output, is unit-pinned at src/repl/commands.rs::tests_for_filter_tests::tests_for_lists_only_referers_with_the_test_signature]
 
 - The argument is required. `/tests-for` with no argument MUST print a usage hint: `Usage: /tests-for <symbol-name>`. [S88]
 - The output lists matching test functions by fully-qualified name, using the `/list` layout (§3.3 L0–L4), byte-identical for the same name set. [S88]

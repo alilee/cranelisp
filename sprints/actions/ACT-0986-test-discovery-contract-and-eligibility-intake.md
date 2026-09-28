@@ -1,6 +1,6 @@
 ---
 id: ACT-0986
-title: Reconcile test-discovery eligibility and published contract evidence
+title: Resolve the remaining test-discovery contract discrepancies
 status: open
 priority: required
 from: arch
@@ -8,91 +8,72 @@ to: qa
 sprint: 122
 filed_at: 2026-09-22
 refers_to:
-  - design/arch/test-discovery.md
+  - repl/spec/16-test-discovery.md
   - spec/appendix-a-builtins.md
+  - design/arch/test-discovery.md
+  - design/int/test-runner.md
   - src/session_v4/test_runner.rs
-  - src/repl/commands.rs
+  - crates/cranelisp-frontend/src/ast_builder/tests.rs
 ---
 
 ## Request
 
-Assess the source-read discrepancies retained in the current test-discovery
-design. They were not exercised during documentation cleanup:
+Two discrepancies remain open. Both fall outside the compiler-owned runner.
 
-- The slash command uses `discover_test_names` (prefix, zero parameters,
-  compiled body); the extern uses `discover_eligible_tests` (exact return
-  scheme as well). Determine the user-visible difference with a valid test
-  control and a mis-typed test candidate.
-- The spec requires a discovery-time warning for excluded mis-typed tests.
-  The extern comments assign it to the slash-command path, whose inspected
-  handler emits no such warning. Establish the observed behavior.
-- The 2026-09-22 user ruling settles the return type as a direct vector:
-  introspection notionally produces a constant. The pure result
-  contract is recorded in REPL section 16.3 and Appendix A; their coverage is
-  marked Uncovered S122 for QA reassessment.
-  No IO implementation change is required by this ruling.
-- Spec assessment corrected the initial sugar observation: the reference
-  library supplies `discover-here` in `stdlib/testing/runner.cl`. The primitive
-  itself takes a vector. The user approved correcting the spec signature and
-  runner calls to vectors and documenting the optional macro separately; those
-  corrections are applied. The user settled empty-vector scope on 2026-09-22:
-  retain the session current module, without recursive import traversal. QA
-  reassesses evidence for scope and the corrected call shapes.
-  Broader project regression discovery is deferred in
-  [ACT-0988](ACT-0988-project-regression-discovery.md).
-- Appendix A still describes unresolved-symbol failure under --link; the
-  design and existing link tests describe an earlier named compile-time refusal.
-  The proposed normative correction was held when the user chose future
-  capability parity between normal run and release execution, with an explicit
-  test-harness mode. Coordinate this requirement through
-  [ACT-0988](ACT-0988-project-regression-discovery.md); do not treat the proposed
-  wording permitting discovery in ordinary --run as approved.
+1. **In-language discovery does not warn.**
+   - REPL §16.1 and the Appendix A `discover-tests` row require a mistyped
+     `test-` function to be excluded and warned at discovery time.
+   - `discover_eligible_tests` in `src/session_v4/test_runner.rs` discards the
+     shared scan's warnings. The runner design's
+     [residual leads](../../design/int/test-runner.md#12-residual-leads) and
+     `design/arch/test-discovery.md` record the same thing: the extern runs
+     inside compiled code and has no warning channel.
+   - A REPL `(discover-tests [])` over a mistyped test therefore excludes it
+     silently.
+   - Resolve by one of these, not both:
+     - a user ruling, through `spec`, that confines the warning to the
+       compiler runner, or that accepts the residual; or
+     - a failing `test` reproduction, then an `arch`/`design` warning channel
+       for extern calls.
+2. **§16.5 and one frontend test attribution.**
+   - The REPL §16.5 programmatic-use example does not follow settled syntax:
+     - each `match` arm is in its own vector, where spec §4.8 requires one
+       flat `[pattern body …]` vector;
+     - it uses nested constructor patterns such as `(Ok (Some why))`, which
+       spec §6.6.1 rejects;
+     - it uses `map`, `filter`, `str-concat` and `contains?` without importing
+       them.
+   - Assess a runnable form against settled syntax and route the prose to
+     `spec`. Keep this separate from discovery behaviour.
+   - `crates/cranelisp-frontend/src/ast_builder/tests.rs::test_discover_tests_no_arg_builds_as_apply`
+     cites Appendix A for a parse-only property. The requirement it observes is
+     REPL §16's "parse as plain applications". Arity rejection is evidenced
+     separately by
+     `tests/spec_12_runtime.rs::discover_tests_neg_no_argument_and_string_forms_are_type_errors`.
+     The citation belongs to frontend `dev`.
 
-- The spec call-shape pass found additional problems in the programmatic-use
-  example: match-arm grouping and nested constructor patterns differ from the
-  current grammar, and helper imports are incomplete. Assess a runnable example
-  against settled syntax; keep this distinct from discovery behavior changes.
-  The frontend parse-only test `test_discover_tests_no_arg_builds_as_apply`
-  also needs its requirement attribution checked: parsing an application is
-  separate from accepting its arity during typechecking.
+## Resolved on 2026-09-28 (QA)
+
+I opened the source and evidence for each item below.
+
+- **Slash command versus extern eligibility.** Both use one predicate,
+  `discovery::classify_test_definition`. `/run-tests` and `--test` read it
+  through the shared runner, and `discover-tests` through the same scan.
+  Evidence: `tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests`
+  and `tests/spec_12_runtime.rs::discover_tests_excludes_mistyped_test_neg`.
+- **The runner's warning.** `--test` writes the warning to stderr, and
+  `/run-tests` shows it. The same TR-1 cell evidences both.
+- **The direct-vector result and scope.** Evidenced as recorded on the
+  Appendix A row.
+- **Mode availability, including `--link`.** Appendix A now defers to REPL
+  §16.6. Evidence: `tests/test_runner.rs` TR-5 and TR-5c.
+- **The DT-1 carry.** Superseded by TR-5, which passes.
 
 ## Completion evidence
 
-Record requirement authority and evidence separately for each discrepancy.
-Confirmed defects need narrow unignored spec-traced reproductions and controls;
-no assertion or runtime change is authorized by this filing alone. Any unsettled
-language choice returns to the user through spec, one decision at a time.
+- For item 1: a recorded user disposition, or a failing un-ignored spec-traced
+  reproduction plus its correction.
+- For item 2: a runnable §16.5 form accepted by `spec`, and the frontend
+  citation corrected.
 
-## Approved carry: ordinary-run discovery
-
-On 2026-09-27 the user approved carrying DT-1's confirmed `--run` defect
-with the explicit test-harness work in
-[ACT-0988](ACT-0988-project-regression-discovery.md). Enabling discovery in
-ordinary `--run` now would add capability that the approved `--test`
-direction relocates. This carry applies only to DT-1, not the other intake
-items in this action.
-
-Source rechecked on approval: `discover_tests_extern` in
-`src/session_v4/test_runner.rs` returns an empty vector when its runner state
-is absent. The unignored regression
-`tests/spec_12_runtime.rs::discover_tests_named_module_under_run_counts_its_tests`
-expects three tests and observes zero. Keep that guard failing until the
-approved harness requirements and implementation settle its replacement.
-The carry neither accepts silent empty discovery as correct nor selects new
-REPL or CLI semantics.
-
-Provenance: arch session `d96c6803-f6bb-41af-9b27-55ce03ad1d30`; sprint reopened
-both discovery scans, the slash-command handler and Appendix A before filing.
-
-
-## Requirement assessment
-
-Spec session `25b7b7c9-1981-41b9-94db-c9e27c94316e` recovered conflicting S76
-return-type authority. The user subsequently chose notionally constant
-introspection and the direct vector result (2026-09-22). The return-type
-question is settled. The subsequent user ruling also settles empty-vector
-module scope as the session current module; evidence reassessment remains open.
-Warning and exact eligibility requirements are settled. Early linked-mode
-refusal was the anticipated replacement for an explicitly interim unresolved
-symbol failure. The proposed replacement prose remains unapproved; the later
-mode-parity ruling and deferred harness work are recorded in ACT-0988.
+This filing authorizes no assertion or runtime change by itself.

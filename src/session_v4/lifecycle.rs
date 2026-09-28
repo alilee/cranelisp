@@ -137,6 +137,7 @@ impl CompilerSession {
             shared,
             error_modules: HashSet::new(),
             failed_forms: HashMap::new(),
+            restart_required: HashMap::new(),
             watcher: None,
             worker_pool: crate::worker_pool::WorkerPool::new(
                 priority_worker_handles,
@@ -1294,28 +1295,56 @@ impl CompilerSession {
         // the complete selected graph before this loop consumes it.
         let modules_to_reload = self.watcher_reload_plan(&changed_paths);
 
-        let mut messages = Vec::new();
-        for (module_path, file_path) in modules_to_reload {
-            // Extract just the filename for the notification message.
-            let file_name = file_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_else(|| module_path.as_ref());
-            match self.reload_module(&module_path, &file_path) {
-                Ok(()) => {
-                    // `reload_module` itself clears `error_modules` +
-                    // `failed_forms` on success (S102 W5R B-1).
-                    messages.push(format!("[updated: {}]", file_name));
-                }
-                Err(e) => {
-                    self.error_modules.insert(module_path.clone());
-                    messages.push(format!("[errors: {}]\n  {e}", file_name));
-                }
-            }
-        }
-        messages
+        modules_to_reload
+            .into_iter()
+            .map(|(module_path, file_path)| {
+                self.reload_with_notice(&module_path, &file_path)
+                    .into_message()
+            })
+            .collect()
     }
 
+    /// Reload one module and describe the outcome as its §14 notification.
+    /// A failure adds the module to the error set (`design/int/repl-lifecycle.md`
+    /// §1.3); `reload_module` itself clears it on success.
+    pub(crate) fn reload_with_notice(
+        &mut self,
+        module_path: &ModuleFullPath,
+        file_path: &Path,
+    ) -> ReloadNotice {
+        let file_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_else(|| module_path.as_ref())
+            .to_string();
+        match self.reload_module(module_path, file_path) {
+            Ok(()) => ReloadNotice::Updated(format!("[updated: {file_name}]")),
+            Err(e) => {
+                self.error_modules.insert(module_path.clone());
+                ReloadNotice::Errors(format!("[errors: {file_name}]\n  {e}"))
+            }
+        }
+    }
+}
+
+/// The §14 notification of one module reload (`repl/spec/14-file-watching.md`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReloadNotice {
+    /// `[updated: <file>]`.
+    Updated(String),
+    /// `[errors: <file>]` and the indented error.
+    Errors(String),
+}
+
+impl ReloadNotice {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            ReloadNotice::Updated(message) | ReloadNotice::Errors(message) => message,
+        }
+    }
+}
+
+impl CompilerSession {
     /// Regenerate the backing .cl file for the current module.
     ///
     /// Called after successful eval of a definition (defn, deftype, deftrait,
@@ -1382,6 +1411,11 @@ impl CompilerSession {
 
     pub fn regenerate_backing_file(&mut self) {
         let module = self.current_module_path();
+        // A restart-required module's saved file holds the edit the session
+        // refused; the REPL must not overwrite it (§14.8).
+        if self.restart_required.contains_key(&module) {
+            return;
+        }
 
         // Get the backing file path (typecheck-product-recorded, else default).
         let file_path = self.backing_file_path_for(&module);
@@ -1404,27 +1438,31 @@ impl CompilerSession {
             return;
         }
 
-        // FIXME 0220 (/arch ruling S81): lazy on-demand introspection
-        // rehydration for cache-loaded symbols. A module restored from the
-        // compile cache has no REPL-only Introspection records, so a
-        // cache-restored `UserFn` would be silently dropped from the
-        // regenerated `.cl` (its source rides neither introspection nor
-        // `macro_sexp`). Re-read the backing `.cl` (the cache key — always
-        // present) and populate the missing UserFn records before regen.
+        // Entries installed from the backing file (cache restore, or a fresh
+        // load of declarations) have no authored-form records; the file they
+        // were installed from supplies them (session-persistence.md §2.4.2).
         if let Some(intro) = self.shared.introspection.as_ref()
             && let Ok(backing_source) = std::fs::read_to_string(&file_path)
         {
-            crate::save::rehydrate_userfn_introspection_from_source(
-                &st,
-                intro,
-                &module,
-                &backing_source,
-            );
+            crate::save::rehydrate_introspection_from_source(&st, intro, &module, &backing_source);
         }
 
         // Generate source text.
-        let source =
-            crate::save::generate_module_source(&st, self.shared.introspection.as_ref(), &module);
+        let source = match crate::save::generate_module_source(
+            &st,
+            self.shared.introspection.as_ref(),
+            &module,
+        ) {
+            Ok(source) => source,
+            Err(unrendered) => {
+                eprintln!(
+                    "Warning: failed to save {}: no recorded source for {unrendered}; \
+                     the file keeps its previous content",
+                    file_path.display()
+                );
+                return;
+            }
+        };
 
         // S102 CS-0489 (§15.2.3 no-silent-drop): re-emit the retained
         // failed-form verbatim texts — the degraded startup load's broken
@@ -1494,8 +1532,8 @@ impl CompilerSession {
 
     /// Reload a single module from its source file.
     ///
-    /// Clears the module's stale products, re-parses, and re-registers with
-    /// the scheduler (the fresh sexps ride the re-register work packet — S78).
+    /// Replaces the module's typecheck product, re-parses, and re-registers
+    /// with the scheduler (the fresh sexps ride the re-register work packet — S78).
     /// The persistent priority workers pick up the re-registration and
     /// re-typecheck + re-codegen. Sprint 57 Wave 4 G11 per
     /// `persistent-workers.md` §4.6 — reload via scheduler falls out of
@@ -1522,27 +1560,27 @@ impl CompilerSession {
                 ),
             })?;
 
-        // Remove stale products before recompilation.
-        // Sprint 57 Wave 2 G6: `codegen_products` was deleted; compiled code
-        // lives on `ModuleEntry::Def.code`.
-        //
-        // S101 (design/int/session-transaction.md §6.3): move each displaced
-        // `Code` handle into the session retention pool instead of `None`-ing
-        // it. The former comment here claimed "`kept_jits` keeps the old
-        // mmap'd pages alive" — but `kept_jits` was dissolved in S58
-        // (Decision 35; retention moved per-entry onto `Code::Jit`), so
-        // `*code = None` dropped what may be the LAST Arc and freed machine
-        // code that in-flight frames or heap closures could still execute.
-        // The pool restores the intended policy ("old code stays callable for
-        // in-flight calls"): pages stay mapped for the session lifetime.
         crate::observability::record_module_event(
             crate::observability::SchedulerTraceTag::ClearModuleState,
             module_path.as_ref(),
         );
-        self.shared.typecheck_products.remove(module_path);
+        // The fresh product keeps the backing path regeneration writes to and,
+        // for introspection, the re-read text that form processing slices
+        // verbatim records from (`design/int/repl-lifecycle.md` §1.2).
+        self.shared.typecheck_products.insert(
+            module_path.clone(),
+            crate::session_v4::TypecheckProduct {
+                file_path: Some(file_path.to_path_buf()),
+                source_text: self.shared.introspection.is_some().then(|| source.clone()),
+                unresolved_dispatch: Vec::new(),
+            },
+        );
         // Compiled owners stay attached until staged publication replaces
         // them. The publication record returns each displaced owner so the
-        // commit gate can retain it before releasing the module write guard.
+        // commit gate can retain it before releasing the module write guard;
+        // dropping a displaced `Code` would free machine code in-flight frames
+        // or heap closures may still execute
+        // (`design/int/session-transaction.md` §6.3).
 
         // Parse the new source; the sexps ride the re-register work packet
         // (S78 — no shared `module_sexps` map). Persistent workers parked on
@@ -1592,17 +1630,29 @@ impl CompilerSession {
                 .register_module(module_path.clone(), sexps, false);
         }
 
-        // Block until inmem-done for every registered module. The workers
-        // do the typecheck + in-memory codegen.
-        self.shared.scheduler.wait_inmem_complete_blocking()?;
-
-        // Check if the module ended up in Failed state (wait_inmem_complete_blocking
-        // would have returned Err in that case, but double-check explicitly).
-        if self.shared.scheduler.is_failed(module_path) {
-            return Err(CranelispError::ModuleError {
-                message: format!("module '{}' failed to compile", module_path.as_ref()),
-                location: ErrorLocation::from_span_file(Span::new(0, 0), None),
-            });
+        // The outcome is this module's own terminal state, never another
+        // module still standing `Failed` (`repl-lifecycle.md` §1.3 Outcome).
+        let completion = match self
+            .shared
+            .scheduler
+            .wait_module_inmem_complete_blocking(module_path)
+        {
+            Err(error) => Err(CranelispError::from(error)),
+            Ok(()) if self.shared.scheduler.is_failed(module_path) => {
+                Err(CranelispError::ModuleError {
+                    message: format!("module '{}' failed to compile", module_path.as_ref()),
+                    location: ErrorLocation::from_span_file(Span::new(0, 0), None),
+                })
+            }
+            Ok(()) => Ok(()),
+        };
+        if let Err(error) = completion {
+            if let Some(refusal) = self.shared.scheduler.structural_type_refusal(module_path) {
+                self.error_modules.insert(module_path.clone());
+                self.restart_required
+                    .insert(module_path.clone(), refusal.type_name);
+            }
+            return Err(error);
         }
 
         // S102 W5R B-1: a successful reload makes the NEW file content the
@@ -1616,6 +1666,7 @@ impl CompilerSession {
         // failed set implies membership in `error_modules`.
         self.failed_forms.remove(module_path);
         self.error_modules.remove(module_path);
+        self.restart_required.remove(module_path);
 
         Ok(())
     }
@@ -1739,6 +1790,9 @@ impl CompilerSession {
         }
         // (If the entry table is absent, the code-ptr lookup below produces the
         // "no `main`" diagnostic — no separate handling needed here.)
+        // §16.6: refuse a program that references `discover-tests` before any
+        // of it runs (`design/int/test-runner.md` §7.3).
+        crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
 
         // Look up main's compiled code on its symbol-table entry (G6). ONE read
         // yields the callable address, the declared result type, AND the code
@@ -2208,6 +2262,12 @@ impl CompilerSession {
         let (source, entry_path) = match file_path {
             Some(path) => {
                 let src = std::fs::read_to_string(&path).unwrap_or_default();
+                // Record the resolved file in every mode, as dependency loads
+                // do; `run_tests` reads it (`design/int/test-runner.md` §4.1).
+                crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, &module);
+                if let Some(mut tp) = self.shared.typecheck_products.get_mut(&module) {
+                    tp.file_path = Some(path.clone());
+                }
                 (src, path)
             }
             None => {
@@ -2330,13 +2390,9 @@ impl CompilerSession {
             .unwrap_or_default();
         crate::exe::validate_main(&entry_table, &dispatch)?;
         drop(entry_table);
-        // FIXME 0406 (test-discovery.md §4.5): refuse a `--link` build that
-        // references a dev-session-only `PrimitiveExtern` (`discover-tests`)
-        // BEFORE invoking `cc` — a friendly compile-time diagnostic instead of
-        // the raw `undefined reference to discover-tests` linker error. Scans
-        // every linked module (not just the entry); the offending callee can
-        // live in any module dragged into the link.
-        crate::exe::reject_dev_session_externs_in_link(&self.shared.symbol_tables)?;
+        // §16.6: refuse a program that references `discover-tests` before
+        // anything is written (`design/int/test-runner.md` §7.3).
+        crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
         let entry_table =
             self.module_table(&module)
                 .ok_or_else(|| CranelispError::ModuleError {

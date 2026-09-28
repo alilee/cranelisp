@@ -75,10 +75,14 @@ until repaired, so regeneration never silently deletes the user's text
 | Kind | Render source |
 |---|---|
 | Structural forms | the table's structural fields |
-| Traits, types | the defining turn's introspection record (`emit_decl_or_source`) |
+| Traits, types | the entry's introspection record (`emit_decl_or_source`) |
 | Impls | the introspection record keyed `Trait.Type` (§12) |
-| Functions | the introspection record; for a cache-restored module, rehydrated first from the backing file (`rehydrate_userfn_introspection_from_source`) |
-| Macros | the introspection record, else the cache-surviving `macro_sexp` |
+| Functions | the entry's introspection record |
+| Macros | the entry's introspection record, else the cache-surviving `macro_sexp` |
+
+Every record read here is the entry's **authored form**: the top-level form
+the user wrote (for an expansion or a literal `begin`, the outer form), plus
+its verbatim text when known. §2.4 states how each install path supplies it.
 
 - **Authored text first.** A record's verbatim `source` is emitted when it
   re-parses to the recorded `sexp` (`sexp_matches_source`) and, for a
@@ -94,16 +98,145 @@ A module whose file holds an authored inline `(mod child form…)` body is not
 regenerated (`should_regenerate`): the child's definitions live in the child's
 table, and regeneration would reduce the body to a bare `(mod child)`.
 
-### 2.4 Open obligation — cache-restored declarations without a record
+### 2.4 Authored-form records
 
-Introspection is REPL-only; a cache-restored module has none. Functions are
-rehydrated from the backing file (§2.2), but traits, types and impls are not.
-`emit_decl_or_source` drops an entry with no record, so regenerating a
-cache-restored module after an edit could omit its trait, type and impl
-declarations. No test establishes whether a supported REPL flow reaches this.
-Evidence ownership is `qa`'s. A reproduction would reopen the choice between
-extending rehydration to these kinds and a cache-surviving source field, the
-latter a `cranelisp-types` and cache-schema change for `/arch`.
+**Invariant.** When regeneration reads a module, every live entry that a
+section generator selects has an authored-form record that is its latest
+successful definition. Otherwise that module is not written (§2.4.3).
+
+#### 2.4.1 Who writes a record
+
+| Install path | Writer |
+|---|---|
+| Ordinary definitions — REPL turn, file load or reload | the **publication writer**: form processing stages one record per definition it builds, and the shared publication step installs the staged records only after that generation publishes. A successful REPL turn then records its verbatim text for every definition it published |
+| Macro publication, from any path | the macro checkpoint writer, after the checkpoint publishes |
+| Cache restore | none at install; [backing-file rehydration](#242-backing-file-rehydration) supplies the record when a reader first needs it |
+
+- **Settled state only.** A record is written from published state
+  (Principle 26). A candidate never reaches the live record, so a rejected
+  redefinition, at typecheck or at the commit gate, a codegen or publication
+  failure and a failed reload each leave every record at its last published
+  generation (`repl/spec/18-redefinition.md` §18.8,
+  `repl/spec/15-session-persistence.md` §15.6). The staged records ride the
+  cluster's publication carrier with its other presentation products
+  (`s117-conformance-recovery.md` §1.1), including a cluster with nothing to
+  compile, and are dropped with it; a dependency gap drops them before the
+  retry.
+- **Whole replacement.** Both writers replace the record's authored carriers
+  together: the form, the expansion (cleared when the new generation has
+  none), the checked AST of a function, and the text. The text is the
+  verbatim slice when the module file is the source, otherwise the form's
+  render until the REPL turn records its input. No carrier can therefore keep
+  an earlier generation. CLIF and code size are codegen facts, written by the
+  same publication step.
+- **Every kind, one key.** The publication writer covers functions, types,
+  traits and impls alike. Each record is keyed by the live-turn projection
+  (`definition_result_symbol`), which rehydration also uses; a `begin` member
+  or expansion product takes the outer authored form (§1.4).
+
+#### 2.4.2 Backing-file rehydration
+
+An entry installed from the object cache has no record, and its backing file
+supplies one when a reader first needs it: `/source`, the redefinition residue,
+and regeneration. Regeneration finds nothing to fill, because it never writes a
+cache-installed generation (§2.4.5). A later turn or reload replaces a filled
+record through the publication writer.
+A cache hit requires the file's hash to equal the manifest
+`source_hash`, so the file is exactly the source of the restored table
+(`int.md` §7.3). Rehydration is lazy and reads the file once.
+
+- **Scope.** Rehydration applies to every top-level native definition form:
+  `defn`, `deftype`, `deftrait` and `defmacro`, each with its private variant,
+  and `impl`. Each member of a top-level `begin` counts as a form, and each
+  member's record takes the outer `begin` as its form, as a live turn does
+  (§1.4). Structural forms are excluded.
+- **Key.** A form's key is the one a live turn records for it, so the two
+  paths share one derivation. A name-slot form keys by its name. An `impl`
+  keys by the live-turn projection (`definition_result_symbol`) over its
+  trait and target slots; no second rule derives impl identity from surface
+  spelling. A form that cannot be keyed is skipped, and §2.4.3 reports it.
+- **Liveness.** A keyed form is rehydrated only if the key names a live
+  entry. For an ordinary entry, the key is in the module's table. For an
+  `impl`, it is in the table's `written_trait_impls`, which also covers impls
+  of imported traits whose shells live elsewhere. A startup-failed form is
+  not live; it stays with `append_failed_forms`.
+- **Absence.** A key is filled only when its record has neither form nor
+  text. A record written by codegen alone, such as CLIF metadata, counts as
+  absent. The record takes the form and its consistency-gated verbatim slice.
+- **Enumeration.** An impl is rehydrated under its `Trait.Type` label, which
+  §12.3 rows 2 and 3 both enumerate.
+- **Macro calls.** A top-level macro call has no native head, so the
+  definitions it produced stay unrecorded for readers of a cache-installed
+  module. §2.4.5 keeps them out of regeneration.
+
+The metadata carries no authored text or form attribution: it holds checked
+ASTs, `macro_sexp`, structural records and the preamble. Carrying either would
+be a `cranelisp-types` and cache-schema change, and `--run` writes the same
+cache. Attribution by source span would also be wrong for REPL-introduced
+definitions, whose spans are turn-relative. The certified file and §2.4.5 make
+that change unnecessary. `repl/spec/15-session-persistence.md` §15.4 rule 6
+requires rules 1–4 to hold whether definitions were compiled from source or
+restored from the object cache; it places no content obligation on the
+metadata.
+
+#### 2.4.3 No silent omission
+
+Each section generator reports every entry it selected but could not render,
+because no record or `macro_sexp` fallback existed after rehydration. A
+record whose authored form another emitted entry already carried is rendered,
+not missing (§1.4). If any entry is unrendered, the session writes nothing,
+keeps the existing backing file and warns on the write-failure channel (§3.3),
+naming the entries. The in-memory state remains the ground truth. Dropping an
+entry would lose authored source irreversibly once the next restart reloads
+the file.
+
+#### 2.4.4 Known limits
+
+- **Source of a failed watcher reload.** A failed reload publishes nothing, so
+  it changes no record (§2.4.1).
+  - **Structural type change.** A reload refused under
+    `repl/spec/14-file-watching.md` §14.8 retains the saved file. Turn
+    admission and a regeneration chokepoint withhold every write to that
+    module until a successful reload or a restart
+    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-restart-required-failure)).
+    The restart then compiles the saved source (§3.4).
+  - **Any other failure.** The next accepted definition turn writes the last
+    published generation over the unaccepted external edit, whether the
+    reload failed to parse, to typecheck or to publish. What the file must
+    hold is unspecified (`repl/spec/14-file-watching.md` §14.4–§14.6 against
+    `repl/spec/15-session-persistence.md` §15.1). Face 2 of
+    [ACT-0998](../../sprints/actions/ACT-0998-watcher-reload-type-change-intake.md)
+    awaits that ruling. If the ruling requires retention, extend §2.1's
+    failed-form re-emission to watcher failures. Do not restore candidate
+    records.
+
+#### 2.4.5 Editing a cache-installed module
+
+Regeneration writes only the current module. A module becomes current and
+editable through `/mod M`; the entry module is always compiled from source over
+its preloaded table.
+
+- **Rule.** When `/mod M` names a module whose live generation was installed
+  from the object cache, the session first recompiles M from its backing file
+  through the ordinary reload operation (`repl-lifecycle.md` §1.2). Every
+  generation that regeneration writes is therefore compiled from source this
+  session, and each of its definitions has a publication record
+  ([§2.4.1](#241-who-writes-a-record)), including those a top-level macro
+  call produced.
+- **Effect.** The cache hit certified that the file is the restored table's
+  source (`int.md` §7.3). The recompile therefore republishes the same
+  definitions at their slots and dependents are unaffected. Persisted macro
+  calls re-expand with the macro current at the recompile, as the template
+  qualification of `repl/spec/15-session-persistence.md` §15.4 permits.
+- **No recompile otherwise.** `/mod` to the entry module, to a module
+  compiled from source this session or to a module not yet loaded switches
+  without recompiling.
+- **Failure.** A failed recompile has the outcome of a failed reload of that
+  module (`repl-lifecycle.md` §1.3–§1.4).
+- **Rejected alternatives.** Re-expansion during rehydration would run macros
+  in a second, save-time expansion path (Principles 7 and 11). Cache-carried
+  attribution is excluded by
+  [§2.4.2](#242-backing-file-rehydration).
 
 ## 3. Write, failure and restore
 
@@ -120,9 +253,9 @@ The path is the typecheck product's recorded `file_path`, else
 
 ### 3.3 Write failure
 
-On failure the session prints a warning and continues. The in-memory state is
-the ground truth; the file is a convenience, and the REPL never aborts because
-a save failed.
+On failure, including a §2.4.3 refusal, the session prints a warning and
+continues. The in-memory state is the ground truth; the file is a convenience,
+and the REPL never aborts because a save failed.
 
 ### 3.4 Restore
 
@@ -218,18 +351,29 @@ So "impls written in M" is not "shells in M's table".
 
 ### 12.3 Enumeration
 
-`generate_impls` collects `Trait.Type` keys from two rows into one sorted set,
-and renders each through the same gated reader the declaration sections use:
+`generate_impls` collects `Trait.Type` keys from three rows into one sorted
+set, and renders each through the same gated reader the declaration sections
+use:
 
 | Row | Source | Covers |
 |---|---|---|
 | 1 | shells in M's table with `impl_module == M` | impls of M's own traits written in M |
 | 2 | M's introspection records whose dotted key names an `(impl …)` form (`record_is_impl_form`) | impls of imported traits written in M |
+| 3 | M's table's `written_trait_impls` | every impl written in M, including one restored from cache, so a missing record is reported under §2.4.3 rather than skipped |
 
-An impl reachable by both rows yields the same key and renders once. An impl
-of M's trait written in another module N is legally excluded: row 1 filters
-it out and its source is recorded under N. The key comes from the settled
-`impl_type`, not from surface syntax.
+An impl reachable by several rows yields the same key and renders once. An
+impl of M's trait written in another module N is legally excluded: rows 1 and
+3 omit it, and its source is recorded under N. Rows 1 and 3 take the key from the settled trait and `impl_type` names. Row
+2 and rehydration use the live-turn key, built from the written head names.
+The two keys agree because a written head name is the declared name:
+`TypeRef` and `TraitRef` hold the qualifier apart from the name, the
+language has no type synonyms, and renamed import and export entries
+(spec §8.3.5) are not yet accepted
+([ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md)).
+Accepting renames breaks that premise, and impl identity must then come from
+one determinant; otherwise every regeneration of a module holding such an
+impl is refused. A disagreement surfaces as a §2.4.3 refusal, never as a
+silent drop.
 
 ### 12.3.1 Completeness guard
 

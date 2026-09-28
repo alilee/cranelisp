@@ -7,10 +7,10 @@ The `cranelisp` binary supports the following invocation modes:
 The general invocation form is:
 
 ```
-cranelisp [--run | --link] [-o <path> | --output <path>] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [target]
+cranelisp [--run | --test | --link] [-o <path> | --output <path>] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [target]
 ```
 
-The optional positional `[target]` specifies the project root and entry module (see §0.5). Invocations in this section show options before the target; §0.5 governs where the target may appear. The mode flags (`--run`, `--link`) and the modifier flags (`--no-color`, `--no-cache`, `--agent`, `--no-agent`) are boolean modifiers and take no parameter; `--priority-workers` and `--nice-workers` each take a numeric argument `N`. `-o <path>` and its long form `--output <path>` take a path argument (§0.2.1.1). Flags modify the behaviour applied to the resolved entry module.
+The optional positional `[target]` specifies the project root and entry module (see §0.5). Invocations in this section show options before the target; §0.5 governs where the target may appear. The mode flags (`--run`, `--test`, `--link`) and the modifier flags (`--no-color`, `--no-cache`, `--agent`, `--no-agent`) are boolean modifiers and take no parameter; `--priority-workers` and `--nice-workers` each take a numeric argument `N`. `-o <path>` and its long form `--output <path>` take a path argument (§0.2.1.1). Flags modify the behaviour applied to the resolved entry module.
 
 The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`, `--nice-workers`, `--agent`, `--no-agent`) are detailed in §0.6. The agent flags (`--agent`/`--no-agent`) are REPL-only and behaviorally gated on the embedded-agent feature; see §0.6.1 and §17.
 
@@ -18,11 +18,12 @@ The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`,
 |---|---|---|---|
 | REPL | `cranelisp [target]` | Interactive REPL (default when no mode flag) | [Tested] |
 | Run | `cranelisp --run [target]` | Compile and execute `main`, then exit | [Tested] |
+| Test | `cranelisp --test [target]` | Compile, then automatically discover, run and report tests (§0.2.2) | [Tested+Neg] |
 | Link | `cranelisp --link [target]` | Compile and produce a standalone executable (§0.2.1) | [Tested] |
 | Version | `cranelisp --version` | Print version string and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
 | Help | `cranelisp --help` | Print usage summary and exit | Future — not implemented (errors `unknown flag` today); see §0.4 |
 
-> The synopsis above is the as-built CLI. There is **no** `--release` flag (it errors `unknown flag`), and `--version`/`--help` are not yet implemented (§0.4). The keep-this-consistent companion is `user/cli-reference.md` — the two MUST agree.
+> The synopsis above is the specified invocation form. There is **no** `--release` flag (it errors `unknown flag`), and `--version`/`--help` are not yet implemented (§0.4). The keep-this-consistent companion is `user/cli-reference.md` — the two MUST agree.
 
 ### 0.1 REPL Mode [Tested]
 
@@ -48,6 +49,15 @@ If the resolved entry module source file does not exist, the binary MUST print a
 ### 0.2.1 Link Mode (`--link`) [R4 S52]
 
 `cranelisp --link [target]` MUST compile the module graph rooted at the resolved entry module and produce a linked, standalone **executable**. It MUST NOT execute any code and MUST NOT produce output to stdout (beyond the `; Linking: …` progress line). [R4 S52]
+
+**Parity with `--run`.** `--run` loads and executes the program; `--link`
+produces a freestanding executable of the same program. Executing that
+executable MUST produce exactly the same output as `--run` produces for the
+program. The two modes provide the same language capabilities, including the
+rejection of `discover-tests` references (§16.6); their execution and
+optimisation strategies may differ. Parity concerns the output of executing the
+program, not messages from compiling or linking it, such as warnings or the
+`; Linking: …` line. [S122]
 
 `--run` and `--link` MUST NOT be used together. If both are present, the binary MUST print an error to stderr and exit with status code 1.
 
@@ -79,8 +89,8 @@ spellings are equivalent: every requirement on `-o <path>` applies identically t
 `--output <path>`. [Tested+Neg tests/link.rs::link_output_long_form_writes_named_path_not_default — the long form writes the artifact at the given path, verbatim against cwd, and the default `<stem>` is not written; short-form equivalence is unit-pinned at src/main.rs::tests::output_long_form_equals_short_form_in_any_position]
 
 **Link-only output path (MUST):** `-o <path>` is accepted only together with `--link`,
-the only mode that produces an artifact. In REPL or `--run` mode, the binary MUST print an error
-and the usage hint to stderr and exit with status code 1 (§0.3). [Tested+Neg tests/link.rs::run_with_output_path_is_rejected_with_usage_and_no_artifact — `--run` mode: exit 1, `error` and `usage:` on stderr, no artifact written; REPL mode is not observed]
+the only mode that produces an artifact. In REPL, `--run` or `--test` mode, the binary MUST print
+an error and the usage hint to stderr and exit with status code 1 (§0.3). [Tested tests/link.rs::run_with_output_path_is_rejected_with_usage_and_no_artifact, tests/test_runner.rs::test_mode_neg_combined_with_run_link_or_output_is_usage_error — the `--run` and `--test` legs: exit 1, the usage hint and no artifact; the REPL leg has no committed evidence]
 
 **Collision-diagnostic floor (MUST) [S106]:** if the resolved
 output path is an **existing directory**, the binary MUST emit a clear cranelisp diagnostic
@@ -88,6 +98,65 @@ naming the path (e.g. `error: output path 'user' is a directory — use -o <path
 different output`) and exit with status code 1, **rather than** surfacing a raw `ld`/`cc` linker
 error. This floor holds independently of the name/location rule above — a directory collision must
 never reach the user as an opaque toolchain error. [S106]
+
+### 0.2.2 Test Mode (`--test`) [S122]
+
+`cranelisp --test [target]` MUST compile the module graph rooted at the
+resolved entry module (§0.5), then run the tests of every test module with the
+test runner shared with `/run-tests` (§16.2). The program supplies no runner,
+and a program that references `discover-tests` is refused (§16.6). [Tested+Neg tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests, tests/test_runner.rs::batch_modes_neg_refuse_uncalled_discover_tests_reference_with_one_diagnostic — result lines and summary identical to `/run-tests`; a `discover-tests` reference is refused]
+
+**`main`.** `--test` MUST NOT call `main`, and the entry module need not
+define it. A `main` that is present compiles as an ordinary definition; the
+entry-point resolution and result handling of §0.2 do not apply. [Tested+Neg tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests, tests/test_runner.rs::test_mode_selects_exactly_the_import_chain_fresh_and_cached — a project with no `main` runs; a bare-`Int` `main` that panics if called is neither validated nor called]
+
+**Test modules.** The test modules are the project modules in the entry
+module's import chain: the entry module resolved from `[target]` (§0.5) and
+every project module transitively reachable from it through that chain. [Tested+Neg tests/test_runner.rs::test_mode_selects_exactly_the_import_chain_fresh_and_cached, tests/test_runner.rs::test_mode_neg_chain_stops_at_library_modules_and_library_prelude — exact name sets on a fresh and a cache-restored run. Admitted: the entry, an `import` target, an `export`ed module, declared children with and without an import, and a project prelude. Excluded although compiled and on disk: alias-only, null-import and FQ-auto-loaded modules; a library module in a project lib directory, its child, a project module reachable only through it, and a lib-directory prelude. The default `{project_root}/stdlib/` classification is unit-pinned only, at src/session_v4/test_runner/selection/tests.rs::classifier_uses_the_resolution_tier_not_a_path_prefix]
+
+- The chain runs from a module to:
+  - each module named by an `import` or `export` entry whose names list is not
+    empty (`spec/08-modules.md` §8.3, §8.4.0);
+  - each submodule it declares with `(mod …)` or `(mod- …)` (§8.2.1, §8.2.3),
+    whether or not it also imports that submodule; and
+  - the prelude, through the implicit prelude import (§8.8.1).
+- The chain does not run through a null import (§8.3.7), an alias-only import
+  (§8.3.6), or a fully-qualified reference that auto-loads a module (§8.5.4).
+  A module reached only in those ways is not a test module.
+- The chain stops at library modules. A library module is not a test module,
+  and the chain does not continue through its imports, exports or declared
+  submodules, so a project module reachable only through a library module is
+  not a test module. A prelude resolved from a lib directory is a library
+  module and brings no tests into the run.
+- A **project module** is one whose source file is resolved from the project
+  root (`spec/08-modules.md` §8.11.1, §8.11.2 tier 2), or a submodule of a
+  project module.
+- A **library module** is one resolved from a lib directory
+  (`spec/08-modules.md` §8.11.2 tier 3, §8.11.4), or a submodule of a library
+  module. This holds even when the lib directory lies inside the project
+  directory, such as the default `{project_root}/stdlib/`.
+- Being compiled for the program does not make a module a test module. Test
+  modules MUST NOT be found by searching the file system.
+
+**Report.** The runner's report (§16.2) MUST be written to stdout. [Tested tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests]
+
+**Exit status.** The process MUST exit with status 0 when no test failed or
+panicked, including when no test is found, and with status 1 when any test
+failed or panicked. [Tested+Neg tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests, tests/test_runner.rs::test_mode_selects_exactly_the_import_chain_fresh_and_cached, tests/test_runner.rs::test_mode_empty_run_reports_no_tests_found_and_exits_zero — 1 with a failure and a panic, 0 when every test passes and when none is found; a panic-only run is unit-pinned at src/session_v4/test_runner/run/tests.rs::report_text_and_exit_code_come_from_the_same_outcomes]
+
+**Warnings** MUST be printed to stderr, including §16.1's warning for a
+mis-typed test. [Tested tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests]
+
+**Compilation failure.** On compilation failure, the error MUST be printed to
+stderr, no test runs, and the process MUST exit with a non-zero status. [Tested+Neg tests/test_runner.rs::test_mode_neg_compile_error_runs_no_test]
+
+**Mode combination.** `--test` MUST NOT be used together with `--run` or
+`--link`. If either is present with `--test`, the binary MUST print an error
+and the usage hint to stderr and exit with status code 1 (§0.3). [Tested+Neg tests/test_runner.rs::test_mode_neg_combined_with_run_link_or_output_is_usage_error]
+
+Target resolution (§0.5), including the missing-source error of §0.5.5, and the
+modifier and worker flags (§0.6) apply to `--test`; `-o`/`--output` is rejected
+(§0.2.1.1). [Tested+Neg tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report, tests/test_runner.rs::test_mode_neg_combined_with_run_link_or_output_is_usage_error — the missing-source error and the `-o` rejection; parsing of the target, modifier and worker flags as for `--run` is unit-pinned only, at src/main.rs::tests::test_flag_parses_target_and_modifiers_as_run_does]
 
 ### 0.3 Error Handling [Tested tests/link.rs::run_with_output_path_is_rejected_with_usage_and_no_artifact — usage hint to stderr and exit 1 for one invalid-argument class (an output path without `--link`); unknown flags, `--run` with `--link`, and the hint's positional-target content have no committed evidence]
 
@@ -165,6 +234,7 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
    - In REPL mode: the binary SHOULD create an empty source file and proceed. This supports the common workflow of starting a new project from an empty directory.
    - In `--run` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
    - In `--link` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
+   - In `--test` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested+Neg tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report — the `--test` leg only; the `--run` and `--link` legs are open under ACT-1004]
 3. If the target is ambiguous (e.g. both a file `mymod.cl` and a directory `mymod/` exist in cwd), **the file wins**: the target resolves to the entry module `mymod` (file `mymod.cl`) with project root cwd, and `mymod/` is treated as the directory holding `mymod`'s submodules (per `spec/08-modules.md §8.11`). This is the normal shape of a project whose entry file declares submodules with `(mod child)`. Rule 3 in §0.5.1 (directory-as-project-root) only fires when there is *no* same-named `.cl` file beside the directory.
 
 #### 0.5.6 Dotted Module Paths [R4 S52]
@@ -245,9 +315,9 @@ This table is kept consistent with `user/cli-reference.md`; the two MUST agree.
 
 #### 0.6.1 `--agent` / `--no-agent` — Embedded Agent Toggle [S88]
 
-The `--agent` and `--no-agent` flags are the runtime half of the agent's **opt-in-twice** discipline (§17.4). The embedded agent is a **dev-session capability only** — it is never part of `--run` or `--link`, and never ships in a release artifact. Accordingly:
+The `--agent` and `--no-agent` flags are the runtime half of the agent's **opt-in-twice** discipline (§17.4). The embedded agent is a **dev-session capability only** — it is never part of `--run`, `--test` or `--link`, and never ships in a release artifact. Accordingly:
 
-- `--agent` / `--no-agent` are meaningful **only in REPL mode**. In `--run` or `--link` mode they MUST be accepted (not an error) and have **no effect** — the agent does not participate in batch compilation or linking. (This mode clause applies only on an agent-**capable** build; on a non-agent build `--agent` errors regardless of mode per the next bullet.)
+- `--agent` / `--no-agent` are meaningful **only in REPL mode**. In `--run`, `--test` or `--link` mode they MUST be accepted (not an error) and have **no effect** — the agent does not participate in batch compilation, test runs or linking. (This mode clause applies only on an agent-**capable** build; on a non-agent build `--agent` errors regardless of mode per the next bullet.) [S122]
 - **`--agent` on a binary built WITHOUT the agent feature MUST be a hard error** (user ruling, 2026-07-09, S106). It MUST print a usage hint to stderr and exit with status code 1 — the **same error style** as `--no-cache` combined with `--link` (§0.6 table; §0.3): a short message naming the flag and the reason it is unsupported, e.g.
   ```
   error: --agent requires a binary built with the agent feature
@@ -263,7 +333,7 @@ The default with no flag is **agent off**, even on an agent-built binary with a 
 
 `--yes` (short form `-y`) is a **policy knob** that auto-answers the agent's write-consent gates. Per the `/arch` ruling (`design/arch/repl-embedded-agent.md §7.4`), it auto-*accepts* the consent question; it does **not** relocate, widen, or remove the gate, and it does **not** touch the pre-flight validator (§17.14.3) — it changes who answers the `[y/N]`, not whether code is validated. It is **off by default**: the human answers each write gate unless `--yes` is given. The flag is **blanket** — one `--yes` covers **both** agent write classes (Build form-submit, §17.14, *and* Document preamble/docstring edits, §17.15), following the universal `-y` convention. Accordingly:
 
-- `--yes` / `-y` are meaningful **only in REPL mode** with an **active agent** (built `--features agent`, enabled per §0.6.1, and backed by a reachable provider — §17.4). **On a binary built WITHOUT the agent feature, `--yes`/`-y` MUST be a hard error** (user ruling, 2026-07-09, S106) — usage hint to stderr, exit code 1, the same `--no-cache` + `--link` error style as `--agent` (§0.6.1) — because there is no write-consent gate for it to auto-answer and the flag names an agent-only policy the binary cannot honour. It MUST NOT print `unknown flag`. **On an agent-capable build**, however, `--yes` remains an **accepted no-op** whenever no agent is *active* — in `--run`/`--link` mode, or when the agent is dormant (no provider key) or disabled (`--no-agent`): the feature is present, so the flag is valid; there is simply no active gate to auto-answer. The reversal is scoped to the **feature-not-compiled-in** case only. [S106]
+- `--yes` / `-y` are meaningful **only in REPL mode** with an **active agent** (built `--features agent`, enabled per §0.6.1, and backed by a reachable provider — §17.4). **On a binary built WITHOUT the agent feature, `--yes`/`-y` MUST be a hard error** (user ruling, 2026-07-09, S106) — usage hint to stderr, exit code 1, the same `--no-cache` + `--link` error style as `--agent` (§0.6.1) — because there is no write-consent gate for it to auto-answer and the flag names an agent-only policy the binary cannot honour. It MUST NOT print `unknown flag`. **On an agent-capable build**, however, `--yes` remains an **accepted no-op** whenever no agent is *active* — in `--run`/`--test`/`--link` mode, or when the agent is dormant (no provider key) or disabled (`--no-agent`): the feature is present, so the flag is valid; there is simply no active gate to auto-answer. The reversal is scoped to the **feature-not-compiled-in** case only. [S106]
 - **Precedence / interaction with `--agent`.** `--yes` presupposes the agent is in play but **does not itself enable the agent.** It is **not** an implicit `--agent`, and it does **not** bypass the opt-in-twice posture (§17.4): with no agent feature, no enabling flag, or no provider key, `--yes` stays a no-op — there is no write gate to auto-answer, so there is nothing to escalate. To act autonomously a user opts in explicitly: enable the agent (`--agent`, §0.6.1) **and** pass `--yes`. (`--no-agent` keeps the agent off, so `--yes` is likewise inert.)
 - `--yes` auto-answers **consent, never validation.** The pre-flight validator (§17.14.3) runs on every submission regardless of `--yes`; only code that at least parses and type-checks ever reaches the session. `--yes` removes the question, not the correctness floor (§17.14.6).
 

@@ -1,6 +1,875 @@
 # S122 evidence allocation
 
-Owner: QA. Purpose: give design and test/dev the conditions needed to deliver the approved known-issue closure and REPL-agent eval outcome. Authority: [scope](../../sprints/SPRINT.md), [architecture review](../../sprints/s122-architecture-review.md), existing requirements cited below. Status: **Phase 3 reviewed; Phase 4 authorized on 2026-09-10; Phase 5 authorized on 2026-09-10.** Implementation follows sprint reservations; live-model execution still requires D6.
+Owner: QA. Purpose: give design and test/dev the conditions needed to deliver the approved known-issue closure and REPL-agent eval outcome. Authority: [scope](../../sprints/SPRINT.md), [architecture review](../../sprints/s122-architecture-review.md), existing requirements cited below. Status: **Phase 5; not yet accepted.** The [acceptance reconciliation](#phase-5-acceptance-reconciliation-2026-09-27), updated 2026-09-28, is the current disposition. The sections after it, including the Phase-3 open conditions, are dated evidence; a later dated judgment supersedes an earlier pending status.
+
+## Phase 5 acceptance reconciliation (2026-09-27)
+
+**Basis (updated 2026-09-28).** `0272a5d9` plus the working tree. The latest
+full run passed 6298 tests, with 0 failed and 1 skipped (the ignored
+`concurrency_spark` benchmark). No file under `src/`, `crates/`, `tests/` or
+`stdlib/` changed after that run
+([runner adequacy](#shared-test-runner--final-adequacy-2026-09-28)). On
+2026-09-28 QA read every live filing, and the source each row below cites.
+
+**Judgment: not ready to accept.** Every S122 correction has adequate evidence,
+and the suite has no failure. Acceptance waits on three things:
+
+1. **REDs.** Each demonstrated defect needs a committed RED (METHOD §2.2).
+   These are N1 and N2, plus C1, C2 and R1 once reproduced. P2 needs a `spec`
+   disposition before any RED.
+2. **Persistence corrections.** P1, P3 and P4 are committed REDs. The user
+   directed fixing them now (2026-09-28). The
+   [four-RED readiness](#persistence-reproduced-failures--attribution-and-readiness-2026-09-28)
+   is their evidence delta.
+3. **User decisions.** The user decides fix or carry for each surface below,
+   and approves each carry row. A carry names the RED or the falsifier that
+   keeps its item visible.
+
+### Delivered outcomes
+
+| Outcome | State | Evidence and limit |
+|---|---|---|
+| Generic replacement; public IO | Delivered | Q1 and Q3 REDs pass in the full run |
+| Recovery; `/mem` | Delivered | Q2 uses the D1 private witness (plant RED, restored GREEN); no public trigger, as approved 2026-09-10. `/mem` Q6 went RED to GREEN. ACT-0958 is satisfied and awaits QA retirement |
+| Macro-turn ownership | Delivered | The Q4 pair balances. Q5 matched 1143 to 46; the 46 stay an unclassified diagnostic, not a gate |
+| Language claims | Delivered | Q10 cases pass; 0815's failure is not reproduced |
+| Convergence | Delivered | 0553 demand capture (Q1/Q7 closed 2026-09-11); 0789, 0898 and 0906 are in source |
+| Corrections added in Phase 5 | Delivered | CD-1, F1, alias-only import, IO notice, FT, LD/LB/LP, DB-1, R1-V, LD-9, P-1, RR-1, BN-1, IR-1, AD-6, F2, G-3, G-7, ACT-0999, ACT-1000, ACT-1001 P-1 and ACT-1002, each with its adequacy section below |
+| Shared test runner (`--test`, `/run-tests`, `/run-all-tests`) | Delivered | [Runner adequacy](#shared-test-runner--final-adequacy-2026-09-28). The user confirmed the delivered public diff on 2026-09-28 |
+| Shared document checker (D7) | Delivered | 0 findings at each S122 check |
+| REPL-agent eval | Delivered | E1 harness accepted; instrument current at `0272a5d9` (G-1). Haiku smoke: 2 of 2 tasks passed, one attempt each (`claude-haiku-4-5-20251001`). This is diagnostic, not a reliability estimate |
+| Known-issue inventory | Incomplete | 47 of the 88 original filings are retired. 41 remain live: 36 FIXMEs and 5 actions. 37 actions filed in S122 are live |
+
+**Closed gates.** G-1 is satisfied: the eval instrument was current at
+`0272a5d9` ([T1](#t1--eval-instrument-currency)). G-2 and G-4 are corrected
+(ACT-0970 and ACT-0980 retired), as are G-3 and G-7 (ACT-0983 and ACT-0996
+retired). Product acceptance of each is the user's. DT-1's carry is superseded
+by TR-5.
+
+### Remaining obligations
+
+Classes:
+
+- **D:** a demonstrated defect, observed by execution.
+- **S:** a non-conformance confirmed in source, not yet executed.
+- **L:** an unverified source lead.
+- **E:** an evidence gap.
+
+A bracketed gate names the item's former row. Every item needs the decision in
+its last column. Only [approved carries](#approved-carries-and-exclusions) are
+settled.
+
+#### 1. REPL persistence and reload
+
+Surface: Binary/int (`src/save.rs`, `src/process_form.rs`, watcher reload).
+
+| ID | Item | Class | User-visible consequence | Evidence and mitigation | Recommendation |
+|---|---|---|---|---|---|
+| P1 | [ACT-0998](../../sprints/actions/ACT-0998-watcher-reload-type-change-intake.md) face 1 [G-8]: a structural `deftype` edit on reload. §14.8 now requires the reload to fail, with a restart diagnostic and file retention. The `wrong-reject` class is void | Requirement change | Editing a `deftype`'s structure in a watched file needs a restart | Allocated as RB-1–RB-7 | Realized and adequate: [final adequacy](#restart-boundary--final-adequacy-2026-09-29) |
+| P2 | ACT-0998 face 2 [G-8]: after a failed reload, the next definition turn can overwrite the external edit | D; outcome depends on which records exist | The user's edit to `user.cl` is lost after a type-error or parse-error reload | Probe controls are in ACT-0998. §14.8 settles retention only for a structural failure (RB-3). Otherwise the requirement is silent, so no RED yet | `spec` disposition when the user chooses. Not a gate for P1, P3 or P4 |
+| P3 | SL-3 [G-8]: a rejected function redefinition is written by the next regeneration | D; `partial-record-update` | A restart diverges from the session and is error-blocked | REDs `persist_typecheck_rejected_redefinition_not_written_by_later_regeneration` and `persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration` | Fix now: `design`(int), then `dev`(src) |
+| P4 | SL-1 [G-8]: a `/mod` definition in a cache-restored dependency whose file has a top-level macro call is not saved | D; `enumeration-miss`. The entry-module face was falsified, including through stdlib `def` | Each turn warns, and the module file loses the new definition at restart | RED `persist_mod_turn_on_cache_restored_macro_expanded_module`, with its fresh-session control GREEN | Fix now: `design`(int) selects the mechanism, then `dev`(src). A schema route needs `arch` and the user gate |
+| P5 | SL-2/F3 [G-8]: a declaration record stays stale after a successful reload | L | The next regeneration writes the old declaration over the edit | Fixed in S122 ([bounded adequacy](#persistence-p3-p4-and-p5--bounded-adequacy-2026-09-28)). §14.8 forbids the field-type reload that carried the fence, so the fence moves to a docstring-only reload (RB-2(b)) | No further correction |
+| P6 | Redefining one member of a shared `begin` keeps the old sibling in the record [G-8] | L | A stale sibling is written back | A review note; never observed | Carry with a falsifier: redefine one member, regenerate, and find the old sibling |
+| P7 | §15.4 rules 2 and 4 against [design §1.3](../../design/int/session-persistence.md#13-section-order) [G-8] | Spec–design conflict, read in both; T4 observed a trait written before a type entered earlier | Regeneration reorders the user's file. The header order is `mod`, `platform`, `import`, `export`, where rule 4 requires platforms, submodules, exports, imports. Each kind follows in alphabetical order, where rule 2 requires authorship order. Round trip holds | No cell observes rules 2–4, so rule 6 stays partial. Rule 4 names a `declare-platform` form the language lacks | A user ruling through `spec`: amend the rules to the as-built order, or schedule authorship-order regeneration |
+| P8 | [ACT-0994](../../sprints/actions/ACT-0994-cached-load-claim-reregistration-intake.md) [G-6]: a cached load completes against a later registration | L | Possibly a stale body after an edit during a cached load | Unobserved. RR-1's 2000-session evidence is separate | Carry with the action's falsifier |
+
+#### 2. Names read by their written spelling
+
+Surface: `cranelisp-typecheck`, one REPL display reader, and import syntax.
+
+Four S122 defects shared one mechanism: G-7, ACT-0999, ACT-1001 P-1 and
+ACT-1002. In each, a reader resolved the written spelling instead of the
+canonical identity. The N3 leads have the same shape. A recurring class is an
+architecture signal (`tests/CLAUDE.md` analysis recipes).
+
+| ID | Item | Class | User-visible consequence | Evidence and mitigation | Recommendation |
+|---|---|---|---|---|---|
+| N1 | [ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md) [G-8]: renamed import and export entries are rejected at parse, including the self-rename that §8.3.5 says MUST NOT be rejected | D; `wrong-reject` | A specified import form is unusable, although `src/syntax/cheatsheet.txt` advertises it | Observed; no RED (`module_extract.rs` calls `expect_symbol`). The fix changes the public `ImportNames` type (`arch` and the user API gate) and inherits the persistence impl-identity obligation | `test` commits the RED now. Scheduling is the user's; QA recommends the next increment, because of the API gate |
+| N2 | [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md) P-3: an ambiguous impl head is reported as `unknown trait` | D; `error-swallow`, provisional | A correct rejection gives the wrong diagnostic; §8.6.5 requires the alternatives | Observed as P-1's bare-head control (`impl_check.rs::resolve_impl_trait_ref`). No RED | Commit the RED, then a bounded typecheck fix, now |
+| N3 | P-2/L-1 (dispatch index found by bare member name); [ACT-0985](../../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md) (three leads); [ACT-0987](../../sprints/actions/ACT-0987-trait-dispatch-and-impl-rigidity-intake.md) (two leads); [ACT-1003](../../sprints/actions/ACT-1003-contested-type-deftype-echo-intake.md) (a warm echo omits `; match:`); `typecheck.md` §11 residuals (the M4 gate, bare type positions, A1) [G-6] | L | Under a contested spelling: wrong dispatch, a wrong accept or a missing display section | Each has a named falsifier; none reproduced | One QA-directed probe basket, run by `test`, with a RED for each confirmed lead. `design`(typecheck) assesses converging the readers onto the canonical key, through `arch` if a crate boundary moves |
+
+#### 3. Batch entry and platform admission
+
+Surface: Binary/int (`src/exe.rs`, `src/platform.rs`,
+`src/process_form/platform.rs`).
+
+| ID | Item | Class | User-visible consequence | Evidence and mitigation | Recommendation |
+|---|---|---|---|---|---|
+| C1 | [ACT-1004](../../sprints/actions/ACT-1004-batch-missing-entry-diagnostic-intake.md): `--run` and `--link` on a missing entry file report `entry module has no 'main' function`, not the file (CLI §0.5.5 rule 2) | S: the message site is in `src/exe.rs`, as reported by `dev` and `review` | A mistyped file name gives a misleading error | The `--test` leg conforms and is evidenced | RED for both modes, then one shared missing-source check, now |
+| C2 | [ACT-0973](../../sprints/actions/ACT-0973-platform-declaration-scope-intake.md) [G-6]: a `platform` form in a dotted non-entry module is skipped (`process_form/platform.rs`, `cache_restore.rs`), where §10.9.1 requires a compile-time error | S; `silent-accept` | A library's platform declaration is ignored without a message | The root-level non-entry path is unread | RED with an entry control and a root-level leg; fix with C1 |
+| C3 | [ACT-0979](../../sprints/actions/ACT-0979-platform-function-type-rejection.md) [G-5] and [0933](../../design/arch/fixmes/0933-platform-sig-residual-type-var-must-refuse-at-mint.md) [G-6]: the platform signature gate checks only the `IO` return, so it admits function types and residual type variables | S (`parse_and_check_platform_type_sig`, `require_io_return`) | A platform can declare a signature the ABI cannot honour. Only Rust platform code reaches this | No rejection path exists | One int-private gate at the mint, with unit rows, now. A `spec` question first: does "contain" extend through a named ADT's field types? |
+| C4 | Q12 [G-5]: a module `platform-x` and a platform named `hx` mint the same GOT symbol | S: static, from the `got_data_symbol_name` carve-out. The runtime fixture was never built | Two modules would share one GOT slab | Needs contrived names on both sides | Carry with that falsifier (owner `arch`). A loader-side platform-name rule is a user naming decision |
+| C5 | [0915](../../design/arch/fixmes/0915-codegen-diagnostic-exposes-mangled-doubled-internal-subjects.md) [G-5]: a codegen diagnostic has a doubled prefix, a `0..0` span and a mangled subject | S: backend `error.rs` and `drop_glue.rs` | Any future internal codegen error is presented badly | No public trigger since the G-7 and ACT-0999 corrections | Carry to backend and int design, with the falsifier: any public codegen error |
+| C6 | [ACT-0986](../../sprints/actions/ACT-0986-test-discovery-contract-and-eligibility-intake.md) item 1 [G-5]: in-language `discover-tests` excludes a mistyped test without warning | S, documented in the runner design | A REPL program calling the primitive gets no warning; the host runner warns | TR-1 evidences the runner's warning | A user ruling through `spec`. QA recommends confining the warning to the host runner; the alternative is an extern warning channel |
+
+#### 4. Runtime ownership and concurrency
+
+Surface: `cranelisp-intrinsics` and `cranelisp-backend`.
+
+| ID | Item | Class | User-visible consequence | Evidence and mitigation | Recommendation |
+|---|---|---|---|---|---|
+| R1 | [ACT-0977](../../sprints/actions/ACT-0977-scoped-launched-work-cancellation-evidence.md) [G-5]: launched work is not cancelled with the context that launched it (§10.12.7 item 5). The item 6 drain is unevidenced | S. `block_on_reactor` builds one `Supervisor` per drive, and a strand has no link to its launch context | A strand launched in a losing `race` or a timed-out branch keeps running and holds its permit | §10.12.10's two rows are unconstructible, because no platform provides their effects | `test` commits a RED on synthetic leaves now. Realization needs `arch` and `design`(intrinsics); QA recommends carrying it to the next increment with the RED in place |
+| R2 | Ownership balance not re-measured [G-6]: 0907 (a `Functor IO` instance retained about 68 B per call in S118); 0934 (a heap payload in an unrun `Bind`); ACT-0974 (only-read `String` primitives as function values); ACT-0976 (residue after a macro runtime error) | L/E | Leaks, or a double discharge, in ordinary programs | The IO release was delivered after the 0907 measurement. The marginal harness has a detection proof | One marginal basket (`test`), with a RED for each confirmed item |
+| R3 | 0694 [G-5]: run-dependent guards | E. Class I is a heap-corruption signature, captured once in S115 | An intermittent memory-safety event in macro interior-alias execution | Q4's macro-ownership correction came after the capture | Characterise Class I once, under load with an armed allocator mode, in R2's visit. Carry Classes II and III as an explicit residual |
+| R4 | ACT-0975 (a poll node inside a synchronous `Par` branch) and ACT-0981 (IO scheduling skips multi-signature bodies) [G-6] | L | A rejected permitted program; lost parallelism, which §10.12.6 makes invisible in values | Source reads | Carry with their falsifiers |
+
+#### 5. Assurance debt and maintenance
+
+None of these carries compiler acceptance authority.
+
+- **Evidence tails [G-6]:** 0761, 0785 (one e2e guard owed), 0811, 0848, 0857,
+  0863, 0891, 0900, 0903, 0929, 0931 and 0747.
+  - QA proposes ACT-0962's deferred coverage increment.
+  - `sprint` states each item's deferral count. METHOD §2.4.5 needs explicit
+    sign-off for a third deferral.
+- **Audit and maintenance actions [G-6].**
+  - ACT-0964–0968, 0978 and 0982 go to their owners at the audit disposition.
+  - ACT-0955, ACT-0963 item 2 and ACT-0971 each change a public-API baseline.
+    QA proposes one baseline batch through `arch` and the user gate. ACT-0955
+    was in S122 scope, so carrying it is a deferral.
+- **Owner retirements, ready.**
+  - Their target roles (`dev`, `design` or `arch`): 0745, 0868, 0889 (narrow
+    it and keep the 46 as the record), 0789, 0906, 0553 and 0708, with their
+    mirrors. `dev` also
+    closes ACT-0965 item 1.
+  - `test`: the present-tense framing in `tests/spec_08_modules.rs`, and the
+    exemplar `<= 1_400` threshold cell.
+  - QA: 0914, 0815 and 0841, after their `spec`, `test` and stdlib mirrors.
+    ACT-1002 retires at the checkpoint commit. ACT-0958 retires once 0915's
+    `refers_to` stops citing it, a `design`(backend) edit.
+- **ACT-0986 item 2.** `spec` makes the §16.5 example runnable. Frontend `dev`
+  corrects the citation on `test_discover_tests_no_arg_builds_as_apply`.
+- **QA:** the L-B1 corpus decision in PLAN.
+- **Pre-existing:** fmt drift and clippy warnings in the types and platform
+  crates.
+
+### Approved carries and exclusions
+
+- **Exclusions approved at Phase 1 on 2026-09-09:** LLVM, 0050, 0463,
+  ACT-0951, ACT-0952 and ACT-0953.
+- **User deferrals:** ACT-0959, 0960, 0961, 0962, 0972, 0988, 0991, 0992,
+  0993 and 0995; cache-corruption hardening C-A; ACT-1005, the macro-order
+  and literal-`begin` round-trip edge cases, to S123 or S124 (2026-09-28,
+  first deferral).
+- **D1 (2026-09-10):** failed-turn recovery is evidenced through the private
+  witness, which satisfies ACT-0958.
+- **Lint deviation:** the 23 `result_large_err` instances
+  ([runner adequacy](#shared-test-runner--final-adequacy-2026-09-28)).
+- **DT-1 carry:** superseded 2026-09-28; TR-5 of the [shared test runner delta](#shared-test-runner-and---test--evidence-delta-2026-09-28) replaces it.
+
+No other item has an approved carry.
+
+### Later phases
+
+- Phase 6a/6b: the backend audit and the language-facing consequences, such as
+  0800 Face 3 (stdlib).
+- Phase 7: the principle and register review (0776, 0783, 0938, 0939, 0942,
+  0943), ACT-0969 and shared-package contribution.
+
+### Acceptance verification T1–T4 (2026-09-27)
+
+The user authorised T1–T4 on 2026-09-27 and did not select T5. `test` ran it as
+sole Cargo owner (`.local/s122-acceptance-t1-t4-test-result.md`, logs
+alongside). QA added seam probes on the same-source debug binary `ce266062…`
+(`.local/s122-acceptance-t1-t4-qa/`). Those probes are diagnostic observers,
+not committed evidence. Each subject failed in `focused-1.log` for its intended
+reason, and each control passed. This establishes the pre-fix RED for every
+subject.
+
+| Cell | Class | Governs |
+|---|---|---|
+| T1 lane, modules, self-check | Maintenance check | The eval instrument (G-1) |
+| `repl_persist::persist_macro_replacement_persists_through_restart` (RED), `…persist_function_replacement_persists_through_restart` | Acceptance | REPL §18.8 |
+| `spec_05_definitions::impl_method_named_like_field_accessor_registers_beside_accessor` (RED), `…impl_method_with_distinct_name_registers_beside_accessor` | Acceptance | Spec §7.3.1 |
+| `spec_07_traits::trait_qualified_method_call_dispatches` (RED), `…trait_method_bare_call_and_qualified_value_dispatch` | Acceptance | Spec §7.4.2a |
+| `repl_persist::persist_cache_restored_declarations_survive_repl_edit_regen` (RED) | Acceptance | REPL §15.4 rule 1 |
+| `repl_persist::persist_bug0220_cache_restored_userfns_survive_repl_edit_regen` (control) | Safety fence | The 0220 function loss |
+
+The retired `spec_05_definitions` collision `_rejected_neg` cell was stricter
+than its authority. It enforced the rule superseded on 2026-09-02, so
+it is removed, not relabelled.
+
+#### T1 — eval instrument currency
+
+G-1 is satisfied. The launcher needed interactive approval, so `test` ran its
+exact `cargo nextest` command with `--target-dir target/agent`. It passed the
+test-process `CARGO_TARGET_DIR` through Cargo `--config env.…`.
+
+- **Equivalent to the launcher.** The launcher, unchanged since `710bc454`,
+  only sets that variable and runs the same command.
+- **Right binary.** `agent_flag_accepted_on_agent_build` passed. It fails on the
+  non-agent default binary, so the lane spawned the agent binary `2529b8b6…`.
+  The self-check report records the same hash, the HEAD and the dirty diff.
+- **Module selection.** `--lib` selected 137 of 137. The different skipped
+  count reflects the selection universe, not coverage.
+- **Limit.** The literal script did not run at this checkpoint. A re-run would
+  add no discrimination, so none is requested.
+
+#### T2 — macro replacement persistence
+
+- **Symptom.** The backing file keeps the first body, and restart reverts the
+  admitted replacement.
+- **Control.** A function replacement passes every leg.
+- **Seam observation.** After each replacement, QA read `/source k` and
+  `/sexp k`. The function record shows the new form in both. The macro record
+  shows new `source` but stale `sexp`. Each saved file matches its `sexp`.
+- **Writer.** `src/process_form/form_dispatch.rs::record_macro_introspection`
+  sets `sexp` only when it is absent. The defn writer in `process_form.rs`
+  overwrites it.
+- **Why the stale form wins.** Save emits verbatim `source` only when it
+  re-parses to the recorded `sexp`, so the stale `sexp` render wins.
+- **Attribution.** Class `partial-record-update` (added to the vocabulary this
+  visit), at that locus.
+- **Falsifier.** If a writer that replaces `sexp` on a successful replacement
+  leaves the file leg RED, the attribution is wrong.
+- **Where it entered.** Coverage: §18.8 macro replacement had no allocated
+  condition.
+- **Fix evidence.** The subject flips GREEN. `dev` adds a unit test at the
+  writer. The `expanded` carrier has the same absent-only guard, so the unit
+  test covers every carrier the fix touches.
+
+#### T3 — accessor-named impl method
+
+- **Change to the allocated control.** The allocated control read
+  `(HasW.w (Box 5))`, and it failed on the non-colliding impl. Under the stop
+  rule, the failure was reattributed rather than tagged.
+- **Redesigned cells.** They read each method through its canonical value,
+  `(let [f HasV.v] (f (Box 5)))`, and the accessor through `Box.v`.
+- **What the cells discriminate:**
+  - rejection loses the confirmation line and the 99;
+  - displacement of the accessor loses the 5.
+- **Independence.** The collision diagnostic is raised at impl time, before any
+  call, so the subject does not depend on the §7.4.2a defect.
+- **Attribution.** Class `wrong-reject` is confirmed. The diagnostic is
+  `check_impl_method_accessor_collisions`'s message, and the control registers.
+- **Where it entered.** Source was not corrected after the 2026-09-02 ruling,
+  and a stricter e2e cell hid the gap.
+- **Fix-time conditions:**
+  - `dev`(typecheck) corrects the four `impl_method_colliding_*` module cases
+    in the same change-set.
+  - `test` adds one negative cell: a bare `v` compatible with both `Box.v` and
+    `HasV.v` is rejected as ambiguous (§7.3.1, §8.6.5). The wrong outcome it
+    catches is a silent pick of one declaration. It cannot be authored before
+    the fix, because the collision rejection would mask it.
+
+**§7.4.2a — qualified call (G-7).**
+
+- **Symptom.** A call-position `HasW.w` fails codegen on the doubled carrier
+  key `HasW.HasW.w$…Box`, in the REPL, a `defn` and `--run`.
+  `(Num.+ 1 2)` fails the same way.
+- **Controls.** The bare call and the qualified value both dispatch.
+- **Class.** `resolver-mirror` is confirmed at the carrier: only the spelling
+  or position differs, and the published key carries the written spelling.
+- **Locus (provisional).** `crates/cranelisp-typecheck/src/traits/dispatch.rs`.
+  `try_resolve_selected_trait_method` strips the qualifier;
+  `try_resolve_trait_method` mangles its `callee_name` as given.
+- **Unobserved.** Which caller passes the written spelling: `infer.rs` at
+  1247, 1294 or 1716, or `mono_collect.rs` at 1227.
+- **Falsifier.** If `callee_name` at the mangle is bare `w` for the failing
+  call, the attribution is wrong.
+- **Where it entered.** Coverage: §7.4.2a had no cell. Nothing shows the call
+  ever worked, so no regression is claimed.
+- **Fix evidence.** The subject flips GREEN. `dev` adds a unit test that also
+  covers the builtin-collapse branch (`resolved_builtin_for_trait_method`),
+  which a user-trait-only fix could leave broken.
+- **Also noted.** The diagnostic exposes a doubled mangled subject, a further
+  instance of 0915's presentation class. No new filing is needed.
+
+#### T4 — declarations after a warm-cache restart
+
+- **Symptom.** A warm-restart regeneration writes only the import and the new
+  function. The cold restart then lacks `weigh` and `Box.v`.
+- **Control.** The function case passes and differs only in declaration kind.
+- **Mechanism (confirmed by the correction).** Save renders traits, types
+  and impls only from introspection records. A cache restore leaves those
+  records empty, and the pre-fix 0220 rehydrator refilled only plain callables.
+  It is now the kind-general
+  `src/save.rs::rehydrate_introspection_from_source`.
+- **Attribution.** Class `enumeration-miss` is plausible but provisional. The
+  locus `src/save.rs::generate_module_source` names the regeneration seam.
+- **Falsifier.** If rehydrating those kinds leaves the RED, the attribution is
+  wrong.
+- **Warm-cache lead: a second face of G-4, not a separate defect.**
+  - Control: hand-editing `user.cl` to drop the declarations invalidates the
+    cache, and they disappear.
+  - After a lossy regeneration, the manifest's `source_hash` equals the new
+    file's SHA-256, while `user.meta.json` still carries `Box`, `Weigh` and the
+    impl.
+  - The cache therefore certifies a file that lacks what it serves. The loss
+    stays hidden until the cache is invalidated.
+  - The T4 cold leg discriminates the root, so no further cell is allocated.
+- **Design constraint.** Route implementation through design(int), per
+  ACT-0980. §15.4 rule 6 (cache independence) requires rules 1–4 whether
+  definitions were compiled from source or restored from the cache; it
+  places no content obligation on the cache metadata.
+
+**Incidental lead, outside this visit.**
+
+- **Observation.** Regeneration wrote `deftrait Weigh` before
+  `deftype Box`, which had been entered first.
+- **Conflict.** The [persistence design](../../design/int/session-persistence.md#13-section-order)
+  orders by kind and alphabetically. [REPL §15.4](../../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+  rule 2 requires authorship order, and that rule is untested (`[R4 S52]`).
+- **Status.** A candidate spec-versus-design conflict. It is recorded here for
+  a user decision on intake, not attributed.
+
+#### Handoffs
+
+- **Coordinator, mechanical.**
+  - The defect-comment corrections, and the design citation replacement in the
+    QA result `.local/s122-acceptance-t1-t4-qa-result.md`.
+  - Commit them in the same change-set as the cells, so the citation gate
+    returns GREEN.
+- **User, in risk order.** G-4, G-2, G-7, G-3; then G-5 and G-6.
+- **After a fix decision.** Each fix follows METHOD §2.2 with the conditions
+  above. Run the full suite once after source changes.
+
+### Persistence correction — evidence delta (2026-09-27)
+
+The user approved fixing G-4 and G-2 together. The governing design is
+[session persistence §2.4](../../design/int/session-persistence.md#24-authored-form-records)
+and [§12.3](../../design/int/session-persistence.md#123-enumeration): a
+kind-general rehydrator over the hash-certified backing file, a refusal instead
+of a silent omission, and a replacing macro writer. The repair is int-private.
+This delta adds only what the T2 and T4 cells do not already discriminate.
+
+**Existing evidence, unchanged.** The T2 and T4 subjects must flip GREEN. Their
+controls must stay GREEN: the function replacement and the 0220 function
+restore. Their pre-fix REDs are recorded above.
+
+| ID | Condition and plausible wrong outcome | Layer, owner, class | RED and control criteria |
+|---|---|---|---|
+| PC-1 | **Fresh-load face of §15.4 rule 1.** Type, trait and impl declarations loaded from a file without a cache survive the next REPL regeneration, and a cold restart still has them. Wrong: the regeneration drops them, because a fresh load writes no declaration record (design's source read, unobserved). A false refusal is also wrong: it leaves the file unchanged, without the new definition. No cell regenerates after a fresh load of declarations | e2e, `test`, `tests/repl_persist.rs` §15.4 section. Acceptance | The T4 cell's structure, with session 1 replaced by a seeded `user.cl`: the T4 import and three declarations plus one `defn keep` returning 7. Session 1 is a fresh temp dir. It checks `(weigh (Box 41))` gives 42, then defines `added`. The regenerated file holds each declaration exactly once, plus `keep` and `added`. Remove the cache, then restart: 42, 5, 7 and 3, and no `Error`. **Pre-fix RED:** write and run the cell before `dev` changes source. The intended reason is that the declarations are missing while `keep` and `added` are present. The in-cell `keep` is the control that differs by kind. If it is GREEN pre-fix, the design claim is falsified: keep the cell with no `// defect:` line and report. For any other failure, stop and report to QA |
+| PC-2 | **Rehydration key and scope.** Each native definition form in the certified file is keyed exactly as a live turn keys it, including impls where rows 1 and 3 take the key from settled names. Wrong: a key disagreement or unhandled form gives a false refusal after a warm restart, so later definitions stay unsaved. The T4 shape cannot reach those variants | Module, `dev`, `src/save.rs` | One table-driven cell covering a type, a trait, an own-trait impl, an imported-trait impl known only through `written_trait_impls`, an HKT echo-head impl, a private head and a top-level `begin` member. Each gets the live-turn key, and every impl key equals its rows 1/3 label. It must be RED against the current rehydrator |
+| PC-3 | **Absence and liveness.** Wrong: a text-only REPL declaration record is overwritten by the file's older generation. This silently reverts a same-session redefinition, the ACT-0970 face for declarations. Also wrong: a non-live impl form is rehydrated and emitted beside `append_failed_forms` | Module, `dev`, `src/save.rs` | Three negatives or legs: a text-only record is untouched; a CLIF-only record is filled; an impl not in `written_trait_impls` is not rehydrated |
+| PC-4 | **No silent omission ([§2.4.3](../../design/int/session-persistence.md#243-no-silent-omission)).** A selected entry with no renderable record causes no write. The file bytes stay unchanged, and a warning names the entry. Wrong: the entry is dropped and the file written, which is the pre-fix behavior | Module, `dev`, `src/save.rs`. Acceptance for §2.4.3. Its only public trigger is the known limit (lead SL-1), so no e2e cell is allocated | RED against the pre-change generator, which writes without the entry, then GREEN. No planted-fault run beyond that |
+| PC-5 | **Macro record replacement.** A second publication replaces `sexp` and `source`, and clears an `expanded` that the new generation lacks. Wrong: a stale carrier survives. The T2 cell observes only `sexp` through the file | Module, `dev`, `src/process_form/tests.rs` | RED against the absent-only writer |
+| PC-6 | **False-refusal measurement.** Every existing regeneration cell detects a false refusal: an unwritten or unchanged file fails its restart leg | Full suite, `dev`, once after the source change. Measured | Any GREEN that flips is a design finding and returns to design(int). Do not suppress or retag it |
+
+**Not allocated.**
+
+- A warm-restart imported-trait e2e: PC-2 discriminates the key at its seam.
+- The unparseable-file cell and a separate dedup negative: PC-6 measures the
+  dedup render through existing regeneration cells.
+- Separate sum/product type cells.
+- A planted-fault run for PC-4.
+
+`dev` may add module cells; QA does not require them.
+
+**Traceability and notation (`test`, after the fix).**
+
+- Stamp both subjects and PC-1, if RED pre-fix, with `fixed=`.
+- The T4 and PC-1 class `enumeration-miss` is confirmed: PC-2 and T4 flipped
+  together. Their `locus=` token keeps the historical callable-only
+  rehydrator's name, per the notation rule. Its current replacement is
+  `src/save.rs::rehydrate_introspection_from_source`.
+- The band now cites T4, PC-1 and the 0220 control on REPL §15.4 rule 1, and
+  T2 with its control on the §18.8 persistence paragraph.
+
+**Leads, unconfirmed.** These come from design's source read and are recorded
+in [§2.4.4](../../design/int/session-persistence.md#244-known-limits). They are
+neither attributed defects nor part of this repair. Each needs a user intake
+decision.
+
+- **SL-1:** definitions produced by an expansion in a cache-restored module
+  are unrendered. After the repair, regeneration refuses instead of dropping
+  them.
+  - **Reachable through stdlib `def`.** It expands to
+    `(begin (defn x-def …) (defmacro x …))`, so `x-def` would have no record
+    after a warm restart. By source read, a REPL `(def x 1)`, a warm restart
+    and any later definition would make every later regeneration in that
+    session refuse.
+  - **Before and after.** Today the same path would silently drop `x-def`.
+  - **Checkpoint.** Present the refusal together with this face.
+- **SL-2:** a stale REPL declaration record after a watcher reload of an
+  external edit.
+- **SL-3:** the function record is written before publication, so a rejected
+  redefinition may persist at the next regeneration. **Highest severity.**
+  Falsifier: reject a redefinition, define something else, then cold restart.
+
+**Blockers:** none for this correction.
+
+- **Rule 6.** §15.4 rule 6 (cache independence) is approved wording. Its
+  rule 1 face is evidenced on both legs; see [retained residuals](#retained-residuals)
+  for the rest.
+- **§15.1 step 2.** A §2.4.3 refusal also leaves §15.1 step 2 (regenerate on
+  every successful definition) unmet for that turn. It refuses only where
+  writing would violate rule 1. This is a disclosure, not a new rule.
+
+**Sequence (Cargo serialized).**
+
+1. `test`: PC-1 and its focused pre-fix run.
+2. `dev`(src): PC-2 to PC-5 RED first, then the fix, focused GREEN on T2, T4,
+   PC-1 and the controls, then PC-6.
+3. `test`: stamps.
+4. `review`.
+5. QA adequacy.
+
+**PC-6 result.** The full run on the corrected tree had 6222 tests: 6218
+passed, 4 failed and 1 was skipped (`.local/s122-persistence-test/visit2/full-suite.log`).
+
+- Three failures are recorded defects: G-3, G-7 and DT-1.
+- The fourth is this document's stale rehydrator citation, now reconciled.
+- No regeneration cell flipped. This measures only the shapes the suite
+  already writes. F1 and F2 below are shapes it does not write.
+
+#### Review findings F1–F3 and A1 — classification (2026-09-27)
+
+The source is `.local/s122-persistence-review-result.md`.
+
+- **Observer.** The coordinator ran QA's basket
+  (`.local/s122-persistence-review-qa/basket.sh`) on the frozen pre-fix binary
+  `ce266062…` and post-fix binary `e6076b17…`. The log is
+  `.local/s122-persistence-review-qa/basket-coordinator.log`, with both
+  hashes verified.
+- **One deviation.** The child `HOME` assignment was omitted; nothing else
+  changed.
+- **Authority.** The basket is a diagnostic observer, not committed evidence.
+- **Classification rule.** The table classifies what was observed. The
+  review's source predictions supply no fix.
+
+| ID | Observed on both binaries unless stated | Classification | Disposition |
+|---|---|---|---|
+| F1 | The renamed import is rejected at parse (`expected symbol for import name`) before any impl exists. The unrenamed control persists the impl and `g`, and its cold restart gives 2 | **Not a regression; latent.** No rename reaches the compiler | Not blocking. PC-7 and PC-7m are retired as unconstructable. [ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md) takes the intake, and design §12.3 records the premise |
+| F2 | A REPL-turn `begin` is written twice. A file-loaded `begin` is written twice post-fix. Pre-fix, the file-loaded `begin` is lost and its cold restart fails (`undefined variable: show`). Every post-fix cold restart gives 41 and 1 | **Existing defect** against design §1.4's "emitted once". The repair extends it to a path that previously lost the form. §15.4 rule 1 held in every restart | Not blocking. The user chose to fix it; [corrected](#f2-correction--adequacy-2026-09-27) |
+| F3 | The watcher refuses the reload (`illegal callable origin/lifecycle pairing`), so the review's mechanism is never reached. The next definition turn then overwrites the external edit: pre-fix without `T`, post-fix with the old `T` | **Mechanism unobserved; not a regression.** The refusal and the overwrite are pre-existing defects outside this repair | [ACT-0998](../../sprints/actions/ACT-0998-watcher-reload-type-change-intake.md) takes the intake. Design §2.4.4 needs a record correction. No cell here |
+| A1 | Both binaries reject `base`'s type change, naming `d1` and `d2` as blocking dependents. Warm and cold, `d1` and `d2` stay 1, and the file is identical | **No divergence** | Closed; no cell |
+
+**F1 — impl identity has two derivations.**
+
+- **The two derivations.**
+  - The live turn and the rehydrator key an impl by its written spelling,
+    through `src/session_v4/types.rs::definition_result_symbol`.
+  - Rows 1 and 3 label it from settled names, through `src/save.rs::impl_label`.
+    Those names come from `WrittenTraitImpl`'s canonical trait and type.
+- **Why they agree today.** Without a rename, the written head name is the
+  declared name:
+  - `TypeRef` and `TraitRef` keep the qualifier apart from `name`;
+  - the language has no type synonyms;
+  - the frontend rejects every renamed entry
+    (`crates/cranelisp-frontend/src/module_extract.rs`, `expect_symbol`), and
+    `ImportNames` cannot represent one.
+- **Where they would diverge.** Once §8.3.5 renames parse,
+  `(import [lib [(Box B)]])` then `(impl W B …)` gives two keys. Each
+  regeneration would then refuse to write the module.
+- **Where it entered.** Design §12.3 asserted that the keys agree without
+  saying why. PC-2 omitted the rename axis, which cannot currently be
+  constructed.
+- **Falsifier of "latent".** An impl head whose written name differs from its
+  settled name without a rename. Neither the language nor the basket supplied
+  one.
+
+**F2 — a shared `begin` is rendered by more than one section.**
+
+- **Mechanism.** The §1.4 authored-form dedup covers only the function and
+  macro section. `(begin (deftype Token MkToken) (impl Show Token …))` is
+  rendered by the type section and again by the impl section.
+- **REPL-turn face.** It predates the repair: both binaries write two copies.
+- **File-loaded face.** The repair replaced loss with duplication. The
+  rehydrator records the outer `begin` for each member.
+- **Severity.** A duplicated `begin` reloads cleanly, so round trip holds.
+- **Bounded (source read).** `src/save.rs::rehydrate_introspection_from_source`
+  fills only absent records, keyed by definition. A file that already holds
+  the duplicate therefore regenerates the same copies without growth. The copy
+  count is at most the number of sections the `begin` spans. Falsifier: a
+  later regeneration writes a third copy.
+- **Where it entered.** A QA allocation miss. PC-6 declined a separate dedup
+  negative, and no existing cell writes a `begin` that spans sections.
+
+##### F2 — the one user choice
+
+**Decided 2026-09-27: fix now** ([SPRINT](../../sprints/SPRINT.md), "Mixed-section
+begin repair approved"). The carry branch was not taken. The G-2/G-4
+correction was adequate without an F2 fix; the choice weighed:
+
+- **Risk.** Round trip held and the copy count was bounded, but the file was
+  less faithful to what the user wrote (§15.4 rule 7). An unprobed hazard
+  (source read): an external edit of the first copy loses to the older second
+  copy, which loads after it.
+- **Fix now, as delivered.** §1.4's single authored-form dedup extends to every
+  declaration section. The change is int-private and design §1.4 stands:
+  - PC-8 is acceptance: RED on the pre-fix build, then GREEN;
+  - `dev` extends `rehydrated_module_regenerates_every_definition` with a
+    cross-section `begin`.
+
+The outcome is [F2 correction — adequacy](#f2-correction--adequacy-2026-09-27).
+
+**F3 — a rehydrated declaration record goes stale after a watcher reload.**
+
+- **Mechanism, still a source read.** SL-2's mechanism: nothing refreshes a
+  declaration record when a reload succeeds. It now reaches records the
+  rehydrator fills from the file, not only text-only REPL records.
+- **Basket.** Inconclusive, as predicted. `(T.w (T 1 2))` failed because the
+  reload itself was refused.
+- **What it showed instead.** Two pre-existing defects on both binaries,
+  recorded in ACT-0998 and not attributed to this repair:
+  - the refusal of a spec-valid product-type edit;
+  - the overwrite of the user's edit by the next definition turn.
+- **Scope.** A record correction to design §2.4.2 and §2.4.4 limit 2. No cell,
+  and no fix scope.
+
+**A1 — redefinition residue over a cache-restored `begin`.**
+
+- **What changed.** Post-fix, the residue rechecks dependents from rehydrated
+  records that repeat the outer `begin`. HEAD degraded to a module-grain
+  reload.
+- **Coverage.** No cell redefines a callee whose dependents sit in a `begin`,
+  in any mode.
+- **Basket leg.** It redefines `base` from `Int` to `String` after a warm
+  restart, then calls `d1` and `d2`. The binaries do not diverge, so no cell
+  is allocated.
+
+**Added conditions.**
+
+| ID | Condition and plausible wrong outcome | Layer, owner, class | Criteria |
+|---|---|---|---|
+| PC-7, PC-7m | **Retired 2026-09-27 as unconstructable.** Both needed a renamed import, which no build parses (F1). Their renamed-type and renamed-trait persistence conditions move to ACT-0997's correction | — | — |
+| PC-8 | **A `begin` spanning sections is written once (design §1.4; §15.4 rule 7 intent).** Wrong outcome: the type and impl sections each emit the shared form. Round trip is not the discriminator, because the duplicate reloads cleanly | e2e, `test`, `tests/repl_persist.rs` §15.4. Acceptance (the fix was taken) | REPL: `(deftrait Show (show [self] primitives/Int))`, then `(begin (deftype Token MkToken) (impl Show Token (defn show [_] 41)))`, then `(defn g [] 1)`. `user.cl` holds exactly one `(begin`. After removing the cache, a cold restart gives `(show MkToken)` 41 and `(g)` 1. Add a leg that seeds `user.cl` with the same `begin`, then defines `g`: again exactly one `(begin`. Both legs were RED before the fix; [outcome](#f2-correction--adequacy-2026-09-27) |
+
+**Not allocated.**
+
+- An F3 cell: F3 waits for SL-2's intake, and ACT-0998 carries its own
+  reproduction.
+- An A1 cell: the binaries did not diverge.
+
+### Persistence correction — adequacy (2026-09-27)
+
+- **Basis.** The uncommitted tree. Its executable inputs match
+  `.local/s122-persistence-test/visit2/tree-at-full-run.sha256`, except:
+  - `tests/repl_persist.rs`, which changed only by comment stamps and now
+    hashes `ce778c85…`, the value `test` reported;
+  - this document.
+- **Execution record.** The coordinator ran:
+  - `test`'s exact pre-fix command against the retained compiler
+    (`prefix-pc1.log`, exit 101);
+  - the literal offline agent launcher.
+
+| Condition | Evidence | Verdict |
+|---|---|---|
+| T2, §18.8 | RED before the fix ([T1–T4](#acceptance-verification-t1t4-2026-09-27)); GREEN in the focused 5/5 and the full run; its control GREEN | Adequate |
+| T4, §15.4 rule 1 | RED on the retained pre-fix compiler at `:1826`; GREEN in the focused and full runs | Adequate |
+| PC-1 | RED on the retained compiler at `:1888`, for the intended reason: 0 of each declaration, while `keep` and `added` are present. The 0220 control passes in the same run. GREEN in the focused and full runs | Adequate |
+| PC-2 to PC-5 | `dev` module cells: 13 RED before, 19 of 19 after. The PC-5 writer cells include `expanded` | Adequate |
+| PC-6 | Full run: 6222 tests, 6218 passed. The 4 failures are G-3, G-7, DT-1 and this document's stale citation, since repaired. No regeneration cell flipped | Adequate for the shapes the suite writes |
+| Agent regeneration callers under the refusal | Offline lane 81 of 81 (`.local/s122-persistence-test/visit2/agent-lane-coordinator.log`) | Adequate |
+| Review F1–F3, A1 | Classified above; none blocks | — |
+
+- **Judgment.** The correction is adequate for G-2 and G-4.
+- **Retirement.** ACT-0970's and ACT-0980's retirement conditions hold, so
+  QA retires both:
+  - T2, T4 and PC-1 pass in an adequate run;
+  - the writer cells cover every carrier the fix touches;
+  - `test` has stamped the subjects `fixed=S122`.
+- **At commit.** Append `/<sha>` to those three stamps.
+- **Limit.** PC-6 measures only the regeneration shapes the suite already
+  writes.
+
+#### Retained residuals
+
+None is waived or carried by this correction. Each needs a user decision.
+
+| Residual | State | Carrier |
+|---|---|---|
+| SL-1: expansion-produced definitions after a restore | Source-read lead. Regeneration refuses instead of dropping them. Reachable through stdlib `def` | [Leads](#persistence-correction--evidence-delta-2026-09-27); design §2.4.4 |
+| SL-2 with F3: stale declaration record after a successful reload | Source-read lead. The record correction is pending | Design §2.4.4 |
+| SL-3: function form written before publication | Source-read lead, highest severity | Design §2.4.4 |
+| Redefining one member of a shared `begin` keeps the old sibling in the record | Review note, unobserved. The class predates this repair for `defn`, and replacement now exposes macros to it | This table |
+| §15.4 rule 6: cache independence of rules 1–4 | Partial. Rule 1 is evidenced on both legs: cache-restored by T4 and the 0220 control, compiled from source by PC-1. No cell observes rules 2–4 on either leg, so the band stays `[Uncovered S122 — partial …]`, as does the §15.4 heading | Coverage gap; a user decision whether to allocate cells |
+| §15.4 rule 2: authorship order | Candidate conflict between spec and design | [T4 incidental lead](#t4--declarations-after-a-warm-cache-restart) |
+| Renamed entries rejected; watcher refuses a product-type edit | New intake from the basket | ACT-0997, ACT-0998 |
+
+F2, formerly in this table, is corrected.
+
+### F2 correction — adequacy (2026-09-27)
+
+- **Scope.** The user's fix-now choice: one authored form is emitted once
+  across sections 5–8 (design §1.4 stands). The change is int-private and
+  confined to `src/save.rs`: one `SectionLedger` spans the four sections.
+- **Basis.** The uncommitted tree on `0272a5d9`. QA re-checked all 815 hashes
+  in `.local/s122-f2-dev/suite-inputs.sha256` against the current tree, and
+  all match (`src/save.rs` `09e3be34…`, `tests/repl_persist.rs` `c835ef33…`).
+  The binary under test is `d30b57cc…`.
+
+| Condition | Evidence | Class | Verdict |
+|---|---|---|---|
+| PC-8, REPL and seeded-file legs | RED on the pre-F2 binary `e6076b17…` at the count discriminator, (2, 2) against (1, 1). The regeneration control, the single-section control and the file leg's load precondition passed first; both sibling controls passed (`.local/s122-f2-test/prefix-pc8.log`). GREEN 4 of 4 with the cold-restart anti-drop leg running (`.local/s122-f2-dev/postfix-pc8.log`); `repl_persist` 43 of 43 | Acceptance: design §1.4; §15.4 rules 1 and 7 | Adequate |
+| Three-section and REPL record shapes | `dev` cells `rehydrated_module_regenerates_every_definition` (extended) and `regen_repl_begin_spanning_sections_emits_once` RED at 3 copies against 1; `regen_repl_begin_after_leading_whitespace_emits_once` RED at 2 against 1 without the unknown-position rule; `save::tests` 60 of 60 after | Module evidence (`dev`) | Adequate |
+| No silent omission (§2.4.3) | The ledger filters only rendered items (review, from source); `regen_refuses_when_a_rehydrated_record_is_removed` passes | Safety fence | Adequate |
+| Regeneration shapes the suite writes | Full run: 6226 run, 6223 passed, 1 skipped. The three failures are G-3, G-7 and DT-1 (`.local/s122-f2-dev/full-suite.log`) | Measurement, as PC-6 | Adequate |
+
+- **Judgment.** F2 is corrected and its evidence is adequate. Independent
+  review `0c3706fa…` found no blocking or required finding. The
+  `enumeration-miss` class at `src/save.rs::generate_module_source` is
+  confirmed: per-section dedup double-counted one shared form, and one ledger
+  across the sections turned every RED green. F2 entered as a QA allocation
+  miss (above).
+- **Off-column-0 REPL `begin`** (`dev`'s find). This is the same defect, fixed,
+  and module-pinned. It gets no separate row, for the reason under R-A1.
+
+**Review observations — diagnostic outcomes.** The coordinator executed QA's
+prepared `.local/s122-f2-qa/basket.sh` once against retained pre-F2 binary
+`e6076b17…` and frozen corrected binary `d30b57cc…`.
+`.local/s122-f2-qa/basket.log` records all 28 sessions exiting successfully.
+These are diagnostic observations, not additional committed acceptance tests.
+
+| Lead | Observation | Disposition under QA's outcome rules |
+|---|---|---|
+| R-A1: function-member `begin` at column 0, indented, second on a line, and seeded in a file (A–D) | Each pre-F2 case writes three copies; each corrected case writes one. All corrected cold restarts yield 41, 3 and 1 without an error | Closed; no additional condition allocated |
+| SL-4: impl method uses a same-module macro (E) | Both binaries cold-restart with 41 and 1 without an error | Predicted failure not reproduced; lead closed |
+| SL-4: mixed `begin` function uses a same-module macro (F) | Both binaries cold-restart with 5 and 1 without an error; corrected output has one `begin` | Predicted failure not reproduced; lead closed |
+| R-A2: two identical gensym-declaration turns (G) | Both turns name the same generated type; both binaries retain that type and constructor after cold restart | Predicted loss not reproduced; lead closed |
+
+No confirmed defect or carry arises from this basket. The remaining persistence
+residuals above are unchanged.
+
+### Traits correction — adequacy (2026-09-27)
+
+- **Scope.** The user's fix choice for G-3 and G-7, confined to
+  `cranelisp-typecheck` with no public-API or schema change: the accessor
+  collision gate and its helper are deleted, and `Trait.method` resolves to its
+  canonical declaration before one shared dispatch body derives the method
+  name from the canonical key.
+- **Basis.** The uncommitted tree on `0272a5d9`. The 815 hashes in
+  `.local/s122-traits-test/suite-inputs.sha256` and the six crate hashes in
+  `.local/s122-traits-dev/post-fix-source-hashes.txt` match the tree. The
+  binary under test is `21cdd2ce…`. The design repairs for review R1 precede
+  the full run, and the document checker reports 511 documents with 0
+  findings.
+
+| Condition | Evidence | Class | Verdict |
+|---|---|---|---|
+| T3 §7.3.1 subject and control | RED before the fix in the [T1–T4](#acceptance-verification-t1t4-2026-09-27) run; GREEN in the focused 7 of 7 and the full run | Acceptance | Adequate |
+| T3 fix-time negative: bare `v` compatible with `Box.v` and `HasV.v` | `impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg` passes. The ambiguity names both declarations, and exact counts of 5 and 99 catch a silent pick either way. It has no pre-fix RED, because the rejection masked it, as allocated; the module cell below observed the same rejection before the fix | Acceptance | Adequate |
+| Registration and selection at the seam | Four rewritten `adt/tests.rs` cells RED at the gate before the fix, GREEN after. They assert the impl, its mangle, a callable `Box.v` and the two-candidate ambiguity. `contested_accessor_and_trait_method_selects_trait_and_records_dispatch` covers selection by argument type | Module evidence (`dev`) | Adequate |
+| G-7 §7.4.2a REPL subject and control | RED before the fix in the T1–T4 run; GREEN in the focused and full runs | Acceptance | Adequate |
+| G-7 seam, including `Num.+` | Three `dispatch/tests.rs` cells RED before the fix, with `callee_name` the written spelling, so the falsifier did not fire; GREEN after. The builtin-collapse cell covers the branch a user-trait-only fix could miss | Module evidence (`dev`) | Adequate |
+| No other regression | Full run 6229, 6228 passed, 1 skipped. The one failure is DT-1 (`.local/s122-traits-test/full-suite.log`) | Measurement | Adequate |
+
+- **Judgment.** G-3 is corrected and its evidence is adequate, so QA retires
+  ACT-0983. G-7 is corrected at the REPL and module layers. The corrected
+  A2-R observer also passes under `--run`, so QA's conditional handoff retires
+  ACT-0996.
+- **Where they entered.** Both are unchanged from T3. G-3 entered as source
+  left uncorrected after a ruling, hidden by a stricter e2e cell. G-7 entered
+  as a coverage gap: §7.4.2a had no cell.
+- **Review.** Independent review of the source found no blocking finding. R1
+  was mechanical and has been applied. A1 and the naming nit are `dev`'s
+  optional advisories, and neither bears on evidence.
+
+**Diagnostic basket — executed by the coordinator.** The host refused QA's
+binary runs. The coordinator ran `.local/s122-traits-qa/basket.sh` against
+binary `21cdd2ce…`, with isolated output in
+`.local/s122-traits-qa-coordinator/basket.log`. Fixture sanity exits 3.
+These are diagnostic observations, not committed acceptance evidence.
+A2-R's user-trait leg exits 8; its stdlib leg fails an unavailable `println`
+fixture precondition. `test` replaced it with a test-standard-prelude
+fixture exercising qualified `Num.+` and the constrained caller; its batch
+exit is 10 (198 + 3 − 191), as expected. The targeted diagnostic log is
+`.local/s122-traits-followup-test/nextest-r2-and-probe.log`.
+All A2-M legs exit 9, closing that lead. The separate imported-trait dotted
+reference observation became ACT-1000, since corrected and retired
+([ACT-1000 adequacy](#act-1000-correction--adequacy-2026-09-27)).
+
+| Case | Lead | Outcome rule |
+|---|---|---|
+| A2-R: `a2-run-user-trait` exits 8; `a2-run-stdlib-num` prints 201 | Review A2: the `--run` face of G-7, through a constrained-polymorphic caller (`mono_collect`) and `Num.+` | Pass: retire ACT-0996 and allocate no `--run` twin, because the dispatch seam is shared by every mode. Fail: confirmed G-7 mode divergence; ACT-0996 stays open and `test` commits the failing case as its RED |
+| A2-M: `a2-modq-call`, `a2-modq-value` and `a2-modq-bare-control` each exit 9 | Review A2: the module-qualified spelling `m/HasW.w`, claimed by `dev` from source | All pass: lead closed, no cell. Only the call fails: new intake against §7.4.2a and §8.5.3. The controls fail: invalid fixture, no classification |
+| R2: `(Zero.z)` against `(z)`, unpinned, under `:Zero` and in `--run`; pinned `:Int (Zero.z)` and `(add-i64 (Zero.z) 5)` | Review R2: the ambiguity gates in `program/finalize/ambiguity.rs` (three sites) look up the written spelling | Qualified matches bare: lead not reproduced and closed. Qualified unpinned is not the §3.11 ambiguity error: confirmed defect against [spec §3.3.3](../../spec/03-types.md) MUST (e) and §8.6.5; intake and a RED pair for `test`. A pinned case fails: confirmed defect in the same intake |
+
+R2 was confirmed: qualified unpinned and constraint-annotated REPL calls
+reported `__expr` has no GOT slot; their bare twins reported type ambiguity.
+The qualified batch case reached a residual type-variable error in the
+codegen view. All pinned cases passed (0, 5, and batch exit 7). QA recorded it
+as ACT-0999, since corrected and retired
+([ACT-0999 adequacy](#act-0999-correction--adequacy-2026-09-27)). It was not a
+regression; qualified calls failed before the G-7 fix.
+
+### ACT-0999 correction — adequacy (2026-09-27)
+
+- **Scope.** The user's fix choice, private to `cranelisp-typecheck`: the three
+  §3.11 gates in `program/finalize/ambiguity.rs` classify a call from the
+  callee's recorded `var_refs` carrier and its canonical trait-method
+  declaration, not the written spelling. No public-API or schema change.
+- **Basis.** The uncommitted tree on `0272a5d9`. The six hashes in
+  `.local/s122-act0999-dev/post-fix-hashes.txt` match the tree; of the 39 suite
+  inputs, only `design/typecheck/traits.md` (review R-1) and `sprints/SPRINT.md`
+  changed after the full run. `tests/spec_07_traits.rs` is byte-identical to
+  the file that recorded the RED.
+
+| Condition | Evidence | Class | Verdict |
+|---|---|---|---|
+| §3.3.3 MUST (e) and §8.6.5 rule 1: `(Zero.z)` and `:Zero (Zero.z)` unpinned are the §3.11 error, as their bare twins are | `trait_qualified_nullary_return_dispatch_unpinned_is_ambiguous_neg`: RED before the fix for the intended reason (`codegen error`); GREEN in the full run | Acceptance | Adequate |
+| Pinned qualified calls still dispatch (`:Int`, consuming context, `:Float`) | `trait_qualified_nullary_return_dispatch_pinned_dispatches` GREEN before and after | Acceptance (control) | Adequate |
+| Every gate classifies both spellings alike | Three `ambiguity/tests.rs` cells loop `z` and `Zero.z`: two RED before the fix at the qualified leg, the pinned control GREEN; all GREEN after. A planted fault at `collect_resolved_dispatch_result_vars` turns the value-position cell RED | Module evidence (`dev`) | Adequate |
+| No other regression | Full run 6234, 6233 passed, 1 skipped; the one failure is DT-1. Crate 953/953; nearby acceptance 397/397 | Measurement | Adequate |
+
+- **`--run` and `--link`.** No twin is allocated. The classifier is shared by
+  every mode and int reads the spelling only for message text. The
+  coordinator's diagnostic replay agrees: qualified and bare unpinned `--run`
+  report the same located §3.11 error and exit 1; the pinned case exits 7.
+- **Module-qualified `m/z` (review A-2).** No cell. `record_reference_target`
+  records the resolved canonical declaration for bare and `/`-qualified
+  spellings alike, and the classifier reads only that record. Falsifier: an
+  unpinned cross-module `(m/z)` that is not the §3.11 error.
+- **Review.** No blocking finding. R-1 applied. R-2 is mechanical, applied at
+  retirement: past-tense comment and `fixed=S122`. A-1 is a `dev` naming
+  advisory for its next touch; it carries no evidence weight.
+- **L-1, unreproduced lead.** `try_resolve_trait_method_decl` still falls back to
+  a bare member-name scan (`hkt_param_idx_for_method`) when the canonical
+  signature has no HKT index. It is a concrete mechanism for the existing
+  §7.4.2a gap, same-named methods across traits. Whether to allocate cells for
+  that gap stays a user decision.
+- **Nextest LEAK (pass) flags.** Two pure-function
+  `repl::search::search_message_selection_tests` cells, untouched by this
+  change, were flagged in the full run. A focused rerun passed 3/3 without the
+  flag. They carry no evidence authority. A recurrence becomes `test`
+  harness intake.
+- **Judgment.** Corrected; evidence adequate. QA retired ACT-0999.
+
+### ACT-1000 intake — classification and allocation (2026-09-27)
+
+- **Classification.** Confirmed defect: a spec-conforming program is rejected.
+  The requirement is settled: §8.3.11 derived dotted access, §8.5.2 and
+  §7.4.2a's `Unchecked.+` example. When trait `T` is imported from `tm` or
+  re-exported by the prelude, `(T.m 4)` reports `undefined variable: T.m`.
+  Bare `(m 4)` exits 5.
+- **Attribution.** Provisional: `wrong-scope-lookup` in
+  `crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity`, which
+  resolves a type head only. The dev seam RED later confirmed it
+  ([adequacy](#act-1000-correction--adequacy-2026-09-27)).
+- **Coverage.** The existing §7.4.2a cells define the trait locally. The
+  cross-module §8.5.2 cells use type parents only.
+
+| Cell (`test`, `tests/spec_08_modules.rs`, `--run`, primitives-only prelude) | Expected | Class |
+|---|---|---|
+| Control: intake `tm.cl`; main `(import [tm [T]]) (defn main [] (Pure (tm/T.m 4)))` | Exit 5 | Acceptance (control) |
+| Subject A: same main with `(T.m 4)` | Exit 5. Today exit 1 with `undefined variable: T.m` | Acceptance, failing guard |
+| Subject B: `.prelude("(export [primitives [*]])\n(export [tm [T m]])\n")`, main `(defn main [] (Pure (T.m 4)))` | Exit 5. Today exit 1 with the same error | Acceptance, failing guard |
+
+- **Test shape.** One `#[test]` asserts the control first. Each leg has a
+  distinct failure message. The fixture is the intake's `tm.cl` verbatim,
+  including `(import [prelude []])`, which keeps the prelude out of `tm` so the
+  re-export leg does not form a cycle.
+  - It carries `// spec: spec/08-modules.md §8.5.2` and the
+    `// defect:` token from ACT-1000.
+- **Why the prelude twin.** The user-facing face is `Num.+` under a
+  re-exporting prelude. Resolving the head through the prelude fallback is a
+  different route from an import entry, so a fix could close one route and
+  miss the other.
+- **Modes.** No REPL or `--link` twin. The fault is check-time resolution,
+  which every mode shares, and the REPL face was observed failing the same way.
+- **Completion criteria.**
+  - The RED is observed on the current binary.
+  - Both subjects fail with `undefined variable: T.m`, and the control exits 5.
+  - The log is kept under `.local/`.
+  - The spec link check passes.
+  - There is no `#[ignore]` and no commit.
+- **If the control fails.** Stop and return to QA. The member itself would be
+  unreachable, which invalidates the attribution.
+- **Not allocated.**
+  - A negative leg for `T.m` with only `m` imported. It is green today, and a
+    too-broad fix is a risk at the seam, so `dev` guards it with a unit cell
+    when fixing.
+  - A matrix over member kinds or import shapes.
+- **Outcome.** `tests/spec_08_modules::imported_trait_dotted_method_resolves_via_import_and_prelude_reexport`
+  is permanent and unignored. On post-ACT-0999 binary `a2a3be21…40a6979`,
+  the control exits 5; direct import and prelude re-export each exit 1 with
+  `undefined variable: T.m`. Both subjects were captured before assertion.
+  The neighboring imported type-member control passes. The focused run is
+  1 pass, 1 intended failure; scoped spec-link check 125/125 OK.
+  Logs: `.local/s122-act1000-test/nextest-focused-final.log`.
+- **Band.** QA's conditional handoff is applied: §8.5.2 and §7.4.2a are
+  partial and name the open RED. No semantics changed.
+- **Disposition.** Assessment and reproduction complete. The user chose the
+  fix ([adequacy](#act-1000-correction--adequacy-2026-09-27)).
+
+### ACT-1000 correction — adequacy (2026-09-27)
+
+- **Scope.** The user's fix choice, private to `cranelisp-typecheck`.
+  `checker.rs::dotted_member_identity` accepts a trait head at the trait's
+  home, and `traits/dispatch.rs::try_resolve_trait_method` falls back to that
+  core when scope misses. No public-API, schema or `callees` change.
+- **Basis.** The uncommitted tree on `0272a5d9`. Dev's post-fix hashes match
+  every file except `checker.rs`. After the full run, `design`'s R1 repair
+  changed only `///` rustdoc lines there, so the evidence still describes
+  current behaviour. `tests/spec_08_modules.rs` is byte-identical to the
+  file that recorded the RED. Binary `e8c43e58…29bbf3`.
+
+| Condition | Evidence | Class | Verdict |
+|---|---|---|---|
+| §8.3.11, §8.5.2, §7.4.2a: `T.m` resolves and dispatches through `(import [tm [T]])` and through a prelude re-export | `imported_trait_dotted_method_resolves_via_import_and_prelude_reexport`: both subjects RED on `a2a3be21…` (exit 1, `undefined variable: T.m`), control exit 5; GREEN in the full run | Acceptance | Adequate |
+| The resolver answers a trait head at its home, and only when the trait is in bare scope | `crates/cranelisp-typecheck/src/checker/tests.rs`: `…resolves_through_imported_trait_head` RED then GREEN; `…needs_its_trait_in_bare_scope` (method-only import) GREEN throughout, as allocated; `…identity_agrees_with_scope_at_home_and_via_prelude` RED then GREEN | Module evidence (`dev`) | Adequate |
+| Eager dispatch accepts the same spelling | `crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::dotted_trait_method_dispatches_through_imported_trait_head` RED then GREEN, with a method-only negative leg | Module evidence (`dev`); safety fence for the shared seam | Adequate; see A2 |
+| No other regression | Full run 6239: 6238 passed, 1 skipped; the only failure is DT-1. Crate 957/957; `spec_07` + `spec_08` 219/219 | Measurement | Adequate |
+
+- **Review A2, dispatch seam.** The e2e cell went green on the resolver fix
+  alone, because a direct call settles through the carrier-keyed deferred
+  pass. The `.or_else` leg serves the immediate `infer_apply` dispatch and
+  both auto-curry drains, which call `try_resolve_trait_method` with the
+  written name. The unit cell is RED without the leg, so it fences that one
+  shared function at the lowest layer. The remaining risk is that a drain
+  passes a spelling other than the written one. That is covered only by the
+  diagnostic partial-application leg in the
+  [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md)
+  basket; it does not gate acceptance.
+- **Review A1, precedence.** Review predicted that typing, eager dispatch and
+  the carrier disagree when an imported `T` meets a prelude-defined `T`. The
+  source refutes the premise. `ResolutionScope::resolve_candidates` merges
+  prelude and import candidates, as §8.6.4 and §8.8.1 require. Bare `T` is
+  therefore ambiguous, the dotted core declines, and all three routes answer
+  the prelude's literal `T.m`.
+  - What remains is a source-predicted wrong accept: §8.5.2 requires an
+    ambiguous parent to be qualified. It has the same shape before the fix
+    and applies to type heads too, so it does not bear on ACT-1000.
+  - It is recorded as P-1 in ACT-1001. The eager-dispatch-reads-carrier
+    shape is still `design`'s choice under Principle 24.
+- **Review A3, provenance.** Closed by review's independent diff check.
+- **L-1, HKT index fallback.** This stays an unproven coverage gap. Dev's
+  "not a residual" rests on reading the canonical signature first. That
+  signature has no HKT index for any conventional method, so the name-keyed
+  scan is the ordinary path, not an edge. ACT-1000 makes the path reachable
+  through the natural disambiguation spelling. It is recorded as P-2 in
+  ACT-1001, with a discriminating basket.
+- **Unmeasured shapes.** No cell is allocated for REPL or `--link` twins,
+  first-class `T.m` values or a polymorphic caller.
+  - The mode twins share check-time resolution.
+  - A first-class value reads the `var_refs` carrier that the green e2e
+    exercises.
+  - A polymorphic caller is re-checked in its defining module, where the
+    same two fixed seams apply. It is predicted from source and not
+    measured.
+  - Each would duplicate the fenced seams, with no distinct wrong outcome
+    named.
+- **Judgment.** Corrected; evidence adequate. QA retired ACT-1000. P-1 and P-2
+  are separate intake. `design`'s R1 records repair is sprint-gated and is
+  not an evidence condition.
+
+### ACT-1001 basket — classification (2026-09-27)
+
+- **Basis.** The coordinator ran `.local/s122-act1000-final-qa/run-probes.sh`
+  on binary `e8c43e58…29bbf3`; the output is `probes.log`, beside the script.
+  The observations are diagnostic, not acceptance cells.
+- **Validity.** Judge each fixture against its own controls. One invalid leg
+  voids only the legs that depend on it.
+
+| Leg | Observed | Classification |
+|---|---|---|
+| a1: `ctl_prelude` 104, `ctl_qualified` 5, `subject` 104 | The prelude impl runs under an ambiguous parent `T` | **P-1 confirmed:** a wrong accept against §8.5.2 and §8.6.4. The symptom is confirmed; the mechanism (literal-key fallback, or prelude precedence at bare resolution) is still source-predicted |
+| a2: `subject_dotted_full` 5, `subject_dotted_partial` 5, `ctl_qualified_partial` 5 | Full and partial application through `T.m` dispatch correctly | Review A2's residual drain-spelling risk is observed clear on this route. Not intake |
+| a2: `ctl_bare_partial` exit 1, `undefined variable: m` | `(import [tm [T]])` does not import the member `m` (§8.3) | Invalid fixture, and it voids only itself. Bare auto-curry stays unmeasured, with no named wrong outcome |
+| l1: all six legs exit 5 | No ordering of `A` or `U` against `T` misdispatches | **P-2 not reproduced.** No leg proves that the scan visits the HKT trait, so this is not evidence about the fallback. The hazard remains asserted-with-a-named-falsifier |
+
+- **Allocated.** P-1 gets one permanent RED from `test`, with a prelude-only
+  control, a qualified control and a discriminating bare-head control that
+  settles the locus. Its specification is in
+  [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md#p-1-allocation--test).
+  The user has not ruled fix or defer.
+- **Routed.** For P-2, `design` rules whether the dispatch index is read only
+  from the canonical declaration, and the user rules on cells for §7.4.2a
+  same-named selection.
+- **Bearing on ACT-1000.** None. Neither lead is ACT-1000's mechanism, and
+  the partial-application legs support its dispatch-seam adequacy.
 
 ## Open conditions
 
@@ -2983,7 +3852,7 @@ In the legal observable shape, the parent deferred, not the child (12/12).
 The super-import dependent correctly blocks the type-changing turn. Three
 macro-edit probes showed the new expansion live but saved the old macro body;
 the no-cache restart therefore also returns the old value. This extends
-[ACT-0970](../../sprints/actions/ACT-0970-macro-redefinition-persistence-intake.md). The requested function control is
+ACT-0970, since retired ([T2](#t2--macro-replacement-persistence)). The requested function control is
 still owed. No permanent D1 test was added; the acceptance hold remains open.
 
 ### F1 and DV3 execution update (2026-09-25)
@@ -3089,8 +3958,7 @@ load? Is the missing fact one that nothing records?
 - **QR-4, credit limit.** A GREEN protects nothing unless `a` releases the
   value. QA credits no QR-4 GREEN as protection.
 - **QR-5.** Invalidate through source-file edits only.
-  [ACT-0970](../../sprints/actions/ACT-0970-macro-redefinition-persistence-intake.md)
-  and the D1 hold remain separate.
+  ACT-0970 (since retired) and the D1 hold remain separate.
 
 **Leads held for `spec`; no cell until the user rules.** `sprint` routes each
 question.
@@ -5301,3 +6169,1177 @@ the review), AD-c (dead bare-name scans) and AD-d stay leads for
 cells in `tests/spec_08_modules.rs`, at the lines listed in the `test`
 report. It lets a future regression pose as a known guard. Bounded cleanup;
 not an acceptance condition.
+
+### ACT-1001 P-1 permanent reproduction — 2026-09-27
+
+- `tests/spec_08_modules.rs::dotted_member_under_ambiguous_trait_parent_is_rejected_neg`
+  is RED: subject exit 104, passing prelude/qualified controls 104/5.
+  The ACT-1000 neighbour passes; focused result is one pass, one intended
+  failure on binary `e8c43e58…29bbf3`. No production change or full rerun.
+- The bare-head impl control succeeds without the import and rejects with
+  `unknown trait: T` when imported and prelude parents coexist.
+- The §8.5.2 band now cites the permanent RED. ACT-1000 remains accepted.
+
+### ACT-1001 P-1 fix readiness — 2026-09-28
+
+The user ruled fix. The full allocation is in
+[ACT-1001 P-1 readiness](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md#p-1-readiness--2026-09-28).
+
+- **Locus.** The prelude-precedence mechanism is refuted by the bare-head
+  control. The locus stays `checker.rs::dotted_member_identity`, where
+  `.ok()?` swallows the parent's ambiguity and the literal `T.m` key
+  answers. It is provisional until `dev`'s U1 observes it at the seam.
+- **Diagnostic.** The cell's `!success()` clause is vacuous, because 104
+  and 5 are program exits, and the word `ambiguous` is not spec wording.
+  - Condition, acceptance evidence under §8.5.2 and §8.6.5: an exit other
+    than 0, 104 or 5, and output listing `prelude/T` and `tm/T`.
+  - `test` repairs the assertion mechanically.
+- **Module evidence (`dev`).**
+  - U1: the trait head, RED first. It is also the mechanism observation.
+  - U2: the type-head twin; the prediction is refuted if it is GREEN
+    before the fix.
+  - One unit leg per consumer if the fix leaves the shared core.
+  - The existing same-terminal and member-ambiguity cells guard against
+    over-rejection.
+- **P-3 intake.** `impl_check.rs::resolve_impl_trait_ref` reports an
+  ambiguous impl head as `unknown trait`, which violates §8.6.5's
+  alternatives list (`error-swallow`, provisional). This is outside the P-1
+  fix, and the user rules fix or defer.
+
+### ACT-1001 P-1 review correction — parent role filter (2026-09-28)
+
+Review F1: the fix judges a dotted parent's ambiguity before retaining only
+type and trait candidates (§8.6.5 rule 2), so a parent spelling that also
+exposes a same-spelled value candidate is wrongly rejected. The readiness
+over-reject guards above did not discriminate this, because none of them
+contests a parent spelling with a non-parent role. That is the coverage gap.
+
+- **Condition (acceptance evidence, §8.5.2 and §8.6.5).**
+  - A dotted parent retains only type and trait candidates before its
+    cardinality is judged.
+  - One survivor resolves the member.
+  - Two or more survivors are rejected, and the diagnostic lists only
+    those survivors.
+- **Evidence (`dev`, module layer, RED before the fix).**
+  - Type parent: value leg, and pattern leg at `resolve_constructor_entry`.
+    The full pattern check belongs to ACT-1002; see the final adequacy
+    section below.
+  - Trait parent: value leg.
+  - Exact-list negative.
+  - Each fixture registers the contesting candidate through an ordinary
+    `deftype`.
+- **No independent e2e.** The decision is one pure function of the scope's
+  candidate set. Registration is mode-independent under §8.6.4, and the
+  existing e2e guards cover composition.
+- **Review F3 (`pending_gap`).** `dev` restores the "always write" contract
+  on the dotted early returns, with one unit leg that seeds a stale gap.
+  This is module evidence and does not gate acceptance.
+- **Review F5 (private parent).** No cell. Both before and after the fix the
+  program is rejected; only the diagnostic changed. The F1 filter reuses the
+  same candidate resolver, so it transports visibility errors unchanged.
+
+### ACT-1001 P-1 final adequacy (2026-09-28)
+
+**Verdict: accepted.** P-1, review F1 and review F3 are corrected and
+adequately evidenced. One condition remains: the narrow core cell below.
+
+| Condition | Evidence | Class | Judgment |
+|---|---|---|---|
+| §8.5.2 and §8.6.5: an ambiguous dotted parent is rejected, listing both canonical parents | `tests/spec_08_modules.rs::dotted_member_under_ambiguous_trait_parent_is_rejected_neg`: RED at exit 104, then GREEN in the full run. U1 and U2 were RED at the seam, which confirms the locus; then GREEN | Acceptance | Adequate |
+| §8.6.5 rule 2: a parent keeps only type and trait candidates before counting | F1-a, F1-c and F1-d were RED before the fix and GREEN after. Their candidate controls pass | Acceptance (module) | Adequate |
+| F1, pattern leg: `Qtok.Qa` resolves through `resolve_constructor_entry` | F1-b's recorded RED was `Ambiguous` at this call. The narrow core cell is **owed** | Acceptance (module) | Adequate once the core cell is GREEN in a focused run |
+| F3: dotted exits clear `pending_gap` | `dotted_value_outcome_clears_a_stale_pending_gap`: RED, then GREEN | Module evidence | Adequate |
+| Over-reject guards | U-cells, the pattern cell, the dispatch cell, the unique-parent cell, the ACT-1000 cells and the `same_named_ctors_dotted_*` e2e cells | Safety fence | GREEN |
+
+- **Full suite.** Run on `0272a5d9` plus the dirty tree: 6251 run, 6249
+  passed, 1 skipped.
+  - The two failures are DT-1 (ACT-0986) and F1-b, the ACT-1002 guard.
+    Both fail for their recorded reasons.
+  - The log is `.local/s122-act1001-final-qa-fullsuite.log`.
+- **F1-b is separate intake,
+  [ACT-1002](../../sprints/actions/ACT-1002-contested-type-name-constructor-pattern-intake.md).**
+  - `instantiate_ctor` re-resolves the type by its bare spelling, and no
+    S122 hunk touches that chain.
+  - The bare pattern fails identically.
+  - The cell stays RED and unignored as that defect's guard.
+  - Its failure moved from the parent ambiguity to `instantiate_ctor`,
+    which shows the core leg works. The core cell asserts that directly.
+- **Core cell limit.** Its RED rests on F1-b's recorded pre-fix observation
+  at the same call. It will not be run against the pre-fix tree.
+- **Retained unchanged.**
+  - P-2 stays asserted-with-a-named-falsifier.
+  - P-3 (`error-swallow`) waits on the user's fix-or-defer ruling.
+  - F5 and review A2 remain residuals with named falsifiers.
+
+### ACT-1001 final handoffs completed — 2026-09-28
+
+- QA's exact H1 pattern-head cell passes. The paired ACT-1002 full
+  pattern-check module cell remains RED with `unknown type in constructor: test/Qtok`.
+  Focused result: one pass, one expected failure. The existing pre-fix
+  ambiguity observation supplies H1's detection evidence, as allocated.
+- H2 fixed stamp and H3 coverage bands are applied. No production code
+  changed after the final 6251-test run; no further suite or review cycle
+  is required by the QA handoff. P-1 and F1/F3 are accepted.
+
+### ACT-1002 fix readiness — evidence allocation (2026-09-28)
+
+The user ruled fix. `design` (`cranelisp-typecheck`) owns the correction's
+shape; this allocation names conditions and does not presume that shape. No
+inter-crate public-API, `cranelisp-types` or `.meta.json` change is expected;
+if the shape needs one, the wave stops for `arch` and the user.
+
+**Condition (acceptance, spec §8.5.2 with §8.6.4).** When a type and another
+type's constructor share a spelling, a match on that type's constructors
+typechecks and runs: dotted and bare heads, data and nullary constructors,
+and exhaustiveness without a wildcard. The contesting constructor keeps its
+own pattern meaning.
+
+**Measured versus predicted.**
+
+- Measured: the rejection is raised in `infer.rs::instantiate_ctor`, the only
+  producer of `unknown type in constructor`. The dotted guard and the bare
+  probe (`.local/s122-act1001-f1-dev/probe-bare-pattern.log`) both hit it. The
+  guard's control shows `Qtok` has the candidates `test/Qtok` and
+  `test/Qwrap.Qtok`. The call `(Qa 1)` typechecks as `test/Qtok`; it has not
+  been executed.
+- Source-predicted only: `lookup_type_def_in_module` → `read_view` →
+  `resolve_entry_in_module` → `resolve_terminal_entry_and_home` →
+  `scope_resolve_in(..).ok()` turns the contested spelling's `Ambiguous` into
+  `None`. The attribution stays provisional until M0 below.
+- Falsifier: under the contest the type-def read returns the type while the
+  pattern still fails, or the uncontested sibling also returns `None`.
+
+**Reader census (source-read; unmeasured unless allocated).**
+
+| Reader | Predicted face under the contest | Allocation |
+|---|---|---|
+| `infer.rs::instantiate_ctor` | The observed rejection, for pattern heads and synthesized constructor bodies | M1, M2 |
+| `infer.rs` match covered-ctor projection | Drops covered constructors | M3 |
+| `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module` | `unknown type in match` without a wildcard | M3 |
+| `infer.rs::check_constructor_pattern` scrutinee-directed head gate (`scope_resolve` on the type name) | A contested bare pattern loses scrutinee-directed resolution | M4, if `design` includes it; otherwise a residual with this falsifier |
+| `checker.rs::is_internal_constructor_check_in_module` | Fails open | None: `is_internal_constructor_check_with_state` reads `internal` off the terminal constructor |
+| `checker.rs::fqtn_for_type` | — | None: test-only |
+| `builtins.rs` bootstrap reads of `SList`, `Sexp`, `IO` | — | None: user code cannot register into `macros` or `primitives` |
+| Backend `context.rs::lookup_type_def` | — | Raw FQ-keyed probe; the bare projection is a candidate, not a binding. Composition is observed by T1 |
+
+**The guard.** `crates/cranelisp-typecheck/src/infer/tests.rs::dotted_pattern_under_type_parent_contested_by_constructor_resolves`
+stays the acceptance cell (module) for the dotted data head. It is RED for
+the intended reason and its control prevents a vacuous GREEN. Limits: its
+wildcard arm short-circuits exhaustiveness, and it observes typecheck only.
+
+**Module evidence (`dev`, `cranelisp-typecheck`, each RED before the fix).**
+
+- **M0, mechanism at its seam.** Before the fix, observe the type-def read
+  that `instantiate_ctor` uses: `None` in the contested world and the type in
+  a sibling world without `Qwrap`. If the fix changes that shared reader,
+  commit this as a reader cell; otherwise a logged probe suffices. A result
+  matching the falsifier stops the fix and returns to `qa`.
+- **M1.** The guard goes GREEN unchanged.
+- **M2, bare head.** `(Qa n)` in the same world. It is RED with the recorded
+  message before the fix.
+- **M3, exhaustiveness.** Positive: `Qtok.Qa` and `Qtok.Qb` arms with no
+  wildcard are accepted. Negative: the `Qtok.Qa` arm alone is rejected as
+  non-exhaustive, naming `Qb`, not as an unknown type. It discriminates a
+  correction confined to `instantiate_ctor`, which the guard cannot.
+- **M4, conditional.** Only if `design` brings the scrutinee-directed head
+  gate into scope: a bare pattern contested by another type's constructor,
+  against a determined `Qtok` scrutinee.
+- Keep the H1 core cell and the existing pattern and exhaustiveness cells
+  GREEN as over-correction fences.
+
+**Independent evidence (`test`, one e2e cell, required).**
+
+- **T1, acceptance, §8.5.2 with §8.6.4.** A program in the ACT-1002 world
+  constructs and matches both types with dotted and bare heads, a nullary
+  arm, no wildcard, and a `Qwrap.Qtok` pattern, asserting its exact value in
+  every mode. It is RED before the fix with a rejection naming
+  `unknown type in constructor`, not an unrelated parse or setup error.
+- **Residual it covers.** No program in this world has been executed. The
+  backend match lowering and layout for a type whose name is contested are
+  only source-read, and the user-visible face is a rejected conforming
+  program. Module cells cannot observe either. One cell costs seconds.
+- **Optional fence.** Probe the bare contesting pattern `(Qtok x)` against a
+  `Qwrap` scrutinee once before the fix. If it passes, keep it in T1 as a
+  fence against a correction that lets the type win the spelling. If it
+  fails, leave it out and file intake to `qa`.
+
+**Gates for ACT-1002 acceptance.**
+
+1. T1 and M2–M3 (and M4 if in scope) observed RED before the fix; M0
+   recorded.
+2. `dev`'s release gate for `cranelisp-typecheck` (METHOD §2.3).
+3. Focused runs: every M cell, the guard, H1, and the `spec_06_pattern_matching`
+   and `spec_08_modules` binaries.
+4. One full `cargo nextest run --no-fail-fast` after the fix and before the
+   `--test` harness work, because the touched readers serve every match.
+   The only expected RED is DT-1.
+5. A finding-scoped `review` of the typecheck change, then `qa` final
+   adequacy and the §8.5.2 band update, with the document checks.
+
+### ACT-1002 final adequacy (2026-09-28)
+
+**Verdict: adequate.** Every allocated condition was observed RED for the
+intended reason and then GREEN. The finding-scoped `review`
+(`.local/s122-act1002-review-result.md`) found no blocking or required
+finding. Its three advisory findings are classified below; none changes an
+observable or reopens a condition.
+
+| Condition | Evidence | Class | Judgment |
+|---|---|---|---|
+| M0: the mechanism at its seam | `.local/s122-act1002-dev/m0-seam-probe.log`. In the contested world, `scope_resolve_in(test, Qtok)` is `Ambiguous` over `test/Qtok` and `test/Qwrap.Qtok`, and `lookup_type_def_in_module` is `None`, while the keyed probe returns `[Qa, Qb]`. The sibling world returns the type both ways. The falsifier was not observed | Diagnostic (attribution) | Attribution confirmed; no longer provisional |
+| M1: the dotted data head | The guard `crates/cranelisp-typecheck/src/infer/tests.rs::dotted_pattern_under_type_parent_contested_by_constructor_resolves` is unchanged apart from its stamp. It was RED with `unknown type in constructor: test/Qtok`, then GREEN | Acceptance (module) | Adequate |
+| M2: the bare data head | `crates/cranelisp-typecheck/src/infer/tests.rs::bare_pattern_under_type_contested_by_constructor_resolves`: RED with the same message, then GREEN | Acceptance (module) | Adequate |
+| M3: exhaustiveness without a wildcard, both legs | `crates/cranelisp-typecheck/src/infer/tests.rs::exhaustiveness_under_type_contested_by_constructor_reads_the_type`. The staged fix discriminates each reader: with `instantiate_ctor` alone the cell stays RED with `unknown type in match: Qtok`; with exhaustiveness added it stays RED with `missing constructor(s) Qa, Qb`, because the projection is unfixed. The negative asserts `ends_with("missing constructor(s) Qb")` | Acceptance (module) | Adequate |
+| The identity reader | `crates/cranelisp-typecheck/src/checker/tests.rs::type_def_by_identity_reads_the_key_under_a_contested_spelling` covers a sum, a product facet, candidate controls, and a constructor key that returns `None` | Module evidence for a new function (no RED possible) | Adequate |
+| T1: composition in every mode | `tests/spec_06_pattern_matching.rs::type_named_like_other_types_ctor_matches_its_own_ctors`, unchanged. It was RED in all six permutations with `unknown type in constructor: user/Qtok`. It is now GREEN with exactly `63` in the focused run and in the full suite. Its `32` term fences the contesting constructor's own pattern | Acceptance | Adequate |
+| Over-correction fences | H1 `…_resolves_at_core`, the `dotted_member_…_contested_by_constructor_resolves` pair, `same_named_ctors_dotted_*`, and the `spec_06_pattern_matching` and `spec_08_modules` binaries (158/158) | Safety fence | GREEN |
+
+- **Gates.**
+  - `cranelisp-typecheck` check, check-tests and crate nextest (972/972) pass.
+  - Clippy reports 190 warnings, none in a changed hunk.
+  - `check_documents.py` reports 0 findings; `spec_link_check.py` reports
+    none mis-cited or malformed.
+- **Clippy limit.** The pre-change clippy count was inferred rather than
+  measured. The two lints near the change anchor on signatures the change did
+  not touch. This does not change the judgment.
+- **Full suite (one run).** The count is 6256 run, 6255 passed, and one
+  failure: DT-1 (ACT-0986 carry), as expected. The one skip is the ignored
+  benchmark. Log: `.local/s122-act1002-dev/full-suite.log`.
+- **Count reconciliation.** 6251 + 5 = 6256:
+  - The 6251-test run predates the ACT-1001 H1 core cell. Its focused log
+    (`.local/s122-act1001-final-h1.log`) shows 969 crate tests.
+  - `dev`'s crate gate shows 972 = 969 + M2 + M3 + the reader cell.
+  - T1 is the fifth test.
+- **Not allocated.**
+  - A reverse-declaration-order cell. The keyed read takes no
+    declaration-order input, so the order independence is structural.
+  - A second layer for the contesting constructor. T1's `32` term already
+    observes it.
+
+**Residuals that stay after ACT-1002 retires.** Each has a standing record
+and a trigger.
+
+- **The scrutinee-in-scope gate of `check_constructor_pattern`** (M4, excluded
+  by `design`) and the bare type positions. They are recorded in
+  `design/typecheck/typecheck.md` §11, "Some bare type positions do not filter
+  to type candidates"; the trigger is a failing cell.
+  - Falsifier for the gate: a bare pattern whose constructor spelling is
+    shared by two types, matched against a determined `Qtok` scrutinee in the
+    ACT-1002 world, is rejected as ambiguous or resolves to the other type.
+- **The warm-REPL deftype echo** omits `; match:` for the contested type. This
+  is new intake,
+  [ACT-1003](../../sprints/actions/ACT-1003-contested-type-deftype-echo-intake.md).
+  It is outside the pattern readers this correction covers, and it neither
+  blocks nor reopens ACT-1002.
+
+**Review findings — classification.**
+
+| Finding | Class | Owner and disposition |
+|---|---|---|
+| A1: in `check_exhaustiveness_in_module`, the `internal`-flag fallback for a product constructor still scope-resolves the constructor's spelling | Residual. It is correct today: a contested spelling yields `internal = false`, and the only internal constructor (`IO`'s `Bind`) hits its canonical key | `design` records it in `typecheck.md` §11 with the falsifier: a user-unconstructable `internal: true` product constructor whose spelling is contested. Or `dev` converges it on the raw key probe `instantiate_ctor` uses. If `dev` converges it, the evidence is the crate lib tier plus focused runs of the M cells, T1 and the two binaries. No full suite and no re-review are needed unless more than that one call changes |
+| A2: stale commentary at `infer.rs` (Principle 17 narration), the `check_exhaustiveness_in_module` rustdoc and `ModuleReadView::lookup_type_def` | Commentary. It does not bear on evidence | `dev`, comment-only, before commit. Gate: `cargo fmt --check` and `cargo check -p cranelisp-typecheck` |
+| A2, pre-existing: the rustdocs of `resolve_entry_in_module`, `resolve_terminal_entry_and_home` and `_scoped` describe a raw chain-follow over a body that is `scope_resolve_in` | Maintenance: a stale record that made the ACT-1002 path read as keyed. It is not a product defect and not ACT-1002 evidence | `dev` (`cranelisp-typecheck`), comment-only. Take it in the A2 pass if `sprint` admits it; otherwise `sprint` files an action to `dev` |
+| A3: the §3.3 rule "a reader holding an `FQTypeName` reads by key" is graded by inspection only | Assurance grade | `design` states it as asserted-with-a-named-falsifier: a production caller passes an `FQTypeName`'s halves to `lookup_type_def_in_module` or a scope reader. Review's census found none. Once the §11 internal-constructor convergence retires the last production caller, restricting that reader to tests makes the rule structural |
+| Outstanding dev-report items 1–5 | Evidence currency | Discharged by `.local/s122-act1002-dev-result.md` and the count reconciliation above. The only limit is the clippy baseline, as stated |
+
+**If a correction follows.** Converging A1 is the only candidate that changes
+production code, and its re-check is stated in its row. `qa` reassesses only
+if a change alters a message, a reader's scope or T1's condition.
+
+## Shared test runner and `--test` — evidence delta (2026-09-28)
+
+**Authority.** [CLI §0.2.2](../../repl/spec/00-cli-invocation.md#022-test-mode---test-s122);
+[§16.1, §16.2 and §16.6](../../repl/spec/16-test-discovery.md);
+[`design/int/test-runner.md`](../../design/int/test-runner.md); the approved
+`run_tests`/`TestRunReport` delta; and the 2026-09-28 rulings in
+[SPRINT](../../sprints/SPRINT.md). `/run-tests`, `/run-all-tests` and `--test`
+are one runner. They differ only in selection and in what the host does with
+the report. No condition below treats a shared behaviour as mode policy.
+ACT-0988 keeps configurable selection and failure diagnostics.
+
+**Supersedes the DT-1 carry.** DT-1 expected discovery under `--run`, which
+§16.6 now forbids. TR-5 replaces it with the `--run` refusal. Gate 5 below
+replaces the earlier band conditions that waited on DT-1 (Appendix A and REPL
+§16.3). DT-1's cell is deleted.
+
+### Independent evidence (`test`)
+
+All cells are end to end. Each is acceptance evidence for the section named in
+its row unless the row says otherwise. A cell is written and observed RED
+before `dev` starts, and the RED is observed for the stated reason.
+
+| Cell | Condition | Wrong outcome it discriminates | Pre-change RED |
+|---|---|---|---|
+| TR-1 execution and parity (§16.1, §16.2, §0.2.2 report, exit, warnings) | The project has no `main` and one `user.cl` with exact-typed tests in this order: pass, `(Some "boom")`, a `div-i64` panic, pass. It also has: <br>• `(defn test-e [] None)`, which typecheck pins to exactly `(Fn [] (Option String))` ([monomorphisation §3.2](../../design/typecheck/monomorphisation.md#32-roots)), so it is an eligible, passing test; <br>• the mistyped `(defn test-f [] (Some 1))`, whose scheme is `(Fn [] (Option Int))`. <br>Under `--test`: <br>• exit 1; <br>• stdout has five FQ result lines in order (`ok`, `FAILED: boom`, `PANIC: …division by zero…`, `ok`, `ok`) and the summary `3 passed, 2 failed`; <br>• `test-f` has no result line, and stderr warns naming its FQ name. <br>REPL `/run-tests` on the same file shows the same result lines and summary with the timing masked, excludes `test-f` and shows the warning | A run that stops at the first failure or panic; bare names; a scan that checks the prefix or only the `Option` head and so runs `test-f`; an eligibility read that misses the pinned scheme and excludes `test-e`; a warning on no stream; a separate CLI report builder; a required `main` | Unknown flag with no report. The `test-f` leg has no pre-change e2e RED; its exclusion was observed RED at discovery row 2 (`user/test-int … ok` was run) |
+| TR-2 `main` (§0.2.2) | TR-3's entry defines `(defn main [] (div-i64 1 0))`. The run exits 0 with a report. Stderr names neither `main` nor `division by zero` | `validate_main` applied; `main` called | Unknown flag |
+| TR-3 chain selection (§0.2.2), fresh and cached | The report's name set is exact. Admitted: <br>• the entry; <br>• an `import` target; <br>• a module that target `export`s; <br>• an unimported `(mod- …)` child of the entry; <br>• a `(mod …)` child of the exported module; <br>• a project-root `prelude.cl`. <br>Each of these is absent even though it has a test: <br>• an alias-only import; <br>• a null import; <br>• a module loaded only by FQ reference. <br>`run_again()` gives the same set. `test` confirms that the second run restores from the cache, and states how | Selection by loaded modules; alias-only, null or FQ edges; missing child edges; `file_path` unrecorded in batch mode (fresh leg); child or edge tables missing after restore (cached leg; FIXME 0868 face) | Unknown flag |
+| TR-4 library stop (§0.2.2, §16.2.2) | `.lib_dir("lib")`, a lib directory inside the project. The entry imports lib module `L`. `L` has a test, declares a child with a test, and imports project module `p`, which has a test. <br>• `--test` reports only the entry's tests. <br>• A second project with `lib/prelude.cl` and no root prelude contributes no prelude test. <br>• REPL `/run-all-tests` after loading `L` includes `p` and the user module's tests and excludes `L` and its child | Walking through a library; the path-prefix classifier; a library prelude as an edge | `--test`: unknown flag. `/run-all-tests`: `L`'s tests listed (prefix classifier) |
+| TR-5 refusal (§16.6, §0.2.1 parity; replaces DT-1) | A program has an uncalled `helper` that calls `discover-tests`, a bare import, `main` returning `(Pure 7)` and one test. <br>• `--run`, `--link` and `--test` each exit 1 before running anything. <br>• Stderr names `discover-tests` and the referencing function, and names the REPL and `--test`. <br>• The diagnostic line is identical in all three modes (design §7.3; the user's same-code ruling). <br>• `--link` writes no artifact; `--test` prints no result line or summary. <br>Import-only control: without `helper`, `--run` exits 7 and `--test` exits 0 with a report | Refusal missing in one mode; a refusal only after execution; per-mode text; an import treated as a reference | `--run` exits 7. The `--link` remedy offers `--run`. `--test` is an unknown flag |
+| TR-5c cached refusal | `h` defines the `discover-tests` helper and a pure `label`. A REPL session warms `h`'s cache; then `--run` on an entry that imports `h`'s `label` is still refused with TR-5's diagnostic. Exit 1 alone does not discriminate | The detector does not see bodies restored from the cache (design §9 falsifier) | Observed: exit 1 through a codegen `unresolved symbol: discover-tests`, not the §16.6 diagnostic |
+| TR-6 process conventions (§0.2.2, §0.2.1.1, §0.5.5) | `--test` with `--run`, with `--link`, or with `-o`: exit 1, `usage:` on stderr, no report. A missing entry file: exit 1, stderr error, and stdout lacks `No tests found`. A type error in the entry: non-zero exit, no report. A project with no tests: stdout `No tests found`, exit 0 | A missing file treated as an empty run; the combination runs one mode; an empty run exits 1 | Empty run, and the missing-entry leg: the unknown-flag error does not name the file, which §0.5.5 rule 2 requires. The combination and compile-error legs are green before the change because an unknown flag also exits 1, so they are fences once `--test` exists |
+
+- **TR-5c is constructed.** The warm run is shown by
+  `module-trace: cache hit (.meta valid) for h`, so the design §9 falsifier is
+  observed rather than asserted.
+- **Pre-change `--run` divergence.** Fresh `--run` resolved the extern to the
+  empty fallback and exited with `main`'s code; cached `--run` failed in
+  codegen. The §16.6 refusal replaces both, and TR-5 with TR-5c guards each
+  path. No further cell or filing is needed.
+- **Maintenance (`test`, same visit).** Each change keeps the test's purpose:
+  - `spec_12_runtime.rs::run_tests_empty_module_reports_no_tests` expects
+    `No tests found`. It is RED before the change.
+  - The `(defn test-… [] None)` fixtures became exact-typed. The change was
+    not required, because typecheck pins that shape to the exact scheme. They
+    remain valid and keep their subjects. TR-1's `test-e` carries the pinned
+    shape end to end:
+    - in `spec_12_runtime.rs`: `run_tests_reports_passes`,
+      `run_tests_multiple_passes_count`, `run_tests_mixed_pass_and_fail_counts`
+      and `run_tests_neg_ignores_non_test_prefixed_fns`;
+    - in `regression.rs`: `TRIVIAL_MOD` and `TWO_TRIVIAL_MOD`.
+  - SG-1 (`stdlib_conformance::stdlib_all_public_modules_compile_and_run`) is
+    a safety fence against compiler regressions that break stdlib compilation.
+    Under §16.6 a public module whose compiled functions reference
+    `discover-tests` cannot run under `--run`. Today these are `testing.runner`
+    and its declaring parent `testing`. The fence therefore:
+    - names that set explicitly, citing §16.6, so a reference spreading into
+      another module fails the fence;
+    - requires each named module's `--run` to fail with the §16.6 refusal
+      (the output names `discover-tests` in the refusal wording), and not with
+      any other error. `--run` waits for compilation before the refusal runs,
+      so the refusal still shows that the module compiled;
+    - fails if a named module exits 0;
+    - keeps exit 0 for every other public module.
+
+    The ordering is source-read: `main.rs` runs `wait_inmem_complete()?`
+    before `trampoline` reaches `refuse_dev_session_externs`. It is refuted if
+    a named module containing a type error is reported with the §16.6 text.
+  - `regression.rs::wave6_run_tests_batched_html_completes_without_crash`
+    matches `No tests found`.
+  - `link.rs::link_module_referencing_discover_tests_extern_fails_with_friendly_message`
+    takes the new remedy tokens, or folds into TR-5.
+  - `discover_tests_named_module_under_run_counts_its_tests` is deleted along
+    with its `// defect:` line.
+  - The existing REPL `discover-tests` cells stay as they are.
+- **Harness.** Invoke `--test` through a new mode builder or
+  `.repl().cli_flag(…)`; `test` chooses.
+- **Observation limit.** The report must be on stdout. Nothing in the spec says
+  stdout carries only the report, so assert the lines' presence and order, not
+  exclusivity.
+
+### Module evidence (`dev`, Binary/int)
+
+- Implement the unit-test design rows of [the runner design](../../design/int/test-runner.md#10-unit-test-design) as written. These rows
+  must be observed RED before the change:
+  - run 2 (the failing value is released);
+  - run 7 (the empty text);
+  - refusal 1 (the one diagnostic);
+  - selection 2 (the library stop);
+  - selection 8 (`file_path` is recorded with introspection off);
+  - discovery 2 (the exact scheme);
+  - the `main.rs` rows.
+
+  Rows on new seams arrive green; say so in the report.
+- **Extend** `main.rs::tests::target_before_or_after_mode_flag_parses_identically`
+  (or add a sibling test). `--test` must parse the target, worker flags,
+  `--no-cache` and the agent flags exactly as `--run` does. §0.2.2 settles
+  these conventions and the design's row 1 does not cover them.
+- The run 2 row is the only evidence for the failing-value release. It needs no
+  end-to-end cell.
+
+### Gates
+
+1. The `test` cells and the maintenance changes land. The TR-1, TR-3, TR-4,
+   TR-5 and empty-run REDs are logged with their reasons, before any
+   production edit.
+2. `dev` implements the change and logs each module RED before its GREEN. The
+   release gate is METHOD §2.3 for `cranelisp`.
+3. Focused runs:
+   - the TR cells;
+   - the edited binaries: `spec_12_runtime`, `link`, `regression` and
+     `cache`;
+   - `tests/cache.rs::cache_restored_parent_enrols_private_test_child`.
+4. One full `cargo nextest run --no-fail-fast`. The expected result is no
+   failures and one skip (the ignored benchmark). ACT-1002's T1 and module
+   cells must remain green. Any failure that does not trace to an open filing
+   is a regression.
+5. `review` runs, and the public `pub` diff goes to the user. `qa` then makes
+   the final adequacy judgment and restores these coverage bands: §0.2.2,
+   §16.1, §16.2 and its subsections, §16.6, the `-o` row of §0.2.1.1, and the
+   Appendix A `discover-tests` row.
+
+### Leads — classification
+
+| Lead | Judgment |
+|---|---|
+| A failing test's value is never released | Real by source read. `dev` run row 2 covers it |
+| `--test` needs the runner state installed | Retired. The refusal ruling makes it unreachable, and TR-5 observes that |
+| FIXME 0868: cache and fresh parity | The existing REPL cell is reused. TR-3's cached leg covers the `--test` walk. The FIXME's disposition belongs to its target role |
+| `/run-all-tests` prefix classification | The TR-4 REPL leg is the predicted RED |
+| In-language discovery has no warning channel; the wrapper reads a null slot as `None`; in-language failure values follow language RC | Outside the host runner. The first is ACT-0986 scope and the others are REPL-only residuals. None is allocated |
+| Declared-child file resolution diverges from §8.2.5 | Selection is unaffected because a child takes its parent's class (selection row 3). Retained as modules intake. Falsifier: a missing child of a project parent resolves from a lib directory instead of failing |
+| The detector matches bare spellings | Over-refusal, now extended to `--run`. It is not reproduced and is unlikely. Falsifier: a module that defines `discover-tests` and calls it bare is refused under `--run`. Not allocated |
+| A macro clause that calls `discover-tests` runs before the refusal | Unreproduced and was already true under `--link`. Falsifier: a batch compile whose macro expansion calls the primitive exits other than through the refusal. Not allocated |
+
+**Readiness: ready for `test`, then `dev`.** No blocker. All cells are
+constructible with the existing harness (`lib_dir`, `prelude.cl`, `run_again`,
+`cli_flag`).
+
+### Shared test runner — final adequacy (2026-09-28)
+
+**Basis.**
+
+- Source: `0272a5d9` plus the dirty tree.
+- Full run: 6298 run, 6298 passed, 1 skipped (the ignored `concurrency_spark`
+  benchmark), in `.local/s122-r1-dev-full.log`.
+- Currency: no file under `src/`, `crates/`, `tests/` or `stdlib/` is newer
+  than that log.
+- Documents: the checker reports 514 documents and 0 findings.
+
+**Judgment: adequate.** Every allocated condition has green, discriminating
+evidence, with the limits below. The runner's product acceptance is the
+user's, together with the pending public-diff confirmation.
+
+| Condition | Evidence | Class | Judgment |
+|---|---|---|---|
+| TR-1 to TR-6 and TR-5c | Green in the full run. Pre-change REDs were logged by `test`. TR-1 and SG-1 were corrected as evidence premises (`test-e` is pinned and admitted; the §16.6 set is refused) | Acceptance | Adequate. `test-f` has no end-to-end RED; its unit RED is discovery row 2 |
+| `/tests-for` uses the shared predicate (review R-1) | `src/repl/commands.rs::tests_for_filter_tests::tests_for_lists_only_referers_with_the_test_signature` was observed RED (it listed the mistyped `test-bad`) and then GREEN. Its siblings differ only in scheme. The e2e fixture `tests/agent.rs::tests_for_filters_to_test_functions` is exact-typed and asserts its own premise. The scoped re-review resolved R-1 | Acceptance (module) | Adequate. The "one scan" claim is again asserted with its design §9 falsifier, which a grep confirms is not tripped |
+| Design §10 module rows and the parse-parity cell | Present (review §3). Run row 2 was observed RED at 4 allocated and 2 released | Acceptance (module) | Adequate |
+| SG-1 | Both named modules were observed exiting 1 with the §16.6 text | Safety fence | Adequate |
+| Documentation example | `.local/s122-test-runner-acceptance.log`. The `user/cli-reference.md` `test-add` example under the stdlib prelude exits 0 when passing, 1 when failing and 0 when empty. The smoke binary's sha matches the current `target/debug/cranelisp` | Maintenance check (documentation currency) | Current |
+
+**Bands restored:**
+
+- CLI §0 mode table, §0.2.2 (each clause), the `-o` row of §0.2.1.1, and the
+  `--test` leg of §0.5.5 rule 2;
+- REPL §16.1, §16.2, §16.2.1, §16.2.2 and §16.6;
+- REPL §17.6.2's test-function definition;
+- the Appendix A `discover-tests` row.
+
+Heading tags keep their `[S122]`/`[R4]` text because they form the inbound
+anchors. The paragraph annotations govern. §16.3 stays partial, because
+freshness, the union and absence without an import are unevidenced.
+
+**Accepted gate deviation.** METHOD §2.3 gate 4 (zero new lints) for
+`cranelisp` admits exactly the 23 `result_large_err` instances the review
+counted:
+
+- `run.rs` 12, `selection.rs` 4, `session_tests.rs` 3, `result_owner.rs` 2 and
+  `commands.rs` 2;
+- the total goes from 785 to 804, with two `question_mark` and two
+  `unneeded_struct_pattern` instances removed;
+- no other lint kind was added.
+
+They follow from the approved `Result<_, CranelispError>` signature. The R-1
+correction added none. This admits no suppression, no other lint and no
+crate-wide policy.
+
+**Residuals.** None is allocated. Each has a named falsifier or owner:
+
+- In-language `discover-tests` excludes without a warning: ACT-0986 item 1.
+- `--run` and `--link` do not name a missing entry file: ACT-1004.
+- The REPL leg of the `-o` rejection has no evidence. The `--run` and `--test`
+  legs exercise the same `select_action` check. Falsifier: `cranelisp -o x`
+  starts a REPL.
+- The §16.2 Tracing bullet has no evidence. Falsifier: `/run-tests` prints a
+  trace for a failing test.
+- A panic-only exit status and `--test` flag parsing are unit-pinned only.
+- The cross-module union order is unspecified by §16.3 (review R-4).
+  Falsifier: a spec ruling that fixes it.
+- Design §12 leads (macro-clause execution, bare-spelling over-refusal, REPL
+  cache-hit parity) stay classified as in the leads table above.
+- SG-1's named set can only become vacuous by a module leaving the public
+  enumeration, which also leaves the fence's scope. A renamed module falls to
+  the exit-0 condition and fails. §16.6 acceptance rests on TR-5, so a
+  membership assertion earns no residual.
+- The `tests/agent.rs` premise assertion was not observed failing. By
+  construction it cannot match the old `(Fn [] primitives/Int)` echo. It is a
+  maintenance check on the fixture.
+- The remedy phrasing is matched by substring against its single source.
+
+## Persistence reproduced failures — attribution and readiness (2026-09-28)
+
+> **Superseded for P1.** The [restart boundary delta](#restart-boundary-for-structural-type-changes--evidence-delta-2026-09-29)
+> replaces the P1 row, PR-1, PR-3's field-count leg, PR-4, the P1 boundary
+> decision and the P1 `// defect:` handoff below. PR-2, PR-5 and PR-6 stand.
+
+**Basis.** `0272a5d9` plus the working tree. `test` added seven cells to
+`tests/repl_persist.rs` (sha256 `8afa25e8…6c5b`): four RED and three GREEN.
+The persistence binary gave 46 passed and 4 failed; the 43 earlier cells pass
+(`.local/s122-persistence-residual-test-result.md`, logs alongside). The
+6298-pass full run predates these cells. QA read the cited source and ran
+nothing. The user deferred ACT-1005 and directed fixing these failures now.
+Every RED, control and new condition below is acceptance evidence for its
+cited requirement.
+
+### Attribution
+
+| RED | Mechanism | Discriminating control | Refuter | Class | Where it entered |
+|---|---|---|---|---|---|
+| P1 `persist_external_edit_adding_product_field_reloads` | **Provisional.** `reload_module` keeps the prior bindings, and publication checks each constructor against its prior binding ([session transaction §7.3](../../design/int/session-transaction.md#73-the-watcher-and-reload-path)). `same_publishable_origin` treats a constructor's `field_count` as part of its origin identity. Not observed: whether `validate_publication_collision` or `unpublished_synthesized_replacement_target` raises | A changed field type keeps the count and reloads. An added sum constructor reloads. The refusal does not depend on earlier turns or on how `T` was installed | A sum constructor whose payload arity changes reloads | `wrong-reject` | Int reload design. §7.3 checks a reload against the prior bindings, although §14.2 step 2 starts it from cleared state. No watcher cell reloaded a `deftype` |
+| P3 typecheck and commit-gate cells | **Confirmed in source.** In pass 2, `process_regular_form_with_origin` writes the record's `sexp`, `expanded` and `ast` before the cluster typecheck and commit gate. It writes `source` only when absent, so the prior text stays. A rejection restores nothing. The old text no longer re-parses to the new `sexp`, so regeneration renders the rejected `sexp`. That matches the observed file | `rejected_change_does_not_write_an_incoherent_backing_file`: rejection with no later regeneration leaves the file coherent. `persist_function_replacement_persists_through_restart`: an accepted replacement persists | With the writer still before typecheck, a rejected redefinition followed by regeneration writes the prior form | `partial-record-update`, widened (`tests/CLAUDE.md`) | Int design [§2.4.1](../../design/int/session-persistence.md#241-who-writes-a-record) row 1 places the writer in form processing, and §2.4.4 recorded the limit as unconfirmed. The rejection cell ended before any later regeneration |
+| P4 `persist_mod_turn_on_cache_restored_macro_expanded_module` | **Confirmed in source.** Rehydration (`save::authored_keys`) keys only native definition heads and `begin` members. A top-level macro call gets no key, so `x-def` has no record, and §2.4.3 refuses the write. The entry module is rebuilt from source over its preloaded table, so form processing writes its records. That is why the entry face did not reproduce | The same turn in the session that compiled `lib` from source regenerates `lib.cl`. The no-macro probe p4g also regenerates | A restored `lib` without a macro call also refuses; p4g did not | `enumeration-miss` | Int design [§2.4.4](../../design/int/session-persistence.md#244-known-limits) first limit. Its trigger, a QA-confirmed reproduction, is now met. No cell regenerated a macro-expanded module restored from cache |
+
+### Requirement support
+
+- **P1.** §14.2 steps 2–3 and §15.3 require an external edit to be
+  recompiled. §18's introduction, §18.5 and §15.6 name reload or restart as
+  the route for a structural change that live redefinition rejects.
+- **P3.** §15.6 and §18.8 state it directly.
+- **P4.** §15.1 names only the entry module, which is the caveat `test`
+  raised. QA finds the requirement supported without a new ruling:
+  - §3.9 calls a `/mod M` defining turn the file-backed dev loop that
+    "edit[s] a module in place".
+  - §3.9 also requires fresh and cache-restored `/mod M` turns to be
+    indistinguishable to the user.
+  - §15.4 rule 6 makes round trip independent of cache restore.
+  - Design §1.1 regenerates the current module, and the fresh control
+    exercises that path. Under an entry-only reading, the two install paths
+    would still diverge.
+  - Clarifying §15.1's scope is advisory for `spec`. Falsifier: a user ruling
+    that a non-entry `/mod` turn is not persisted. The file assertion would
+    then give way to a parity assertion.
+
+### Evidence delta
+
+`design`(int) settles each mechanism first. `dev`(src) then realizes it with
+module evidence, and `test` adds the independent cells below. Write each new
+RED first (METHOD §2.2).
+
+| ID | Condition | Plausible wrong outcome | Layer and owner | Existing evidence |
+|---|---|---|---|---|
+| PR-1 | A reload that changes a product type's field count, up or down, reports `[updated: …]`, and the new constructor and accessors return the new layout's values | The refusal persists, or the reload succeeds but reads the old layout | The P1 RED. `dev`: a unit at the reload publication seam covering both directions, with the prior slot retained rather than zeroed (§7.3) | P1 RED and two controls |
+| PR-2 | A live REPL `deftype` redefinition that changes the field count is still rejected atomically. The prior type stays live and the backing file is unchanged (§18.5, §15.6) | The fix relaxes constructor identity for every publication, so a live redefinition reinterprets values under a changed layout | `test`: a new e2e twin of PR-1. Types-crate units pin the origin refusals, for example `unpublished_synthesized_replacement_refuses_wrong_origin_and_shape_atomically` | No e2e cell covers §18.5 |
+| PR-3 (P5) | After a successful reload that changes a declaration, the next regeneration writes the edited declaration, and a cold restart yields it | A stale rehydrated or REPL-text record overwrites the edit (design §2.4.4, second limit) | `test`: new e2e cells on two routes. A field-type change is reachable today; commit it as a RED if it fails. A field-count change becomes reachable with PR-1 | None |
+| PR-4 | An importing dependent that uses the changed type is re-typechecked and recompiled. It returns the new layout's value, or `[errors: …]` for source that is now ill-typed. It never runs code compiled for the old layout | The dependent keeps old-layout code; the result is type confusion, not only staleness | `test`: one new e2e cell. `watch_cascade_invalidates_dependent_module_on_dep_change` accepts `[errors:]` and reads no value | Notification only |
+| PR-5 | A rejected function redefinition, at typecheck or at the commit gate, leaves every carrier of its record at the prior generation. The next regeneration and a cold restart run the prior definition | Only the text is restored, or only the typecheck path is fixed | The two P3 REDs. `dev`: a writer-seam unit for both rejection stages, a rejected first definition with no prior, and an accepted replacement updating every carrier | P3 REDs and two controls |
+| PR-6 | A `/mod` turn in a cache-restored non-entry module whose file has a top-level macro call regenerates that module's backing file. The call appears once, beside the new definition, and a cold restart yields every definition. Entering such a module recompiles it from its backing file through the ordinary reload ([design §2.4.5](../../design/int/session-persistence.md#245-editing-a-cache-installed-module)) | The warning persists; the call is written once per definition it produced; the recompile also fires for the entry or a fresh module; the reload loses the backing path, so regeneration writes a different file; or §2.4.3 stops refusing a genuinely unrenderable entry | The P4 RED, which counts the call and restarts cold. `dev`: units for the recompile trigger, a negative for the entry and fresh targets, backing-path retention across reload, and the retained §2.4.3 refusal | P4 RED and fresh control |
+
+`test` also re-runs the archived P2 probes after the P3 correction. This is a
+diagnostic observer and gates nothing (ACT-0998 face 2).
+
+**Gate.** Before `review`, `dev` completes its release gate. QA then judges
+adequacy from the four REDs flipping, PR-2 to PR-4, the full persistence
+binary and one full `cargo nextest run --no-fail-fast`. The P3/P4/P5 subset is
+judged without the full run, which waits for P1 and ACT-1006 (bounded adequacy
+below).
+
+### Boundary and API decisions
+
+The evidence requires none. Two design routes would require one:
+
+- **P1.** A change to constructor-origin identity, or a reload-specific
+  publication funnel in `cranelisp-types`, changes an invariant `arch` owns
+  and types units pin. It goes to `arch` first. Any public-surface delta also
+  goes through the inter-crate API user gate. A resolution confined to int
+  needs no boundary decision.
+- **P4.** Cache-carried attribution changes the `cranelisp-types` serde shape
+  and `CACHE_SCHEMA_VERSION` (design §2.4.2). That needs `arch` and the user
+  gate. Re-expansion at rehydration stays inside int. If the chosen mechanism
+  depends on macro order, `design` states that and routes it through the
+  coordinator; ACT-1005 stays deferred.
+- **P3** is inside int.
+
+### Handoffs to `test` (comment only)
+
+Replace each cell's `// defect:` line:
+
+- P1:
+  `// defect: class=wrong-reject locus=src/session_v4/lifecycle.rs::reload_module found=S122 owner=/dev — provisional: reload publishes over the retained prior bindings, and cranelisp-types same_publishable_origin compares a constructor's field_count`
+- Both P3 cells:
+  `// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev — the pass-2 record writer runs before typecheck and the commit gate, and a rejection does not restore the record`
+- P4:
+  `// defect: class=enumeration-miss locus=src/save.rs::authored_keys found=S122 owner=/dev — rehydration keys no top-level macro call, so definitions a cached module's macro call produced have no record`
+
+### Limits
+
+- P1's raise site has not been observed. Its sum-arity refuter ran (D1 below)
+  and did not fire: the arity change is refused too.
+
+## Persistence P3, P4 and P5 — bounded adequacy (2026-09-28)
+
+**Basis.**
+
+- Source: `0272a5d9` plus the working tree after `dev`(src) visit `df5a3760`
+  (`.local/s122-persistence-records-dev-result.md`, logs in
+  `.local/s122-persistence-records-dev-scratch/`).
+- Currency: the final module run (`gate3-lib-final.log`, 914/914) is newer than
+  every file under `src/`, `crates/`, `tests/` and `stdlib/`. The final focused
+  e2e run (`final-focused-e2e.log`, 233/237) is newer than every changed
+  production file. The binary it ran (`d9a1ebd4…2ec1`) predates only the
+  `#[cfg(test)]` module `src/session_v4/persistence_tests.rs`.
+- The wider 501/505 run (`focused-e2e.log`) predates the last production edits
+  (20:54 against 20:55), so it is corroboration, not current evidence.
+- No full `cargo nextest run --no-fail-fast` was run. It stays deferred until
+  P1 and ACT-1006 are dispositioned, so no whole-suite claim is made.
+
+**Judgment: adequate for P3, P4 and P5 within this basis, subject to two
+`dev` repairs before commit** (review F1 and F3 below). `review`
+(`.local/s122-persistence-records-review-result.md`) found no blocking finding
+and independently confirmed:
+
+- publication atomicity;
+- the absence of any other ordinary-definition writer;
+- keying of every definition kind;
+- the reload product replacement and the `/mod` trigger conditions;
+- the private boundary.
+
+| Condition | Evidence | Class | Judgment |
+|---|---|---|---|
+| PR-5 (P3, both rejection stages) | Both P3 e2e cells were observed RED before the fix and GREEN after. Module units for each rejection stage and for an accepted replacement that updates every carrier. A gap drops its staged records structurally: they live in the attempt's own `BuiltProgram` and are dropped on every `Gap` return (review F4). The gap unit does not discriminate that | Acceptance | Adequate |
+| PR-3 (P5, field-type routes) | Both field-type cells were observed RED before the fix (`test` `cells-run1.log`) and GREEN after. The module unit covers declaration records replaced by reload and kept by a failed reload | Acceptance | Adequate for the P5 fix. The field-type precondition is now forbidden, so the fence moves to RB-2(b) |
+| PR-6 (P4) | The P4 cell was RED before the fix and GREEN after; the fresh control stays GREEN. Module units for the recompile trigger, the entry and fresh-module negatives, and backing-path retention across reload. The unloaded-module leg cannot fail (review F4) | Acceptance | Adequate once F3 is repaired: only these units discriminate the negatives and path retention |
+| PR-2 | GREEN before and after | Safety fence (§18.5) | Held |
+| PR-4, reorder twin | GREEN before and after | Acceptance (dependent recompile) | Held then; both cells are retired or inverted to RB-5 |
+| Module-unit detection | Planted faults M1–M10 each failed the named unit, and every unit passed again on the restored source. The faults were planted against an earlier revision of `persistence_tests.rs`, which changed afterwards (review F3) | Maintenance check (instrument detection) | Adequate for the production units; open for the final persistence units |
+
+**Detection before the fix.** The module units were first observed GREEN on
+the fixed code. Faults M1, M5, M6 and M8 each reinstate the pre-fix
+behaviour: the pre-publication writer, the product removed on reload, no
+`/mod` trigger, and the `insert_cluster` drain.
+
+- M1 and M6 are also covered by e2e REDs observed red-to-green.
+- M5 (backing path), M7 (entry exclusion) and M10 (the cache flag) have no
+  other discriminating evidence.
+
+**Review findings — classification.**
+
+| Finding | Class | Owner | Effect on adequacy |
+|---|---|---|---|
+| F1: displaced and stale doc comments | Required code-quality repair | `dev`(src), comment-only, no re-review | Must land before commit; changes no condition |
+| F3: the mutation proofs predate the final test file | Weak module witness | `dev`(src): re-arm M5, M7 and M10 against the final `persistence_tests.rs`. M1 and M6 need no re-run | Must land before commit; the PR-6 negatives and path retention rest on it |
+| F4: the gap unit's name overclaims, and the unloaded leg is vacuous | Weak module witness | `dev`(src): narrow the name and comment, drop the leg | Advisory; no new cell |
+| F2: `insert_cluster` has no effect and its callers' comments say it commits | Design choice | `design`(int) decides retirement, which would make the guard structural; `dev` corrects the four comments | Advisory |
+| F5.1 and F5.2: the `/mod` recompile's cost, and its unchecked certification premise | Design question | `design`(int) | Residual below |
+| F5.3: `/mod` as a second route into the hang | Intake | `qa`: recorded in ACT-1006 | None |
+| Dev residual 4: `/mod` prints on failure and still switches | Spec-silent normative question | Coordinator to `spec` and the user | None |
+
+**Not counted as fixed.** The ACT-1006 hang cell remains RED. The P1 cells,
+the PR-4 cells and both PR-3 field-type cells are retired or inverted by the
+[restart boundary delta](#restart-boundary-for-structural-type-changes--evidence-delta-2026-09-29).
+
+**Residuals.**
+
+- **Library-directory path on the watcher route.** The unit calls
+  `reload_module` with the library path directly. How the watcher derives that
+  path is unchanged, and no e2e cell regenerates a library-directory module
+  after a watcher reload. Not allocated: the changed code is the product
+  replacement the unit discriminates. Falsifier: a watcher reload of
+  `libs/m.cl`, a `/mod m` defining turn, then `{root}/m.cl` exists.
+- **A `/mod` recompile after the file changed on disk** (review F5.2). If the
+  file changed after the cache hit and the watcher has not yet polled, the
+  recompile reloads the module alone, without its dependents. A failure there
+  is an ACT-1006 route. Whether a later watcher poll still cascades to the
+  dependents is unobserved. `design`(int) settles the trigger (F5.1) first;
+  then QA allocates.
+  - Falsifier: edit a cache-installed library file with no poll in between,
+    run `/mod` into it, then call a dependent; the dependent runs the
+    pre-edit code.
+- **Text on the superseded-residue path.** A dependent recompiled by the
+  redefinition-residue transaction would take its rendered form as text. The
+  design treats that path as unreachable. Falsifier: a REPL-entered
+  dependent's `/source` changes after an ordinary callable redefinition.
+
+**P5 class confirmed.** `partial-record-update` at
+`process_regular_form_with_origin`. The writer recorded only functions, so an
+accepted reload left the prior declaration record in place. Control: fault M9,
+which keys functions only, fails the declaration unit; keying every kind flips
+both field-type cells.
+
+**Handoff to `test` (comments only).** Following the convention on the
+earlier S122 fixed repros, append `fixed=S122` (with the commit sha at commit)
+to the `// defect:` lines of the five flipped cells: both P3 cells, the P4
+cell and both PR-3 field-type cells. State each defect in the past tense.
+
+- On the two PR-3 lines, delete `provisional, qa to confirm:`.
+- On the P4 line, keep the locus and add prose naming today's route:
+  `src/repl/commands.rs::recompile_cache_installed_module` recompiles the
+  module from source before the edit.
+- Leave the P1, PR-4 field-count and ACT-1006 cells unchanged.
+
+### Diagnostic observers after the correction
+
+**P2, rerun.** `sprint` ran the archived P2 section unchanged against the
+fixed binary. Output: `.local/s122-persistence-records-dev-scratch/p2-observed.log`,
+binary `d9a1ebd4…2ec1`. The inputs match the pre-fix cells
+(`.local/s122-persistence-residual-test-scratch/probe-run1.log`):
+
+| Failed reload, no earlier turn | Edit after the next definition turn: before | After |
+|---|---|---|
+| p2a: origin refusal (P1) | kept | **lost** |
+| p2b: type error | kept | **lost** |
+| p2c: parse error | lost | lost |
+
+Every failed reload is now followed by the last published source. This
+matches design [§2.4.4](../../design/int/session-persistence.md#244-known-limits).
+The earlier "kept" outcomes came from records written before any commit
+decision (P3) and from declarations that had no record (P5). ACT-0998 face 2
+records the classification. The observation selects no policy.
+
+**D1–D7, run.** `sprint` ran the unchanged design script
+(`.local/s122-persistence-four-design-scratch/probe-observed.log`, 20:35)
+against the binary built before the P3/P4 change; the log records no digest.
+The reload change (`reload_module` replacing the typecheck product) lies on the
+D1–D5 path, so those rows are pre-correction observations. Each needs a
+current rerun or a permanent cell before it is relied on.
+
+| Probe | Observed | Classification |
+|---|---|---|
+| D1 sum payload arity, D2 sum reorder, D3 sum constructor removed, D5 generic product field count | Reload refused with the origin/lifecycle error | Refusal now required by §14.8, but without its restart diagnostic ([restart boundary](#restart-boundary-for-structural-type-changes--evidence-delta-2026-09-29)) |
+| D4 `defn` removed from a reloaded file | `[updated:]`, and the removed `h` still returns 2 | New defect intake: [ACT-1007](../../sprints/actions/ACT-1007-reload-removed-definition-stays-live-intake.md) |
+| D6 live `deftype` field type changed from `Int` to `String` | Accepted, and the file is rewritten | Defect intake (§18.5 `wrong-accept`), closed: [ACT-1008](#act-1008--live-field-type-change-accepted-closed) |
+| D7 live field-count change | Rejected | PR-2 behaviour, already evidenced |
+
+## Restart boundary for structural type changes — evidence delta (2026-09-29)
+
+**Basis.** `0272a5d9` plus the working tree. `tests/repl_persist.rs` sha256
+`53dccf27…cb1e`; `tests/repl_watch.rs` `3be88570…1cc6`. QA read the sources
+and ran nothing; today's behaviour comes from the recorded runs cited above.
+
+**Authority.**
+
+- REPL [§14.8](../../repl/spec/14-file-watching.md#148-structural-type-changes-require-restart),
+  with its mirrors in §15.1, §15.3 and §18.5, under the user's ruling "restart
+  is a good resting point for now".
+- The route is `arch`'s (`.local/s122-restart-boundary-arch-result.md`). It
+  has no public API delta. The conditions below do not depend on its
+  mechanism.
+
+**Supersedes.** This delta supersedes the P1 rows of the
+[four-RED readiness](#persistence-reproduced-failures--attribution-and-readiness-2026-09-28):
+
+- the P1 attribution, and its `wrong-reject` class, which §14.8 makes void;
+- PR-1;
+- PR-3's field-count leg;
+- PR-4;
+- the P1 boundary decision.
+
+PR-2, PR-5 and PR-6 stand.
+
+**Judgment: ready.** `test` writes the REDs first. `design`(int) and then
+`dev` realize the route. Every observable below is reachable through the
+binary. Only RB-5 is gated, by ACT-1006.
+
+### Readings adopted
+
+- **"Structural" means §18.5's full identity.** Spec settled this with the
+  ruling.
+- **A repeated structural save fails again.** §18.5 says that a watcher reload
+  does not establish the change. Under §14.8, only a successful reload or a
+  restart ends the failure.
+- **Diagnostic match.** A cell matches the restart diagnostic on the type's
+  name and on `restart`, case-insensitively. If a conforming wording lacks
+  that word, return it to QA. Do not steer the product to fit the match.
+
+### Conditions
+
+Every condition is acceptance evidence for its cited section.
+
+| ID | Condition | Plausible wrong outcome | Layer, owner and cell |
+|---|---|---|---|
+| RB-1 | A `user.cl` reload that changes a live product field's type, with the count kept, fails. `[errors: user.cl]` names `T` and says a restart is required. No `[updated: user.cl]` appears, and `(T.v (T "s"))` does not yield `"s"` (§14.8, §14.4) | The reload is accepted, as today: the origin identity compares only tag, count and flag. Or the refusal lacks the restart remedy, or carries the "reload persisted source" remedy | `test`: invert and rename `persist_external_edit_changing_field_type_reloads_control`. RED today |
+| RB-2 | A structurally identical redeclaration reloads (§14.8, §18.5). (a) An edit changes only a function body beside an identical `T`. (b) An edit changes only `T`'s docstring, on the REPL-entered and file-loaded routes: `[updated: user.cl]`, `/doc T` shows the new text, the next defining turn writes the edited declaration once and not the prior one, and a cold restart shows the new text | Any redeclaration of a live type is refused. A docstring counts as structural. An identical structure is treated as a no-op, so the prior record is regenerated over the edit (the P5 defect again) | `test`: (a) `persist_external_edit_changing_defn_body_reloads_control`, unchanged. (b) Transpose both `persist_reloaded_field_type_edit_of_*` cells. Both are expected GREEN today. (b) is also the P5 safety fence |
+| RB-3 | After a file-loaded `T` gains a field and the reload fails as in RB-1, `(defn h [] 2)` is rejected. A slash command shows `h` undefined; evaluation is blocked. `user.cl` is byte-identical to the saved edit. A second structurally different save fails again. After `/quit`, a restart that keeps the cache yields the two-field `T` without `[errors:`. A defining turn then regenerates the file with it (§14.8, §15.1, §18.5) | The turn is accepted and the edit overwritten, as observed today (ACT-0998 p2a). Or the turn is rejected but another caller rewrites the file. Or the turn is installed but not written. Or a repeated save establishes the layout, the restart serves the cached one-field `T`, or the retention outlives the restart | `test`: invert and rename `persist_reloaded_field_count_edit_survives_regeneration`. RED today |
+| RB-4 | After the RB-1 failure, a save structurally identical to the live `T` reloads with `[updated: user.cl]`. Evaluation resumes, and a defining turn is accepted and regenerates the file from the saved content (§14.8, §14.4 item 4) | The retention is never released, or evaluation stays blocked | `test`: continue RB-1's session, or a sibling cell |
+| RB-5 | Swapping the two fields of `T` in `shapes.cl`, which `reader` and the REPL import, fails as in RB-1: `[errors: shapes.cl]` names `T` and says a restart is required. `(read-a (T 1 2))` is refused and yields neither 1 nor 2. `/quit` is read, and the session exits within the harness timeout (§14.8, §14.4 items 2–3) | The session hangs; the failed imported reload hung 16 times in 20 runs of this shape ([ACT-1006](#act-1006--failed-imported-reload-hang-closed)). Or the reorder is admitted, or the dependent runs code for the old layout | `test`: invert and rename `watch_dependent_reads_reordered_fields_after_reload`. Accept only after 15 consecutive passes |
+| RB-6 | A live redefinition that changes only a field's type is rejected under the same rule (§18.5). `(T.v x)` for an earlier `x = (T 7)` gives 7, and so does `(T.v (T 7))`. The next definition turn writes the `Int` declaration once, and a cold restart gives 7 | The reload and live cadences apply different rules; the live path accepts, as today | `test`: the [ACT-1008](#act-1008--live-field-type-change-accepted-closed) cell, with its value probe folded in. RED today. It completes ACT-1008 and does not gate §14.8 |
+
+### Retired and inverted cells
+
+| Cell | Disposition | Reason |
+|---|---|---|
+| `persist_external_edit_adding_product_field_reloads` | Retire | Its reload must now fail. As a refusal it repeats RB-3's first step. Today's identity already refuses a count change, so the cell discriminates nothing further. Its `wrong-reject` defect line is void, because §14.8 requires the refusal |
+| `persist_external_edit_changing_field_type_reloads_control` | Invert to RB-1 | §14.8 forbids the reload this cell controlled for |
+| `persist_reloaded_field_type_edit_of_repl_entered_type_survives_regeneration`, `…_of_file_loaded_type_…` | Transpose to RB-2(b) | Their precondition is forbidden. A permitted declaration edit still exercises the same record writer |
+| `persist_reloaded_field_count_edit_survives_regeneration` | Invert to RB-3 | The edited layout must now survive on disk and be established at restart, not at regeneration |
+| `watch_dependent_reads_reordered_fields_after_reload` | Invert to RB-5 | Field order is structural |
+| `watch_dependent_reads_added_field_layout_after_reload` | Retire | It repeats RB-5's imported-module refusal. ACT-1006's own cell records the hang it observed |
+| `persist_live_deftype_adding_product_field_rejected_and_not_written_neg` | Keep; comment only | Its claim that the reload twin "MUST be accepted" is false under §14.8 |
+
+**RB-2(b) observables.** The file assertion discriminates P5. `/doc T` is
+the leg for §18.5's live documentation. If `/doc` shows no type docstring at
+all, `test` reports that to QA and does not drop the leg.
+
+**RB-2(b) detection limit.** The P5 fix came before the transposed form, so
+that form will not be observed RED. Detection rests on the field-type form's
+recorded red-to-green and on fault M9 failing the declaration unit (bounded
+adequacy above). Falsifier: with M9 reinstated, the transposed cells stay
+GREEN.
+
+### Module evidence (`dev`)
+
+Write each unit RED first. Plant a fault only where a unit was not seen
+failing before its production change.
+
+- **Structural comparison, both polarities.**
+  - Refused: field type, field order, field name and field count; a sum
+    constructor added, removed or reordered; payload arity and payload type;
+    type parameters; visibility.
+  - Admitted: an identical declaration, a docstring-only change, a
+    payload-label change and alpha-renamed parameters.
+  - A sum type's visibility change carries the restart remedy, not the reload
+    remedy.
+- **Publication backstop, if one is added.** A synthesized member whose scheme
+  changed is refused, and the table is unchanged. An alpha-equivalent scheme
+  is admitted.
+- **Retention state.**
+  - Only a §14.8 refusal sets it; a type-error or parse-error reload does not.
+  - A later failing save and `/reset` keep it. A successful reload of that
+    module clears it.
+  - No regeneration caller writes the retained file.
+  - Admission rejects a turn that would regenerate the retained file and
+    leaves the session unchanged. It admits a turn that regenerates a
+    different file.
+
+### ACT-1006 and this correction
+
+- **The old reason is gone.** A structural reload no longer succeeds, so the
+  path on which a dependent failed after one is gone.
+- **The new reason: the failure itself.** §14.8's own failure, in an imported
+  non-entry module, is the recorded hang shape. The refusal still fails after
+  parsing, which is the supported hang condition.
+- **What it gates.** ACT-1006 gates RB-5 only. It does not gate the
+  entry-module conditions: the entry refusal hung in none of three or more
+  runs. It does not gate design or `dev` start either.
+- **How RB-5 can pass.** Either ACT-1006 is corrected, or the delivered
+  failure path avoids the hang under the repetition standard. Fifteen
+  single-session passes match ACT-1006's own fifteen-session standard.
+- **Its own defect stands.** The type-error RED
+  `watch_type_error_reload_of_imported_module_blocks_without_hanging` remains
+  open, whatever RB-5 shows.
+- **Recommendation.** The library-module case is §14.8's common one, so QA
+  recommends that `sprint` schedule the ACT-1006 correction with this one.
+
+### Residuals, not allocated
+
+These are covered by units only.
+
+- **`/reset` during a failure.** Falsifier: after an RB-1 failure, `/reset`
+  and then a definition rewrites `user.cl`.
+- **An agent write turn.** Falsifier: under `--features agent`, an accepted
+  write turn during an RB-1 failure rewrites the file.
+- **`/mod` into a failed non-entry module.** This is ACT-1006's second route.
+  Falsifier: after an RB-5 failure, `/mod shapes` and then a definition
+  rewrites `shapes.cl`.
+- **Payload-label, type-parameter and visibility dimensions.** RB-1 and RB-5
+  already show that the full rule is wired end to end.
+
+Outside §14.8 (arch §4). Both are atomic refusals that keep their existing
+messages:
+
+- a class change between a type and a callable at reload;
+- a constructor name reused by a different type.
+
+The following stay open elsewhere:
+
+- ACT-0998 face 2, for failed reloads caused by type or parse errors;
+- ACT-1007;
+- ACT-1005, which is deferred.
+
+### Gate
+
+`dev` completes its release gate before `review`. QA then judges adequacy
+from:
+
+- RB-1, RB-3 and RB-6 observed red to green;
+- RB-2 and RB-4 GREEN;
+- RB-5 passing 15 consecutive times, or recorded as blocked by ACT-1006;
+- the persistence and watch binaries;
+- one full `cargo nextest run --no-fail-fast`. Every RED in it must trace to
+  an open filing; ACT-1006's cell is the expected one.
+
+### Handoff to `test`
+
+1. Author RB-1, RB-3, RB-4, RB-5 and RB-6 as REDs, and the RB-2(b)
+   transposition. Rename each inverted cell for its new behaviour. Point each
+   `// spec:` line at §14.8, or at §18.5 for RB-6.
+2. Delete the two retired cells.
+3. RB-2(b) keeps its `// defect: class=partial-record-update …` line, adding
+   `fixed=S122` and the commit sha at commit. Its comment states two things:
+   - the field-type form was RED before the fix;
+   - the transposed form was not observed RED.
+4. RB-1, RB-3 and RB-5 carry no `// defect:` line, because they are
+   requirement cells.
+5. RB-6 takes ACT-1008's line: `class=wrong-accept`, locus
+   `src/redefine.rs::validate_guarded_redefinition`, with owner `/dev`.
+6. Correct the stale twin sentence on the PR-2 cell.
+7. Leave ACT-1006's cell unchanged.
+
+## Restart boundary — final adequacy (2026-09-29)
+
+**Basis.** `0272a5d9` plus the working tree. Test source hashes (sha256):
+
+- `tests/repl_persist.rs` `973d1bf0…af27c`;
+- `tests/repl_watch.rs` `3be88570…1cc6`.
+
+Production hashes (sha256):
+
+- `src/scheduler.rs` `4969e876…`;
+- `src/worker.rs` `784de6dd…`;
+- `src/redefine/type_structure.rs` `81f7d0d3…`;
+- `crates/cranelisp-types/src/module.rs` `578344bd…`.
+
+`dev` ran the full suite and the stress gates on the same sources:
+`.local/s122-restart-boundary-src-dev-scratch/`. QA re-ran the `repl_persist`
+and `repl_watch` binaries (71 run, 68 passed) and the focused units (23/23),
+logged in `.local/s122-restart-boundary-final-qa-scratch/`.
+
+**Closure basis.** `0272a5d9` plus the working tree after the E1/E2 and R-1
+corrections (sha256):
+
+- `tests/repl_persist.rs` `92103e6c…db58`;
+- `tests/repl_watch.rs` `1f662a05…21ae`;
+- `src/session_v4/lifecycle.rs` `645f989e…4e8c`;
+- `src/session_v4/persistence_tests.rs` `cded5210…dce3`;
+- `src/scheduler.rs` unchanged.
+
+Gates:
+
+- after E1/E2: both binaries 71/71 and RB-5 15/15
+  (`.local/s122-restart-boundary-repaired-binaries.log` and
+  `.local/s122-restart-boundary-repaired-stress.log`);
+- after R-1 and after the last test-source edit, in
+  `.local/s122-restart-boundary-r1-dev-scratch/`: both binaries 71/71, RB-5
+  15/15, `persistence_tests` 17/17, and RB-7 with U2 10/10;
+- the full suite, 6336 passed, 1 skipped, 0 failed (118.9 s). The captured
+  log is stdout-only and empty, so the summary line is taken from the `dev`
+  session's tool output.
+
+**Judgment: adequate.** The delivered behaviour meets RB-1 to RB-7, and the
+full suite has no RED. Nothing remains open for this correction
+([closure](#closure)).
+
+| ID | Class | Result on the final tree | Verdict |
+|---|---|---|---|
+| RB-1 | Acceptance, §14.8 | Observed RED before the fix, for the intended reason. GREEN now | Adequate |
+| RB-2(a), RB-2(b) | Acceptance, §14.8 and §18.5; (b) is also the P5 safety fence | GREEN. (b) keeps its recorded detection limit | Adequate |
+| RB-3 | Acceptance, §14.8 and §15.1 | Observed RED before the fix, including the mid-session snapshot leg. GREEN now | Adequate |
+| RB-4 | Acceptance, §14.8 and §14.4 item 4 | Before the fix, RED only at its precondition. Its release legs could not fail while no §14.8 failure existed. GREEN now | Adequate. The "retention never released" outcome was proven detectable at the unit seam, where fault F4 fails `restart_required_stands_until_a_successful_reload`. With that fault, the e2e would fail too: the definition turn would be refused |
+| RB-5 | Acceptance, §14.8 imported leg | Every behavioural leg held in 15 of 15 sessions before E2. After E2, GREEN in 15 of 15 consecutive stress iterations, before and after R-1 | Adequate |
+| RB-6 | Acceptance, §18.5; also a safety fence for the reinterpretation of live values | Observed RED before the fix, including a SIGSEGV. After E1, GREEN | Adequate. Defect record: [ACT-1008](#act-1008--live-field-type-change-accepted-closed) |
+| PR-2 | Acceptance, §18.5 field count | After E1, GREEN with every leg run, including the file and cold-restart legs | Adequate |
+| RB-7 | Acceptance, §14.8 bullet 1 and retention, beside a standing failure | `dev` unit `structural_reload_beside_a_failed_module_reports_its_own_refusal`: RED before the fix in every invocation, each time with another module's error. GREEN after, 10 of 10 | Adequate |
+| U2 | `dev` module evidence, §14.8 release beside a standing failure | `reload_beside_a_failed_module_succeeds_and_lifts_its_restart_marker`: RED before the fix deterministically (a successful reload returned another module's error). GREEN after, 10 of 10 | Adopted as RB-7's deterministic discriminator. It needs no `test` condition |
+
+**Evidence defects**, both corrected by `test` and GREEN, are in
+`.local/s122-restart-boundary-test-classification.md`.
+
+- **E1.** §14.8 requires the refusal to identify the type, and the REPL
+  names types fully qualified. So "no echo" is matched as the absence of
+  `; deftype`.
+- **E2.** RB-5 requires `/quit` to be read and the session to exit within the
+  timeout, not with status 0. The exit status of 1 on `/quit` while a module
+  error stands is present at HEAD (`src/main.rs` REPL epilogue). The leg is
+  replaced by a normal-exit, not-a-signal check, which keeps the crash
+  discrimination.
+
+No language question is raised.
+
+**RB-6 diagnostic.** RB-6 requires rejection, not a particular diagnostic.
+Both refusal layers are unit-evidenced:
+
+- **Int.** `type_structure::tests::*` refuses every §18.5 facet, and
+  `error_names_type_and_restart_not_reload` checks the message.
+- **Types backstop.** Its refuse and admit units carry detection proofs
+  M1–M4.
+
+The int refusal is the one users see. No further diagnostic condition is
+allocated.
+
+### ACT-1006 — failed imported reload hang (closed)
+
+- **Defect.** After a watched module that another module imports failed
+  after parsing, the reload never completed: no notification, and `/quit`
+  never read (§14.4 item 3, §14.2 step 5). Most sessions hung, not all.
+  Repro: `tests/repl_watch.rs::watch_type_error_reload_of_imported_module_blocks_without_hanging`.
+- **Mechanism: confirmed at its seam.** The importer's pool worker, in
+  `block_on_first_unready_closure_member`, registered as a waiter on the
+  already-`Failed` dependency after that dependency's failure cascade had
+  drained its waiters. The foreground completion wait then parked when it
+  scanned the stranded importer before the failed module.
+  - Control: within one run, a completed and a hung session showed the same
+    stranded waiter and differed only in the wait's scan order.
+  - Replanting the fault reproduced the hang with an identical dump;
+    restoring the fix returned the cell to GREEN.
+  - Design lead (b), the stranded `Blocked` importer, was the participant;
+    lead (a), the scan order, was the amplifier.
+- **Class:** `lost-wakeup`. **Entered at** the one waiter registrant without
+  the `Failed` fast path; coverage let it through because every earlier §14
+  watch cell failed its reload by parse error, which never reaches the
+  barrier.
+- **Correction evidence:** both barriers share `failed_closure_member_locked`
+  (design [error cascade §4.1](../../design/int/step9-error-cascade.md#41-cascade-construction));
+  `scheduler::tests::atomic_barrier_gate_fails_importer_of_already_failed_member`
+  was observed RED, then GREEN; the cell passed 75 of 75 sessions; the
+  parse-error and accepted-reload controls stayed GREEN. The cell carries its
+  `// defect: class=lost-wakeup … fixed=S122` line.
+
+### ACT-1008 — live field-type change accepted (closed)
+
+- **Defect.** A live same-name `deftype` that changed only a field's type was
+  accepted, although REPL §18.5 requires a structurally different
+  redeclaration to be rejected atomically and forbids reinterpreting existing
+  values under a changed layout. Repro:
+  `tests/repl_persist.rs::persist_live_deftype_changing_field_type_rejected_and_not_written_neg`
+  (RB-6).
+- **Memory-unsafe face, observed.** In `test`'s pre-fix RED run
+  (`.local/s122-restart-boundary-test-scratch/red-run2.log:36–43`), after
+  `(defn x [] (T 7))` the `String` redefinition echoed `; deftype`, and
+  `(T.v (x))` ended the process with SIGSEGV: the `Int` payload was read as a
+  heap pointer. `user.cl` held the rejected declaration, so the cold restart
+  was error-blocked. The SIGSEGV is a face of the `wrong-accept`, not a
+  separate defect.
+- **Class:** `wrong-accept`. **Entered at** the int redefinition design and its
+  coverage: the live-turn guard had no §18.5 structural comparison, the types
+  origin identity compared only tag, field count and internal flag, and no
+  cell exercised §18.5 beyond PR-2's field count.
+- **Correction evidence.** Two layers now prevent a changed constructor or
+  accessor scheme from being published:
+  - int's §18.5 comparison, `redefine::type_structure::structural_type_change`,
+    at all three validation callers (prepare, plan, commit);
+  - the types backstop, `validate_publication_collision`, which is structural
+    at the only publication gate. With the int policy absent, it alone turned
+    RB-6 GREEN.
+- RB-6 was observed RED, including the SIGSEGV, then GREEN with every leg
+  run. Its value probe observes the property end to end, and it carries
+  `// defect: class=wrong-accept … fixed=S122`.
+
+### Src review R-1 — a reload's outcome beside a standing failure
+
+- **Defect, substantiated by inspection.** `reload_module` takes its outcome
+  from `wait_inmem_complete_blocking`, which returns the error of the first
+  `Failed` module in `HashMap` order, and reads the module's structural
+  refusal record straight after it. The watcher plan reloads a root before
+  its importers, so after any failed reload of the root, the importers still
+  stand `Failed` during the next one.
+  - Face (a): the `[errors: <file>]` notification carries another module's
+    stale error, so it neither names the type nor states the restart
+    (§14.8 bullet 1).
+  - Face (b): the refusal record can be read before the reloaded module is
+    terminal, so the restart marker is missed and §14.8 retention has no
+    carrier.
+  - This is not the ACT-1006 lost wake-up: no waiter is stranded.
+- **Class:** `wrong-scope-lookup` — the reload's outcome is read at
+  whole-scheduler scope, not from the reloaded module.
+- **Where it entered:** `design/int/repl-lifecycle.md` §1.3.1 accepts that
+  the completion wait's error can name another module, which is weaker than
+  [REPL §14.8](../../repl/spec/14-file-watching.md#148-structural-type-changes-require-restart);
+  `dev` realised it faithfully. Coverage: no condition placed a
+  structural reload beside a standing `Failed` module.
+- **Correction, closed.** `design`(int) ruled that a reload's outcome is the
+  reloaded module's own terminal state (`repl-lifecycle.md` §1.3 Outcome).
+  `reload_module` now waits with `wait_module_inmem_complete_blocking` on
+  that module alone. The finding-scoped `review`(src) found R-1 closed, with
+  no blocking finding.
+- **RB-7 — `dev` module unit, acceptance for §14.8 bullet 1 and retention.**
+  - Seam: `CompilerSession::reload_module`, beside the restart-required units
+    in `src/session_v4/persistence_tests.rs`.
+  - Setup: a module with a live `deftype T`, and an unrelated module standing
+    `Failed`. Save a structural edit of `T` and reload the first module.
+  - Observe: the returned error names `T` and the restart remedy, not the
+    other module's error; `restart_required` maps the module to `T`.
+  - Plausible wrong outcome: the other module's error, and no marker.
+  - Control: the same reload with no other `Failed` module, which passes
+    before the fix (the existing restart-required unit).
+  - The defect fires only when the failed module precedes the reloaded one in
+    iteration order. The unit repeats the scenario over fresh sessions, each
+    with a fresh hash seed, so a run under the defect fails with probability
+    at least 99%.
+  - Observed RED before the correction for the intended reason, then GREEN.
+  - No `test` condition: the defect is outcome selection shared by every
+    reload caller, and RB-1 to RB-5 already evidence the watcher's rendering
+    of the returned error. An e2e would only add an order-probabilistic
+    repeat of the unit.
+
+### Residuals
+
+- **The foreground completion waits are order-dependent.**
+  `wait_inmem_complete_blocking` and `wait_object_complete` stop at the first
+  incomplete module. R-1 is this shape's outcome face at `reload_module`,
+  corrected at that caller. The residual below is its stranding face only.
+  - Grade: asserted, with a named falsifier. With the barrier corrected, no
+    observed path strands a module.
+  - The two waiter registrants, `block_for_typecheck` and
+    `block_on_first_unready_closure_member`, each check for `Failed` under the
+    lock. A future third registrant could reintroduce the stranding.
+  - Falsifier: a hung session whose dump shows a waiter on a `Failed` module,
+    or a stranded module with no `Failed` dependency.
+  - Structural option, not allocated: refuse inside `add_waiter_locked`, so
+    one decision point covers every registrant. This is `design`(int) or
+    `dev` at `sprint`'s discretion.
+  - Checking every module for `Failed` inside the wait would hide stranding,
+    not cure it. It is not recommended.
+- **A reload that adds an import of a cache-restored module** (R-1 review
+  A-1). A cache-restored module enters `TypecheckDone` before its object is
+  loaded, and the signature barrier opens on `TypecheckDone`. So a reload
+  that first imports such a module can return `Ok` before that module's
+  in-memory load completes. The every-module wait covered this when no
+  module stood `Failed`; the per-module wait does not.
+  - Grade: asserted, with a named falsifier. The hazard is a call through an
+    unpopulated GOT slot (`null-got-slot`). It rests on source reading only;
+    no run reached the window.
+  - The same shape predates R-1 on the eval path, whose per-module
+    dependency wait does not await a cache-restored transitive dependency.
+    Reverting R-1 therefore would not remove the class.
+  - Falsifier: a reload that adds an import of a module with a valid cache
+    entry, then an immediate call into that module through the reloaded
+    module, crashes or observes an unloaded slot.
+  - Owner: `design`(int) records this limit in `repl-lifecycle.md` §1.3
+    Coverage. A structural option is to make a reload's completion include
+    the in-memory load of the dependencies it newly registered, which would
+    also cover the eval path; `sprint` may schedule it. It is not required for
+    this acceptance.
+- **`/mod` into a failed cache-installed module.** This route reaches the same
+  corrected barrier, so the correction covers it by construction. No cell.
+  - Falsifier: after an RB-5 failure, `/mod shapes` followed by a definition
+    hangs or rewrites `shapes.cl`.
+- **Reordering fields of the same type.**
+  - This is memory-safe: every position keeps its type.
+  - The types backstop cannot see it (types review A1). The int guard owns it,
+    and it is evidenced by RB-5 on the reload route and by the field-order
+    unit.
+  - A2, which asks the types refuse unit to match its specific `WrongState`,
+    stays advisory. Planted faults M1–M3 already showed the unit fails for the
+    intended reason today.
+- **Agent write turns.** Evidence is only the feature-gated units, with faults
+  F10 and F7a. The agent e2e lane was not run.
+- **The `/quit` exit status while an error stands** is unspecified. It is
+  observed, not filed.
+- **Src review advisories, accepted without new evidence.**
+  - A-1: when one cluster changes two types, the refused type is the first
+    found in `HashMap` order. §14.8 needs one named type, and admission uses
+    the same record, so the variation is cosmetic.
+  - A-2: a type-parameter reorder, a sum constructor rename and the
+    `Ctor.internal` flag have no unit of their own. Each is compared directly
+    by the §18.5 comparator; a parameter reorder also changes the
+    constructor scheme, which the types backstop refuses independently.
+  - A-3: an importer failed at the barrier fast path reads
+    `module '…' failed`, and one failed by the cascade reads
+    `dependency '…' failed`. Both name the failed dependency; §14.3 fixes
+    no wording.
+  - A-4: the structural refusal is located at `Span::SYNTHETIC`, short of
+    the §5.1 location MUST. The watcher route is located by its
+    `[errors: <file>]` header, and existing reload failures share the gap.
+    Falsifier: a live-turn refusal whose output gives the user no way to
+    find the rejected form.
+- **Out of scope:** ACT-0998 face 2 stays open, ACT-1007 stays separate, and
+  ACT-1005 stays deferred.
+
+### Closure
+
+- **Met:**
+  - E1 and E2 are applied and GREEN, including PR-2 in full and RB-5 at 15
+    consecutive iterations;
+  - R-1 is corrected, RB-7 and U2 were observed RED then GREEN, RB-1 to
+    RB-5 stayed GREEN, and the finding-scoped review closed R-1;
+  - the ACT-1006 cell carries its past-tense comment and its
+    `class=lost-wakeup` line. ACT-1006 is deleted; its record is
+    [its subsection](#act-1006--failed-imported-reload-hang-closed);
+  - RB-6's `// defect:` line carries `fixed=S122`, and its comment records
+    the pre-fix SIGSEGV and describes its value probe directly. The edit is
+    comment-only: `tests/repl_persist.rs` is now `98e3eb15…bb4a`, and
+    reverting only the RB-6 and RB-5 comment lines reproduces the
+    closure-basis `92103e6c…db58`.
+    ACT-1008 is deleted; its record is the
+    [subsection above](#act-1008--live-field-type-change-accepted-closed).
+- **Open:** nothing for this correction.
+- **At commit:** each S122 `fixed=S122` line gains the commit sha.

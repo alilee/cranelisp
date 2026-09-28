@@ -200,6 +200,11 @@ pub struct ModuleState {
     /// makes a stray requeue impossible — there is no second orchestrator to
     /// suppress, so no flag is needed (claimable XOR owned, by construction).
     pub blocked_on: Option<ModuleFullPath>,
+
+    /// The live type this generation's staged table was refused for
+    /// re-establishing with a different structure (`design/int/session-transaction.md`
+    /// §2.6). Every registration starts it empty; a failed reload reads it.
+    pub(crate) structural_type_refusal: Option<crate::redefine::StructuralTypeChange>,
 }
 
 impl ModuleState {
@@ -220,6 +225,7 @@ impl ModuleState {
             instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
+            structural_type_refusal: None,
         }
     }
 
@@ -244,6 +250,7 @@ impl ModuleState {
             instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
+            structural_type_refusal: None,
         }
     }
 
@@ -271,6 +278,7 @@ impl ModuleState {
             instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
+            structural_type_refusal: None,
         }
     }
 
@@ -979,6 +987,7 @@ impl CompileScheduler {
                 instantiation_demands,
                 generation_started: false,
                 blocked_on: None,
+                structural_type_refusal: None,
             };
         }
 
@@ -1865,6 +1874,29 @@ impl CompileScheduler {
     // REPL Recovery (Step 9)
     // -----------------------------------------------------------------------
 
+    /// Record that `module`'s current generation redeclared a live type with a
+    /// different structure. No-op for an unregistered module.
+    pub(crate) fn record_structural_type_refusal(
+        &self,
+        module: &ModuleFullPath,
+        refusal: crate::redefine::StructuralTypeChange,
+    ) {
+        if let Some(ms) = self.lock().modules.get_mut(module) {
+            ms.structural_type_refusal = Some(refusal);
+        }
+    }
+
+    /// The structural type refusal recorded for `module`'s current generation.
+    pub(crate) fn structural_type_refusal(
+        &self,
+        module: &ModuleFullPath,
+    ) -> Option<crate::redefine::StructuralTypeChange> {
+        self.lock()
+            .modules
+            .get(module)
+            .and_then(|ms| ms.structural_type_refusal.clone())
+    }
+
     /// Check whether a module is in the Failed pool.
     pub fn is_failed(&self, module: &ModuleFullPath) -> bool {
         let state = self.lock();
@@ -2000,6 +2032,32 @@ impl CompileScheduler {
         }
     }
 
+    /// The failure of the first closure member in `Failed`, if any. Both
+    /// barriers refuse on it: a failed member never publishes signatures, and
+    /// its failure cascade has already drained its waiters, so a waiter
+    /// registered now would never be woken (ACT-1006).
+    fn failed_closure_member_locked(
+        state: &SchedulerState,
+        closure: &ClosureOrder,
+    ) -> Option<SchedulerError> {
+        closure.order.iter().find_map(|m| {
+            let ms = state.modules.get(m)?;
+            (ms.pool == ModulePool::Failed).then(|| SchedulerError::ModuleFailed {
+                module: m.clone(),
+                message: ms
+                    .error
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error".to_string()),
+                span: ms
+                    .error
+                    .as_ref()
+                    .map(|e| e.span())
+                    .unwrap_or(Span::SYNTHETIC),
+            })
+        })
+    }
+
     /// Park the caller until **every** module in `closure` has its signatures
     /// published (the Phase-A barrier gate). Returns when the barrier opens, or
     /// `Err` if any closure module failed.
@@ -2018,26 +2076,8 @@ impl CompileScheduler {
             if state.shutdown {
                 return Ok(());
             }
-            // Fail fast if any closure module errored — otherwise we would park
-            // forever on a dep that will never become ready.
-            for m in &closure.order {
-                if let Some(ms) = state.modules.get(m)
-                    && ms.pool == ModulePool::Failed
-                {
-                    return Err(SchedulerError::ModuleFailed {
-                        module: m.clone(),
-                        message: ms
-                            .error
-                            .as_ref()
-                            .map(|e| e.to_string())
-                            .unwrap_or_else(|| "unknown error".to_string()),
-                        span: ms
-                            .error
-                            .as_ref()
-                            .map(|e| e.span())
-                            .unwrap_or(Span::SYNTHETIC),
-                    });
-                }
+            if let Some(failed) = Self::failed_closure_member_locked(&state, closure) {
+                return Err(failed);
             }
             let all_ready = closure
                 .order
@@ -2067,6 +2107,8 @@ impl CompileScheduler {
     /// If every member is already terminal, return `Ok(None)` (barrier open — the
     /// body proceeds). On a transitive cycle back to `module`, fail `module` and
     /// return `Err` (the standard circular-dependency error).
+    /// When a member has already failed, return its error without registering
+    /// a waiter; the worker fails `module` with it.
     ///
     /// A pool worker MUST NOT park its thread on the barrier (that would
     /// re-introduce the starvation/deadlock axis the S78 free-back-to-pool model
@@ -2093,6 +2135,9 @@ impl CompileScheduler {
         closure: &ClosureOrder,
     ) -> Result<Option<ModuleFullPath>, CranelispError> {
         let mut state = self.lock();
+        if let Some(failed) = Self::failed_closure_member_locked(&state, closure) {
+            return Err(failed.into());
+        }
         let member = closure
             .order
             .iter()

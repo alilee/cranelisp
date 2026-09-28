@@ -131,9 +131,8 @@ use std::path::Path;
 /// suffix without re-presenting an already-published macro.
 ///
 /// On `Done` the cluster's expanded program is returned for codegen; the
-/// cluster-level REPL/scheduler metadata rides on `ProcessedCluster` (committed
-/// via `cluster::insert_cluster`). The per-symbol staging entries already
-/// committed to live inside `check_program_compat`.
+/// cluster-level REPL/scheduler metadata and the staged per-symbol writes ride
+/// on `ProcessedCluster` until the prepared publication commits them.
 pub fn process_cluster_once(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -146,7 +145,7 @@ pub fn process_cluster_once(
     // dropped on a gap. Never lands in a shared map (the S60–S62 heisenbug
     // substrate is gone). `expanded_program` accumulates within THIS pass only.
     let sexps = continuation.forms();
-    let mut expanded_program: Vec<TopLevel> = Vec::new();
+    let mut expanded_program = BuiltProgram::default();
     let mut prefix = ExpandedPrefix::resuming(continuation);
 
     // §8.6.4 (FIXME 0514) — the definition-over-(import|export|prelude)
@@ -183,11 +182,61 @@ pub fn process_cluster_once(
         ctx,
         module,
         sexps,
-        &expanded_program,
+        expanded_program,
         &prefix,
         pass2_result,
         &mut turn_definitions,
     )
+}
+
+/// The ordinary definitions one cluster attempt has built, each with its
+/// staged authored-form record (`design/int/session-persistence.md` §2.4.1).
+/// The records reach the live introspection map only through the cluster's
+/// publication; a gap or error drops them with this attempt.
+#[derive(Default)]
+struct BuiltProgram {
+    forms: Vec<TopLevel>,
+    records: Vec<(FQSymbol, crate::session_v4::Introspection)>,
+}
+
+impl BuiltProgram {
+    /// Append `built`, staging one record per definition when the session
+    /// keeps introspection. Every member takes the authored top-level form.
+    fn extend(&mut self, ctx: &ModuleCompiler, module: &ModuleFullPath, built: Built<'_>) {
+        if ctx.introspection.is_some() {
+            let source = verbatim_source_slice(ctx, module, built.authored_origin)
+                .unwrap_or_else(|| crate::pretty::pretty_print_plain(built.authored_origin));
+            for top in &built.forms {
+                let Some(key) = crate::session_v4::definition_result_symbol(module, top) else {
+                    continue;
+                };
+                let ast = match top {
+                    TopLevel::Defn(defn) => Some(defn.clone()),
+                    _ => None,
+                };
+                self.records.push((
+                    key,
+                    crate::session_v4::Introspection {
+                        source: Some(source.clone()),
+                        sexp: Some(built.authored_origin.clone()),
+                        expanded: built.expanded.cloned(),
+                        ast,
+                        clif_ir: None,
+                        code_size: None,
+                    },
+                ));
+            }
+        }
+        self.forms.extend(built.forms);
+    }
+}
+
+/// One authored form's build: its top-level definitions and the expansion
+/// they were built from, if any.
+struct Built<'a> {
+    authored_origin: &'a Sexp,
+    expanded: Option<&'a Sexp>,
+    forms: Vec<TopLevel>,
 }
 
 /// What a cluster attempt has expanded so far: the ordinary forms and the
@@ -363,18 +412,23 @@ fn finish_pass2(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     origin_sexps: &[Sexp],
-    expanded_program: &[TopLevel],
+    built: BuiltProgram,
     prefix: &ExpandedPrefix,
     pass2_result: Pass2Result,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<ClusterOnce, CranelispError> {
+    let BuiltProgram {
+        forms: expanded_program,
+        records,
+    } = built;
+    let expanded_program = expanded_program.as_slice();
     match pass2_result {
         Pass2Result::Complete => {
             // Finalize: single `check_program_compat` over the expanded
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
             let mut outcome =
-                finalize_cluster(ctx, module, origin_sexps, expanded_program, prefix)?;
+                finalize_cluster(ctx, module, origin_sexps, expanded_program, prefix, records)?;
             if let ClusterOnce::Done { processed, .. } = &mut outcome
                 && let Some(shared) = ctx.shared_state
             {
@@ -470,6 +524,7 @@ fn finalize_cluster(
     origin_sexps: &[Sexp],
     expanded_program: &[TopLevel],
     prefix: &ExpandedPrefix,
+    records: Vec<(FQSymbol, crate::session_v4::Introspection)>,
 ) -> Result<ClusterOnce, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
@@ -616,10 +671,10 @@ fn finalize_cluster(
     // to live inside `check_program_compat`; the typecheck warning channel
     // (FIXME 0365) flows back on the `Ok` path and is threaded onto
     // `ProcessedCluster.warnings` so the REPL driver renders each as a
-    // `; warning: <message>` line. The `ProcessedCluster` carrier is committed
-    // via `cluster::insert_cluster`.
+    // `; warning: <message>` line. The staged authored-form records install
+    // only when this cluster's generation publishes.
     let mut processed =
-        crate::cluster::ProcessedCluster::from_parts(cluster_warnings, Vec::new(), Vec::new());
+        crate::cluster::ProcessedCluster::from_parts(cluster_warnings, Vec::new(), records);
     processed.set_redefinitions(redefinitions);
     // S101: the commit gate's redefinition classifications ride the cluster
     // carrier back to the driver; the eval path runs the dependent-
@@ -977,7 +1032,7 @@ fn pass2_check_bodies_with_expansion(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     sexps: &[Sexp],
-    expanded_program: &mut Vec<TopLevel>,
+    expanded_program: &mut BuiltProgram,
     prefix: &mut ExpandedPrefix,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<Pass2Result, CranelispError> {
@@ -1252,7 +1307,7 @@ fn process_regular_form(
     module: &ModuleFullPath,
     annotation_prefix: &[Sexp],
     sexp: &Sexp,
-    expanded_program: &mut Vec<TopLevel>,
+    expanded_program: &mut BuiltProgram,
     macro_lookup_dependencies: &mut BTreeSet<ModuleFullPath>,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<RegularFormResult, CranelispError> {
@@ -1275,7 +1330,7 @@ fn process_regular_form_with_origin(
     annotation_prefix: &[Sexp],
     sexp: &Sexp,
     authored_origin: &Sexp,
-    expanded_program: &mut Vec<TopLevel>,
+    expanded_program: &mut BuiltProgram,
     macro_lookup_dependencies: &mut BTreeSet<ModuleFullPath>,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<RegularFormResult, CranelispError> {
@@ -1484,52 +1539,15 @@ fn process_regular_form_with_origin(
         Err(e) => return Err(e),
     };
     record_definition_emissions(module, &emission_markers, &built, turn_definitions)?;
-    let working = wrap_exprs_as_defns(&built);
-
-    // Per Decision 44's 2026-05-13 third amendment, the per-form
-    // `check_form(Register)` + `check_form(CheckBody)` calls are no longer
-    // exposed; typecheck is now driven once over the cluster via
-    // `check_program_compat` in `finalize_module`. The per-form work loop
-    // below remains in place for the introspection + scheduler-notification
-    // bookkeeping (which is `int`-side, not typecheck-side) — accumulator
-    // mutation is silenced here.
-    for form in &working {
-        // Populate introspection for REPL slash commands (--repl only).
-        if let Some(intr_map) = ctx.introspection
-            && let TopLevel::Defn(defn) = form
-        {
-            let fq = cranelisp_types::FQSymbol {
-                module: module.clone(),
-                symbol: defn.name.clone(),
-            };
-            let mut entry = intr_map.entry(fq).or_default();
-            // Source: extract VERBATIM from module source_text via sexp
-            // span, consistency-gated (S102 CS-D2 — the slice must
-            // re-parse to the recorded form; a stale `source_text` from a
-            // previous load never mis-slices into the record). REPL eval
-            // may overwrite with the actual input text later.
-            if entry.source.is_none() {
-                let src = verbatim_source_slice(ctx, module, authored_origin);
-                entry.source =
-                    src.or_else(|| Some(crate::pretty::pretty_print_plain(authored_origin)));
-            }
-            entry.sexp = Some(authored_origin.clone());
-            if let Some(ref expanded) = effective_sexp {
-                entry.expanded = Some(expanded.clone());
-            }
-            entry.ast = Some(defn.clone());
-        }
-        // S93 net-neutral subtraction (`signature-body-prepass.md` §6): the
-        // former per-symbol `notify_symbol_typechecked(module, defn.name)` is
-        // RETIRED. It satisfied only specific-symbol typecheck waiters, but every
-        // live `block_for_typecheck` registers a `"*"` (whole-module) waiter
-        // satisfied by `notify_typecheck_done`'s sweep — so the per-symbol notify
-        // matched no waiter and was a no-op. Removing it deletes one of the two
-        // signature-readiness protocols (Principle 7) that the module-atomic
-        // barrier subsumes.
-    }
-
-    expanded_program.extend(built);
+    expanded_program.extend(
+        ctx,
+        module,
+        Built {
+            authored_origin,
+            expanded: effective_sexp.as_ref(),
+            forms: built,
+        },
+    );
     Ok(RegularFormResult::Complete(regular_sexps))
 }
 

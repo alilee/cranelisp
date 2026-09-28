@@ -11,6 +11,8 @@ The REPL MUST persist interactive definitions to disk by maintaining a backing `
 
 The regenerated source file MUST be valid, parseable Cranelisp source — loading it through the normal module graph pipeline MUST reproduce the same session state. [R4 S52]
 
+A file whose reload failed on a structural type change is not regenerated until that failure is resolved; §14.8 governs it. [Tested+Neg tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart, tests/repl_persist::persist_compatible_save_after_structural_reload_failure_releases_the_file]
+
 A definition entered in the session that fails to compile MUST NOT trigger regeneration and is never written. The backing file reflects the last successfully compiled state, plus any startup-failed source retained under §15.2.3. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_failed_import_not_written_to_backing_neg, tests/repl_persist::persist_expression_only_session_leaves_hand_authored_user_cl_untouched — the failed-definition variant itself is not exercised; nearest cells are the failed structural form and the expression-only control]
 
 ### 15.2 Session Restore [Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
@@ -74,23 +76,23 @@ Each persisted definition that failed to compile at startup MUST keep its source
 
 Error blocking caused by a watched file changing during a session is specified separately (§14.4–§14.6).
 
-### 15.3 Unified Development Model [R4 S52]
+### 15.3 Unified Development Model [Tested tests/repl_persist::persist_external_edit_changing_defn_body_reloads_control] [Tested tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart — a structural edit takes effect at restart]
 
 This design unifies interactive and file-based development:
 - Interactive definitions are source files that happen to be managed by the REPL.
-- File watching (§14) applies uniformly — external edits to the backing file MUST be picked up by the watcher and recompiled.
+- File watching (§14) applies uniformly — external edits to the backing file MUST be picked up by the watcher and recompiled. An edit that changes the structure of a live nominal type takes effect at restart, not by reload (§14.8).
 - The object cache (§14.7) accelerates both imported modules and the user's own work.
 
-### 15.4 Regeneration Integrity [Tested tests/repl_persist::persist_user_cl_is_valid_source_with_topological_ordering]
+### 15.4 Regeneration Integrity [Uncovered S122 — partial: rule 1 is evidenced as recorded on it, and rule 6 only for rule 1; rules 2–4 are unevidenced, and rule 7 is evidenced only for a `begin` spanning sections (tests/repl_persist::persist_repl_begin_spanning_sections_written_once, tests/repl_persist::persist_file_loaded_begin_spanning_sections_written_once); tests/repl_persist::persist_user_cl_is_valid_source_with_topological_ordering asserts presence and reload only, not order]
 
 The regenerated source file MUST satisfy the following invariants:
 
-1. **Round-trip correctness:** Loading the regenerated file through the compiler MUST produce the same types, values, and module exports as the interactive session. [R4 S52]
+1. **Round-trip correctness:** Loading the regenerated file through the compiler MUST produce the same types, values, and module exports as the interactive session. [Tested tests/repl_persist::persist_bug0220_cache_restored_userfns_survive_repl_edit_regen, tests/repl_persist::persist_cache_restored_declarations_survive_repl_edit_regen, tests/repl_persist::persist_file_loaded_declarations_survive_repl_edit_regen] [Tested tests/repl_persist::persist_reloaded_docstring_edit_of_repl_entered_type_survives_regeneration, tests/repl_persist::persist_reloaded_docstring_edit_of_file_loaded_type_survives_regeneration — after a docstring-only declaration reload]
 2. **Authorship ordering:** Definitions MUST appear in the order they were registered with the session — file-loaded modules in source declaration order; REPL-introduced symbols appended in the order they were entered. Redefinition MUST NOT reorder; a redefined symbol keeps its original position. Cranelisp's cluster-atomic typecheck handles forward references natively, so dependency ordering is not a correctness requirement — the regenerated file reflects authorship intent. [R4 S52]
 3. **Symbol qualification preservation:** The regenerated source MUST preserve the user's original qualification style. If the user wrote a fully-qualified reference (`core.option/Some`), it MUST remain fully-qualified. If the user wrote a bare name (`Some`) that was resolved via an import, it MUST remain bare. The regenerator MUST NOT rewrite bare names to qualified or vice versa. [R4 S52]
 4. **Structural sections at top in fixed order:** Structural sections MUST appear at the top of the regenerated file in this fixed order: (a) platforms — `(declare-platform ...)` forms; (b) submodules — `(mod ...)` declarations; (c) exports — `(export ...)` forms; (d) imports — `(import ...)` forms. Within each section, items appear in authorship order (file parse order + REPL append). Definitions follow the four structural sections. [R4 S52]
 5. **Comments:** The behaviour of comments in regenerated source is unspecified. The implementation MAY strip comments, preserve them, or handle them in any other way. [R4 S52]
-6. **Source in cache metadata:** The `.meta.json` cache file MUST include all source text needed for regeneration, so that the REPL can restore the backing file from cache alone. [R4 S52]
+6. **Cache independence:** Rules 1–4 MUST hold whether the module's current definitions were compiled from source or restored from the object cache (§14.7). [Uncovered S122 — partial: rule 1 holds on both legs, restored by tests/repl_persist::persist_bug0220_cache_restored_userfns_survive_repl_edit_regen and tests/repl_persist::persist_cache_restored_declarations_survive_repl_edit_regen, compiled from source by tests/repl_persist::persist_file_loaded_declarations_survive_repl_edit_regen; no test observes rules 2–4 on either leg; rule 1 for a `/mod` turn in a cache-restored module holding a top-level macro call: tests/repl_persist::persist_mod_turn_on_cache_restored_macro_expanded_module, fresh control tests/repl_persist::persist_mod_turn_on_fresh_macro_expanded_module_control]
 7. **Authorship-intent rationale:** The regeneration invariants above (authorship ordering, fixed structural-section order, redef in place) collectively express a single intent — *principle of least surprise*. The regenerated file is a faithful record of what the user typed and when, not a derived form computed from compilation properties. The compiler's pipeline already handles forward references and dependency resolution; regeneration's job is authorship fidelity, not re-deriving correctness. [R4 S52]
 
 **Template qualification to round-trip correctness. [S121]** Rule 1 reproduces
@@ -113,7 +115,7 @@ typecheck/re-`impl` boundary (§18.4, §18.6).
 
 The file watcher (§14) MUST ignore writes triggered by the REPL's own source regeneration. Self-triggered writes MUST NOT cause a recompilation cycle. External edits to the backing file (e.g. from a text editor) MUST be detected and recompiled normally. [R4 S52]
 
-### 15.6 Redefinition [Tested tests/repl_lifecycle::redefinition_replaces_value]
+### 15.6 Redefinition [Tested tests/repl_lifecycle::redefinition_replaces_value] [Tested+Neg tests/repl_persist::persist_typecheck_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration]
 
 When the user successfully redefines a name that already exists in the session,
 the regenerated source file MUST contain only the latest definition — the

@@ -278,7 +278,7 @@ const TRIVIAL_MOD: &str = r#";; Trivial test module — sanity check that the su
 ;; for /run-tests at all. Should pass (no crash).
 (import [primitives [*]])
 
-(defn test-none-ok [] None)
+(defn test-none-ok [] (if true None (Some "never")))
 "#;
 
 // spec: repl/spec.md §16.3 — /run-tests
@@ -428,8 +428,8 @@ fn d45_form_shaped_body_run_tests_no_crash() {
 }
 
 const TWO_TRIVIAL_MOD: &str = r#"(import [primitives [*]])
-(defn test-a [] None)
-(defn test-b [] None)
+(defn test-a [] (if true None (Some "never")))
+(defn test-b [] (if true None (Some "never")))
 "#;
 
 // spec: repl/spec.md §16.3 — 2-test trivial batch
@@ -2950,7 +2950,7 @@ fn wave6_run_tests_batched_html_completes_without_crash() {
     // Failure mode 1: SIGSEGV / SIGTRAP from the JIT'd test bodies.
     let signal_crash = matches!(exit, Some(139) | Some(133)) || exit.is_none();
     // Failure mode 2: discovery race hides the test functions.
-    let no_tests_found = combined.contains("No test-* functions found");
+    let no_tests_found = combined.contains("No tests found");
     // Failure mode 3: load fails outright before tests are discovered.
     let load_failed = combined.contains("no parsed sexps for module")
         || combined.contains("undefined variable: Nil");

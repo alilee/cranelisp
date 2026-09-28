@@ -11,10 +11,11 @@ by live source comments and tests; keep them stable.
 Redefinition is a guarded publication inside the ordinary prepared transaction:
 
 1. The proposed cluster checks into unpublished staging.
-2. `redefine::validate_guarded_redefinition` rejects, before any live change,
-   a declaration-class change, a visibility change, a callable language-type
-   change with a blocking dependent (§3) and a same-language-type replacement
-   whose ABI-bearing `ModeSummary` differs.
+2. Before any live change, the guard rejects a structurally different
+   redeclaration of a live nominal type (§2.6). `redefine::validate_guarded_redefinition`
+   then rejects a declaration-class change, a visibility change, a callable
+   language-type change with a blocking dependent (§3) and a
+   same-language-type replacement whose ABI-bearing `ModeSummary` differs.
 3. An admitted generic base or overload family rematerializes its prior
    concrete instances into the same candidate (`design/int/s122-closure.md` §2).
 4. The commit gate classifies each published callable (§2) and applies the slot
@@ -117,6 +118,80 @@ admission or commit path (Principles 7 and 11).
   `derive_codegen_batch_enrolls_omitted_default_method_of_the_impl`; an
   explicit-method cell passes under either derivation. End-to-end behaviour
   is `tests/impl_redefinition_dispatch.rs`.
+
+### 2.6 Type re-establishment (REPL §18.5, §14.8)
+
+A live nominal type is re-established only with an identical structure. One
+comparison serves live turns and watcher reloads (Principle 11); a reload
+therefore never changes a live type's layout, and a changed structure takes
+effect only at restart.
+
+- **Site.** `worker::validate_guarded_staging_except` makes one type pass over
+  the staged keys before its per-key `validate_guarded_redefinition` loop.
+  The validator is the guard's only entry: prepare, plan (including macro
+  checkpoints) and commit all call it, so no cadence can skip it.
+- **Trigger.** A staged key whose staged binding and live binding both answer
+  `Binding::type_def_info()`: a product constructor carrying its type facet,
+  or a sum's `TypeRecord::Defined`. A class change between a type and a
+  callable is outside this pass; it keeps its existing refusal.
+- **Order.** The pass precedes every per-key check. A sum's visibility change
+  must get this remedy, not the class/visibility refusal's "reload persisted
+  source". Checking the type before any same-cluster callable also keeps the
+  type-naming diagnostic deterministic.
+- **Comparand.** The recorded determinants of the layout. The comparison
+  derives no layout, so it does not mirror a types derivation (Principles 7
+  and 24).
+
+  | Facet | Read from |
+  |---|---|
+  | Visibility | the type key's binding |
+  | Product or sum | which binding form answers `type_def_info()` |
+  | Type-parameter count | `TypeDefInfo.type_params` |
+  | Constructors, in order | `TypeDefInfo.constructors`; each sum constructor under the types-owned `member_key(Type, Ctor)` in the same table |
+  | Per constructor: tag, payload count, `internal` | `CallableOrigin::Ctor` |
+  | Per constructor: payload and result types, alpha-equivalent | the constructor's scheme under `LanguageType::of_scheme` (§2.2); the result type carries parameter order |
+  | Product only: field and accessor names | the constructor arm's `param_names` |
+
+  Docstrings and sum payload labels are excluded. The family is compared
+  whole, from the live and staging tables the validator already holds: an
+  added sum constructor has no prior key for a per-key check to see.
+- **Refusal.** The pass returns an int-private value naming the type. It
+  becomes one `CranelispError::TypeError` for both cadences, naming the type
+  and stating that its structure differs from the live declaration. The
+  remedy keeps the structure, uses a new name, or edits the saved source and
+  restarts; the message must not offer reload as a remedy. The wording is
+  `dev`'s.
+- **Refusal record.** When the session scheduler is present, the validator
+  records the refused type on the module's scheduler state before returning
+  the error. Every registration or re-registration starts that record empty,
+  and only a failed reload reads it
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-restart-required-failure)).
+  A refused live turn also leaves a record. Nothing reads it, and the
+  module's next registration clears it first. This record is the typed
+  discriminator: nothing matches message text, and `CranelispError` gains no
+  variant.
+- **Types backstop.** The types-owned publication funnel
+  (`validate_publication_collision`) refuses an in-place republication of a
+  synthesized constructor or accessor whose scheme is not alpha-equal. On
+  every int path, this pass fails first. The backstop cannot see a reorder of
+  same-typed fields, which keeps every position's type and is memory-safe.
+  This pass is the only refusal for that case.
+- **Guards.** The pass's units are in `src/redefine/type_structure/tests.rs`.
+  They cover changes to fields, constructors, payloads, type parameters and
+  visibility, and they admit an identical redeclaration. End to end,
+  `tests/repl_persist.rs::persist_live_deftype_changing_field_type_rejected_and_not_written_neg`
+  checks the live-turn cadence. It covers the refusal, both value probes, the
+  saved file and a cold restart.
+  [REPL lifecycle §1.3.1](repl-lifecycle.md#131-restart-required-failure)
+  names the reload-cadence guards.
+- **Rejected alternatives.**
+  - A foreground comparison before re-registration would avoid the worker
+    failure path. It would, however, re-derive resolved field types outside
+    typecheck (Principle 7). It would also cover no live turn and no
+    macro-produced `deftype`.
+  - Threading a typed error from the guard would change the error type of the
+    shared prepare, cluster and worker signatures, for a fact that only
+    `reload_module` reads.
 
 ---
 
@@ -277,6 +352,8 @@ Persisted-source reload and the watcher's dependent-module recompilation commit
 through the same gate and slot policy at module grain:
 
 - no slot is zeroed; old pointers stay live until each new pointer lands;
+- a type redeclaration that is not structurally identical fails the reload
+  at the guard (§2.6), so a reload never changes a live type's layout;
 - each recommitted callable classifies against its prior binding;
 - demands for the module's prior instances travel with the reload as data
   (`design/int/s122-closure.md` §2); no source form is replayed.
@@ -392,7 +469,7 @@ diagnostic and definition confirmation are the user-visible record.
 | Concern | Site |
 |---|---|
 | Admission guard, blocking dependents, rematerialization policy, overload-arm correspondence | `src/redefine.rs` (`validate_guarded_redefinition`, `blocking_dependents`, `instance_rematerialization_policy`, `match_replacement_overload_arm`) |
-| Guard invocation and prepared candidate | `src/worker.rs` (`prepare_cluster_commit`, `validate_guarded_staging`, `capture_reload_instantiation_demands`) |
+| Guard invocation, type re-establishment pass (§2.6) and prepared candidate | `src/worker.rs` (`prepare_cluster_commit`, `validate_guarded_staging_except`, `capture_reload_instantiation_demands`); the refusal record on `scheduler::ModuleState` |
 | Classification, slot policy and pooling | `redefine::classify_redefinition`; `worker::commit_staging_to_live`; the prepared compiled publication |
 | Outcomes to eval | `RedefinitionOutcome` on the processed cluster (`src/cluster.rs`), consumed after codegen in `src/eval.rs` |
 | Retention pool | `redefine::RetainedCode`, `RetentionPool`; `SharedState.retained_code` |

@@ -128,6 +128,7 @@ Three structural notes about the surface worth naming:
    re-export is retained only when it remains present in the current checked
    public surface; the root library has a small consumer audience.
 3. **`Code` is re-exported, not defined, here.** `Code` lives in `cranelisp-backend`; `src/code.rs` re-exports it and instantiates the session table (§5.1). Backend fills GOT slots inside `compile_to_module`; int attaches the `Code` owner afterwards (§7.2). `cranelisp-types` never depends on backend (Principle 3).
+4. **The test harness has one public entry.** `CompilerSession::run_tests` returns a `TestRunReport` whose accessors are its text, its warnings and its exit code; the user approved this delta on 2026-09-28. It is the only public item the `--test` harness adds. Selection, the eligibility scan and the run-and-report core that it shares with `/run-tests` and `/run-all-tests` stay crate-private ([test runner](test-runner.md)).
 
 ---
 
@@ -154,6 +155,7 @@ The two structural facts that dominate the tree today:
 | CLI + mode dispatch | `main.rs` (the single Run/Link/REPL dispatcher, Principle 11) |
 | Module registry / visibility | `lib.rs` (5 binary-facing `pub mod` for `main.rs` imports + `cluster`/`worker_pool`/`cache`; everything else `pub(crate)`) |
 | Session lifecycle + shared state | `session_v4.rs` (facade) + `session_v4/{lifecycle,shared_state,nice_worker,types}.rs`; `session_setup.rs` (construction helpers independent of `CompilerSession`) |
+| Test discovery and running | `session_v4/test_runner.rs` (the `discover-tests` extern and its runner state) + `test_runner/{discovery,selection,run}.rs` (the one eligibility scan, test-module selection and the run-and-report core shared by `--test`, `/run-tests` and `/run-all-tests`) ([test runner](test-runner.md)) |
 | Scheduling + workers | `scheduler.rs` (+ `scheduler/tests.rs`) — the single coordination authority; `worker.rs` (+ `worker/tests.rs`) priority/nice loops + codegen/cache subsystem; `worker_pool.rs`; `thread_util.rs` |
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
 | Cluster processing | `cluster.rs` (`process_cluster` → `ClusterOutcome::{Done, Gap}`; `ProcessedCluster` carries warnings, resolved imports, introspection records, the committed `RedefinitionOutcome`s and the boxed `PreparedCommit`, which lives in `worker.rs`). The approved move-only publication receipt is not realised; see §16.0. |
@@ -412,7 +414,8 @@ for sym in defined_symbols(&shared.symbol_tables[scope]) {
 > if removed they cease to be a read site below.
 
 **Population sites** (all conditional on `shared.introspection.is_some()`):
-- `process_form` after parse + macro expansion: write `source` + `sexp`.
+- Publication installs the authored-form records that form processing staged for the generation's ordinary definitions, only after that generation publishes; the macro checkpoint writer records macros ([session persistence §2.4.1](session-persistence.md#241-who-writes-a-record)).
+- Backing-file rehydration fills absent authored-form records for entries installed from the object cache, on first read ([session persistence §2.4.2](session-persistence.md#242-backing-file-rehydration)).
 - `compile_to_module` per-symbol call (Decision 41): backend writes `clif_ir`, `code_size`, `compile_duration` directly into the introspection map via the `Option<&DashMap<FQSymbol, Introspection>>` parameter — no int-side post-processing. Disasm is NOT among them (re-derived on demand, above).
 
 **Read sites**: slash-command accessors on `CompilerSession` (`symbol_source`, `symbol_sexp`, `symbol_clif`, `symbol_code_size`, `symbol_compile_duration`) read the stored fields; `Sess::format_error` for rich inline display; `Sess::regenerate_backing_file` for source emission. `/disasm` is NOT a stored-field read — `handle_disasm` calls `cranelisp_backend::produce_disasm` on demand (see §8.2.1).
@@ -1077,7 +1080,8 @@ is released, unclaimed and M has not failed:
   attach Code::Linker(shared Arc<Linker>) to each restored entry
   complete the claim: loaded, or failed with the load error
 
-REPL step that runs compiled code (expression turn, /run-tests, /run-all-tests):
+Step that runs compiled code (REPL expression turn, /run-tests, /run-all-tests;
+--test's run_tests):
   wait until no cached object load is held, claimable or claimed
   if a cached object load has failed: report it and run nothing
   if shutting down with a load outstanding: report it incomplete and run nothing
@@ -1150,9 +1154,10 @@ REPL step that runs compiled code (expression turn, /run-tests, /run-all-tests):
   - Before the REPL runs compiled code, it waits until no cached-object load
     is held, claimable or claimed. At shutdown it returns an outstanding load
     as incomplete, never as readiness. The steps that run code are an expression
-    turn's execution and the `/run-tests` and `/run-all-tests` commands. For
-    the test commands the wait precedes test discovery, which lists only
-    tests whose code is present.
+    turn's execution, the `/run-tests` and `/run-all-tests` commands, and
+    `--test`'s `run_tests` ([test runner §6.1](test-runner.md#61-prepare)). For
+    the test runner, the wait precedes test discovery; an eligible test whose
+    code is still absent is reported as a failure, never skipped.
   - Running code requires a readiness value that only this wait returns, so
     a REPL execution step that skips the wait does not compile.
   - The wait is global over cached loads, not scoped to what the turn can
@@ -2006,19 +2011,14 @@ Design points:
 
 ### 8.3 `regenerate_backing_file` (Decision 39)
 
-```text
-regenerate_backing_file(module):
-  let st = shared.symbol_tables.get(module)?;
-  let intro = shared.introspection.as_ref().ok_or(IntrospectionRequired)?;
-  let mut text = String::new();
-  for sym in st.defn_order():
-    let fq = FQSymbol::new(module, sym);
-    if let Some(info) = intro.get(&fq):
-      if let Some(src) = &info.source: text.push_str(src); text.push('\n');
-  atomic_write(module_file_path(module), text);
-```
-
-The old `module_sources: DashMap<ModuleFullPath, Arc<str>>` field on SharedState is GONE. Per-defn source on `Introspection.source` is the only source store. Cited principle: P7 (single source of truth — per-defn source has one home).
+Regeneration renders the module's structural fields and each selected entry's
+authored-form introspection record, rehydrating missing records from the
+backing file first. It writes nothing if any selected entry has no authored
+form. [Session persistence §§1–2](session-persistence.md) owns the sections,
+record writers, rehydration and refusal. Introspection is the only store of
+per-definition authored text; the cache metadata carries none
+([Session persistence §2.4.2](session-persistence.md#242-backing-file-rehydration)).
+Cited principle: P7.
 
 ### 8.4 Watcher integration
 
@@ -2314,6 +2314,34 @@ dispositions never executed, and on files since deleted.
 The S121 C6 visit delivered most of its bundles; these obligations remain open
 in source. Each owning filing stays the tracker; this list is the design intent.
 
+- **`--test` and the shared test runner (S122, ACT-0988).** Implemented in
+  source as [test runner](test-runner.md) describes; the obligation closes on
+  verification, which is pending. Its open items are the verification state
+  recorded in that design's status line; no design decision is outstanding.
+
+- **Persistence corrections (S122, ACT-0998).**
+  - Records are written only from published state
+    ([session persistence §2.4.1](session-persistence.md#241-who-writes-a-record)),
+    and a cache-installed module is recompiled before `/mod` makes it current
+    ([§2.4.5](session-persistence.md#245-editing-a-cache-installed-module)).
+    Both are implemented in the working tree. QA judged them adequate on
+    2026-09-28, subject to the review repairs its delta names. Open: commit
+    and the user's Phase-5 acceptance.
+  - **Restart boundary.** A reload that would change a
+    live type's structure fails with the restart remedy, and the saved file
+    is retained until a successful reload or a restart (REPL §14.8, §18.5).
+    The design is the guard's type pass
+    ([session transaction §2.6](session-transaction.md#26-type-re-establishment-repl-185-148))
+    and the restart-required marker
+    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-restart-required-failure)).
+    A reload's outcome is the reloaded module's own state
+    ([§1.3 Outcome](repl-lifecycle.md#13-failed-reload)). The imported-module
+    case relies on the barrier fail-fast
+    ([error cascade §4.1](step9-error-cascade.md#41-cascade-construction)).
+    Each of these sections names its guards. There is no public API change.
+    - The open design risks are the §1.3 Outcome coverage hypothesis and
+      §4.1's order-dependent stranding face. Each is asserted with a named
+      falsifier, and neither is measured.
 - **Annotation-mirror tail (FIXME 0708).** Four lexical `src/` mirrors of the
   retired pre-fold annotation shape survive and each goes one way:
   `worker::leading_annotation_len` (a constant-`0` stub) deletes with its

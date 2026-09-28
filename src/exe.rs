@@ -644,18 +644,15 @@ pub fn first_dispatch_within(
         .find(|s| s.span.start >= body.start && s.span.end <= body.end)
 }
 
-/// Friendly compile-time rejection of a `--link` build that references a
-/// **dev-session-only** host-promised `RustPrimitive` (today: `discover-tests`).
+/// Refuse a batch program that references a **dev-session-only** host-promised
+/// `RustPrimitive` (today: `discover-tests`), which is available only in the
+/// REPL (`repl/spec/16-test-discovery.md` §16.6).
 ///
-/// FIXME 0406 (→/int), test-discovery.md §4.5. `discover-tests` is host-promised
-/// only in a live session (int's `Jit::define_symbol`, REPL/`--run`). Under AOT
-/// `--link` there is no live session, so the emitted `Linkage::Import` against it
-/// is never satisfied and the `cc` step fails with a RAW
-/// `undefined reference to discover-tests`. That opaque linker diagnostic
-/// violates the project no-opaque-error principle (root `CLAUDE.md`:
-/// "No valid language construct should produce an opaque error"). This gate
-/// replaces it with a clear message — surfaced **before** linking — naming the
-/// symbol, the reason, and the remedy.
+/// The one gate for the three batch driver seams — `trampoline` (`--run`),
+/// `link_by_name` (`--link`) and `run_tests` (`--test`) — each of which calls
+/// it before it runs or writes anything (`design/int/test-runner.md` §7.3). The
+/// diagnostic takes no mode, so the three cannot differ. The REPL runs code
+/// through none of these seams.
 ///
 /// **Detection is structural, not a name match.** The dev-session-only set is
 /// the single-source list `worker::DEV_SESSION_ONLY_EXTERNS` (the same names
@@ -680,7 +677,10 @@ pub fn first_dispatch_within(
 /// `catch-runtime-error` is deliberately NOT in the set — it is a self-contained
 /// intrinsic that resolves in `--link` (test-discovery.md §6), so it is never
 /// rejected here.
-pub fn reject_dev_session_externs_in_link(
+///
+/// Bodies restored from the module cache are scanned too: a restored entry
+/// keeps its `ast`.
+pub(crate) fn refuse_dev_session_externs(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> Result<(), CranelispError> {
     // Is FQ `fq` a dev-session-only `PrimitiveExtern` (the structural
@@ -711,27 +711,25 @@ pub fn reject_dev_session_externs_in_link(
                     &resolves_to_dev_session_extern,
                 )
             {
-                return Err(link_dev_session_error(&sym, module, caller));
+                return Err(dev_session_extern_error(&sym, module, caller));
             }
         }
     }
     Ok(())
 }
 
-/// Build the friendly `--link` rejection error naming the offending symbol, the
-/// reason, the referencing site, and the remedy (FIXME 0406).
-fn link_dev_session_error(
+/// The one §16.6 refusal: the primitive, one referencing function, the REPL
+/// as where it is available and `--test` as the way to run the tests.
+fn dev_session_extern_error(
     sym: &cranelisp_types::Symbol,
     module: &ModuleFullPath,
     caller: &cranelisp_types::Symbol,
 ) -> CranelispError {
     CranelispError::CodegenError {
         message: format!(
-            "`{sym}` is a REPL/dev-session-only builtin and is not available in \
-             `--link` builds (it scans the live session's symbol table, which a \
-             standalone executable does not have). It is referenced by \
-             `{module}/{caller}`. Remove the reference, or run this program with \
-             `--run` or in the REPL (use `/run-tests` there to run tests).",
+            "`{module}/{caller}` references `{sym}`, which is available only in the \
+             REPL. Remove the reference; to have the compiler discover and run the \
+             program's tests, use `cranelisp --test`.",
         ),
         location: ErrorLocation::from_span(Span::SYNTHETIC),
     }
@@ -1679,7 +1677,7 @@ mod tests {
         }
     }
 
-    // ── reject_dev_session_externs_in_link (FIXME 0406) ─────────────────────
+    // ── refuse_dev_session_externs (REPL §16.6) ─────────────────────────────
 
     use cranelisp_types::Expr;
 
@@ -1717,14 +1715,14 @@ mod tests {
         install_user_fn(table, name, Type::Fn(vec![], Box::new(Type::Int)), body);
     }
 
-    // spec: design/arch/test-discovery.md §4.5 — a `--link` fn that CALLS the
-    // dev-session-only `discover-tests` extern (by the bare imported name) is
-    // REJECTED with a friendly compile-time diagnostic (FIXME 0406), replacing
-    // the raw linker `undefined reference to discover-tests` (the documented
-    // interim). The message names the symbol, the reason, the referencing site,
-    // and the remedy.
+    // spec: repl/spec/16-test-discovery.md §16.6 Availability by Invocation Mode —
+    // a body call to `discover-tests` (by the bare imported name) is refused
+    // with the one batch diagnostic: it names the primitive and the referencing
+    // function, names the REPL as where it is available and `--test` as the
+    // way to run the program's tests, and names no invoking mode
+    // (design/int/test-runner.md §7.3; §10 refusal row 1).
     #[test]
-    fn link_rejects_body_call_to_dev_session_extern_with_friendly_message() {
+    fn refuses_body_call_to_dev_session_extern_with_the_one_diagnostic() {
         use cranelisp_types::Symbol;
         let tables = dashmap::DashMap::new();
         tables.insert(
@@ -1749,25 +1747,18 @@ mod tests {
         install_user_fn_with_body(&mut runner, "run-all", body);
         tables.insert(ModuleFullPath::from("runner"), runner);
 
-        let err = reject_dev_session_externs_in_link(&tables).unwrap_err();
+        let err = refuse_dev_session_externs(&tables).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
-                assert!(
-                    message.contains("discover-tests"),
-                    "names the symbol: {message}"
-                );
-                assert!(
-                    message.contains("dev-session-only") && message.contains("--link"),
-                    "explains dev-session-only + unavailable in --link: {message}"
-                );
-                assert!(
-                    message.contains("runner/run-all"),
-                    "names the referencing site: {message}"
-                );
-                assert!(
-                    message.contains("--run") || message.contains("REPL"),
-                    "suggests the --run / REPL remedy: {message}"
-                );
+                for token in ["discover-tests", "runner/run-all", "REPL", "--test"] {
+                    assert!(message.contains(token), "names `{token}`: {message}");
+                }
+                for mode in ["--run", "--link"] {
+                    assert!(
+                        !message.contains(mode),
+                        "the one diagnostic names no invoking mode (`{mode}`): {message}"
+                    );
+                }
             }
             other => panic!("expected CodegenError, got {other:?}"),
         }
@@ -1812,7 +1803,7 @@ mod tests {
         );
         tables.insert(ModuleFullPath::from("runner"), runner);
         assert!(
-            reject_dev_session_externs_in_link(&tables).is_ok(),
+            refuse_dev_session_externs(&tables).is_ok(),
             "an unused import of discover-tests does not drag it into the link"
         );
     }
@@ -1848,7 +1839,7 @@ mod tests {
         install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
 
-        let err = reject_dev_session_externs_in_link(&tables).unwrap_err();
+        let err = refuse_dev_session_externs(&tables).unwrap_err();
         assert!(
             matches!(&err, CranelispError::CodegenError { message, .. } if message.contains("discover-tests")),
             "FQ body reference must be rejected naming the symbol: {err:?}"
@@ -1888,7 +1879,7 @@ mod tests {
         install_user_fn_with_body(&mut safe, "guarded", body);
         tables.insert(ModuleFullPath::from("safe"), safe);
         assert!(
-            reject_dev_session_externs_in_link(&tables).is_ok(),
+            refuse_dev_session_externs(&tables).is_ok(),
             "catch-runtime-error works in --link and must not be rejected"
         );
     }
@@ -1918,7 +1909,7 @@ mod tests {
         install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
         assert!(
-            reject_dev_session_externs_in_link(&tables).is_ok(),
+            refuse_dev_session_externs(&tables).is_ok(),
             "a user FQ symbol (user/discover-tests, a UserFn) is not a dev-session extern"
         );
     }
@@ -1945,6 +1936,6 @@ mod tests {
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
-        assert!(reject_dev_session_externs_in_link(&tables).is_ok());
+        assert!(refuse_dev_session_externs(&tables).is_ok());
     }
 }

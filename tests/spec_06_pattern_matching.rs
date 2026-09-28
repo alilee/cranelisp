@@ -699,6 +699,32 @@ fn match_over_dotted_covered_ctor_not_false_nonexhaustive_neg() {
     out.assert_exit(5);
 }
 
+// spec: spec/08-modules.md §8.5.2/§8.6.4 — a type may share its name with another
+// type's constructor (`Qtok` is a type and `Qwrap`'s constructor). Matching the
+// type's own constructors still typechecks and runs: dotted and bare heads, data
+// and nullary arms, no wildcard. The contesting constructor keeps its own pattern
+// meaning, dotted and bare: the bare `(Qtok x)` on a `Qwrap` scrutinee fences a
+// correction that lets the type win the spelling. Terms are distinct powers of
+// two; a wrong arm in the `Qa` matches adds 64.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122
+#[test]
+fn type_named_like_other_types_ctor_matches_its_own_ctors() {
+    run_through_all_modes(
+        "(import [primitives [Pure Int add-i64]])\n\
+         (deftype Qtok (Qa [:Int n]) Qb)\n\
+         (deftype Qwrap (Qtok [:Int x]))\n\
+         (defn main [] (Pure\n\
+           (add-i64 (match (Qtok.Qa 1) [(Qtok.Qa n) n Qtok.Qb 64])\n\
+           (add-i64 (match Qtok.Qb [(Qtok.Qa n) n Qtok.Qb 2])\n\
+           (add-i64 (match (Qa 4) [(Qa n) n Qb 64])\n\
+           (add-i64 (match Qtok.Qb [(Qa n) n Qb 8])\n\
+           (add-i64 (match (Qwrap.Qtok 16) [(Qwrap.Qtok x) x])\n\
+                    (match (Qwrap.Qtok 32) [(Qtok x) x]))))))))\n",
+        PreludeVariant::None,
+    )
+    .assert_all_equal(63);
+}
+
 // spec: spec/08-modules.md §8.5.4 edge 1 (pattern position, M2-P) — a qualified
 // constructor pattern `(shapes/Circle r)` auto-loads its defining module and
 // resolves in pattern position, matching value-position auto-load.

@@ -1,6 +1,6 @@
 // cranelisp main: pipeline-v4.md §2.2 structure.
 //
-// Three modes: Run (--run), Link (--link), Repl (default).
+// Four modes: Run (--run), Test (--test), Link (--link), Repl (default).
 // One CompilerSession, one code path. Workers are persistent.
 //
 // Embedded agent (REPL-only). The optional LLM advisor is compiled in ONLY
@@ -57,8 +57,12 @@ use repl_input::{ReadOutcome, ReplInput};
 // Action enum (pipeline-v4.md §2.1)
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(test, derive(Debug, PartialEq))]
 enum Action {
     Run,
+    /// `--test`: compile as `--run` does, then run the program's tests
+    /// instead of `main` (`repl/spec/00-cli-invocation.md` §0.2.2).
+    Test,
     Link,
     Repl,
 }
@@ -67,17 +71,18 @@ impl Action {
     fn codegen_behaviour(&self) -> CodegenBehaviour {
         match self {
             Action::Link => CodegenBehaviour::ObjectOnly,
-            _ => CodegenBehaviour::InMemoryAndObject,
+            Action::Run | Action::Test | Action::Repl => CodegenBehaviour::InMemoryAndObject,
         }
     }
 
     /// The session's run-mode (D1 ruling §4). This is the ONLY legitimate place
     /// `Action` becomes `RunMode`; it is threaded onto `SharedState` as the
     /// explicit REPL-vs-batch signal (introspection gating + layout-hash gate),
-    /// replacing the former `introspection.is_some()` proxy.
+    /// replacing the former `introspection.is_some()` proxy. `--test` compiles
+    /// exactly as `--run` does (Principle 11).
     fn run_mode(&self) -> RunMode {
         match self {
-            Action::Run => RunMode::Run,
+            Action::Run | Action::Test => RunMode::Run,
             Action::Link => RunMode::Link,
             Action::Repl => RunMode::Repl,
         }
@@ -108,6 +113,7 @@ struct ParsedFlags {
     priority_workers: Option<usize>,
     nice_workers: Option<usize>,
     action_run: bool,
+    action_test: bool,
     action_link: bool,
     output_override: Option<PathBuf>,
     agent_on: bool,
@@ -122,11 +128,11 @@ struct ParsedFlags {
 // ONLY `--no-agent` (the sole still-valid agent flag — `--agent`/`--yes`
 // hard-error there, FIXME 0539).
 #[cfg(feature = "agent")]
-const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
+const USAGE: &str = "usage: cranelisp [target] [--run | --test | --link] [-o <path>] [--no-color] \
                      [--no-cache] [--priority-workers N] [--nice-workers N] \
                      [--agent | --no-agent] [--yes]";
 #[cfg(not(feature = "agent"))]
-const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
+const USAGE: &str = "usage: cranelisp [target] [--run | --test | --link] [-o <path>] [--no-color] \
                      [--no-cache] [--priority-workers N] [--nice-workers N] \
                      [--no-agent]";
 
@@ -341,6 +347,27 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
             // the RAII guards held in `main()` (design/int/observability.md §7.1).
             flush_traces();
             process::exit(exit_code);
+        }
+        // §0.2.2: compile as `--run` does, then run the tests instead of
+        // `main`. Warnings go to stderr and the report to stdout; the exit
+        // code is the report's.
+        Action::Test => {
+            use std::io::Write;
+            startup?;
+            s.wait_inmem_complete()?;
+            let report = s.run_tests()?;
+            for warning in report.warnings() {
+                eprintln!("warning: {}", warning.message);
+            }
+            let mut stdout = std::io::stdout().lock();
+            let _ = writeln!(stdout, "{}", report.text());
+            // `process::exit` skips destructors, so flush explicitly.
+            let _ = stdout.flush();
+            drop(stdout);
+            s.wait_object_complete()?;
+            s.shutdown();
+            flush_traces();
+            process::exit(report.exit_code());
         }
         // §8: Link mode.
         Action::Link => {
@@ -799,31 +826,11 @@ fn parse_args() -> LaunchSpec {
     let args: Vec<String> = std::env::args().collect();
     let flags = parse_arg_flags(&args);
 
-    if flags.action_run && flags.action_link {
-        eprintln!("error: --run and --link cannot be used together");
-        process::exit(1);
-    }
-
-    if flags.no_cache && flags.action_link {
-        eprintln!("error: --no-cache is not supported with --link");
-        process::exit(1);
-    }
-
-    // §0.2.1.1: `-o <path>` names the `--link` artifact; it is meaningless in
-    // `--run` / REPL mode (no output artifact is produced).
-    if flags.output_override.is_some() && !flags.action_link {
-        eprintln!("error: -o <path> is only supported with --link");
+    let action = select_action(&flags).unwrap_or_else(|message| {
+        eprintln!("error: {message}");
         eprintln!("{USAGE}");
         process::exit(1);
-    }
-
-    let action = if flags.action_link {
-        Action::Link
-    } else if flags.action_run {
-        Action::Run
-    } else {
-        Action::Repl
-    };
+    });
 
     // §0.6.1: resolve the agent toggle. `--no-agent` wins when both are present;
     // default is off. The agent is a REPL-only, dev-session capability — it
@@ -868,6 +875,26 @@ fn parse_args() -> LaunchSpec {
     }
 }
 
+/// The mode the flags select, or the usage error that rejects them (§0.3).
+/// At most one mode flag is allowed (§0.2.1, §0.2.2), and `-o <path>` names the
+/// `--link` artifact, so no other mode accepts it (§0.2.1.1).
+fn select_action(flags: &ParsedFlags) -> Result<Action, String> {
+    let action = match (flags.action_run, flags.action_test, flags.action_link) {
+        (false, false, false) => Action::Repl,
+        (true, false, false) => Action::Run,
+        (false, true, false) => Action::Test,
+        (false, false, true) => Action::Link,
+        _ => return Err("only one of --run, --test and --link may be given".to_string()),
+    };
+    if flags.no_cache && matches!(action, Action::Link) {
+        return Err("--no-cache is not supported with --link".to_string());
+    }
+    if flags.output_override.is_some() && !matches!(action, Action::Link) {
+        return Err("-o <path> is only supported with --link".to_string());
+    }
+    Ok(action)
+}
+
 /// The argument-recognition loop: walk `args`, matching each flag into
 /// [`ParsedFlags`]. Cross-flag validation + resolution into a [`LaunchSpec`] is
 /// the caller's ([`parse_args`]). A malformed flag exits the process here.
@@ -895,6 +922,10 @@ fn parse_arg_flags(args: &[String]) -> ParsedFlags {
             }
             "--run" => {
                 flags.action_run = true;
+                i += 1;
+            }
+            "--test" => {
+                flags.action_test = true;
                 i += 1;
             }
             "--link" => {
@@ -1186,6 +1217,74 @@ mod tests {
             assert_eq!(target_first, target_last, "mode {mode}");
             assert_eq!(target_first.target.as_deref(), Some("dir/mymod"));
         }
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.2.2 Test Mode (`--test`) — `--test` parses the target, worker flags, `--no-cache` and agent flags exactly as `--run` does
+    #[test]
+    fn test_flag_parses_target_and_modifiers_as_run_does() {
+        let modifiers = [
+            "--no-cache",
+            "--priority-workers",
+            "2",
+            "--nice-workers",
+            "3",
+            "--no-agent",
+            "--no-color",
+        ];
+        for target_first in [true, false] {
+            let argv = |mode: &'static str| -> Vec<&str> {
+                let mut v = vec![mode];
+                v.extend(modifiers);
+                if target_first {
+                    v.insert(0, "dir/t");
+                } else {
+                    v.push("dir/t");
+                }
+                v
+            };
+            let test = flags_of(&argv("--test"));
+            let run = flags_of(&argv("--run"));
+            assert!(test.action_test && !test.action_run);
+            assert_eq!(
+                ParsedFlags {
+                    action_test: false,
+                    action_run: true,
+                    ..test
+                },
+                run
+            );
+        }
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.2.2 Test Mode (`--test`) — `--test` selects the test action, compiled as `--run` is
+    #[test]
+    fn test_flag_selects_test_action_with_run_mode_and_in_memory_codegen() {
+        let action = select_action(&flags_of(&["--test", "t"])).expect("a valid invocation");
+        assert_eq!(action, Action::Test);
+        assert_eq!(action.run_mode(), RunMode::Run);
+        assert_eq!(
+            action.codegen_behaviour(),
+            CodegenBehaviour::InMemoryAndObject
+        );
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.2.2 Test Mode (`--test`) — `--test` with `--run`, with `--link` or with `-o` is a usage error
+    #[test]
+    fn test_flag_combined_with_another_mode_or_output_is_a_usage_error() {
+        for args in [
+            &["--test", "--run", "t"][..],
+            &["--link", "t", "--test"][..],
+            &["--test", "-o", "x", "t"][..],
+            &["--run", "--link", "t"][..],
+        ] {
+            assert!(select_action(&flags_of(args)).is_err(), "{args:?}");
+        }
+        assert_eq!(select_action(&flags_of(&["t"])), Ok(Action::Repl));
+        assert_eq!(select_action(&flags_of(&["--run", "t"])), Ok(Action::Run));
+        assert_eq!(
+            select_action(&flags_of(&["--link", "-o", "x", "t"])),
+            Ok(Action::Link)
+        );
     }
 
     // spec: repl/spec/00-cli-invocation.md §0.5 — target between options; a value stays adjacent to its option

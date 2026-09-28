@@ -39,7 +39,9 @@ pub enum RunMode {
     /// introspection; layout-hash drift WARNS-AND-LOADS.
     Repl,
     /// `cranelisp --run <file>` — batch execute then `process::exit`;
-    /// no introspection; layout-hash drift REFUSES.
+    /// no introspection; layout-hash drift REFUSES. `cranelisp --test <file>`
+    /// compiles in this mode too, then runs the program's tests instead of
+    /// `main`.
     Run,
     /// `cranelisp --link <file>` — produce a standalone executable;
     /// no introspection; layout-hash drift REFUSES.

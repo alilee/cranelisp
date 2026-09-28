@@ -253,8 +253,9 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
 - [`syntax-cheatsheet-plan.md`](syntax-cheatsheet-plan.md) — the `/syntax`
   command for recalling a language form at the REPL, and reader annotations for
   macro authors.
-- [`cli-reference.md`](cli-reference.md) — every command-line mode and option, how
-  the entry-module target is resolved, how the lib search path / `Cranelisp.toml`
+- [`cli-reference.md`](cli-reference.md) — every command-line mode and option,
+  including [writing and running tests](cli-reference.md#test---test), how the
+  entry-module target is resolved, how the lib search path / `Cranelisp.toml`
   works, and the `/search` command for finding an importable function.
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display
   formats, slash commands, errors, caching.

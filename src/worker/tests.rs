@@ -114,7 +114,7 @@ fn cache_preloaded_sum_projection_recheck_preserves_ownership() {
             vec![cranelisp_types::Mode::Copy],
             "{label}"
         );
-        validate_guarded_staging(&tables, &module, &checked.staging).unwrap();
+        validate_guarded_staging(&tables, &module, &checked.staging, None).unwrap();
     }
 }
 
@@ -1535,8 +1535,34 @@ fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_stat
     let expected_targets = prepared.targets.clone();
     let observed_mutations = RefCell::new(Vec::new());
     let observed_targets = RefCell::new(Vec::new());
-    let mut processed =
-        crate::cluster::ProcessedCluster::from_parts(check.warnings, Vec::new(), Vec::new());
+    // The candidate's authored-form record rides the cluster; the failed
+    // compile must install none of it (`design/int/session-persistence.md`
+    // §2.4.1), which the snapshot's record comparison observes.
+    let candidate_record = crate::session_v4::Introspection {
+        source: Some("(defn rollback-id [_] (rollback-helper))".to_string()),
+        sexp: Some(
+            cranelisp_frontend::parse("(defn rollback-id [_] (rollback-helper))")
+                .unwrap()
+                .remove(0),
+        ),
+        ..Default::default()
+    };
+    assert_ne!(
+        rollback_introspection(&session, &module),
+        Some(format!("{candidate_record:?}")),
+        "precondition: the candidate record differs from the live one"
+    );
+    let mut processed = crate::cluster::ProcessedCluster::from_parts(
+        check.warnings,
+        Vec::new(),
+        vec![(
+            FQSymbol {
+                module: module.clone(),
+                symbol: Symbol::from("rollback-id"),
+            },
+            candidate_record,
+        )],
+    );
     processed.set_prepared(prepared);
 
     let error = compile_and_publish_prepared_with(
@@ -2601,7 +2627,8 @@ fn save_generate_module_source_reads_structural_decls_from_symbol_table() {
     });
 
     let introspection = dashmap::DashMap::new();
-    let source = crate::save::generate_module_source(&st, Some(&introspection), &module);
+    let source = crate::save::generate_module_source(&st, Some(&introspection), &module)
+        .expect("a module with only structural declarations regenerates");
 
     // Sections must appear (per design/int/session-persistence.md §1.3).
     // Structural decls came off the SymbolTable, NOT a separate parallel
@@ -4156,4 +4183,126 @@ fn classify_listing_entry_buckets_every_category() {
         .expect("second candidate installs");
     assert!(candidate_table.get("x").is_none());
     assert_eq!(candidate_table.name_candidates(&Symbol::from("x")).len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Publication writer (design/int/session-persistence.md §2.4.1)
+// ---------------------------------------------------------------------------
+
+fn record_key(name: &str) -> FQSymbol {
+    FQSymbol {
+        module: ModuleFullPath::from("user"),
+        symbol: Symbol::from(name),
+    }
+}
+
+fn parsed(text: &str) -> Sexp {
+    cranelisp_frontend::parse(text).unwrap().remove(0)
+}
+
+fn live_record(
+    shared: &crate::session_v4::SharedState,
+    name: &str,
+) -> Option<crate::session_v4::Introspection> {
+    shared
+        .introspection
+        .as_ref()
+        .unwrap()
+        .get(&record_key(name))
+        .map(|record| record.clone())
+}
+
+/// A live record for `g` from a macro-produced generation, with codegen facts.
+fn seed_expanded_record(shared: &crate::session_v4::SharedState) {
+    shared.introspection.as_ref().unwrap().insert(
+        record_key("g"),
+        crate::session_v4::Introspection {
+            source: Some("(mkg)".to_string()),
+            sexp: Some(parsed("(mkg)")),
+            expanded: Some(parsed("(defn g [] 1)")),
+            ast: None,
+            clif_ir: Some("seeded clif".to_string()),
+            code_size: Some(7),
+        },
+    );
+}
+
+/// The staged record of a direct `(defn g [] 2)` replacement.
+fn staged_direct_replacement() -> Vec<(FQSymbol, crate::session_v4::Introspection)> {
+    vec![(
+        record_key("g"),
+        crate::session_v4::Introspection {
+            source: Some("(defn g [] 2)".to_string()),
+            sexp: Some(parsed("(defn g [] 2)")),
+            expanded: None,
+            ast: None,
+            clif_ir: None,
+            code_size: None,
+        },
+    )]
+}
+
+// spec: design/int/session-persistence.md §2.4.1 — a published generation
+// replaces every authored carrier (the prior expansion is cleared) and keeps
+// the codegen facts; a cluster with nothing to compile still publishes, and
+// its records install once.
+#[test]
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+fn publication_installs_staged_records_field_wise_once() {
+    let shared = test_shared_state();
+    seed_expanded_record(&shared);
+    let mut processed = crate::cluster::ProcessedCluster::from_parts(
+        Vec::new(),
+        Vec::new(),
+        staged_direct_replacement(),
+    );
+
+    compile_and_publish_prepared_with(&mut processed, &shared, true, |_, _, _| {
+        unreachable!("invariant: a cluster without a prepared commit compiles nothing")
+    })
+    .unwrap();
+
+    let record = live_record(&shared, "g").unwrap();
+    assert_eq!(record.source.as_deref(), Some("(defn g [] 2)"));
+    assert_eq!(
+        record.sexp.as_ref().map(Sexp::format_flat),
+        Some(parsed("(defn g [] 2)").format_flat())
+    );
+    assert!(record.expanded.is_none(), "the prior expansion is cleared");
+    assert_eq!(record.clif_ir.as_deref(), Some("seeded clif"));
+    assert_eq!(record.code_size, Some(7));
+    assert!(processed.introspection_records().is_empty());
+
+    shared
+        .introspection
+        .as_ref()
+        .unwrap()
+        .remove(&record_key("g"));
+    compile_and_publish_prepared_with(&mut processed, &shared, true, |_, _, _| {
+        unreachable!("invariant: nothing is prepared")
+    })
+    .unwrap();
+    assert!(
+        live_record(&shared, "g").is_none(),
+        "a repeated publication call installs nothing"
+    );
+}
+
+// spec: design/int/session-persistence.md §2.4.1 negative — releasing a
+// cluster's residue installs none of its staged records; only publication does.
+#[test]
+fn insert_cluster_installs_no_staged_record() {
+    let shared = test_shared_state();
+    seed_expanded_record(&shared);
+    let processed = crate::cluster::ProcessedCluster::from_parts(
+        Vec::new(),
+        Vec::new(),
+        staged_direct_replacement(),
+    );
+
+    crate::cluster::insert_cluster(&shared, processed, &ModuleFullPath::from("user")).unwrap();
+
+    let record = live_record(&shared, "g").unwrap();
+    assert_eq!(record.source.as_deref(), Some("(mkg)"));
+    assert!(record.expanded.is_some());
 }

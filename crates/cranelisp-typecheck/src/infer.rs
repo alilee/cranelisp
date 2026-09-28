@@ -8,7 +8,7 @@ use cranelisp_types::{
     MatchArm, Pattern, ResolvedCall, Span, Symbol, TemplateKind, Type, TypeExpr, VarRef,
 };
 
-use crate::checker::{CheckState, TypeCheckEnv};
+use crate::checker::{CheckState, DottedMember, TypeCheckEnv};
 use crate::scheme::mono;
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
@@ -170,13 +170,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         tag: usize,
         span: Span,
     ) -> Result<(cranelisp_types::FQSymbol, Type), CranelispError> {
-        // Look up the type's TypeDefInfo in its defining module.
-        let info = self
-            .lookup_type_def_in_module(&type_name.module, &type_name.name)
-            .ok_or_else(|| CranelispError::TypeError {
-                message: format!("unknown type in constructor: {type_name}"),
-                location: ErrorLocation::from_span(span),
-            })?;
+        let info =
+            self.type_def_by_identity(type_name)
+                .ok_or_else(|| CranelispError::TypeError {
+                    message: format!("unknown type in constructor: {type_name}"),
+                    location: ErrorLocation::from_span(span),
+                })?;
         if tag >= info.constructors.len() {
             return Err(CranelispError::TypeError {
                 message: format!("constructor tag {tag} out of range for {type_name}"),
@@ -255,12 +254,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // recursion-self carve-out) observes the bare shape. See
         // `TypeCheckEnv::normalize_self_qualified`.
         let name: &str = self.normalize_self_qualified(state, name.as_ref());
+        let undefined = || CranelispError::TypeError {
+            message: format!("undefined variable: {name}"),
+            location: ErrorLocation::from_span(span),
+        };
+
+        // A dotted `Parent.member` spelling is answered by the dotted core
+        // alone, resolved once (spec §8.5.2): a rejected parent is the error,
+        // a miss is undefined, and the literal key is never read through scope.
+        let local = state.env.lookup(name).is_some();
+        let dotted_member = match DottedMember::parse(name).filter(|_| !local) {
+            Some(dotted) => {
+                // A dotted spelling has no module qualifier, so no gap.
+                state.pending_gap = None;
+                Some(
+                    self.dotted_member_identity(state, dotted, span)?
+                        .ok_or_else(undefined)?,
+                )
+            }
+            None => None,
+        };
 
         // Lexical bindings shadow the entire module candidate set. Otherwise
         // retain every value-role terminal until ordinary HM constraints can
         // select one; raw candidate cardinality is not a resolution verdict.
-        if state.env.lookup(name).is_none()
-            && self.resolve_dotted_member_fq(state, name).is_none()
+        if !local
+            && dotted_member.is_none()
             && let Ok(candidates) = self.scope_resolve_candidates(state, name, span)
         {
             let contested = candidates.len() > 1;
@@ -287,7 +306,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 ));
             }
         }
-        let (scheme, gap) = self.lookup(state, name);
+        let (scheme, gap) = match &dotted_member {
+            Some((_, entry)) => (
+                crate::candidate_selection::language_value_scheme(entry).cloned(),
+                None,
+            ),
+            None => self.lookup(state, name),
+        };
         // Record the in-band gap (if any) so a failed qualified-name resolution
         // surfaces as `CheckError::Gap` once the per-form dispatcher reports its
         // not-found error. Always write (Some or None) to match the prior
@@ -298,6 +323,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // alternatives, rather than as "undefined variable" (spec §8.6.5; field
         // accessors §5.2.6).
         if scheme.is_none()
+            && dotted_member.is_none()
             && self
                 .scope_resolve_candidates(state, name, span)
                 .is_ok_and(|candidates| candidates.len() > 1)
@@ -333,10 +359,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 location: ErrorLocation::from_span(span),
             });
         }
-        let scheme = scheme.ok_or_else(|| CranelispError::TypeError {
-            message: format!("undefined variable: {name}"),
-            location: ErrorLocation::from_span(span),
-        })?;
+        let scheme = scheme.ok_or_else(undefined)?;
 
         // Don't instantiate special forms -- they are not callable as values.
         // Per S69 Submission 36: special forms live on `ModuleEntry::SpecialForm`,
@@ -438,7 +461,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (leg 3, carrier only — dotted refs are `callees` residue); every other
         // name goes through the shared bare/qualified recorder (which also owns
         // the local-shadow gate + the self-recursion carve-out, leg 2).
-        if let Some(fq) = self.resolve_dotted_member_fq(state, name) {
+        if let Some((fq, _)) = dotted_member {
             // A dotted `Type.member` reference is a table reference — its typed
             // verdict is `VarRef::Global` with the canonical member storage FQ.
             state
@@ -1379,8 +1402,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // got-slotted ctor `Def` whose function-type scheme is curry-
                 // shaped, so it would otherwise fall through to the generic
                 // curry path here; reject it with a clear arity diagnostic.
-                // A probe: its gap is dropped.
-                if let (Some(entry), _) = self.resolve_constructor_entry(state, name.as_ref())
+                // A probe: its gap and a rejected dotted parent are dropped;
+                // value position reports the callee itself.
+                if let Ok((Some(entry), _)) =
+                    self.resolve_constructor_entry(state, name.as_ref(), span)
                     && let Some(callable) = entry.callable()
                     && let CallableOrigin::Ctor { field_count, .. } = &callable.origin
                 {
@@ -1792,10 +1817,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.settle_pending_candidates(state, false, true)?;
 
         // Check exhaustiveness for concrete ADT scrutinees.
-        // The type is defined in `fqtn.module` (its home module), not the
-        // current module — under Principle 17 short-name resolution, looking
-        // up the type via `state.current_module` would fail for ADTs imported
-        // from other modules (e.g. `macros/SList` matched in `fn.threading`).
         let resolved_scrutinee = self.apply_subst(state, &scrutinee_ty);
         if let Type::ADT(fqtn, _) = &resolved_scrutinee {
             let covered_ctors = covered_ctor_spans
@@ -1811,7 +1832,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     if type_name != fqtn {
                         return None;
                     }
-                    self.lookup_type_def_in_module(&fqtn.module, &fqtn.name)
+                    self.type_def_by_identity(fqtn)
                         .and_then(|info| info.constructors.get(*tag).cloned())
                 })
                 .collect::<Vec<_>>();
@@ -1852,7 +1873,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // S109), **bare** (`SCons`, current-module + prelude fallback), or
         // **module-qualified** (`macros/SCons`, FQ, load-bearing for every
         // quasiquote macro). `resolve_constructor_entry` dispatches all three.
-        let (entry, qualified_gap) = self.resolve_constructor_entry(state, name.as_ref());
+        let (entry, qualified_gap) = self.resolve_constructor_entry(state, name.as_ref(), span)?;
         if let Some(entry) = entry
             && let Some(callable) = entry.callable()
             && let CallableOrigin::Ctor { type_name, tag, .. } = &callable.origin

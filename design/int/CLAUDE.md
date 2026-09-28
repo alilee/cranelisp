@@ -84,6 +84,7 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `expansion-qualification-scope.md` | `qualify_expanded_sexp` is scope-aware, skipping value-level binder slots. |
 | `multi-sig-introspection.md` | Multi-signature introspection: one line per arm, each with its own constraints (§2.4). |
 | `private-submodule-import.md` | Private submodule import refusal, with its open unloaded-parent case. |
+| `test-runner.md` | `--test` and the crate-private runner it shares with `/run-tests` and `/run-all-tests`: selection, the one eligibility scan, prepare/execute/report, test-result release and the batch refusal of `discover-tests`. Implemented and verified. |
 
 ### Reference lineage
 

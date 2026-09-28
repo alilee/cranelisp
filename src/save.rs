@@ -10,13 +10,13 @@
 // `SharedState.module_structures` dissolves; this module reads everything
 // from `SymbolTable`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
 use cranelisp_types::{
     Binding, CallableOrigin, Decl, ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl,
-    ModuleFullPath, PlatformSpec, Sexp,
+    ModuleFullPath, PlatformSpec, Sexp, Span,
 };
 
 use dashmap::DashMap;
@@ -61,8 +61,10 @@ pub(crate) fn should_regenerate(symbol_table: &crate::code::SessionSymbolTable) 
 
 /// Generate complete module source from the module's `SymbolTable`.
 ///
-/// Pure function: reads data, returns source text. Sections appear in
-/// the order specified by design/int/session-persistence.md §1.3:
+/// Pure function: reads data, returns source text, or refuses with every
+/// selected entry that has no recorded authored form (§2.4.3) rather than
+/// omit it. Sections appear in the order specified by
+/// design/int/session-persistence.md §1.3:
 ///   1. mod decls
 ///   2. platform decls
 ///   3. imports (merged, prelude filtered)
@@ -78,11 +80,11 @@ pub(crate) fn should_regenerate(symbol_table: &crate::code::SessionSymbolTable) 
 /// itself — `imports` records only user-authored forms (CP3 / option (b),
 /// see `design/int/int.md` §6.5) but the filter remains as a
 /// belt-and-braces guard.
-pub fn generate_module_source(
+pub(crate) fn generate_module_source(
     symbol_table: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
-) -> String {
+) -> Result<String, UnrenderedEntries> {
     let mut sections = Vec::new();
 
     // 0. Module preamble (spec §8.16.5) — the leading `;;` comment block at the
@@ -124,26 +126,29 @@ pub fn generate_module_source(
         sections.push(export_section);
     }
 
+    // Sections 5–8 share one ledger, in this order.
+    let mut ledger = SectionLedger::default();
+
     // 5. Trait declarations (alphabetical)
-    let trait_section = generate_traits(symbol_table, introspection, module_path);
+    let trait_section = generate_traits(symbol_table, introspection, module_path, &mut ledger);
     if !trait_section.is_empty() {
         sections.push(trait_section);
     }
 
     // 6. Type definitions (alphabetical)
-    let type_section = generate_types(symbol_table, introspection, module_path);
+    let type_section = generate_types(symbol_table, introspection, module_path, &mut ledger);
     if !type_section.is_empty() {
         sections.push(type_section);
     }
 
     // 7. Trait implementations
-    let impl_section = generate_impls(symbol_table, introspection, module_path);
+    let impl_section = generate_impls(symbol_table, introspection, module_path, &mut ledger);
     if !impl_section.is_empty() {
         sections.push(impl_section);
     }
 
     // 8. Functions and macros (dependency-sorted)
-    let fn_section = generate_fns_and_macros(symbol_table, introspection, module_path);
+    let fn_section = generate_fns_and_macros(symbol_table, introspection, module_path, &mut ledger);
     if !fn_section.is_empty() {
         sections.push(fn_section);
     }
@@ -159,11 +164,57 @@ pub fn generate_module_source(
     // persisted-content kind left unclaimed.
     assert_section_completeness(symbol_table, module_path);
 
+    if !ledger.unrendered.is_empty() {
+        return Err(UnrenderedEntries(ledger.unrendered));
+    }
     let mut result = sections.join("\n\n");
     if !result.is_empty() {
         result.push('\n');
     }
-    result
+    Ok(result)
+}
+
+/// Entries a regeneration selected but could not render because no authored
+/// form was recorded for them (`design/int/session-persistence.md` §2.4.3).
+/// Writing the module without them would lose their source at the next start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnrenderedEntries(Vec<cranelisp_types::Symbol>);
+
+impl std::fmt::Display for UnrenderedEntries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<String> = self.0.iter().map(|name| format!("`{name}`")).collect();
+        f.write_str(&names.join(", "))
+    }
+}
+
+/// What sections 5–8 have produced so far in one regeneration.
+///
+/// Records that share one authored form — a macro expansion or a literal
+/// `begin`, whose members may fall in different sections — emit it once, at
+/// its first position (`design/int/session-persistence.md` §1.4). A record
+/// whose form was already emitted is rendered, not unrendered (§2.4.3).
+#[derive(Default)]
+struct SectionLedger {
+    /// Emitted authored forms by flat rendering, each with the span it was
+    /// authored at. A REPL declaration's record holds text only, so its form
+    /// has no known span (`None`) and matches any form with the same text.
+    emitted: HashMap<String, Vec<Option<Span>>>,
+    unrendered: Vec<cranelisp_types::Symbol>,
+}
+
+impl SectionLedger {
+    /// `true` the first time the authored form is offered; its text is then
+    /// emitted.
+    fn first_emission(&mut self, form: &Sexp, authored_at: Option<Span>) -> bool {
+        let spans = self.emitted.entry(form.format_flat()).or_default();
+        let seen = spans
+            .iter()
+            .any(|span| span.is_none() || authored_at.is_none() || *span == authored_at);
+        if !seen {
+            spans.push(authored_at);
+        }
+        !seen
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -666,15 +717,24 @@ fn emit_decl_text(sexp: &Sexp, source: Option<&str>, live_doc: Option<&str>) -> 
 /// Before this fix the sexp-only gate dropped such declarations ENTIRELY from
 /// the regenerated file. Emit the verbatim authored source, gated on it
 /// re-parsing to a single well-formed form (a stale/garbage source is skipped,
-/// never corrupts the file). `None` ⇒ nothing recorded (e.g. a cache-restored
-/// module with no introspection) ⇒ caller drops the entry, as before.
-fn emit_decl_or_source(sexp: Option<Sexp>, source: Option<String>) -> Option<String> {
+/// never corrupts the file). The text-only record's authored form is that
+/// parse. `None` ⇒ nothing renderable is recorded ⇒ the caller reports the
+/// entry as unrendered (§2.4.3).
+fn emit_decl_or_source(sexp: Option<Sexp>, source: Option<String>) -> Option<RenderedDecl> {
     match (sexp, source) {
-        (Some(sexp), src) => Some(emit_decl_text(&sexp, src.as_deref(), None)),
+        (Some(sexp), src) => Some(RenderedDecl {
+            text: emit_decl_text(&sexp, src.as_deref(), None),
+            authored_at: Some(sexp.span()),
+            form: sexp,
+        }),
         (None, Some(src)) => {
             let trimmed = src.trim();
             match cranelisp_frontend::parse(trimmed) {
-                Ok(forms) if forms.len() == 1 => Some(trimmed.to_string()),
+                Ok(mut forms) if forms.len() == 1 => Some(RenderedDecl {
+                    form: forms.remove(0),
+                    authored_at: None,
+                    text: trimmed.to_string(),
+                }),
                 _ => None,
             }
         }
@@ -682,34 +742,52 @@ fn emit_decl_or_source(sexp: Option<Sexp>, source: Option<String>) -> Option<Str
     }
 }
 
+/// One declaration's authored form, where it was authored when the record
+/// knows, and the text emitted for it.
+struct RenderedDecl {
+    form: Sexp,
+    authored_at: Option<Span>,
+    text: String,
+}
+
+/// Join a declaration section's items in key order, leaving out a form an
+/// earlier item or section already emitted.
+fn join_declarations(mut items: Vec<(String, RenderedDecl)>, ledger: &mut SectionLedger) -> String {
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items
+        .into_iter()
+        .filter(|(_, decl)| ledger.first_emission(&decl.form, decl.authored_at))
+        .map(|(_, decl)| decl.text)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn generate_traits(
     st: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
+    ledger: &mut SectionLedger,
 ) -> String {
-    let mut items: Vec<(String, String)> = Vec::new();
+    let mut items = Vec::new();
     for (name, entry) in st.all_symbols() {
         if matches!(entry.declaration, Decl::Trait(_)) {
             let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
-            if let Some(text) = emit_decl_or_source(sexp, source) {
-                items.push((name.to_string(), text));
+            match emit_decl_or_source(sexp, source) {
+                Some(decl) => items.push((name.to_string(), decl)),
+                None => ledger.unrendered.push(name.clone()),
             }
         }
     }
-    items.sort_by(|a, b| a.0.cmp(&b.0));
-    items
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    join_declarations(items, ledger)
 }
 
 fn generate_types(
     st: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
+    ledger: &mut SectionLedger,
 ) -> String {
-    let mut items: Vec<(String, String)> = Vec::new();
+    let mut items = Vec::new();
     for (name, entry) in st.all_symbols() {
         // Enumerate through the SINGLE `type_def_info()` reader (0573; the S79
         // dual-facet cure) — it answers `Some` for a sum/enum `TypeDef` entry AND
@@ -721,17 +799,13 @@ fn generate_types(
         // (`type_def: None`) answers `None`, so each type is emitted exactly once.
         if entry.type_def_info().is_some() {
             let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
-            if let Some(text) = emit_decl_or_source(sexp, source) {
-                items.push((name.to_string(), text));
+            match emit_decl_or_source(sexp, source) {
+                Some(decl) => items.push((name.to_string(), decl)),
+                None => ledger.unrendered.push(name.clone()),
             }
         }
     }
-    items.sort_by(|a, b| a.0.cmp(&b.0));
-    items
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    join_declarations(items, ledger)
 }
 
 /// Generate trait implementations WRITTEN IN this module (RT-4 close,
@@ -780,10 +854,15 @@ fn generate_types(
 /// excluded: row 1 filters `impl_module != M`, and its source is recorded under
 /// `{N, …}`, not `{M, …}`, so row 2 does not reach it either. `BTreeSet` gives
 /// deterministic sorted output.
+///
+/// - **Row 3 — `written_trait_impls`.** Every impl written in M, including one
+///   restored from cache with no record, so a missing record is reported as
+///   unrendered (§2.4.3) instead of skipped.
 fn generate_impls(
     st: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
+    ledger: &mut SectionLedger,
 ) -> String {
     use std::collections::BTreeSet;
     let mut keys: BTreeSet<String> = BTreeSet::new();
@@ -793,12 +872,17 @@ fn generate_impls(
         if let Decl::ImplShell(shell) = &entry.declaration
             && shell.impl_module == *module_path
         {
-            keys.insert(format!(
-                "{}.{}",
-                shell.trait_name.name, shell.impl_type.name
-            ));
+            keys.insert(impl_label(&shell.trait_name, &shell.impl_type));
         }
     }
+
+    // Row 3 — the table's written-impl records.
+    keys.extend(
+        st.written_trait_impls
+            .iter()
+            .filter(|written| written.impl_module == *module_path)
+            .map(|written| impl_label(&written.trait_name, &written.impl_type)),
+    );
 
     // Row 2 — introspection impl-label records written HERE (the imported-trait
     // backstop). Fully consumed + dropped BEFORE the render loop's `.get()` below
@@ -815,14 +899,24 @@ fn generate_impls(
         }
     }
 
-    keys.into_iter()
-        .filter_map(|key| {
-            let sym = cranelisp_types::Symbol::from(key);
-            let (sexp, source) = introspection_sexp_and_source(introspection, module_path, &sym);
-            emit_decl_or_source(sexp, source)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut items = Vec::new();
+    for key in keys {
+        let sym = cranelisp_types::Symbol::from(key.as_str());
+        let (sexp, source) = introspection_sexp_and_source(introspection, module_path, &sym);
+        match emit_decl_or_source(sexp, source) {
+            Some(decl) => items.push((key, decl)),
+            None => ledger.unrendered.push(sym),
+        }
+    }
+    join_declarations(items, ledger)
+}
+
+/// The `Trait.Type` label of an impl, from its settled trait and target names.
+fn impl_label(
+    trait_name: &cranelisp_types::FQTraitName,
+    impl_type: &cranelisp_types::FQTypeName,
+) -> String {
+    format!("{}.{}", trait_name.name, impl_type.name)
 }
 
 /// `true` iff the introspection record's recorded form (verbatim `source`
@@ -919,6 +1013,7 @@ fn generate_fns_and_macros(
     st: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
+    ledger: &mut SectionLedger,
 ) -> String {
     // Partition into macros and non-macro fns. Macros MUST be emitted BEFORE
     // the functions that use them (S77 W-MacroTrait, FIXME 0299): defmacro-
@@ -968,12 +1063,9 @@ fn generate_fns_and_macros(
         // regeneration; skip primitives, constructors, platform effects,
         // overloaded base entries, etc. Per FIXME 0219 — macros surface
         // through the same `ModuleEntry::Def` arm symmetric with UserFn.
-        // For macros, capture the symbol-table `macro_sexp` (D1 ruling §6) as a
-        // fallback source: a cache-restored-then-REPL-edited `defmacro` has no
-        // introspection record (introspection is REPL-only and absent on cache
-        // restore), but `macro_sexp` round-trips the cache — without this
-        // fallback `regenerate_backing_file` would silently DROP the macro from
-        // the regenerated `.cl`, breaking a cached REPL restart that uses it.
+        // For macros, the cache-surviving `macro_sexp` (D1 ruling §6) is the
+        // fallback source when no record exists, e.g. a cache-restored macro
+        // that rehydration could not key (§2.2, §2.4.4).
         let (is_macro, macro_table_sexp) = match &entry.declaration {
             Decl::Macro(declaration) => (true, Some(declaration.macro_sexp.clone())),
             Decl::Overloaded(_) => continue,
@@ -997,45 +1089,35 @@ fn generate_fns_and_macros(
         // stale or mispaired source harmless (render fallback).
         let (record_sexp, record_source) =
             introspection_sexp_and_source(introspection, module_path, name);
-        let sexp = record_sexp.or(macro_table_sexp);
-        if let Some(sexp) = sexp {
-            let item = FnMacroItem {
-                name: name.to_string(),
-                sexp,
-                source: record_source,
-            };
-            if is_macro {
-                macro_items.push(item);
-            } else {
-                fn_items.push(item);
-            }
+        let Some(sexp) = record_sexp.or(macro_table_sexp) else {
+            ledger.unrendered.push(name.clone());
+            continue;
+        };
+        let item = FnMacroItem {
+            name: name.to_string(),
+            sexp,
+            source: record_source,
+        };
+        if is_macro {
+            macro_items.push(item);
+        } else {
+            fn_items.push(item);
         }
     }
 
     // Dependency-sort each section independently (macro→macro and fn→fn
     // intra-section edges still matter), then concatenate macros-first.
     //
-    // S102 CS-D1 — single-authority dedup (§15.4.7; s102-defect-wave.md §4.2):
-    // N records sharing ONE authored form emit that form exactly once, at its
-    // first position in the macros-first stream. Two shapes produce shared
-    // authored forms: a macro-expansion-produced defmacro records the turn's
-    // ORIGINAL outer form (as does the defn the same expansion produced —
-    // e.g. `(mdef x 1)` under both `x` and `x-def`), and a literal
-    // `(begin (defn a …) (defn b …))` records the begin under both names.
-    // Emitting the authored form twice poisons the file: the original
-    // re-expands at reload while its expansion artifacts are already
-    // registered, and the two do not co-load (/port D1). Identity is the
-    // authored form itself: (span, rendered text).
-    let mut seen_authored: HashSet<(u32, u32, String)> = HashSet::new();
+    // An authored form shared with an earlier item or section is emitted once
+    // (§1.4). A second copy poisons the file: a macro call re-expands at
+    // reload while its expansion artifacts are already registered, and the
+    // two do not co-load.
     let macros_sorted = dependency_sort(macro_items, st);
     let fns_sorted = dependency_sort(fn_items, st);
     macros_sorted
         .into_iter()
         .chain(fns_sorted)
-        .filter(|item| {
-            let span = item.sexp.span();
-            seen_authored.insert((span.start, span.end, item.sexp.format_flat()))
-        })
+        .filter(|item| ledger.first_emission(&item.sexp, Some(item.sexp.span())))
         // Macros carry `None` (they are absent from `docstrings`); UserFns thread
         // their live, authoritative docstring (§11.3a). Emission is source-text-
         // first (CS-D2): the verbatim authored text when consistent, else the
@@ -1062,115 +1144,100 @@ struct FnMacroItem {
 }
 
 // ---------------------------------------------------------------------------
-// Cache-hit introspection rehydration (FIXME 0220 — /arch ruling S81)
+// Backing-file rehydration (design/int/session-persistence.md §2.4.2)
 // ---------------------------------------------------------------------------
 
-/// Does this top-level form define `name`?
-///
-/// Recognises the defining special forms `(defn name …)`, `(defmacro name …)`,
-/// `(deftype name …)`, `(deftrait name …)` — the forms `generate_*` emits and
-/// therefore the forms a re-read of the backing `.cl` must be able to map back
-/// to a symbol. Returns `false` for structural forms (`import`/`export`/`mod`/
-/// `platform`) which define no named symbol in the symbol table.
-pub(crate) fn sexp_defines_symbol(sexp: &Sexp, name: &str) -> bool {
-    if let Sexp::List(items, _) = sexp
-        && items.len() >= 2
-        && let Sexp::Symbol(head, _) = &items[0]
-        && matches!(head.as_str(), "defn" | "defmacro" | "deftype" | "deftrait")
-        && let Sexp::Symbol(defined, _) = &items[1]
-    {
-        return defined.as_str() == name;
-    }
-    false
+/// The identity a live turn records for one top-level definition form.
+enum AuthoredKey {
+    /// A name-slot form: live when the module's table binds the name.
+    Entry(cranelisp_types::Symbol),
+    /// An `impl`: live when the module's `written_trait_impls` names it.
+    Impl(cranelisp_types::Symbol),
 }
 
-/// Lazy on-demand introspection rehydration for cache-loaded symbols
-/// (FIXME 0220, /arch ruling S81 item 3 — the non-macro `.cl`-regen gap).
+/// Fill every missing authored-form record of `module_path` from its backing
+/// file (`design/int/session-persistence.md` §2.4.2).
 ///
-/// A module restored from the on-disk compile cache populates its
-/// `SymbolTable` but NOT the REPL-only `Introspection` DashMap (introspection
-/// is REPL-only by design and never serialized into the cache — see
-/// `memory/introspection-repl-only-principle.md`). Macros survive regeneration
-/// because their source rides `DefKind::Macro.macro_sexp` (cache-serialized),
-/// but a cache-restored regular `UserFn` with no introspection record was
-/// silently DROPPED from the regenerated `.cl` by `generate_fns_and_macros`
-/// (its `introspection_sexp_and_source(..).0.or(macro_table_sexp)` covers
-/// macros only).
-///
-/// This re-reads + re-parses the backing `.cl` (always present — it is the
-/// cache key), locates each top-level form that defines a `UserFn` whose
-/// `Introspection.sexp` is absent, and populates the record from the parsed
-/// form. Content-fresh at the moment of need; the read-only REPL session pays
-/// nothing. `frontend` owns the parse; file-IO + populate is int's (one
-/// private path). Returns the number of records rehydrated.
-pub(crate) fn rehydrate_userfn_introspection_from_source(
+/// Cache restore and a fresh file load of declarations install entries
+/// without records; the backing file they were installed from supplies them.
+/// Each top-level native definition form, and each member of a top-level
+/// `begin`, is keyed as a live turn keys it and fills that key's record only
+/// when the key is live and the record has neither form nor text. The record
+/// takes the whole top-level form, as a live turn records a `begin`. A text-
+/// only record is a REPL declaration that the file may hold an older
+/// generation of, so it is never replaced. Returns the number of records
+/// filled; an unparseable file fills none.
+pub(crate) fn rehydrate_introspection_from_source(
     st: &crate::code::SessionSymbolTable,
     introspection: &DashMap<FQSymbol, Introspection>,
     module_path: &ModuleFullPath,
     backing_source: &str,
 ) -> usize {
-    // Which UserFns lack an introspection sexp? (Macros are handled by the
-    // macro_sexp fallback and need no rehydration; other DefKinds are not
-    // regenerated as fn/macro source.)
-    let mut missing: Vec<cranelisp_types::Symbol> = Vec::new();
-    for (name, entry) in st.all_symbols() {
-        if crate::worker::is_internal_listing_entry(name.as_ref(), entry) {
-            continue;
-        }
-        let is_userfn = entry
-            .callable()
-            .is_some_and(|callable| matches!(callable.origin, CallableOrigin::Plain));
-        if !is_userfn {
-            continue;
-        }
-        let fq = FQSymbol {
-            module: module_path.clone(),
-            symbol: name.clone(),
-        };
-        let has_sexp = introspection
-            .get(&fq)
-            .map(|i| i.sexp.is_some())
-            .unwrap_or(false);
-        if !has_sexp {
-            missing.push(name.clone());
-        }
-    }
-
-    if missing.is_empty() {
+    let Ok(forms) = cranelisp_frontend::parse(backing_source) else {
         return 0;
-    }
-
-    let sexps = match cranelisp_frontend::parse(backing_source) {
-        Ok(s) => s,
-        Err(_) => return 0,
     };
+    let written_impls: HashSet<String> = st
+        .written_trait_impls
+        .iter()
+        .filter(|written| written.impl_module == *module_path)
+        .map(|written| impl_label(&written.trait_name, &written.impl_type))
+        .collect();
 
-    let mut rehydrated = 0;
-    for name in &missing {
-        if let Some(sexp) = sexps.iter().find(|s| sexp_defines_symbol(s, name.as_ref())) {
-            let fq = FQSymbol {
-                module: module_path.clone(),
-                symbol: name.clone(),
+    let mut filled = 0;
+    for form in &forms {
+        for key in authored_keys(form, module_path) {
+            let symbol = match key {
+                AuthoredKey::Entry(symbol) if st.get(symbol.as_ref()).is_some() => symbol,
+                AuthoredKey::Impl(symbol) if written_impls.contains(symbol.as_ref()) => symbol,
+                AuthoredKey::Entry(_) | AuthoredKey::Impl(_) => continue,
             };
-            let mut entry = introspection.entry(fq).or_default();
-            entry.sexp = Some(sexp.clone());
-            if entry.source.is_none() {
-                // S102 CS-D2 (§15.4.7 authorship fidelity): the rehydrator
-                // holds the original file text — capture the VERBATIM span
-                // slice, not `pretty_print(sexp)` (which re-renders reader
-                // shorthand as its desugared form and destroys the user's
-                // authored text on the next regen). Consistency-gated
-                // (`verbatim_slice`); any bound/parse mismatch falls back to
-                // the pretty render.
-                entry.source = Some(
-                    verbatim_slice(sexp, backing_source)
-                        .unwrap_or_else(|| crate::pretty::pretty_print_plain(sexp)),
-                );
+            let mut record = introspection
+                .entry(FQSymbol {
+                    module: module_path.clone(),
+                    symbol,
+                })
+                .or_default();
+            if record.sexp.is_some() || record.source.is_some() {
+                continue;
             }
-            rehydrated += 1;
+            record.sexp = Some(form.clone());
+            record.source = Some(
+                verbatim_slice(form, backing_source)
+                    .unwrap_or_else(|| crate::pretty::pretty_print_plain(form)),
+            );
+            filled += 1;
         }
     }
-    rehydrated
+    filled
+}
+
+/// The live-turn keys of one top-level form: its own, or each `begin`
+/// member's. Structural forms, expressions and macro calls have none, and a
+/// member that does not build is skipped.
+fn authored_keys(form: &Sexp, module_path: &ModuleFullPath) -> Vec<AuthoredKey> {
+    use crate::process_form::form_dispatch::{FormKind, classify_form};
+    cranelisp_frontend::flatten_begin(form.clone())
+        .iter()
+        .filter_map(|member| {
+            if cranelisp_frontend::is_defmacro(member) {
+                return cranelisp_frontend::parse_defmacro(member)
+                    .ok()
+                    .map(|info| AuthoredKey::Entry(info.name));
+            }
+            if !matches!(classify_form(member, module_path), Ok(FormKind::Regular)) {
+                return None;
+            }
+            let built = crate::worker::build_program_compat(std::slice::from_ref(member)).ok()?;
+            let [top] = built.as_slice() else {
+                return None;
+            };
+            let key = crate::session_v4::definition_result_symbol(module_path, top)?.symbol;
+            Some(match top {
+                cranelisp_types::TopLevel::TraitImpl(_) => AuthoredKey::Impl(key),
+                _ => AuthoredKey::Entry(key),
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,6 +1376,16 @@ mod tests {
         expected_slot: usize,
         callees: Vec<FQSymbol>,
     ) {
+        install_callable(table, name, expected_slot, callees, CallableOrigin::Plain);
+    }
+
+    fn install_callable(
+        table: &mut crate::code::SessionSymbolTable,
+        name: &str,
+        expected_slot: usize,
+        callees: Vec<FQSymbol>,
+        origin: CallableOrigin,
+    ) {
         let variant = DefnVariant {
             params: Vec::new(),
             body: Expr::IntLit {
@@ -1337,7 +1414,7 @@ mod tests {
                 Vec::new(),
                 None,
                 expected_slot as u64,
-                CallableOrigin::Plain,
+                origin,
                 Realization::Body { view, code: None },
                 Some(variant),
                 callees,
@@ -1345,6 +1422,15 @@ mod tests {
             )
             .expect("user-function fixture installs through lifecycle funnel");
         assert_eq!(slot.index(), expected_slot);
+    }
+
+    fn regen_ok(
+        st: &crate::code::SessionSymbolTable,
+        introspection: Option<&DashMap<FQSymbol, Introspection>>,
+        module: &ModuleFullPath,
+    ) -> String {
+        generate_module_source(st, introspection, module)
+            .unwrap_or_else(|unrendered| panic!("unexpected refusal for {unrendered}"))
     }
 
     fn install_macro(table: &mut crate::code::SessionSymbolTable, name: &str, macro_sexp: Sexp) {
@@ -1434,20 +1520,21 @@ mod tests {
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
 
-        // Without any introspection record, the UserFn is dropped from regen.
+        // Without any introspection record, regeneration refuses (§2.4.3).
         let before = generate_module_source(&st, Some(&introspection), &module);
-        assert!(
-            !before.contains("answer"),
-            "precondition: cache-loaded UserFn with no introspection is dropped: {before:?}"
+        assert_eq!(
+            before.map_err(|unrendered| unrendered.0),
+            Err(vec![Symbol::from("answer")]),
+            "precondition: a cache-loaded UserFn with no record is refused, not dropped"
         );
 
         // The backing `.cl` (the cache key) still holds the function source.
         let backing = "(defn answer [] 42)\n";
-        let n = rehydrate_userfn_introspection_from_source(&st, &introspection, &module, backing);
+        let n = rehydrate(&st, &introspection, &module, backing);
         assert_eq!(n, 1, "exactly one UserFn rehydrated");
 
         // After rehydration, the function regenerates back into the source.
-        let after = generate_module_source(&st, Some(&introspection), &module);
+        let after = regen_ok(&st, Some(&introspection), &module);
         assert!(
             after.contains("answer"),
             "post-rehydration: UserFn is recovered into regenerated source: {after:?}"
@@ -1547,7 +1634,7 @@ mod tests {
             introspection.entry(fq).or_default().sexp = Some(original.clone());
         }
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert_eq!(
             out.matches("(mdef x 1)").count(),
             1,
@@ -1580,7 +1667,7 @@ mod tests {
             introspection.entry(fq).or_default().sexp = Some(begin_form.clone());
         }
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert_eq!(
             out.matches("(begin").count(),
             1,
@@ -1627,7 +1714,7 @@ mod tests {
             .or_default()
             .sexp = Some(twice);
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(out.contains("(defn f [] 1)"), "f emitted: {out:?}");
         assert!(out.contains("(defn g [] 1)"), "g emitted: {out:?}");
         assert!(
@@ -1726,7 +1813,7 @@ mod tests {
             rec.source = Some(authored.to_string());
         }
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains(authored),
             "the authored bytes are what gets written back (§15.4.7): {out:?}"
@@ -1758,7 +1845,7 @@ mod tests {
             rec.source = Some("stale garbage ( not the defn".to_string());
         }
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains("(defn f [x] (add-i64 x 1))"),
             "inconsistent source falls back to the sexp render: {out:?}"
@@ -1794,7 +1881,7 @@ mod tests {
             rec.source = Some(authored.to_string());
         }
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains("\"new doc\""),
             "the live docstring wins over the recorded source: {out:?}"
@@ -1828,7 +1915,7 @@ mod tests {
             rec.source = Some(authored.to_string());
         }
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains(authored),
             "a docstring-consistent source emits byte-verbatim: {out:?}"
@@ -1848,7 +1935,7 @@ mod tests {
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         // Authored formatting a pretty-printer would not reproduce.
         let backing = ";; header\n(defn g [x]\n    (mul-i64 x   2))\n";
-        let n = rehydrate_userfn_introspection_from_source(&st, &introspection, &module, backing);
+        let n = rehydrate(&st, &introspection, &module, backing);
         assert_eq!(n, 1);
         let fq = FQSymbol {
             module: module.clone(),
@@ -1859,16 +1946,6 @@ mod tests {
             Some("(defn g [x]\n    (mul-i64 x   2))"),
             "rehydrated source is the exact file slice"
         );
-    }
-
-    #[test]
-    fn sexp_defines_symbol_matches_defining_forms() {
-        let p = |s: &str| cranelisp_frontend::parse(s).unwrap().remove(0);
-        assert!(sexp_defines_symbol(&p("(defn foo [] 1)"), "foo"));
-        assert!(sexp_defines_symbol(&p("(deftype Point [:Int x])"), "Point"));
-        assert!(sexp_defines_symbol(&p("(defmacro m [x] x)"), "m"));
-        assert!(!sexp_defines_symbol(&p("(defn foo [] 1)"), "bar"));
-        assert!(!sexp_defines_symbol(&p("(import [core [foo]])"), "foo"));
     }
 
     // FIXME 0343: a parent whose backing file holds an authored inline
@@ -2144,7 +2221,7 @@ mod tests {
         };
         introspection.entry(fq).or_default().sexp = Some(parse1("(defn double [x] (add-i64 x x))"));
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains("(defn double \"doubles its argument\" [x] (add-i64 x x))"),
             "regen must emit the live docstring in the §5.12 slot: {out:?}"
@@ -2246,7 +2323,7 @@ mod tests {
         };
         introspection.entry(fq).or_default().sexp = Some(parse1("(defn answer [] 42)"));
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.starts_with(";; Header doc\n;; second line\n"),
             "preamble must be the leading section-0 block: {out:?}"
@@ -2260,7 +2337,7 @@ mod tests {
 
         // No-preamble module: no leading `;;` block.
         st.module_preamble = None;
-        let out_none = generate_module_source(&st, Some(&introspection), &module);
+        let out_none = regen_ok(&st, Some(&introspection), &module);
         assert!(
             !out_none.starts_with(";;"),
             "a no-preamble module must regenerate without a leading block: {out_none:?}"
@@ -2301,7 +2378,7 @@ mod tests {
             .or_default()
             .sexp = Some(parse1("(defn g [x] (mul-i64 x 2))"));
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             !out.contains("add-i64") && !out.contains("__expr"),
             "the transient `__expr` expression MUST NOT be persisted: {out:?}"
@@ -2350,7 +2427,7 @@ mod tests {
             .or_default()
             .source = Some("(add-i64 1 2)".to_string());
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains("(defn __expr-helper [] 1)"),
             "a user defn named like the wrapper MUST be preserved (exact-match \
@@ -2421,7 +2498,7 @@ mod tests {
         rec.source = Some(authored.to_string());
         drop(rec);
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains(authored),
             "a matching source MUST regenerate byte-verbatim (source-first): {out:?}"
@@ -2451,7 +2528,7 @@ mod tests {
         rec.source = Some("(deftype Stale (Other [:Int z]))".to_string());
         drop(rec);
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains("MkPt") && !out.contains("Stale"),
             "a mismatched source MUST fall back to the sexp render, never the \
@@ -2481,7 +2558,7 @@ mod tests {
             .or_default()
             .source = Some(authored.to_string()); // sexp intentionally None
 
-        let out = generate_module_source(&st, Some(&introspection), &module);
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(
             out.contains(authored),
             "a REPL-defined trait (source-only record) MUST regenerate from its \
@@ -2489,22 +2566,39 @@ mod tests {
         );
     }
 
-    // Negative boundary: an entry with NO introspection record at all (neither
-    // sexp nor source — e.g. a cache-restored module) is skipped, not emitted
-    // as garbage. (Rehydration of cache-restored decls is a separate gap.)
-    // spec: repl/spec.md §15.4 — §5–7 no-record skip
+    // An entry that a section generator selects but cannot render, because it
+    // has neither form nor text, refuses the whole generation and is named —
+    // never silently dropped, never emitted as garbage. One cell per section
+    // generator; the impl is reachable only through `written_trait_impls`.
+    // spec: design/int/session-persistence.md §2.4.3, §12.3 row 3
     #[test]
-    fn regen_type_decl_no_record_is_skipped() {
+    fn regen_refuses_each_kind_selected_without_a_record() {
         let module = ModuleFullPath::from("user");
-        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.install_binding("Pt".into(), type_def_entry(&module, "Pt"))
+        let refused = |st: &crate::code::SessionSymbolTable| {
+            let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+            generate_module_source(st, Some(&introspection), &module)
+                .map_err(|unrendered| unrendered.0)
+        };
+
+        let mut types = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        types
+            .install_binding("Pt".into(), type_def_entry(&module, "Pt"))
             .expect("type fixture installs");
-        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        let out = generate_module_source(&st, Some(&introspection), &module);
-        assert!(
-            !out.contains("Pt"),
-            "a decl with no introspection record is skipped (no garbage): {out:?}"
-        );
+        assert_eq!(refused(&types), Err(vec![Symbol::from("Pt")]));
+
+        let mut traits = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        traits
+            .install_binding("Disp".into(), trait_decl_entry("Disp"))
+            .expect("trait fixture installs");
+        assert_eq!(refused(&traits), Err(vec![Symbol::from("Disp")]));
+
+        let mut impls = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        upsert_written_impl(&mut impls, "lib", "Disp", &module, "W");
+        assert_eq!(refused(&impls), Err(vec![Symbol::from("Disp.W")]));
+
+        let mut fns = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        install_userfn(&mut fns, "f", 0, Vec::new());
+        assert_eq!(refused(&fns), Err(vec![Symbol::from("f")]));
     }
 
     // -----------------------------------------------------------------------
@@ -2555,7 +2649,12 @@ mod tests {
             .or_default()
             .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
 
-        let out = generate_impls(&st, Some(&introspection), &module);
+        let out = generate_impls(
+            &st,
+            Some(&introspection),
+            &module,
+            &mut SectionLedger::default(),
+        );
         assert_eq!(
             out, "(impl Disp W (defn dp [w] 42))",
             "an impl written in M MUST regenerate from its defining-turn source: {out:?}"
@@ -2587,7 +2686,12 @@ mod tests {
             .or_default()
             .source = Some("(impl Disp X (defn dp [w] 7))".to_string());
 
-        let out = generate_impls(&st, Some(&introspection), &home);
+        let out = generate_impls(
+            &st,
+            Some(&introspection),
+            &home,
+            &mut SectionLedger::default(),
+        );
         assert!(
             out.is_empty(),
             "an impl written in another module is a LEGAL exclusion from M's regen: {out:?}"
@@ -2617,7 +2721,12 @@ mod tests {
             .or_default()
             .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
 
-        let out = generate_impls(&st, Some(&introspection), &module);
+        let out = generate_impls(
+            &st,
+            Some(&introspection),
+            &module,
+            &mut SectionLedger::default(),
+        );
         assert_eq!(
             out, "(impl Disp W (defn dp [w] 42))",
             "an impl of an IMPORTED trait written HERE (shell at the trait home, \
@@ -2643,7 +2752,12 @@ mod tests {
             .or_default()
             .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
 
-        let out = generate_impls(&st, Some(&introspection), &module);
+        let out = generate_impls(
+            &st,
+            Some(&introspection),
+            &module,
+            &mut SectionLedger::default(),
+        );
         assert_eq!(
             out.matches("(impl Disp W").count(),
             1,
@@ -2670,7 +2784,12 @@ mod tests {
             .or_default()
             .source = Some("(deftype Color Red Green Blue)".to_string());
 
-        let out = generate_impls(&st, Some(&introspection), &module);
+        let out = generate_impls(
+            &st,
+            Some(&introspection),
+            &module,
+            &mut SectionLedger::default(),
+        );
         assert!(
             out.is_empty(),
             "a dotted non-impl record MUST NOT be enumerated as an impl: {out:?}"
@@ -2706,5 +2825,405 @@ mod tests {
         }
         // And the full sweep runs clean (no panic).
         assert_section_completeness(&st, &module);
+    }
+
+    // -----------------------------------------------------------------------
+    // Backing-file rehydration of every native definition form
+    // (session-persistence.md §2.4.2) and the no-silent-omission refusal
+    // (§2.4.3).
+    // -----------------------------------------------------------------------
+
+    fn rehydrate(
+        st: &crate::code::SessionSymbolTable,
+        introspection: &DashMap<FQSymbol, Introspection>,
+        module: &ModuleFullPath,
+        backing: &str,
+    ) -> usize {
+        rehydrate_introspection_from_source(st, introspection, module, backing)
+    }
+
+    fn upsert_written_impl(
+        table: &mut crate::code::SessionSymbolTable,
+        trait_home: &str,
+        trait_name: &str,
+        type_home: &ModuleFullPath,
+        impl_type: &str,
+    ) {
+        use cranelisp_types::{FQTraitName, FQTypeName, WrittenTraitImpl};
+        let writer = table.path.clone();
+        table
+            .upsert_written_trait_impl(WrittenTraitImpl::new(
+                FQTraitName::new(ModuleFullPath::from(trait_home), trait_name.into()),
+                FQTypeName::new(type_home.clone(), impl_type.into()),
+                writer,
+                vec!["m".into()],
+                Visibility::Public,
+            ))
+            .expect("written-impl fixture records through the writer funnel");
+    }
+
+    const REHYDRATION_BACKING: &str = "\
+(import [primitives [*]])
+(deftype Shape (Circle [:Int r]) (Square [:Int s]))
+(deftype Box [:Int v])
+(deftrait Weigh (weigh [x] Int))
+(impl Weigh Box (defn weigh [x] 1))
+(impl Show Box (defn show [x] \"box\"))
+(impl (Functor f) (Functor Option) (defn fmap [g o] o))
+(defn- hidden [] 1)
+(begin (defn a [] 1) (defn b [] 2))
+(defmacro twice [e] `(add-i64 ~e ~e))
+(defn retained-failure [] 1)
+(impl Weigh Shape (defn weigh [x] 2))
+(begin (deftype Token MkToken) (impl Weigh Token (defn weigh [x] 3)) (defn c [] 3))
+";
+
+    /// The fixture's `begin` whose members fall in the type, impl and
+    /// function sections.
+    const SPANNING_BEGIN: &str =
+        "(begin (deftype Token MkToken) (impl Weigh Token (defn weigh [x] 3)) (defn c [] 3))";
+
+    /// A cache-restored module: every live entry of the backing file's forms
+    /// installed, no introspection records. `retained-failure` and the
+    /// `Weigh Shape` impl are in the file but not live.
+    fn rehydration_fixture() -> (ModuleFullPath, crate::code::SessionSymbolTable) {
+        use cranelisp_types::{FQTypeName, TypeDefInfo};
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.install_binding("Shape".into(), type_def_entry(&module, "Shape"))
+            .expect("sum type installs");
+        let box_type = FQTypeName::new(module.clone(), "Box".into());
+        install_callable(
+            &mut st,
+            "Box",
+            0,
+            Vec::new(),
+            CallableOrigin::Ctor {
+                type_name: box_type.clone(),
+                tag: 0,
+                field_count: 1,
+                internal: false,
+                type_def: Some(Box::new(TypeDefInfo {
+                    name: box_type,
+                    type_params: vec![],
+                    constructors: vec![],
+                })),
+            },
+        );
+        st.install_binding("Weigh".into(), trait_decl_entry("Weigh"))
+            .expect("trait installs");
+        install_trait_impl_shell(&mut st, &module, "Weigh", &module, "Box", &module);
+        upsert_written_impl(&mut st, "user", "Weigh", &module, "Box");
+        upsert_written_impl(&mut st, "prelude", "Show", &module, "Box");
+        upsert_written_impl(
+            &mut st,
+            "prelude",
+            "Functor",
+            &ModuleFullPath::from("primitives"),
+            "Option",
+        );
+        install_userfn(&mut st, "hidden", 1, Vec::new());
+        install_userfn(&mut st, "a", 2, Vec::new());
+        install_userfn(&mut st, "b", 3, Vec::new());
+        install_macro(&mut st, "twice", parse1("(defmacro twice [e] e)"));
+        st.install_binding("Token".into(), type_def_entry(&module, "Token"))
+            .expect("spanning-begin type installs");
+        upsert_written_impl(&mut st, "user", "Weigh", &module, "Token");
+        install_userfn(&mut st, "c", 4, Vec::new());
+        (module, st)
+    }
+
+    fn record_form(
+        introspection: &DashMap<FQSymbol, Introspection>,
+        module: &ModuleFullPath,
+        key: &str,
+    ) -> Option<String> {
+        introspection
+            .get(&FQSymbol {
+                module: module.clone(),
+                symbol: key.into(),
+            })
+            .and_then(|record| record.sexp.as_ref().map(Sexp::format_flat))
+    }
+
+    fn backing_form(prefix: &str) -> String {
+        let form = cranelisp_frontend::parse(REHYDRATION_BACKING)
+            .expect("fixture parses")
+            .into_iter()
+            .find(|form| form.format_flat().starts_with(prefix))
+            .expect("fixture holds the form");
+        form.format_flat()
+    }
+
+    // spec: design/int/session-persistence.md §2.4.2 — scope: sum and product
+    // deftype and deftrait records come from the backing file, text verbatim.
+    #[test]
+    fn rehydrate_fills_declaration_records_from_backing_file() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        for (key, prefix) in [
+            ("Shape", "(deftype Shape"),
+            ("Box", "(deftype Box"),
+            ("Weigh", "(deftrait Weigh"),
+        ] {
+            assert_eq!(
+                record_form(&introspection, &module, key),
+                Some(backing_form(prefix)),
+                "`{key}` takes its authored form from the backing file"
+            );
+        }
+        let box_source = introspection
+            .get(&FQSymbol {
+                module: module.clone(),
+                symbol: "Box".into(),
+            })
+            .and_then(|record| record.source.clone());
+        assert_eq!(box_source.as_deref(), Some("(deftype Box [:Int v])"));
+    }
+
+    // spec: design/int/session-persistence.md §2.4.2 — key and liveness: an
+    // impl keys by the live-turn projection, including the HKT echo head, and
+    // is live when `written_trait_impls` names it (own or imported trait).
+    #[test]
+    fn rehydrate_fills_impls_under_live_turn_labels() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        for (key, prefix) in [
+            ("Weigh.Box", "(impl Weigh Box"),
+            ("Show.Box", "(impl Show Box"),
+            ("Functor.Option", "(impl (Functor f)"),
+        ] {
+            assert_eq!(
+                record_form(&introspection, &module, key),
+                Some(backing_form(prefix)),
+                "impl `{key}` is rehydrated under its label"
+            );
+        }
+
+        let hkt = parse1("(impl (Functor f) (Functor Option) (defn fmap [g o] o))");
+        let built = crate::worker::build_program_compat(std::slice::from_ref(&hkt))
+            .expect("HKT impl builds");
+        let live_turn_key = crate::session_v4::definition_result_symbol(&module, &built[0])
+            .expect("an impl has a result symbol");
+        assert_eq!(live_turn_key.symbol.as_ref(), "Functor.Option");
+    }
+
+    // spec: design/int/session-persistence.md §2.4.2 — scope: private heads,
+    // and each `begin` member takes the outer form as a live turn does.
+    #[test]
+    fn rehydrate_fills_private_heads_and_begin_members_with_outer_form() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        assert_eq!(
+            record_form(&introspection, &module, "hidden"),
+            Some(backing_form("(defn- hidden"))
+        );
+        let begin = backing_form("(begin");
+        assert_eq!(
+            record_form(&introspection, &module, "a"),
+            Some(begin.clone())
+        );
+        assert_eq!(record_form(&introspection, &module, "b"), Some(begin));
+    }
+
+    // spec: design/int/session-persistence.md §2.4.2 — a cache-restored macro
+    // gets its authored form, not the published `macro_sexp`.
+    #[test]
+    fn rehydrate_gives_macro_its_authored_form() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        assert_eq!(
+            record_form(&introspection, &module, "twice"),
+            Some(backing_form("(defmacro twice"))
+        );
+    }
+
+    // spec: design/int/session-persistence.md §2.4.2 liveness — a form whose
+    // key names no live entry (a retained startup failure, an impl the table
+    // does not record as written here) is not rehydrated.
+    #[test]
+    fn rehydrate_skips_forms_whose_key_is_not_live() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        assert_eq!(
+            record_form(&introspection, &module, "retained-failure"),
+            None
+        );
+        assert_eq!(record_form(&introspection, &module, "Weigh.Shape"), None);
+    }
+
+    // spec: design/int/session-persistence.md §2.4.1–§2.4.2 absence — a REPL
+    // declaration's text-only record is authoritative: the file may hold an
+    // older generation, and rehydration must not replace it.
+    #[test]
+    fn rehydrate_keeps_authoritative_text_only_record() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let newer = "(deftrait Weigh (weigh [x] Int) (tare [x] Int))";
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "Weigh".into(),
+        };
+        introspection.entry(fq.clone()).or_default().source = Some(newer.to_string());
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        let record = introspection.get(&fq).expect("record kept");
+        assert_eq!(record.source.as_deref(), Some(newer));
+        assert!(record.sexp.is_none(), "the older file form is not attached");
+    }
+
+    // spec: design/int/session-persistence.md §2.4.2 absence — a record
+    // written by codegen alone carries no authored form and is filled.
+    #[test]
+    fn rehydrate_fills_clif_only_record() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: "hidden".into(),
+            })
+            .or_default()
+            .clif_ir = Some("function u0:0() {}".to_string());
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        assert_eq!(
+            record_form(&introspection, &module, "hidden"),
+            Some(backing_form("(defn- hidden"))
+        );
+    }
+
+    // spec: design/int/session-persistence.md §2.4.2 — an unparseable backing
+    // file rehydrates nothing.
+    #[test]
+    fn rehydrate_unparseable_file_fills_nothing() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let broken = format!("{REHYDRATION_BACKING}(defn unclosed [] ");
+        assert_eq!(rehydrate(&st, &introspection, &module, &broken), 0);
+        assert!(introspection.is_empty());
+    }
+
+    // spec: design/int/session-persistence.md §2.4.3 negative and §1.4 — a
+    // fully rehydrated module writes, and a `begin` shared by records in one
+    // section or across sections is rendered once rather than reported missing.
+    #[test]
+    fn rehydrated_module_regenerates_every_definition() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        let out = regen_ok(&st, Some(&introspection), &module);
+        for form in [
+            "(deftype Shape (Circle [:Int r]) (Square [:Int s]))",
+            "(deftype Box [:Int v])",
+            "(deftrait Weigh (weigh [x] Int))",
+            "(impl Weigh Box (defn weigh [x] 1))",
+            "(impl Show Box (defn show [x] \"box\"))",
+            "(impl (Functor f) (Functor Option) (defn fmap [g o] o))",
+            "(defn- hidden [] 1)",
+            "(defmacro twice [e] `(add-i64 ~e ~e))",
+        ] {
+            assert!(out.contains(form), "`{form}` regenerates: {out}");
+        }
+        assert_eq!(
+            out.matches("(begin (defn a [] 1) (defn b [] 2))").count(),
+            1
+        );
+        assert_eq!(out.matches(SPANNING_BEGIN).count(), 1, "{out}");
+        assert!(
+            out.find(SPANNING_BEGIN) < out.find("(impl"),
+            "emitted at its first position, the type section: {out}"
+        );
+        assert!(!out.contains("retained-failure") && !out.contains("Weigh Shape"));
+    }
+
+    // spec: design/int/session-persistence.md §1.4 — a REPL turn's `begin`
+    // spanning sections: the declarations' text-only records and the
+    // function's form record share one authored form, emitted once.
+    #[test]
+    fn regen_repl_begin_spanning_sections_emits_once() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        for key in ["Token", "Weigh.Token", "c"] {
+            let mut record = introspection
+                .entry(FQSymbol {
+                    module: module.clone(),
+                    symbol: key.into(),
+                })
+                .or_default();
+            record.source = Some(SPANNING_BEGIN.to_string());
+            if key == "c" {
+                record.sexp = Some(parse1(SPANNING_BEGIN));
+            }
+        }
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        let out = regen_ok(&st, Some(&introspection), &module);
+        assert_eq!(out.matches(SPANNING_BEGIN).count(), 1, "{out}");
+    }
+
+    // spec: design/int/session-persistence.md §1.4 — the function's form
+    // carries its offset in the input line, `  (begin …)`; a text-only record
+    // has no position, so the shared form still matches on its text.
+    #[test]
+    fn regen_repl_begin_after_leading_whitespace_emits_once() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let turn = format!("  {SPANNING_BEGIN}");
+        let offset_form = cranelisp_frontend::parse(&turn).unwrap().remove(0);
+        assert_ne!(
+            offset_form.span().start,
+            0,
+            "precondition: the form is offset"
+        );
+        for key in ["Token", "Weigh.Token", "c"] {
+            let mut record = introspection
+                .entry(FQSymbol {
+                    module: module.clone(),
+                    symbol: key.into(),
+                })
+                .or_default();
+            record.source = Some(SPANNING_BEGIN.to_string());
+            if key == "c" {
+                record.sexp = Some(offset_form.clone());
+            }
+        }
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+
+        let out = regen_ok(&st, Some(&introspection), &module);
+        assert_eq!(out.matches(SPANNING_BEGIN).count(), 1, "{out}");
+    }
+
+    // spec: design/int/session-persistence.md §2.4.3 — detection proof: remove
+    // one rehydrated record and the refusal names exactly that entry.
+    #[test]
+    fn regen_refuses_when_a_rehydrated_record_is_removed() {
+        let (module, st) = rehydration_fixture();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
+        introspection.remove(&FQSymbol {
+            module: module.clone(),
+            symbol: "Show.Box".into(),
+        });
+
+        let refusal = generate_module_source(&st, Some(&introspection), &module)
+            .expect_err("a missing record refuses the generation");
+        assert_eq!(refusal.0, vec![Symbol::from("Show.Box")]);
+        assert_eq!(
+            refusal.to_string(),
+            "`Show.Box`",
+            "the warning names the entry"
+        );
     }
 }

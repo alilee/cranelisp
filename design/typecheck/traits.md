@@ -206,9 +206,6 @@ re-resolves the bare name.
    equals a field accessor of the target type. The method and the accessor stay
    distinct canonical declarations
    ([`fixme-0365-field-accessor-dotted.md`](fixme-0365-field-accessor-dotted.md) §2).
-   As built, `check_impl_method_accessor_collisions` still rejects such an impl
-   before anything is written. That rejection is obsolete. Its defect intake is
-   `ACT-0983`, and its removal is §2.1 of the same document.
 4. **Completeness.** Every method without a default must be provided
    (`check_impl_methods_present`).
 5. **Target identity, resolved once.** The effective target resolves to one
@@ -384,9 +381,9 @@ bare trait name in the caller's scope:
 
 - the impl lookup (the keyed probe, typecheck §9.1.1);
 - the `FQTraitName` in the resolved call;
-- the declaration scan behind `method_self_in_return` and `hkt_param_index`,
-  which reads the method from its own trait at that home (`find_trait_method_decl`
-  with a trait filter);
+- the `hkt_param_index` declaration scan, which reads the method from its own
+  trait at that home (`find_trait_method_decl` with a trait filter);
+  `method_self_in_return` reads the canonical declaration directly;
 - constraint verification during monomorphisation (`verify_constraints`).
 
 The dispatch type follows the same rule: its identity comes from the type and
@@ -508,9 +505,6 @@ Violating any of these is an implementation bug.
 
 ## 11. Open items
 
-- **Impl-method accessor rejection.** The rejection in §3 step 3 is obsolete.
-  Intake is `ACT-0983`, and the removal design is
-  [accessor/impl overlap obligation](fixme-0365-field-accessor-dotted.md#21-unresolved-obligation--the-source-still-rejects-the-overlap).
 - **Dead default-body fallback.** `generate_default_methods` skips every method
   without a parsed default body before its hard-coded fallback runs, so
   `type_resolve::build_default_body` is reachable only from its own tests. The

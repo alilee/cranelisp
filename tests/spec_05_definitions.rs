@@ -1479,37 +1479,85 @@ fn type_member_accessor_typed_fn_of_type() {
     .assert_stdout_contains(":primitives/Int 7");
 }
 
-// spec: spec/07-traits.md §7.3.1 — impl-time collision rejection (FIXME 0365,
-// R3). A trait `impl` whose method name collides with the target type's existing
-// field-accessor name MUST be rejected at impl time with a diagnostic naming the
-// collision — the program does NOT run. Here `Box` has a field accessor `v`, and
-// the impl tries to define a method `v` for `Box` → compile-time error.
+/// Implement a one-method trait for `Box` (field `v`), then read the method
+/// through its canonical `Trait.method` value and the accessor through
+/// `Box.v`. The method yields 99 and the accessor 5, so a rejected impl loses
+/// the 99 and a method that displaced the accessor loses the 5.
+fn assert_impl_registers_beside_box_accessor(trait_name: &str, method: &str) {
+    let out = repl_prims(&format!(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftrait {trait_name} ({method} [x] primitives/Int))\n\
+         (impl {trait_name} Box (defn {method} [x] 99))\n\
+         (let [f {trait_name}.{method}] (f (Box 5)))\n\
+         (Box.v (Box 5))\n"
+    ));
+    out.assert_stdout_does_not_contain("Error")
+        .assert_stdout_contains_all(&[
+            &format!("impl user/{trait_name} for user/Box"),
+            ":primitives/Int 99",
+            ":primitives/Int 5",
+        ]);
+}
+
+// spec: spec/07-traits.md §7.3.1 — an impl method named like a field accessor of
+// its target type is permitted: `HasV.v` for `Box` registers beside the accessor
+// `Box.v` and neither replaces the other. RED before the S122 fix (ACT-0983):
+// the impl was rejected as colliding with the accessor.
+// Control: impl_method_with_distinct_name_registers_beside_accessor.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::check_impl_method_accessor_collisions found=S122 owner=/dev fixed=S122
+// The locus was deleted by the fix: registration no longer consults the
+// target's field accessors, and the shared bare spelling is resolved per use
+// (impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg).
 #[test]
-fn impl_method_colliding_with_field_accessor_rejected_neg() {
+fn impl_method_named_like_field_accessor_registers_beside_accessor() {
+    assert_impl_registers_beside_box_accessor("HasV", "v");
+}
+
+// spec: spec/07-traits.md §7.3.1; spec/08-modules.md §8.6.5 — with `HasV.v` and
+// the accessor `Box.v` both registered, the bare call `(v (Box 5))` is
+// compatible with both, so it is rejected as ambiguous and the diagnostic lists
+// both canonical declarations. A silent pick of the accessor adds a second 5;
+// a silent pick of the method adds a second 99. The canonical calls in the same
+// session supply exactly one of each and confirm both declarations registered.
+#[test]
+fn impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg() {
     let out = repl_prims(
         "(deftype Box [:primitives/Int v])\n\
          (deftrait HasV (v [x] primitives/Int))\n\
          (impl HasV Box (defn v [x] 99))\n\
-         (Box.v (Box 5))\n",
+         (v (Box 5))\n\
+         (Box.v (Box 5))\n\
+         (HasV.v (Box 5))\n",
     );
-    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
-    // The collision MUST be surfaced as a compile-time error naming the clash.
+    let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        combined.contains("collision")
-            || combined.contains("collide")
-            || combined.contains("conflict")
-            || combined.contains("already")
-            || (combined.contains("error") && combined.contains("accessor")),
-        "an impl method `v` colliding with `Box`'s field accessor `v` MUST be \
-         rejected at impl time with a diagnostic naming the collision (§7.3.1, \
-         FIXME 0365); got stdout={} stderr={}",
-        out.stdout,
-        out.stderr
+        combined.contains("ambiguous bare name 'v'")
+            && combined.contains("user/Box.v")
+            && combined.contains("user/HasV.v"),
+        "the bare call MUST be rejected as ambiguous, naming `user/Box.v` and \
+         `user/HasV.v` (§8.6.5); got:\n{combined}"
     );
-    // Negative: the colliding impl MUST NOT silently win — `(Box.v (Box 5))`
-    // MUST NOT return the method's `99` (the field accessor's 5 is the only
-    // correct value, and only if the impl is rejected rather than overriding).
-    out.assert_stdout_does_not_contain(":primitives/Int 99");
+    assert!(
+        out.stdout.contains("impl user/HasV for user/Box"),
+        "precondition: the impl MUST register beside the accessor; stdout:\n{}",
+        out.stdout
+    );
+    for value in [":primitives/Int 5", ":primitives/Int 99"] {
+        assert_eq!(
+            out.stdout.matches(value).count(),
+            1,
+            "`{value}` MUST come only from its canonical call; a second one is \
+             a silent pick by the bare call; stdout:\n{}",
+            out.stdout
+        );
+    }
+}
+
+// spec: spec/07-traits.md §7.3.1 — control for the accessor-named cell: the same
+// impl with a method name that no accessor of `Box` uses.
+#[test]
+fn impl_method_with_distinct_name_registers_beside_accessor() {
+    assert_impl_registers_beside_box_accessor("HasW", "w");
 }
 
 // =============================================================================

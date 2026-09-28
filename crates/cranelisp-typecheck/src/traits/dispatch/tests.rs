@@ -226,6 +226,111 @@ fn resolved_target_cross_module_trait_method_records_impl_writer_module() {
     }
 }
 
+// spec: spec/07-traits.md §7.4.2a — `Trait.method` dispatches wherever the
+// trait is in bare scope: at its home and through an import of the trait, but
+// not through an import of the method alone (ACT-1000).
+#[test]
+fn dotted_trait_method_dispatches_through_imported_trait_head() {
+    let mut tc = tc_with_prims();
+    tc.register_trait_decl_self(&make_test_trait_decl())
+        .unwrap();
+    tc.register_trait_impl_self(&test_trait_int_impl()).unwrap();
+    let home = cranelisp_types::ModuleFullPath::from("test");
+    let import = |tc: &mut TestFixture, module: &str, name: &str| {
+        tc.set_current_module(cranelisp_types::ModuleFullPath::from(module));
+        tc.symbol_table_mut()
+            .expose_candidate(
+                Symbol::from(name),
+                cranelisp_types::FQSymbol {
+                    module: home.clone(),
+                    symbol: Symbol::from(name),
+                },
+                Visibility::Public,
+            )
+            .unwrap();
+    };
+    let dispatch = |tc: &mut TestFixture| {
+        tc.try_resolve_trait_method_self(
+            &Symbol::from("TestTrait.test-op"),
+            &[Type::Int, Type::Int],
+            Span::SYNTHETIC,
+        )
+        .expect("should not error")
+    };
+
+    let at_home = dispatch(&mut tc);
+    import(&mut tc, "trait_importer", "TestTrait");
+    let via_trait_import = dispatch(&mut tc);
+    for (route, result) in [("home", at_home), ("trait import", via_trait_import)] {
+        match result {
+            Some(ResolvedCall::TraitMethod {
+                method_name,
+                mangled_name,
+                ..
+            }) => {
+                assert_eq!(method_name.as_ref(), "test-op", "{route}");
+                assert_eq!(
+                    mangled_name.as_ref(),
+                    "TestTrait.test-op$primitives/Int",
+                    "{route}"
+                );
+            }
+            other => panic!("{route}: expected a TraitMethod resolution, got {other:?}"),
+        }
+    }
+
+    import(&mut tc, "method_importer", "test-op");
+    assert!(
+        dispatch(&mut tc).is_none(),
+        "importing only the method does not bring `TestTrait` into bare scope"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.2 — eager dispatch of `Trait.method` under an
+// ambiguous parent spelling is rejected, not routed to the prelude's literal
+// key; §8.6.5 lists the surviving canonical parents (ACT-1001).
+#[test]
+fn dotted_trait_method_dispatch_rejects_ambiguous_trait_head() {
+    let mut tc = tf_prims();
+    for home in [crate::checker::PRELUDE_MODULE, "tm"] {
+        tc.set_current_module(cranelisp_types::ModuleFullPath::from(home));
+        seed_glob_import(
+            &mut tc,
+            &cranelisp_types::ModuleFullPath::from("primitives"),
+        );
+        tc.register_trait_decl_self(&make_test_trait_decl())
+            .unwrap();
+        tc.register_trait_impl_self(&test_trait_int_impl()).unwrap();
+    }
+    let user = cranelisp_types::ModuleFullPath::from("dot_user");
+    tc.set_current_module(user.clone());
+    tc.prelude_fallback.insert(user, true);
+    tc.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("TestTrait"),
+            cranelisp_types::FQSymbol {
+                module: cranelisp_types::ModuleFullPath::from("tm"),
+                symbol: Symbol::from("TestTrait"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+
+    let result = tc.try_resolve_trait_method_self(
+        &Symbol::from("TestTrait.test-op"),
+        &[Type::Int, Type::Int],
+        Span::SYNTHETIC,
+    );
+    let Err(error) = result else {
+        panic!("`TestTrait.test-op` under an ambiguous parent must not dispatch, got {result:?}");
+    };
+    let message = format!("{error}");
+    assert!(
+        message.contains("prelude/TestTrait") && message.contains("tm/TestTrait"),
+        "the rejection must list both canonical parents, got: {message}"
+    );
+}
+
 // spec: 07-traits §7.4.3 — no matching impl returns TypeError
 #[test]
 fn test_try_resolve_trait_method_no_impl() {
@@ -798,4 +903,102 @@ fn dispatch_of_scalar_beside_home_local_int_adt_mints_primitives_key_lockstep() 
         tc.symbol_table().get(mangled_name.as_str()).is_some(),
         "the definition side wrote `{mangled_name}`"
     );
+}
+
+// ===========================================================================
+// §7.4.2a — a `Trait.method` spelling dispatches like the bare method. The
+// written spelling is resolved to its canonical declaration, and the mangle
+// and builtin table read that declaration's method name, never the spelling.
+// ===========================================================================
+
+fn resolve_written(tc: &mut TestFixture, written: &str, arg_types: &[Type]) -> ResolvedCall {
+    tc.try_resolve_trait_method_self(&Symbol::from(written), arg_types, Span::SYNTHETIC)
+        .unwrap_or_else(|error| panic!("`{written}` must resolve: {error}"))
+        .unwrap_or_else(|| panic!("`{written}` must dispatch"))
+}
+
+// spec: spec/07-traits.md §7.4.2a — the qualified spelling of a user trait
+// method mints the same impl symbol as the bare spelling, and that symbol is
+// the one the definition side wrote.
+#[test]
+fn trait_qualified_method_dispatches_to_the_bare_method_impl() {
+    let mut tc = tc_with_prims();
+    tc.register_trait_decl_self(&make_test_trait_decl())
+        .unwrap();
+    tc.register_trait_impl_self(&test_trait_int_impl()).unwrap();
+    tc.clear_transient_state();
+
+    for written in ["test-op", "TestTrait.test-op"] {
+        let ResolvedCall::TraitMethod {
+            method_name,
+            mangled_name,
+            ..
+        } = resolve_written(&mut tc, written, &[Type::Int, Type::Int])
+        else {
+            panic!("`{written}` must resolve to a TraitMethod");
+        };
+        assert_eq!(method_name.as_ref(), "test-op", "{written}");
+        assert_eq!(
+            mangled_name.as_ref(),
+            "TestTrait.test-op$primitives/Int",
+            "{written}"
+        );
+        assert!(tc.symbol_table().get(mangled_name.as_ref()).is_some());
+    }
+}
+
+// spec: spec/07-traits.md §7.4.2a — `(Num.+ 1 2)` reaches the primitive
+// collapse exactly as `(+ 1 2)` does, rather than a doubled impl mangle.
+#[test]
+fn trait_qualified_primitive_operator_collapses_to_builtin() {
+    let mut tc = tc_with_prims();
+    register_num_for_int(&mut tc);
+
+    for written in ["+", "Num.+"] {
+        match resolve_written(&mut tc, written, &[Type::Int, Type::Int]) {
+            ResolvedCall::BuiltinFn { name } => assert_eq!(name.as_ref(), "add-i64"),
+            other => panic!("`{written}` must collapse to add-i64, got {other:?}"),
+        }
+    }
+}
+
+// spec: spec/07-traits.md §7.4.2a — through call-position inference, a
+// `Trait.method` callee records the impl's canonical mangle on the call.
+#[test]
+fn trait_qualified_call_records_the_impl_mangle() {
+    let mut tc = tc_with_prims();
+    tc.register_trait_decl_self(&make_test_trait_decl())
+        .unwrap();
+    tc.register_trait_impl_self(&test_trait_int_impl()).unwrap();
+    tc.clear_transient_state();
+
+    let call_span = Span::new(40, 62);
+    let mut call = Expr::Apply {
+        callee: Box::new(Expr::var(
+            Symbol::from("TestTrait.test-op"),
+            Span::new(41, 58),
+        )),
+        args: vec![
+            Expr::IntLit {
+                value: 1,
+                span: Span::new(59, 60),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 2,
+                span: Span::new(61, 62),
+                inferred_type: None,
+            },
+        ],
+        span: call_span,
+        resolved_call: None,
+        inferred_type: None,
+    };
+    assert_eq!(tc.infer_expr_for_test(&mut call).unwrap(), Type::Int);
+    match tc.state.method_resolutions.resolved_calls.get(&call_span) {
+        Some(ResolvedCall::TraitMethod { mangled_name, .. }) => {
+            assert_eq!(mangled_name.as_ref(), "TestTrait.test-op$primitives/Int");
+        }
+        other => panic!("expected a TraitMethod resolution, got {other:?}"),
+    }
 }

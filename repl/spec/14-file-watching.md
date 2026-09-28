@@ -16,7 +16,7 @@ New files in watched directories SHOULD be detected, but they do not trigger any
 
 The watcher MUST NOT watch directories that have not been imported. Stdlib directories are watched only if the prelude or a user module actually imported from them.
 
-### 14.2 Eager Recompilation [Tested+Neg tests/repl_watch::watch_does_not_notify_on_metadata_only_change]
+### 14.2 Eager Recompilation [Tested+Neg tests/repl_watch::watch_does_not_notify_on_metadata_only_change] [S122 — step 2 for a removed definition: no cell (ACT-1007)]
 
 When a `.cl` source file is modified (content change, not just metadata/timestamp), the watcher MUST:
 
@@ -25,6 +25,9 @@ When a `.cl` source file is modified (content change, not just metadata/timestam
 3. **Recompile immediately.** Re-read, re-parse, re-typecheck, and re-compile the module. Update GOT entries so callers get the new code.
 4. **Cascade to dependents.** Dependents of the changed module MUST also be recompiled in topological order.
 5. **Notify the user of the result.** Display `[updated: <file>]` on success or `[errors: <file>]` on failure (see §14.3).
+
+A reload that would change the structure of a live nominal type fails instead
+(§14.8).
 
 Recompilation is **eager** — it happens as soon as the change is detected (at the next poll opportunity, before the next prompt), not deferred until the module is accessed.
 
@@ -59,7 +62,7 @@ The format is `[errors: <file>]` followed by the error details on indented lines
 
 **Input preservation (nice-to-have):** If the user is mid-input when a notification arrives, the notification SHOULD print on a new line, then reinstate the partial input line so typing is uninterrupted. Implementation SHOULD use rustyline's `ExternalPrinter` API for this — with the S106 line editor (§10.8) now a normative default-build dependency, `ExternalPrinter` is the wired-in home for this behaviour on the interactive branch. As an interim approach, notifications MAY be deferred until the next prompt boundary (before the prompt is printed). Notifications MUST NOT corrupt the user's input.
 
-### 14.4 Error Blocking [Tested tests/repl_watch::watch_errors_block_evaluation_no_last_known_good]
+### 14.4 Error Blocking [Tested tests/repl_watch::watch_errors_block_evaluation_no_last_known_good] [Tested tests/repl_watch::watch_type_error_reload_of_imported_module_blocks_without_hanging — items 2–3 after an imported module fails typecheck, five sessions per run, 15 consecutive stress runs]
 
 When a module fails to recompile, the REPL MUST block further evaluation until the error is resolved:
 
@@ -105,3 +108,30 @@ File watching and the object cache work together:
 - Failed recompilations do NOT update the cache — the stale cache entry remains until a successful recompilation replaces it.
 
 This means that after editing one file, only that file and its dependents are recompiled — unchanged modules load instantly from cache.
+
+### 14.8 Structural Type Changes Require Restart [Tested+Neg tests/repl_persist::persist_external_edit_changing_field_type_fails_requiring_restart, tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart, tests/repl_persist::persist_compatible_save_after_structural_reload_failure_releases_the_file, tests/repl_persist::persist_reloaded_docstring_edit_of_repl_entered_type_survives_regeneration, tests/repl_persist::persist_reloaded_docstring_edit_of_file_loaded_type_survives_regeneration, tests/repl_persist::persist_external_edit_changing_defn_body_reloads_control, tests/repl_persist::watch_imported_type_field_reorder_fails_requiring_restart — entry-module field-type and field-count reloads fail with the type and restart named; the rejected turn leaves the saved file; a repeated structural save fails again; restart establishes the edit; a compatible save releases the failure; docstring-only and body-only edits reload; an imported module's field reorder fails with the type and restart named, its dependent runs neither layout and `/quit` is read, 15 consecutive stress runs. Payload-label, type-parameter and visibility facets, and a structural reload beside another module standing failed, are unit-evidenced only]
+
+A watcher reload MUST NOT change the structure of a live nominal type. When a
+changed file redeclares a `deftype` whose canonical name is live in the
+session, and the redeclaration is not structurally identical to the live
+declaration under
+[§18.5](18-redefinition.md#185-type-declaration-re-establishment), the reload
+of that file fails:
+
+- The `[errors: <file>]` notification (§14.3) identifies the type and states
+  that a restart is required to establish its changed structure. This
+  information is normative; wording and layout are implementation-defined.
+- Error blocking and module state follow §14.4–§14.6.
+
+A structurally identical redeclaration, such as one that changes only
+docstrings or positional sum-payload labels, does not fail under this section.
+
+While such a failure stands, the REPL MUST NOT overwrite the failed file; the
+saved content remains on disk. A REPL turn whose success would regenerate that
+file (§15.1) is therefore rejected and leaves the session and the file
+unchanged. The failure stands until a later save of the file reloads
+successfully (§14.4 item 4) or the REPL restarts. A restart compiles the saved
+source with no prior live declaration (§15.2), so it establishes the changed
+type.
+
+This retention applies only to a failure under this section.

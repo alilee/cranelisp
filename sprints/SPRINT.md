@@ -1,24 +1,31 @@
 # Sprint 122: Known-issue closure and REPL-agent evaluation
 
-**Status:** PHASE 5, final correction batch verified; DT-1 carry approved.
-Latest consumer checkpoint: `236aa44d`; local shared-package checkpoint:
-`c339fa7`. The REPL cache crash repair is committed, independently reviewed
-and QA-adequate, with 2000 successful stress sessions. BN-1 and IR-1 are
-implemented and independently reviewed; all 948 typecheck tests pass, and
-AD-6 is delivered. Final verification is complete and QA judges this batch
-adequate. The user approved carrying the RED discovery test under `--run`
-with ACT-0988's explicit test-harness work; its unignored guard is retained.
+**Status:** PHASE 5. The shared test runner is delivered and its public API
+confirmed. P3/P4/P5 persistence corrections and the approved restart boundary
+are implemented and have bounded QA adequacy. Structural type changes now
+require restart; the live field-type crash and imported-module failed-reload
+hang are fixed. The finding-scoped reload-outcome correction passed independent
+review. Mechanical record cleanup is complete. Whole-sprint acceptance is not yet
+requested.
 
-The latest full run passed 6200 tests, with only the newly retained DT-1
-`--run` discovery case failing and one skipped. The standing-document checker
-reports zero findings across 510 documents. Historical audits are retired to
-Git with open points retained. The bounded Haiku eval, earlier compiler and
-cache-dependency corrections have recorded evidence below.
+Latest consumer checkpoint: `0272a5d9`; local shared-package checkpoint:
+`c339fa7`. Later corrections and tests remain uncommitted. The final default
+suite passes **6336 tests, with one skipped and zero failures**. Persistence
+and watch binaries pass 71/71; imported structural refusal passes 15 stress
+iterations, and the new outcome-selection units pass 10 iterations.
 
-C-A cache-corruption hardening, DLL version alignment (ACT-0993) and the
-later-REPL-turn child declaration question (ACT-0995) are user-deferred.
-ACT-0994 remains open QA intake. Reservations and dispatch provenance appear
-at the end of this plan. No phase transition or publication is authorized.
+The [whole-sprint QA reconciliation](../tests/plan/s122-evidence-delta.md#phase-5-acceptance-reconciliation-2026-09-27)
+owns remaining obligations; the [restart-boundary judgment](../tests/plan/s122-evidence-delta.md#restart-boundary--final-adequacy-2026-09-29)
+owns this correction's evidence and limits. General failed-reload edit loss
+(ACT-0998 face 2) still needs user disposition, and ACT-1007 remains separate
+intake. The cache-restored dependency completion window is a recorded,
+unreproduced residual; its canonical limit and falsifier are in
+[REPL lifecycle design](../design/int/repl-lifecycle.md#13-failed-reload).
+
+Macro-order edge-case investigation is user-deferred to S123 or S124 under
+[ACT-1005](actions/ACT-1005-macro-order-regeneration-edge-cases.md). Earlier
+approved deferrals remain recorded below. No commit, phase transition or
+publication is authorized. NOTES and the dirty shared package remain untouched.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
 issue records truthful, and deliver a repeatable REPL-agent evaluation baseline.
@@ -2335,7 +2342,7 @@ actual rendering evidence. It did not allocate tests merely because direct
 remain in the scheduling design.
 
 New source-read leads remain unconfirmed:
-[ACT-0980](actions/ACT-0980-cache-restored-declaration-persistence-intake.md)
+ACT-0980 (retired 2026-09-27)
 prioritizes potential authored-source loss after warm-cache regeneration;
 [ACT-0981](actions/ACT-0981-multi-signature-io-scheduling-intake.md) follows with
 multi-signature automatic scheduling. Neither is closed or represented as a
@@ -2436,7 +2443,7 @@ completed inversion, rollout and facade-migration plans are retired into Git.
 Sibling ADT/trait descriptions and the backend's primitive-startup hook name
 are aligned. Source and test assertions are unchanged.
 
-[ACT-0983](actions/ACT-0983-accessor-impl-collision-intake.md) retains the
+ACT-0983 (resolved; filing retired) retains the
 obsolete accessor/impl rejection for QA reproduction; it is not closed by the
 document edit. ACT-0984 (resolved; filing retired)
 retains the trace-under-link rejection test's conflict with current authority.
@@ -5134,3 +5141,1107 @@ stress evidence: only records changed afterward. The reconciliation must
 separate delivered outcomes, approved carries, unresolved obligations and
 work belonging to the later user-facing phases. This is not approval to
 advance to Phase 6a, close the sprint or push.
+
+Checkpoint `0272a5d9` commits 47 files for the verified correction batch and
+approved carries. `.agents` and NOTES were excluded. The 28 changed Rust
+source/test inputs match the final suite's recorded hashes. BN-1 and IR-1
+regression stamps now name this fixing commit; only comments changed.
+
+QA `c9e0e0c9-a21d-4313-87ca-c87b9a00482b` (Claude Opus5.5/high) owns the
+whole-sprint Phase 5 reconciliation in `tests/plan/`, with no Cargo or source
+changes. This extends the acceptance assessment across the included sprint
+outcomes; it does not repeat the completed implementation reviews.
+
+QA completed the reconciliation and released its reservations. All delivered
+compiler corrections have adequate evidence at the checkpoint; Phase 5 as a
+whole is not yet ready for acceptance. The canonical QA section above owns
+gates G-1–G-7, the inventory dispositions and the proposed T1–T4 test visit.
+The proposed visit groups persistence cases on one surface and refreshes the
+offline agent lane without another paid model run. It includes no production
+fix or semantic decision. T5, platform function-signature rejection evidence,
+remains an optional addition. Unapproved carries remain open; later-phase
+work stays at its declared checkpoint.
+
+### Grouped acceptance verification authorised — 2026-09-27
+
+The user's “proceed” authorises QA's T1–T4 visit: offline agent verification,
+macro replacement persistence, accessor/impl overlap, and warm-cache authored
+declaration preservation. T5 is not selected. One test role owns Cargo and test
+sources; no production fixes, live-model run, commit or phase transition is
+included. Claude Opus 5.5/high follows the user's persistent model allocation.
+QA will assess the completed evidence before confirmed defects return for
+individual decisions.
+
+Test session `74921814-d0e4-48db-a061-f5c76557965f`, agent
+`40d6b7c8-073e-4ca9-8e45-e8e3309c3558`, holds that reservation.
+
+Test completed T1–T4 and released Cargo/test sources. Offline checks pass
+81/81 (agent lane), 137/137 (agent modules), 18/18 (eval self-check).
+Focused evidence is four failing subjects and four passing controls: macro
+persistence, accessor/impl overlap, warm-cache declaration preservation,
+and a separately isolated qualified trait-call failure discovered by T3's
+first control. Production source is unchanged. QA now assesses attribution,
+the adjusted control and the equivalent agent invocation, and reconciles
+owned evidence. Two stale test-name citations require mechanical repair.
+
+QA session `30557f17-82d2-4d8a-806f-5f66b2707a23`, agent
+`727f58f2-9acd-4251-adb4-fa46007eba4c` (Claude Opus 5.5/high), completed
+assessment and released its reservations. The
+[assessed T1–T4 evidence](../tests/plan/s122-evidence-delta.md#acceptance-verification-t1t4-2026-09-27)
+satisfies G-1 and confirms G-2/G-3/G-4/G-7. The equivalent isolated agent
+invocation is adequate; no repeat is needed. Exact QA handoffs repair defect
+comments and the stale design citation, without executable changes.
+
+The next proposed decision is repair of authored-source loss (ACT-0980), with
+the related macro-persistence defect (ACT-0970) grouped into the same src
+implementation visit if both fixes are selected. Integration design must settle
+the restoration approach first; any public-API or schema change returns to its
+existing approval gate. Typecheck owns the other two failures (ACT-0983 and
+ACT-0996); they remain open for subsequent disposition. No carry, fix, commit
+or phase transition is inferred from the verification approval.
+
+After mechanical handoffs, the document checker passes (511 documents, zero
+findings), all three citation-drift tests pass, and both traceability checkers
+report zero unresolved or malformed citations. NOTES retains its prior hash;
+no production source changed and no commit was made in this visit.
+
+### Persistence repairs authorised — 2026-09-27
+
+The user's “ye” approves repairing ACT-0980 and ACT-0970 together, following
+the presented recommendation. Integration design settles declaration
+restoration, then one src implementation visit repairs both failures, with
+focused regression evidence, independent review and QA adequacy. Existing
+public-API/schema approval gates still apply. The trait defects remain outside
+this repair batch; no commit, push or phase transition is authorised.
+
+Design(int) session `e2c47cf1-1cab-4884-8337-133655bf281e`, agent
+`3b51cf08-159b-47d3-810a-760b722cfc39` (Claude Opus 5.5/high), owns
+the bounded restoration design; no source or Cargo reservation is active.
+
+Design(int) completed a private restoration approach in the existing
+persistence design: no public API, cache schema or consumer-edge change.
+A missing renderable entry prevents overwriting the backing file and emits a
+save warning. QA assesses that material evidence delta and the cold-load face
+before implementation. Spec independently reconciles the pre-existing §15.4
+rule 6 metadata wording; no normative change is approved. Design's additional
+source-read leads remain unconfirmed intake, not expanded repair scope.
+
+Readiness QA `b5cd740d-28f4-4705-96a0-ffa0536c85b8` owns the evidence
+delta; spec `8e8d9a26-3aca-411d-aa84-96c2bc34c22c` is read-only on rule 6.
+Dev(src) `8e37eea9-aa6c-4588-ac5b-97199edd6e62` owns src/module tests and
+Cargo, proceeding from established REDs and the completed private design.
+All use Claude Opus 5.5/high. The independent test visit and one full suite
+follow release of the source reservation; no concurrent Cargo owner exists.
+
+Dev completed both private fixes: 19/19 focused module cells, 873/873 library
+tests and 247/247 neighboring e2e tests pass; zero new clippy warnings. Source
+and Cargo are released. Test `4dd16de5-700f-4099-80c3-e7f3c7de6bde` now owns
+Cargo and final e2e evidence. PC-1 uses a preserved compiler with the prior
+QA binary's identical SHA-256 to establish pre-fix behavior after compilation
+of the new test; no source reversion or concurrent build is needed. The full
+suite is run once after this change. Independent review is read-only.
+
+Spec found a conflict between the S52 cache-source requirement and later
+user-ratified D1/S81 rehydration. The user requested background on the proposed
+cache-independence replacement; no wording approval has been given. The repair
+is neutral to that pre-existing open requirement, which remains unclaimed.
+
+The first test session's transport wait ended before Cargo release; test
+`afb52b8f-95e7-4a48-8e39-0267bcc5eb9b` completed the remaining visit.
+The coordinator executed its exact direct-test pre-fix command against the
+retained compiler: PC-1 and T4 fail with lost declarations, while the 0220
+control passes. This fills the provider-permission execution gap without
+source changes or another build. PC-1/T2/T4 and controls pass post-fix.
+
+The full run reports 6222 run, 6218 passed, four failed, one skipped: the
+three open trait/discovery guards plus a stale QA citation, now repaired.
+The coordinator also ran the literal offline agent launcher: 81/81 pass.
+
+Review `95312c70-f526-4b1a-a8eb-486d746df1fc` raised F1–F3/A1 for
+classification. QA `6cd4722e-31f8-4da3-8264-d776cdc167ce` supplied a
+bounded before/after probe basket, executed by the coordinator. F1's import
+renames and F3's watcher reload fail their preconditions on both binaries;
+they do not confirm the predicted regression. F2 duplicates a mixed-section
+begin but restores its tested values; pre-fix file loading lost them. A1
+agrees across both binaries. QA `e8f155f5-8ec9-4b1f-8c45-c37e5f65f46b`
+finalises those observed classifications and the selected-fix adequacy.
+All roles remain Claude Opus 5.5/high. No source change followed the full run.
+
+Final QA accepts the two selected persistence corrections and retires
+ACT-0970 and ACT-0980. F1 is unreachable until import renames work; ACT-0997
+retains that gap and the future identity obligation. F3's predicted successful
+reload path was not reached; ACT-0998 retains the existing failed-reload and
+source-overwrite observations. A1 agrees across pre/post binaries. Exact
+mechanical F1/F3 design-record corrections are applied.
+
+F2 remains an observed, bounded duplicate of a begin spanning declaration
+sections; its tested types and values round-trip after the repair. Fix or
+carry remains a user choice, not a blocker to the selected correction's
+adequacy and not an approved carry. Other G-8 residuals stay explicit in
+QA's evidence carrier. Rule 6 wording still awaits the user's decision.
+No commit, phase transition or publication has occurred.
+
+Final mechanical verification: 511 documents, zero findings; citation-drift
+3/3 pass; 2589 valid test-to-spec citations, zero malformed/mis-cited;
+898 live spec-to-test citations, zero unresolved or awaiting QA. NOTES is
+unchanged. No role or Cargo reservation remains active.
+
+### Cache-independence requirement approved — 2026-09-27
+
+The user's “yes” approves replacing REPL §15.4 rule 6 with: “Cache
+independence: Rules 1–4 MUST hold whether the module's current definitions
+were compiled from source or restored from the object cache (§14.7).”
+This removes the source-in-cache-metadata obligation; it does not establish
+coverage of every regeneration invariant. Spec applies the exact wording,
+then QA reassesses the coverage band using existing evidence. Other G-8
+residuals, F2 fix/carry, commit and phase transition remain undecided.
+
+Spec `c86f33e5-04ab-4d43-b20b-0276169b4e38` applied the approved sentence
+verbatim. Its exact mechanical design handoff is applied. QA
+`58ba60ae-a506-405f-abed-a1e715ae9ef3` reassesses only the rule 6 and section
+coverage band and stale QA status. Both roles use Claude Opus 5.5/high.
+No production code or test execution changes are needed for this wording edit.
+
+The approved rule 6 wording and matching design sentence are applied. QA
+marks rule 6 and the §15.4 summary partial: existing evidence covers
+round-trip correctness on both source and cache paths; rules 2–4 have no
+allocated ordering/qualification/structural-order observations. That coverage
+gap remains in G-8; the normative wording decision is settled. Document and
+traceability checks pass, with 511 documents and zero findings. No code
+changed, no tests reran, no commit occurred, and role reservations are released.
+
+### Mixed-section begin repair approved — 2026-09-27
+
+The user's “continue” approves fixing F2 now: emit one authored begin once
+across declaration sections. PC-8 supplies REPL-entered and file-loaded
+regressions, then dev repairs the private save path under the existing §1.4
+design. Focused validation, independent finding-scoped review and QA follow.
+No API/schema change, trait repair, commit or phase transition is included.
+
+Test `e088d4c3-8c46-489a-bb6a-9f78dd93cf82` (Claude Opus 5.5/high)
+established both PC-8 legs RED at exactly two copies, with both sibling
+controls passing. It released tests and Cargo. Dev(src) now takes the private
+section-composition repair, preserving previous fixes and their evidence.
+
+Dev(src) `c597de34-ffd4-48e9-8a9d-a54c3607907f` completed the private
+save correction. PC-8 and its controls pass 4/4; persistence passes 43/43;
+save module tests pass 60/60. The final-source full run has 6226 tests:
+6223 pass, the three known ACT-0983/ACT-0996/DT-1 failures remain, and one
+is skipped. Source and Cargo are released.
+
+Independent review(src) `0c3706fa-346b-451d-8c91-8cd1aba674d8` reports no
+blocking or required finding. Its evidence advisory, authored-identity lead
+and pre-existing macro-ordering lead go to QA for classification. QA
+`3aceb6c8-db63-4aea-959c-866f04c96a22` assesses PC-8 adequacy and updates
+its current evidence carrier. All three roles use Claude Opus 5.5/high.
+
+QA accepts PC-8: F2 is corrected and the evidence is adequate. The coordinator
+executed QA's exact diagnostic basket after its host refused binary execution.
+All 28 sessions completed: four broader begin shapes save once and round-trip;
+the two macro-ordering examples reload; the generated-name example loses no
+type. QA's conditional handoff closes those leads without another role visit.
+The evidence carrier and QA-owned §15.4 coverage annotation are updated
+mechanically. Existing unrelated residuals remain; no new carry is introduced.
+All role and Cargo reservations are released. No commit or phase transition.
+
+### Trait correction batch approved — 2026-09-27
+
+The user's “continue” approves the proposed combined ACT-0983/ACT-0996
+correction: accessor-named impl methods and qualified trait-method calls.
+The T3/G-7 QA allocation and existing independent REDs govern the batch.
+Dev(typecheck) owns private implementation and module evidence; test completes
+the allocated ambiguity negative after registration works. One final full
+run, independent review and QA adequacy follow. No public API/schema change,
+commit or phase transition is included.
+
+Dev(typecheck) `fb8de8e0-d7d3-43f9-832e-c5c90d664da7` established seven
+module REDs with two green controls, then corrected both defects privately.
+The nine focused cells, 950 crate tests, 308 nearby acceptance tests and 285
+additional dispatch checks pass. Its exact stale-design removals are applied.
+Source and Cargo are released. Review(typecheck)
+`c66ea8fd-5a4e-47a0-b810-621ca71bf2de` inspects independently; test
+`0bbfcfd7-6f72-40a9-ad76-c6e6f33fecfd` owns the remaining ambiguity negative,
+test comment/format upkeep and the final full run. All use Claude Opus 5.5/high.
+
+Review reports no source blocker. Its stale-design finding R1 is corrected,
+including the extra open-item bullet; document checks return to 511/0.
+The test visit adds the allocated ambiguous bare-use negative and records
+seven focused passes. Final full run: 6229 run, 6228 pass, one known DT-1
+failure, one skipped. Source/test hashes are recorded and no source changed
+after that run. Test and Cargo are released.
+
+QA `52f70ea7-da85-474a-bec6-af71f7cb816b` (Claude Opus 5.5/high) assesses
+adequacy and classifies review R2 (qualified return-type dispatch) and A2
+(mode/module qualification coverage). These are observations awaiting
+classification, not approved carries or automatic additions to fix scope.
+
+QA accepts and retires ACT-0983. ACT-0996's REPL/module evidence is adequate;
+its final mode observation awaits correction of an invalid stdlib fixture.
+The coordinator executed the bounded basket: ordinary user-trait batch calls
+and module-qualified calls pass. R2 is confirmed: unpinned qualified nullary
+calls report an internal codegen error while bare calls report type ambiguity;
+pinned controls pass. Per QA's conditional handoff, ACT-0999 retains the
+observation. Test `cb5d2d19-8c68-45d6-938e-513a7c61be3f` (Claude Opus
+5.5/high) records its RED/control pair and resolves the observer fixture.
+No fix or carry of ACT-0999 is presumed.
+
+The corrected A2-R fixture passes through the test harness (batch exit 10),
+so QA's conditional handoff retires ACT-0996. Both original trait corrections
+are complete. ACT-0999 now has a permanent failing, unignored ambiguity
+subject and passing pinned control; the two corrected call controls pass in
+the same targeted run (3 pass, 1 intended failure). This addition followed
+the full-suite measurement above; no production source changed.
+
+The probe also isolated imported-trait dotted lookup as a separate observation;
+ACT-1000 retains it for QA classification. It is not an approved carry or
+fix. ACT-0999's fix/defer decision returns to the user. All roles and Cargo
+are released. No commit or phase transition occurred; NOTES remains untouched.
+
+### Qualified return-dispatch correction approved — 2026-09-27
+
+The user's “ok” approves fixing ACT-0999 now: qualified unresolved
+return-polymorphic calls must report the specified type ambiguity, while
+explicitly typed calls continue to dispatch. Existing RED/control evidence
+and QA's R2 handoff govern the private typechecker correction. Dev module
+evidence, focused/full validation, finding-scoped review and QA adequacy
+follow. ACT-1000 remains separate intake; no public API/schema change,
+commit or phase transition is approved.
+
+Dev(typecheck) `c05fc487-39e3-45d3-9191-d1e4dc4f975e` confirms the mechanism
+with module REDs and corrects the three ambiguity gates privately. Crate
+953/953 and nearby acceptance 397/397 pass. Full run: 6234 run, 6233 pass,
+one known DT-1 failure, one skipped; two passing search tests have nextest
+LEAK markers for QA classification. Source and Cargo are released.
+Review(typecheck) `aaad9245-e452-489c-8099-29b674a23fb1` performs the
+finding-scoped inspection. Both roles use Claude Opus 5.5/high.
+
+The coordinator replayed the existing QA batch observer in fresh disposable
+directories: bare and qualified unpinned calls both produce located §3.11
+ambiguity errors (exit 1), and the pinned qualified case exits 7. The dev's
+exact mechanical traits-design wording update is applied. No production
+source changed after the full run.
+
+Finding-scoped review finds the correction sound with no source blocker.
+Its required design-record correction is applied; test defect framing awaits
+QA retirement. QA `796e8b2d-6675-42d0-90d4-462e98376720` (Claude Opus
+5.5/high) assesses adequacy, the review's advisories and the two nextest
+process-output flags. No broader implementation is dispatched.
+
+QA accepts ACT-0999 and retires its filing. The required comment-only test
+framing and `fixed=S122` stamp are applied mechanically; a commit SHA awaits
+commit authorization. No source behavior changed after the full run.
+The nextest flags did not recur in a focused 3/3 run and are diagnostic only.
+Review's HKT fallback lead remains in QA's existing same-named-trait coverage
+gap; no defect, carry or extra implementation is presumed. ACT-1000 remains
+separate unresolved intake. All roles/Cargo are released; no commit or phase
+transition, and NOTES remains untouched.
+
+### Imported-trait dotted-member assessment approved — 2026-09-27
+
+The user's “ok” approves assessing ACT-1000 against the specified derived
+dotted-member rules and recording a minimal permanent regression if confirmed.
+QA classifies the existing observations and allocates independent test evidence.
+No production correction, carry, commit or phase transition is presumed.
+
+QA `0bc6d72e-c5a4-471c-a6e9-428c377f7f50` (Claude Opus 5.5/high)
+confirms ACT-1000 against settled derived-dotted-access rules. Its source
+attribution to type-only parent lookup is provisional; current-binary
+execution belongs to the allocated test visit. One regression covers a
+same-fixture fully qualified control, direct trait import, and prelude
+re-export. No new semantics are needed. QA released its reservation.
+
+Test `9bb2614b-bd01-4f68-a1ec-840ba8163fc9` (Claude Opus 5.5/high)
+records the allocated permanent regression. On the current post-ACT-0999
+binary, the fully qualified control exits 5, while both imported-parent
+subjects fail with undefined `T.m`. The neighboring imported type-member
+control passes. Focused result: 1 pass, 1 intended failure. QA's mechanical
+coverage-band and intake updates are applied; no extra QA visit is needed
+for this as-allocated outcome. Assessment and reproduction are complete;
+ACT-1000's fix/defer decision returns to the user. All roles/Cargo released;
+no production edit, commit, carry or phase transition.
+
+### Imported-trait dotted-member correction approved — 2026-09-27
+
+The user's “go” approves fixing ACT-1000. Existing QA allocation and
+independent RED/control govern the private typechecker correction. Dev first
+checks the provisional lookup attribution with module evidence, then implements
+and validates; focused review and QA adequacy follow. No public API/schema
+change, commit or phase transition is included.
+
+Dev(typecheck) `92e44ba3-b341-419a-882a-79b4c7228ae3` corrects trait-parent
+lookup and its immediate dispatch seam, with four module regressions. Crate
+957/957 and relevant acceptance 219/219 pass. Full run: 6239 run, 6238 pass,
+one known DT-1 failure, one skipped. Source and Cargo are released.
+Review `6cac1ba8-5566-4b75-a3a8-a1543240c0df` finds no code blocker; its
+required stale-design repair goes to design(typecheck)
+`28dbbdee-c4fb-4759-8b5f-ceeec322cb91`. QA
+`b596d1d8-2bed-4567-bc99-435f461c8e97` assesses adequacy and classifies the
+prelude-shadow precedence lead. These roles use Claude Opus 5.5/high.
+No additional implementation, commit or phase transition is presumed.
+
+QA accepts ACT-1000 and retires its intake. Its coverage-band handoffs and
+comment-only `fixed=S122` stamp are applied. Design's R1 records repair,
+crate guidance, nearby rustdoc and the supplied census wording are applied;
+no behavior changed after the full run. Document checks pass at 510/0.
+
+The coordinator executes QA's diagnostic basket on binary `e8c43e58…29bbf3`:
+P-1 returns 104 with qualified/prelude controls 5/104; P-2's six legs return
+5. Dotted full/partial and qualified partial calls return 5; the bare partial
+control lacks a method import and reports undefined `m`. QA
+`462807af-39e5-458e-8a8d-fab459318a56` classifies these observations under
+ACT-1001. No correction or carry of that separate intake is approved.
+
+QA confirms ACT-1001 P-1 as wrong acceptance under an ambiguous trait
+parent; its mechanism remains provisional pending the bare-parent control.
+P-2 does not reproduce in the six-leg basket and remains a source lead.
+The partial-application subject and independent qualified control pass;
+the invalid bare-method fixture invalidates only itself. ACT-1000 remains
+accepted. Test `dccf412e-45c4-4986-ac93-4198ccf45dde` (Claude Opus 5.5/high)
+records P-1's allocated permanent RED and discriminating control; no production
+fix or carry is authorized. Only focused tests are needed.
+
+Test records ACT-1001 P-1 as an unignored RED with passing controls. The
+ACT-1000 neighbour remains GREEN (focused one pass, one intended failure).
+The bare-parent discriminating control rejects with `unknown trait: T`,
+not ambiguity; that diagnostic detail and the provisional locus remain
+for QA. The evidence and coverage handoffs are recorded. The approved
+ACT-1000 fix is complete; the separate P-1 fix/defer decision returns to
+the user. No commit or phase transition occurred; NOTES is unchanged.
+
+### Ambiguous dotted-parent correction approved — 2026-09-28
+
+The user's “fix that” authorizes ACT-1001 P-1's correction. The permanent
+wrong-accept RED and its passing controls govern the work. QA settles the
+pending attribution/diagnostic detail; design(typecheck) shapes the private
+correction before dev implements it. P-2's unreproduced dispatch-index lead
+is outside this fix. No public inter-crate API/schema change, commit or phase
+transition is authorized. Preserve the existing dirty tree and NOTES.
+
+QA `3ad8b50a-ef74-4e12-9074-6965527f6a6b` retains the typechecker locus
+pending module evidence and aligns the regression with §8.6.5: require
+both canonical parent alternatives, not a particular ambiguity word. The
+coordinator applies that exact assertion handoff and records RED at 104;
+the ACT-1000 control remains GREEN. Design
+`10703c46-1b1d-4a50-9355-65da63261984` supplies one fallible dotted resolver
+with no literal-key fallback. Its changes are private to the typechecker.
+Both roles use Claude Opus 5.5/high. Dev implements and validates next.
+
+Dev(typecheck) `5785a5a8-1828-4e6c-a473-1b58d9e0cd72` confirms the
+mechanism with four pre-fix REDs (trait/type parent, pattern, eager dispatch)
+and a passing unique-parent guard. One fallible dotted core now supplies
+identity and type without a literal-name fallback. All 963 crate tests and
+302 nearby integration tests pass. Full run: 6246 run, 6245 pass, one known
+DT-1 failure, one skipped. Source/Cargo are released. Review
+`6a5e4a4a-5653-48fd-95ec-f8cb12246696` inspects the correction independently;
+both roles use Claude Opus 5.5/high. Dev's exact design-name handoff is applied.
+
+Review F1 identifies a plausible over-reject introduced by resolving the
+parent before filtering its role; F3 identifies a skipped value-path gap
+reset. QA `1d690c1d-c477-4410-a07b-972b0e0c59f8` allocates four ordinary-
+declaration module guards plus the gap reset test, with no extra e2e.
+Design `885fa3a6-d316-48c1-95b7-b1032eaed0ae` amends the private shape to
+share the existing type-role predicate and count only type/trait parents.
+Dev `b5ed14af-1c50-479b-8998-686ddf97da76` implements that finding-scoped
+correction. All use Claude Opus 5.5/high. F2 is mechanically repaired, F4
+is answered in the dev result, and QA allocates no additional F5 privacy
+cell. P-2 and the separate P-3 impl-head diagnostic remain outside the fix.
+
+F1/F3 dev observes five pre-fix REDs through ordinary declarations, then
+corrects role filtering and the stale-gap reset. Four cells turn GREEN;
+the pattern cell advances to a separate `instantiate_ctor` lookup failure.
+A bare-pattern control fails identically, while constructor calls pass.
+Crate result: 968 run, 967 pass, that one retained RED; nearby integration
+302/302. No full suite repeated at this point. Source/Cargo are released.
+QA `5422f124-3225-49ca-a286-1107f3116cfd` classifies the independent
+pattern issue and assesses adequacy. Review
+`4746563d-38c3-41db-b203-67151ccb06dc` performs the single F1/F3
+re-review. Both use Claude Opus 5.5/high. The newly existing shared predicate
+is added to the design's cross-reference list by exact handoff.
+
+QA accepts ACT-1001 P-1 and F1/F3; the single re-review has no blocking
+or required finding. Final suite: 6251 run, 6249 pass, two failures (DT-1
+and the independent pattern defect, ACT-1002), one skipped. No production
+source changed afterwards. The coordinator applies QA's exact H1 module
+cell and test annotations: focused one pass (pattern-head resolution),
+one expected failure (later pattern instantiation). This satisfies QA's
+last condition without another review or full-suite run. The supplied
+coverage bands and fixed stamp are applied. P-1 is complete; ACT-1001
+remains open only for P-2/P-3, and ACT-1002 retains the newly isolated
+pattern fault. No further fix, carry, commit or phase transition is
+authorized. NOTES is unchanged.
+
+### Green-suite work approved — 2026-09-28
+
+The user's “agreed” approves fixing ACT-1002, then bringing forward the
+minimum explicit `--test` harness work needed to replace DT-1's interim
+ordinary-run expectation with correct positive and negative coverage.
+Broader project-wide discovery remains deferred. This supersedes the DT-1
+carry only for that minimum increment; unsettled harness invocation and
+REPL policy return as concrete requirement decisions. No commit, public
+inter-crate API change or phase transition is authorized. Preserve NOTES
+and the existing dirty tree. Design and QA assess ACT-1002 while spec
+prepares the minimum harness requirement decision packet independently.
+
+Design(typecheck) `442d13fc-6c14-4835-9f15-2061c238544e` supplies the
+ACT-1002 private design. QA `526479c5-bf71-433e-803a-871dddf86a24`
+allocates one independent end-to-end RED and module evidence. Test records
+that RED before production changes; the design leaves M4's separate
+scrutinee-directed spelling lead out of scope. Spec
+`475703ea-daee-408a-8e45-210fb1602ae0` returns the minimum harness decision
+packet. The first question, `--test` invocation behavior, is pending with
+the user; ACT-1002 proceeds independently. These roles use Claude Opus 5.5/high.
+
+Test `c3fca9ee-dd7e-4ec6-851a-0c6fe355498e` records T1 RED across fresh
+and cached REPL/run/link executions; the existing pattern binary otherwise
+passes (32 pass, one intended failure). The optional contesting-constructor
+control passes and is retained. A warm REPL type-echo omission is a separate
+unclassified observation for QA. Dev now owns the private correction and
+validation; no harness code changes begin before this correction's gate.
+
+The user selects **automatic discovery and execution** for `--test`, rather
+than calling a program-supplied runner `main`. Module selection is the next
+pending question (target only versus loaded project modules); broader
+unloaded-project discovery remains deferred. Spec prepares the remaining
+minimum runner choices. ACT-1002 implementation proceeds independently.
+
+Dev(typecheck) `5f0ee35e-02d0-4803-ac52-d2dcfc6e6a11` observes ACT-1002's
+lookup collapse at the seam and implements the private correction. Module
+REDs demonstrate each of the three readers, then turn GREEN. Nearby
+integration passes 158/158, including T1 across six execution permutations.
+Full suite: 6256 run, 6255 pass, one remaining DT-1 failure, one skipped.
+Review `301fce82-8faa-4422-9efb-5d6f44d78295` is in progress. Spec
+`113eebea-2e13-4292-9e5a-b5925c5d8bd6` prepares automatic-runner details;
+the user module-selection answer remains pending. All roles use Claude
+Opus 5.5/high; no commit or phase transition.
+
+QA `19b14496-3f56-4073-ba15-ade595d461cb` accepts ACT-1002 against the
+logged evidence; review has no blocking or required finding. A1's assessed
+residual and A3's assurance grade are recorded by QA's exact handoff. Dev
+`d79d86bb-a2fa-4826-8f35-9e6f996e179d` completes A2's comment-only repair;
+crate check and formatting pass. Coverage bands and T1's `fixed=S122` stamp
+are applied. Actual commit hashes and action retirement await an authorized
+checkpoint commit. No production behavior changed after the full run.
+
+ACT-1003 retains the separate warm-REPL echo observation for assessment; it
+is not an added fix. The pattern work is complete. Automatic `--test`
+implementation awaits the user module-selection ruling, then the remaining
+runner-contract decisions prepared by spec. No phase transition or commit;
+NOTES remains untouched.
+
+### Automatic test-runner scope settled — 2026-09-28
+
+The user chooses modules reachable from the target through the import chain,
+with a default that includes only project-directory modules and excludes
+modules on library search paths. This supersedes the pending target-only
+versus all-loaded choice: being loaded alone does not establish eligibility.
+Configurable module selection is future work. Spec records this ruling and
+the previously approved automatic runner; other unresolved runner semantics
+remain separate decisions. No commit or phase transition is included.
+
+The user approves that `--test` neither requires nor calls `main`; if
+present, `main` compiles as an ordinary definition. This settles QB in the
+prepared automatic-runner packet. Spec's next consolidated edit applies that
+ruling with the remaining approved runner text. The next pending question
+is whether `(mod …)` / `(mod- …)` declarations extend test-module reachability.
+
+The user includes declared child modules in `--test` reachability, including
+`(mod …)` and `(mod- …)` children without an explicit import. This settles
+the scope packet's Q-A. The project-directory/library-path exclusion remains
+in force. The non-empty-run report, continuation and exit policy is the next
+pending question; zero-test and trace-policy decisions remain separate.
+
+Arch `53b85716-3f3b-459a-bae0-eedfe197a23c` assesses the minimum runner.
+It identifies a root-library public session entry point as an approval-gated
+interface delta; no guarded language-library, cache-schema or ABI change is
+needed by its proposed boundary. Exact method/result shape follows the
+pending reporting policy. The later child-module ruling includes cache/fresh
+parity for private children in the runner scope. Spec
+`303a0c91-d3b6-4af4-98e0-3783675f5b46` has recorded the earlier approved
+automatic/import-chain/project-only/library-excluded requirements. Subsequent
+main and child-module rulings await the next consolidated spec application.
+Both roles used Claude Opus 5.5/high; no implementation or commit occurred.
+
+The user approves the non-empty-run report, continuation and exit policy:
+fully qualified per-test results and a summary on stdout, continuation after
+failures and captured panics, exit 0 for all passing and 1 for any failure or
+panic; compilation errors prevent execution and go to stderr. The user adds:
+“`--test` should be the same code as `/run-tests`, we can keep this simple.”
+This establishes shared execution/reporting code, not a separate CLI runner.
+The zero-test exit status remains a separate pending user decision. Spec now
+consolidates the approved main, children and reporting rulings; remaining
+unapproved policies are not implementation authority.
+
+The user also approves a genuinely empty run: print “No tests found” and
+exit 0. This settles QC-1; architecture can now present the exact shared
+runner interface proposal. Spec consolidation is running as Claude Opus
+5.5/high session `68b4825c-09d1-4eaf-ba60-bee4dbd6c3b9`.
+
+Spec consolidation completed and records main, declared children, reports,
+continuation and non-empty exit policy. Arch session
+`0e4afb74-0aa0-4ffe-ae2a-f1021103a915` (Claude Opus 5.5/high) presents the
+exact root-library API proposal; it remains unapproved and unimplemented.
+
+The user settles failure tracing: keep the shared harness simple now;
+option-controlled improvements are future work. ACT-0988 retains that scope.
+Sprint applies spec's prepared QC-1 exit-0 hunk and QC-2 deletion of the
+automatic-trace promise, removing the now-settled CLI trace placeholder.
+These mechanical handoffs implement the explicit empty-run and manual-trace
+rulings; no unrelated requirement or coverage claim changes.
+
+The user explicitly approves the presented root-library API delta:
+`CompilerSession::run_tests(&self) -> Result<TestRunReport, CranelispError>`,
+the private-field `TestRunReport` with `text() -> &str`,
+`warnings() -> &[Warning]`, and `exit_code() -> i32`, and its `session_v4`
+re-export. The exact architecture packet is the implementation contract;
+no extra public items, cache-schema, ABI or library-baseline change is
+authorized. Actual delivered public diff still returns for confirmation.
+Design(int) proceeds on the settled shared-runner behavior; outstanding
+selection-edge, normal-mode refusal and CLI-policy questions remain separate.
+
+The user approves rejection of any compiled reference to `discover-tests`
+under both `--run` and `--link`, even in an uncalled function; an import alone
+remains allowed. The user strengthens the parity requirement explicitly:
+“--run and executing the --link output should have exactly the same output.
+--run loads and executes, --link produces a freestanding executable of the
+same programme.” This concerns program execution, not linker build messages.
+
+Design(int) `cca17f0e-a8a2-49e5-9952-235ef67de6da`, Claude Opus 5.5/high,
+completes the shared runner design in `design/int/test-runner.md`. No code or
+tests changed. Spec applies the approved normal-execution boundary and parity;
+remaining module-edge and CLI-policy decisions precede a settled QA handoff.
+
+The user approves the remaining batch conventions for `--test`: combining it
+with `--run` or `--link` is a usage error; a missing entry source file is an
+error with exit 1; warnings go to stderr; agent flags follow `--run` behavior.
+Existing target resolution, worker flags, `--no-cache`, and rejection of
+`-o` continue to apply. The import-chain edge proposal is now with the user;
+the mode conventions are settled independently.
+
+The user qualifies the import-chain proposal: the implicit prelude contributes
+tests only when it is in the project directory; a prelude found through a
+library search path must not bring in library tests. Record the proposed
+loading-import/re-export/declared-child chain with this project-only prelude
+qualification. Empty and alias-only imports do not load additional modules
+for testing; FQ-only references are outside this import-chain default.
+
+Spec `a6cb8210-0311-4e50-9dc8-689208850994` (Claude Opus 5.5/high) completes
+the ordinary-mode refusal and execution-output parity requirements and
+invalidates the affected mode evidence. Document check: 513 documents,
+0 findings. The primitive's availability inside `--test` remains the next
+explicit decision before the final harness handoff.
+
+The user rejects exposing `discover-tests` inside tests under `--test`:
+“no --test uses the cli test harness/runner.” The CLI invokes compiler-owned
+discovery and execution; the language primitive remains REPL-only. This
+supersedes the proposed harness-thread runner-state installation and any
+positive test expecting programmatic discovery under `--test`. Spec must
+reconcile availability and diagnostics with this ruling before the evidence
+handoff; the shared CLI/REPL host runner remains approved.
+
+The user explicitly settles traversal at the project/library boundary:
+“stop at library modules.” A library contributes no tests and the harness
+does not follow its imports or declared children to select further tests.
+This settles the prior spec/design R1 question, including project modules
+reachable only through a library dependency. The implicit library prelude
+remains excluded by the same boundary.
+
+Spec `fee87816-582e-493a-82a7-53ff1cfc24e1` applies the approved CLI
+conventions and loading-edge selection. Spec
+`6928659a-4ea1-4957-a052-36030f6ba271` records REPL-only primitive
+availability and distinguishes the compiler harness in the diagnostic remedy.
+Both Claude Opus 5.5/high runs complete with 513 documents and 0 findings.
+Spec identifies one remaining refusal-policy distinction for `--test`:
+reject the whole run for a compiled reference, or fail only a test that calls
+the primitive. That choice is with the user; the coordinator's earlier
+rejection statement was a recommendation, not an additional user ruling.
+
+The user approves applying the existing §16.6 compiled-reference rejection
+to `--test` as well, and directs: “you are asking too many questions that
+depart from --run and --link behaviour and open up air between /run-tests
+and --test. we want to use exactly the same code.” Use shared execution,
+reporting and refusal behavior; preserve only explicitly approved selection
+and CLI process differences. Do not reopen common behavior as separate mode
+policy. Option-controlled failure enhancements remain deferred. The library
+traversal stop is settled and supersedes design's older R1 interpretation.
+
+The user strengthens the shared-runner direction again: “they will have
+everything the same! they will just pass their arguments differently. same
+code!” `/run-tests` and `--test` are argument adapters to one runner with
+identical behavior. Selection differences are runner inputs, not separate
+implementations. Execution, eligibility, warnings, reporting, empty results
+and failure handling must share the same code. The host applies the result
+to its environment (the CLI exits; the REPL continues); this does not create
+a second runner policy. This latest ruling governs the final design and
+evidence handoff and supersedes any earlier allowance for divergent messages.
+
+Final consolidation completes: spec `61eef5f3-86cc-48d0-b08c-fd595e953916`,
+design(int) `db0be5bf-ad3a-4cb8-8cba-acbcda7b0e32`, and arch
+`c05f0743-6b15-4d93-b495-f67c43bdc0cf`, all Claude Opus 5.5/high.
+Requirements and design now have one shared runner, the library traversal
+stop, common empty report and common batch refusal. No decisions remain
+open for implementation. Sprint applies arch's exact inbound-anchor repair.
+QA `3b917a93-a787-4655-b82e-cec1d815b1bb` is preparing the settled evidence
+delta before test/dev. No production code or tests changed in consolidation.
+
+QA `3b917a93-a787-4655-b82e-cec1d815b1bb` finds the shared-runner change
+ready with no blocker. Its final evidence-delta section allocates TR-1–TR-6
+and bounded fixture maintenance to test, module evidence to dev, and a full
+green suite after focused checks. DT-1's carry is superseded by TR-5. Test
+now owns the test files and Cargo for establishing pre-production REDs;
+no production writer or commit is active.
+
+Test `65394bf2-d293-4c62-9bf6-2250e6a73e82` (Claude Opus 5.5/high)
+establishes all TR cells and fixture maintenance. Full pre-production run:
+6266 run, 6254 pass, 12 fail, 1 skip; the 12 are 11 expected runner/maintenance
+failures plus the removed DT-1 citation, mechanically repaired by sprint.
+TR-5c proves cached refusal is currently an opaque codegen failure rather
+than the required diagnostic. ACT-1002 remains green. Dev now owns src and
+Cargo; QA reconciles helper/evidence records independently. Docs
+`c15a8230-77b7-4326-a274-f62b65b678df` updates the user reference for the
+same change, with operational verification awaiting implementation.
+
+Dev `609ba04a-f17b-4fce-8273-942700c30866` (Claude Opus 5.5/high)
+implements the shared runner and exact approved public API. Module RED/GREEN
+evidence includes failure-value release, exact eligibility, empty reports,
+library exclusion, batch source paths, refusal and CLI parsing. Focused
+integration: 301 run/300 pass/1 fail. Full: 6297 run/6294 pass/3 fail/1 skip.
+The three are TR-1's assumed-polymorphic fixture, the stdlib gate's old
+all-modules-under-run premise, and renamed source citations. Sprint repairs
+the citations; arch is updating delivered status. QA
+`1e5a65a6-0167-4881-a2fa-1c7a3e377da3` classifies the two evidence questions;
+independent review `b7fd5289-a945-431b-b8d0-bcb806df76fc` checks code and
+actual API. Both use Claude Opus 5.5/high. No commit; full green is pending.
+
+QA classifies TR-1 and SG-1 as evidence-premise errors, not product defects
+or normative questions. Sprint removes the superseded pending-question prose
+from the design status; its existing post-pinning scheme rule is unchanged.
+The interrupted correction dispatch never started; retry starts test
+`bd5d81fe-2d81-4ba4-9f9f-cf3a814edb9d`. It owns tests/Cargo for focused
+fixture checks. The full suite waits for the remaining source correction.
+
+Review `b7fd5289-a945-431b-b8d0-bcb806df76fc` confirms the public delta
+matches exactly. Required R-1: `/tests-for` retains a separate loose predicate;
+converge it on shared eligibility. QA `c25ec6e0-e817-430d-8d80-8e8f76431d5f`
+allocates its minimal evidence. Review justifies the 23 new `result_large_err`
+instances as propagation of the explicitly approved existing error type;
+sprint records this narrow METHOD lint deviation without suppressions or an
+unapproved API change. No other new lint kind appears. All roles Opus 5.5/high.
+
+Test `bd5d81fe-2d81-4ba4-9f9f-cf3a814edb9d` corrects TR-1 and SG-1;
+focused runner/runtime/stdlib checks pass 128/128. QA R-1 assessment requires
+only dev's module negative/control, plus maintenance of the existing
+`tests/agent.rs` positive fixture. Test `513a0ab6-0cbc-4e88-b57d-2c5e95195777`
+owns Cargo for that fixture; dev `8dd44edf-630e-42d0-a465-fc71f86ecf48`
+prepares R-1 and waits for the explicit test handoff before source edits and
+Cargo. One full suite follows the correction. ACT-1004 retains the separately
+reported missing-entry filename diagnostic lead for QA intake. No new runner
+policy, public interface or commit is authorized.
+
+The fixture handoff passes 22/22 and releases Cargo. Dev R-1
+`8dd44edf-630e-42d0-a465-fc71f86ecf48` records the real mistyped-sibling
+RED, converges `/tests-for` on `classify_test_definition`, then passes
+39/39 focused checks and the full suite: **6298 passed, 0 failed, 1 skipped**
+(108 s). Document checker: 514 documents, 0 findings. API unchanged.
+Scoped review `becaab6c-c25c-4ac9-a1dc-f15b33b2ba41` resolves R-1 with no
+surviving findings and verifies full-run currency. Sprint applies the exact
+predicate-consumer documentation handoff and removes superseded verification
+status, keeping the acceptance gate here.
+
+Fresh acceptance smoke uses the final binary and the documented test-add
+example in a new temporary project, `CRANELISP_LIB` pointing to this tree's
+stdlib and `--no-cache`: passing case exits 0, failure case exits 1, empty
+case prints `No tests found` and exits 0. Evidence:
+`.local/s122-test-runner-acceptance.log`. QA
+`2874eb2a-d2b3-48ec-b839-89020c2999fd` is restoring supported coverage and
+making the final adequacy judgment. User confirmation of the exact delivered
+public diff remains pending; no commit or phase transition.
+
+QA final adequacy `2874eb2a-d2b3-48ec-b839-89020c2999fd` is **adequate**
+and recommends acceptance of the shared runner. Supported coverage bands are
+restored, including §17.6.2's negative; G-5 is reconciled. ACT-0986 now retains
+only in-language warning and example/citation issues. ACT-1004 remains separate
+intake. The full suite, clean scoped review and fresh acceptance smoke support
+this recommendation; user public-diff confirmation is the remaining gate.
+
+Sprint independently recounts the clippy JSON baselines and corrects the
+reports' arithmetic typo: **23**, not 21, added `result_large_err` diagnostics
+(12 run, 4 selection, 3 session tests, 2 result owner, 2 commands), with four
+other diagnostics removed; total 785 → 804. The per-file accepted set is
+unchanged. No suppression or other lint kind is admitted. The QA plan and
+live count are corrected mechanically; original role reports remain evidence
+of the typo. No source changed after the 6298-pass full run.
+
+### Delivered shared-runner API confirmed — 2026-09-28
+
+The user answered “yes” to the post-implementation public-diff confirmation:
+`CompilerSession::run_tests() -> Result<TestRunReport, CranelispError>`,
+`TestRunReport::{text, warnings, exit_code}`, and the `session_v4` re-export.
+Independent review verified the delivered surface matches the prior approved
+proposal. This closes the runner's final public-API gate. The 6298-pass full
+run, clean scoped review and QA adequacy remain current; no source changes
+followed them. Phase 5 remains active pending whole-sprint reconciliation.
+
+### Remaining Phase-5 reconciliation — 2026-09-28
+
+The user authorized reconciling the remaining issues into a concrete fix-or-carry
+list. QA (Claude Opus 5.5/high), session
+`b07b13ce-8feb-46e4-a32f-d352389bf015`, owns the current G-5/G-6/G-8 assessment
+and QA evidence-plan update. It checks later deliveries and recorded rulings
+against current claims before proposing further work. No source changes,
+blanket carries or phase transition are authorized by this dispatch.
+
+QA completed the reconciliation: all delivered corrections retain adequate
+evidence, but remaining work is now grouped by persistence, name resolution,
+batch/platform admission, runtime ownership, and assurance/maintenance. The
+updated evidence plan supersedes the former G-5/G-6/G-8 table. It separates
+observed defects, source-confirmed non-conformance, unverified leads and
+coverage gaps. No proposed carry is approved by this assessment. Document
+checker: 514 documents, zero findings; whitespace clean; NOTES unchanged.
+
+The next authorized evidence visit addresses persistence P1–P4: the observed
+watcher refusal and external-edit overwrite, and the rejected-redefinition and
+warm-restored macro-definition leads. Its outcome determines implementation
+attribution before a fix or any public/schema decision. Other groups remain
+explicit in the QA reconciliation.
+
+| Role | Provider / model / effort | Session | Current reservation |
+|---|---|---|---|
+| test | Claude / Opus 5.5 / high | `f55071b2-d152-44e7-8c9b-def2e5473470` | Persistence P1–P4 reproductions; tests/repl_persist.rs; sole Cargo owner |
+| spec | Claude / Opus 5.5 / high | `e6ed4e32-858f-4f83-9c58-97814bf4b91c` | Read-only framing of P7 regeneration-order question |
+
+Persistence evidence visit completed (test session above): seven permanent,
+unignored cells added to `tests/repl_persist.rs`; **four RED, three GREEN**.
+The complete persistence binary reports **46 passed, four failed**; its 43
+pre-existing cells still pass. The prior 6298-pass full-suite run predates
+these additions and is no longer a claim that the current tree is all green.
+No compiler implementation changed and no commit was made.
+
+- P1 reproduces for product field-count changes; field-type and function-body
+  controls reload successfully.
+- P3 reproduces after typecheck rejection and commit-gate rejection: a later
+  successful turn writes the rejected definition, breaking a cold restart.
+- P4's entry-module prediction did not reproduce, including stdlib `def`.
+  The cached dependency edited through `/mod` does reproduce; its fresh control
+  passes. QA must narrow the record and adjudicate the traceability limits.
+- P2 diagnostics show external-edit loss after a parse-error reload as well
+  as the P1 refusal. Type-error reloads preserve the edit. Test requests a
+  specification disposition before adding a P2 acceptance assertion.
+
+Evidence: `.local/s122-persistence-residual-test-result.md` and the focused
+logs it names. QA attribution/reclassification and design handoffs remain;
+no carry or implementation mechanism is inferred from these results.
+
+Spec's read-only P7 assessment completed (session above). Authorship order is
+an explicit S69 user ruling, not a fresh preference question. The coordinator
+retains that authority. A question is pending for the actual conflict:
+redefinition in place can put a use before a macro introduced later. The user
+is asked about moving only the using form after its required macros. Other
+normative questions remain unapproved; no spec edits were made. Assessment:
+`.local/s122-persistence-order-spec-result.md`.
+
+### Four reproduced persistence failures — fix-now direction (2026-09-28)
+
+The user directed: “write the action for the deferred and focus on the
+reproduced failures.” [ACT-1005](actions/ACT-1005-macro-order-regeneration-edge-cases.md)
+records the macro-order edge-case investigation for S123 or S124. This does not
+approve changing authorship-order requirements or a general dependency-sort
+mechanism. The earlier ordering question is superseded by this deferral.
+
+QA (Claude Opus 5.5/high), session
+`58787f90-457e-4efc-b666-0715b130072c`, owns attribution and readiness for the
+four permanent REDs: P1, both P3 rejection stages, and P4's cached dependency
+face. P2 remains separate intake. No source edits or Cargo during this QA visit;
+design and implementation follow the bounded evidence handoff. No commit or
+phase transition is authorized.
+
+Design(int), Claude Opus 5.5/high, session
+`e5da8d03-b10e-47ed-a596-6e441dd4823c`, inspects the same four failures in
+parallel with QA. Its writable reservation is the Binary/int persistence
+design; final readiness consumes QA's result. Compiler/test source remains
+reserved for the subsequent implementation visit. ACT-1005 establishment
+verified: 515 documents, zero findings.
+
+QA completed four-RED readiness (`58787f90…`); requirement support is established
+for the cached `/mod` face without a new ruling. Design(int) completed
+`e5da8d03…`: P3 uses publication-time source records; P4 recompiles a cached
+module through the ordinary reload path before editing. Updating declaration
+records through that same writer is necessary related work within the
+user-authorized persistence correction, not a separate feature or permission
+gate. P1 requires an architecture decision before a public-surface proposal.
+
+Test, Claude Opus 5.5/high, session `d6c7d8b8-cb1d-4626-9438-7dcfb695605b`,
+owns PR-2–PR-4 controls and exact defect-comment updates. Arch, same provider,
+model and effort, session `c9a14c39-d698-4b39-9d6e-c226592c0cb2`, owns the P1
+cross-context assessment and exact public API packet. No unapproved API is
+implemented.
+
+Sprint ran the design-authored D1–D7 probe script, unchanged, against the
+existing debug binary after inspecting its scratch-only operations. Log:
+`.local/s122-persistence-four-design-scratch/probe-observed.log`.
+D1/D2/D3/D5 reloads report the origin/lifecycle refusal; D4 leaves removed `h`
+callable; D6 accepts the live Int-to-String field change; D7 rejects a live
+field-count change. These are diagnostic observations for QA/arch, not new
+scope approvals or substitutes for permanent regressions. No Cargo or
+production edits occurred in this coordinator probe.
+
+Test PR-2–PR-4 visit completed (`d6c7d8b8…`). Live field-count rejection and
+field-reorder dependent recompilation controls pass. Two new field-type
+persistence REDs confirm P5, covered by the common publication writer. The
+field-count persistence/dependent legs remain blocked by P1. The separate
+imported-module failed-reload hang has a permanent unignored reduced test and
+`ACT-1006` QA intake;
+no carry or mechanism is assumed.
+
+Dev(src), Claude Opus 5.5/high, session
+`df5a3760-0258-4e43-950f-d13bea580a96`, owns P3/P4 and the related declaration
+record repair, with sole Cargo access. P1 public changes remain gated with
+arch. Known P1 and hang failures stay explicit; full-suite green cannot be
+claimed until the combined correction and dispositions are complete.
+
+Arch P1 assessment completed (`c9a14c39…`), exact proposal in
+`.local/s122-p1-reload-arch-result.md`. Item 1 adds
+`StagedPublicationDecision::SupersedeType { type_name: FQTypeName }`; expected
+public baseline: variant and field only, no serde/cache/ABI change. The user
+has been asked to approve item 1; it is pending. Item 2 (widening the absent-key
+`ChangeAbi` contract to slotless callables) is expressly excluded from that
+question and remains unapproved. Architecture rejects the design's proposed
+whole-module fresh-slot policy, selecting changed-family slots with complete
+cascade/retirement instead; design must align before P1 implementation.
+
+Arch identifies ACT-1006's failed-dependent hang as a P1 acceptance dependency,
+not an API-proposal blocker. Its absence from the independent P3/P4 source-record
+batch remains explicit. Diagnostic D1–D7 results recorded above supersede the
+arch report's statement that those probes had not run.
+
+The user chose “Discuss the design first” for P1 item 1. Approval is not
+provided. The coordinator explained reload versus live-redefinition authority,
+family-atomic replacement, removed-member retirement, slot retention and the
+separate dependent-recompile safety obligation. No P1 API implementation
+proceeds; P3/P4 implementation continues independently.
+
+Dev P3/P4/P5 completed (`df5a3760…`): five acceptance REDs now pass (the two
+rejection stages, cached dependency save, and two declaration-record routes).
+914/914 module tests pass. Final focused e2e 233/237 and earlier wider 501/505
+fail only at P1/layout preconditions and ACT-1006. No public API/schema/ABI
+change. Independent review, Claude Opus 5.5/high, session
+`c859437e-503f-4a5a-b4d4-8366f8628965`, inspects this delivered subset.
+
+Sprint executed the developer's archived P2 setup and P2 section in its
+scratch (no changed assertions or source). Log:
+`.local/s122-persistence-records-dev-scratch/p2-observed.log`; binary digest
+`d9a1ebd426996ab96b707ac89f65864e3f04862c686485d6d61abcfe96f02ec1`.
+All three failed reload shapes (origin refusal, type error, parse error) are
+followed by an accepted definition turn which writes the last published source,
+losing the external edit. The user was informed; no retention/loss policy is
+approved by this observation. ACT-0998 face 2 remains unresolved.
+
+QA bounded adequacy, Claude Opus 5.5/high, session
+`f1542ea8-b452-4bb8-ba09-18e53a504873`, consumes the delivery/review and this
+diagnostic, updates PR-6 to the chosen route, and retains P1/ACT-1006/P2 limits.
+No whole-sprint green claim or phase transition.
+
+Independent review `c859437e…` reports no blocking correctness finding in
+P3/P4/P5. Required F1 is mechanical doc-comment attachment/narration damage.
+Advisories F2–F4 concern the effect-free prior helper and evidence descriptions;
+F5 records `/mod` recompile cost/changed-source assumptions and its possible
+route into ACT-1006. Lint suppressions follow the existing local convention;
+review finds no public-API or behavioral-contract change in this subset.
+
+Dev(src), Claude Opus 5.5/high, session
+`eaac47ec-7c1d-462a-8bd7-ad520c6dca8d`, applies F1, F2's minimum stale-comment
+repair, F4's accurate test claims, and F3's final-text detection proof. No new
+behavior or helper redesign is allocated; no re-review for these mechanical
+repairs. QA owns bounded adequacy and retained F5 risks. P1 remains unapproved.
+
+QA bounded adequacy `f1542ea8…` completed: P3/P4/P5 adequate, conditional on
+the in-flight F1 repair and final-text M5/M7/M10 fault proofs. Review found no
+blocking correctness issue. QA records ACT-1007 (removed definition stays
+live) and ACT-1008 (live field-type change accepted), both intake without
+new fix or carry authority. ACT-1006 remains a P1 acceptance dependency.
+Document checker at QA handoff: 518 documents, zero findings.
+
+Mechanical follow-up `eaac47ec…` completed. F1 doc repair, F2 stale claims
+and F4 test-claim repairs are applied. F3 faults M1/M5/M6/M7/M10 were each
+observed failing against the final test text, then restored; 26 affected
+module tests pass. Sprint byte-compared the three production snapshots and
+final test snapshot: all match. This discharges QA's named F1/F3 conditions
+without a substantive re-review. F2 helper retirement and F5 remain advisory
+owner handoffs, not newly approved behavior.
+
+Fresh final acceptance: the five repaired `repl_persist` cells pass **5/5**
+on the final tree, through nextest's fresh REPL sessions, in 0.973 s. Log:
+`.local/s122-persistence-records-acceptance.log`. Document checker: 518
+documents, zero findings; whitespace check clean; NOTES digest unchanged.
+The known P1 and ACT-1006 REDs remain. No commit, phase transition or public
+API approval occurred. The user's P1 request is discussion first.
+
+### Restart boundary adopted — 2026-09-29
+
+The user asked whether rejecting incompatible changes would simplify the
+requirements, then ruled: “restart is a good resting point for now.” Structural
+same-name type changes will require restart instead of in-session type-family
+supersession. The unapproved `SupersedeType` and associated `ChangeAbi` widening
+proposals are withdrawn from this correction. Existing compatible updates stay
+available; this ruling does not remove every cascade or approve unrelated
+import/export, deletion or macro policy changes.
+
+Spec, Claude Opus 5.5/high, session
+`f8cb8915-b6f0-4a5c-a86f-23bb8363d7e1`, records the requirement and directly
+necessary consistency repairs. Arch, same allocation, session
+`ff2514a2-c170-4e33-b421-a5bd53fa202c`, assesses the smallest rejection-only route and exact
+boundary implications; final judgment consumes spec's result. Compiler and
+test changes follow the settled evidence delta. No phase move or commit.
+
+Spec `f8cb8915…` completed: REPL §14.8 establishes restart-only structural
+changes, restart diagnostics and protection of the rejected backing file;
+§15 and §18 mirrors agree. Document checker: 518 documents, zero findings.
+QA, Claude Opus 5.5/high, session
+`d7ff876b-0f30-40ee-82b3-f974288f99c4`, revises the evidence allocation against
+this boundary. Full §18.5 structural identity and rejecting turns that would
+overwrite the protected file follow the accepted ruling. The general failed
+reload retention question remains separate.
+
+Arch `ff2514a2…` completed: the revised route needs no public API, cache or
+ABI delta. An int-owned shared structural guard and session protection implement
+§14.8; a types-private synthesized-slot check protects publication. The imported
+reload hang remains relevant to required failure handling, subject to QA evidence.
+Design(int), Claude Opus 5.5/high, session
+`d0adf6cc-9827-48f1-af21-271d87aca824`, aligns current design and prepares the
+private implementation handoff.
+
+QA `d7ff876b…` completed: ready for RB-1–RB-6. Old live-layout-success
+conditions are retired/inverted; compatible docstring edits retain the P5
+regeneration fence. The imported failure cell RB-5 remains subject to
+ACT-1006; the independent type-error hang remains open. RB-6 is included in
+this correction because the same structural guard governs live definitions.
+Test, Claude Opus 5.5/high, session
+`7451309e-d412-48ed-ba77-13fd0d62ef97`, authors and observes the settled
+cells, with sole Cargo ownership. The correction includes investigation and
+repair of ACT-1006's required failure path; no carry is implied.
+
+Design dispatch `d0adf6cc…` failed before inference (DNS EAI_AGAIN, zero
+tokens); it made no edits. Retried through the same approved transport with
+network authority, session `0b9fc8a9-8253-4cf1-bd15-e21c78411432`, same
+Claude Opus 5.5/high allocation.
+
+Test dispatch `7451309e…` likewise failed before inference (DNS EAI_AGAIN,
+zero tokens, no edits). Network-authorized retry session
+`c78461f8-51f9-481c-82d0-80c35cf189b2` retains Claude Opus 5.5/high and
+sole Cargo ownership.
+
+Design `0b9fc8a9…` completed the int handoff with no public delta; document
+checker 518/0. Test `c78461f8…` completed: 9 focused cells, 4 pass/5 fail;
+71 persistence/watch cases, 65 pass/6 fail (the five revised behaviors plus
+ACT-1006). RB-6 reproduced SIGSEGV after the wrong-accepted live field-type
+change, making ACT-1008's memory-safety consequence observed. RB-4 fails at
+its precondition only; compatible-save legs currently pass. These reports
+supersede old P1 success expectations, not the completed P3/P4/P5 fixes.
+
+Dev(types), Claude Opus 5.5/high, session
+`cc22d2d6-bd56-4537-b4db-756ea8a5091d`, implements the private publication
+backstop and its allocated module evidence. Sole Cargo ownership; no public
+delta or source supersession operation.
+
+Dev(types) `cc22d2d6…` completed: 292/292 crate tests pass; four isolated
+fault checks discriminate the backstop. Full run: 6318/6324 pass, 1 skipped.
+RB-6 now passes (the wrong-accepted field-type crash is prevented). One prior
+P5 module unit now fails because its structural-change precondition is forbidden;
+src dev transposes it to the already allocated docstring edit. Remaining failures
+are the four REPL-facing conditions plus ACT-1006. Arch standing-record session
+`f9546238-bf8e-4f4b-a758-7c567e11f7dc` completed, checker 518/0.
+Dev(src), Claude Opus 5.5/high, session
+`39f78b92-1029-44a6-86fb-13f87eed0871`, implements the int guard/retention
+and investigates the reproduced ACT-1006 failure path with discriminating
+evidence before attribution. It owns Cargo.
+
+Independent review(types), Claude Opus 5.5/high, session
+`59fc3e27-acac-4573-9361-9219d634c8e6`, inspects the completed backstop
+read-only while src dev proceeds. No concurrent Cargo or source mutation.
+
+Review(types) `59fc3e27…` completed with no blocking/required correctness
+finding and no public delta. Advisory A1 overstates same-typed field-position
+protection in comments/prose; narrow wording repairs are owned by dev(types),
+session `222422e5-5ab5-4ce3-bd02-88e7f2416d8e`, and arch, session
+`952594cc-b3f9-4ee6-91fa-826655091e9a` (Claude Opus 5.5/high). A2's
+error-field matcher tightening remains advisory; the existing fault proofs
+already discriminate the required check. No behavioral re-review is needed
+for wording alone.
+
+Both A1 wording repairs completed; checker 518/0. Dev(src) `39f78b92…`
+completed: 924/924 default library tests, 1064/1064 with agent, full suite
+6331/6334 with one skipped. Remaining failures are two live-refusal output
+matchers and RB-5's exit-0 assertion; QA classifies their authority before
+any test changes. ACT-1006's cell and error-blocking control passed 15/15
+stress iterations. Runtime evidence and fault replant attribute the hang to
+a worker signature barrier registering a waiter after its dependency failed;
+the private fail-fast fix matches the already-existing sibling path.
+QA final session `d1d09c47-970a-4ff5-a16d-f9308e181df4` and independent
+review(src) `5234540b-d769-4a8a-9024-9ce6d5c16625` (Claude Opus 5.5/high)
+assess the bounded result. QA first emits a test-expectation classification;
+no product semantics are changed to fit those assertions.
+
+QA classified all three remaining full-suite failures as evidence defects,
+with no new normative decision. Test session
+`56a205fc-6629-4887-9c57-e45a2868b7d5` (Claude Opus 5.5/high) applied
+only the allocated E1/E2 assertion repairs; no Cargo run, pending final green.
+Design(int) session `77ca0290-eeb7-4cd5-913d-997ad3abbdf0` aligns its pending
+status and barrier description with the completed implementation. QA retains
+Cargo ownership until its report; reviewer is read-only.
+
+QA `d1d09c47…` found bounded adequacy conditional on test repairs, review
+and the lost-wakeup vocabulary entry. Review(src) `5234540b…` then identified
+R-1, a required plausible early-read of a module's reload outcome while another
+module stands Failed. This is not a new normative decision or approved carry.
+QA session `11a7bdbf-7bb8-40de-b12a-52b75f3aa4a5` classifies/allocates R-1
+and completes its vocabulary/reference repairs; design(int) session
+`8f85a919-b17f-4bb4-b8dc-0a0f54f47d87` resolves the narrow interior issue.
+Both use Claude Opus 5.5/high and no Cargo. Sprint ran the test-authored final
+commands after E1/E2: persistence/watch binaries now pass 71/71 (fresh run,
+5.948 s). RB-5 stress is running; this discharges only the instrument-repair
+condition, not R-1.
+
+QA R-1 readiness completed: required correction, module-seam RB-7 allocated;
+vocabulary/reference repairs complete. Design R-1 completed: use the existing
+per-module completion wait for both failure and success; no public delta.
+Dev(src) `8d60b11e-98d6-472b-9460-9425748cc6af` (Claude Opus 5.5/high)
+authors RB-7 RED first and applies this finding-scoped correction. Its local
+positive control may also observe design's deterministic success-side twin.
+The repaired RB-5 now passes 15/15 stress iterations (13.393 s), completing
+the instrument-repair evidence.
+
+Dev R-1 `8d60b11e…` completed: RB-7 observed RED before the fix in four
+invocations; the success-side U2 was deterministically RED. Both now pass,
+including 10 stress iterations. Persistence/watch 71/71, RB-5 15/15 and full
+suite **6336 passed, 1 skipped, 0 failed**. The production correction is one
+existing wait call plus its comment; no scheduler/public delta.
+Finding-scoped review session `c82bee4a-0d64-472f-a887-0584d1959638` and
+QA conditional closure session `3d91682a-77c5-4b33-bb08-270869a19db7`
+(Claude Opus 5.5/high) consume the final change. Test provenance session
+`20901ebb-0e1d-45eb-b8c3-c2e157c0edf8` completed the lost-wakeup annotation;
+text checks pass. No commit or phase advancement.
+
+R-1 re-review `c82bee4a…` closed the finding with no required issue left.
+QA `3d91682a…` judged RB-1–RB-7 and ACT-1006 adequate; it retained only
+RB-6 comment notation before retiring ACT-1008. Test session
+`fcfa8cc4-2ab1-413c-9f25-bc5f08ed59f4`, design session
+`f245d70d-25c1-4404-92dc-86f68415f0d6`, and mechanical QA closure session
+`33d916be-d6c3-4075-ab9b-7da6802758d1` (Claude Opus 5.5/high) finish
+those comment/canonical-residual/action updates without code changes or another
+adequacy cycle. Final-record design `69b7a4c2-7163-4b25-994d-b68154386a01`
+removed stale implementation-status text and preserved guards independently of
+retired actions. The coordinator independently verified the full-suite summary
+in dev's tool output: 6336 passed, 1 skipped, 118.882 s.
+
+Final mechanical test/design/QA sessions completed. ACT-1006 and ACT-1008
+are retired, with salient evidence preserved in the existing QA plan and
+permanent regression tests. QA records nothing open for this correction
+except adding the commit sha to fixed annotations when a commit is authorized.
+The cache-restored dependency residual is now explicit in the canonical design.
+Fresh final acceptance on the final implementation: **71/71** persistence/watch
+cases pass (6.124 s), log `.local/s122-restart-boundary-final-acceptance.log`.
+Binary SHA-256: `dcfab1aef5c2de6c31ee2e7148856a5a457ad13307d52fcacc24e7e0d69f17c3`.
+NOTES digest is unchanged. No commit or phase transition occurred.
+
+Final document check: **516 documents, zero findings**, zero unverified
+references. Whitespace check clean; public-API baselines unchanged. The final
+test source hash matches QA's restored comment-only state.

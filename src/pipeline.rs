@@ -26,15 +26,14 @@ pub fn resolve_module_file(
     project_root: &Path,
     lib_dirs: &[PathBuf],
 ) -> Option<PathBuf> {
-    let relative = format!("{}.cl", module.as_ref().replace('.', "/"));
-
     // Tier 2: project root.
-    let root_candidate = project_root.join(&relative);
+    let root_candidate = project_root_candidate(module, project_root);
     if root_candidate.is_file() {
         return Some(root_candidate);
     }
 
     // Tier 3: lib directories.
+    let relative = module_relative_path(module);
     for dir in lib_dirs {
         let candidate = dir.join(&relative);
         if candidate.is_file() {
@@ -42,6 +41,18 @@ pub fn resolve_module_file(
         }
     }
     None
+}
+
+/// The tier-2 file `resolve_module_file` tries first for `module`. A module
+/// whose recorded file equals this path was resolved from the project root,
+/// which is how the test runner tells project from library modules
+/// (`design/int/test-runner.md` §4.1).
+pub(crate) fn project_root_candidate(module: &ModuleFullPath, project_root: &Path) -> PathBuf {
+    project_root.join(module_relative_path(module))
+}
+
+fn module_relative_path(module: &ModuleFullPath) -> String {
+    format!("{}.cl", module.as_ref().replace('.', "/"))
 }
 
 // ---------------------------------------------------------------------------

@@ -45,19 +45,6 @@ fn declaration_docstring(entry: &Binding<Code>) -> Option<&str> {
     }
 }
 
-/// Whether a definition is a test function (the `test-` prefix + a nullary
-/// `Def`, per the test convention §16.1) — the `/tests-for` filter
-/// (repl/spec.md §17.6.2). Structural (does not require the function to be
-/// codegen'd), so it works over freshly-typechecked REPL state.
-pub(crate) fn is_test_function(name: &str, entry: &Binding<Code>) -> bool {
-    if !name.starts_with("test-") {
-        return false;
-    }
-    entry
-        .callable()
-        .is_some_and(|callable| callable.arm.param_names.is_empty())
-}
-
 impl CompilerSession {
     /// /sig handler: the §1.1 primary line of every candidate the spelling
     /// denotes (§3.8, §4.1.11).
@@ -302,7 +289,7 @@ impl CompilerSession {
     fn collect_referers(&self, home: &ModuleFullPath, bare: &str, tests_only: bool) -> Vec<String> {
         let mut referers: Vec<String> = Vec::new();
         // Callable referents via the reverse index (skip for `/tests-for`,
-        // which filters to the token-scanned test-fn shape).
+        // whose token scan admits only test functions).
         if !tests_only {
             let target = FQSymbol {
                 module: home.clone(),
@@ -333,8 +320,9 @@ impl CompilerSession {
 
     /// `/tests-for <sym>` handler (repl/spec.md §17.6.2, design/int/agent.md §9).
     ///
-    /// A specialization of `/refs` filtered to test functions (the `test-`
-    /// prefix + nullary test signature, §16.1). LLM-free, default build.
+    /// A specialization of `/refs` filtered to test functions: the `test-`
+    /// prefix and the §16.1 signature, as the test runner decides them.
+    /// LLM-free, default build.
     pub(crate) fn handle_tests_for(&self, sym: &str) -> String {
         if sym.is_empty() {
             return "Usage: /tests-for <symbol-name>".to_string();
@@ -352,8 +340,10 @@ impl CompilerSession {
         out
     }
 
-    /// /mod handler: switch module namespace.
-    pub(crate) fn handle_mod(&mut self, name: &str) {
+    /// /mod handler: switch module namespace. Returns the failed-reload
+    /// notification when the target had to be recompiled from its backing
+    /// file and that failed.
+    pub(crate) fn handle_mod(&mut self, name: &str) -> Option<String> {
         // S78 §1.4: `/mod` with no argument returns to the "home" module — the
         // ENTRY module — NOT a hardcoded "user". `"user"` is only the entry
         // module's default name when no CLI target is given.
@@ -362,6 +352,7 @@ impl CompilerSession {
         } else {
             ModuleFullPath::from(name)
         };
+        let failure = self.recompile_cache_installed_module(&path);
         self.set_current_module(path.clone());
         // S102 CS-D3a (§6.2.3): establish the target module's session-env
         // companions. `set_current_module` creates a blank table via
@@ -376,6 +367,28 @@ impl CompilerSession {
             &self.shared.module_aliases,
             &self.shared.prelude_fallback,
         );
+        failure
+    }
+
+    /// Make a cache-installed module editable: recompile it from its backing
+    /// file through the ordinary reload, so every generation regeneration
+    /// writes was compiled from source this session
+    /// (`design/int/session-persistence.md` §2.4.5). The entry module, a
+    /// module compiled from source and a module not yet loaded are left as
+    /// they are.
+    fn recompile_cache_installed_module(&mut self, module: &ModuleFullPath) -> Option<String> {
+        if *module == self.entry_module || !self.shared.scheduler.is_cached_module(module) {
+            return None;
+        }
+        let backing = self
+            .shared
+            .typecheck_products
+            .get(module)
+            .and_then(|product| product.file_path.clone())?;
+        match self.reload_with_notice(module, &backing) {
+            crate::session_v4::ReloadNotice::Updated(_) => None,
+            crate::session_v4::ReloadNotice::Errors(message) => Some(message),
+        }
     }
 
     /// /source handler: show original source text of a definition.
@@ -574,7 +587,7 @@ impl CompilerSession {
             let st = self.shared.symbol_tables.get(&module)?;
             st.clone()
         };
-        crate::save::rehydrate_userfn_introspection_from_source(
+        crate::save::rehydrate_introspection_from_source(
             &table,
             intr_map,
             &module,
@@ -1060,16 +1073,8 @@ impl CompilerSession {
         format!("{header}\n{delta_line}")
     }
 
-    /// /run-tests handler: discover and execute test-* functions.
-    ///
-    /// Scans def_codegen for zero-arg functions named `test-*`, calls each
-    /// directly, interprets the `(Option String)` result: None = pass,
-    /// Some(reason) = fail.
-    /// /run-tests handler: discover and run test-* functions.
-    ///
-    /// With no argument: tests in current module. With a module path: tests
-    /// in that module. Runs all tests fast first, then re-runs failures with
-    /// tracing to capture trace trees for diagnostics.
+    /// `/run-tests [module]`: the shared test run over the current module, or
+    /// over the named one (`repl/spec/16-test-discovery.md` §16.2.1).
     pub(crate) fn handle_run_tests(&self, arg: &str) -> String {
         let module = if arg.is_empty() {
             self.current_module_path()
@@ -1077,10 +1082,9 @@ impl CompilerSession {
             ModuleFullPath::from(arg)
         };
         // A cache-restored parent enrolls its declared children synchronously,
-        // but their object may still be queued for in-memory loading. Test
-        // discovery must not race that load (or worse, call a null GOT slot and
-        // count the sentinel as a pass). A named, registered module is therefore
-        // observed only after its in-memory readiness boundary.
+        // but their object may still be queued for in-memory loading, so a
+        // named, registered module is observed only after its in-memory
+        // readiness boundary.
         if self.shared.scheduler.is_registered(&module)
             && let Err(error) = self
                 .shared
@@ -1089,25 +1093,37 @@ impl CompilerSession {
         {
             return crate::style::error_line(&error.to_string());
         }
-        // Discovery lists only tests whose code is present, so it follows
-        // the cached-load wait (`design/int/int.md` §7.1).
-        let ready = match self.shared.scheduler.wait_cached_loads_settled() {
-            Ok(ready) => ready,
-            Err(error) => return crate::style::error_line(&error.to_string()),
-        };
-        // Core discovery — shared with discover_tests_extern.
-        let test_names = discover_test_names(&self.shared.symbol_tables, &module);
-        if test_names.is_empty() {
-            return if arg.is_empty() {
-                "No test-* functions found.".to_string()
-            } else {
-                format!("No test-* functions found in '{arg}'.")
-            };
-        }
-        self.format_test_run(&test_names, ready)
+        self.display_test_run(&[module])
     }
 
-    /// /run-all-tests handler: discover and run tests in all project-root modules.
+    /// `/run-all-tests`: the shared test run over every loaded module that is
+    /// not a library module (`repl/spec/16-test-discovery.md` §16.2.2).
+    pub(crate) fn handle_run_all_tests(&self) -> String {
+        let modules = self.selection_inputs().non_library_modules();
+        self.display_test_run(&modules)
+    }
+
+    /// Run the tests of `modules` and display the report text unchanged,
+    /// preceded by one `; warning:` line per discovery warning.
+    fn display_test_run(&self, modules: &[ModuleFullPath]) -> String {
+        let report = self
+            .shared
+            .scheduler
+            .wait_cached_loads_settled()
+            .map_err(CranelispError::from)
+            .and_then(|ready| self.run_test_modules(modules, ready));
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => return crate::style::error_line(&error.to_string()),
+        };
+        let mut doc = StyledDoc::new();
+        for warning in report.warnings() {
+            push_warning_line(&mut doc, &warning.message);
+        }
+        doc.plain(report.text());
+        render(&doc)
+    }
+
     /// `/platform-schema <name>` — print the compiler-generated schema artifact
     /// for a loaded platform (platform-interface.md §5.5.1 / §6.0).
     ///
@@ -1133,83 +1149,6 @@ impl CompilerSession {
             }
         };
         cranelisp_backend::schema::generate_schema(&self.shared.symbol_tables, &roots)
-    }
-
-    pub(crate) fn handle_run_all_tests(&self) -> String {
-        let ready = match self.shared.scheduler.wait_cached_loads_settled() {
-            Ok(ready) => ready,
-            Err(error) => return crate::style::error_line(&error.to_string()),
-        };
-        let mut all_names: Vec<String> = Vec::new();
-        for entry in self.shared.typecheck_products.iter() {
-            let module_path = entry.key();
-            if let Some(ref fp) = entry.value().file_path
-                && !fp.starts_with(&self.shared.project_root)
-            {
-                continue;
-            }
-            let names = discover_test_names(&self.shared.symbol_tables, module_path);
-            all_names.extend(names);
-        }
-        all_names.sort();
-        if all_names.is_empty() {
-            return "No test-* functions found in any project module.".to_string();
-        }
-        self.format_test_run(&all_names, ready)
-    }
-
-    /// Re-run a failing test with tracing by eval'ing `(trace (test-name))`.
-    /// Format a test run: run all tests via shared core logic.
-    pub(crate) fn format_test_run(
-        &self,
-        test_names: &[String],
-        ready: crate::scheduler::ExecutionReadiness,
-    ) -> String {
-        let start = std::time::Instant::now();
-        let mut passed = 0usize;
-        let mut failed = 0usize;
-        let mut lines = Vec::new();
-
-        for name in test_names {
-            // Core test execution — shared with run_test_extern.
-            let outcome = run_test_by_name(
-                &self.shared.symbol_tables,
-                name,
-                &self.current_repl_module,
-                &ready,
-            );
-            let dots = ".".repeat(40usize.saturating_sub(name.len()));
-            match &outcome {
-                TestOutcome::Pass { .. } => {
-                    lines.push(format!("  {name} {dots} ok"));
-                    passed += 1;
-                }
-                TestOutcome::Fail { reason, .. } => {
-                    lines.push(format!("  {name} {dots} FAILED: {reason}"));
-                    failed += 1;
-                }
-                TestOutcome::Panic { reason, .. } => {
-                    lines.push(format!("  {name} {dots} PANIC: {reason}"));
-                    failed += 1;
-                }
-            }
-        }
-
-        let elapsed = start.elapsed();
-        lines.push(String::new());
-        if failed == 0 {
-            lines.push(format!(
-                "{passed} passed in {:.2}ms",
-                elapsed.as_secs_f64() * 1000.0,
-            ));
-        } else {
-            lines.push(format!(
-                "{passed} passed, {failed} failed in {:.2}ms",
-                elapsed.as_secs_f64() * 1000.0,
-            ));
-        }
-
-        lines.join("\n")
     }
 }
 
@@ -1799,5 +1738,34 @@ mod fq_arg_commands_tests {
             base_hits, 1,
             "the mono variant + its base collapse to ONE m/g entry; got: {referers:?}",
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_for_filter_tests {
+    use crate::repl::format::format_symbol_layout;
+    use crate::repl::test_support::session;
+
+    // spec: repl/spec/17-embedded-agent.md §17.6.2 — a test function has the
+    // `test-` prefix and the §16.1 signature. The two referers differ only in
+    // their scheme, so the exact output shows the exact-typed one is listed,
+    // the mistyped one is not, and no warning text is added.
+    #[test]
+    fn tests_for_lists_only_referers_with_the_test_signature() {
+        let mut s = session();
+        for form in [
+            "(import [primitives [*]])",
+            "(defn f [x] (add-i64 x 1))",
+            "(defn test-bad [] (f 1))",
+            "(defn test-good [] (if (eq-i64 (f 1) 2) None (Some \"f 1 is not 2\")))",
+        ] {
+            s.eval(form)
+                .unwrap_or_else(|e| panic!("fixture form `{form}` must compile: {e}"));
+        }
+        let expected = format!(
+            "; tests referencing f\n{}",
+            format_symbol_layout(&["user/test-good".to_string()]).join("\n")
+        );
+        assert_eq!(s.handle_tests_for("f"), expected);
     }
 }

@@ -1253,7 +1253,7 @@ fn qualified_name_to_undeclared_registered_child_resolves_to_root_module() {
 // module declares `(mod q)`; a file-backed `a/q.cl` that nothing declares is
 // not a submodule of `a`, so the name resolves to the root `q`; a declared
 // child is reached whatever else is loaded, and through an import alias
-// defect: class=resolver-mirror locus=src/process_form/dependency.rs::resolve_current_module_relative found=S122 owner=/dev fixed=S122
+// defect: class=resolver-mirror locus=src/process_form/dependency.rs::resolve_current_module_relative found=S122 owner=/dev fixed=S122/0272a5d9
 // The locus was deleted by the fix; the single resolver is now
 // `src/imports.rs::DeclaredChildren` (design/int/int.md §6.9).
 #[test]
@@ -3802,6 +3802,115 @@ fn same_named_ctors_import_plus_import_twin() {
         !neg.status.success(),
         "a contested bare ctor across two imported types MUST poison; {}",
         combined(&neg)
+    );
+}
+
+// spec: spec/08-modules.md §8.5.2 — a trait method is a member of its trait, so
+// `T.m` resolves wherever `T` is in bare scope: through a direct import and
+// through a prelude re-export, as `tm/T.m` does at the trait's home.
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity found=S122 owner=/dev fixed=S122
+#[test]
+fn imported_trait_dotted_method_resolves_via_import_and_prelude_reexport() {
+    let tm = "(import [prelude []])\n(import [primitives [*]])\n\
+              (deftrait T (m [x] self))\n\
+              (impl T Int (defn m [x] (add-i64 x 1)))\n";
+    let control = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("tm.cl", tm)
+        .file(
+            "main.cl",
+            "(import [tm [T]])\n(defn main [] (Pure (tm/T.m 4)))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert_eq!(
+        control.status.code(),
+        Some(5),
+        "control: the qualified member `tm/T.m` MUST dispatch at its home; {}",
+        combined(&control)
+    );
+    // Both subjects are captured before either is asserted, so a failure
+    // reports each route's outcome.
+    let direct_import = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("tm.cl", tm)
+        .file(
+            "main.cl",
+            "(import [tm [T]])\n(defn main [] (Pure (T.m 4)))\n",
+        )
+        .run("main.cl")
+        .output();
+    let prelude_reexport = Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(export [tm [T m]])\n")
+        .file("tm.cl", tm)
+        .file("main.cl", "(defn main [] (Pure (T.m 4)))\n")
+        .run("main.cl")
+        .output();
+    let failures: Vec<String> = [
+        ("direct import `(import [tm [T]])`", &direct_import),
+        ("prelude re-export `(export [tm [T m]])`", &prelude_reexport),
+    ]
+    .into_iter()
+    .filter(|(_, out)| out.status.code() != Some(5))
+    .map(|(route, out)| {
+        format!(
+            "`(T.m 4)` through {route} MUST exit 5, got {:?}; {}",
+            out.status.code(),
+            combined(out)
+        )
+    })
+    .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+}
+
+// spec: spec/08-modules.md §8.5.2 — an ambiguous parent spelling needs its module qualification before a dotted member resolves; §8.6.4 prelude and import candidates merge; §8.6.5 ambiguity diagnostics list the surviving canonical alternatives
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity found=S122 owner=/dev fixed=S122
+// The prelude and `tm` each define a trait `T`; importing `tm`'s makes bare
+// `T` ambiguous, so `T.m` must be rejected, listing both parents (ACT-1001
+// P-1; before the fix the prelude impl ran, exiting 104).
+#[test]
+fn dotted_member_under_ambiguous_trait_parent_is_rejected_neg() {
+    let prelude = "(export [primitives [*]])\n(deftrait T (m [x] self))\n\
+                   (impl T Int (defn m [x] (add-i64 x 100)))\n";
+    let tm = "(import [prelude []])\n(import [primitives [*]])\n\
+              (deftrait T (m [x] self))\n\
+              (impl T Int (defn m [x] (add-i64 x 1)))\n";
+    let run = |main: &str| {
+        Cranelisp::new()
+            .prelude(prelude)
+            .file("tm.cl", tm)
+            .file("main.cl", main)
+            .run("main.cl")
+            .output()
+    };
+    let prelude_only = run("(defn main [] (Pure (T.m 4)))\n");
+    assert_eq!(
+        prelude_only.status.code(),
+        Some(104),
+        "control: with no import, `T.m` MUST dispatch to the prelude impl; {}",
+        combined(&prelude_only)
+    );
+    let qualified = run("(import [tm [T]])\n(defn main [] (Pure (tm/T.m 4)))\n");
+    assert_eq!(
+        qualified.status.code(),
+        Some(5),
+        "control: the qualified member `tm/T.m` MUST dispatch to `tm`'s impl; {}",
+        combined(&qualified)
+    );
+    let subject = run("(import [tm [T]])\n(defn main [] (Pure (T.m 4)))\n");
+    let text = combined(&subject);
+    let code = subject.status.code();
+    assert!(
+        code != Some(104)
+            && code != Some(5)
+            && !subject.status.success()
+            && text.contains("prelude/T")
+            && text.contains("tm/T"),
+        "`T.m` under an ambiguous parent `T` (prelude and `(import [tm [T]])`) \
+         MUST be rejected with alternatives prelude/T and tm/T, got exit {:?} \
+         (104 = the prelude impl ran, 5 = the import took silent precedence); {}",
+        code,
+        text
     );
 }
 

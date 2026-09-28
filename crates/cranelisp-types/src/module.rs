@@ -4474,13 +4474,28 @@ fn validate_publication_collision<C: CodeStore, L: LinkerStore>(
                     expected: "a slotted callable to become Template or remain slotted",
                 });
             }
-            if same_publishable_origin(&existing.origin, &replacement.origin) {
-                Ok(())
-            } else {
-                Err(LifecycleError::IllegalOriginState {
+            if !same_publishable_origin(&existing.origin, &replacement.origin) {
+                return Err(LifecycleError::IllegalOriginState {
                     symbol: name.clone(),
-                })
+                });
             }
+            // A synthesized member's scheme fixes the field type at each
+            // position, and values built under the prior layout stay live.
+            // This forbids changing a member's type in place. It does not see
+            // name-to-position identity (reordering same-typed fields passes);
+            // that, and whether a type may be redeclared, are integration's
+            // policy.
+            if matches!(
+                existing.origin,
+                CallableOrigin::Ctor { .. } | CallableOrigin::Accessor { .. }
+            ) && !schemes_alpha_equivalent(&existing.arm.scheme, &replacement.arm.scheme)
+            {
+                return Err(LifecycleError::WrongState {
+                    symbol: name.clone(),
+                    expected: "an alpha-equivalent synthesized-member scheme",
+                });
+            }
+            Ok(())
         }
         // Adding/removing signatures may change a plain defn's representation.
         // Semantic admission belongs to integration; slot and owner moves remain

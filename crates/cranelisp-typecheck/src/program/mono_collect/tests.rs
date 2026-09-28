@@ -1137,10 +1137,15 @@ fn find_trait_method_decl_home_hop_finds_self_returning_method_d2() {
     tc.set_current_module(user.clone());
     seed_specific_import(&mut tc, &zlib, &["z"]);
     let state = CheckState::new(user.clone());
+    let env = tc.env();
+    let selected = env
+        .resolve_terminal_fq_scoped(&state, "z")
+        .expect("the method-only import resolves `z`")
+        .canonical;
     assert!(
-        tc.env().method_self_in_return(&state, "z"),
-        "a method-only-imported Self-returning method MUST be found via the \
-         D2 home-hop in find_trait_method_decl (Suggestion 6)"
+        env.method_self_in_return(&selected),
+        "a method-only-imported Self-returning method MUST read its `Self` \
+         return off its own trait at the trait's home (D2)"
     );
 }
 

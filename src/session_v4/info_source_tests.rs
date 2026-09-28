@@ -5,7 +5,7 @@ use cranelisp_types::{BrokenProvenance, Symbol, Visibility};
 /// prelude.cl is auto-discovered (mirrors
 /// `bare_primitive_value_path_tests::isolated_session`). Caller stages
 /// `shared.symbol_tables` + `shared.introspection` directly.
-fn isolated_session() -> (CompilerSession, PathBuf) {
+pub(super) fn isolated_session() -> (CompilerSession, PathBuf) {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())

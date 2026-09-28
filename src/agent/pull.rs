@@ -576,6 +576,16 @@ impl CompilerSession {
                 output: msg,
             };
         }
+        // A document edit regenerates the current module's file, which a
+        // restart-required failure retains; refuse before asking consent.
+        if let Some(refusal) = self.restart_required_refusal() {
+            let _ = writeln!(stdout, "{refusal}");
+            return ToolCallResult {
+                id: call.id.clone(),
+                command: format!("({tool} refused)"),
+                output: refusal,
+            };
+        }
 
         // (2) Render the EXACT proposed documentation — the canonical `;;` block
         // for a preamble (via the shared `generate_preamble` emitter, §17.2), the
@@ -1786,6 +1796,52 @@ mod tests {
             !rendered.contains("recorded"),
             "a miss must NOT print 'recorded': {rendered}"
         );
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.8 — while the current module is
+    // restart-required, an agent write that would regenerate its file is refused
+    // before consent: the document tools and `submit` alike.
+    #[test]
+    fn agent_writes_refused_before_consent_in_restart_required_module() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], true);
+        let module = s.current_module_path();
+        let type_name = cranelisp_types::FQTypeName::new(module.clone(), "T".into());
+        s.error_modules.insert(module.clone());
+        s.restart_required.insert(module.clone(), type_name);
+        for (id, tool, argument) in [
+            ("p1", "set-preamble", "user A module."),
+            ("d1", "set-doc", "f A function."),
+        ] {
+            let mut sink: Vec<u8> = Vec::new();
+            let mut consent = ScriptedConsent::new(&["y"]);
+            let call = ToolCallRequest {
+                id: id.to_string(),
+                name: tool.to_string(),
+                argument: argument.to_string(),
+                question: None,
+            };
+            let result = s.run_document_edit(&call, &mut sink, &mut consent);
+            assert!(
+                result.output.contains("Restart"),
+                "{tool}: {}",
+                result.output
+            );
+            assert_eq!(consent.0.len(), 1, "{tool}: consent must not be asked");
+        }
+        let mut sink: Vec<u8> = Vec::new();
+        let result = s.run_pull(
+            &submit_call("(defn f [] 1)"),
+            &mut sink,
+            &mut crate::agent::types::NoConsent,
+        );
+        assert!(
+            result.output.contains("Restart"),
+            "submit: {}",
+            result.output
+        );
+        let table = s.shared.symbol_tables.get(&module).unwrap();
+        assert!(table.get("f").is_none(), "submit must not define f");
     }
 
     // S2 (honesty) — `set-doc` on a non-`UserFn` `Def` (here a `PrimitiveExtern`)

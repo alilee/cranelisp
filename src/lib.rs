@@ -9,7 +9,9 @@
 //
 // External consumers (binary + legacy tests via `cranelisp::...`):
 // - `observability`   — `src/main.rs:12` (panic-hook install, flush)
-// - `session_v4`      — `src/main.rs:13` (`CommandResult`, `CompilerSession`, `SessionSettings`)
+// - `session_v4`      — `src/main.rs` (`CommandResult`, `CompilerSession`, `RunMode`,
+//                       `SessionSettings`; `--test` reads a `TestRunReport` from
+//                       `CompilerSession::run_tests`)
 // - `got_trace`       — `src/main.rs:14`
 // - `io_trace`        — `src/main.rs:14`
 // - `style`           — `src/main.rs:66` (`init_color`)
@@ -22,8 +24,9 @@ pub(crate) mod styled;
 
 // cluster — the cluster-atomic typecheck orchestration hot path (src/CLAUDE.md
 // §Cluster-atomic orchestration). `process_cluster` is the SOLE crate-crossing
-// where `ResolutionGap` values become scheduler calls; `insert_cluster` commits
-// the `ProcessedCluster` carrier. Live on every eval/`--run`/`--link` turn.
+// where `ResolutionGap` values become scheduler calls. The `ProcessedCluster`
+// it returns is committed by the prepared publication. Live on every
+// eval/`--run`/`--link` turn.
 pub mod cluster;
 
 // WorkerPool — entry point for the worker thread pool owned by

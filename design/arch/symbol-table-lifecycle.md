@@ -141,7 +141,8 @@ one swap; failure preserves live state and returns all submitted owners through
   records carry old/new targets, slots and every displaced owner, including
   removed family arms. Non-callable records have no body movements.
 
-The types planner checks structural pairing and slot eligibility. Integration
+The types planner checks structural pairing, slot eligibility and the
+synthesized-member layout invariant (§5.8). Integration
 owns language/ownership ABI comparison; types does not repeat that comparison
 as a second policy engine. Caller-free language-type changes, including
 Plain/overloaded transitions, follow the existing retirement rule; they do not
@@ -279,6 +280,17 @@ generic constructors/accessors retain synthesis recipes, not fabricated concrete
 views. Product-type facets remain origin metadata; bare member exposures refer
 to canonical constructor/accessor bindings. The types-owned field/layout
 projections prevent backend or typecheck from rebuilding declaration policy.
+
+A synthesized constructor or accessor republishes over a live one only with an
+alpha-equivalent scheme; otherwise staged publication refuses the whole
+transaction with `LifecycleError::WrongState`. The scheme fixes the field type
+at each position, and values built under the prior layout stay live, so this
+forbids changing a member's type in place. It does not cover name-to-position
+identity: reordering same-typed fields keeps every scheme and passes. It is a
+layout invariant, not a redefinition policy: full structural identity,
+including field names, and whether a type may be redeclared
+([REPL spec §18.5](../../repl/spec/18-redefinition.md)) are decided by
+integration's redefinition guard.
 
 ### 5.9 Imports and candidates
 
