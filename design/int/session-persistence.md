@@ -45,6 +45,8 @@ Sections are emitted in a fixed order, separated by blank lines:
 
 The structural sections read the table's own fields (`submodules`,
 `platforms`, `imports`, `exports`); there is no separate structure store.
+After a whole-file rebuild, these fields hold exactly the saved source's forms
+([int §6.10](int.md#610-the-import-generation)).
 
 ### 1.4 Dependency ordering
 
@@ -68,7 +70,8 @@ The file holds definitions and structural forms only
 internal `$`-mangled entries and compiler-generated keys are never written.
 Forms that failed to load during a degraded start-up are re-emitted verbatim
 until repaired, so regeneration never silently deletes the user's text
-(`append_failed_forms`).
+(`append_failed_forms`). A backing file that does not parse yields no forms;
+it is kept by the module lock instead (§2.4.4).
 
 ### 2.2 Render source per kind
 
@@ -129,6 +132,10 @@ successful definition. Otherwise that module is not written (§2.4.3).
   render until the REPL turn records its input. No carrier can therefore keep
   an earlier generation. CLIF and code size are codegen facts, written by the
   same publication step.
+- **Removal.** A whole-file rebuild's prologue deletes the record of every
+  definition of the displaced generation; the rebuild's publication then
+  installs its own
+  ([session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild)).
 - **Every kind, one key.** The publication writer covers functions, types,
   traits and impls alike. Each record is keyed by the live-turn projection
   (`definition_result_symbol`), which rehydration also uses; a `begin` member
@@ -190,25 +197,26 @@ naming the entries. The in-memory state remains the ground truth. Dropping an
 entry would lose authored source irreversibly once the next restart reloads
 the file.
 
-#### 2.4.4 Known limits
+#### 2.4.4 Failed source
 
-- **Source of a failed watcher reload.** A failed reload publishes nothing, so
-  it changes no record (§2.4.1).
-  - **Structural type change.** A reload refused under
-    `repl/spec/14-file-watching.md` §14.8 retains the saved file. Turn
-    admission and a regeneration chokepoint withhold every write to that
-    module until a successful reload or a restart
-    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-restart-required-failure)).
-    The restart then compiles the saved source (§3.4).
-  - **Any other failure.** The next accepted definition turn writes the last
-    published generation over the unaccepted external edit, whether the
-    reload failed to parse, to typecheck or to publish. What the file must
-    hold is unspecified (`repl/spec/14-file-watching.md` §14.4–§14.6 against
-    `repl/spec/15-session-persistence.md` §15.1). Face 2 of
-    [ACT-0998](../../sprints/actions/ACT-0998-watcher-reload-type-change-intake.md)
-    awaits that ruling. If the ruling requires retention, extend §2.1's
-    failed-form re-emission to watcher failures. Do not restore candidate
-    records.
+A failed reload publishes nothing, so it changes no record (§2.4.1). Its
+saved file holds the edit the session has not accepted, and the module lock
+([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)) keeps it: turn
+admission and the regeneration chokepoint withhold every write to that module
+until a reload of it succeeds (`repl/spec/14-file-watching.md` §14.5 item 5).
+
+- **Every cause.** The lock covers a §14.8 refusal, a read, parse, typecheck,
+  codegen or publication failure, and a dependent that failed in the cascade.
+  Candidate records are never restored to fill the file.
+- **Startup.** An entry backing file that does not parse is locked the same
+  way (`repl/spec/15-session-persistence.md` §15.2.3). One that parses but
+  fails keeps its definition-turn repair and the failed-form re-emission of
+  [§2.1](#21-content). Every other module a failed start leaves `Failed` is
+  locked. It is not a backing file, so no repair applies
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
+- **Restart.** The lock is session state. A restart compiles the saved
+  source ([§3.4](#34-restore)), so source that compiles is established and
+  source that still fails follows the startup rule above.
 
 #### 2.4.5 Editing a cache-installed module
 
@@ -218,19 +226,28 @@ its preloaded table.
 
 - **Rule.** When `/mod M` names a module whose live generation was installed
   from the object cache, the session first recompiles M from its backing file
-  through the ordinary reload operation (`repl-lifecycle.md` §1.2). Every
-  generation that regeneration writes is therefore compiled from source this
-  session, and each of its definitions has a publication record
+  through a reload plan rooted at M (`repl-lifecycle.md` §1.2). A module
+  whose load failed is locked ([§2.4.4](#244-failed-source)). A generation
+  that regeneration writes for a loaded module is therefore compiled from
+  source this session, and each of its definitions has a publication record
   ([§2.4.1](#241-who-writes-a-record)), including those a top-level macro
   call produced.
 - **Effect.** The cache hit certified that the file is the restored table's
-  source (`int.md` §7.3). The recompile therefore republishes the same
-  definitions at their slots and dependents are unaffected. Persisted macro
+  source (`int.md` §7.3). The recompile is a whole-file rebuild, which may
+  number slots differently from the cached generation, so the plan rebuilds
+  M's dependents too; from unchanged sources they compile to the same
+  definitions. `/mod` reports each failed module's notification. Persisted macro
   calls re-expand with the macro current at the recompile, as the template
   qualification of `repl/spec/15-session-persistence.md` §15.4 permits.
 - **No recompile otherwise.** `/mod` to the entry module, to a module
   compiled from source this session or to a module not yet loaded switches
   without recompiling.
+  - A module not yet loaded starts from an empty table, so a definition
+    turn there regenerates its file without the file's existing
+    definitions.
+  - Whether `/mod` to an existing unloaded file must load it, refuse, or may
+    replace it is an open spec question (ACT-1010 M2). This design does not
+    decide it.
 - **Failure.** A failed recompile has the outcome of a failed reload of that
   module (`repl-lifecycle.md` §1.3–§1.4).
 - **Rejected alternatives.** Re-expansion during rehydration would run macros
@@ -266,6 +283,8 @@ and the REPL never aborts because a save failed.
 - A backing file with broken forms loads its good forms and retains the
   failed ones for re-emission (§2.1); the file is never deleted
   (`repl/spec/14-file-watching.md` §14.4–§14.5).
+- A backing file that does not parse loads nothing, and its module is locked
+  until a save of it compiles ([§2.4.4](#244-failed-source)).
 - The start-up restore notice counts definitions from the restore record, not
   from a re-parse of the file (`repl/spec/15-session-persistence.md` §15.2.2).
 

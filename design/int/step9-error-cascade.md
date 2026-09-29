@@ -96,7 +96,10 @@ After a failed dependency wait, the eval thread calls
 - A module that was once terminal and failed only as a cascade victim keeps its
   table.
 
-Start-up recovery and redefinition use the same reset.
+Start-up recovery and redefinition use the scheduler reset alone and keep
+every table. Start-up recovery also locks each module the reset returns,
+other than the entry
+([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
 
 ## 6. Evidence
 

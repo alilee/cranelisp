@@ -251,7 +251,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .insert(span, resolution);
     }
 
-    /// Seed the existing pass-4 driver from reload-captured typed demands.
+    /// Seed the existing pass-4 driver from typed demands captured for a
+    /// REPL-turn generic/overload redefinition.
     /// This is deliberately a caller of `drive_call_site_monomorphisation`,
     /// never a second caller of the mint core.
     pub(crate) fn instantiate_demand_roots(

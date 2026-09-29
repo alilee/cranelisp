@@ -8,41 +8,73 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-use cranelisp_types::{
-    CranelispError, ErrorLocation, ModuleFullPath, MonoDemand, Sexp, Span, Symbol,
-};
+use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Sexp, Span, Symbol};
 
 use crate::observability::{self, SchedulerTraceTag};
 
 /// The source a cluster attempt resumes from, together with the modules whose
 /// qualified macro heads were recognised while expanding its already-expanded
-/// prefix (`design/int/int.md` §7.6.2). The expanded prefix no longer names
-/// those modules, so the two travel as one value through every holder; only
-/// [`SourceContinuation::source`] starts from an empty set.
+/// prefix (`design/int/int.md` §7.6.2), and what that source stands for. The
+/// expanded prefix no longer names those modules, so they travel as one value
+/// through every holder; a fresh continuation starts from an empty set.
 #[derive(Debug, Clone)]
 pub struct SourceContinuation {
     forms: std::sync::Arc<[Sexp]>,
     macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+    provenance: SourceProvenance,
+}
+
+/// What a continuation's source stands for when its generation publishes
+/// (`design/int/session-transaction.md` §7.3).
+#[derive(Debug, Clone)]
+pub(crate) enum SourceProvenance {
+    /// A module's re-read saved source, compiled into the fresh table of a
+    /// whole-file rebuild. It carries the module's established reference, the
+    /// comparand of the restart boundary for types (§7.3.2).
+    WholeSource(std::sync::Arc<crate::code::SessionSymbolTable>),
+    /// Anything else. It merges into the live table, so it has no reference.
+    Increment,
 }
 
 impl SourceContinuation {
-    /// Unexpanded source: a first attempt or a retry from the top.
+    /// Unexpanded source that increments the live generation: a first
+    /// registration, a REPL turn, or an empty placeholder.
     pub fn source(forms: impl Into<std::sync::Arc<[Sexp]>>) -> Self {
         SourceContinuation {
             forms: forms.into(),
             macro_lookup_dependencies: BTreeSet::new(),
+            provenance: SourceProvenance::Increment,
         }
     }
 
-    /// The remainder of an attempt that expanded part of its source.
+    /// A module's whole re-read saved source, rebuilt against `reference`.
+    /// Only a reload establishes it.
+    pub(crate) fn whole_source(
+        forms: impl Into<std::sync::Arc<[Sexp]>>,
+        reference: std::sync::Arc<crate::code::SessionSymbolTable>,
+    ) -> Self {
+        SourceContinuation {
+            provenance: SourceProvenance::WholeSource(reference),
+            ..SourceContinuation::source(forms)
+        }
+    }
+
+    /// The remainder of an attempt that expanded part of its source; it keeps
+    /// the attempt's provenance.
     pub(crate) fn resumed(
         forms: Vec<Sexp>,
         macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+        provenance: SourceProvenance,
     ) -> Self {
         SourceContinuation {
             forms: forms.into(),
             macro_lookup_dependencies,
+            provenance,
         }
+    }
+
+    pub(crate) fn provenance(&self) -> &SourceProvenance {
+        &self.provenance
     }
 
     pub fn forms(&self) -> &[Sexp] {
@@ -173,11 +205,6 @@ pub struct ModuleState {
     /// `TypecheckDone`, never typechecked from source).
     pub continuation: Option<SourceContinuation>,
 
-    /// Historical concrete instantiations that a persisted-source reload must
-    /// recreate in this generation. Stored beside `continuation` so dependency
-    /// retries carry the same immutable request packet.
-    pub instantiation_demands: std::sync::Arc<[MonoDemand]>,
-
     /// True after this generation's structural/prologue work has completed.
     /// A dependency retry then consumes only `continuation`, without repeating
     /// generation setup.
@@ -222,7 +249,6 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             continuation,
-            instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
             structural_type_refusal: None,
@@ -247,7 +273,6 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             continuation: None,
-            instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
             structural_type_refusal: None,
@@ -275,7 +300,6 @@ impl ModuleState {
             error: None,
             static_closure_memo: None,
             continuation: None,
-            instantiation_demands: std::sync::Arc::from([]),
             generation_started: false,
             blocked_on: None,
             structural_type_refusal: None,
@@ -372,7 +396,6 @@ pub enum PriorityWork<'s> {
     Typecheck {
         module: ModuleFullPath,
         continuation: SourceContinuation,
-        instantiation_demands: std::sync::Arc<[MonoDemand]>,
         generation_started: bool,
     },
     /// Load a cache-restored module's object into memory.
@@ -634,6 +657,17 @@ impl CompileScheduler {
         sexps: std::sync::Arc<[Sexp]>,
         delays_other: bool,
     ) {
+        self.register_module_continuation(module, SourceContinuation::source(sexps), delays_other);
+    }
+
+    /// [`Self::register_module`] with the caller's continuation, so a reload's
+    /// first-seed fallback carries whole-source provenance.
+    pub(crate) fn register_module_continuation(
+        &self,
+        module: ModuleFullPath,
+        continuation: SourceContinuation,
+        delays_other: bool,
+    ) {
         observability::record_module_event(
             SchedulerTraceTag::RegisterModuleRegister,
             module.as_ref(),
@@ -650,10 +684,9 @@ impl CompileScheduler {
         } else {
             ModulePool::TypecheckNext
         };
-        state.modules.insert(
-            module.clone(),
-            ModuleState::new(pool, Some(SourceContinuation::source(sexps))),
-        );
+        state
+            .modules
+            .insert(module.clone(), ModuleState::new(pool, Some(continuation)));
         if delays_other {
             state.typecheck_first.push_back(module);
         } else {
@@ -914,16 +947,30 @@ impl CompileScheduler {
         module: &ModuleFullPath,
         sexps: std::sync::Arc<[Sexp]>,
     ) -> bool {
-        self.re_register_module_with_demands(module, sexps, std::sync::Arc::from([]))
+        self.re_register_module_continuation(module, SourceContinuation::source(sexps))
     }
 
-    /// Re-register changed persisted source together with the historical
-    /// concrete instantiations that must join the same unpublished candidate.
-    pub(crate) fn re_register_module_with_demands(
+    /// [`Self::re_register_module`] with the caller's continuation, so a
+    /// reload carries whole-source provenance.
+    pub(crate) fn re_register_module_continuation(
         &self,
         module: &ModuleFullPath,
-        sexps: std::sync::Arc<[Sexp]>,
-        instantiation_demands: std::sync::Arc<[MonoDemand]>,
+        continuation: SourceContinuation,
+    ) -> bool {
+        self.requeue_for_typecheck(module, Some(continuation))
+    }
+
+    /// Re-queue `module` for typecheck with no stored continuation, as a
+    /// defensive dispatch would find it.
+    #[cfg(test)]
+    pub(crate) fn requeue_without_continuation(&self, module: &ModuleFullPath) -> bool {
+        self.requeue_for_typecheck(module, None)
+    }
+
+    fn requeue_for_typecheck(
+        &self,
+        module: &ModuleFullPath,
+        continuation: Option<SourceContinuation>,
     ) -> bool {
         observability::record_module_event(SchedulerTraceTag::ReRegisterModule, module.as_ref());
         let mut state = self.lock();
@@ -983,8 +1030,7 @@ impl CompileScheduler {
                 error: None,
                 // Source changed — the static closure must be re-walked.
                 static_closure_memo: None,
-                continuation: Some(SourceContinuation::source(sexps)),
-                instantiation_demands,
+                continuation,
                 generation_started: false,
                 blocked_on: None,
                 structural_type_refusal: None,
@@ -1083,21 +1129,14 @@ impl CompileScheduler {
             .modules
             .get(&module)
             .is_some_and(|ms| ms.generation_started);
-        let instantiation_demands = state
-            .modules
-            .get(&module)
-            .map(|ms| std::sync::Arc::clone(&ms.instantiation_demands))
-            .unwrap_or_else(|| std::sync::Arc::from([]));
         PriorityWork::Typecheck {
             module,
             continuation,
-            instantiation_demands,
             generation_started,
         }
     }
 
-    /// Replace a blocked module's source continuation. Reload demands remain
-    /// on the same immutable packet across the retry; compilation candidates
+    /// Replace a blocked module's source continuation. Compilation candidates
     /// never enter scheduler state.
     pub fn set_source_continuation(
         &self,
@@ -1337,9 +1376,6 @@ impl CompileScheduler {
             return;
         }
         Self::set_pool_locked(&mut state, module, ModulePool::TypecheckDone);
-        if let Some(ms) = state.modules.get_mut(module) {
-            ms.instantiation_demands = std::sync::Arc::from([]);
-        }
         // Phase-A barrier (S93): the terminal pool transition IS the signature
         // publication edge. `notify_typecheck_done` runs post-`finalize_cluster`
         // (the cluster's Defs are already installed in `symbol_tables[module]`),
@@ -2676,7 +2712,6 @@ impl CompileScheduler {
         Self::set_pool_locked(state, module, ModulePool::Failed);
         if let Some(ms) = state.modules.get_mut(module) {
             ms.error = Some(error);
-            ms.instantiation_demands = std::sync::Arc::from([]);
         }
         Self::cascade_failure_locked(state, module);
     }

@@ -1047,9 +1047,10 @@ fn generate_fns_and_macros(
         // transient session output, NOT module content, and MUST NOT be
         // persisted to the backing source file (repl/spec.md §15.7). Only its
         // SOURCE emission is suppressed — the live in-session `__expr` entry is
-        // left untouched. A reload re-reads the definitions-only file; its
-        // ordinary prepared replacement captures and rematerializes historical
-        // concrete demands, so no synthetic expression is replayed or persisted.
+        // left untouched. A reload rebuilds the module from the
+        // definitions-only file and keeps no instance: the definitions that use
+        // one demand it again when they recompile
+        // (design/int/session-transaction.md §8.5).
         //
         // The wrapper name is EXACTLY `"__expr"` (never suffixed), so match it
         // exactly via `worker::is_internal_listing_name` — a user symbol like

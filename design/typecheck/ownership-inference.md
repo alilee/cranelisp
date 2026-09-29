@@ -57,7 +57,7 @@ consumer acts on. Absence is always the safe reading.
 - The pass runs once per cluster, as the last step of `finalize_check_result_inner`,
   after `finalize_annotations_and_publish`. At that point monomorphisation has settled,
   callees are written and every concrete codegen view has been rebuilt.
-  `instantiate_demands` runs it once more, after a reload demand set drains
+  `instantiate_demands` runs it once more, after a replayed demand set drains
   ([monomorphisation](monomorphisation.md) §3.8.6).
 - It adds no pipeline stage, no store and no graph. It reads the cluster through the
   ordinary staging-aware accessor and writes through the ordinary publication funnel.

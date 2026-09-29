@@ -896,7 +896,8 @@ signature-coherence subsystem, not a mode-special-case.
   tables' `imports` for dependents of a changed module and `reload_module`s each — S35/S37
   lineage), `re_register_module` (fresh-sexps re-queue), and the S45 error-cascade machinery
   (`scheduler.reset_module` / `reset_all_failed_modules` + embedded-original-error reporting).
-- **The GOT** — the commit substrate: per-slot atomic writes, append-only slot allocation.
+- **The GOT** — the commit substrate: per-slot atomic writes, append-only slot allocation
+  within one table (§5.6 (iv)).
   ABI identity is encoded in slot identity (§5.6 — an ABI-changing redefinition allocates a
   fresh slot; the old slot freezes).
 - **The heap and the runtime cadence** — the actors recompilation *cannot* reach: closure values
@@ -987,8 +988,8 @@ table entries; it cannot reach the heap.
 illegal state unrepresentable by encoding ABI identity in slot identity):
 
 - **ABI-changing redefinition ⇒ fresh slot.** New `f` is installed at a **newly allocated GOT
-  slot**; `f`'s entry now carries the new slot. The **old slot freezes**, permanently pointing at
-  the old implementation. Every recompiled caller whose own ABI surface changed in the fixpoint
+  slot**; `f`'s entry now carries the new slot. The **old slot freezes**, pointing at the old
+  implementation for the table's lifetime (iv). Every recompiled caller whose own ABI surface changed in the fixpoint
   gets a fresh slot the same way; a recompiled caller whose ABI is unchanged is patched in place
   (its callers need no recompile). A BROKEN caller's trap stub is patched **in place** on its
   existing slot — the stub raises without touching its arguments, which is signature-safe, and
@@ -1018,9 +1019,12 @@ illegal state unrepresentable by encoding ABI identity in slot identity):
   cache-invalid full-recompile path. (iii) An ABI-changing **persisted** redefinition therefore
   leaves a **permanent hole** in the slot space that survives restart in a valid cache — 8
   bytes of GOT slab each (body-only edits take the §5.4 fast path and keep their slot).
-  (iv) **Claims and tombstones are the freeze boundary**: slot allocation scans live claims and
-  retired-slot tombstones, so a published index never silently becomes a fresh slot
-  ([symbol-table lifecycle](symbol-table-lifecycle.md), slot identity). Frozen-slot
+  (iv) **Claims and tombstones are the freeze boundary within one table**: slot allocation
+  scans live claims and retired-slot tombstones, so a published index never silently becomes
+  a fresh slot while the table lives. A whole-file rebuild replaces the module's table over
+  the same GOT, ending its freezes and holes; that reissue relies on the rebuild's quiescent
+  boundary and complete dependent invalidation, not on freezing
+  ([symbol-table lifecycle §4.3](symbol-table-lifecycle.md#43-slot-identity)). Frozen-slot
   **bindings** — the retained `Code::Jit`, the old code pointers — die with the session:
   freezing is a **session-memory commitment only**, and restart is the zero-cost reclamation
   of the retention-rule leak. (v) Load-time hole reclamation would be sound (after restart no

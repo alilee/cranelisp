@@ -2313,7 +2313,7 @@ fn lift_error_does_not_mask_codegen_error_as_gap_when_a_gap_is_pending() {
     );
 }
 
-// spec: design/typecheck/monomorphisation.md §3.8 M-1/M-2 — reload demands seed
+// spec: design/typecheck/monomorphisation.md §3.8 M-1/M-2 — replayed demands seed
 // the existing mono engine, mint the ordinary concrete instance, and dedup a
 // repeated seed without moving its slot.
 #[test]
@@ -2667,7 +2667,7 @@ fn instantiate_demands_absent_home_is_gap() {
 }
 
 // design/typecheck/monomorphisation.md §3.8 M-3 — an engine/body invariant
-// failure is not reclassified as a stale-root warning merely because reload
+// failure is not reclassified as a stale-root warning merely because replayed
 // demands use a synthetic call site.
 #[test]
 fn instantiate_demands_propagates_template_body_invariant_failure() {
@@ -2693,7 +2693,7 @@ fn instantiate_demands_propagates_template_body_invariant_failure() {
             CallableOrigin::Plain,
             TemplateBody::Ast(DefnVariant {
                 params: vec![(Symbol::from("x"), None)],
-                // Deliberately contradicts the stored a -> a scheme. A reload
+                // Deliberately contradicts the stored a -> a scheme. A replayed
                 // demand for Int must surface this engine invariant failure.
                 body: Expr::BoolLit {
                     value: true,

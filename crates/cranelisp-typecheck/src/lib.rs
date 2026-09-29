@@ -29,9 +29,10 @@
 //! Decision 44 (amended FIXME 0167 for Approach B + [`SymbolTableAccess`];
 //! 2026-05-13 third amendment collapsing the prior two-pass facade split
 //! into a single function):
-//! Reload recovery uses the sibling [`instantiate_demands`] entry point to seed
-//! the same monomorphisation worklist from typed, synthetic-site demands; it
-//! neither replays source forms nor publishes a second instantiation engine.
+//! The sibling [`instantiate_demands`] entry point is consumed when a REPL turn
+//! redefines a generic base or overload family: it seeds the same
+//! monomorphisation worklist from typed, synthetic-site demands, and neither
+//! replays source forms nor publishes a second instantiation engine.
 //!
 //! ```ignore
 //! pub fn check_forms<C, L>(

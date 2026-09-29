@@ -382,9 +382,11 @@ where
     Ok(result)
 }
 
-/// Re-instantiate concrete template demands after a source reload.
+/// Re-instantiate concrete template demands when a REPL turn redefines a
+/// generic base or overload family.
 ///
-/// This is a seed of the ordinary pass-4 monomorphisation worklist, not a
+/// A module reload does not call this; it rebuilds the module whole and
+/// ordinary monomorphisation re-mints the instances still used. This is a seed of the ordinary pass-4 monomorphisation worklist, not a
 /// second instantiation engine. Demands carry terminal storage identity and
 /// concrete arguments. An absent home module returns [`CheckError::Gap`]; a
 /// stale template/arity/constraint demand is declined as an ordinary warning

@@ -114,7 +114,7 @@ fn cache_preloaded_sum_projection_recheck_preserves_ownership() {
             vec![cranelisp_types::Mode::Copy],
             "{label}"
         );
-        validate_guarded_staging(&tables, &module, &checked.staging, None).unwrap();
+        validate_guarded_staging(&tables, &module, &checked.staging, None, None).unwrap();
     }
 }
 
@@ -465,12 +465,14 @@ fn prepare_uncheckable_cluster(
         &session.shared.module_aliases,
         &session.shared.prelude_fallback,
         &ModuleFullPath::from("user"),
-        &[],
-        &[],
+        ClusterPrograms {
+            working: &[],
+            codegen: &[],
+        },
         OwedFacts {
-            reload_demands: &[],
             lookup_dependencies,
         },
+        None,
         &session.shared,
     )
     .unwrap()
@@ -2414,7 +2416,6 @@ fn mk_writer_test_ctx<'a>(
         platform_dirs: &[],
         project_root: Path::new("/"),
         shared_state: None,
-        reload_demands: std::sync::Arc::from([]),
         eval_driven: false,
     }
 }
@@ -4305,4 +4306,144 @@ fn insert_cluster_installs_no_staged_record() {
     let record = live_record(&shared, "g").unwrap();
     assert_eq!(record.source.as_deref(), Some("(mkg)"));
     assert!(record.expanded.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Increments never rebuild: only a reload's whole-source registration swaps in
+// a fresh table (design/int/session-transaction.md §7.3.1). The rebuild's own
+// rows are in `session_v4/persistence_tests.rs`.
+// ---------------------------------------------------------------------------
+
+const REMOVAL_V1: &str = "(defn g [] 1)\n(defn h [] 2)\n";
+
+/// A REPL session whose `user` module was loaded from `user.cl` holding
+/// `source`.
+fn removal_session(
+    source: &str,
+) -> (
+    tempfile::TempDir,
+    crate::session_v4::CompilerSession,
+    std::path::PathBuf,
+) {
+    let (root, mut session) = owed_facts_session();
+    let path = root.path().join("user.cl");
+    std::fs::write(&path, source).unwrap();
+    session.register_module("user").unwrap();
+    (root, session, path)
+}
+
+fn user_binding(
+    session: &crate::session_v4::CompilerSession,
+    name: &str,
+) -> Option<Binding<crate::code::Code>> {
+    session
+        .shared
+        .symbol_tables
+        .get(&ModuleFullPath::from("user"))
+        .and_then(|table| table.get(name).cloned())
+}
+
+fn user_slot(session: &crate::session_v4::CompilerSession, name: &str) -> Option<usize> {
+    user_binding(session, name).and_then(|binding| binding.callable_got_slot())
+}
+
+fn user_retired_slots(session: &crate::session_v4::CompilerSession) -> Vec<usize> {
+    session
+        .shared
+        .symbol_tables
+        .get(&ModuleFullPath::from("user"))
+        .unwrap()
+        .retired_slots()
+        .iter()
+        .map(|retired| retired.slot.index())
+        .collect()
+}
+
+// spec: design/int/session-transaction.md §7.3.1 negative — driving a declared
+// submodule after the parent's generation has published retries no source, so
+// it removes none of the definitions that generation just published.
+#[test]
+fn published_generation_keeps_its_definitions_across_the_submodule_retry() {
+    let (root, mut session) = owed_facts_session();
+    std::fs::write(root.path().join("lib.cl"), "(defn a [] 1)\n(mod- test)\n").unwrap();
+    std::fs::create_dir_all(root.path().join("lib")).unwrap();
+    std::fs::write(root.path().join("lib").join("test.cl"), "(defn t [] 2)\n").unwrap();
+    session.eval("(import [lib [a]])").unwrap();
+    let lib = session
+        .shared
+        .symbol_tables
+        .get(&ModuleFullPath::from("lib"))
+        .unwrap()
+        .clone();
+    assert!(lib.get("a").is_some(), "the parent keeps `a`");
+    assert!(
+        session
+            .shared
+            .symbol_tables
+            .get(&ModuleFullPath::from("lib.test"))
+            .is_some_and(|table| table.get("t").is_some()),
+        "precondition: the submodule was driven"
+    );
+    session.shutdown();
+}
+
+// spec: design/int/session-transaction.md §7.3.1 negative — a REPL turn that
+// defines only `g` replaces no generation, so `h` keeps its binding and slot.
+#[test]
+fn additive_turn_defining_one_function_retires_nothing() {
+    let (_root, mut session, _path) = removal_session(REMOVAL_V1);
+    let h_slot = user_slot(&session, "h");
+    assert!(h_slot.is_some(), "precondition");
+    session.eval("(defn g [] 5)").unwrap();
+    assert_eq!(user_slot(&session, "h"), h_slot);
+    session.shutdown();
+}
+
+// spec: design/int/session-transaction.md §7.3.1 negative (Placeholder) — a
+// dispatch that finds no stored continuation over a populated table retires
+// nothing.
+#[test]
+fn dispatch_without_a_stored_continuation_retires_nothing() {
+    let (_root, session, _path) = removal_session(REMOVAL_V1);
+    let user = ModuleFullPath::from("user");
+    let h_slot = user_slot(&session, "h");
+    assert!(h_slot.is_some(), "precondition");
+    let retired = user_retired_slots(&session);
+
+    assert!(session.shared.scheduler.requeue_without_continuation(&user));
+    let _ = session
+        .shared
+        .scheduler
+        .wait_module_inmem_complete_blocking(&user);
+
+    assert_eq!(user_slot(&session, "h"), h_slot, "`h` keeps its slot");
+    assert!(user_binding(&session, "g").is_some(), "`g` stays");
+    assert_eq!(user_retired_slots(&session), retired, "no tombstone");
+    let mut session = session;
+    session.shutdown();
+}
+
+// spec: design/int/session-transaction.md §7.3.1 negative (Placeholder);
+// repl/spec/15-session-persistence.md §15.2.3 — startup recovery's empty
+// re-registration of the entry retires nothing its populated table holds.
+#[test]
+fn startup_recovery_placeholder_retires_nothing() {
+    let (_root, mut session, _path) = removal_session(REMOVAL_V1);
+    let user = ModuleFullPath::from("user");
+    let h_slot = user_slot(&session, "h");
+    assert!(h_slot.is_some(), "precondition");
+    let retired = user_retired_slots(&session);
+    session.shared.scheduler.notify_module_failed(
+        &user,
+        CranelispError::ModuleError {
+            message: "startup failed".into(),
+            location: cranelisp_types::ErrorLocation::from_span_file(Span::new(0, 0), None),
+        },
+    );
+
+    assert_eq!(session.recover_startup_failure("user"), None);
+
+    assert_eq!(user_slot(&session, "h"), h_slot, "`h` keeps its slot");
+    assert_eq!(user_retired_slots(&session), retired, "no tombstone");
+    session.shutdown();
 }

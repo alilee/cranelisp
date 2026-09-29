@@ -20,6 +20,7 @@ pub(crate) use cranelisp_types::{
 
 pub(crate) use crate::code::{Code, SessionSymbolTable};
 pub(crate) use crate::display::format_type_qualified;
+use crate::session_v4::ModuleLock;
 pub(crate) use crate::session_v4::{
     CommandResult, CompilerSession, EvalResult, Introspection, ReadOnlyMacroResolver,
     SymbolCategory, intrinsic_type_from_name, is_comment_only, parens_balanced,
@@ -498,8 +499,8 @@ impl CompilerSession {
             return CommandResult::Final(msg);
         }
         // A definition turn would regenerate the current module's file, which
-        // a restart-required failure retains (§14.8).
-        if let Some(refusal) = self.restart_required_refusal() {
+        // its lock keeps as saved.
+        if let Some(refusal) = self.module_lock_refusal() {
             return CommandResult::Final(refusal);
         }
 
@@ -508,17 +509,21 @@ impl CompilerSession {
     }
 
     /// The refusal of a turn that would regenerate the current module's file
-    /// while a restart-required failure retains it
-    /// (`design/int/repl-lifecycle.md` §1.3.1), or `None` when the module is
-    /// not restart-required.
-    pub(crate) fn restart_required_refusal(&self) -> Option<String> {
+    /// while that module is locked (`design/int/repl-lifecycle.md` §1.3.1),
+    /// naming the remedy for the lock's cause; `None` when it is not locked.
+    pub(crate) fn module_lock_refusal(&self) -> Option<String> {
         let module = self.current_module_path();
-        let type_name = self.restart_required.get(&module)?;
-        Some(format!(
-            "Cannot define in module '{module}': its saved file changes the structure of type \
-             {type_name}, which takes effect only after a restart. Restart the REPL to establish \
-             it, or save a declaration with the live structure."
-        ))
+        match self.module_locks.get(&module)? {
+            ModuleLock::RestartRequired(type_name) => Some(format!(
+                "Cannot define in module '{module}': its saved file changes the structure of type \
+                 {type_name}, which takes effect only after a restart. Restart the REPL to \
+                 establish it, or save a declaration with the live structure."
+            )),
+            ModuleLock::FailedSource => Some(format!(
+                "Cannot define in module '{module}': its saved file does not compile. Save a \
+                 version that compiles to release the module."
+            )),
+        }
     }
 
     /// Dispatch a parsed slash command, returning a `CommandResult`.
@@ -632,12 +637,12 @@ impl CompilerSession {
                 // Startup-failed source and its error block leave together,
                 // only on repair (repl/spec/15-session-persistence.md
                 // §15.2.3); `/reset` is not a repair.
-                // A restart-required failure stands until a successful reload
-                // or a restart (§14.8).
+                // A module lock stands until a successful reload of its
+                // module or a restart.
                 let failed_forms = &self.failed_forms;
-                let restart_required = &self.restart_required;
+                let module_locks = &self.module_locks;
                 self.error_modules.retain(|module| {
-                    failed_forms.contains_key(module) || restart_required.contains_key(module)
+                    failed_forms.contains_key(module) || module_locks.contains_key(module)
                 });
                 CommandResult::Final("command not yet available in v4 REPL".to_string())
             }

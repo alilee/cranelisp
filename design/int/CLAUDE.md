@@ -60,7 +60,7 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `concurrency-architecture.md` | The compiler-internal scheduling axis: where int is concurrent, why, and which doc carries each invariant. |
 | `persistent-workers.md` | The delivered worker-lifecycle contract — spawn, park/wake, enqueue-not-spawn, per-batch JIT, shutdown. Section numbers are pinned by live source. |
 | `signature-body-prepass.md` | The S93 two-phase barrier — the durable race cure. |
-| `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification (including trait-implementation redefinition, §2.5), slot versioning, the retention pool and persistence. Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
+| `session-transaction.md` | Live redefinition: the guarded-publication model, commit-gate slot classification (including trait-implementation redefinition, §2.5), slot versioning, the retention pool and persistence; and the whole-file rebuild of a reloaded module (§7.3). Section numbers are pinned by live source; it also marks the superseded dependent-recompilation residue. |
 | `session-persistence.md` | Save/regenerate. The cache artefact, cache-hit flow, restoration parity and `Code` carrier are `int.md` §§5 and 7. |
 | `io-integration.md` | The host program driver, `main` validation, and platform-DLL load orchestration (search, ABI gate, registration, layout-hash gate). |
 | `result-owner.md` | The one program-result owner across REPL, `--run`, cache-hit and linked startup: observe, then release exactly once through canonical type glue. |

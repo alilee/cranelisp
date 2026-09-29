@@ -33,7 +33,7 @@ and the suite has no failure. Acceptance waits on three things:
 | Recovery; `/mem` | Delivered | Q2 uses the D1 private witness (plant RED, restored GREEN); no public trigger, as approved 2026-09-10. `/mem` Q6 went RED to GREEN. ACT-0958 is satisfied and awaits QA retirement |
 | Macro-turn ownership | Delivered | The Q4 pair balances. Q5 matched 1143 to 46; the 46 stay an unclassified diagnostic, not a gate |
 | Language claims | Delivered | Q10 cases pass; 0815's failure is not reproduced |
-| Convergence | Delivered | 0553 demand capture (Q1/Q7 closed 2026-09-11); 0789, 0898 and 0906 are in source |
+| Convergence | Delivered | Q1 REPL-turn demand replay is in source. Q7 reload demand replay is retired, together with FIXME 0553 ([Q7](#q7-reload-demand-replay--retired-2026-09-29)). 0789, 0898 and 0906 are in source |
 | Corrections added in Phase 5 | Delivered | CD-1, F1, alias-only import, IO notice, FT, LD/LB/LP, DB-1, R1-V, LD-9, P-1, RR-1, BN-1, IR-1, AD-6, F2, G-3, G-7, ACT-0999, ACT-1000, ACT-1001 P-1 and ACT-1002, each with its adequacy section below |
 | Shared test runner (`--test`, `/run-tests`, `/run-all-tests`) | Delivered | [Runner adequacy](#shared-test-runner--final-adequacy-2026-09-28). The user confirmed the delivered public diff on 2026-09-28 |
 | Shared document checker (D7) | Delivered | 0 findings at each S122 check |
@@ -65,8 +65,15 @@ Surface: Binary/int (`src/save.rs`, `src/process_form.rs`, watcher reload).
 
 | ID | Item | Class | User-visible consequence | Evidence and mitigation | Recommendation |
 |---|---|---|---|---|---|
-| P1 | [ACT-0998](../../sprints/actions/ACT-0998-watcher-reload-type-change-intake.md) face 1 [G-8]: a structural `deftype` edit on reload. §14.8 now requires the reload to fail, with a restart diagnostic and file retention. The `wrong-reject` class is void | Requirement change | Editing a `deftype`'s structure in a watched file needs a restart | Allocated as RB-1–RB-7 | Realized and adequate: [final adequacy](#restart-boundary--final-adequacy-2026-09-29) |
-| P2 | ACT-0998 face 2 [G-8]: after a failed reload, the next definition turn can overwrite the external edit | D; outcome depends on which records exist | The user's edit to `user.cl` is lost after a type-error or parse-error reload | Probe controls are in ACT-0998. §14.8 settles retention only for a structural failure (RB-3). Otherwise the requirement is silent, so no RED yet | `spec` disposition when the user chooses. Not a gate for P1, P3 or P4 |
+| P1 | [ACT-0998](#act-0998--failed-reload-edit-loss-closed) face 1 [G-8]: a structural `deftype` edit on reload. §14.8 now requires the reload to fail, with a restart diagnostic and file retention. The `wrong-reject` class is void | Requirement change | Editing a `deftype`'s structure in a watched file needs a restart | Allocated as RB-1–RB-7 | Realized and adequate: [final adequacy](#restart-boundary--final-adequacy-2026-09-29) |
+| P2 | ACT-0998 face 2 [G-8]: after a failed reload, the next definition turn can overwrite the external edit | Requirement change: the user's ruling of 2026-09-29 locks every failed module (§14.5 item 5, §15.2.3) | The user's edit to `user.cl` is lost after a type-error or parse-error reload | FL-1–FL-3 went RED, then GREEN | Realized and adequate: [final adequacy](#failed-reload-lock-and-removed-definitions--final-adequacy-2026-09-29) |
+| P9 | [ACT-1007](#act-1007--removed-definition-stays-live-closed): a definition that a successful reload no longer defines stayed callable (§14.2 step 2) | Corrected by the whole-file rebuild: concrete functions, and generic functions (G1), including a generic caller removed with its callee (G2) | — | RM-1 to RM-5 went RED, then GREEN, and stay GREEN on the rebuild ([rebuild adequacy](#whole-file-rebuild-and-qualified-dependents--final-adequacy-2026-09-29)). The template widening was reverted: `cranelisp-types` equals HEAD and every baseline is +0/−0 | The user accepts |
+| P10 | [ACT-1010](../../sprints/actions/ACT-1010-mod-regenerates-uncompiled-module-file-intake.md): `/mod` plus a definition overwrites a module file this session never compiled | M1, a dependency that failed at startup, is corrected. M2, a never-loaded module, is a `spec` question | The unloaded file's authored source is lost | M1 went RED, then GREEN, with its in-session control ([correction adequacy](#failed-reload-lock-and-removed-definitions--correction-adequacy-2026-09-29)) | `spec` rules on M2 |
+| P11 | [ACT-1011](../../sprints/actions/ACT-1011-startup-failed-dependency-fix-does-not-cascade-intake.md): after a startup failure, a fixed dependency does not recompile its dependents (§14.2 step 4, §14.6) | D, observed with an in-session control and a scheduler trace. It predates the M1 correction | Evaluation stays blocked until each dependent file gets a changed save, or the REPL restarts. No source is lost | Probes only; no RED | Decide fix or carry. Either way, `test` commits the RED |
+| P12 | [ACT-1012](#act-1012--omitted-import-kept-closed): a successful reload kept an `import` its saved source omitted, and regeneration wrote it back (§14.2 steps 2–3, §15.1) | Corrected by the whole-file rebuild, with no public-API change | — | C2 went RED, then GREEN; C3 and RM-5 stay GREEN ([rebuild adequacy](#whole-file-rebuild-and-qualified-dependents--final-adequacy-2026-09-29)) | The user accepts |
+| P13 | A dependent reached only by a qualified function call or type reference was not recompiled or locked when that module changed (§14.2 step 4, §14.5 item 5; the user's 2026-09-29 ruling) | Corrected by one reload edge predicate for selection and order | — | FQR-1 and FQR-2 went RED, then GREEN ([rebuild adequacy](#whole-file-rebuild-and-qualified-dependents--final-adequacy-2026-09-29)) | The user accepts |
+| P14 | Review R1: a dependency's rebuild (watcher, `/mod`, T1 or T2) locks a startup-degraded entry, which closes §15.2.3's at-prompt repair | Spec question: §15.2.3 against §14.2 step 4 with §14.5 item 5 | The user must save a compiling file to repair it. It fails closed, and no source is lost | A probe with its control ([review dispositions](#review-src-dispositions)); no cell yet | `spec` frames it and the user rules. `test` then commits the cell for the ruled reading |
+| P15 | [ACT-1013](../../sprints/actions/ACT-1013-reload-accepts-qualified-module-cycle-intake.md): a reload that closes a qualified-reference module cycle is accepted, where §8.5.4 edge 6 requires a circular-dependency error | D, with a fresh-load control; the attribution is provisional | The session runs a program that a restart rejects | Probes only; no RED | Decide fix or carry. Either way, `test` commits the RED |
 | P3 | SL-3 [G-8]: a rejected function redefinition is written by the next regeneration | D; `partial-record-update` | A restart diverges from the session and is error-blocked | REDs `persist_typecheck_rejected_redefinition_not_written_by_later_regeneration` and `persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration` | Fix now: `design`(int), then `dev`(src) |
 | P4 | SL-1 [G-8]: a `/mod` definition in a cache-restored dependency whose file has a top-level macro call is not saved | D; `enumeration-miss`. The entry-module face was falsified, including through stdlib `def` | Each turn warns, and the module file loses the new definition at restart | RED `persist_mod_turn_on_cache_restored_macro_expanded_module`, with its fresh-session control GREEN | Fix now: `design`(int) selects the mechanism, then `dev`(src). A schema route needs `arch` and the user gate |
 | P5 | SL-2/F3 [G-8]: a declaration record stays stale after a successful reload | L | The next regeneration writes the old declaration over the edit | Fixed in S122 ([bounded adequacy](#persistence-p3-p4-and-p5--bounded-adequacy-2026-09-28)). §14.8 forbids the field-type reload that carried the fence, so the fence moves to a docstring-only reload (RB-2(b)) | No further correction |
@@ -130,8 +137,8 @@ None of these carries compiler acceptance authority.
     was in S122 scope, so carrying it is a deferral.
 - **Owner retirements, ready.**
   - Their target roles (`dev`, `design` or `arch`): 0745, 0868, 0889 (narrow
-    it and keep the 46 as the record), 0789, 0906, 0553 and 0708, with their
-    mirrors. `dev` also
+    it and keep the 46 as the record), 0789, 0906 and 0708, with their
+    mirrors. `arch` deleted 0553 on 2026-09-29. `dev` also
     closes ACT-0965 item 1.
   - `test`: the present-tense framing in `tests/spec_08_modules.rs`, and the
     exemplar `<= 1_400` threshold cell.
@@ -367,9 +374,12 @@ restore. Their pre-fix REDs are recorded above.
 - The band now cites T4, PC-1 and the 0220 control on REPL §15.4 rule 1, and
   T2 with its control on the §18.8 persistence paragraph.
 
-**Leads, unconfirmed.** These come from design's source read and are recorded
-in [§2.4.4](../../design/int/session-persistence.md#244-known-limits). They are
-neither attributed defects nor part of this repair. Each needs a user intake
+**Leads, unconfirmed.** These come from design's source read and were
+recorded in the int design's former §2.4.4 known limits. That list is retired;
+its current carriers are
+[§2.4.1](../../design/int/session-persistence.md#241-who-writes-a-record) and
+[§2.4.5](../../design/int/session-persistence.md#245-editing-a-cache-installed-module).
+They are neither attributed defects nor part of this repair. Each needs a user intake
 decision.
 
 - **SL-1:** definitions produced by an expansion in a cache-restored module
@@ -433,7 +443,7 @@ The source is `.local/s122-persistence-review-result.md`.
 |---|---|---|---|
 | F1 | The renamed import is rejected at parse (`expected symbol for import name`) before any impl exists. The unrenamed control persists the impl and `g`, and its cold restart gives 2 | **Not a regression; latent.** No rename reaches the compiler | Not blocking. PC-7 and PC-7m are retired as unconstructable. [ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md) takes the intake, and design §12.3 records the premise |
 | F2 | A REPL-turn `begin` is written twice. A file-loaded `begin` is written twice post-fix. Pre-fix, the file-loaded `begin` is lost and its cold restart fails (`undefined variable: show`). Every post-fix cold restart gives 41 and 1 | **Existing defect** against design §1.4's "emitted once". The repair extends it to a path that previously lost the form. §15.4 rule 1 held in every restart | Not blocking. The user chose to fix it; [corrected](#f2-correction--adequacy-2026-09-27) |
-| F3 | The watcher refuses the reload (`illegal callable origin/lifecycle pairing`), so the review's mechanism is never reached. The next definition turn then overwrites the external edit: pre-fix without `T`, post-fix with the old `T` | **Mechanism unobserved; not a regression.** The refusal and the overwrite are pre-existing defects outside this repair | [ACT-0998](../../sprints/actions/ACT-0998-watcher-reload-type-change-intake.md) takes the intake. Design §2.4.4 needs a record correction. No cell here |
+| F3 | The watcher refuses the reload (`illegal callable origin/lifecycle pairing`), so the review's mechanism is never reached. The next definition turn then overwrites the external edit: pre-fix without `T`, post-fix with the old `T` | **Mechanism unobserved; not a regression.** The refusal and the overwrite are pre-existing defects outside this repair | [ACT-0998](#act-0998--failed-reload-edit-loss-closed) takes the intake. Design §2.4.4 needs a record correction. No cell here |
 | A1 | Both binaries reject `base`'s type change, naming `d1` and `d2` as blocking dependents. Warm and cold, `d1` and `d2` stay 1, and the file is identical | **No divergence** | Closed; no cell |
 
 **F1 — impl identity has two derivations.**
@@ -898,7 +908,7 @@ Classes: A acceptance evidence; S safety fence; D diagnostic observer; M mainten
 | Q4 A/S — macro discharge | A successful expansion retains no argument/result tree; aliasing does not double release; after argument transfer a trap causes no host double-cleanup, and executable owners remain live through invocation. The retained [macro-turn contract, Rule 3](../../design/int/macro-turn-ownership.md#rule-3--the-argument-tree-is-discharged-by-crossing-the-abi), reconciled by approved S122 architecture item 4, expressly permits forfeiture of the transferred argument tree on a failed expansion; zero-leak acceptance is not extended to that path. `spec/12-runtime.md` §12.3.1 and macro-turn design. | Test changes existing +1/+2 marginal residual witnesses to balanced expectations, first recording their intended pre-fix failure. Reuse interior-alias run/link/armed cases. Dev pins all-Owned clause production (no inferred mode summary plus the existing D0 CLIF check), argument transfer before protected invocation, successful result copy/consume once, and absence of host argument cleanup after transferred-call failure. Intrinsics handle misuse detection remains at its own unit seam after D3. | `tests/macro_turn_marshal_leak_0889.rs`, `tests/macro_expansion_interior_alias_double_free.rs`, marginal helper. A newtype alone proves neither correct JIT consumption nor trap cleanup. |
 | Q5 D — original workload | Reconcile the claimed prelude/session residual on the same library/input/configuration before and after macro repair; distinguish changed fixed overhead from per-expansion slope. | QA allocates one paired original prelude/session measurement using current binary and corrected binary, recording actual residuals. Test retains existing marginal workload guards unchanged where common residue cancels. | S118 1143 is historical, not a current acceptance constant. Existing +1/+2 passing pins establish present marginal leak. No threshold around historical fixed overhead. |
 | Q6 A — /mem | Report the expression observation after its returned owner is released, including heap values; no phantom retained result in delta. `repl/spec/03-slash-commands.md` §3.7 and `design/int/result-owner.md`. | Test extends current /mem process witness with a heap-result/control and separately verifies rendered value. Dev pins sampling order around owner lifetime. | `tests/repl_introspection.rs`; `src/repl/commands.rs::handle_mem` samples before formatting/drop. Use warmed/paired setup so macro/bootstrap work is not mislabeled result leakage. |
-| Q7 A — reload demand recovery | Capture all required concrete instances, including complete result-context substitutions; settled reload remints them without replaying stale source expressions. Current session-transaction §10 contract. | Reuse typecheck instantiate_demands unit battery; dev(src) tests set capture and correct forwarding at its private consumer. Test extends existing reload e2e with two distinct realizations and an unrelated stale expression, observing correct post-reload calls. | `crates/cranelisp-typecheck/src/form/tests.rs`, `src/redefine.rs`, `tests/repl_persist_redefine.rs`. Do not duplicate every producer unit via subprocess. |
+| Q7 — reload demand recovery (retired) | Retired on 2026-09-29. A reload rebuilds the module from its saved source, and each rebuilt dependent re-demands its own instances ([Q7](#q7-reload-demand-replay--retired-2026-09-29)). | — | The `repl_watch` generic-demand pair remains acceptance evidence. |
 | Q8 A/M — ACT-0954 removal | Unsafe unused public wrapper is unavailable; synchronous watcher/reload followed by evaluation observes current module. | Remove obsolete row-45 source-presence assertion; use existing synchronous reload process evidence. Arch checks exact approved root-library removal and retained scheduler operation. | `tests/facade_pif_rows.rs`; no runtime test through a deleted API and no new publication clock. Seven generated baselines do not cover root library. |
 | Q9 S/M — bounded convergence | Quote shields, IO result-root interpretation and Vec tag polarity retain their contract through shared derivation. | Dev retains/extents the existing shared-helper units and changed call-site unit only where a wrong argument/branch survives them. Test reuses quote/shield, result-owner and threshold public guards; no new e2e merely for code deduplication. | 0789,0898,0906; shared APIs already exist. CLIF golden change is a scoped diagnostic/maintenance consequence, not authority for semantics. |
 | Q10 A — omitted language shapes | Valid multi-field derive and three-constructor Ord cases, supplied-free-variable curry-then-apply, and function-valued def application behave under their current spec. | Test authors minimal current public repro/control first; dev adds attributed unit before fixing. Keep generic ambiguity question separate from the already-ruled supplied-free-variable case. | 0815/0799/0800 current Q10 cases are now executing and pass; see clause-specific disposition below. `stdlib/derive/test.cl` still needs its owner to repair obsolete failure/omission prose. No direct-callable `def` semantics are inferred. |
@@ -1523,65 +1533,28 @@ observation; it does not prove macro balance or overall runtime completion.
 No source edits, tests or builds were performed during this QA reconciliation.
 
 
-## Q7 external overload reload carrier finding
+## Q7 reload demand replay — retired (2026-09-29)
 
-Independent Binary/int review raised an Important foreign-template generation
-condition; QA source readback confirms the carrier gap, without an executing
-wrong-result claim. `src/worker.rs::capture_reload_instantiation_demands` keeps
-the historical `OverloadArm` ordinal/type arguments. In
-`extend_reload_demands`, a foreign owner is resolved from the current dependency
-table using that same selector and its current scheme. Unlike local replacement
-matching, this does not establish correspondence after dependency clause order
-changes. The approved uniform identity packet requires the authoritative
-template generation/schema and semantic matching before replay; no new API or
-language rule is needed to identify the omission. The plain generic Q7 witness
-and local-family reorder evidence do not cover this foreign path.
-
-One minimal next Binary/int module observation is allocated under its next
-reservation: use a real imported generic family with legal one/two-arity clauses
-and consumer-owned prior concrete realizations; capture the consumer's reload
-packet, reorder the dependency with the same signature set, then reload the
-consumer. Inspect both prior concrete identities, staged selected-arm backlinks
-and compiled bodies immediately after reload, before a later call can remint
-a missing instance. Pair with the same consumer reload under an unchanged
-dependency. Ensure the fixture reaches `extend_reload_demands`' foreign-owner
-branch rather than the local authored-replacement matcher. Use the existing
-legal generic shape and module reload facilities; no new public seam or mode
-matrix. First record the intended failing carrier/result observation. Design
-then determines the private correspondence correction, preserving atomic
-publication/retirement and owner retention under the existing reload contract.
-If legitimate setup cannot retain the claimed old-selector condition, report
-that reachability limit before prescribing a fix. QA requested review's final
-source/fixture detail; source observation above is the bounded handoff and does
-not imply a completed independent review.
-
-Queued record reconciliation remains separate: root reports real bootstrap
-roster2/2 (`cf467c35`, prefix), with design-complete0604/0740/0793 and QA0818
-awaiting their exact closure readbacks. This note credits the reported roster
-execution only; it does not delete those filings or substitute for their
-criteria. No tests/builds/source edits were performed during this QA intake.
-
-
-Q7 reviewer follow-through adds a distinct demand-only omission to the same
-retained Binary/int handoff. QA verified `check_cluster_to_staging` returns
-None for empty ordinary parsed entries;
-`prepare_cluster_commit_with_demands` then returns before
-`extend_reload_demands`, and `src/scheduler.rs` clears the packet at terminal
-typecheck completion. The delivered marker-bearing fixture does not observe
-this path. This is source-confirmed control flow; executing loss remains to be
-armed, not presumed from the review report.
-
-Prioritize one import-only caller subject with an external plain generic and
-prior transient Int/String realizations: persist/reload the caller's import-only
-source, inspect recovered bodies before subsequent eval can remint. Its control
-adds the unrelated marker used by the existing fixture. Keep dependency order
-unchanged here so empty-work omission is discriminated independently. Reuse
-that setup for the external-overload condition above with marker present to
-ensure replay is reached, comparing unchanged/reordered dependency. Combine
-helpers where economical, not the causal oracles: an early empty-work exit
-cannot prove ordinal replay correctness. Both belong to the one queued Q7
-owner visit, with no new public seam/matrix or inferred API. Review supplied
-the exact paths; final integrated review remains pending.
+- **Retired.** The whole-file rebuild
+  ([session transaction §7.3](../../design/int/session-transaction.md#73-the-watcher-and-reload-path))
+  rebuilds a reloaded module from its saved source, and each rebuilt dependent
+  re-demands its own instances. Reload demand capture and replay, and the two
+  carrier findings recorded here against them (foreign overload ordinals
+  replayed without correspondence, and replay skipped on an empty-work exit),
+  therefore have no code left to hold them. Git holds the findings.
+- **Kept.** Q1's REPL-turn replay: `capture_affected_mono_demands` in
+  `src/worker.rs` feeds `cranelisp_typecheck::instantiate_demands`, with its
+  unit rows and the Q1 replacement cells.
+- **Retired units.** The two rematerialization rows and the two
+  external-overload remap rows in `src/session_v4/persistent_worker_tests.rs`
+  went with the code.
+- **Public evidence kept.** The `repl_watch` generic-demand pair
+  (`watch_reload_recovers_two_generic_demands_without_replaying_stale_expression`
+  and `watch_reload_direct_import_recovers_two_generic_demands_control`)
+  stays. Its prelude-export subject went RED on dependent selection, with the
+  direct-import control GREEN, and turned GREEN with the provenance
+  correction. Both cells are GREEN on the rebuild in QA's fresh run, which
+  means the rebuilt dependent returns the changed 42/42.
 
 
 ## Queued filing reconciliation — delivered roster and census limits
@@ -1622,71 +1595,6 @@ and cell to visit `Sexp::Annotated` and both children produced by
 `alloc_sexp_pair`. Current production construction is structurally correct;
 this is an incomplete allocated producer observer, separate from both Q7
 behavior findings. No new matrix, production fix or public case is implied.
-
-
-## Q7 public watcher integration — new stale-body observation
-
-The permanent
-`tests/repl_watch.rs::watch_reload_recovers_two_generic_demands_without_replaying_stale_expression`
-fails in run `1a306cbc-72d0-4780-9c35-0077a6295706`,
-`/tmp/s122-runtime-q7-public-watcher-red-dc78ddbe.log`. The dependency is reached
-through a prelude re-export. Named Int/String callers return7/7 before the
-external generic file changes to42; after `[updated: generic_value.cl]` they
-still return7/7. Process exits0 and sentinel31337 appears once. The final oracle
-splits at the update boundary and rejects missing post-update42/42, so neither
-notification nor retained old results falsely prove recovery. This is a new
-public integration failure, not reopening the closed module carrier findings.
-
-Current `src/session_v4/lifecycle.rs::dependent_modules` scans recorded direct
-imports once; `poll_and_reload` consumes that selection. The corrected module
-witness in `src/session_v4/persistent_worker_tests.rs` explicitly reloads the
-consumer after its dependency and therefore does not exercise automatic watcher
-selection through this prelude provenance. Source supports investigating that
-orchestration boundary, but does not establish which dependent was admitted
-in this public run.
-
-Allocate one explicit-import twin to the same existing public shape: user
-imports `generic_value/value-for` directly, with the generic re-export removed
-from its prelude if needed, keeping callers, types, sentinel and changed file
-identical. Keep the prelude subject intact. This distinguishes selection by
-import provenance from downstream rematerialization without a mode matrix.
-The next Binary/int observation records selected dependent modules and whether
-the consumer reaches reload preparation before prescribing correction; if both
-provenances fail, inspect the admitted consumer's captured/reminted bodies.
-No scheduling-only attribution, new API, backend correction or notification-as-
-publication claim follows from this intake. QA performed source/log reading
-and owned-record updates only while test retained its source/build reservation.
-
-
-Q7 watcher attribution settled by the executing provenance pair: run
-`d18e302d-2720-4a89-9b7a-ded21001b079`,
-`/tmp/s122-runtime-q7-public-watcher-pair-dc78ddbe.log`, is1 PASS/1 FAIL.
-`watch_reload_direct_import_recovers_two_generic_demands_control` produces
-post-update42/42; the unchanged transitive prelude-export subject produces7/7.
-Both succeed as processes, report the dependency update and print the sentinel
-once. Source plus this pair attributes the defect to Binary/int watcher
-dependent selection/provenance: `dependent_modules` matches only each table's
-recorded direct imports against the original changed set, and `poll_and_reload`
-uses that one result without establishing affected consumers through implicit
-prelude/re-export dependencies. The successful direct-import twin shows that
-the corrected downstream reload/rematerialization can deliver both bodies when
-the consumer is reached. This does not claim every internal dependency edge
-has been independently traced.
-
-The existing watcher §14.2 contract requires dependent recompilation in
-topological order. The next retained Binary/int correction/design must make
-this affected consumer reachable through the actual prelude/re-export
-dependency relationship while preserving that ordering and existing path
-admission/once-only semantics. Do not weaken the public oracle, replay prompt
-expressions, or reopen the already-corrected demand/ownership path by guess.
-The existing executing public pair and inspected selection source suffice for
-this handoff; no additional private attribution observer is required. Dev may
-use its ordinary focused selection unit to protect the correction's actual
-branch, but QA allocates no second framework/matrix. Acceptance reuses the pair
-with both42/42, sentinel once and successful process after the update; preserve
-previous module replay/rejection/ownership evidence. One scoped review of the
-changed selection path follows, under the existing gate, not a new role cycle.
-No source/build activity was performed by QA.
 
 
 ## Runtime evidence checkpoint — matched residual and golden limit
@@ -6677,7 +6585,7 @@ cited requirement.
 |---|---|---|---|---|---|
 | P1 `persist_external_edit_adding_product_field_reloads` | **Provisional.** `reload_module` keeps the prior bindings, and publication checks each constructor against its prior binding ([session transaction §7.3](../../design/int/session-transaction.md#73-the-watcher-and-reload-path)). `same_publishable_origin` treats a constructor's `field_count` as part of its origin identity. Not observed: whether `validate_publication_collision` or `unpublished_synthesized_replacement_target` raises | A changed field type keeps the count and reloads. An added sum constructor reloads. The refusal does not depend on earlier turns or on how `T` was installed | A sum constructor whose payload arity changes reloads | `wrong-reject` | Int reload design. §7.3 checks a reload against the prior bindings, although §14.2 step 2 starts it from cleared state. No watcher cell reloaded a `deftype` |
 | P3 typecheck and commit-gate cells | **Confirmed in source.** In pass 2, `process_regular_form_with_origin` writes the record's `sexp`, `expanded` and `ast` before the cluster typecheck and commit gate. It writes `source` only when absent, so the prior text stays. A rejection restores nothing. The old text no longer re-parses to the new `sexp`, so regeneration renders the rejected `sexp`. That matches the observed file | `rejected_change_does_not_write_an_incoherent_backing_file`: rejection with no later regeneration leaves the file coherent. `persist_function_replacement_persists_through_restart`: an accepted replacement persists | With the writer still before typecheck, a rejected redefinition followed by regeneration writes the prior form | `partial-record-update`, widened (`tests/CLAUDE.md`) | Int design [§2.4.1](../../design/int/session-persistence.md#241-who-writes-a-record) row 1 places the writer in form processing, and §2.4.4 recorded the limit as unconfirmed. The rejection cell ended before any later regeneration |
-| P4 `persist_mod_turn_on_cache_restored_macro_expanded_module` | **Confirmed in source.** Rehydration (`save::authored_keys`) keys only native definition heads and `begin` members. A top-level macro call gets no key, so `x-def` has no record, and §2.4.3 refuses the write. The entry module is rebuilt from source over its preloaded table, so form processing writes its records. That is why the entry face did not reproduce | The same turn in the session that compiled `lib` from source regenerates `lib.cl`. The no-macro probe p4g also regenerates | A restored `lib` without a macro call also refuses; p4g did not | `enumeration-miss` | Int design [§2.4.4](../../design/int/session-persistence.md#244-known-limits) first limit. Its trigger, a QA-confirmed reproduction, is now met. No cell regenerated a macro-expanded module restored from cache |
+| P4 `persist_mod_turn_on_cache_restored_macro_expanded_module` | **Confirmed in source.** Rehydration (`save::authored_keys`) keys only native definition heads and `begin` members. A top-level macro call gets no key, so `x-def` has no record, and §2.4.3 refuses the write. The entry module is rebuilt from source over its preloaded table, so form processing writes its records. That is why the entry face did not reproduce | The same turn in the session that compiled `lib` from source regenerates `lib.cl`. The no-macro probe p4g also regenerates | A restored `lib` without a macro call also refuses; p4g did not | `enumeration-miss` | Int design's former §2.4.4 first limit, now carried by [§2.4.5](../../design/int/session-persistence.md#245-editing-a-cache-installed-module). Its trigger, a QA-confirmed reproduction, is now met. No cell regenerated a macro-expanded module restored from cache |
 
 ### Requirement support
 
@@ -6870,7 +6778,9 @@ binary `d9a1ebd4…2ec1`. The inputs match the pre-fix cells
 | p2c: parse error | lost | lost |
 
 Every failed reload is now followed by the last published source. This
-matches design [§2.4.4](../../design/int/session-persistence.md#244-known-limits).
+matched the int design's former §2.4.4 known limits. The module lock in
+[§2.4.4](../../design/int/session-persistence.md#244-failed-source) has since
+replaced that outcome.
 The earlier "kept" outcomes came from records written before any commit
 decision (P3) and from declarations that had no record (P5). ACT-0998 face 2
 records the classification. The observation selects no policy.
@@ -6885,7 +6795,7 @@ current rerun or a permanent cell before it is relied on.
 | Probe | Observed | Classification |
 |---|---|---|
 | D1 sum payload arity, D2 sum reorder, D3 sum constructor removed, D5 generic product field count | Reload refused with the origin/lifecycle error | Refusal now required by §14.8, but without its restart diagnostic ([restart boundary](#restart-boundary-for-structural-type-changes--evidence-delta-2026-09-29)) |
-| D4 `defn` removed from a reloaded file | `[updated:]`, and the removed `h` still returns 2 | New defect intake: [ACT-1007](../../sprints/actions/ACT-1007-reload-removed-definition-stays-live-intake.md) |
+| D4 `defn` removed from a reloaded file | `[updated:]`, and the removed `h` still returns 2 | New defect intake: [ACT-1007](#act-1007--removed-definition-stays-live-closed) |
 | D6 live `deftype` field type changed from `Int` to `String` | Accepted, and the file is rewritten | Defect intake (§18.5 `wrong-accept`), closed: [ACT-1008](#act-1008--live-field-type-change-accepted-closed) |
 | D7 live field-count change | Rejected | PR-2 behaviour, already evidenced |
 
@@ -7343,3 +7253,648 @@ allocated.
     [subsection above](#act-1008--live-field-type-change-accepted-closed).
 - **Open:** nothing for this correction.
 - **At commit:** each S122 `fixed=S122` line gains the commit sha.
+
+## Failed-reload lock and removed definitions — evidence delta (2026-09-29)
+
+**Basis.** Checkpoint `63605970`: 6336 passed, 1 skipped. QA read the source
+and ran nothing. The session could not execute the binary, so no probe ran.
+
+**Authority.**
+
+- REPL §14.5 item 5 and §14.6 ([file watching](../../repl/spec/14-file-watching.md)),
+  and §15.1 and §15.2.3 ([session persistence](../../repl/spec/15-session-persistence.md)).
+- REPL §14.2 step 2 ([file watching](../../repl/spec/14-file-watching.md)),
+  for ACT-1007.
+- The user's 2026-09-29 ruling
+  ([SPRINT](../../sprints/SPRINT.md#general-failed-file-policy--2026-09-29)),
+  as `spec` recorded it in the working tree. Its reports are
+  `.local/s122-failed-reload-policy-spec-result.md` and
+  `.local/s122-failed-reload-restart-spec-result.md`; the second adds the
+  startup parse-failure lock.
+- [ACT-1009](../../sprints/actions/ACT-1009-repl-restore-last-known-good.md)'s
+  recovery command is out of scope. No condition anticipates it.
+
+**Judgment: ready.** Every observable below can be reached through the
+binary. No language question is open.
+
+### Readings adopted
+
+- **A cascade-failed dependent is locked, and it is released by its own
+  successful recompilation.** This is spec's recorded reading. §14.6 releases
+  a module when "the offending file is fixed and saved" and the
+  recompilation succeeds. So a fixed dependency, followed by the dependent's
+  successful cascade recompilation, releases the dependent without a save of
+  the dependent's own file.
+- **The turn refusal's wording is not normative.** Cells observe whether the
+  session and the file stay unchanged, not the message.
+
+### Conditions
+
+All are acceptance evidence for the cited section. All are `test` cells in
+`tests/repl_persist.rs`, beside RB-3 and RB-4, reusing `save`, `turns`,
+`error_blocks` and `Legs`.
+
+| ID | Condition | Plausible wrong outcome | Expected before the fix |
+|---|---|---|---|
+| FL-1 | `user.cl` holds `(defn g [] 1)`. **Save** `(defn g [] (undefined-name 1))`: `[errors: user.cl]` lists the error, `(defn h [] 2)` is rejected, `/sig h` shows `h` undefined, `(g)` is refused, and `user.cl` is byte-identical to the save. **Save** a parse error: the file fails again and the lock stands. `(defn h [] 2)` is still rejected, and `user.cl` equals the second save. **Save** `(defn g [] 5)`: `[updated: user.cl]`, `(g)` gives 5, and `(defn h [] 2)` is accepted. `user.cl` then holds `g` 5 and `h` exactly once each, and no `undefined-name` (§14.5 item 5, §14.4 item 4, §15.1) | The definition turn is accepted and overwrites the edit (ACT-0998 p2b). The turn is rejected, but another caller rewrites the file. A second failure clears the lock. The lock is never released | RED at the rejection and file legs |
+| FL-2 | As FL-1's first save, but from a clean state with an unparsable save (`(defn g [] `): the turn is rejected, `h` is undefined and the file is byte-identical. **Restart** (`run_again`, cache kept): the load failure is reported and a prompt is reached. `(g)` is refused and does not give 1. `(defn h [] 2)` is rejected, and `user.cl` is still byte-identical. **Save** `(defn g [] 5)`: `[updated: user.cl]`, `(g)` gives 5, and a definition is accepted (§14.5 item 5, §14.6, §15.2.3 parse paragraph) | The parse path returns before the module is re-registered, so a lock set only on a scheduler failure misses it (`reload_module`). At restart: the stale cache serves `g` 1; startup keeps the text as a failed form but admits the definition (today's `degraded_form_load` shape); or the file is not watched after a degraded startup, so the lock never releases | RED at the in-session rejection leg (ACT-0998 p2c) and at the restart rejection leg |
+| FL-3 | `user.cl` imports `val` from `mymod.cl`, and also holds `(defn g [] 1)`. Save a type error to `mymod.cl`: `[errors: mymod.cl]`. `user`, which failed in the cascade, rejects `(defn h [] 2)`, and `user.cl` is byte-identical to its initial content. Save a fix to `mymod.cl`: both modules reload, `(defn h [] 2)` is accepted, and `user.cl` keeps the import and `g` and adds `h` (§14.5 item 5 for a cascade-failed dependent, §14.6) | The lock is keyed to the changed file alone, so a definition in the failed dependent regenerates `user.cl` from a cleared or partial table. Or the dependent is never released | Expected RED at the rejection leg. If it passes before the fix, report the observed turn output to QA, and do not force a RED |
+| RM-1 | `user.cl` holds `(defn g [] 1)` and `(defn h [] 2)`. `(h)` gives 2. Save only `(defn g [] 1)`: `[updated: user.cl]`, `(h)` does not give 2, and `/sig h` reports `h` undefined. Control: `(g)` gives 1. `(defn k [] 3)` then regenerates `user.cl` with `g` and `k`, and without `h` (§14.2 step 2, §15.1) | The reload publishes over the prior bindings and never retires `h`, so `h` stays callable (ACT-1007 D4). A regeneration then writes `h` back to disk | Unknown: this is ACT-1007's current reproduction |
+| RM-2 | `lib.cl` defines `g` and `h`, and an importer imports both. Save `lib.cl` without `h`: `[updated: lib.cl]`, the importer reports `[errors: <importer file>]`, and `(h)` does not give 2 (§14.2 steps 2 and 4) | The export or import records keep `h`, so the dependent reloads and calls the old code, or crashes through a stale slot | Unknown |
+
+### RM-1 outcome protocol (ACT-1007)
+
+The last observation of ACT-1007 predates the P3/P4 change to `reload_module`,
+so `test` runs RM-1 first, on the current tree.
+
+- **RED, with `/sig h` still showing `h`.** The retention hypothesis holds.
+  Commit RM-1 and RM-2 unignored, with
+  `// defect: class=partial-record-update locus=src/session_v4/lifecycle.rs::reload_module found=S122 owner=/dev`.
+  Under that class, a successful replacement leaves the omitted binding at its
+  previous generation. QA reclassifies if `design` places the writer
+  elsewhere.
+- **RED, with `/sig h` undefined but `(h)` giving 2.** The stale behaviour is
+  in the GOT or in the code, not in retention. Commit the RED without a
+  `// defect:` line and return the finding to QA for classification before
+  `design` starts.
+- **GREEN.** The defect no longer reproduces. RM-1 and RM-2 stay as permanent
+  regression cells without a `// defect:` line. QA retires ACT-1007, and no
+  `design` or `dev` work follows.
+
+### Existing evidence reused
+
+- **§14.8 cause of the lock:** RB-3 and RB-4. Their legs now also evidence
+  §14.5 item 5.
+- **Evaluation block and release:**
+  `watch_errors_block_evaluation_no_last_known_good` and
+  `watch_clears_error_state_when_subsequent_edit_fixes_source`.
+- **Liveness of a failed imported reload:**
+  `watch_type_error_reload_of_imported_module_blocks_without_hanging`.
+- **Over-locking fence.** The three §15.2.3 startup cells use a backing file
+  that parses (`STARTUP_BROKEN`). They must stay GREEN, because a definition
+  repair is still admitted there. A lock generalised to every error-set
+  member fails them.
+
+### Module evidence (`dev`)
+
+Write each unit RED first. Extend the units in
+`src/session_v4/persistence_tests.rs`.
+
+- **Lock set.**
+  - Each reload failure sets the lock: a read failure, a parse failure, a
+    typecheck failure and a §14.8 refusal.
+  - So does a dependent that fails in a watcher plan.
+  - A startup load that parses but fails does not. A startup parse failure
+    does.
+- **Lock lifecycle.**
+  - The lock stands across a later failure of another cause, `/reset` and
+    `/mod`.
+  - Only the module's own successful reload clears it, including beside
+    another module standing `Failed`.
+  - A locked module is always in the error set.
+  - Extend `restart_required_stands_until_a_successful_reload` to cover this.
+- **Admission and the chokepoint.**
+  - A definition or structural turn in a locked current module is rejected,
+    and the session is unchanged.
+  - A turn in another module is admitted.
+  - `regenerate_backing_file` writes nothing for a locked module.
+  - The agent's submit and document edits are refused. Extend
+    `agent_writes_refused_before_consent_in_restart_required_module` with a
+    lock that is not structural.
+- **The §14.8 refusal** still names the type and the restart remedy
+  (existing units).
+- **Removal (after RM-1 reproduces).** A reload whose source omits `h`
+  leaves no `h` binding in the module's table, and the binding of the
+  retained `g` is unchanged.
+
+### Inputs `design`(int) must settle before `dev`
+
+These are routed through `sprint`. QA makes no condition of them.
+
+- Extend retention in `session-persistence.md` §2.4.4 and in
+  `repl-lifecycle.md` §1.3 and §1.3.1. Both still say "no module lock",
+  admit definition turns after a failed reload, and treat a restart as a
+  release. Also align `int.md`.
+- The superseded T1 CS-3 floor (`session-transaction.md` §10) promises to
+  release its block when the recorded failed forms are repaired, never a
+  lockout. If the lock is set inside `reload_module`, that residue becomes
+  a lockout. Design states its treatment. The path is suspected
+  unreachable, so no cell is allocated.
+- Record the retirement of an omitted callable in `session-transaction.md`
+  §7.3, only if RM-1 reproduces.
+
+### Residuals, not allocated
+
+- **After a parse-failed reload, the old definitions stay live.**
+  `reload_module` returns before re-registration, but §14.5 items 1–2 say
+  they are unavailable. Evaluation is blocked, so only introspection can
+  show them. This predates the batch.
+  - Falsifier: `/sig g` after FL-2's first save shows `g`.
+- **Removing a type, trait, impl or macro.** §14.2 step 2 names only
+  removal. No settled observable covers a removed type with live values, so
+  QA invents none.
+  - Falsifier: a removed `deftype` is still constructible after an
+    `[updated:]` reload.
+- **Agent write turns** have only feature-gated unit evidence. The agent e2e
+  lane is not run.
+
+### Gate
+
+- FL-1 and FL-2 observed RED, then GREEN.
+- FL-3 observed RED then GREEN, or recorded as GREEN before the fix, with
+  its refusal output.
+- RM-1 and RM-2 dispositioned under the protocol.
+- The RB cells and the §15.2.3, watch and persistence binaries stay GREEN.
+- RB-5 passes 15 consecutive times if the change touches `scheduler.rs` or
+  `worker.rs`.
+- One full `cargo nextest run --no-fail-fast`, in which every RED traces to
+  an open filing.
+
+### Handoff to `test`
+
+1. Author FL-1 to FL-3 and RM-1 to RM-2, with `// spec:` lines citing the
+   sections above. Run RM-1 first and follow its protocol.
+2. FL-1 to FL-3 are requirement cells for the 2026-09-29 ruling, so they
+   carry no `// defect:` line, as RB-1 and RB-3 do not. RM-1 and RM-2 carry
+   a line only as the protocol directs.
+3. Add §14.5 item 5 to the `// spec:` lines of RB-3
+   (`persist_structural_reload_failure_keeps_saved_edit_until_restart`) and
+   RB-4 (`persist_compatible_save_after_structural_reload_failure_releases_the_file`).
+   The retention text moved there from §14.8.
+4. Report each pre-fix outcome, with test source hashes.
+
+## Failed-reload lock and removed definitions — final adequacy (2026-09-29)
+
+**Basis.** `63605970` plus the working tree. Source diff (`src`, `crates`,
+`tests`, `stdlib`, Cargo files) sha256 `c4c66cc6…9f0a`; `crates/` unchanged;
+`tests/repl_persist.rs` `f740ac6d…aa7ae8`. The binary the fresh runs and
+probes exercised is not established. The hash QA recorded, `b6f373e9…04b6`
+(09:37:56), is its `cargo build` artifact
+(`target/debug/deps/cranelisp-7014148730ec400b`). The nextest run then
+re-pointed `target/debug/cranelisp` to its own build, `a03189dd…d761`
+(09:32:20), as `test` observed. Both were built from the same source, and no
+`src/` edit followed 09:31:59, so the results stand; only the attribution is
+corrected. Inputs: the test,
+design, arch, dev and design-close results, and the review
+(`.local/s122-reload-cleanup-review-result.md`).
+
+**Judgment.**
+
+- **Module lock (FL): adequate.** It is ready for acceptance within its
+  allocation.
+- **Removal (RM): not ready.** Concrete functions are evidenced, but review
+  R1 needs a correction, R3 needs a unit correction, and G2 is a regression
+  that needs a user decision (ACT-1007).
+- **ACT-1010 M1:** a new defect against §14.6, found in the same surface. It
+  needs a fix or carry decision.
+
+### Executed evidence
+
+| Evidence | Result | Class |
+|---|---|---|
+| FL-1–FL-3 | RED before the fix (test), GREEN in dev's run and in QA's fresh run | Acceptance, §14.5 item 5, §14.6, §15.1, §15.2.3 |
+| RM-1, RM-2 | RED before the fix, GREEN after | Acceptance, §14.2 step 2 (concrete) |
+| `repl_persist` + `repl_watch`, fresh binary | 76 of 76 passed. Includes RB-1–RB-5, the three §15.2.3 startup cells, watch block/release and imported-failure liveness | Safety fences |
+| RB-5 under `--stress-count 15` | 15 of 15 (dev) | Safety fence |
+| Lock and removal units | RED first, then GREEN. Planted faults on the origin filter, the referer scan and the refusal each detected (dev) | Module evidence |
+| Full suite (dev) | 6354 run: 6353 passed, 1 skipped, 1 failed. The failure was the `citation_drift` anchor, now repaired; `citation_drift` 3 of 3 | Maintenance check |
+| Agent units | 138 of 138 (dev). The agent e2e lane was not run: its launcher needs an approval this session lacks | Residual |
+| QA probes, `.local/s122-reload-cleanup-final-qa-scratch/` | Same-module `g` calling an omitted `h`: `[errors:]` located at `g`, module locked, file kept. A dependency that failed a watcher reload refuses a `/mod` definition. G1, G2, M1 and M2 are in the actions | Diagnostic observers |
+
+### Review findings
+
+- **R1, whole source by default.** Correction in this batch. `dev` adds
+  positive whole-source provenance, with units: a dispatch with no stored
+  continuation over a populated table retires nothing, and the
+  degraded-startup placeholder retires nothing. `design`(int) aligns the
+  §7.3.1 wording. There is no new e2e condition: the fallback has no public
+  trigger, and the §15.2.3 startup cells fence degraded startup. One
+  finding-scoped re-review follows.
+- **R2, confirmed by QA** as ACT-1007 G2. `test` records it as RM-4. The
+  remedy is decided with G1.
+- **R3.** A weak module witness, returned to `dev`: drop the generic "keeps"
+  leg. RM-3 is the durable record.
+- **Mechanical.** The RM notation goes to `test`, below. The `src/CLAUDE.md`
+  degraded-startup note goes to `dev`.
+
+### Allocation to `test`
+
+Each cell is failing and unignored, in `tests/repl_persist.rs` beside RM-1.
+
+| ID | Condition | Plausible wrong outcome | `// defect:` |
+|---|---|---|---|
+| RM-3 | `user.cl` holds `g`, `h` and `(defn id [x] x)`, and `(id 5)` gives 5. A save of only `g` reports `[updated:]`. `(h)` fails (control). `(id 5)` does not give 5, `/sig id` reports it undefined, and the next definition's regeneration has no `id` (§14.2 step 2, §15.1) | `id` stays live and is written back (observed) | `class=partial-record-update locus=crates/cranelisp-types/src/module.rs::plan_staged_publication found=S122 owner=/dev` |
+| RM-4 | `user.cl` holds `(defn h [] 2)` and `(defn wrap [x] (let [y (h)] x))`. A save of `(defn g [] 1)` reports `[updated: user.cl]` and no `[errors:`. `(g)` gives 1, a definition is accepted, and `/sig wrap` and `/sig h` report them undefined (§14.2 step 2, §14.5) | Refused and locked (observed), or updated with stale `wrap` and `h` (as at `63605970`) | `class=wrong-reject locus=src/worker.rs::refuse_removed_referers found=S122 owner=/dev` |
+| M1 | ACT-1010 M1: after a startup failure of an imported `lib.cl`, `/mod lib` plus a definition leaves the failing `keep-me` source in `lib.cl`. Rejecting the turn or retaining the source both conform. In-session control: the same failure from a save refuses the turn (§14.6, §14.5 item 5) | The file is overwritten (observed) | `class=release-path-bypass locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev`, provisional until `design` places the mechanism |
+
+**RM-1/RM-2 notation (comment only).** Replace the locus with
+`src/worker.rs::finish_prepared_commit`. The RM-1 protocol reserved this
+reclassification. The prepared commit composed the publication decisions and
+retired no omitted key; `reload_module` only drove it. Rewrite the "DEFECT
+(open)" prose in the past tense, and add `fixed=S122/<sha>` at commit.
+
+### Residuals, not allocated
+
+- **Introspection after a failed reload.** The prior definitions stay visible
+  to `/sig`, for every failure cause and not only a parse failure (§14.5
+  item 2). Falsifier: `/sig h` after the `g`→`h` refusal lists `h`.
+- **Type, trait, impl and macro removal.** No settled observable.
+- **T1 residue reach**, recorded by design and asserted, not measured
+  (`int.md` §16.0).
+- **A top-level expression in a module file** that names a removed function
+  fails closed without a location (design-close).
+
+### Gate for the correction visit
+
+- R1 units RED, then GREEN; R3 changed.
+- `repl_persist` and `repl_watch` GREEN, apart from the allocated REDs.
+- RB-5 passes 15 consecutive runs, because R1 touches the scheduler.
+- One full `cargo nextest run --no-fail-fast`, in which each RED traces to
+  ACT-1007 or ACT-1010.
+
+### ACT-0998 — failed-reload edit loss (closed)
+
+- Face 1 (§14.8) closed with the
+  [restart boundary](#restart-boundary--final-adequacy-2026-09-29).
+- Face 2 is realized by FL-1–FL-3, which went RED and then GREEN on the fresh
+  binary, and a watcher-failed dependency also refuses `/mod` definitions.
+  The delta gate is met, and the §15.1 row and the §14.5 and §14.6 bands are
+  restored.
+- The startup-failed dependency face is outside ACT-0998's watcher scope and
+  moves to ACT-1010. QA deleted ACT-0998; this subsection is its record.
+
+## Failed-reload lock and removed definitions — correction adequacy (2026-09-29)
+
+**Basis.** `63605970` plus the working tree.
+
+- The source diff (`src`, `crates`, `tests`, `stdlib`, Cargo files) has
+  sha256 `869ecd60…48be32`. This matches dev's report, and review and QA each
+  re-derived it. `crates/` is unchanged.
+- `tests/repl_persist.rs` is `ada52e7b…f475dc`.
+- QA hashed the binary after its own run. `target/debug/cranelisp` is a
+  hardlink to `target/debug/deps/cranelisp-edacda00632be5a0`, sha256
+  `2408e889…acb510`, built at 10:54:52. The run rebuilt nothing, and no
+  source file is newer than the binary.
+- Inputs are the correction reports from `design`, `test` and `dev`, plus the
+  review (`.local/s122-reload-cleanup-correction-review-result.md`). Review
+  found that no finding survives.
+
+**Judgment (this correction only, not the sprint).**
+
+- **R1, positive whole-source provenance: adequate.**
+- **R3: adequate.**
+- **ACT-1010 M1: adequate.** M2 stays open as a `spec` question.
+- **Removal (RM) is still not ready.** RM-3 and RM-4 are RED, pending the
+  user's decision on generic removal (ACT-1007). They are known REDs, not an
+  accepted carry. Concrete removal and the module lock are delivered.
+- **ACT-1011 is a new observed defect.** It predates this correction and the
+  correction fails closed on it, so it is a next-basket item.
+
+### Executed evidence
+
+| Evidence | Result | Class |
+|---|---|---|
+| R1 Placeholder units: a dispatch with no stored continuation, and recovery's empty re-registration | RED before the fix (`h` retired; slot 1 tombstoned and re-minted as 3), GREEN after (dev) | Module evidence |
+| R1 plants: `continuation_with` passing `Increment`; `reload_module` using `source` | Each detected, with a control that stayed GREEN (dev) | Module evidence |
+| R3 | The generic "keeps" leg is removed. RM-3 is the open record | Module evidence |
+| M1 unit `startup_failed_dependency_is_locked_and_the_entry_is_not` | RED (`lib` lock `None`), then GREEN (dev) | Module evidence |
+| M1 cell `persist_mod_definition_keeps_dependency_source_failed_at_startup` | RED before the fix (test: `lib.cl` became `(defn z [] 1)`). GREEN in dev's run and QA's fresh run | Acceptance, §14.6 and §15.1 |
+| `repl_persist` + `repl_watch` + `citation_drift`, QA fresh run | 82 run: 80 passed. The 2 failures are RM-3 and RM-4, on the legs `test` recorded before the fix | Safety fences; known REDs |
+| RB-5 under `--stress-count 15` | 15 of 15 (dev) | Safety fence |
+| Full suite (dev) | 6361 run: 6359 passed, 1 skipped, and 2 failed (RM-3 and RM-4). No source changed after it, so QA reused it | Release evidence |
+| `cranelisp` lib units | 943 of 943, and 1083 of 1083 with `--features agent`, including 138 agent units (dev) | Module evidence |
+| QA probes, `.local/s122-reload-cleanup-correction-qa-scratch/` | ACT-1011, below | Diagnostic observer |
+
+The gate for the correction visit is met. Each RED traces to ACT-1007.
+
+### Review observation 1: cascade intermediates
+
+Design named a falsifier: after a fix to a startup-failed `base`, a
+cascade-locked `lib` still refuses. Review inferred from source that it would
+not fire. The probes contradict that inference: the falsifier fires. They
+also show that the missing cascade predates the correction.
+
+- **After the correction.** The fix reports only `[updated: base.cl]`.
+  - `lib` and the entry stay failed, and a `lib` definition is refused.
+  - `lib.cl` is kept.
+  - A changed save of `lib.cl` releases `lib`.
+- **Before the correction** (`b6f373e9…04b6`), the fix did not recompile the
+  dependents either. A `lib` definition was accepted and rewrote `lib.cl`
+  without `f`.
+- **In-session control.** Cascades all three files.
+- **Scheduler trace.** The startup reset untracks every failed module, and
+  the import fast path treats the untracked `lib` as typechecked.
+
+This is filed as ACT-1011 (P11). The correction turns a loss of authored
+source into a refusal with a save exit, so ACT-1011 does not block it.
+
+### Mechanical items at commit (no role cycle)
+
+- The M1 cell's comment, `test` notation:
+  - rewrite the "DEFECT (open)" prose in the past tense;
+  - drop "provisional until design places the mechanism";
+  - add `fixed=S122/<sha>`.
+- Design placed the mechanism at `recover_startup_failure`. The recovery
+  reset lifted `lib`'s failed state, which is the sibling face the vocabulary
+  names, so the class `release-path-bypass` holds.
+- RM-1 and RM-2 take `fixed=S122/<sha>`, as the final adequacy directs.
+
+### Residuals, carried forward
+
+The residuals of the [final adequacy](#failed-reload-lock-and-removed-definitions--final-adequacy-2026-09-29)
+stand unchanged. The agent e2e lane was not run. ACT-1009 restoration stays
+explicitly deferred.
+
+## Whole-file rebuild and qualified dependents — final adequacy (2026-09-29)
+
+**Authority.**
+
+- The user's rulings of 2026-09-29:
+  - a reload rebuilds the whole file into an empty namespace at the
+    completed-turn boundary;
+  - every dependent reached by a fully-qualified function or type reference
+    is invalidated, and it error-locks if it no longer compiles;
+  - REPL increments are unchanged;
+  - the §14.8 restart boundary for a structural type change stays.
+- REPL §14.2 steps 2–4, §14.5, §14.6, §14.8 and §15.1.
+- Design: [session transaction §7.3](../../design/int/session-transaction.md#73-the-watcher-and-reload-path)
+  and [REPL lifecycle §1.2–§1.3](../../design/int/repl-lifecycle.md#12-poll-and-reload).
+
+**Basis.** `63605970` plus the working tree.
+
+- `git diff -- src` has sha256 `f274465e…df51836`. It is byte-identical to
+  dev's post-fix snapshot, `.local/s122-quiescent-rebuild-src-post-diff.patch`.
+- `git diff -- crates` has sha256 `4d71dc47…576746`. It is comment-only, in
+  four `cranelisp-typecheck` files. `cranelisp-types` equals HEAD.
+- The test blobs are `tests/repl_persist.rs` `d10009b6…` and
+  `tests/repl_watch.rs` `47ab51bd…`. `Cargo.lock` is `f1532968…`.
+  `repl_persist.rs` is the blob on which `test` observed the FQR REDs.
+- QA built with the debug profile and default features (no `agent`), with no
+  `CRANELISP_*` variables set. Nextest's link-prerequisite setup script
+  relinked `target/debug/cranelisp`, so the binary QA's run exercised is
+  `b68a0e8a…db4560`. The same sources were unchanged after the run.
+
+**Judgment (this correction).**
+
+- **Adequate.** `review`(src) found no blocking finding
+  (`.local/s122-quiescent-rebuild-review-result.md`). Its dispositions are
+  [below](#review-src-dispositions). No source change follows from them in
+  this wave.
+- **Two items go to the user and do not block this correction:**
+  - R1, the startup-degraded entry. It is a spec question, and it fails
+    closed.
+  - ACT-1013, a module cycle closed by a reload, which is new defect intake.
+- **ACT-1012 is closed** ([record below](#act-1012--omitted-import-kept-closed)).
+- **P13 (qualified dependents) is corrected.**
+- **ACT-1007's closure stands, now on the rebuild.**
+- **Q7 reload demand replay is retired**
+  ([Q7](#q7-reload-demand-replay--retired-2026-09-29)).
+- **Public API: +0/−0 on all seven baselines.** Nothing is returned to the
+  user.
+
+### Executed evidence
+
+| Evidence | Result | Class |
+|---|---|---|
+| C2 `persist_import_omitted_by_save_is_not_in_scope_or_rewritten` | RED on binary `302ede61…b148` (QA) on exactly its three cell legs. GREEN in dev's run and in QA's fresh run | Acceptance: §14.2 step 2, §15.1 |
+| C3 `persist_import_kept_by_save_stays_in_scope_and_is_written_once_control` | GREEN before and after | Acceptance control |
+| FQR-1 `watch_qualified_caller_fails_on_removed_callee_until_it_is_restored`, FQR-2 `watch_qualified_type_dependent_locked_until_its_module_compiles` | RED on the pre-fix snapshot `ee1d2938` (test) at the predicted legs, with the RM-2 and FL-3 controls GREEN. GREEN in dev's run and in QA's fresh run | Acceptance: §14.2 step 4, §14.5 item 5, §14.6 |
+| RM-1 to RM-5 | Their recorded REDs stand (RM-3 and RM-4 at `2408e889…b510`; RM-5 at `ac42cb28…6ed2`, legs 3, 4 and 8). All GREEN on the rebuild, including RM-5 leg 8 | Acceptance: §14.2 step 2, §14.5 item 5, §15.1 |
+| QA fresh run: `repl_persist`, `repl_watch`, `repl_persist_redefine`, `repl_mod_devloop` | 101 of 101 passed. The run includes FL-1 to FL-3, M1, the §14.8 cells with RB-5, the `repl_watch` generic-demand pair, and the T1 and `/mod` fences | Acceptance for the cells above; safety fences for the rest |
+| Dev's e2e set: the four binaries above plus `repl_watch`, `repl_persist_race`, `cache`, `repl_redefinition`, `repl_lifecycle` and `impl_redefinition_dispatch` | 260 of 260 | Safety fences. `cache` covers the QR, LD and restored-rewrite cells |
+| RB-5 under `--stress-count 15` | 15 of 15 (dev) | Safety fence: scheduler code changed |
+| Full suite (dev), `.local/s122-src-full-nextest.txt` | 6371 run: 6370 passed, 1 skipped, 1 failed. The failure is the document gate. The source is byte-identical since that run, so QA reused it | Release evidence |
+| `public_api_relocations` | 3 of 3 (dev). The canonical generator ran: all seven baselines +0/−0 | Maintenance check |
+| Module rows (dev), listed below | Two plan rows went RED on the pre-fix source, then GREEN. Rows with no pre-fix seam were each proven by a planted fault (M1–M7), then reverted | Module evidence |
+| QA probe, `.local/s122-quiescent-rebuild-final-qa-scratch/p1/` | §14.5 item 2, below | Diagnostic observer |
+
+**Module rows.**
+
+- `src/session_v4/lifecycle.rs`:
+  - `reload_plan_selects_recorded_edge_dependents_transitively` and
+    `reload_plan_orders_qualified_dependent_after_its_dependency`: RED first;
+  - `reload_plan_selects_a_failed_dependent_through_its_reference`.
+- `src/session_v4/persistence_tests.rs`:
+  - `rebuild_prologue_establishes_exactly_what_the_saved_source_keeps`;
+  - `rebuild_omitting_a_function_leaves_it_absent_with_its_owner_pooled`;
+  - `rebuild_recomputes_the_prelude_fallback_from_the_saved_source`;
+  - `rebuild_naming_an_omitted_function_fails_unresolved_and_locks` and
+    `rebuild_naming_an_omitted_import_fails_unresolved_and_locks`;
+  - `rebuild_from_an_empty_source_leaves_an_empty_table`;
+  - `rebuild_resumed_after_a_dependency_gap_still_omits_the_function`;
+  - `established_reference_survives_failures_and_drops_on_success`;
+  - `repeated_rebuilds_reuse_got_slots_while_increments_retire_theirs`;
+  - `order_check_rebuilds_a_new_qualified_caller_after_its_callee`;
+  - the lock row for each caller: `watcher_plan_locks_a_failed_dependent` and
+    `mod_recompile_failure_locks_the_module`;
+  - `reload_replaces_declaration_records_and_failed_reload_clears_them`.
+- `src/redefine.rs`: `t1_reload_tests::t1_rooted_plan_locks_a_failed_dependent`.
+
+**§14.5 item 2, introspection of a failed module.** The unit row
+`reload_replaces_declaration_records_and_failed_reload_clears_them` shows
+that a failed rebuild leaves no record of the displaced declarations.
+
+QA's probe used a `lib.cl` holding `T`, `a` and `b`, and a `user.cl` whose only
+reference is `(lib/b)`. Before the save, `/sig lib/b` and `/info lib/T`
+answered. A save keeping `a`, omitting `b` and `T`, and adding an ill-typed `c`
+had these results:
+
+- `[errors: lib.cl]` and `[errors: user.cl]` were reported.
+- `/sig` of `lib/a`, `lib/b` and `lib/c`, and `/info lib/T`, each reported an
+  unknown symbol.
+- Evaluation was blocked.
+- `user.cl` was unchanged.
+
+The residual that §14.5's band carried is therefore closed. No e2e cell is
+allocated: the only composition the unit leaves open is `/sig`'s read, which
+goes through the canonical candidate query.
+
+**`/mod` behaviour.** Recompiling a cache-installed module with `/mod` now
+also rebuilds its dependents and reports every failed module. This follows
+from the plan invariant, because a rebuild reuses slot indices. It is not a
+semantic carry. REPL §3 is silent on it, and `repl_mod_devloop` stays GREEN.
+
+**Structural closures.** These leads are structural consequences of the fresh
+table, so they get no rows:
+
+- `install_fresh_generation` is reachable only from `reload_module`, which only
+  the plan executor calls. Recovery, placeholder dispatch and REPL increments
+  therefore cannot reset a module.
+- No removal or withdrawal list exists. The earlier leads (a withdrawn export,
+  and stale `export`, `platform` or `mod` records) therefore have no
+  mechanism left to be wrong in.
+
+### Review (src) dispositions
+
+The probes are in `.local/s122-quiescent-rebuild-final-qa-scratch/`, on
+binary `b68a0e8a…db4560`.
+
+- **R1 — a dependency's rebuild locks a startup-degraded entry: a spec
+  question for the user.**
+  - **Observed (`p2`).** `user.cl` imports `lib`, and its `bad` failed at
+    startup. After a save of `lib.cl`, `user` reports `[errors: user.cl]`,
+    and `(defn bad [] 1)` is refused with the failed-source lock message.
+    `user.cl` stays byte-identical.
+  - **Control (`p2c`).** It differs only in having no `lib.cl` save. The same
+    turn is accepted, and it repairs the file.
+  - **The two readings.**
+    - §15.2.3 keeps the entry's definition turns open for repair at the
+      prompt.
+    - §14.2 step 4 recompiles the entry as a dependent, and §14.5 item 5 locks
+      it when it fails.
+
+    The two readings permit materially different observables, so QA encodes
+    neither. `spec` frames the question for the user.
+  - **Consequence.** It fails closed. No authored source is lost, and a
+    compiling save of the entry releases it. What is lost is the at-prompt
+    repair route.
+  - **Age.** Review read in source that the watcher route predates this
+    visit (the S122 lock). This change adds the `/mod`, T1 and T2 routes,
+    which the slot-reuse invariant requires.
+  - **Why a repair admission alone is unsafe.** The failed rebuild has
+    already discarded recovery's committed forms. A repair admission without
+    a matching design would therefore regenerate the file without them.
+- **A2 — the order check stops when its set recurs: reachable only through a
+  forbidden cycle.**
+  - **Observed (`p3`).** A save closing a qualified-reference cycle between
+    two loaded modules is accepted. Both modules compile, so by source reading
+    the stop is reached.
+  - **Values stay correct.** The cyclic modules rebuild from unchanged
+    source with the same slot layout.
+  - **Routing.** The spec violation is new intake:
+    [ACT-1013](../../sprints/actions/ACT-1013-reload-accepts-qualified-module-cycle-intake.md).
+    Its resolution decides what the stop does.
+- **A1 — a fallible reset sits before pooling (`dev`, advisory).**
+  - The `Err` is precluded, as review traced, so this is not an evidence gap.
+  - It rides the next `src/` visit, and needs no re-review of this wave.
+- **A3 — the §7.3.4 Increments row is unrealized.** QA accepts the structural
+  grade as its evidence: review's grep, and QA's reading above. `design`(int)
+  rewords the row to cite that grade.
+
+### Residuals
+
+None blocks this correction. None is a new approved carry.
+
+- **Plan invariant: asserted with a named falsifier**
+  ([§7.3.3](../../design/int/session-transaction.md#733-slot-reuse-and-the-plan-invariant)).
+  The falsifier: after a completed plan, evaluation reaches code in a module
+  that references a rebuilt module's GOT and was neither rebuilt after it nor
+  locked. Its sources are:
+  - an inline-`mod` REPL module with no mapped file (unmeasured);
+  - a cycle between two compiling modules, where the order check stops at a
+    recurring root set. The cycle is reachable (ACT-1013). The falsifier was
+    not observed, because a same-source rebuild keeps its layout;
+  - a failing save that adds a new qualified reference to an already failing
+    module. It is released only by its own next save.
+- **Accepted by design:** pool growth of one table's owners per rebuild, and
+  stale `/search` rows for a failed module.
+- **Trait interface change on reload.** It is now admitted (arch §5.2), and no
+  cell observes it. Dependents are selected by the evidenced edge predicate.
+  Falsifier: after a saved change to a trait's methods, a dependent `impl`
+  or call dispatches through the old interface without a notification. The
+  §18.6 line is with `spec`.
+- **Cache-restored qualified dependent.** Falsifier: after `run_again`, an
+  FQR-1 save leaves `user` updated or unlocked. It is unmeasured; LD-3 and
+  LD-8 show that restored tables keep their lookup dependencies.
+- **A kept import across a dependency gap.** Falsifier: a whole-source reload
+  that takes a gap regenerates a kept import twice. It is unmeasured; C3
+  takes no gap.
+- **Carried from generic removal, unmeasured:**
+  - a restart while an importer is locked holding a dangling link.
+    Falsifier: `run_again` after RM-5's first save panics or restores `(call)`
+    giving 5;
+  - stale instance reuse through `already_installed` when a removed template
+    is added back.
+- **Separate open defects:** ACT-1011 (startup-failed dependency cascade) and
+  ACT-1010 M2. The rebuild does not touch the startup-recovery path.
+- **Over-selection:** a stale lookup dependency may recompile a module that no
+  longer references the changed one. §14.2 permits it.
+
+### Mechanical items at the next commit
+
+These are comment-only items in `test` notation, handed off once through the
+coordinator. Loci keep the seam where each defect lived; the prose after the
+token names what to read today.
+
+- **RM-1, RM-2** (`src/worker.rs::finish_prepared_commit`), **RM-3, RM-5**
+  (`crates/cranelisp-types/src/module.rs::plan_staged_publication`):
+  - add `fixed=S122/<sha>`;
+  - put RM-1 to RM-3's "DEFECT (open)" prose in the past tense;
+  - after each token, add "— fixed by the whole-file rebuild
+    (design/int/session-transaction.md §7.3.1)".
+- **RM-4** (its `refuse_removed_referers` locus in `src/worker.rs`):
+  - add `fixed=S122/<sha>` and past-tense prose;
+  - keep the token, because the refusal was raised there;
+  - after it, add "— retired with the removal list; the whole-file rebuild
+    (design/int/session-transaction.md §7.3.1) has no referer scan".
+
+  This withdraws the earlier direction to move the token to
+  `prior_definitions`, which is also retired.
+- **RM-5 prose:** "The omitted import this save leaves behind is ACT-1012's"
+  becomes past tense ("was ACT-1012's").
+- **C2** (`src/process_form/form_dispatch.rs::record_imports_on_symbol_table`):
+  - add `fixed=S122/<sha>` and past-tense prose;
+  - keep the token, because the writer appended without a reset;
+  - replace "provisional until design places the mechanism" with "— the
+    whole-source reload appended to the prior table's record and never reset
+    it; fixed by the whole-file rebuild's fresh table
+    (design/int/session-transaction.md §7.3.1)".
+
+  This supersedes the earlier `run_cluster_prologue` direction.
+- **Optional:** the `repl_watch` generic-demand pair's `// spec:` lines can
+  cite `design/int/session-transaction.md §7.3` in place of
+  `design/int/s122-closure.md §2`.
+- **Prior sections still apply:** M1 (`fixed=`, past tense).
+
+### ACT-1007 — removed definition stays live (closed)
+
+- **Requirement.** REPL §14.2 step 2: a function that the saved file no longer
+  defines is neither callable nor persisted (§15.1).
+- **Faces observed.**
+  - Concrete functions: RM-1 and RM-2.
+  - **G1:** a generic omitted by a save stayed callable and was written back.
+  - **G2:** a save omitting a generic caller together with its callee was
+    refused and locked.
+
+  Probes are in `.local/s122-reload-cleanup-final-qa-scratch/`.
+- **Mechanism.** A reload merged into the module's live table, so an omitted
+  definition stayed unless an enumerated removal retired it. The interim
+  removal list could not retire a template, because `plan_staged_publication`
+  refused an absent template. Its referer scan also read the surviving
+  generic's callees.
+- **Resolution.** The whole-file rebuild (the user's ruling, 2026-09-29) makes
+  the saved source the whole namespace, and it has no removal list. The
+  interim template widening was reverted to HEAD.
+- **Evidence.** RM-1 to RM-5 went RED, then GREEN, and are GREEN on the
+  rebuild (executed evidence above).
+
+### ACT-1012 — omitted import kept (closed)
+
+- **Requirement.** REPL §14.2 steps 2–3 and §15.1: a successful reload whose
+  saved source omits an `import` leaves the name out of scope, and
+  regeneration does not write the import back.
+- **Observation.** RM-5 leg 8 wrote a removed import back, and the next start
+  failed with `'id' not found in module 'lib'`. The controls, on binary
+  `302ede61…b148`:
+  - **C1**, a concrete sibling, differed only in genericity and behaved the
+    same way.
+  - **C2** had no removal and no failure. `/imports` still listed `id`, a bare
+    `(id 5)` gave 5, and the import was written back.
+  - **C3** kept the import, which was written once.
+
+  The defect was independent of generic removal.
+- **Mechanism.** `record_imports_on_symbol_table` appended to the live table,
+  and a whole-source reload reset neither the record nor the private
+  candidates and alias keys.
+- **Resolution.** The rebuild's fresh table and its reset of state outside
+  the table (import-alias and submodule-alias keys). There is no public API
+  change.
+- **Evidence.**
+  - C2 went RED, then GREEN. C3 and RM-5 are GREEN.
+  - Module rows: the prologue row (each import once, then none, with the alias
+    keys gone), and the omitted-import unresolved-and-locks row.
+  - A failed attempt keeps its edges through the established reference
+    (`established_reference_survives_failures_and_drops_on_success` and
+    `reload_plan_selects_a_failed_dependent_through_its_reference`).
+
+  QA deleted ACT-1012; this subsection is its record.

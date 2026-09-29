@@ -2057,6 +2057,13 @@ fn save(file: &str, source: &str) -> String {
     format!("/sh sleep 0.3\n/sh echo '{source}' > {file}\n/sh sleep 0.5\n")
 }
 
+/// The output of a `save` whose first turn is `first`: its echo and settle
+/// turns. The reload notification is printed before whichever prompt follows
+/// the watcher's detection of the write, so it lands in one of the two.
+fn save_notice(turns: &[&str], first: usize) -> String {
+    turns.iter().skip(first + 1).take(2).copied().collect()
+}
+
 /// Each `[errors: <file>]` notification in `out`, with the lines after it up
 /// to the next prompt.
 fn error_blocks<'a>(out: &'a e2e::CrOutput, file: &str) -> Vec<&'a str> {
@@ -2080,7 +2087,10 @@ fn requires_restart_for(block: &str, ty: &str) -> bool {
     let symbol_char = |c: char| c.is_alphanumeric() || "-_?!*".contains(c);
     let names_ty = block.match_indices(ty).any(|(i, _)| {
         !block[..i].chars().next_back().is_some_and(symbol_char)
-            && !block[i + ty.len()..].chars().next().is_some_and(symbol_char)
+            && !block[i + ty.len()..]
+                .chars()
+                .next()
+                .is_some_and(symbol_char)
     });
     names_ty && block.to_lowercase().contains("restart")
 }
@@ -2171,10 +2181,11 @@ fn persist_external_edit_changing_field_type_fails_requiring_restart() {
     legs.assert_all(&transcript(&out));
 }
 
-// spec: repl/spec/14-file-watching.md §14.8 — the failure stands until a later
-// save reloads successfully (§14.4 item 4): a save structurally identical to
-// the live `T` reloads, evaluation resumes, and a definition turn is accepted
-// and regenerates the file from the saved content. RB-4. RED when authored
+// spec: repl/spec/14-file-watching.md §14.8, §14.5 item 5 — the failure and
+// its lock stand until a later save reloads successfully (§14.4 item 4): a
+// save structurally identical to the live `T` reloads, evaluation resumes, and
+// a definition turn is accepted and regenerates the file from the saved
+// content. RB-4. RED when authored
 // (S122) at its precondition, the RB-1 failure.
 #[test]
 fn persist_compatible_save_after_structural_reload_failure_releases_the_file() {
@@ -2650,11 +2661,11 @@ fn persist_reloaded_docstring_edit_of_file_loaded_type_survives_regeneration() {
     );
 }
 
-// spec: repl/spec/14-file-watching.md §14.8 — after a file-loaded `T` gains a
-// field, the reload fails and the saved edit is retained: a definition turn
-// that would regenerate the file is rejected and leaves the session and the
-// file unchanged; evaluation stays blocked (§14.4); a second structurally
-// different save fails again. A restart that keeps the cache compiles the
+// spec: repl/spec/14-file-watching.md §14.8, §14.5 item 5 — after a
+// file-loaded `T` gains a field, the reload fails and the module is locked, so
+// the saved edit is retained: a definition turn that would regenerate the file
+// is rejected and leaves the session and the file unchanged; evaluation stays
+// blocked (§14.4); a second structurally different save fails again. A restart that keeps the cache compiles the
 // saved source (§15.2) and establishes the two-field `T`; the next definition
 // regenerates the file with it (§15.1). RB-3. RED when authored (S122): the
 // definition turn is accepted and overwrites the saved edit (ACT-0998 p2a).
@@ -2774,7 +2785,10 @@ fn watch_imported_type_field_reorder_fails_requiring_restart() {
         .stdin(&format!(
             "(import [shapes [T]])\n(import [reader [read-a]])\n(read-a (T 1 2))\n\
              {}(read-a (T 1 2))\n/quit\n",
-            save("shapes.cl", "(deftype T [:primitives/Int b :primitives/Int a])")
+            save(
+                "shapes.cl",
+                "(deftype T [:primitives/Int b :primitives/Int a])"
+            )
         ))
         .timeout(std::time::Duration::from_secs(10))
         .try_output()
@@ -2805,4 +2819,868 @@ fn watch_imported_type_field_reorder_fails_requiring_restart() {
         "the dependent is refused and yields neither 1 nor 2",
     );
     legs.assert_all(&transcript(&out));
+}
+
+// =============================================================================
+// §14.2 step 2 — a successful reload retires definitions its source omits
+// =============================================================================
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 2 clears the module's
+// previous definitions, so a save that omits `h` reloads (`[updated:]`) and
+// leaves `h` neither callable nor listed by `/sig`; the retained `g` still
+// evaluates. repl/spec/15-session-persistence.md §15.1 — the next definition
+// regenerates the file with `g` and `k` and without `h`. RM-1 (ACT-1007).
+// The prepared commit published the names the source defined and retired no
+// omitted one, so `h` stayed callable, listed by `/sig` and written back.
+// defect: class=partial-record-update locus=src/worker.rs::finish_prepared_commit found=S122 owner=/dev
+#[test]
+fn persist_definition_removed_by_save_is_not_callable_or_rewritten() {
+    // Turns: 1 (h), 2–4 save, 5 (h), 6 /sig h, 7 (g), 8 (defn k).
+    let out = Cranelisp::new()
+        .user("(defn g [] 1)\n(defn h [] 2)\n")
+        .repl()
+        .stdin(&format!(
+            "(h)\n{}(h)\n/sig h\n(g)\n(defn k [] 3)\n/quit\n",
+            save("user.cl", "(defn g [] 1)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 2"),
+        "precondition: `(h)` gives 2 before the save",
+    );
+    legs.check(
+        out.stdout.contains("[updated: user.cl]") && !out.stdout.contains("[errors:"),
+        "the save omitting `h` reloads: `[updated: user.cl]`",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int 2"),
+        "`(h)` does not give 2 after the reload",
+    );
+    legs.check(
+        !turn(6).contains("user/h"),
+        "`/sig h` reports `h` undefined",
+    );
+    legs.check(
+        turn(7).contains(":primitives/Int 1"),
+        "control: the retained `g` gives 1",
+    );
+    legs.check(
+        turn(8).contains("user/k"),
+        "the definition turn is accepted",
+    );
+    legs.check(
+        saved.matches("(defn g [] 1)").count() == 1
+            && saved.matches("(defn k [] 3)").count() == 1
+            && !saved.contains("defn h"),
+        "regeneration writes `g` and `k` and does not write `h` back",
+    );
+    legs.assert_all(&format!("{}\nuser.cl:\n{saved}", transcript(&out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — steps 2 and 4: `lib.cl` saved
+// without `h` reloads, the cascade recompiles its importer, whose import of
+// `h` no longer resolves, so it reports `[errors: user.cl]`; `(h)` does not
+// give 2. RM-2 (ACT-1007).
+// `lib` kept `h`, so the importer reloaded (`[updated: user.cl]`) and `(h)`
+// still gave 2: RM-1's retention seen across an import.
+// defect: class=partial-record-update locus=src/worker.rs::finish_prepared_commit found=S122 owner=/dev
+#[test]
+fn watch_definition_removed_from_imported_file_fails_its_importer() {
+    // Turns: 1 (h), 2–4 save, 5 (h).
+    let out = Cranelisp::new()
+        .file("lib.cl", "(defn g [] 1)\n(defn h [] 2)\n")
+        .user("(import [lib [g h]])\n")
+        .repl()
+        .stdin(&format!(
+            "(h)\n{}(h)\n/quit\n",
+            save("lib.cl", "(defn g [] 1)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 2"),
+        "precondition: the imported `(h)` gives 2 before the save",
+    );
+    legs.check(
+        out.stdout.contains("[updated: lib.cl]"),
+        "the save omitting `h` reloads: `[updated: lib.cl]`",
+    );
+    legs.check(
+        !error_blocks(&out, "user.cl").is_empty(),
+        "the importer reports `[errors: user.cl]`",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int 2"),
+        "`(h)` does not give 2 after the reload",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 2 retires a generic
+// function the save omits as it does a concrete one: after `[updated:]`,
+// `(id 5)` does not give 5 and `/sig id` reports `id` undefined; the concrete
+// `h` omitted by the same save is the control. repl/spec/15-session-persistence.md
+// §15.1 — the next definition regenerates the file without `id`. RM-3
+// (ACT-1007 G1).
+// DEFECT (open): the types planner accepts an absent-key removal only for a
+// slotted binding, so the slotless generic `id` stays callable, listed and
+// written back.
+// defect: class=partial-record-update locus=crates/cranelisp-types/src/module.rs::plan_staged_publication found=S122 owner=/dev
+#[test]
+fn persist_generic_definition_removed_by_save_is_not_callable_or_rewritten() {
+    // Turns: 1 (id 5), 2–4 save, 5 (h), 6 (id 5), 7 /sig id, 8 (defn k).
+    let out = Cranelisp::new()
+        .user("(defn g [] 1)\n(defn h [] 2)\n(defn id [x] x)\n")
+        .repl()
+        .stdin(&format!(
+            "(id 5)\n{}(h)\n(id 5)\n/sig id\n(defn k [] 3)\n/quit\n",
+            save("user.cl", "(defn g [] 1)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 5"),
+        "precondition: `(id 5)` gives 5 before the save",
+    );
+    legs.check(
+        out.stdout.contains("[updated: user.cl]") && !out.stdout.contains("[errors:"),
+        "the save omitting `h` and `id` reloads: `[updated: user.cl]`",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int 2"),
+        "control: the omitted concrete `(h)` fails",
+    );
+    legs.check(
+        !turn(6).contains(":primitives/Int 5"),
+        "`(id 5)` does not give 5 after the reload",
+    );
+    legs.check(
+        !turn(7).contains("user/id"),
+        "`/sig id` reports `id` undefined",
+    );
+    legs.check(
+        turn(8).contains("user/k"),
+        "the definition turn is accepted",
+    );
+    legs.check(
+        saved.matches("(defn k [] 3)").count() == 1 && !saved.contains("defn id"),
+        "regeneration writes `k` and does not write `id` back",
+    );
+    legs.assert_all(&format!("{}\nuser.cl:\n{saved}", transcript(&out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — a save that omits both `h` and
+// the generic `wrap` calling it compiles, so it reloads (`[updated: user.cl]`,
+// no `[errors:`) and step 2 retires both: `/sig wrap` and `/sig h` report them
+// undefined. §14.5 — the save did not fail, so the module is not locked:
+// `(g)` gives 1 and a definition is accepted. RM-4 (ACT-1007 G2).
+// DEFECT (open): the referer scan reads the callees of the surviving generic
+// `wrap`, refuses the compiling save as naming the removed `h`, and locks the
+// module.
+// defect: class=wrong-reject locus=src/worker.rs::refuse_removed_referers found=S122 owner=/dev
+#[test]
+fn persist_save_omitting_generic_caller_and_its_callee_reloads_unlocked() {
+    // Turns: 1 (h), 2–4 save, 5 (g), 6 (defn k), 7 /sig wrap, 8 /sig h.
+    let out = Cranelisp::new()
+        .user("(defn h [] 2)\n(defn wrap [x] (let [y (h)] x))\n")
+        .repl()
+        .stdin(&format!(
+            "(h)\n{}(g)\n(defn k [] 3)\n/sig wrap\n/sig h\n/quit\n",
+            save("user.cl", "(defn g [] 1)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 2"),
+        "precondition: `(h)` gives 2 before the save",
+    );
+    legs.check(
+        out.stdout.contains("[updated: user.cl]")
+            && !format!("{}{}", out.stdout, out.stderr).contains("[errors:"),
+        "the compiling save reloads: `[updated: user.cl]` and no `[errors:`",
+    );
+    legs.check(
+        turn(5).contains(":primitives/Int 1"),
+        "`(g)` gives 1 from the saved source",
+    );
+    legs.check(
+        turn(6).contains("user/k"),
+        "the definition turn is accepted: the module is not locked",
+    );
+    legs.check(
+        !turn(7).contains("user/wrap"),
+        "`/sig wrap` reports `wrap` undefined",
+    );
+    legs.check(
+        !turn(8).contains("user/h"),
+        "`/sig h` reports `h` undefined",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — steps 2 and 4: `lib.cl` saved
+// without the generic `id` reloads, and the cascade recompiles its importer,
+// whose import of `id` no longer resolves, so it reports `[errors: user.cl]`
+// and `(call)` does not give 5. §14.5 item 5 — the importer's own save that
+// compiles releases it: `[updated: user.cl]`, no further `[errors: user.cl]`,
+// `(k)` gives 3 and a definition is accepted. repl/spec/15-session-persistence.md
+// §15.1 — regeneration writes `k` and `m` and not the omitted `call`. RM-5
+// (ACT-1007 G1 across an import).
+// The types planner accepted an absent-key removal only for a slotted binding,
+// so `lib` kept the slotless generic `id`, the importer reloaded and `(call)`
+// still gave 5. The omitted import this save leaves behind is ACT-1012's,
+// observed by `persist_import_omitted_by_save_is_not_in_scope_or_rewritten`.
+// defect: class=partial-record-update locus=crates/cranelisp-types/src/module.rs::plan_staged_publication found=S122 owner=/dev
+#[test]
+fn watch_generic_removed_from_imported_file_fails_importer_until_its_save() {
+    // Turns: 1 (call), 2–4 save lib, 5 (call), 6–8 save user, 9 (k),
+    // 10 (defn m).
+    let out = Cranelisp::new()
+        .file("lib.cl", "(defn g [] 1)\n(defn id [x] x)\n")
+        .user("(import [lib [id]])\n(defn call [] (id 5))\n")
+        .repl()
+        .stdin(&format!(
+            "(call)\n{}(call)\n{}(k)\n(defn m [] 4)\n/quit\n",
+            save("lib.cl", "(defn g [] 1)"),
+            save("user.cl", "(defn k [] 3)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let lib_save: String = (2..=5).map(turn).collect();
+    let user_save: String = (6..t.len()).map(turn).collect();
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 5"),
+        "precondition: `(call)` gives 5 before the save",
+    );
+    legs.check(
+        lib_save.contains("[updated: lib.cl]"),
+        "the save omitting `id` reloads: `[updated: lib.cl]`",
+    );
+    legs.check(
+        lib_save.contains("[errors: user.cl]"),
+        "the importer reports `[errors: user.cl]`",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int 5"),
+        "`(call)` does not give 5 after the reload",
+    );
+    legs.check(
+        user_save.contains("[updated: user.cl]") && !user_save.contains("[errors: user.cl]"),
+        "the importer's save that compiles reloads: `[updated: user.cl]` and no `[errors: user.cl]`",
+    );
+    legs.check(
+        turn(9).contains(":primitives/Int 3"),
+        "`(k)` gives 3 from the saved source",
+    );
+    legs.check(
+        turn(10).contains("user/m"),
+        "the definition turn is accepted: the module is not locked",
+    );
+    legs.check(
+        saved.matches("(defn k [] 3)").count() == 1
+            && saved.matches("(defn m [] 4)").count() == 1
+            && !saved.contains("(id 5)"),
+        "regeneration writes `k` and `m` and does not write `call` back",
+    );
+    legs.assert_all(&format!("{}\nuser.cl:\n{saved}", transcript(&out)));
+}
+
+// =============================================================================
+// §14.2 step 2, §15.1 — a successful reload retires an import its source omits
+// =============================================================================
+
+/// A session over an unchanged `lib` whose `user.cl` imports `id`, in which
+/// `user.cl` is saved as `saved` and then extended by one definition.
+/// Turns: 1 `/imports lib`, 2 `(id 5)`, 3–5 save, 6 `(k)`, 7 `/imports lib`,
+/// 8 `(id 5)`, 9 `(defn m)`.
+fn import_session_after_user_save(saved: &str) -> e2e::CrOutput {
+    Cranelisp::new()
+        .file("lib.cl", "(defn g [] 1)\n(defn id [x] x)\n")
+        .user("(import [lib [id]])\n(defn k [] 2)\n")
+        .repl()
+        .stdin(&format!(
+            "/imports lib\n(id 5)\n{}(k)\n/imports lib\n(id 5)\n(defn m [] 4)\n/quit\n",
+            save("user.cl", saved)
+        ))
+        .output()
+}
+
+/// Whether a `/imports lib` response lists `id` under its `From lib:` header.
+fn lists_id_from_lib(response: &str) -> bool {
+    response.contains("From lib:") && response.split_whitespace().any(|w| w == "id")
+}
+
+/// The legs both import cells share: the import is in scope before the save,
+/// the save reloads from its own source, and the module stays unlocked.
+fn check_import_session_frame(legs: &mut Legs, out: &e2e::CrOutput, t: &[&str]) {
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    legs.check(
+        lists_id_from_lib(turn(1)),
+        "precondition: `/imports lib` lists `id` before the save",
+    );
+    legs.check(
+        turn(2).contains(":primitives/Int 5"),
+        "precondition: the imported `(id 5)` gives 5 before the save",
+    );
+    legs.check(
+        out.stdout.contains("[updated: user.cl]")
+            && !format!("{}{}", out.stdout, out.stderr).contains("[errors:"),
+        "the save reloads: `[updated: user.cl]` and no `[errors:`",
+    );
+    legs.check(
+        turn(6).contains(":primitives/Int 3"),
+        "`(k)` gives 3 from the saved source",
+    );
+    legs.check(
+        turn(9).contains("user/m"),
+        "the definition turn is accepted: the module is not locked",
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 2 clears the module's
+// previous state, so after a save of `user.cl` that omits its only `import`
+// reloads (`[updated: user.cl]`), `/imports lib` no longer lists `id` and a
+// bare `(id 5)` does not give 5; `lib` is unchanged and defines `id`
+// throughout. repl/spec/15-session-persistence.md §15.1 — the next definition
+// regenerates the file without the import. ACT-1012 C2; the kept-import twin is
+// `persist_import_kept_by_save_stays_in_scope_and_is_written_once_control`.
+// DEFECT (open): the reload keeps the omitted import, so `id` stays listed and
+// bare-resolvable, and regeneration writes the import back.
+// defect: class=partial-record-update locus=src/process_form/form_dispatch.rs::record_imports_on_symbol_table found=S122 owner=/dev — provisional until design places the mechanism
+#[test]
+fn persist_import_omitted_by_save_is_not_in_scope_or_rewritten() {
+    let out = import_session_after_user_save("(defn k [] 3)");
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    check_import_session_frame(&mut legs, &out, &t);
+    legs.check(
+        !lists_id_from_lib(turn(7)),
+        "`/imports lib` does not list `id` after the reload",
+    );
+    legs.check(
+        !turn(8).contains(":primitives/Int 5"),
+        "a bare `(id 5)` does not give 5 after the reload",
+    );
+    legs.check(
+        saved.matches("(defn k [] 3)").count() == 1
+            && saved.matches("(defn m [] 4)").count() == 1
+            && !saved.contains("import"),
+        "regeneration writes `k` and `m` and does not write the import back",
+    );
+    legs.assert_all(&format!("{}\nuser.cl:\n{saved}", transcript(&out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — a save of `user.cl` that keeps
+// its `import` reloads, and `id` stays listed by `/imports lib` and gives 5 as
+// a bare `(id 5)`. repl/spec/15-session-persistence.md §15.1 — the next
+// definition regenerates the file with the import exactly once. ACT-1012 C3,
+// the control for `persist_import_omitted_by_save_is_not_in_scope_or_rewritten`:
+// the save differs from that cell's only by the import.
+#[test]
+fn persist_import_kept_by_save_stays_in_scope_and_is_written_once_control() {
+    let out = import_session_after_user_save("(import [lib [id]]) (defn k [] 3)");
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    check_import_session_frame(&mut legs, &out, &t);
+    legs.check(
+        lists_id_from_lib(turn(7)),
+        "`/imports lib` still lists `id` after the reload",
+    );
+    legs.check(
+        turn(8).contains(":primitives/Int 5"),
+        "a bare `(id 5)` still gives 5 after the reload",
+    );
+    legs.check(
+        saved.matches("(import [lib [id]])").count() == 1
+            && saved.matches("import").count() == 1
+            && saved.matches("(defn k [] 3)").count() == 1
+            && saved.matches("(defn m [] 4)").count() == 1,
+        "regeneration writes the import exactly once, with `k` and `m`",
+    );
+    legs.assert_all(&format!("{}\nuser.cl:\n{saved}", transcript(&out)));
+}
+
+// =============================================================================
+// §14.5 item 5, §14.6, §15.2.3 — a failed reload locks its module's file
+// =============================================================================
+
+const FL_TYPE_ERROR: &str = "(defn g [] (undefined-name 1))";
+const FL_PARSE_ERROR: &str = "(defn g [] ";
+const FL_FIXED: &str = "(defn g [] 5)";
+
+// spec: repl/spec/14-file-watching.md §14.5 item 5 — a save that fails to
+// typecheck locks `user.cl`: `[errors: user.cl]` lists the error, a definition
+// turn is rejected and leaves the session (`/sig h`) and the file unchanged,
+// and evaluation is refused (§14.4). A later parse-error save fails again and
+// the lock stands. A save that compiles releases it (§14.4 item 4, §14.6);
+// the next definition regenerates the file from the saved content (§15.1).
+// FL-1.
+#[test]
+fn persist_type_error_reload_locks_file_until_a_save_compiles() {
+    // Turns: 1–3 save, 4 (defn h), 5 /sig h, 6 (g), 7 snapshot, 8–10 save,
+    // 11 (defn h), 12 snapshot, 13–15 save, 16 (g), 17 (defn h).
+    let out = Cranelisp::new()
+        .user("(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "{}(defn h [] 2)\n/sig h\n(g)\n/sh cp user.cl after-type-error.txt\n\
+             {}(defn h [] 2)\n/sh cp user.cl after-parse-error.txt\n\
+             {}(g)\n(defn h [] 2)\n/quit\n",
+            save("user.cl", FL_TYPE_ERROR),
+            save("user.cl", FL_PARSE_ERROR),
+            save("user.cl", FL_FIXED)
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_type_error = out.read_tmp("after-type-error.txt");
+    let after_parse_error = out.read_tmp("after-parse-error.txt");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        save_notice(&t, 1).contains("[errors: user.cl]")
+            && error_blocks(&out, "user.cl")
+                .first()
+                .is_some_and(|b| b.contains("undefined-name")),
+        "the type-error save fails: `[errors: user.cl]` lists the error",
+    );
+    legs.check(
+        !turn(4).contains("user/h"),
+        "the definition turn during the failure is rejected",
+    );
+    legs.check(
+        !turn(5).contains("user/h"),
+        "`/sig h` shows `h` undefined: the rejection left the session unchanged",
+    );
+    legs.check(
+        !turn(6).contains(":primitives/Int"),
+        "`(g)` is refused while the module has errors",
+    );
+    legs.check(
+        after_type_error == format!("{FL_TYPE_ERROR}\n"),
+        "user.cl is byte-identical to the type-error save after the rejected turn",
+    );
+    legs.check(
+        save_notice(&t, 8).contains("[errors: user.cl]"),
+        "the parse-error save fails again: `[errors: user.cl]`",
+    );
+    legs.check(
+        !turn(11).contains("user/h"),
+        "the lock stands after the second failure: the definition is rejected",
+    );
+    legs.check(
+        after_parse_error == format!("{FL_PARSE_ERROR}\n"),
+        "user.cl is byte-identical to the parse-error save after the rejected turn",
+    );
+    legs.check(
+        save_notice(&t, 13).contains("[updated: user.cl]"),
+        "the save that compiles reloads: `[updated: user.cl]`",
+    );
+    legs.check(
+        turn(16).contains(":primitives/Int 5"),
+        "evaluation resumes with the saved `g`",
+    );
+    legs.check(
+        turn(17).contains("user/h"),
+        "the released module accepts the definition",
+    );
+    legs.check(
+        saved.matches("defn g").count() == 1
+            && saved.matches(FL_FIXED).count() == 1
+            && saved.matches("defn h").count() == 1
+            && saved.matches("(defn h [] 2)").count() == 1
+            && !saved.contains("undefined-name"),
+        "user.cl holds `g` 5 and `h` exactly once each and no `undefined-name`",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the type-error rejection:\n{after_type_error}\n\
+         user.cl after the parse-error rejection:\n{after_parse_error}\nuser.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 item 5 — a save that does not
+// parse locks `user.cl`: a definition turn is rejected, `/sig h` shows `h`
+// undefined and the file keeps the saved text. §14.6 and
+// repl/spec/15-session-persistence.md §15.2.3 (parse-failure lock paragraph) —
+// a restart does not bypass the failure: the load error is reported and a
+// prompt is reached, `(g)` is refused rather than giving the cached 1, a
+// definition is rejected and the file is unchanged. A save that compiles then
+// releases the lock. FL-2.
+#[test]
+fn persist_parse_error_reload_lock_survives_restart_until_a_save_compiles() {
+    // Turns: 1–3 save, 4 (defn h), 5 /sig h.
+    let first = Cranelisp::new()
+        .user("(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "{}(defn h [] 2)\n/sig h\n/quit\n",
+            save("user.cl", FL_PARSE_ERROR)
+        ))
+        .output();
+    let t = turns(&first.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = first.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        save_notice(&t, 1).contains("[errors: user.cl]"),
+        "precondition: the parse-error save fails: `[errors: user.cl]`",
+    );
+    legs.check(
+        !turn(4).contains("user/h"),
+        "the definition turn during the failure is rejected",
+    );
+    legs.check(
+        !turn(5).contains("user/h"),
+        "`/sig h` shows `h` undefined: the rejection left the session unchanged",
+    );
+    legs.check(
+        saved == format!("{FL_PARSE_ERROR}\n"),
+        "user.cl is byte-identical to the parse-error save at exit",
+    );
+    let first_log = format!("{}\nuser.cl at exit:\n{saved}", transcript(&first));
+
+    // Turns: 1 (g), 2 (defn h), 3 /sig h, 4 snapshot, 5–7 save, 8 (g),
+    // 9 (defn h).
+    let restarted = first
+        .run_again()
+        .repl()
+        .stdin(&format!(
+            "(g)\n(defn h [] 2)\n/sig h\n/sh cp user.cl after-restart-rejection.txt\n\
+             {}(g)\n(defn h [] 2)\n/quit\n",
+            save("user.cl", FL_FIXED)
+        ))
+        .output();
+    let t = turns(&restarted.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_rejection = restarted.read_tmp("after-restart-rejection.txt");
+    legs.check(
+        format!("{}{}", turn(0), restarted.stderr).contains("[errors: user.cl]") && t.len() > 1,
+        "the restart reports the load failure and reaches a prompt",
+    );
+    legs.check(
+        !turn(1).contains(":primitives/Int"),
+        "after the restart `(g)` is refused and does not give the cached 1",
+    );
+    legs.check(
+        !turn(2).contains("user/h"),
+        "after the restart the definition turn is rejected",
+    );
+    legs.check(
+        !turn(3).contains("user/h"),
+        "after the restart `/sig h` shows `h` undefined",
+    );
+    legs.check(
+        after_rejection == format!("{FL_PARSE_ERROR}\n"),
+        "after the restart user.cl is byte-identical to the parse-error save",
+    );
+    legs.check(
+        save_notice(&t, 5).contains("[updated: user.cl]"),
+        "the save that compiles reloads: `[updated: user.cl]`",
+    );
+    legs.check(
+        turn(8).contains(":primitives/Int 5"),
+        "evaluation resumes with the saved `g`",
+    );
+    legs.check(
+        turn(9).contains("user/h"),
+        "the released module accepts the definition",
+    );
+    legs.assert_all(&format!(
+        "{first_log}\n--- restart ---\n{}\nuser.cl after the rejected turn:\n{after_rejection}",
+        transcript(&restarted)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 item 5 — a module that fails in
+// the cascade of a failed imported file is itself locked: `user`, importing
+// `val` from `mymod.cl`, rejects a definition and keeps `user.cl` unchanged
+// while `mymod.cl` has a type error. §14.6 — fixing `mymod.cl` recompiles both
+// modules, which releases `user` without a save of `user.cl`; the next
+// definition regenerates `user.cl` keeping the import and `g`. FL-3.
+#[test]
+fn watch_cascade_failed_importer_locked_until_import_is_fixed() {
+    const USER: &str = "(import [mymod [val]])\n(defn g [] 1)\n";
+    // Turns: 1 (val), 2–4 save, 5 (defn h), 6 snapshot, 7–9 save, 10 (val),
+    // 11 (defn h).
+    let out = Cranelisp::new()
+        .file("mymod.cl", "(defn val [] 10)\n")
+        .user(USER)
+        .repl()
+        .stdin(&format!(
+            "(val)\n{}(defn h [] 2)\n/sh cp user.cl after-rejection.txt\n{}(val)\n(defn h [] 2)\n/quit\n",
+            save("mymod.cl", "(defn val [] (primitives/add-i64 1 \"x\"))"),
+            save("mymod.cl", "(defn val [] 20)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_rejection = out.read_tmp("after-rejection.txt");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 10"),
+        "precondition: `(val)` gives 10 before the edit",
+    );
+    legs.check(
+        !error_blocks(&out, "mymod.cl").is_empty(),
+        "the type-error save fails: `[errors: mymod.cl]`",
+    );
+    legs.check(
+        !turn(5).contains("user/h"),
+        "the cascade-failed `user` rejects the definition turn",
+    );
+    legs.check(
+        after_rejection == USER,
+        "user.cl is byte-identical to its initial content after the rejected turn",
+    );
+    legs.check(
+        save_notice(&t, 7).contains("[updated: mymod.cl]"),
+        "the fixed save reloads: `[updated: mymod.cl]`",
+    );
+    legs.check(
+        turn(10).contains(":primitives/Int 20"),
+        "both modules reload: evaluation resumes with the fixed `val`",
+    );
+    legs.check(
+        turn(11).contains("user/h"),
+        "the released `user` accepts the definition",
+    );
+    legs.check(
+        saved.contains("mymod")
+            && saved.matches("(defn g [] 1)").count() == 1
+            && saved.matches("(defn h [] 2)").count() == 1,
+        "user.cl keeps the import and `g` and adds `h`",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the rejected turn:\n{after_rejection}\nuser.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 4, with the user's
+// 2026-09-29 ruling: `user`, reaching `lib` only through the qualified call
+// `(lib/h)` and no `import`, is a dependent of `lib`. A save of `lib.cl`
+// omitting `h` fails it: `[errors: user.cl]`, and `(call)` does not give 2.
+// §14.5 item 5 — the failed `user` rejects a definition and keeps `user.cl`
+// byte-identical. §14.6 — restoring `h` releases it without a save of
+// `user.cl`: `(call)` gives the new 5 and the definition is accepted. FQR-1;
+// RM-2 and FL-3 are the same removal and lock reached through an `import`.
+#[test]
+fn watch_qualified_caller_fails_on_removed_callee_until_it_is_restored() {
+    const USER: &str = "(defn call [] (lib/h))\n";
+    // Turns: 1 (call), 2–4 save, 5 (defn k), 6 snapshot, 7 (call), 8–10 save,
+    // 11 (call), 12 (defn k).
+    let out = Cranelisp::new()
+        .file("lib.cl", "(defn g [] 1)\n(defn h [] 2)\n")
+        .user(USER)
+        .repl()
+        .stdin(&format!(
+            "(call)\n{}(defn k [] 3)\n/sh cp user.cl after-rejection.txt\n(call)\n{}(call)\n(defn k [] 3)\n/quit\n",
+            save("lib.cl", "(defn g [] 1)"),
+            save("lib.cl", "(defn g [] 1) (defn h [] 5)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_rejection = out.read_tmp("after-rejection.txt");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 2"),
+        "precondition: `(call)` gives 2 before the save",
+    );
+    legs.check(
+        save_notice(&t, 2).contains("[updated: lib.cl]"),
+        "the save omitting `h` reloads: `[updated: lib.cl]`",
+    );
+    legs.check(
+        !error_blocks(&out, "user.cl").is_empty(),
+        "the qualified caller reports `[errors: user.cl]`",
+    );
+    legs.check(
+        !turn(5).contains("user/k"),
+        "the failed `user` rejects the definition turn",
+    );
+    legs.check(
+        after_rejection == USER,
+        "user.cl is byte-identical to its initial content after the rejected turn",
+    );
+    legs.check(
+        !turn(7).contains(":primitives/Int 2"),
+        "`(call)` does not give 2 after the removal",
+    );
+    legs.check(
+        save_notice(&t, 8).contains("[updated: lib.cl]"),
+        "the save restoring `h` reloads: `[updated: lib.cl]`",
+    );
+    legs.check(
+        turn(11).contains(":primitives/Int 5"),
+        "the released `user` calls the restored `h`: `(call)` gives 5",
+    );
+    legs.check(
+        turn(12).contains("user/k"),
+        "the released `user` accepts the definition",
+    );
+    legs.check(
+        saved.matches("(defn call [] (lib/h))").count() == 1
+            && saved.matches("(defn k [] 3)").count() == 1,
+        "user.cl holds `call` and `k` exactly once each",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the rejected turn:\n{after_rejection}\nuser.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 item 5 — with the user's
+// 2026-09-29 ruling: `user`, reaching `lib` only through the qualified type
+// `:lib/T` and no `import`, is a dependent of `lib`, so a save of `lib.cl`
+// that fails typecheck with `T` unchanged locks it: a definition is rejected
+// and `user.cl` stays byte-identical. §14.2 step 4 and §14.6 — the compiling
+// save recompiles `user` and releases it without a save of `user.cl`. FQR-2;
+// FL-3 is the same failure reached through an `import`.
+#[test]
+fn watch_qualified_type_dependent_locked_until_its_module_compiles() {
+    const USER: &str = "(defn f [:lib/T t] 7)\n";
+    const T_AND_MK: &str = "(deftype T [:primitives/Int n]) (defn mk [] (T 7))";
+    // Turns: 1 (f (lib/mk)), 2–4 save, 5 (defn k), 6 snapshot, 7–9 save,
+    // 10 (f (lib/mk)), 11 (defn k).
+    let out = Cranelisp::new()
+        .file(
+            "lib.cl",
+            "(deftype T [:primitives/Int n])\n(defn mk [] (T 7))\n(defn ok [] 1)\n",
+        )
+        .user(USER)
+        .repl()
+        .stdin(&format!(
+            "(f (lib/mk))\n{}(defn k [] 3)\n/sh cp user.cl after-rejection.txt\n{}(f (lib/mk))\n(defn k [] 3)\n/quit\n",
+            save(
+                "lib.cl",
+                &format!("{T_AND_MK} (defn ok [] (primitives/add-i64 1 \"x\"))"),
+            ),
+            save("lib.cl", &format!("{T_AND_MK} (defn ok [] 2)"))
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_rejection = out.read_tmp("after-rejection.txt");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 7"),
+        "precondition: `(f (lib/mk))` gives 7 before the save",
+    );
+    legs.check(
+        !error_blocks(&out, "lib.cl").is_empty(),
+        "the ill-typed save fails: `[errors: lib.cl]`",
+    );
+    legs.check(
+        !turn(5).contains("user/k"),
+        "the locked `user` rejects the definition turn",
+    );
+    legs.check(
+        after_rejection == USER,
+        "user.cl is byte-identical to its initial content after the rejected turn",
+    );
+    legs.check(
+        save_notice(&t, 7).contains("[updated: lib.cl]"),
+        "the compiling save reloads: `[updated: lib.cl]`",
+    );
+    legs.check(
+        turn(10).contains(":primitives/Int 7"),
+        "evaluation resumes: `(f (lib/mk))` gives 7",
+    );
+    legs.check(
+        turn(11).contains("user/k"),
+        "the released `user` accepts the definition",
+    );
+    legs.check(
+        saved.matches("(defn f [:lib/T t] 7)").count() == 1
+            && saved.matches("(defn k [] 3)").count() == 1,
+        "user.cl holds `f` and `k` exactly once each",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the rejected turn:\n{after_rejection}\nuser.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.6 — a restart does not bypass a
+// failure: `lib.cl`, imported by `user.cl`, fails at startup, and `/mod lib`
+// plus a definition leaves the failing `keep-me` source in `lib.cl`, whether
+// the turn is rejected or the source retained. §14.5 item 5 — control: the
+// same failing `lib.cl` produced by an in-session save locks the module, and
+// the same turns keep the file. M1 (ACT-1010).
+// DEFECT (open): the startup-failed dependency is not locked, so the turns
+// regenerate `lib.cl` as `(defn z [] 1)` and the failing source is lost.
+// defect: class=release-path-bypass locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev — provisional until design places the mechanism
+#[test]
+fn persist_mod_definition_keeps_dependency_source_failed_at_startup() {
+    const USER: &str = "(import [lib [keep-me]])\n(defn g [] 1)\n";
+    const FAILING: &str = "(defn keep-me [] (undefined-name 1))";
+    const TURNS: &str = "/mod lib\n(defn z [] 1)\n/mod user\n/quit\n";
+
+    let in_session = Cranelisp::new()
+        .file("lib.cl", "(defn keep-me [] 42)\n")
+        .user(USER)
+        .repl()
+        .stdin(&format!("(keep-me)\n{}{TURNS}", save("lib.cl", FAILING)))
+        .output();
+    let t = turns(&in_session.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let in_session_lib = in_session.read_tmp("lib.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 42"),
+        "control precondition: `(keep-me)` gives 42 before the save",
+    );
+    legs.check(
+        !error_blocks(&in_session, "lib.cl").is_empty(),
+        "control: the in-session save fails: `[errors: lib.cl]`",
+    );
+    legs.check(
+        in_session_lib.contains(FAILING),
+        "control: after the in-session failure lib.cl keeps the failing source",
+    );
+
+    let startup = Cranelisp::new()
+        .file("lib.cl", &format!("{FAILING}\n"))
+        .user(USER)
+        .repl()
+        .stdin(TURNS)
+        .output();
+    let startup_lib = startup.read_tmp("lib.cl");
+    legs.check(
+        format!("{}{}", startup.stdout, startup.stderr).contains("[errors:"),
+        "precondition: startup reports the load failure",
+    );
+    legs.check(
+        startup_lib.contains(FAILING),
+        "after the startup failure lib.cl keeps the failing source",
+    );
+    legs.assert_all(&format!(
+        "--- in-session control ---\n{}\nlib.cl at exit:\n{in_session_lib}\n\
+         --- startup failure ---\n{}\nlib.cl at exit:\n{startup_lib}",
+        transcript(&in_session),
+        transcript(&startup)
+    ));
 }

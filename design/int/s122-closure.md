@@ -27,7 +27,7 @@ rediscover or divide the work into new tickets.
 
 | Selected obligation | Binary/int files | Dependency or stop condition |
 |---|---|---|
-| Reload-demand recovery and session surface | `src/redefine.rs`, `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/worker.rs`; `src/eval.rs` only if the existing outcome/warning handoff needs it | Q7's source carrier, demand-only and foreign-remap module discriminators, watcher provenance, complete-plan ordering, and scoped reviews are delivered; final integrated evidence remains pending |
+| REPL-turn demand recovery and session surface | `src/redefine.rs`, `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/worker.rs`; `src/eval.rs` only if the existing outcome/warning handoff needs it | The REPL-turn rematerialization (§2), watcher provenance, complete-plan ordering and scoped reviews are delivered; final integrated evidence remains pending. Persisted-reload demand replay (Q7's carrier and its demand-only and foreign-remap paths) retires with the whole-file rebuild below |
 | Macro-call ownership | `src/marshal.rs`, `src/expander.rs`, `src/process_form/macro_clause.rs` | Binary/int's typed transfer, fixed all-Owned clause convention and host result discharge are delivered; backend's Q4 correction is reviewed and the public pair passes 2/2 |
 | Shared quote classifier | `src/expander.rs`, `src/process_form/macro_resolution.rs` | Both int walkers consume `cranelisp_types::{quote_head, QuoteHead}`; quote behavior is unchanged |
 | Canonical result root and `/mem` | `src/result_owner.rs`, `src/repl/commands.rs` | Both int consumers are delivered; Q6 observes the rendered heap result and the post-release counter snapshot |
@@ -37,6 +37,7 @@ rediscover or divide the work into new tickets.
 | Fresh FQ type-only reference site (A2, int half) | `src/process_form.rs` and its `tests.rs` | Implemented per `int.md` §6.3.1 (including the R1 correction); FT-1 to FT-4 GREEN; review passed. No public API, carrier or schema change |
 | RR-1: restore before load, one load entry, load before execution | `src/process_form/cache_restore.rs`, `src/scheduler.rs`, `src/process_form/macro_resolution.rs`, `src/worker.rs` (the cached-load entry and the ladder's load item), `src/eval.rs` and `src/pipeline.rs` (expression execution), `src/repl/commands.rs` (the test commands), and the scheduler test module | Designed in `int.md` §7.1 on 2026-09-27, after the user prioritised RR-1. Face (i)'s restore-before-load, the face (ii) correction (*load before execution*) and the scheduler-minted claim that closes review R-1 and R-2 are reviewed and committed at `236aa44d`. QA measured zero face (i), `test`'s stress found zero failures of any face in 2000 sessions, and QA judged the evidence adequate on 2026-09-27. No public API, carrier, schema or ABI change. Open: the `fixed=` sha stamps, the user's Phase-5 acceptance, the fresh-dependency residual and the five named execution-wait exclusions, including claim and re-registration (FA-1) |
 | IR-1: one bare-module-name resolver for `import` and `export` | `src/imports.rs`, `src/process_form/dependency.rs`, `src/process_form.rs`, `src/process_form/cache_restore.rs`, `src/cache/dependency_record.rs`, `src/session_v4/lifecycle.rs`, `src/session_v4/index_worker.rs`; the `imports`, `dependency` and `cache/dependency_record` test modules | Implemented and independently reviewed per `int.md` §6.9 on 2026-09-27. All six end-to-end legs and the six module evidence groups pass. The adjacent crash replay passed 800 sessions; QA judges IR-1 adequate. User Phase-5 acceptance remains. No public API, carrier, schema or ABI change |
+| Whole-file rebuild: removed definitions (ACT-1007), omitted import (ACT-1012), qualified dependents (FQR-1, FQR-2) | `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/session_v4/types.rs`, `src/scheduler.rs`, `src/process_form.rs`, `src/cluster.rs`, `src/worker.rs`, `src/redefine.rs`, `src/repl/commands.rs`, `src/eval.rs` and `src/process_form/dependency.rs` (fixture fields only); the `worker`, `persistence`, `persistent_worker` and `process_form` test modules | The user approved the quiescent boundary on 2026-09-29; the realization is +0/−0 public API. Designed in `session-transaction.md` §7.3, `repl-lifecycle.md` §1.2–§1.3 and `int.md` §6.10. The uncommitted per-definition removal and the committed persisted-reload demand replay retire (`session-transaction.md` §7.3.5). Ready for `dev` |
 | Eval production follow-up | none selected | Open Binary/int source only if an approved live configuration proves the condition in §6 |
 
 `crates/cranelisp-exe-bundle/` remains inside the reservation and caller census,
@@ -124,23 +125,12 @@ This work occurs inside `prepare_cluster_commit`, before
 `plan_staging_commit`, compilation or any live publication. The post-publication
 `apply_redefinition_outcomes` T1 reload is not the Q1 implementation: a failure
 there could no longer preserve the complete prior base-plus-realizations
-candidate. Q1 adds no dependent recompilation or cascade. Persisted-source
-watcher reload remains a separate path and reuses the same private
-rematerialization helper with its source-or-demand staging.
+candidate. Q1 adds no dependent recompilation or cascade.
 
-A persisted reload may carry saved demands even when source checking produces
-no authored staging row for the reloaded module. In that demand-only case,
-preparation creates the module's empty unpublished staging table and continues
-through the same demand planning, ownership completion, compilation and atomic
-publication path. An empty source cluster is therefore not an early return when
-reload demands remain.
-
-A saved demand whose template owner is another module resolves against that
-owner's current live generation. An ordinary target keeps its selected target;
-an overload target tests the current arms and accepts exactly the one whose
-scheme derives the historical caller's canonical concrete-signature key.
-Missing or multiple matches reject the candidate. No prior ordinal is treated
-as cross-generation identity, and no alias or secondary key registry is added.
+A persisted-source reload does not use this cadence. It rebuilds the module
+from a fresh table and recompiles its dependents, whose definitions demand
+their instances again (`session-transaction.md` §7.3). It captures and replays
+no demand.
 
 The target-clean read world in step 5 is load-bearing. On a private clone of the
 live target table, the existing absent-key `ChangeAbi` operation masks the
@@ -247,16 +237,13 @@ For a caller-free language-type-changing base, declined stale demands remain
 same successful publication; omission alone must not preserve them. A decline
 while rematerializing a same-language-type base is instead a candidate failure.
 A `Gap` follows the existing synchronous load → wait → retry cadence. Any other
-failure takes the established CS-3 error-blocked recovery floor and leaves the
-session usable. A repeat of the same demand is idempotent inside the
-target-clean check world.
-The persisted-source reload half of this S122 slice separately deletes
-`capture_instantiation_drivers`, `reload_module`'s `extra_forms` parameter, and
-all synthetic `__expr` replay. Each prepared candidate has one demand
-instantiation trigger. The approved ACT-0954 surface change deletes only public
+failure rejects the candidate and leaves the session usable. A repeat of the
+same demand is idempotent inside the target-clean check world.
+Each prepared candidate has one demand instantiation trigger. The approved
+ACT-0954 surface change deletes only public
 `CompilerSession::re_register_module`; the private scheduler operation and the
-synchronous lifecycle reload remain. The obsolete source-presence assertion for
-that wrapper retires with it. No replacement public session method is added.
+synchronous lifecycle reload remain. No replacement public session method is
+added.
 
 Watcher polling keeps its actual cadence: `main.rs` calls `poll_and_reload`
 after a completed ordinary or agent turn and before the next prompt. It does not
@@ -340,18 +327,14 @@ checkpoint `dc78ddbe` plus the retained S122 working tree. The first failure is
 during replacement preparation; process success and still-callable old bodies
 do not satisfy the subject.
 
-Q7's permanent source-level witness now inspects both the `Int` and `String`
-concrete bodies before a later evaluation can remint either demand. Its planted
-stale-body control returns `7` in
-`/tmp/s122-int-q7-demand-carrier-plant-red-dc78ddbe.log`; the restored module
-witness passes in `/tmp/s122-int-q7-reload-green-dc78ddbe.log`. This records the
-corrected demand carrier at its owning seam. The demand-only replay, foreign
-overload remap, ordinary rematerialization controls and `Annotated`
-single-owner completeness pass 13/13 in run
-`236d2b5d-d8d2-4dfd-8261-02a13085449c`; scoped re-review found no surviving
-issue in those three findings. The watcher provenance and complete-plan
-ordering corrections are also delivered and reviewed; §7 retains final
-integrated evidence.
+Q7's persisted-reload demand carrier and its module witnesses retire with the
+whole-file rebuild (`session-transaction.md` §7.3.5). The public pair
+`tests/repl_watch.rs::watch_reload_recovers_two_generic_demands_without_replaying_stale_expression`
+and its direct-import control remain the end-to-end evidence: after the
+generic dependency reloads, both named callers rebuild with it and observe the
+replacement body, and no prompt expression replays. The watcher provenance and
+complete-plan ordering corrections are also delivered and reviewed; §7 retains
+final integrated evidence.
 
 ## 3. Macro and quote ownership
 
@@ -502,7 +485,8 @@ QA owns the eval conditions and policy; `/test` owns the executable harness and
 remaining integrated evidence, while `/arch` owns the generated public API
 baseline confirmed by the user on 2026-09-11. `/dev` must return for design
 review only if the eval run proves the precise configuration gap in §6. The
-delivered reload rematerialization, watcher correction and review, macro
+whole-file rebuild (§1) is the one open reload correction. The delivered
+REPL-turn rematerialization, watcher correction and review, macro
 host/Q4, quote classifier, result-root, `/mem` and Q5 comparison need no second
 correction pass. The generated runtime diff is
 `/tmp/s122-runtime-public-api.diff`; it matches the approved packet and has user

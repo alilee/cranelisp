@@ -135,11 +135,12 @@ execution, publication cadence, scheduling, module loading and REPL state
 - **Entries:** `check_forms` (the cluster), `check_type_expr` (one type
   expression against a view; the platform loader pairs it with frontend's
   `parse_type_expr`) and `instantiate_demands` (replay of recorded
-  monomorphisation demands, consumed by the binary's reload driver). The
+  monomorphisation demands, consumed when a REPL turn redefines a generic base
+  or overload family). The
   demand carrier and instance identity are types-owned
-  ([symbol-table lifecycle](symbol-table-lifecycle.md)); the replay rules are in
-  [monomorphisation](../typecheck/monomorphisation.md) and the reload handoff in
-  [session transaction](../int/session-transaction.md).
+  ([symbol-table lifecycle](symbol-table-lifecycle.md)); the replay rules and
+  the Binary/int capture are in
+  [monomorphisation §3.8](../typecheck/monomorphisation.md#38-instantiate-this-symbol-at-these-types--instantiate_demands).
 - A **cluster** is the unit of non-macro typecheck atomicity: one REPL form, the
   contents of one `begin`, or a file's fully expanded non-macro forms. Signature
   registration then body checking is an ordering inside `check_forms`; no pass

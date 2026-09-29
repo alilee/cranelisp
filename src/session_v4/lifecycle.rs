@@ -11,7 +11,7 @@
 // `eval.rs`/`repl.rs`). Moved verbatim from `session_v4.rs` (S87 §2.1), with
 // `new` decomposed into phase-helpers (S87 §3.2).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
@@ -27,9 +27,9 @@ use crate::code::{Code, SessionSymbolTable};
 use crate::scheduler::CompileScheduler;
 
 use super::{
-    CompilerSession, FailedForm, ModuleIntroductionOutcome, SessionSettings, SharedState,
-    SymbolCategory, SymbolInfo, TestRunnerState, dedup_platform_names_preserving_order,
-    nice_worker_loop, resolve_priority_worker_count,
+    CompilerSession, FailedForm, ModuleIntroductionOutcome, ModuleLock, SessionSettings,
+    SharedState, SymbolCategory, SymbolInfo, TestRunnerState,
+    dedup_platform_names_preserving_order, nice_worker_loop, resolve_priority_worker_count,
 };
 
 /// One read of the entry module's `main` entry (`read_main_entry`): the
@@ -137,7 +137,8 @@ impl CompilerSession {
             shared,
             error_modules: HashSet::new(),
             failed_forms: HashMap::new(),
-            restart_required: HashMap::new(),
+            module_locks: HashMap::new(),
+            reload_references: HashMap::new(),
             watcher: None,
             worker_pool: crate::worker_pool::WorkerPool::new(
                 priority_worker_handles,
@@ -1008,278 +1009,184 @@ impl CompilerSession {
         }
     }
 
-    /// The transitive dependent modules (+ backing file paths) that import or
-    /// re-export ANY module in `changed`, excluding the changed modules
-    /// themselves. A module whose implicit prelude fallback is enabled depends
-    /// on `prelude`. **Single-sourced**
-    /// for both the watcher cascade (`poll_and_reload`) and the T1 full-cure
-    /// cascade (`redefine::reload_t1_dependents`) so the two never reload
-    /// different sets (Principle 7 — no drift; the P7 hazard `/review` flagged).
-    /// Path resolution is the `file_to_module` reverse map; a dependent absent
-    /// from it is skipped in BOTH callers identically. Results are layered in
-    /// dependency order, so a re-exporting module precedes its consumers.
-    pub(crate) fn dependent_modules(
-        &self,
-        changed: &HashSet<ModuleFullPath>,
-    ) -> Vec<(ModuleFullPath, PathBuf)> {
+    /// The reload edges of every module the session holds: what each module
+    /// depends on for reload selection and order, computed once per plan
+    /// (`design/int/repl-lifecycle.md` §1.2). One predicate serves both, so a
+    /// module that is selected is also ordered after what it depends on.
+    fn reload_edge_graph(&self) -> HashMap<ModuleFullPath, BTreeSet<ModuleFullPath>> {
+        self.shared
+            .symbol_tables
+            .iter()
+            .map(|entry| {
+                let module = entry.key();
+                let fallback = self
+                    .shared
+                    .prelude_fallback
+                    .get(module)
+                    .is_some_and(|enabled| *enabled);
+                let mut edges = table_reload_edges(module, entry.value(), fallback);
+                // A failed compile records no callee or lookup dependency, so
+                // the established reference keeps a failed module reachable
+                // from the dependency whose repair releases it.
+                if let Some(reference) = self.reload_references.get(module) {
+                    let fallback = crate::imports::gets_prelude_fallback(
+                        module,
+                        &reference.imports,
+                        &reference.exports,
+                    );
+                    edges.extend(table_reload_edges(module, reference, fallback));
+                }
+                (module.clone(), edges)
+            })
+            .collect()
+    }
+
+    /// The modules a changed file maps to, in first-seen order.
+    fn watcher_roots(&self, changed_paths: &[PathBuf]) -> Vec<(ModuleFullPath, PathBuf)> {
         let file_to_mod = self
             .shared
             .file_to_module
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let prelude = ModuleFullPath::from("prelude");
-        let mut reached = changed.clone();
-        let mut out: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
+        let mut roots: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
+        for path in changed_paths {
+            if let Some(module) = file_to_mod.get(path)
+                && !roots.iter().any(|(existing, _)| existing == module)
+            {
+                roots.push((module.clone(), path.clone()));
+            }
+        }
+        roots
+    }
+
+    /// The reload plan for `roots`: the roots plus every module that reaches
+    /// one of them transitively over reload edges, ordered dependency first
+    /// (`design/int/repl-lifecycle.md` §1.2). A dependent is admitted only when
+    /// a file maps to it; the rebuild reads that file.
+    fn reload_plan(&self, roots: &[(ModuleFullPath, PathBuf)]) -> Vec<(ModuleFullPath, PathBuf)> {
+        let graph = self.reload_edge_graph();
+        let file_to_mod = self
+            .shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut plan: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
+        for (module, path) in roots {
+            if !plan.iter().any(|(existing, _)| existing == module) {
+                plan.push((module.clone(), path.clone()));
+            }
+        }
+        let mut reached: HashSet<ModuleFullPath> =
+            plan.iter().map(|(module, _)| module.clone()).collect();
         loop {
-            let mut layer = self
-                .shared
-                .symbol_tables
+            let mut layer = graph
                 .iter()
-                .filter_map(|entry| {
-                    let dependent = entry.key().clone();
-                    if reached.contains(&dependent) {
-                        return None;
-                    }
-                    let table = entry.value();
-                    let declared =
-                        crate::imports::DeclaredChildren::of(&dependent, &table.submodules);
-                    let explicit = table
-                        .imports
-                        .iter()
-                        .map(|spec| &spec.module_path)
-                        .chain(table.exports.iter().map(|spec| &spec.module_path))
-                        .any(|spelling| reached.contains(&declared.resolve(spelling)));
-                    let through_prelude = reached.contains(&prelude)
-                        && self
-                            .shared
-                            .prelude_fallback
-                            .get(&dependent)
-                            .is_some_and(|enabled| *enabled);
-                    (explicit || through_prelude).then_some(dependent)
+                .filter(|(dependent, edges)| {
+                    !reached.contains(*dependent) && edges.iter().any(|edge| reached.contains(edge))
                 })
+                .map(|(dependent, _)| dependent.clone())
                 .collect::<Vec<_>>();
             layer.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
-            layer.dedup();
-
-            let mut admitted = Vec::new();
-            for dependent in layer {
-                if let Some(path) = file_to_mod
-                    .iter()
-                    .find(|(_, module)| **module == dependent)
-                    .map(|(path, _)| path.clone())
-                {
-                    admitted.push((dependent, path));
-                }
-            }
+            let admitted = layer
+                .into_iter()
+                .filter_map(|dependent| {
+                    file_to_mod
+                        .iter()
+                        .find(|(_, module)| **module == dependent)
+                        .map(|(path, _)| (dependent, path.clone()))
+                })
+                .collect::<Vec<_>>();
             if admitted.is_empty() {
                 break;
             }
             for (dependent, path) in admitted {
                 reached.insert(dependent.clone());
-                out.push((dependent, path));
+                plan.push((dependent, path));
             }
         }
-
-        self.order_reload_modules(out)
-    }
-
-    /// Topologically order a complete admitted reload set after condensing its
-    /// strongly connected components. Edges point from dependency to consumer;
-    /// members of one SCC use lexical order only inside that indivisible unit.
-    fn order_reload_modules(
-        &self,
-        modules: Vec<(ModuleFullPath, PathBuf)>,
-    ) -> Vec<(ModuleFullPath, PathBuf)> {
-        fn finish_order(
-            node: usize,
-            edges: &[Vec<usize>],
-            seen: &mut [bool],
-            finished: &mut Vec<usize>,
-        ) {
-            if std::mem::replace(&mut seen[node], true) {
-                return;
-            }
-            for &next in &edges[node] {
-                finish_order(next, edges, seen, finished);
-            }
-            finished.push(node);
-        }
-
-        fn collect_component(
-            node: usize,
-            reverse: &[Vec<usize>],
-            component: usize,
-            assigned: &mut [Option<usize>],
-            members: &mut Vec<usize>,
-        ) {
-            if assigned[node].is_some() {
-                return;
-            }
-            assigned[node] = Some(component);
-            members.push(node);
-            for &next in &reverse[node] {
-                collect_component(next, reverse, component, assigned, members);
-            }
-        }
-
-        if modules.len() < 2 {
-            return modules;
-        }
-        let index = modules
-            .iter()
-            .enumerate()
-            .map(|(index, (module, _))| (module.clone(), index))
-            .collect::<HashMap<_, _>>();
-        let mut edges = vec![Vec::new(); modules.len()];
-        let mut reverse = vec![Vec::new(); modules.len()];
-        let prelude = ModuleFullPath::from("prelude");
-        for (consumer_index, (consumer, _)) in modules.iter().enumerate() {
-            let Some(table) = self.shared.symbol_tables.get(consumer) else {
-                continue;
-            };
-            let declared = crate::imports::DeclaredChildren::of(consumer, &table.submodules);
-            let mut dependencies = table
-                .imports
-                .iter()
-                .map(|spec| &spec.module_path)
-                .chain(table.exports.iter().map(|spec| &spec.module_path))
-                .filter_map(|spelling| index.get(&declared.resolve(spelling)).copied())
-                .collect::<Vec<_>>();
-            if self
-                .shared
-                .prelude_fallback
-                .get(consumer)
-                .is_some_and(|enabled| *enabled)
-                && let Some(prelude_index) = index.get(&prelude)
-            {
-                dependencies.push(*prelude_index);
-            }
-            dependencies.sort_unstable();
-            dependencies.dedup();
-            for dependency_index in dependencies {
-                edges[dependency_index].push(consumer_index);
-                reverse[consumer_index].push(dependency_index);
-            }
-        }
-
-        let mut seen = vec![false; modules.len()];
-        let mut finished = Vec::with_capacity(modules.len());
-        for node in 0..modules.len() {
-            finish_order(node, &edges, &mut seen, &mut finished);
-        }
-        let mut assigned = vec![None; modules.len()];
-        let mut components = Vec::<Vec<usize>>::new();
-        while let Some(node) = finished.pop() {
-            if assigned[node].is_some() {
-                continue;
-            }
-            let component = components.len();
-            let mut members = Vec::new();
-            collect_component(node, &reverse, component, &mut assigned, &mut members);
-            components.push(members);
-        }
-
-        let mut component_edges = vec![HashSet::new(); components.len()];
-        let mut indegree = vec![0usize; components.len()];
-        for (dependency, consumers) in edges.iter().enumerate() {
-            let dependency_component = assigned[dependency].expect("every node assigned");
-            for &consumer in consumers {
-                let consumer_component = assigned[consumer].expect("every node assigned");
-                if dependency_component != consumer_component
-                    && component_edges[dependency_component].insert(consumer_component)
-                {
-                    indegree[consumer_component] += 1;
-                }
-            }
-        }
-
-        let component_key = |component: usize| {
-            components[component]
-                .iter()
-                .map(|&member| modules[member].0.as_ref())
-                .min()
-                .unwrap_or("")
-        };
-        let mut ready = indegree
-            .iter()
-            .enumerate()
-            .filter_map(|(component, degree)| (*degree == 0).then_some(component))
-            .collect::<Vec<_>>();
-        let mut component_order = Vec::with_capacity(components.len());
-        while !ready.is_empty() {
-            ready.sort_by(|left, right| component_key(*left).cmp(component_key(*right)));
-            let component = ready.remove(0);
-            component_order.push(component);
-            for &consumer in &component_edges[component] {
-                indegree[consumer] -= 1;
-                if indegree[consumer] == 0 {
-                    ready.push(consumer);
-                }
-            }
-        }
-
-        let mut modules = modules.into_iter().map(Some).collect::<Vec<_>>();
-        let mut ordered = Vec::with_capacity(modules.len());
-        for component in component_order {
-            let mut members = components[component].clone();
-            members.sort_by(|left, right| {
-                modules[*left]
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .as_ref()
-                    .cmp(modules[*right].as_ref().unwrap().0.as_ref())
-            });
-            ordered.extend(members.into_iter().map(|member| {
-                modules[member]
-                    .take()
-                    .expect("each reload module emitted once")
-            }));
-        }
-        ordered
-    }
-
-    /// Assemble the exact root-plus-dependent sequence consumed by the watcher
-    /// reload loop. Keeping root mapping and cascade selection together makes
-    /// their shared ordering observable at the execution boundary.
-    fn watcher_reload_plan(&self, changed_paths: &[PathBuf]) -> Vec<(ModuleFullPath, PathBuf)> {
-        let file_to_mod = self
-            .shared
-            .file_to_module
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut plan = Vec::new();
-        for path in changed_paths {
-            if let Some(module) = file_to_mod.get(path)
-                && !plan.iter().any(|(existing, _)| existing == module)
-            {
-                plan.push((module.clone(), path.clone()));
-            }
-        }
-        let changed = plan
-            .iter()
-            .map(|(module, _)| module.clone())
-            .collect::<HashSet<_>>();
         drop(file_to_mod);
-        for dependent in self.dependent_modules(&changed) {
-            if !plan.iter().any(|(existing, _)| existing == &dependent.0) {
-                plan.push(dependent);
-            }
-        }
-        self.order_reload_modules(plan)
+        order_reload_modules(plan, &graph)
     }
 
-    /// Poll the file watcher for changed source files and reload them.
+    /// Rebuild `roots` and their dependents from their saved files — the one
+    /// executor every reload of a saved file runs through: the watcher poll,
+    /// `/mod`'s recompile of a cache-installed module and the T1 and T2
+    /// residue (`design/int/repl-lifecycle.md` §1.2). It returns each rebuilt
+    /// module's last outcome, in the order the module was first rebuilt.
     ///
-    /// Returns a list of user-visible messages (one per reloaded module).
-    /// On success, `reload_module` removes the module from `error_modules`
-    /// and drops its retained `failed_forms` (the new file content is the
-    /// authority — S102 W5R B-1). On failure, adds it to `error_modules`
-    /// to block subsequent evals.
+    /// The plan is ordered from edges recorded before it runs, so a rebuilt
+    /// module whose new source reaches a module the same plan rebuilt later
+    /// compiled against that module's displaced generation, whose GOT slots
+    /// the later rebuild reused. The order check rebuilds each such module
+    /// again, with its dependents, in a follow-on plan. A module set that
+    /// recurs can only come from a qualified-reference cycle between modules
+    /// that both compile, which no order satisfies; the check stops there
+    /// (`design/int/session-transaction.md` §7.3.3 names that residual).
+    pub(crate) fn run_reload_plan(
+        &mut self,
+        roots: Vec<(ModuleFullPath, PathBuf)>,
+    ) -> Vec<ReloadOutcome> {
+        let mut outcomes: Vec<ReloadOutcome> = Vec::new();
+        let mut followed: HashSet<BTreeSet<ModuleFullPath>> = HashSet::new();
+        let mut pending = roots;
+        while !pending.is_empty() {
+            let plan = self.reload_plan(&pending);
+            for (module, file) in &plan {
+                let result = self.reload_module(module, file);
+                let outcome = ReloadOutcome {
+                    module: module.clone(),
+                    file: file.clone(),
+                    result,
+                };
+                match outcomes.iter_mut().find(|prior| prior.module == *module) {
+                    Some(prior) => *prior = outcome,
+                    None => outcomes.push(outcome),
+                }
+            }
+            pending = self.rebuilt_before_a_later_dependency(&plan, &outcomes);
+            let follow_on = pending.iter().map(|(module, _)| module.clone()).collect();
+            if !followed.insert(follow_on) {
+                break;
+            }
+        }
+        outcomes
+    }
+
+    /// The order check: each module of `plan` that rebuilt successfully and
+    /// whose new edges reach a module `plan` rebuilt after it.
+    fn rebuilt_before_a_later_dependency(
+        &self,
+        plan: &[(ModuleFullPath, PathBuf)],
+        outcomes: &[ReloadOutcome],
+    ) -> Vec<(ModuleFullPath, PathBuf)> {
+        let graph = self.reload_edge_graph();
+        let position: HashMap<&ModuleFullPath, usize> = plan
+            .iter()
+            .enumerate()
+            .map(|(index, (module, _))| (module, index))
+            .collect();
+        plan.iter()
+            .enumerate()
+            .filter(|(index, (module, _))| {
+                let rebuilt = outcomes
+                    .iter()
+                    .any(|outcome| outcome.module == *module && outcome.result.is_ok());
+                rebuilt
+                    && graph.get(module).is_some_and(|edges| {
+                        edges
+                            .iter()
+                            .any(|edge| position.get(edge).is_some_and(|later| later > index))
+                    })
+            })
+            .map(|(_, root)| root.clone())
+            .collect()
+    }
+
+    /// Poll the file watcher for changed source files and rebuild them with
+    /// their dependents (`design/int/repl-lifecycle.md` §1.2).
     ///
-    /// Per repl/spec.md §14: notification format is `[updated: file.cl]`
-    /// on success, `[errors: file.cl]` on failure. Cascade invalidation
-    /// reloads modules that depend on changed modules.
+    /// Returns one §14 notification per rebuilt module: `[updated: file.cl]`
+    /// on success, `[errors: file.cl]` and the module's own error on failure.
     pub fn poll_and_reload(&mut self) -> Vec<String> {
         let watcher = match &mut self.watcher {
             Some(w) => w,
@@ -1291,55 +1198,243 @@ impl CompilerSession {
             None => return Vec::new(),
         };
 
-        // The production plan maps roots, closes over dependents, and orders
-        // the complete selected graph before this loop consumes it.
-        let modules_to_reload = self.watcher_reload_plan(&changed_paths);
-
-        modules_to_reload
+        let roots = self.watcher_roots(&changed_paths);
+        self.run_reload_plan(roots)
             .into_iter()
-            .map(|(module_path, file_path)| {
-                self.reload_with_notice(&module_path, &file_path)
-                    .into_message()
-            })
+            .map(|outcome| outcome.notice())
             .collect()
     }
 
-    /// Reload one module and describe the outcome as its §14 notification.
-    /// A failure adds the module to the error set (`design/int/repl-lifecycle.md`
-    /// §1.3); `reload_module` itself clears it on success.
-    pub(crate) fn reload_with_notice(
-        &mut self,
-        module_path: &ModuleFullPath,
-        file_path: &Path,
-    ) -> ReloadNotice {
-        let file_name = file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_else(|| module_path.as_ref())
-            .to_string();
-        match self.reload_module(module_path, file_path) {
-            Ok(()) => ReloadNotice::Updated(format!("[updated: {file_name}]")),
-            Err(e) => {
-                self.error_modules.insert(module_path.clone());
-                ReloadNotice::Errors(format!("[errors: {file_name}]\n  {e}"))
-            }
+    /// Lock `module` with failed source unless it is already locked, and
+    /// block it in the error set.
+    fn lock_failed_source(&mut self, module: &ModuleFullPath) {
+        self.error_modules.insert(module.clone());
+        self.module_locks
+            .entry(module.clone())
+            .or_insert(ModuleLock::FailedSource);
+    }
+}
+
+/// A module's reload edges as `table` records them: each `import` and
+/// `export` target resolved through its declared children, `prelude` when
+/// `prelude_fallback` holds, and its callee modules and lookup dependencies.
+/// Declared children are not reload edges: a `mod` declaration compiles no
+/// reference into the child (`design/int/repl-lifecycle.md` §1.2).
+fn table_reload_edges(
+    module: &ModuleFullPath,
+    table: &SessionSymbolTable,
+    prelude_fallback: bool,
+) -> BTreeSet<ModuleFullPath> {
+    let declared = crate::imports::DeclaredChildren::of(module, &table.submodules);
+    let mut edges: BTreeSet<ModuleFullPath> = table
+        .imports
+        .iter()
+        .map(|spec| &spec.module_path)
+        .chain(table.exports.iter().map(|spec| &spec.module_path))
+        .map(|spelling| declared.resolve(spelling))
+        .collect();
+    if prelude_fallback {
+        edges.insert(ModuleFullPath::from("prelude"));
+    }
+    edges.extend(crate::cache::dependency_record::recorded_edges(
+        module, table,
+    ));
+    edges.remove(module);
+    edges
+}
+
+/// Pool every compiled owner `table` holds — callables, overload arms,
+/// instances and macro clauses — as a frozen entry, before the displaced table
+/// can drop (`design/int/session-transaction.md` §6.1, §7.3.1).
+fn retain_compiled_owners(
+    pool: &crate::redefine::RetentionPool,
+    module: &ModuleFullPath,
+    table: &SessionSymbolTable,
+) {
+    let mut retained = pool.lock().unwrap_or_else(|e| e.into_inner());
+    for (target, arm) in table.codegen_targets() {
+        let owner = match &target {
+            cranelisp_types::CallableTarget::Binding(owner)
+            | cranelisp_types::CallableTarget::OverloadArm { owner, .. }
+            | cranelisp_types::CallableTarget::MacroClause { owner, .. } => owner,
+            _ => continue,
+        };
+        if let Life::Concrete {
+            slot,
+            realization: Realization::Body {
+                code: Some(code), ..
+            },
+            ..
+        } = &arm.life
+        {
+            retained.push(crate::redefine::RetainedCode::frozen(
+                module,
+                &owner.symbol,
+                Some(slot.index()),
+                code.clone(),
+            ));
         }
     }
 }
 
-/// The §14 notification of one module reload (`repl/spec/14-file-watching.md`).
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ReloadNotice {
-    /// `[updated: <file>]`.
-    Updated(String),
-    /// `[errors: <file>]` and the indented error.
-    Errors(String),
+/// Topologically order a complete reload plan after condensing its strongly
+/// connected components over `graph`'s edges. Members of one component use
+/// lexical order only inside that indivisible unit.
+fn order_reload_modules(
+    modules: Vec<(ModuleFullPath, PathBuf)>,
+    graph: &HashMap<ModuleFullPath, BTreeSet<ModuleFullPath>>,
+) -> Vec<(ModuleFullPath, PathBuf)> {
+    fn finish_order(
+        node: usize,
+        edges: &[Vec<usize>],
+        seen: &mut [bool],
+        finished: &mut Vec<usize>,
+    ) {
+        if std::mem::replace(&mut seen[node], true) {
+            return;
+        }
+        for &next in &edges[node] {
+            finish_order(next, edges, seen, finished);
+        }
+        finished.push(node);
+    }
+
+    fn collect_component(
+        node: usize,
+        reverse: &[Vec<usize>],
+        component: usize,
+        assigned: &mut [Option<usize>],
+        members: &mut Vec<usize>,
+    ) {
+        if assigned[node].is_some() {
+            return;
+        }
+        assigned[node] = Some(component);
+        members.push(node);
+        for &next in &reverse[node] {
+            collect_component(next, reverse, component, assigned, members);
+        }
+    }
+
+    if modules.len() < 2 {
+        return modules;
+    }
+    let index = modules
+        .iter()
+        .enumerate()
+        .map(|(index, (module, _))| (module.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut edges = vec![Vec::new(); modules.len()];
+    let mut reverse = vec![Vec::new(); modules.len()];
+    for (consumer_index, (consumer, _)) in modules.iter().enumerate() {
+        let Some(dependencies) = graph.get(consumer) else {
+            continue;
+        };
+        for dependency_index in dependencies
+            .iter()
+            .filter_map(|dependency| index.get(dependency))
+        {
+            edges[*dependency_index].push(consumer_index);
+            reverse[consumer_index].push(*dependency_index);
+        }
+    }
+
+    let mut seen = vec![false; modules.len()];
+    let mut finished = Vec::with_capacity(modules.len());
+    for node in 0..modules.len() {
+        finish_order(node, &edges, &mut seen, &mut finished);
+    }
+    let mut assigned = vec![None; modules.len()];
+    let mut components = Vec::<Vec<usize>>::new();
+    while let Some(node) = finished.pop() {
+        if assigned[node].is_some() {
+            continue;
+        }
+        let component = components.len();
+        let mut members = Vec::new();
+        collect_component(node, &reverse, component, &mut assigned, &mut members);
+        components.push(members);
+    }
+
+    let component_of = |node: usize| match assigned[node] {
+        Some(component) => component,
+        None => unreachable!("invariant: every reload plan node is assigned a component"),
+    };
+    let mut component_edges = vec![HashSet::new(); components.len()];
+    let mut indegree = vec![0usize; components.len()];
+    for (dependency, consumers) in edges.iter().enumerate() {
+        let dependency_component = component_of(dependency);
+        for &consumer in consumers {
+            let consumer_component = component_of(consumer);
+            if dependency_component != consumer_component
+                && component_edges[dependency_component].insert(consumer_component)
+            {
+                indegree[consumer_component] += 1;
+            }
+        }
+    }
+
+    let component_key = |component: usize| {
+        components[component]
+            .iter()
+            .map(|&member| modules[member].0.as_ref())
+            .min()
+            .unwrap_or("")
+    };
+    let mut ready = indegree
+        .iter()
+        .enumerate()
+        .filter_map(|(component, degree)| (*degree == 0).then_some(component))
+        .collect::<Vec<_>>();
+    let mut component_order = Vec::with_capacity(components.len());
+    while !ready.is_empty() {
+        ready.sort_by(|left, right| component_key(*left).cmp(component_key(*right)));
+        let component = ready.remove(0);
+        component_order.push(component);
+        for &consumer in &component_edges[component] {
+            indegree[consumer] -= 1;
+            if indegree[consumer] == 0 {
+                ready.push(consumer);
+            }
+        }
+    }
+
+    let mut slots = modules.into_iter().map(Some).collect::<Vec<_>>();
+    let mut ordered = Vec::with_capacity(slots.len());
+    for component in component_order {
+        let mut members = components[component].clone();
+        members.sort_by(|left, right| {
+            let name = |member: &usize| slots[*member].as_ref().map(|(module, _)| module.clone());
+            name(left).cmp(&name(right))
+        });
+        ordered.extend(
+            members
+                .into_iter()
+                .filter_map(|member| slots[member].take()),
+        );
+    }
+    ordered
 }
 
-impl ReloadNotice {
-    pub(crate) fn into_message(self) -> String {
-        match self {
-            ReloadNotice::Updated(message) | ReloadNotice::Errors(message) => message,
+/// One module's outcome in a reload plan: success, or the module's own error.
+pub(crate) struct ReloadOutcome {
+    pub(crate) module: ModuleFullPath,
+    file: PathBuf,
+    pub(crate) result: Result<(), CranelispError>,
+}
+
+impl ReloadOutcome {
+    /// The §14 notification (`repl/spec/14-file-watching.md`):
+    /// `[updated: <file>]`, or `[errors: <file>]` and the indented error.
+    pub(crate) fn notice(&self) -> String {
+        let file_name = self
+            .file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_else(|| self.module.as_ref());
+        match &self.result {
+            Ok(()) => format!("[updated: {file_name}]"),
+            Err(e) => format!("[errors: {file_name}]\n  {e}"),
         }
     }
 }
@@ -1411,9 +1506,9 @@ impl CompilerSession {
 
     pub fn regenerate_backing_file(&mut self) {
         let module = self.current_module_path();
-        // A restart-required module's saved file holds the edit the session
-        // refused; the REPL must not overwrite it (§14.8).
-        if self.restart_required.contains_key(&module) {
+        // A locked module's saved file holds source the session has not
+        // accepted; whatever the caller, the REPL must not overwrite it.
+        if self.module_locks.contains_key(&module) {
             return;
         }
 
@@ -1530,19 +1625,36 @@ impl CompilerSession {
         // guarded cannot occur (the map it republished into is deleted).
     }
 
-    /// Reload a single module from its source file.
+    /// Rebuild `module_path` from its saved file: a whole-file rebuild whose
+    /// new generation is exactly what the saved source establishes
+    /// (`design/int/session-transaction.md` §7.3; `repl-lifecycle.md` §1.2).
     ///
-    /// Replaces the module's typecheck product, re-parses, and re-registers
-    /// with the scheduler (the fresh sexps ride the re-register work packet — S78).
-    /// The persistent priority workers pick up the re-registration and
-    /// re-typecheck + re-codegen. Sprint 57 Wave 4 G11 per
-    /// `persistent-workers.md` §4.6 — reload via scheduler falls out of
-    /// persistent workers (same path as `register_module_with_source`).
-    /// Reload a module from its definitions-only backing `.cl`. The ordinary
-    /// prepared replacement captures and rematerializes historical concrete
-    /// demands in the same unpublished candidate, so no synthetic expression
-    /// replay is appended to persisted source.
-    pub(crate) fn reload_module(
+    /// Visible only to the session's own modules: every other caller reaches
+    /// it through [`Self::run_reload_plan`], so no reload runs outside a plan.
+    /// Every failure locks the module (`repl-lifecycle.md` §1.3.1). Success
+    /// makes the new file content the authority: it drops any retained
+    /// degraded-startup failed forms, which regeneration would otherwise
+    /// re-append over the repair, and releases the error block, the lock and
+    /// the established reference.
+    pub(in crate::session_v4) fn reload_module(
+        &mut self,
+        module_path: &ModuleFullPath,
+        file_path: &Path,
+    ) -> Result<(), CranelispError> {
+        let result = self.rebuild_from_file(module_path, file_path);
+        match &result {
+            Ok(()) => {
+                self.failed_forms.remove(module_path);
+                self.error_modules.remove(module_path);
+                self.module_locks.remove(module_path);
+                self.reload_references.remove(module_path);
+            }
+            Err(_) => self.lock_failed_source(module_path),
+        }
+        result
+    }
+
+    fn rebuild_from_file(
         &mut self,
         module_path: &ModuleFullPath,
         file_path: &Path,
@@ -1575,59 +1687,36 @@ impl CompilerSession {
                 unresolved_dispatch: Vec::new(),
             },
         );
-        // Compiled owners stay attached until staged publication replaces
-        // them. The publication record returns each displaced owner so the
-        // commit gate can retain it before releasing the module write guard;
-        // dropping a displaced `Code` would free machine code in-flight frames
-        // or heap closures may still execute
-        // (`design/int/session-transaction.md` §6.3).
 
-        // Parse the new source; the sexps ride the re-register work packet
-        // (S78 — no shared `module_sexps` map). Persistent workers parked on
-        // the priority-work condvar wake and process it (G11 per §4.6).
         let parsed = cranelisp_frontend::parse(&source)?;
         let sexps: std::sync::Arc<[Sexp]> = std::sync::Arc::from(parsed);
-        let instantiation_demands = self
-            .shared
-            .symbol_tables
-            .get(module_path)
-            .map(|table| crate::worker::capture_reload_instantiation_demands(&table))
-            .unwrap_or_else(|| std::sync::Arc::from([]));
 
-        // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
-        // a reload re-reads fresh source, so re-capture the leading `;;` block
-        // onto the module's live table (disk is the source of truth on reload).
-        crate::save::apply_module_preamble(&self.shared.symbol_tables, module_path, &source);
-
-        // S82 reload-during-compile race: a worker sets `inmem_done = true`
-        // partway through its codegen pass, BEFORE it reaches
-        // `notify_typecheck_done` (the TypecheckWorking → TypecheckDone
-        // transition). The initial `register_module_with_source` returns as
-        // soon as `wait_inmem_complete_blocking` observes `inmem_done`, so the
-        // worker may still be mid-pass when we get here. If it is,
-        // `re_register_module` hits its "mid-typecheck — skip" guard, returns
-        // false, and the `register_module` fallback below is a no-op (the
-        // module already exists) — the reload would be silently dropped and the
-        // stale table survives. Wait for the in-flight pass to settle so the
-        // re-register reliably takes.
+        // A worker marks the module in-memory complete before its pass
+        // settles; re-registering mid-pass would be skipped and the rebuild
+        // silently dropped, and the swap below must not race the pass.
         self.shared
             .scheduler
             .wait_module_typecheck_settled(module_path);
 
-        // `re_register_module` clears `inmem_done` and re-queues the module
-        // for typecheck with the fresh sexps. `register_module` would be a
-        // no-op because the module is already in `scheduler.modules`.
-        let re_registered = self.shared.scheduler.re_register_module_with_demands(
-            module_path,
-            sexps.clone(),
-            instantiation_demands,
-        );
-        if !re_registered {
-            // Module isn't known to the scheduler yet (first-time seed from
-            // file watcher) — fall back to register_module.
-            self.shared
-                .scheduler
-                .register_module(module_path.clone(), sexps, false);
+        let reference = self.install_fresh_generation(module_path)?;
+
+        // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md
+        // §5): the leading `;;` block of the saved source, onto the fresh table.
+        crate::save::apply_module_preamble(&self.shared.symbol_tables, module_path, &source);
+
+        // Only this registration carries whole-source provenance, including
+        // the first-seed fallback for a module the scheduler no longer tracks.
+        let reloaded = crate::scheduler::SourceContinuation::whole_source(sexps, reference);
+        if !self
+            .shared
+            .scheduler
+            .re_register_module_continuation(module_path, reloaded.clone())
+        {
+            self.shared.scheduler.register_module_continuation(
+                module_path.clone(),
+                reloaded,
+                false,
+            );
         }
 
         // The outcome is this module's own terminal state, never another
@@ -1646,28 +1735,101 @@ impl CompilerSession {
             }
             Ok(()) => Ok(()),
         };
-        if let Err(error) = completion {
-            if let Some(refusal) = self.shared.scheduler.structural_type_refusal(module_path) {
-                self.error_modules.insert(module_path.clone());
-                self.restart_required
-                    .insert(module_path.clone(), refusal.type_name);
-            }
-            return Err(error);
+        // The refusal record belongs to the generation registered above, so it
+        // is read only after that generation's own outcome.
+        if completion.is_err()
+            && let Some(refusal) = self.shared.scheduler.structural_type_refusal(module_path)
+        {
+            self.module_locks.insert(
+                module_path.clone(),
+                ModuleLock::RestartRequired(refusal.type_name),
+            );
         }
+        completion
+    }
 
-        // S102 W5R B-1: a successful reload makes the NEW file content the
-        // authority — drop any retained degraded-startup failed forms for
-        // this module and lift the §14.4 error block. Without this, the next
-        // defining turn's regen would re-append the stale broken text after
-        // the user's external repair (silently undoing the hand-edit and
-        // re-poisoning the file for the next restart). Cleared here — not at
-        // the poll site — so EVERY successful reload path (watcher poll,
-        // T2 module-grain degrade) restores the invariant that a non-empty
-        // failed set implies membership in `error_modules`.
-        self.failed_forms.remove(module_path);
-        self.error_modules.remove(module_path);
-        self.restart_required.remove(module_path);
+    /// The whole-file rebuild's prologue (`design/int/session-transaction.md`
+    /// §7.3.1): replace the module's table with a fresh one that keeps its
+    /// GOT, reset the session state keyed by the module from the displaced
+    /// table, pool every compiled owner the displaced table holds, and return
+    /// the module's established reference (§7.3.2) — the one already held,
+    /// else the displaced table, which is then held.
+    fn install_fresh_generation(
+        &mut self,
+        module: &ModuleFullPath,
+    ) -> Result<Arc<SessionSymbolTable>, CranelispError> {
+        let displaced = {
+            let mut live = self
+                .shared
+                .symbol_tables
+                .entry(module.clone())
+                .or_insert_with(|| SessionSymbolTable::new_with_params(module.clone()));
+            let mut fresh = SessionSymbolTable::new_with_params(module.clone());
+            fresh.got = Arc::clone(&live.got);
+            std::mem::replace(&mut *live, fresh)
+        };
+        self.reset_module_session_state(module, &displaced)?;
+        retain_compiled_owners(&self.shared.retained_code, module, &displaced);
+        let reference = match self.reload_references.get(module) {
+            Some(held) => Arc::clone(held),
+            None => {
+                let reference = Arc::new(displaced);
+                self.reload_references
+                    .insert(module.clone(), Arc::clone(&reference));
+                reference
+            }
+        };
+        Ok(reference)
+    }
 
+    /// Reset the session state the displaced generation of `module`
+    /// established outside its own table (§7.3.1), each under its own guard.
+    /// The rebuild's Pass 0 and publication re-establish what the saved source
+    /// keeps.
+    fn reset_module_session_state(
+        &self,
+        module: &ModuleFullPath,
+        displaced: &SessionSymbolTable,
+    ) -> Result<(), CranelispError> {
+        let aliases = displaced
+            .imports
+            .iter()
+            .filter_map(|spec| spec.alias.as_ref().map(|alias| alias.as_ref()))
+            .chain(displaced.submodules.iter().map(|decl| decl.name.as_ref()));
+        for alias in aliases {
+            self.shared
+                .module_aliases
+                .remove(&cranelisp_types::module_alias_key(module, alias));
+        }
+        self.shared.declared_exports.remove(module);
+        self.shared.prelude_fallback.remove(module);
+        for record in displaced
+            .written_trait_impls
+            .iter()
+            .filter(|record| record.trait_name.module != *module)
+        {
+            let Some(mut home) = self.shared.symbol_tables.get_mut(&record.trait_name.module)
+            else {
+                continue;
+            };
+            let key = cranelisp_types::trait_impl_key(&record.impl_type, &record.trait_name);
+            let written_here = matches!(
+                home.get(key.as_ref()).map(|binding| &binding.declaration),
+                Some(Decl::ImplShell(shell)) if shell.impl_module == *module
+            );
+            if written_here {
+                home.remove_non_callable(&key)
+                    .map_err(|error| CranelispError::ModuleError {
+                        message: format!(
+                            "cannot remove the implementation shell `{key}` that module '{module}' wrote: {error}"
+                        ),
+                        location: ErrorLocation::from_span(Span::SYNTHETIC),
+                    })?;
+            }
+        }
+        if let Some(introspection) = &self.shared.introspection {
+            introspection.retain(|key, _| key.module != *module);
+        }
         Ok(())
     }
 
@@ -2098,10 +2260,11 @@ impl CompilerSession {
     /// what turns one broken defn into a wholesale lockout; the REPL's own
     /// per-form semantics are the natural degraded mode.
     ///
-    /// 1. Reset the failed scheduler state and re-register the entry EMPTY,
-    ///    reaching the ordinary fresh-REPL scheduler state (terminal pool;
-    ///    the eval thread becomes the sole orchestrator exactly as on a
-    ///    healthy start).
+    /// 1. Reset the failed scheduler state, locking each other module the
+    ///    failed start left `Failed` with failed source, and re-register the
+    ///    entry EMPTY as an increment, reaching the ordinary fresh-REPL
+    ///    scheduler state (terminal pool; the eval thread becomes the sole
+    ///    orchestrator exactly as on a healthy start).
     /// 2. Re-read the backing source (disk-read-only — the loader itself
     ///    never regenerates) and drive it FORM-BY-FORM through the ordinary
     ///    eval path, output suppressed. Green forms commit; failing forms
@@ -2112,6 +2275,11 @@ impl CompilerSession {
     /// 4. While the failed set is non-empty the entry sits in
     ///    `error_modules` (§14.4: expressions refused, definitions accepted
     ///    as the repair — the `process_commands` carve-out).
+    ///
+    /// A backing source that does not parse yields no failed forms: it is
+    /// reported with its parse error and the entry is locked with failed
+    /// source, so no definition turn or regeneration writes the file until a
+    /// reload of it succeeds.
     ///
     /// Startup-print ruling (S102 W5, noted for /design): the degraded
     /// re-drive against a warm (cache-preloaded) table classifies
@@ -2131,7 +2299,14 @@ impl CompilerSession {
         //    Scheduler-only — the entry's table is re-seeded just below and the
         //    degraded re-drive re-populates from source, so no table purge here
         //    (contrast the autoload-retry reset, which drops stale dep tables).
-        let _ = self.shared.scheduler.reset_all_failed_modules();
+        //    A failed dependency's kept table is not its source, and only the
+        //    entry has the §15.2.3 repair, so the dependency is locked
+        //    (`repl-lifecycle.md` §1.3.1).
+        for failed in self.shared.scheduler.reset_all_failed_modules() {
+            if failed != module {
+                self.lock_failed_source(&failed);
+            }
+        }
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
         let empty: std::sync::Arc<[Sexp]> = std::sync::Arc::from(Vec::<Sexp>::new());
         self.shared
@@ -2174,7 +2349,19 @@ impl CompilerSession {
             .and_then(|n| n.to_str())
             .unwrap_or(module_name)
             .to_string();
-        let failed = self.degraded_form_load(&source);
+        // An unparsable file has no definition source to retain as failed
+        // forms; the lock keeps it instead (`repl-lifecycle.md` §1.3.1).
+        let sexps = match cranelisp_frontend::parse(&source) {
+            Ok(sexps) => sexps,
+            Err(e) => {
+                self.lock_failed_source(&module);
+                return Some(format!(
+                    "[errors: {file_name}]\n  {}",
+                    first_line(&e.to_string())
+                ));
+            }
+        };
+        let failed = self.degraded_form_load(&source, &sexps);
 
         // Startup-print suppression (ruling above).
         self.pending_cascade_reports.clear();
@@ -2190,23 +2377,12 @@ impl CompilerSession {
         Some(report)
     }
 
-    /// Drive `source` form-by-form through the ordinary eval path (each
-    /// toplevel form its own cluster, output suppressed), collecting the
-    /// forms that fail. A whole-source parse failure retains the entire text
-    /// as one symbol-less [`FailedForm`] (regen must not drop it either).
-    fn degraded_form_load(&mut self, source: &str) -> Vec<FailedForm> {
-        let sexps = match cranelisp_frontend::parse(source) {
-            Ok(s) => s,
-            Err(e) => {
-                return vec![FailedForm {
-                    symbol: None,
-                    error: first_line(&e.to_string()),
-                    text: source.trim_end().to_string(),
-                }];
-            }
-        };
+    /// Drive the parsed `sexps` of `source` form-by-form through the ordinary
+    /// eval path (each toplevel form its own cluster, output suppressed),
+    /// collecting the forms that fail.
+    fn degraded_form_load(&mut self, source: &str, sexps: &[Sexp]) -> Vec<FailedForm> {
         let mut failed = Vec::new();
-        for sexp in &sexps {
+        for sexp in sexps {
             match self.process_single_form(sexp) {
                 Ok(_) => {} // green form committed; output suppressed
                 Err(e) => {
@@ -3267,8 +3443,108 @@ mod watcher_reload_plan_tests {
         path
     }
 
+    /// The plan the watcher builds for `changed` files.
+    fn watcher_plan(
+        session: &CompilerSession,
+        changed: &[PathBuf],
+    ) -> Vec<(ModuleFullPath, PathBuf)> {
+        session.reload_plan(&session.watcher_roots(changed))
+    }
+
     fn plan_names(plan: &[(ModuleFullPath, PathBuf)]) -> Vec<&str> {
         plan.iter().map(|(module, _)| module.as_ref()).collect()
+    }
+
+    /// Install `module` with no declared edge and a recorded lookup
+    /// dependency on each of `recorded`, as a qualified reference records it.
+    fn install_qualified_dependent(
+        session: &CompilerSession,
+        root: &Path,
+        module: &str,
+        recorded: &[&str],
+    ) -> PathBuf {
+        let path = install_plan_module(session, root, module, &[]);
+        let mut table = session
+            .shared
+            .symbol_tables
+            .get_mut(&ModuleFullPath::from(module))
+            .expect("module just installed");
+        for dependency in recorded {
+            table.record_lookup_dependency(ModuleFullPath::from(*dependency));
+        }
+        path
+    }
+
+    fn position_of(names: &[&str], module: &str) -> usize {
+        names
+            .iter()
+            .position(|name| *name == module)
+            .unwrap_or_else(|| panic!("`{module}` selected: {names:?}"))
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 Guards — a module whose only
+    // edge to the changed module is a recorded (qualified-reference) edge is
+    // selected, transitively through its own importer; a module with no edge
+    // is not.
+    #[test]
+    fn reload_plan_selects_recorded_edge_dependents_transitively() {
+        let (mut session, root) = plan_session();
+        let changed = install_plan_module(&session, root.path(), "zlib", &[]);
+        install_qualified_dependent(&session, root.path(), "app", &["zlib"]);
+        install_plan_module(&session, root.path(), "app_user", &["app"]);
+        install_plan_module(&session, root.path(), "unrelated", &[]);
+
+        let plan = watcher_plan(&session, &[changed]);
+        let names = plan_names(&plan);
+        assert!(
+            position_of(&names, "zlib") < position_of(&names, "app")
+                && position_of(&names, "app") < position_of(&names, "app_user"),
+            "{names:?}"
+        );
+        assert!(!names.contains(&"unrelated"), "{names:?}");
+        session.shutdown();
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 Guards; session-transaction.md
+    // §7.3.2 — a dependent whose last rebuild failed has a partial table that
+    // records no edge, and is still selected through its held reference's
+    // qualified-reference edge when that dependency changes.
+    #[test]
+    fn reload_plan_selects_a_failed_dependent_through_its_reference() {
+        let (mut session, root) = plan_session();
+        let changed = install_plan_module(&session, root.path(), "zlib", &[]);
+        install_plan_module(&session, root.path(), "app", &[]);
+        let mut reference = SessionSymbolTable::new_with_params(ModuleFullPath::from("app"));
+        reference.record_lookup_dependency(ModuleFullPath::from("zlib"));
+        session
+            .reload_references
+            .insert(ModuleFullPath::from("app"), Arc::new(reference));
+
+        let plan = watcher_plan(&session, &[changed]);
+        let names = plan_names(&plan);
+        assert!(
+            position_of(&names, "zlib") < position_of(&names, "app"),
+            "{names:?}"
+        );
+        session.shutdown();
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 Guards — a dependent reached
+    // only through a qualified reference, whose name sorts before its
+    // dependency, is ordered after it when both change together.
+    #[test]
+    fn reload_plan_orders_qualified_dependent_after_its_dependency() {
+        let (mut session, root) = plan_session();
+        let app = install_qualified_dependent(&session, root.path(), "app", &["zlib"]);
+        let zlib = install_plan_module(&session, root.path(), "zlib", &[]);
+
+        let plan = watcher_plan(&session, &[app, zlib]);
+        let names = plan_names(&plan);
+        assert!(
+            position_of(&names, "zlib") < position_of(&names, "app"),
+            "{names:?}"
+        );
+        session.shutdown();
     }
 
     // spec: repl/spec.md §14.2 — an admitted dependency SCC is one ordering
@@ -3288,7 +3564,7 @@ mod watcher_reload_plan_tests {
         install_plan_module(&session, root.path(), "aaa_downstream", &["middle_cycle_a"]);
         install_plan_module(&session, root.path(), "unrelated", &[]);
 
-        let plan = session.watcher_reload_plan(&[changed]);
+        let plan = watcher_plan(&session, &[changed]);
         let names = plan_names(&plan);
         let downstream = names
             .iter()
@@ -3335,7 +3611,7 @@ mod watcher_reload_plan_tests {
             vec![consumer.clone(), dependency.clone()],
             vec![dependency.clone(), consumer.clone()],
         ] {
-            let plan = session.watcher_reload_plan(&changed);
+            let plan = watcher_plan(&session, &changed);
             let names = plan_names(&plan);
             let dependency_index = names
                 .iter()

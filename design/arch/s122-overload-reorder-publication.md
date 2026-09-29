@@ -214,7 +214,7 @@ callers obtain it by the existing keyed template lookup. Typecheck uses the same
 quantified-variable ordering, not a second locally maintained order rule.
 
 **Errors and validation.** The helpers never silently omit arguments or fall
-back to an ordinal key. A stale reload demand continues through the existing
+back to an ordinal key. A stale demand continues through the existing
 warning/decline policy; its context-aware key failure does not authorize a
 fallback identity. Typecheck attributes malformed signature errors to the
 existing demand span and retains the existing Gap/invariant distinction.

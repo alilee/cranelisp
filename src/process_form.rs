@@ -31,7 +31,7 @@ use cranelisp_types::{
 
 use std::collections::BTreeSet;
 
-use crate::scheduler::SourceContinuation;
+use crate::scheduler::{SourceContinuation, SourceProvenance};
 use crate::worker::{
     ClusterOnce, ModuleCompiler, build_program_compat, check_program_compat, leading_annotation_len,
 };
@@ -178,6 +178,10 @@ pub fn process_cluster_once(
         &mut turn_definitions,
     )?;
 
+    let program = match strategy {
+        ModuleStrategy::Replace => continuation.provenance().clone(),
+        ModuleStrategy::Additive => SourceProvenance::Increment,
+    };
     finish_pass2(
         ctx,
         module,
@@ -185,6 +189,7 @@ pub fn process_cluster_once(
         expanded_program,
         &prefix,
         pass2_result,
+        program,
         &mut turn_definitions,
     )
 }
@@ -246,6 +251,7 @@ struct Built<'a> {
 struct ExpandedPrefix {
     forms: Vec<Sexp>,
     macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+    provenance: SourceProvenance,
 }
 
 impl ExpandedPrefix {
@@ -253,6 +259,7 @@ impl ExpandedPrefix {
         ExpandedPrefix {
             forms: Vec::new(),
             macro_lookup_dependencies: continuation.macro_lookup_dependencies().clone(),
+            provenance: continuation.provenance().clone(),
         }
     }
 
@@ -260,7 +267,11 @@ impl ExpandedPrefix {
     fn continuation_with(&self, rest: impl IntoIterator<Item = Sexp>) -> SourceContinuation {
         let mut forms = self.forms.clone();
         forms.extend(rest);
-        SourceContinuation::resumed(forms, self.macro_lookup_dependencies.clone())
+        SourceContinuation::resumed(
+            forms,
+            self.macro_lookup_dependencies.clone(),
+            self.provenance.clone(),
+        )
     }
 }
 
@@ -288,16 +299,10 @@ fn run_cluster_prologue(
     let declared = dependency::cluster_declared_children(ctx, module, sexps);
 
     if strategy == ModuleStrategy::Replace {
-        // Set active module. Symbol table is preserved for slot reuse
-        // and type-change detection.
         ctx.set_current_module(module.clone());
 
         // Static cycle gate — fast-exits when the cluster has no imports.
         closure = dependency::static_import_closure(ctx, module, sexps, &declared)?;
-
-        // Zero GOT slots and clear codegen artifacts for this module's
-        // symbols. Slot assignments are preserved so re-compiled code
-        // lands in the same slots.
 
         // Prelude fallback bit (§8.8.1) — single-sourced via `ensure_prelude_bit`
         // (FIXME 0516 fold-in), fresh-recompute discipline for the Replace path.
@@ -408,6 +413,7 @@ fn pass0_peel_structural(
 /// Finalize Pass 2: on `Complete`, run `finalize_cluster` then drive declared
 /// submodules (FIXME 0342); on `BlockedOnFqModule`, drive the unloaded FQ
 /// dependency and surface a gap for retry-from-top.
+#[allow(clippy::too_many_arguments)]
 fn finish_pass2(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -415,6 +421,7 @@ fn finish_pass2(
     built: BuiltProgram,
     prefix: &ExpandedPrefix,
     pass2_result: Pass2Result,
+    program: SourceProvenance,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<ClusterOnce, CranelispError> {
     let BuiltProgram {
@@ -427,8 +434,15 @@ fn finish_pass2(
             // Finalize: single `check_program_compat` over the expanded
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
-            let mut outcome =
-                finalize_cluster(ctx, module, origin_sexps, expanded_program, prefix, records)?;
+            let mut outcome = finalize_cluster(
+                ctx,
+                module,
+                origin_sexps,
+                expanded_program,
+                prefix,
+                records,
+                &program,
+            )?;
             if let ClusterOnce::Done { processed, .. } = &mut outcome
                 && let Some(shared) = ctx.shared_state
             {
@@ -458,6 +472,8 @@ fn finish_pass2(
             // (`cluster::process_cluster`) and the REPL entry
             // (`session_v4::process_single_form`) drive this same core.
             if matches!(outcome, ClusterOnce::Done { .. }) {
+                // The generation has published: a retry carries no source and
+                // only drives the declared submodules, so it is an increment.
                 let published = SourceContinuation::source(Vec::new());
                 store_pool_continuation(ctx, module, &published, true);
                 if let Some(dep) = drive_submodules(ctx, module)? {
@@ -525,6 +541,7 @@ fn finalize_cluster(
     expanded_program: &[TopLevel],
     prefix: &ExpandedPrefix,
     records: Vec<(FQSymbol, crate::session_v4::Introspection)>,
+    program: &SourceProvenance,
 ) -> Result<ClusterOnce, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
@@ -557,6 +574,10 @@ fn finalize_cluster(
     // NEVER on error class — a native finalize error (its span within an origin
     // form) passes through unchanged.
     let mut prepared = None;
+    let established_reference = match program {
+        SourceProvenance::WholeSource(reference) => Some(reference.as_ref()),
+        SourceProvenance::Increment => None,
+    };
     let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) =
         if let Some(shared) = ctx.shared_state {
             match crate::worker::prepare_cluster_commit_with_demands(
@@ -564,12 +585,14 @@ fn finalize_cluster(
                 ctx.module_aliases,
                 ctx.prelude_fallback,
                 module,
-                &final_working,
-                expanded_program,
+                crate::worker::ClusterPrograms {
+                    working: &final_working,
+                    codegen: expanded_program,
+                },
                 crate::worker::OwedFacts {
-                    reload_demands: &ctx.reload_demands,
                     lookup_dependencies: &prefix.macro_lookup_dependencies,
                 },
+                established_reference,
                 shared,
             ) {
                 Ok(None) => (None, Vec::new(), Vec::new(), Vec::new()),

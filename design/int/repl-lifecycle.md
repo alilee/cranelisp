@@ -33,29 +33,91 @@ that save by atomic rename would lose a per-file watch.
   - The baseline is recorded on first encounter.
   - When the session regenerates a backing file itself, it updates the stored
     hash so its own write is not reported.
-- **Reload set.** The changed modules plus their transitive dependents,
-  ordered by strongly connected component and then topologically. A dependent
-  is a module that imports or re-exports a reached module, or that has its
-  prelude fallback on when the prelude is reached.
+- **Reload edges.** One private predicate answers "module A depends on module
+  B" for both selection and ordering (Principle 7). A's edges are:
+  - each `import` and `export` target, resolved through A's declared children
+    ([int §6.9](int.md#69-bare-module-names-in-import-and-export));
+  - `prelude`, when A's fallback bit is on;
+  - A's recorded edges, `cache::dependency_record::recorded_edges`: callee
+    modules and lookup dependencies. These carry qualified function, type,
+    trait, constructor, pattern, accessor and macro-head references, including
+    through a re-exporter ([int §7.6.1–§7.6.2](int.md#76-dependency-record-and-validity));
+  - while A holds an established reference, the same edges of that reference
+    ([session transaction §7.3.2](session-transaction.md#732-the-established-reference)).
+    A failed compile records neither callees nor lookup dependencies, so this
+    keeps a failed module reachable from the dependency whose repair releases
+    it.
+
+  Declared children are not reload edges: a `mod` declaration drives loading
+  and compiles no reference into the child. They remain cache-validity edges.
+  Over-selection through a stale edge costs only a recompile.
+- **Reload set.** The changed modules plus every module that reaches one of
+  them transitively over reload edges. A dependent is admitted when
+  `file_to_module` maps a file to it; any other is skipped
+  ([session transaction §7.3.3](session-transaction.md#733-slot-reuse-and-the-plan-invariant)
+  names the residual).
+- **Order.** Condense the plan over the same edges and emit components
+  dependency first; lexical order applies only inside a component and between
+  unrelated components. The order is load-bearing: a whole-file rebuild
+  reuses GOT slot indices, so a module compiled before a dependency the same
+  plan rebuilds would call through reused slots.
+- **Order check.** The plan is ordered from edges recorded before it runs. A
+  changed root whose new source adds a reference to another plan member can
+  therefore compile before it. After the plan runs, check each module it
+  rebuilt successfully against its new edges. One that reaches a module this
+  plan rebuilt later is rebuilt again, with its dependents, in a follow-on
+  plan, until no such module remains. Compile-time cycles are rejected, so
+  this converges; with no new cross-reference it adds no work. Each module's
+  last outcome is its notification.
+- **One executor.** Every reload of a saved file runs as a plan through one
+  private executor: the watcher poll, `/mod`'s recompile of a cache-installed
+  module (`session-persistence.md` §2.4.5), and the superseded T1 and T2
+  residue ([session transaction §10](session-transaction.md#10-t1-and-module-grain-reload-superseded-residue)).
+  A caller supplies roots; the executor adds dependents, orders, reloads each
+  module, runs the order check and returns each module's outcome. The watcher
+  prints every notification, `/mod` reports each failed module's, and T1 and
+  T2 read their root's outcome. `reload_module` is visible only to the
+  session's own modules, so no other caller can rebuild outside a plan.
 - **Reload.** `reload_module` replaces the module's typecheck product with the
   file it re-read, keeping the backing path and recording that text for
-  verbatim slices. It then re-parses and re-registers the module and waits for
-  that module's own outcome (§1.3). Displaced code enters the retention pool
-  (`session-transaction.md`). Regeneration writes to the recorded path
+  verbatim slices. It waits for the module's in-flight pass to settle, runs
+  the whole-file rebuild's prologue
+  ([session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild)),
+  captures the preamble onto the fresh table, re-parses and re-registers the
+  module with whole-source provenance, and waits for that module's own outcome
+  (§1.3). Regeneration writes to the recorded path
   (`session-persistence.md` §3.2), so a reload must not drop it.
-- **Other callers.** `/mod` into a cache-installed module uses the same
-  operation (`session-persistence.md` §2.4.5).
+- **Guards (module).**
+  - A module whose only edge to the changed module is a recorded edge is
+    selected, transitively; a module with no edge is not.
+  - A dependent whose last rebuild failed on a qualified reference to the
+    changed module is still selected when that module changes.
+  - A qualified-reference-only dependent whose name sorts before its
+    dependency is ordered after it.
+  - Order check: two roots changed together, where the earlier-sorting one's
+    new source adds a qualified call into the other, end with the caller
+    rebuilt after the callee.
+
+  End to end: FQR-1
+  (`tests/repl_persist.rs::watch_qualified_caller_fails_on_removed_callee_until_it_is_restored`),
+  FQR-2
+  (`tests/repl_persist.rs::watch_qualified_type_dependent_locked_until_its_module_compiles`)
+  and FL-3.
 
 ### 1.3 Failed reload
 
-A failed reload adds the module to the session's error set. There is no
-last-known-good restore and no module lock.
+A failed reload adds the module to the session's error set and locks it
+(§1.3.1). There is no last-known-good restore: the module keeps the partial
+table its failed rebuild produced
+([session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild)).
 
 - While the set is non-empty, an expression turn is refused with `Cannot
   evaluate: module '<name>' has errors. Fix the source file and save.`
-- A definition turn is still admitted, because it can be the repair
+- A definition turn is admitted unless its current module is locked. In an
+  unlocked module it can be the repair of a startup failure
   (`15-session-persistence.md` §15.2.3).
-- A later successful reload clears the module's error and failed-form state.
+- A later successful reload clears the module's error, failed-form state and
+  lock.
 
 **Outcome.** A reload's outcome, success or failure, is the reloaded module's
 own terminal state, never another module's.
@@ -106,62 +168,105 @@ own terminal state, never another module's.
   map order puts another failed module first. Neither
   exercises the coverage falsifier.
 
-#### 1.3.1 Restart-required failure
+#### 1.3.1 Module lock
 
-A reload refused because it would change a live type's structure
-(`14-file-watching.md` §14.8; the guard is
-[session transaction §2.6](session-transaction.md#26-type-re-establishment-repl-185-148))
-also retains the module's saved file until the failure ends.
+A module whose saved file the session has not accepted is locked: the REPL
+writes nothing over that file until a reload of it succeeds
+(`14-file-watching.md` §14.5 item 5; `15-session-persistence.md` §15.2.3,
+unparsable backing file). One lock serves every cause. The restart-required
+refusal (`14-file-watching.md` §14.8) is one of its causes, not a separate
+mechanism.
 
-- **Marker.** The session holds a crate-private map from each
-  restart-required module to its refused type. It is session state and is
-  never persisted.
-- **Set.** `reload_module` sets it on its failure branch, when the reloaded
-  module's scheduler refusal record names a type. It adds the module to the
-  error set in the same step. Every reload caller is covered: the watcher,
-  `/mod`'s cache-installed recompile and the superseded T1 residue.
-  - The read is keyed by the reloaded module and follows that module's own
-    `Failed` outcome (§1.3 Outcome), so it cannot precede the worker's record.
-  - The returned error is the module's own refusal, so the notification
-    names the type and the restart remedy (§14.8).
-  - A read or parse failure returns before re-registration and reads nothing.
-- **Stands.** A later failing reload of any cause leaves the marker, as do
-  `/reset` (§2.1) and `/mod`.
+- **State.** The session holds a crate-private map from each locked module
+  to its cause. It is session state and is never persisted, so a restart
+  compiles the saved source afresh (§14.6). The cause is one of two:
+  - **restart-required**, carrying the refused type: the reload was refused
+    under §14.8 (the guard is
+    [session transaction §2.6](session-transaction.md#26-type-re-establishment-repl-185-148));
+  - **failed source**: every other failure, whether the file could not be
+    read, parsed, typechecked, compiled or published, or the module failed
+    in the cascade from a failed dependency. At startup, an entry backing
+    file that does not parse and every non-entry module the failed start
+    left `Failed` have this cause too.
+- **Set.** Two sites write the lock, and each also adds the module to the
+  error set.
+  - `reload_module` locks on every failure it returns, including the read
+    and parse failures before re-registration. It records restart-required
+    when the reloaded module's scheduler refusal record names a type; the
+    read is keyed by the reloaded module and follows that module's own
+    `Failed` outcome (§1.3 Outcome), so it cannot precede the worker's
+    record, and the returned error is the module's own refusal, naming the
+    type and the restart remedy (§14.8). Otherwise it records failed source
+    unless the module is already locked. Every caller reaches it through the
+    one executor (§1.2), so no reload of a saved file can fail without
+    locking.
+  - Startup recovery (`recover_startup_failure`) records failed source in
+    two cases.
+    - **Entry that does not parse.** Such a file yields no failed form: it
+      has no definition source to retain (§15.2.3), so the lock, not
+      re-emission (`session-persistence.md` §2.1), keeps it. The startup
+      report still prints `[errors: <file>]` with the parse error. The file
+      stays mapped and watched, because entry registration maps it before
+      parsing.
+    - **Failed non-entry modules.** Recovery locks every module other than
+      the entry that its scheduler reset returns, that is, every module the
+      failed start left `Failed`, whether by its own failure or in the
+      cascade. Recovery forgets them before the degraded entry re-drive, so
+      nothing re-establishes them. Without the lock, `/mod` to one of them
+      plus a definition would regenerate its file from a table that never
+      compiled, overwriting the failing source (ACT-1010 M1; REPL §14.6: a
+      restart does not bypass a failure). Such a module is not a backing
+      file (§15.1), so the §15.2.3 repair does not apply to it. Each was
+      mapped for the watcher when its load read the file, so its own
+      compiling save releases it.
+- **Not set.** A startup backing file that parses keeps the §15.2.3 repair:
+  its failed forms are retained and definition turns are admitted.
+- **Stands.** A later failing reload of any cause leaves the lock, as do
+  `/reset` (§2.1) and `/mod`. A later §14.8 refusal replaces a failed-source
+  cause with restart-required; a later failure of another cause keeps the
+  recorded cause.
 - **Clears.** Only `reload_module`'s success branch clears it, beside the
-  existing error-set and failed-form clears, including while another module
-  stands `Failed` (§1.3 Outcome). Process exit also ends it.
-- **Invariant.** A restart-required module is always in the error set. The
-  set site maintains it, and `/reset` keeps such modules.
+  error-set and failed-form clears and the drop of the module's established
+  reference
+  ([session transaction §7.3.2](session-transaction.md#732-the-established-reference)),
+  including while another module stands
+  `Failed` (§1.3 Outcome). A dependent locked in a cascade is released by its
+  own successful reload, which the plan orders after its fixed dependency
+  (§1.2). Process exit also ends it.
+- **Invariant.** A locked module is always in the error set. The set sites
+  maintain it, and `/reset` keeps locked modules. The failed-form repair
+  clear (`clear_repaired_failed_form`) follows only an admitted definition
+  turn, which the lock refuses in its own module.
 - **Turn admission.** `process_commands` rejects, inside its §14.4 gate, a
-  definition or structural turn whose current module is restart-required.
-  The session and the file are unchanged. The message names the module, the
-  type and the restart remedy.
-  - A turn in a module that is not restart-required keeps the admission
-    rules above, even when another module is restart-required.
+  definition or structural turn whose current module is locked. The session
+  and the file are unchanged. The message names the module and the remedy
+  for the cause: restart-required names the type and the restart remedy;
+  failed source says that the saved file does not compile and that a
+  successful save releases the module. The wording is `dev`'s.
+  - A turn in a module that is not locked keeps the admission rules above,
+    even when another module is locked.
   - This one site covers typed REPL input and the agent's submit, which
     routes through it (`submit_clean_form`).
   - The agent's document edits bypass it, so `run_document_edit` makes the
     same refusal before asking for consent.
 - **Write chokepoint.** `regenerate_backing_file` returns before reading or
-  writing when the current module is restart-required. This covers every
+  writing when the current module is locked. This covers every
   regeneration caller, including any that admission does not enumerate:
   `main.rs`, `agent/pull.rs` and the `redefine.rs` residue.
 - **Why both.** Admission keeps the session unchanged; the chokepoint keeps
   the file intact whatever the caller.
-- **Scope.** A failure of any other cause sets no marker. What the file must
-  hold then is ACT-0998 face 2
-  (`session-persistence.md` §2.4.4).
-- **Imported modules.** A refusal in a non-entry module that another module
-  imports fails after parsing, inside a worker. Its importer fails through
-  the barrier's fail-fast on an already-failed member
+- **Imported modules.** A failure in a non-entry module that another module
+  imports is reported after parsing, inside a worker. Its importer fails
+  through the barrier's fail-fast on an already-failed member
   ([error cascade §4.1](step9-error-cascade.md#41-cascade-construction)), so
   the reload plan returns. The watcher prints its notifications only after
-  the whole plan returns, so any wait that never ends withholds the §14.8
-  diagnostic. The end-to-end guard is
-  `tests/repl_persist.rs::watch_imported_type_field_reorder_fails_requiring_restart`.
+  the whole plan returns, so any wait that never ends withholds the
+  diagnostic. The end-to-end guards are
+  `tests/repl_persist.rs::watch_imported_type_field_reorder_fails_requiring_restart`
+  and `tests/repl_watch.rs::watch_type_error_reload_of_imported_module_blocks_without_hanging`.
   A `/mod` into a failed cache-installed module reaches the same barrier, so
   the fail-fast covers it by construction. No cell exercises that route.
-- **Guards.** In `tests/repl_persist.rs`:
+- **Guards.** In `tests/repl_persist.rs`, for the restart-required cause:
   - `persist_external_edit_changing_field_type_fails_requiring_restart`
     checks the refusal.
   - `persist_structural_reload_failure_keeps_saved_edit_until_restart`
@@ -169,9 +274,13 @@ also retains the module's saved file until the failure ends.
   - `persist_compatible_save_after_structural_reload_failure_releases_the_file`
     checks the clear.
 
-  The marker's lifecycle unit is
-  `restart_required_stands_until_a_successful_reload`, in
-  `src/session_v4/persistence_tests.rs`.
+  The lock's lifecycle, admission and chokepoint units are in
+  `src/session_v4/persistence_tests.rs`. They include one row per executor
+  caller: a failed root or dependent reached through the watcher plan,
+  `/mod`'s recompile and a T1-rooted plan each leaves its module locked and
+  in the error set. For a failed non-entry module at
+  startup, the ACT-1010 M1 cell is the end-to-end guard. Its unit checks
+  that recovery locks the failed dependency and not a parseable entry.
 
 ### 1.4 Notification
 
@@ -195,8 +304,7 @@ things:
   `sync_watcher`, with hashes re-baselined.
 - **It keeps failed modules.** A module holding unrepaired failed source stays
   in the error set, because `/reset` is not a repair (§15.2.3). So does a
-  restart-required module (§1.3.1), whose failure stands until a successful
-  reload or restart (§14.8).
+  locked module (§1.3.1), whose lock stands until a reload of it succeeds.
 
 Symbol tables, compiled code, macros, the prelude and the disk cache are
 untouched.

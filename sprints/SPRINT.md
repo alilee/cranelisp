@@ -8,23 +8,37 @@ hang are fixed. The finding-scoped reload-outcome correction passed independent
 review. Mechanical record cleanup is complete. Whole-sprint acceptance is not yet
 requested.
 
-Latest consumer checkpoint: `0272a5d9`; local shared-package checkpoint:
-`c339fa7`. Later corrections and tests remain uncommitted. The final default
-suite passes **6336 tests, with one skipped and zero failures**. Persistence
-and watch binaries pass 71/71; imported structural refusal passes 15 stress
-iterations, and the new outcome-selection units pass 10 iterations.
+Latest consumer checkpoint: `63605970`; local shared-package checkpoint:
+`c339fa7`. The uncommitted whole-file rebuild installs a fresh namespace at the
+approved quiescent boundary and invalidates fully qualified dependents. It
+supersedes the earlier per-definition removal and reload-demand mechanisms.
+Incremental REPL behavior is preserved. Independent review found no blocking
+code defect; bounded QA accepts the correction. All seven generated public-API
+baselines are **+0/−0**, which needs no confirmation.
+
+Latest full suite: **6370 passed, one skipped, one document-gate failure**.
+The runtime failures are fixed: omitted imports and qualified-dependent
+invalidation/recovery pass. Fresh QA acceptance passes **101/101**; the broader
+focused run passes **260/260**, RB5 stress **15/15**, and API checks **3/3**.
+The sole failed gate was repaired without source changes and rerun: all
+three `citation_drift` tests pass; the checker reports 517 documents and zero
+findings. There are no remaining test failures from this correction.
+[ACT-1012 is closed](../tests/plan/s122-evidence-delta.md#act-1012--omitted-import-kept-closed).
 
 The [whole-sprint QA reconciliation](../tests/plan/s122-evidence-delta.md#phase-5-acceptance-reconciliation-2026-09-27)
-owns remaining obligations; the [restart-boundary judgment](../tests/plan/s122-evidence-delta.md#restart-boundary--final-adequacy-2026-09-29)
-owns this correction's evidence and limits. General failed-reload edit loss
-(ACT-0998 face 2) still needs user disposition, and ACT-1007 remains separate
-intake. The cache-restored dependency completion window is a recorded,
-unreproduced residual; its canonical limit and falsifier are in
-[REPL lifecycle design](../design/int/repl-lifecycle.md#13-failed-reload).
+owns remaining obligations. The [rebuild adequacy judgment](../tests/plan/s122-evidence-delta.md#whole-file-rebuild-and-qualified-dependents--final-adequacy-2026-09-29)
+owns current evidence and residuals. ACT-1010 retains the unresolved behavior
+of `/mod` into an existing file never loaded; ACT-1011 records startup dependency
+recovery; ACT-1013 records qualified cycles admitted by reload. Review R1's
+startup-repair versus subsequent reload-lock question is settled by the user's
+2026-09-29 agreement: once a whole-file rebuild occurs, its normal failure-lock
+policy applies, including to a startup-degraded entry. Specification and test
+recording remain. The other items are open, not implicitly approved carries. Whole-sprint
+acceptance and a phase transition are not requested by this checkpoint.
 
 Macro-order edge-case investigation is user-deferred to S123 or S124 under
 [ACT-1005](actions/ACT-1005-macro-order-regeneration-edge-cases.md). Earlier
-approved deferrals remain recorded below. No commit, phase transition or
+approved deferrals remain recorded below. The checkpoint commit was approved and completed. No phase transition or
 publication is authorized. NOTES and the dirty shared package remain untouched.
 
 **Goal:** Resolve the known compiler and language defects, make the remaining
@@ -182,7 +196,7 @@ these streams, not separate ticket-shaped waves.
 
 | Closure stream | Filings allocated exactly once |
 |---|---|
-| Binary / integration | 0553, 0604, 0694, 0740, 0745, 0789, 0793, 0795, 0798, 0800, 0818, 0863, 0868, 0889, 0898, 0914, 0921, 0927, 0933, ACT-0958 |
+| Binary / integration | 0604, 0694, 0740, 0745, 0789, 0793, 0795, 0798, 0800, 0818, 0863, 0868, 0889, 0898, 0914, 0921, 0927, 0933, ACT-0958 |
 | Frontend / annotation closure | 0708, 0785 |
 | Typecheck | 0762, 0776, 0777, 0779, 0794, 0799, 0869, 0913, 0924, 0929, 0935 |
 | Backend | 0747, 0781, 0782, 0891, 0900, 0903, 0906, 0907, 0915, 0916, 0917 |
@@ -6245,3 +6259,414 @@ NOTES digest is unchanged. No commit or phase transition occurred.
 Final document check: **516 documents, zero findings**, zero unverified
 references. Whitespace check clean; public-API baselines unchanged. The final
 test source hash matches QA's restored comment-only state.
+
+### General failed-file policy — 2026-09-29
+
+The user approved the proposed checkpoint and reload-cleanup batch, and ruled:
+“unsuccessful typecheck of changed files should result in the files being
+preserved and error/s listed in the repl. then the module is locked until a
+successful typecheck. later we'll add a reset to last known good repl function.”
+Checkpoint `63605970` contains the verified work through the restart boundary;
+NOTES and the shared-package changes are excluded. No later commit is inferred.
+
+Spec, Claude Opus 5.5/high, session
+`916b8dba-3d88-42b2-9c02-4ccacc11ad03`, records the policy and necessary
+REPL-spec mirrors. [ACT-1009](actions/ACT-1009-repl-restore-last-known-good.md)
+retains the explicitly deferred recovery command. ACT-1007 is checked on this
+checkpoint before scheduling a correction. Work remains within Phase 5.
+
+QA readiness session `1adc9292-7049-4439-9041-a0660f5dc1d9` (Claude Opus
+5.5/high) allocates one reload/persistence evidence batch including current
+ACT-1007 reproduction. Spec `916b8dba…` completed the general failed-reload
+lock in §14.5 and mirrors. A narrow spec consistency follow-up,
+`fe08ba7c-0feb-4245-aeb5-a01a28b4d6f3`, checks the parse-broken startup
+case against the approved rule that restarting cannot bypass the failed-file
+protection. No tests or implementation have started for the new batch.
+
+Spec consistency `fe08ba7c…` completed: a startup parse failure locks and
+preserves the whole backing file; parseable startup failures retain their
+established per-definition repair behavior. QA `1adc9292…` consumed both
+spec results and judged ready: FL-1–FL-3 and RM-1–RM-2, with existing RB/startup
+controls reused. Design(int) `17ce5da5-3d2b-4188-97d8-2671bd8d94af`
+prepares the shared private path. Test `d0aebe00-45be-4dde-afa2-2c8ca2f73549` owns the settled RED
+batch and Cargo; RM-1's current observation is published first for design.
+
+Test `d0aebe00…` completed: FL-1–FL-3 and RM-1–RM-2 all RED for the
+allocated reasons; the 71 previous persistence/watch cells remain GREEN.
+RM-1 confirms the omitted binding survives lookup, introspection, its slot
+and regeneration. Design `17ce5da5…` settled the general module-lock path.
+Arch `90c7b3bb-c92f-4626-9f3e-0ee5154e8e0d` confirms the published absent-key
+ChangeAbi transaction already supports slotted ordinary-function retirement;
+no public API/schema/ABI delta. It supersedes design's initial boundary concern.
+Generic-template retirement has a separate public-semantic limitation and stays
+open, with no user carry or interface extension inferred. Design follow-up
+`7a7e98a6-23f4-49c1-a28d-49961c3e9ed0` finishes the same int handoff from
+these results before a single source implementation visit. All named roles use
+Claude Opus 5.5/high.
+
+Dev(src), Claude Opus 5.5/high, session
+`a366ae44-3652-4d30-8c9c-20f9a6fa8c55`, starts the settled FL policy and
+module evidence while removal-only design finishes. It owns Cargo and source.
+RM implementation remains dependent on the final design handoff; the same
+source owner consumes it when ready rather than guessing or holding up FL.
+
+Design follow-up `7a7e98a6…` completed the removal handoff in
+`design/int/session-transaction.md` §7.3.1. The existing publication facade
+suffices for the allocated concrete-function cases; no public API, schema or
+ABI change. Dev `a366ae44…` consumes that handoff in the same source-owner visit.
+
+Review(src), Claude Opus 5.5/high, session
+`33bbcf32-59c1-4890-baca-ed53ff178603`, begins read-only inspection of the
+implemented batch while dev completes verification. All 76 persistence/watch
+cells and 15 imported-refusal stress runs pass. Dev retains sole source/Cargo
+ownership; review consumes its final report before concluding.
+
+Final bounded QA, Claude Opus 5.5/high, session
+`fdea5d0a-6970-4fe1-9c86-8b9a405ae19f`, starts record reconciliation and the
+known QA-anchor repair. Dev's full run has 6353 passes, one skipped and the
+single document-conformance failure; QA waits for dev's ownership release
+before fresh acceptance, and consumes independent review before judging.
+
+Dev `a366ae44…` completed and released source/Cargo: the full suite's sole
+failure is the QA-owned document anchor; release build, 76 persistence/watch
+cells, 138 agent units and 15 stress runs pass. Implementation also corrects
+two test-reproduced interactions: a post-publication submodule continuation
+must not remove its new definitions, and an old expression wrapper must not
+block removal. Review and QA consume the final report; standing mirrors remain
+to be reconciled by their owners.
+
+Design(int) standing reconciliation, Claude Opus 5.5/high, session
+`ad852c6c-66bf-4683-bd09-b75979933646`, verifies the two implementation
+refinements against source and updates only their canonical design descriptions.
+
+Review `33bbcf32…` completed. It confirms module-lock behavior and concrete
+retirement ownership, but requires bounded corrections/dispositions: R1 source
+provenance must distinguish an intentional empty file from internal placeholders;
+R2 predicts a false refusal when omitted generic residuals reference removed
+concrete functions; R3 a unit pins the open generic limitation as green. QA
+classifies the latter two before the correction handoff. Design mirror
+`ad852c6c…` completed its two requested refinements; final document check is clean.
+
+QA's canonical judgment accepts FL within allocation and confirms separate
+startup dependency loss (ACT-1010 M1). A single correction basket is dispatched:
+Design(int) `08208d0f-ea1a-4851-ba5d-9b4c9252d5c9` settles private R1/M1;
+Test authors the settled RM-3/RM-4/M1 evidence and RM annotation repairs. Both
+use Claude Opus 5.5/high. Generic removal and unloaded-file `/mod` semantics
+remain open decisions; neither is silently deferred or expanded.
+
+QA `fdea5d0a…` completed: FL adequate; RM requires R1/R3 and a generic
+removal disposition; M1 is reproduced startup file loss covered by the approved
+protection policy. Test session `957f17b8-9b2d-4e1a-8b08-f3b07e4a02cc`
+holds the settled RED batch. The user is asked whether generic deletion should
+require restart temporarily or receive full live removal now; no answer or
+requirement change is inferred. M1 correction proceeds under existing authority.
+
+Test `957f17b8…` completed: RM-3, RM-4 and M1 all RED for the allocated
+reasons; prior 76 persistence/watch cells stay GREEN. RM-1/RM-2 mechanism
+annotations are corrected. No fixed commit marker is added before a commit.
+Test identified a binary-hash attribution correction for final QA: nextest
+relinks its own current-source executable; both builds postdate the source.
+
+Design `08208d0f…` completed: R1 and M1 are private src corrections, no
+semantic/public-boundary choice. Dev(src), Claude Opus 5.5/high, session
+`05a0399a-dadc-48b4-8f06-f08feac795b5`, implements R1/R3/M1 in one visit,
+including the src guidance mirror and allocated checks. Test and design have
+released ownership. RM-3/RM-4 remain explicit ACT-1007 REDs pending user choice.
+
+Correction evidence: R1/M1 module REDs are GREEN, 943 module tests pass,
+and persistence/watch is 77 GREEN plus the two expected ACT-1007 REDs.
+Finding-scoped Review(src), Claude Opus 5.5/high, session
+`ec311b62-acb6-4994-b7de-bf1603ad1fcc`, inspects R1/R3/M1 while dev finishes
+its final checks; dev retains Cargo/source until its report returns ownership.
+
+The user clarified that removal means omission from a saved source file and
+asked how invalidated foreign callers relate to retaining old versions. No
+restart exception or public change was approved. Arch read-only assessment,
+Claude Opus 5.5/high, session `0d3f21fe-0653-4c63-be1a-9d830fa0902a`, checks
+the outstanding minted-instance question and prepares an exact proposal if
+needed; live binding and retained code ownership are separate responsibilities.
+
+Dev `05a0399a…` completed and explicitly released source/Cargo. Default
+module tests 943/943, agent module tests 1083/1083, RB5 stress15/15;
+full suite 6359 passes, one skipped and exactly ACT-1007 RM-3/RM-4 RED.
+M1 passes. No public API/schema/ABI delta. Final bounded QA begins after this
+release and consumes the finding-scoped review before judging.
+
+Correction QA session `eac19666-a786-4e6c-8793-9d0c735245d5` uses Claude
+Opus 5.5/high. Its scope is the delivered R1/R3/M1 correction, current-source
+acceptance and truthful remaining generic/dependency records.
+
+
+Arch `0d3f21fe…` completed read-only assessment: template removal needs no
+old template version; compiled instances own their code and existing reload
+demand handling covers retirement. The exact proposed public semantic widening
+is now before the user; no implementation is approved yet. No API shape,
+cache or ABI change is proposed. Review `ec311b62…` returned an interim
+no-finding observation before the dev report arrived, without its required
+artifact. Review completion session `293e1e5b-8442-41e1-9c80-6cc1d5c17987`
+(Claude Opus 5.5/high) finishes that same R1/R3/M1 handoff; it is not a new
+review scope.
+
+Review completion `293e1e5b…` releases R1/R3/M1: no finding survives, final
+source/evidence hashes match dev, and the src guidance mirror is accurate.
+Generic publication remains a separate user gate, with no producer edits yet.
+
+
+Correction QA `eac19666…` completed its judgment: FL, concrete RM, R1/R3 and
+M1 are adequate; final acceptance is 80 passes with the two known generic REDs
+(82 tests including document checks). Documents: 518, zero findings;
+traceability: 2629 valid citations and zero unresolved references. Source
+hash matches dev/review. ACT-1011 records the measured startup-cascade recovery
+problem for the next correction basket; no fix/carry decision is inferred.
+The user requests more background on the generic proposal; no approval yet.
+No new commit or phase transition occurred.
+
+
+### Generic removal approval — 2026-09-29
+
+The user said “agreed” to the explained exact public semantic extension in
+arch assessment `0d3f21fe…`: absent-key `ChangeAbi` also removes a slotless
+Template binding; the consumer includes omitted authored templates. No new
+public item, slot for a template, cache-format or ABI change. The expected
+generated public baseline is unchanged and returns for post-implementation
+confirmation under the root gate. No restart exception, new deletion command,
+commit, carry or phase transition is authorized. Producer, design and QA
+readiness proceed concurrently on separate owned surfaces; Cargo is serialized.
+
+Active generic-removal roles, all Claude Opus 5.5/high:
+- Arch producer `8218fce7-0d89-4c10-95d1-3889787089a5`: approved types
+  contract, module evidence and generated baseline; sole Cargo owner.
+- Design(int) `efd1a27b-fbd9-4eb0-adbd-2eecec3f6606`: canonical consumer
+  design and bounded implementation handoff.
+- QA readiness `fa570b82-15ad-4369-8fed-68db7ca1ecb9`: evidence delta for
+  generic removal and dependent concrete instances.
+
+Producer `8218fce7…` completed: 294/294 types tests; fresh public-API guard
+passes3/3 and reports the expected +0/−0 surface. Cargo released. Design
+`efd1a27b…` requires retaining the consumer's slotless non-template exclusion
+while adding all-template bindings. QA `fa570b82…` judged ready and allocated
+one foreign-caller recovery cell RM-5 before the consumer change.
+
+Test `d50b9d17-17f2-4a21-a8c8-c961bb1d4423` owns RM-5 and Cargo in the
+pre-consumer window. Review(types) `afb562fa-a204-4c87-bc44-e553d8a70b29`
+independently inspects the completed producer without Cargo. Both use Claude
+Opus 5.5/high. Producer implementation and record consumers have no new API
+shape or serialization changes.
+
+Test `d50b9d17…` completed: RM-5 RED at the expected import-error/call legs
+and an additional stale-import regeneration leg. Existing77cells stayGREEN;
+RM3/RM4 remainRED. Consumer proceeds; the extra leg will be classified on the
+post-fix binary. Review(types) `afb562fa…` completed with no findings and
+confirmed the measured generated0/0 comparison.
+
+Dev(src) `5377c909-1df1-4e49-ab3d-8c31d7ff533c`, Claude Opus5.5/high,
+owns consumer integration and Cargo. Design's positive eligibility rule governs
+slotless templates; other slotless states stay excluded. The distinct stale
+import observation is preserved for post-fix QA, not assumed part of this change.
+
+Consumer `5377c909…` completed: RM3/RM4 GREEN, RM5 invalidation/recovery
+legs GREEN; stale-import regeneration leg remainsRED unchanged. Full suite:
+6366 passes, one skipped, one failure (RM5). The other77 persistence/watch
+cells stayGREEN. Source/Cargo released. Final QA classifies the import leg;
+no test expectation is weakened or import-record redesign inferred.
+
+Final roles, Claude Opus5.5/high:
+- Review(src) `0f47777b-233a-46c2-8abe-e54a2efb023e`: completed consumer delta.
+- QA `a1c69bdc-612d-47ba-80b1-bc972ff5a4c6`: final acceptance and independent
+  attribution of RM5's remaining stale-import leg; sole Cargo owner.
+- Design(int) `63122993-c9f8-4ab3-be5b-15aa5971572a`: current standing mirrors,
+  removing stale implementation timing without claiming the full RM5 is green.
+
+Review(src) `0f47777b…` releases the approved delta with no blocking/required
+finding. Its advisory empty-overload predicate mismatch fails closed and has
+no current producer; final QA retains its disposition. Design `63122993…`
+completed standing technical reconciliation. Mechanical status-only cleanup
+`f535327c-84f4-42d3-b1eb-87364c9f2a20` (Claude Opus5.5/high) removes two
+stale execution-status mirrors from int.md; no technical design change or
+new review cycle.
+
+
+Final QA `a1c69bdc…` accepts the approved generic behavior and retires
+ACT-1007. RM5's unchanged import-regeneration leg is independently reproduced
+with concrete and import-only controls and filed as ACT-1012. It remains RED,
+not accepted debt. Generated API guard passes3/3, types baseline +0/−0.
+Design status reconciliation `f535327c…` completed. Exact reference repair
+`ff088848-f7cd-41a5-b448-4d4250672913` (Claude Opus5.5/high) repoints the
+retired-action link to the closed QA record; this is mechanical only.
+No further implementation, commit or phase transition is inferred. The final
+baseline comparison returns to the user under the root post-implementation gate.
+
+Mechanical reference repair `ff088848…` completed. Final document checker:
+518 documents, zero findings and zero unverified references. Whitespace check
+passes; public baseline files have no diff; NOTES digest remains unchanged.
+Implementation and evidence are ready for the required +0/−0 baseline
+confirmation. The separate ACT-1012 RED remains explicit.
+
+
+### Unchanged API baseline needs no confirmation — 2026-09-29
+
+The user ruled: “I don't need to confirm no changes.” Root guidance now requires
+post-implementation confirmation only for a non-empty generated baseline diff.
+An unchanged result is verification evidence, not a user decision. Prior
+approval for actual public-contract changes, including signature-identical
+semantic changes, remains required. The generic-removal +0/−0 gate is satisfied;
+the previously requested confirmation is withdrawn. ACT-1012 remains open, and
+no commit or phase transition is inferred.
+
+Arch guidance mirror `c97b90fd-95f1-4e07-bf83-ca1e9bf8ba2c` (Claude Opus
+5.5/high) aligns its local approval wording with the root ruling. This changes
+coordination policy only; no source, API baseline or runtime behavior changes.
+
+Guidance alignment completed. Root and architecture guidance agree; document
+check: 518 documents, zero findings. No confirmation remains outstanding for
+the unchanged generic-removal baseline. No commit was made.
+
+### Omitted import correction — 2026-09-29
+
+The user says “continue” after clearing the unchanged-baseline gate. ACT-1012
+is the next correction: the remaining RED is an import omitted by a successful
+saved-source reload but retained in lookup and regeneration. Source-first check
+opened the append-only writer in form_dispatch.rs, reload_module and save.rs.
+QA's C2/C3 allocation is settled; test separates that RED from RM5's verified
+generic behavior while design(int) settles the smallest coherent repair.
+No new public change, commit or phase transition is inferred.
+
+Test `3ac4467f-8b24-4133-991c-0432ca70751d` owns the settled C2/C3 evidence
+and Cargo. Design(int) `dd880e0e-4174-4d95-8070-65571aea10e3` owns the
+private correction handoff and standing design. Both use Claude Opus5.5/high;
+source implementation waits for the reproducer and any genuine boundary decision.
+
+Test `3ac4467f…` completed and released Cargo: C2 is RED on omitted-import
+listing, bare resolution and regeneration; C3 retained-import control and RM5
+generic removal are GREEN. The focused persistence/citation run passes 69 of
+70 tests, with C2 the sole failure. Design's correction handoff remains in
+progress; these focused results do not replace the last full-suite result.
+
+Design `dd880e0e…` completed. Its proposed correction requires a candidate
+withdrawal operation absent from the types facade; implementation waits for
+architecture assessment and explicit public-contract approval. Arch
+`027be541-4e98-4ebe-9a9c-4d3d8dd6d9c4` (Claude Opus5.5/high) prepares the
+exact proposal. QA concurrently reconciles the isolated C2 evidence and settles
+the correction's evidence delta; neither stream changes implementation.
+
+Arch `027be541…` completed: proposes one private foreign-candidate withdrawal
+method (+1/−0 types baseline), plus the whole-source replacement contract for
+`imports`; no cache-schema or ABI change. QA
+`ee4a5163-dfd2-4b49-adaf-fa7e2a81e97c` (Claude Opus5.5/high) completed the
+settled evidence delta and updated bands. No additional end-to-end cell is
+required. The proposal is ready for user review; C2 remains RED, no dependent
+implementation or commit was made, and Phase5 remains active.
+
+### Whole-file namespace direction — 2026-09-29
+
+The user distinguishes incremental REPL turns, which retain the current
+namespace, from whole-file rebuilds, which start with an empty namespace.
+Old slots and code remain available where existing callers require them;
+changed callable structures receive fresh slots. The proposed import-withdrawal
+API is not approved and is superseded as the assumed repair mechanism.
+Arch `ee8fa381-bcf9-419c-a58d-d28e03810bf4` (Claude Opus5.5/high) assesses
+the existing publication machinery and exact remaining contract changes.
+No implementation, public API change, commit or phase transition is inferred.
+
+Arch `ee8fa381…` completed the source assessment. It recommends parking the
+prior generation outside lookup while rebuilding the visible namespace from
+source, reusing existing slot reconciliation and code retention. The proposed
+types contract has four methods (+4/−0); it is not approved. The first open
+normative question is whether omitting a live nominal type or trait requires
+restart, consistent with the existing structural-change boundary, or requires
+a retained nominal identity reservation. The import-only withdrawal proposal
+remains superseded. Exact proposal: local assessment
+`s122-whole-file-namespace-arch-result.md`; implementation and phase remain
+unchanged pending the decisions and focused design handoff.
+
+The user additionally requires reload invalidation through fully qualified
+references. The current `dependent_modules` traversal follows imports,
+exports and prelude only; the cache dependency code already combines recorded
+callee modules and lookup dependencies. The rebuild handoff must include this
+missing cascade coverage and its independent regression evidence. Platform
+function values are prohibited by spec §10.10.1, but rejection is not yet
+implemented: ACT-0979 remains open and the current platform signature gate
+checks only the IO return. Do not treat that normative prohibition as measured
+compiler enforcement when assessing runtime retention.
+
+### Quiescent reload direction — 2026-09-29
+
+The user rules that cross-area design relies on specified contracts, with
+implementation defects tracked separately. Whole-file reload occurs after
+evaluation and IO finish and the result is released; platform closures are
+excluded by contract. Historical closure/type-identity retention is therefore
+not a reload design requirement. Incremental behavior stays unchanged; full
+rebuild starts with an empty namespace and invalidates dependents including
+fully qualified references. The user authorizes this direction to get green.
+The previous nominal-reservation question is withdrawn. Existing retained
+code need not be removed merely for cleanup, but cannot justify new machinery.
+
+Arch `a862704d-9585-4efe-ac5e-e95ac987d1a1` (Claude Opus5.5/high) revises
+only the consequences of this ruling into the smallest concrete proposal.
+QA concurrently allocates minimal fully qualified reload evidence. Any actual
+public API delta still needs exact prior approval; no phase transition or
+commit is inferred.
+
+QA `1c19e60f-1796-45c5-8b5e-365520f755c0` completed the FQR evidence delta:
+two independent function/type-only cells include failure locking and release
+after dependency repair. Test `bedf40f8-d520-4541-b237-18374b1171f1` owns their
+implementation and Cargo; the conditions do not depend on the pending rebuild
+API shape. Spec concurrently scribes the approved dependency definition.
+Both use Claude Opus5.5/high. QA flags preservation of failed-attempt FQ edges
+as a design input for the combined correction, not a new semantic question.
+
+Arch `a862704d…` completed: the revised correction uses existing public
+constructors and GOT field, with no new API (+0/−0 expected). Whole-file
+rebuild replaces the table and may reuse slot indices at the quiescent
+boundary; complete dependency invalidation and error locking govern resumption.
+Those consequences were relayed to the user. The +4 proposal is withdrawn.
+Spec `f4653a6c-0fe7-4a75-b119-8d79269787f2` completed the dependency-rule
+clarification. Test `bedf40f8…` observed both FQR cells RED, imported controls
+GREEN, and released Cargo; no compiler fix was included in that evidence.
+
+Design(int) `b3d96717-ec0e-4eba-847e-4f432a579cf5` settles the private
+implementation and failed-FQ-edge recovery. Dev(types)
+`031f0ad7-10ce-40b7-8161-b9d09882464b` reverts only the now-unneeded
+uncommitted slotless-template extension and owns Cargo until its focused
+checks finish. Both use Claude Opus5.5/high. Consumer migration follows in
+one src visit; intermediate removal-test failures are not final evidence.
+
+Types `031f0ad7…` completed: crate equals HEAD, 292/292 tests pass, Cargo
+released. Arch documentation `e3fc4d3a-6b1d-4992-a171-45b37492cd02`
+completed owned alignment. Design `b3d96717…` completed: selection and ordering
+share all dependency edges; a held failed-attempt reference preserves FQ
+recovery edges; all rebuild callers converge. No public delta is needed.
+Dev(src) `badc2363-fccc-426f-8e50-4c1429e98ba6` (Claude Opus5.5/high) now
+owns implementation and Cargo through the focused, stress, API and full gates.
+Typecheck documentation and one crate-root rustdoc consumer reference are
+being aligned independently, without Cargo or behavior changes.
+
+
+Dev(src) `badc2363…` completed and released Cargo/source. Focused acceptance
+passes 260/260; target cells pass; RB5 stress passes 15/15; the canonical
+public-API check passes 3/3 with all seven baselines +0/−0. Full run:
+6370 passed, one document-gate failure, one skipped. The six document findings
+name retired source symbols and are assigned to their record owners.
+
+Arch `cd566f38-f089-4b44-b655-2356b352a375` completed the final owned
+alignment and retired superseded filing0553. Sprint repaired its incoming
+inventory/action references. Independent review(src)
+`3e79067c-8cad-4827-898c-f3c07b56d6c7` is read-only; final QA
+`06ee9450-ecc7-40ac-9b4a-ab5d87b5881d` owns fresh acceptance, Cargo and
+QA record repair. Both use Claude Opus5.5/high. The typecheck prose-only
+alignment sessions `ff46949d…`, `7032f21e…` and `1fa595c8…` completed;
+none ran Cargo. No commit or phase transition occurred.
+
+
+Final QA `06ee9450…` accepts the correction after fresh 101/101 acceptance;
+review `3e79067c…` has no blocking code finding. Review R1 remains a separate
+startup-repair policy question; qualified-cycle observation is filed as
+ACT-1013, not implicitly accepted carry. Design final repair
+`a6f27c00-c1c1-4373-ac1e-d434ed91d3f6` (Claude Opus5.5/high) repointed the
+retired ACT-1012 link and recorded QA's accepted structural Increments grade.
+Coordinator reran `citation_drift`: 3/3 pass, checker 517 documents/0 findings.
+The source diff hash remains `f274465e…df51836`, identical to the full-run and
+QA tree. All observed test failures for this correction are cleared. NOTES
+checksum remains unchanged; no commit, phase transition or whole-sprint
+acceptance is inferred. Comment-only defect `fixed=` markers await the next
+explicitly authorized checkpoint commit per QA's mechanical handoff.

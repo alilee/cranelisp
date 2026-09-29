@@ -370,12 +370,12 @@ impl CompilerSession {
         failure
     }
 
-    /// Make a cache-installed module editable: recompile it from its backing
-    /// file through the ordinary reload, so every generation regeneration
-    /// writes was compiled from source this session
-    /// (`design/int/session-persistence.md` §2.4.5). The entry module, a
-    /// module compiled from source and a module not yet loaded are left as
-    /// they are.
+    /// Make a cache-installed module editable: rebuild it and its dependents
+    /// from their backing files through the one reload executor, so every
+    /// generation regeneration writes was compiled from source this session
+    /// (`design/int/session-persistence.md` §2.4.5). Returns the notification
+    /// of each module that failed. The entry module, a module compiled from
+    /// source and a module not yet loaded are left as they are.
     fn recompile_cache_installed_module(&mut self, module: &ModuleFullPath) -> Option<String> {
         if *module == self.entry_module || !self.shared.scheduler.is_cached_module(module) {
             return None;
@@ -385,10 +385,13 @@ impl CompilerSession {
             .typecheck_products
             .get(module)
             .and_then(|product| product.file_path.clone())?;
-        match self.reload_with_notice(module, &backing) {
-            crate::session_v4::ReloadNotice::Updated(_) => None,
-            crate::session_v4::ReloadNotice::Errors(message) => Some(message),
-        }
+        let failures: Vec<String> = self
+            .run_reload_plan(vec![(module.clone(), backing)])
+            .into_iter()
+            .filter(|outcome| outcome.result.is_err())
+            .map(|outcome| outcome.notice())
+            .collect();
+        (!failures.is_empty()).then(|| failures.join("\n"))
     }
 
     /// /source handler: show original source text of a definition.

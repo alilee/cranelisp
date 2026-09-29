@@ -1576,7 +1576,6 @@ mod bare_module_name_tests {
                 platform_dirs: &[],
                 project_root: self.dir.path(),
                 shared_state: None,
-                reload_demands: std::sync::Arc::from([]),
                 eval_driven: true,
             };
             let sexps = cranelisp_frontend::parse(source).unwrap();

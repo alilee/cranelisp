@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
-use cranelisp_types::{FQSymbol, FQTypeName, ModuleFullPath, Warning};
+use cranelisp_types::{FQSymbol, ModuleFullPath, Warning};
 // Re-exported for the `#[cfg(test)] mod *_tests` siblings that reach it via
 // `use super::*` (they construct `SessionSettings`). The parent itself no
 // longer names it directly (the `SessionSettings` field moved to `types.rs`).
@@ -46,8 +46,9 @@ pub use self::types::{
     SymbolCategory, SymbolInfo, TypecheckProduct, parens_balanced_pub,
 };
 pub(crate) use self::types::{
-    FailedForm, TurnDefinitions, dedup_platform_names_preserving_order, definition_result_symbol,
-    intrinsic_type_from_name, is_comment_only, parens_balanced, resolve_priority_worker_count,
+    FailedForm, ModuleLock, TurnDefinitions, dedup_platform_names_preserving_order,
+    definition_result_symbol, intrinsic_type_from_name, is_comment_only, parens_balanced,
+    resolve_priority_worker_count,
 };
 
 // test_runner — the shared test runner behind `--test`, `/run-tests` and
@@ -89,7 +90,6 @@ pub(crate) use self::shared_state::ReadOnlyMacroResolver;
 // module; the struct defs stay in this parent (§2.0). `populate_ring0_got_slots`
 // is module-internal to `lifecycle` (only `new` calls it), so no re-export.
 mod lifecycle;
-pub(crate) use lifecycle::ReloadNotice;
 
 // ---------------------------------------------------------------------------
 // CompilerSession (pipeline-v4.md §5)
@@ -402,11 +402,17 @@ pub struct CompilerSession {
     /// leaves `error_modules` and the next regen writes a green backing file.
     pub(crate) failed_forms: std::collections::HashMap<ModuleFullPath, Vec<FailedForm>>,
 
-    /// Modules whose reload failed because it would change a live type's
-    /// structure, with that type (`design/int/repl-lifecycle.md` §1.3.1).
-    /// Each is also in `error_modules`. Its saved file is not overwritten
-    /// until a successful reload of the module or a restart.
-    pub(crate) restart_required: HashMap<ModuleFullPath, FQTypeName>,
+    /// Locked modules and the cause of each lock
+    /// (`design/int/repl-lifecycle.md` §1.3.1). Every locked module is also
+    /// in `error_modules`. Session state only, so a restart compiles the
+    /// saved source afresh.
+    pub(crate) module_locks: HashMap<ModuleFullPath, ModuleLock>,
+
+    /// Each module's established reference while its whole-file rebuilds keep
+    /// failing: the table the first failing rebuild displaced
+    /// (`design/int/session-transaction.md` §7.3.2). Only a successful reload
+    /// of the module drops it.
+    pub(crate) reload_references: HashMap<ModuleFullPath, Arc<SessionSymbolTable>>,
 
     /// File watcher for REPL mode. Initialized via `init_watcher()` after
     /// construction. None in batch/link modes or if OS watcher unavailable.

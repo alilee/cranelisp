@@ -1692,9 +1692,10 @@ fn resolve_recheck_sexps(
     RecheckInputs::Sexps(ordered.into_iter().map(|(_, s)| s).collect())
 }
 
-/// T2 module-grain degrade: reload the member's module from its backing file
-/// through the existing S35/S37 machinery. Returns `false` when no backing
-/// file is known or the reload fails.
+/// T2 module-grain degrade: rebuild the member's module and its dependents
+/// from their backing files through the one reload executor
+/// (`design/int/session-transaction.md` §10). Returns `false` when no backing
+/// file is known or the module's own rebuild fails.
 fn module_grain_reload(session: &mut CompilerSession, module: &ModuleFullPath) -> bool {
     let Some(path) = session
         .shared
@@ -1704,7 +1705,10 @@ fn module_grain_reload(session: &mut CompilerSession, module: &ModuleFullPath) -
     else {
         return false;
     };
-    session.reload_module(module, &path).is_ok()
+    session
+        .run_reload_plan(vec![(module.clone(), path)])
+        .iter()
+        .any(|outcome| &outcome.module == module && outcome.result.is_ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -1753,22 +1757,22 @@ impl CompilerSession {
     ///
     /// - **CS-1.** `regenerate_backing_file` runs FIRST so the backing source
     ///   carries the just-committed redefinition (never resurrect the
-    ///   pre-redefinition source a bare mid-turn reload would read), then
-    ///   `reload_module`(target) + the dependent cascade reload through the
-    ///   §7.3 Replace commit gate. Eval-synchronous: `reload_module` blocks the
-    ///   eval thread on `wait_inmem_complete_blocking` while a pool worker
-    ///   re-typechecks (the S93 watcher discipline — no second orchestrator,
-    ///   B1 stays closed). Reachable from BOTH the ordinary-def exit and the
-    ///   `eval.rs` defmacro early-return (F5a) via `apply_redefinition_outcomes`.
+    ///   pre-redefinition source a bare mid-turn reload would read), then a
+    ///   reload plan rooted at the target module runs through the one reload
+    ///   executor, which rebuilds the target and its dependents
+    ///   (`design/int/session-transaction.md` §7.3, §10). Eval-synchronous:
+    ///   each rebuild blocks the eval thread while a pool worker re-typechecks
+    ///   (the S93 watcher discipline — no second orchestrator, B1 stays
+    ///   closed). Reachable from BOTH the ordinary-def exit and the `eval.rs`
+    ///   defmacro early-return (F5a) via `apply_redefinition_outcomes`.
     /// - **CS-2.** A successful reload cures the split world, so NO `stale:`
     ///   report is pushed (the section renders empty). `stale_callers` cannot
     ///   distinguish a recompiled caller from a stale one — the empty render is
     ///   achieved by not pushing after a successful reload, not by a re-scan.
-    /// - **CS-3.** A reload FAILURE degrades to the §14.4 error-blocked state
-    ///   (the 0489 prompt floor — never a lockout or session exit) and keeps
-    ///   the interim `stale:` print; a module whose regen is SUPPRESSED
-    ///   (FIXME-0343 `should_regenerate` guard) keeps the print rather than
-    ///   reload stale disk source.
+    /// - **CS-3.** A failed reload leaves its module locked like any failed
+    ///   rebuild and keeps the interim `stale:` print; a module whose regen is
+    ///   SUPPRESSED (FIXME-0343 `should_regenerate` guard) keeps the print
+    ///   rather than reload stale disk source.
     fn drive_t1_full_cure(&mut self, target: &FQSymbol) {
         // The omission rule (§18.1.1): no compiled caller left behind ⇒ no
         // reload, no report. The on-demand `ReverseIndex` scan runs ONLY here
@@ -1788,69 +1792,15 @@ impl CompilerSession {
             self.push_stale_report(target, stale);
             return;
         };
-        match self.reload_module(&target.module, &path) {
-            Ok(()) => {
-                self.reload_t1_dependents(&target.module);
-                // CS-2: the reload recompiled exactly the stale callers — the
-                // section renders EMPTY (push nothing). Kept machinery, not
-                // throwaway (Principle 8).
-            }
-            Err(e) => {
-                // CS-3 (reload failure): the regenerated source is now
-                // ill-typed (e.g. an unannotated caller made ambiguous under an
-                // overloaded target — a real error `--run` would report for
-                // this file too). Degrade to the §14.4 error-blocked floor.
-                self.enter_t1_reload_error_block(target, &stale, &first_line(&e.to_string()));
-                self.push_stale_report(target, stale);
-            }
-        }
-    }
-
-    /// Enter the §14.4 error-blocked floor after a CS-3 T1 reload failure —
-    /// **liftable by repair, never a lockout** (the 0489 floor).
-    ///
-    /// Resets the scheduler's Failed state so the session exits cleanly (never
-    /// a session exit), records each stale caller resident in the target module
-    /// as a `FailedForm` (keyed by module) from its introspection source, and
-    /// adds the module to `error_modules`. Recording the failed forms is
-    /// load-bearing for the "never a lockout" guarantee: `clear_repaired_failed_form`
-    /// lifts the block ONLY when `failed_forms` drains, and
-    /// `regenerate_backing_file` re-emits them verbatim (`append_failed_forms`)
-    /// so the ill-typed caller is never silently dropped. A repair definition
-    /// turn (re-defining the ambiguous caller) drains the set and reopens the
-    /// prompt. (Unlike a full degraded re-drive this does NOT re-enter the eval
-    /// path, so it cannot recurse or perturb the surviving module state.)
-    fn enter_t1_reload_error_block(&mut self, target: &FQSymbol, stale: &[FQSymbol], error: &str) {
-        use crate::session_v4::FailedForm;
-        // Scheduler-only reset here — do NOT purge the failed modules' live
-        // tables (contrast the autoload-retry reset). A T1 redefinition rollback
-        // relies on the PRIOR (valid) definitions still living in those tables
-        // for the caller-repair lift; purging them destroys recoverable state.
-        let _ = self.shared.scheduler.reset_all_failed_modules();
-        let failed: Vec<FailedForm> = stale
+        let rebuilt = self
+            .run_reload_plan(vec![(target.module.clone(), path)])
             .iter()
-            .filter(|fq| fq.module == target.module)
-            .filter_map(|fq| {
-                let text = self
-                    .shared
-                    .introspection
-                    .as_ref()
-                    .and_then(|m| m.get(fq))
-                    .and_then(|i| i.source.clone())?;
-                Some(FailedForm {
-                    symbol: Some(fq.symbol.clone()),
-                    error: error.to_string(),
-                    text,
-                })
-            })
-            .collect();
-        if !failed.is_empty() {
-            self.failed_forms
-                .entry(target.module.clone())
-                .or_default()
-                .extend(failed);
+            .any(|outcome| outcome.module == target.module && outcome.result.is_ok());
+        // CS-2: a successful reload recompiled the stale callers, so the
+        // section renders EMPTY. CS-3: a failed one left the module locked.
+        if !rebuilt {
+            self.push_stale_report(target, stale);
         }
-        self.error_modules.insert(target.module.clone());
     }
 
     /// Push the §18.1.1 `stale:` interim report for `target` (the CS-3
@@ -1886,22 +1836,6 @@ impl CompilerSession {
         }
         let fallback = self.shared.project_root.join(format!("{module}.cl"));
         fallback.exists().then_some(fallback)
-    }
-
-    /// CS-1 dependent cascade: reload every module importing `changed` from its
-    /// own backing file (the §7.3 imports-scan). A cross-module caller — or a
-    /// `__macro_*` clause's home module — that uses the redefined dependency
-    /// picks up the new definition through its re-typecheck / re-expansion.
-    /// Reload failures are non-fatal here (the primary target has already been
-    /// cured). The dependent set + path resolution come from the SHARED
-    /// `CompilerSession::dependent_modules` scan the watcher's `poll_and_reload`
-    /// also uses (Principle 7 — the two cascades cannot drift).
-    fn reload_t1_dependents(&mut self, changed: &ModuleFullPath) {
-        let mut changed_set: HashSet<ModuleFullPath> = HashSet::new();
-        changed_set.insert(changed.clone());
-        for (dep, path) in self.dependent_modules(&changed_set) {
-            let _ = self.reload_module(&dep, &path);
-        }
     }
 
     /// Drain the pending cascade-report text for the turn's display, if any.
@@ -1952,7 +1886,6 @@ impl CompilerSession {
                 platform_dirs: &platform_dirs_snap,
                 project_root: &self.shared.project_root,
                 shared_state: Some(&self.shared),
-                reload_demands: std::sync::Arc::from([]),
                 // Eval-thread-synchronous: a dependency gap must never move
                 // the module to TypecheckBlocked (Invariant SW) — the
                 // transaction waits on the dep itself and retries from the top.
@@ -3169,5 +3102,59 @@ mod tests {
         drop(_g);
         let _off = crate::style::test_support::ColorGuard::force(false);
         assert_eq!(r.render(&cur).unwrap(), "; recompiled:\n;  g");
+    }
+}
+
+#[cfg(test)]
+mod t1_reload_tests {
+    use super::*;
+    use crate::session_v4::{ModuleLock, RunMode, SessionSettings};
+    use cranelisp_types::CodegenBehaviour;
+
+    // spec: design/int/repl-lifecycle.md §1.3.1; design/int/session-transaction.md
+    // §10 — the T1 cure's reload plan runs through the one executor, so a
+    // dependent that fails in it is locked and blocked like any failed rebuild,
+    // while the target module that rebuilt is not and no `stale:` report is
+    // pushed.
+    #[test]
+    fn t1_rooted_plan_locks_a_failed_dependent() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("lib.cl"),
+            "(defn f [] 1)\n(defn k [] (f))\n",
+        )
+        .unwrap();
+        let app_file = root.path().join("app.cl");
+        std::fs::write(&app_file, "(import [lib [f]])\n(defn a [] (f))\n").unwrap();
+        let mut s = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: true,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 0,
+                run_mode: RunMode::Repl,
+            },
+            root.path().to_path_buf(),
+            "user",
+        )
+        .unwrap();
+        s.set_lib_dirs(Vec::new());
+        s.eval("(import [app [a]])").unwrap();
+        assert_eq!(s.handle_mod("lib"), None);
+        std::fs::write(&app_file, "(import [lib [f]])\n(defn a [] (nope))\n").unwrap();
+        let lib = ModuleFullPath::from("lib");
+        let app = ModuleFullPath::from("app");
+
+        s.drive_t1_full_cure(&FQSymbol {
+            module: lib.clone(),
+            symbol: Symbol::from("f"),
+        });
+
+        assert_eq!(s.module_locks.get(&app), Some(&ModuleLock::FailedSource));
+        assert!(s.error_modules.contains(&app));
+        assert!(!s.module_locks.contains_key(&lib));
+        assert!(s.take_cascade_report().is_none(), "the target rebuilt");
+        s.shutdown();
     }
 }

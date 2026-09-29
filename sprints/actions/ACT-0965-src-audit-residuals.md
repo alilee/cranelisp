@@ -23,7 +23,8 @@ assessment's F-B ([historical assessment](https://github.com/alilee/cranelisp/bl
 "open, unchanged" without carrying it and whose backlog filing (0407) had
 already been deleted at S98. The S122 plan proposed dispositions for F-2 and
 F-3 but the user has not yet ruled; F-B has never been put to the user. S121
-F-1 is not here — FIXME 0553 carries it. None of the three is approved work.
+F-1 is not here — the `SPRINT.md` scope row “src S121 F-1 — reload
+realization mismatch” carries it. None of the three is approved work.
 
 1. **F-2 — a live comment contradicts the source map.** `src/lib.rs`, directly
    under `pub(crate) mod repl;`, still says the `repl/` module was deleted and

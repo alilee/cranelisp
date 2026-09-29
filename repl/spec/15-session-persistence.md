@@ -2,7 +2,7 @@
 
 ## 15. REPL Session Persistence [R4 S52]
 
-### 15.1 Source Regeneration [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session]
+### 15.1 Source Regeneration [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session] [Tested+Neg tests/repl_persist::persist_import_omitted_by_save_is_not_in_scope_or_rewritten, tests/repl_persist::persist_import_kept_by_save_stays_in_scope_and_is_written_once_control — after a reload whose saved source omits an `import`, regeneration does not write it back; a kept import is written once]
 
 The REPL MUST persist interactive definitions to disk by maintaining a backing `.cl` file for the entry module (e.g. `user.cl`). When the user enters a definition that compiles successfully:
 
@@ -11,7 +11,7 @@ The REPL MUST persist interactive definitions to disk by maintaining a backing `
 
 The regenerated source file MUST be valid, parseable Cranelisp source — loading it through the normal module graph pipeline MUST reproduce the same session state. [R4 S52]
 
-A file whose reload failed on a structural type change is not regenerated until that failure is resolved; §14.8 governs it. [Tested+Neg tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart, tests/repl_persist::persist_compatible_save_after_structural_reload_failure_releases_the_file]
+A file whose reload failed is not regenerated while its module is locked; §14.5 governs it. [Tested+Neg tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart, tests/repl_persist::persist_compatible_save_after_structural_reload_failure_releases_the_file, tests/repl_persist::persist_type_error_reload_locks_file_until_a_save_compiles, tests/repl_persist::persist_parse_error_reload_lock_survives_restart_until_a_save_compiles, tests/repl_persist::watch_cascade_failed_importer_locked_until_import_is_fixed, tests/repl_persist::watch_qualified_caller_fails_on_removed_callee_until_it_is_restored, tests/repl_persist::watch_qualified_type_dependent_locked_until_its_module_compiles, tests/repl_persist::persist_mod_definition_keeps_dependency_source_failed_at_startup — §14.8, type-error, parse-error, cascade-dependent and qualified-reference-dependent causes, and a dependency still failing at restart]
 
 A definition entered in the session that fails to compile MUST NOT trigger regeneration and is never written. The backing file reflects the last successfully compiled state, plus any startup-failed source retained under §15.2.3. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_failed_import_not_written_to_backing_neg, tests/repl_persist::persist_expression_only_session_leaves_hand_authored_user_cl_untouched — the failed-definition variant itself is not exercised; nearest cells are the failed structural form and the expression-only control]
 
@@ -62,7 +62,7 @@ never as a headline. [S114]
 
 **Implementation handoff (`/dev`, src/):** this notice is REPL boot-time runtime output — it requires `src/` code (the startup restore path), not a `repl/` config change. `/repl` specifies the wording, count semantics, empty-suppression rule, and the TTY gate above; `/dev` implements it at the session-restore seam behind the same `is_terminal()` gate the search-index notice uses. **Count source (`/dev`, Minor — FIXME 0707):** the count MUST be taken from the session's own restore record (the definitions that actually restored), **not** by re-reading and re-parsing the backing file — after a startup load failure (§15.2.3) a re-parse over-counts by including definitions that failed to restore, contradicting "restored definitions." [S113/S114]
 
-#### 15.2.3 Startup Load Failure [Tested+Neg tests/repl_persist::persist_startup_load_failure_reaches_prompt_blocks_then_repairs, tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition — one module, non-TTY; report/refusal wording not spec-pinned]
+#### 15.2.3 Startup Load Failure [Tested+Neg tests/repl_persist::persist_startup_load_failure_reaches_prompt_blocks_then_repairs, tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition — one module, non-TTY; report/refusal wording not spec-pinned; a backing file that parses but fails. The parse-failure lock paragraph is evidenced separately below]
 
 If the persisted source (the backing `.cl` file, §15.1) fails to compile at startup, the REPL MUST report the load error and still reach a prompt.
 
@@ -73,6 +73,12 @@ The affected module MUST then enter an error-blocked state:
 - a successful repair clears the error-blocked state.
 
 Each persisted definition that failed to compile at startup MUST keep its source text, verbatim, in every later regeneration of the backing file (§15.1) until a successful definition replaces it. A successful turn that defines a different name therefore MUST NOT remove the failed definition's source from the backing file. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition]
+
+A backing file that does not parse at startup has no definition source to
+retain this way. Its module is instead locked as after a failed reload
+(§14.5 item 5): the REPL MUST NOT overwrite the file, a definition update whose
+success would regenerate it is rejected, and the lock releases only when a
+later save of the file compiles successfully. [Tested+Neg tests/repl_persist::persist_parse_error_reload_lock_survives_restart_until_a_save_compiles — reached through a parse-error save and a restart that keeps the cache: the error is reported, `(g)` is refused, a definition is rejected, the file is unchanged, and a compiling save releases the lock]
 
 Error blocking caused by a watched file changing during a session is specified separately (§14.4–§14.6).
 

@@ -15,8 +15,7 @@ use std::path::{Path, PathBuf};
 use cranelisp_types::Defn;
 use cranelisp_types::{
     Binding, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation, InstanceLink,
-    Life, ModuleFullPath, MonoDemand, Realization, Sexp, Span, StagedPublicationDecision, Symbol,
-    TopLevel,
+    Life, ModuleFullPath, Realization, Sexp, Span, StagedPublicationDecision, Symbol, TopLevel,
 };
 
 use cranelisp_typecheck::CheckState;
@@ -50,18 +49,23 @@ impl PreparedCommit {
 /// joins this value; `is_empty` destructures it exhaustively, so the
 /// publication decision cannot compile without accounting for the new fact.
 pub(crate) struct OwedFacts<'a> {
-    pub(crate) reload_demands: &'a [MonoDemand],
     pub(crate) lookup_dependencies: &'a std::collections::BTreeSet<ModuleFullPath>,
 }
 
 impl OwedFacts<'_> {
     fn is_empty(&self) -> bool {
         let Self {
-            reload_demands,
             lookup_dependencies,
         } = self;
-        reload_demands.is_empty() && lookup_dependencies.is_empty()
+        lookup_dependencies.is_empty()
     }
+}
+
+/// The two views of one cluster that the prepare step reads: the working
+/// program it checks and the program whose definitions it enrols for codegen.
+pub(crate) struct ClusterPrograms<'a> {
+    pub(crate) working: &'a [TopLevel],
+    pub(crate) codegen: &'a [TopLevel],
 }
 
 struct PreparedCompilation {
@@ -452,16 +456,22 @@ pub(crate) fn prepare_cluster_commit(
         module_aliases,
         prelude_fallback,
         module,
-        working_program,
-        codegen_program,
+        ClusterPrograms {
+            working: working_program,
+            codegen: codegen_program,
+        },
         OwedFacts {
-            reload_demands: &[],
             lookup_dependencies: &std::collections::BTreeSet::new(),
         },
+        None,
         shared,
     )
 }
 
+/// Check one cluster into a prepared publication. A whole-file rebuild
+/// supplies its module's `established_reference`, against which the type pass
+/// compares staged types (`design/int/session-transaction.md` §7.3.2); every
+/// other attempt compares against the live table.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_cluster_commit_with_demands(
@@ -469,9 +479,9 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     module_aliases: &cranelisp_types::ModuleAliases,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
-    working_program: &[TopLevel],
-    codegen_program: &[TopLevel],
+    programs: ClusterPrograms<'_>,
     owed: OwedFacts<'_>,
+    established_reference: Option<&crate::code::SessionSymbolTable>,
     shared: &crate::session_v4::SharedState,
 ) -> Result<
     Option<
@@ -484,7 +494,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         module_aliases,
         prelude_fallback,
         module,
-        working_program,
+        programs.working,
     )?;
     let checked = match checked {
         Some(checked) => checked,
@@ -508,22 +518,16 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         symbol_tables,
         module,
         &checked.staging,
+        established_reference,
         Some(&shared.scheduler),
     )?;
-    let mut demands = capture_affected_mono_demands(symbol_tables, module, &checked.staging)?;
-    extend_reload_demands(
-        symbol_tables,
-        module,
-        &checked.staging,
-        owed.reload_demands,
-        &mut demands,
-    )?;
+    let demands = capture_affected_mono_demands(symbol_tables, module, &checked.staging)?;
     let prepared = finish_prepared_commit(
         symbol_tables,
         module_aliases,
         prelude_fallback,
         module,
-        codegen_program,
+        programs.codegen,
         checked,
         &demands,
         shared,
@@ -1024,156 +1028,6 @@ fn capture_mono_demands(table: &crate::code::SessionSymbolTable) -> Vec<Historic
     instances
 }
 
-/// Project the concrete instantiations owned by one module table into the
-/// immutable request packet carried by a persisted-source reload.
-pub(crate) fn capture_reload_instantiation_demands(
-    table: &crate::code::SessionSymbolTable,
-) -> std::sync::Arc<[MonoDemand]> {
-    capture_mono_demands(table)
-        .into_iter()
-        .map(|historical| {
-            MonoDemand::from_type_args(
-                historical.link.template,
-                historical.link.type_args,
-                Span::SYNTHETIC,
-            )
-        })
-        .collect::<Vec<_>>()
-        .into()
-}
-
-/// Add reload-carried historical instances that are not already covered by
-/// an authored replacement in this cluster. A missing replacement template is
-/// an explicit decline; its prior key retires only if the whole candidate
-/// later publishes successfully.
-fn extend_reload_demands(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module: &ModuleFullPath,
-    staging: &crate::code::SessionSymbolTable,
-    reload_demands: &[MonoDemand],
-    captured: &mut Vec<CapturedMonoDemand>,
-) -> Result<(), CranelispError> {
-    let Some(live) = symbol_tables.get(module).map(|table| table.clone()) else {
-        return Ok(());
-    };
-    let historical = capture_mono_demands(&live);
-    for demand in reload_demands {
-        let old_link = demand.instance_link();
-        let Some(prior) = historical.iter().find(|prior| prior.link == old_link) else {
-            continue;
-        };
-        if captured
-            .iter()
-            .any(|existing| existing.prior_key == prior.prior_key)
-        {
-            continue;
-        }
-        let Some(owner) = callable_target_owner(&demand.template) else {
-            continue;
-        };
-        let remapped = if &owner.module == module {
-            staging.callable_target(&demand.template).map(|arm| {
-                demand
-                    .instance_key(&arm.scheme)
-                    .map(|key| (demand.clone(), key))
-                    .map_err(|error| CranelispError::TypeError {
-                        message: format!(
-                            "cannot rematerialize persisted instance '{}': replacement key derivation failed: {error}",
-                            prior.prior_key
-                        ),
-                        location: ErrorLocation::from_span(Span::SYNTHETIC),
-                    })
-            }).transpose()?
-        } else {
-            symbol_tables
-                .get(&owner.module)
-                .map(|table| remap_foreign_reload_demand(&table, demand, &prior.prior_key))
-                .transpose()?
-                .flatten()
-        };
-        let Some((staged_demand, staged_key)) = remapped else {
-            captured.push(CapturedMonoDemand {
-                prior_key: prior.prior_key.clone(),
-                old_link,
-                demand: None,
-                staged_key: None,
-                policy:
-                    crate::redefine::InstanceRematerializationPolicy::CallerFreeLanguageTypeChange,
-            });
-            continue;
-        };
-        captured.push(CapturedMonoDemand {
-            prior_key: prior.prior_key.clone(),
-            old_link,
-            demand: Some(staged_demand),
-            staged_key: Some(staged_key),
-            policy: crate::redefine::InstanceRematerializationPolicy::CallerFreeLanguageTypeChange,
-        });
-    }
-    Ok(())
-}
-
-/// Resolve a reload-carried demand against the dependency generation visible
-/// now. Overload arm ordinals are generation-local, so foreign replay matches
-/// by the canonical concrete-signature key that the historical caller owns.
-fn remap_foreign_reload_demand(
-    table: &crate::code::SessionSymbolTable,
-    demand: &MonoDemand,
-    prior_key: &Symbol,
-) -> Result<Option<(MonoDemand, Symbol)>, CranelispError> {
-    let CallableTarget::OverloadArm { owner, .. } = &demand.template else {
-        let Some(arm) = table.callable_target(&demand.template) else {
-            return Ok(None);
-        };
-        let key = demand.instance_key(&arm.scheme).map_err(|error| {
-            CranelispError::TypeError {
-                message: format!(
-                    "cannot rematerialize persisted instance '{prior_key}': replacement key derivation failed: {error}"
-                ),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }
-        })?;
-        return Ok(Some((demand.clone(), key)));
-    };
-
-    let Some(binding) = table.get(owner.symbol.as_ref()) else {
-        return Ok(None);
-    };
-    let Decl::Overloaded(declaration) = &binding.declaration else {
-        return Ok(None);
-    };
-    let mut matches = Vec::new();
-    for (ordinal, replacement) in declaration.arms.iter().enumerate() {
-        let Ok(arm) = cranelisp_types::CallableArmId::from_ordinal(ordinal) else {
-            continue;
-        };
-        let remapped = MonoDemand::from_type_args(
-            CallableTarget::OverloadArm {
-                owner: owner.clone(),
-                arm,
-            },
-            demand.type_args.clone(),
-            Span::SYNTHETIC,
-        );
-        if remapped
-            .instance_key(&replacement.callable.scheme)
-            .is_ok_and(|key| key == *prior_key)
-        {
-            matches.push(remapped);
-        }
-    }
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(matches.pop().map(|remapped| (remapped, prior_key.clone()))),
-        count => Err(CranelispError::TypeError {
-            message: format!(
-                "cannot rematerialize persisted instance '{prior_key}': replacement overload has {count} matching arms"
-            ),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }),
-    }
-}
-
 fn capture_affected_mono_demands(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -1344,6 +1198,7 @@ fn plan_staging_commit_inner(
         module,
         &staging,
         rematerialized_instances,
+        None,
         Some(&shared.scheduler),
     )?;
 
@@ -1577,6 +1432,7 @@ fn commit_staging_to_live(
         symbol_tables,
         module,
         &staging,
+        None,
         shared.map(|shared| &shared.scheduler),
     )?;
     let Some(mut live) = symbol_tables.get_mut(module) else {
@@ -1627,27 +1483,40 @@ fn validate_guarded_staging(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: &crate::code::SessionSymbolTable,
+    type_comparand: Option<&crate::code::SessionSymbolTable>,
     scheduler: Option<&crate::scheduler::CompileScheduler>,
 ) -> Result<(), CranelispError> {
-    validate_guarded_staging_except(symbol_tables, module, staging, &[], scheduler)
+    validate_guarded_staging_except(
+        symbol_tables,
+        module,
+        staging,
+        &[],
+        type_comparand,
+        scheduler,
+    )
 }
 
 /// The redefinition guard over a staged table. The type pass runs first, so a
 /// structural type refusal is reported (and recorded for a failed reload to
-/// read) ahead of any per-key refusal in the same cluster.
+/// read) ahead of any per-key refusal in the same cluster. It compares against
+/// `type_comparand` when one is given (a whole-file rebuild's established
+/// reference, `design/int/session-transaction.md` §2.6) and otherwise against
+/// the live table; the per-key guard always reads the live table.
 fn validate_guarded_staging_except(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: &crate::code::SessionSymbolTable,
     rematerialized_instances: &[Symbol],
+    type_comparand: Option<&crate::code::SessionSymbolTable>,
     scheduler: Option<&crate::scheduler::CompileScheduler>,
 ) -> Result<(), CranelispError> {
     let Some(live) = symbol_tables.get(module).map(|table| table.clone()) else {
         return Ok(());
     };
+    let comparand = type_comparand.unwrap_or(&live);
     let structural_change = staging
         .all_symbols()
-        .find_map(|(name, _)| crate::redefine::structural_type_change(&live, staging, name));
+        .find_map(|(name, _)| crate::redefine::structural_type_change(comparand, staging, name));
     if let Some(change) = structural_change {
         let error = change.to_error();
         if let Some(scheduler) = scheduler {
@@ -1793,9 +1662,6 @@ pub struct ModuleCompiler<'a> {
     /// codegen input stashing for nice workers.
     /// None for REPL contexts where caching is not used.
     pub shared_state: Option<&'a crate::session_v4::SharedState>,
-    /// Historical concrete instantiations captured atomically with a
-    /// persisted-source re-registration. Empty for ordinary compilation.
-    pub reload_demands: std::sync::Arc<[MonoDemand]>,
     /// **Eval-thread orchestration mode (S93, Invariant SW).** `true` ONLY on
     /// the REPL eval thread driving its own entry module (the Additive path in
     /// `eval.rs`). When set, a dependency gap records a *cycle-check* edge via
@@ -3154,7 +3020,6 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
             Some(PriorityWork::Typecheck {
                 module,
                 continuation,
-                instantiation_demands,
                 generation_started,
             }) => {
                 // FIXME 0285 defect 2 — worker-panic→park robustness. A panic
@@ -3166,13 +3031,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                 // Catch the unwind, convert it to a module failure, and notify
                 // so `wait_inmem_complete_blocking` returns `ModuleFailed`.
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle_typecheck_work_shared(
-                        shared,
-                        &module,
-                        &continuation,
-                        instantiation_demands,
-                        generation_started,
-                    )
+                    handle_typecheck_work_shared(shared, &module, &continuation, generation_started)
                 }));
                 match result {
                     Ok(Ok(())) => {}
@@ -3397,16 +3256,9 @@ fn handle_typecheck_work_shared(
     shared: &crate::session_v4::SharedState,
     module: &ModuleFullPath,
     continuation: &crate::scheduler::SourceContinuation,
-    instantiation_demands: std::sync::Arc<[MonoDemand]>,
     generation_started: bool,
 ) -> Result<(), CranelispError> {
-    match crate::cluster::process_cluster(
-        shared,
-        continuation,
-        instantiation_demands,
-        module,
-        generation_started,
-    )? {
+    match crate::cluster::process_cluster(shared, continuation, module, generation_started)? {
         crate::cluster::ClusterOutcome::Done {
             mut processed,
             program: _,

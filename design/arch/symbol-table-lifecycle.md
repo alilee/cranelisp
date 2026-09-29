@@ -22,7 +22,8 @@ Neither history nor this consolidation accepts outstanding sprint work.
 - Types owns lifecycle and slot mutation. Integration owns language/ABI
   classification, transaction scheduling and executable-memory retention.
 - Persisted indices survive cache restoration; process pointers and compiled
-  owners do not serialize. Published indices cannot silently become fresh slots.
+  owners do not serialize. Within one table, a published index cannot silently
+  become a fresh slot; a whole-file rebuild starts a new table (§4.3).
 
 These are the operative outcomes of the earlier clean-sheet exercise. Its
 incumbent-model comparisons, rejected migration waypoints and source censuses
@@ -97,6 +98,34 @@ and types derives the final slot plan. Published retirement preserves the old
 index in tombstones; code-page retention is the separate integration half of
 that same lifetime obligation. Manifest-backed platform slots share this index
 space and remain tied to descriptor order.
+
+**Whole-file rebuild.** Tombstones and claims are per table. A whole-source
+reload of a module installs a new, empty table that keeps the module's
+`GotTable`: the GOT base stays fixed for the module's lifetime, while slot
+claims, tombstones and every other table fact restart from the saved source.
+The new table may therefore reissue indices the displaced table published.
+REPL increments keep the per-table rule above. Approved 2026-09-29; the source
+implementation is in progress.
+
+Reissue is sound only while Binary/int holds two obligations:
+
+- **Quiescent boundary.** A rebuild runs between completed REPL turns, after
+  evaluation and IO finish and the result is released; a normal completion has
+  already drained its detached strands (spec §10.12.7 item 6). Platform-held
+  function values are excluded by spec §10.10.1; its rejection is not yet
+  enforced ([ACT-0979](../../sprints/actions/ACT-0979-platform-function-type-rejection.md)).
+- **Complete invalidation.** Before evaluation resumes, every module whose
+  compiled code references the rebuilt GOT is recompiled after it in the same
+  plan or is in the error set (REPL spec §14.2 step 4, §14.4–§14.5).
+  Qualified-reference edges count
+  ([lookup dependencies](interfaces.md#qualified-lookup-dependencies)).
+
+The mechanism, including the REPL spec §14.8 reference and retention of the displaced
+table's owners, is
+[session transaction §7.3](../int/session-transaction.md#73-the-watcher-and-reload-path).
+Completeness of the dependent set is asserted with a falsifier: after a
+successful reload cycle, an evaluation reaches compiled code that references
+the rebuilt GOT and was neither recompiled in that cycle nor error-locked.
 
 ### 4.4 Enforcement and publication boundary
 

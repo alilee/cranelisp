@@ -296,7 +296,8 @@ rebuilt. Contract: [trait-implementation persistence](trait-impl-cache-carrier.m
   expansion-time closure has typechecked and compiled; a later failure does not roll it
   back. A macro replacement with fewer clauses supplies explicit absent-key ABI-change
   decisions in that publication; omission alone never deletes.
-- `instantiate_demands` is the sibling entry point that replays `MonoDemand`s on reload.
+- `instantiate_demands` is the sibling entry point that replays `MonoDemand`s when a REPL
+  turn redefines a generic base or overload family. A module reload replays no demands.
 - Contracts: [BC 2](bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) (the cluster
   definition and invariants 2, 3a, 7, 10 and 11),
   [BC 6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle) and
@@ -422,7 +423,9 @@ for trait-implementation registration.
   the private retired-slot tombstones. Allocation derives its unavailable set from live
   claims plus tombstones; no counter is stored. `CallableSlot` is an opaque newtype, so no
   other crate can mint one.
-- The per-module `GotTable` is the runtime pointer source and is rebuilt on restore.
+- The per-module `GotTable` is the runtime pointer source and is rebuilt on restore. A
+  whole-file rebuild keeps it under a new table
+  ([symbol-table lifecycle §4.3](symbol-table-lifecycle.md#43-slot-identity)).
 - `validate_lifecycle` checks slot range and uniqueness, concrete schemes, legal origin, state
   and realization pairings, and instance-key identity.
 - A serde-visible change to this tree takes a `CACHE_SCHEMA_VERSION` bump
@@ -454,12 +457,23 @@ for trait-implementation registration.
 - **Maintenance.** Producers record into the cluster's staging table, and staged publication
   unions the set into the live table. A gap or failure discards staging, and restore
   installs the persisted set. No removal exists: the set is rebuilt only when the module is
-  recompiled from source into a new table. A stale member after redefinition costs a cache
-  miss, never a stale restore.
+  recompiled from source into a new table, as a whole-file rebuild does
+  ([symbol-table lifecycle §4.3](symbol-table-lifecycle.md#43-slot-identity)). A stale member
+  after a REPL redefinition costs a cache miss or an extra reload recompile, never a stale
+  restore.
 - **Use.** The dependency record's edges include the set, so it governs cache validity.
   It is not a load edge. Restore does not load these modules; a later compilation that needs
   one loads it on demand (spec §8.5.4). Object loading and `--link` contents still follow
   declared and callee edges ([dependency record](../int/int.md#76-dependency-record-and-validity)).
+- **Reload selection and ordering (approved 2026-09-29; implementation in progress).** The
+  same recorded edges, callee modules and this set, make a module a reload dependent of each
+  module they name, alongside imports, exports and the prelude (REPL spec §14.2 step 4).
+  They also order the plan: a whole-file rebuild reuses GOT slot indices, so a dependent must
+  rebuild after every module it names that the same plan rebuilds. A failed compile records
+  nothing, so Binary/int must keep a failed dependent selectable by the module whose repair
+  releases it (§14.6). Mechanism:
+  [REPL lifecycle §1.2](../int/repl-lifecycle.md#12-poll-and-reload) and
+  [session transaction §7.3](../int/session-transaction.md#73-the-watcher-and-reload-path).
 - **Schema.** The field has no `#[serde(default)]`, and its addition bumps
   `CACHE_SCHEMA_VERSION`.
 

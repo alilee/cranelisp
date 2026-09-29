@@ -65,7 +65,7 @@ is a map, not a second contract.
   `ParsedEntry` list against `SymbolTableAccess` (staging over live), the other
   modules' `SymbolTables`, `ModuleAliases` and `PreludeFallback`, returning
   `Result<CheckResult, CheckError>`.
-- `instantiate_demands` — the reload seed: re-requests typed `MonoDemand`s
+- `instantiate_demands` — the redefinition seed: re-requests typed `MonoDemand`s
   through the same monomorphisation worklist after a redefinition
   (`monomorphisation.md` §3.8). It is not a second instantiation engine.
 - `check_type_expr` — standalone `TypeExpr → Type` resolution for annotation and
@@ -1173,7 +1173,7 @@ No non-concrete type reaches codegen under any reachable instantiation:
 - A residual type in a codegen view may be defaulted only under the licence in
   `non-concrete-producer-obligations.md` §3.2; otherwise the ambiguity backstop
   refuses it at a located position (`monomorphisation.md` §4).
-- Reload demands carry `Span::SYNTHETIC`; a stale demand declines to a warning
+- Replayed demands carry `Span::SYNTHETIC`; a stale demand declines to a warning
   (`monomorphisation.md` §3.8).
 
 `CheckResult` carries no instance list: instances are ordinary concrete
@@ -1236,7 +1236,7 @@ never walks alias segments or spells an alias key itself, fixtures included
 | Method-tail classification | `s116-method-signature-resolution.md` | Implemented |
 | Canonical trait identity at `impl` | `qualified-trait-impl.md` | Implemented |
 | Higher-kinded traits | `hkt.md` | Current |
-| Monomorphisation, reload demands, ambiguity backstop, multi-signature back-flow | `monomorphisation.md` | Current |
+| Monomorphisation, demand replay, ambiguity backstop, multi-signature back-flow | `monomorphisation.md` | Current |
 | Complete-substitution specialization identity | `result-context-specialization.md` | Implemented |
 | Non-concrete producer obligations | `non-concrete-producer-obligations.md` | Current: the funnel, one instance identity, accessor re-synthesis and residual-parameter defaulting |
 | Return-polymorphic dispatch signal | `return-poly-dispatch-signal.md` | Implemented (`CheckResult.unresolved_dispatch`) |

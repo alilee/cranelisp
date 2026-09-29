@@ -666,6 +666,18 @@ pub(crate) struct FailedForm {
     pub text: String,
 }
 
+/// Why a module's saved file is locked: the REPL writes nothing over it until
+/// a reload of the module succeeds (`design/int/repl-lifecycle.md` §1.3.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModuleLock {
+    /// The reload was refused because it changes this live type's structure,
+    /// which only a restart can establish (`repl/spec/14-file-watching.md` §14.8).
+    RestartRequired(cranelisp_types::FQTypeName),
+    /// The saved source did not compile, or the module failed in the cascade
+    /// from a dependency whose source did not.
+    FailedSource,
+}
+
 // ---------------------------------------------------------------------------
 // Sprint 67 W3 — Facade-prescribed introspection record types
 // (FIXME 0176 partial close; `facades/int.md` §"Introspection records")

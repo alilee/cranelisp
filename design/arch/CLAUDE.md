@@ -118,8 +118,9 @@ crate. [Source conventions](../../src/CLAUDE.md) apply to source work.
 `pub(crate)` is the default; each public item needs rustdoc explaining the
 cross-boundary promise. Root [API approval rules](../../CLAUDE.md#roles) require
 exact pre-implementation approval for public surface and consumer-edge changes,
-then confirmation of the generated delta before the wave passes. Phase or wave
-approval does not replace either gate.
+then user confirmation of a non-empty generated delta before the wave passes; an
+unchanged baseline is verification evidence only. Phase or wave approval does
+not replace either gate.
 
 `arch` owns the contract and approval packet; the implementing crate regenerates
 its baseline, and independent review compares the source, rustdoc and actual
@@ -162,8 +163,9 @@ cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crat
   auto-trait implementations remain in the current format.
 - Generate the production/default-feature surface, never with `test-support`.
 - Co-land changed source, corresponding rustdoc/BC contracts and the generated
-  diff. Review checks the approved and actual surfaces; the user confirms the
-  actual diff before promotion. A baseline is not a substitute for rustdoc
+  diff. Review checks the approved and actual surfaces; the user confirms a
+  non-empty actual diff before promotion, per the root
+  [API gate](../../CLAUDE.md#roles). A baseline is not a substitute for rustdoc
   currentness review.
 
 **Approved format change, not yet implemented:**

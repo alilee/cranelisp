@@ -100,7 +100,7 @@ the public defects retained directly in tests and do not count independent roots
 
 | ID | QA assessment and source observation | Priority; axes | Owner / next step |
 |---|---|---|---|
-| [0553](../design/arch/fixmes/0553-instantiate-symbol-at-types-entry-point.md) | **maintenance / claim; implementation in progress** — The opening replay helpers are now absent from `src/redefine.rs` and `src/session_v4/lifecycle.rs`. Reload-demand convergence is in the active Binary/int stream; required evidence and filing closure remain pending. | P1; Q,U | arch then design(src) |
+| 0553 | **retired 2026-09-29** — Superseded by the approved [fresh-source rebuild](../design/int/session-transaction.md#73-the-watcher-and-reload-path). Independent Q1 redefinition evidence remains in the [QA delta](../tests/plan/s122-evidence-delta.md). | P1; Q,U | arch disposition complete; QA adequacy pending |
 | [0604](../design/arch/bounded-contexts.md) | **closed: structural obligation** — BC §6 preserves QA’s existing no-flip retirement ruling, current publication/census contract and corrected regression-sweep scope. Historical firing attribution remains explicitly unconfirmed. | P2; Q | QA plus design(src) |
 | [0740](../design/arch/bounded-contexts.md) | **closed: census** — Current isolation design and source commentary account for all three session-init seams and candidate-before-publication routes; the owned record obligation is discharged. | P3; Q | design(src) |
 | [0793](../design/arch/bounded-contexts.md) | **closed: census** — The PRIMITIVES_TABLE whole-table initialization has its explicit disposition in the current design and source census; no new initialization mechanism was needed. | P3; Q | design(src) |

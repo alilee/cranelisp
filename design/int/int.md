@@ -353,7 +353,7 @@ CompilerSession (initiator-thread-only):
 After Phase 0 (`register_module`), no code path holds a whole-module `&mut SymbolTable`. Per-symbol writes go through `SymbolTable::insert_or_update(&self, sym, entry)` and `SymbolTable::write_code(&self, sym, code)`, which acquire the inner DashMap's per-entry write lock briefly.
 
 **The two `&mut SymbolTable` operations**:
-1. **Phase 0** in `register_module`: `entry(m).or_default()` → `write_structural_decls(decls)` + `defn_order` seed → drop RefMut. Microsecond-scale; once per module.
+1. **Structural records**: not written at registration (§6.1). Pass 0 writes them under the module's guard; a whole-file rebuild starts them empty ([§6.10](#610-the-import-generation)).
 2. **REPL append**: `append_defn_order(&mut self, sym)` per eval that introduces a new defn. Brief initiator-thread `&mut` hold (microseconds).
 
 Everything else — `insert_or_update`, `write_code`, `install_import_bindings`, `get`, `get_type`, `defined_symbols`, `public_symbols`, `all_symbols`, `allocate_got_slot`, `defn_order` (read) — is `&self`, no RefMut needed.
@@ -491,23 +491,10 @@ for one fact.
 
 ### 6.1 `register_module` Phase 0 (Decision 38)
 
-```text
-register_module(module):
-  parse → ParseProduct { forms, structural }
-  // Phase 0: brief &mut SymbolTable hold
-  {
-    let mut st = symbol_tables.entry(module).or_default();
-    st.write_structural_decls(structural);            // imports/exports/platforms/submodules
-    st.seed_defn_order(forms);                        // first-registration order
-    // RefMut drops here.
-  }
-  // Cache-hit decision lives in the recursive flow per Decision 37 (§7).
-  scheduler.register_module(module);                  // dispatches PriorityWork::Typecheck
-  for each import in structural.imports:
-    register_module(import.module_path);              // recursive
-```
-
-The Phase 0 block is microsecond-scale. The RefMut drop *must* happen before `scheduler.register_module` so workers picking up `PriorityWork::Typecheck` find the SymbolTable reachable via shared `.get()` only.
+Registration parses the source and queues the module with its forms on the work packet
+(`scheduler.register_module`). It writes no structural record. The cluster's Pass 0 records
+`import`, `export`, `mod` and `platform` forms and discovers dependencies through
+`drive_module_dep` (§6.2); [§6.10](#610-the-import-generation) governs the import record.
 
 **Queue-priority rule (`delays_other`)** — `scheduler.register_module(module, delays_other)` routes the module into the prioritised `TypecheckFirst` queue when `true` and `TypecheckNext` when `false`. The flag answers one question: *is some other module's progress waiting on this one?*
 
@@ -733,10 +720,10 @@ The scheduler maps these to readiness states; waiters unblock when the correspon
   - `/imports` lists prelude-provided names in a separate `Prelude (implicit)` group when
     the bit is ON.
   - `SymbolTable.imports` records only user-authored `(import …)` forms. The implicit
-    prelude import is never recorded there: source regeneration and duplicate-import
-    warnings reason about what the user wrote. Its resolved effect lives in the
-    module's name candidates. `writer_does_not_record_implicit_prelude_in_imports`
-    pins this.
+    prelude import is never recorded there, because source regeneration writes what the
+    user wrote. Its resolved effect is the fallback bit, not name candidates.
+    `writer_does_not_record_implicit_prelude_in_imports` pins this. A whole-file rebuild
+    starts the record empty and resets the bit ([§6.10](#610-the-import-generation)).
 
 ### 6.6 Pass-1 quote shield
 
@@ -1041,6 +1028,62 @@ seam exists. Arm the resolver rows by planting file-backed capture.
    maps to `q`.
 6. The dependency-record edges: a declared child adds no root `q` edge; an
    undeclared `q` adds one.
+
+### 6.10 The import generation
+
+REPL §14.2 steps 2–3 require a successful reload to clear the module's
+previous state and recompile it from the saved source; §15.1 requires the
+regenerated file to reproduce that state. An `import` the saved source omits
+therefore leaves scope, `/imports` and the regenerated file
+([ACT-1012](../../tests/plan/s122-evidence-delta.md#act-1012--omitted-import-kept-closed)).
+
+One `(import …)` form has three int-written carriers in the importing module:
+
+| Carrier | Readers |
+|---|---|
+| `SymbolTable.imports`, the authored-form record | regeneration (`save.rs`), the cache dependency record, reload selection and order, restore-time session env, test-module selection |
+| Private name candidates whose source is another module | bare resolution in typecheck and introspection, `/imports` (`explicit_import_sources`) |
+| Import-alias keys `<module>.<alias>` in `SharedState.module_aliases` | qualified resolution through an alias |
+
+**Rule.** A whole-file rebuild replaces all three with the saved source's
+generation
+([session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild)):
+
+- the fresh table starts with an empty record and no candidates, and Pass 0
+  installs and records each import form as on a first registration;
+- the rebuild prologue removes the displaced generation's import-alias and
+  submodule-alias keys through `module_alias_key`, the key mint the installer
+  uses, so the two cannot disagree;
+- the prologue also resets the prelude-fallback bit, so the `Replace`
+  prologue's fresh recompute is exact: a newly added explicit prelude import
+  leaves the bit off.
+
+An increment keeps today's rule: Pass 0 appends a form after it resolves
+(FIXME 0548). A REPL-typed import therefore persists, and a later rebuild
+keeps it exactly when the saved file still declares it. The `export`, `mod`
+and `platform` records are rebuilt the same way.
+
+**Consequences.**
+
+- A body that still names an omitted import fails as an unresolved name, and
+  the module locks.
+- A failed rebuild's record holds only the forms Pass 0 resolved. Its cascade
+  edges come from its established reference instead
+  ([session transaction §7.3.2](session-transaction.md#732-the-established-reference)),
+  so a save of the module whose import made it fail still reaches it. FL-3
+  (`watch_cascade_failed_importer_locked_until_import_is_fixed`) is the
+  end-to-end guard.
+- Nothing that persists or evaluates reads a locked module's partial
+  generation: regeneration returns early, expression turns are refused while
+  the error set is non-empty, and a failed module never reaches
+  `TypecheckDone`, so no cache entry is written for it.
+
+**Evidence.** The Prologue, Prelude bit, Increments and Unresolved omission
+rows of [session transaction §7.3.4](session-transaction.md#734-module-tests-dev);
+end to end, C2 and its C3 control, RM-5's regeneration leg and FL-3.
+
+**Outside this section.** A failed REPL-turn import can leave its alias key
+installed without a record. This is an unverified lead.
 
 ---
 
@@ -1641,9 +1684,12 @@ producer, consumers and lifecycle within them.
     publication must read the prepared staging, not the plan's tables.
   - **An attempt that owes a fact publishes.** The final check makes no
     staged publication only when the attempt owes the live table nothing.
-    The owed facts are its checkable entries, its reload demands and its
-    accumulated lookup dependencies. See
+    The owed facts are its checkable entries and its accumulated lookup
+    dependencies. See
     [the empty-publication correction](#7621-empty-publication-correction).
+    A whole-file rebuild owes nothing further: its fresh table already holds
+    none of the prior generation
+    ([session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild)).
   - The finalize path without a session commits directly and records no
     macro heads. Only unit harnesses reach it; every production compiler
     context carries the session.
@@ -1820,15 +1866,14 @@ passed its finding-scoped re-review.
     entry, such as one yielding only structural forms. An expansion yielding
     only macro definitions records through its checkpoint.
 - **Correction: one publication decision over everything the attempt owes.**
-  - The prepare step already takes the decision "nothing to check, yet
-    something to publish" for reload demands. It starts from an empty
-    staging, and the demands add their targets. Extend that decision; do not
-    add a second one.
-  - The attempt's lookup dependencies travel into the prepare step beside
-    its reload demands, as one value holding both. The value's own emptiness
-    test is the whole no-publication condition. A fact later added to what an
-    attempt owes joins that value, so the decision cannot omit it (Principle
-    7, Principle 26).
+  - The prepare step takes one decision, "nothing to check, yet something to
+    publish", starting from an empty staging. Do not add a second one.
+  - The attempt's lookup dependencies travel into the prepare step as the
+    owed value. The value's own emptiness test is the whole no-publication
+    condition. A fact later added to what an attempt owes joins that value,
+    so the decision cannot omit it (Principle 7, Principle 26). The whole-file
+    rebuild's established reference is a check input, not an owed fact, and
+    does not join it.
   - The prepare step records the set into every prepared publication it
     returns, including the empty one. This replaces the caller's recording
     after the call, so the final check has one recording site. Recording
@@ -1853,7 +1898,7 @@ passed its finding-scoped re-review.
     restores next session after `m` changes, differs from `--no-cache`.
 - **Unit rows** (Principle 23):
   - `worker`:
-    - a cluster with no checkable entry, no reload demand and a lookup set
+    - a cluster with no checkable entry and a lookup set
       returns a prepared publication whose staging holds the set;
     - the same cluster with an empty set returns no publication.
   - `process_form`, beside the §7.6.2 rows: a module whose only form is an
@@ -2026,7 +2071,7 @@ Per `facades/int.md` invariants 7 + 8 + bounded-context §6.2:
 
 1. REPL startup loads the entry module and waits for every registered module's in-memory readiness before the first prompt. Afterwards, a REPL step waits only for outstanding cached loads, and only before it runs compiled code ([load before execution](#71-cache-hit-flow-inside-register_module)).
 2. `set_repl_input_active(true)` opens the watcher window during `read_line`; `set_repl_input_active(false)` closes on input submission.
-3. Watcher events do NOT flow directly into compilation. They cross to the REPL cadence at a poll point and become `re_register_module` calls.
+3. Watcher events do NOT flow directly into compilation. They cross to the REPL cadence at a poll point and become one reload plan: each changed module and its dependents is rebuilt whole from its saved file, in dependency order ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload); [session transaction §7.3](session-transaction.md#73-the-watcher-and-reload-path)).
 
 `watch.rs` owns the `notify`-based watcher and the `WatcherChannel` mpsc. The REPL polls at prompt boundary; the prompt-window mechanism is the closure that prevents mid-input watcher interleave.
 
@@ -2050,6 +2095,9 @@ realizes it inside the ordinary prepared transaction:
   concrete instances into the same candidate (`design/int/s122-closure.md` §2);
 - the commit gate's `RedefKind` decides slot reuse versus a fresh slot, and
   every displaced compiled owner enters the session retention pool.
+
+A reload of a saved file is not a redefinition: it is a whole-file rebuild
+whose only redefinition check is the §14.8 type boundary.
 
 Full design: **`session-transaction.md`**. The S102 persistence and dev-loop
 cures it relies on are in **`s102-defect-wave.md`**.
@@ -2328,12 +2376,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     2026-09-28, subject to the review repairs its delta names. Open: commit
     and the user's Phase-5 acceptance.
   - **Restart boundary.** A reload that would change a
-    live type's structure fails with the restart remedy, and the saved file
-    is retained until a successful reload or a restart (REPL §14.8, §18.5).
+    live type's structure fails with the restart remedy (REPL §14.8, §18.5).
     The design is the guard's type pass
-    ([session transaction §2.6](session-transaction.md#26-type-re-establishment-repl-185-148))
-    and the restart-required marker
-    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-restart-required-failure)).
+    ([session transaction §2.6](session-transaction.md#26-type-re-establishment-repl-185-148)).
     A reload's outcome is the reloaded module's own state
     ([§1.3 Outcome](repl-lifecycle.md#13-failed-reload)). The imported-module
     case relies on the barrier fail-fast
@@ -2342,6 +2387,34 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     - The open design risks are the §1.3 Outcome coverage hypothesis and
       §4.1's order-dependent stranding face. Each is asserted with a named
       falsifier, and neither is measured.
+  - **Failed-source lock.** Every failed reload, an entry backing file
+    that does not parse at startup and every other module a failed start
+    leaves `Failed` lock the module: its saved file is not overwritten until
+    a reload of it succeeds (REPL §14.5, §14.6, §15.2.3). The §14.8 refusal
+    is one cause of the one lock
+    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
+    Delivery and acceptance status is in the
+    [evidence delta](../../tests/plan/s122-evidence-delta.md) and the
+    ACT-1010 filing.
+  - **Whole-file rebuild (ACT-1007, ACT-1012, qualified dependents).** A
+    reload rebuilds its module from a fresh table that keeps the module's GOT,
+    so everything its saved source omits — definitions of every class,
+    imports, macros, impls — leaves scope, introspection and the regenerated
+    file
+    ([session transaction §7.3](session-transaction.md#73-the-watcher-and-reload-path);
+    [§6.10](#610-the-import-generation)). Dependents, including modules that
+    reach it only through qualified references, rebuild after it in the same
+    plan or lock
+    ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)).
+    - The user approved the quiescent whole-file boundary on 2026-09-29.
+      It adds no public API (+0/−0 on every guarded baseline), cache schema
+      or ABI change.
+    - Status: designed; `dev` implements it with the retirements in
+      session transaction §7.3.5. The earlier per-definition removal and
+      candidate-withdrawal designs are withdrawn.
+    - Guards: C2, RM-1 to RM-5, FL-3, FQR-1 and FQR-2 end to end, and the
+      module rows in session transaction §7.3.4 and REPL lifecycle §1.2
+      and §1.3.1.
 - **Annotation-mirror tail (FIXME 0708).** Four lexical `src/` mirrors of the
   retired pre-fold annotation shape survive and each goes one way:
   `worker::leading_annotation_len` (a constant-`0` stub) deletes with its
@@ -2455,9 +2528,11 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   belongs to `qa`.
 - **Superseded dependent-recompilation machinery.** `src/redefine.rs` still
   contains the S101–S103 transaction (`run_transaction`, `mark_broken` and trap
-  stubs, the T1 end-of-turn reload and its error block, `TransactionReport`
-  sections). It serves no current requirement and should delete
-  (`session-transaction.md` §0). Reachability differs by leg. The per-symbol
+  stubs, the T1 end-of-turn reload, `TransactionReport` sections). It serves
+  no current requirement and should delete (`session-transaction.md` §0).
+  Until then its T1 and T2 reloads run through the one reload executor and
+  lock on failure; T1's repairable error block retires with the whole-file
+  rebuild (`session-transaction.md` §10). Reachability differs by leg. The per-symbol
   transaction runs only for an admitted language-type change, which the guard
   admits only without a blocking dependent, so its closure should be empty
   (read from source). The T1 reload is not guarded that way: a redefinition

@@ -7,7 +7,7 @@
 - [the unified symbol-table lifecycle](../arch/symbol-table-lifecycle.md) — the `Life`
   machine and its settlement funnels;
 - [the full-signature identity contract](../arch/s122-overload-reorder-publication.md);
-- the monomorphisation reload seed in `design/arch/bounded-contexts.md` §2;
+- the demand-replay entry in `design/arch/bounded-contexts.md` §2;
 - Principles 20, 24 and 26;
 - the language rules in `spec/03-types.md` §3.6.3, §3.10 and §3.11 and
   `spec/05-definitions.md` §5.1.2.
@@ -109,7 +109,7 @@ enter the same core. A second instantiation entry point is rejected (Principle 7
   its concrete type.
 - `register_test_fn_mono_roots` gives a degenerate polymorphic `test-*` function a
   concrete `(Fn [] (Option String))` instance under its bare name.
-- A reload demand set is a root set (§3.8).
+- A replayed demand set is a root set (§3.8).
 - A generic definition is not a root. It is specialised only through a concrete use. A
   template nothing instantiates is dead for codegen, which is correct under rank-1
   inference (spec §3.10).
@@ -210,14 +210,17 @@ The implementation-level statement, and the unit test that guards these facts, a
 
 ### 3.8.1 The capability
 
-- After a from-source module reload, same-module instances whose callers survive must be
-  re-minted.
+- When a REPL turn redefines a generic base or overload family, the module's existing
+  concrete instances of it must be re-minted from the replacement.
 - Replaying a remembered driver form was insufficient: it covered only one past
   instantiation, and it re-ran whatever ill-typedness that form had acquired.
-- Reload therefore requests instantiation of named templates at recorded substitution
-  vectors: data, not forms. Binary/int captures the demand set
-  (`src/worker.rs::capture_reload_instantiation_demands`). Its transaction and remapping
-  are specified in `design/int/s122-closure.md` §2.
+- The redefinition therefore requests instantiation of named templates at recorded
+  substitution vectors: data, not forms. Binary/int captures the demand set from the
+  still-live module (`src/worker.rs::capture_affected_mono_demands`); its cadence is
+  `design/int/s122-closure.md` §2.
+- A module reload does not replay demands. The module is rebuilt whole from source and
+  its dependents recompile, so ordinary monomorphisation from their roots re-mints the
+  instances still used (`design/int/session-transaction.md` §7.3.1 and §7.3.5).
 
 ### 3.8.2 Replay
 
@@ -246,7 +249,7 @@ The implementation-level statement, and the unit test that guards these facts, a
 |---|---|
 | instantiate at the given substitutions | typecheck (this section) |
 | codegen the instances | nothing new: they are ordinary `Life::Concrete` entries with a body realisation |
-| capture the live demand set before the replacing commit, and re-request it after the reload settles | Binary/int |
+| capture the live demand set before the replacing commit, and re-request it into the same candidate | Binary/int |
 
 ### 3.8.4 Public surface
 
@@ -260,8 +263,8 @@ type, cache-schema or ABI effect. Its approval and binding contract are in
 - It adds no caller of `monomorphise_call`, and does not duplicate the driver.
 - A hybrid of keyed read and form replay is rejected.
 - The acceptance falsifiers are:
-  - two separately minted instantiations of one template both survive a reload;
-  - a stale, ill-typed driver record does not break reload;
+  - two separately minted instantiations of one template both survive a redefinition;
+  - a stale, ill-typed driver record does not break a redefinition;
   - repeating a demand set is idempotent;
   - a declined demand leaves no residue next to a valid demand for the same template;
   - a gap is not a decline.
