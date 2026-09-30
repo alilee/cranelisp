@@ -296,10 +296,13 @@ fn frame_classification_distinguishes_the_parameter_frame() {
     chain.push_frame();
     chain.bind(sym("p"), var(1), Some(Type::Int));
 
-    assert!(chain.param_frame_binds(&sym("p")));
-    assert!(chain.let_frames_bind(&sym("p")));
+    let shadow = chain.resolve_slot_ref(&sym("p")).expect("live p slot");
+    assert!(!shadow.in_param_frame());
+    assert_eq!(shadow.frame(), 1);
     assert!(chain.resolve_ref_in_innermost_frame(&sym("p")).is_some());
     assert_eq!(chain.resolve_indexed(&sym("p")).map(|(i, _)| i), Some(1));
     chain.pop_frame();
+    let param = chain.resolve_slot_ref(&sym("p")).expect("live p slot");
+    assert!(param.in_param_frame());
     assert_eq!(chain.resolve_indexed(&sym("p")).map(|(i, _)| i), Some(0));
 }

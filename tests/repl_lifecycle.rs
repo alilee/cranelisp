@@ -607,13 +607,24 @@ fn two_independent_sessions_isolation_neg_no_state_leak() {
 // Wave 5.6 file 6 e2e.rs chunk-3 GAP-COVER carry-forwards.
 // =============================================================================
 
+/// A REPL whose project root holds the module `name` (`name.cl`), loaded by a
+/// qualified reference before `stdin` runs, so `/mod name` targets an
+/// existing module (repl/spec/03-slash-commands.md §3.9).
+fn repl_with_loaded_module(name: &str, stdin: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .file(&format!("{name}.cl"), "(defn seed [] 0)\n")
+        .stdin(&format!("({name}/seed)\n{stdin}"))
+        .output()
+}
+
 // spec: repl/spec.md §8 — Scenario 1: `/mod math` switches the prompt
 // to `math>`. Distinct from `mod_shows_current` which exercises the
 // no-arg form (current module display).
 // (carry: legacy/e2e.rs::e2e_s8_mod_switch_namespace)
 #[test]
 fn mod_switch_to_named_module_changes_prompt() {
-    let out = repl("/mod math\n");
+    let out = repl_with_loaded_module("math", "/mod math\n");
     assert!(
         out.stdout.contains("math>"),
         "/mod math MUST switch the prompt to 'math>' per repl/spec.md §8 Scenario 1; got:\n{}",
@@ -628,11 +639,7 @@ fn mod_switch_to_named_module_changes_prompt() {
 // (carry: legacy/e2e.rs::e2e_s8_mod_switch_back)
 #[test]
 fn mod_switch_round_trip_math_to_user() {
-    let out = repl(
-        "/mod math
-/mod user
-",
-    );
+    let out = repl_with_loaded_module("math", "/mod math\n/mod user\n");
     assert!(
         out.stdout.contains("math>") && out.stdout.contains("user>"),
         "/mod round-trip MUST surface both 'math>' and 'user>' prompts per §8 Scenario 2; got:\n{}",
@@ -715,8 +722,9 @@ fn mod_no_arg_returns_to_entry_module_not_user() {
     let out = Cranelisp::new()
         .repl()
         .file("myapp.cl", "(defn main [] 0)")
+        .file("scratch.cl", "(defn seed [] 0)\n")
         .cli_flag("myapp")
-        .stdin("/mod scratch\n/mod\n")
+        .stdin("(scratch/seed)\n/mod scratch\n/mod\n")
         .output()
         .assert_ok();
     // After the no-arg `/mod` the prompt must return to the entry module.
@@ -741,7 +749,7 @@ fn mod_no_arg_returns_to_entry_module_not_user() {
 //   default name (not as a privileged identity).
 #[test]
 fn mod_no_arg_default_entry_is_user() {
-    let out = repl("/mod scratch\n/mod\n").assert_ok();
+    let out = repl_with_loaded_module("scratch", "/mod scratch\n/mod\n").assert_ok();
     let returned_to_user = out
         .stdout
         .rsplit("scratch>")
@@ -753,6 +761,287 @@ fn mod_no_arg_default_entry_is_user() {
         "with no CLI target, `/mod` no-arg MUST return to the default entry \
          'user' (design/int/int.md §6.5); got:\n{}",
         out.stdout
+    );
+}
+
+// =============================================================================
+// §3.9 Target module — `/mod <name>` switches to the module the language's
+// module-name resolution finds, loading it if needed, and never creates one
+// =============================================================================
+
+/// Each input line of a piped REPL session as (prompt module, output):
+/// element `k` is the prompt the `k+1`th line was entered at, with that
+/// line's output. A prompt reads `<elapsed>ms; <module>> `.
+fn prompted_turns(stdout: &str) -> Vec<(&str, &str)> {
+    stdout
+        .split("ms; ")
+        .skip(1)
+        .filter_map(|chunk| chunk.split_once("> "))
+        .collect()
+}
+
+/// Whether `/mod`'s output reports an unknown module named `name`.
+fn reports_unknown_module(output: &str, name: &str) -> bool {
+    let lower = output.to_lowercase();
+    output.contains(name) && (lower.contains("not found") || lower.contains("unknown"))
+}
+
+fn assert_legs(violated: &[&str], out: &helpers::e2e::CrOutput, context: &str) {
+    assert!(
+        violated.is_empty(),
+        "violated:\n- {}\nstdout:\n{}\nstderr:\n{}\n{context}",
+        violated.join("\n- "),
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec/03-slash-commands.md §3.9 — Target module: `nonexistent`
+// names no module, so `/mod nonexistent` reports an unknown-module error naming
+// it and leaves `user` active: the following definition lands in `user`. No
+// module is created: `/exports nonexistent` still finds none, and no
+// `nonexistent.cl` is written. repl/spec/08-module-demos.md §8 Scenario 7. NAV-1.
+// DEFECT (open): `/mod nonexistent` switches to a new blank module.
+// defect: class=silent-accept locus=src/repl/commands.rs::handle_mod found=S122 owner=/dev — provisional until design places the fix: ensure_module_exists creates a blank table for any name that is not loaded
+#[test]
+fn mod_unknown_module_neg_not_created_and_active_module_unchanged() {
+    let out = repl("/mod nonexistent\n(defn z [] 1)\n/exports nonexistent\n/quit\n");
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or(("", ""));
+    let mut violated = Vec::new();
+    let mut check = |holds: bool, leg: &'static str| {
+        if !holds {
+            violated.push(leg);
+        }
+    };
+    check(
+        reports_unknown_module(turn(0).1, "nonexistent"),
+        "`/mod nonexistent` reports an unknown-module error naming `nonexistent`",
+    );
+    check(
+        t.iter().all(|(module, _)| *module == "user"),
+        "every prompt stays `user>`",
+    );
+    check(
+        turn(1).1.contains("user/z") && !turn(1).1.contains("nonexistent/z"),
+        "`(defn z [] 1)` lands in `user`",
+    );
+    check(
+        reports_unknown_module(turn(2).1, "nonexistent"),
+        "`/exports nonexistent` still reports the module unknown",
+    );
+    check(
+        !out.tmp_exists("nonexistent.cl"),
+        "no `nonexistent.cl` is written",
+    );
+    assert_legs(&violated, &out, "");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.9 — Target module: nothing has loaded
+// `lib.cl`, so `/mod lib` loads it and switches to it. `(keep-me)` gives 42
+// there, and the preceding definition keeps `(defn keep-me [] 42)` in
+// `lib.cl`. repl/spec/14-file-watching.md §14.1. ACT-1010 M2; NAV-2.
+// DEFECT (open): `/mod lib` switches to a new blank `lib`, so `(keep-me)` is
+// undefined and `(defn z [] 1)` regenerates `lib.cl` without `keep-me`.
+// defect: class=silent-accept locus=src/repl/commands.rs::handle_mod found=S122 owner=/dev — provisional until design places the fix: ensure_module_exists creates a blank table for any name that is not loaded
+#[test]
+fn mod_unloaded_module_is_loaded_and_its_file_kept() {
+    let out = Cranelisp::new()
+        .repl()
+        .file("lib.cl", "(defn keep-me [] 42)\n")
+        .stdin("/mod lib\n(defn z [] 1)\n(keep-me)\n/quit\n")
+        .output();
+    let t = prompted_turns(&out.stdout);
+    let lib = out.read_tmp("lib.cl");
+    let mut violated = Vec::new();
+    let mut check = |holds: bool, leg: &'static str| {
+        if !holds {
+            violated.push(leg);
+        }
+    };
+    check(
+        t.get(2).is_some_and(|(module, output)| {
+            *module == "lib" && output.contains(":primitives/Int 42")
+        }),
+        "`(keep-me)` in `lib` gives 42",
+    );
+    check(
+        lib.contains("(defn keep-me [] 42)"),
+        "lib.cl still holds `(defn keep-me [] 42)`",
+    );
+    assert_legs(&violated, &out, &format!("lib.cl at exit:\n{lib}"));
+}
+
+const ROOT_Y: &str = "(defn which [] 2)\n";
+
+/// The root module `y` (`y.cl`) and `user/y.cl` both provide `which`; `user`
+/// declares the submodule `user.y` only when `declares_child`. `other/o`
+/// loads the root `y` through `other`'s import. Turns: 1 `(other/o)`,
+/// 2 `/mod y`, 3 `(defn z [] 3)`, 4 `(which)`.
+fn dual_name_session(declares_child: bool) -> helpers::e2e::CrOutput {
+    let user = if declares_child {
+        "(mod y)\n(defn g [] 0)\n"
+    } else {
+        "(defn g [] 0)\n"
+    };
+    Cranelisp::new()
+        .repl()
+        .file("y.cl", ROOT_Y)
+        .file("user/y.cl", "(defn which [] 1)\n")
+        .file("other.cl", "(import [y [which]])\n(defn o [] (which))\n")
+        .user(user)
+        .stdin("(other/o)\n/mod y\n(defn z [] 3)\n(which)\n/quit\n")
+        .output()
+}
+
+// spec: repl/spec/03-slash-commands.md §3.9 — Target module: `/mod <name>`
+// resolves `<name>` from the active module by the language's module-name
+// resolution. `user` declares `(mod y)` and a root `y.cl` exists (the root `y`
+// is also loaded), so under spec/08-modules.md §8.11.2.1 `/mod y` switches to
+// the submodule `user.y`: the prompt is `user.y>`, `(defn z [] 3)` lands in
+// `user.y`, `(which)` gives `user.y`'s 1, and the root `y.cl` is untouched.
+// The control
+// `mod_bare_name_resolves_root_module_without_declared_submodule_control`
+// differs only in the `(mod y)` declaration.
+// DEFECT (open): `/mod` reads `y` as an absolute module path and switches to
+// the root `y`.
+// defect: class=wrong-scope-lookup locus=src/repl/commands.rs::handle_mod found=S122 owner=/dev — provisional: the target is read as an absolute path, not by the language's module-name resolution
+#[test]
+fn mod_bare_name_resolves_declared_submodule_over_root_module() {
+    let out = dual_name_session(true);
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or(("", ""));
+    let mut violated = Vec::new();
+    let mut check = |holds: bool, leg: &'static str| {
+        if !holds {
+            violated.push(leg);
+        }
+    };
+    check(
+        turn(0).1.contains(":primitives/Int 2"),
+        "precondition: `(other/o)` loads the root `y` and gives 2",
+    );
+    check(
+        turn(2).0 == "user.y",
+        "after `/mod y` the prompt is `user.y>`",
+    );
+    check(
+        turn(2).1.contains("user.y/z"),
+        "`(defn z [] 3)` lands in `user.y`",
+    );
+    check(
+        turn(3).1.contains(":primitives/Int 1"),
+        "`(which)` gives the submodule's 1",
+    );
+    check(
+        out.read_tmp("y.cl") == ROOT_Y,
+        "the root `y.cl` is unchanged",
+    );
+    assert_legs(&violated, &out, "");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.9 — Target module: `user` declares
+// no submodule `y`, so `/mod y` resolves to the root module `y`
+// (spec/08-modules.md §8.11.2): the prompt is `y>`, `(defn z [] 3)` lands in
+// `y`, and `(which)` gives the root's 2. The control for
+// `mod_bare_name_resolves_declared_submodule_over_root_module`.
+#[test]
+fn mod_bare_name_resolves_root_module_without_declared_submodule_control() {
+    let out = dual_name_session(false);
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or(("", ""));
+    let mut violated = Vec::new();
+    let mut check = |holds: bool, leg: &'static str| {
+        if !holds {
+            violated.push(leg);
+        }
+    };
+    check(
+        turn(0).1.contains(":primitives/Int 2"),
+        "precondition: `(other/o)` loads the root `y` and gives 2",
+    );
+    check(turn(2).0 == "y", "after `/mod y` the prompt is `y>`");
+    check(
+        turn(2).1.contains(" y/z") && !turn(2).1.contains("user.y/z"),
+        "`(defn z [] 3)` lands in the root `y`",
+    );
+    check(
+        turn(3).1.contains(":primitives/Int 2"),
+        "`(which)` gives the root's 2",
+    );
+    assert_legs(&violated, &out, "");
+}
+
+/// `user` imports `f` from `lib` under the module alias `lib-alias`
+/// (spec/08-modules.md §8.3.4). Turns: 1 `/mod <target>`, 2 `(defn z [] 1)`.
+fn aliased_lib_session(target: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .file("lib.cl", "(defn f [] 1)\n")
+        .user("(import [(lib lib-alias) [f]])\n")
+        .stdin(&format!("/mod {target}\n(defn z [] 1)\n/quit\n"))
+        .output()
+}
+
+// spec: repl/spec/03-slash-commands.md §3.9 — Target module: module-name
+// resolution (spec/08-modules.md §8.11.2) does not read import aliases, which
+// only qualified names substitute (§8.6.6 step 1). So `lib-alias`, an alias of
+// the loaded `lib`, names no module: `/mod lib-alias` reports an unknown-module
+// error naming it, `user` stays active and receives `(defn z [] 1)`, `lib.cl` is
+// unchanged, and no `lib-alias.cl` is written. The control
+// `mod_module_name_of_aliased_import_switches_to_it_control` differs only in
+// naming `lib`.
+// DEFECT (open): `/mod lib-alias` switches to a new blank module `lib-alias`.
+// defect: class=silent-accept locus=src/repl/commands.rs::handle_mod found=S122 owner=/dev — provisional until design places the fix: ensure_module_exists creates a blank table for any name that is not loaded; the cell also refuses a fix that resolves through the qualified-name alias step
+#[test]
+fn mod_import_alias_neg_not_a_module_name() {
+    let out = aliased_lib_session("lib-alias");
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or(("", ""));
+    let mut violated = Vec::new();
+    let mut check = |holds: bool, leg: &'static str| {
+        if !holds {
+            violated.push(leg);
+        }
+    };
+    check(
+        reports_unknown_module(turn(0).1, "lib-alias"),
+        "`/mod lib-alias` reports an unknown-module error naming `lib-alias`",
+    );
+    check(
+        t.iter().all(|(module, _)| *module == "user"),
+        "every prompt stays `user>`",
+    );
+    check(
+        turn(1).1.contains("user/z"),
+        "`(defn z [] 1)` lands in `user`",
+    );
+    check(
+        out.read_tmp("lib.cl") == "(defn f [] 1)\n",
+        "lib.cl is unchanged",
+    );
+    check(
+        !out.tmp_exists("lib-alias.cl"),
+        "no `lib-alias.cl` is written",
+    );
+    assert_legs(&violated, &out, "");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.9 — Target module: `/mod lib` names
+// the loaded module `lib`, imported by `user` under an alias, and switches to
+// it: the prompt is `lib>` and `(defn z [] 1)` lands in `lib`. The control for
+// `mod_import_alias_neg_not_a_module_name`.
+#[test]
+fn mod_module_name_of_aliased_import_switches_to_it_control() {
+    let out = aliased_lib_session("lib");
+    let t = prompted_turns(&out.stdout);
+    let switched = t
+        .get(1)
+        .is_some_and(|(module, output)| *module == "lib" && output.contains("lib/z"));
+    assert!(
+        switched,
+        "`/mod lib` switches to `lib`, where `(defn z [] 1)` lands\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
     );
 }
 

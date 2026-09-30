@@ -160,31 +160,6 @@
        [(SCons y yt) (szip-rev-acc xt yt (SCons (SCons x (SCons y SNil)) acc))
         _ acc])]))
 
-;; ARITY CEILING (S115) — read before assuming a derive bug is in this file.
-;;
-;; These builders are correct but cannot RUN past a small arity, because the
-;; SList/Sexp values they allocate corrupt the heap (FIXME 0835 — glibc
-;; `free(): chunks in smallbin corrupted` from ~6 SList cells, reproducible in
-;; ORDINARY code with no macro involved). The observable derive symptoms:
-;;
-;;   - any constructor with 2+ FIELDS → the compiler process dies silently
-;;     (no diagnostic, REPL exits) for all three derive macros; 1 field is green
-;;   - `derive-Ord` on a nullary enum with 3+ CONSTRUCTORS → macro-expansion
-;;     "runtime panic: match failed"; 1 and 2 constructors are green
-;;
-;; Both were confirmed NOT to be defects in the generated code: hand-writing the
-;; exact impl these builders emit — the 2-field `Eq` and the 3-arm nested-match
-;; `Ord` — compiles and evaluates correctly. Only BUILDING it fails.
-;;
-;; So do not "fix" these builders by reshaping them. Two reshapes were tried and
-;; neither moved the ceiling (replacing the `snth` index walk with a tail walk;
-;; hoisting every quasiquote out of its enclosing closure into a named `defn-`).
-;; Both are RETAINED below because they are better code, not because they cured
-;; anything. `derive/test.cl` covers exactly the arities that work and says so.
-
-;; (Retained from the S115 pass: quasiquote-bearing fold steps are named
-;; `defn-`s and the closure only calls them.)
-
 (defn- eq-chain-step "One (a b) pair of the Eq field-equality chain" [inner pair]
   (match pair
     [(SCons a rest)

@@ -777,3 +777,52 @@ mod lookup_dependencies {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Reload edges (design/int/repl-lifecycle.md §1.2; design/int/int.md §6.12)
+// ---------------------------------------------------------------------------
+
+fn reload_edges_of(imports: Vec<ImportSpec>, fallback: bool) -> Vec<String> {
+    let mut table = SessionSymbolTable::new_with_params(m("x"));
+    table.imports = imports;
+    reload_edges(&m("x"), &table, fallback)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+// spec: design/int/int.md §6.12 — the bit alone gives the prelude edge,
+// whatever else the module depends on or whatever reaches it.
+#[test]
+fn reload_edges_follow_the_prelude_fallback_bit() {
+    assert_eq!(reload_edges_of(Vec::new(), true), ["prelude"]);
+    assert!(reload_edges_of(Vec::new(), false).is_empty());
+}
+
+// spec: spec/08-modules.md §8.3.7; design/int/int.md §6.12 — a null import,
+// plain or aliased, loads nothing and is no reload edge; a named import of
+// the prelude is one.
+#[test]
+fn a_null_import_is_no_reload_edge_and_a_named_prelude_import_is_one() {
+    assert!(reload_edges_of(vec![import("prelude", None, ImportNames::None)], false).is_empty());
+    assert!(reload_edges_of(vec![import("y", Some("w"), ImportNames::None)], false).is_empty());
+    assert_eq!(
+        reload_edges_of(vec![named_import("prelude")], false),
+        ["prelude"]
+    );
+}
+
+// spec: design/int/int.md §7.6 — the cache-validity edge set keeps a null
+// import, which the reload predicate drops.
+#[test]
+fn the_cache_validity_edges_keep_a_null_import() {
+    assert_eq!(
+        edges_of(
+            &[import("prelude", None, ImportNames::None)],
+            &[],
+            &[],
+            false
+        ),
+        ["prelude"]
+    );
+}

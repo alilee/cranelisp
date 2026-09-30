@@ -1,5 +1,4 @@
-//! The ONE program-result owner (`design/int/result-owner.md`, FIXME 0745 /
-//! arch ruling 9).
+//! The ONE program-result owner (`design/int/result-owner.md`, arch ruling 9).
 //!
 //! Every successful execution result — REPL turn, `--run` entry `main`, and
 //! (in CLIF form) the linked startup stub — crosses from generated typed code

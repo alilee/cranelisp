@@ -2,15 +2,15 @@
 //!
 //! An exact-balance assertion over a compiler child (`allocs == deallocs` at
 //! exit) is only as truthful as the child's baseline. Sprint 118 established
-//! that it is not truthful at all today: **every** child that loads the stdlib
-//! prelude carries a program-independent compile-time residual — 1143
-//! allocations at S118 HEAD — from the int-side macro-turn marshal boundary
-//! (FIXME 0889; `tests/plan/s118-test-plan.md` §2.5). An absolute
-//! `allocs == deallocs` cell over such a child measures ONLY that residual. It
-//! reads RED no matter what the runtime behaviour it is named after does, and
-//! it would read GREEN again the moment 0889 is fixed *even if the named
-//! runtime behaviour had rotted in the meantime*. Either way the cell is not an
-//! instrument.
+//! that it is not truthful at all: **every** child that loads the stdlib
+//! prelude carries a program-independent residual — 1143 allocations at S118
+//! from the int-side macro-turn marshal boundary; S122 fixed that share and 46
+//! unclassified allocations remain (FIXME 0889; `tests/plan/s118-test-plan.md`
+//! §2.5). An absolute `allocs == deallocs` cell over such a child measures ONLY
+//! that residual. It reads RED no matter what the runtime behaviour it is named
+//! after does, and it would read GREEN again the moment 0889 is fixed *even if
+//! the named runtime behaviour had rotted in the meantime*. Either way the cell
+//! is not an instrument.
 //!
 //! The cure is accounting, not thresholds. This module measures a **pair** of
 //! children that differ in exactly one thing — the workload under test — and
@@ -616,6 +616,21 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
     }
 
     let (allocs, deallocs) = instrument.parse(&stderr).unwrap_or_else(|e| {
+        // An armed seam check (`CRANELISP_RC_DEC_CHECK`) stops the child at the
+        // faulting release, before it can report counters. That is the cell's
+        // verdict, not a harness failure, so name it as such.
+        if let Some(stop) = stderr.lines().find(|l| {
+            l.contains("STALE RC DEC")
+                || l.contains("SEAM VIOLATION")
+                || l.contains("USE-AFTER-FREE")
+        }) {
+            panic!(
+                "marginal {role} child was stopped by an armed allocator seam check \
+                 before reporting counters:\n  {stop}\n\
+                 exit={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                status.code()
+            );
+        }
         panic!(
             "marginal {role} child produced no readable {instrument:?} counters ({e}).\n\
              A pair cannot be subtracted if one side did not report — this is a harness \

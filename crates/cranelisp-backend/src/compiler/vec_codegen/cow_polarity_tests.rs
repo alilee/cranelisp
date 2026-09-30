@@ -26,18 +26,15 @@ use cranelisp_types::Span;
 use super::{SourceOwnership, VecSetCow, emit_vec_push_cow_core, emit_vec_set_cow_core};
 use crate::jit::Jit;
 
-/// COW source polarity for the probe harness (R14 / §13.7).
+/// COW source polarity for the probe harness (§13.7).
 #[derive(Clone, Copy)]
 enum Own {
-    /// Wrapper/curry consuming, fresh-temp, or toggle-off all-Owned — the copy
-    /// branch releases; the mutate branch transfers (no inc).
+    /// The site owns the consumed reference — the copy branch releases; the
+    /// mutate branch transfers (no inc).
     Owned,
-    /// analysis-ON live-`Var` binding, result ESCAPES — the mutate/grow branch
-    /// incs the reused pointer (the 0641 B-2/I-2 retention).
-    BorrowedEscaping,
-    /// analysis-ON live-`Var` binding, result does NOT escape (recur-transfer /
-    /// in-frame consume) — no mutate inc (l_c3 in-place reuse preserved).
-    BorrowedInFrame,
+    /// The source's slot keeps its reference — the mutate/grow branch retains
+    /// the reused pointer; the copy branch releases nothing.
+    Borrowed,
 }
 
 /// Build a probe function `(i64) -> i64` whose body is a single COW core
@@ -83,12 +80,7 @@ fn cow_core_clif(set: bool, own: Own) -> String {
             vec_drop_func_id: vec_drop_id,
             elem_dec_fn_ptr: dec_fn,
         },
-        Own::BorrowedEscaping => SourceOwnership::Borrowed {
-            retain_reused: true,
-        },
-        Own::BorrowedInFrame => SourceOwnership::Borrowed {
-            retain_reused: false,
-        },
+        Own::Borrowed => SourceOwnership::Borrowed,
     };
 
     let result = if set {
@@ -136,8 +128,8 @@ fn rc_dec_count(clif: &str) -> usize {
 }
 
 /// `atomic_rmw.i64 add` occurrences — with NeverHeap elements + `RC_STATS` off,
-/// the ONLY such op the core can emit is the §13.7 escape-gated retention inc
-/// (`retain_reused_source`, Borrowed-escaping only).
+/// the ONLY such op the core can emit is the §13.7 retention inc
+/// (`retain_reused_source`, `Borrowed` only).
 fn rc_inc_count(clif: &str) -> usize {
     clif.matches("atomic_rmw.i64 add").count()
 }
@@ -167,7 +159,7 @@ fn vec_set_cow_copy_branch_releases_owned_source() {
 // polarity (static in-place site): NO branch releases the source (scope owns it).
 #[test]
 fn vec_set_cow_borrowed_source_releases_nothing_neg() {
-    let clif = cow_core_clif(true, Own::BorrowedInFrame);
+    let clif = cow_core_clif(true, Own::Borrowed);
     assert_eq!(
         rc_dec_count(&clif),
         0,
@@ -194,7 +186,7 @@ fn vec_push_cow_copy_branch_releases_owned_source() {
 // mutate/grow/copy all release nothing.
 #[test]
 fn vec_push_cow_borrowed_source_releases_nothing_neg() {
-    let clif = cow_core_clif(false, Own::BorrowedInFrame);
+    let clif = cow_core_clif(false, Own::Borrowed);
     assert_eq!(
         rc_dec_count(&clif),
         0,
@@ -211,7 +203,7 @@ fn vec_push_cow_borrowed_source_releases_nothing_neg() {
 fn cow_core_owned_minus_borrowed_is_exactly_one_release() {
     for set in [true, false] {
         let owned = rc_dec_count(&cow_core_clif(set, Own::Owned));
-        let borrowed = rc_dec_count(&cow_core_clif(set, Own::BorrowedInFrame));
+        let borrowed = rc_dec_count(&cow_core_clif(set, Own::Borrowed));
         assert_eq!(
             owned - borrowed,
             1,
@@ -222,77 +214,37 @@ fn cow_core_owned_minus_borrowed_is_exactly_one_release() {
 }
 
 // =============================================================================
-// §13.7 escape-gate matrix (S113 W5b, FIXME-0664 /arch ruling) — the mutate/grow
-// branch retention INC. Fires ONLY for a Borrowed live-`Var` binding whose result
-// ESCAPES the source's scope (`BorrowedEscaping`): the returned same pointer
-// outlives the binding's scope-dec and must own an independent reference (the
-// 0641 B-2/I-2 UAF). A recur-transfer / in-frame consume (`BorrowedInFrame`) and
-// `Owned` (transfer) emit NO inc — preserving l_c3 loop reuse and killing the
-// fresh-temp/loop over-retain. The VALUE-correctness half is the committed e2e
-// repros + the toggle × modes lane.
+// §13.7 mutate/grow retention — the result owns exactly one reference on every
+// branch. A `Borrowed` source's slot keeps and later releases its reference, so
+// the same-pointer return takes one more; an `Owned` source transfers. The
+// escape fact is not an input (ACT-1024); the classification cells are in
+// `cow_claim_tests`.
 // =============================================================================
 
-// spec: design/backend/ownership-codegen.md §13.7 — vec-set mutate branch,
-// Borrowed-ESCAPING: exactly one retention inc on the returned same pointer.
+// spec: design/backend/ownership-codegen.md §13.7 — a `Borrowed` source's
+// mutate (`vec-set`) and unique (`vec-push`, one covering fast + grow) block
+// retains the reused pointer exactly once.
 #[test]
-fn vec_set_cow_borrowed_escaping_retains_reused_source() {
-    let clif = cow_core_clif(true, Own::BorrowedEscaping);
-    assert_eq!(
-        rc_inc_count(&clif),
-        1,
-        "vec-set COW core, Borrowed-escaping source MUST emit exactly one \
-         mutate-branch retention inc (§13.7). CLIF:\n{clif}"
-    );
-}
-
-// spec: §13.7 — vec-push unique branch, Borrowed-ESCAPING: one retention inc
-// (covers both fast + grow, which return the same pointer).
-#[test]
-fn vec_push_cow_borrowed_escaping_retains_reused_source() {
-    let clif = cow_core_clif(false, Own::BorrowedEscaping);
-    assert_eq!(
-        rc_inc_count(&clif),
-        1,
-        "vec-push COW core, Borrowed-escaping source MUST emit exactly one \
-         unique-branch retention inc (§13.7, one covers fast+grow). CLIF:\n{clif}"
-    );
-}
-
-// spec: §13.7 — the escape gate: an IN-FRAME Borrowed source (recur-transfer /
-// non-escape) and an Owned source emit NO mutate-branch inc. The in-frame case
-// is the l_c3 in-place-reuse preservation; the Owned case is the transfer. Both
-// = zero inc, for both ops. (The negative side that kills the fresh-temp/loop
-// over-retain the FIXME-0664 falsification found.)
-#[test]
-fn cow_core_no_retention_inc_for_inframe_or_owned_neg() {
+fn cow_core_borrowed_source_retains_the_reused_box() {
     for set in [true, false] {
+        let clif = cow_core_clif(set, Own::Borrowed);
         assert_eq!(
-            rc_inc_count(&cow_core_clif(set, Own::BorrowedInFrame)),
-            0,
-            "in-frame Borrowed (non-escape) MUST NOT emit a retention inc \
-             (set={set}) — preserves l_c3 loop reuse"
-        );
-        assert_eq!(
-            rc_inc_count(&cow_core_clif(set, Own::Owned)),
-            0,
-            "Owned source MUST NOT emit a retention inc (set={set}) — transfer"
+            rc_inc_count(&clif),
+            1,
+            "set={set}: a Borrowed source MUST emit exactly one retention inc \
+             (§13.7). CLIF:\n{clif}"
         );
     }
 }
 
-// spec: §13.7 — the retention inc is attributable to the ESCAPE gate ALONE
-// (Principle 18): Borrowed-escaping emits exactly one more mutate-branch inc than
-// Borrowed-in-frame, for both ops.
+// spec: §13.7 (NEGATIVE) — an `Owned` source transfers: no retention inc.
 #[test]
-fn cow_core_escaping_minus_inframe_is_exactly_one_retention() {
+fn cow_core_owned_source_does_not_retain_neg() {
     for set in [true, false] {
-        let escaping = rc_inc_count(&cow_core_clif(set, Own::BorrowedEscaping));
-        let inframe = rc_inc_count(&cow_core_clif(set, Own::BorrowedInFrame));
         assert_eq!(
-            escaping - inframe,
-            1,
-            "the escaping/in-frame retention-inc delta MUST be exactly one \
-             (set={set}): escaping={escaping} inframe={inframe}"
+            rc_inc_count(&cow_core_clif(set, Own::Owned)),
+            0,
+            "Owned source MUST NOT emit a retention inc (set={set}) — transfer"
         );
     }
 }

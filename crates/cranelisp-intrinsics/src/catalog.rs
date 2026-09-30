@@ -70,15 +70,18 @@
 //! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
 //! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
 //! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
-//! invariant 12; `design/arch/tracing.md`). The table is 37 entries: 25 core
+//! invariant 12; `design/arch/tracing.md`). The table holds the core entries
 //! (incl. `catch-runtime-error`, the protected-call combinator,
 //! `design/arch/test-discovery.md` §6; `cranelisp_spark_budget_try_reserve`,
 //! the create-gate reservation primitive, lenient-eval.md §3.6.1, S92; the
 //! 2 S99 `runtime/rc_stat_{inc,dec}` measurement tally helpers; and the 3
 //! increment-II `runtime/{reuse_hit,reuse_miss,extern_adapt_str_len}` tally
 //! helpers, §6.5/§9.2; and `runtime/free_io_node`, the post-dec IO teardown
-//! tail) + the 12 `cranelisp_trace_*` family. The catalog + its tests are the single owner of
-//! the trace name-agreement contract (closing the prior no-owner gap).
+//! tail) + the 12 `cranelisp_trace_*` family. The exact name set, and so the
+//! entry count, is owned by this module's test list `EXPECTED_NAMES`, pinned by
+//! `name_set_is_exactly_the_expected_names`; it is not restated here. The
+//! catalog + its tests are the single owner of the trace name-agreement
+//! contract (closing the prior no-owner gap).
 
 /// One backend-emitted-call target in the published intrinsics catalog.
 ///
@@ -108,7 +111,7 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 38 entries — 26 core (the set relocated
+/// Returns a `'static` slice of the core entries (the set relocated
 /// from the retired `cranelisp_backend::jit::intrinsic_symbols()`, plus
 /// `cranelisp_ivar_dealloc`, the IVar-aware drop path;
 /// `cranelisp_spark_budget_try_reserve`, the create-gate primitive;
@@ -116,9 +119,10 @@ pub struct IntrinsicEntry {
 /// the 2 S99 `runtime/rc_stat_{inc,dec}` tally helpers; and the 3 increment-II
 /// `runtime/{reuse_hit,reuse_miss,extern_adapt_str_len}` tally helpers,
 /// §6.5/§9.2) plus the 12
-/// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12).
-/// See this module's `//!` for the consumer contract, the ABI guardrail, and the
-/// scope boundary.
+/// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12). The
+/// exact name set and entry count are the module tests' `EXPECTED_NAMES`, not
+/// restated here. See this module's `//!` for the consumer contract, the ABI
+/// guardrail, and the scope boundary.
 pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
     &[
         // Runtime infrastructure (internal, not user-callable).

@@ -1,6 +1,6 @@
 //! Single declaration inventory for the primitive table and linker harvest.
 
-use cranelisp_intrinsics::handle::{Borrowed, Owned};
+use cranelisp_intrinsics::handle::Owned;
 use cranelisp_types::{
     Mode, ModeSummary, ModuleFullPath, Scheme, Symbol, SymbolTable, Type, TypeName, Visibility,
 };
@@ -444,7 +444,7 @@ primitive_declarations! {
         }
         user_extern {
             name: "string-identity",
-            shim: shim_string_identity(s: Borrowed<'static>) -> Owned => crate::string::string_identity, call: (s),
+            shim: shim_string_identity(s: Owned) -> Owned => crate::string::string_identity, call: (s),
             metadata: PrimitiveDef {
             name: Symbol::from("string-identity"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::String)),

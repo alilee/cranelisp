@@ -1,9 +1,16 @@
 # S122 selected backend closure
 
 Owner: `/design` (backend). Status: **Selected backend runtime-consumer and Q4
-alias corrections delivered and independently reviewed; solution-golden,
-final Q5/API and integrated acceptance pending; the §8 IOR-5 correction is
-implemented; final integrated acceptance pending**. The
+alias corrections delivered and independently reviewed; solution-golden
+evidence and the Q5 paired measurement complete; the §8 IOR-5 correction is
+implemented; the ACT-0974 extern entry convention (co-landed with its
+primitives half), the ACT-1021 branch-forward rule, its consuming-COW amendment
+and the amendment's last-use alias correction, and the ACT-1024 COW retention
+correction with the match-seam retirement it requires, are implemented in the
+working tree, uncommitted and not accepted; `test`'s V2 passed and
+`review`(backend) found no blocking finding; K4 is complete and `qa` judged
+Phase 5's evidence adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); user acceptance and phase
+approval pending**. The
 Phase-3 scope and existing contracts were authorized 2026-09-09 against
 compiler checkpoint `dc78ddbe` and package checkpoint `98436c9`; this design
 has completed independent runtime review with no material findings. This
@@ -13,8 +20,9 @@ the current generic-replacement and sequence-IO failures.
 
 The bounded context remains `design/arch/bounded-contexts.md` §3. The selected
 change has no new public backend API, generated backend baseline delta, emitted
-raw ABI, cache schema, platform ABI, persistent representation, or compiler
-mode. It consumes `ConcreteType::result_root()` and the approved intrinsics
+raw ABI, platform ABI, persistent representation, or compiler mode. Its only
+cache-schema change is ACT-0974's value-only bump
+([non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6). It consumes `ConcreteType::result_root()` and the approved intrinsics
 `Owned` contract. The separate uniform executable-identity migration and cache
 schema 29 state remain governed by their existing architecture record; this
 slice neither changes nor re-dispositions them.
@@ -22,8 +30,10 @@ slice neither changes nor re-dispositions them.
 ## 1. Delivered backend slice and remaining gates
 
 The selected source and module-test work is delivered and independently
-reviewed. Scoped solution-golden selection, final Q5/API evidence and
-integrated acceptance remain open:
+reviewed, except where a row below states otherwise, and its solution-golden
+evidence is complete (§3). The Q5 paired
+measurement is complete (§6). Final API confirmation and integrated acceptance
+remain open:
 
 | Obligation | Backend path | Dependency |
 |---|---|---|
@@ -32,6 +42,9 @@ integrated acceptance remain open:
 | Typed closure fixture | test module in `crates/cranelisp-backend/src/compiler/control_flow/launch.rs` | delivered using intrinsics `handle::Owned` and `drop::consume_closure(Owned)` |
 | Source guidance affected by the helper census | `crates/cranelisp-backend/CLAUDE.md` | delivered beside implementation |
 | Q4 macro returned-alias ownership | selected-arm projection in `crates/cranelisp-backend/src/lib.rs`; match/return ownership in `crates/cranelisp-backend/src/compiler/` | delivered with focused and public evidence; independently reviewed with no material finding |
+| ACT-0974 extern entry convention | `compiler/apply.rs`, `compiler/control_flow/fn_as_value.rs`, `compiler/fn_compiler.rs`, `cache/mod.rs` (value-only schema bump) | designed at [non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6 and implemented in the working tree, co-landed with the primitives half (`string-identity` moves its argument). The SI cells went RED first; `string_primitive_value_discharge` is 10/10 at V2, and neither the primitives nor the backend review found a blocking issue. K4 is complete and `qa` judged it adequate, retiring ACT-0974 ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); user acceptance is pending |
+| ACT-1021 parameter forwarded through a tail-argument branch | `compiler/fn_compiler.rs` and `compiler/vec_codegen.rs`, plus `heap.rs` for last-use aliases; the four protect paths in `compiler/control_flow/let_if.rs` and `compiler/match_codegen.rs` read the same fact unchanged | designed at [ownership-codegen.md](ownership-codegen.md) §13.3 (branch-forward rule, one ownership fact, consuming COW argument and its last-use alias correction); the rule, the amendment and the alias correction are in the working tree; `test`'s after-fix run passed with `copy_only_tail_push_protects_its_forwarded_match_alias` GREEN, V2 kept the tail family GREEN, and review found no blocking finding; K4 is complete and `qa` judged it adequate, retiring ACT-1021 on K4's armed and unarmed replay ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); user acceptance is pending |
+| ACT-1024 in-place COW on a frame-owned `Var` released twice | `compiler/vec_codegen.rs` (two-state source classification; the recorded retain decisions are deleted), `compiler/apply.rs` (the claim set around the self-tail arguments; the escape threading is deleted), `compiler/fn_compiler.rs` (the claim set and its one reader; the return-COW claim, keyed by site; the retain reconciliation is deleted), `compiler/match_codegen.rs` (the arm plan without a COW input) | designed at [ownership-codegen.md](ownership-codegen.md) §13.7 and implemented in the working tree on top of the ACT-1021 amendment, with the match-seam retirement that fixes ACT-1027 (user-approved for S122). `dev`'s release gate and affected e2e pass; V2 passed with the ACT-1024 cells and both ACT-1027 faces GREEN, and review found no blocking finding; K4 is complete and `qa` judged it adequate; user acceptance is pending. ACT-1026's leak is exposed on the mutate branch and is carried, as is ACT-1028 |
 
 No `tests/` path is part of the backend reservation. Any actual affected CLIF
 golden is test-owned and is selected from the produced diff, not predicted from
@@ -94,10 +107,13 @@ controls remain unchanged.
 
 The fold can change Cranelift block creation order for the two former copies,
 so CLIF block labels may change while behavior does not. Module evidence is
-green, but actual solution-golden selection remains pending until the root
-compiler consumers migrate and the complete attributed diff can be inspected.
-Re-baseline only affected functions/fixtures with attribution to 0906. A broad
-baseline refresh or semantic inference from textual identity is a review reject.
+green. The scoped golden re-baselines attribute only canonical frame renames
+and the Q4 clause release, with no 0906 instruction change, and the goldens
+pass in the last full run
+([QA allocation](../../tests/plan/s122-evidence-delta.md#final-integration-failures--classification-and-allocation),
+[acceptance basis](../../tests/plan/s122-evidence-delta.md#phase-5-acceptance-reconciliation-2026-09-27)).
+A broad baseline refresh or semantic inference from textual identity is a
+review reject.
 
 ## 4. Typed `consume_closure` fixture
 
@@ -126,14 +142,14 @@ change. They do not delete filings or weaken their surviving evidence needs.
 
 | Records | Current disposition in this backend visit |
 |---|---|
-| 0898, 0906 | Backend source and focused module evidence are delivered. Actual solution-golden selection and integrated evidence remain open; neither record licenses a broader refresh. |
+| 0898, 0906 | Delivered: backend source, focused module evidence and solution-golden evidence (§3). Both are retired; `dev`(backend) re-verified 0906 against source and deleted it under K3 on 2026-09-30. Neither record licenses a broader refresh. |
 | 0637 | Borrowed-sibling cache validation and its out-of-range/highest-legal-slot unit already exist. Evidence/record reconciliation only; no backend change. |
 | 0747 | The S121 one-finder consolidation is superseded by the current slot-identity and carrier-keyed designs. The three functions answer different questions and remain separate; §5.1 is the final design disposition, with no backend source change. |
 | 0761, 0781, 0782 | Existing ownership-flow and match/scope guards carry the delivered behavior. QA/test reconcile locus and coverage tails; backend does not reimplement the fixes. |
 | 0891, 0903, 0916, 0917, 0931 | Historical template/TCO/frame mechanisms are partly superseded. The current `signature_heap_category` residual fallback is not changed in this selected pass. QA first remeasures the exact current corpus/CLIF condition; any surviving violation returns to its attributed producer/backend design rather than entering 0898/0906 by proximity. |
 | 0900 | Defect-token granularity is test-owned maintenance and has no backend source consequence. |
 | 0907, 0934 | Tag-directed IO disposal, the ABI-10 Pure witness, backend construction/adoption stamps, and their backend units are delivered. Unrun-Bind/cancellation evidence is reconciled by QA/runtime owners. The current sequence-IO RED is not attributed to these mechanisms. |
-| 0915 | The display shape alone does not establish doubled or mangled public diagnostics, and no legitimate stable public codegen-failure trigger is known. Preserve the existing diagnostic until that condition is observable; do not redesign it from an unarmed witness. |
+| 0915 | Carried to S123 under K9 (C5) in the [approved disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30). The display shape alone does not establish doubled or mangled public diagnostics, and no legitimate stable public codegen-failure trigger is known. Preserve the existing diagnostic until that condition is observable; do not redesign it from an unarmed witness. |
 
 ### 5.1 0747 — retire the manufactured consolidation
 
@@ -192,9 +208,14 @@ The completed independent runtime review covered:
 - the relevant existing record-tail evidence, cited rather than duplicated;
 - the delivered backend local checks.
 
-The remaining evidence tail is the actual scoped solution-golden diff, final
-generated API confirmation, Q5's final paired after-state after this backend
-correction, and the later integrated suite allocated by QA.
+Q5's paired after-state is measured. The fixed-session residual fell from 1143
+to 46 on the matched input, library, configuration and build posture. QA keeps
+the 46 as an unclassified diagnostic, not a gate, and does not call it harmless
+or a proved leak
+([runtime checkpoint](../../tests/plan/s122-evidence-delta.md#runtime-evidence-checkpoint--matched-residual-and-golden-limit)).
+A zero-session-residue claim would need that provenance first. QA's K4 visit
+closed the remaining evidence tail, the final generated API confirmation and
+the integrated suite ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
 
 The accepted slice excludes new helper visibility, a new result-root rule, any
 emitted ABI change caused by the Rust handle migration, a third nullary-tag guard
@@ -261,8 +282,9 @@ new retain on the constructor-result/nullary control. The affected focused set
 passes 19/19 in run `7777a8dc-2485-4e44-ab5c-11f5a75ad7c7`, and QA's existing
 public pair passes 2/2 in run `0ce70208-1654-41a3-887f-89431a0b7b84`. The
 independent backend review found no material defect. No additional mode matrix
-or public seam is added. Actual solution-golden selection, Q5 remeasurement,
-final API confirmation and integrated macro/host evidence remain open.
+or public seam is added. Solution-golden evidence (§3) and the Q5 paired
+measurement (§6) are complete; final API confirmation and integrated macro/host
+evidence remain open.
 
 ## 8. IOR-5 — an IO-combinator result is fresh
 
@@ -308,10 +330,12 @@ The pre-fix failure, confirmed by emitted-code observation:
   callee is spelled `bind` but whose carrier is not `BuiltinFn` is not
   classified by this rule.
 - **The rule does not extend to other builtins.** Inline Vec operations can
-  return an existing element or an in-place COW source. Extern primitives such
-  as `string-identity` may return an argument. They stay `OwnedTemporary`.
-  A per-primitive result contract belongs to its owners and is not assumed
-  here.
+  return an existing element or an in-place COW source, so they stay
+  `OwnedTemporary`. An extern shim such as `string-identity` may return its
+  argument, so it is never `Fresh`. Its owned-transfer result is classified by
+  the entry-convention derivation
+  ([non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6),
+  not by this rule.
 - **Joins stay conservative.** `(if c (bind p k) p)` joins to `NotOwnedHere`,
   so its protect remains. Per-arm protection is out of scope.
 
@@ -324,8 +348,12 @@ The pre-fix failure, confirmed by emitted-code observation:
   continuation and match-arm exits, including `match_codegen`'s
   independent-arm plan.
 - Nothing else changes: no `cranelisp-types` change, no public API or
-  `public-api.txt` delta, no emitted-call ABI change, no cache-schema change
-  (`BUILD_ID` invalidates object caches), and no intrinsics or platform change.
+  `public-api.txt` delta, no emitted-call ABI change and no intrinsics or
+  platform change.
+- There is no cache-schema bump. The elision is confined to each frame's own
+  emission and moves no convention a cached object shares with separately
+  compiled code
+  ([bump rule](module-caching.md#142-cache_schema_version-ownership)).
 - CLIF goldens containing a heap-binding scope that returns an IO combinator
   change, with attribution to IOR-5 only.
 

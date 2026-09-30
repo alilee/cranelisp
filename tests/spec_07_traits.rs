@@ -2772,7 +2772,7 @@ const HASW_FOR_BOX: &str = "(deftype Box [:primitives/Int v])\n\
 // the S122 fix (ACT-0996): the call failed codegen with an entry miss on the
 // doubled target `user/HasW.HasW.w$user/Box`; the prelude's `(Num.+ 1 2)` and a
 // `--run` `main` failed the same way. Control: trait_method_bare_call_and_qualified_value_dispatch.
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs found=S122 owner=/dev fixed=S122
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs found=S122 owner=/dev fixed=S122/63605970
 // The qualified spelling resolved as a value, but `try_resolve_trait_method`
 // mangled the written `HasW.w` passed by call-position inference as the method
 // name.
@@ -2811,7 +2811,7 @@ const ZERO_FOR_INT_AND_FLOAT: &str = "(deftrait Zero (z [] self))\n\
 // `(Zero.z)` and `:Zero (Zero.z)` are rejected exactly as their bare twins are.
 // Bare twins run first in the same session as the fixture's self-check.
 // Control: trait_qualified_nullary_return_dispatch_pinned_dispatches.
-// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/finalize/ambiguity.rs found=S122 owner=/dev fixed=S122
+// defect: class=resolver-mirror locus=crates/cranelisp-typecheck/src/program/finalize/ambiguity.rs found=S122 owner=/dev fixed=S122/63605970
 // ACT-0999 (fixed): the qualified spellings reached codegen and failed with
 // "`__expr` entry has no GOT slot" instead of the §3.11 error.
 #[test]

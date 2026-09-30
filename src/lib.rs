@@ -66,7 +66,7 @@ pub(crate) mod marshal;
 // renamed to shed the misleading "v3 lingering" connotation).
 pub(crate) mod pipeline;
 pub(crate) mod platform;
-// result_owner — the ONE program-result owner (FIXME 0745 / arch ruling 9,
+// result_owner — the ONE program-result owner (arch ruling 9,
 // `design/int/result-owner.md`). `pub` because `OwnedProgramResult` rides the
 // binary-facing `EvalResult::Val` / `CompilerSession::trampoline` surfaces that
 // `src/main.rs` consumes; the int bounded context has no `public-api.txt`

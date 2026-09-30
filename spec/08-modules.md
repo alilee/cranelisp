@@ -607,7 +607,7 @@ The load-on-reference obligation is subject to the following normative edges.
 
 5. **Dependency fails to compile.** If the referenced module is located but fails to compile, the referencing form fails with a **chained diagnostic** naming the failed module and its underlying error. This is an evaluation/compile error at the reference site, not a session-killer: a REPL session MUST survive it (the failing reference reports and the session continues).
 
-6. **Cycles.** A qualified reference that closes a module dependency cycle MUST be reported as a **circular-dependency error naming the cycle path**, at parity with `import`-induced cycles (§8.10.2). It MUST NOT deadlock, and MUST NOT surface as "undefined variable."
+6. **Cycles.** A qualified reference that closes a module dependency cycle MUST be reported as a **circular-dependency error naming the cycle path**, at parity with `import`-induced cycles (§8.10.2). It MUST NOT deadlock, and MUST NOT surface as "undefined variable." [Tested+Neg tests/spec_08_modules::fq_ref_cycle_reports_circular_dependency_path, tests/spec_08_modules::fq_ref_mixed_cycle_import_plus_fq_reports_cycle — `--run` only: the cycle is reported, and not as `undefined variable`] [Tested+Neg tests/spec_08_modules::fq_ref_cycle_repl_startup_reports_circular_dependency_like_run, tests/repl_persist::watch_save_closing_qualified_module_cycle_reports_circular_dependency, tests/repl_persist::watch_save_adding_acyclic_qualified_call_reloads_control, tests/spec_08_modules::import_cycle_repl_startup_reports_circular_dependency — REPL: a fresh load and a reload that close the cycle report it naming the path, at parity with `--run` and with an `import` cycle; an acyclic reload is accepted] [Tested tests/repl_persist::repl_definition_closing_qualified_module_cycle_refused_and_not_written — REPL increment: a definition turn closing the cycle is refused naming the path and not written; a later definition is accepted] [Tested+Neg tests/repl_persist::repl_defmacro_clause_closing_qualified_module_cycle_refused_and_not_written, tests/repl_persist::repl_defmacro_clause_calling_acyclic_qualified_dependency_accepted_control — REPL `defmacro` turn: a clause closing the cycle is refused naming the path and not written, and a later definition is accepted; an acyclic clause is accepted] [Tested+Neg tests/repl_persist::prelude_save_calling_x_qualified_neg_refused_as_cycle_like_restart — a prelude's qualified reference closing a cycle through a module's implicit prelude import (§8.8.1): a save and a restart report the cycle, and the restart does not report the module's prelude type unresolved]
 
 7. **In-flight atomicity.** A qualified reference resolved against a module that is still in the process of loading MUST behave as if that load had completed first: no observable partial-module state is exposed to resolution. (This closes the load-scheduler race normatively — a reference sees a module as either not-yet-loaded or fully loaded, never half-loaded.)
 
@@ -777,7 +777,7 @@ A private name:
 (main.util/internal 42)         ; error: 'internal' is private
 ```
 
-## 8.8 Prelude [Tested tests/spec_08_modules::def1_prelude_provided_defn_called_bare_enters_codegen_batch, tests/spec_08_modules::prelude_like_reexport_compiles]
+## 8.8 Prelude [Tested tests/spec_08_modules::def1_prelude_provided_defn_called_bare_enters_codegen_batch — a prelude name is available bare; the dependency rule is annotated on its paragraph]
 
 ### 8.8.1 Implicit Import
 
@@ -789,13 +789,24 @@ When a module's source does not reference `prelude` in any `import` or `export` 
 
 An implementation MAY store these bindings in an **outer scope** rather than copy them into the module's inner table, but this is only a storage choice. Prelude, explicit-import, re-export, derived-member, and module-local candidates with the same spelling MUST be merged for §8.6.4–§8.6.5 resolution; an outer-scope implementation MUST NOT consult the prelude only after an inner miss and thereby give a local declaration silent precedence. Same-terminal paths deduplicate, while distinct terminals remain candidates. Lexical `let`/`fn`/`match` bindings still shadow the entire module-scope set under §8.6.3. [Tested+Neg tests/spec_08_name_shadowing::deftrait_over_prelude_provided_trait_rejected_neg, crates/cranelisp-typecheck/src/checker/tests.rs::prelude_fallback_unions_local_and_prelude_candidates]
 
-An explicit `(import [prelude [...]])` or `(export [prelude [...]])` suppresses the implicit prelude — i.e. the prelude-resolution fallback is NOT activated for that module. The module author may import specific prelude names (those named bindings enter the inner scope as ordinary explicit imports, with no fallback), suppress the prelude entirely with a null import (§8.3.6), or re-export prelude symbols without receiving the implicit fallback. In every case the rule is the same: a module that references `prelude` gets no implicit fallback; a module that does not gets the fallback activated.
+An explicit `(import [prelude [...]])` or `(export [prelude [...]])` suppresses the implicit prelude — i.e. the prelude-resolution fallback is NOT activated for that module. The module author may import specific prelude names (those named bindings enter the inner scope as ordinary explicit imports, with no fallback), suppress the prelude entirely with a null import (§8.3.7), or re-export prelude symbols without receiving the implicit fallback. In every case the rule is the same: a module that references `prelude` gets no implicit fallback; a module that does not gets the fallback activated.
+
+The implicit import is a dependency on `prelude` in the module dependency graph (§8.10.1), like the written import it stands for. A module that the prelude depends on, directly or transitively, and whose source does not reference `prelude` therefore forms a circular dependency, which MUST be rejected under §8.10.2. Whether the prelude reaches a module creates no exception. Such a module avoids the cycle by suppressing the implicit import with a null import, which loads nothing (§8.3.7): [Tested+Neg tests/spec_08_modules::prelude_dependency_without_opt_out_neg_rejected_as_cycle_in_every_mode, tests/spec_08_modules::prelude_dependency_with_null_import_runs_in_every_mode_control — reach by `import` at a fresh load in `--run`, `--link` and REPL startup] [Tested+Neg tests/repl_persist::prelude_save_importing_module_without_opt_out_neg_refused_as_cycle_like_restart, tests/repl_persist::prelude_save_importing_opted_out_module_reloads_like_restart_control, tests/repl_persist::mod_prelude_import_of_module_without_opt_out_neg_refused_as_cycle, tests/repl_persist::mod_prelude_import_of_opted_out_module_accepted_and_written_once_control — reach by `import` added by a prelude save, with a restart agreeing, and by a `/mod prelude` turn, which is not written] [Tested+Neg tests/repl_persist::prelude_save_exporting_x_neg_refused_as_cycle_like_restart, tests/repl_persist::prelude_save_calling_x_qualified_neg_refused_as_cycle_like_restart, tests/repl_persist::prelude_save_exporting_opted_out_x_reloads_like_restart_control — reach by `export` or a qualified reference, at a save and a restart; in each case the null-import twin is accepted] [Tested src/process_form/dependency.rs::failed_attempt_reached_by_the_prelude_reports_the_cycle — unit; transitive reach, `x -> prelude -> a -> x`] [Tested+Neg src/session_v4/persistence_tests.rs::helper_save_dropping_its_prelude_opt_out_is_refused_as_a_cycle — unit; the prelude reaches the module by `export` or a qualified reference, and a save of the module that drops its opt-out, or a prelude save that adds the reach, is refused naming the cycle, reports no unresolved name and ends as a restart does; the save that restores the opt-out is accepted]
+
+```clojure
+;; prelude.cl
+(import [x [one]])
+
+;; x.cl -- without the next line, prelude -> x -> prelude is a cycle
+(import [prelude []])
+(defn one [] 1)
+```
 
 A `(mod prelude)` declaration does not suppress the implicit fallback, but the declared submodule shadows the library prelude during module resolution.
 
 ### 8.8.2 Regular Module Semantics
 
-The prelude uses normal module resolution (Section 8.11.2) with no special search paths. It is discovered, loaded, and compiled as a regular module through the standard compilation pipeline -- it participates in the module graph like any other module and is compiled in topological order (its dependencies first, then the prelude, then user modules).
+The prelude uses normal module resolution (Section 8.11.2) with no special search paths. It is discovered, loaded, and compiled as a regular module through the standard compilation pipeline -- it participates in the module graph like any other module and is compiled in topological order (its dependencies first, then the prelude, then user modules). This order does not exempt the prelude's dependencies from the implicit import; each must suppress it or form a cycle (§8.8.1). [Tested tests/repl_persist::prelude_save_importing_prelude_dependent_module_agrees_with_restart — a prelude save importing a module that uses the prelude's type, with no opt-out: the session and a restart agree]
 
 A project MAY provide its own `prelude.cl` that shadows a library prelude, since module resolution checks the project directory before the stdlib directory.
 
@@ -863,7 +874,7 @@ Synthetic modules are always known to the module system. Their names are seeded 
 
 ### 8.10.1 Dependency Graph
 
-The implementation MUST construct a dependency graph from module declarations (`mod`, `import`, `export`, `platform`) and compile modules in **topological order** -- dependencies before dependents.
+The implementation MUST construct a dependency graph from module declarations (`mod`, `import`, `export`, `platform`) and the implicit prelude import (§8.8.1), and compile modules in **topological order** -- dependencies before dependents. [Tested+Neg tests/spec_08_modules::prelude_dependency_without_opt_out_neg_rejected_as_cycle_in_every_mode, tests/spec_08_modules::prelude_dependency_with_null_import_runs_in_every_mode_control, tests/repl_persist::prelude_save_exporting_x_neg_refused_as_cycle_like_restart — the implicit prelude import as a graph edge, and a null import as none; the other declaration kinds are evidenced under §8.3–§8.5 and §8.10.2]
 
 ### 8.10.2 Circular Dependencies
 

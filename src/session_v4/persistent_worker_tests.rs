@@ -116,7 +116,7 @@ fn reload_during_compile_race_completes() {
     // Overwrite with new content and trigger reload.
     std::fs::write(&file_path, "(defn updated [] 2)\n").expect("rewrite reload_target.cl");
     let module = ModuleFullPath::from("reload_target");
-    s.reload_module(&module, &file_path)
+    s.reload_module(&module, &file_path, Default::default())
         .expect("reload should succeed via persistent workers");
 
     // Module must be in a non-failed state after reload. The post-reload
@@ -473,7 +473,7 @@ fn reload_success_drops_failed_forms_and_error_block() {
     // reload succeeds.
     std::fs::write(&file_path, "(defn fixed [] 1)\n(defn broken [] 2)\n")
         .expect("rewrite repairme.cl");
-    s.reload_module(&module, &file_path)
+    s.reload_module(&module, &file_path, Default::default())
         .expect("reload of the repaired file succeeds");
 
     assert!(

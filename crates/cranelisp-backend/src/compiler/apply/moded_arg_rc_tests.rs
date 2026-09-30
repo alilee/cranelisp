@@ -2,27 +2,34 @@
 //! (`design/backend/ownership-codegen.md` §3.1 / §13.5 apply row, Principle 23).
 //!
 //! `moded_arg_rc` is the pure decision core of
-//! `FnCompiler::compile_consuming_arg_list_moded`: it maps
-//! `{heap category} × {callee param mode} × {owned-binding vs temporary}` to the
-//! RC action emitted at the call site. This module pins the FULL matrix — every
+//! `FnCompiler::compile_entry_arg_list`: it maps
+//! `{heap category} × {derived param kind} × {owned-binding vs temporary}` to
+//! the RC action emitted at the call site. The kind comes from the callee's
+//! derived entry convention, never a declared `Mode`
+//! (`design/backend/non-concrete-release-contract.md` §7.6). This module pins
+//! the FULL matrix — every
 //! implied cell, complexity/edge/negative classes — so `/qa` can audit coverage
 //! mechanically and the strategy's scenario space is guarded independent of the
 //! spec-derived e2e lanes.
 
 use super::{ModedArgRc, moded_arg_rc};
+use crate::compiler::entry_convention::ParamKind;
 use crate::heap::HeapCategory;
-use cranelisp_types::Mode;
 
-// --- Negative / scalar class: NeverHeap is ALWAYS a no-op, whatever mode or
+// --- Negative / scalar class: NeverHeap is ALWAYS a no-op, whatever kind or
 //     binding kind — RC never touches a scalar. ---
 #[test]
 fn never_heap_is_always_none() {
-    for mode in [Mode::Owned, Mode::Borrowed, Mode::Copy] {
+    for kind in [
+        ParamKind::Consume,
+        ParamKind::Borrow,
+        ParamKind::NoReference,
+    ] {
         for owned in [true, false] {
             assert_eq!(
-                moded_arg_rc(HeapCategory::NeverHeap, mode, owned),
+                moded_arg_rc(HeapCategory::NeverHeap, kind, owned),
                 ModedArgRc::None,
-                "NeverHeap must never emit an RC op (mode={mode:?}, owned={owned})",
+                "NeverHeap must never emit an RC op (kind={kind:?}, owned={owned})",
             );
         }
     }
@@ -33,38 +40,38 @@ fn never_heap_is_always_none() {
 //     inc an owned-binding Var, do nothing for a temporary. This is the §2.2
 //     else-arm identity at the decision grain. ---
 #[test]
-fn owned_mode_reproduces_pre_s102_consuming() {
+fn consume_kind_reproduces_pre_s102_consuming() {
     // Owned-binding Var → consuming inc (guarded iff Mixed).
     assert_eq!(
-        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Owned, true),
+        moded_arg_rc(HeapCategory::AlwaysHeap, ParamKind::Consume, true),
         ModedArgRc::Inc
     );
     assert_eq!(
-        moded_arg_rc(HeapCategory::Mixed, Mode::Owned, true),
+        moded_arg_rc(HeapCategory::Mixed, ParamKind::Consume, true),
         ModedArgRc::IncGuarded
     );
     // Temporary → transfer, no op.
     assert_eq!(
-        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Owned, false),
+        moded_arg_rc(HeapCategory::AlwaysHeap, ParamKind::Consume, false),
         ModedArgRc::None
     );
     assert_eq!(
-        moded_arg_rc(HeapCategory::Mixed, Mode::Owned, false),
+        moded_arg_rc(HeapCategory::Mixed, ParamKind::Consume, false),
         ModedArgRc::None
     );
 }
 
-// --- Elision class: a `Borrowed` param elides the consuming inc on an
+// --- Elision class: a `Borrow` param elides the consuming inc on an
 //     owned-binding Var (the caller retains ownership; its scope-cleanup dec is
 //     the single accounting). ---
 #[test]
 fn borrowed_owned_binding_elides_inc() {
     assert_eq!(
-        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Borrowed, true),
+        moded_arg_rc(HeapCategory::AlwaysHeap, ParamKind::Borrow, true),
         ModedArgRc::None
     );
     assert_eq!(
-        moded_arg_rc(HeapCategory::Mixed, Mode::Borrowed, true),
+        moded_arg_rc(HeapCategory::Mixed, ParamKind::Borrow, true),
         ModedArgRc::None
     );
 }
@@ -76,24 +83,23 @@ fn borrowed_owned_binding_elides_inc() {
 #[test]
 fn borrowed_temporary_owes_post_call_dec() {
     assert_eq!(
-        moded_arg_rc(HeapCategory::AlwaysHeap, Mode::Borrowed, false),
+        moded_arg_rc(HeapCategory::AlwaysHeap, ParamKind::Borrow, false),
         ModedArgRc::PostDec
     );
     assert_eq!(
-        moded_arg_rc(HeapCategory::Mixed, Mode::Borrowed, false),
+        moded_arg_rc(HeapCategory::Mixed, ParamKind::Borrow, false),
         ModedArgRc::PostDecGuarded
     );
 }
 
-// --- Copy class: `Copy` is value-representation (no RC identity). Pass-through
-//     in every position — never minted for a heap category in increment I, but
-//     the mapping is total and defensive. ---
+// --- No-reference class: pass-through in every position — never derived for
+//     a heap category in increment I, but the mapping is total and defensive. ---
 #[test]
-fn copy_mode_is_pass_through() {
+fn no_reference_kind_is_pass_through() {
     for cat in [HeapCategory::AlwaysHeap, HeapCategory::Mixed] {
         for owned in [true, false] {
             assert_eq!(
-                moded_arg_rc(cat, Mode::Copy, owned),
+                moded_arg_rc(cat, ParamKind::NoReference, owned),
                 ModedArgRc::None,
                 "Copy is value-repr — no RC op (cat={cat:?}, owned={owned})",
             );
@@ -106,9 +112,9 @@ fn copy_mode_is_pass_through() {
 #[test]
 fn full_matrix_is_pinned() {
     use HeapCategory::{AlwaysHeap as A, Mixed as M, NeverHeap as N};
-    use Mode::{Borrowed as B, Copy as C, Owned as O};
     use ModedArgRc::*;
-    // (category, mode, owned_binding) => expected
+    use ParamKind::{Borrow as B, Consume as O, NoReference as C};
+    // (category, kind, owned_binding) => expected
     let cases = [
         ((N, O, true), None),
         ((N, O, false), None),
@@ -129,11 +135,11 @@ fn full_matrix_is_pinned() {
         ((M, C, true), None),
         ((M, C, false), None),
     ];
-    for ((cat, mode, owned), expected) in cases {
+    for ((cat, kind, owned), expected) in cases {
         assert_eq!(
-            moded_arg_rc(cat, mode, owned),
+            moded_arg_rc(cat, kind, owned),
             expected,
-            "matrix cell ({cat:?}, {mode:?}, owned={owned})",
+            "matrix cell ({cat:?}, {kind:?}, owned={owned})",
         );
     }
 }

@@ -17,6 +17,7 @@ use cranelisp_types::{
 use crate::heap::{self, HeapCategory};
 
 use super::context::CtorValueShape;
+use super::entry_convention::ResultKind;
 use super::scope_chain::{Binding, CaptureEnv, ScopeChain, SlotRef, resolve_binding};
 use super::{
     CompileContext, find_var_type_in_expr, inner_fn_discriminator_for, signature_heap_category,
@@ -321,7 +322,7 @@ where
     /// (`design/backend/ownership-codegen.md` §3.3): the span of the ONE
     /// `vec-get` node whose heap-element materialization inc `compile_vec_get`
     /// should SKIP, or `None`. Set (with save/restore) by
-    /// [`FnCompiler::compile_consuming_arg_list_moded`] to the span of a borrowed
+    /// [`FnCompiler::compile_entry_arg_list`] to the span of a borrowed
     /// projection argument (site fact `provenance`) being passed DIRECTLY into a
     /// `Borrowed` parameter — the sole provably-safe elision: the borrowed element
     /// is consumed in-place by the callee's borrow, never escapes the enclosing
@@ -331,48 +332,24 @@ where
     /// (§2.2).
     pub(crate) elide_vecget_span: Option<Span>,
 
-    /// The heap scope binding whose reference the function's TAIL COW op
-    /// (`(vec-set v …)` / `(vec-push v …)`) moves into the returned Vec, or
-    /// `None`. Set once at function-body setup ([`FnCompiler::compile_body`])
-    /// from [`FnCompiler::return_cow_source_in_scope`].
+    /// The COW sites holding the **consuming claim** (§13.7), as their source
+    /// nodes' addresses: each such site takes its source slot's reference, and
+    /// the claim's issuer suppresses that slot's own release. Only these `Var`
+    /// sources lower `Owned`; every other `Var` source is `Borrowed`. Keyed by
+    /// node, so a nested COW in a claimed site's operands, or a binder shadowing
+    /// the claimed source's name, does not inherit it. Two issuers:
     ///
-    /// A COW op's in-place arm (rc==1) returns the SAME Vec pointer, so its
-    /// source reference transfers into the returned value; but the source is a
-    /// scope binding that scope-exit would `rc_dec`, freeing the just-returned
-    /// Vec (the `tests/vec_assoc_param_mutate_return_uaf.rs` premature-free). Two
-    /// coordinated effects key on this field: (1) the source var is passed as the
-    /// `skip_var` so `pop_scope_with_cleanup` suppresses its scope-exit dec (the
-    /// ref lives on as the return value); (2) `compile_vec_set`/`compile_vec_push`
-    /// switch the COW **copy** branch from `Borrowed` to `Owned` so the copy path
-    /// (which returns a FRESH Vec, leaving the source unreferenced) releases the
-    /// source itself — scope cleanup no longer does. Both arms are then correct:
-    /// in-place transfers, copy releases, and the source is decremented exactly
-    /// once on every path. `None` ⇒ every COW site keeps its `Borrowed` polarity,
-    /// byte-identical to pre-fix.
-    pub(crate) return_cow_source: Option<Symbol>,
-    /// The recorded escape fact (`node_escapes`) of the COW `Apply` currently
-    /// being lowered — stashed by `compile_builtin_fn_call` immediately before
-    /// `compile_vec_op` (after the args are compiled, so a nested-arg apply cannot
-    /// clobber it), read by `cow_source_ownership` for the §13.7 escape gate
-    /// (FIXME 0664 /arch ruling). `None` ⇒ absent fact ⇒ the UAF-safe inc default
-    /// (P25). Analysis-OFF ignores it (toggle-off is all-Owned, R14).
-    pub(crate) pending_cow_escapes: Option<bool>,
-
-    /// FIXME 0693 — the producer's OWN retain decision per COW site, keyed by
-    /// the COW `Apply`'s span, written by
-    /// `vec_codegen.rs::cow_source_ownership` at the moment it classifies the
-    /// source, and read by the R3 match-consume seam
-    /// ([`FnCompiler::scrutinee_cow_retains_reused`]). This makes the dec side a
-    /// DERIVATION of the producer's decision rather than a re-derivation from
-    /// the callee spelling (Principle 7 single source of truth / Principle 24
-    /// resolve once).
+    /// - the function-body return-COW site ([`return_cow_source_in_scope`]),
+    ///   claimed for the whole body; scope exit skips its slot (`skip_var`);
+    /// - the consuming in-place COW arguments of the self-tail call being
+    ///   compiled ([`consuming_cow_arguments`]); the parameter flush skips
+    ///   their slots.
     ///
-    /// `Some(v)` = one consistent verdict recorded at that span; `None` =
-    /// AMBIGUOUS (two distinct COW sites collapsed onto one span — reachable
-    /// only for `Span::SYNTHETIC` bodies), read as the leak-safe verdict
-    /// (suppress the dec; never a spurious dec, i.e. never the UAF direction).
-    /// Absent key = the producer never ran in THIS compiler frame.
-    pub(crate) cow_retain_decisions: HashMap<Span, Option<bool>>,
+    /// That these are the only issuers is asserted, not structural: the set is
+    /// `pub(crate)`, so a third insertion compiles. Falsifier: a write to this
+    /// set outside those two issuers. Read only through
+    /// [`FnCompiler::holds_consuming_claim`].
+    pub(crate) consuming_claims: HashSet<usize>,
 
     /// Whether each compiled match merge receives an independently owned
     /// result on every normal arm, keyed by the stable address of the `MonoExpr`
@@ -481,9 +458,7 @@ where
             // `dependent_spark.rs` sets it directly on its dedicated inner).
             in_spark_thunk: false,
             elide_vecget_span: None,
-            return_cow_source: None,
-            pending_cow_escapes: None,
-            cow_retain_decisions: HashMap::new(),
+            consuming_claims: HashSet::new(),
             independent_match_results: HashMap::new(),
             tco_owned_params: std::collections::HashSet::new(),
             pending_scrutinee_releases: Vec::new(),
@@ -646,9 +621,7 @@ where
             // the flag is raised only around the backend-synthesized thunk compiles.
             in_spark_thunk: false,
             elide_vecget_span: None,
-            return_cow_source: None,
-            pending_cow_escapes: None,
-            cow_retain_decisions: HashMap::new(),
+            consuming_claims: HashSet::new(),
             independent_match_results: HashMap::new(),
             tco_owned_params: std::collections::HashSet::new(),
             pending_scrutinee_releases: Vec::new(),
@@ -663,19 +636,23 @@ where
         // heap-typed parameters and dec's them at exit. The caller inc's
         // variable arguments before the call.
         let skip_var = compiler.return_var_in_scope(body);
-        // vec-assoc UAF fix (`tests/vec_assoc_param_mutate_return_uaf.rs`): a tail
-        // COW op (`(vec-set v …)` / `(vec-push v …)`) on a heap scope binding `v`
-        // returns `v`'s backing (in-place arm) — the returned Vec IS `v`. Suppress
-        // `v`'s scope-exit dec (fold it into `skip_var`, mutually exclusive with a
-        // bare-Var return) and record it so the COW site flips its copy branch to
-        // the `Owned` polarity (see the `return_cow_source` field rustdoc).
+        // The return-COW issuer of the consuming claim (§13.7): a body that is
+        // `(vec-set v …)` / `(vec-push v …)` on a parameter `v` returns `v`'s
+        // box on its in-place branch. Scope exit skips `v`'s slot (folded into
+        // `skip_var`, exclusive with a bare-`Var` return), and the site claims
+        // `v`'s reference, so its copy branch releases the source itself.
         let param_frame_names = compiler.scope.innermost_frame_names();
         let cow_return_source = return_cow_source_in_scope(body, Some(&param_frame_names));
-        compiler.return_cow_source = cow_return_source.clone();
+        if let Some(source) = cow_return_source {
+            compiler
+                .consuming_claims
+                .insert(source as *const MonoExpr as usize);
+        }
         let skip_var = skip_var.or_else(|| {
-            cow_return_source
-                .as_ref()
-                .and_then(|name| compiler.scope.resolve_ref_in_innermost_frame(name))
+            let MonoExpr::Var { name, .. } = cow_return_source? else {
+                return None;
+            };
+            compiler.scope.resolve_ref_in_innermost_frame(name)
         });
         // §3.2 soundness tripwire (`design/backend/ownership-codegen.md` §3.2):
         // a `Borrowed` param must NEVER be the function's returned value — the
@@ -865,9 +842,6 @@ where
                 // value to the caller and stays heap.)
                 let stack = self.constructor_call_stack_eligible(expr, args);
                 let apply_type = ty.to_type();
-                // §13.7 (FIXME 0664): this Apply's recorded escape fact, threaded
-                // to the COW seam (`cow_source_ownership`'s escape gate).
-                let apply_escapes = node_escapes(expr);
                 // S114 carrier flip (`typed-resolution-carrier.md` §4): the Apply's
                 // typed dispatch verdict → the `Option<&FQSymbol>` the keyed fetch
                 // consumes. Exhaustive on the closed `ApplyRef` sum (no `_` arm):
@@ -887,7 +861,6 @@ where
                     apply_target,
                     Some(&apply_type),
                     stack,
-                    apply_escapes,
                 )
             }
             MonoExpr::Match {
@@ -1366,46 +1339,61 @@ where
         self.scope.set_borrow_root(name, root);
     }
 
-    /// Will one of the tail-jump flushes release the binding `name`? Mirrors the
-    /// two flush filters exactly — `flush_let_scopes_before_tail_jump` for the
-    /// `let`/match/lambda frames and
-    /// `flush_superseded_heap_params_before_tail_jump` for the param frame — so
-    /// a protective inc gated on it balances one-for-one and is emitted in no
-    /// other case.
-    fn tail_jump_releases_binding(
+    /// [`slot_holds_frame_owned_reference`] for the live slot `at`.
+    fn frame_owns_slot(&self, at: SlotRef) -> bool {
+        self.slot_ownership_facts(at)
+            .is_some_and(slot_holds_frame_owned_reference)
+    }
+
+    fn slot_ownership_facts(&self, at: SlotRef) -> Option<SlotOwnershipFacts> {
+        let slot = self.scope.slot(at)?;
+        Some(SlotOwnershipFacts {
+            frame: if at.in_param_frame() {
+                SlotFrame::Param
+            } else {
+                SlotFrame::Local
+            },
+            heap: slot.ty().is_some_and(|ty| self.is_heap_type(ty)),
+            borrowed: slot.is_borrowed(),
+            promoted: self.tco_owned_params.contains(slot.name()),
+        })
+    }
+
+    /// [`consuming_cow_arguments`] for a self-tail call in this frame: each
+    /// consuming site's source node and the parameter slot it resolves to.
+    /// Computed before the arguments compile; the in-place condition is the
+    /// same last-use predicate `compile_vec_push`/`compile_vec_set` branch on.
+    pub(crate) fn consuming_cow_arguments_of<'e>(
         &self,
-        name: &Symbol,
-        args: &[MonoExpr],
-        transfer_slots: &HashSet<SlotRef>,
-    ) -> bool {
-        if self
-            .scope
-            .resolve_slot_ref(name)
-            .is_some_and(|at| transfer_slots.contains(&at))
-        {
+        args: &'e [MonoExpr],
+    ) -> Vec<(&'e MonoExpr, SlotRef)> {
+        consuming_cow_arguments(
+            args,
+            cranelisp_types::ownership_analysis_off(),
+            |name, source| {
+                let at = self.scope.resolve_slot_ref(name)?;
+                let slot = self.slot_ownership_facts(at)?;
+                let in_place = self.is_vec_last_use(source);
+                Some((at, CowSourceFacts { slot, in_place }))
+            },
+        )
+    }
+
+    /// Does the COW site whose source node is `source` hold the consuming
+    /// claim ([`FnCompiler::consuming_claims`])?
+    pub(crate) fn holds_consuming_claim(&self, source: &MonoExpr) -> bool {
+        self.consuming_claims
+            .contains(&(source as *const MonoExpr as usize))
+    }
+
+    /// Will one of the tail-jump flushes release the binding `name` resolves
+    /// to? It is the flushes' own reading: the slot ownership fact, then the
+    /// §6 verdict through the same `tail_slot_facts`.
+    fn tail_jump_releases_binding(&self, name: &Symbol, tail: TailTransferContext<'_>) -> bool {
+        let Some(at) = self.scope.resolve_slot_ref(name) else {
             return false;
-        }
-        if !self
-            .lookup_type(name)
-            .is_some_and(|ty| self.is_heap_type(&ty))
-        {
-            return false;
-        }
-        if self.scope.let_frames_bind(name) {
-            return !self.is_borrowed(name);
-        }
-        if self.scope.param_frame_binds(name) {
-            if self.is_borrowed(name) && !self.tco_owned_params.contains(name) {
-                return false;
-            }
-            return !param_flush_exempts_inplace_cow(
-                args,
-                name,
-                cranelisp_types::ownership_analysis_off(),
-                |arg| self.scrutinee_cow_retains_reused(arg),
-            );
-        }
-        false
+        };
+        self.frame_owns_slot(at) && !self.slot_is_transferred(at, name, at.frame(), tail)
     }
 
     /// S118 slice S3 (§2 — protect, then tear down; FIXME 0810 Face B). Upgrade
@@ -1416,7 +1404,7 @@ where
     /// exists. The next iteration's parameter slot is frame-OWNED (the flush
     /// decs it on the way round, the function exit decs it at the end), so a
     /// borrow handed into it must first become an owned reference — the same
-    /// adaptation `compile_consuming_arg_list_moded` performs for a
+    /// adaptation `compile_entry_arg_list` performs for a
     /// caller-borrowed `Var` handed to an `Owned` position. The loop parameter
     /// slots were the one set of `Owned` positions that never adapted:
     /// `(let [r (step g i)] (match r [(Jus g2) (go g2 …)]))` carried `g2`
@@ -1430,10 +1418,10 @@ where
     /// one reference per call there.
     pub(crate) fn protect_escaping_borrows_before_tail_jump(
         &mut self,
-        args: &[MonoExpr],
-        transfer_slots: &HashSet<SlotRef>,
+        tail: TailTransferContext<'_>,
     ) {
-        let owed: Vec<Symbol> = args
+        let owed: Vec<Symbol> = tail
+            .args
             .iter()
             .filter_map(|arg| match arg {
                 MonoExpr::Var { name, .. } if self.is_borrowed(name) => {
@@ -1441,7 +1429,7 @@ where
                         // The consuming arm's own release fires at this jump.
                         Some(BorrowRoot::OwnedTemporary) => true,
                         Some(BorrowRoot::Binding(root)) => {
-                            self.tail_jump_releases_binding(root, args, transfer_slots)
+                            self.tail_jump_releases_binding(root, tail)
                         }
                         // Not a tracked pattern view (a `Borrowed` param, a
                         // capture): its owner is outside this frame entirely.
@@ -1525,13 +1513,10 @@ where
         let mut to_dec: Vec<(Variable, Type)> = Vec::new();
         for frame_index in (1..self.scope.frame_count()).rev() {
             let mut frame_decs = self.collect_frame_heap_decs(frame_index, |this, at, slot| {
-                if slot.is_borrowed() {
-                    // The owner is outside this frame: nothing here to release.
-                    return true;
-                }
-                // §6, rows 1/4/5. A `let` frame has no in-place-COW exemption
-                // (that is a parameter-slot rule), so row 3 is not offered.
-                this.slot_is_transferred(at, slot.name(), frame_index, tail, false)
+                // §6, rows 1/4/5. Row 3 never applies here: a consuming COW
+                // argument consumes a parameter slot only.
+                !this.frame_owns_slot(at)
+                    || this.slot_is_transferred(at, slot.name(), frame_index, tail)
             });
             to_dec.append(&mut frame_decs);
         }
@@ -1547,10 +1532,9 @@ where
         name: &Symbol,
         frame_index: usize,
         tail: TailTransferContext<'_>,
-        offer_inplace_cow: bool,
     ) -> bool {
         let analysis_off = cranelisp_types::ownership_analysis_off();
-        let facts = self.tail_slot_facts(at, name, frame_index, tail, offer_inplace_cow);
+        let facts = self.tail_slot_facts(at, name, frame_index, tail);
         match tco_slot_disposition(facts, analysis_off) {
             SlotDisposition::TransferOldOwner => true,
             SlotDisposition::Replace => false,
@@ -1577,7 +1561,6 @@ where
         name: &Symbol,
         frame_index: usize,
         tail: TailTransferContext<'_>,
-        offer_inplace_cow: bool,
     ) -> TailSlotFacts {
         let transfers_this_slot = tail.transfer_slots.contains(&at);
         let named = tail.bare_var_names.contains(name);
@@ -1586,13 +1569,7 @@ where
         TailSlotFacts {
             tail_arg_transfers_this_slot: transfers_this_slot,
             bare_var_arg_is_borrowed: named && shadowing_borrow && self.is_borrowed(name),
-            inplace_cow_rooted_here: offer_inplace_cow
-                && param_flush_exempts_inplace_cow(
-                    tail.args,
-                    name,
-                    cranelisp_types::ownership_analysis_off(),
-                    |arg| self.scrutinee_cow_retains_reused(arg),
-                ),
+            inplace_cow_rooted_here: tail.consuming_cow_slots.contains(&at),
         }
     }
 
@@ -1610,7 +1587,7 @@ where
                 .scope
                 .slot_ref(frame_index, index)
                 .expect("frame iteration supplies a live slot");
-            let facts = self.tail_slot_facts(at, name, frame_index, tail, false);
+            let facts = self.tail_slot_facts(at, name, frame_index, tail);
             if tco_slot_disposition(facts, cranelisp_types::ownership_analysis_off())
                 == SlotDisposition::BorrowedInvalid
                 && slot.ty().is_some_and(|ty| self.is_heap_type(ty))
@@ -1647,17 +1624,15 @@ where
     ///    so dec'ing it would double-free the value the next iteration owns (the
     ///    exact contract the let flush honors);
     ///  - a borrowed param (the caller owns it);
-    ///  - **analysis-ON only** — a param that SOME tail arg is an in-place COW
-    ///    rooted at (`(vec-set p …)` / `(vec-push p …)` anywhere in the arg list,
-    ///    not only at `p`'s own position — FIXME 0691): the mutate branch returns
-    ///    `p`'s OWN box and forwards it into that slot, unless the COW producer
-    ///    retained a separate result owner. That retained result replaces the
-    ///    old slot owner, so its balancing release is owed. Otherwise SKIP = leak-safe,
-    ///    the both-polarity fence's safe direction: never an under-count / UAF.
-    ///    Under `CRANELISP_NO_OWNERSHIP` the COW always copies (rc≥2 force-count),
-    ///    so nothing is carried forward and the dec is always owed — the exemption
-    ///    does NOT apply toggle-off (FIXME 0695). `conj`/`assoc` are USER-fn
-    ///    calls, not these primitives, so the persistent-op leak is still fixed.
+    ///  - a param consumed by a consuming in-place COW argument
+    ///    ([`consuming_cow_arguments`]; §6 row 3, `ownership-codegen.md` §13.3):
+    ///    `(vec-set p …)` / `(vec-push p …)` at `p`'s last use, at any argument
+    ///    position (FIXME 0691). Its source is `Owned`, so the COW forwards the
+    ///    box in place or releases it in the copy branch. A copy-only site —
+    ///    `p` used later in the argument list — consumes nothing, and the slot
+    ///    is released here. Toggle-off never consumes (FIXME 0695).
+    ///    `conj`/`assoc` are user-fn calls, not these primitives, so the
+    ///    persistent-op leak is still fixed.
     ///
     /// The frames are NOT popped (the loop header reuses the param slots) — this
     /// only releases the superseded slot references.
@@ -1672,66 +1647,49 @@ where
         // frame-owned slot. Checked before any release is emitted.
         self.check_no_borrowed_transfer(0, tail)?;
         let to_dec = self.collect_frame_heap_decs(0, |this, at, slot| {
-            let name = slot.name();
             // A borrowed param is the caller's to release — EXCEPT one this frame
             // PROMOTED because the back-edge supersedes its slot with a value the
             // caller does not own (FIXME 0720; the entry inc keeps the caller's
-            // own reference out of reach of this dec).
-            if slot.is_borrowed() && !this.tco_owned_params.contains(name) {
-                return true;
-            }
-            // §6, all five rows — the ONE verdict, including the analysis-ON
-            // in-place-COW exemption (row 3, positional-blind per FIXME 0691,
-            // toggle-asymmetric per FIXME 0695).
-            this.slot_is_transferred(at, name, 0, tail, true)
+            // own reference out of reach of this dec). Then §6, all five rows —
+            // the ONE verdict, including row 3 for a consuming COW argument.
+            !this.frame_owns_slot(at) || this.slot_is_transferred(at, slot.name(), 0, tail)
         });
         self.emit_heap_binding_decs(&to_dec)
     }
 
-    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
-    /// `name`: it lives in a `let`/match/lambda frame (chain frames `1..` — NOT
-    /// the param frame `[0]`, which the loop header reuses and the flush leaves
-    /// untouched), is heap-typed, and is not borrowed. This is the exact
-    /// predicate the flush's `collect_frame_heap_decs` filter applies, so a
-    /// protective inc gated on it balances the flush dec one-for-one.
-    pub(crate) fn tail_flush_will_dec(&self, name: &Symbol) -> bool {
-        if !self.scope.let_frames_bind(name) || self.is_borrowed(name) {
-            return false;
-        }
-        self.lookup_type(name)
-            .is_some_and(|ty| self.is_heap_type(&ty))
-    }
-
     /// Under `tail_arg_protect` (set while compiling an `if`/`match` that is a
     /// direct tail-call argument), emit a protective `rc_inc` on `val` iff
-    /// `branch` is a bare `Var` that directly aliases a live heap `let`-binding
-    /// the tail-jump flush will `rc_dec` (`tail_flush_will_dec`).
+    /// `branch` is a bare `Var` whose resolved slot holds a frame-owned heap
+    /// reference — the branch-forward rule of `ownership-codegen.md` §13.3,
+    /// for `let`/match/lambda frames and the parameter frame alike.
     ///
-    /// Why this is correct for the F1 cases (design/backend/ownership-codegen.md
-    /// §13.3):
-    /// - `(recur (if c v v))` — each branch result is the binding `v`; one branch
-    ///   runs, incs `v` once, the flush decs it once → the loop param owns `v`.
-    /// - `(recur (if c lo hi))` — distinct bindings: the taken branch incs its
-    ///   binding, the flush decs BOTH `lo` and `hi`, so the moved one nets to the
-    ///   loop param and the dead one is freed — impossible with a single static
-    ///   skip-dec, which is why per-branch protection + uniform flush is used.
-    /// - `(recur (if c (wrap v) v))` — the `wrap` branch result is fresh (an
-    ///   `Apply`, not a scope-binding `Var`) so it is NOT protected; `wrap`
-    ///   already inc'd `v` internally and the flush's dec of `v` balances it. The
-    ///   bare-`v` branch IS protected. Both runtime paths balance.
+    /// A branch-forwarded `Var` never receives its slot's reference: a
+    /// top-level move or an in-place COW may take it, and the flushes release
+    /// every other frame-owned slot. So the key is ownership, not "released at
+    /// the jump", and no transfer or COW row is consulted:
+    /// - `(recur (if c lo hi))` — the taken branch increments its binding, the
+    ///   flushes release both, so the forwarded one nets to the loop slot.
+    /// - `(recur v (if c v w))` — the top-level `v` takes the slot's reference,
+    ///   so the branch copy needs its own.
+    /// - `(recur (if c p q) (vec-push p 1))` — the push consumes `p`'s slot;
+    ///   without the increment an in-place push would share `p`'s box with the
+    ///   branch copy.
+    /// - `(recur (if c (wrap v) v))` — the `wrap` branch is not a bare `Var`;
+    ///   the call already incremented `v`.
     ///
-    /// A branch whose result reaches the tail through a nested scope exit
-    /// (`(if c (let [w …] v) …)`) is already protected by that scope's own
-    /// `protect_return_value` inc (the tail flush being the balancing "caller"
-    /// dec), so this helper only needs to cover the DIRECT bare-`Var` branch.
+    /// This covers the DIRECT bare-`Var` branch only. A branch that yields a
+    /// binding through a nested scope (`(if c (let [w …] v) …)`) relies on
+    /// that scope's `protect_return_value`, which fires only when the scope
+    /// has a heap cleanup target (`ownership-codegen.md` §13.3, lead L6).
     /// Returns `val` unchanged so callers can thread it inline.
     pub(crate) fn maybe_protect_tail_arg_alias(&mut self, branch: &MonoExpr, val: Value) -> Value {
         if !self.tail_arg_protect {
             return val;
         }
         if let MonoExpr::Var { name, .. } = branch
-            && self.tail_flush_will_dec(name)
-            && let Some(ty) = self.lookup_type(name)
+            && let Some(at) = self.scope.resolve_slot_ref(name)
+            && self.frame_owns_slot(at)
+            && let Some(ty) = self.scope.slot(at).and_then(BinderSlot::ty).cloned()
         {
             // B3.3-R (§5.1): the protective inc balancing the tail-flush dec is
             // always atomic. This was a through-binding site (per-binding
@@ -1856,9 +1814,8 @@ where
     // provenance root THROUGH binding-indirection (`let`-forward, match-var-arm
     // forward, nesting). It reads ONLY binding liveness ("is this a
     // live binding"), NEVER an ownership fact, so it answers IDENTICALLY in both
-    // `CRANELISP_NO_OWNERSHIP` toggle states by construction (§2, the load-bearing
-    // contrast with the escape gate that makes 0668 a SEPARATE family from the
-    // R14 producer ruling).
+    // `CRANELISP_NO_OWNERSHIP` toggle states by construction (§2), which makes
+    // 0668 a SEPARATE family from the R14 COW producer rule.
 
     /// The live-binding provenance ROOT of `node`, traced through
     /// binding-indirection, or `None` if the operand delivers an independent owned
@@ -1892,8 +1849,12 @@ where
         ) <= ValueProvenance::TransferredCall
     }
 
+    /// Whether the call `expr` hands back a reference its caller owns
+    /// independently: a closure call, or a keyed callable whose derived entry
+    /// convention transfers its result. An owned but unverified result keeps
+    /// its return protection.
     fn call_returns_owned_reference(&self, expr: &MonoExpr) -> bool {
-        use cranelisp_types::{CallableTarget, Life, Realization};
+        use cranelisp_types::CallableTarget;
         let MonoExpr::Apply {
             callee,
             resolved_call,
@@ -1905,11 +1866,13 @@ where
         };
         let target = match resolved_call.as_deref() {
             Some(ResolvedCall::SigDispatch { target }) => target.clone(),
-            Some(ResolvedCall::TraitMethod { .. }) => match dispatch {
-                ApplyRef::Dispatch(fq) => CallableTarget::Binding(fq.clone()),
-                ApplyRef::ViaCallee => return false,
-            },
-            // Inline primitives and curry construction retain their own lowering rules.
+            Some(ResolvedCall::TraitMethod { .. } | ResolvedCall::BuiltinFn { .. }) => {
+                match dispatch {
+                    ApplyRef::Dispatch(fq) => CallableTarget::Binding(fq.clone()),
+                    ApplyRef::ViaCallee => return false,
+                }
+            }
+            // Curry construction retains its own lowering rule.
             Some(_) => return false,
             None => match callee.as_ref() {
                 MonoExpr::Var { name, .. } if self.binds(name) => return true,
@@ -1930,127 +1893,7 @@ where
         ) {
             return false;
         }
-        let Some(owner) = crate::callable_target_owner(&target) else {
-            return false;
-        };
-        self.ctx
-            .symbol_tables
-            .get(&owner.module)
-            .is_some_and(|table| {
-                table.callable_target(&target).is_some_and(|arm| {
-                    matches!(
-                        arm.life,
-                        Life::Concrete {
-                            realization: Realization::Body { .. },
-                            ..
-                        }
-                    )
-                })
-            })
-    }
-
-    /// The dec side of the §13.7 COW escape gate, read at the match consume seam
-    /// so R3 (forwarding-suppresses-dec) and the COW producer's escape-inc stay a
-    /// MATCHED PAIR. Returns `true` iff `node` is a COW `vec-set`/`vec-push` site
-    /// whose in-place/mutate branch emitted the retention inc on the returned
-    /// pointer; then the scrutinee-dec is that inc's BALANCING dec and MUST fire.
-    /// When it does not hold (non-COW temp, alias, toggle-off, or a
-    /// nested/non-escaping COW whose gate declined the inc), the forwarding dec
-    /// is spurious and R3 suppresses it. NOT a "distinguish wrong-`Some(false)`"
-    /// workaround (R14/F4): a `Some(false)` is treated uniformly as "no
-    /// escape-inc ⇒ suppress", never corrected.
-    ///
-    /// **FIXME 0693 (S115 W3 change-set 1) — consolidated.** This was a MIRROR
-    /// that re-derived the site's identity from the syntactic callee spelling
-    /// (`matches!(callee_name, "vec-set" | "vec-push")`) plus a live-binding
-    /// liveness condition the producer does not have — the resolver-mirror class
-    /// (P24: the name is a trigger, the CARRIER is the identity), with a latent
-    /// UAF channel (a user fn literally named `vec-set` under
-    /// `PreludeVariant::None` made the name test true although the producer's COW
-    /// gate never ran; masked today only by typecheck recording
-    /// `escapes = Some(false)` on that scrutinee — a mask the W4 escape-fact
-    /// correction can lift). It is now a DERIVATION on two levels:
-    ///
-    /// 1. the site identity + gate condition come from the ONE shared predicate
-    ///    [`cow_site_retain_verdict`], which the producer's
-    ///    `cow_source_ownership` also calls (via `cow_source_is_borrowed` /
-    ///    `cow_retains_reused_gate`) and which keys on the RESOLUTION CARRIER;
-    /// 2. the value actually returned is the producer's OWN recorded decision
-    ///    (`cow_retain_decisions`, span-keyed) whenever it is available.
-    ///
-    /// **The disagreement fence** is the `debug_assert_eq!` inside
-    /// [`reconcile_cow_retain_verdict`]: if the recorded decision and the
-    /// shared-predicate derivation ever disagree, the producer ran a different
-    /// gate than this seam believes, which is exactly the spurious-dec (UAF)
-    /// channel 0693 named. Release builds take the LEAK-SAFE verdict — see that
-    /// function for why "trust the record" is the wrong polarity (FIXME 0751).
-    pub(crate) fn scrutinee_cow_retains_reused(&self, node: &MonoExpr) -> bool {
-        let Some(derived) = crate::compiler::vec_codegen::cow_site_retain_verdict(
-            node,
-            self.return_cow_source.as_ref(),
-            cranelisp_types::ownership_analysis_off(),
-        ) else {
-            // Not a carrier-identified COW site ⇒ no retention inc exists.
-            return false;
-        };
-        let MonoExpr::Apply { span, .. } = node else {
-            return false;
-        };
-        reconcile_cow_retain_verdict(self.cow_retain_decisions.get(span).copied(), derived, *span)
-    }
-}
-
-/// Reconcile the producer's RECORDED retain decision at a COW site's span
-/// against the R3 seam's own shared-predicate DERIVATION (FIXME 0693 / 0751).
-///
-/// `recorded`: `Some(Some(v))` = one consistent verdict recorded at that span;
-/// `Some(None)` = AMBIGUOUS (two distinct COW sites collapsed onto one span,
-/// reachable only for `Span::SYNTHETIC` bodies); `None` = the producer never ran
-/// in THIS compiler frame (the site was lowered by an inner compiler), so the
-/// shared predicate is the answer.
-///
-/// **Every uncertain case takes the leak-safe verdict `false`** — suppress the
-/// dec. A `true` the producer did not actually back with an inc is a spurious
-/// dec, i.e. the UAF direction; a suppressed dec is at worst a leak.
-///
-/// The DISAGREEMENT arm (`Some(Some(recorded))` with `recorded != derived`) is
-/// the one FIXME 0751 corrected. Its rustdoc used to claim a release build
-/// "degrades to the producer's truth rather than to a guess" — but a
-/// disagreement is precisely the state in which the seam does NOT know that the
-/// record belongs to THIS site. The reachable shape: two COW sites share a
-/// synthetic span; site A ran the producer and recorded `Some(true)`; site B —
-/// the node being asked about — never recorded (its lowering took the
-/// non-last-use copy path, which never calls `cow_source_ownership`, so no
-/// collapse to the ambiguous marker happened); `derived(B) = false`. Returning
-/// the record then fires B's dec with no inc behind it. The record is a
-/// DIFFERENT SITE's truth, so it gets the same polarity the ambiguous arm
-/// already had.
-pub(crate) fn reconcile_cow_retain_verdict(
-    recorded: Option<Option<bool>>,
-    derived: bool,
-    span: Span,
-) -> bool {
-    match recorded {
-        // Agreement: the producer emitted exactly what this seam derived.
-        Some(Some(recorded)) if recorded == derived => recorded,
-        // Disagreement: loud in development, leak-safe in release.
-        Some(Some(recorded)) => {
-            debug_assert!(
-                false,
-                "FIXME 0693 disagreement fence: the COW producer \
-                 (vec_codegen::cow_source_ownership) recorded retain_reused={recorded} at \
-                 span {span:?}, but the R3 match-consume seam's shared-predicate derivation \
-                 says {derived}. The two sides of the §13.7 escape gate MUST agree — a \
-                 consumer-side `true` without a producer inc is a spurious dec (UAF)."
-            );
-            false
-        }
-        // Ambiguous span (two COW sites under one synthetic span).
-        Some(None) => false,
-        // The producer did not run in THIS compiler frame. Fall back to the
-        // shared predicate — the same answer the consolidated gate gives, never
-        // a re-derivation from the callee spelling.
-        None => derived,
+        self.ctx.entry_convention_of(&target).result() == ResultKind::Transferred
     }
 }
 
@@ -2084,6 +1927,9 @@ pub(crate) struct TailTransferContext<'a> {
     pub args: &'a [MonoExpr],
     pub transfer_slots: &'a HashSet<SlotRef>,
     pub bare_var_names: &'a HashSet<Symbol>,
+    /// The parameter slots consumed by consuming in-place COW arguments
+    /// ([`consuming_cow_arguments`]).
+    pub consuming_cow_slots: &'a HashSet<SlotRef>,
 }
 
 /// The per-slot facts [`tco_slot_disposition`] reads, gathered by the caller so
@@ -2098,9 +1944,42 @@ pub(crate) struct TailSlotFacts {
     /// inner shadow. This validation remains spelling-sensitive so it rejects
     /// the established UAF shape rather than silently changing it to a release.
     pub bare_var_arg_is_borrowed: bool,
-    /// Some tail argument is an in-place COW rooted at this slot without a
-    /// proven independently retained result owner — row 3.
+    /// A consuming in-place COW argument consumes this slot's reference —
+    /// row 3.
     pub inplace_cow_rooted_here: bool,
+}
+
+/// The kind of scope frame a slot lives in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotFrame {
+    /// Frame `0`: the function's parameters, reused by the TCO loop header.
+    Param,
+    /// A `let`, match or lambda-body frame.
+    Local,
+}
+
+/// The per-slot facts [`slot_holds_frame_owned_reference`] reads.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SlotOwnershipFacts {
+    pub frame: SlotFrame,
+    /// The slot's recorded type is heap-classified.
+    pub heap: bool,
+    /// The binder borrows: another owner releases the value.
+    pub borrowed: bool,
+    /// The function promoted a parameter of this name to frame-owned
+    /// (FIXME 0720's entry increment).
+    pub promoted: bool,
+}
+
+/// Does the slot hold a heap reference that this frame owns
+/// (`ownership-codegen.md` §13.3, "One ownership fact")?
+///
+/// Every tail seam reads this one fact: both tail-jump flushes, the
+/// branch-forward increment and the escape-borrow gate. Promotion counts only
+/// in the parameter frame, so a local binder that shadows a promoted
+/// parameter's name is judged by its own borrowed mark.
+pub(crate) fn slot_holds_frame_owned_reference(facts: SlotOwnershipFacts) -> bool {
+    facts.heap && (!facts.borrowed || (facts.frame == SlotFrame::Param && facts.promoted))
 }
 
 /// The §6 verdict table, in order.
@@ -2117,8 +1996,9 @@ pub(crate) struct TailSlotFacts {
 ///
 /// **Row 3 keeps its toggle asymmetry.** Under `CRANELISP_NO_OWNERSHIP` the COW
 /// source is force-counted so the op always COPIES: nothing is carried forward
-/// and the dec is always owed (FIXME 0695). The toggle is an explicit input
-/// here rather than read at two sites.
+/// and the dec is always owed (FIXME 0695). [`consuming_cow_arguments`] already
+/// yields no slot toggle-off; the explicit input keeps the verdict total over
+/// its facts.
 pub(crate) fn tco_slot_disposition(facts: TailSlotFacts, analysis_off: bool) -> SlotDisposition {
     if facts.bare_var_arg_is_borrowed {
         return SlotDisposition::BorrowedInvalid;
@@ -2132,54 +2012,55 @@ pub(crate) fn tco_slot_disposition(facts: TailSlotFacts, analysis_off: bool) -> 
     SlotDisposition::Replace
 }
 
-/// The MS-P8 param-flush in-place-COW exemption decision (pure — FIXMEs 0691,
-/// 0695). A superseded heap param is EXEMPT from the tail-jump dec (SKIP,
-/// leak-safe) iff analysis is ON **and** SOME tail arg is an in-place COW rooted
-/// at the param without a proven independently retained result owner:
-///
-/// - **Positional-blind (0691):** the scan is over ALL args, not just the arg at
-///   the param's own position. An in-place `vec-set`/`vec-push` on param `p` can
-///   forward `p`'s OWN box into a DIFFERENT slot (e.g. `(go (vec-set v 0 n) …)`
-///   where `v`'s own slot takes a fresh value); the positional-only check dec'd
-///   `v` and freed the carried box (UAF). Any-arg scan is leak-safe in the copy
-///   case, correct in the mutate case — honouring the flush's own invariant
-///   (never an under-count / UAF).
-/// - **Toggle-off never exempts (0695):** under `CRANELISP_NO_OWNERSHIP` the COW
-///   source is force-counted (rc≥2) so the op ALWAYS copies — nothing is carried
-///   forward in place, the mutate-in-place rationale never holds, and the
-///   superseded param's dec is always owed.
-/// - The retain probe uses the producer's recorded/shared verdict. Both the
-///   borrowed-sibling protection and slot flush consume this same exemption;
-///   uncertain records preserve the existing leak-safe skip.
-pub(crate) fn param_flush_exempts_inplace_cow(
-    args: &[MonoExpr],
-    name: &Symbol,
-    analysis_off: bool,
-    retains_reused: impl Fn(&MonoExpr) -> bool,
-) -> bool {
-    if analysis_off {
-        return false;
-    }
-    // Reusing the pointer is not transferring the old owner when the COW site
-    // retained an independent result reference. Its old slot must be released.
-    args.iter()
-        .any(|arg| arg_is_inplace_cow_on(arg, name) && !retains_reused(arg))
+/// What [`cow_argument_consumes_slot`] reads about the bare `Var` source of a
+/// top-level self-tail argument that is a COW builtin site.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CowSourceFacts {
+    /// The slot the source resolves to.
+    pub slot: SlotOwnershipFacts,
+    /// The source is at its last use, so the site lowers through the in-place
+    /// core rather than the copy extern.
+    pub in_place: bool,
 }
 
-/// Structural: is `arg` an IN-PLACE COW primitive (`vec-set`/`vec-push`) whose
-/// source is the bare `Var` `name`? Such an op can return `name`'s OWN box when it
-/// reuses in place, so the MS-P8 param-flush must not dec that param (the box is
-/// carried forward). Free fn (no liveness) — a pure AST-shape predicate.
+/// Does a top-level self-tail argument that is a COW site consume its source
+/// slot's reference (`ownership-codegen.md` §13.3, "The consuming in-place COW
+/// argument")? Only an in-place site on a frame-owned parameter, with analysis
+/// on. A promoted Borrowed parameter is frame-owned but never in place:
+/// `is_last_use` refuses a borrowed slot.
+pub(crate) fn cow_argument_consumes_slot(facts: CowSourceFacts, analysis_off: bool) -> bool {
+    !analysis_off
+        && facts.in_place
+        && facts.slot.frame == SlotFrame::Param
+        && slot_holds_frame_owned_reference(facts.slot)
+}
+
+/// The consuming in-place COW arguments of one self-tail call (§6 row 3): each
+/// consuming site's source node with what `source_facts` resolved it to. The
+/// COW producer lowers such a source `Owned`, and the parameter flush skips
+/// the slot — one fact, two readers.
 ///
-/// The COW-site identity comes from [`cow_site_source`] — the RESOLUTION
-/// CARRIER, shared with the §13.7 gate (FIXME 0752 / Principle 24). A user fn
-/// that merely SPELLS `vec-set` is not an in-place COW, and exempting its param
-/// from the flush would suppress a dec that is owed.
-pub(crate) fn arg_is_inplace_cow_on(arg: &MonoExpr, name: &Symbol) -> bool {
-    let Some((source, _)) = crate::compiler::vec_codegen::cow_site_source(arg) else {
-        return false;
-    };
-    matches!(source, MonoExpr::Var { name: s, .. } if s == name)
+/// Site identity is the resolution carrier ([`cow_site_source`], FIXME 0752):
+/// a user fn that merely spells `vec-set` is not a site. Only top-level
+/// arguments are sites, at any position (FIXME 0691); a COW under a branch or
+/// inside another argument's operands is not (lead L7).
+///
+/// [`cow_site_source`]: crate::compiler::vec_codegen::cow_site_source
+pub(crate) fn consuming_cow_arguments<'e, S>(
+    args: &'e [MonoExpr],
+    analysis_off: bool,
+    source_facts: impl Fn(&Symbol, &'e MonoExpr) -> Option<(S, CowSourceFacts)>,
+) -> Vec<(&'e MonoExpr, S)> {
+    args.iter()
+        .filter_map(|arg| {
+            let source = crate::compiler::vec_codegen::cow_site_source(arg)?;
+            let MonoExpr::Var { name, .. } = source else {
+                return None;
+            };
+            let (slot, facts) = source_facts(name, source)?;
+            cow_argument_consumes_slot(facts, analysis_off).then_some((source, slot))
+        })
+        .collect()
 }
 
 /// Structural: does `body` forward the binding `name` out as its value? True for
@@ -3369,7 +3250,7 @@ mod b34_stack_eligibility_tests {
 /// materializes the returned projection with an owned reference (its `vec-get`
 /// inc, an accessor call, or `protect_return_value` under cleanup targets), so a
 /// direct caller consumes it as an ordinary owned temporary — the §3.3 in-frame
-/// elision is confined to the CONSUMER seam (`compile_consuming_arg_list_moded`),
+/// elision is confined to the CONSUMER seam (`compile_entry_arg_list`),
 /// never propagated across a function-return boundary (that propagation is
 /// parallel-unsound — an escaping borrowed view races a concurrent COW/free,
 /// observed in f4_sudoku). `_body` is retained for the seam signature but no
@@ -3381,53 +3262,39 @@ pub(crate) fn return_is_fresh_by_summary(
     summary.is_some_and(|s| s.result == cranelisp_types::ResultMode::Fresh)
 }
 
-/// The heap scope binding a TAIL COW op moves into the function's return value,
-/// or `None` — the [`FnCompiler::return_cow_source`] determinant (vec-assoc UAF
-/// fix, `tests/vec_assoc_param_mutate_return_uaf.rs`).
+/// The source node of the function-body return-COW site, or `None` — the
+/// return-COW issuer of the consuming claim ([`FnCompiler::consuming_claims`];
+/// vec-assoc UAF fix, `tests/vec_assoc_param_mutate_return_uaf.rs`).
 ///
 /// Matches ONLY the direct shape: the whole body is `(vec-set v …)` /
-/// `(vec-push v …)` whose FIRST argument is a bare `Var` naming a member of the
-/// current scope frame. Restricting to the direct body guarantees `v` is used
-/// exactly once (as the COW source), so it is genuinely at last use (the in-place
-/// COW arm fires) and suppressing its scope-exit dec cannot strand a live
-/// reference. A more complex body (`v` used elsewhere, a COW inside an `if`/`let`,
-/// the element argument aliasing `v`) does NOT match — conservative,
-/// byte-identical to pre-fix.
+/// `(vec-push v …)` whose first argument is a bare `Var` naming a member of the
+/// current scope frame. The returned node, not its name, is what the claim
+/// keys: a nested COW, or a binder shadowing `v`, is a different node (lead L8).
+/// The claim has no last-use condition: when an element argument also reads
+/// `v`, the site copies and scope exit still skips `v` (lead L9, a leak).
 ///
-/// **The COW-site identity comes from [`cow_site_source`]** — the RESOLUTION
-/// CARRIER, shared with the §13.7 gate (FIXME 0752 / Principle 24). It used to
-/// read the callee `Var`'s written name, defended by "the vec-query primitive
-/// names are canonical and never aliased at a value site" — the claim FIXME
-/// 0693 falsified for the sibling seam. This site is the sharper one of the
-/// pair: its product [`FnCompiler::return_cow_source`] is an INPUT to
-/// `cow_source_is_borrowed`, so a user fn spelled `vec-set` perturbed the
-/// CONSOLIDATED gate from one level upstream.
+/// Site identity comes from [`cow_site_source`], the resolution carrier, never
+/// the callee's spelling (FIXME 0752, Principle 24).
 ///
-/// Free function (not an associated fn) so the ownership DECISION is unit-testable
-/// without constructing a generic `FnCompiler` — the `return_is_fresh_by_summary`
-/// precedent.
-pub(crate) fn return_cow_source_in_scope(
-    body: &MonoExpr,
+/// [`cow_site_source`]: crate::compiler::vec_codegen::cow_site_source
+pub(crate) fn return_cow_source_in_scope<'e>(
+    body: &'e MonoExpr,
     scope_frame: Option<&Vec<Symbol>>,
-) -> Option<Symbol> {
-    let (source, _) = crate::compiler::vec_codegen::cow_site_source(body)?;
-    let MonoExpr::Var { name: src, .. } = source else {
+) -> Option<&'e MonoExpr> {
+    let source = crate::compiler::vec_codegen::cow_site_source(body)?;
+    let MonoExpr::Var { name, .. } = source else {
         return None;
     };
-    let frame = scope_frame?;
-    if frame.contains(src) {
-        Some(src.clone())
-    } else {
-        None
-    }
+    scope_frame?.contains(name).then_some(source)
 }
 
 #[cfg(test)]
 mod return_cow_source_tests {
     //! vec-assoc UAF fix (`tests/vec_assoc_param_mutate_return_uaf.rs`): the
-    //! last-use/ownership DECISION seam — which scope binding a tail COW op
-    //! (`vec-set`/`vec-push`) moves into the function return, so its scope-exit
-    //! dec is suppressed and the COW copy branch flips to `Owned`. VA-3 unit pin.
+    //! return-COW issuer of the consuming claim — which source node a tail COW
+    //! op (`vec-set`/`vec-push`) moves into the function return, so its slot's
+    //! scope-exit release is suppressed and the site lowers it `Owned`. VA-3
+    //! unit pin.
     use super::return_cow_source_in_scope;
     use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
 
@@ -3483,34 +3350,36 @@ mod return_cow_source_tests {
         names.iter().map(|n| Symbol::from(*n)).collect()
     }
 
-    // (i) `(vec-set v i x)` returning a scope-bound param `v` ⇒ suppress v's
-    // scope-exit dec (the in-place COW returns v's backing).
+    /// Is the issuer's answer for `body` exactly the site's own source node?
+    fn claims_its_own_source(body: &MonoExpr, frame: &Vec<Symbol>) -> bool {
+        let MonoExpr::Apply { args, .. } = body else {
+            unreachable!("fixture: a COW site")
+        };
+        return_cow_source_in_scope(body, Some(frame)).is_some_and(|s| std::ptr::eq(s, &args[0]))
+    }
+
+    // (i) `(vec-set v i x)` on a scope-bound param `v`: the site claims `v`'s
+    // reference, keyed by its source node (the in-place COW returns v's box).
     #[test]
     fn vec_set_on_returned_scope_param_is_the_cow_source() {
         let f = frame(&["v", "i", "x"]);
-        assert_eq!(
-            return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)),
-            Some(Symbol::from("v"))
-        );
+        assert!(claims_its_own_source(&cow_call("vec-set", var("v")), &f));
     }
 
-    // (ii) `vec-push` sibling — same suppression.
+    // (ii) `vec-push` sibling — same claim.
     #[test]
     fn vec_push_on_returned_scope_param_is_the_cow_source() {
         let f = frame(&["v", "i", "x"]);
-        assert_eq!(
-            return_cow_source_in_scope(&cow_call("vec-push", var("v")), Some(&f)),
-            Some(Symbol::from("v"))
-        );
+        assert!(claims_its_own_source(&cow_call("vec-push", var("v")), &f));
     }
 
     // (iii) control: the identity-fn return (bare `Var`, not a COW) is NOT a COW
     // source — it is handled by `return_var_in_scope` instead, and MUST NOT be
-    // flagged here (no over-correction: the copy branch stays `Borrowed`).
+    // claimed here.
     #[test]
     fn identity_bare_var_return_is_not_a_cow_source() {
         let f = frame(&["v"]);
-        assert_eq!(return_cow_source_in_scope(&var("v"), Some(&f)), None);
+        assert!(return_cow_source_in_scope(&var("v"), Some(&f)).is_none());
     }
 
     // Control: a COW on a NON-frame source (a temporary / fresh literal wrapped
@@ -3519,43 +3388,34 @@ mod return_cow_source_tests {
     #[test]
     fn cow_on_non_frame_source_is_not_flagged() {
         let f = frame(&["i", "x"]); // `v` deliberately absent from the frame
-        assert_eq!(
-            return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)),
-            None
-        );
+        assert!(return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)).is_none());
     }
 
     // Control: a non-COW callee (`vec-get`) is not a mutating op — no source move.
     #[test]
     fn non_cow_primitive_is_not_flagged() {
         let f = frame(&["v", "i"]);
-        assert_eq!(
-            return_cow_source_in_scope(&cow_call("vec-get", var("v")), Some(&f)),
-            None
-        );
+        assert!(return_cow_source_in_scope(&cow_call("vec-get", var("v")), Some(&f)).is_none());
     }
 
-    // spec: FIXME 0752 (NEGATIVE, the SHARP cell) — this producer FEEDS the
-    // consolidated R3 gate (`return_cow_source` is an input to
-    // `cow_source_is_borrowed`), so a spelling read here re-opens the exact
-    // channel 0693 closed, one level upstream. A user fn named `vec-set` must
-    // not make its argument the function's return-COW-source: that would
-    // suppress a scope-exit dec nothing else discharges AND flip a real COW
-    // site's copy branch to `Owned`.
+    // spec: FIXME 0752 (NEGATIVE) — this issuer's claim feeds the COW source
+    // classification, so a spelling read here would re-open the channel 0693
+    // closed. A user fn named `vec-set` must not claim its argument: that would
+    // suppress a scope-exit release nothing else discharges.
     #[test]
     fn a_user_fn_spelled_vec_set_is_not_the_return_cow_source_neg() {
         let f = frame(&["v", "i", "x"]);
-        assert_eq!(
-            return_cow_source_in_scope(&cow_call_carrier("vec-set", var("v"), None), Some(&f)),
-            None
+        assert!(
+            return_cow_source_in_scope(&cow_call_carrier("vec-set", var("v"), None), Some(&f))
+                .is_none()
         );
         // ...and the carrier's NAME is what is read, not the callee Var's.
-        assert_eq!(
+        assert!(
             return_cow_source_in_scope(
                 &cow_call_carrier("vec-set", var("v"), Some("vec-get")),
                 Some(&f)
-            ),
-            None
+            )
+            .is_none()
         );
     }
 }
@@ -3995,160 +3855,6 @@ mod binding_indirection_classifier_tests {
         assert_eq!(operand_live_binding_root(&m, &live(&["v"])), None);
         if let MonoExpr::Match { arms, .. } = &m {
             assert!(match_forwards_scrutinee(arms), "single [r r] arm forwards");
-        }
-    }
-
-    /// A COW site as typecheck RESOLVES it — carrier present
-    /// (`ResolvedCall::BuiltinFn`), which is what identifies a COW builtin
-    /// (FIXME 0752 / P24).
-    fn cow_call(prim: &str, src: MonoExpr) -> MonoExpr {
-        cow_call_carrier(prim, src, Some(prim))
-    }
-
-    /// A call that merely SPELLS `prim` but resolved elsewhere. `carrier: None`
-    /// is the user-defined fn named `vec-set` (legal under
-    /// `PreludeVariant::None`) — the latent channel FIXME 0693 closed at the R3
-    /// seam and 0752 closed here.
-    fn cow_call_carrier(prim: &str, src: MonoExpr, carrier: Option<&str>) -> MonoExpr {
-        MonoExpr::Apply {
-            dispatch: cranelisp_types::ApplyRef::ViaCallee,
-            callee: Box::new(var(prim)),
-            args: vec![src, var("i"), var("x")],
-            span: Span::new(0, 1),
-            resolved_call: carrier.map(|n| {
-                Box::new(cranelisp_types::ResolvedCall::BuiltinFn {
-                    name: Symbol::from(n),
-                })
-            }),
-            ty: ConcreteType::Int,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-            provenance: None,
-        }
-    }
-
-    // MS-P8 in-place guard — `(vec-set p …)` / `(vec-push p …)` on a param `p` may
-    // return `p`'s own box, so the param-flush must SKIP it (never dec the carried
-    // box → the both-polarity fence's leak-safe direction).
-    #[test]
-    fn arg_is_inplace_cow_on_matches_vecset_and_vecpush_on_param() {
-        use super::arg_is_inplace_cow_on;
-        let p = Symbol::from("v");
-        assert!(arg_is_inplace_cow_on(&cow_call("vec-set", var("v")), &p));
-        assert!(arg_is_inplace_cow_on(&cow_call("vec-push", var("v")), &p));
-        // A COW on a DIFFERENT source is not in-place on `v` (v IS superseded ⇒
-        // must be dec'd, so it is NOT skipped).
-        assert!(!arg_is_inplace_cow_on(&cow_call("vec-set", var("w")), &p));
-        // A user-fn call (`conj`) is NOT an in-place primitive — the persistent-op
-        // leak MUST still be fixed (dec fires).
-        assert!(!arg_is_inplace_cow_on(&cow_call("conj", var("v")), &p));
-        // A non-COW primitive is not skipped.
-        assert!(!arg_is_inplace_cow_on(&cow_call("vec-get", var("v")), &p));
-    }
-
-    // spec: FIXME 0752 (NEGATIVE, the load-bearing cell) — COW-site identity at
-    // the MS-P8 param-flush seam comes from the RESOLUTION CARRIER, never the
-    // callee's written spelling. A user fn literally named `vec-set` (legal
-    // under `PreludeVariant::None`) is NOT an in-place COW: exempting its param
-    // from the tail-jump flush suppresses a dec that IS owed (a leak), and the
-    // "the vec primitive names are canonical" rationale is the claim 0693
-    // falsified for the sibling seam.
-    #[test]
-    fn a_user_fn_spelled_vec_set_is_not_an_inplace_cow_neg() {
-        use super::{arg_is_inplace_cow_on, param_flush_exempts_inplace_cow};
-        let p = Symbol::from("v");
-        let spelled = cow_call_carrier("vec-set", var("v"), None);
-        assert!(!arg_is_inplace_cow_on(&spelled, &p));
-        assert!(!param_flush_exempts_inplace_cow(
-            &[spelled],
-            &p,
-            false,
-            |_| false
-        ));
-        // ...and a COW SPELLING that resolved to a different builtin is likewise
-        // not a COW site (the carrier's NAME is read, not the callee Var's).
-        let mislabelled = cow_call_carrier("vec-set", var("v"), Some("vec-get"));
-        assert!(!arg_is_inplace_cow_on(&mislabelled, &p));
-    }
-
-    // MS-P8 exemption matrix (FIXMEs 0691, 0695) — the param-flush in-place-COW
-    // exemption decision, over {position × toggle}. Analysis-ON, exempt iff SOME
-    // arg is an in-place COW rooted at the param (positional-blind); toggle-off,
-    // never exempt.
-    #[test]
-    fn param_flush_exempts_inplace_cow_all_positions_analysis_on() {
-        use super::param_flush_exempts_inplace_cow;
-        let v = Symbol::from("v");
-        // Own position: `(go (vec-set v …) …)`, `v` at slot 0.
-        let own = [cow_call("vec-set", var("v")), var("n")];
-        assert!(param_flush_exempts_inplace_cow(&own, &v, false, |_| false));
-        // CROSS position (0691): the COW on `v` feeds slot 0 (param `a`) while
-        // `v`'s own slot (1) takes a fresh `[1 2 3]`. Positional-blind ⇒ exempt.
-        let cross = [cow_call("vec-set", var("v")), vec_lit(), var("n")];
-        assert!(param_flush_exempts_inplace_cow(&cross, &v, false, |_| {
-            false
-        }));
-        // No arg is an in-place COW rooted at `v` ⇒ NOT exempt (dec owed).
-        let none = [var("v"), vec_lit(), var("n")];
-        assert!(!param_flush_exempts_inplace_cow(&none, &v, false, |_| {
-            false
-        }));
-        // A user-fn call (`conj`) is not an in-place primitive ⇒ NOT exempt.
-        let conj = [cow_call("conj", var("v")), var("n")];
-        assert!(!param_flush_exempts_inplace_cow(&conj, &v, false, |_| {
-            false
-        }));
-    }
-
-    #[test]
-    fn param_flush_never_exempts_toggle_off() {
-        use super::param_flush_exempts_inplace_cow;
-        let v = Symbol::from("v");
-        // Even the own-position in-place COW is NOT exempt toggle-off (0695): the
-        // COW always copies (rc≥2 force-count), so the superseded dec is owed.
-        let own = [cow_call("vec-set", var("v")), var("n")];
-        assert!(!param_flush_exempts_inplace_cow(
-            &own,
-            &v,
-            /* analysis_off = */ true,
-            |_| false
-        ));
-        let cross = [cow_call("vec-set", var("v")), vec_lit(), var("n")];
-        assert!(!param_flush_exempts_inplace_cow(&cross, &v, true, |_| {
-            false
-        }));
-    }
-
-    // spec: spec/12-runtime.md §12.3.1 — an independently retained COW result
-    // does not transfer the old parameter's owner through a tail backedge.
-    #[test]
-    fn retaining_cow_tail_argument_releases_its_old_source_owner() {
-        let v = Symbol::from("v");
-        for escapes in [Some(false), Some(true), None] {
-            let mut cow = cow_call("vec-push", var("v"));
-            if let MonoExpr::Apply { escapes: fact, .. } = &mut cow {
-                *fact = escapes;
-            }
-            let retains =
-                crate::compiler::vec_codegen::cow_site_retain_verdict(&cow, None, false).unwrap();
-            assert_eq!(retains, escapes != Some(false));
-            for args in [vec![cow.clone()], vec![var("n"), cow]] {
-                assert_eq!(
-                    super::param_flush_exempts_inplace_cow(&args, &v, false, |arg| {
-                        crate::compiler::vec_codegen::cow_site_retain_verdict(arg, None, false)
-                            .unwrap_or(false)
-                    }),
-                    !retains,
-                    "escape fact {escapes:?}: a retained result owns a separate reference",
-                );
-                assert!(
-                    super::param_flush_exempts_inplace_cow(&args, &v, false, |_| {
-                        super::reconcile_cow_retain_verdict(Some(None), retains, Span::SYNTHETIC)
-                    }),
-                    "an ambiguous producer record must preserve the conservative skip"
-                );
-            }
         }
     }
 
@@ -5084,97 +4790,6 @@ mod rc_release_sweep_tests {
     }
 }
 
-#[cfg(test)]
-mod cow_retain_reconciliation_tests {
-    //! FIXME 0693 / 0751 — the record-vs-derivation reconciliation at the R3
-    //! COW dec-side seam ([`reconcile_cow_retain_verdict`]).
-    //!
-    //! Sibling of `vec_codegen/cow_gate_tests.rs`, which pins the two PURE
-    //! predicates the producer and consumer share; this module pins what the
-    //! consumer does with the producer's span-keyed RECORD on top of them.
-    //!
-    //! The load-bearing cell is the DISAGREEMENT arm. It resolved to the
-    //! recorded verdict (rustdoc: "degrades to the producer's truth"), which is
-    //! only true when the record belongs to the same site — and disagreement is
-    //! exactly the state in which the seam cannot know that. A recorded `true`
-    //! with a derived `false` then fired a dec with no producer inc behind it —
-    //! the spurious-dec/UAF channel 0693 was opened to close, and the polarity
-    //! the sibling ambiguity arm already had right.
-
-    use super::reconcile_cow_retain_verdict;
-    use cranelisp_types::Span;
-
-    // spec: design/backend/ownership-codegen.md §13.7 — agreement is a pass-through
-    // in BOTH polarities (the byte-identical fence: the overwhelmingly common
-    // case must be untouched by the 0751 correction).
-    #[test]
-    fn agreement_passes_the_verdict_through() {
-        assert!(reconcile_cow_retain_verdict(
-            Some(Some(true)),
-            true,
-            Span::SYNTHETIC
-        ));
-        assert!(!reconcile_cow_retain_verdict(
-            Some(Some(false)),
-            false,
-            Span::SYNTHETIC
-        ));
-    }
-
-    // spec: §13.7 — an ambiguous span (two COW sites collapsed under one
-    // synthetic span) takes the leak-safe verdict.
-    #[test]
-    fn ambiguous_record_is_leak_safe() {
-        assert!(!reconcile_cow_retain_verdict(
-            Some(None),
-            true,
-            Span::SYNTHETIC
-        ));
-        assert!(!reconcile_cow_retain_verdict(
-            Some(None),
-            false,
-            Span::SYNTHETIC
-        ));
-    }
-
-    // spec: §13.7 — an ABSENT record means the producer ran in another compiler
-    // frame; the shared predicate is then the answer, in both polarities.
-    #[test]
-    fn absent_record_falls_back_to_the_shared_predicate() {
-        assert!(reconcile_cow_retain_verdict(None, true, Span::SYNTHETIC));
-        assert!(!reconcile_cow_retain_verdict(None, false, Span::SYNTHETIC));
-    }
-
-    // spec: §13.7 / FIXME 0751 — DEBUG builds keep the loud fence: a
-    // producer/consumer disagreement is a compiler-invariant breach and must be
-    // impossible to miss in development.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "disagreement fence")]
-    fn disagreement_trips_the_debug_fence() {
-        let _ = reconcile_cow_retain_verdict(Some(Some(true)), false, Span::SYNTHETIC);
-    }
-
-    // spec: §13.7 / FIXME 0751 — RELEASE builds take the LEAK-SAFE verdict, not
-    // the record. The record belongs to a DIFFERENT site (that is what
-    // disagreement means), so trusting it emits a dec with no inc behind it.
-    // Both directions of the disagreement resolve to `false`.
-    #[cfg(not(debug_assertions))]
-    #[test]
-    fn disagreement_takes_the_leak_safe_verdict_in_release_neg() {
-        assert!(!reconcile_cow_retain_verdict(
-            Some(Some(true)),
-            false,
-            Span::SYNTHETIC
-        ));
-        assert!(!reconcile_cow_retain_verdict(
-            Some(Some(false)),
-            true,
-            Span::SYNTHETIC
-        ));
-    }
-}
-
 /// S118 slice S5 — the ONE TCO replacement/transfer predicate (§6).
 #[cfg(test)]
 mod tco_slot_predicate_tests;
@@ -5185,6 +4800,15 @@ mod tco_slot_predicate_tests;
 #[cfg(test)]
 mod tco_shadowing_borrow_tests;
 
+/// `ownership-codegen.md` §13.3 — the consuming in-place COW argument: one
+/// fact read by the COW producer and the parameter flush (ACT-1021).
+#[cfg(test)]
+mod consuming_cow_argument_tests;
+/// `ownership-codegen.md` §13.3 — the branch-forward rule and the slot
+/// ownership fact every tail seam reads (ACT-1021).
+#[cfg(test)]
+mod tail_branch_forward_tests;
+
 /// S118 — `design/backend/transitive-drop-glue.md` §10 fourth row (superseded
 /// by `non-concrete-release-contract.md` §4.1): a directly constructed ctor
 /// template's residual parameter, still pinned at its S118 balance (I-CT)
@@ -5193,3 +4817,8 @@ mod tco_shadowing_borrow_tests;
 mod ctor_template_admission_tests;
 #[cfg(test)]
 pub(crate) use ctor_template_admission_tests::assert_threshold_guarded_adds;
+
+/// `non-concrete-release-contract.md` §7.6 — return protection reads the
+/// derived entry convention's result kind.
+#[cfg(test)]
+mod entry_result_protection_tests;

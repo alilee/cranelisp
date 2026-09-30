@@ -1,7 +1,7 @@
 ---
 id: ACT-0955
 title: Omit generated auto-trait impls from public-API baselines
-status: open
+status: deferred
 priority: next-sprint
 from: sprint
 to: arch
@@ -12,6 +12,18 @@ refers_to:
   - tests/public_api_relocations.rs
   - crates/cranelisp-platform/public-api.txt
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11, public-API baseline batch).** First deferral. It
+  lands in one `arch` batch with ACT-0963 item 2 and ACT-0971; the batch's
+  non-empty generated diff needs one user confirmation.
+- Source on 2026-09-30: the guard in `tests/public_api_relocations.rs` still
+  passes only `--omit auto-derived-impls`, and
+  `crates/cranelisp-backend/src/cache/object.rs` still has
+  `unsafe impl Send for CacheWritePacket`.
 
 ## Request
 

@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CodeStore, ExportSpec, ImportSpec, LinkerStore, ModDecl, ModuleFullPath, SymbolTable,
+    CodeStore, ExportSpec, ImportNames, ImportSpec, LinkerStore, ModDecl, ModuleFullPath,
+    SymbolTable,
 };
 
 use crate::callee_edges::binding_callees;
@@ -126,6 +127,37 @@ pub(crate) fn recorded_edges<C: CodeStore, L: LinkerStore>(
             .filter(|target| is_edge(module, target))
             .cloned(),
     );
+    edges
+}
+
+/// A module's reload edges as `table` records them: each `import` that loads
+/// and each `export` target, resolved through its declared children; `prelude`
+/// when `prelude_fallback` holds; and its callee modules and lookup
+/// dependencies. A null import loads nothing (spec §8.3.7) and is no edge; a
+/// use through it is recorded as a callee or lookup dependency. Declared
+/// children are not reload edges: a `mod` declaration compiles no reference
+/// into the child. Reload selection and order and the publication cycle check
+/// read this one predicate, each supplying the fallback bit of the generation
+/// it reads (`design/int/repl-lifecycle.md` §1.2, `design/int/int.md` §6.12).
+pub(crate) fn reload_edges(
+    module: &ModuleFullPath,
+    table: &SessionSymbolTable,
+    prelude_fallback: bool,
+) -> BTreeSet<ModuleFullPath> {
+    let declared = DeclaredChildren::of(module, &table.submodules);
+    let mut edges: BTreeSet<ModuleFullPath> = table
+        .imports
+        .iter()
+        .filter(|spec| !matches!(spec.names, ImportNames::None))
+        .map(|spec| &spec.module_path)
+        .chain(table.exports.iter().map(|spec| &spec.module_path))
+        .map(|spelling| declared.resolve(spelling))
+        .collect();
+    if prelude_fallback {
+        edges.insert(ModuleFullPath::from(PRELUDE));
+    }
+    edges.extend(recorded_edges(module, table));
+    edges.remove(module);
     edges
 }
 

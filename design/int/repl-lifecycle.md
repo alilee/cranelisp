@@ -34,10 +34,17 @@ that save by atomic rename would lose a per-file watch.
   - When the session regenerates a backing file itself, it updates the stored
     hash so its own write is not reported.
 - **Reload edges.** One private predicate answers "module A depends on module
-  B" for both selection and ordering (Principle 7). A's edges are:
-  - each `import` and `export` target, resolved through A's declared children
-    ([int §6.9](int.md#69-bare-module-names-in-import-and-export));
-  - `prelude`, when A's fallback bit is on;
+  B" for selection, ordering and the order check (Principle 7). A's edges are:
+  - each `import` target that loads and each `export` target, resolved
+    through A's declared children
+    ([int §6.9](int.md#69-bare-module-names-in-import-and-export)). A null
+    import loads nothing (spec §8.3.7) and is no edge; a use through it is
+    recorded below;
+  - `prelude`, when A's fallback bit is on
+    ([int §6.12](int.md#612-the-implicit-prelude-dependency)). A module the
+    prelude reaches with its bit on is a cycle that the static gate or the
+    publication check refuses, so the edge never makes a live order
+    unsettleable;
   - A's recorded edges, `cache::dependency_record::recorded_edges`: callee
     modules and lookup dependencies. These carry qualified function, type,
     trait, constructor, pattern, accessor and macro-head references, including
@@ -46,11 +53,17 @@ that save by atomic rename would lose a per-file watch.
     ([session transaction §7.3.2](session-transaction.md#732-the-established-reference)).
     A failed compile records neither callees nor lookup dependencies, so this
     keeps a failed module reachable from the dependency whose repair releases
-    it.
+    it;
+  - A's **failure dependencies** (§1.2.1): each module through which one of
+    A's attempts failed since A last compiled. A module that has never
+    compiled holds no reference, so without these its dependency's fix would
+    never select it (ACT-1011).
 
   Declared children are not reload edges: a `mod` declaration drives loading
   and compiles no reference into the child. They remain cache-validity edges.
-  Over-selection through a stale edge costs only a recompile.
+  Over-selection through a stale edge costs only a recompile. The graph covers
+  every module that has a table or a failure-dependency record, because a
+  startup-failed dependency has no table (§1.3.1).
 - **Reload set.** The changed modules plus every module that reaches one of
   them transitively over reload edges. A dependent is admitted when
   `file_to_module` maps a file to it; any other is skipped
@@ -66,9 +79,39 @@ that save by atomic rename would lose a per-file watch.
   therefore compile before it. After the plan runs, check each module it
   rebuilt successfully against its new edges. One that reaches a module this
   plan rebuilt later is rebuilt again, with its dependents, in a follow-on
-  plan, until no such module remains. Compile-time cycles are rejected, so
-  this converges; with no new cross-reference it adds no work. Each module's
-  last outcome is its notification.
+  plan, until no such module remains. Each module's last outcome is its
+  notification. With no new cross-reference it adds no work.
+- **Cycles.** The publication check rejects the attempt that would close a
+  module cycle ([int §6.11](int.md#611-module-cycles-at-publication)), so two
+  cycle members never both compile. Each rebuild tells that check which
+  modules this pass rebuilds after it; their pre-plan edges are not yet
+  settled. A cycle created in a pass is therefore rejected at its
+  last-rebuilt member. The follow-on then rebuilds the earlier members, and
+  each ends as a restart on the saved files ends it:
+  - a member rebuilt after the failed member fails when it depends on that
+    member. The mechanism depends on how it reaches the failed member:
+    - a Pass-0 `import` or `export` of it, or a qualified reference to a
+      name its failed table lacks, meets the scheduler's fail-fast
+      ([int §6.11](int.md#611-module-cycles-at-publication), Pass-0
+      fail-fast on a failed module);
+    - any other edge meets the failed-dependency refusal of int §6.11. Until
+      that refusal is realised, a qualified reference that still resolves
+      against the failed table compiles, and the session diverges from a
+      restart (ACT-1016 Face 1);
+  - a member that reaches the failed member only through the implicit prelude
+    edge compiles, as it does at a restart
+    ([int §6.12](int.md#612-the-implicit-prelude-dependency));
+  - a member that the follow-on rebuilds ahead of the failed member can
+    compile, because the failed member is then unsettled. The failed member is
+    then refused again, the follow-on recurs, and the recurrence stop fails
+    both.
+- **Recurrence stop.** A follow-on root set that recurs cannot arise from an
+  acyclic set of successes; reaching it is the
+  [§7.3.3](session-transaction.md#733-slot-reuse-and-the-plan-invariant)
+  falsifier. The executor then fails and locks every module of the recurring
+  set with an error saying the reload order did not settle, and returns. It
+  never reports success for them. The stop also bounds the loop, because the
+  root sets are finite.
 - **One executor.** Every reload of a saved file runs as a plan through one
   private executor: the watcher poll, `/mod`'s recompile of a cache-installed
   module (`session-persistence.md` §2.4.5), and the superseded T1 and T2
@@ -97,12 +140,146 @@ that save by atomic rename would lose a per-file watch.
   - Order check: two roots changed together, where the earlier-sorting one's
     new source adds a qualified call into the other, end with the caller
     rebuilt after the callee.
+  - After startup recovery of the chain `user` → `lib` → `base` with `base`
+    failing, the plan for `base` selects `lib` and `user`, in that order. The
+    same holds when `lib` failed in its own source against `base` at any
+    stage (§1.2.1): in Pass 0 on a name `base` lacks, in Pass 1 on a macro
+    from `base`, and in its type pass, reaching `base` by `import`, by
+    qualified reference and by an alias.
+  - A plan whose root closes a qualified cycle ends with every cycle member
+    failed and locked; the acyclic twin succeeds.
+  - When ACT-1016 Face 1 is realised, the same holds when a member rebuilt
+    after the refused one uses only a name that the refused member's failed
+    table still holds. In QA's shape, `a` re-exports `c/k`, `b` calls `a/k`,
+    and a save of `a` adds a call to `b/g`. Then `a`, `b` and their dependent
+    `user` end failed, as a restart reports. The row pair is ACT-1016's.
+  - A plan in which a follow-on member reaches the refused member only
+    through the implicit prelude edge ends with that member compiled, as a
+    restart leaves it. This is int §6.12's helper end.
+  - Two roots changed together, where one drops its reference back to the
+    other and the other adds a reference to it, both succeed: the later
+    member's pre-plan edge does not reject the earlier one.
+  - The recurrence stop, factored as a pure step, locks a planted recurring
+    set and passes a non-recurring one.
+  - The prelude edge follows the fallback bit alone, and a null import adds
+    no edge; the rows are in
+    [int §6.12](int.md#612-the-implicit-prelude-dependency).
 
   End to end: FQR-1
   (`tests/repl_persist.rs::watch_qualified_caller_fails_on_removed_callee_until_it_is_restored`),
   FQR-2
-  (`tests/repl_persist.rs::watch_qualified_type_dependent_locked_until_its_module_compiles`)
-  and FL-3.
+  (`tests/repl_persist.rs::watch_qualified_type_dependent_locked_until_its_module_compiles`),
+  FL-3,
+  `tests/repl_persist.rs::watch_fix_of_dependency_failed_at_startup_recompiles_its_dependents`,
+  `tests/repl_persist.rs::watch_fix_of_module_newly_imported_by_failing_save_recompiles_importer`,
+  the own-source twins
+  `tests/repl_persist.rs::watch_dependency_save_recompiles_importer_failed_at_startup_in_own_source`
+  and `watch_dependency_save_recompiles_qualified_caller_failed_at_startup_in_own_source`,
+  and `tests/repl_persist.rs::watch_save_closing_qualified_module_cycle_reports_circular_dependency`,
+  each with its control.
+
+#### 1.2.1 Failure dependencies
+
+A failed attempt publishes nothing, and startup recovery purges a table that
+never compiled (§1.3.1). The modules a failed attempt depended on must
+therefore be recorded where selection can read them.
+
+- **The fact.** The modules one attempt of module A depended on and failed
+  with:
+  - the dependency A waited on when that dependency failed (the cascade);
+  - an already-failed dependency A met: the fail-fast at a dependency wait, at
+    the signature barrier or at a Pass-0 declaration, or the publication
+    check's failed-dependency refusal
+    ([int §6.11](int.md#611-module-cycles-at-publication));
+  - the next module on a cycle A closed (the scheduler's wait-graph check,
+    the static import-closure gate, and the publication check of
+    [int §6.11](int.md#611-module-cycles-at-publication));
+  - for a whole-source attempt of A that fails, the attempt's dependencies
+    (below). This covers a failure in A's own source at every stage.
+
+  The last kind over-approximates, which selection tolerates: an extra module
+  costs a recompile. It derives no compile-necessary identity, so Principle
+  24's ban on identity scans does not apply. Without it, a module that never
+  compiled and failed in its own source against `base` holds no edge to
+  `base` once recovery purges its table (ACT-1011, own-source face), whatever
+  stage failed and however it reached `base`.
+- **The attempt failure exit.** Every stage of a cluster attempt returns
+  through the one exit of `process_cluster_once`, in every mode:
+  - the prologue: the static gate, Pass 0 and the barrier;
+  - Pass 1 expansion and its macro checkpoints;
+  - the final type pass and commit planning.
+
+  When a whole-source attempt (a fresh load or a rebuild) fails, that exit
+  adds the attempt's dependencies to A's scheduler record, once, before the
+  error leaves. An increment's failure changes nothing and locks nothing, so
+  it records nothing. The attempt's dependencies are the union of:
+  - **Declarations in the attempt's forms.** Each `import` target that loads
+    and each `export` target, resolved through the forms' declared children
+    by the static gate's extraction, which reads exports for this reader.
+    The forms are read, not the table, because Pass 0 records a declaration
+    only after it resolves: a failing import is never on the table
+    (FIXME 0548).
+  - **The prelude**, when A's bit is on.
+  - **A's live-table reload edges.** They hold macro clauses published at
+    this attempt's earlier checkpoints, whose source a resumed attempt no
+    longer carries.
+  - **Qualified symbols.** The module of each qualified symbol written in
+    the attempt's forms or in its expanded prefix, read through the alias
+    carrier as qualified auto-loading reads it. The prefix holds each
+    expansion made so far, so a reference a macro generated counts.
+    Reader-quoted data is shielded by `cranelisp_types::quote_head`, the one quote
+    classifier. Int §6.12's cycle precedence uses this one enumeration for
+    each walked file, but substitutes through that file's own aliases rather
+    than the carrier.
+  - **Macro heads.** The macro-head modules the attempt accumulated
+    ([int §7.6.2](int.md#762-lookup-dependencies)).
+
+  The type pass keeps no lookup record on failure, so the exit reads what the
+  attempt holds. The checked program is not needed: its qualified references
+  are those of the expanded forms. The same exit applies int §6.12's cycle
+  precedence, which can replace the error it returns.
+  The cascade site stays, because a parked waiter runs no attempt. The cycle
+  and fail-fast sites also stay and record their precise module; the exit's
+  set contains it.
+- **Scheduler record.** The scheduler keeps the set on A's module state for
+  A's current generation, as it keeps the structural type refusal: each site
+  above adds to it, and every registration or re-registration clears it. It
+  is read only after A's own outcome.
+- **Session record.** The session keeps, beside the lock and the established
+  reference, the union of A's failure dependencies since A last compiled.
+  - `reload_module`'s failure branch adds the scheduler record of the
+    reloaded module.
+  - Startup recovery adds the record of every module its reset returns,
+    including the entry, before anything forgets them (§1.3.1).
+  - Only `reload_module`'s success branch clears it. `/reset` keeps it.
+- **Why a union.** A module blocked by `base`, then by `c`, still depends on
+  `base`; over-selection costs a recompile, under-selection strands a locked
+  module.
+- **Residual.** Each module's own save still selects it. The entry's
+  degraded re-drive (§1.3.1) is not copied into the session record; the
+  §15.2.3 repair recovers the entry by definition turns. Falsifier: an entry
+  form failing on `base/b`'s arity at startup is not re-driven by a save of
+  `base`.
+- **Module evidence (`dev`).** Arm each positive row RED on the pre-fix
+  source where its seam exists.
+  - Each of these failures of `lib` leaves `base` in `lib`'s scheduler record:
+    - a Pass-0 failure through `(import [base [c]])` and through
+      `(export [base [c]])`, while `base` lacks `c`;
+    - a Pass-1 expansion failure on a macro imported from `base`;
+    - a type failure reached by `(import [base [b]])`, by `base/b`, and
+      through an import alias;
+    - a type failure on `base/b` that only a macro's expansion wrote;
+    - a macro-checkpoint type failure.
+  - Startup recovery carries each record into the session record past the
+    purge.
+  - A qualified symbol inside quoted data adds no module.
+  - An increment's failure leaves the record unchanged.
+  - Planted absent at the exit, the §1.2 plan rows for the own-source twins
+    and for the Pass-0 case go RED.
+
+  End to end: the own-source twins and T4-p0
+  (`tests/repl_persist.rs`, beside them;
+  [QA allocation](../../tests/plan/s122-evidence-delta.md#design-residuals--adjudication-2026-09-30)).
 
 ### 1.3 Failed reload
 
@@ -116,8 +293,8 @@ table its failed rebuild produced
 - A definition turn is admitted unless its current module is locked. In an
   unlocked module it can be the repair of a startup failure
   (`15-session-persistence.md` §15.2.3).
-- A later successful reload clears the module's error, failed-form state and
-  lock.
+- A later successful reload clears the module's error, failed-form state,
+  lock, established reference and failure dependencies.
 
 **Outcome.** A reload's outcome, success or failure, is the reloaded module's
 own terminal state, never another module's.
@@ -211,23 +388,46 @@ mechanism.
     - **Failed non-entry modules.** Recovery locks every module other than
       the entry that its scheduler reset returns, that is, every module the
       failed start left `Failed`, whether by its own failure or in the
-      cascade. Recovery forgets them before the degraded entry re-drive, so
-      nothing re-establishes them. Without the lock, `/mod` to one of them
-      plus a definition would regenerate its file from a table that never
-      compiled, overwriting the failing source (ACT-1010 M1; REPL §14.6: a
-      restart does not bypass a failure). Such a module is not a backing
-      file (§15.1), so the §15.2.3 repair does not apply to it. Each was
-      mapped for the watcher when its load read the file, so its own
-      compiling save releases it.
+      cascade. Without the lock, `/mod` to one of them plus a definition
+      would regenerate its file from source the session never accepted
+      (ACT-1010 M1; REPL §14.6: a restart does not bypass a failure). Such a
+      module is not a backing file (§15.1), so the §15.2.3 repair does not
+      apply to it. Each was mapped for the watcher when its load read the
+      file, so its own compiling save releases it, and its failure
+      dependencies (§1.2.1) let its dependency's fix select it.
+- **Startup reset.** Recovery resets failed modules by the one rule the eval
+  thread's dependency retry uses (`reset_failed_modules`): each is forgotten
+  by the scheduler, and a module that never reached a terminal typecheck
+  loses its table, with the session state keyed by it reset from that table
+  as the rebuild prologue resets it
+  ([session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild)).
+  The entry is the exception: recovery re-seeds and re-drives it.
+  - **Why.** A kept table that never compiled, for a module the scheduler has
+    forgotten, reads as loaded: the `import` fast path installs from it and
+    a qualified reference resolves against it. The degraded re-drive then
+    reported `in-memory codegen incomplete` instead of the cycle `--run`
+    reports (ACT-1013, fresh load). With the table purged, the re-drive loads
+    each dependency it references from source, so its failed form carries
+    the dependency's own error chain, as a reference at the prompt does.
+  - **Order.** Capture each reset module's failure dependencies, then lock,
+    then purge.
+  - A purged module keeps its lock, error-set membership and watcher
+    mapping. `/mod` to it loads it on demand (int §8.5.1); a reload builds
+    its table afresh
+    ([session transaction §7.3.2](session-transaction.md#732-the-established-reference)).
 - **Not set.** A startup backing file that parses keeps the §15.2.3 repair:
-  its failed forms are retained and definition turns are admitted.
+  its failed forms are retained and definition turns are admitted. The repair
+  lasts until the module's first whole-file rebuild. A plan may run one for
+  any reason, including as a dependent of a changed module; its failure locks
+  the module as any failed reload does, and its success drops the retained
+  failed forms (§15.2.3, final paragraph).
 - **Stands.** A later failing reload of any cause leaves the lock, as do
   `/reset` (§2.1) and `/mod`. A later §14.8 refusal replaces a failed-source
   cause with restart-required; a later failure of another cause keeps the
   recorded cause.
 - **Clears.** Only `reload_module`'s success branch clears it, beside the
-  error-set and failed-form clears and the drop of the module's established
-  reference
+  error-set, failed-form and failure-dependency clears and the drop of the
+  module's established reference
   ([session transaction §7.3.2](session-transaction.md#732-the-established-reference)),
   including while another module stands
   `Failed` (§1.3 Outcome). A dependent locked in a cascade is released by its
@@ -280,7 +480,13 @@ mechanism.
   `/mod`'s recompile and a T1-rooted plan each leaves its module locked and
   in the error set. For a failed non-entry module at
   startup, the ACT-1010 M1 cell is the end-to-end guard. Its unit checks
-  that recovery locks the failed dependency and not a parseable entry.
+  that recovery locks the failed dependency and not a parseable entry. The
+  startup reset adds two units: recovery leaves no table for a failed
+  never-compiled dependency while keeping it locked and mapped, and keeps the
+  entry's table; and after recovery from the fresh-load qualified cycle the
+  entry's failed form carries the circular-dependency error. End to end:
+  `tests/spec_08_modules.rs::fq_ref_cycle_repl_startup_reports_circular_dependency_like_run`,
+  with `import_cycle_repl_startup_reports_circular_dependency` as the control.
 
 ### 1.4 Notification
 
@@ -412,12 +618,3 @@ attribution.
    relative to the project root. The source prints the bare file name, which
    differs for any file below the root.
    - Falsifier: edit a watched `lib/m.cl` and observe `[updated: m.cl]`.
-2. **Qualified-only dependents are not reloaded.** The dependent set reads
-   imports, re-exports and the prelude bit only. A module that reaches the
-   changed module only through a qualified reference is not reloaded, although
-   §14 requires dependents to be recompiled.
-   - This is a third enumeration of module edges, beside the cache record and
-     the restore walk (`int.md` §7.6). Whether a stale dependent is observable
-     after GOT indirection is unmeasured.
-   - Falsifier: `a` calls `b/f` without importing `b`, then `b` changes
-     `f`'s arity. Observe whether `a` is re-typechecked.

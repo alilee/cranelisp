@@ -85,13 +85,13 @@
 ;; (`(deftype …)`) plus an `(impl …)` expansion that references the derived
 ;; methods — all of which belong to a DOWNSTREAM module that imports these
 ;; macros and derives on its own ADT. That downstream module is the correct
-;; test home (spec §9.3.4). Recorded in plan-stdlib.md §26.4.
+;; test home (spec §9.3.4). Recorded in plan-stdlib.md §3.3.
 ;;
 ;; BUILT S115: `derive/test.cl` (module `derive.test`) is that consumer — a
 ;; separate module that imports these macros from `super` and derives against
 ;; its own four ADTs. It is the standing guard for the derive surface; the two
 ;; S115 conformance fixes above (`!=` for Eq, `<=`/`>=` for Ord) are pinned
-;; there, and its header records the FIXME-0815 / FIXME-0816 boundaries.
+;; there, and its header lists the shapes it does not cover.
 
 (mod- test)
 ;;

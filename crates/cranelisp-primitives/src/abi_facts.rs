@@ -1,15 +1,14 @@
 //! Private Rust-side ABI facts derived by the primitive declaration inventory.
 
-use cranelisp_intrinsics::handle::{Borrowed, Owned};
-use cranelisp_types::Type;
 #[cfg(test)]
-use cranelisp_types::{ModeSummary, ParamFlow};
+use cranelisp_intrinsics::handle::Borrowed;
+use cranelisp_intrinsics::handle::Owned;
+use cranelisp_types::Type;
 
 /// The Rust ownership shape used on one side of a raw primitive shim word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AbiKind {
     Scalar,
-    BorrowedHandle,
     OwnedHandle,
 }
 
@@ -22,8 +21,8 @@ pub(crate) trait AbiHandle: Sized {
     ///
     /// # Safety
     ///
-    /// The declaration's type and `ParamFlow` must assign `raw` the ownership
-    /// represented by `Self`.
+    /// The declaration's type must assign `raw` the ownership represented by
+    /// `Self`.
     unsafe fn from_abi(raw: i64) -> Self;
 
     /// Convert a private body result back to the unchanged raw shim ABI.
@@ -55,19 +54,6 @@ impl AbiHandle for Owned {
     }
 }
 
-impl AbiHandle for Borrowed<'static> {
-    const KIND: AbiKind = AbiKind::BorrowedHandle;
-
-    unsafe fn from_abi(raw: i64) -> Self {
-        // SAFETY: upheld by the declaration-derived wrapper contract above.
-        unsafe { Borrowed::from_abi(raw) }
-    }
-
-    fn into_abi(self) -> i64 {
-        self.raw_for_read()
-    }
-}
-
 /// The one private adapter for a freshly produced, fully initialized runtime
 /// result (or its specifically approved nullary/error sentinel).
 ///
@@ -92,7 +78,7 @@ pub(crate) fn test_owned(raw: i64) -> Owned {
 pub(crate) fn test_borrowed(raw: i64) -> Borrowed<'static> {
     // SAFETY: module fixtures keep the referenced raw allocation live for the
     // complete use of this returned test borrow.
-    unsafe { <Borrowed<'static> as AbiHandle>::from_abi(raw) }
+    unsafe { Borrowed::from_abi(raw) }
 }
 
 /// Whether a declared language type travels as a counted heap handle.
@@ -101,23 +87,11 @@ pub(crate) fn is_heap_carried(ty: &Type) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn abi_kinds_for(ty: &Type, ownership: &ModeSummary) -> Vec<AbiKind> {
+pub(crate) fn abi_kinds_for(ty: &Type) -> Vec<AbiKind> {
     let Type::Fn(params, _) = ty else {
         panic!("primitive declaration must carry a function type");
     };
-    params
-        .iter()
-        .enumerate()
-        .map(|(index, param)| {
-            if !is_heap_carried(param) {
-                AbiKind::Scalar
-            } else if ownership.param_flow.get(index) == Some(&ParamFlow::IntoResult) {
-                AbiKind::BorrowedHandle
-            } else {
-                AbiKind::OwnedHandle
-            }
-        })
-        .collect()
+    params.iter().map(kind_of).collect()
 }
 
 #[cfg(test)]
@@ -125,7 +99,12 @@ pub(crate) fn result_kind_for(ty: &Type) -> AbiKind {
     let Type::Fn(_, result) = ty else {
         panic!("primitive declaration must carry a function type");
     };
-    if is_heap_carried(result) {
+    kind_of(result)
+}
+
+#[cfg(test)]
+fn kind_of(ty: &Type) -> AbiKind {
+    if is_heap_carried(ty) {
         AbiKind::OwnedHandle
     } else {
         AbiKind::Scalar

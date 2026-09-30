@@ -37,7 +37,9 @@ rediscover or divide the work into new tickets.
 | Fresh FQ type-only reference site (A2, int half) | `src/process_form.rs` and its `tests.rs` | Implemented per `int.md` §6.3.1 (including the R1 correction); FT-1 to FT-4 GREEN; review passed. No public API, carrier or schema change |
 | RR-1: restore before load, one load entry, load before execution | `src/process_form/cache_restore.rs`, `src/scheduler.rs`, `src/process_form/macro_resolution.rs`, `src/worker.rs` (the cached-load entry and the ladder's load item), `src/eval.rs` and `src/pipeline.rs` (expression execution), `src/repl/commands.rs` (the test commands), and the scheduler test module | Designed in `int.md` §7.1 on 2026-09-27, after the user prioritised RR-1. Face (i)'s restore-before-load, the face (ii) correction (*load before execution*) and the scheduler-minted claim that closes review R-1 and R-2 are reviewed and committed at `236aa44d`. QA measured zero face (i), `test`'s stress found zero failures of any face in 2000 sessions, and QA judged the evidence adequate on 2026-09-27. No public API, carrier, schema or ABI change. Open: the `fixed=` sha stamps, the user's Phase-5 acceptance, the fresh-dependency residual and the five named execution-wait exclusions, including claim and re-registration (FA-1) |
 | IR-1: one bare-module-name resolver for `import` and `export` | `src/imports.rs`, `src/process_form/dependency.rs`, `src/process_form.rs`, `src/process_form/cache_restore.rs`, `src/cache/dependency_record.rs`, `src/session_v4/lifecycle.rs`, `src/session_v4/index_worker.rs`; the `imports`, `dependency` and `cache/dependency_record` test modules | Implemented and independently reviewed per `int.md` §6.9 on 2026-09-27. All six end-to-end legs and the six module evidence groups pass. The adjacent crash replay passed 800 sessions; QA judges IR-1 adequate. User Phase-5 acceptance remains. No public API, carrier, schema or ABI change |
-| Whole-file rebuild: removed definitions (ACT-1007), omitted import (ACT-1012), qualified dependents (FQR-1, FQR-2) | `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/session_v4/types.rs`, `src/scheduler.rs`, `src/process_form.rs`, `src/cluster.rs`, `src/worker.rs`, `src/redefine.rs`, `src/repl/commands.rs`, `src/eval.rs` and `src/process_form/dependency.rs` (fixture fields only); the `worker`, `persistence`, `persistent_worker` and `process_form` test modules | The user approved the quiescent boundary on 2026-09-29; the realization is +0/−0 public API. Designed in `session-transaction.md` §7.3, `repl-lifecycle.md` §1.2–§1.3 and `int.md` §6.10. The uncommitted per-definition removal and the committed persisted-reload demand replay retire (`session-transaction.md` §7.3.5). Ready for `dev` |
+| Whole-file rebuild: removed definitions (ACT-1007), omitted import (ACT-1012), qualified dependents (FQR-1, FQR-2) | `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/session_v4/types.rs`, `src/scheduler.rs`, `src/process_form.rs`, `src/cluster.rs`, `src/worker.rs`, `src/redefine.rs`, `src/repl/commands.rs`, `src/eval.rs` and `src/process_form/dependency.rs` (fixture fields only); the `worker`, `persistence`, `persistent_worker` and `process_form` test modules | The user approved the quiescent boundary on 2026-09-29; the realization is +0/−0 public API. Designed in `session-transaction.md` §7.3, `repl-lifecycle.md` §1.2–§1.3 and `int.md` §6.10. The uncommitted per-definition removal and the committed persisted-reload demand replay retire (`session-transaction.md` §7.3.5). Implemented, and QA judged it adequate on 2026-09-29 ([rebuild adequacy](../../tests/plan/s122-evidence-delta.md#whole-file-rebuild-and-qualified-dependents--final-adequacy-2026-09-29)). Open: the user's Phase-5 acceptance |
+| Reload next basket: startup-failed dependents (ACT-1011), qualified module cycles on reload, increment and fresh load (ACT-1013), and `/mod` targets (ACT-1010 M2, NAV-1) | `src/scheduler.rs`, `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/worker.rs`, `src/process_form/dependency.rs`, `src/eval.rs`, `src/repl/commands.rs`, `src/repl/mod.rs`, and `src/cache/dependency_record.rs` (the reload-edge predicate's shared home); the `scheduler`, `dependency`, `cache/dependency_record`, `persistence`, `worker` and `repl` test modules | Designed 2026-09-29: failure dependencies and the startup reset (`repl-lifecycle.md` §1.2.1, §1.3.1), the publication cycle check (`int.md` §6.11), the recurrence stop (`repl-lifecycle.md` §1.2), the `/mod` target (`int.md` §8.5.1) and review A1's prologue order (`session-transaction.md` §7.3.1). Implemented 2026-09-29, uncommitted, with public API +0/−0. `dev` reported its full suite green. The prelude-fallback reach rule the implementation adopted is retracted by the user's 2026-09-30 ruling. Tails designed 2026-09-30: the implicit prelude edge with null imports excluded (`int.md` §6.12; ACT-1014), the publication check at the shared commit-planning step that macro checkpoints also reach (§6.11; ACT-1013), and own-source attempt dependencies (`repl-lifecycle.md` §1.2.1; ACT-1011). Revised 2026-09-30 after QA's adjudication: the attempt dependencies are recorded at the one attempt failure exit for every stage, and that exit reports a prelude cycle in preference to the attempt's own error for export and qualified reach at fresh load (`int.md` §6.12). The same files and test modules carry them, plus `src/process_form.rs`, `src/process_form/macro_clause.rs` and `src/process_form/macro_resolution.rs`. Implemented 2026-09-30 at source `889b6d26…`, public API +0/−0. Review found no blocking finding, and the design was reconciled with the implementation on 2026-09-30. The §6.12 file-derived aliases in cycle precedence were delivered at source `d056842f…`. The helper-end row stayed RED there. After QA repaired its condition, the defect is the prelude's follow-on `export` of the refused `x`, which reports an unresolved name, so the cycle is never named. The correction is designed 2026-09-30 as §6.11's Pass-0 fail-fast, in `src/process_form/dependency.rs`. It is implemented at source `f0d1006f…`, uncommitted, with no public API change. The helper-end row and the two Pass-0 module rows are GREEN there, and bounded tiers passed 4,412 of 4,412; the full suite was not run. The finding-scoped review of the fail-fast and the alias change found no blocking or required finding, and QA judged ACT-1014 adequate and closed it on 2026-09-30 ([helper-end adequacy](../../tests/plan/s122-evidence-delta.md#act-1014-helper-end--final-adequacy-2026-09-30)). §6.11 also records the failed-dependency refusal for ACT-1016 Face 1, which is not implemented. The user carried ACT-1015, ACT-1016 and ACT-1017 to S123 on 2026-09-30. Open: the fresh final acceptance run (K4) and the user's Phase-5 acceptance |
+| Batch missing entry (K1, ACT-1004) | `src/session_v4/lifecycle.rs` (entry registration) and `src/session_v4/test_runner/run.rs` (its missing-entry check is deleted); the lifecycle and test-runner session test modules | The user approved K1 as fix-now on 2026-09-30. Designed in `int.md` §6.1.1. No public item, carrier, schema or ABI change. Implemented 2026-09-30 at source `fefd41e8…`, uncommitted: the `--run` and `--link` REDs are GREEN with their controls, and the five module rows pass. Review found no blocking or required finding, and QA judged the evidence adequate ([K1 adequacy](../../tests/plan/s122-evidence-delta.md#k1--bounded-adequacy-2026-09-30)). Open: commit, the fresh final run (K4) and the user's Phase-5 acceptance |
 | Eval production follow-up | none selected | Open Binary/int source only if an approved live configuration proves the condition in §6 |
 
 `crates/cranelisp-exe-bundle/` remains inside the reservation and caller census,
@@ -485,9 +487,38 @@ QA owns the eval conditions and policy; `/test` owns the executable harness and
 remaining integrated evidence, while `/arch` owns the generated public API
 baseline confirmed by the user on 2026-09-11. `/dev` must return for design
 review only if the eval run proves the precise configuration gap in §6. The
-whole-file rebuild (§1) is the one open reload correction. The delivered
+whole-file rebuild and the reload next basket (§1) are delivered and
+QA-adequate. The delivered
 REPL-turn rematerialization, watcher correction and review, macro
 host/Q4, quote classifier, result-root, `/mem` and Q5 comparison need no second
 correction pass. The generated runtime diff is
 `/tmp/s122-runtime-public-api.diff`; it matches the approved packet and has user
 confirmation. Final integrated acceptance remains the completion gate.
+
+**Approved final disposition (user, 2026-09-30).** The user approved the
+fix-now basket K1–K4 and the carries K5–K11 of QA's
+[final disposition proposal](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30),
+which remains the canonical record of every item. Binary/int's share:
+
+- **Fix now.**
+  - K1, the batch missing entry (§1; `int.md` §6.1.1), is implemented,
+    reviewed and QA-adequate, uncommitted.
+  - K3, this surface's status records, is done. FIXME 0745 is retired, since
+    `src/result_owner.rs` releases every successful result. FIXME 0708 is
+    retired; its annotation-mirror tail is recorded in `int.md` §16.0, which
+    no filing tracks. The `dev`-targeted FIXMEs 0868 (resolved, deleted once
+    its inbound links move) and 0889 (narrowed to its unclassified
+    allocations, open) carry their own status.
+  - K4, the fresh final run on the committed tree, remains.
+- **Carried to S123**, with the source loci they touch in this surface:
+  - ACT-1015, ACT-1016 (Faces 1 and 2; `int.md` §6.11) and ACT-1017
+    (`int.md` §6.11, *Diagnostic as delivered*);
+  - K6 C2, the skipped non-entry `platform` form
+    (`src/process_form/platform.rs`);
+  - K8: P6 inside ACT-1005, and P8 (ACT-0994, cached load against a later
+    registration);
+  - K9: C5's int half (FIXME 0915), and C6's extern warning channel for
+    `discover-tests` (ACT-0986 item 1).
+
+The carries add no design here. Each is designed when its carried work
+resumes.

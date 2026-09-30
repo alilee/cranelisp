@@ -10,6 +10,8 @@ refers_to: tests/nullary_return_dispatch_method_only_import.rs;
   tests/agent.rs;
   tests/repl_persist.rs;
   tests/cache.rs;
+  tests/spec_10_io.rs;
+  crates/cranelisp-intrinsics/src/reactor.rs;
   tests/plan/s122-evidence-delta.md
 status: open
 ---
@@ -31,9 +33,10 @@ That shared condition does not make the members one defect.
 |---|---|---|
 | `nullary_return_dispatch_method_only_import::…_no_codegen_leak` (Class II, publication ordering) | clean compile diagnostic `codegen error at 14..15: undefined function: z` | S121 D1: 53/200 failures under twelve non-Cranelisp CPU workers, one Cranelisp subprocess, one signature. Host contention alone suffices; shared cache/tmpdir/`CRANELISP_LIB`/`user.cl` state is not required. Mechanism not yet demonstrated. |
 | `multi_sig_module_locality::imported_multi_sig_base_direct_call_repl` (Class II candidate) | one RED under load, output not captured | same seam family as the nullary member; unattributed |
-| `macro_expansion_interior_alias_double_free::macro_clause_interior_alias_double_free_run` (Class I, heap invariant) | glibc `free(): chunks in smallbin corrupted`, killed by signal | memory-safety event, not a flap; one S115 capture; not re-characterised since |
+| `macro_expansion_interior_alias_double_free::macro_clause_interior_alias_double_free_run` (Class I, heap invariant) | glibc `free(): chunks in smallbin corrupted`, killed by signal | memory-safety event, not a flap; one S115 capture. **S122 K2 (2026-09-30), not reproduced:** 600 runs under load, 200 in each arm (unarmed, `CRANELISP_RC_DEC_CHECK=1`, `CRANELISP_QUARANTINE_FREED=1`), plus a 20-run unloaded baseline. The load was 12 busy Python workers on 14 CPUs, with a 1-minute load average of 13.8–19.0 after a 40 s ramp. Runs used `nextest --stress-count`, serially, on source `f0d1006f…`; logs `.local/s122-final-test/class1-*.log` and `load.log`. Limits: scrub was not armed, and the `--link` and REPL faces and the single-threaded run were not exercised. Absence is neither attribution nor retirement |
 | `agent::y_short_flag_errors_on_non_agent_build`, `repl_persist::imported_trait_impl_survives_restart` (Class III) | one RED each under load, output not captured | unclassified |
 | `cache::cache_restores_sibling_written_trait_impls_for_dispatch` (inverse polarity) | an intended-RED guard passed once in an interleaved multi-binary run | intended REDs are verified per binary; unattributed |
+| `spec_10_io::resource_serial_diff_token_parallelizes` (unclassified, reactor) | panic `reactor suspended with no armed interest` (`reactor.rs`) | one S122 full-run capture (2026-09-24, `dev` observation 6); passed alone and in the next full run; fresh tempdir per run, so no cache state. Unattributed; no class assigned |
 
 ## Remaining obligation
 
@@ -51,13 +54,32 @@ That shared condition does not make the members one defect.
     The S122 allocation asks `qa` to reconcile this against the current Q1/Q7
     publication evidence: identify a surviving exact condition or seek an
     explicit residual disposition, not another speculative detector.
-- **Class I** owes its own characterisation under the armed diagnostic modes
-  and a single-threaded run at identical load. Absence under a perturbing
-  tool is not a fix.
-- **Class III and the inverse-polarity member** owe isolation-versus-load
-  characterisation with captured in-suite output.
+- **Class I.** The loaded, armed characterisation has not reproduced it (S122 K2
+  above). Still owed:
+  - the scrub mode;
+  - a single-threaded run at identical load;
+  - the `--link` and REPL faces.
+
+  The alternative is an explicit user-approved residual disposition. Absence
+  under a perturbing tool is not a fix.
+- **Class III, the inverse-polarity member and the reactor panic** owe
+  isolation-versus-load characterisation with captured in-suite output.
 - Tee every characterisation run; the D1 capture and binary hash are in Git
   history of this file.
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Class I is S122 work (K2).** One bounded `test` characterisation under
+  load with an armed allocator mode, recording run count and load. A confirmed
+  corruption returns to the user with its attribution for a fix decision.
+- **K2 result.** No corruption was confirmed, so nothing returns to the user
+  as a fix. Class I remains unattributed and has no approved package after K2.
+  `sprint` presents it to the user for a K10 carry beside the other members.
+- **Class II, Class III, the inverse-polarity member and the reactor panic
+  are carried to S123 (K10).** The prior deferral count is not recorded; the
+  filing has been open since S114.
 
 ## Closure
 

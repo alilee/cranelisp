@@ -6,8 +6,14 @@ filed_at: 2026-07-21
 sprint_filed: 115
 refers_to: tests/adt_wrapped_supersede_leak_0720.rs — an attribution ratified
   by a reduced repro that was never re-measured against the signal it explained
-status: open
+status: deferred
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11) into ACT-0962's coverage increment.** No deferral count is recorded.
 
 # An attribution that EXPLAINS a measured signal is not closed until the SIGNAL is re-measured
 

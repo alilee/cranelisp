@@ -138,13 +138,11 @@ impl CompilerSession {
     /// calling thread with runtime errors captured. A failure or panic does not
     /// stop the run. `main` is never called.
     ///
-    /// **Errors:** `Err` means the run could not start — an entry module with
-    /// no source file (§0.5.5), a program that references `discover-tests`
-    /// (§16.6), a readiness or load failure, or an unresolvable result-release
-    /// target — and no test has run. A failing or panicking test is never
-    /// `Err`.
+    /// **Errors:** `Err` means the run could not start — a program that
+    /// references `discover-tests` (§16.6), a readiness or load failure, or an
+    /// unresolvable result-release target — and no test has run. A failing or
+    /// panicking test is never `Err`.
     pub fn run_tests(&self) -> Result<TestRunReport, CranelispError> {
-        self.require_entry_source()?;
         crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
         let ready = self.shared.scheduler.wait_cached_loads_settled()?;
         let modules = self.selection_inputs().chain_modules()?;
@@ -164,31 +162,6 @@ impl CompilerSession {
         let start = std::time::Instant::now();
         let outcomes = execute(prepared);
         Ok(TestRunReport::new(outcomes, warnings, start.elapsed()))
-    }
-
-    /// A missing entry file registers as an empty module, which the REPL
-    /// accepts; a test run must instead name the missing file (§0.5.5).
-    fn require_entry_source(&self) -> Result<(), CranelispError> {
-        let has_source = self
-            .shared
-            .typecheck_products
-            .get(&self.entry_module)
-            .is_some_and(|product| product.file_path.is_some());
-        if has_source {
-            return Ok(());
-        }
-        let expected =
-            crate::pipeline::project_root_candidate(&self.entry_module, &self.shared.project_root);
-        Err(CranelispError::ModuleError {
-            message: format!(
-                "entry module source file `{}` does not exist",
-                expected.display()
-            ),
-            location: cranelisp_types::ErrorLocation::from_span_file(
-                cranelisp_types::Span::SYNTHETIC,
-                Some(expected),
-            ),
-        })
     }
 
     pub(crate) fn selection_inputs(&self) -> SelectionInputs<'_> {

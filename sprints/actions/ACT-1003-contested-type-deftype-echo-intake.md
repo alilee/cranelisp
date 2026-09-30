@@ -1,7 +1,7 @@
 ---
 id: ACT-1003
 title: Classify the missing constructor listing for a type whose name another type's constructor shares
-status: open
+status: deferred
 priority: advisory
 from: qa
 to: qa
@@ -14,12 +14,17 @@ refers_to:
   - repl/spec/01-display-format.md
 ---
 
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K5, N3).** First deferral.
+
 ## Request
 
 `qa` classifies this lead. It needs one discriminating probe, directed to
 `test`, before it becomes a defect or is dismissed. It is neither a blocker
-nor a reopening of
-[ACT-1002](ACT-1002-contested-type-name-constructor-pattern-intake.md).
+nor a reopening of ACT-1002 (fixed in `63605970`; retired 2026-09-30).
 
 ## Observation (unreduced, pre-ACT-1002-fix binary)
 

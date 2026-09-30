@@ -27,15 +27,17 @@ question.
   `harvest_only`) are the only legal shapes; the macro generates the exported
   wrapper, table entry, GOT population and shim harvest. Never hand-write an
   `#[unsafe(export_name)]` function; a source-structure guard rejects it.
-- Category modules hold crate-private bodies only. A body's parameter types
-  are the ABI kinds written in the row's `shim:` clause: scalar `i64`, `Owned`
-  for a consumed heap parameter, `Borrowed<'_>` only for a `ParamFlow::IntoResult`
-  parameter (design §2.4). Derive from `ParamFlow`, never `Mode`: the only-read
-  String rows declare `Mode::Borrowed` yet their bodies take `Owned`.
-- Discharge each `Owned` once through the intrinsics consume funnel
-  (`rc::consume_shallow`, `drop::consume_*`, which take `Owned`). The type
-  system rejects a double discharge; a missed one is a `#[must_use]` warning
-  and a debug drop bomb.
+- Category modules hold crate-private bodies only. A body's parameter and
+  result types are the ABI kinds written in the row's `shim:` clause, derived
+  from the declared type alone: scalar `i64` for `Int`/`Bool`/`Float`, `Owned`
+  for every heap-carried position (design §2.4). Neither `Mode` nor `ParamFlow`
+  selects a kind: the only-read String rows declare `Mode::Borrowed` and
+  `string-identity` declares `IntoResult`, yet their bodies take `Owned`. A
+  `Borrowed` token in a `shim:` clause does not compile.
+- Discharge each `Owned` parameter once through the intrinsics consume funnel
+  (`rc::consume_shallow`, `drop::consume_*`, which take `Owned`), or move it
+  into the result as `string-identity` does. The type system rejects a double
+  discharge; a missed one is a `#[must_use]` warning and a debug drop bomb.
 - Every user-callable row carries a finished `ModeSummary`. A row that borrows
   a parameter and may return it declares `MayAliasOf`, never `Fresh`
   (design §3.2), and gets an `ownership_facts/tests.rs` pin.

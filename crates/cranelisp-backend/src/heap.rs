@@ -991,16 +991,27 @@ pub(crate) fn compute_last_uses(
     use cranelisp_types::{Span, Symbol};
 
     let mut uses: HashMap<Symbol, Vec<Span>> = HashMap::new();
-    // Pure-SSA alias map (alias name -> ultimate root), built as `Let` bindings
-    // are traversed. A `(let [w v] …)` binding whose value is a bare `Var` makes
-    // `w` a SECOND handle on the SAME buffer as `v` (`compile_var` returns the
-    // local via `use_var` — no fresh allocation), so a use of `w` is ALSO a use
-    // of `v` for last-use purposes: the root must stay live until the alias's
-    // last use. Without this, `(let [w v v2 (vec-set v 0 99)] (vec-get w 0) …)`
-    // marks the `vec-set` as `v`'s last use ⇒ in-place COW mutation ⇒ the aliased
-    // `w` reads corrupted data (the discovered S103 defect,
-    // `tests/ownership_reuse.rs::l_c3_pure_ssa_alias_vec_set_preserves_value_semantics`,
-    // exit 198 vs the correct 109; `design/backend/ownership-codegen.md` §6.3).
+    // Uncounted-alias map (alias name -> ultimate root). An alias names its
+    // root's box without holding a reference, so a use of the alias is ALSO a
+    // use of the root: the root must stay live until the alias's last use, or a
+    // COW at the root's earlier use mutates in place under the alias
+    // (`design/backend/ring2-rc.md` §5.5). Two binders are aliases:
+    // - `(let [w v] …)`, a `let` value that is a bare `Var` (S103,
+    //   `tests/ownership_reuse.rs::l_c3_pure_ssa_alias_vec_set_preserves_value_semantics`);
+    // - `(match v [a …])`, a variable-pattern arm over a bare `Var` scrutinee
+    //   (S122, `design/backend/ownership-codegen.md` §13.3).
+    // The map is name-keyed and never scoped. A later NON-alias binder of the
+    // same name leaves its entry in place, which can only delay the root's last
+    // use — an in-place site becomes a copy, the safe direction. A later ALIAS
+    // binder of the same name over a different root OVERWRITES the entry: later
+    // uses of the still-live outer binder are credited to the new root, so the
+    // original root's last use can move EARLIER, and an in-place COW or
+    // consuming claim at that use can mutate or release a box the outer binder
+    // still views. That direction is uncorrected and departs from the
+    // slot-not-spelling invariant (`design/backend/binding-scope.md` "Purpose
+    // and invariant"). Falsifier: an outer alias read after an inner same-name
+    // alias over another root, where an earlier COW on the outer root then runs
+    // in place or consumes it while the outer alias still views the box.
     // Consumed by `record_var_use` at every `Var`/`Apply` occurrence.
     let mut aliases: HashMap<Symbol, Symbol> = HashMap::new();
     collect_var_uses(expr, &mut uses, &mut aliases);
@@ -1016,10 +1027,8 @@ pub(crate) fn compute_last_uses(
 }
 
 /// Record one variable occurrence at `span`, propagating it to the variable's
-/// pure-SSA alias root (if any). A `(let [w v] …)` binding registers `w -> v`
-/// in `aliases` (chains collapsed to the ultimate root at insertion), so a use
-/// of `w` counts as a use of BOTH `w` and `v` — the two share one buffer, so the
-/// root's live range must cover the alias's uses (see `compute_last_uses`).
+/// uncounted-alias root (if any; see `compute_last_uses`), so a use of an alias
+/// counts as a use of BOTH the alias and its root.
 fn record_var_use(
     name: &cranelisp_types::Symbol,
     span: cranelisp_types::Span,
@@ -1048,17 +1057,29 @@ fn collect_var_uses_nested_only(
     collect_var_uses(expr, uses, aliases);
 }
 
+/// Register `alias` as an uncounted alias of `src`'s root, collapsing chains
+/// (`(let [w v] (match w [a …]))` makes `a` an alias of `v`).
+fn register_alias(
+    alias: &cranelisp_types::Symbol,
+    src: &cranelisp_types::Symbol,
+    aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
+) {
+    let root = aliases.get(src).cloned().unwrap_or_else(|| src.clone());
+    aliases.insert(alias.clone(), root);
+}
+
 /// Collect all variable references in pre-order traversal.
 ///
-/// `aliases` threads the pure-SSA alias map (see [`compute_last_uses`]): `Let`
-/// bindings whose value is a bare `Var` add an `alias -> root` edge, and every
-/// `Var`/`Apply` occurrence propagates a use to the root via [`record_var_use`].
+/// `aliases` threads the uncounted-alias map (see [`compute_last_uses`]): a
+/// `let` value or match scrutinee that is a bare `Var` adds an `alias -> root`
+/// edge, and every `Var`/`Apply` occurrence propagates a use to the root via
+/// [`record_var_use`].
 fn collect_var_uses(
     expr: &cranelisp_types::MonoExpr,
     uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
     aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 ) {
-    use cranelisp_types::MonoExpr;
+    use cranelisp_types::{MonoExpr, Pattern};
 
     match expr {
         MonoExpr::Var { name, span, .. } => {
@@ -1067,12 +1088,8 @@ fn collect_var_uses(
         MonoExpr::Let { bindings, body, .. } => {
             for (name, val) in bindings {
                 collect_var_uses(val, uses, aliases);
-                // A pure-SSA alias binding `(name val)` where `val` is a bare
-                // `Var`: register `name -> root`, resolving `val`'s own alias so
-                // chains (`(let [w v x w] …)`) collapse to the ultimate root.
                 if let MonoExpr::Var { name: src, .. } = val {
-                    let root = aliases.get(src).cloned().unwrap_or_else(|| src.clone());
-                    aliases.insert(name.clone(), root);
+                    register_alias(name, src, aliases);
                 }
             }
             collect_var_uses(body, uses, aliases);
@@ -1130,6 +1147,13 @@ fn collect_var_uses(
         } => {
             collect_var_uses(scrutinee, uses, aliases);
             for arm in arms {
+                // A constructor-pattern binder is a projected field, not the
+                // scrutinee's box; a non-`Var` scrutinee roots no binding.
+                if let (Pattern::Var { name, .. }, MonoExpr::Var { name: src, .. }) =
+                    (&arm.pattern, scrutinee.as_ref())
+                {
+                    register_alias(name, src, aliases);
+                }
                 collect_var_uses(&arm.body, uses, aliases);
             }
         }

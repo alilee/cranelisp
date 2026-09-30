@@ -1,7 +1,7 @@
 ---
 id: ACT-0987
 title: Assess trait primitive identity and impl-method rigidity leads
-status: open
+status: deferred
 priority: required
 from: design
 to: qa
@@ -11,6 +11,12 @@ refers_to:
   - design/typecheck/traits.md
   - design/typecheck/inference.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K5, N3).** First deferral.
 
 ## Request
 

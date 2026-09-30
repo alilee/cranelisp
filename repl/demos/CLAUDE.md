@@ -81,12 +81,12 @@ released EXACTLY ONCE, in the same observe-then-release order in REPL, `--run`,
 and linked startup (`src/CLAUDE.md` §"Program-result ownership"). It works by
 `/mem` **snapshot** arithmetic: produce the same heap value several times and
 `allocs`/`deallocs` advance together while `live` does not move. Concrete
-shapes (a user product, a recursive tree, `(Some heap)`) are shown flat; the
-residual-type-parameter exception is then shown *growing*, side by side with
-the same value under a pinning annotation, and labelled as the filed defect it
-is rather than hidden. Every number the narration cites is exact against the
-live output, so a drift in either direction shows up as narration that no
-longer matches. It is deliberately outside the "demonstrate the language, not
+shapes (a user product, a recursive tree, `(Some heap)`) are shown flat, and
+then a result whose displayed type keeps a residual type parameter is shown
+equally flat beside the same value under a pinning annotation. It closes with
+`/mem <expr>`, whose per-expression delta reads `live +0` for a released
+value. Every number the narration cites is exact against the live output, so
+a drift in either direction shows up as narration that no longer matches. It is deliberately outside the "demonstrate the language, not
 the changelog" arc — its subject is the runtime ledger, not a language feature.
 Replay: `DEMO_FAST=1 ./repl/showcase memory-lifecycle`.
 

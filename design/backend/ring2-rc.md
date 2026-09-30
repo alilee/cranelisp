@@ -17,7 +17,7 @@
 
 | Question | Canonical home |
 |---|---|
-| The convention as a boundary rule, and the extern boundary | [bounded contexts](../arch/bounded-contexts.md) §3 invariant 2; §4b invariants 3, 5 and 6 |
+| The convention as a boundary rule, and the extern boundary | [bounded contexts](../arch/bounded-contexts.md) §3 invariant 2; §4a invariant 8; §4b invariants 3, 5 and 6 |
 | Heap word layouts and header | `spec/12-runtime.md` §12.1 (descriptive); the "Heap Object Layouts" and "Heap Classification" sections of [interfaces](../arch/interfaces.md); the offsets are the associated constants beside each `#[repr(C)]` layout, starting with `HeapHeader` in `crates/cranelisp-types/src/heap.rs` |
 | Why classification never sees a type variable | [concrete-boundary-type.md](../arch/concrete-boundary-type.md) §2 |
 | Release emission, drop glue, match scrutinee lifetimes, the TCO transfer predicate | [transitive-drop-glue.md](transitive-drop-glue.md) §4–§6 |
@@ -83,20 +83,26 @@ per-extern cost of releasing its own arguments is small and enumerable.
 
 ### 3.3 Extern consumption
 
-Every extern releases each heap argument it neither returns nor retains. For
-each heap parameter an extern author decides exactly one of:
+Every extern primary entry takes ownership of every heap argument, with no
+exception ([BC §4a invariant 8](../arch/bounded-contexts.md#4a-primitives--cratescranelisp-primitives)).
+For each heap parameter an extern author decides exactly one of:
 
 | Parameter fate | Extern obligation | Declared ownership fact |
 |---|---|---|
-| Flows out unchanged through the result | Return it; the caller's reference leaves with it | `AliasOf` |
-| Stored in a structure that outlives the call | Store the transferred reference, or increment into storage | `Retained` |
-| Only read | Release it before return; the caller adapts at the site when the analysis declares the read | `Borrowed` (analysis fact; the extern still consumes) |
+| Flows out unchanged through the result | Move that same reference into the result | `IntoResult`, with an `AliasOf` result |
+| Stored in a structure that outlives the call | Store the transferred reference | `Retained` |
+| Only read | Release it before return | `Borrowed` (an analysis fact only; the entry still consumes) |
 | Otherwise | Release it before return | `Consumed` |
 
 - The per-primitive record is the declaration row in
-  `crates/cranelisp-primitives/src/declarations.rs`: its shim signature types
-  each argument as owned or borrowed, and its ownership summary carries the
-  fact. There is no separate audit table to keep in step.
+  `crates/cranelisp-primitives/src/declarations.rs`: its shim signature takes
+  each heap argument owned, and its ownership summary carries the analysis
+  fact. There is no separate audit table to keep in step. `string-identity`
+  moves its argument into its result (ACT-0974, in the working tree,
+  uncommitted and awaiting user acceptance).
+- The backend derives every extern call's convention from the realization, not
+  from the declared fact
+  ([non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6).
 - Runtime helpers behind an extern are not bound by it; the extern entry is.
   `cranelisp_run_io` consumes the caller's tree while the trampoline it drives
   borrows that tree (§3.5).
@@ -196,6 +202,23 @@ Violating this lets COW mutate an aliased Vec in place, after which the owner's
 release frees it a second time. The Sprint 61 reduction
 `(consume (Box [0]))`, which read length `0`, is the pinned regression
 (`tests/regression.rs`).
+
+The converse also holds: **a use of an uncounted alias is a use of its root.**
+An alias is a binder that names the root's box without holding a reference.
+`compute_last_uses` records each of its uses against the root too, so the
+root's last use cannot come before the alias's. Two binders are such aliases:
+
+- **`let` forward.** `(let [w v] …)` makes `w` an alias of `v`. This dates
+  from S103; the pinned regression is
+  `ownership_reuse::l_c3_pure_ssa_alias_vec_set_preserves_value_semantics`.
+- **Variable-pattern arm.** In `(match v [a …])` with `v` a bare `Var`, `a` is
+  an alias of `v`. Adopted at S122; see
+  [ownership codegen](ownership-codegen.md) §13.3 "The consuming in-place COW
+  argument".
+
+The map is keyed by name, so a later unrelated binder of the same name can only
+delay a last use. That turns an in-place site into a copy, which is the safe
+direction.
 
 The ownership analysis treats both as inferred cases —
 `borrowed_vars` seeds borrow-through-projection

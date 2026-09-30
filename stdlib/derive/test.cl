@@ -1,7 +1,7 @@
 ;; derive/test.cl — self-tests for derive (module derive.test)
 ;;
-;; The CONSUMER module `plan-stdlib.md` §26.4 has specified since S87 and nobody
-;; built. The derive macros cannot be exercised from an inline `(mod test …)`
+;; The consumer module `plan-stdlib.md` §3.3 specifies. The derive macros
+;; cannot be exercised from an inline `(mod test …)`
 ;; body in `derive.cl` itself: a `defmacro` is available only to the forms that
 ;; FOLLOW it in the same module (spec §9.3.4), so a `(derive-Eq …)` call inside
 ;; derive.cl's own submodule forms fails at expansion. A SEPARATE module that
@@ -10,30 +10,11 @@
 ;;
 ;; USAGE CONTRACT exercised here: `derive-Eq`/`derive-Ord`/`derive-Display` take
 ;; a `deftype` sexp as their INTROSPECTION argument but do NOT define the type —
-;; the type must already exist. (The `derive` dispatch macro is the form that
-;; emits both, via `(begin <deftype> <derive-X calls>)`; that path is blocked by
-;; FIXME 0816 — an `impl` in the same `begin` as the `deftype` defining its
-;; target does not see it — so this module derives against pre-defined types.)
+;; the type must already exist, so this module derives against pre-defined types.
 ;;
-;; ── WHAT THIS MODULE DELIBERATELY DOES NOT COVER ──────────────────────
-;;
-;; The covered arities are exactly the arities that RUN. Everything else is
-;; blocked by FIXME 0835 (a heap-corruption defect in SList/Sexp construction,
-;; reproducible with no macro involved) and its derive-visible face FIXME 0815:
-;;
-;;   - constructors with 2+ FIELDS — all three macros kill the compiler process
-;;     outright, no diagnostic. Only single-field data constructors appear below.
-;;   - `derive-Ord` on a nullary enum with 3+ CONSTRUCTORS — macro-expansion
-;;     panic. `Flag` (2 ctors) carries the Ord cases; `Colour` (3 ctors) is
-;;     covered for Eq and Display ONLY, which is what makes the Ord ceiling a
-;;     genuine anomaly rather than a shared budget.
-;;
-;; Both ceilings were confirmed to be defects in BUILDING the impl, not in the
-;; impl built: hand-writing the exact expansion for both blocked shapes compiles
-;; and evaluates correctly. WIDEN THIS MODULE THE MOMENT 0835/0815 CLOSE — a
-;; 3-constructor `derive-Ord` case and a 2-field `Point` case across all three
-;; macros are the specific cells owed, and they are the reason to keep this
-;; header rather than quietly shipping the narrow set.
+;; NOT COVERED HERE: the `derive` dispatch form, two-field constructors, and
+;; `derive-Ord` on a three-constructor enum. The last two are covered by the
+;; `stdlib_derive_*` cases in `tests/stdlib_conformance.rs`.
 
 (import [super [derive-Eq derive-Ord derive-Display]])
 (import [testing.assertions [assert-eq assert-true assert-false]])
@@ -132,8 +113,7 @@
 (defn test-ord-enum-ge-false-when-less [] :(Option String)
   (assert-false (>= Off On)))
 
-;; Field order on a data constructor (single field — see the header for why the
-;; multi-field lexicographic case is not here).
+;; Field order on a single-field data constructor.
 (defn test-ord-data-field-decides [] :(Option String)
   (assert-true (< (Lvl 1) (Lvl 2))))
 

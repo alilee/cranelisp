@@ -8,11 +8,17 @@ refers_to: crates/cranelisp-backend/src/error.rs;
   crates/cranelisp-backend/src/drop_glue.rs;
   design/backend/non-concrete-release-contract.md §3.4, §7.2;
   design/int/int.md §9.1;
-  repl/spec/05-error-presentation.md;
-  sprints/actions/ACT-0958-rearm-failed-turn-recovery-coverage.md
-status: open
+  repl/spec/05-error-presentation.md
+status: deferred
 ruled_at: design/backend/non-concrete-release-contract.md §3.4 (R-4), §7.2
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K9, C5).** Owners: `design`(backend) and `design`(int).
+  Falsifier: any public codegen error. No deferral count is recorded.
 
 # A codegen-stage failure is presented with a `0..0` span, a doubled prefix and an internal subject
 
@@ -22,7 +28,7 @@ ruled_at: design/backend/non-concrete-release-contract.md §3.4 (R-4), §7.2
 located at the user's form, names its subject as the user would write it, and
 carries one located category prefix.
 
-## Current state (verified 2026-09-24)
+## Current state (backend loci re-verified 2026-09-30)
 
 In the S118 specimen, `codegen error at 0..0:` appeared twice and the subject
 rendered as the module-doubled, `$`-mangled instance of a user function
@@ -47,12 +53,14 @@ rendered as the module-doubled, `$`-mangled instance of a user function
   projection at `format_error` (`__expr` → the entered form, `f$T…` → `f`),
   a projection and never a resolver; the carrier symbol stays unchanged.
 - **Evidence.** Every public trigger of this frame was the since-delivered IO
-  refusal (FIXME 0907). The S122 private Q1/D1 fixture now yields a real
-  `CodegenFailed` at a prepared target but no public trigger exists;
-  ACT-0958 owns returning the public-testability decision to the user.
-  Once the frame lands, the contract's `/review` reject 7 applies.
+  refusal (FIXME 0907); no legitimate public trigger exists. The user's D1
+  ruling (2026-09-10) accepts the private failed-turn witness in
+  `src/worker/tests.rs` without public codegen-failure reachability. That
+  witness obtains a production `CodegenFailed` at a prepared target and checks
+  its module and symbol, not its presentation. Once the frame lands, the
+  contract's `/review` reject 7 applies.
 
 ## Closure
 
-Backend and int halves land with unit rows, and the evidence decision under
-ACT-0958 is recorded.
+Backend and int halves land with unit rows. If a public codegen error appears,
+it becomes this frame's public witness.

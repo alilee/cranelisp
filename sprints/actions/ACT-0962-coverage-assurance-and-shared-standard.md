@@ -1,7 +1,7 @@
 ---
 id: ACT-0962
 title: Establish trustworthy coverage reporting and converge through se-agentic
-status: open
+status: deferred
 priority: required
 from: sprint
 to: qa
@@ -13,6 +13,12 @@ refers_to:
   - tests/CLAUDE.md
   - .agents/skills/qa/SKILL.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11).** This action receives the evidence tails 0761, 0785, 0811, 0848, 0857, 0863, 0891, 0900, 0903, 0929, 0931 and 0747, and QA's L-B1 corpus decision. It was already a user deferral in S122, so this is a repeat carry, approved with the package; no count is otherwise recorded.
 
 ## Request
 

@@ -1504,7 +1504,7 @@ fn assert_impl_registers_beside_box_accessor(trait_name: &str, method: &str) {
 // `Box.v` and neither replaces the other. RED before the S122 fix (ACT-0983):
 // the impl was rejected as colliding with the accessor.
 // Control: impl_method_with_distinct_name_registers_beside_accessor.
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::check_impl_method_accessor_collisions found=S122 owner=/dev fixed=S122
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::check_impl_method_accessor_collisions found=S122 owner=/dev fixed=S122/63605970
 // The locus was deleted by the fix: registration no longer consults the
 // target's field accessors, and the shared bare spelling is resolved per use
 // (impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg).

@@ -18,12 +18,11 @@
 //!
 //! ## Consuming convention (Decision 24)
 //!
-//! The generated extern wrappers consume every heap argument they do not
-//! return. The bodies here state that by type: a consumed argument arrives as
-//! `Owned` and is discharged exactly once through the intrinsics consume
-//! funnel (`rc::consume_shallow`, `drop::consume_*`); `string-identity`, the
-//! one retained argument, arrives as `Borrowed` (design
-//! `design/primitives/primitives.md` §2.4).
+//! The generated extern wrappers take ownership of every heap argument. The
+//! bodies here state that by type: each heap argument arrives as `Owned` and
+//! is either discharged exactly once through the intrinsics consume funnel
+//! (`rc::consume_shallow`, `drop::consume_*`) or, in `string-identity`, moved
+//! into the result (design `design/primitives/primitives.md` §2.4).
 
 use cranelisp_intrinsics::handle::{Borrowed, Owned};
 use cranelisp_intrinsics::heap_string::{HeapString, alloc_string};
@@ -137,10 +136,10 @@ pub(crate) fn str_len(s: Owned) -> i64 {
     len
 }
 
-/// Identity function for strings — increments RC and returns the same pointer.
-/// Used when a string value needs to be shared (creates a new reference).
-pub(crate) fn string_identity(s: Borrowed<'_>) -> Owned {
-    s.to_owned()
+/// Identity function for strings: moves the argument's owner into the result,
+/// as its `AliasOf(0)` declaration states.
+pub(crate) fn string_identity(s: Owned) -> Owned {
+    s
 }
 
 /// Extract a substring from `start` (inclusive) to `end` (exclusive), clamping

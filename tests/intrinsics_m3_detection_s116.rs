@@ -45,6 +45,12 @@
 // full stdlib prelude. It is ACCEPTED for now and recovered in a future sprint;
 // its magnitude is fenced by `tests/macro_turn_marshal_leak_0889.rs`.
 //
+// S122 UPDATE. The macro-turn share is fixed: the marshaller transfers single-
+// owner trees and a successful expansion discharges its result once, and the
+// `macro_turn_marshal_leak_0889.rs` cells now assert balance. A cold stdlib
+// session still ends with 46 unclassified allocations (FIXME 0889, Q5), so the
+// ambient imbalance, and the marginal statement below, remain.
+//
 // The clean control below is therefore retrofitted onto MARGINAL accounting
 // (`helpers::marginal`): it now measures this child against a same-prelude,
 // same-env, no-workload child and asserts the DIFFERENCE. That is what the
@@ -129,12 +135,12 @@ fn m3_parity_catches_injected_imbalance() {
 // Stated MARGINALLY (see the header): the clean child's alloc-parity ledger is
 // compared to a same-prelude, same-env child with no workload, and the
 // difference must be exactly zero — nothing this child allocates survives it,
-// and it over-frees nothing either. The ambient FIXME-0889 macro-turn residual
-// is present in both ledgers and cancels; it is not this child's, not 0848's,
-// and not 0745's. The two `is_some()` legs preserve the original "exits
-// normally" contract in the only form that is checkable while 0889 stands, and
-// they tighten back to it automatically once 0889 lands (both children then exit
-// 0 and the second leg asserts it).
+// and it over-frees nothing either. The ambient stdlib-session residual (FIXME
+// 0889) is present in both ledgers and cancels; it is not this child's, not
+// 0848's, and not 0745's. The two `is_some()` legs preserve the original "exits
+// normally" contract in the only form that is checkable while that residual
+// stands, and they tighten back to it automatically once it is gone (both
+// children then exit 0 and the second leg asserts it).
 // spec: design/intrinsics/diagnostic-modes.md §7.3 — clean M3 child control.
 #[test]
 fn m3_parity_clean_child_exits_normally_control() {
@@ -164,7 +170,7 @@ fn m3_parity_clean_child_exits_normally_control() {
         m.report()
     );
     if m.control().exit_code().is_some() {
-        // The ambient imbalance is gone (0889 fixed) — the original contract.
+        // The ambient imbalance is gone — the original contract.
         assert_eq!(
             m.subject().exit_code(),
             Some(0),

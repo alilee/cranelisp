@@ -12,9 +12,11 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, FQTypeName, Life,
-    ModeSummary, ModuleFullPath, Span, Symbol, SymbolTable, Type, TypeDefInfo,
+    Binding, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation, FQSymbol,
+    FQTypeName, Life, ModuleFullPath, Span, Symbol, SymbolTable, Type, TypeDefInfo,
 };
+
+use super::entry_convention::EntryConvention;
 
 /// A single field of a constructor, as reconstructed for backend codegen.
 ///
@@ -190,7 +192,8 @@ where
     /// callers discriminate on its `DefKind` — got-slot dispatch via
     /// `callable_got_slot()`, platform/poll via `DefKind::PlatformEffect`,
     /// extern via `DefKind::PrimitiveExtern`, ctor via `DefKind::Constructor`,
-    /// ownership summary via `mode_summary()`, arity via `param_names`.
+    /// arity via `param_names`. The entry convention is read through
+    /// [`Self::entry_convention_at`] instead, without cloning the entry.
     ///
     /// Carrier-miss (a `None` `resolved_target` on a table-reference kind) or
     /// entry-miss (`Some(fq)` that fetches nothing here) is a hard
@@ -253,13 +256,25 @@ where
         })
     }
 
-    /// S15 (wrapper return-protection summary) kind arm: the callee's ownership
-    /// [`ModeSummary`] read off the fetched entry. Replaces the
-    /// `resolve_callee_summary` value-site reach. `None` ⇒ the Decision-24
-    /// conservative point (no summary carried).
-    pub(crate) fn callee_summary_at(&self, fq: &FQSymbol) -> Option<ModeSummary> {
-        self.entry_at(fq)
-            .and_then(|(_, e)| e.mode_summary().cloned())
+    /// The entry convention of the callable a call site keyed as `fq`; an
+    /// absent carrier or a key with no callable arm derives the no-entry row.
+    pub(crate) fn entry_convention_at(&self, fq: Option<&FQSymbol>) -> EntryConvention {
+        match fq {
+            Some(fq) => self.entry_convention_of(&CallableTarget::Binding(fq.clone())),
+            None => EntryConvention::of::<C>(None),
+        }
+    }
+
+    /// The entry convention of the selected callable arm `target`.
+    pub(crate) fn entry_convention_of(&self, target: &CallableTarget) -> EntryConvention {
+        let table = crate::callable_target_owner(target)
+            .and_then(|owner| self.symbol_tables.get(&owner.module));
+        EntryConvention::of(
+            table
+                .as_deref()
+                .and_then(|table| table.callable_target(target))
+                .map(|arm| &arm.life),
+        )
     }
 
     /// Whether the resolved entry is a slotless inline primitive. The Vec

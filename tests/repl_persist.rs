@@ -1750,7 +1750,7 @@ fn assert_replacement_persists_through_restart(define: fn(i64) -> String) {
 // with it (§18.4). RED when authored (S122, ACT-0970): the file keeps the first
 // body `(quasiquote 1)`; restart yields 1 and the batch program exits 8, not
 // 107. Control: persist_function_replacement_persists_through_restart.
-// defect: class=partial-record-update locus=src/process_form/form_dispatch.rs::record_macro_introspection found=S122 owner=/dev fixed=S122
+// defect: class=partial-record-update locus=src/process_form/form_dispatch.rs::record_macro_introspection found=S122 owner=/dev fixed=S122/63605970
 // The macro writer set the introspection `sexp` only when absent, so after the
 // replacement `/source k` showed the new text while `/sexp k`, which save
 // emits, still showed the first body. The writer now replaces the record.
@@ -1783,7 +1783,7 @@ const DECLS: [&str; 3] = [
 // function, and the cold restart reports `undefined variable: weigh`. Control
 // differing only in declaration kind:
 // persist_bug0220_cache_restored_userfns_survive_repl_edit_regen.
-// defect: class=enumeration-miss locus=src/save.rs::rehydrate_userfn_introspection_from_source found=S122 owner=/dev fixed=S122
+// defect: class=enumeration-miss locus=src/save.rs::rehydrate_userfn_introspection_from_source found=S122 owner=/dev fixed=S122/63605970
 // Save renders these kinds only from introspection, which cache restore left
 // empty and the rehydrator refilled only for plain callables. That seam is
 // gone; read `src/save.rs::rehydrate_introspection_from_source`, which covers
@@ -1851,7 +1851,7 @@ fn persist_cache_restored_declarations_survive_repl_edit_regen() {
 // them. Control differing only in declaration kind: `keep`, a function loaded
 // from the same file. RED before the fix (S122, PC-1): the regenerated file
 // held `keep` and `added` but none of the three declarations.
-// defect: class=enumeration-miss locus=src/save.rs::rehydrate_userfn_introspection_from_source found=S122 owner=/dev fixed=S122
+// defect: class=enumeration-miss locus=src/save.rs::rehydrate_userfn_introspection_from_source found=S122 owner=/dev fixed=S122/63605970
 // A fresh load wrote no declaration record, and the rehydrator refilled only
 // plain callables. That seam is gone; read
 // `src/save.rs::rehydrate_introspection_from_source`, which covers every kind.
@@ -1994,7 +1994,7 @@ fn assert_spanning_begin_written_once(session: e2e::CrOutput) {
 // impl sections is regenerated as the one form the user typed. PC-8, REPL leg.
 // RED before the S122 F2 fix: the file held the `begin` twice; the cold
 // restart still gave 41 and 1.
-// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122
+// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122/63605970
 // The shared-authored-form dedup (design §1.4) was scoped to
 // `generate_fns_and_macros`, so the type and impl sections each rendered the
 // shared `begin`.
@@ -2018,7 +2018,7 @@ fn persist_repl_begin_spanning_sections_written_once() {
 // entered at the REPL, is regenerated once. PC-8, seeded-file leg. RED before
 // the S122 F2 fix: the file held the `begin` twice; the cold restart still gave
 // 41 and 1.
-// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122
+// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122/63605970
 // As for the REPL leg; `rehydrate_introspection_from_source` records the outer
 // `begin` under each member, which is the shape §1.4 dedups.
 #[test]
@@ -2494,7 +2494,7 @@ fn persist_live_deftype_adding_product_field_rejected_and_not_written_neg() {
 // `x` was compiled against the `Int` constructor, so a wrong accept would read
 // the `Int` payload under the `String` layout. RED when authored (S122): the
 // redefinition was accepted, and `(T.v (x))` ended the process with SIGSEGV.
-// defect: class=wrong-accept locus=src/redefine.rs::validate_guarded_redefinition found=S122 owner=/dev fixed=S122
+// defect: class=wrong-accept locus=src/redefine.rs::validate_guarded_redefinition found=S122 owner=/dev fixed=S122/63605970
 #[test]
 fn persist_live_deftype_changing_field_type_rejected_and_not_written_neg() {
     // Turns: 1 T, 2 x, 3 redefinition, 4 (T.v (x)), 5 (T.v (T 7)), 6 other.
@@ -2625,7 +2625,7 @@ fn assert_reloaded_declaration_persists(
 // transposed from a field-type edit that §14.8 now refuses. That field-type
 // form was RED before the fix (S122, PR-3): the reload succeeded, but defining
 // `h` wrote the old `T` over the edit. This docstring form was not observed RED.
-// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev fixed=S122 — the record writer recorded only functions, so a successful reload left the prior generation's declaration record to be regenerated
+// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev fixed=S122/63605970 — the record writer recorded only functions, so a successful reload left the prior generation's declaration record to be regenerated
 #[test]
 fn persist_reloaded_docstring_edit_of_repl_entered_type_survives_regeneration() {
     assert_reloaded_declaration_persists(
@@ -2647,7 +2647,7 @@ fn persist_reloaded_docstring_edit_of_repl_entered_type_survives_regeneration() 
 // limit). RB-2(b), file-loaded route. Transposed as the REPL-entered cell: the
 // field-type form was RED before the fix (S122, PR-3); this docstring form was
 // not observed RED.
-// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev fixed=S122 — the record writer recorded only functions, so a successful reload left the prior generation's declaration record to be regenerated
+// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev fixed=S122/63605970 — the record writer recorded only functions, so a successful reload left the prior generation's declaration record to be regenerated
 #[test]
 fn persist_reloaded_docstring_edit_of_file_loaded_type_survives_regeneration() {
     assert_reloaded_declaration_persists(
@@ -2832,7 +2832,7 @@ fn watch_imported_type_field_reorder_fails_requiring_restart() {
 // regenerates the file with `g` and `k` and without `h`. RM-1 (ACT-1007).
 // The prepared commit published the names the source defined and retired no
 // omitted one, so `h` stayed callable, listed by `/sig` and written back.
-// defect: class=partial-record-update locus=src/worker.rs::finish_prepared_commit found=S122 owner=/dev
+// defect: class=partial-record-update locus=src/worker.rs::finish_prepared_commit found=S122 owner=/dev fixed=S122/e4062202 — fixed by the whole-file rebuild (design/int/session-transaction.md §7.3.1)
 #[test]
 fn persist_definition_removed_by_save_is_not_callable_or_rewritten() {
     // Turns: 1 (h), 2–4 save, 5 (h), 6 /sig h, 7 (g), 8 (defn k).
@@ -2887,7 +2887,7 @@ fn persist_definition_removed_by_save_is_not_callable_or_rewritten() {
 // give 2. RM-2 (ACT-1007).
 // `lib` kept `h`, so the importer reloaded (`[updated: user.cl]`) and `(h)`
 // still gave 2: RM-1's retention seen across an import.
-// defect: class=partial-record-update locus=src/worker.rs::finish_prepared_commit found=S122 owner=/dev
+// defect: class=partial-record-update locus=src/worker.rs::finish_prepared_commit found=S122 owner=/dev fixed=S122/e4062202 — fixed by the whole-file rebuild (design/int/session-transaction.md §7.3.1)
 #[test]
 fn watch_definition_removed_from_imported_file_fails_its_importer() {
     // Turns: 1 (h), 2–4 save, 5 (h).
@@ -2928,10 +2928,9 @@ fn watch_definition_removed_from_imported_file_fails_its_importer() {
 // `h` omitted by the same save is the control. repl/spec/15-session-persistence.md
 // §15.1 — the next definition regenerates the file without `id`. RM-3
 // (ACT-1007 G1).
-// DEFECT (open): the types planner accepts an absent-key removal only for a
-// slotted binding, so the slotless generic `id` stays callable, listed and
-// written back.
-// defect: class=partial-record-update locus=crates/cranelisp-types/src/module.rs::plan_staged_publication found=S122 owner=/dev
+// The types planner accepted an absent-key removal only for a slotted binding,
+// so the slotless generic `id` stayed callable, listed and written back.
+// defect: class=partial-record-update locus=crates/cranelisp-types/src/module.rs::plan_staged_publication found=S122 owner=/dev fixed=S122/e4062202 — fixed by the whole-file rebuild (design/int/session-transaction.md §7.3.1)
 #[test]
 fn persist_generic_definition_removed_by_save_is_not_callable_or_rewritten() {
     // Turns: 1 (id 5), 2–4 save, 5 (h), 6 (id 5), 7 /sig id, 8 (defn k).
@@ -2983,10 +2982,9 @@ fn persist_generic_definition_removed_by_save_is_not_callable_or_rewritten() {
 // no `[errors:`) and step 2 retires both: `/sig wrap` and `/sig h` report them
 // undefined. §14.5 — the save did not fail, so the module is not locked:
 // `(g)` gives 1 and a definition is accepted. RM-4 (ACT-1007 G2).
-// DEFECT (open): the referer scan reads the callees of the surviving generic
-// `wrap`, refuses the compiling save as naming the removed `h`, and locks the
-// module.
-// defect: class=wrong-reject locus=src/worker.rs::refuse_removed_referers found=S122 owner=/dev
+// The referer scan read the callees of the surviving generic `wrap`, refused
+// the compiling save as naming the removed `h`, and locked the module.
+// defect: class=wrong-reject locus=src/worker.rs::refuse_removed_referers found=S122 owner=/dev fixed=S122/e4062202 — retired with the removal list; the whole-file rebuild (design/int/session-transaction.md §7.3.1) has no referer scan
 #[test]
 fn persist_save_omitting_generic_caller_and_its_callee_reloads_unlocked() {
     // Turns: 1 (h), 2–4 save, 5 (g), 6 (defn k), 7 /sig wrap, 8 /sig h.
@@ -3039,9 +3037,9 @@ fn persist_save_omitting_generic_caller_and_its_callee_reloads_unlocked() {
 // (ACT-1007 G1 across an import).
 // The types planner accepted an absent-key removal only for a slotted binding,
 // so `lib` kept the slotless generic `id`, the importer reloaded and `(call)`
-// still gave 5. The omitted import this save leaves behind is ACT-1012's,
+// still gave 5. The omitted import this save left behind was ACT-1012's,
 // observed by `persist_import_omitted_by_save_is_not_in_scope_or_rewritten`.
-// defect: class=partial-record-update locus=crates/cranelisp-types/src/module.rs::plan_staged_publication found=S122 owner=/dev
+// defect: class=partial-record-update locus=crates/cranelisp-types/src/module.rs::plan_staged_publication found=S122 owner=/dev fixed=S122/e4062202 — fixed by the whole-file rebuild (design/int/session-transaction.md §7.3.1)
 #[test]
 fn watch_generic_removed_from_imported_file_fails_importer_until_its_save() {
     // Turns: 1 (call), 2–4 save lib, 5 (call), 6–8 save user, 9 (k),
@@ -3158,9 +3156,9 @@ fn check_import_session_frame(legs: &mut Legs, out: &e2e::CrOutput, t: &[&str]) 
 // throughout. repl/spec/15-session-persistence.md §15.1 — the next definition
 // regenerates the file without the import. ACT-1012 C2; the kept-import twin is
 // `persist_import_kept_by_save_stays_in_scope_and_is_written_once_control`.
-// DEFECT (open): the reload keeps the omitted import, so `id` stays listed and
-// bare-resolvable, and regeneration writes the import back.
-// defect: class=partial-record-update locus=src/process_form/form_dispatch.rs::record_imports_on_symbol_table found=S122 owner=/dev — provisional until design places the mechanism
+// The reload kept the omitted import, so `id` stayed listed and
+// bare-resolvable, and regeneration wrote the import back.
+// defect: class=partial-record-update locus=src/process_form/form_dispatch.rs::record_imports_on_symbol_table found=S122 owner=/dev fixed=S122/e4062202 — the whole-source reload appended to the prior table's record and never reset it; fixed by the whole-file rebuild's fresh table (design/int/session-transaction.md §7.3.1)
 #[test]
 fn persist_import_omitted_by_save_is_not_in_scope_or_rewritten() {
     let out = import_session_after_user_save("(defn k [] 3)");
@@ -3630,9 +3628,9 @@ fn watch_qualified_type_dependent_locked_until_its_module_compiles() {
 // the turn is rejected or the source retained. §14.5 item 5 — control: the
 // same failing `lib.cl` produced by an in-session save locks the module, and
 // the same turns keep the file. M1 (ACT-1010).
-// DEFECT (open): the startup-failed dependency is not locked, so the turns
-// regenerate `lib.cl` as `(defn z [] 1)` and the failing source is lost.
-// defect: class=release-path-bypass locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev — provisional until design places the mechanism
+// The startup-failed dependency was not locked, so the turns regenerated
+// `lib.cl` as `(defn z [] 1)` and the failing source was lost.
+// defect: class=release-path-bypass locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev fixed=S122/e4062202
 #[test]
 fn persist_mod_definition_keeps_dependency_source_failed_at_startup() {
     const USER: &str = "(import [lib [keep-me]])\n(defn g [] 1)\n";
@@ -3682,5 +3680,1059 @@ fn persist_mod_definition_keeps_dependency_source_failed_at_startup() {
          --- startup failure ---\n{}\nlib.cl at exit:\n{startup_lib}",
         transcript(&in_session),
         transcript(&startup)
+    ));
+}
+
+// =============================================================================
+// §14.2 step 4, §14.6 — fixing a dependency recompiles its dependents, however
+// the dependency came to fail
+// =============================================================================
+
+const CHAIN_BASE_FAILING: &str = "(defn b [] (undefined-name 1))";
+const CHAIN_BASE_FIXED: &str = "(defn b [] 7)";
+
+/// The import chain `user` → `lib` → `base`, in which `base.cl` fails and is
+/// then fixed by a save. `failed_at_startup` selects whether `base.cl` fails
+/// when the session loads it or through an earlier save in the session.
+/// Returns the output and the turn of the `(f)` that follows the fix; the
+/// `(f)` four turns earlier precedes the fix, the fix's save occupies the
+/// three turns between, and `(defn k [] 3)` follows it.
+fn chain_fixed_after_dependency_failure(failed_at_startup: bool) -> (e2e::CrOutput, usize) {
+    let (initial_base, fail_in_session) = if failed_at_startup {
+        (CHAIN_BASE_FAILING, String::new())
+    } else {
+        (
+            CHAIN_BASE_FIXED,
+            format!("(f)\n{}", save("base.cl", CHAIN_BASE_FAILING)),
+        )
+    };
+    let out = Cranelisp::new()
+        .file("base.cl", &format!("{initial_base}\n"))
+        .file("lib.cl", "(import [base [b]])\n(defn f [] (b))\n")
+        .user("(import [lib [f]])\n(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "{fail_in_session}(f)\n{}(f)\n(defn k [] 3)\n/quit\n",
+            save("base.cl", CHAIN_BASE_FIXED)
+        ))
+        .output();
+    let after_fix = fail_in_session.lines().count() + 5;
+    (out, after_fix)
+}
+
+/// The legs both chain cells share: `(f)` is refused while `base` fails, and
+/// the fix recompiles `base` and both of its dependents, so `(f)` gives 7.
+fn check_chain_released_by_fix(legs: &mut Legs, t: &[&str], after_fix: usize) {
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let notice = save_notice(t, after_fix - 3);
+    legs.check(
+        !turn(after_fix - 4).contains(":primitives/Int 7"),
+        "precondition: `(f)` is refused while `base` fails",
+    );
+    legs.check(
+        notice.contains("[updated: base.cl]"),
+        "the fixing save reloads: `[updated: base.cl]`",
+    );
+    legs.check(
+        notice.contains("[updated: lib.cl]") && notice.contains("[updated: user.cl]"),
+        "the fix recompiles the dependents: `[updated: lib.cl]` and `[updated: user.cl]`",
+    );
+    legs.check(
+        turn(after_fix).contains(":primitives/Int 7"),
+        "the released dependents evaluate: `(f)` gives 7",
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 4: `base.cl` fails when the
+// session loads it, and the save that fixes it recompiles its importer `lib`
+// and `lib`'s importer `user`, reporting `[updated:]` for all three files.
+// §14.6 — the fix clears the dependents' errors, so `(f)` gives 7 without a
+// save of `lib.cl` or `user.cl`. §15.2.3 — the recompiled `user` then accepts
+// `(defn k [] 3)` and regenerates `user.cl` with its import once: a release
+// without the rebuild would keep the import retained from the startup failure
+// and write it twice. ACT-1011; the control
+// `watch_fix_of_dependency_failed_in_session_recompiles_its_dependents_control`
+// differs only in when `base.cl` failed.
+// DEFECT (open): the fix reports only `[updated: base.cl]`; `lib` and `user`
+// are not recompiled and `(f)` stays refused as their modules have errors.
+// defect: class=enumeration-miss locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev — provisional: at e4062202 the reload plan's edge graph (src/session_v4/lifecycle.rs::reload_edge_graph) holds no edge for a module that failed at startup
+#[test]
+fn watch_fix_of_dependency_failed_at_startup_recompiles_its_dependents() {
+    let (out, after_fix) = chain_fixed_after_dependency_failure(true);
+    let t = turns(&out.stdout);
+    let mut legs = Legs::default();
+    legs.check(
+        t.first()
+            .is_some_and(|startup| startup.contains("[errors:")),
+        "precondition: startup reports the load failure",
+    );
+    check_chain_released_by_fix(&mut legs, &t, after_fix);
+    let saved = out.read_tmp("user.cl");
+    legs.check(
+        t.get(after_fix + 1)
+            .is_some_and(|turn| turn.contains("user/k")),
+        "the released `user` accepts `(defn k [] 3)`",
+    );
+    legs.check(
+        saved.matches("(import [lib [f]])").count() == 1,
+        "user.cl holds `(import [lib [f]])` exactly once",
+    );
+    legs.assert_all(&format!("{}\nuser.cl at exit:\n{saved}", transcript(&out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 4: `base.cl` compiles at
+// startup and fails through a save, and the save that fixes it recompiles
+// `lib` and `user`. §14.6 — the fix clears their errors and `(f)` gives 7.
+// ACT-1011's control for
+// `watch_fix_of_dependency_failed_at_startup_recompiles_its_dependents`.
+#[test]
+fn watch_fix_of_dependency_failed_in_session_recompiles_its_dependents_control() {
+    let (out, after_fix) = chain_fixed_after_dependency_failure(false);
+    let t = turns(&out.stdout);
+    let mut legs = Legs::default();
+    legs.check(
+        t.get(1)
+            .is_some_and(|turn| turn.contains(":primitives/Int 7")),
+        "precondition: `(f)` gives 7 before `base.cl` fails",
+    );
+    legs.check(
+        !error_blocks(&out, "base.cl").is_empty(),
+        "precondition: the failing save reports `[errors: base.cl]`",
+    );
+    check_chain_released_by_fix(&mut legs, &t, after_fix);
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 4: a save of `user.cl`
+// adds `(import [c [x]])` while `c.cl` fails, so `user` fails through it; the
+// save that fixes `c.cl` recompiles `user`, reporting `[updated: user.cl]`.
+// §14.6 — the fix clears `user`'s error: `(g)` gives 9 and `(defn k [] 2)` is
+// accepted, and the regenerated `user.cl` holds the import exactly once.
+// ACT-1011.
+// At e4062202 the fix reported only `[updated: c.cl]`, and `user` stayed
+// refused as a module with errors.
+// defect: class=enumeration-miss locus=src/session_v4/lifecycle.rs::reload_edge_graph found=S122 owner=/dev
+#[test]
+fn watch_fix_of_module_newly_imported_by_failing_save_recompiles_importer() {
+    // Turns: 1 `(g)`, 2–4 save of user.cl, 5 `(g)`, 6–8 save of c.cl,
+    // 9 `(g)`, 10 `(defn k [] 2)`.
+    let out = Cranelisp::new()
+        .file("c.cl", "(defn x [] (nope))\n")
+        .user("(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "(g)\n{}(g)\n{}(g)\n(defn k [] 2)\n/quit\n",
+            save("user.cl", "(import [c [x]]) (defn g [] (x))"),
+            save("c.cl", "(defn x [] 9)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let notice = save_notice(&t, 6);
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the saves",
+    );
+    legs.check(
+        !error_blocks(&out, "user.cl").is_empty() && !turn(5).contains(":primitives/Int"),
+        "precondition: the save of user.cl fails through `c`, and `(g)` is refused",
+    );
+    legs.check(
+        notice.contains("[updated: c.cl]") && notice.contains("[updated: user.cl]"),
+        "the fix of c.cl reports `[updated: c.cl]` and `[updated: user.cl]`",
+    );
+    legs.check(turn(9).contains(":primitives/Int 9"), "`(g)` gives 9");
+    legs.check(turn(10).contains("user/k"), "`(defn k [] 2)` is accepted");
+    legs.check(
+        saved.matches("(import [c [x]])").count() == 1,
+        "user.cl at exit holds `(import [c [x]])` exactly once",
+    );
+    legs.assert_all(&format!("{}\nuser.cl at exit:\n{saved}", transcript(&out)));
+}
+
+/// `lib.cl` (`lib_source`) fails at startup in its own source against
+/// `base.cl` (`base_before`); `user` imports `f` from `lib`. A save of
+/// `base.cl` as `base_after` removes the failure. Turns: 1 `(g)`, 2–4 save,
+/// 5 `(g)`, 6 `(lib/f)`.
+fn own_source_failure_then_dependency_save(
+    base_before: &str,
+    lib_source: &str,
+    base_after: &str,
+) -> e2e::CrOutput {
+    Cranelisp::new()
+        .file("base.cl", &format!("{base_before}\n"))
+        .file("lib.cl", &format!("{lib_source}\n"))
+        .user("(import [lib [f]])\n(defn g [] (f))\n")
+        .repl()
+        .stdin(&format!(
+            "(g)\n{}(g)\n(lib/f)\n/quit\n",
+            save("base.cl", base_after)
+        ))
+        .output()
+}
+
+/// `base`'s `b` takes one parameter, which `lib` omits; the save drops it.
+const ONE_PARAMETER_B: &str = "(defn b [x] x)";
+const NULLARY_B: &str = "(defn b [] 7)";
+
+/// The legs every own-source twin shares: startup reports `lib`'s failure,
+/// whose text contains `startup_fault`, and the save of `base.cl` recompiles
+/// `lib` and `user`, which then evaluate.
+fn own_source_failure_released_legs(out: &e2e::CrOutput, startup_fault: &str) -> Legs {
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let notice = save_notice(&t, 2);
+    let mut legs = Legs::default();
+    legs.check(
+        t.first()
+            .is_some_and(|startup| startup.contains("[errors:") && startup.contains(startup_fault)),
+        "precondition: startup reports `lib`'s own-source failure",
+    );
+    legs.check(
+        !turn(1).contains(":primitives/Int"),
+        "precondition: `(g)` is refused before the save",
+    );
+    legs.check(
+        notice.contains("[updated: base.cl]"),
+        "precondition: the save reloads: `[updated: base.cl]`",
+    );
+    legs.check(
+        notice.contains("[updated: lib.cl]") && notice.contains("[updated: user.cl]"),
+        "the save recompiles the dependents: `[updated: lib.cl]` and `[updated: user.cl]`",
+    );
+    legs.check(turn(5).contains(":primitives/Int 7"), "`(g)` gives 7");
+    legs.check(turn(6).contains(":primitives/Int 7"), "`(lib/f)` gives 7");
+    legs
+}
+
+fn assert_own_source_failure_released_by_dependency_save(out: &e2e::CrOutput) {
+    own_source_failure_released_legs(out, "arity").assert_all(&transcript(out));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 4: `lib.cl` fails at
+// startup in its own source against `base`, which it imports; a save of
+// `base.cl` that makes the call type-correct recompiles `lib` and its importer
+// `user`, and `(g)` and `(lib/f)` give 7. ACT-1011; the twin
+// `watch_dependency_save_recompiles_qualified_caller_failed_at_startup_in_own_source`
+// reaches `base` by a qualified reference. The sibling
+// `watch_fix_of_dependency_failed_at_startup_recompiles_its_dependents` has
+// the dependency itself fail.
+// DEFECT (open): the save reports only `[updated: base.cl]`, and `lib` and
+// `user` stay refused as modules with errors.
+// defect: class=enumeration-miss locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev — provisional: the startup purge drops the attempt's `import` edges, and an own-source failure records no failure dependency
+#[test]
+fn watch_dependency_save_recompiles_importer_failed_at_startup_in_own_source() {
+    assert_own_source_failure_released_by_dependency_save(
+        &own_source_failure_then_dependency_save(
+            ONE_PARAMETER_B,
+            "(import [base [b]])\n(defn f [] (b))",
+            NULLARY_B,
+        ),
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 4: as the `import` twin
+// `watch_dependency_save_recompiles_importer_failed_at_startup_in_own_source`,
+// with `lib` reaching `base` only by the qualified reference `(base/b)`.
+// ACT-1011.
+// DEFECT (open): the save reports only `[updated: base.cl]`, and `lib` and
+// `user` stay refused as modules with errors.
+// defect: class=enumeration-miss locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev — provisional: an own-source failure records no failure dependency
+#[test]
+fn watch_dependency_save_recompiles_qualified_caller_failed_at_startup_in_own_source() {
+    assert_own_source_failure_released_by_dependency_save(
+        &own_source_failure_then_dependency_save(
+            ONE_PARAMETER_B,
+            "(defn f [] (base/b))",
+            NULLARY_B,
+        ),
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — step 4, and §14.6: `lib.cl`
+// holds `(import [base [c]])` while `base.cl` lacks `c`, so `lib` fails at
+// startup resolving its own imports (Pass 0). A save of `base.cl` adding `c`
+// recompiles `lib` and then its importer `user`, and `(g)` and `(lib/f)` give
+// 7. ACT-1011; the Pass-0 sibling of
+// `watch_dependency_save_recompiles_importer_failed_at_startup_in_own_source`.
+// DEFECT (open): the save reports only `[updated: base.cl]`, and `lib` and
+// `user` stay refused as modules with errors.
+// defect: class=enumeration-miss locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev — provisional: an own-source failure before the type pass records no failure dependency
+#[test]
+fn watch_dependency_save_recompiles_importer_failed_at_startup_resolving_import() {
+    let out = own_source_failure_then_dependency_save(
+        NULLARY_B,
+        "(import [base [c]])\n(defn f [] (c))",
+        "(defn b [] 7) (defn c [] 7)",
+    );
+    let mut legs = own_source_failure_released_legs(&out, "'c'");
+    let notice = save_notice(&turns(&out.stdout), 2);
+    legs.check(
+        notice
+            .find("[updated: lib.cl]")
+            .zip(notice.find("[updated: user.cl]"))
+            .is_some_and(|(lib, user)| lib < user),
+        "`lib` is recompiled before `user`",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// =============================================================================
+// §15.2.3 — a dependency's change recompiles a startup-degraded entry, and a
+// failure of that recompilation locks it
+// =============================================================================
+
+/// `user.cl` imports `f` from `lib.cl`, and its `bad` fails at startup.
+const DEGRADED_ENTRY: &str = "(import [lib [f]])\n(defn ok [] (f))\n(defn bad [] (nope))\n";
+
+fn degraded_entry_session(stdin: &str) -> e2e::CrOutput {
+    Cranelisp::new()
+        .file("lib.cl", "(defn f [] 1)\n")
+        .user(DEGRADED_ENTRY)
+        .repl()
+        .stdin(stdin)
+        .output()
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2.3 — `user.cl` fails at
+// startup, and a changed save of its import `lib.cl` recompiles it as a
+// dependent (repl/spec/14-file-watching.md §14.2 step 4). That recompilation
+// fails, so `user` is locked (§14.5 item 5): the at-prompt repair
+// `(defn bad [] 1)` is refused and `user.cl` is unchanged. A compiling save of
+// `user.cl` releases it (§14.6), `(ok)` gives the new 2, and a later definition
+// regenerates `user.cl` without the startup-failed `(nope)`. R1; the control
+// `persist_startup_degraded_entry_repairs_at_prompt_without_dependency_change_control`
+// differs only in the save of `lib.cl`.
+#[test]
+fn persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles() {
+    // Turns: 1 (ok), 2–4 save of lib.cl, 5 (defn bad), 6 snapshot,
+    // 7–9 save of user.cl, 10 (ok), 11 (defn k).
+    let out = degraded_entry_session(&format!(
+        "(ok)\n{}(defn bad [] 1)\n/sh cp user.cl after-rejection.txt\n{}(ok)\n(defn k [] 4)\n/quit\n",
+        save("lib.cl", "(defn f [] 2)"),
+        save(
+            "user.cl",
+            "(import [lib [f]]) (defn ok [] (f)) (defn bad [] 3)"
+        )
+    ));
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let lib_notice = save_notice(&t, 2);
+    let after_rejection = out.read_tmp("after-rejection.txt");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        t.first()
+            .is_some_and(|startup| startup.contains("[errors: user.cl]")),
+        "precondition: startup reports `[errors: user.cl]`",
+    );
+    legs.check(
+        !turn(1).contains(":primitives/Int"),
+        "precondition: `(ok)` is refused while `user` fails",
+    );
+    legs.check(
+        lib_notice.contains("[updated: lib.cl]") && lib_notice.contains("[errors: user.cl]"),
+        "the save of lib.cl reports `[updated: lib.cl]` and `[errors: user.cl]`",
+    );
+    legs.check(
+        !turn(5).contains("user/bad"),
+        "the locked `user` refuses `(defn bad [] 1)`",
+    );
+    legs.check(
+        after_rejection == DEGRADED_ENTRY,
+        "user.cl is byte-identical to its initial content after the refused turn",
+    );
+    legs.check(
+        save_notice(&t, 7).contains("[updated: user.cl]"),
+        "the compiling save of user.cl reports `[updated: user.cl]`",
+    );
+    legs.check(
+        turn(10).contains(":primitives/Int 2"),
+        "the released `user` evaluates: `(ok)` gives 2",
+    );
+    legs.check(turn(11).contains("user/k"), "`(defn k [] 4)` is accepted");
+    legs.check(
+        !saved.contains("(nope)"),
+        "the regenerated user.cl does not write back the startup-failed `(nope)`",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turn:\n{after_rejection}\nuser.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2.3 — with no recompilation,
+// the startup-degraded `user` accepts the at-prompt repair `(defn bad [] 1)`,
+// and the regenerated `user.cl` holds it in place of the failed `(nope)`. R1's
+// control for
+// `persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles`.
+#[test]
+fn persist_startup_degraded_entry_repairs_at_prompt_without_dependency_change_control() {
+    let out = degraded_entry_session("(ok)\n(defn bad [] 1)\n/quit\n");
+    let t = turns(&out.stdout);
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        t.first()
+            .is_some_and(|startup| startup.contains("[errors: user.cl]")),
+        "precondition: startup reports `[errors: user.cl]`",
+    );
+    legs.check(
+        t.get(2).is_some_and(|turn| turn.contains("user/bad")),
+        "the degraded `user` accepts `(defn bad [] 1)`",
+    );
+    legs.check(
+        saved.contains("(defn bad [] 1)") && !saved.contains("(nope)"),
+        "user.cl holds `(defn bad [] 1)` and not `(nope)`",
+    );
+    legs.assert_all(&format!("{}\nuser.cl at exit:\n{saved}", transcript(&out)));
+}
+
+// =============================================================================
+// spec §8.5.4 edge 6 — a reload that closes a qualified-reference cycle
+// =============================================================================
+
+/// `user` calls `b/g`, which calls `a/f`; `a.cl` is then saved with `f` giving
+/// 5 and a new `(defn h [] <h_body>)`. Turns: 1 `(run)`, 2–4 save, 5 `(a/h)`,
+/// 6 `(run)`.
+fn qualified_chain_after_save_of_a(h_body: &str) -> e2e::CrOutput {
+    Cranelisp::new()
+        .file("a.cl", "(defn f [] 1)\n")
+        .file("b.cl", "(defn g [] (a/f))\n")
+        .user("(defn run [] (b/g))\n")
+        .repl()
+        .stdin(&format!(
+            "(run)\n{}(a/h)\n(run)\n/quit\n",
+            save("a.cl", &format!("(defn h [] {h_body}) (defn f [] 5)"))
+        ))
+        .output()
+}
+
+// spec: spec/08-modules.md §8.5.4 — edge 6: a qualified reference that closes
+// a module dependency cycle MUST be reported as a circular-dependency error,
+// at parity with `import` cycles (§8.10.2). A save of `a.cl` adding
+// `(defn h [] (b/g))`, while `b` calls `a/f`, closes the cycle `a → b → a`, so
+// the reload reports an error naming the cycle and the cyclic `h` is not
+// installed. repl/spec/14-file-watching.md §14.2, §14.4. ACT-1013; the control
+// `watch_save_adding_acyclic_qualified_call_reloads_control` differs only in
+// `h`'s body.
+// DEFECT (open): the save is accepted with `[updated:]` for all three files,
+// with no error, and `(a/h)` gives 5.
+// defect: class=silent-accept locus=src/session_v4/lifecycle.rs::run_reload_plan found=S122 owner=/dev — provisional: cycle detection runs only while a module loads (review A2)
+#[test]
+fn watch_save_closing_qualified_module_cycle_reports_circular_dependency() {
+    let out = qualified_chain_after_save_of_a("(b/g)");
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let names_cycle = ["a.cl", "b.cl", "user.cl"]
+        .iter()
+        .flat_map(|file| error_blocks(&out, file))
+        .any(|block| {
+            let block = block.to_lowercase();
+            block.contains("circular") || block.contains("cycle")
+        });
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(run)` gives 1 before the save",
+    );
+    legs.check(
+        names_cycle,
+        "the save reports an `[errors:` block naming a circular dependency",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int 5"),
+        "the cyclic `h` is not installed: `(a/h)` does not give 5",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: spec/08-modules.md §8.5.4 — a save of `a.cl` adding `(defn h [] 2)`
+// closes no cycle, so it reloads with `[updated: a.cl]` and no error, `(a/h)`
+// gives 2, and `user`'s qualified chain gives the new 5. repl/spec/14-file-watching.md
+// §14.2. ACT-1013's control for
+// `watch_save_closing_qualified_module_cycle_reports_circular_dependency`.
+#[test]
+fn watch_save_adding_acyclic_qualified_call_reloads_control() {
+    let out = qualified_chain_after_save_of_a("2");
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(run)` gives 1 before the save",
+    );
+    legs.check(
+        save_notice(&t, 2).contains("[updated: a.cl]")
+            && !format!("{}{}", out.stdout, out.stderr).contains("[errors:"),
+        "the save reloads: `[updated: a.cl]` and no `[errors:`",
+    );
+    legs.check(turn(5).contains(":primitives/Int 2"), "`(a/h)` gives 2");
+    legs.check(
+        turn(6).contains(":primitives/Int 5"),
+        "`(run)` gives the new 5",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+/// Piped-REPL stdout split at each prompt, whatever module it names: index 0
+/// is startup output, index N is the response to the Nth input turn. A prompt
+/// reads `<elapsed>ms; <module>> `.
+fn prompted_turns(stdout: &str) -> Vec<&str> {
+    regex::Regex::new(r"\d+\+\d+ms; [a-zA-Z][a-zA-Z0-9._-]*> ")
+        .unwrap()
+        .split(stdout)
+        .collect()
+}
+
+/// `user` calls `b/g`, which calls `a/f`, and a REPL turn in `a` enters
+/// `definition`. Turns: 1 `(run)`, 2 `/mod a`, 3 `definition`, then `rest`.
+fn turn_in_a_while_b_calls_a(b_source: &str, definition: &str, rest: &str) -> e2e::CrOutput {
+    Cranelisp::new()
+        .file("a.cl", "(defn f [] 1)\n")
+        .file("b.cl", &format!("{b_source}\n"))
+        .user("(defn run [] (b/g))\n")
+        .repl()
+        .stdin(&format!("(run)\n/mod a\n{definition}\n{rest}/quit\n"))
+        .output()
+}
+
+// spec: spec/08-modules.md §8.5.4 — edge 6: a REPL definition turn in `a`
+// adding `(defn h [] (b/g))`, while `b` calls `a/f`, closes the cycle
+// `a → b → a` and is refused naming it. The refused `h` is not installed:
+// `a` accepts `(defn k [] 2)`, `user`'s chain still gives 1, and
+// repl/spec/15-session-persistence.md §15.1 regenerates `a.cl` with `k` and
+// without `h`. ACT-1013.
+// At e4062202 the turn was accepted as `a/h` and written to `a.cl`.
+// defect: class=silent-accept locus=src/worker.rs::prepare_cluster_commit_with_demands found=S122 owner=/dev
+#[test]
+fn repl_definition_closing_qualified_module_cycle_refused_and_not_written() {
+    // Turns: 4 `(defn k [] 2)`, 5 `/mod user`, 6 `(run)`.
+    let out = turn_in_a_while_b_calls_a(
+        "(defn g [] (a/f))",
+        "(defn h [] (b/g))",
+        "(defn k [] 2)\n/mod user\n(run)\n",
+    );
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("a.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(run)` gives 1",
+    );
+    legs.check(
+        turn(3).contains("a -> b -> a") && !turn(3).contains("a/h"),
+        "the `(defn h [] (b/g))` turn is refused naming `a -> b -> a`",
+    );
+    legs.check(turn(4).contains("a/k"), "`(defn k [] 2)` is accepted");
+    legs.check(
+        turn(6).contains(":primitives/Int 1"),
+        "`(run)` in `user` still gives 1",
+    );
+    legs.check(
+        saved.contains("(defn k [] 2)") && !saved.contains("(defn h"),
+        "a.cl at exit holds `k` and not `h`",
+    );
+    legs.assert_all(&format!("{}\na.cl at exit:\n{saved}", transcript(&out)));
+}
+
+/// The `defmacro` turn whose clause calls `b/g`; its expansion is the literal 1.
+const MACRO_CALLING_B: &str = "(defmacro m [] (let [v (b/g)] `1))";
+
+/// Turns after `MACRO_CALLING_B`: 4 `(m)`, 5 `(defn k [] 2)`.
+const AFTER_MACRO: &str = "(m)\n(defn k [] 2)\n";
+
+// spec: spec/08-modules.md §8.5.4 — edge 6: a REPL `defmacro` turn in `a`
+// whose clause calls `b/g`, while `b` calls `a/f`, closes the cycle
+// `a → b → a` as a definition's body does, so it is refused naming the cycle
+// and not written to `a.cl`; `a` then accepts `(defn k [] 2)`. ACT-1013; the
+// control `repl_defmacro_clause_calling_acyclic_qualified_dependency_accepted_control`
+// differs only in `b`.
+// DEFECT (open): the `defmacro` turn is accepted and written to `a.cl`; `(m)`
+// and `(defn k [] 2)` are then refused as the cycle `a -> b -> a`.
+// defect: class=silent-accept locus=src/process_form/macro_clause.rs::compile_macro_checkpoint found=S122 owner=/dev — provisional: a clause published at its checkpoint is not cycle-checked
+#[test]
+fn repl_defmacro_clause_closing_qualified_module_cycle_refused_and_not_written() {
+    let out = turn_in_a_while_b_calls_a("(defn g [] (a/f))", MACRO_CALLING_B, AFTER_MACRO);
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("a.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(run)` gives 1",
+    );
+    legs.check(
+        turn(3).contains("a -> b -> a") && !turn(3).contains("a/m"),
+        "the `defmacro` turn is refused naming `a -> b -> a`",
+    );
+    legs.check(turn(5).contains("a/k"), "`(defn k [] 2)` is accepted");
+    legs.check(
+        !saved.contains("(defmacro m"),
+        "a.cl at exit has no `defmacro m`",
+    );
+    legs.assert_all(&format!("{}\na.cl at exit:\n{saved}", transcript(&out)));
+}
+
+// spec: spec/08-modules.md §8.5.4 — a `defmacro` turn in `a` whose clause
+// calls `b/g`, while `b` does not reach `a`, closes no cycle: it is accepted,
+// `(m)` gives 1 and `(defn k [] 2)` is accepted. ACT-1013's control for
+// `repl_defmacro_clause_closing_qualified_module_cycle_refused_and_not_written`.
+#[test]
+fn repl_defmacro_clause_calling_acyclic_qualified_dependency_accepted_control() {
+    let out = turn_in_a_while_b_calls_a("(defn g [] 3)", MACRO_CALLING_B, AFTER_MACRO);
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 3"),
+        "precondition: `(run)` gives 3",
+    );
+    legs.check(turn(3).contains("a/m"), "the `defmacro` turn is accepted");
+    legs.check(turn(4).contains(":primitives/Int 1"), "`(m)` gives 1");
+    legs.check(turn(5).contains("a/k"), "`(defn k [] 2)` is accepted");
+    legs.assert_all(&transcript(&out));
+}
+
+// =============================================================================
+// ACT-1014 — a prelude save that imports a prelude-dependent module agrees
+// with a restart on the saved files
+// =============================================================================
+
+/// The outcome of evaluating `(x/get (P 4))`, as the parity cell compares it.
+fn get_p4_outcome(response: &str) -> &'static str {
+    if response.contains(":primitives/Int 4") {
+        "gives 4"
+    } else if !response.contains(":primitives/Int")
+        && (response.contains("Error") || response.contains("Cannot evaluate"))
+    {
+        "refused"
+    } else {
+        "other"
+    }
+}
+
+// spec: spec/08-modules.md §8.8.2 — `x` uses the prelude's type `P` through
+// the implicit import (§8.8.1), and a save of `prelude.cl` adds
+// `(import [x [one]])`. A session and a restart on the saved files MUST agree
+// (root CLAUDE.md: a REPL/restart divergence is a defect): `(x/get (P 4))`
+// gives 4 in both or is refused in both. The cell takes no position on which,
+// pending the §8.8.1/§8.10.2 ruling ACT-1014 carries.
+// DEFECT (open): the session gives 4; the restart refuses, with `prelude`
+// failing on `dependency 'x' failed: … unknown type P`.
+// defect: class=mode-divergence locus=src/session_v4/lifecycle.rs::reload_plan found=S122 owner=/dev — unattributed
+#[test]
+fn prelude_save_importing_prelude_dependent_module_agrees_with_restart() {
+    const GET_P4: &str = "(x/get (P 4))";
+    // Turns: 1 `(x/one)`, 2–4 save of prelude.cl, 5 `GET_P4`.
+    let session = Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(deftype P [:Int n])\n")
+        .file("x.cl", "(defn get [:P p] (P.n p))\n(defn one [] 1)\n")
+        .user("(defn u [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "(x/one)\n{}{GET_P4}\n/quit\n",
+            save(
+                "prelude.cl",
+                "(export [primitives [*]]) (import [x [one]]) (deftype P [:Int n])"
+            )
+        ))
+        .output();
+    let session_transcript = transcript(&session);
+    let t = turns(&session.stdout);
+    let precondition = t
+        .get(1)
+        .is_some_and(|turn| turn.contains(":primitives/Int 1"));
+    let in_session = get_p4_outcome(t.get(5).copied().unwrap_or(""));
+
+    let restart = session
+        .run_again()
+        .repl()
+        .cli_flag("--no-cache")
+        .stdin(&format!("{GET_P4}\n/quit\n"))
+        .output();
+    let after_restart = get_p4_outcome(turns(&restart.stdout).get(1).copied().unwrap_or(""));
+    let mut legs = Legs::default();
+    legs.check(
+        precondition,
+        "precondition: `(x/one)` gives 1 before the save",
+    );
+    legs.check(
+        in_session != "other" && after_restart != "other",
+        "each `(x/get (P 4))` gives 4 or is refused",
+    );
+    legs.check(
+        in_session == after_restart,
+        "the session and the restart agree on `(x/get (P 4))`",
+    );
+    legs.assert_all(&format!(
+        "session: {in_session}; restart: {after_restart}\n\
+         --- session ---\n{session_transcript}\n--- restart ---\n{}",
+        transcript(&restart)
+    ));
+}
+
+// =============================================================================
+// ACT-1014 — the implicit prelude import is a dependency at reload and at a
+// REPL turn (spec §8.8.1, PD-2 and PD-3)
+// =============================================================================
+
+/// A session whose prelude does not yet import `x`, and whose `x.cl` gives
+/// `(x/one)` 3, carrying the null import (§8.3.7) when `opt_out`. Turn 1 is
+/// `(x/one)`.
+fn prelude_not_yet_importing_x(opt_out: bool, turns_after_first: &str) -> e2e::CrOutput {
+    let opt_out_line = if opt_out {
+        "(import [prelude []])\n"
+    } else {
+        ""
+    };
+    Cranelisp::new()
+        .prelude("(export [primitives [*]])\n")
+        .file("x.cl", &format!("{opt_out_line}(defn one [] 3)\n"))
+        .user("")
+        .repl()
+        .stdin(&format!("(x/one)\n{turns_after_first}/quit\n"))
+        .output()
+}
+
+/// Turns 2–4 save `prelude.cl` with `(import [x [one]])`; turn 5 is `(x/one)`.
+fn save_prelude_importing_x(opt_out: bool) -> e2e::CrOutput {
+    let saved = save("prelude.cl", "(export [primitives [*]]) (import [x [one]])");
+    prelude_not_yet_importing_x(opt_out, &format!("{saved}(x/one)\n"))
+}
+
+/// Turns 2 `/mod prelude`, 3 `(import [x [one]])`, 4 `/mod user`, 5 `(x/one)`.
+fn mod_prelude_import_of_x(opt_out: bool) -> e2e::CrOutput {
+    prelude_not_yet_importing_x(
+        opt_out,
+        "/mod prelude\n(import [x [one]])\n/mod user\n(x/one)\n",
+    )
+}
+
+/// A restart on the session's saved files, with `(x/one)` as turn 1.
+fn restart_evaluating_x_one(session: e2e::CrOutput) -> e2e::CrOutput {
+    session
+        .run_again()
+        .repl()
+        .cli_flag("--no-cache")
+        .stdin("(x/one)\n/quit\n")
+        .output()
+}
+
+/// Whether some line of `text` reports a circular dependency naming both
+/// `prelude` and `x` as whole words.
+fn names_prelude_x_cycle(text: &str) -> bool {
+    text.lines().any(|line| {
+        let words: Vec<&str> = line
+            .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+            .collect();
+        line.to_lowercase().contains("circular")
+            && words.contains(&"prelude")
+            && words.contains(&"x")
+    })
+}
+
+// spec: spec/08-modules.md §8.8.1 and §8.10.2 — a save of `prelude.cl` adding
+// `(import [x [one]])`, where `x.cl` does not reference `prelude`, closes
+// `prelude -> x -> prelude` through `x`'s implicit prelude import. The reload
+// MUST refuse the save naming the cycle, and a restart on the saved files MUST
+// report the same cycle (REPL/restart parity, root CLAUDE.md).
+#[test]
+fn prelude_save_importing_module_without_opt_out_neg_refused_as_cycle_like_restart() {
+    let session = save_prelude_importing_x(false);
+    let session_transcript = transcript(&session);
+    let mut legs = Legs::default();
+    {
+        let t = prompted_turns(&session.stdout);
+        let notice = save_notice(&t, 2);
+        legs.check(
+            t.get(1)
+                .is_some_and(|turn| turn.contains(":primitives/Int 3")),
+            "precondition: `(x/one)` gives 3 before the save",
+        );
+        legs.check(
+            notice.contains("[errors:") && names_prelude_x_cycle(&notice),
+            "the save is refused naming the cycle of `prelude` and `x`",
+        );
+        legs.check(
+            !notice.contains("[updated: prelude.cl]"),
+            "the save does not report `[updated: prelude.cl]`",
+        );
+    }
+    let restart = restart_evaluating_x_one(session);
+    legs.check(
+        names_prelude_x_cycle(&format!("{}\n{}", restart.stdout, restart.stderr)),
+        "a restart on the saved files reports the same cycle",
+    );
+    legs.assert_all(&format!(
+        "--- session ---\n{session_transcript}\n--- restart ---\n{}",
+        transcript(&restart)
+    ));
+}
+
+// spec: spec/08-modules.md §8.8.1 and §8.3.7 — control: the same save when
+// `x.cl` carries `(import [prelude []])`. The null import loads nothing, so no
+// cycle forms: the save reports `[updated: prelude.cl]`, `(x/one)` gives 3
+// after it, and a restart on the saved files agrees.
+// DEFECT (open): the save reports `[errors: prelude.cl] … 'one' not found in
+// module 'x'` and evaluation is blocked; the restart gives 3. The twin without
+// the null import reloads, and the pre-S122 build reloads both.
+// defect: class=enumeration-miss locus=src/cache/dependency_record.rs::reload_edges found=S122 owner=/dev — provisional: the null import is read as the edge `x -> prelude`
+#[test]
+fn prelude_save_importing_opted_out_module_reloads_like_restart_control() {
+    let session = save_prelude_importing_x(true);
+    let session_transcript = transcript(&session);
+    let mut legs = Legs::default();
+    {
+        let t = prompted_turns(&session.stdout);
+        let notice = save_notice(&t, 2);
+        legs.check(
+            t.get(1)
+                .is_some_and(|turn| turn.contains(":primitives/Int 3")),
+            "precondition: `(x/one)` gives 3 before the save",
+        );
+        legs.check(
+            notice.contains("[updated: prelude.cl]") && !notice.contains("[errors:"),
+            "the save reports `[updated: prelude.cl]` and no errors",
+        );
+        legs.check(
+            t.get(5)
+                .is_some_and(|turn| turn.contains(":primitives/Int 3")),
+            "`(x/one)` gives 3 after the save",
+        );
+    }
+    let restart = restart_evaluating_x_one(session);
+    legs.check(
+        prompted_turns(&restart.stdout)
+            .get(1)
+            .is_some_and(|turn| turn.contains(":primitives/Int 3")),
+        "a restart on the saved files gives 3",
+    );
+    legs.assert_all(&format!(
+        "--- session ---\n{session_transcript}\n--- restart ---\n{}",
+        transcript(&restart)
+    ));
+}
+
+// spec: spec/08-modules.md §8.8.1 and §8.10.2 — a REPL turn in `prelude`
+// entering `(import [x [one]])`, where `x.cl` does not reference `prelude`,
+// closes `prelude -> x -> prelude`. The turn MUST be refused naming the cycle
+// and not written to `prelude.cl`; `(x/one)` in `user` still gives 3.
+#[test]
+fn mod_prelude_import_of_module_without_opt_out_neg_refused_as_cycle() {
+    let out = mod_prelude_import_of_x(false);
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("prelude.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 3"),
+        "precondition: `(x/one)` gives 3",
+    );
+    legs.check(
+        names_prelude_x_cycle(turn(3)),
+        "the import turn is refused naming the cycle of `prelude` and `x`",
+    );
+    legs.check(
+        !saved.contains("[x ["),
+        "prelude.cl at exit has no import of `x`",
+    );
+    legs.check(
+        turn(5).contains(":primitives/Int 3"),
+        "`(x/one)` in `user` still gives 3",
+    );
+    legs.assert_all(&format!(
+        "{}\nprelude.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: spec/08-modules.md §8.8.1 and §8.3.7 — control: the same turn when
+// `x.cl` carries `(import [prelude []])`. No cycle forms, so the turn is
+// accepted and written to `prelude.cl` once, and `(x/one)` in `user` gives 3.
+#[test]
+fn mod_prelude_import_of_opted_out_module_accepted_and_written_once_control() {
+    let out = mod_prelude_import_of_x(true);
+    let t = prompted_turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let saved = out.read_tmp("prelude.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 3"),
+        "precondition: `(x/one)` gives 3",
+    );
+    legs.check(
+        !turn(3).to_lowercase().contains("error") && !turn(3).contains("circular"),
+        "the import turn is accepted",
+    );
+    legs.check(
+        saved.matches("(import [x [one]])").count() == 1,
+        "prelude.cl at exit holds `(import [x [one]])` once",
+    );
+    legs.check(
+        turn(5).contains(":primitives/Int 3"),
+        "`(x/one)` in `user` gives 3",
+    );
+    legs.assert_all(&format!(
+        "{}\nprelude.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// =============================================================================
+// ACT-1014 — prelude reach to `x` by `export` or a qualified reference closes
+// the implicit-import cycle at reload and at a restart (spec §8.8.1, PD-4 and
+// PD-5)
+// =============================================================================
+
+/// A session whose prelude defines `P` and does not reach `x`, and whose `user`
+/// calls `x/one` (3). Without `opt_out`, `x.cl` uses `P` bare; with it, `x.cl`
+/// carries the null import (§8.3.7) and does not use `P`. Turn 1 is `(x/one)`,
+/// turns 2–4 save `prelude.cl` as `saved_prelude`, and turn 5 is `(one)`.
+fn prelude_save_reaching_x(opt_out: bool, saved_prelude: &str) -> e2e::CrOutput {
+    let x_source = if opt_out {
+        "(import [prelude []])\n(defn one [] 3)\n"
+    } else {
+        "(defn get [:P p] (P.n p))\n(defn one [] 3)\n"
+    };
+    Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(deftype P [:Int n])\n")
+        .file("x.cl", x_source)
+        .user("(defn u [] (x/one))\n")
+        .repl()
+        .stdin(&format!(
+            "(x/one)\n{}(one)\n/quit\n",
+            save("prelude.cl", saved_prelude)
+        ))
+        .output()
+}
+
+/// The prelude save re-exporting `x`'s `one`.
+const PRELUDE_EXPORTING_X: &str =
+    "(export [primitives [*]]) (export [x [one]]) (deftype P [:Int n])";
+
+/// Whether some line of `text` reports the type `P` as unresolved, unknown or
+/// undefined.
+fn reports_p_unresolved(text: &str) -> bool {
+    text.lines().any(|line| {
+        let lower = line.to_lowercase();
+        line.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+            .any(|word| word == "P")
+            && ["unresolved", "unknown", "undefined"]
+                .iter()
+                .any(|fault| lower.contains(fault))
+    })
+}
+
+/// PD-4 and PD-5: the save of `saved_prelude`, which reaches `x` while `x`
+/// uses `P` through the implicit import, is refused naming the cycle, and a
+/// restart on the saved files reports the same cycle rather than `P`
+/// unresolved.
+fn assert_prelude_reach_refused_as_cycle_like_restart(saved_prelude: &str) {
+    let session = prelude_save_reaching_x(false, saved_prelude);
+    let session_transcript = transcript(&session);
+    let mut legs = Legs::default();
+    {
+        let t = prompted_turns(&session.stdout);
+        let turn = |i: usize| t.get(i).copied().unwrap_or("");
+        let notice = save_notice(&t, 2);
+        legs.check(
+            turn(1).contains(":primitives/Int 3"),
+            "precondition: `(x/one)` gives 3 before the save",
+        );
+        legs.check(
+            notice.contains("[errors:") && names_prelude_x_cycle(&notice),
+            "the save is refused naming the cycle of `prelude` and `x`",
+        );
+        legs.check(
+            !notice.contains("[updated: prelude.cl]"),
+            "the save does not report `[updated: prelude.cl]`",
+        );
+    }
+    let restart = restart_evaluating_x_one(session);
+    let restart_output = format!("{}\n{}", restart.stdout, restart.stderr);
+    legs.check(
+        names_prelude_x_cycle(&restart_output),
+        "a restart on the saved files reports the same cycle",
+    );
+    legs.check(
+        !reports_p_unresolved(&restart_output),
+        "the restart does not report `P` unresolved, unknown or undefined",
+    );
+    legs.assert_all(&format!(
+        "--- session ---\n{session_transcript}\n--- restart ---\n{}",
+        transcript(&restart)
+    ));
+}
+
+// spec: spec/08-modules.md §8.8.1, §8.10.1 and §8.10.2 — PD-4: `x.cl` uses the
+// prelude's `P` through the implicit import, and a save of `prelude.cl` adding
+// `(export [x [one]])` closes `prelude -> x -> prelude`, since `export` is a
+// dependency edge. The reload MUST refuse the save naming the cycle, and a
+// restart on the saved files MUST report the same cycle, not `P` unresolved.
+// The twin `prelude_save_calling_x_qualified_neg_refused_as_cycle_like_restart`
+// reaches `x` by a qualified reference.
+#[test]
+fn prelude_save_exporting_x_neg_refused_as_cycle_like_restart() {
+    assert_prelude_reach_refused_as_cycle_like_restart(PRELUDE_EXPORTING_X);
+}
+
+// spec: spec/08-modules.md §8.5.4 — item 6, with §8.8.1: PD-5, as
+// `prelude_save_exporting_x_neg_refused_as_cycle_like_restart` with the
+// prelude reaching `x` only by the qualified call `(x/one)`. The qualified
+// reference closing the cycle MUST be reported as the circular dependency, at
+// the reload and at a restart, and MUST NOT surface as an unresolved name.
+#[test]
+fn prelude_save_calling_x_qualified_neg_refused_as_cycle_like_restart() {
+    assert_prelude_reach_refused_as_cycle_like_restart(
+        "(export [primitives [*]]) (deftype P [:Int n]) (defn pone [] (x/one))",
+    );
+}
+
+// spec: spec/08-modules.md §8.8.1 and §8.3.7 — PD-4c, the control for
+// `prelude_save_exporting_x_neg_refused_as_cycle_like_restart`: `x.cl` carries
+// `(import [prelude []])` and does not use `P`. The null import loads nothing,
+// so the export closes no cycle: the save reports `[updated: prelude.cl]`, the
+// re-exported `(one)` gives 3, and a restart on the saved files agrees.
+#[test]
+fn prelude_save_exporting_opted_out_x_reloads_like_restart_control() {
+    let session = prelude_save_reaching_x(true, PRELUDE_EXPORTING_X);
+    let session_transcript = transcript(&session);
+    let mut legs = Legs::default();
+    {
+        let t = prompted_turns(&session.stdout);
+        let turn = |i: usize| t.get(i).copied().unwrap_or("");
+        let notice = save_notice(&t, 2);
+        legs.check(
+            turn(1).contains(":primitives/Int 3"),
+            "precondition: `(x/one)` gives 3 before the save",
+        );
+        legs.check(
+            notice.contains("[updated: prelude.cl]") && !notice.contains("[errors:"),
+            "the save reports `[updated: prelude.cl]` and no errors",
+        );
+        legs.check(
+            turn(5).contains(":primitives/Int 3"),
+            "the re-exported `(one)` gives 3 after the save",
+        );
+    }
+    let restart = session
+        .run_again()
+        .repl()
+        .cli_flag("--no-cache")
+        .stdin("(one)\n/quit\n")
+        .output();
+    legs.check(
+        prompted_turns(&restart.stdout)
+            .get(1)
+            .is_some_and(|turn| turn.contains(":primitives/Int 3")),
+        "a restart on the saved files gives 3 for `(one)`",
+    );
+    legs.assert_all(&format!(
+        "--- session ---\n{session_transcript}\n--- restart ---\n{}",
+        transcript(&restart)
     ));
 }

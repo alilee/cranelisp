@@ -893,7 +893,7 @@ fn expand_scoped(
             //    data reaches `build_form` intact and is desugared by the frontend
             //    fold (never macro-expanded first). Matched STRUCTURALLY — bare
             //    `quote`/`quasiquote` head + `len() == 2`, the SAME test the fold
-            //    uses (`quasiquote.rs::is_quote`/`is_quasiquote`); the shield
+            //    uses (`cranelisp_types::quote_head`); the shield
             //    consults neither `shadows` nor the resolver, keeping the two in
             //    lockstep (`design/int/int.md` §6.6). Placed FIRST: a
             //    reader-quote head is handled by the shield and nothing else.

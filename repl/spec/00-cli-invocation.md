@@ -156,7 +156,7 @@ and the usage hint to stderr and exit with status code 1 (§0.3). [Tested+Neg te
 
 Target resolution (§0.5), including the missing-source error of §0.5.5, and the
 modifier and worker flags (§0.6) apply to `--test`; `-o`/`--output` is rejected
-(§0.2.1.1). [Tested+Neg tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report, tests/test_runner.rs::test_mode_neg_combined_with_run_link_or_output_is_usage_error — the missing-source error and the `-o` rejection; parsing of the target, modifier and worker flags as for `--run` is unit-pinned only, at src/main.rs::tests::test_flag_parses_target_and_modifiers_as_run_does]
+(§0.2.1.1). [Tested+Neg tests/cli_missing_entry.rs::test_mode_missing_entry_file_is_named_on_stderr, tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report, tests/test_runner.rs::test_mode_neg_combined_with_run_link_or_output_is_usage_error — the missing-source error (the file named in the message body, and no report) and the `-o` rejection; parsing of the target, modifier and worker flags as for `--run` is unit-pinned only, at src/main.rs::tests::test_flag_parses_target_and_modifiers_as_run_does]
 
 ### 0.3 Error Handling [Tested tests/link.rs::run_with_output_path_is_rejected_with_usage_and_no_artifact — usage hint to stderr and exit 1 for one invalid-argument class (an output path without `--link`); unknown flags, `--run` with `--link`, and the hint's positional-target content have no committed evidence]
 
@@ -231,10 +231,10 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
 
 1. If the target contains a directory component and the directory does not exist, the binary MUST print an error to stderr naming the missing directory and exit with status code 1.
 2. If the resolved entry module source file (`{project_root}/{entry_module}.cl`) does not exist:
-   - In REPL mode: the binary SHOULD create an empty source file and proceed. This supports the common workflow of starting a new project from an empty directory.
-   - In `--run` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
-   - In `--link` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
-   - In `--test` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested+Neg tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report — the `--test` leg only; the `--run` and `--link` legs are open under ACT-1004]
+   - In REPL mode: the binary SHOULD create an empty source file and proceed. This supports the common workflow of starting a new project from an empty directory. [Tested tests/cli_missing_entry.rs::repl_missing_entry_starts_an_empty_module]
+   - In `--run` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested tests/cli_missing_entry.rs::run_missing_entry_file_is_named_on_stderr — exit 1 and the file named in the message body; the refusal before registration is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::run_mode_refuses_a_missing_entry_before_registration]
+   - In `--link` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested tests/cli_missing_entry.rs::link_missing_entry_file_is_named_on_stderr — exit 1 and the file named in the message body; the refusal before registration is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::link_mode_refuses_a_missing_entry_before_registration]
+   - In `--test` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested+Neg tests/cli_missing_entry.rs::test_mode_missing_entry_file_is_named_on_stderr, tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report — the first cell requires the file named in the message body; the second is credited only for the absent report, because its filename substring is satisfied by the location prefix alone]
 3. If the target is ambiguous (e.g. both a file `mymod.cl` and a directory `mymod/` exist in cwd), **the file wins**: the target resolves to the entry module `mymod` (file `mymod.cl`) with project root cwd, and `mymod/` is treated as the directory holding `mymod`'s submodules (per `spec/08-modules.md §8.11`). This is the normal shape of a project whose entry file declares submodules with `(mod child)`. Rule 3 in §0.5.1 (directory-as-project-root) only fires when there is *no* same-named `.cl` file beside the directory.
 
 #### 0.5.6 Dotted Module Paths [R4 S52]

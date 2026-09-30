@@ -3590,7 +3590,7 @@ fn dotted_pattern_head_under_type_parent_contested_by_constructor_resolves_at_co
 // spec: spec/08-modules.md §8.5.2, §8.6.5 rule 2 — pattern position shares the
 // dotted parent filter: a sum type whose spelling another type's constructor
 // shares is still the one parent of `Qtok.Qa`.
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122/63605970
 #[test]
 fn dotted_pattern_under_type_parent_contested_by_constructor_resolves() {
     let mut tc = tc();
@@ -3693,7 +3693,7 @@ fn infer_match_on_contested_qtok(arms: &[(&str, &[&str])]) -> Result<Type, Strin
 // spec: spec/08-modules.md §8.6.4 — the bare constructor spelling `Qa` names
 // its type's constructor although another type's constructor shares the
 // type's spelling `Qtok`.
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122/63605970
 #[test]
 fn bare_pattern_under_type_contested_by_constructor_resolves() {
     let ty = infer_match_on_contested_qtok(&[("Qa", &["n"]), ("Qb", &[])])
@@ -3705,7 +3705,7 @@ fn bare_pattern_under_type_contested_by_constructor_resolves() {
 // — a wildcard-free match covering every constructor of the
 // contested type is exhaustive, and one that omits `Qb` is rejected as
 // non-exhaustive rather than as an unknown type.
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module found=S122 owner=/dev fixed=S122
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module found=S122 owner=/dev fixed=S122/63605970
 #[test]
 fn exhaustiveness_under_type_contested_by_constructor_reads_the_type() {
     let ty = infer_match_on_contested_qtok(&[("Qtok.Qa", &["n"]), ("Qtok.Qb", &[])])

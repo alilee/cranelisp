@@ -7,7 +7,8 @@
 operation it emits, the disposition of each non-concrete face, and the open
 backend work that completes it. It absorbed the S121 C4 visit design; that
 visit's delivered bundles are recorded here as current mechanism and its open
-bundles as §7. Source was re-verified on 2026-09-21.
+bundles as §7. Source was re-verified on 2026-09-21, and for §7.6 on
+2026-09-30.
 
 **Architecture inputs, cited rather than restated:**
 [concrete-boundary-type.md](../arch/concrete-boundary-type.md) §3.1.1 (the
@@ -480,8 +481,10 @@ residue cells observe and cannot reopen it.
 
 ## 7. Open backend work
 
-Each item below is designed and not yet implemented, verified against source on
-2026-09-21. None is accepted as residual. Order and dependencies are §7.7.
+Each item below is designed and not yet implemented, except §7.6, which is
+implemented in the working tree and not accepted. Verified against source on
+2026-09-21 (§7.6 on 2026-09-30). None is accepted as residual. Order and
+dependencies are §7.7.
 
 ### 7.1 Consume the lifecycle exhaustively (partial)
 
@@ -492,7 +495,7 @@ cannot lower is a compile error in this crate.
 | State | Backend lowers | Refusal |
 |---|---|---|
 | `Concrete { Body { view } }` | the view, into the claimed slot. This projection **is** `defined_symbols()` | — |
-| `Concrete { ExternShim { borrowed_sibling } }` | nothing; call sites import the shim | — |
+| `Concrete { ExternShim { borrowed_sibling } }` | nothing; call sites dispatch through the shim's slot under the §7.6 convention | — |
 | `Concrete { Dll }` | nothing; call sites are GOT-indirect against the manifest-order slot | — |
 | `Concrete { FacadeOf { abi_name } }` | nothing per instance; the slot is the one hand-written body named by `abi_name`; no per-instance body or glue identity | — |
 | `Inline` | inline lowering at concrete call sites; value position emits a span-keyed unit-local wrapper selected by `is_inline_primitive_at`, below the table | located error when the wrapper body has no arm for the name |
@@ -614,49 +617,181 @@ and their checks are
 [non-concrete-producer-obligations.md](../typecheck/non-concrete-producer-obligations.md).
 FIXME 0913 must not be closed by pinning annotations in tests or docs.
 
-### 7.6 Decision-24 wrapper discharge follows realization (open)
+### 7.6 The entry convention is derived once, from realization (open, ACT-0974)
 
-The closure wrapper's `emit_d24_adaptation` (`control_flow/fn_as_value.rs`) emits
-a guarded post-call dec for every `Mode::Borrowed` parameter. That is correct
-only when the target body genuinely uses the borrowing ABI. A consuming Rust
-extern shim discharges its argument itself under Decision 24, so the wrapper
-discharges it a second time. Ordinary applied calls are unaffected; value
-position and auto-curry take this path. The only-read string externs
-(`str-len`, `str-eq`, `neq-string`, `starts-with?`, `ends-with?`, `contains?`)
-are the affected population.
+**Status (2026-09-30): implemented in the working tree, co-landed with the
+primitives half, uncommitted and not accepted.** The derivation and all four
+consumers below are in source, and the §9 rows are delivered beside them. The
+SI cells went RED first; `string_primitive_value_discharge` is 10/10 at `test`'s
+V2. Neither the primitives nor the backend review found a blocking issue.
+K4 is complete and `qa` judged Phase 5's evidence
+adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
+User acceptance and phase approval are pending. The heading keeps its anchor for existing
+citations. `qa` retired ACT-0974 at K4; the retirement holds only in the
+change-set that commits the correction.
 
-The repair is one target-effect classification derived from the same keyed
-`Life`/`Realization` read used for dispatch, exhaustive with no wildcard:
+**Contract (cited, not restated).** Every extern primary entry takes ownership
+of every heap argument and transfers any heap result owned; a declared
+`Borrowed` mode or `IntoResult` flow is an analysis fact that no primary entry
+realizes ([BC §4a invariant 8](../arch/bounded-contexts.md#4a-primitives--cratescranelisp-primitives),
+[ownership inference §3.1](../arch/ownership-inference.md#31-class-a--abi-bearing-the-per-param-mode-vector),
+the `Realization::ExternShim` rustdoc; user-approved 2026-09-30). The primitives
+half — `string-identity` moves its argument, and the wrapper boundary has no
+borrowed parameter kind — is [primitives §2.4](../primitives/primitives.md#24-typed-abi-boundary).
+The behavioural requirement is `spec/12-runtime.md` §12.3.1 items 1–2.
 
-| Target realization, declared parameter fact | Wrapper post-call action |
+**The class.** Four backend paths each decided what an extern entry does with
+references, each from a different fact, and none from the entry's realization
+(the [retained ACT-0974 record](../../tests/plan/s122-evidence-delta.md#retained-records-of-the-deleted-filings)
+carries the faces):
+
+| Path | Fact it read | Face |
+|---|---|---|
+| direct call (`apply.rs`) | always consuming, plus a `string-identity` name test | F2a: a temporary argument leaks |
+| value wrapper (`fn_as_value.rs`) | the declared `Mode` | F1: the six `Borrowed`-declared string externs double-release (use-after-free); F2b: `string-identity` leaks |
+| auto-curry target call | nothing | correct only by omission |
+| return protection (`call_returns_owned_reference`) | owned only for a `Body` | F3: an extra protect on `string-identity`'s owned result leaks |
+
+Correcting one path, or excluding six names, leaves the others deciding
+independently. The repair gives the convention one determinant and makes every
+RC-action producer read it (Principles
+[07](../arch/principles/07-single-source-of-truth.md),
+[20](../arch/principles/20-model-invariants-by-representation.md),
+[24](../arch/principles/24-resolve-once.md)).
+
+**The derivation.** One backend-private derivation maps the keyed callable
+arm's lifecycle state to an entry convention. It is exhaustive over `Life` and
+`Realization` with no `_ =>` arm, so a new state or realization fails to
+compile until it is classified. It reads the entry the call already keys for
+dispatch — the `Apply` carrier, the callee `Var`'s global resolution, the
+selected `CallableTarget` arm or the wrapper's target key — and performs no
+resolution of its own.
+
+| Callable state | Heap parameters | Heap result |
+|---|---|---|
+| `Concrete { Body }`, summary present and not ABI-conservative | per the summary: `Borrowed` borrows, `Owned` consumes, `Copy` carries no reference | transferred |
+| `Concrete { Body }`, summary absent or ABI-conservative | consume | transferred |
+| `Concrete { ExternShim }` | consume, whatever the declared `Mode` or `ParamFlow` | transferred |
+| `Concrete { Dll }`, `Concrete { FacadeOf }` | consume | owned, unverified |
+| `HostPromised`, `Broken` | consume | owned, unverified |
+| `Inline` | consume. Asserted unreachable: static sites lower inline, value position uses the unit-local wrapper (§7.1), and an inline arm has no slot for an entry call. Falsifier: a golden frame change at an inline-arm call | owned, unverified |
+| `Template`, `Declared` | consume (never reached: §7.1 refuses before an entry call is emitted) | owned, unverified |
+| no table entry (named intrinsics such as the trace accessors) | consume | owned, unverified |
+
+- **Only a `Body` can borrow.** The per-parameter answer is a backend-private
+  kind (consume, borrow, no reference), and only the `Body` row constructs a
+  borrow. The static argument-list producer (`moded_arg_rc`'s caller) and the
+  wrapper adaptation accept that kind, never a `Mode`, so an adaptation against
+  a declared mode does not type-check at either seam that emits RC actions.
+- **"Transferred" licenses return-protect elision; "owned, unverified" does
+  not.** Decision 24 makes every entry's result owned. The protect is elided
+  (`ValueProvenance::TransferredCall`) only where that guarantee is checked
+  where the entry is built: a compiled body by this crate, an extern shim by the
+  primitives wrapper boundary's owned result kind. `Dll`, `FacadeOf`, host and
+  intrinsic results keep today's protect. Keeping it is the widening direction
+  (Principle [25](../arch/principles/25-narrowing-carries-its-check.md)), and it
+  keeps those frames byte-identical.
+- **The callee side needs no second derivation.** A compiled body's parameter
+  binder and its tail-call promotion read that body's own summary, which is the
+  same keyed summary the `Body` row reads. These are the only other backend
+  reads of a parameter mode.
+- **A borrowed sibling is a distinct entry.** No producer registers one
+  ([ownership-codegen.md](ownership-codegen.md) §9). A static site that selects
+  one will need its own explicit derivation input, naming the entry it calls. A
+  value wrapper never selects one. Trigger: the first registered sibling.
+
+**Consumers.** All four read the derivation.
+
+1. **Static argument lists.** One argument-list producer takes the derived
+   convention. "Consume everywhere" is exactly today's consuming list.
+   - The extern-primitive path and the platform/direct-extern path pass their
+     keyed target's derivation, and an absent target consumes. The
+     `string-identity` branch deletes.
+   - The moded paths (user and trait calls, family targets, bare `Var` callees)
+     pass the derivation instead of the raw summary. An extern shim reached
+     through any of them consumes, whatever it declares.
+2. **Value wrapper.** The wrapper adapts only for a borrow answer. It emits
+   today's post-call release for that parameter. Every other answer emits
+   nothing after the call, so extern-shim targets lose their second release.
+3. **Auto-curry target call.** Each arm that calls an entry applies the same
+   adaptation step against the derivation of its target. This covers the GOT
+   arm through the value wrapper, and the direct-extern arms keyed by
+   `{primitives, name}`, where an absent entry consumes. Today every such
+   outcome is "nothing", so the arm stays byte-identical, but it is now correct
+   by derivation rather than by omission. It remains its chain's one adapter
+   and never stacks a value wrapper.
+4. **Return protection.** `call_returns_owned_reference` reads the result half
+   for any carrier that keys a table callable, including a `BuiltinFn` whose
+   `Apply` carrier names an extern shim. "Transferred" gives `TransferredCall`;
+   "owned, unverified" keeps today's answer. The auto-curry and IO-combinator
+   `Fresh` rules ([s122-closure.md](s122-closure.md) §8) and inline lowerings
+   keep their own rules.
+
+**Emission effect.**
+
+- The value wrappers over the six `Borrowed`-declared string externs (`str-len`,
+  `str-eq`, `neq-string`, `starts-with?`, `ends-with?`, `contains?`) lose their
+  post-call release.
+- A static `string-identity` caller gains one consuming increment for a `Var`
+  argument, replacing the shim's internal mint. It loses the return protect
+  where one fired.
+- Every other frame is byte-identical:
+  - consuming lists are unchanged;
+  - `Body` conventions are unchanged;
+  - no other extern declares a non-`Fresh` result (the non-`Fresh` Vec
+    declarations are `Inline`);
+  - unverified results keep their protect.
+- The golden re-baseline is scoped to those frames and attributed to ACT-0974.
+  A changed frame outside that set is QA intake, not re-baselined.
+- No public item, carrier, serialized field or shape, slot, symbol or C ABI
+  changes. Expected `public-api.txt` delta: +0/−0.
+- **The landing change-set bumps `CACHE_SCHEMA_VERSION`, value only.** A cached
+  caller object bakes the old `string-identity` convention: a `Var` passed with
+  no increment. The primitives shim is never cached, so after the change it
+  takes ownership of a reference that the cached caller never gave, and a warm
+  hit frees a live binding. That is the paired-object case of the
+  [bump rule](module-caching.md#142-cache_schema_version-ownership). The build
+  identity cannot stand in for the bump: an uncommitted landing build stamps
+  its base commit.
+
+**Order.** The backend and primitives changes co-land in one change-set.
+Primitives alone would be a use-after-free: an unincremented `Var` would flow
+into a moving shim. Backend alone would leak. If the two `dev` invocations run
+in sequence, backend goes first and no suite runs between them. The schema bump
+lands in the same change-set.
+
+**Grades.**
+
+| Property | Grade |
 |---|---|
-| `Body`, heap `Mode::Borrowed` | canonical typed `drop<T>` post-dec (the body borrowed and emitted no dec) |
-| `Body`, `Mode::Owned` | none |
-| any, `Mode::Copy` or non-heap | none |
-| `ExternShim`, `ParamFlow::Consumed` | none, regardless of `Mode` |
-| `ExternShim`, `ParamFlow::IntoResult` | none; result handling unchanged |
-| `ExternShim`, `ParamFlow::Retained` | none (the safe direction) |
-| `Dll`, `FacadeOf` | none; a future non-trivial convention needs its own explicit case |
+| No RC-action producer accepts a declared `Mode`; only a `Body` yields a borrow | structural |
+| A new `Life` or `Realization` variant must be classified before the crate compiles | structural |
+| No name, origin or per-row branch decides a convention; nothing per-row exists to mirror | structural, by elimination |
+| An extern primary entry cannot borrow or return unowned | structural (primitives) |
+| Value, temporary, returned, `show`-dispatched and curried extern uses balance against direct calls | measured, by QA's [ACT-0974 cells](../../tests/plan/s122-evidence-delta.md#act-0974-extern-entry-convention--prepared-evidence-delta-2026-09-30) |
+| No new emission site reads a parameter mode directly | asserted. Falsifier: a backend `param_mode` read outside the derivation and the callee-side binder and promotion; §8 reject 15 |
+| `Dll`, `FacadeOf`, host and intrinsic entries consume as Decision 24 requires | asserted, by their own contracts. Falsifier: an imbalance on a value-position or curried call to one |
 
-- `ParamFlow` is read through `ModeSummary::param_flow`, never by indexing.
-- The `Body + Borrowed` dec uses the parameter's concrete type and the canonical
-  `drop<T>`; it does not preserve `heap::emit_rc_dec_guarded` as a wrapper-only
-  release. A missing or non-concrete parameter type is the located refusal.
-- Value-position wrappers and auto-curry consume one positional plan exactly
-  once; a table-backed builtin reaching `emit_curry_target_call` goes through the
-  keyed realization dispatch, not a name roster. The auto-curry wrapper remains
-  its chain's Decision-24 adapter and never stacks a value wrapper.
-- A closure wrapper always calls the shim's primary Decision-24 entry; a
-  `borrowed_sibling` is a static Borrowed-call optimisation only.
-- `string-identity` (`IntoResult`, `ResultMode::AliasOf(0)`) is the control: no
-  post-dec and no result compensation. No `Mode`, `ParamFlow` or result
-  declaration changes to accommodate this.
+**Excluded from this change-set.** Each is a separate emission class with its
+own evidence.
 
-Surface effect: no public item, carrier, serialized field, slot, symbol,
-signature, cache schema or ABI changes. The only emitted delta is removal of the
-redundant post-call dec from affected extern wrapper bodies, under one scoped
-attributed golden re-baseline; `Body` and `IntoResult` wrapper frames are
-byte-identical controls.
+- **The typed wrapper release.** The `Body`-borrow post-call release is a
+  guarded shallow dec with no glue. Canonical release (§1) needs the
+  parameter's concrete type and the canonical `drop<T>`, with the located
+  refusal for a missing or non-concrete type. That is open work under §7.7.
+  - Unmeasured lead for `qa`: a compound `Borrowed` parameter passed as a
+    temporary through a value wrapper, where the wrapper holds the last
+    reference, would free the box without its children.
+- **The mirrored extern name rosters.** `apply.rs::is_extern_primitive` and
+  `fn_as_value.rs::is_extern_primitive_in_wrapper` still route dispatch.
+  `neq-string` is absent from both. After this change they decide no
+  convention; routing by the keyed realization is a Principle-24 routing
+  change, outside the approved proposal.
+  - Unverified lead for `qa`: the auto-curry direct-extern arm calls by name
+    through `Linkage::Import`, rather than GOT-indirect as
+    [BC §4a invariant 3](../arch/bounded-contexts.md#4a-primitives--cratescranelisp-primitives)
+    requires of primitive call sites. A curried extern in cache mode is
+    unobserved.
 
 ### 7.7 Order
 
@@ -666,7 +801,8 @@ byte-identical controls.
 | refusal frame | §7.1 | byte-identical (diagnostics only) |
 | census | §7.1 | byte-identical, debug-profile only |
 | structural close | §7.2; §7.3 reading zero; typecheck's face 2/3 obligations | census-gated; zero new refusals; scoped attributed re-baseline of the monomorphised accessor frames (e.g. `f4_sudoku` `Grid.cells`) |
-| wrapper discharge | §7.1 | scoped attributed re-baseline of affected extern wrapper bodies only |
+| extern entry convention (§7.6, ACT-0974) | — (co-lands with primitives) | scoped re-baseline attributed to ACT-0974: extern-shim wrapper bodies and `string-identity` callers only |
+| typed wrapper release (§7.6, excluded) | §7.6 | scoped attributed re-baseline of `Body`-borrow wrapper bodies only |
 
 ---
 
@@ -699,10 +835,19 @@ In addition to [transitive-drop-glue.md](transitive-drop-glue.md) §11:
     (§5.5).
 13. **A backend-side IO teardown walk** (§5.4).
 14. **A census reachable in a release build** (§7.3).
-15. **A name list, `DefKind::Primitive` proxy, module-name test or per-row branch
-    for wrapper discharge**, deleting every `Borrowed` wrapper post-dec, an
-    auto-curry-only path, a builtin bypass of the realization plan, a stacked
-    adapter, or changing a declaration to accommodate it (§7.6).
+15. **An entry convention decided outside the §7.6 derivation.** This covers:
+    - a name test, `DefKind`/origin proxy, module-name test or per-row branch;
+    - a declared `Mode` or `ParamFlow` read that selects an RC action at a call
+      or wrapper seam;
+    - an RC-action producer that accepts a `Mode`;
+    - a `_ =>` arm in the derivation, or a borrow answer from anything but a
+      `Body`;
+    - protect elision on an "owned, unverified" result;
+    - a value wrapper that selects a `borrowed_sibling`;
+    - an auto-curry-only path, a builtin bypass of the derivation or a stacked
+      adapter;
+    - deleting every wrapper post-call release regardless of kind;
+    - changing a declaration to accommodate the wrapper.
 16. **A golden re-baseline outside the items that declare one** (§7.7), or one
     taken without scoped attribution.
 
@@ -712,7 +857,8 @@ In addition to [transitive-drop-glue.md](transitive-drop-glue.md) §11:
 
 Rows sit beside their production owner per the crate's sibling convention. The
 delivered rows (0917, the IO arm, the `Pure` stamp and the platform-return tag
-dispatch, the shared nullary guard) are in source and are not repeated.
+dispatch, the shared nullary guard, and the §7.6 derivation and its three
+consumer seams) are in source and are not repeated.
 
 | Submodule | Positive | Edge | Negative |
 |---|---|---|---|
@@ -722,7 +868,6 @@ dispatch, the shared nullary guard) are in source and are not repeated.
 | `rc_emission::signature_heap_category` (§7.3, §7.4) | each concrete shape maps to its category; the census records frame partition and shape | a concrete sum with a nullary constructor is `Mixed` | both census legs; after the flip, a residual `Var` is a located error naming the frame and emits no RC op |
 | `compiler/context` constructor materialisation (§7.4) | field types at a concrete instantiation come from the one types projection | a nullary constructor has zero fields; arity mismatch is a keying error | `CtorField` cannot hold a residual; a residual instantiation is a located refusal at the reference's span; no second field-type read |
 | `vec_codegen` element inc pointer (§7.4) | a concrete element resolves its adapter | a scalar element needs none | a missing element type is a located refusal |
-| `fn_as_value` wrapper discharge (§7.6) | `Body + Borrowed` emits one typed dec; `ExternShim + Consumed` emits none | `IntoResult` preserves `string-identity`; value position and auto-curry consume the same plan once | the synthetic consuming-extern and borrowing-`Body` CLIF pair discriminates a kind-blind deletion; no name classifier; no stacked adapter |
 | category before provenance (§3.5) | — | — | no provenance-licensed RC emission is reachable without a preceding category gate |
 
 E2e acceptance is `qa`'s.

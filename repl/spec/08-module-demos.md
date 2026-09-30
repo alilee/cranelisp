@@ -9,7 +9,9 @@ When the module system is fully wired (Ring 2B), these 7 REPL scenarios validate
 user> /mod math
 math>
 ```
-The prompt changes to reflect the active module. Definitions entered now belong to `math`. The `/mod` command MUST NOT print a confirmation message — the prompt change is sufficient feedback.
+The prompt changes to reflect the active module. `math` is an existing module, such as
+`math.cl` in the project root; `/mod` never creates a module (§3.9). Definitions entered now
+belong to `math`. The `/mod` command MUST NOT print a confirmation message — the prompt change is sufficient feedback.
 
 **Scenario 2: `/mod user` switches back**
 ```
@@ -68,9 +70,11 @@ user>
 ```
 Bare `/mod` with no argument switches back to the entry module (§0.5). The transcript shows a session started without a target, whose entry module is `user`. The current module is always visible in the prompt, so a "show current" command is redundant. `/mod` is the quickest way home.
 
-**Scenario 7: Unknown module gives clear error**
+**Scenario 7: Unknown module gives clear error** [Tested+Neg tests/repl_lifecycle::mod_unknown_module_neg_not_created_and_active_module_unchanged — the error names the module; the prompt, the definition's module and `/exports` show nothing was created, and no file is written]
 ```
 user> /mod nonexistent
-Error: Module 'nonexistent' not found. Use /mod <name> to create a new module.
+Error: Module 'nonexistent' not found.
+user>
 ```
-The error message is actionable — it tells the user what to do next.
+`/mod` never creates a module (§3.9): the error names the missing module, and the prompt stays
+on the current module.

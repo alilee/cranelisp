@@ -14,6 +14,7 @@ use cranelisp_types::{
     Span, Symbol, Type,
 };
 
+use crate::compiler::entry_convention::{EntryConvention, ParamKind};
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
 
@@ -53,6 +54,9 @@ mod value_use_tests;
 
 #[cfg(test)]
 mod keyed_miss_tests;
+
+#[cfg(test)]
+mod entry_adaptation_tests;
 
 /// Borrowed-builder form of `FnCompiler::emit_adt_construct` (apply.rs): emit an
 /// ADT construction (`alloc` + tag + field stores) onto an arbitrary `builder`,
@@ -433,25 +437,22 @@ where
     /// §3.4 adaptation algebra (`design/backend/ownership-codegen.md` §3.4): emit
     /// the per-edge delta between the closure-protocol Decision-24 convention
     /// (every param arrives owned/consumed, result is Fresh/owned) and the
-    /// target's moded [`ModeSummary`], onto a wrapper's borrowed `builder` AFTER
-    /// the target call returns. ONE helper, and the sole consumers all reach it
-    /// through [`Self::emit_wrapper_call`] (the fn-as-value / trait-method-value
-    /// wrapper bodies and the auto-curry target call) — no per-site reinvention
-    /// (Principle 7), no stacked adapters.
+    /// target's derived [`EntryConvention`], onto a wrapper's borrowed `builder`
+    /// AFTER the target call returns. ONE helper, reached by every wrapper
+    /// target call — [`Self::emit_wrapper_call`] (the fn-as-value /
+    /// trait-method-value wrapper bodies and the auto-curry GOT arm) and the
+    /// auto-curry direct-extern arms — no per-site reinvention (Principle 7), no
+    /// stacked adapters.
     ///
-    /// - param `Owned→Borrowed` ⇒ **post-call dec** of the received-owned arg:
-    ///   the wrapper owns its params (closure protocol) but the moded callee
-    ///   borrowed (did not dec) the `Borrowed` positions, so the wrapper releases
-    ///   them.
-    /// - result `ProjectionOf→Fresh` ⇒ **materialization inc**: the moded callee
-    ///   returned a borrowed view rooted in a param, but the closure protocol
-    ///   owes the caller a fresh owned value.
-    /// - everything else (Owned/Copy params, `AliasOf`/`Fresh` result) ⇒
-    ///   pass-through.
+    /// - a `Borrow` param ⇒ **post-call dec** of the received-owned arg: the
+    ///   wrapper owns its params (closure protocol) but the callee borrowed (did
+    ///   not dec) that position, so the wrapper releases it. Only a compiled
+    ///   body derives `Borrow`; an extern shim consumes, whatever it declares.
+    /// - every other position ⇒ pass-through.
     ///
     /// Guarded RC ops throughout (layout-safe for AlwaysHeap and Mixed alike).
-    /// Reached ONLY for a non-ABI-conservative summary, so with analysis off it
-    /// never runs — the wrapper body is byte-identical to today (§2.2).
+    /// With analysis off no body carries a non-conservative summary, so nothing
+    /// is emitted and the wrapper body is byte-identical (§2.2).
     ///
     /// **No result materialization inc (FIXME 0522 reconcile, option B).** A
     /// moded callee ALWAYS returns its `ProjectionOf`/`AliasOf` result carrying an
@@ -470,16 +471,37 @@ where
     fn emit_d24_adaptation(
         &mut self,
         builder: &mut FunctionBuilder,
-        summary: &cranelisp_types::ModeSummary,
+        convention: &EntryConvention,
         args: &[Value],
-        _result: Value,
     ) {
         let dealloc_id = self.ctx.dealloc_func_id;
         for (i, &arg) in args.iter().enumerate() {
-            if summary.param_mode(i) == cranelisp_types::Mode::Borrowed {
-                heap::emit_rc_dec_guarded(builder, self.module, arg, dealloc_id, None, true);
+            match convention.param(i) {
+                ParamKind::Borrow => {
+                    heap::emit_rc_dec_guarded(builder, self.module, arg, dealloc_id, None, true)
+                }
+                ParamKind::Consume | ParamKind::NoReference => {}
             }
         }
+    }
+
+    /// Call the extern `name` from a wrapper body by name and adapt the call
+    /// against the derived convention of its `{primitives, name}` entry; an
+    /// absent entry consumes.
+    fn emit_adapted_extern_call_in_wrapper(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        name: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let convention = self.ctx.entry_convention_at(Some(&FQSymbol {
+            module: ModuleFullPath::from("primitives"),
+            symbol: Symbol::from(name),
+        }));
+        let result = emit_extern_call_in_wrapper(builder, self.module, name, args, span)?;
+        self.emit_d24_adaptation(builder, &convention, args);
+        Ok(result)
     }
 
     /// Emit the call instruction inside a wrapper function body.
@@ -489,16 +511,15 @@ where
     /// using the uniform `__cranelisp_got_{module}` data-symbol strategy
     /// (design/backend/compile-to-module.md §12).
     ///
-    /// §3.5 R2 wrapper coupling: when the resolved call target carries a
-    /// **non-trivial** ownership summary (any param non-`Owned`, or result
-    /// non-`Fresh`), the moded-body call is wrapped with [`Self::emit_d24_adaptation`]
-    /// so the closure-reachable code pointer (this wrapper) is Decision-24
-    /// conformant. THE INVARIANT: every code pointer reachable from a closure
-    /// value targets a Decision-24-conformant entry; a moded body is reachable
-    /// ONLY through statically-resolved call sites (§3.1) and these adapter
-    /// wrapper bodies — its address never escapes into a closure unadapted.
-    /// A summary-trivial (or absent) target synthesizes directly over the body
-    /// call as today (zero new emission — byte-identical-off).
+    /// §3.5 R2 wrapper coupling: the target call is adapted with
+    /// [`Self::emit_d24_adaptation`] against the target's derived entry
+    /// convention, so the closure-reachable code pointer (this wrapper) is
+    /// Decision-24 conformant. THE INVARIANT: every code pointer reachable from
+    /// a closure value targets a Decision-24-conformant entry; a moded body is
+    /// reachable ONLY through statically-resolved call sites (§3.1) and these
+    /// adapter wrapper bodies — its address never escapes into a closure
+    /// unadapted. A consuming target (every extern shim, and a body with no
+    /// borrowed parameter) needs no adaptation, so nothing is emitted.
     fn emit_wrapper_call(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -514,15 +535,9 @@ where
         // — Rev-2, no name-resolver fallback).
         target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // §3.5 / S110 W2 (S15): the target's summary, kept only when
-        // non-ABI-conservative — the moded-body arms below adapt against it.
-        // Keyed read off the carrier (`callee_summary_at`) replacing
-        // `resolve_callee_summary`. `None` for every summary-trivial or
-        // non-summary target (constructors, inline vec primitives, unanalysed
-        // fns), so those arms emit exactly today's shape.
-        let target_summary = target_fq
-            .and_then(|fq| self.ctx.callee_summary_at(fq))
-            .filter(|s| !s.is_abi_conservative());
+        // §3.5 / S110 W2 (S15): the target's derived entry convention, keyed off
+        // the carrier. The call arms below adapt against it.
+        let convention = self.ctx.entry_convention_at(target_fq);
 
         // If the function is declared in the current compilation unit, emit a
         // direct call — cheaper and avoids an unnecessary GOT dereference. User
@@ -532,9 +547,7 @@ where
             let target_ref = self.module.declare_func_in_func(*target_id, builder.func);
             let call = builder.ins().call(target_ref, user_params);
             let result = builder.inst_results(call)[0];
-            if let Some(ref summary) = target_summary {
-                self.emit_d24_adaptation(builder, summary, user_params, result);
-            }
+            self.emit_d24_adaptation(builder, &convention, user_params);
             return Ok(result);
         }
 
@@ -647,13 +660,11 @@ where
 
         let call = builder.ins().call_indirect(sig_ref, func_ptr, user_params);
         let result = builder.inst_results(call)[0];
-        // §3.5: adapt the moded-body call so this wrapper (the closure-reachable
-        // code pointer) is Decision-24 conformant. `None` ⇒ no emission (today's
-        // shape). Auto-curry composes here directly (it reaches this arm through
-        // `emit_curry_target_call`) — one adapter, never stacked.
-        if let Some(ref summary) = target_summary {
-            self.emit_d24_adaptation(builder, summary, user_params, result);
-        }
+        // §3.5: adapt the target call so this wrapper (the closure-reachable
+        // code pointer) is Decision-24 conformant. Auto-curry composes here
+        // directly (it reaches this arm through `emit_curry_target_call`) — one
+        // adapter, never stacked.
+        self.emit_d24_adaptation(builder, &convention, user_params);
         Ok(result)
     }
 
@@ -672,7 +683,7 @@ where
         trait_resolution: Option<&ResolvedCall>,
         vec_elem: Option<&Type>,
         // S110 W2 (§4): the plain-fn target's STORAGE key (the auto-curry Apply
-        // carrier / the fn-as-value Var carrier), used for the summary-trivial
+        // carrier / the fn-as-value Var carrier), used for the
         // `_ =>`/no-resolution fall-throughs. The TraitMethod and BuiltinFn arms
         // derive their OWN carrier from the resolution product (the mangled entry
         // lives in `impl_module`; a vec-query primitive lives in `primitives`),
@@ -746,12 +757,8 @@ where
                     }
                     // Named builtin resolved by the typechecker.
                     if is_extern_primitive_in_wrapper(jit_name) {
-                        return emit_extern_call_in_wrapper(
-                            builder,
-                            self.module,
-                            jit_name,
-                            all_args,
-                            span,
+                        return self.emit_adapted_extern_call_in_wrapper(
+                            builder, jit_name, all_args, span,
                         );
                     }
                     if primitives_inline::is_known_builtin(jit_name) {
@@ -787,13 +794,8 @@ where
                         }
                     }
                     // Unknown builtin: treat as extern.
-                    return emit_extern_call_in_wrapper(
-                        builder,
-                        self.module,
-                        jit_name,
-                        all_args,
-                        span,
-                    );
+                    return self
+                        .emit_adapted_extern_call_in_wrapper(builder, jit_name, all_args, span);
                 }
                 _ => {} // SigDispatch, AutoCurry — fall through to emit_wrapper_call
             }
@@ -1181,7 +1183,9 @@ fn is_extern_primitive_in_wrapper(name: &str) -> bool {
 }
 
 /// Emit an extern function call inside a wrapper function body.
-/// Used by auto-curry wrappers to call extern primitives like `str-eq`, and by
+/// Used by auto-curry wrappers to call extern primitives like `str-eq` (through
+/// `FnCompiler::emit_adapted_extern_call_in_wrapper`, which adapts the call to
+/// the entry's derived convention), and by
 /// the vec-query COW emission cores (`vec_codegen`) for the
 /// `vec-set-copy`/`vec-push-copy`/`vec-push-grow` runtime externs when emitting
 /// into a borrowed builder (wrapper bodies build in a separate Cranelift

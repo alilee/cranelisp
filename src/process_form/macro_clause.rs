@@ -23,13 +23,14 @@ pub(super) enum MacroCheckpoint {
 /// Compile and immediately publish one complete parent-plus-clause generation.
 ///
 /// The publication records the attempt's macro-head modules and the clause
-/// bodies' own lookup dependencies (`design/int/int.md` §7.6.2).
+/// bodies' own lookup dependencies (`design/int/int.md` §7.6.2), and is
+/// refused when it would close a module cycle (§6.11).
 pub(super) fn compile_macro_checkpoint(
     env: &MacroClauseEnv<'_>,
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     macro_sexp: &cranelisp_types::Sexp,
-    macro_lookup_dependencies: &std::collections::BTreeSet<ModuleFullPath>,
+    attempt: &super::AttemptFacts,
 ) -> Result<MacroCheckpoint, CranelispError> {
     let span = macro_sexp.span();
     let shared = env.shared_state.ok_or_else(|| CranelispError::MacroError {
@@ -117,22 +118,27 @@ pub(super) fn compile_macro_checkpoint(
         )
         .map_err(|error| lifecycle_error(&info.name, span, error))?;
     staging.next_seq = seq.saturating_add(1);
+    // The clause bodies were checked in the scratch table, which is not
+    // published, so their lookup dependencies move to the macro's table.
+    let lookup_dependencies: std::collections::BTreeSet<ModuleFullPath> = clause_staging
+        .lookup_dependencies()
+        .chain(&attempt.macro_lookup_dependencies)
+        .cloned()
+        .collect();
     let mut prepared = crate::worker::plan_staging_commit(
         env.symbol_tables,
         module,
         staging,
         &program,
         shared,
-        &[],
+        &crate::worker::PublicationCheck {
+            lookup_dependencies: &lookup_dependencies,
+            later_members: attempt.later_members(),
+            working: &program,
+        },
     )?;
     prepared.unresolved_dispatch = checked.unresolved_dispatch;
-    // The clause bodies were checked in the scratch table, which is not
-    // published, so their lookup dependencies move to the macro's table here.
-    prepared.record_lookup_dependencies(
-        clause_staging
-            .lookup_dependencies()
-            .chain(macro_lookup_dependencies),
-    );
+    prepared.record_lookup_dependencies(&lookup_dependencies);
     let mut processed =
         crate::cluster::ProcessedCluster::from_parts(Vec::new(), Vec::new(), Vec::new());
     processed.set_prepared(prepared);

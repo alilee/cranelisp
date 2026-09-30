@@ -57,24 +57,27 @@ function %build-grid(i64, i64, i64) -> i64 system_v {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
-    sig3 = (i64, i64) -> i64 system_v
-    sig4 = (i64, i64, i64) -> i64 system_v
-    sig5 = (i64) system_v
-    sig6 = (i64) system_v
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64, i64) -> i64 system_v
+    sig5 = (i64, i64, i64) -> i64 system_v
+    sig6 = (i64, i64) system_v
+    sig7 = (i64) system_v
     fn0 = u0:0 sig1
     fn1 = colocated u0:54 sig2
-    fn2 = u0:25 sig3
-    fn3 = u0:24 sig4
-    fn4 = colocated u0:51 sig5
-    fn5 = colocated u0:51 sig6
+    fn2 = colocated u0:53 sig3
+    fn3 = u0:25 sig4
+    fn4 = u0:24 sig5
+    fn5 = u0:14 sig6
+    fn6 = colocated u0:51 sig7
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
 
 block1(v3: i64, v4: i64, v5: i64):
-    v41 -> v3
-    v37 -> v4
-    v40 -> v5
+    v39 -> v4
+    v40 -> v4
+    v43 -> v5
+    v44 -> v5
     v6 = icmp eq v4, v5
     v7 = uextend.i64 v6
     brif v7, block2, block3
@@ -96,55 +99,64 @@ block3:
     store notrap aligned v18, v17+16  ; v18 = 0
     store notrap aligned v15, v17+24
     v19 = func_addr.i64 fn1
-    v20 = load.i64 notrap aligned v3+8
-    v21 = iconst.i64 1
-    v22 = icmp eq v20, v21  ; v21 = 1
-    brif v22, block5, block6
+    v20 = func_addr.i64 fn2
+    v21 = load.i64 notrap aligned v3+8
+    v22 = iconst.i64 1
+    v23 = icmp eq v21, v22  ; v22 = 1
+    brif v23, block5, block6
 
 block5:
-    v24 = iadd_imm.i64 v3, 8
-    v25 = iconst.i64 1
-    v26 = atomic_rmw.i64 add v24, v25  ; v25 = 1
-    v27 = load.i64 notrap aligned v3+16
-    v28 = load.i64 notrap aligned v3+24
-    v29 = icmp slt v27, v28
-    brif v29, block8, block9
+    v25 = load.i64 notrap aligned v3+16
+    v26 = load.i64 notrap aligned v3+24
+    v27 = icmp slt v25, v26
+    brif v27, block8, block9
 
 block8:
-    v30 = load.i64 notrap aligned v3+32
-    v31 = iconst.i64 8
-    v32 = imul.i64 v27, v31  ; v31 = 8
-    v33 = iadd v30, v32
-    store.i64 notrap aligned v17, v33
-    v34 = iadd_imm.i64 v27, 1
-    store notrap aligned v34, v3+16
+    v28 = load.i64 notrap aligned v3+32
+    v29 = iconst.i64 8
+    v30 = imul.i64 v25, v29  ; v29 = 8
+    v31 = iadd v28, v30
+    store.i64 notrap aligned v17, v31
+    v32 = iadd_imm.i64 v25, 1
+    store notrap aligned v32, v3+16
     jump block7(v3)
 
 block9:
-    v35 = call fn2(v3, v17)
-    jump block7(v35)
+    v33 = call fn3(v3, v17)
+    jump block7(v33)
 
 block6:
-    v36 = call fn3(v3, v17, v19)
-    jump block7(v36)
+    v34 = call fn4(v3, v17, v19)
+    v35 = iadd_imm.i64 v3, 8
+    v36 = iconst.i64 1
+    v37 = atomic_rmw.i64 sub v35, v36  ; v36 = 1
+    v38 = icmp eq v37, v36  ; v36 = 1
+    brif v38, block11, block10
 
-block7(v23: i64):
-    v38 = iconst.i64 1
-    v39 = iadd.i64 v4, v38  ; v38 = 1
-    call fn4(v3)
-    jump block1(v23, v39, v5)
+block11:
+    fence 
+    call fn5(v3, v20)
+    jump block10
 
 block10:
-    v48 = iconst.i64 0
-    v47 -> v48
-    v42 = iconst.i64 0
-    jump block4(v42, v48)  ; v42 = 0, v48 = 0
+    jump block7(v34)
 
-block4(v8: i64, v46: i64):
-    v43 = iadd_imm v8, 8
-    v44 = iconst.i64 1
-    v45 = atomic_rmw.i64 add v43, v44  ; v44 = 1
-    call fn5(v46)
+block7(v24: i64):
+    v41 = iconst.i64 1
+    v42 = iadd.i64 v4, v41  ; v41 = 1
+    jump block1(v24, v42, v5)
+
+block12:
+    v51 = iconst.i64 0
+    v50 -> v51
+    v45 = iconst.i64 0
+    jump block4(v45, v51)  ; v45 = 0, v51 = 0
+
+block4(v8: i64, v49: i64):
+    v46 = iadd_imm v8, 8
+    v47 = iconst.i64 1
+    v48 = atomic_rmw.i64 add v46, v47  ; v47 = 1
+    call fn6(v49)
     return v8
 }
 ; === end CLIF user::build-grid ===

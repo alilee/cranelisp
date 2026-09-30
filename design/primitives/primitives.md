@@ -105,10 +105,14 @@ tests.
 ### 2.3 Implementation bodies
 
 Category modules own the behavior of scalar, conversion, String, marshalling
-and Sexp operations. Extern wrappers follow the Decision-24 consuming
-convention: every heap-typed argument that is not returned is discharged at the
-wrapper boundary. Private bodies express that convention in their signatures
-(§2.4); it does not vary per call site.
+and Sexp operations. Every extern wrapper is a primary entry under the uniform
+consuming convention of
+[BC §4a invariant 8](../arch/bounded-contexts.md#4a-primitives--cratescranelisp-primitives):
+it takes ownership of every heap argument, which its body discharges once or
+moves, as that same reference, into its result; a heap result is transferred
+owned. Private bodies express that convention in their signatures (§2.4). It
+does not vary per row or per call site, and declared ownership facts do not
+alter it (§3.2).
 
 Backend inline substitution for an extern row is an optional optimisation that
 must preserve the named operation's semantics; indirect calls stay valid
@@ -122,24 +126,35 @@ raw words to the private body's parameter types on entry and the body's result
 back to a raw word on return. Typing changes no exported symbol, arity, word,
 GOT slot or `ModeSummary`.
 
-**Derivation.** For each parameter the kind is:
+Changing a row's kinds changes no serialized cache shape. It does move the
+caller-side RC contract that backend's cached objects bake in, so it lands with
+backend's value-only `CACHE_SCHEMA_VERSION` bump
+([module caching §14.2](../backend/module-caching.md#142-cache_schema_version-ownership)).
 
-| Declared parameter | Kind |
+**Derivation.** Each parameter and result kind follows from the declared
+type alone:
+
+| Declared parameter or result | Kind |
 |---|---|
 | `Int`, `Bool` or `Float` | scalar `i64` |
-| heap-carried, `ParamFlow::IntoResult` | `Borrowed<'_>` |
-| heap-carried, any consuming flow | `Owned` |
+| heap-carried | `Owned` |
 
-- The axis is `ParamFlow`, never `Mode`. The only-read String rows keep
-  `Mode::Borrowed` as the analysis fact while their ABI still consumes, so
-  their bodies take `Owned` and discharge once.
-- `string-identity` is the sole `IntoResult` row: its body borrows, mints one
-  owner for the result and discharges nothing.
+- Neither `Mode` nor `ParamFlow` is an input. The declared summary is an
+  analysis fact that the row keeps unchanged: the only-read String rows declare
+  `Mode::Borrowed`, and `string-identity` declares `Owned`, `IntoResult` and
+  `AliasOf(0)`. Their bodies all take `Owned`.
+- `string-identity`'s body moves its owner into its result. It neither mints
+  nor discharges, as its `AliasOf(0)` declaration states.
+- The wrapper admits exactly these two kinds. The private conversion trait is
+  implemented for `i64` and `Owned` only, so a `Borrowed` token in a `shim:`
+  clause, as parameter or result, does not compile. A compile-fail case proves
+  the rejection, and the trusted-base guard pins the implementing set.
 - The row's `shim:` clause writes each private parameter and result type once.
   The macro uses those tokens both for the entry/exit conversion and for the
   row's ABI-kind data. rustc ties the tokens to the body; a declaration unit
-  ties them to the declared type and `ParamFlow`; a compile-fail case proves a
-  contradictory token/body pair is rejected.
+  ties them to the declared type, which catches, for example, an `i64` token
+  on a String parameter that would skip its discharge; a compile-fail case
+  proves a contradictory token/body pair is rejected.
 - `UserInline` rows carry no wrapper tokens. Scalar `HarvestExtern` rows derive
   scalar kinds. `sconcat` is the one named exemption, because Binary/int seeds
   its Cranelisp type; rustc still checks its tokens against its body. Adding a
@@ -164,8 +179,10 @@ GOT slot or `ModeSummary`.
 - Raw field accessors and pre-initialisation allocator outputs stay raw
   representation seams. Typing adds no general panic-cleanup regime.
 
-**Trusted base.** Beyond the wrapper's entry conversion and ABI return, three
-private operations touch raw handles, each at an exact approved site set:
+**Trusted base.** The wrapper's entry conversion adopts each heap argument as
+an owner, and its ABI return transfers a heap result's owner to the caller.
+Beyond those, three private
+operations touch raw handles, each at an exact approved site set:
 
 - a produced-value adapter, whose precondition is a fully initialised fresh
   RC=1 value, a canonical produced nullary value, or `quote-sexp`'s existing
@@ -181,7 +198,7 @@ and their counts are recorded in the [shared trusted base](../runtime/s119-typed
 makes the assertions enumerable; it does not prove raw provenance. Adding an
 operation or site changes the shared trusted base: route it to `arch` and the
 user before implementation. The current base adds no public item, C ABI,
-Cargo edge, cache schema, heap layout or language behavior.
+Cargo edge, serialized cache shape, heap layout or language behavior.
 
 ## 3. Data flows
 
@@ -208,13 +225,19 @@ maintained list.
 ### 3.2 Ownership declarations
 
 Every user-callable row carries a finished `ModeSummary`. Scalar parameters are
-`Copy`; only-read heap parameters may be `Borrowed` even though the extern ABI
-consumes them; transforming operations use owned/fresh results; identity uses
-`AliasOf`; element reads use `ProjectionOf`; conditional copy-on-write Vec
-operations use `MayAliasOf`. Absence is the conservative default only outside
-the heap-parameter set; user-callable heap declarations must carry a summary.
+`Copy`; only-read heap parameters may be `Borrowed` even though the extern entry
+takes ownership of them; transforming operations use owned/fresh results;
+identity uses `AliasOf`; element reads use `ProjectionOf`; conditional
+copy-on-write Vec operations use `MayAliasOf`. Absence is the conservative
+default only outside the heap-parameter set; user-callable heap declarations
+must carry a summary.
 
-A row whose emission borrows a parameter and may return it must declare
+The summary describes the operation's language-level ownership for analysis.
+It is not the extern entry's calling convention, which is uniform (§2.3):
+statically resolved call sites adapt to the declared facts, and no extern entry
+realizes them.
+
+A row whose inline emission borrows a parameter and may return it must declare
 `MayAliasOf`, never `Fresh`: a false `Fresh` lets return-protect elision free a
 value the caller still owns.
 
@@ -240,10 +263,11 @@ facts; `vec-set` and `vec-push` implement their unique/shared COW branches;
 `vec-len` reads the length word and releases the Vec it consumed. Changing
 declaration metadata must not rewrite those mechanics.
 
-The declarations are the authority for the wrapper adaptation used when a
-primitive is a value. Backend owns that emission and must match declared
-`ParamFlow`; that repair is open in the
-[backend release contract](../backend/non-concrete-release-contract.md#76-decision-24-wrapper-discharge-follows-realization-open).
+When an extern primitive is used as a value, backend's wrapper calls the same
+uniformly consuming entry and does not adapt to the declared summary. Backend
+derives that convention from the callable's realization; its
+[release contract](../backend/non-concrete-release-contract.md) §7.6 owns the
+derivation.
 
 ### 3.3 String/Vec representation boundary
 
@@ -281,11 +305,12 @@ arithmetic.
    are shared through session concretisation.
 6. Every primitive entry has `CallableOrigin::RustPrimitive` and no compiled-code owner;
    callable addresses live only in the GOT.
-7. The extern language-call boundary consumes the heap arguments it does not
-   return, by type: a consumed heap parameter reaches its body as `Owned`, a
-   retained one as `Borrowed`. A missing discharge is a `#[must_use]` warning
-   and a debug drop bomb; a second discharge does not compile.
-   `string-identity` is the one retained parameter.
+7. Every extern entry takes ownership of every heap argument, by type: each
+   heap parameter reaches its body as `Owned`, which the body discharges once
+   or moves into its result, and a heap result leaves as `Owned`. No shim
+   parameter or result is `Borrowed`; such a token does not compile. A missing
+   discharge is a `#[must_use]` warning and a debug drop bomb; a second
+   discharge does not compile. There is no per-row exception.
 8. Backend substitution is optional and trait-ignorant; the named primitive
    remains the semantic authority.
 9. Intrinsics is the sole Vec representation owner. Primitive String code uses
@@ -321,15 +346,18 @@ arithmetic.
 Tests mirror the module composition (Principles 5 and 23):
 
 - declaration tests cover every legal variant, compile-fail illegal macro
-  shapes (including a token/body contradiction), duplicates, missing heap
-  ownership, token-versus-declaration ABI kinds and exact inventory projection;
+  shapes (including a token/body contradiction and a `Borrowed` shim token),
+  duplicates, missing heap ownership, token-versus-declared-type ABI kinds and
+  exact inventory projection, which also pins every declared summary unchanged;
 - a source-structure guard keeps primitive function exports inside the
-  declaration macro, and the trusted-base guard pins each raw-handle site;
+  declaration macro, and the trusted-base guard pins each raw-handle site and
+  the conversion trait's implementing set;
 - table/GOT tests call through loaded slots and verify static backing,
   primitive origin, the absence of a compiled-code owner, the inline/no-slot Vec family, schemes, docs and
   declared summaries;
 - category units cover operation behavior and extern-boundary RC balance,
-  including exactly-once child transfer for `split`;
+  including exactly-once child transfer for `split` and `string-identity`
+  returning its argument's reference so that one release frees it;
 - marshal units assert the structural-embedding rule across sizes: one mint
   per embed, one per copied item;
 - production CLIF witnesses cover `Borrowed` parameter polarity and the
@@ -370,7 +398,8 @@ made only to turn a test red remains excluded.
 | Declaration/export/harvest drift | one macro inventory generates every projection |
 | Invalid body/publication combination | closed `PrimitiveDecl` variants |
 | Null GOT target or slotted polymorphic row | extern allocation and population are one projection; inline has no slot; slot minting refuses non-concrete schemes |
-| Missed or doubled heap discharge in a body | `Owned`/`Borrowed` signatures derived from `ParamFlow`; token/body compile-fail case |
+| Missed or doubled heap discharge in a body | `Owned` at every heap shim position, derived from the declared type; token/body compile-fail case |
+| An extern entry borrowing a heap argument or returning a borrowed result | no borrowed conversion kind; `Borrowed`-token compile-fail case; implementing-set pin in the trusted-base guard |
 | Raw-handle misuse | exact trusted-base site guard (§2.4) |
 | False or missing heap ownership fact | summary required in each user row; transfer, CLIF and public-mode evidence |
 | Primitive/backend coupling | dependency severance; communication through types and the mounted table |
@@ -395,6 +424,9 @@ until complete.
   grows the backend uniform-realization roster.
 - **A `Mode`-keyed ABI derivation** — would give the only-read String rows
   borrowed handles and silently delete their Decision-24 discharges.
+- **A `ParamFlow`-keyed borrowed shim kind** — makes one row's entry realize an
+  analysis fact, so every backend call path must mirror a per-row convention.
+  The entry convention is uniform (BC §4a invariant 8).
 - **Weakening a declaration to fit a backend wrapper** — the declaration is the
   authority; the emission must match it.
 - **Declaration mutations that alter inline Vec bodies** — inline CLIF is body

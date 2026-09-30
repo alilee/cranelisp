@@ -912,8 +912,18 @@ pub enum Realization<C: crate::CodeStore = ()> {
         code: Option<C>,
     },
     /// Hand-written Rust extern shim stored into the slot at registration.
+    ///
+    /// The slot's primary entry follows the uniform consuming convention with
+    /// no exception: it takes ownership of every heap argument, releasing it
+    /// or moving that same reference into its result, and transfers any heap
+    /// result owned. The callable's declared [`ModeSummary`] is an analysis
+    /// fact that statically-resolved call sites adapt to; no primary entry
+    /// realizes a `Borrowed` parameter or an `IntoResult` flow, and value
+    /// wrappers do not adapt to it (`design/arch/ownership-inference.md` §3.1).
     ExternShim {
-        /// Optional sibling slot using the borrowed calling convention.
+        /// Optional sibling slot using the borrowed calling convention, chosen
+        /// explicitly by statically-resolved call sites and never by a value
+        /// wrapper.
         borrowed_sibling: Option<CallableSlot>,
     },
     /// Platform DLL owns and populates the manifest-indexed slot.

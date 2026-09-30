@@ -463,15 +463,17 @@ pub(crate) fn prepare_cluster_commit(
         OwedFacts {
             lookup_dependencies: &std::collections::BTreeSet::new(),
         },
-        None,
+        &crate::scheduler::SourceProvenance::Increment,
         shared,
     )
 }
 
-/// Check one cluster into a prepared publication. A whole-file rebuild
-/// supplies its module's `established_reference`, against which the type pass
-/// compares staged types (`design/int/session-transaction.md` §7.3.2); every
-/// other attempt compares against the live table.
+/// Check one cluster into a prepared publication. A whole-file rebuild's
+/// `provenance` supplies its module's established reference, against which
+/// the type pass compares staged types (`design/int/session-transaction.md`
+/// §7.3.2); every other attempt compares against the live table. A cluster
+/// whose publication would close a module cycle is refused
+/// (`design/int/int.md` §6.11).
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_cluster_commit_with_demands(
@@ -481,7 +483,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     module: &ModuleFullPath,
     programs: ClusterPrograms<'_>,
     owed: OwedFacts<'_>,
-    established_reference: Option<&crate::code::SessionSymbolTable>,
+    provenance: &crate::scheduler::SourceProvenance,
     shared: &crate::session_v4::SharedState,
 ) -> Result<
     Option<
@@ -514,6 +516,13 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         Ok(checked) => checked,
         Err(gap) => return Ok(Some(Err(gap))),
     };
+    let (established_reference, later_members) = match provenance {
+        crate::scheduler::SourceProvenance::WholeSource {
+            reference,
+            later_members,
+        } => (Some(reference.as_ref()), Some(later_members.as_ref())),
+        crate::scheduler::SourceProvenance::Increment => (None, None),
+    };
     validate_guarded_staging(
         symbol_tables,
         module,
@@ -521,7 +530,6 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         established_reference,
         Some(&shared.scheduler),
     )?;
-    let demands = capture_affected_mono_demands(symbol_tables, module, &checked.staging)?;
     let prepared = finish_prepared_commit(
         symbol_tables,
         module_aliases,
@@ -529,7 +537,11 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         module,
         programs.codegen,
         checked,
-        &demands,
+        PublicationCheck {
+            lookup_dependencies: owed.lookup_dependencies,
+            later_members,
+            working: programs.working,
+        },
         shared,
     )?;
     Ok(prepared.map(|prepared| {
@@ -540,6 +552,146 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     }))
 }
 
+/// What the publication cycle check of one prepared generation reads beside
+/// its staged table (`design/int/int.md` §6.11): the lookup dependencies it
+/// owes, the members its reload pass rebuilds later, and the checked program
+/// that locates a refusal.
+pub(crate) struct PublicationCheck<'a> {
+    pub(crate) lookup_dependencies: &'a std::collections::BTreeSet<ModuleFullPath>,
+    pub(crate) later_members: Option<&'a std::collections::BTreeSet<ModuleFullPath>>,
+    pub(crate) working: &'a [TopLevel],
+}
+
+/// Refuse a generation of `module` whose publication would close a module
+/// cycle, recording the module it would reach first as `module`'s failure
+/// dependency (`design/int/int.md` §6.11; `design/int/repl-lifecycle.md`
+/// §1.2.1). The error is located at the program's first reference to that
+/// module, else at its head.
+fn refuse_publication_cycle(
+    shared: &crate::session_v4::SharedState,
+    module: &ModuleFullPath,
+    staging: &crate::code::SessionSymbolTable,
+    check: &PublicationCheck<'_>,
+) -> Result<(), CranelispError> {
+    let Some(cycle) = publication_cycle(
+        &shared.symbol_tables,
+        &shared.prelude_fallback,
+        PublicationEdges {
+            module,
+            staging,
+            lookup_dependencies: check.lookup_dependencies,
+        },
+        check.later_members,
+    ) else {
+        return Ok(());
+    };
+    let reached = &cycle.cycle[1];
+    shared
+        .scheduler
+        .record_failure_dependencies(module, [reached.clone()]);
+    let working = check.working;
+    let first_reference = staging
+        .all_symbols()
+        .flat_map(|(_, binding)| crate::callee_edges::binding_callees(binding))
+        .find(|callee| callee.module == *reached)
+        .map(|callee| {
+            crate::process_form::gap_reference_span(
+                working,
+                &crate::process_form::GapReference {
+                    module: reached,
+                    member: callee.symbol.as_ref(),
+                    referring_module: module,
+                    module_aliases: &shared.module_aliases,
+                },
+            )
+        })
+        .filter(|span| *span != Span::SYNTHETIC);
+    let span = first_reference
+        .or_else(|| {
+            working.first().map(|head| match head {
+                TopLevel::Defn(defn) => defn.span,
+                TopLevel::TypeDef { span, .. } => *span,
+                TopLevel::TraitDecl(decl) => decl.span,
+                TopLevel::TraitImpl(impl_) => impl_.span,
+                TopLevel::Expr(expr) => expr.span(),
+            })
+        })
+        .unwrap_or(Span::SYNTHETIC);
+    Err(CranelispError::ModuleError {
+        message: format!("circular dependency detected: {}", cycle.render()),
+        location: ErrorLocation::from_span_file(span, None),
+    })
+}
+
+/// The edges a prepared cluster of `module` would publish: its staged table's,
+/// its owed lookup dependencies, and those `module`'s live table already holds.
+pub(crate) struct PublicationEdges<'a> {
+    pub(crate) module: &'a ModuleFullPath,
+    pub(crate) staging: &'a crate::code::SessionSymbolTable,
+    pub(crate) lookup_dependencies: &'a std::collections::BTreeSet<ModuleFullPath>,
+}
+
+/// The cycle through `module` that publishing `edges` would close, walking
+/// every other module's live-table reload edges except those of
+/// `later_members`, which have not yet settled (`design/int/int.md` §6.11).
+/// A module's edges include the prelude when its fallback bit is on (§6.12).
+pub(crate) fn publication_cycle(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    edges: PublicationEdges<'_>,
+    later_members: Option<&std::collections::BTreeSet<ModuleFullPath>>,
+) -> Option<crate::scheduler::CycleError> {
+    use crate::cache::dependency_record::reload_edges;
+    let module = edges.module;
+    let fallback_of = |of: &ModuleFullPath| prelude_fallback.get(of).is_some_and(|bit| *bit);
+    let live_edges = |of: &ModuleFullPath| {
+        symbol_tables
+            .get(of)
+            .map(|table| reload_edges(of, &table, fallback_of(of)))
+            .unwrap_or_default()
+    };
+    let mut targets = reload_edges(module, edges.staging, fallback_of(module));
+    targets.extend(
+        edges
+            .lookup_dependencies
+            .iter()
+            .filter(|target| *target != module)
+            .cloned(),
+    );
+    targets.extend(live_edges(module));
+
+    // Breadth-first from every target; `reached_from` records the module each
+    // visited module was first reached from, `None` for a target.
+    let mut reached_from: std::collections::HashMap<ModuleFullPath, Option<ModuleFullPath>> =
+        targets
+            .iter()
+            .map(|target| (target.clone(), None))
+            .collect();
+    let mut queue: std::collections::VecDeque<ModuleFullPath> = targets.into_iter().collect();
+    while let Some(visiting) = queue.pop_front() {
+        if later_members.is_some_and(|later| later.contains(&visiting)) {
+            continue;
+        }
+        for next in live_edges(&visiting) {
+            if next == *module {
+                let mut path = vec![visiting.clone()];
+                while let Some(Some(previous)) = reached_from.get(path.last()?) {
+                    path.push(previous.clone());
+                }
+                path.push(module.clone());
+                path.reverse();
+                path.push(module.clone());
+                return Some(crate::scheduler::CycleError { cycle: path });
+            }
+            if !reached_from.contains_key(&next) {
+                reached_from.insert(next.clone(), Some(visiting.clone()));
+                queue.push_back(next);
+            }
+        }
+    }
+    None
+}
+
 #[allow(clippy::type_complexity)]
 fn finish_prepared_commit(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
@@ -548,7 +700,7 @@ fn finish_prepared_commit(
     module: &ModuleFullPath,
     codegen_program: &[TopLevel],
     mut checked: PreparedCheck,
-    demands: &[CapturedMonoDemand],
+    cycle_check: PublicationCheck<'_>,
     shared: &crate::session_v4::SharedState,
 ) -> Result<
     Option<
@@ -556,6 +708,8 @@ fn finish_prepared_commit(
     >,
     CranelispError,
 > {
+    let demands = capture_affected_mono_demands(symbol_tables, module, &checked.staging)?;
+    let demands = demands.as_slice();
     if let Err(gap) = instantiate_captured_demands(
         symbol_tables,
         module_aliases,
@@ -598,6 +752,7 @@ fn finish_prepared_commit(
         shared,
         &decisions,
         &guard_exempt_symbols,
+        &cycle_check,
     )?;
     prepared
         .outcomes
@@ -1162,13 +1317,16 @@ fn capture_affected_mono_demands(
     Ok(captured)
 }
 
+/// Plan the publication of a macro checkpoint's staged generation through
+/// the commit-planning step a prepared cluster shares, so it too is refused
+/// when it would close a module cycle (`design/int/int.md` §6.11).
 pub(crate) fn plan_staging_commit(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
     codegen_program: &[TopLevel],
     shared: &crate::session_v4::SharedState,
-    additional_decisions: &[StagedPublicationDecision],
+    cycle_check: &PublicationCheck<'_>,
 ) -> Result<PreparedCommit, CranelispError> {
     plan_staging_commit_inner(
         symbol_tables,
@@ -1176,11 +1334,13 @@ pub(crate) fn plan_staging_commit(
         staging,
         codegen_program,
         shared,
-        additional_decisions,
         &[],
+        &[],
+        cycle_check,
     )
 }
 
+#[allow(clippy::too_many_arguments)] // within the src/ eight-parameter budget
 fn plan_staging_commit_inner(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
@@ -1189,6 +1349,7 @@ fn plan_staging_commit_inner(
     shared: &crate::session_v4::SharedState,
     additional_decisions: &[StagedPublicationDecision],
     rematerialized_instances: &[Symbol],
+    cycle_check: &PublicationCheck<'_>,
 ) -> Result<PreparedCommit, CranelispError> {
     use crate::redefine::{RedefKind, RedefinitionOutcome, classify_redefinition};
     use cranelisp_types::FQSymbol;
@@ -1201,6 +1362,7 @@ fn plan_staging_commit_inner(
         None,
         Some(&shared.scheduler),
     )?;
+    refuse_publication_cycle(shared, module, &staging, cycle_check)?;
 
     let tables = dashmap::DashMap::new();
     for row in symbol_tables.iter() {

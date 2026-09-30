@@ -59,24 +59,17 @@ fn arm_forwards_scrutinee(arm: &MonoMatchArm) -> bool {
     }
 }
 
-/// Resolve the per-arm plan from the once-recorded ownership answer.
-///
-/// `cow_retains_reused` is the dec side of the §13.7 COW escape gate: when the
-/// producer emitted the retention inc on the returned pointer, THIS release is
-/// its balancing dec and must fire even on a forwarding arm. It travels with
-/// the release per arm and keeps its polarity — never an independent exemption.
-pub(crate) fn scrutinee_lifetime_for_arm(
-    owned: bool,
-    cow_retains_reused: bool,
-    arm: &MonoMatchArm,
-) -> ScrutineeLifetime {
+/// Resolve the per-arm plan from the once-recorded ownership answer and the
+/// arm's shape. Nothing else is an input: a COW scrutinee owns exactly one
+/// reference on every branch, like any owned temporary (§13.7).
+pub(crate) fn scrutinee_lifetime_for_arm(owned: bool, arm: &MonoMatchArm) -> ScrutineeLifetime {
     if !owned {
-        return ScrutineeLifetime::Borrowed;
+        ScrutineeLifetime::Borrowed
+    } else if arm_forwards_scrutinee(arm) {
+        ScrutineeLifetime::OwnedForwarded
+    } else {
+        ScrutineeLifetime::OwnedConsumed
     }
-    if arm_forwards_scrutinee(arm) && !cow_retains_reused {
-        return ScrutineeLifetime::OwnedForwarded;
-    }
-    ScrutineeLifetime::OwnedConsumed
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -108,11 +101,8 @@ where
         // §5 — record the lifetime plan ONCE, before any arm is emitted, so a
         // reader sees the arms consume one answer instead of two complementary
         // tests. `yields_owned_temporary` is the ownership authority (the
-        // `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere` lattice); the COW-retain
-        // question is the dec side of the §13.7 escape gate and is asked here
-        // rather than at each arm.
+        // `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere` lattice).
         let scrutinee_owned = crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
-        let cow_retains_reused = self.scrutinee_cow_retains_reused(scrutinee);
         let scrut_ty = scrutinee.ty().to_type();
         // §2 — whose reference do this match's pattern bindings ride on? The
         // frame's own temporary when it owns one, otherwise the live binding
@@ -164,7 +154,7 @@ where
             // body is compiled so a tail self-call inside the body discharges
             // it on the live path (§5 / 0810 Face A); popped and emitted at the
             // arm's own lifetime end below.
-            let plan = scrutinee_lifetime_for_arm(scrutinee_owned, cow_retains_reused, arm);
+            let plan = scrutinee_lifetime_for_arm(scrutinee_owned, arm);
             let owes_release = plan == ScrutineeLifetime::OwnedConsumed && scrut_is_heap;
             if owes_release {
                 self.push_pending_scrutinee_release(scrut_val, scrut_ty.clone());
@@ -175,7 +165,7 @@ where
                     // Always matches -- compile body and jump to merge. A
                     // wildcard arm pushes no bindings, so the body's value is the
                     // arm value directly; protect it when this match is a tail-
-                    // call arg aliasing a live let-binding (F1 UAF cure).
+                    // call arg forwarding a frame-owned binding (F1 UAF cure).
                     self.in_tail_position = saved_tail;
                     let body_val = self.compile_expr(&arm.body)?;
                     let body_val = self.maybe_protect_tail_arg_alias(&arm.body, body_val);
@@ -311,7 +301,7 @@ where
         // alias protection instead of `protect_return_value`: the tail-jump flush
         // is the balancing dec, not a caller, so an unconditional protect inc on
         // a fresh arm value would leak. `maybe_protect_tail_arg_alias` incs only a
-        // direct scope-binding-`Var` arm the flush will dec (F1 UAF cure).
+        // direct `Var` arm whose slot the frame owns (F1 UAF cure).
         let returned_borrowed = skip_var
             .and_then(|slot| self.scope.slot(slot))
             .is_some_and(|slot| slot.is_borrowed());
@@ -577,9 +567,9 @@ where
             true
         } else if self.tail_arg_protect {
             // Tail-call-arg context: the tail-jump flush is the balancing dec
-            // (not a caller), so protect only a direct scope-binding-`Var` arm
-            // the flush will dec — never an unconditional inc on a fresh value,
-            // which would leak here (F1 UAF cure).
+            // (not a caller), so protect only a direct `Var` arm whose slot the
+            // frame owns — never an unconditional inc on a fresh value, which
+            // would leak here (F1 UAF cure).
             self.maybe_protect_tail_arg_alias(body, body_val);
             self.body_has_independent_result(body)
         } else {
@@ -849,6 +839,10 @@ mod scrutinee_ownership_tests;
 /// S118 slice S3 — the pure per-arm scrutinee lifetime plan (§5).
 #[cfg(test)]
 mod arm_lifetime_plan_tests;
+
+/// ACT-1024/1027 — a COW scrutinee plans like any owned temporary (§13.7).
+#[cfg(test)]
+mod cow_scrutinee_plan_tests;
 
 #[cfg(test)]
 mod tests {

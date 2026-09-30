@@ -1,8 +1,8 @@
 //! S118 slice S3 — the per-arm scrutinee lifetime plan
 //! (`design/backend/transitive-drop-glue.md` §5, §10 row 5).
 //!
-//! [`super::scrutinee_lifetime_for_arm`] is pure over `(owned, cow_retains,
-//! arm)`, so the whole rule is exercised without a live `FnCompiler` — the
+//! [`super::scrutinee_lifetime_for_arm`] is pure over `(owned, arm)`, so the
+//! whole rule is exercised without a live `FnCompiler` — the
 //! `is_fresh_construction` / `cow_site_source` precedent. Two properties carry
 //! the defects this slice closes:
 //!
@@ -89,7 +89,7 @@ fn ctor_arm() -> MonoMatchArm {
 fn a_borrowed_scrutinee_is_never_released_by_any_arm_neg() {
     for a in [forwarding_var_arm(), consuming_var_arm(), ctor_arm()] {
         assert_eq!(
-            scrutinee_lifetime_for_arm(false, false, &a),
+            scrutinee_lifetime_for_arm(false, &a),
             ScrutineeLifetime::Borrowed,
             "{:?}",
             a.pattern
@@ -99,11 +99,13 @@ fn a_borrowed_scrutinee_is_never_released_by_any_arm_neg() {
 
 // spec: spec/12-runtime.md §12.3.1 — an arm that forwards the whole scrutinee
 // carries the one owner out; releasing it here would free a value that travels
-// (the `[r r]` control that must stay green).
+// (the `[r r]` control that must stay green). This holds for ANY owned
+// temporary, a COW site's result included: the plan has no other input, so no
+// COW-specific release can be expressed (§13.7, ACT-1027).
 #[test]
 fn a_forwarding_var_arm_over_an_owned_temporary_transfers_the_owner() {
     assert_eq!(
-        scrutinee_lifetime_for_arm(true, false, &forwarding_var_arm()),
+        scrutinee_lifetime_for_arm(true, &forwarding_var_arm()),
         ScrutineeLifetime::OwnedForwarded
     );
 }
@@ -114,7 +116,7 @@ fn a_forwarding_var_arm_over_an_owned_temporary_transfers_the_owner() {
 #[test]
 fn a_consuming_var_arm_releases_the_owned_temporary() {
     assert_eq!(
-        scrutinee_lifetime_for_arm(true, false, &consuming_var_arm()),
+        scrutinee_lifetime_for_arm(true, &consuming_var_arm()),
         ScrutineeLifetime::OwnedConsumed
     );
 }
@@ -134,33 +136,14 @@ fn a_ctor_arm_still_releases_when_a_sibling_var_arm_forwards() {
         "precondition: the whole-match approximation would say this match forwards"
     );
     assert_eq!(
-        scrutinee_lifetime_for_arm(true, false, &arms[0]),
+        scrutinee_lifetime_for_arm(true, &arms[0]),
         ScrutineeLifetime::OwnedConsumed,
         "the ctor path consumed the temporary; a sibling arm's forwarding is \
          not its business"
     );
     assert_eq!(
-        scrutinee_lifetime_for_arm(true, false, &arms[1]),
+        scrutinee_lifetime_for_arm(true, &arms[1]),
         ScrutineeLifetime::OwnedForwarded,
         "and the var path still transfers, so the fix is not 'release everywhere'"
-    );
-}
-
-// spec: spec/12-runtime.md §12.3.1 (§13.7 escape gate) — the COW exception
-// travels PER ARM and keeps its polarity: when the producer emitted the
-// retention inc on the reused pointer, this release is its balancing dec and
-// MUST fire, even on the arm that forwards. It is the dec side of one gate,
-// never an independent exemption.
-#[test]
-fn the_cow_retain_exception_forces_a_release_on_a_forwarding_arm() {
-    assert_eq!(
-        scrutinee_lifetime_for_arm(true, true, &forwarding_var_arm()),
-        ScrutineeLifetime::OwnedConsumed
-    );
-    // ... and it cannot manufacture a release out of a BORROWED scrutinee: the
-    // ownership answer is recorded once and dominates.
-    assert_eq!(
-        scrutinee_lifetime_for_arm(false, true, &forwarding_var_arm()),
-        ScrutineeLifetime::Borrowed
     );
 }

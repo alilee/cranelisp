@@ -1,7 +1,7 @@
 ---
 id: ACT-0994
 title: Assess cached-load completion across module re-registration
-status: open
+status: deferred
 priority: advisory
 from: sprint
 to: qa
@@ -13,6 +13,12 @@ refers_to:
   - design/int/int.md
   - tests/plan/s122-evidence-delta.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K8, P8).** First deferral.
 
 ## Request
 

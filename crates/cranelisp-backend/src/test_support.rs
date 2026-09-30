@@ -239,6 +239,7 @@ where
         symbol_tables,
         module_path,
         module,
+        &|_| {},
     )
     .expect("probe: compile_defn_in_module")
 }
@@ -280,11 +281,19 @@ where
         symbol_tables,
         module_path,
         module,
+        &|_| {},
     )
 }
 
+/// The fallible core with constructor-pattern carriers: [`try_compile_defns_in_module`]
+/// plus the span-keyed `pattern_ctors` map of
+/// [`compile_defns_in_module_with_pattern_ctors`].
+///
+/// `supply_site_facts` edits each built body before compilation. It stands in
+/// for the typecheck site facts (`escapes`, `confined`, …) that a hand-built
+/// `Expr` cannot carry.
 #[allow(clippy::too_many_arguments)]
-fn try_compile_defns_in_module_with_pattern_ctors<M, C, L>(
+pub(crate) fn try_compile_defns_in_module_with_pattern_ctors<M, C, L>(
     compile: &[&Defn],
     mode_summaries: &[Option<cranelisp_types::ModeSummary>],
     declare_only: &[&Defn],
@@ -293,6 +302,7 @@ fn try_compile_defns_in_module_with_pattern_ctors<M, C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_path: ModuleFullPath,
     module: &mut M,
+    supply_site_facts: &dyn Fn(&mut cranelisp_types::MonoExpr),
 ) -> Result<Vec<String>, CranelispError>
 where
     M: cranelift_module::Module,
@@ -342,7 +352,7 @@ where
         // fixture's `resolved_targets` (present ⇒ Global/Dispatch, absent ⇒
         // Local/ViaCallee).
         let (var_refs, apply_refs) = resolved_targets_to_typed_maps(d.body(), resolved_targets);
-        let body =
+        let mut body =
             cranelisp_types::MonoExpr::from_expr(d.body(), pattern_ctors, &var_refs, &apply_refs)
                 .unwrap_or_else(|_| {
                     cranelisp_types::MonoExpr::lenient_from_expr(
@@ -352,6 +362,7 @@ where
                         &apply_refs,
                     )
                 });
+        supply_site_facts(&mut body);
         let compile_ctx = crate::compiler::CompileContext {
             func_ids: &func_ids,
             func_arities: &func_arities,
@@ -1806,4 +1817,263 @@ pub(crate) fn count_release_ops(clif: &str) -> usize {
         })
         .count();
     glue_calls + clif.matches("atomic_rmw.i64 sub").count()
+}
+
+/// Compile `(defn f [p0 ..] body)` in module `user` against `tables` and return
+/// its CLIF. `params` spells each parameter's type and `result` the return
+/// type; `carriers` are the span-keyed dispatch carriers the body's references
+/// need (for a primitive, `{primitives, name}` on the `Apply` and callee spans).
+pub(crate) fn probe_caller_clif(
+    tables: &DashMap<ModuleFullPath, SymbolTable>,
+    carriers: &HashMap<Span, cranelisp_types::FQSymbol>,
+    params: &[Type],
+    result: Type,
+    body: Expr,
+) -> String {
+    let user = ModuleFullPath::from("user");
+    let defn = Defn {
+        name: Symbol::from("f"),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: (0..params.len())
+                .map(|i| (Symbol::from(format!("p{i}")), None))
+                .collect(),
+            body,
+            span: Span::new(0, 1000),
+        }],
+        visibility: Visibility::Public,
+        span: Span::new(0, 1000),
+    };
+    insert_user_fn_stub_typed(
+        &mut tables
+            .entry(user.clone())
+            .or_insert_with(|| SymbolTable::new(user.clone())),
+        "f",
+        params,
+        result,
+    );
+    let mut jit = Jit::new_with_symbols(&[]).expect("jit");
+    try_compile_defns_in_module(&[&defn], &[], &[], carriers, tables, user, jit.jit_module())
+        .expect("probe: f compiles")
+        .into_iter()
+        .next()
+        .expect("probe: one compiled defn")
+}
+
+/// Fixtures for the §13.7 COW-site cells (`design/backend/ownership-codegen.md`
+/// §13.5 "COW cores" and "Match scrutinee plan" rows): a `defn` over owned
+/// `Vec Int` parameters in module `main`, compiled through the production
+/// per-body seam, whose COW sites carry one chosen escape fact.
+pub(crate) mod cow_site_fixture {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use cranelisp_types::{
+        Defn, DefnVariant, Expr, FQTypeName, MatchArm, Mode, ModeSummary, ModuleFullPath, MonoExpr,
+        Pattern, ResolvedCall, Span, Symbol, Type, Visibility,
+    };
+
+    static NEXT_SPAN: AtomicU32 = AtomicU32::new(50_000);
+
+    /// A span no other node shares: last-use facts are keyed by span.
+    fn span() -> Span {
+        let start = NEXT_SPAN.fetch_add(2, Ordering::Relaxed);
+        Span::new(start, start + 1)
+    }
+
+    pub(crate) fn vec_ty() -> Type {
+        Type::ADT(
+            FQTypeName::new("primitives".into(), "Vec".into()),
+            vec![Type::Int],
+        )
+    }
+
+    fn var(name: &str, ty: &Type) -> Expr {
+        Expr::Var {
+            name: Symbol::from(name),
+            span: span(),
+            resolved_call: None,
+            inferred_type: Some(Box::new(ty.clone())),
+        }
+    }
+
+    pub(crate) fn vec_var(name: &str) -> Expr {
+        var(name, &vec_ty())
+    }
+
+    pub(crate) fn int(value: i64) -> Expr {
+        Expr::IntLit {
+            value,
+            span: span(),
+            inferred_type: Some(Box::new(Type::Int)),
+        }
+    }
+
+    /// `[]`, a fresh `Vec Int`.
+    pub(crate) fn empty_vec() -> Expr {
+        Expr::VecLit {
+            elements: vec![],
+            span: span(),
+            inferred_type: Some(Box::new(vec_ty())),
+        }
+    }
+
+    /// `(op args…)` resolved to the inline Vec builtin `op`.
+    fn vec_op(op: &str, args: Vec<Expr>) -> Expr {
+        let result = if op == "vec-len" { Type::Int } else { vec_ty() };
+        Expr::Apply {
+            callee: Box::new(var(op, &Type::Int)),
+            args,
+            span: span(),
+            resolved_call: Some(Box::new(ResolvedCall::BuiltinFn { name: op.into() })),
+            inferred_type: Some(Box::new(result)),
+        }
+    }
+
+    /// `(vec-set source 0 5)`.
+    pub(crate) fn vec_set(source: Expr) -> Expr {
+        vec_op("vec-set", vec![source, int(0), int(5)])
+    }
+
+    /// `(vec-push source value)`.
+    pub(crate) fn vec_push(source: Expr, value: i64) -> Expr {
+        vec_push_of(source, int(value))
+    }
+
+    /// `(vec-push source value)` with a computed element.
+    pub(crate) fn vec_push_of(source: Expr, value: Expr) -> Expr {
+        vec_op("vec-push", vec![source, value])
+    }
+
+    pub(crate) fn vec_len(source: Expr) -> Expr {
+        vec_op("vec-len", vec![source])
+    }
+
+    pub(crate) fn let_in(bindings: Vec<(&str, Expr)>, body: Expr, ty: Type) -> Expr {
+        Expr::Let {
+            bindings: bindings
+                .into_iter()
+                .map(|(name, value)| (Symbol::from(name), value))
+                .collect(),
+            body: Box::new(body),
+            span: span(),
+            inferred_type: Some(Box::new(ty)),
+        }
+    }
+
+    /// `(match scrutinee [binder body])`.
+    pub(crate) fn match_var(scrutinee: Expr, binder: &str, body: Expr, ty: Type) -> Expr {
+        let pattern = Pattern::Var {
+            name: Symbol::from(binder),
+            span: span(),
+        };
+        match_one_arm(scrutinee, pattern, body, ty)
+    }
+
+    /// `(match scrutinee [_ body])`.
+    pub(crate) fn match_wildcard(scrutinee: Expr, body: Expr, ty: Type) -> Expr {
+        match_one_arm(scrutinee, Pattern::Wildcard { span: span() }, body, ty)
+    }
+
+    fn match_one_arm(scrutinee: Expr, pattern: Pattern, body: Expr, ty: Type) -> Expr {
+        Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![MatchArm {
+                pattern,
+                body,
+                span: span(),
+            }],
+            span: span(),
+            compiler_generated: false,
+            inferred_type: Some(Box::new(ty)),
+        }
+    }
+
+    /// Set `escapes` on every COW-builtin site of the shapes built above.
+    fn set_cow_escapes(node: &mut MonoExpr, escapes: Option<bool>) {
+        if crate::compiler::vec_codegen::cow_site_source(node).is_some()
+            && let MonoExpr::Apply { escapes: fact, .. } = node
+        {
+            *fact = escapes;
+        }
+        match node {
+            MonoExpr::Apply { args, .. } => {
+                args.iter_mut().for_each(|a| set_cow_escapes(a, escapes));
+            }
+            MonoExpr::Let { bindings, body, .. } => {
+                for (_, value) in bindings.iter_mut() {
+                    set_cow_escapes(value, escapes);
+                }
+                set_cow_escapes(body, escapes);
+            }
+            MonoExpr::Match {
+                scrutinee, arms, ..
+            } => {
+                set_cow_escapes(scrutinee, escapes);
+                for arm in arms.iter_mut() {
+                    set_cow_escapes(&mut arm.body, escapes);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Compile `(defn f [params…] body)`, every parameter an `Owned` `Vec Int`
+    /// and every COW site carrying `escapes`, and return its CLIF.
+    pub(crate) fn compile_f(
+        params: &[&str],
+        body: Expr,
+        result: Type,
+        escapes: Option<bool>,
+    ) -> String {
+        let main = ModuleFullPath::from("main");
+        let defn = Defn {
+            name: Symbol::from("f"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: params.iter().map(|p| (Symbol::from(*p), None)).collect(),
+                body,
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let tables = super::option_type_tables();
+        super::insert_user_fn_stub_typed(
+            &mut tables.get_mut(&main).expect("main table"),
+            "f",
+            &vec![vec_ty(); params.len()],
+            result,
+        );
+        let summary = ModeSummary {
+            param_modes: vec![Mode::Owned; params.len()],
+            ..ModeSummary::default()
+        };
+        let mut jit = crate::jit::Jit::new_with_symbols(&[]).expect("JIT construction");
+        super::try_compile_defns_in_module_with_pattern_ctors(
+            &[&defn],
+            &[Some(summary)],
+            &[],
+            &super::HashMap::new(),
+            &super::HashMap::new(),
+            &tables,
+            main,
+            jit.jit_module(),
+            &|body| set_cow_escapes(body, escapes),
+        )
+        .unwrap_or_else(|e| panic!("compile f: {e}"))
+        .pop()
+        .expect("one compiled defn")
+    }
+
+    /// Inline increments. With `Int` elements and RC stats off, the only
+    /// increments these shapes can emit are a reused box's retention and a
+    /// return protect.
+    pub(crate) fn increments(clif: &str) -> usize {
+        clif.matches("atomic_rmw.i64 add").count()
+    }
+
+    /// Every release: canonical glue calls and inline decrements.
+    pub(crate) fn releases(clif: &str) -> usize {
+        super::count_release_ops(clif)
+    }
 }

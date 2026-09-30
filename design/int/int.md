@@ -121,7 +121,7 @@ this document elaborates its internal architecture.
 
 Three structural notes about the surface worth naming:
 
-1. **`CompilerSession` is the high-level facade.** A single object that `::main` constructs and drives. Construction is fallible and returns `Result<CompilerSession, CranelispError>` because bootstrap uses the same fallible lifecycle machine as every other birth route. It wraps an `Arc<SharedState>` (the worker-shareable subset) plus initiator-thread-only state (watcher channel, REPL eval cursor, worker pool handles, accumulated warnings). Every CLI mode (`--run`, `--link`, REPL) constructs the same `CompilerSession`; the only difference is which methods are invoked after `register_module`. Per Principle 11 (single pipeline; mode parameters) — there is exactly one `process_form`, parameterised by mode (and the mode discriminator IS `shared.introspection.is_some()`, not a separate flag).
+1. **`CompilerSession` is the high-level facade.** A single object that `::main` constructs and drives. Construction is fallible and returns `Result<CompilerSession, CranelispError>` because bootstrap uses the same fallible lifecycle machine as every other birth route. It wraps an `Arc<SharedState>` (the worker-shareable subset) plus initiator-thread-only state (watcher channel, REPL eval cursor, worker pool handles, accumulated warnings). Every CLI mode (`--run`, `--link`, REPL) constructs the same `CompilerSession`; the only difference is which methods are invoked after `register_module`. Per Principle 11 (single pipeline; mode parameters) — there is exactly one `process_form`, parameterised by mode. The mode discriminator is `SharedState.run_mode` (`session_v4/types.rs`), which replaced the former `shared.introspection.is_some()` proxy.
 2. **No re-exports of `cranelisp-types` items beyond the checked Binary/int
    public surface.** Per Principle 15 (facade types live with their behavior),
    int imports from each implementation crate directly. Any convenience
@@ -503,6 +503,108 @@ Registration parses the source and queues the module with its forms on the work 
 
 A `false` at a dep site is a silent divergence: the dep lands in the unprioritised queue behind unrelated work while a blocked caller waits. (S59/S60 lineage; the rule is the one durable residue of the dual-path persistence collapse.)
 
+#### 6.1.1 A missing entry source file
+
+Status: **implemented 2026-09-30** (K1,
+[ACT-1004](../../sprints/actions/ACT-1004-batch-missing-entry-diagnostic-intake.md))
+in `register_entry_module`; review found no blocking or required finding, and
+QA judged the evidence adequate
+([K1 adequacy](../../tests/plan/s122-evidence-delta.md#k1--bounded-adequacy-2026-09-30)).
+Private to `src/`: no public item, signature, carrier, schema or ABI change.
+
+**Rule** ([CLI §0.5.5](../../repl/spec/00-cli-invocation.md#055-error-handling-r4-s52)
+rule 2). Entry registration resolves the entry's source file (project root,
+then lib directories), so it is the one place that knows the file is absent.
+When the resolver finds no file:
+
+- **REPL:** register an empty module, as today. This is the empty-start
+  workflow, and startup recovery, the watcher and regeneration are unchanged.
+- **Every other run mode** (`--run`, `--link`, `--test`): refuse before
+  anything is registered, with a located module error naming the resolver's
+  own project-root candidate, `{project_root}/{entry}.cl` for an undotted
+  entry. This is the refusal `--test` reported before K1, moved rather than
+  copied, so `--test`'s text and outcome do not change.
+  - For a dotted entry the candidate maps dots to directories (`core.str`
+    names `{project_root}/core/str.cl`). Whether CLI §0.5.5–§0.5.6 intend that
+    mapping is [ACT-1020](../../sprints/actions/ACT-1020-dotted-entry-target-file-mapping-intake.md),
+    which predates K1. The refusal names the file the resolver probed, so it
+    follows whatever mapping that settles.
+
+**Why this reaches every batch outcome.** The batch arms of `main.rs`'s `run`
+already propagate the registration result (`startup?`) before any wait,
+`trampoline`, `run_tests` or `link_by_name`. The existing error path prints it
+to stderr and exits 1. So no module compiles, `main` is never validated, no
+report is written and no executable is produced. `main.rs` does not change.
+
+**Why at registration and not at each batch caller.**
+
+- One decision point serves all three batch modes, with the mode as a
+  parameter where the fact is decided (Principle 11). The session's run mode
+  is the existing REPL-versus-batch signal, and REPL-versus-batch is the
+  distinction §0.5.5 draws.
+- It reads the resolver's own answer (Principle 07). A caller-side check must
+  re-derive absence, either from the recorded file path (as `run_tests` does
+  now) or by probing the file again. A project-root probe would also refuse an
+  entry that the resolver finds in a lib directory.
+- A batch session has no use for an empty entry registered without a source
+  file. Removing that state removes the `no 'main' function` misdiagnosis at
+  its origin, rather than intercepting it in each mode. `run_tests` carries no
+  check of its own (Principle 06), and batch callers must not add one
+  ([test runner §11](test-runner.md#11-rejected-alternatives-and-potential-extensions)).
+
+**Unchanged.**
+
+- An entry file that exists but is empty compiles as an empty module in every
+  mode. §0.5.5 is about absence, not emptiness.
+- `/run-tests` and `/run-all-tests` never passed through the check.
+- `register_module` stays public with the same signature. In a batch session
+  it now returns an error for a missing entry, as §0.5.5 requires. The
+  `run_tests` rustdoc drops the missing-entry case from its error list. Both
+  are inside the root crate, which has no generated API baseline, so there is
+  no baseline effect and no inter-crate gate.
+
+**Not decided here.** An entry file that exists but cannot be read registers as
+an empty module in every mode, because the read error is discarded. §0.5.5
+does not name this case;
+[ACT-1019](../../sprints/actions/ACT-1019-unreadable-entry-file-registers-empty-intake.md)
+establishes the requirement first.
+
+**Module evidence** (`lifecycle::entry_registration_tests`):
+
+- `run_mode_refuses_a_missing_entry_before_registration`: the error names
+  `{root}/user.cl` and carries that file in its location, and the scheduler
+  has no registration for the entry, so the refusal came before registration.
+- `link_mode_refuses_a_missing_entry_before_registration`: the same under
+  `RunMode::Link`. This twin catches a mode test written as "is `Run`" instead
+  of "is not REPL".
+- `repl_mode_registers_a_missing_entry_as_empty`: the empty-start control.
+- `run_mode_registers_an_existing_empty_entry`: absence, not emptiness,
+  decides.
+- `run_mode_registers_an_entry_found_only_in_a_lib_directory`: catches a
+  project-root probe standing in for the resolver.
+- The test-runner session test
+  `run_tests_reports_an_existing_entry_without_tests_as_an_empty_run` keeps
+  the existing-entry leg: `No tests found`, exit 0. Its former missing leg is
+  the first row above.
+
+**End to end** (`tests/cli_missing_entry.rs`).
+`run_missing_entry_file_is_named_on_stderr` and
+`link_missing_entry_file_is_named_on_stderr` assert exit 1 with the missing
+file named on stderr; both were RED before K1. The controls are
+`test_mode_missing_entry_file_is_named_on_stderr`,
+`repl_missing_entry_starts_an_empty_module` and
+`tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report`.
+
+No cell asserts the absence of `no 'main'` text, or of an executable under
+`--link`. QA judged both held by construction and allocated no cell
+([K1 adequacy](../../tests/plan/s122-evidence-delta.md#k1--bounded-adequacy-2026-09-30)):
+
+- the refusal precedes registration (the first two module rows);
+- `startup?` precedes `trampoline` and `link_by_name`;
+- an ignored error would print nothing, which fails the positive cells.
+
+**Grade:** measured, by the module rows and the two end-to-end cells.
+
 ### 6.2 Cluster orchestration
 
 A **cluster** is the unit of typecheck atomicity: one non-`(begin)` REPL input, one
@@ -524,7 +626,8 @@ wait; neither duplicates the core (Principle 11):
 It resolves the module file with the `import` rules, registers the dependency with
 `delays_other = true` (§6.1) and records the edge; it never blocks. `block_for_typecheck`
 and the eval cycle edge check acyclicity before recording a wait, so a mutual import is a
-cycle error at the import site, not a deadlock.
+cycle error at the import site, not a deadlock. A cycle between modules that are already
+loaded involves no wait; the publication check refuses it ([§6.11](#611-module-cycles-at-publication)).
 
 **Concurrency invariant — share only monotonic terminal facts.** In-progress cluster state
 never leaves the frame that orchestrates it:
@@ -712,6 +815,8 @@ The scheduler maps these to readiness states; waiters unblock when the correspon
   - The prelude is loaded like any dependency. Its names are never installed into a module's
     table, and they carry the same §8.6.4 conflict and §8.6.5 ambiguity rules as an explicit
     import (spec §8.8.1).
+  - A module whose bit is ON depends on the prelude in every graph int checks or orders by,
+    and a null import of the prelude is no edge ([§6.12](#612-the-implicit-prelude-dependency)).
   - A prelude restored from cache establishes the same fallback as a fresh load
     ([restoration parity](#75-restoration-parity)).
     `tests/cache.rs::cache_repl_minimal_plain_fn_prelude_restored_on_session_2`
@@ -1084,6 +1189,531 @@ end to end, C2 and its C3 control, RM-5's regeneration leg and FL-3.
 
 **Outside this section.** A failed REPL-turn import can leave its alias key
 installed without a record. This is an unverified lead.
+
+### 6.11 Module cycles at publication
+
+Status: **designed 2026-09-29** (ACT-1013); the macro-checkpoint site and the
+prelude edge **designed 2026-09-30**. Two follow-on corrections were
+**designed 2026-09-30**:
+
+- the Pass-0 fail-fast (ACT-1014's helper end) is **implemented** at source
+  `f0d1006f…`, uncommitted. Its finding-scoped review found no blocking or
+  required finding, and QA judged ACT-1014 adequate and closed it
+  ([helper-end adequacy](../../tests/plan/s122-evidence-delta.md#act-1014-helper-end--final-adequacy-2026-09-30),
+  2026-09-30);
+- the failed-dependency refusal (ACT-1016 Face 1) is **not implemented**. The
+  user carried ACT-1016 to S123 on 2026-09-30.
+
+Private to `src/`; no public API, carrier, schema or ABI change.
+
+**Rule.** A module dependency cycle is a compile-time error naming its path
+(spec §8.10.2; §8.5.4 edge 6 for a qualified reference). The published
+module graph stays acyclic: a cluster whose new generation would close a
+cycle is refused before it publishes.
+
+**Why a check at publication.** The two existing checks see only loading:
+
+- the scheduler's wait graph sees a module wait for a dependency that is not
+  yet terminal (§6.2);
+- the static import-closure gate reads the `import` declarations of files
+  (§6.9).
+
+A qualified reference to a module already loaded resolves without a wait. A
+save or a REPL turn that closes a cycle between loaded modules was therefore
+accepted. Probed on 2026-09-29 at `e4062202`: the reload face of ACT-1013,
+and an increment face, `/mod a` then `(defn h [] (b/g))` while `b` calls
+`a/f`, which is accepted and written to `a.cl`. An `import` that closes a
+cycle on reload is already rejected by the gate.
+
+**Where.** The commit-planning step of the ordinary prepared publication
+(`worker::plan_staging_commit_inner`), which a prepared cluster
+(`prepare_cluster_commit_with_demands`) and a macro checkpoint
+(`macro_clause::compile_macro_checkpoint`) both reach before codegen and
+publication. Eval turns, pool clusters, whole-file rebuilds and macro
+checkpoints therefore share one site in every mode (Principle 11; review
+reject 11 already forbids a macro-specific publication writer). A refusal is
+an ordinary prepare error: a REPL turn is rejected with the session unchanged,
+a pool cluster fails its module, and a rebuild fails and locks it.
+
+- **Why the checkpoint.** A macro clause publishes at its checkpoint, before
+  any cluster of its attempt prepares. A check only at cluster prepare let a
+  REPL `defmacro` turn, which has no later cluster, publish a clause that
+  closes a cycle and write it to the file (ACT-1013, macro face).
+- **Inputs at both callers.** The staged table, whose macro clauses carry
+  their callee edges; the owed lookup dependencies (a cluster's owed facts; a
+  checkpoint's clause-body and macro-head dependencies), seen by the check
+  whether they are passed or recorded on the staging first; the later members
+  of the attempt's whole-source provenance, threaded to the checkpoint from
+  the expansion pass that holds it; and the checked program, for the refusal's
+  location.
+
+**The check** for module `M`:
+
+- **New edges.** The edges of the staged table and the cluster's owed lookup
+  dependencies, together with `M`'s live-table edges. The live table holds
+  the Pass-0 imports and exports of this attempt, macro clauses published at
+  its checkpoints, and, for an increment, the earlier generations still live.
+- **Settled graph.** Every other module's live-table edges. Selection,
+  ordering and this check read one edge predicate, from one crate-private
+  home: imports that load and exports, through declared children; the
+  prelude when the module's fallback bit is on
+  ([§6.12](#612-the-implicit-prelude-dependency)); and recorded edges
+  ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)). Established
+  references and failure dependencies are not read: they describe past or
+  failed generations and serve selection only.
+- **Unsettled members.** A whole-file rebuild's provenance carries, beside
+  its established reference, the modules its plan pass rebuilds after `M`.
+  The walk skips them, because their live tables still hold the pre-plan
+  generation. An increment and a fresh load carry none.
+- **Failed dependency** (ACT-1016 Face 1). For a whole-source attempt (a
+  fresh load or a rebuild), a new-edge target that stands `Failed` refuses
+  the cluster before the walk. Two kinds of target are exempt: an unsettled
+  member, and the prelude reached only through the fallback bit.
+  - The error is that module's own error, as the scheduler's fail-fast sites
+    return it (spec §8.5.4 item 5). It records the module as `M`'s failure
+    dependency.
+  - Resolution does not catch this. A qualified name resolves against the
+    failed module's table, which keeps its failed attempt's Pass-0
+    declarations. Without the refusal, a member that a follow-on rebuilt after
+    a refused cycle member compiled against that member's failed table,
+    although a restart fails it. QA measured this with `a` and `b` on a
+    qualified cycle (2026-09-30, `.local/s122-helper-followon-qa-scratch/`).
+  - An unsettled member's standing is pre-plan, so it is skipped here as in
+    the walk. Otherwise a module saved together with the repair of its failed
+    dependency would be refused before that repair runs.
+  - The prelude edge is exempt because a module does not wait on the prelude
+    at a fresh load (§6.12). A restart therefore compiles a module with the
+    bit on beside a failed prelude when it names no prelude name, and the
+    session must end the same way (ACT-1014).
+  - An increment is exempt. Its live table holds earlier generations, whose
+    edges were checked when they published. Refusing on those edges would
+    refuse every turn in a module while any dependency is failed. That
+    would change the definition-turn admission of
+    [REPL lifecycle §1.3](repl-lifecycle.md#13-failed-reload), which carries
+    the startup repair of `repl/spec/15-session-persistence.md` §15.2.3.
+- **Refusal.** A path from a new-edge target back to `M` refuses the cluster
+  with `circular dependency detected: M -> X -> … -> M`, rendered by
+  `scheduler::CycleError::render`, the format every cycle diagnostic shares.
+  It is located at the cluster's first reference to `X` when one is found,
+  otherwise at the cluster head. It records `X` as `M`'s failure dependency
+  ([REPL lifecycle §1.2.1](repl-lifecycle.md#121-failure-dependencies)).
+
+**Pass-0 fail-fast on a failed module** (ACT-1014's helper end).
+
+- **Rule.** Pass 0's `import` or `export` of a module that has a table and
+  stands `Failed` fails the attempt with that module's error, and records the
+  module as a failure dependency. It does not resolve names against the
+  failed table. This is the scheduler's existing fail-fast, which a qualified
+  reference to a name missing from that module already reaches.
+- **Why.** Today both Pass-0 handlers install from any present table. A
+  follow-on that rebuilds the prelude against `x`'s refused generation
+  therefore reports `(export [x [one]])` as `'one' not found in module 'x'`.
+  That is the save's only prelude notice, so the cycle is never named
+  (spec §8.10.2; QA's attribution in ACT-1014). The fail-fast carries `x`'s
+  own refusal, `x -> prelude -> x`.
+- **Scope.** It applies in every mode and to an increment, because the
+  declarations are the attempt's own forms.
+  - For an `import`, and for a declaration of a name the failed table lacks,
+    the outcome does not change; the message and its location do (see
+    *Diagnostic as delivered*). Such an attempt already failed, at the
+    signature barrier or on the unresolved name.
+  - An `export` of a name the failed table still holds is newly refused. The
+    barrier's members exclude export targets, and spec §8.10.3 compiles a
+    dependent only after its dependency is fully processed.
+  - Like the qualified fail-fast, it does not consult unsettled members. The
+    error may therefore come from a later member's earlier attempt.
+- **Not covered:** an `export` of a module that is still in flight at a fresh
+  load (ACT-1016 Face 2). That module is not `Failed`, so this rule does not
+  apply to it.
+- **As implemented.** Both Pass-0 handlers in `src/process_form/dependency.rs`
+  call one table check before they install or wait. `handle_import` calls it
+  after the private-submodule check, and `handle_export` calls it before it
+  installs. The check runs before the eval/pool branch, so both paths reach
+  it. The scheduler's I3 body now lives in one locked helper, which
+  `block_for_typecheck` and Pass 0 share. There is still one error builder
+  and one site that records a failure dependency. A failed module with no
+  table takes the load path instead: its wait fails fast with the same error
+  or, on the eval path, retries after the purge (review N2).
+- **Diagnostic as delivered.** The refusal carries the failed module's stored
+  error and span, without a file, as `block_for_typecheck` already does. So an
+  `import` that was located at its declaration is now located at a span of
+  the failed module, under the dependent's file. The reused builder also
+  repeats `module error at …` in the rendered text. The qualified fail-fast
+  already did both. QA filed them as
+  [ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md),
+  which the user carried to S123.
+
+**Exactness.** When `M` is checked, every module outside the pass and every
+member rebuilt earlier in it holds its final generation. A cycle created in a
+pass is therefore refused at its last-rebuilt member, and no stale pre-plan
+edge refuses `M`. On a fresh load the scheduler reports a genuine cycle as a
+wait cycle before either member publishes, so `--run` and `--link`
+diagnostics do not change. An implicit-prelude cycle is the exception: a
+module does not wait on an in-flight prelude, so the scheduler sees no wait
+cycle. The static gate, this check or the failure exit's cycle precedence
+reports it ([§6.12](#612-the-implicit-prelude-dependency)). QA falsified the
+wait premise for `export` on 2026-09-30. An `export` of a module still in
+flight at a fresh load reads its partial table without waiting, and in every
+mode reports the cycle as an unresolved name. That is ACT-1016 Face 2,
+carried to S123.
+
+**Cost.** The walk visits the targets' dependency closure once per check and
+computes each visited module's edges once. It runs for every prepared
+cluster. The full suite's wall time is the measurement.
+
+**Grade: asserted with a named falsifier.** Every generation and increment
+passes the prepare step. Falsifiers:
+
+- after a completed turn or plan, the live tables of modules whose latest
+  attempt compiled contain a cycle. A failed attempt's table keeps its Pass-0
+  declarations and publishes no generation;
+- once the failed-dependency refusal is implemented, a whole-source
+  generation publishes while a module it has an edge to stands `Failed`. An
+  unsettled member and the prelude reached through the bit are the
+  exceptions;
+- a Pass-0 `import` or `export` of a module standing `Failed` reports an
+  unresolved name.
+
+**Potential extension: an increment's own edges.** A REPL turn whose staged
+edges or owed lookups reach a module standing `Failed` publishes when every
+name it uses survives in that module's table. Spec §8.5.4 item 5 asks for a
+chained failure. This is inferred from the whole-source mechanism, not
+observed. Trigger: `qa` reproduces it. The same refusal would then read only
+the turn's staged edges and owed lookups, never its earlier generations.
+
+**Module evidence (`dev`).**
+
+- An increment in `a` whose staged callee reaches `b`, while `b`'s live table
+  reaches `a`, is refused naming `a -> b -> a`; `a`'s table is unchanged. The
+  same turn is accepted when `b` does not reach `a`.
+- A rebuild of `M` whose new edge reaches `X`, with `X` among the members
+  rebuilt later and `X`'s live table reaching `M`, is accepted. With `X` not
+  excluded, it is refused.
+- A macro checkpoint in `a` whose clause calls `b/g`, while `b`'s live table
+  reaches `a`, is refused naming `a -> b -> a`, and `a`'s table holds no
+  macro. The same checkpoint is accepted when `b` does not reach `a`, and
+  during a rebuild of `a` with `b` among the later members.
+- Pass-0 fail-fast, in `src/process_form/dependency.rs`
+  `bare_module_name_tests`:
+  - `pass0_declaration_of_a_failed_module_fails_with_its_error`. An `export`
+    or `import` of `w`, of a name `w`'s table holds or lacks, while `w` stands
+    `Failed` with a present table, fails with `w`'s error rather than a
+    `not found in module 'w'`. It records `w` as a failure dependency and
+    installs no candidate. All four legs were RED on `d056842f…` and are GREEN
+    on `f0d1006f…`.
+  - `pass0_declaration_of_a_compiled_module_installs_its_names` is the
+    negative. With `w` compiled, both install as before and record nothing.
+    It is GREEN before and after.
+  - With the fail-fast planted absent, the positive row is RED on all four
+    legs and the negative stays GREEN (`dev`'s report,
+    `.local/s122-helper-followon-dev-result.md`).
+- Failed dependency, when the S123 carry of ACT-1016 schedules Face 1. Arm
+  the positive leg RED on the source it starts from.
+  - A rebuild of `M` whose staged callee is in `w`, while `w` stands `Failed`
+    and `w`'s table still holds the called name, is refused with `w`'s error,
+    and `w` becomes `M`'s failure dependency.
+  - The same rebuild is accepted with `w` compiled, and with `w` among the
+    later members.
+  - An increment in `M` calling the same name is accepted, which is the
+    increment exemption.
+  - A rebuild of `x` with the bit on and no prelude name is accepted while
+    the prelude stands `Failed`, which is the prelude exemption.
+- The prelude rows are in [§6.12](#612-the-implicit-prelude-dependency); the
+  plan rows are in
+  [REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload).
+
+End to end:
+`tests/repl_persist.rs::watch_save_closing_qualified_module_cycle_reports_circular_dependency`
+and its acyclic control,
+`tests/repl_persist.rs::repl_definition_closing_qualified_module_cycle_refused_and_not_written`,
+and the macro face,
+`tests/repl_persist.rs::repl_defmacro_clause_closing_qualified_module_cycle_refused_and_not_written`
+with `repl_defmacro_clause_calling_acyclic_qualified_dependency_accepted_control`;
+the `--run` cycle cells stay green. ACT-1016 allocates the evidence for the
+failed-dependency refusal and for Face 2.
+
+### 6.12 The implicit prelude dependency
+
+Status: **designed 2026-09-30** (ACT-1014); fresh-load reach through
+`export` or a qualified reference **revised 2026-09-30** after QA's
+[adjudication](../../tests/plan/s122-evidence-delta.md#design-residuals--adjudication-2026-09-30).
+Implemented in the S122 working tree and reconciled with it on 2026-09-30.
+The walk's file-derived aliases (below) were delivered at source `d056842f…`
+on 2026-09-30. The helper end of ACT-1014 needed §6.11's Pass-0 fail-fast
+(the outcome below). It is implemented at source `f0d1006f…`, uncommitted,
+and the helper-end row is GREEN there. The finding-scoped review of the
+fail-fast and the alias change found no blocking or required finding. QA
+judged ACT-1014 adequate and closed it on 2026-09-30
+([helper-end adequacy](../../tests/plan/s122-evidence-delta.md#act-1014-helper-end--final-adequacy-2026-09-30)).
+Private to `src/`; no public API, carrier, schema or ABI change.
+
+**Rule.** The implicit import is a dependency on `prelude`, like the
+`(import [prelude [*]])` it stands for (spec §8.8.1, §8.10.1; the user's
+2026-09-30 ruling). A module whose fallback bit is on
+([§6.5](#65-entry-module-and-the-implicit-prelude)) has the edge
+`M → prelude` in every graph int checks or orders by. How the prelude reaches
+`M` makes no exception: a module with the bit on that the prelude depends on
+closes a cycle, which is refused (spec §8.10.2). A null import suppresses the
+bit and is itself no edge (spec §8.3.7), so `(import [prelude []])` is the
+remedy the spec names.
+
+**Where the edge enters.** One fact, four readers:
+
+| Graph | Owner | What it refuses |
+|---|---|---|
+| Static import-closure gate ([§6.9](#69-bare-module-names-in-import-and-export)) | `static_import_closure` and its file walk | A cycle through an `import`, at the first cluster whose walk sees it: a fresh load in every mode, a REPL turn, a whole-file rebuild |
+| Reload graph ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)) | selection, order and the order check | Nothing itself; a prelude save selects every module with the bit on and orders it after the prelude |
+| Publication check ([§6.11](#611-module-cycles-at-publication)) | the commit-planning step | A generation that closes the cycle through a re-export or a qualified reference |
+| Cycle precedence at the failure exit (below) | the attempt failure exit of [REPL lifecycle §1.2.1](repl-lifecycle.md#121-failure-dependencies) | Nothing new; a failed whole-source attempt on such a cycle reports the cycle instead of its own error |
+
+- **Static gate.** The walk adds the edge beside a module's loading imports.
+  For the root it follows the fallback bit this attempt sets; the `Replace`
+  arm sets the bit before the gate runs. For each walked file it applies the
+  spec §8.8.1 predicate to that file, the one the bit and the injection use.
+  The target is the prelude file the injection discovers. With no prelude
+  file there is no edge (spec §8.8.3), and the prelude has no edge to itself
+  (spec §5.9).
+- **The barrier does not wait on the edge.** The signature barrier's members
+  stay the closure over written imports. A parent waits for its declared
+  children before it is terminal (the FIXME 0342 deferral in
+  `process_cluster_once`), and a declared child of a module the prelude
+  re-exports keeps the implicit import: the stdlib's `(mod- test)` children
+  do. A barrier wait on the prelude would deadlock `prelude → parent → child →
+  prelude`, although declared children are not dependency edges (§6.9;
+  [REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)). The prelude's
+  readiness stays with its injection (§6.5).
+- **Reload and publication predicate.** The edge is present exactly when the
+  module's bit is on. Each reader supplies the bit of the generation it
+  reads: `SharedState.prelude_fallback` for a live or staged table, and the
+  bit that its records imply for an established reference. The predicate's
+  bit parameter therefore carries a real value at every caller, and the
+  reach computation (`add_prelude_fallback_edges`) is deleted.
+- **A null import is no edge.** The reload predicate counts only imports that
+  load, as the static gate already does. A qualified or aliased use through a
+  null import is still recorded, as a callee or lookup edge. Measured
+  2026-09-30 on the delivered binary (`b3015064…`), with `x.cl` holding
+  `(import [prelude []])` and the prelude importing `x`: `/mod x` then
+  `(defn k [] 2)` is refused as `x -> prelude -> x`, and a save of either
+  file fails, ordering the prelude before `x` (probes N2–N4 in
+  `.local/s122-reload-tails-design-probe/`). The same misreading reaches a
+  fresh load in every mode: a prelude that imports a null-importing helper
+  and publishes a definition is refused as `prelude -> mymod -> prelude` by
+  the publication check at its own cluster, while an import-only prelude
+  publishes nothing and passes (face C, `test`'s probe of 2026-09-30,
+  `.local/s122-prelude-ruling-test-result.md`). The publication check reads
+  the reload predicate, so this correction removes face C with no further
+  site. The cache-validity edge set keeps null imports
+  ([§7.6](#76-dependency-record-and-validity)); over-invalidation there is
+  harmless.
+
+**Reach the static gate does not see.** The static walk follows loading
+imports only, because its closure is also the barrier's members. At a fresh
+load, a module `x` with the bit on that the prelude reaches only through
+`export` or a qualified reference, directly or through other modules,
+therefore compiles against the in-flight prelude. Either:
+
+- `x` compiles. Then the publication check refuses the first member of the
+  cycle that publishes after the other members' edges are live, the
+  prelude's cluster at the latest (§6.11 exactness), naming the cycle; or
+- `x` fails in its own source, typically on a prelude name the in-flight
+  prelude does not yet hold. Spec §8.5.4 item 6 requires the cycle here, not
+  the unresolved name.
+
+The second case is closed by **cycle precedence at the failure exit**. The
+exit that records a failed whole-source attempt's dependencies
+([REPL lifecycle §1.2.1](repl-lifecycle.md#121-failure-dependencies)) also
+asks, for a module `A` with the bit on, whether the prelude reaches `A`:
+
+- **The walk.** It starts at the prelude and uses the static gate's file walk:
+  resolve, read and parse each file, with an unreadable or unparseable file a
+  leaf. From each file it follows the edges §1.2.1 extracts from an attempt's
+  forms:
+  - `import` targets that load and `export` targets, resolved through the
+    file's declared children;
+  - the module of each qualified symbol written outside reader-quoted data,
+    substituted through the aliases that file declares: its import aliases,
+    resolved through its declared children, and its `mod` short names.
+
+  Prelude edges are not followed; the walk starts there.
+- **Aliases come from the walked file.** A walked module's Pass 0 writes the
+  same aliases to the session carrier, but it may not have run when the
+  failing module's exit fires. The walk therefore collects each parsed file's
+  aliases into a walk-local set, with the keys and targets Pass 0 derives,
+  and substitutes through the one `cranelisp_types::substitute_module_alias`.
+  Every alias the session writes today is private to its declaring module, so
+  a file's own declarations are every alias its qualifiers can read.
+  Falsifier: a public module alias, such as a spec §8.4.4 export mount,
+  becomes writable, and the walk does not collect it.
+- **The report.** When the walk reaches `A`, the attempt fails with
+  `circular dependency detected: A -> prelude -> … -> A`, rendered by
+  `scheduler::CycleError::render`, at the location of the error it replaces.
+  Otherwise the original error stands.
+- **Why only the prelude edge.** The premise is that every other dependency
+  edge is a wait at a fresh load, so the scheduler reports its cycle before
+  one member compiles against the other (§6.11). The prelude edge is the one
+  no module waits on (the barrier bullet above). QA falsified the premise for
+  an `export` of an in-flight module (ACT-1016 Face 2). Whether cycle
+  precedence or a wait answers that face is decided in the S123 carry of
+  ACT-1016.
+- **It changes a diagnostic, never an outcome.** The attempt has already
+  failed, so an edge the walk over-approximates can mislabel a failure but
+  cannot reject a program. The reader-quote shield, `cranelisp_types::quote_head`
+  (the one classifier, as the expander uses it), keeps a qualified symbol in
+  quoted data, such as a macro template, from counting. Principle 24's ban
+  on identity scans does not apply: the walk derives no compile-necessary
+  identity.
+- **Declared children stay out of the walk**, as out of every cycle graph. A
+  declared child of a prelude dependency that fails on a prelude name keeps
+  its own error; that shape is
+  [ACT-1015](../../sprints/actions/ACT-1015-declared-child-reads-in-flight-prelude-intake.md)'s
+  intake (an unconfirmed lead, carried to S123), not a cycle.
+- **Deterministic and mode-uniform.** The walk reads files and the failed
+  module's identity, not scheduler or session state, so the report does not
+  depend on interleaving. `--run`, `--link`, REPL startup and a restart share
+  the fresh load and report one path.
+- **Whole-source attempts only**, as the record. An increment that closes the
+  cycle is refused by the publication check before it can fail otherwise.
+- **Not taken:** following export targets and qualified references in the
+  static gate. That would change the barrier's members or need a second
+  closure. It would also make every module with the bit on parse the
+  prelude's re-export closure on every load: thirteen stdlib modules today,
+  which needs a session memo. The failure exit pays only when an attempt
+  fails.
+
+**Outcome for ACT-1014's shape.**
+
+- **Reach through an import.** A save that adds `(import [x [one]])` to the
+  prelude, while `x` has the bit on:
+  - the prelude's rebuild is refused at the static gate, naming
+    `prelude -> x -> prelude`;
+  - `x` and every other module with the bit on fail and lock on their
+    rebuilds;
+  - a restart on the saved files reports the same path at the entry's first
+    cluster.
+
+  Both refuse `(x/get (P 4))`.
+- **Reach through `(export [x …])` or a prelude function calling `x/…`.** In
+  the session:
+  - the plan's pre-plan edges order the prelude before `x`;
+  - the prelude's rebuild publishes, because `x` is a later member whose
+    edges are not yet settled (§6.11);
+  - `x`'s rebuild is refused by the publication check, naming
+    `x -> prelude -> x`;
+  - the order check's follow-on rebuilds the prelude with its dependents. The
+    prelude fails through §6.11's Pass-0 fail-fast on the failed `x`, which
+    carries `x`'s refusal naming the cycle. A qualified reach already fails
+    this way;
+  - `x` is rebuilt again. If it names a prelude name, it fails on that name,
+    and cycle precedence reports `x -> prelude -> x`. Otherwise it compiles,
+    because a module does not wait on the prelude.
+
+  The save ends with the prelude failed and the cycle named, and with `x` as
+  a restart leaves it.
+- **A save of `x` that drops its null import (the helper end),** while the
+  prelude reaches `x` by `export` or `x/…`:
+  - the pre-plan edges order `x` first. `x` publishes, because the prelude is
+    a later member, and the prelude is refused, naming
+    `prelude -> x -> prelude`;
+  - the follow-on for `x` orders the component `[prelude, x]`. The prelude
+    publishes, and `x` is refused, naming `x -> prelude -> x`;
+  - the follow-on for the prelude fails it through the Pass-0 fail-fast, with
+    `x`'s refusal. `x` then compiles.
+
+  The save ends with the prelude failed and locked, the cycle named, and `x`
+  compiled. The save that restores the null import rebuilds `x` without the
+  edge and then the prelude, and both are accepted.
+- **Restart parity.** A restart on the saved files ends each module as the
+  session does. The prelude is refused and names the cycle. `x` compiles
+  unless it names a prelude name, because at a fresh load it publishes before
+  the prelude's edges are live (§6.11, Exactness). QA's restart probe
+  confirms `x/one` compiles (ACT-1014).
+- **With `x` null-importing the prelude** and naming no prelude name, the
+  session and the restart accept every form of reach.
+
+**Superseded.** The 2026-09-29 reach rule, which kept a fallback edge only
+for a module outside the prelude's reach on the strength of spec §8.8.2's
+order, is retracted by the ruling. Fixtures whose prelude imports a module
+with the bit on are cyclic under the ruling; `qa` holds the census.
+
+**Cost.**
+
+- **The static gate.** A module with the bit on now walks the prelude's file
+  and its import closure once per cluster fingerprint. The stdlib prelude
+  imports nothing, so that is one parse.
+- **Cycle precedence.** A successful attempt pays nothing. A failed
+  whole-source attempt with the bit on pays at most one read and parse of
+  each file the prelude reaches. A fresh load already parses those files once
+  to load them.
+- **Measurement.** The full suite's wall time; a material rise refutes the
+  claim. `dev`'s single run at the implemented source reported 113.8 s under
+  nextest, against the standing figure of about 170 s, so the claim stands.
+
+**Grade: asserted with a named falsifier**, as §6.11. Falsifiers:
+
+- after a completed load, turn or plan, the prelude's live table reaches a
+  module whose bit is on, both modules' latest attempts having compiled. A
+  failed attempt's table keeps its Pass-0 declarations, so a failed prelude
+  that still exports `x` does not refute the claim;
+- a failed fresh load whose files put a module with the bit on on a cycle
+  through the prelude reports another error for that module.
+
+**Module evidence (`dev`).** Arm each row RED on the pre-fix source where its
+seam exists.
+
+- The predicate: a module with the bit on has the prelude edge whether or not
+  the prelude reaches it; a module holding `(import [prelude []])` has none;
+  `(import [prelude [x]])` is an edge; a null alias import is none.
+- The static gate, over a temporary project whose prelude imports `x` with
+  the bit on: the roots `prelude`, `x` and a third module with the bit on each
+  report the cycle, starting where the walk enters it: `x -> prelude -> x`
+  from `x`, `prelude -> x -> prelude` from the others. With `x`
+  null-importing the prelude, none does. The barrier's members for a root with the bit on and no imports
+  exclude the prelude.
+- The publication check:
+  - a prelude generation re-exporting `x` with the bit on is refused;
+  - with `x` null-importing, it is accepted, and so is an increment in `x`
+    (probe N2);
+  - a prelude generation that imports a null-importing module and publishes
+    a definition is accepted (face C).
+- Cycle precedence, over a temporary project in which `x`, with the bit on,
+  fails on a bare prelude type:
+  - with the prelude reaching `x` through `export`, and through a function
+    calling `x/…`, the failure reports `x -> prelude -> x`, not the name;
+  - with the prelude exporting `a` and `a` importing `x`, it reports
+    `x -> prelude -> a -> x`;
+  - with the prelude exporting `a`, `a` null-importing the prelude and
+    reaching `x` only as `y/one` through `(import [(x y) []])`, and no alias
+    in the session carrier, it reports `x -> prelude -> a -> x`;
+  - with `x` null-importing the prelude and failing on another missing name,
+    that name's error stands.
+  - Over-reach negatives, each keeping `x`'s own error:
+    - the prelude names `x/one` only inside a quoted macro template;
+    - `x` is a declared child of a module the prelude exports.
+- The plan: a save of a null-importing `x` orders `x` before the prelude and
+  both succeed (probe N3); a save of the prelude succeeds (probe N4).
+- The helper end:
+  `src/session_v4/persistence_tests.rs::helper_save_dropping_its_prelude_opt_out_is_refused_as_a_cycle`.
+  It is re-realised to ACT-1014's repaired condition. It covers `export` and
+  `x/one` reach in both directions: the helper end, and the twin leg in
+  PD-4's direction.
+  - Its `export` variant was RED on `d056842f…` in both directions, for the
+    unresolved name. All four legs are GREEN on `f0d1006f…`. Each closing save
+    names `x -> prelude -> x` and ends with `x` compiled and the prelude
+    refused, which matches an in-process `no_cache` restart.
+  - The kept-bit plant turns it RED, and so does the fail-fast planted
+    absent.
+  - ACT-1014 assigns the staged-edge plant to the seam row
+    `worker::tests::publication_cycle_follows_the_staged_module_s_own_prelude_edge`.
+
+End to end:
+
+- `tests/repl_persist.rs::prelude_save_importing_prelude_dependent_module_agrees_with_restart`;
+- the ruled cells PD-1 to PD-3, PD-4 (export reach), PD-5 (qualified reach)
+  and the control PD-4c
+  ([QA allocation](../../tests/plan/s122-evidence-delta.md#design-residuals--adjudication-2026-09-30));
+- face C's fresh-load witness, the repaired
+  `tests/repl_watch.rs::watch_errors_block_evaluation_no_last_known_good`.
+  Whether it also gets a cell in every mode is `qa`'s decision.
 
 ---
 
@@ -2081,6 +2711,81 @@ Per `facades/int.md` §"Composed introspection flows": slash commands are compos
 
 Universal output format (Sprint 14): `:Type {value|name} ; {classification} - {docstring}` + optional related symbol comment lines. Defined in `repl/spec.md`; implemented across `Sess::format_*` family.
 
+#### 8.5.1 `/mod` target
+
+Status: **designed 2026-09-29** (ACT-1010 M2, NAV-1). Private to `src/`.
+
+**Rule.** `/mod <name>` switches only to an existing module and never creates
+one. A module not yet loaded is loaded by the switch. An unknown name reports
+an error naming it and leaves the current module unchanged
+(`repl/spec/03-slash-commands.md` §3.9; `repl/spec/08-module-demos.md`,
+Scenario 7). The user ruled on
+2026-09-29 that `<name>` is read by the language's module-name resolution,
+with that code shared; `spec` records the ruling in
+`repl/spec/03-slash-commands.md` §3.9. Bare `/mod` returns
+to the entry module.
+
+**Flow.** `/mod` adds no resolver and no loader of its own:
+
+1. **Resolve.** Read `<name>` from the current module through the one
+   bare-module-name resolver (`imports::DeclaredChildren`, §6.9), built from
+   the current module's declared children. A declared submodule `M.name`
+   therefore wins over a root module `name` (spec §8.11.2.1); a dotted name is
+   absolute.
+2. **Loaded.** If the session holds a table for the resolved module, switch
+   to it. A cache-installed generation is first recompiled from source
+   ([session persistence §2.4.5](session-persistence.md#245-editing-a-cache-installed-module)).
+   A locked module is loaded: `/mod` switches, and the lock refuses its
+   definition turns.
+3. **Search.** Otherwise locate its file with `pipeline::resolve_module_file`,
+   the root-then-lib search every `import` and qualified reference uses. No
+   file reports `Module '<name>' not found.` through the error line; the
+   current module and the set of tables stay unchanged.
+4. **Load.** Otherwise load it through the language's load-on-reference: the
+   dependency drive a qualified reference at the prompt runs
+   (`drive_module_dep`, §6.2), then the eval thread's wait
+   (`register_dep_for_eval`). Build the eval thread's `ModuleCompiler` once
+   for `eval.rs` and `/mod`; do not add another inline construction. A
+   cache hit takes step 2's recompile. On success, switch; `sync_watcher`
+   after the turn watches the file (REPL §14.1). On failure, report the load
+   error, the chained §8.5.4 edge-5 diagnostic, and do not switch. The wait's
+   failed-module reset purges the never-compiled table, so no phantom
+   remains.
+
+**Structure.** `set_current_module` no longer creates a table: `/mod` is its
+only production caller and reaches it only with a loaded module, so the
+current module always has a table without a create-if-absent. The
+`install_module_session_env` call in `handle_mod` existed for the blank table;
+a loaded module already carries its session environment from its load or
+restore, so the call is removed once the rows below show that environment
+unchanged.
+
+**Consequences.**
+
+- A startup-failed dependency has no table after recovery
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)), so `/mod` to
+  it loads it, reports its failure and stays put. Its file stays intact.
+- A module loaded from a file this way is compiled from source this session,
+  so regeneration writes every definition the file held.
+- Loading a locked module whose saved file has since been fixed, before the
+  watcher polls, loads it while the lock stands. The next poll's reload
+  releases the lock.
+
+**Module evidence (`dev`).**
+
+- `handle_mod` on an unknown name returns the error naming it and leaves the
+  current module and the set of tables unchanged.
+- On an unloaded file-backed module it loads the file and switches; the
+  module's definitions resolve.
+- A declared submodule wins over a root module of the same name.
+- On a file that fails to compile it reports the error, stays put and leaves
+  no table.
+
+End to end: NAV-1, NAV-2 and the six NAV-3 fixture repairs
+([navigation](../../tests/plan/s122-evidence-delta.md#mod-navigation-nav-1nav-3));
+`tests/repl_persist.rs::persist_mod_definition_keeps_dependency_source_failed_at_startup`
+stays green.
+
 ### 8.6 Live redefinition — guarded publication and slot versioning
 
 `repl/spec/18-redefinition.md` §18 is normative: a replacement is fully checked
@@ -2362,10 +3067,16 @@ dispositions never executed, and on files since deleted.
 The S121 C6 visit delivered most of its bundles; these obligations remain open
 in source. Each owning filing stays the tracker; this list is the design intent.
 
-- **`--test` and the shared test runner (S122, ACT-0988).** Implemented in
-  source as [test runner](test-runner.md) describes; the obligation closes on
-  verification, which is pending. Its open items are the verification state
-  recorded in that design's status line; no design decision is outstanding.
+- **`--test` and the shared test runner (S122, ACT-0988).** Implemented as
+  [test runner](test-runner.md) describes, and QA judged it adequate
+  ([runner adequacy](../../tests/plan/s122-evidence-delta.md#shared-test-runner--final-adequacy-2026-09-28)).
+  Open: the user's Phase-5 acceptance.
+
+- **Batch missing entry (S122 K1, ACT-1004).** Entry registration refuses a
+  missing entry file for every batch mode
+  ([§6.1.1](#611-a-missing-entry-source-file)). Implemented, reviewed and
+  QA-adequate on 2026-09-30. Open: commit, the fresh final run (K4) and the
+  user's Phase-5 acceptance.
 
 - **Persistence corrections (S122, ACT-0998).**
   - Records are written only from published state
@@ -2409,14 +3120,18 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     - The user approved the quiescent whole-file boundary on 2026-09-29.
       It adds no public API (+0/−0 on every guarded baseline), cache schema
       or ABI change.
-    - Status: designed; `dev` implements it with the retirements in
-      session transaction §7.3.5. The earlier per-definition removal and
-      candidate-withdrawal designs are withdrawn.
+    - Status: implemented with the retirements in session transaction
+      §7.3.5, and QA judged it adequate on 2026-09-29
+      ([rebuild adequacy](../../tests/plan/s122-evidence-delta.md#whole-file-rebuild-and-qualified-dependents--final-adequacy-2026-09-29)).
+      Open: the user's Phase-5 acceptance. The earlier per-definition removal
+      and candidate-withdrawal designs are withdrawn.
     - Guards: C2, RM-1 to RM-5, FL-3, FQR-1 and FQR-2 end to end, and the
       module rows in session transaction §7.3.4 and REPL lifecycle §1.2
       and §1.3.1.
-- **Annotation-mirror tail (FIXME 0708).** Four lexical `src/` mirrors of the
-  retired pre-fold annotation shape survive and each goes one way:
+- **Annotation-mirror tail** (re-verified in source 2026-09-30). No filing
+  tracks it: FIXME 0708, its former tracker, is retired, so this entry is the
+  record. Four lexical `src/` mirrors of the retired pre-fold annotation shape
+  survive and each goes one way:
   `worker::leading_annotation_len` (a constant-`0` stub) deletes with its
   caller's `annotation_prefix` plumbing and its pin test;
   `save.rs::is_bare_colon` and `expander::is_annotation_symbol` are re-expressed

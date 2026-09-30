@@ -113,10 +113,17 @@ fn typed_consume_trusted_base_matches_exact_production_callers() {
         })
         .collect::<Vec<_>>();
     assert_eq!(unexpected_abi_handle_files, Vec::<PathBuf>::new());
+    // A shim boundary kind exists only through this implementing set, so a
+    // borrowed (or any third) kind cannot be adopted by a wrapper.
+    let abi_handle_kinds = sources[Path::new("abi_facts.rs")]
+        .lines()
+        .filter_map(|line| line.strip_prefix("impl AbiHandle for "))
+        .map(|header| header.trim_end_matches(" {"))
+        .collect::<Vec<_>>();
+    assert_eq!(abi_handle_kinds, ["i64", "Owned"]);
     assert_eq!(
         abi_handle_conversion_sites(&sources, "from_abi"),
         expected(&[
-            ("abi_facts.rs::test_borrowed", 1),
             ("abi_facts.rs::test_owned", 1),
             ("declaration_macro.rs::<module>", 2),
         ])
@@ -136,7 +143,7 @@ fn typed_consume_trusted_base_matches_exact_production_callers() {
     assert_eq!(
         token_sites(&sources, "Borrowed::from_abi("),
         expected(&[
-            ("abi_facts.rs::from_abi", 1),
+            ("abi_facts.rs::test_borrowed", 1),
             ("marshal.rs::borrowed_field", 1),
         ])
     );
@@ -185,7 +192,6 @@ fn typed_consume_trusted_base_matches_exact_production_callers() {
         expected(&[
             ("marshal.rs::quote_sexp_build", 2),
             ("marshal.rs::shallow_rc_inc", 1),
-            ("string.rs::string_identity", 1),
         ])
     );
 

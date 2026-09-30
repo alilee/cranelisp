@@ -1,7 +1,7 @@
 ---
 id: ACT-0975
 title: Investigate poll and combinator nodes reached inside synchronous Par branches
-status: open
+status: deferred
 priority: normal
 from: design
 to: qa
@@ -12,6 +12,12 @@ refers_to:
   - crates/cranelisp-intrinsics/src/io.rs
   - design/intrinsics/reactor.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K7, R4).** First deferral.
 
 ## Observation and limit
 

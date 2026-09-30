@@ -50,9 +50,10 @@ mod macro_clause;
 mod macro_resolution;
 mod platform;
 
+pub(crate) use self::dependency::drive_module_dep;
 use self::dependency::{
-    BlockAction, drive_module_dep, drive_submodules, ensure_prelude_bit, fq_module_is_loaded,
-    handle_export, handle_import, handle_mod, inject_prelude_if_needed,
+    BlockAction, drive_submodules, ensure_prelude_bit, fq_module_is_loaded, handle_export,
+    handle_import, handle_mod, inject_prelude_if_needed,
 };
 use self::platform::handle_platform;
 // `register_dep` (the per-dep prologue) lives in `dependency`; `cache_restore`
@@ -133,20 +134,91 @@ use std::path::Path;
 /// On `Done` the cluster's expanded program is returned for codegen; the
 /// cluster-level REPL/scheduler metadata and the staged per-symbol writes ride
 /// on `ProcessedCluster` until the prepared publication commits them.
+///
+/// Every stage of an attempt fails through this one exit. A failed
+/// whole-source attempt (the `Replace` strategy: a fresh load or a rebuild)
+/// records its dependencies as the module's failure dependencies before the
+/// error leaves, and reports a cycle through the implicit prelude in place of
+/// its own error (`design/int/repl-lifecycle.md` §1.2.1,
+/// `design/int/int.md` §6.12). An increment's failure records nothing.
 pub fn process_cluster_once(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     continuation: &SourceContinuation,
     strategy: ModuleStrategy,
     generation_started: bool,
+    turn_definitions: Option<&mut crate::session_v4::TurnDefinitions>,
+) -> Result<ClusterOnce, CranelispError> {
+    let mut prefix = ExpandedPrefix::resuming(continuation);
+    let outcome = attempt_cluster(
+        ctx,
+        module,
+        continuation,
+        strategy,
+        generation_started,
+        turn_definitions,
+        &mut prefix,
+    );
+    match outcome {
+        Err(error) if strategy == ModuleStrategy::Replace => Err(fail_whole_source_attempt(
+            ctx,
+            module,
+            continuation.forms(),
+            &prefix,
+            error,
+        )),
+        outcome => outcome,
+    }
+}
+
+/// The attempt failure exit of a whole-source attempt of `module`: record the
+/// attempt's dependencies, then give a cycle through the implicit prelude
+/// precedence over `error`, at its location.
+fn fail_whole_source_attempt(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    forms: &[Sexp],
+    prefix: &ExpandedPrefix,
+    error: CranelispError,
+) -> CranelispError {
+    let dependencies = dependency::attempt_dependencies(
+        ctx,
+        module,
+        forms,
+        &prefix.forms,
+        &prefix.attempt.macro_lookup_dependencies,
+    );
+    ctx.scheduler
+        .record_failure_dependencies(module, dependencies);
+    if !ctx.prelude_fallback.get(module).is_some_and(|bit| *bit) {
+        return error;
+    }
+    match dependency::prelude_reach_cycle(ctx, module) {
+        Some(cycle) => CranelispError::ModuleError {
+            message: format!("circular dependency detected: {}", cycle.render()),
+            location: error.location().clone(),
+        },
+        None => error,
+    }
+}
+
+/// One attempt of `process_cluster_once`, accumulating what it expands into
+/// `prefix`.
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+fn attempt_cluster(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    continuation: &SourceContinuation,
+    strategy: ModuleStrategy,
+    generation_started: bool,
     mut turn_definitions: Option<&mut crate::session_v4::TurnDefinitions>,
+    prefix: &mut ExpandedPrefix,
 ) -> Result<ClusterOnce, CranelispError> {
     // In-call-stack working state — rebuilt from the continuation every pass,
     // dropped on a gap. Never lands in a shared map (the S60–S62 heisenbug
     // substrate is gone). `expanded_program` accumulates within THIS pass only.
     let sexps = continuation.forms();
     let mut expanded_program = BuiltProgram::default();
-    let mut prefix = ExpandedPrefix::resuming(continuation);
 
     // §8.6.4 (FIXME 0514) — the definition-over-(import|export|prelude)
     // rejection is no longer mode-gated here: it moved to the shared typecheck
@@ -174,7 +246,7 @@ pub fn process_cluster_once(
         module,
         sexps,
         &mut expanded_program,
-        &mut prefix,
+        prefix,
         &mut turn_definitions,
     )?;
 
@@ -187,7 +259,7 @@ pub fn process_cluster_once(
         module,
         sexps,
         expanded_program,
-        &prefix,
+        prefix,
         pass2_result,
         program,
         &mut turn_definitions,
@@ -244,22 +316,42 @@ struct Built<'a> {
     forms: Vec<TopLevel>,
 }
 
-/// What a cluster attempt has expanded so far: the ordinary forms and the
-/// modules whose qualified macro heads that expansion recognised
-/// (`design/int/int.md` §7.6.2). A resumed attempt starts from the set its
-/// continuation carried and re-walks the continuation's forms.
+/// What a cluster attempt has expanded so far: the ordinary forms, and the
+/// facts each of its macro checkpoints reads. A resumed attempt starts from
+/// the facts its continuation carried and re-walks the continuation's forms.
 struct ExpandedPrefix {
     forms: Vec<Sexp>,
-    macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
+    attempt: AttemptFacts,
+}
+
+/// What one cluster attempt carries into each macro checkpoint: the modules
+/// whose qualified macro heads its expansion recognised
+/// (`design/int/int.md` §7.6.2), and its provenance, whose later members the
+/// checkpoint's publication cycle check skips (§6.11).
+pub(super) struct AttemptFacts {
+    pub(super) macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
     provenance: SourceProvenance,
+}
+
+impl AttemptFacts {
+    /// The members a whole-file rebuild's reload pass rebuilds after this
+    /// module; `None` for any other attempt.
+    pub(super) fn later_members(&self) -> Option<&BTreeSet<ModuleFullPath>> {
+        match &self.provenance {
+            SourceProvenance::WholeSource { later_members, .. } => Some(later_members),
+            SourceProvenance::Increment => None,
+        }
+    }
 }
 
 impl ExpandedPrefix {
     fn resuming(continuation: &SourceContinuation) -> Self {
         ExpandedPrefix {
             forms: Vec::new(),
-            macro_lookup_dependencies: continuation.macro_lookup_dependencies().clone(),
-            provenance: continuation.provenance().clone(),
+            attempt: AttemptFacts {
+                macro_lookup_dependencies: continuation.macro_lookup_dependencies().clone(),
+                provenance: continuation.provenance().clone(),
+            },
         }
     }
 
@@ -269,8 +361,8 @@ impl ExpandedPrefix {
         forms.extend(rest);
         SourceContinuation::resumed(
             forms,
-            self.macro_lookup_dependencies.clone(),
-            self.provenance.clone(),
+            self.attempt.macro_lookup_dependencies.clone(),
+            self.attempt.provenance.clone(),
         )
     }
 }
@@ -301,13 +393,16 @@ fn run_cluster_prologue(
     if strategy == ModuleStrategy::Replace {
         ctx.set_current_module(module.clone());
 
-        // Static cycle gate — fast-exits when the cluster has no imports.
-        closure = dependency::static_import_closure(ctx, module, sexps, &declared)?;
-
         // Prelude fallback bit (§8.8.1) — single-sourced via `ensure_prelude_bit`
         // (FIXME 0516 fold-in), fresh-recompute discipline for the Replace path.
-        // Then ensure prelude is LOADED so the fallback has a table to consult.
+        // It is set before the static gate, which reads it as the root's
+        // implicit prelude dependency (`design/int/int.md` §6.12).
         ensure_prelude_bit(ctx, module, sexps, true);
+
+        // Static cycle gate — fast-exits when the cluster has no dependency.
+        closure = dependency::static_import_closure(ctx, module, sexps, &declared)?;
+
+        // Ensure prelude is LOADED so the fallback has a table to consult.
         if let Some(dep) = inject_prelude_if_needed(ctx, module, sexps)? {
             return Ok(Some(dep));
         }
@@ -327,9 +422,10 @@ fn run_cluster_prologue(
         ensure_prelude_bit(ctx, module, sexps, false);
 
         // Static cycle gate for the eval path too (S93 Invariant PP). The eval
-        // thread is the genuine barrier waiter; a REPL `(import …)` whose static
-        // closure is cyclic is rejected up front, and the closure is reused by
-        // the body-boundary barrier below.
+        // thread is the genuine barrier waiter; a REPL turn whose static
+        // closure is cyclic, through an `(import …)` or the implicit prelude,
+        // is rejected up front, and the closure is reused by the body-boundary
+        // barrier below.
         closure = dependency::static_import_closure(ctx, module, sexps, &declared)?;
     }
 
@@ -574,10 +670,6 @@ fn finalize_cluster(
     // NEVER on error class — a native finalize error (its span within an origin
     // form) passes through unchanged.
     let mut prepared = None;
-    let established_reference = match program {
-        SourceProvenance::WholeSource(reference) => Some(reference.as_ref()),
-        SourceProvenance::Increment => None,
-    };
     let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) =
         if let Some(shared) = ctx.shared_state {
             match crate::worker::prepare_cluster_commit_with_demands(
@@ -590,9 +682,9 @@ fn finalize_cluster(
                     codegen: expanded_program,
                 },
                 crate::worker::OwedFacts {
-                    lookup_dependencies: &prefix.macro_lookup_dependencies,
+                    lookup_dependencies: &prefix.attempt.macro_lookup_dependencies,
                 },
-                established_reference,
+                program,
                 shared,
             ) {
                 Ok(None) => (None, Vec::new(), Vec::new(), Vec::new()),
@@ -732,11 +824,11 @@ fn module_has_no_member_error(module: &ModuleFullPath, member: &str, span: Span)
 
 /// A gap's `module/member` identity together with the scope the cluster wrote
 /// its reference in.
-struct GapReference<'a> {
-    module: &'a ModuleFullPath,
-    member: &'a str,
-    referring_module: &'a ModuleFullPath,
-    module_aliases: &'a ModuleAliases,
+pub(crate) struct GapReference<'a> {
+    pub(crate) module: &'a ModuleFullPath,
+    pub(crate) member: &'a str,
+    pub(crate) referring_module: &'a ModuleFullPath,
+    pub(crate) module_aliases: &'a ModuleAliases,
 }
 
 impl GapReference<'_> {
@@ -785,7 +877,7 @@ impl<'a> WrittenRef<'a> {
 
 /// The span of the first reference to `reference` in `program`, in value or
 /// type position, or `Span::SYNTHETIC` when nothing matches (int.md §6.3.1).
-fn gap_reference_span(program: &[TopLevel], reference: &GapReference<'_>) -> Span {
+pub(crate) fn gap_reference_span(program: &[TopLevel], reference: &GapReference<'_>) -> Span {
     let pred = |written: WrittenRef<'_>| reference.is_written_as(written);
     program
         .iter()
@@ -1075,13 +1167,9 @@ fn pass2_check_bodies_with_expansion(
             }
             FormKind::Defmacro => {
                 let info = cranelisp_frontend::parse_defmacro(sexp)?;
-                if let Some(gap) = compile_macro_if_needed(
-                    ctx,
-                    module,
-                    &info,
-                    sexp,
-                    &prefix.macro_lookup_dependencies,
-                )? {
+                if let Some(gap) =
+                    compile_macro_if_needed(ctx, module, &info, sexp, &prefix.attempt)?
+                {
                     let dep_module = macro_checkpoint_gap_target(ctx, &gap, sexp.span())?;
                     return Ok(Pass2Result::BlockedOnFqModule {
                         dep_module,
@@ -1130,7 +1218,7 @@ fn pass2_check_bodies_with_expansion(
                     annotation_prefix,
                     &sexps[form_idx],
                     expanded_program,
-                    &mut prefix.macro_lookup_dependencies,
+                    &mut prefix.attempt,
                     turn_definitions,
                 )? {
                     RegularFormResult::Complete(forms) => prefix.forms.extend(forms),
@@ -1331,7 +1419,7 @@ fn process_regular_form(
     annotation_prefix: &[Sexp],
     sexp: &Sexp,
     expanded_program: &mut BuiltProgram,
-    macro_lookup_dependencies: &mut BTreeSet<ModuleFullPath>,
+    attempt: &mut AttemptFacts,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<RegularFormResult, CranelispError> {
     process_regular_form_with_origin(
@@ -1341,7 +1429,7 @@ fn process_regular_form(
         sexp,
         sexp,
         expanded_program,
-        macro_lookup_dependencies,
+        attempt,
         turn_definitions,
     )
 }
@@ -1354,7 +1442,7 @@ fn process_regular_form_with_origin(
     sexp: &Sexp,
     authored_origin: &Sexp,
     expanded_program: &mut BuiltProgram,
-    macro_lookup_dependencies: &mut BTreeSet<ModuleFullPath>,
+    attempt: &mut AttemptFacts,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<RegularFormResult, CranelispError> {
     // A literal top-level `begin` is itself an ordinary syntactic form, but
@@ -1369,9 +1457,7 @@ fn process_regular_form_with_origin(
         for (index, form) in forms.iter().enumerate() {
             if cranelisp_frontend::is_defmacro(form) {
                 let info = cranelisp_frontend::parse_defmacro(form)?;
-                if let Some(gap) =
-                    compile_macro_if_needed(ctx, module, &info, form, macro_lookup_dependencies)?
-                {
+                if let Some(gap) = compile_macro_if_needed(ctx, module, &info, form, attempt)? {
                     let mut continuation = ordinary;
                     continuation.extend_from_slice(&forms[index..]);
                     return Ok(RegularFormResult::Blocked {
@@ -1405,7 +1491,7 @@ fn process_regular_form_with_origin(
                 form,
                 authored_origin,
                 expanded_program,
-                macro_lookup_dependencies,
+                attempt,
                 turn_definitions,
             )? {
                 RegularFormResult::Complete(forms) => ordinary.extend(forms),
@@ -1447,7 +1533,7 @@ fn process_regular_form_with_origin(
             sexp: expanded,
             macro_lookup_dependencies: recognised,
         } => {
-            macro_lookup_dependencies.extend(recognised);
+            attempt.macro_lookup_dependencies.extend(recognised);
             expanded
         }
         ExpandOutcome::BlockedOnFqModule(dep) => {
@@ -1491,9 +1577,7 @@ fn process_regular_form_with_origin(
             // the ORIGINAL outer form `sexp`, exactly what the sibling defn
             // records below — one turn, one authored form, one emission.
             let authored_source = verbatim_source_slice(ctx, module, authored_origin);
-            if let Some(gap) =
-                compile_macro_if_needed(ctx, module, &info, form, macro_lookup_dependencies)?
-            {
+            if let Some(gap) = compile_macro_if_needed(ctx, module, &info, form, attempt)? {
                 let built_prefix = if emission_markers
                     .iter()
                     .any(|marker| matches!(marker, DefinitionEmissionMarker::Ordinary))

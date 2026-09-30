@@ -218,24 +218,16 @@ fn run_tests_refuses_a_discover_tests_reference_before_running() {
     );
 }
 
-// spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — under `--test` a
-// missing entry source file is an error naming it, not an empty run.
+// spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2 is about
+// absence: under `--test` an existing entry with no tests is an empty run.
+// Entry registration refuses a missing file (`lifecycle::entry_registration_tests`).
 #[test]
-fn run_tests_refuses_a_missing_entry_source_file() {
+fn run_tests_reports_an_existing_entry_without_tests_as_an_empty_run() {
     let root = tempfile::tempdir().unwrap();
-    let mut s = session(root.path(), RunMode::Run, Vec::new());
-    s.register_module("user")
-        .expect("a missing entry registers as empty");
-    s.wait_inmem_complete().expect("the empty entry loads");
-    let Err(error) = s.run_tests() else {
-        panic!("a missing entry file must not be an empty run");
-    };
-    assert!(error.to_string().contains("user.cl"), "{error}");
-
-    let present = batch_with(root.path(), &[]);
-    let report = present
+    let s = batch_with(root.path(), &[]);
+    let report = s
         .run_tests()
-        .unwrap_or_else(|e| panic!("an existing empty entry is an empty run: {e}"));
+        .unwrap_or_else(|e| panic!("an entry without tests is an empty run: {e}"));
     assert_eq!(report.text(), "No tests found");
     assert_eq!(report.exit_code(), 0);
 }

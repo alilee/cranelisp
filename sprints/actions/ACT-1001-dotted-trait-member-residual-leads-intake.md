@@ -1,7 +1,7 @@
 ---
 id: ACT-1001
 title: Guard the confirmed ambiguous-parent wrong accept; route the unreproduced dispatch-index hazard
-status: open
+status: deferred
 priority: required
 from: qa
 to: qa
@@ -16,6 +16,12 @@ refers_to:
   - spec/08-modules.md
   - spec/07-traits.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **P-3 (K5, N2) and P-2 (K5, N3) are carried to S123.** First deferral. P-1 is closed; its evidence below stands.
 
 ## Request
 
@@ -277,8 +283,8 @@ corrected, and the evidence is adequate. The record is in
   the literal key answered after the parent's ambiguity was swallowed.
 - **F1-b split.** `resolve_constructor_entry` now resolves `Qtok.Qa`
   correctly. The pattern then fails in `instantiate_ctor`, which is an
-  existing defect, filed as
-  [ACT-1002](ACT-1002-contested-type-name-constructor-pattern-intake.md).
+  existing defect, filed as ACT-1002 (fixed in `63605970`; retired
+  2026-09-30).
   The F1-b cell stays RED as that defect's guard.
 - **Condition still open.** One narrow core cell for the pattern leg must
   pass in a focused run. It needs no further QA or review cycle.

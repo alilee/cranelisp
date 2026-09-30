@@ -44,7 +44,7 @@ surface for zero codegen gain.
 
 The entries are this crate's backend-emitted-call targets, each naming an
 in-crate Rust path. **The inventory lives in source, pinned by the closed-set
-guard `crates/cranelisp-intrinsics/src/catalog/tests.rs::name_set_is_exactly_the_expected_38`**
+guard `crates/cranelisp-intrinsics/src/catalog/tests.rs::name_set_is_exactly_the_expected_names`**
 — do not keep a second copy here.
 
 Deliberately excluded:

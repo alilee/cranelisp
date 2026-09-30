@@ -315,6 +315,224 @@ fn pure_ssa_alias_use_extends_root_live_range() {
     assert_eq!(last_uses.get(&(v.clone(), Span::new(30, 31))), Some(&false));
 }
 
+/// Builders for the variable-pattern alias cells. Types are irrelevant to
+/// last-use ordering, so every node is `Int`.
+mod match_alias {
+    use cranelisp_types::{
+        ApplyRef, ConcreteType, MonoExpr, MonoMatchArm, Pattern, Span, Symbol, SymbolRef, VarRef,
+    };
+
+    pub(super) fn var(name: &str, at: u32) -> MonoExpr {
+        MonoExpr::Var {
+            resolution: VarRef::Local {
+                binder: Symbol::from(name),
+                binding_span: Span::SYNTHETIC,
+            },
+            name: Symbol::from(name),
+            span: Span::new(at, at + 1),
+            resolved_call: None,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    pub(super) fn call(callee: &str, at: u32, args: Vec<MonoExpr>) -> MonoExpr {
+        MonoExpr::Apply {
+            dispatch: ApplyRef::ViaCallee,
+            callee: Box::new(var(callee, at)),
+            args,
+            span: Span::new(at, at + 50),
+            resolved_call: None,
+            ty: ConcreteType::Int,
+            confined: None,
+            escapes: None,
+            provenance: None,
+            unique_static: None,
+        }
+    }
+
+    pub(super) fn one() -> MonoExpr {
+        MonoExpr::IntLit {
+            value: 1,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    pub(super) fn var_arm(binder: &str, body: MonoExpr) -> MonoMatchArm {
+        arm(
+            Pattern::Var {
+                name: Symbol::from(binder),
+                span: Span::new(2, 3),
+            },
+            body,
+        )
+    }
+
+    pub(super) fn ctor_arm(binder: &str, body: MonoExpr) -> MonoMatchArm {
+        arm(
+            Pattern::Constructor {
+                name: SymbolRef::new(None, Symbol::from("Some")),
+                bindings: vec![Symbol::from(binder)],
+                span: Span::new(2, 3),
+            },
+            body,
+        )
+    }
+
+    fn arm(pattern: Pattern, body: MonoExpr) -> MonoMatchArm {
+        MonoMatchArm {
+            pattern,
+            body,
+            span: Span::new(2, 200),
+            provenance: None,
+            resolved_ctor: None,
+        }
+    }
+
+    pub(super) fn match_on(scrutinee: MonoExpr, arm: MonoMatchArm) -> MonoExpr {
+        MonoExpr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![arm],
+            span: Span::new(0, 201),
+            compiler_generated: false,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    /// Whether `name`'s occurrence at `at` is its last use.
+    pub(super) fn is_last(expr: &MonoExpr, name: &str, at: u32) -> Option<bool> {
+        super::compute_last_uses(expr)
+            .get(&(Symbol::from(name), Span::new(at, at + 1)))
+            .copied()
+    }
+}
+
+// spec: spec/12-runtime.md §12.3.3 — a variable-pattern arm binder over a bare
+// `Var` scrutinee views the scrutinee's box without holding a reference, so a
+// later use of the binder is a use of its root (`design/backend/ring2-rc.md`
+// §5.5; `ownership-codegen.md` §13.3 "Last use covers the slot's uncounted
+// aliases"). Without the edge, `v` at the push is its last use, the push
+// mutates in place, and `a` reads the pushed value (or, forwarded into a tail
+// slot, a freed box).
+//
+// defect: class=enumeration-miss locus=crates/cranelisp-backend/src/heap.rs::compute_last_uses found=S122 owner=/dev
+#[test]
+fn a_variable_pattern_binder_extends_its_scrutinee_live_range() {
+    use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
+    use match_alias::*;
+
+    // (match v [a (f (vec-push v 1) a)])
+    let direct = match_on(
+        var("v", 1),
+        var_arm(
+            "a",
+            call(
+                "f",
+                10,
+                vec![
+                    call("vec-push", 20, vec![var("v", 30), one()]),
+                    var("a", 40),
+                ],
+            ),
+        ),
+    );
+    assert_eq!(
+        is_last(&direct, "v", 30),
+        Some(false),
+        "the push is not v's last use"
+    );
+    assert_eq!(
+        is_last(&direct, "v", 40),
+        Some(true),
+        "a's use is v's last use"
+    );
+
+    // (let [w v] (match w [a (f (vec-push v 1) a)])) — the chain collapses to v.
+    let chained = MonoExpr::Let {
+        bindings: vec![(Symbol::from("w"), var("v", 1))],
+        body: Box::new(match_on(
+            var("w", 5),
+            var_arm(
+                "a",
+                call(
+                    "f",
+                    10,
+                    vec![
+                        call("vec-push", 20, vec![var("v", 30), one()]),
+                        var("a", 40),
+                    ],
+                ),
+            ),
+        )),
+        span: Span::new(0, 202),
+        ty: ConcreteType::Int,
+    };
+    assert_eq!(
+        is_last(&chained, "v", 30),
+        Some(false),
+        "a aliases w, which aliases v"
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.3 (NEGATIVE) — the alias edge delays the root's
+// last use only by the binder's own later uses. A binder read only inside the
+// site's operands is consumed before the call executes, an unused binder
+// extends nothing, and a constructor-pattern binder is a projected field, not a
+// view of the scrutinee's box. In each the push stays `v`'s last use.
+#[test]
+fn a_binder_that_is_not_used_after_the_site_leaves_the_push_last_neg() {
+    use match_alias::*;
+
+    // (match v [a (f (vec-push v (vec-len a)))])
+    let inside_operands = match_on(
+        var("v", 1),
+        var_arm(
+            "a",
+            call(
+                "f",
+                10,
+                vec![call(
+                    "vec-push",
+                    20,
+                    vec![var("v", 30), call("vec-len", 60, vec![var("a", 70)])],
+                )],
+            ),
+        ),
+    );
+    assert_eq!(is_last(&inside_operands, "v", 30), Some(true));
+
+    // (match v [a (f (vec-push v 1))])
+    let unused = match_on(
+        var("v", 1),
+        var_arm(
+            "a",
+            call(
+                "f",
+                10,
+                vec![call("vec-push", 20, vec![var("v", 30), one()])],
+            ),
+        ),
+    );
+    assert_eq!(is_last(&unused, "v", 30), Some(true));
+
+    // (match v [(Some a) (f (vec-push v 1) a)])
+    let constructor = match_on(
+        var("v", 1),
+        ctor_arm(
+            "a",
+            call(
+                "f",
+                10,
+                vec![
+                    call("vec-push", 20, vec![var("v", 30), one()]),
+                    var("a", 40),
+                ],
+            ),
+        ),
+    );
+    assert_eq!(is_last(&constructor, "v", 30), Some(true));
+}
+
 // spec: sprints/SPRINT.md §"Wave 0" R4 — byte-identical-off guard for the RC
 // inc codegen switch. With both S99 env gates unset (the test-process default),
 // `emit_rc_inc` must emit the blessed inline `atomic_rmw` and NO `rc_stat_inc`

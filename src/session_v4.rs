@@ -5,7 +5,7 @@
 // routes through process_module_forms(Additive) with serial per-form processing
 // (Step 7).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
@@ -413,6 +413,12 @@ pub struct CompilerSession {
     /// (`design/int/session-transaction.md` §7.3.2). Only a successful reload
     /// of the module drops it.
     pub(crate) reload_references: HashMap<ModuleFullPath, Arc<SessionSymbolTable>>,
+
+    /// Each module's failure dependencies since it last compiled: every module
+    /// through which one of its attempts failed
+    /// (`design/int/repl-lifecycle.md` §1.2.1). Reload selection reads them;
+    /// only a successful reload of the module clears them.
+    pub(crate) failure_dependencies: HashMap<ModuleFullPath, BTreeSet<ModuleFullPath>>,
 
     /// File watcher for REPL mode. Initialized via `init_watcher()` after
     /// construction. None in batch/link modes or if OS watcher unavailable.

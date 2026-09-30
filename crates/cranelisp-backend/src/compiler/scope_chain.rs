@@ -75,6 +75,18 @@ pub(crate) struct SlotRef {
     index: usize,
 }
 
+impl SlotRef {
+    /// The index of the scope frame this slot lives in.
+    pub(crate) fn frame(self) -> usize {
+        self.frame
+    }
+
+    /// Does this slot live in the parameter frame (`0`)?
+    pub(crate) fn in_param_frame(self) -> bool {
+        self.frame == 0
+    }
+}
+
 /// A stack of frames; a frame is an ORDERED list of slots.
 ///
 /// Frame `0` is the function's parameter frame (the TCO loop header reuses its
@@ -217,19 +229,6 @@ impl ScopeChain {
     /// The innermost frame's slots.
     pub(crate) fn innermost_frame(&self) -> &[BinderSlot] {
         self.frames.last().map_or(&[], Vec::as_slice)
-    }
-
-    /// Does any `let`/match/lambda frame (`1..`) bind `name`?
-    pub(crate) fn let_frames_bind(&self, name: &Symbol) -> bool {
-        self.frames
-            .iter()
-            .skip(1)
-            .any(|frame| frame.iter().any(|slot| &slot.name == name))
-    }
-
-    /// Does the parameter frame (`0`) bind `name`?
-    pub(crate) fn param_frame_binds(&self, name: &Symbol) -> bool {
-        self.frame(0).iter().any(|slot| &slot.name == name)
     }
 }
 

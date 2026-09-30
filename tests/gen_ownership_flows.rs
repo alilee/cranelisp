@@ -51,9 +51,8 @@
 //
 // If a future defect ever needs a cell to opt out again, do NOT resurrect this
 // mechanism from git: an opt-out is a suppressed assertion, and the two named
-// alternatives are a cell-by-cell pin in a repro file (which is what 0745 has)
-// or a STRUCTURAL exclusion — a shape the generator cannot emit at all, which is
-// what `single_program` documents below.
+// alternatives are a cell-by-cell pin in a repro file or a STRUCTURAL
+// exclusion — a shape the generator cannot emit at all (see `single_program`).
 //
 // CAPABILITY FENCES (METHOD §2.2 — "an instrument is unverified until it is
 // proven to detect"; `memory-safety-coverage.md` §4.1). The four `_capability_`
@@ -86,7 +85,7 @@
 //     spark & macro-expansion flows (strategy §2.2 "v2"). The MATCH eliminator
 //     steps are no longer on this list: S118 W1 added them as three positions
 //     (FIXME 0830), with their own residual scope named at the row.
-//   - the program-RESULT-heap face — see `single_program` below (FIXME 0745).
+//   - the program-RESULT-heap face — see `single_program` below.
 //
 // spec: spec/12-runtime.md §12.3.1 — Requirements (a heap value MUST be freed when
 // it is no longer reachable, and MUST NOT be freed while it is).
@@ -424,16 +423,14 @@ const ITERS: i64 = 25;
 
 /// `main` ALWAYS returns `(Pure <Int>)`.
 ///
-/// PRE-REGISTERED EXCLUSION (dispatch caveat (a); FIXME 0745, carried to S116):
-/// the program-RESULT-heap face — `main` returning an `IO` whose payload is a
-/// heap value — leaks by construction today, because nobody releases the program
-/// result value in any mode. It is pinned by
-/// `adt_drop_glue_underkey::entry_main_ioresult_heap_payload_toggle_off_leak_r2`
-/// and owned by `/design`(int) + an `/arch` mechanism ruling. Generating it here
-/// would make every cell of this harness's first run read as noise for a defect
-/// that already has a pin, an owner and a trigger. The exclusion is STRUCTURAL —
-/// there is no `Pure <heap>` template in the generator — not a suppressed
-/// assertion. When 0745 lands, `main`-returns-heap becomes a third variant here.
+/// STRUCTURAL EXCLUSION: there is no `Pure <heap>` template, so the
+/// program-RESULT-heap face — `main` returning an `IO` whose payload is a heap
+/// value — is not generated here. It was excluded while that result leaked
+/// (FIXME 0745, fixed in S118 by the program-result owner). Its evidence is
+/// `program_result_owner_s116.rs` (run, link and REPL) and
+/// `adt_drop_glue_underkey::entry_main_ioresult_heap_payload_toggle_off_leak_r2`.
+/// Whether this product should gain a `main`-returns-heap variant is QA's
+/// allocation.
 fn single_program(t: &OwningType, p: &Position) -> String {
     format!("{}{}(defn main [] (Pure (cell)))\n", t.defs, (p.emit)(t))
 }

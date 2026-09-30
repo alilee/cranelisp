@@ -51,34 +51,13 @@
 
 (export [primitives [Int Bool Float String]])
 
-;; ── Curated collection verbs (module-qualified — bare BLOCKED, carried) ──
+;; ── Curated collection verbs (module-qualified, not re-exported) ─────
 ;;
-;; The Clojure-aligned Vec verbs `count`/`get`/`conj`/`assoc` live in
-;; `collections.vec`, wrapping `vec-len`/`vec-get`/`vec-push`/`vec-set`.
-;; They are reached module-qualified (`collections.vec/count`) or via
-;; `(import [collections.vec [count get conj]])` — the capability is fully
-;; reachable that way (verified: `(import [collections.vec [count]])`
-;; then `(count [1 2 3])` ⇒ 3).
-;;
-;; The S86 de-leak TARGETED promoting `count`/`get`/`conj` to BARE prelude
-;; (so the curated surface needs no raw primitive for collection access).
-;; That half is BLOCKED by a pipeline defect, NOT a curation problem:
-;; a plain `defn` that the prelude only RE-EXPORTS (or imports-then-exports)
-;; is resolved by typecheck but its body is never pulled into the *user
-;; program's* codegen batch — `(count [1 2 3])` typechecks then fails at
-;; codegen with "undefined function: count" (REPL and `--run` alike). The
-;; same defect already affects the long-re-exported bare `pure` (io.monad).
-;; Root cause: `derive_codegen_batch` (src/worker.rs:621) emits only local
-;; `Def` entries; re-export/import installs `ModuleEntry::Import`, which is
-;; codegen-skipped, and the prelude's import does not cascade the body into
-;; the consuming module's batch. This is DEF-1 (see plan-stdlib.md §1.5),
-;; routed to /qa → /int. Trait methods (`+`/`show`) and macros (`vec`) are
-;; unaffected — they materialise on demand at the call site, which is why
-;; the raw-primitive de-leak itself (trait operators) succeeds.
-;;
-;; Until DEF-1 lands, these stay module-qualified (the import path works),
-;; and `assoc`/`first`/`rest`/`map`/`filter`/`reduce` stay reserved for
-;; Phase-H trait dispatch (FIXME 0402, target: /spec).
+;; `count`/`get`/`conj`/`assoc` and `map`/`filter`/`reduce` are not
+;; re-exported here: the bare names are reserved until a collection trait owns
+;; them (spec §11.4a). The list and pair `first` accessors are not re-exported
+;; either, as a curation choice (plan-stdlib.md §1.5). Reach these verbs
+;; module-qualified (`collections.vec/count`) or through an explicit import.
 
 ;; ── DE-LEAK LANDED (S86 step 1.5d) ───────────────────────────────────
 ;;

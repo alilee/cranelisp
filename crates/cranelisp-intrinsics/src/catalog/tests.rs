@@ -53,13 +53,12 @@ const EXPECTED_NAMES: &[&str] = &[
     "cranelisp_trace_format",
 ];
 
-/// Name-set completeness + uniqueness: the table contains exactly the 38
+/// Name-set completeness + uniqueness: the table contains exactly the
 /// expected names — no more, no fewer — and no name repeats (BC §6
 /// guardrail; positive + negative coverage).
 #[test]
-fn name_set_is_exactly_the_expected_38() {
+fn name_set_is_exactly_the_expected_names() {
     let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-    assert_eq!(names.len(), 38, "table must hold exactly 38 entries");
     assert_eq!(names.len(), EXPECTED_NAMES.len());
 
     // Every expected name present (no drop).

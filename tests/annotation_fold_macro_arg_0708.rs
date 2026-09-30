@@ -9,12 +9,12 @@
 // stdlib-free equivalent below is an inline two-clause macro receiving an annotated
 // argument.
 //
-// TODAY (HEAD, pre-implementation): `:primitives/Int` is delivered to the macro as
-// a SEPARATE positional argument, so `(pick 1 :primitives/Int 5)` arrives as THREE
-// arguments and dies with `no matching clause … with 3 argument(s); clauses accept
-// 1 or 2` — the annotation did NOT fold in macro-argument position. FAILING-NOT-
-// IGNORED; the flip trigger is the S116 IMPLEMENTATION wave (this S115 wave scribes
-// the ruling + lands the behaviour pin only; no S115 fix wave carries it).
+// Before the fix, `:primitives/Int` reached the macro as a SEPARATE positional
+// argument, so `(pick 1 :primitives/Int 5)` arrived as THREE arguments and died
+// with `no matching clause … with 3 argument(s); clauses accept 1 or 2`. The
+// reader now builds one `Sexp::Annotated` in every position
+// (`reader.rs::read_colon_prefix`, S116 `4cdbe572`), and this pair is the
+// regression guard.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -30,16 +30,14 @@ fn repl_prims(lines: &str) -> String {
     format!("{}{}", out.stdout, out.stderr)
 }
 
-// RED — the annotation folds in MACRO-ARGUMENT position. `(pick 1 :primitives/Int 5)`
+// The annotation folds in MACRO-ARGUMENT position. `(pick 1 :primitives/Int 5)`
 // MUST see TWO arguments (`1` and the annotated `5`), dispatch to the `[x y] y`
-// clause, and evaluate the annotated `5` → `:primitives/Int 5`. Today the annotation
-// does NOT fold: the macro sees THREE arguments and the `3 argument(s)` arity
-// artifact surfaces. This cell asserts that artifact ABSENT (and the fold succeeds).
-// Flips with the S116 implementation wave.
+// clause, and evaluate the annotated `5` → `:primitives/Int 5`. The unfolded
+// reading showed the `3 argument(s)` arity artifact, which this cell asserts
+// ABSENT alongside the folded result.
 // spec: spec/01-lexical.md §1.4.5 — Colon-Prefixed Symbols [S115 ruling — Reading
-// A-structural; :Type folds the following form in ALL positions incl. macro-arg;
-// implementation carries to S116]
-// defect: class=wrong-reject locus=frontend/int annotation-fold seam — `:Type` not folded in macro-argument position (0708) found=S115 owner=/dev
+// A-structural; :Type folds the following form in ALL positions incl. macro-arg]
+// defect: class=wrong-reject locus=frontend/int annotation-fold seam — `:Type` not folded in macro-argument position (0708) found=S115 owner=/dev fixed=S116/4cdbe572
 #[test]
 fn annotation_folds_in_macro_argument_position() {
     let c = repl_prims("(defmacro pick ([x] x) ([x y] y))\n(pick 1 :primitives/Int 5)\n");
@@ -57,10 +55,10 @@ fn annotation_folds_in_macro_argument_position() {
     );
 }
 
-// GREEN control TWIN — the SAME macro call WITHOUT the annotation already works
-// today (`pick` receives two plain arguments `1` and `5`, returns `5`). Fences the
-// boundary: the RED above is specifically about the ANNOTATION folding, not about
-// the two-argument macro-call shape itself.
+// Control TWIN — the SAME macro call WITHOUT the annotation (`pick` receives two
+// plain arguments `1` and `5`, returns `5`). Fences the boundary: the cell above
+// is specifically about the ANNOTATION folding, not about the two-argument
+// macro-call shape itself.
 // spec: spec/02-grammar.md §2.3.8 — Type Annotation [S115 ruling — Reading
 // A-structural; the un-annotated two-argument macro call is the boundary control]
 #[test]

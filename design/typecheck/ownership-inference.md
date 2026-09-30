@@ -1,6 +1,7 @@
 # Ownership inference — typecheck interior
 
-**Status:** current design, verified against source on 2026-09-21.
+**Status:** current design, verified against source on 2026-09-21; §3.3 rule 6, §4.5
+and §12 re-verified on 2026-09-30.
 **Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
 **Governed by:** the [ownership-inference spine](../arch/ownership-inference.md)
 (lattice, typecheck→backend contract, per-dimension conservative values and the
@@ -269,7 +270,7 @@ structural justification.
 | Rule 3 | match-arm binding | a whole-value pattern binds the scrutinee's origin verbatim; a destructured field binds a projection of it, unconditional only when the scrutinee is unconditional and otherwise conditional over the scrutinee's reach and links; a whole-value binding that escapes re-walks the scrutinee in that context | widening |
 | Rule 4 | `if` / match join | union of the reach sets and link sets; the variant is the ⊤-ward of the two operands (`Unconditional ⊑ Conditional`); `projection` only when every reaching operand is one; a definite origin survives only when both operands are unconditional on the same parameter and kind; independent of operand order | widening |
 | Rule 5 | vector literal / constructor | the container's origin is the join of its elements' origins (never unconditionally `Fresh`); elements are walked as fields; the node's escape fact is its context's | widening |
-| Rule 6 | projection out (`ProjectionOf(k)` callee) | argument `k` unconditional: an unconditional projection plus a provenance fact; conditional: a conditional projection, **and** force `escapes = true` at every carried link span; fresh: `Fresh` | precision-preserving; the link force only adds increments |
+| Rule 6 | projection out (`ProjectionOf(k)` callee) | argument `k` unconditional: an unconditional projection plus a provenance fact; conditional: a conditional projection, **and** force `escapes = true` at every carried link span; fresh: `Fresh` | precision-preserving; the link force only moves an escape fact to its conservative value (§4.5) |
 | Rule 7 | capture | an escaping lambda, or the launched side of `LaunchContinue`, computes its free-variable set: each captured binding widens every parameter it reaches, and a fresh or conditional binding is queued as escaping (§3.5). A non-escaping lambda's body is walked as its own frame's return, with an isolated escape list and the enclosing parameter state restored afterwards. A lambda value is `Fresh` | widening |
 | Rule 8 | static call | arguments are walked at the callee's modes and flows (absent summary: `Owned`, `Retained`); the result follows the callee's `ResultMode`: `AliasOf(k)` gives argument `k`'s origin, `MayAliasOf(k)` joins `Fresh` with argument `k`, `MayAliasAny` joins `Fresh` with every argument, and a conditional outcome adds this call's span to `cow`; `Fresh` and an absent summary give `Fresh` (§10.4); an index past the call's arguments reads the frame's whole parameter set (a parameterless frame reads `Fresh`). A Decision-24 call walks its arguments as Decision-24 and yields `Fresh` | precision-preserving |
 | Rule 9 | return | `origin_to_result_mode`, above | precision-preserving |
@@ -404,27 +405,28 @@ summary says `ProjectionOf(i)`, or a vector element read (`vec-get`, declared
 ### 4.5 May-alias links
 
 A copy-on-write result may be its argument's own reference on the in-place path, or a
-fresh copy on the other. When such a value passes through two or more links in one frame
-(nested calls, or a `let`) and is then projected out, every link whose accounting includes
-a consumer-emitted release needs its protect.
+fresh copy on the other. A conditional origin carries its link set: the spans of every
+`MayAliasOf` or `MayAliasAny` call that created a link on its chain. Rule 8 adds a link, and rules 2 and 4
+carry and union the set.
 
-- **The obligation belongs to the value** (Principle 25). A conditional origin carries the
-  spans of every `MayAliasOf` call that created a link on its chain. Rules 8, 2 and 4 union
-  and carry those spans, and rule 6 forces the escape fact at all of them. The backend's
-  escape-gated retain then balances each release.
-- **The number of consumer arms is fixed.** A chain shape is covered by composition, not
-  by teaching the projection arm another syntactic shape. Composition is closed only while
-  every composition rule is order-independent at its join. The `join_lattice_*` property
-  cells assert that (§11). A rule that reads its answer off one operand breaks closure
-  without adding an arm.
-- **Negative control.** A chain returned whole and projected by the caller has no
-  projection in the frame, so no link is forced. The return publishes `MayAliasOf` and the
-  return protect covers it.
-- **Contingency.** Links are walk-internal and need no persisted field while the linking
-  call's node is in the consuming cluster's walk. If a link is created inside an imported,
-  summarised user function, and a caller-frame span cannot drive the backend's retain,
-  the obligation must ride the summary. That is a `cranelisp-types` and cache-schema
-  change, routed to `arch`.
+- **Rule 6 forces the escape fact** to `true` at every carried link span when a
+  conditional value is projected out. The force is monotone: it only moves a published
+  escape fact to its conservative value.
+- **No consumer requires the force.** The backend retains every borrowed copy-on-write
+  source whatever the escape fact says
+  ([ownership codegen §13.7](../backend/ownership-codegen.md#137-cow-mutate-and-grow-branches--the-settled-contract)),
+  so the force balances no release. The escape fact's other readers do not depend on it
+  at a link span:
+  - stack placement acts only on a data-constructor call
+    ([ownership codegen §4.1](../backend/ownership-codegen.md#41-eligibility)), and a
+    link span is always a call to a callee with a may-alias result;
+  - spark density scores a forced link span as a heap site instead of as `NoEscape`,
+    which is the conservative direction for an admission heuristic
+    ([ownership codegen §13.4](../backend/ownership-codegen.md#134-spark-density--the-fact-supply)).
+- **Links are walk-internal.** The set never crosses the summary boundary, so no
+  persisted field or imported-summary carriage is owed. A consumer that needs a
+  link-forced fact across an imported summary returns to `arch` as a `cranelisp-types`
+  carrier and schema change ([safety invariants](../arch/safety-invariants.md) R1).
 
 ---
 
@@ -701,7 +703,7 @@ path.
 | Symbol-keyed escape list (§3.5) | Precision residual on the advisory half: `(let [a (Some x)] (let [a a] a))` leaves `x` `Consumed`. Trigger for correctness review: an escape drained by a scope that did not bind it, observable as a lost or duplicated allocation escape fact under a shadow |
 | Symbol-keyed provenance (§2.3, §3.4) | Retained as the safe direction; consumers test presence only. Falsifier: a backend site that binds the symbol, or any reader of `MonoMatchArm.provenance`, which would call for binder identities instead of names |
 | Mutual-import cycles | Accepted precision loss: an importee whose pass has not run reads absent |
-| Imported copy-on-write links (§4.5) | Contingency: routes to `arch` as a carrier and schema change |
+| Rule 6 link force and link set (§4.5) | Retained with no consumer that requires it. Retiring both simplifies the rule table and changes only spark-density scoring at link spans; not scheduled. Trigger: the next change to rule 6 or the link set, reviewed as a rule-table change (safety invariants §3c) with `arch`'s R1 text |
 | Absent-callee `Fresh` premise (§10.4) | Asserted; falsifier stated there. Attributing the two populations is `qa`'s |
 
 ---

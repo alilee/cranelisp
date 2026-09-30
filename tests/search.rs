@@ -1007,9 +1007,11 @@ fn e3_search_session(cmds: &str) -> helpers::e2e::CrOutput {
         .prelude("(export [primitives [*]])\n(export [foo [other]])\n")
         .repl()
         // The LOADED module: `count` (not in scope) + `other` (re-exported via prelude).
+        // The null import keeps `foo`, which the prelude loads, off a cycle with
+        // the prelude through its implicit prelude import (§8.8.1).
         .file(
             "lib/foo.cl",
-            "(export [primitives [*]])\n(defn count [x] x)\n(defn other [x] x)\n",
+            "(import [prelude []])\n(export [primitives [*]])\n(defn count [x] x)\n(defn other [x] x)\n",
         )
         // An UNLOADED reachable sibling — indexed via the file feed (branches b/c),
         // NOT the live-table feed. Its `unloaded-count` shares the `count` substring.
@@ -1281,7 +1283,8 @@ fn search_neg_no_bare_duplicate_ctor_row() {
 // MUST NOT be surfaced as importable `/search` rows (repl/spec.md §17.19.2). The
 // entry module `user` declares a private `(mod- test)` child (child-file backed at
 // `user/test.cl`), loaded+registered at startup. After `/mod sibling` switches the
-// current module to `sibling` — OUTSIDE `user`'s subtree — a `/search` for the
+// current module to the root module `sibling` (`sibling.cl`, loaded first by a
+// qualified reference) — OUTSIDE `user`'s subtree — a `/search` for the
 // child's symbol MUST NOT advertise `(import [user.test [...]])`: importing
 // `user.test` from `sibling` is rejected by §8.2.3 ("importer 'sibling' is not
 // within the 'user' subtree"), so the row advertises an import that FAILS.
@@ -1304,7 +1307,8 @@ fn search_neg_private_mod_dash_submodule_not_surfaced_to_outside_subtree() {
             "(import [super [pubfn]])\n\
              (defn test-secretxyz [] :primitives/Int (pubfn 42))\n",
         )
-        .stdin("/mod sibling\n/search test-secretxyz\n")
+        .file("sibling.cl", "(defn seed [] 0)\n")
+        .stdin("(sibling/seed)\n/mod sibling\n/search test-secretxyz\n")
         .output();
     // `sibling` is outside `user`'s subtree, so `user.test` is NOT importable from
     // it (§8.2.3). /search MUST NOT advertise the private submodule's import hint.

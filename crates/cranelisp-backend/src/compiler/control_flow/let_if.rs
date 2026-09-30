@@ -493,8 +493,8 @@ where
         self.in_tail_position = saved_tail;
         let then_val = self.compile_expr(then_branch)?;
         // Tail-call-arg alias protection (F1 UAF cure): if this `if` is a direct
-        // tail-call argument and this branch yields a live heap let-binding the
-        // tail-jump flush will dec, inc it so the value survives the flush. No-op
+        // tail-call argument and this branch yields a bare binding whose slot
+        // the frame owns, inc it so the value survives the flush. No-op
         // otherwise. Nested control flow inherits the flag → its branches protect
         // too; a non-control-flow branch (`(wrap v)`) is left unprotected.
         let then_val = self.maybe_protect_tail_arg_alias(then_branch, then_val);

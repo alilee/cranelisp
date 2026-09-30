@@ -139,6 +139,7 @@ impl CompilerSession {
             failed_forms: HashMap::new(),
             module_locks: HashMap::new(),
             reload_references: HashMap::new(),
+            failure_dependencies: HashMap::new(),
             watcher: None,
             worker_pool: crate::worker_pool::WorkerPool::new(
                 priority_worker_handles,
@@ -532,13 +533,33 @@ impl CompilerSession {
     /// call-site scoping was meant to prevent. So purge only a module that was
     /// **never terminal** (`!was_ever_terminal`): a fresh dep that never
     /// successfully typechecked. A was-terminal module keeps its table.
-    pub(crate) fn reset_failed_modules(&self) {
+    pub(crate) fn reset_failed_modules(&self) -> Result<(), CranelispError> {
         let reset = self.shared.scheduler.reset_all_failed_modules();
-        for m in &reset {
-            if !self.shared.scheduler.was_ever_terminal(m) {
-                self.shared.symbol_tables.remove(m);
+        self.purge_never_compiled(&reset, None)
+    }
+
+    /// The one failed-module purge rule, shared by the eval thread's
+    /// dependency retry and startup recovery (`design/int/repl-lifecycle.md`
+    /// §1.3.1, Startup reset): drop the table of each `reset` module that never
+    /// reached a terminal typecheck, other than `keep`, and reset the session
+    /// state keyed by it from that table as the rebuild prologue does, so no
+    /// alias, export or introspection record outlives it.
+    fn purge_never_compiled(
+        &self,
+        reset: &[crate::scheduler::ResetModule],
+        keep: Option<&ModuleFullPath>,
+    ) -> Result<(), CranelispError> {
+        for failed in reset {
+            if keep == Some(&failed.module)
+                || self.shared.scheduler.was_ever_terminal(&failed.module)
+            {
+                continue;
+            }
+            if let Some((module, table)) = self.shared.symbol_tables.remove(&failed.module) {
+                self.reset_module_session_state(&module, &table)?;
             }
         }
+        Ok(())
     }
 
     /// Set the current module path (REPL carry-forward).
@@ -552,7 +573,6 @@ impl CompilerSession {
     /// module — REPL carry-forward state (subst, env, overloads) is lost
     /// on module switch, matching the prior behaviour.
     pub(crate) fn set_current_module(&mut self, path: ModuleFullPath) {
-        cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &path);
         self.current_repl_module = path.clone();
         // Sprint 66 Wave 3a-γ: keep the test-runner state's `current_module`
         // in sync so `discover-tests` (with empty module arg) targets the
@@ -1009,12 +1029,15 @@ impl CompilerSession {
         }
     }
 
-    /// The reload edges of every module the session holds: what each module
-    /// depends on for reload selection and order, computed once per plan
-    /// (`design/int/repl-lifecycle.md` §1.2). One predicate serves both, so a
-    /// module that is selected is also ordered after what it depends on.
+    /// The reload edges of every module the session holds a table or failure
+    /// dependencies for: what each module depends on for reload selection and
+    /// order, computed once per plan (`design/int/repl-lifecycle.md` §1.2).
+    /// One predicate serves both, so a module that is selected is also ordered
+    /// after what it depends on.
     fn reload_edge_graph(&self) -> HashMap<ModuleFullPath, BTreeSet<ModuleFullPath>> {
-        self.shared
+        use crate::cache::dependency_record::reload_edges;
+        let mut graph: HashMap<ModuleFullPath, BTreeSet<ModuleFullPath>> = self
+            .shared
             .symbol_tables
             .iter()
             .map(|entry| {
@@ -1024,21 +1047,32 @@ impl CompilerSession {
                     .prelude_fallback
                     .get(module)
                     .is_some_and(|enabled| *enabled);
-                let mut edges = table_reload_edges(module, entry.value(), fallback);
+                let mut edges = reload_edges(module, entry.value(), fallback);
                 // A failed compile records no callee or lookup dependency, so
                 // the established reference keeps a failed module reachable
                 // from the dependency whose repair releases it.
                 if let Some(reference) = self.reload_references.get(module) {
-                    let fallback = crate::imports::gets_prelude_fallback(
+                    let reference_fallback = crate::imports::gets_prelude_fallback(
                         module,
                         &reference.imports,
                         &reference.exports,
                     );
-                    edges.extend(table_reload_edges(module, reference, fallback));
+                    edges.extend(reload_edges(module, reference, reference_fallback));
                 }
                 (module.clone(), edges)
             })
-            .collect()
+            .collect();
+        // A module that never compiled records no edge on any table, and a
+        // startup-failed one has no table (§1.2.1).
+        for (module, dependencies) in &self.failure_dependencies {
+            graph.entry(module.clone()).or_default().extend(
+                dependencies
+                    .iter()
+                    .filter(|dependency| *dependency != module)
+                    .cloned(),
+            );
+        }
+        graph
     }
 
     /// The modules a changed file maps to, in first-seen order.
@@ -1118,10 +1152,11 @@ impl CompilerSession {
     /// module whose new source reaches a module the same plan rebuilt later
     /// compiled against that module's displaced generation, whose GOT slots
     /// the later rebuild reused. The order check rebuilds each such module
-    /// again, with its dependents, in a follow-on plan. A module set that
-    /// recurs can only come from a qualified-reference cycle between modules
-    /// that both compile, which no order satisfies; the check stops there
-    /// (`design/int/session-transaction.md` §7.3.3 names that residual).
+    /// again, with its dependents, in a follow-on plan. Each rebuild names the
+    /// modules its pass rebuilds after it, so the publication check does not
+    /// read their unsettled edges (`design/int/int.md` §6.11). A follow-on set
+    /// that recurs cannot come from acyclic successes: its modules are failed
+    /// and locked rather than reported rebuilt (§1.2, Recurrence stop).
     pub(crate) fn run_reload_plan(
         &mut self,
         roots: Vec<(ModuleFullPath, PathBuf)>,
@@ -1131,25 +1166,41 @@ impl CompilerSession {
         let mut pending = roots;
         while !pending.is_empty() {
             let plan = self.reload_plan(&pending);
-            for (module, file) in &plan {
-                let result = self.reload_module(module, file);
-                let outcome = ReloadOutcome {
-                    module: module.clone(),
-                    file: file.clone(),
-                    result,
-                };
-                match outcomes.iter_mut().find(|prior| prior.module == *module) {
-                    Some(prior) => *prior = outcome,
-                    None => outcomes.push(outcome),
-                }
+            for (index, (module, file)) in plan.iter().enumerate() {
+                let later_members = plan[index + 1..]
+                    .iter()
+                    .map(|(later, _)| later.clone())
+                    .collect();
+                let result = self.reload_module(module, file, later_members);
+                record_outcome(&mut outcomes, module, file, result);
             }
             pending = self.rebuilt_before_a_later_dependency(&plan, &outcomes);
-            let follow_on = pending.iter().map(|(module, _)| module.clone()).collect();
-            if !followed.insert(follow_on) {
+            if let Some(recurring) = recurring_follow_on(&mut followed, &pending) {
+                self.stop_unsettled_reload(&recurring, &mut outcomes);
                 break;
             }
         }
         outcomes
+    }
+
+    /// The recurrence stop (`design/int/repl-lifecycle.md` §1.2): fail and
+    /// lock each module of a recurring follow-on set, replacing its outcome.
+    fn stop_unsettled_reload(
+        &mut self,
+        recurring: &BTreeSet<ModuleFullPath>,
+        outcomes: &mut [ReloadOutcome],
+    ) {
+        for module in recurring {
+            self.lock_failed_source(module);
+            if let Some(outcome) = outcomes.iter_mut().find(|prior| prior.module == *module) {
+                outcome.result = Err(CranelispError::ModuleError {
+                    message: format!(
+                        "the reload order of module '{module}' did not settle; save its file again once its dependencies compile"
+                    ),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                });
+            }
+        }
     }
 
     /// The order check: each module of `plan` that rebuilt successfully and
@@ -1215,32 +1266,41 @@ impl CompilerSession {
     }
 }
 
-/// A module's reload edges as `table` records them: each `import` and
-/// `export` target resolved through its declared children, `prelude` when
-/// `prelude_fallback` holds, and its callee modules and lookup dependencies.
-/// Declared children are not reload edges: a `mod` declaration compiles no
-/// reference into the child (`design/int/repl-lifecycle.md` §1.2).
-fn table_reload_edges(
+/// Replace `module`'s earlier outcome in `outcomes`, or append its first.
+fn record_outcome(
+    outcomes: &mut Vec<ReloadOutcome>,
     module: &ModuleFullPath,
-    table: &SessionSymbolTable,
-    prelude_fallback: bool,
-) -> BTreeSet<ModuleFullPath> {
-    let declared = crate::imports::DeclaredChildren::of(module, &table.submodules);
-    let mut edges: BTreeSet<ModuleFullPath> = table
-        .imports
-        .iter()
-        .map(|spec| &spec.module_path)
-        .chain(table.exports.iter().map(|spec| &spec.module_path))
-        .map(|spelling| declared.resolve(spelling))
-        .collect();
-    if prelude_fallback {
-        edges.insert(ModuleFullPath::from("prelude"));
+    file: &Path,
+    result: Result<(), CranelispError>,
+) {
+    let outcome = ReloadOutcome {
+        module: module.clone(),
+        file: file.to_path_buf(),
+        result,
+    };
+    match outcomes.iter_mut().find(|prior| prior.module == *module) {
+        Some(prior) => *prior = outcome,
+        None => outcomes.push(outcome),
     }
-    edges.extend(crate::cache::dependency_record::recorded_edges(
-        module, table,
-    ));
-    edges.remove(module);
-    edges
+}
+
+/// The recurrence stop's decision (`design/int/repl-lifecycle.md` §1.2): the
+/// module set of a non-empty follow-on `pending` that `followed` has already
+/// seen, else `None` after recording it.
+fn recurring_follow_on(
+    followed: &mut HashSet<BTreeSet<ModuleFullPath>>,
+    pending: &[(ModuleFullPath, PathBuf)],
+) -> Option<BTreeSet<ModuleFullPath>> {
+    if pending.is_empty() {
+        return None;
+    }
+    let follow_on: BTreeSet<ModuleFullPath> =
+        pending.iter().map(|(module, _)| module.clone()).collect();
+    if followed.insert(follow_on.clone()) {
+        None
+    } else {
+        Some(follow_on)
+    }
 }
 
 /// Pool every compiled owner `table` holds — callables, overload arms,
@@ -1640,16 +1700,27 @@ impl CompilerSession {
         &mut self,
         module_path: &ModuleFullPath,
         file_path: &Path,
+        later_members: BTreeSet<ModuleFullPath>,
     ) -> Result<(), CranelispError> {
-        let result = self.rebuild_from_file(module_path, file_path);
+        let result = self.rebuild_from_file(module_path, file_path, later_members);
         match &result {
             Ok(()) => {
                 self.failed_forms.remove(module_path);
                 self.error_modules.remove(module_path);
                 self.module_locks.remove(module_path);
                 self.reload_references.remove(module_path);
+                self.failure_dependencies.remove(module_path);
             }
-            Err(_) => self.lock_failed_source(module_path),
+            Err(_) => {
+                let dependencies = self.shared.scheduler.failure_dependencies(module_path);
+                if !dependencies.is_empty() {
+                    self.failure_dependencies
+                        .entry(module_path.clone())
+                        .or_default()
+                        .extend(dependencies);
+                }
+                self.lock_failed_source(module_path);
+            }
         }
         result
     }
@@ -1658,6 +1729,7 @@ impl CompilerSession {
         &mut self,
         module_path: &ModuleFullPath,
         file_path: &Path,
+        later_members: BTreeSet<ModuleFullPath>,
     ) -> Result<(), CranelispError> {
         crate::observability::record_module_event(
             crate::observability::SchedulerTraceTag::RecompileModule,
@@ -1706,7 +1778,8 @@ impl CompilerSession {
 
         // Only this registration carries whole-source provenance, including
         // the first-seed fallback for a module the scheduler no longer tracks.
-        let reloaded = crate::scheduler::SourceContinuation::whole_source(sexps, reference);
+        let reloaded =
+            crate::scheduler::SourceContinuation::whole_source(sexps, reference, later_members);
         if !self
             .shared
             .scheduler
@@ -1750,10 +1823,11 @@ impl CompilerSession {
 
     /// The whole-file rebuild's prologue (`design/int/session-transaction.md`
     /// §7.3.1): replace the module's table with a fresh one that keeps its
-    /// GOT, reset the session state keyed by the module from the displaced
-    /// table, pool every compiled owner the displaced table holds, and return
-    /// the module's established reference (§7.3.2) — the one already held,
-    /// else the displaced table, which is then held.
+    /// GOT, pool every compiled owner the displaced table holds, hold the
+    /// module's established reference (§7.3.2) — the one already held, else
+    /// the displaced table — and only then reset the session state keyed by
+    /// the module from the displaced table, so the reset's early return can
+    /// neither drop an unpooled owner nor lose the reference.
     fn install_fresh_generation(
         &mut self,
         module: &ModuleFullPath,
@@ -1766,19 +1840,15 @@ impl CompilerSession {
                 .or_insert_with(|| SessionSymbolTable::new_with_params(module.clone()));
             let mut fresh = SessionSymbolTable::new_with_params(module.clone());
             fresh.got = Arc::clone(&live.got);
-            std::mem::replace(&mut *live, fresh)
+            Arc::new(std::mem::replace(&mut *live, fresh))
         };
-        self.reset_module_session_state(module, &displaced)?;
         retain_compiled_owners(&self.shared.retained_code, module, &displaced);
-        let reference = match self.reload_references.get(module) {
-            Some(held) => Arc::clone(held),
-            None => {
-                let reference = Arc::new(displaced);
-                self.reload_references
-                    .insert(module.clone(), Arc::clone(&reference));
-                reference
-            }
-        };
+        let reference = Arc::clone(
+            self.reload_references
+                .entry(module.clone())
+                .or_insert_with(|| Arc::clone(&displaced)),
+        );
+        self.reset_module_session_state(module, &displaced)?;
         Ok(reference)
     }
 
@@ -2017,7 +2087,7 @@ impl CompilerSession {
             }
             // 0 = clean: `outcome.exit_code` is the inner IO value (or main's own
             // result for a non-IO main). Ownership of that word crosses HERE,
-            // into the ONE program-result owner (FIXME 0745). `IO a` is
+            // into the ONE program-result owner (`result_owner`). `IO a` is
             // unwrapped exactly once — at this driver boundary — so the owner
             // selects glue for the inner `a`, never for `IO a` (§4.4). The host
             // (`main.rs::run`) then observes the exit code and releases, in
@@ -2294,18 +2364,31 @@ impl CompilerSession {
     pub fn recover_startup_failure(&mut self, module_name: &str) -> Option<String> {
         let module = ModuleFullPath::from(module_name);
 
-        // 1. Reset failed scheduler state (entry + any failed deps are
-        //    removed; deps re-register on demand through the eval dep drive).
-        //    Scheduler-only — the entry's table is re-seeded just below and the
-        //    degraded re-drive re-populates from source, so no table purge here
-        //    (contrast the autoload-retry reset, which drops stale dep tables).
-        //    A failed dependency's kept table is not its source, and only the
-        //    entry has the §15.2.3 repair, so the dependency is locked
-        //    (`repl-lifecycle.md` §1.3.1).
-        for failed in self.shared.scheduler.reset_all_failed_modules() {
-            if failed != module {
-                self.lock_failed_source(&failed);
+        // 1. Reset failed scheduler state by the eval path's one rule
+        //    (`repl-lifecycle.md` §1.3.1, Startup reset): capture each reset
+        //    module's failure dependencies (§1.2.1), lock each failed dependency
+        //    (only the entry has the §15.2.3 repair), then purge every
+        //    never-compiled table but the entry's, which is re-seeded and
+        //    re-driven below. The degraded re-drive then loads each dependency
+        //    it references from source.
+        let reset = self.shared.scheduler.reset_all_failed_modules();
+        for failed in &reset {
+            if !failed.failure_dependencies.is_empty() {
+                self.failure_dependencies
+                    .entry(failed.module.clone())
+                    .or_default()
+                    .extend(failed.failure_dependencies.iter().cloned());
             }
+        }
+        for failed in reset.iter().filter(|failed| failed.module != module) {
+            self.lock_failed_source(&failed.module);
+        }
+        if let Err(error) = self.purge_never_compiled(&reset, Some(&module)) {
+            self.lock_failed_source(&module);
+            return Some(format!(
+                "[errors: {module_name}]\n  {}",
+                first_line(&error.to_string())
+            ));
         }
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
         let empty: std::sync::Arc<[Sexp]> = std::sync::Arc::from(Vec::<Sexp>::new());
@@ -2426,6 +2509,10 @@ impl CompilerSession {
     /// §3.1: Register entry module by name. Session resolves the source
     /// file from project_root + lib_dirs, reads it, and registers with
     /// the scheduler.
+    ///
+    /// When no file resolves, the REPL registers an empty module; every batch
+    /// mode refuses before registering anything, naming the project-root file
+    /// (`repl/spec/00-cli-invocation.md` §0.5.5 rule 2).
     pub fn register_entry_module(
         &mut self,
         module_name: &str,
@@ -2446,10 +2533,20 @@ impl CompilerSession {
                 }
                 (src, path)
             }
-            None => {
-                // No file found — empty module (e.g., fresh REPL).
+            None if self.shared.run_mode.is_repl() => {
                 let default_path = self.shared.project_root.join(format!("{module_name}.cl"));
                 (String::new(), default_path)
+            }
+            None => {
+                let expected =
+                    crate::pipeline::project_root_candidate(&module, &self.shared.project_root);
+                return Err(CranelispError::ModuleError {
+                    message: format!(
+                        "entry module source file `{}` does not exist",
+                        expected.display()
+                    ),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(expected)),
+                });
             }
         };
 
@@ -2581,7 +2678,7 @@ impl CompilerSession {
         // through this slot via `__cranelisp_got_{entry_module}`.
         let main_got_slot = crate::exe::entry_main_got_slot(&entry_table)?;
 
-        // FIXME 0745 / `design/int/result-owner.md` §3.3 — the linked startup
+        // `design/int/result-owner.md` §3.3 — the linked startup
         // stub's typed-context exit. `validate_main` has already guaranteed
         // `main : (Fn [] (IO a))`, so the SAME scheme read that produced the
         // GOT slot yields the inner `a`. Classify it (§1.1, the shared
@@ -3632,5 +3729,213 @@ mod watcher_reload_plan_tests {
             );
         }
         session.shutdown();
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 Guards, §1.2.1 — after startup
+    // recovery of the chain `user` → `lib` → `base` with `base` failing, the
+    // plan for `base` selects `lib` and `user`, in that order, although `lib`
+    // keeps no table and neither dependent ever compiled a reference (ACT-1011).
+    #[test]
+    fn reload_plan_selects_startup_failed_dependents_through_failure_dependencies() {
+        let (mut session, root) = plan_session();
+        for (name, text) in [
+            ("base.cl", "(defn b [] (undefined-name 1))\n"),
+            ("lib.cl", "(import [base [b]])\n(defn f [] (b))\n"),
+            ("user.cl", "(import [lib [f]])\n(defn g [] 1)\n"),
+        ] {
+            std::fs::write(root.path().join(name), text).expect("write chain file");
+        }
+        assert!(session.register_module("user").is_err(), "precondition");
+        assert!(session.recover_startup_failure("user").is_some());
+        let base = root
+            .path()
+            .join("base.cl")
+            .canonicalize()
+            .expect("base.cl exists");
+
+        let plan = watcher_plan(&session, &[base]);
+
+        assert_eq!(plan_names(&plan), vec!["base", "lib", "user"]);
+        session.shutdown();
+    }
+
+    fn follow_on(modules: &[&str]) -> Vec<(ModuleFullPath, PathBuf)> {
+        modules
+            .iter()
+            .map(|module| {
+                (
+                    ModuleFullPath::from(*module),
+                    PathBuf::from(format!("{module}.cl")),
+                )
+            })
+            .collect()
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 (Recurrence stop) — the pure
+    // step passes a new follow-on set and an empty one, and names a set that
+    // recurs, whatever order its members arrive in.
+    #[test]
+    fn recurring_follow_on_names_only_a_set_seen_before() {
+        let mut followed = HashSet::new();
+        assert_eq!(
+            recurring_follow_on(&mut followed, &follow_on(&["a", "b"])),
+            None
+        );
+        assert_eq!(recurring_follow_on(&mut followed, &follow_on(&["a"])), None);
+        assert_eq!(recurring_follow_on(&mut followed, &[]), None);
+        assert_eq!(
+            recurring_follow_on(&mut followed, &follow_on(&["b", "a"])),
+            Some(BTreeSet::from([
+                ModuleFullPath::from("a"),
+                ModuleFullPath::from("b")
+            ]))
+        );
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 (Recurrence stop) — the stop
+    // fails and locks every module of a recurring set and never reports it
+    // rebuilt; a module outside the set keeps its outcome.
+    #[test]
+    fn recurrence_stop_fails_and_locks_the_recurring_set() {
+        let (mut session, _root) = plan_session();
+        let mut outcomes = Vec::new();
+        for module in ["a", "b", "c"] {
+            record_outcome(
+                &mut outcomes,
+                &ModuleFullPath::from(module),
+                Path::new("x.cl"),
+                Ok(()),
+            );
+        }
+        let recurring = BTreeSet::from([ModuleFullPath::from("a"), ModuleFullPath::from("b")]);
+
+        session.stop_unsettled_reload(&recurring, &mut outcomes);
+
+        for outcome in &outcomes {
+            let in_set = recurring.contains(&outcome.module);
+            assert_eq!(outcome.result.is_err(), in_set, "{}", outcome.notice());
+            assert_eq!(
+                session.module_locks.get(&outcome.module),
+                in_set.then_some(&ModuleLock::FailedSource)
+            );
+            assert_eq!(session.error_modules.contains(&outcome.module), in_set);
+        }
+        session.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod entry_registration_tests {
+    use super::*;
+    use crate::session_v4::RunMode;
+    use cranelisp_types::CodegenBehaviour;
+
+    fn session(root: &Path, run_mode: RunMode, lib_dirs: Vec<PathBuf>) -> CompilerSession {
+        let mut s = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: true,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 0,
+                run_mode,
+            },
+            root.to_path_buf(),
+            "user",
+        )
+        .expect("test session bootstrap");
+        s.set_lib_dirs(lib_dirs);
+        s
+    }
+
+    fn is_registered(s: &CompilerSession) -> bool {
+        s.shared
+            .scheduler
+            .is_registered(&ModuleFullPath::from("user"))
+    }
+
+    /// A batch mode refuses a missing entry, naming the project-root file in
+    /// the message and the location, before the scheduler learns of it.
+    fn assert_missing_entry_refused(run_mode: RunMode) {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = session(root.path(), run_mode, Vec::new());
+        let expected = root.path().join("user.cl");
+        let Err(error) = s.register_module("user") else {
+            panic!("{run_mode:?}: a missing entry must not register as an empty module");
+        };
+        assert!(
+            error.to_string().contains(&expected.display().to_string()),
+            "{run_mode:?}: the error must name `{}`: {error}",
+            expected.display()
+        );
+        assert_eq!(error.location().file.as_deref(), Some(expected.as_path()));
+        assert!(
+            !is_registered(&s),
+            "{run_mode:?}: the refusal must precede scheduler registration"
+        );
+        s.shutdown();
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2:
+    // `--run` (and `--test`, which compiles in `Run` mode) on a missing entry
+    // file is an error naming it (design/int/int.md §6.1.1).
+    #[test]
+    fn run_mode_refuses_a_missing_entry_before_registration() {
+        assert_missing_entry_refused(RunMode::Run);
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2,
+    // `--link`. Catches a mode test written as "is `Run`" instead of "is not
+    // REPL".
+    #[test]
+    fn link_mode_refuses_a_missing_entry_before_registration() {
+        assert_missing_entry_refused(RunMode::Link);
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2: the
+    // REPL starts a missing entry as an empty module.
+    #[test]
+    fn repl_mode_registers_a_missing_entry_as_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = session(root.path(), RunMode::Repl, Vec::new());
+        s.register_module("user")
+            .unwrap_or_else(|e| panic!("the REPL starts a missing entry empty: {e}"));
+        assert!(is_registered(&s));
+        s.shutdown();
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2 is
+    // about absence: an existing empty entry file registers in a batch mode.
+    #[test]
+    fn run_mode_registers_an_existing_empty_entry() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("user.cl"), "").unwrap();
+        let mut s = session(root.path(), RunMode::Run, Vec::new());
+        s.register_module("user")
+            .unwrap_or_else(|e| panic!("an existing empty entry registers: {e}"));
+        assert!(is_registered(&s));
+        s.shutdown();
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — the entry is
+    // missing only when the resolver finds no file. An entry found only in a
+    // lib directory registers, so a project-root probe cannot stand in for the
+    // resolver.
+    #[test]
+    fn run_mode_registers_an_entry_found_only_in_a_lib_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let lib = tempfile::tempdir().unwrap();
+        let lib_entry = lib.path().join("user.cl");
+        std::fs::write(&lib_entry, "(defn from-lib [] 1)\n").unwrap();
+        let mut s = session(root.path(), RunMode::Run, vec![lib.path().to_path_buf()]);
+        s.register_module("user")
+            .unwrap_or_else(|e| panic!("a lib-directory entry registers: {e}"));
+        let recorded = s
+            .shared
+            .typecheck_products
+            .get(&ModuleFullPath::from("user"))
+            .and_then(|tp| tp.file_path.clone());
+        assert_eq!(recorded, Some(lib_entry));
+        s.shutdown();
     }
 }

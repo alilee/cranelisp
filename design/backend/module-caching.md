@@ -459,13 +459,24 @@ contract are in [compile to module](compile-to-module.md).
 - **Bump rule.** Bump for any change to persisted bytes that an older sidecar
   cannot be read as. Also bump for a value-only change when an older sidecar can
   carry a value the current compiler would misuse. Soundness corrections to
-  persisted ownership summaries are examples of the second kind. The constant's
-  rustdoc carries the per-version record. Read the current value there rather
-  than from prose.
+  persisted ownership summaries are examples of the second kind.
+- **Paired object code counts, even with an unchanged shape.** Also bump when a
+  change moves a convention that a cached `.o` shares with code it was not
+  compiled with, such as the never-cached `primitives` module or the runtime.
+  An old object would then call, or be called, under the old convention.
+  The ACT-0974 extern entry convention is an example
+  ([non-concrete release contract](non-concrete-release-contract.md) §7.6). A
+  change confined to one frame's own emission moves no such convention and
+  needs no bump. A stale object keeps the old frame until its module rebuilds.
+- The constant's rustdoc carries the per-version record. Read the current value
+  there rather than from prose.
 - **Build identity.** `BUILD_ID` is stamped next to the schema version and
-  compared on load. It catches a rebuilt compiler, but it is not a substitute
-  for a bump. It misses cross-branch cache reuse, and it misses two uncommitted
-  builds of one commit.
+  compared on load. It is not a substitute for a bump:
+  - it misses cross-branch cache reuse;
+  - it misses two uncommitted builds of one commit, because both stamp that
+    commit.
+- The manifest's compiler fingerprint usually catches such a rebuild, but it is
+  skipped when unreadable (§12).
 - A mismatch of either is a `CacheStale`, which is an ordinary miss, never a
   decoding error.
 

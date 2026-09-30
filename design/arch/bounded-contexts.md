@@ -357,8 +357,12 @@ mounting (binary).
    separate because a symbol's category is then its crate: one runtime crate
    left that category ambiguous, and intrinsics inside backend would put
    stable-ABI runtime code in the codegen context.
-8. **Consuming convention at the extern boundary.** Every extern consumes the
-   heap arguments it does not return.
+8. **Consuming convention at the extern boundary.** Every extern primary entry
+   takes ownership of every heap argument: it releases it or moves that same
+   reference into its result; a heap result is transferred owned. A declared
+   `Borrowed` mode or `IntoResult` flow is an analysis fact that static call
+   sites adapt to; no primary entry realizes it, and there is no exception
+   ([ownership inference §3.1](ownership-inference.md#31-class-a--abi-bearing-the-per-param-mode-vector)).
 
 **Rejected shapes** — each returns only with a new ruling:
 

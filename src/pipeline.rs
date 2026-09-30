@@ -188,7 +188,7 @@ pub fn execute_compiled_expr(
     let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, is_io);
 
     // The driver boundary: `IO a` is unwrapped exactly once here, and the clean
-    // arm's word crosses into the ONE program-result owner (FIXME 0745). The
+    // arm's word crosses into the ONE program-result owner (`result_owner`). The
     // owner stays armed across the `EvalResult::Val` boundary and is released
     // by the REPL driver AFTER the turn's `StyledDoc` is complete (§4.2).
     match program_outcome_to_result(outcome, ty)? {

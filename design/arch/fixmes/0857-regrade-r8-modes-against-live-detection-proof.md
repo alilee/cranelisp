@@ -5,8 +5,14 @@ filed_by: /sprint
 filed_at: 2026-07-22
 sprint_filed: 116
 refers_to: https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-intrinsics-s115.md §2.3 and §6 R-7; https://github.com/alilee/cranelisp/blob/a07823d8/tests/plan/s115-instrumentation-matrix.md; tests/ms_p6_mode_self_tests.rs
-status: open
+status: deferred
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11) into ACT-0962's coverage increment.** No deferral count is recorded.
 
 # Regrade R8 diagnostic modes against live detection proof
 

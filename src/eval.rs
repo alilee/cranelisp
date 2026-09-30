@@ -128,10 +128,59 @@ impl CompilerSession {
         match result {
             Ok(()) => Ok(()),
             Err(e) => {
-                self.reset_failed_modules();
+                self.reset_failed_modules()?;
                 Err(CranelispError::from(e))
             }
         }
+    }
+
+    /// Run `drive` with the eval thread's [`ModuleCompiler`] for `module`, the
+    /// one construction the REPL eval path and `/mod`'s load share
+    /// (`design/int/int.md` §8.5.1). The REPL check state is lent to the
+    /// compiler and restored afterwards.
+    pub(crate) fn with_eval_compiler<R>(
+        &self,
+        module: &ModuleFullPath,
+        drive: impl FnOnce(&mut ModuleCompiler<'_>) -> R,
+    ) -> R {
+        let repl_cs = self
+            .repl_check_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap_or_else(|| CheckState::new(module.clone()));
+        let lib_dirs_snap = self.lib_dirs();
+        let platform_dirs_snap = self.platform_dirs();
+        let mut wctx = ModuleCompiler {
+            symbol_tables: &self.shared.symbol_tables,
+            next_type_id: &self.shared.next_type_id,
+            module_aliases: &self.shared.module_aliases,
+            prelude_fallback: &self.shared.prelude_fallback,
+            check_state: repl_cs,
+            current_module: module.clone(),
+            scheduler: &self.shared.scheduler,
+            typecheck_products: &self.shared.typecheck_products,
+            // D1/D1b: introspection is REPL-only. The store is `Some` only
+            // under `RunMode::Repl` (D1b ctor gate), so `.as_ref()` is the
+            // single adaptor — `None` in batch, no second discriminator to
+            // drift.
+            introspection: self.shared.introspection.as_ref(),
+            lib_dirs: &lib_dirs_snap,
+            platform_dirs: &platform_dirs_snap,
+            project_root: &self.shared.project_root,
+            shared_state: Some(&self.shared),
+            // S93 Invariant SW: the REPL eval thread is the sole orchestrator
+            // of its entry module — a dependency gap must NOT move the entry to
+            // TypecheckBlocked (the eval thread waits on the dep itself and
+            // re-runs from the top).
+            eval_driven: true,
+        };
+        let result = drive(&mut wctx);
+        *self
+            .repl_check_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
+        result
     }
 
     /// Evaluate source text in the current REPL module.
@@ -311,57 +360,17 @@ impl CompilerSession {
 
             let module = self.current_module_path();
 
-            let result = {
-                // Extract REPL check_state for worker use, restore after.
-                cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-                let repl_cs = self
-                    .repl_check_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .unwrap_or_else(|| CheckState::new(module.clone()));
-                let lib_dirs_snap = self.lib_dirs();
-                let platform_dirs_snap = self.platform_dirs();
-                let mut wctx = ModuleCompiler {
-                    symbol_tables: &self.shared.symbol_tables,
-                    next_type_id: &self.shared.next_type_id,
-                    module_aliases: &self.shared.module_aliases,
-                    prelude_fallback: &self.shared.prelude_fallback,
-                    check_state: repl_cs,
-                    current_module: module.clone(),
-                    scheduler: &self.shared.scheduler,
-                    typecheck_products: &self.shared.typecheck_products,
-                    // D1/D1b: introspection is REPL-only. The store is `Some`
-                    // only under `RunMode::Repl` (D1b ctor gate), so `.as_ref()`
-                    // is the single adaptor — `None` in batch, no second
-                    // discriminator to drift.
-                    introspection: self.shared.introspection.as_ref(),
-                    lib_dirs: &lib_dirs_snap,
-                    platform_dirs: &platform_dirs_snap,
-                    project_root: &self.shared.project_root,
-                    shared_state: Some(&self.shared),
-                    // S93 Invariant SW: the REPL eval thread is the sole
-                    // orchestrator of its entry module — a dependency gap must
-                    // NOT move the entry to TypecheckBlocked (the eval thread
-                    // waits on the dep itself and re-runs from the top).
-                    eval_driven: true,
-                };
-
-                let res = process_form::process_cluster_once(
-                    &mut wctx,
+            cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
+            let result = self.with_eval_compiler(&module, |wctx| {
+                process_form::process_cluster_once(
+                    wctx,
                     &module,
                     &pending,
                     ModuleStrategy::Additive,
                     generation_started,
                     Some(&mut turn_definitions),
-                );
-                // Restore REPL check_state.
-                *self
-                    .repl_check_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(wctx.check_state);
-                res?
-            };
+                )
+            })?;
 
             match result {
                 ClusterOnce::Done {

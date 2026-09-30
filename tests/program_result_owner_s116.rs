@@ -24,11 +24,13 @@ const NESTED_MAIN: &str = "(deftype Leaf [:String text])\n\
      (deftype Branch [:(Vec Leaf) leaves])\n\
      (defn main [] (Pure (Branch [(Leaf \"seen-before-release\")])))\n";
 
-// RED — run observes a non-Int `Pure` payload as exit 0, then releases the
-// nested ADT→Vec→ADT→String graph. Both analysis polarities are exact.
+// Run observes a non-Int `Pure` payload as exit 0, then releases the nested
+// ADT→Vec→ADT→String graph. Both analysis polarities are exact. The entry
+// result was once observed and never released; `src/result_owner.rs` is the
+// owner today.
 // spec: spec/10-io.md §10.1 and spec/12-runtime.md §12.3.1 — `Pure` transfers
 // its payload to the program-result owner; non-Int conversion precedes release.
-// defect: class=rc-miscount locus=src program-result typed-context exit — entry result is observed but never released (0745/R15) found=S114 owner=/dev
+// defect: class=rc-miscount locus=src program-result typed-context exit — entry result is observed but never released (0745/R15) found=S114 owner=/dev fixed=S118/fc3375f9
 #[test]
 fn run_nested_pure_payload_observed_then_released_both_toggles() {
     for off in [false, true] {
@@ -57,10 +59,10 @@ fn run_nested_pure_payload_observed_then_released_both_toggles() {
     }
 }
 
-// RED — linked startup performs the same non-Int conversion and transitive
-// release before process exit; this proves relocation, not link success alone.
+// Linked startup performs the same non-Int conversion and transitive release
+// before process exit; this proves relocation, not link success alone.
 // spec: spec/10-io.md §10.1 and spec/12-runtime.md §12.3.1.
-// defect: class=rc-miscount locus=cranelisp-exe-bundle linked startup result owner — linked successful result lacks type-directed final release found=S116 owner=/dev
+// defect: class=rc-miscount locus=cranelisp-exe-bundle linked startup result owner — linked successful result lacks type-directed final release found=S116 owner=/dev fixed=S118/ec8ed5f4
 #[test]
 fn linked_nested_pure_payload_converts_then_releases() {
     let out = Cranelisp::new()
@@ -84,11 +86,11 @@ fn linked_nested_pure_payload_converts_then_releases() {
     );
 }
 
-// RED — REPL rendering must finish while the owning value is live, after which
-// the turn releases it before the next prompt/process exit.
+// REPL rendering must finish while the owning value is live, after which the
+// turn releases it before the next prompt/process exit.
 // spec: repl/spec.md §5.1 and spec/12-runtime.md §12.3.1 — value feedback is
 // useful and complete before exact-once release at the typed exit.
-// defect: class=rc-miscount locus=src REPL result owner — displayed owning expression result leaks after formatting found=S116 owner=/dev
+// defect: class=rc-miscount locus=src REPL result owner — displayed owning expression result leaks after formatting found=S116 owner=/dev fixed=S118/ac2ad657
 #[test]
 fn repl_nested_heap_value_displays_before_exact_release() {
     let out = Cranelisp::new()
@@ -114,7 +116,7 @@ fn repl_nested_heap_value_displays_before_exact_release() {
     );
 }
 
-// GREEN control — scalar results require no glue and retain ordinary exit-code
+// Control — scalar results require no glue and retain ordinary exit-code
 // conversion in both run and link modes.
 // spec: spec/10-io.md §10.1 — `Pure Int` becomes the process exit code.
 #[test]

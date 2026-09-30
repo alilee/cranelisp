@@ -5,14 +5,15 @@
 // WHY AN ABSOLUTE NUMBER LIVES HERE AT ALL (tests/CLAUDE.md §"Allocator balance
 // is measured MARGINALLY" bans absolute thresholds for the prelude-loading
 // class). The ban's premise is an ambient, program-independent compile-time
-// residual (1143 allocations at S118 HEAD — FIXME 0889's macro-turn marshal
-// boundary) that an absolute cell would be measuring instead of the behaviour
-// it is named after. That premise is FALSE for a WARM cache-hit child, and
-// `/qa` measured it so (`tests/plan/s118-test-plan.md` §11.3): a cache hit
-// skips macro expansion entirely, so two independent warm controls report
-// residual EXACTLY 0 (allocs=1 / deallocs=1). The 1143 term appears only in
-// COLD / `--no-cache` children. The warm subject's residue is therefore pure
-// runtime retention, and the absolute bound below is an honest instrument —
+// residual that an absolute cell would be measuring instead of the behaviour
+// it is named after (FIXME 0889: 1143 allocations at S118; S122 fixed the
+// macro-turn share, and 46 unclassified allocations remain). That premise is
+// FALSE for a WARM cache-hit child, and `/qa` measured it so
+// (`tests/plan/s118-test-plan.md` §11.3): a cache hit skips macro expansion
+// entirely, so two independent warm controls report residual EXACTLY 0
+// (allocs=1 / deallocs=1). The ambient term appears only in COLD /
+// `--no-cache` children. The warm subject's residue is therefore pure
+// runtime retention, and the absolute balance below is an honest instrument —
 // but only for as long as that premise holds, which is why the second cell in
 // this file executes the premise continuously instead of trusting this comment.
 
@@ -86,10 +87,11 @@ fn warm_residue_of(dir: &Path, entry: &str) -> (i64, String) {
     (residue(&stderr), stderr)
 }
 
-// The warm serial Sudoku solve must be bounded by the independently measured
-// composition residue (~1,312). Before FIXME 0917's S120 fix it retained
-// ~12,431 objects, all runtime retention (the warm ambient term is 0 — see the
-// second cell and the header); a partial fix could not pass.
+// The warm serial Sudoku solve must retain nothing. Before FIXME 0917's S120 fix
+// it retained ~12,431 objects, all runtime retention (the warm ambient term is
+// 0 — see the second cell and the header). The cell asserted a `<= 1_400` bound
+// until S122 re-derived it as exact balance (`tests/plan/PLAN.md`); a nonzero
+// residual is intake for `qa`, never a new threshold.
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released;
 // application-scale quantitative acceptance for the transitive-discharge class.
 // defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S115 owner=/dev fixed=S120/cbb3be9e
@@ -110,13 +112,13 @@ fn warm_residue_of(dir: &Path, entry: &str) -> (i64, String) {
 //   calls that accessor) and by the 0917 reduction. This cell is NOT 0903's
 //   acceptance witness; it passed once 0917's fix landed in S120 (`cbb3be9e`).
 #[test]
-fn sudoku_warm_serial_solve_residue_at_most_1400() {
+fn sudoku_warm_serial_solve_retains_nothing() {
     let td = exemplar_scratch();
     let (retained, stderr) = warm_residue_of(td.path(), "solver.cl");
-    assert!(
-        retained <= 1_400,
-        "warm serial Sudoku residue MUST be <=1400 after complete 0810/transitive \
-         discharge; got {retained}. A value materially above ~2000 is a partial fix.\n{stderr}"
+    assert_eq!(
+        retained, 0,
+        "a warm serial Sudoku solve MUST release everything it allocates (the warm \
+         control carries no ambient term); got {retained}.\n{stderr}"
     );
 }
 
@@ -158,8 +160,8 @@ fn warm_cache_hit_control_carries_no_ambient_residual() {
         "a WARM cache-hit child that does no solve work MUST retain nothing \
          (measured 0 — allocs=1/deallocs=1 — at S118 HEAD, tests/plan/\
          s118-test-plan.md §11.3); got {retained}. Nonzero means the ambient \
-         compile-time term (FIXME 0889's 1143, or a new one) is back in the WARM \
-         path, so `sudoku_warm_serial_solve_residue_at_most_1400` is no longer \
-         measuring runtime retention and its bound must be re-derived.\n{stderr}"
+         compile-time term (FIXME 0889's, or a new one) is back in the WARM \
+         path, so `sudoku_warm_serial_solve_retains_nothing` is no longer \
+         measuring runtime retention and must be re-derived marginally.\n{stderr}"
     );
 }

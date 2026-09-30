@@ -1,13 +1,19 @@
 ---
 id: ACT-0981
 title: Assess automatic IO scheduling in multi-signature bodies
-status: open
+status: deferred
 priority: normal
 from: design
 to: qa
 sprint: 122
 filed_at: 2026-09-22
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K7, R4).** First deferral.
 
 ## Intake and next disposition
 

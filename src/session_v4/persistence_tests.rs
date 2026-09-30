@@ -253,7 +253,7 @@ fn reload_replaces_declaration_records_and_failed_reload_clears_them() {
     );
 
     std::fs::write(&path, DECLS_V2).unwrap();
-    s.reload_module(&user, &path).unwrap();
+    s.reload_module(&user, &path, Default::default()).unwrap();
     let type_v2 = record_of(&s, "user", "T").unwrap();
     let impl_v2 = record_of(&s, "user", "Disp.T").unwrap();
     assert_eq!(
@@ -270,7 +270,7 @@ fn reload_replaces_declaration_records_and_failed_reload_clears_them() {
     );
 
     std::fs::write(&path, DECLS_BROKEN).unwrap();
-    assert!(s.reload_module(&user, &path).is_err());
+    assert!(s.reload_module(&user, &path, Default::default()).is_err());
     assert!(record_of(&s, "user", "T").is_none());
     assert!(record_of(&s, "user", "Disp.T").is_none());
     s.shutdown();
@@ -385,7 +385,8 @@ fn reload_keeps_backing_path_for_library_module_regeneration() {
     let libm = ModuleFullPath::from("libm");
 
     std::fs::write(&lib_file, "(defn base [] 6)\n").unwrap();
-    s.reload_module(&libm, &lib_file).unwrap();
+    s.reload_module(&libm, &lib_file, Default::default())
+        .unwrap();
     let product = s.shared.typecheck_products.get(&libm).unwrap();
     assert_eq!(product.file_path.as_deref(), Some(lib_file.as_path()));
     assert_eq!(product.source_text.as_deref(), Some("(defn base [] 6)\n"));
@@ -562,7 +563,7 @@ fn sum_visibility_reload_is_refused_with_the_restart_remedy() {
 
     std::fs::write(&path, "(deftype- S A B)\n").unwrap();
     let error = s
-        .reload_module(&ModuleFullPath::from("user"), &path)
+        .reload_module(&ModuleFullPath::from("user"), &path, Default::default())
         .unwrap_err()
         .to_string();
     assert!(
@@ -751,8 +752,10 @@ fn startup_parseable_entry_with_failed_form_is_not_locked() {
 
 // spec: repl/spec/14-file-watching.md §14.6; repl/spec/15-session-persistence.md
 // §15.1 — an imported module that fails at startup is locked with failed
-// source, so no definition turn in it or regeneration writes its file, while
-// the parseable entry keeps its §15.2.3 repair and is not locked.
+// source, while the parseable entry keeps its §15.2.3 repair and is not
+// locked. Recovery purges the dependency's never-compiled table, so `/mod` to
+// it reloads it, reports its failure and stays put (design/int/int.md §8.5.1),
+// and no regeneration writes its file.
 #[test]
 fn startup_failed_dependency_is_locked_and_the_entry_is_not() {
     const FAILING_LIB: &str = "(defn keep-me [] (nope))\n";
@@ -771,12 +774,12 @@ fn startup_failed_dependency_is_locked_and_the_entry_is_not() {
     assert!(s.error_modules.contains(&ModuleFullPath::from("lib")));
     assert_eq!(lock_of(&s, "user"), None, "the entry is not locked");
 
-    s.handle_mod("lib");
-    assert_eq!(s.current_module_path(), ModuleFullPath::from("lib"));
     assert!(matches!(
-        s.process_commands("(defn z [] 1)", &mut Vec::new()),
-        CommandResult::Final(_)
+        s.handle_mod("lib"),
+        Some(crate::repl::commands::ModReport::Refused(_))
     ));
+    assert_eq!(s.current_module_path(), ModuleFullPath::from("user"));
+    assert_eq!(lock_of(&s, "lib"), Some(ModuleLock::FailedSource));
     s.regenerate_backing_file();
     assert_eq!(std::fs::read_to_string(&lib_path).unwrap(), FAILING_LIB);
     s.shutdown();
@@ -827,7 +830,10 @@ fn structural_reload_beside_a_failed_module_reports_its_own_refusal() {
         fail_siblings(&mut s, &siblings);
 
         std::fs::write(&lib_file, TYPE_STRUCTURAL).unwrap();
-        let error = s.reload_module(&lib, &lib_file).unwrap_err().to_string();
+        let error = s
+            .reload_module(&lib, &lib_file, Default::default())
+            .unwrap_err()
+            .to_string();
         assert!(
             error.contains("lib/T") && error.contains("restart"),
             "run {run}: {error}"
@@ -854,7 +860,8 @@ fn reload_beside_a_failed_module_succeeds_and_lifts_its_restart_marker() {
     fail_siblings(&mut s, &siblings);
 
     std::fs::write(&lib_file, TYPE_V1).unwrap();
-    s.reload_module(&lib, &lib_file).unwrap();
+    s.reload_module(&lib, &lib_file, Default::default())
+        .unwrap();
     assert_eq!(restart_required_type(&s, "lib"), None);
     assert!(!s.error_modules.contains(&lib));
     assert!(s.shared.scheduler.is_failed(&ModuleFullPath::from("sib0")));
@@ -881,7 +888,7 @@ fn rebuild_session(root: &Path, source: &str) -> (CompilerSession, PathBuf) {
 /// Save `source` to `path` and rebuild `user` alone from it.
 fn rebuild_user(s: &mut CompilerSession, path: &Path, source: &str) -> Result<(), CranelispError> {
     std::fs::write(path, source).unwrap();
-    s.reload_module(&ModuleFullPath::from("user"), path)
+    s.reload_module(&ModuleFullPath::from("user"), path, Default::default())
 }
 
 fn table_of(s: &CompilerSession, module: &str) -> SessionSymbolTable {
@@ -1335,11 +1342,766 @@ fn mod_recompile_failure_locks_the_module() {
     mark_cache_installed(&s, "lib");
     std::fs::write(root.path().join("lib.cl"), "(defn base [] (nope))\n").unwrap();
 
-    let failure = s
-        .handle_mod("lib")
-        .expect("the failed recompile is reported");
+    let Some(crate::repl::commands::ModReport::RecompileFailed(failure)) = s.handle_mod("lib")
+    else {
+        panic!("the failed recompile is reported");
+    };
 
     assert!(failure.starts_with("[errors: lib.cl]"), "{failure}");
     assert!(locked_with_failed_source(&s, "lib"));
     s.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Reload next basket: failure dependencies and the startup reset
+// (design/int/repl-lifecycle.md §1.2.1, §1.3.1), module cycles at publication
+// (design/int/int.md §6.11) and the `/mod` target (int.md §8.5.1)
+// ---------------------------------------------------------------------------
+
+/// Start a REPL over `root` as `main.rs` does: load the entry `user`, and
+/// recover through the degraded startup load when that fails. Returns the
+/// recovery report.
+fn started_session(root: &Path) -> (CompilerSession, Option<String>) {
+    let mut s = repl_session(root);
+    let started = s
+        .register_module("user")
+        .and_then(|_| s.wait_inmem_complete().map_err(CranelispError::from));
+    let report = match started {
+        Ok(()) => None,
+        Err(_) => s.recover_startup_failure("user"),
+    };
+    s.mark_entry_eval_owned();
+    (s, report)
+}
+
+fn write_files(root: &Path, files: &[(&str, &str)]) {
+    for (name, text) in files {
+        let path = root.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, text).unwrap();
+    }
+}
+
+fn has_table(s: &CompilerSession, module: &str) -> bool {
+    s.shared
+        .symbol_tables
+        .contains_key(&ModuleFullPath::from(module))
+}
+
+fn maps_file(s: &CompilerSession, file: &Path) -> bool {
+    let canonical = file.canonicalize().unwrap();
+    s.shared
+        .file_to_module
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&canonical)
+}
+
+fn failure_dependencies_of(s: &CompilerSession, module: &str) -> Vec<String> {
+    s.failure_dependencies
+        .get(&ModuleFullPath::from(module))
+        .map(|dependencies| dependencies.iter().map(|m| m.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// The import chain `user` → `lib` → `base` whose `base` fails at startup.
+const CHAIN_FAILING_BASE: &[(&str, &str)] = &[
+    ("base.cl", "(defn b [] (undefined-name 1))\n"),
+    ("lib.cl", "(import [base [b]])\n(defn f [] (b))\n"),
+    ("user.cl", "(import [lib [f]])\n(defn g [] 1)\n"),
+];
+
+// spec: design/int/repl-lifecycle.md §1.3.1 (Startup reset), §1.2.1 — recovery
+// leaves no table for a failed dependency that never compiled while keeping it
+// locked and mapped for the watcher, keeps the entry's table, and records each
+// module's failure dependency.
+#[test]
+fn startup_reset_purges_never_compiled_dependencies_and_records_their_failure_dependencies() {
+    let root = tempfile::tempdir().unwrap();
+    write_files(root.path(), CHAIN_FAILING_BASE);
+    let (mut s, report) = started_session(root.path());
+    assert!(
+        report.is_some(),
+        "precondition: the startup failure is reported"
+    );
+
+    for dependency in ["lib", "base"] {
+        assert!(!has_table(&s, dependency), "`{dependency}` keeps no table");
+        assert_eq!(lock_of(&s, dependency), Some(ModuleLock::FailedSource));
+        assert!(maps_file(&s, &root.path().join(format!("{dependency}.cl"))));
+    }
+    assert!(has_table(&s, "user"), "the entry's table is kept");
+    assert_eq!(lock_of(&s, "user"), None);
+    assert_eq!(failure_dependencies_of(&s, "lib"), vec!["base"]);
+    assert_eq!(failure_dependencies_of(&s, "user"), vec!["lib"]);
+    assert_eq!(
+        failure_dependencies_of(&s, "base"),
+        vec!["prelude"],
+        "`base` failed in its own source, which names only its implicit prelude"
+    );
+    s.shutdown();
+}
+
+/// Start a REPL over `user` → `lib` → `base` in which `lib` fails in its own
+/// source against `base`, and return the session.
+fn own_source_failure_session(root: &Path, base: &str, lib: &str) -> CompilerSession {
+    write_files(
+        root,
+        &[
+            ("base.cl", base),
+            ("lib.cl", lib),
+            ("user.cl", "(import [lib [f]])\n(defn g [] 1)\n"),
+        ],
+    );
+    let (s, report) = started_session(root);
+    assert!(
+        report.is_some(),
+        "precondition: the startup failure is reported"
+    );
+    assert!(!has_table(&s, "lib"), "precondition: recovery purged `lib`");
+    s
+}
+
+const BASE_B: &str = "(defn b [] 1)\n";
+
+/// `(base source, lib source)` pairs in which `lib` fails in its own source
+/// against `base` at each stage of its attempt.
+const OWN_SOURCE_FAILURES: &[(&str, &str, &str)] = &[
+    (
+        "Pass 0 import of a name `base` lacks",
+        BASE_B,
+        "(import [base [c]])\n(defn f [] 1)\n",
+    ),
+    (
+        "Pass 0 export of a name `base` lacks",
+        BASE_B,
+        "(export [base [c]])\n(defn f [] 1)\n",
+    ),
+    (
+        "Pass 1 expansion of a macro imported from `base`",
+        "(defmacro m [x] x)\n",
+        "(import [base [m]])\n(defn f [] (m))\n",
+    ),
+    (
+        "type pass through an import",
+        BASE_B,
+        "(import [base [b]])\n(defn f [] (b 1))\n",
+    ),
+    (
+        "type pass through a qualified reference",
+        BASE_B,
+        "(defn f [] (base/b 1))\n",
+    ),
+    (
+        "type pass through an import alias",
+        BASE_B,
+        "(import [(base bs) []])\n(defn f [] (bs/b 1))\n",
+    ),
+    (
+        "type pass on a reference only a macro's expansion wrote",
+        BASE_B,
+        "(defmacro call-b [] `(base/b 1))\n(defn f [] (call-b))\n",
+    ),
+    (
+        "macro checkpoint's type pass",
+        BASE_B,
+        "(defmacro bad [] (let [v (base/b 1)] `1))\n(defn f [] 1)\n",
+    ),
+];
+
+// spec: design/int/repl-lifecycle.md §1.2.1 (The attempt failure exit) — a
+// failure of `lib` in its own source against `base`, at every stage of its
+// attempt, leaves `base` in `lib`'s failure dependencies, and startup
+// recovery carries them past the purge of `lib`'s table.
+#[test]
+fn own_source_failure_at_every_stage_records_the_dependency_it_failed_against() {
+    let mut missing = Vec::new();
+    for (stage, base, lib) in OWN_SOURCE_FAILURES {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = own_source_failure_session(root.path(), base, lib);
+        let recorded = failure_dependencies_of(&s, "lib");
+        if !recorded.contains(&"base".to_string()) {
+            missing.push(format!("{stage}: {recorded:?}"));
+        }
+        s.shutdown();
+    }
+    assert!(missing.is_empty(), "`base` not recorded: {missing:#?}");
+}
+
+// spec: design/int/repl-lifecycle.md §1.2.1 — a qualified symbol inside
+// reader-quoted data is data, not a dependency.
+#[test]
+fn own_source_failure_does_not_record_a_module_named_only_in_quoted_data() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = own_source_failure_session(
+        root.path(),
+        BASE_B,
+        "(defn f [] (let [q (quote base/b)] (nope)))\n",
+    );
+    assert!(
+        !failure_dependencies_of(&s, "lib").contains(&"base".to_string()),
+        "{:?}",
+        failure_dependencies_of(&s, "lib")
+    );
+    s.shutdown();
+}
+
+// spec: design/int/repl-lifecycle.md §1.2.1 — an increment's failure changes
+// nothing and records nothing.
+#[test]
+fn a_failed_increment_records_no_failure_dependency() {
+    let root = tempfile::tempdir().unwrap();
+    write_files(root.path(), &[("base.cl", BASE_B)]);
+    let mut s = repl_session(root.path());
+    assert!(s.eval("(defn k [] (base/b 1))").is_err());
+    assert!(
+        s.shared
+            .scheduler
+            .failure_dependencies(&ModuleFullPath::from("user"))
+            .is_empty()
+    );
+    s.shutdown();
+}
+
+// spec: design/int/repl-lifecycle.md §1.2 (Guards), §1.2.1 — after startup
+// recovery of `user` → `lib` → `base` with `lib` failing in its own source
+// against `base`, in Pass 0 or in its type pass, a save of `base` selects
+// `lib` and then `user`, and both recompile.
+#[test]
+fn dependency_save_selects_a_module_failed_against_it_in_its_own_source() {
+    for (stage, lib, fixed_base) in [
+        (
+            "Pass 0",
+            "(import [base [c]])\n(defn f [] (c))\n",
+            "(defn c [] 2)\n",
+        ),
+        (
+            "type pass",
+            "(import [base [b]])\n(defn f [] (b 1))\n",
+            "(defn b [x] x)\n",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = own_source_failure_session(root.path(), BASE_B, lib);
+        let base_file = root.path().join("base.cl");
+        std::fs::write(&base_file, fixed_base).unwrap();
+
+        let outcomes = s.run_reload_plan(vec![(ModuleFullPath::from("base"), base_file)]);
+
+        let order: Vec<&str> = outcomes.iter().map(|o| o.module.as_ref()).collect();
+        let notices: Vec<String> = outcomes.iter().map(|o| o.notice()).collect();
+        assert_eq!(order, ["base", "lib", "user"], "{stage}: {notices:?}");
+        assert!(
+            outcomes.iter().all(|outcome| outcome.result.is_ok()),
+            "{stage}: {notices:?}"
+        );
+        s.shutdown();
+    }
+}
+
+// spec: design/int/repl-lifecycle.md §1.3.1 (Startup reset);
+// spec/08-modules.md §8.5.4 edge 6 — after recovery from a fresh-load
+// qualified cycle the entry's failed form carries the circular-dependency
+// error, not an incomplete-codegen error.
+#[test]
+fn startup_fresh_load_qualified_cycle_fails_the_entry_form_naming_the_cycle() {
+    let root = tempfile::tempdir().unwrap();
+    write_files(
+        root.path(),
+        &[
+            ("a.cl", "(defn f [] (b/g))\n"),
+            ("b.cl", "(defn g [] (a/f))\n"),
+            (
+                "user.cl",
+                "(import [primitives [Pure]])\n(defn main [] (Pure (a/f)))\n",
+            ),
+        ],
+    );
+    let (mut s, report) = started_session(root.path());
+    let report = report.expect("the failed start is reported");
+    assert!(report.contains("circular dependency detected"), "{report}");
+    let failed = s.failed_forms.get(&ModuleFullPath::from("user")).unwrap();
+    assert!(
+        failed
+            .iter()
+            .any(|form| form.error.contains("circular dependency detected")),
+        "{failed:?}"
+    );
+    assert!(!report.contains("in-memory codegen incomplete"), "{report}");
+    s.shutdown();
+}
+
+/// `b` calls `a/f`; the session loads both.
+fn qualified_pair_session(root: &Path, b_source: &str) -> CompilerSession {
+    write_files(root, &[("a.cl", "(defn f [] 1)\n"), ("b.cl", b_source)]);
+    let mut s = repl_session(root);
+    s.eval("(b/g)").unwrap();
+    s.eval("(a/f)").unwrap();
+    s
+}
+
+fn defines(s: &CompilerSession, module: &str, name: &str) -> bool {
+    symbol_names(&table_of(s, module))
+        .iter()
+        .any(|defined| defined == name)
+}
+
+// spec: design/int/int.md §6.11 — an increment in `a` whose staged callee
+// reaches `b`, while `b`'s live table reaches `a`, is refused naming
+// `a -> b -> a` and leaves `a`'s table without it; the same turn is accepted
+// when `b` does not reach `a`.
+#[test]
+fn increment_closing_a_qualified_cycle_is_refused_with_the_table_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = qualified_pair_session(root.path(), "(defn g [] (a/f))\n");
+    assert_eq!(s.handle_mod("a"), None);
+    let error = s
+        .eval("(defn h [] (b/g))")
+        .err()
+        .expect("the cyclic turn is refused")
+        .to_string();
+    assert!(
+        error.contains("circular dependency detected: a -> b -> a"),
+        "{error}"
+    );
+    assert!(!defines(&s, "a", "h"));
+    s.shutdown();
+
+    let control = tempfile::tempdir().unwrap();
+    let mut s = qualified_pair_session(control.path(), "(defn g [] 3)\n");
+    assert_eq!(s.handle_mod("a"), None);
+    s.eval("(defn h [] (b/g))").unwrap();
+    assert!(defines(&s, "a", "h"));
+    s.shutdown();
+}
+
+/// A `defmacro` in `a` whose clause calls `b/g`.
+const MACRO_CALLING_B: &str = "(defmacro m [] (let [v (b/g)] `1))";
+
+// spec: design/int/int.md §6.11 (Where) — a macro checkpoint in `a` whose
+// clause calls `b/g`, while `b`'s live table reaches `a`, is refused naming
+// `a -> b -> a` and publishes no macro; the same checkpoint is accepted when
+// `b` does not reach `a`.
+#[test]
+fn macro_checkpoint_closing_a_qualified_cycle_is_refused_and_publishes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = qualified_pair_session(root.path(), "(defn g [] (a/f))\n");
+    assert_eq!(s.handle_mod("a"), None);
+    let error = s
+        .eval(MACRO_CALLING_B)
+        .err()
+        .expect("the cyclic checkpoint is refused")
+        .to_string();
+    assert!(
+        error.contains("circular dependency detected: a -> b -> a"),
+        "{error}"
+    );
+    assert!(!defines(&s, "a", "m"));
+    s.shutdown();
+
+    let control = tempfile::tempdir().unwrap();
+    let mut s = qualified_pair_session(control.path(), "(defn g [] 3)\n");
+    assert_eq!(s.handle_mod("a"), None);
+    s.eval(MACRO_CALLING_B).unwrap();
+    assert!(defines(&s, "a", "m"));
+    s.shutdown();
+}
+
+// spec: design/int/int.md §6.11 (Unsettled members) — a rebuild of `a` whose
+// macro checkpoint calls `b/g` is accepted while `b`, whose pre-plan table
+// still reaches `a`, is among the members the pass rebuilds later.
+#[test]
+fn macro_checkpoint_in_a_rebuild_skips_members_rebuilt_later() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = qualified_pair_session(root.path(), "(defn g [] (a/f))\n");
+    let (a_file, b_file) = (root.path().join("a.cl"), root.path().join("b.cl"));
+    std::fs::write(&a_file, format!("(defn f [] 1)\n{MACRO_CALLING_B}\n")).unwrap();
+    std::fs::write(&b_file, "(defn g [] 3)\n").unwrap();
+
+    let outcomes = s.run_reload_plan(vec![
+        (ModuleFullPath::from("a"), a_file),
+        (ModuleFullPath::from("b"), b_file),
+    ]);
+
+    let notices: Vec<String> = outcomes.iter().map(|o| o.notice()).collect();
+    assert!(
+        outcomes.iter().all(|outcome| outcome.result.is_ok()),
+        "{notices:?}"
+    );
+    assert!(defines(&s, "a", "m"));
+    s.shutdown();
+}
+
+// spec: design/int/repl-lifecycle.md §1.2 (Cycles) — a plan whose root closes
+// a qualified cycle ends with every cycle member failed and locked; its
+// acyclic twin rebuilds every member.
+#[test]
+fn reload_plan_closing_a_qualified_cycle_fails_and_locks_every_member() {
+    for (h_body, cyclic) in [("(b/g)", true), ("2", false)] {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = qualified_pair_session(root.path(), "(defn g [] (a/f))\n");
+        let a_file = root.path().join("a.cl");
+        std::fs::write(&a_file, format!("(defn h [] {h_body})\n(defn f [] 5)\n")).unwrap();
+
+        let outcomes = s.run_reload_plan(vec![(ModuleFullPath::from("a"), a_file)]);
+
+        let notices: Vec<String> = outcomes.iter().map(|outcome| outcome.notice()).collect();
+        for member in ["a", "b"] {
+            let outcome = outcomes
+                .iter()
+                .find(|outcome| outcome.module.as_ref() == member)
+                .unwrap_or_else(|| panic!("`{member}` rebuilt: {notices:?}"));
+            assert_eq!(outcome.result.is_err(), cyclic, "{notices:?}");
+            assert_eq!(locked_with_failed_source(&s, member), cyclic, "{notices:?}");
+        }
+        if cyclic {
+            assert!(
+                notices
+                    .iter()
+                    .any(|notice| notice.contains("circular dependency detected")),
+                "{notices:?}"
+            );
+        }
+        s.shutdown();
+    }
+}
+
+// spec: design/int/repl-lifecycle.md §1.2 (Cycles); design/int/int.md §6.11
+// (Unsettled members) — two roots change together: `b` drops its reference to
+// `a` and `a` adds one to `b`. The plan rebuilds `a` first, while `b`'s live
+// table still holds its pre-plan edge to `a`; that edge does not refuse `a`,
+// and both succeed.
+#[test]
+fn reload_plan_swapping_a_reference_between_two_roots_rebuilds_both() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = qualified_pair_session(root.path(), "(defn g [] (a/f))\n");
+    let (a_file, b_file) = (root.path().join("a.cl"), root.path().join("b.cl"));
+    std::fs::write(&b_file, "(defn g [] 2)\n").unwrap();
+    std::fs::write(&a_file, "(defn f [] (b/g))\n").unwrap();
+
+    let outcomes = s.run_reload_plan(vec![
+        (ModuleFullPath::from("a"), a_file),
+        (ModuleFullPath::from("b"), b_file),
+    ]);
+
+    assert!(
+        outcomes.iter().all(|outcome| outcome.result.is_ok()),
+        "{:?}",
+        outcomes
+            .iter()
+            .map(|outcome| outcome.notice())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(s.eval("(a/f)").unwrap().expect("a value").value(), 2);
+    s.shutdown();
+}
+
+fn tables_held(s: &CompilerSession) -> std::collections::BTreeSet<String> {
+    s.shared
+        .symbol_tables
+        .iter()
+        .map(|entry| entry.key().to_string())
+        .collect()
+}
+
+// spec: design/int/int.md §8.5.1 — `/mod` on a name with no module reports an
+// error naming it and leaves the current module and the set of tables
+// unchanged.
+#[test]
+fn mod_unknown_name_is_refused_leaving_module_and_tables_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = repl_session(root.path());
+    let before = tables_held(&s);
+
+    let report = s.handle_mod("nonexistent");
+
+    let Some(crate::repl::commands::ModReport::Refused(refusal)) = report else {
+        panic!("the unknown module is refused: {report:?}");
+    };
+    assert!(
+        refusal.contains("'nonexistent'") && refusal.contains("not found"),
+        "{refusal}"
+    );
+    assert_eq!(s.current_module_path(), ModuleFullPath::from("user"));
+    assert_eq!(tables_held(&s), before);
+    s.shutdown();
+}
+
+// spec: design/int/int.md §8.5.1 — `/mod` on a module not yet loaded loads its
+// file and switches to it, and the module's definitions resolve there.
+#[test]
+fn mod_loads_an_unloaded_file_backed_module_and_switches_to_it() {
+    let root = tempfile::tempdir().unwrap();
+    write_files(root.path(), &[("lib.cl", "(defn keep-me [] 42)\n")]);
+    let mut s = repl_session(root.path());
+
+    assert_eq!(s.handle_mod("lib"), None);
+
+    assert_eq!(s.current_module_path(), ModuleFullPath::from("lib"));
+    assert_eq!(s.eval("(keep-me)").unwrap().expect("a value").value(), 42);
+    s.shutdown();
+}
+
+// spec: design/int/int.md §8.5.1; spec/08-modules.md §8.11.2.1 — from a
+// module declaring `(mod y)`, `/mod y` targets the submodule even though a
+// root `y.cl` exists; without the declaration it targets the root.
+#[test]
+fn mod_resolves_a_declared_submodule_over_a_root_module() {
+    for (user, target) in [
+        ("(mod y)\n(defn g [] 0)\n", "user.y"),
+        ("(defn g [] 0)\n", "y"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        write_files(
+            root.path(),
+            &[
+                ("y.cl", "(defn which [] 2)\n"),
+                ("user/y.cl", "(defn which [] 1)\n"),
+                ("user.cl", user),
+            ],
+        );
+        let (mut s, report) = started_session(root.path());
+        assert_eq!(report, None, "precondition: the entry loads");
+
+        assert_eq!(s.handle_mod("y"), None);
+
+        assert_eq!(s.current_module_path(), ModuleFullPath::from(target));
+        s.shutdown();
+    }
+}
+
+// spec: design/int/int.md §8.5.1 — `/mod` on a file that fails to compile
+// reports its error, stays in the current module and leaves no table.
+#[test]
+fn mod_on_a_failing_file_reports_its_error_and_stays_put() {
+    let root = tempfile::tempdir().unwrap();
+    write_files(root.path(), &[("lib.cl", "(defn keep-me [] (nope))\n")]);
+    let mut s = repl_session(root.path());
+
+    let report = s.handle_mod("lib");
+
+    let Some(crate::repl::commands::ModReport::Refused(refusal)) = report else {
+        panic!("the failed load is reported: {report:?}");
+    };
+    assert!(refusal.contains("nope"), "{refusal}");
+    assert_eq!(s.current_module_path(), ModuleFullPath::from("user"));
+    assert!(!has_table(&s, "lib"));
+    s.shutdown();
+}
+
+/// `mymod.cl` for a prelude that imports it: opted out of the implicit prelude
+/// with a null import (spec §8.3.7), or carrying the fallback bit.
+fn mymod_source(opted_out: bool) -> &'static str {
+    if opted_out {
+        "(import [prelude []])\n(defn val [] 42)\n"
+    } else {
+        "(defn val [] 42)\n"
+    }
+}
+
+/// A session over a prelude that imports `mymod` and defines `two`; the
+/// entry's turn importing `two` loads the prelude.
+fn prelude_dependency_session(
+    root: &Path,
+    opted_out: bool,
+) -> (CompilerSession, Result<(), CranelispError>) {
+    write_files(
+        root,
+        &[
+            (
+                "prelude.cl",
+                "(export [primitives [*]])\n(import [mymod [val]])\n(defn two [] 2)\n",
+            ),
+            ("mymod.cl", mymod_source(opted_out)),
+        ],
+    );
+    let mut s = repl_session(root);
+    let loaded = s.eval("(import [prelude [two]])").map(|_| ());
+    (s, loaded)
+}
+
+// spec: spec/08-modules.md §8.8.1, §8.10.2; design/int/int.md §6.12 — a
+// prelude importing a module with the fallback bit on closes a cycle through
+// that module's implicit prelude dependency, which is refused.
+#[test]
+fn prelude_importing_a_module_with_the_fallback_bit_is_refused_as_a_cycle() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut s, loaded) = prelude_dependency_session(root.path(), false);
+    let error = loaded
+        .expect_err("the cyclic prelude is refused")
+        .to_string();
+    assert!(
+        error.contains("circular dependency detected: prelude -> mymod -> prelude"),
+        "{error}"
+    );
+    s.shutdown();
+}
+
+// spec: spec/08-modules.md §8.3.7; design/int/int.md §6.12 (face C, probes
+// N2–N4) — with `mymod` opted out, the prelude publishing a definition while
+// importing it is accepted, an increment in `mymod` is accepted, a save of
+// `mymod` rebuilds it before the prelude, and a save of the prelude succeeds.
+#[test]
+fn opted_out_prelude_dependency_loads_accepts_increments_and_reloads() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut s, loaded) = prelude_dependency_session(root.path(), true);
+    loaded.expect("the prelude and its opted-out import load");
+    assert!(defines(&s, "prelude", "two"));
+
+    assert_eq!(s.handle_mod("mymod"), None);
+    s.eval("(defn z [] 1)").unwrap();
+    assert!(defines(&s, "mymod", "z"));
+
+    let mymod_file = root.path().join("mymod.cl");
+    std::fs::write(&mymod_file, "(import [prelude []])\n(defn val [] 99)\n").unwrap();
+    let outcomes = s.run_reload_plan(vec![(ModuleFullPath::from("mymod"), mymod_file)]);
+    let notices: Vec<String> = outcomes.iter().map(|o| o.notice()).collect();
+    assert!(
+        outcomes.iter().all(|outcome| outcome.result.is_ok()),
+        "{notices:?}"
+    );
+    let position = |module: &str| outcomes.iter().position(|o| o.module.as_ref() == module);
+    assert!(
+        position("mymod") < position("prelude") && position("prelude").is_some(),
+        "{notices:?}"
+    );
+
+    let prelude_file = root.path().join("prelude.cl");
+    let outcomes = s.run_reload_plan(vec![(ModuleFullPath::from("prelude"), prelude_file)]);
+    let notices: Vec<String> = outcomes.iter().map(|o| o.notice()).collect();
+    assert!(
+        outcomes.iter().all(|outcome| outcome.result.is_ok()),
+        "{notices:?}"
+    );
+    s.shutdown();
+}
+
+/// Whether `x` and the prelude each compiled: a table on a module that does
+/// not stand `Failed`.
+fn helper_and_prelude_standing(s: &CompilerSession) -> [(&'static str, bool); 2] {
+    ["x", "prelude"].map(|module| {
+        let compiled =
+            has_table(s, module) && !s.shared.scheduler.is_failed(&ModuleFullPath::from(module));
+        (module, compiled)
+    })
+}
+
+/// One direction of the helper-end cycle: the files a session loads, the
+/// saved module, the save that closes the cycle and the save that opens it.
+struct HelperCycleLeg {
+    prelude: &'static str,
+    x: &'static str,
+    saved: &'static str,
+    closing: &'static str,
+    restoring: &'static str,
+}
+
+impl HelperCycleLeg {
+    /// The leg's failures against ACT-1014's condition: the closing save names
+    /// the cycle and no unresolved name, and ends as a fresh session on the
+    /// saved files; the restoring save is accepted.
+    fn failures(&self) -> Vec<String> {
+        let label = format!("{} saving {:?}", self.saved, self.closing);
+        let root = tempfile::tempdir().unwrap();
+        write_files(
+            root.path(),
+            &[("prelude.cl", self.prelude), ("x.cl", self.x)],
+        );
+        let file = root.path().join(format!("{}.cl", self.saved));
+        let load = |s: &mut CompilerSession| {
+            let _ = s.eval("(import [prelude [two]])");
+            let _ = s.eval("(import [x [one]])");
+        };
+        let save = |s: &mut CompilerSession, source: &str| -> Vec<String> {
+            std::fs::write(&file, source).unwrap();
+            s.run_reload_plan(vec![(ModuleFullPath::from(self.saved), file.clone())])
+                .iter()
+                .map(|outcome| outcome.notice())
+                .collect()
+        };
+
+        let mut s = repl_session(root.path());
+        load(&mut s);
+        assert_eq!(
+            helper_and_prelude_standing(&s),
+            [("x", true), ("prelude", true)],
+            "precondition: {label} starts acyclic"
+        );
+        let closed = save(&mut s, self.closing);
+        let session_standing = helper_and_prelude_standing(&s);
+        let restored = save(&mut s, self.restoring);
+        s.shutdown();
+
+        std::fs::write(&file, self.closing).unwrap();
+        let mut restart = repl_session(root.path());
+        load(&mut restart);
+        let restart_standing = helper_and_prelude_standing(&restart);
+        restart.shutdown();
+
+        let mut failures = Vec::new();
+        if restart_standing != [("x", true), ("prelude", false)] {
+            failures.push(format!(
+                "precondition: a restart on {label} refuses only the prelude, got {restart_standing:?}"
+            ));
+        }
+        let names_the_cycle = closed.iter().any(|notice| {
+            notice.contains("circular dependency detected: x -> prelude -> x")
+                || notice.contains("circular dependency detected: prelude -> x -> prelude")
+        });
+        if !names_the_cycle || closed.iter().any(|n| n.contains("not found in module")) {
+            failures.push(format!("{label}: closing save {closed:#?}"));
+        }
+        if session_standing != restart_standing {
+            failures.push(format!(
+                "{label}: session {session_standing:?}, restart {restart_standing:?}"
+            ));
+        }
+        if !restored
+            .iter()
+            .all(|notice| notice.starts_with("[updated:"))
+        {
+            failures.push(format!("{label}: restoring save {restored:#?}"));
+        }
+        failures
+    }
+}
+
+// spec: spec/08-modules.md §8.8.1, §8.10.2; repl/spec/14-file-watching.md
+// §14.6; design/int/int.md §6.11 (Pass-0 fail-fast), §6.12 (the helper end,
+// restart parity) — the prelude reaches `x` by `export` or by `x/one`, which
+// the static gate does not follow. A save that closes the cycle through `x`'s
+// implicit prelude edge, by dropping `x`'s opt-out or, in the twin direction,
+// by adding the prelude's reach, names the cycle, reports no unresolved name
+// and ends as a restart on the saved files does: `x` compiled and the prelude
+// refused. The save that opens the cycle again is accepted.
+#[test]
+fn helper_save_dropping_its_prelude_opt_out_is_refused_as_a_cycle() {
+    const X_OPTED_OUT: &str = "(import [prelude []])\n(defn one [] 1)\n";
+    const X_WITH_BIT: &str = "(defn one [] 1)\n";
+    const PRELUDE_ALONE: &str = "(defn two [] 2)\n";
+    let mut failures = Vec::new();
+    for reaching_prelude in [
+        "(export [x [one]])\n(defn two [] 2)\n",
+        "(defn two [] (x/one))\n",
+    ] {
+        let helper_end = HelperCycleLeg {
+            prelude: reaching_prelude,
+            x: X_OPTED_OUT,
+            saved: "x",
+            closing: X_WITH_BIT,
+            restoring: X_OPTED_OUT,
+        };
+        let twin = HelperCycleLeg {
+            prelude: PRELUDE_ALONE,
+            x: X_WITH_BIT,
+            saved: "prelude",
+            closing: reaching_prelude,
+            restoring: PRELUDE_ALONE,
+        };
+        failures.extend(helper_end.failures());
+        failures.extend(twin.failures());
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

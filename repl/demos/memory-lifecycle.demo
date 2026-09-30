@@ -57,34 +57,32 @@
 ; before releasing; a linked binary converts before releasing. You never see a
 ; half-formatted value, and nothing is released twice.
 
-; One honest exception, visible right here. When the result's displayed type
-; still carries a residual type parameter, no release happens and `live` grows.
-; Compare the two lines below: the same value, differing only in whether an
-; annotation pins the residual parameter.
+; The displayed type does not decide the release. Below, the same value is
+; produced twice with a residual type parameter left in its type, then twice
+; under an annotation that pins it.
 /mem
 
 (Err "boom")
 
 (Err "boom")
 
-; `deallocs` did not move, and `live` grew — that is a known defect, filed
-; against the type-level view that leaves the parameter unpinned. It is shown
-; rather than hidden, and this demo is where it will visibly stop happening.
+; `allocs` and `deallocs` each advanced by four — two per value — and `live`
+; did not move. The unpinned `a` in the displayed type changes nothing.
 /mem
 
-; Pin the parameter and the same value is released exactly as above:
+; Pin the parameter and the ledger reads the same:
 :(Result String String) (Err "boom")
 
 :(Result String String) (Err "boom")
 
-; `deallocs` moved with `allocs`; `live` is back to flat.
+; Four and four again, `live` flat. The two displays differ; the release does
+; not.
 /mem
 
 ; A closing note on the tool itself. `/mem <expr>` reports a per-expression
-; delta, and its measurement window closes before the result is released — so
-; it reports `live +N` for every heap value, including the ones proven flat
-; above. That gap is filed too. Until it closes, the snapshot form used
-; throughout this demo is the truthful instrument.
+; delta instead of a snapshot. It displays the result, releases it, and only
+; then closes its measurement window, so the same heap value reads `live +0`
+; here too: one line answers "did this expression's memory get reclaimed?"
 /mem (Box "boxed")
 
 ; [end]

@@ -15,6 +15,23 @@ status: open
 ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §5
 ---
 
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **S122 work (K2), evidence only.** `test` measures one marginal pair for the balance cell (`Functor IO` instance). A balanced pair retires the balance obligation. A confirmed ordinary leak becomes a committed RED carried to S123 under K7. A double discharge, use-after-free or corruption returns to the user with its attribution for a fix decision.
+- **Balance obligation retired (qa, 2026-09-30).**
+  `spec_10_io::functor_io_instance_calls_balance_against_inline_bind` passes.
+  - Three `fmap` calls through the `Functor IO` instance are measured against
+    three inline `bind`s.
+  - Control 10/10, subject 13/13: a marginal of +3/+3 and a residual of 0.
+  - Both exits are 42. `CRANELISP_RC_DEC_CHECK` is armed, and the harness
+    capability fence passed 3/3.
+  - Source `f0d1006f…`; log `.local/s122-final-test/k2-pairs.log`.
+  - The S118 retention of about 68 bytes per call no longer reproduces.
+- **The refusal face is closed.** The seven S118 cells pass in the last full run; QA accepts that as closure evidence for the refusal.
+- **Later phases.** The refusal-era text (obligation 2) routes in Phase 6a/6b; obligation 3, whether `/info Bind` must introspect, goes to `spec` on `repl/` in Phase 6a.
+
 # IO release after the runtime-directed teardown — evidence and rider reconciliation
 
 ## Current state (verified 2026-09-24)
@@ -39,12 +56,8 @@ ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §5
 
 ## Remaining obligation
 
-1. **Evidence (`qa`).** Accept the seven cells' passing state as closure
-   evidence for the refusal, or rerun them. Add a
-   balance cell for a trait instance over IO, such as
-   `(impl (Functor IO) (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))`:
-   in S118 it compiled, returned correctly and retained about 68 bytes per
-   call. The unrun-`Bind` payload residual is FIXME 0934's.
+1. **Evidence (`qa`).** Discharged: the refusal closed on the seven cells, and
+   the balance obligation on the K2 cell above.
 2. **Stale refusal text (route to owners).** Once the cells pass:
    - `test` updates the `// defect:` notation on those cells;
    - `training` removes the known-red headers and part markers in examples 21
@@ -61,5 +74,5 @@ ruled_at: design/backend/non-concrete-release-contract.md §4 face 4, §5
 
 ## Closure
 
-The seven cells and the trait-instance balance cell pass, and the listed
-owners have removed their refusal-era text or recorded why it stays.
+The listed owners have removed their refusal-era text or recorded why it
+stays, and obligation 3 is decided. The evidence obligation is already met.

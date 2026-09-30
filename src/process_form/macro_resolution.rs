@@ -750,7 +750,7 @@ pub(super) fn compile_macro_if_needed(
     module: &ModuleFullPath,
     info: &cranelisp_frontend::DefmacroInfo,
     macro_sexp: &Sexp,
-    macro_lookup_dependencies: &BTreeSet<ModuleFullPath>,
+    attempt: &super::AttemptFacts,
 ) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
     // S76 W-Macro (fire B): the dead `block_for_macro_codegen` dep-walk
     // (`collect_transitive_uncompiled_deps` + the notify-loop) is DELETED, not
@@ -767,7 +767,7 @@ pub(super) fn compile_macro_if_needed(
         prelude_fallback: ctx.prelude_fallback,
         shared_state: ctx.shared_state,
     };
-    match compile_macro_checkpoint(&env, module, info, macro_sexp, macro_lookup_dependencies)? {
+    match compile_macro_checkpoint(&env, module, info, macro_sexp, attempt)? {
         MacroCheckpoint::Published => Ok(None),
         MacroCheckpoint::Gap(gap) => Ok(Some(gap)),
     }

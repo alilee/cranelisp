@@ -74,9 +74,10 @@
 // marginal here does NOT retire 0688's attribution, and `/qa` owns tracing it to
 // a mechanism before the family is called closed.
 //
-// The 0889 leak itself is NOT closed by this change-set either. It is accepted
-// for now by user decision and recovered in a future sprint; its magnitude is
-// fenced by the exact-value pins in `tests/macro_turn_marshal_leak_0889.rs`.
+// The 0889 leak itself was NOT closed by this change-set either. S122 fixed its
+// macro-turn share (`tests/macro_turn_marshal_leak_0889.rs` now asserts
+// balance); a cold stdlib session still ends with 46 unclassified allocations
+// (FIXME 0889), which is the ambient term these pairs cancel today.
 // ===========================================================================
 
 #[path = "helpers/mod.rs"]
@@ -86,7 +87,8 @@ use helpers::marginal::{Child, Instrument, MarginalPair};
 use std::time::Duration;
 
 /// The no-workload control: same prelude, same env, a program that computes
-/// nothing. Its residual IS the ambient 0889 term and nothing else.
+/// nothing. Its residual IS the ambient stdlib-session term (FIXME 0889) and
+/// nothing else.
 const AMBIENT_ONLY: &str = "(import [primitives [Pure]])\n\
      (defn main [] (Pure 0))\n";
 
@@ -115,7 +117,7 @@ fn pair(label: &str, control: &str, subject: &str) -> MarginalPair {
 // loop shape threading an `Int` accumulator, so the subtraction charges this
 // cell with exactly the persistent-collection workload: the `collections.vec`
 // import, the `[0]` literal, and 20 `conj` iterations. A returning 0688 (one Vec
-// leaked per iteration) shows up here as a marginal residual of ~20; the 0889
+// leaked per iteration) shows up here as a marginal residual of ~20; the
 // ambient term cannot show up here at all.
 // spec: spec/12-runtime.md §12.3.1 — a superseded persistent-collection value is
 // freed when no longer reachable.
@@ -145,12 +147,12 @@ fn conj_loop_does_not_leak() {
 // MS-P8 parity face — the SAME marginal read through the M3 detector's atexit
 // path (`CRANELISP_ALLOC_PARITY`) rather than the `[RC_STATS]` report, because a
 // detector can disagree with a counter report and the cell is named after the
-// detector. Under FIXME 0889 both children abort on the ambient imbalance, so
-// "no abort" is stated as what it actually means here: the conj workload does
-// not change the armed detector's verdict, and contributes zero to the
-// imbalance it reports. When 0889 lands, both children reach normal exit and the
-// second assertion below tightens back to the original `exit 21` contract with
-// no edit.
+// detector. While the ambient stdlib-session residual (FIXME 0889) stands, both
+// children abort on it, so "no abort" is stated as what it actually means here:
+// the conj workload does not change the armed detector's verdict, and
+// contributes zero to the imbalance it reports. When that residual is gone,
+// both children reach normal exit and the second assertion below tightens back
+// to the original `exit 21` contract with no edit.
 // spec: spec/12-runtime.md §12.3.1 — a balanced program passes the alloc-parity check.
 // defect: class=rc-miscount locus=crates/cranelisp-backend TCO tail-jump loop-param slot overwrite — superseded heap param never released (0688 verdict a; conj copy path is the exposure, not the seam) found=S113 owner=/dev
 #[test]
@@ -175,7 +177,7 @@ fn conj_loop_parity_no_abort() {
         m.report()
     );
     if m.control().exit_code().is_some() {
-        // The ambient imbalance is gone (0889 fixed) — both children exit
+        // The ambient imbalance is gone — both children exit
         // normally and the program's value is observable under arming again.
         assert_eq!(
             m.subject().exit_code(),

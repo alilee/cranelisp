@@ -62,14 +62,15 @@ never as a headline. [S114]
 
 **Implementation handoff (`/dev`, src/):** this notice is REPL boot-time runtime output — it requires `src/` code (the startup restore path), not a `repl/` config change. `/repl` specifies the wording, count semantics, empty-suppression rule, and the TTY gate above; `/dev` implements it at the session-restore seam behind the same `is_terminal()` gate the search-index notice uses. **Count source (`/dev`, Minor — FIXME 0707):** the count MUST be taken from the session's own restore record (the definitions that actually restored), **not** by re-reading and re-parsing the backing file — after a startup load failure (§15.2.3) a re-parse over-counts by including definitions that failed to restore, contradicting "restored definitions." [S113/S114]
 
-#### 15.2.3 Startup Load Failure [Tested+Neg tests/repl_persist::persist_startup_load_failure_reaches_prompt_blocks_then_repairs, tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition — one module, non-TTY; report/refusal wording not spec-pinned; a backing file that parses but fails. The parse-failure lock paragraph is evidenced separately below]
+#### 15.2.3 Startup Load Failure [Tested+Neg tests/repl_persist::persist_startup_load_failure_reaches_prompt_blocks_then_repairs, tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition — reach the prompt, block, repair at the prompt with no recompilation, and retention; one module, non-TTY; report/refusal wording not spec-pinned; a backing file that parses but fails. The parse-failure and recompilation lock paragraphs are evidenced separately below]
 
 If the persisted source (the backing `.cl` file, §15.1) fails to compile at startup, the REPL MUST report the load error and still reach a prompt.
 
 The affected module MUST then enter an error-blocked state:
 
 - ordinary expressions are refused;
-- definition updates are accepted, so the user can repair the module at the prompt; and
+- definition updates are accepted, so the user can repair the module at the
+  prompt, until a failed recompilation locks it (below); and
 - a successful repair clears the error-blocked state.
 
 Each persisted definition that failed to compile at startup MUST keep its source text, verbatim, in every later regeneration of the backing file (§15.1) until a successful definition replaces it. A successful turn that defines a different name therefore MUST NOT remove the failed definition's source from the backing file. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition]
@@ -79,6 +80,13 @@ retain this way. Its module is instead locked as after a failed reload
 (§14.5 item 5): the REPL MUST NOT overwrite the file, a definition update whose
 success would regenerate it is rejected, and the lock releases only when a
 later save of the file compiles successfully. [Tested+Neg tests/repl_persist::persist_parse_error_reload_lock_survives_restart_until_a_save_compiles — reached through a parse-error save and a restart that keeps the cache: the error is reported, `(g)` is refused, a definition is rejected, the file is unchanged, and a compiling save releases the lock]
+
+Once the session recompiles the module from its saved file (§14.2 steps 2–3),
+whatever caused the recompilation, including as a dependent of a changed
+module (§14.2 step 4), a failure of that recompilation locks the module as
+after any failed reload (§14.5 item 5). The at-prompt repair above then no
+longer applies: a definition update whose success would regenerate the file is
+rejected, and the lock releases as §14.5 item 5 and §14.6 specify. [Tested+Neg tests/repl_persist::persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles, tests/repl_persist::persist_startup_degraded_entry_repairs_at_prompt_without_dependency_change_control — reached as a dependent of a changed save of an imported module: the entry is reported and locked, a definition is refused, the file is unchanged, a compiling save of the entry releases it, and a later definition does not write back the startup-failed form; the control, without the dependency's save, repairs at the prompt]
 
 Error blocking caused by a watched file changing during a session is specified separately (§14.4–§14.6).
 

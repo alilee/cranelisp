@@ -352,20 +352,20 @@ fn import_below_use_still_available_before_definitions() {
 // span; these e2e tests were authored as the owed end-to-end regression guard
 // (FIXME 0330) and instead SURFACED a defect.
 //
-// DEFECT (FIXME 0336 → /dev int): under `--run`, `rewrite_parent_inline_mod` is
-// invoked TWICE for the same `(mod child …)` form — the S78 cluster
-// retry-from-top re-runs Pass-0 against the original `sexps` (span 29..59) AFTER
-// the first pass already shrank the on-disk parent to 77 bytes. The second call
-// slices the STALE span over the rewritten file, producing a corrupt parent
+// Fixed defect (FIXME 0336, /dev int): under `--run`, `rewrite_parent_inline_mod`
+// was invoked TWICE for the same `(mod child …)` form — the S78 cluster
+// retry-from-top re-ran Pass-0 against the original `sexps` (span 29..59) AFTER
+// the first pass had already shrunk the on-disk parent to 77 bytes. The second
+// call sliced the STALE span over the rewritten file, producing a corrupt parent
 // (`(mod child)e (child/helper)))`). The exact-match idempotence guard in
-// `splice_inline_mod_to_bare` misses because the stale-span slice is not exactly
-// `(mod child)`. The first run still exits correctly (in-memory state is fine),
-// but the durable backing-file damage breaks every subsequent run. The reader
-// span (29..59) and the pure splice are CORRECT; the bug is the double-invocation
-// with a stale span on cluster retry — int's, in `src/process_form.rs`.
+// `splice_inline_mod_to_bare` missed because the stale-span slice was not exactly
+// `(mod child)`. The first run still exited correctly (in-memory state was fine),
+// but the durable backing-file damage broke every subsequent run. The reader
+// span (29..59) and the pure splice were correct; the bug was the
+// double-invocation with a stale span on cluster retry, in `src/process_form.rs`.
 //
-// These tests are FAILING-NOT-IGNORED per `memory/feedback_failing_not_ignored.md`
-// — they pin the spec-correct behaviour and flip green when /dev resolves 0336.
+// These tests went RED under 0336 and pass since its fix; they pin the
+// spec-correct behaviour.
 // =============================================================================
 
 // spec: spec/08-modules.md §8.2.2 — first compilation of an inline `(mod child
@@ -398,8 +398,8 @@ fn inline_mod_extracts_backing_file_and_rewrites_parent() {
 
     // Step 2: the parent file was rewritten — the inline form is now a bare
     // `(mod child)` reference, the inline body is gone, and the surrounding
-    // forms (import, main) are preserved INTACT. The last assertion fails under
-    // FIXME 0336 (the `main` form is truncated by the stale-span re-rewrite).
+    // forms (import, main) are preserved INTACT. The last assertion failed under
+    // FIXME 0336 (the `main` form was truncated by the stale-span re-rewrite).
     let parent = out.read_tmp("app.cl");
     assert!(
         parent.contains("(mod child)"),
@@ -434,8 +434,8 @@ fn inline_mod_extraction_is_idempotent_on_rerun() {
     let child_after_first = first.read_tmp("app/child.cl");
 
     // Second run in the same project tree: the rewritten parent + extracted
-    // backing file MUST re-run cleanly to the same result. Fails under 0336
-    // because the first run corrupted `app.cl`.
+    // backing file MUST re-run cleanly to the same result. This failed under
+    // 0336 because the first run corrupted `app.cl`.
     let second = first.run_again().run("app.cl").output().assert_exit(7);
     assert_eq!(
         child_after_first,
@@ -449,16 +449,16 @@ fn inline_mod_extraction_is_idempotent_on_rerun() {
 // LIB-DIR-RELATIVE (`{parent_dir}/…`), never CWD-relative (FIXME 0423 — /int)
 // =============================================================================
 //
-// DEFECT (FIXME 0423 → /int): when a module that lives in a CRANELISP_LIB
-// directory declares an INLINE `(mod test …)` body, and the program is run
-// from a working directory that is NOT the lib-dir, the extractor writes the
+// Fixed defect (FIXME 0423, /int): when a module that lives in a CRANELISP_LIB
+// directory declared an INLINE `(mod test …)` body, and the program was run
+// from a working directory that was NOT the lib-dir, the extractor wrote the
 // extracted backing file CWD-relative (`<cwd>/<module>/test.cl`) instead of
-// next to its parent in the lib-dir (`<lib-dir>/<module>/test.cl`). This is
+// next to its parent in the lib-dir (`<lib-dir>/<module>/test.cl`). This was
 // the root cause of the stray `./collections/`, `./num/`, … trees that
 // appeared at the repo root when the stdlib self-test runner was invoked from
-// the repo root in S87 (currently band-aided by a `.gitignore` guard). The
-// parent rewrite (to bare `(mod test)`) DOES correctly target the lib-dir
-// copy; only the backing-file write mis-resolves against the process CWD.
+// the repo root in S87 (then band-aided by a `.gitignore` guard). The parent
+// rewrite (to bare `(mod test)`) correctly targeted the lib-dir copy; only the
+// backing-file write mis-resolved against the process CWD.
 //
 // REPRO (this test): `mod.cl` with an inline `(mod test …)` lives in the
 // lib-dir (`lib/` under the per-test tmpdir, on CRANELISP_LIB); the `--run`
@@ -467,16 +467,13 @@ fn inline_mod_extraction_is_idempotent_on_rerun() {
 // backing file MUST appear under the lib-dir (`lib/mod/test.cl`) and MUST NOT
 // appear CWD-relative (`mod/test.cl` at the tmpdir root).
 //
-// FAILING-NOT-IGNORED per `memory/feedback_failing_not_ignored.md` — it pins
-// the spec-correct lib-dir-relative behaviour and flips green when /int
-// resolves the extraction output path against the lib-dir / the source
-// module's own directory rather than the process CWD. → /int (source-regen /
-// `(mod …)` extraction write path; `src/`).
+// It went RED under 0423 and passes since its fix; it pins the spec-correct
+// lib-dir-relative behaviour.
 
 // spec: spec/08-modules.md §8.2.2 — extraction step 1 writes the backing file
 // at `{parent_dir}/{stem}/{name}.cl`; `{parent_dir}` is the parent module's OWN
 // directory (the lib-dir for a lib-dir module), NEVER the process working
-// directory. The stray CWD-relative write is FIXME 0423.
+// directory. The stray CWD-relative write was FIXME 0423.
 #[test]
 fn inline_mod_test_extraction_writes_lib_dir_relative_not_cwd() {
     // `accum.cl` lives in the lib-dir (`lib/`, on CRANELISP_LIB). It declares
@@ -2420,22 +2417,21 @@ fn bare_mod_decl_neg_does_not_resolve_sibling_file() {
 // =============================================================================
 // §8.3.8 Super Import — child submodule resolves parent symbols
 //
-// FAILING-NOT-IGNORED repro for FIXME 0342 (S81 close). A plain (non-cyclic)
+// Repro for FIXME 0342 (S81 close), passing since its fix. A plain (non-cyclic)
 // `(import [super [name]])` from a `(mod test ...)` submodule MUST resolve the
-// parent module's symbols (both fns and type constructors). Today it errors
-// `'name' not found in module '<parent>'` — the submodule typechecks before
-// the parent's definitions are visible to it (an ordering issue).
+// parent module's symbols (both fns and type constructors). It errored
+// `'name' not found in module '<parent>'` — the submodule typechecked before
+// the parent's definitions were visible to it (an ordering issue).
 //
 // This is DISTINCT from the §8.3.8 mutual-import deadlock limitation — there
 // is no cycle here (parent does not import from the child).
 //
-// Owning skill: /typecheck (resolution) or /int (module-load ordering) —
-// see tests/CLAUDE.md §"Isolating Cross-Crate Failures". The visible error is
-// a typecheck "not found"; the root cause may be int's load ordering.
+// The visible error was a typecheck "not found"; the root cause was suspected
+// in int's load ordering.
 // =============================================================================
 
 // spec: spec/08-modules.md §8.3.8 — non-cyclic child→parent `super` import of
-//   a parent fn MUST resolve. FIXME(/typecheck 0342).
+//   a parent fn MUST resolve (FIXME 0342).
 #[test]
 fn super_import_resolves_parent_fn() {
     Cranelisp::new()
@@ -2456,13 +2452,13 @@ fn super_import_resolves_parent_fn() {
         .run("entry.cl")
         .output()
         // CORRECT: the submodule sees the parent's `helper`, the project
-        // compiles, and main exits 7. Today this FAILS with
+        // compiles, and main exits 7. Before the fix this failed with
         // `'helper' not found in module 'superp'`.
         .assert_exit(7);
 }
 
 // spec: spec/08-modules.md §8.3.8 — non-cyclic child→parent `super` import of
-//   a parent TYPE constructor MUST resolve. FIXME(/typecheck 0342).
+//   a parent TYPE constructor MUST resolve (FIXME 0342).
 //
 // Fixture corrected (S82): the original repro used a postfix annotation
 // `[b :superp/Box]` which is INVALID — `:Type` is a reader-macro-like
@@ -2470,8 +2466,8 @@ fn super_import_resolves_parent_fn() {
 // `[:superp/Box b]`), never the preceding binder (per
 // `memory/annotation-reader-macro-binds-following-form.md`). It also used a
 // `box-v` accessor; the spec (§5 — auto-generated accessor = the FIELD name)
-// has no `box-v`, and the field-name accessor (`v`) currently does not resolve
-// as a free callable (a separate pre-existing typecheck issue — see report).
+// has no `box-v`, and at S82 the field-name accessor (`v`) did not resolve as
+// a free callable (a separate typecheck issue).
 //
 // This guard's SUBJECT is the `super` import of a parent type constructor, NOT
 // accessor/annotation mechanics. It therefore extracts the field via `match`
@@ -2508,13 +2504,13 @@ fn super_import_resolves_parent_type_constructor() {
 
 // spec: spec/08-modules.md §8.5 — a module MUST be able to reference its own
 // types by their fully-qualified (module-qualified) name.
-// FAILING-NOT-IGNORED defect repro (FIXME 0351, target /typecheck, S83).
+// Defect repro (FIXME 0351, /typecheck, S83), passing since its fix.
 // Inside `t.cl` (compiled as module `t`), the type `Box` is defined locally;
 // annotating a parameter with the self-qualified name `:t/Box` MUST resolve
-// to that local type. As-built it errors:
+// to that local type. Before the fix it errored:
 //   `unknown type `t/Box` (from module ``)`.
 // Single-file, no super-import — this is the (a) repro of 0351, isolating the
-// self-qualified resolution defect from the (now-green) 0342 super-import guard.
+// self-qualified resolution defect from the 0342 super-import guard.
 //
 // The behaviour-under-test is the self-qualified `:t/Box` annotation on `unbox`
 // (module `t` referencing its OWN type by qualified name). Post-S80 `main` MUST
@@ -2632,35 +2628,33 @@ fn mod_test_child_super_imported_parent_trait_resolves_as_constraint() {
 //        dropped from the consuming program's codegen batch — DEFECT DEF-1 (S86)
 // =============================================================================
 //
-// DEF-1 — a plain `defn` that the consuming program reaches ONLY through the
-// implicit-prelude glob (a bare call, no explicit import) typechecks but its
-// BODY never enters the user program's codegen batch. The call resolves at
-// typecheck (the prelude-resolution fallback per §8.8.1 surfaces the name into
-// bare scope), then codegen fails `undefined function: <name>`.
+// DEF-1 (fixed) — a plain `defn` that the consuming program reached ONLY through
+// the implicit-prelude glob (a bare call, no explicit import) typechecked but
+// its BODY never entered the user program's codegen batch. The call resolved at
+// typecheck (the prelude-resolution fallback per §8.8.1 surfaced the name into
+// bare scope), then codegen failed `undefined function: <name>`.
 //
 // ISOLATION (this session, /qa S86 step 1.5a):
-//   - The bare prelude-provided call FAILS; an EXPLICIT `(import [prelude [name]])`
-//     of the SAME name WORKS (the control test below, exit 3). So the trigger is
-//     the implicit-glob / re-export path, NOT the function itself.
-//   - The body must wrap a GOT-dispatched primitive (`vec-len`, `vec-push`,
+//   - The bare prelude-provided call FAILED; an EXPLICIT `(import [prelude [name]])`
+//     of the SAME name WORKED (the control test below, exit 3). So the trigger
+//     was the implicit-glob / re-export path, NOT the function itself.
+//   - The body had to wrap a GOT-dispatched primitive (`vec-len`, `vec-push`,
 //     `Pure`) to surface the drop. A wrapper of an INLINE-emitted primitive
-//     (`add-i64`) appears to work because the inline materialises at the call
+//     (`add-i64`) appeared to work because the inline materialised at the call
 //     site — masking the same batch-derivation gap. `count` (wraps `vec-len`)
-//     is the representative shape (matches the carried `count`/`get`/`conj`
-//     prelude-promotion blocker in `stdlib/prelude.cl`).
-//   - The long-re-exported bare `pure` (io.monad) is the pre-existing instance.
+//     is the representative shape.
+//   - The long-re-exported bare `pure` (io.monad) was an earlier instance.
 //
-// TRUE OWNER: /int. `derive_codegen_batch` (`src/worker.rs:621`) emits only
+// Owner at the time: /int. `derive_codegen_batch` emitted only
 // `ModuleEntry::Def` entries; a name surfaced via the implicit-prelude fallback
-// installs as `ModuleEntry::Import`/`Reexport`, which is codegen-skipped, and
-// the prelude's provision does not cascade the body into the consuming module's
-// batch. FIXME(/int). LOCALIZED at the batch-derivation seam.
+// installed as `ModuleEntry::Import`/`Reexport`, which was codegen-skipped, and
+// the prelude's provision did not cascade the body into the consuming module's
+// batch. Localized at the batch-derivation seam.
 //
-// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md: asserts the
-// CORRECT behaviour (a prelude-provided function is callable bare; the program
-// runs to exit 3), RED today (`codegen error … undefined function: count`,
-// exit 1), GREEN when the body enters the batch. When fixed, the
-// `count`/`get`/`conj` bare re-exports in `stdlib/prelude.cl` can be un-blocked.
+// The cell asserts the CORRECT behaviour (a prelude-provided function is
+// callable bare; the program runs to exit 3). It was RED
+// (`codegen error … undefined function: count`, exit 1) until the body entered
+// the batch, and passes since.
 
 const PRELUDE_WITH_COUNT: &str = "\
 (export [primitives [*]])
@@ -2805,7 +2799,7 @@ fn import_mod_target_qualified_and_bare_equiv() {
 // (S96 Phase 6 user-proxy validation; PRE-EXISTING, unrelated to S96).
 // =============================================================================
 //
-// FAILING-NOT-IGNORED defect repro. §8.11.2 step 1 mandates that when resolving
+// Defect repro, passing since its fix. §8.11.2 step 1 mandates that when resolving
 // a module name inside a module, the FIRST search step is "Submodule of current
 // module -- already registered via (mod name) in the current module" (no file
 // search required). A shell module that declares `(mod child)` and then
@@ -2814,36 +2808,32 @@ fn import_mod_target_qualified_and_bare_equiv() {
 //   (mod child)
 //   (export [child [foo]])
 //
-// — therefore MUST resolve `child` to the current module's submodule. Today it
-// fails:
+// — therefore MUST resolve `child` to the current module's submodule. It
+// failed:
 //   module 'child' not found (re-exported by 'shell')
 // because the export-resolution path (src/process_form/dependency.rs
-// `handle_export` → `pipeline::resolve_module_file`) skips §8.11.2 step 1 and
-// resolves `child` only as a project-root / lib-dir ROOT module — which does not
+// `handle_export` → `pipeline::resolve_module_file`) skipped §8.11.2 step 1 and
+// resolved `child` only as a project-root / lib-dir ROOT module — which did not
 // exist (the file is `shell/child.cl`, i.e. module `shell.child`).
 //
-// Isolation (`tests/CLAUDE.md §"Isolating Cross-Crate Failures"`):
-//   - SELF-CONTAINED fixture reproduces (this test — no stdlib dependency).
-//     The defect is NOT stdlib-specific; the real `stdlib/core.cl`
-//     `(export [syntax …])` / `(export [io …])` bare re-exports are merely the
-//     surfacing instance (failing under `CRANELISP_LIB=stdlib`).
-//   - The FULLY-QUALIFIED form `(export [shell.child [foo]])` WORKS (exit 42) —
+// Isolation at the time (`tests/CLAUDE.md §"Isolating Cross-Crate Failures"`):
+//   - The SELF-CONTAINED fixture reproduced it (this test — no stdlib
+//     dependency). The defect was NOT stdlib-specific; the `stdlib/core.cl`
+//     `(export [syntax …])` / `(export [io …])` bare re-exports were merely the
+//     surfacing instance.
+//   - The FULLY-QUALIFIED form `(export [shell.child [foo]])` WORKED (exit 42) —
 //     see `export_specific_reexport` above — pinning the axis to bare-relative
 //     name resolution, NOT re-export semantics in general.
-//   - The same skip affects bare-relative IMPORT
+//   - The same skip affected bare-relative IMPORT
 //     (`(import [child …])` ⇒ "module 'child' not found (imported by 'shell')").
-//   - The bug reproduces in-project AND via a lib path; not lib-path-specific.
+//   - The bug reproduced in-project AND via a lib path.
 //
-// Resolver = /int (module resolution in the binary crate). The error originates
-// in `src/process_form/dependency.rs`, which is /int-owned; the fix is to honour
-// §8.11.2 step 1 (submodule-of-current-module) before falling through to
-// project-root / lib-dir file resolution in BOTH the export and import paths.
+// The error originated in `src/process_form/dependency.rs` (/int), which did
+// not honour §8.11.2 step 1 (submodule-of-current-module) before falling
+// through to project-root / lib-dir file resolution.
 //
 // spec: spec/08-modules.md §8.11.2 — Module Resolution Search Order (step 1,
 //   submodule of current module).
-// FIXME(/int): honour §8.11.2 step 1 in `handle_export`/`handle_import` so a
-//   bare name matching a `(mod name)`-declared submodule of the current module
-//   resolves to that submodule instead of erroring "module 'name' not found".
 #[test]
 fn bare_relative_submodule_reexport_resolves() {
     Cranelisp::new()
@@ -2867,8 +2857,8 @@ fn bare_relative_submodule_reexport_resolves() {
         .output()
         // CORRECT: the bare `child` in `(export [child [foo]])` resolves to the
         // current module's `(mod child)` submodule (§8.11.2 step 1); `foo` is
-        // re-exported through `shell`; main exits 42. Today this FAILS with
-        // "module 'child' not found (re-exported by 'shell')".
+        // re-exported through `shell`; main exits 42. Before the fix this failed
+        // with "module 'child' not found (re-exported by 'shell')".
         .assert_exit(42);
 }
 
@@ -2965,14 +2955,14 @@ fn import_shadowed_by_defn_before_first_call_is_rejected_error() {
 // position. The bare constructor `Red` resolves in value position AND the
 // language even DISPLAYS the value using the canonical dotted form
 // (`:user/Color Color.Red`), yet writing that same `Color.Red` as input in
-// value position fails `undefined variable`. Contrast: the dotted FIELD
-// accessor `Box.v` DOES resolve as a value — so the dotted-member resolver
-// enumerates field accessors but omits constructors. Mode-independent
-// (`--run` and REPL both fail); nullary and applied (`Opt.Some`) ctors alike.
+// value position failed `undefined variable`. By contrast the dotted FIELD
+// accessor `Box.v` resolved as a value — so the dotted-member resolver
+// enumerated field accessors but omitted constructors. Mode-independent
+// (`--run` and REPL both failed); nullary and applied (`Opt.Some`) ctors alike.
 //
 // This test asserts the spec-correct behaviour (exit 7 via a bare-pattern
-// match on a value bound through the dotted constructor ref) and is therefore
-// RED until the dotted value-position constructor path is fixed.
+// match on a value bound through the dotted constructor ref). It was RED until
+// the dotted value-position constructor path was fixed, and passes since.
 // defect: class=enumeration-miss locus=crates/cranelisp-typecheck/src/checker.rs::resolve_dotted_field_accessor found=S108 owner=/dev
 #[test]
 fn dotted_constructor_in_value_position_resolves() {
@@ -3372,6 +3362,74 @@ fn fq_ref_mixed_cycle_import_plus_fq_reports_cycle() {
     );
 }
 
+// spec: spec/08-modules.md §8.5.4 — edge 6 at mode parity: `a/f` calls `b/g`,
+// which calls `a/f`, and `user.cl` is the entry for both `--run user.cl` and
+// the REPL. `--run` reports the circular dependency (the control, asserted
+// first); the REPL loading the same `user.cl` at startup MUST report the same
+// circular-dependency error. An `import` cycle is reported so in both modes.
+// ACT-1013, REPL fresh-load face.
+// Before the S122 fix the REPL reported `in-memory codegen incomplete for 'a'`
+// instead.
+// defect: class=mode-divergence locus=src/scheduler.rs::SchedulerError::InmemIncomplete found=S122 owner=/dev — unattributed; the face's emission site, not a placed mechanism
+#[test]
+fn fq_ref_cycle_repl_startup_reports_circular_dependency_like_run() {
+    const USER: &str = "(import [primitives [Pure]])\n(defn main [] (Pure (a/f)))\n";
+    let cyclic = || {
+        Cranelisp::new()
+            .file("a.cl", "(defn f [] (b/g))\n")
+            .file("b.cl", "(defn g [] (a/f))\n")
+            .user(USER)
+            .timeout(Duration::from_secs(15))
+    };
+    let names_cycle = |text: &str| {
+        let text = text.to_lowercase();
+        text.contains("circular") || text.contains("cycle")
+    };
+
+    let run = cyclic().run("user.cl").output();
+    let run_text = combined(&run);
+    assert!(
+        !run.status.success() && names_cycle(&run_text),
+        "control: `--run user.cl` MUST report the circular dependency; {run_text}"
+    );
+
+    let repl = cyclic().repl().stdin("(main)\n/quit\n").output();
+    let repl_text = combined(&repl);
+    assert!(
+        repl_text.contains("[errors:") && names_cycle(&repl_text),
+        "the REPL startup load MUST report the same circular dependency as `--run`; {repl_text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.10.2 — an `import` cycle is a circular-dependency
+// error in the REPL too: `a` imports `f`'s callee `g` from `b`, which imports
+// `f` from `a`, and the REPL loading `user.cl`, which imports `a`, reports the
+// cycle at startup and refuses `(main)`. The `import`-edge twin of
+// `fq_ref_cycle_repl_startup_reports_circular_dependency_like_run`, kept as a
+// separate cell so it stays observable while that one fails.
+#[test]
+fn import_cycle_repl_startup_reports_circular_dependency() {
+    let out = Cranelisp::new()
+        .file("a.cl", "(import [b [g]])\n(defn f [] (g))\n")
+        .file("b.cl", "(import [a [f]])\n(defn g [] (f))\n")
+        .user("(import [primitives [Pure]])\n(import [a [f]])\n(defn main [] (Pure (f)))\n")
+        .timeout(Duration::from_secs(15))
+        .repl()
+        .stdin("(main)\n/quit\n")
+        .output();
+    let text = combined(&out);
+    let startup = out.stdout.split("user>").next().unwrap_or("");
+    let main_turn = out.stdout.split("user>").nth(1).unwrap_or("");
+    assert!(
+        startup.contains("[errors:") && startup.to_lowercase().contains("circular"),
+        "the REPL startup MUST report the circular dependency; {text}"
+    );
+    assert!(
+        main_turn.to_lowercase().contains("error") && !main_turn.contains(":primitives/"),
+        "`(main)` MUST be refused while the cycle stands; {text}"
+    );
+}
+
 // --- AL-8 — idempotence: a second reference does not reload ------------------
 
 // spec: spec/08-modules.md §8.5.4 edge 8 — a second FQ reference to an
@@ -3600,7 +3658,7 @@ fn autoload_diamond_race_under_load_repeated() {
 // value-position FQ reference to a GENERIC fn concretely used MUST either
 // resolve check-side (a mono minted at the inferred concrete type) or die
 // check-side with an actionable annotation-required error — NEVER a codegen-
-// layer error. Today it leaks the doubly-wrapped codegen error (RED).
+// layer error. Before the fix it leaked the doubly-wrapped codegen error.
 // defect: class=check-gate-leak locus=crates/cranelisp-typecheck (value-position ref to slot-less Polymorphic template never mints a mono; leaks to backend/literals.rs) found=S108 owner=/dev
 #[test]
 fn fq_value_ref_generic_fn_concrete_use_never_reaches_codegen() {
@@ -3808,7 +3866,7 @@ fn same_named_ctors_import_plus_import_twin() {
 // spec: spec/08-modules.md §8.5.2 — a trait method is a member of its trait, so
 // `T.m` resolves wherever `T` is in bare scope: through a direct import and
 // through a prelude re-export, as `tm/T.m` does at the trait's home.
-// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity found=S122 owner=/dev fixed=S122
+// defect: class=wrong-scope-lookup locus=crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity found=S122 owner=/dev fixed=S122/63605970
 #[test]
 fn imported_trait_dotted_method_resolves_via_import_and_prelude_reexport() {
     let tm = "(import [prelude []])\n(import [primitives [*]])\n\
@@ -3864,7 +3922,7 @@ fn imported_trait_dotted_method_resolves_via_import_and_prelude_reexport() {
 }
 
 // spec: spec/08-modules.md §8.5.2 — an ambiguous parent spelling needs its module qualification before a dotted member resolves; §8.6.4 prelude and import candidates merge; §8.6.5 ambiguity diagnostics list the surviving canonical alternatives
-// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity found=S122 owner=/dev fixed=S122
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity found=S122 owner=/dev fixed=S122/63605970
 // The prelude and `tm` each define a trait `T`; importing `tm`'s makes bare
 // `T` ambiguous, so `T.m` must be rejected, listing both parents (ACT-1001
 // P-1; before the fix the prelude impl ran, exiting 104).
@@ -3948,8 +4006,8 @@ fn product_ctor_dotted_form_does_not_resolve_neg() {
 }
 
 // spec: spec/08-modules.md §8.5.2 first-class MAY (DC-8) — a dotted ctor is
-// first-class: bound in a `let` and applied. RED until the dotted value-position
-// constructor path lands.
+// first-class: bound in a `let` and applied. It was RED until the dotted
+// value-position constructor path landed.
 #[test]
 fn dotted_ctor_passed_as_argument_and_let_bound() {
     Cranelisp::new()
@@ -4262,4 +4320,112 @@ fn fq_generic_value_ref_in_vector_position_never_reaches_codegen() {
              check-side, never leak to codegen (I2, 0585); {text}"
         );
     }
+}
+
+// =============================================================================
+// §8.8.1 / §8.10.2 — the implicit prelude import is a dependency (PD-1)
+// =============================================================================
+
+/// `prelude.cl` imports `x`, whose `one` gives 3. `x.cl` references `prelude`
+/// only when `opt_out` adds the null import. `main.cl` returns `(x/one)`.
+fn prelude_importing_x(opt_out: bool) -> Cranelisp {
+    let x = if opt_out {
+        "(import [prelude []])\n(defn one [] 3)\n"
+    } else {
+        "(defn one [] 3)\n"
+    };
+    Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(import [x [one]])\n")
+        .file("x.cl", x)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(defn main [] (Pure (x/one)))\n",
+        )
+        .user("")
+        .timeout(Duration::from_secs(15))
+}
+
+/// Whether some line of `text` reports a circular dependency naming both
+/// `prelude` and `x` as whole words.
+fn names_prelude_x_cycle(text: &str) -> bool {
+    text.lines().any(|line| {
+        let words: Vec<&str> = line
+            .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+            .collect();
+        line.to_lowercase().contains("circular")
+            && words.contains(&"prelude")
+            && words.contains(&"x")
+    })
+}
+
+/// Each fresh-load mode's output for the project, with whether `(x/one)` was
+/// evaluated to 3: the exit code under `--run` and `--link`, turn 1 in the REPL.
+fn prelude_importing_x_in_every_mode(opt_out: bool) -> Vec<(&'static str, bool, String)> {
+    let exits_3 = |out: &helpers::e2e::CrOutput| out.status.code() == Some(3);
+    let run = prelude_importing_x(opt_out).run("main.cl").output();
+    let link = prelude_importing_x(opt_out)
+        .link_then_run("main.cl")
+        .output();
+    let repl = prelude_importing_x(opt_out)
+        .repl()
+        .stdin("(x/one)\n/quit\n")
+        .output();
+    let repl_gives_3 = repl
+        .stdout
+        .split("user>")
+        .nth(1)
+        .is_some_and(|turn| turn.contains(":primitives/Int 3"));
+    let described =
+        |out: &helpers::e2e::CrOutput| format!("status {:?}\n{}", out.status.code(), combined(out));
+    vec![
+        ("--run", exits_3(&run), described(&run)),
+        ("--link", exits_3(&link), described(&link)),
+        ("REPL startup", repl_gives_3, described(&repl)),
+    ]
+}
+
+// spec: spec/08-modules.md §8.8.1 and §8.10.2 — the implicit prelude import is a
+// dependency on `prelude`, so `x`, which the prelude imports and whose source
+// does not reference `prelude`, closes `prelude -> x -> prelude`. The cycle MUST
+// be reported naming both modules, and `(x/one)` is not evaluated, in `--run`,
+// `--link` and REPL startup alike. `x` uses no prelude name, so the rejection
+// cannot rest on use.
+#[test]
+fn prelude_dependency_without_opt_out_neg_rejected_as_cycle_in_every_mode() {
+    let mut violated = Vec::new();
+    for (mode, evaluated, output) in prelude_importing_x_in_every_mode(false) {
+        let mut legs = Vec::new();
+        if !names_prelude_x_cycle(&output) {
+            legs.push("the cycle naming `prelude` and `x` is reported");
+        }
+        if evaluated {
+            legs.push("`(x/one)` is not evaluated");
+        }
+        if !legs.is_empty() {
+            violated.push(format!("{mode}: {}\n{output}", legs.join("; ")));
+        }
+    }
+    assert!(
+        violated.is_empty(),
+        "violated:\n- {}",
+        violated.join("\n- ")
+    );
+}
+
+// spec: spec/08-modules.md §8.8.1 and §8.3.7 — control: the same project with
+// `(import [prelude []])` in `x.cl`. The null import suppresses the implicit
+// import and loads nothing, so there is no cycle, and `(x/one)` gives 3 in
+// `--run`, `--link` and REPL startup alike.
+#[test]
+fn prelude_dependency_with_null_import_runs_in_every_mode_control() {
+    let violated: Vec<String> = prelude_importing_x_in_every_mode(true)
+        .into_iter()
+        .filter(|(_, gives_3, _)| !gives_3)
+        .map(|(mode, _, output)| format!("{mode}: `(x/one)` gives 3\n{output}"))
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "violated:\n- {}",
+        violated.join("\n- ")
+    );
 }

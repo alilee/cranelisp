@@ -56,8 +56,7 @@ documents (root [roles](../CLAUDE.md#roles)).
 - **Ship tests with every definition-bearing module.** The S115 sweep found
   every stdlib defect in untested modules.
 - **Enumerate withheld cases.** When a compiler defect caps coverage, ship the
-  cases that run and list the withheld ones in the test header, as
-  `derive/test.cl` does.
+  cases that run and list the withheld ones in the test header.
 - **Do not work around a language gap.**
   - A stdlib workaround for a compiler or language defect hides the defect
     from the conformance gate and bakes the workaround into model code.
@@ -77,10 +76,6 @@ documents (root [roles](../CLAUDE.md#roles)).
 - **A stale cache masks stdlib edits.** REPL and `--run` persist
   `.cranelisp-cache` in the working directory. Clear it or pass `--no-cache`
   when testing stdlib changes; a stale cache produces misleading errors.
-- **A cache-restored parent does not enrol its private test child**
-  ([FIXME 0868](../design/arch/fixmes/0868-cache-restored-parent-does-not-enrol-private-child.md)).
-  A second REPL process then finds no tests, so run self-tests with a cold
-  cache.
 - Probe from your own scratch directory with `CRANELISP_LIB` set, never from
   the repo root ([probe hygiene](../sprints/METHOD.md#22-phase-notes)).
 

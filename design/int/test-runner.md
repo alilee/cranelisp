@@ -2,6 +2,8 @@
 
 **Owner:** `design` (int). **Status:** implemented and verified in `src/`.
 Verification evidence and acceptance status are recorded in `sprints/SPRINT.md`.
+A missing entry file is refused at entry registration, not by the runner
+([int §6.1.1](int.md#611-a-missing-entry-source-file)).
 **Subordinate to:** [`int.md`](int.md). **Scope:** `src/`.
 
 Governing inputs, cited rather than restated:
@@ -80,7 +82,7 @@ runner state (§6.3).
 | `--run`, `--link` and `--test` refuse any compiled reference to `discover-tests`; an import alone is allowed | §16.6; user, 2026-09-28, for `--test` | One gate at the three batch seams (§7.3) |
 | `discover-tests` is REPL-only; under `--test` the compiler's runner discovers and runs tests | §16.6 | No runner state (§6.3) |
 | `--run` output equals the linked executable's output, with the same capabilities | §0.2.1 | One §7.3 gate serves both; `--test` neither links nor calls `main` |
-| `--test` with `--run` or `--link` is a usage error; `-o` is rejected; a missing entry file exits 1; warnings go to stderr; agent, worker and `--no-cache` flags behave as for `--run` | §0.2.2 | Flag parsing, the entry-source check in `run_tests` and the `Action::Test` arm (§7.1) |
+| `--test` with `--run` or `--link` is a usage error; `-o` is rejected; a missing entry file exits 1; warnings go to stderr; agent, worker and `--no-cache` flags behave as for `--run` | §0.2.2 | Flag parsing, entry registration's batch refusal ([int §6.1.1](int.md#611-a-missing-entry-source-file)) and the `Action::Test` arm (§7.1) |
 | An empty run reports `No tests found`; `--test` exits 0 | §16.2, §0.2.2 | The report (§6.4) |
 
 Two readings follow from the standing text:
@@ -324,12 +326,12 @@ cannot be built (Principle 20).
     `--run`.
 - The arm runs these steps in order:
   1. `startup?`, then `wait_inmem_complete`. A compile failure goes to stderr
-     with exit 1 through the existing `run` error path, and no test runs.
-  2. Call `run_tests`. An `Err` takes the same error path. It includes the
-     §7.3 refusal and a missing entry source file (§0.5.5): entry registration
-     records an empty module when the file is absent, which the REPL relies
-     on, so startup succeeds and `run_tests` refuses an entry with no recorded
-     source file, naming the expected `{project_root}/{entry}.cl`.
+     with exit 1 through the existing `run` error path, and no test runs. A
+     missing entry source file (§0.5.5) fails here: batch entry registration
+     refuses it, naming the expected file
+     ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
+  2. Call `run_tests`. An `Err`, including the §7.3 refusal, takes the same
+     error path.
   3. Write each warning to stderr.
   4. Write the text and a newline to stdout, then flush stdout explicitly,
      because `process::exit` skips destructors.
@@ -394,7 +396,7 @@ pre-execution checks.
 |---|---|
 | `--test` with `--run` or `--link`, or with `-o` | usage error to stderr, exit 1 |
 | Compile or startup failure under `--test` | stderr, exit 1, no report |
-| Missing entry source file under `--test` | `Err` from `run_tests` naming the expected file: stderr, exit 1, no report |
+| Missing entry source file under `--test` | Refused at entry registration, naming the expected file ([int §6.1.1](int.md#611-a-missing-entry-source-file)): stderr, exit 1, no report |
 | A compiled reference to `discover-tests` under `--run`, `--link` or `--test` | refused at the driver seam (§7.3): stderr, exit 1; nothing runs and no executable is written |
 | Readiness failure: a failed or incomplete cached load | `Err` from `run_tests`; no test runs |
 | An admitted edge to a module with no table | `Err`, naming the module; no test runs |
@@ -479,8 +481,10 @@ RED against it; the others arrived green with the seam they test.
   7. The exit code is 0 for all passing, 1 for any failure or panic, and 0 for
      an empty run. The empty text is exactly `No tests found`; the REPL
      handlers return it unchanged.
-  8. An entry module with no recorded source file returns `Err` naming the
-     expected file; an entry whose file exists but is empty does not.
+  8. An entry whose file exists but defines no test is an empty run
+     (`run_tests_reports_an_existing_entry_without_tests_as_an_empty_run`).
+     The missing-file rows are entry registration's
+     ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
 - **refusal gate** (`exe`)
   1. A bare and an FQ body reference are each refused with the one §16.6
      diagnostic, which does not offer `--run`.
@@ -510,10 +514,11 @@ QA allocates the end-to-end cells.
 - **Classify by `file_path.starts_with(project_root)`.** This includes lib
   directories that lie inside the project, the defect the earlier
   `/run-all-tests` had.
-- **Check the entry file in the session under `RunMode::Run`.** Entry
-  registration would have to fail for a missing file in batch mode only. That
-  adds a mode-gating origin, and `run_tests`, the one place the check matters,
-  already owns pre-execution refusals.
+- **A missing-entry check in `run_tests`, or at each batch caller.** Once
+  `--run` and `--link` needed the same refusal (ACT-1004), a caller-side check
+  would re-derive absence at three seams. Entry registration, where the
+  resolver decides absence, refuses it once for every batch mode
+  ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
 - **Run first, then build the owner fallibly.** A glue failure after the first
   test would break the promise that `Err` means no test has run.
 - **Re-read the GOT slot at call time.** This would split the same read that
@@ -550,10 +555,6 @@ These are for `qa` intake and are not designed here:
   to a user function that shadows `discover-tests` is refused, although it
   does not reference the primitive, at all three seams. It was read from source
   and is not reproduced.
-- **`--run` and `--link` report a missing entry file only indirectly.** The
-  empty registered entry reaches them as a missing `main`, so the diagnostic
-  does not name the absent file (§0.5.5). Only `--test` checks the entry
-  source (§7.1). Intake: ACT-1004.
 - **REPL cache-hit parity for the extern.** A cache-restored module that
   references `discover-tests` now loads and runs in the REPL, as a fresh one
   does (§7.3). No REPL cell observes it.

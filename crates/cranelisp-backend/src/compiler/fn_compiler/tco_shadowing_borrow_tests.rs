@@ -148,10 +148,16 @@ fn compile_typed(
     .map(|mut clifs| clifs.pop().expect("one compiled defn"))
 }
 
-// spec: spec/12-runtime.md §12.3.1 — replacing a retained COW source releases
-// its old slot, so a borrowed sibling argument must first acquire an owner.
+// spec: spec/12-runtime.md §12.3.1 — `(defn go [n x] (match x [alias (go
+// (vec-push x 1) alias)]))`. The later use of the variable-pattern alias keeps
+// `x` live past the push (`design/backend/ownership-codegen.md` §13.3 "Last use
+// covers the slot's uncounted aliases"), so the push is copy-only: it must not
+// branch on `x`'s count, the flush releases `x`, and the forwarded `alias` is
+// protected before that release.
+//
+// defect: class=enumeration-miss locus=crates/cranelisp-backend/src/heap.rs::compute_last_uses found=S122 owner=/dev
 #[test]
-fn retaining_cow_tail_replacement_protects_its_borrowed_sibling() {
+fn copy_only_tail_push_protects_its_forwarded_match_alias() {
     let vec_ty = Type::ADT(
         cranelisp_types::FQTypeName::new("primitives".into(), "Vec".into()),
         vec![Type::Int],
@@ -191,6 +197,11 @@ fn retaining_cow_tail_replacement_protects_its_borrowed_sibling() {
         inferred_type: Some(Box::new(Type::Int)),
     };
     let clif = compile_typed(&go_defn(body), None, &[vec_ty.clone(), vec_ty]).unwrap();
+    let rc_load = format!("aligned v3+{}", cranelisp_types::HeapHeader::RC_OFFSET);
+    assert!(
+        !clif.contains(&rc_load),
+        "an aliased source must not take the in-place core:\n{clif}"
+    );
     let backedge = clif
         .split("\n\n")
         .find(|block| !block.starts_with("block0") && block.contains("jump block1("))

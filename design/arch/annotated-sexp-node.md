@@ -3,12 +3,11 @@
 **Status: current cross-crate contract, delivered.** `:Type <form>` folds at
 read time into one structural `Sexp::Annotated` node, so every consumer —
 macros included — sees the annotation in the tree. The user ruled this shape
-on 2026-07-21 (the "structural" reading of FIXME 0708); a metadata side-channel
+on 2026-07-21 (the "structural" reading); a metadata side-channel
 was rejected because an annotation asserts a type and must not be silently
 lost (`spec/01-lexical.md` §1.4.5, `spec/02-grammar.md` §2.3.8, and the macro
-rows of `spec/09-macros.md`). The residual work is in
-[FIXME 0708](fixmes/0708-annotation-not-folded-in-macro-argument-position.md)
-and [the mirror residue below](#7-the-mirrors-the-node-replaces).
+rows of `spec/09-macros.md`). The residual work is
+[the mirror residue below](#7-the-mirrors-the-node-replaces).
 
 ## 1. The node shape
 
@@ -145,8 +144,7 @@ or other string-prefix dispatch standing in for `Sexp::Annotated` is a review
 reject. Four `src/` mirrors of the pre-fold shape remain —
 `worker::leading_annotation_len` (a constant-zero stub),
 `save.rs::is_bare_colon`, `expander::is_annotation_symbol`, and
-`pretty.rs::is_type_annotation_list` with its helpers. Their disposition is
-`design/int/int.md` §16.0 and
-[FIXME 0708](fixmes/0708-annotation-not-folded-in-macro-argument-position.md).
+`pretty.rs::is_type_annotation_list` with its helpers. Their disposition and
+arming evidence are in [Binary/int §16.0](../int/int.md).
 Each replacement must re-express the rule over the node; deleting a test
 while leaving the lexical check under another name is a review reject.

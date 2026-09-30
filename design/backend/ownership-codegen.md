@@ -5,7 +5,8 @@
 
 **Status:** the current design of the backend mechanisms that consume the
 ownership analysis — what is built, the contracts it rests on, and the parts
-that are designed but not built. Verified against source on 2026-09-21. Section
+that are designed but not built. Verified against source on 2026-09-21;
+§3.4, §13.3, §13.5, §13.7 and §15 row 2 re-verified on 2026-09-30. Section
 numbers are cited from source and tests and are kept stable; the increment
 ladders, as-built narratives and falsified analyses that used to fill this
 document are in Git history.
@@ -39,8 +40,8 @@ producer of every fact consumed here is
 | Redefinition machinery (backend half) | §8 | Built |
 | Dual-symbol extern convention | §9 | **Carrier only**: `Realization::ExternShim { borrowed_sibling }` exists and is cache-validated, but no sibling is registered and no emission gate selects one |
 | Vec-query trio in value position | §12.7 | Built |
-| Supporting contracts (golden oracle, counters, wrapper and COW contracts, spark density, unit scenarios, producer pins) | §13 | Current |
-| RC/alloc seam assertion density | §15 | Rows 5–6 built; rows 1–4 open |
+| Supporting contracts (golden oracle, counters, wrapper and COW contracts, spark density, unit scenarios, producer pins) | §13 | Current; the ACT-1021 and ACT-1024 COW corrections (§13.3, §13.7) are in the working tree, uncommitted; K4 is complete and `qa` judged it adequate; user acceptance is pending |
+| RC/alloc seam assertion density | §15 | Rows 5–6 built; row 2 retired; rows 1, 3 and 4 open |
 
 ---
 
@@ -122,10 +123,12 @@ golden corpus.
 
 ### 3.1 Caller side
 
-At a statically resolved call whose callee carries a summary,
-`compile_consuming_arg_list_moded` reads the callee's modes through the keyed
-`CompileContext::callee_summary_at` (conservative on absence) and emits per position
-through the pure `moded_arg_rc(category, mode, owned_binding)`:
+At a statically resolved call, `compile_consuming_arg_list_moded` reads the
+callee's entry convention — derived once from the keyed callable's realization
+([non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6) —
+and emits per position through the pure `moded_arg_rc`. Only a compiled `Body`
+with a non-conservative summary can yield a borrowed position; every other
+realization, and an absent summary, consumes:
 
 | Argument | Callee param `Owned` | Callee param `Borrowed` |
 |---|---|---|
@@ -184,19 +187,23 @@ of its root, so the root's release orders after every rooted projection.
 
 The per-edge delta between Decision 24 and a moded convention is mechanical and
 has one emitter, `emit_d24_adaptation` (`fn_as_value.rs`), consumed by the
-value-position wrapper bodies and by auto-curry. It currently emits a guarded
-post-call dec for every `Borrowed` parameter and no result inc — a moded callee
-always returns an owned reference, so callee materialization and wrapper
-adaptation never both increment. Its parameter loop is wrong for consuming
-extern shims; the realization-directed replacement is designed at
+value-position wrapper bodies and by auto-curry. It emits a post-call release
+for each parameter the derived entry convention marks borrowed, and no result
+inc — a moded callee always returns an owned reference, so callee
+materialization and wrapper adaptation never both increment. It reads the
+derived convention, never a declared `Mode`: only a compiled `Body` can borrow,
+so an extern shim's wrapper adapts nothing whatever the shim declares. The
+derivation, and the separately scheduled typed release of the borrowed
+parameter, are
 [non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6.
 
 ### 3.5 The Decision-24 wrapper
 
 The existing value-position and auto-curry wrapper bodies **are** the Decision-24
-adapters: when the target's summary is non-conservative, `emit_wrapper_call`
-injects `emit_d24_adaptation` around the moded call; a conservative or absent
-summary calls through unchanged. No separate adapter symbol is minted, and
+adapters: when the target's derived entry convention borrows a parameter —
+only a compiled `Body` can — `emit_wrapper_call` injects `emit_d24_adaptation`
+around the call; every other target calls through unchanged, and an extern shim
+always receives its argument owned. No separate adapter symbol is minted, and
 auto-curry composes through the same seam, so adapters never stack.
 
 > **Invariant.** Every code pointer reachable from a closure value targets a
@@ -520,7 +527,9 @@ population worth removing.
 If built, a call site targets the sibling only when **all** hold: the declared
 fact marks the parameter only-read, the argument is borrowed at the site, a
 sibling is registered, and analysis is on. Any false leg takes the consuming
-export with today's emission. A closure wrapper always calls the consuming entry
+export with today's emission. A selected sibling needs its own explicit case in
+the entry-convention derivation, and a closure wrapper never selects one: it
+always calls the consuming primary entry
 ([non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6).
 
 ### 9.4 `neq-string` is a primitive entry
@@ -680,23 +689,240 @@ inside the adaptation (§3.5).
 source iff `Owned`. Wrapper and curry bodies pass `Owned`. The mutate and grow
 branches return the same box, whose ownership the settled §13.7 contract governs.
 
-**The tail-call scope flush.** Before a tail self-call jumps, the heap `let`
-bindings in scope frames `[1..]` are released
-(`flush_let_scopes_before_tail_jump`), because decs emitted after the jump never
-run. A tail argument transfers a live binding in exactly one of three ways, and
-the flush must net each binding to exactly one owner:
+**The tail-call flushes.** Decs emitted after a tail self-call's jump never
+run, so two flushes release before it:
+
+- the heap `let`/match/lambda bindings in scope frames `[1..]`
+  (`flush_let_scopes_before_tail_jump`);
+- the superseded heap parameters in frame `[0]`
+  (`flush_superseded_heap_params_before_tail_jump`).
+
+Which old slot each flush releases is the
+[§6 predicate](transitive-drop-glue.md#6-tco-replacementtransfer-predicate).
+This section owns the other half: every value handed to the next iteration
+must carry exactly one owned reference.
 
 | Argument shape | Treatment |
 |---|---|
-| Bare top-level `Var` `(recur v)` | a move: excluded from the flush |
-| Control-flow alias `(recur (if c a b))`, `(recur (match … a))` | flushed; each branch that yields a will-be-flushed binding incs it at the branch tail (`maybe_protect_tail_arg_alias`), per branch, because which binding moves is known only at runtime |
-| Consumed into a fresh value `(recur (wrap v))` | flushed; the consuming inc already gave the fresh value its own reference |
+| Bare top-level `Var` `(recur v)` | a move: the slot's own reference travels, and the flushes skip that slot |
+| Control-flow forward `(recur (if c a b))`, `(recur (match … a))` | a branch or arm that yields a bare `Var` increments it at the branch tail (`maybe_protect_tail_arg_alias`) when the rule below says so. Which binding travels is known only at runtime, so the increment is per branch |
+| Consumed into a fresh value `(recur (wrap v))` | the consuming increment already gave the fresh value its own reference |
+
+**The branch-forward rule.** A branch-forwarded `Var` never receives its slot's
+reference: only a top-level move, and the analysis-on in-place COW row of §6,
+do. So the branch increments exactly when the resolved slot holds a frame-owned
+heap reference:
+
+- **in a `let`/match/lambda frame:** the slot is not borrowed;
+- **in the parameter frame:** the slot is not borrowed, or the frame promoted
+  it (FIXME 0720's entry increment).
+
+Consequences:
+
+- **Transfer rows are deliberately not consulted.** In `(recur v (if c v w))`
+  the top-level `v` takes the slot's reference, and the branch copy needs its
+  own. A "released at the jump" key would skip that increment and leave two
+  slots on one reference.
+- **A parameter consumed by an in-place COW argument is still incremented
+  when a branch also forwards it.** In `(go (if c p q) (vec-push p 1))` the
+  COW's `p` is its last use, so without the increment an in-place push would
+  share `p`'s box with the branch copy. With it the push sees two references
+  and copies, and the consuming COW releases the slot's reference (below).
+- **Borrowed, unpromoted parameters are not incremented.** Forwarded through a
+  branch at its own position, such a parameter cannot occur: the branch
+  supersedes the slot, so the frame promotes it. Forwarded into a different,
+  frame-owned slot, it owes a reference nothing supplies (lead L4).
+- **The slot is resolved, not spelled.** The rule reads the slot the `Var`
+  resolves to ([binding scope](binding-scope.md) §4). Promotion is a
+  parameter-frame fact only, and never applies to a shadowing binder.
+
+**One ownership fact, read by every tail seam.** "The slot holds a frame-owned
+reference" is computed once per slot. The following all read it:
+
+- both flush filters;
+- the branch-forward rule;
+- the escape-borrow gate (`tail_jump_releases_binding`), which asks whether a
+  borrowed view's root dies at the jump.
+
+"Released at the jump" is that fact combined with the §6 verdict `Replace`.
+Converging the three former readings onto the one fact is what makes a
+disagreement between the flushes and the increment unconstructable (Principle
+[07](../arch/principles/07-single-source-of-truth.md)).
+
+**The consuming in-place COW argument.** §6 row 3 ("in-place COW rooted at the
+slot": transfer, no release) is true only when the COW takes the slot's
+reference in both of its runtime branches. One fact per self-tail call decides
+it, before the arguments compile:
+
+- **The fact.** A top-level tail argument consumes a parameter slot's reference
+  when analysis is on, the argument is a COW builtin site, its source is a
+  bare `Var` resolving to that frame-owned parameter slot, and the source is at
+  its last use, so the site lowers through the in-place core.
+- **"Last use" covers the slot's uncounted aliases.** A binder that views the
+  same box without holding a reference extends the source's live range: a
+  `let` forward, and a variable-pattern arm binder over the bare `Var`
+  scrutinee ([RC discipline](ring2-rc.md) §5.5). In
+  `(match x [alias (go (vec-push x 1) alias)])` the push is not `x`'s last use,
+  so the site is copy-only: the flush releases `x`, and the escape-borrow gate
+  gives the forwarded `alias` its reference.
+- **A copy-only site is not row 3.** A COW whose source is used later in the
+  argument list, as in `(go (vec-push p 1) (if c p q))`, lowers to the copy
+  extern, which neither consumes nor forwards `p`'s box. It is §6 row 5, and
+  the flush releases the slot.
+- **The producer reads the fact.** The fact is issued as the site's consuming
+  claim (§13.7), so a consuming site's source is `Owned`: the mutate and grow
+  branches forward the box with no retention increment, and the copy branch
+  releases the slot's reference. This is the self-tail sibling of the
+  return-COW claim (`return_cow_source_in_scope`). Every other COW site keeps
+  the §13.7 classification.
+- **The flush reads the same fact.** Row 3 exempts exactly the consuming
+  site's slot. A consuming site never retains, so no retention enters row 3.
+- **Toggle-off never consumes.** The fact is false, so the COW counts its
+  source, always copies and the flush releases (FIXME 0695).
+
+With both readers on one fact, every forward is balanced whichever branch
+runs:
+
+| Step | Branch taken | Branch not taken |
+|---|---|---|
+| `(go (if c p q) (vec-push p 1))` (consuming) | the increment gives `p` two references; the COW copies and releases one | the COW mutates in place and carries the slot's reference forward |
+| `(go (vec-push p 1) (if c p q))` (copy-only) | the increment gives the forward its own reference; the flush releases the slot | the flush releases `p` |
+
+The previous, name-keyed exemption offered row 3 to any COW site rooted at the
+slot and gated it on the retain verdict. The copy-only order then kept the
+slot's reference unreleased. Before this rule, the unincremented branch copy
+absorbed that reference by accident. With the increment it leaked one
+reference per iteration (`Consumed` flow). With `IntoResult` flow the retain
+verdict withdrew the exemption, and the forward was freed before this rule.
+
+**Status (2026-09-30): the branch-forward rule, the consuming-COW fact and the
+fact's alias correction (below) are implemented in the working tree,
+uncommitted, and not accepted.** `test`'s after-fix run (V1 part 1) passed.
+The §13.7 change-set has since landed on top of them. `test`'s V2 kept the
+tail family and A-T/A-V GREEN, and `review`(backend) found no blocking
+finding. K4 is complete and `qa` judged Phase 5's evidence
+adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
+User acceptance and phase approval are pending.
+
+- QA's D1/D2 and C-PT/C-LT gates confirmed the ACT-1021 mechanism
+  ([retained record](../../tests/plan/s122-evidence-delta.md#retained-records-of-the-deleted-filings))
+  and the slot-ownership key.
+- `dev` implemented the branch-forward rule and the one ownership fact in the
+  working tree, uncommitted. D1, C-PT, C-C1, C-C2′ and the committed subject
+  flipped GREEN. C-C2 (`Consumed`) regressed to a leak of one reference per
+  iteration, which falsified this section's earlier claim that the COW-first
+  leak was the exemption's accepted residual.
+- The consuming-COW fact above corrects row 3's reading within ACT-1021. The
+  §6 verdict table is unchanged. The mechanism agrees with all four C-C2 and
+  C-C2′ outcomes, and `test`'s seam view confirmed it at CLIF.
+- The §13.7 contract (ACT-1024) builds on this fact. The consuming claim is
+  what licenses a `Var`-sourced COW to skip its retention increment, so every
+  other `Var`-sourced site retains.
+- **Correction (2026-09-30, during implementation).** The consuming fact read
+  the name-keyed last-use map, which ignored variable-pattern aliases.
+  - **Symptom.** A committed unit went RED. It is now
+    `tco_shadowing_borrow_tests::copy_only_tail_push_protects_its_forwarded_match_alias`,
+    and it is GREEN with the correction. Its shape is
+    `(match x [alias (go (vec-push x 1) alias)])`.
+  - **Mechanism.** The site claimed `x`, so there was no retention increment
+    and no flush release. The escape-borrow gate saw no dying root, so `alias`
+    got no increment either. Both loop slots were left on one reference.
+  - **Evidence.** `dev`'s failing CLIF confirms the mechanism. At e2e the
+    same shape, with the parameter's flow `Consumed`, is a use-after-free
+    under the armed stale-release check at HEAD, before the amendment and
+    after it. The unit cell's regression is its absent-escape-fact
+    configuration, which the retaining COW had balanced.
+  - **Fix.** The alias rule above narrows the fact and leaves its two readers
+    unchanged. The alias map it reads is keyed by name and never scoped, so
+    it is conservative only in part:
+    - a stale entry left by a non-alias rebinding can only delay a last use,
+      which turns an in-place site into a copy (safe);
+    - a later alias binder with the same name over a different root
+      overwrites the entry, which can move the original root's last use
+      earlier (unsafe). This is the existing, unmeasured lead
+      [ACT-1029](../../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md):
+      predicted class `binder-name-underkey`, with a use-after-free face. It
+      is not an S122 regression, not part of ACT-1021's approved scope, and
+      not confirmed. A scope-correct map waits on a confirmed face.
+  - **Measured (`dev`, 2026-09-30).** The unit cell, the last-use map cells
+    and both e2e probes (A-T armed; A-V in all six modes, including both link
+    modes that used to crash) are GREEN after the fix. The correction adds no
+    golden drift beyond QA's six classified frames. The falsifier stays: either
+    probe or the unit cell RED again.
+  - **Also closed, by prediction and unmeasured, except where a same-name
+    alias binder intervenes (ACT-1029):** in any frame, an in-place COW
+    followed by a later use of a variable-pattern alias mutates the value
+    that alias names. The closure is asserted; it is falsified by that write
+    observed through an alias with no same-name alias binder intervening.
+    The exception is ACT-1029's: its minimal pair confirms the lead if the
+    subject faults under the armed stale-release check, or its `let` twin
+    shows the in-place write, while the renamed control balances. It refutes
+    the lead if the subject balances armed with the correct value.
+
+**Leads for `qa`.** Each is unmeasured unless its entry says otherwise. None
+is part of ACT-1021's approved scope.
+
+- **L2 — a borrowed pattern view forwarded through a branch.** Its root is
+  released at the jump. The escape-borrow gate upgrades only a top-level `Var`,
+  and the branch rule skips a borrowed slot. The prediction is a
+  use-after-free.
+- **L3 — promotion read by name at scope exit.** `pop_scope_with_cleanup`
+  applies promotion in every frame. A borrowed pattern binder that shadows a
+  promoted parameter's name would be released at its scope exit. The slot
+  fact closes this, but moving scope exit onto it waits for L3's measurement.
+- **L4 — a borrowed, unpromoted parameter forwarded into another slot** (QA).
+  The receiving slot is frame-owned, and the branch rule does not increment a
+  borrowed slot. The prediction is an over-release when that branch runs.
+- **L5 — a nullary-pattern arm.** `compile_nullary_pattern` has no protect
+  call, so `[None v]` in a tail-argument `match` forwards a frame-owned binding
+  bare. The prediction is a use-after-free.
+- **L6 — a heap-free nested scope.** `(if c (let [k 1] p) q)` relies on the
+  inner scope's return protect, which fires only when that scope has a heap
+  cleanup target. The prediction is a use-after-free.
+- **L7 — a consuming COW the flushes do not see.** Before §13.7 landed, a
+  tail-argument COW whose site recorded `escapes = Some(false)` forwarded its
+  source's box with no retention increment. Two shapes then also release that
+  box at the jump:
+  - a `let`-bound source, `(let [v …] (go (vec-push v 1)))`, because row 3 is
+    not offered in a `let` frame;
+  - a COW under a branch, `(go (if c (vec-push p 1) q))`, because row 3 reads
+    top-level arguments only.
+
+  §13.7 closes both by prediction. Neither site holds the consuming claim, so
+  the source is `Borrowed`, the reuse increments whatever the escape fact, and
+  the flush's release balances it. The unit tier pins that neither holds the
+  claim and that the `let` face retains under every escape fact; W-LOOP
+  measures the flush release they share. Closure itself is asserted, with a
+  named falsifier: either shape RED under the armed stale-release check.
+- **L8 — a shadowing binder named like the return-COW source. Refuted as
+  unreachable (`dev`, 2026-09-30, at CLIF).** The shape is
+  `(defn f [v] (vec-push v (let [v (vec-push [] 2)] (vec-len (vec-push v 3)))))`.
+  The name-keyed return-COW source did match the inner site, but that site is
+  never in place: `compute_last_uses` is name-keyed and records the outer
+  direct `Var` argument as `v`'s last use, so the inner site lowers to the
+  copy extern, which never reads the source classification. The CLIF is
+  identical before and after the site-keyed claim, and the predicted
+  double release does not occur. The site-keyed claim (§13.7) still makes the
+  misclassification unconstructable in any shape; the issuer's unit pins the
+  claimed node's identity, and the L8 cell is a negative leg.
+- **L9 — a return-COW body whose element argument reads the source.** The
+  shape is `(defn f [v] (vec-push v (vec-len v)))`. The source is not at its
+  last use, so the site lowers to the copy extern, which releases nothing,
+  while scope exit still skips `v`. The prediction is a leak of one reference
+  per call. It is not in ACT-1024's scope. Closing it would add the claim's
+  last-use condition to the return-COW issuer.
+- **L10 — an alias through a non-`Var` scrutinee or `let` value.** The alias
+  rule reads a bare `Var` only. In `(match (if c x y) [a (go (vec-push x 1) a)])`
+  the binder `a` may view `x`'s box without extending `x`'s last use. The
+  prediction is the same fault as the corrected shape. Widening the rule to
+  the provenance trace (`operand_live_binding_root`) would close it at the
+  cost of more copy-only sites. The trigger is a measured fault.
 
 The protection flag is set only while compiling an `if`/`match` that is itself a
 tail argument, is cleared around the condition or scrutinee, and replaces the
 unconditional return protect for a match arm in that context. A leak-balance
 check reads green over this class's use-after-free, so its evidence asserts the
-computed result.
+computed result under the armed stale-release check.
 
 **Attribution discipline.** Design hypotheses in this area have named a
 plausible but wrong seam more than once. Before fixing an RC defect here,
@@ -725,8 +951,11 @@ oracle.
 | RC helpers (`cranelisp-backend/src/heap.rs`, `rc_emission.rs`) | helper × `confined` {`Some(true)`, `Some(false)`, `None`, toggle-off} → non-atomic arm or unchanged atomic arm; the unsound probe still overrides |
 | Moded arguments (`apply.rs`) | {owned binding, temporary} × callee param {`Owned`, `Borrowed`, no summary} × toggle; the adaptation row; arity above eight; a recursive callee |
 | Return protect (`fn_compiler.rs`) | result mode {`Fresh`, `MayAliasOf`, `AliasOf`, `ProjectionOf`, absent} × body shape |
+| Tail-argument forwarding (`fn_compiler.rs`, §13.3) | slot {`let` owned, `let` borrowed, parameter owned, parameter borrowed and unpromoted, parameter promoted} × form {`if` branch, wildcard arm, variable-pattern arm, constructor-pattern arm} × also {moved by a top-level `Var`, consumed by an in-place COW argument} → exactly one increment on the forwarding branch, or none; the ownership fact is pure over slot facts and reads a shadowing binder's slot, not its name |
+| Consuming COW argument (`fn_compiler.rs`, `vec_codegen.rs`, `heap.rs`, §13.3) | COW site {in-place (source at last use), copy-only (source used later, or a later use of its variable-pattern or `let` alias; an alias used only inside the site's own operands does not count)} × source slot {parameter owned, parameter promoted, `let`} × position {top-level argument, under a branch} × toggle → the fact holds only for an in-place top-level site on an owned parameter with analysis on; where it holds, the source is `Owned` and the flush skips exactly that slot, otherwise the flush releases the slot and the §13.7 classification is unchanged |
 | Wrappers (`fn_as_value.rs`) | dispatch kind {user function, extern, inline primitive, constructor, trait method, operator} × use {HOF argument, partial application, returned, stored, bound} × instantiation count {1, 2 same op, 2 different ops, n} × summary × mode {REPL, `--run`} |
-| COW cores (`vec_codegen.rs`) | branch {mutate, copy, grow} × polarity {`Owned`, `Borrowed`} × call site {static, wrapper, curry} × escape {`Some(true)`, `Some(false)`, `None`} → exact balance and value semantics |
+| COW cores (`vec_codegen.rs`, §13.7) | branch {mutate, copy, grow} × source {fresh temporary, `Var` holding the consuming claim (return-COW, self-tail), other `Var`, shadowing binder named like the return-COW source, `Var` in a nested operand of a claimed site} × call site {static, wrapper, curry} × escape {`Some(true)`, `Some(false)`, `None`} → only the first two sources are `Owned`; every other `Var` is `Borrowed` and increments on mutate and grow; the result owns exactly one reference on every branch; emission is identical across the escape axis. The shadowing binder in the return-COW shape is never at its last use, so it copies (L8, §13.3): that cell is a negative leg, and the claim's node key is pinned at its issuer |
+| Match scrutinee plan (`match_codegen.rs`, §13.7, [transitive drop glue](transitive-drop-glue.md) §5) | scrutinee {fresh temporary, call result, COW site on {mutate, copy branch, copy-only path} × source {`Owned`, `Borrowed`}, binding} × arm {forwarding variable, consuming variable, constructor, wildcard} × consumer {returned, `let`-bound, tail argument} × toggle → the plan reads ownership and arm shape only; a forwarding arm emits no release, and the enclosing return adds no protect; a consuming arm releases once; a COW scrutinee plans identically to a call result |
 | Vec literal element move-in | element {fresh temporary, COW-aliased result} × escape |
 | Stack placement | the five gates × `escapes` × site kind → stack slot or unchanged heap; sentinel behaviour |
 | Spark density (`sparkability.rs`) | facts {present, absent} × body {allocation-dense, compute-dense, mixed} × threshold boundary → admitted, declined, inert |
@@ -746,11 +975,11 @@ oracle.
 ### 13.7 COW mutate and grow branches — the settled contract
 
 A COW operation has a copy branch (`rc > 1`, a new box) and mutate/grow branches
-(`rc == 1`, the same box). When the result of a mutate on a borrowed source
-escapes — returned through a match binding, stored in a Vec literal, projected
-out — the source's scope dec would free the box under the live result. The
-settled contract (the R14 ruling, [safety-invariants.md](../arch/safety-invariants.md)
-§4) has two inseparable halves:
+(`rc == 1`, the same box). On the mutate and grow branches the result and the
+source are one box, so the result owns a reference only if the site supplies
+one. The settled contract (the R14 ruling,
+[safety-invariants.md](../arch/safety-invariants.md) §4) has two inseparable
+halves:
 
 1. **Toggle-off counts every COW source.** `cow_source_ownership` classifies
    every source `Owned` when analysis is off, so the runtime `rc == 1` branch
@@ -758,26 +987,209 @@ settled contract (the R14 ruling, [safety-invariants.md](../arch/safety-invarian
    construction. The conservative loop allocates per iteration; that is what
    conservative means. (**R14 count-truth:** the in-place branch is sound iff
    every live independently owned reference is counted.)
-2. **Analysis-on incs by escape.** `Borrowed` comes only from the settled origin
-   lattice, and the COW core incs the returned pointer iff
-   `node_escapes(cow_apply) != Some(false)` — escape or absence incs, the
-   use-after-free-safe direction; an in-frame recur transfer (`Some(false)`)
-   keeps in-place reuse. Escape is read from the node, never re-derived at the
-   producer.
+2. **Analysis-on: the source has two states, and a `Borrowed` source always
+   retains on reuse.**
+   - **`Owned`** — the site owns the reference it consumes. The mutate and
+     grow branches transfer it, and the copy branch releases it. The source is
+     either a fresh producing temporary, or a `Var` whose site holds the
+     **consuming claim**.
+   - **The consuming claim** — this exact site takes its source slot's
+     reference. Only code that also suppresses that slot's release issues it,
+     and there are two issuers:
+     - the function-body return-COW site, whose slot scope exit skips;
+     - the consuming self-tail argument (§13.3), whose slot the flush skips.
+   - **`Borrowed`** — every other `Var` source. The slot keeps its reference
+     and releases it later, at scope exit or at a tail flush. The mutate and
+     grow branches increment the returned box, and the copy branch releases
+     nothing.
 
-The halves cannot land separately: the gate alone leaves the oracle comparing
-correct-on against wrong-off, and the polarity alone leaves the analysis-on
-failures. An unconditional producer inc on the borrowed mutate branch was
-**falsified** — it leaks for a literal source and scales allocation with
-iteration count in a recur loop — and a per-consumer alias inc at every consume
-shape was rejected as a mirror family. The separate binding-indirection consume
-contract is a different, structurally discriminated rule
-([binding-indirection-consume.md](binding-indirection-consume.md)).
+**The escape fact is not an input.** `escapes = Some(false)` truthfully says
+the result stays in the frame. It does not say that the slot's release is
+suppressed. Every in-frame consumer of a COW result releases it as an owned
+temporary, for example:
 
-**Where the backend gate cannot help.** If typecheck records a wrong
-`escapes = Some(false)` (the match-variable pattern case), the gate correctly
-declines to inc and cannot distinguish it from a correct recur loop; the cure is
-the recorded fact, in typecheck.
+- an inline-op temporary drop;
+- a `let` binding's scope exit;
+- a moded call argument;
+- a match wrapper release;
+- a tail-argument move.
+
+Reading `Some(false)` as licence to skip the increment therefore released one
+box twice (ACT-1024;
+[QA intake](../../tests/plan/s122-evidence-delta.md#act-1023-and-act-1024--intake-2026-09-30)).
+With the claim as the gate, that state cannot arise. The two halves carry
+different grades
+([R14](../arch/safety-invariants.md)):
+
+- **`Borrowed` carries no retain flag — structural.** It is a unit variant, and
+  both COW cores retain it (Principle
+  [20](../arch/principles/20-model-invariants-by-representation.md)).
+- **A `Var` source reaches `Owned` analysis-on only through the claim, and only
+  code that suppresses the slot's release issues it — asserted, with a named
+  falsifier.** The grade rests on a census of the two issuers, not on
+  representation (Principle
+  [25](../arch/principles/25-narrowing-carries-its-check.md)). The claim set is
+  crate-visible, so a third writer would compile.
+  - Falsifier: a write to the claim set outside the return-COW issuer and the
+    self-tail call's extend-and-restore.
+  - Promotion: making the set private behind its two issuers makes this
+    structural. It is not scheduled.
+
+**The claim is keyed by site, not by name.** It attaches to the exact COW node
+whose slot release its issuer suppresses. A nested COW inside that site's
+operands does not inherit it. A shadowing binder that spells the source's name
+is `Borrowed` (Principle [24](../arch/principles/24-resolve-once.md);
+[binding scope](binding-scope.md) §4). The return-COW source used to be
+compared by name, so a shadowing inner site matched it. In lead L8's shape
+(§13.3) that site never lowers in place, so no fault was reachable there; the
+node key removes the name comparison altogether.
+
+**Every COW result owns exactly one reference, on every branch and path.**
+
+- An `Owned` source transfers on mutate and grow. The copy branch returns a
+  fresh box and releases the source.
+- A `Borrowed` source retains on mutate and grow. The copy branch returns a
+  fresh box.
+- A source that is not at its last use lowers to the copy extern, which returns
+  a fresh box.
+
+So a COW site is an ordinary owned temporary to every consumer, which is how
+provenance already classifies it (`OwnedTemporary`). No consumer needs to know
+which branch ran, and none may carry a COW-specific release rule. This is
+**structural**: no retain-less `Borrowed` state exists from which a
+branch-dependent result could arise.
+
+Consequences:
+
+- **In-place reuse survives wherever the count returns to 1 before the next
+  check.**
+  - A loop whose source slot is released at the jump pays one increment and
+    one release per iteration, and still mutates in place. Examples are a
+    `let`-bound source and a parameter whose COW sits under a `let` or a
+    branch.
+  - The consuming self-tail argument (`build`, the l_c3 loops) pays nothing.
+- **A chain of in-frame COWs on dead `let` sources copies from the second
+  site.** In `(let [a (vec-push v 1) b (vec-push a 2)] …)`, `v`'s slot still
+  counts until scope exit.
+  - Every such chain used to release one box more than once, so no correct
+    program loses reuse.
+  - Recovering the reuse would need the slot release suppressed at last use.
+    That is drop-guided reuse (§6.1), which is not designed.
+  - Trigger: a measured workload in which such a chain dominates.
+- **The typecheck escape fact stays published and read** by stack placement
+  (§4) and spark density (§13.4). A wrong `Some(false)`, such as the old
+  match-variable pattern case, can no longer cause a COW use-after-free.
+- **The match seam has no COW rule.** A match over a COW scrutinee plans like
+  a match over any owned temporary
+  ([transitive drop glue](transitive-drop-glue.md) §5). A forwarding
+  variable-pattern arm is `OwnedForwarded`, and a consuming arm is
+  `OwnedConsumed`.
+  - **What retires.** The match exception forced `OwnedConsumed` on a
+    forwarding arm whenever the site retained, as the retention's "balancing"
+    release. The producer's recorded retain decisions and their reconciliation
+    existed only to feed it, and they retire with it.
+  - **Why it was wrong.** The arm released the result it forwarded, and that
+    release was balanced only if the frame later added a reference back.
+    - **Where a return protect followed** (ACT-1027's e2e shapes, D2-C and
+      D2-R in [QA's V1 record](../../tests/plan/s122-evidence-delta.md#act-1024--v1-record-and-the-w-m-ruling-2026-09-30)),
+      the mutate and grow branches survived. On the copy branch and the
+      copy-only path the result is the only reference, so the arm freed it
+      before the protect ran.
+    - **Where none followed** (the U-R3a unit, `(match (vec-set v 0 5) [r r])`
+      returned over an owned parameter), the arm release alone was the fault.
+      On the mutate branch the retention and the arm release cancel, and `v`'s
+      scope exit then frees the returned box; on the copy branch the arm frees
+      the fresh box. Measured at CLIF before the fix: one increment and two
+      releases, with no protect.
+  - **Why it cannot stay.** Reading "is `Borrowed`", as this contract first
+    specified, would widen that fault to every unclaimed `Var` site.
+- **A forwarding join's leak is exposed, not caused.** A `let` or `match` that
+  yields its own binder transfers that binder's reference. The probeless
+  provenance walk (`value_provenance`) reads such a join as `NotOwnedHere`, so
+  its consumer leaks one block
+  ([ACT-1026](../../sprints/actions/ACT-1026-binder-forwarding-join-consumed-in-frame-leak-intake.md)).
+  - **Two consumer faces.** An in-frame inline op does not release the join.
+    An enclosing join, followed by the return protect, adds a reference.
+  - **What changes.** The retention supplies the reference that the missing
+    increment used to withhold. On the mutate branch those shapes move from a
+    cancelling balance to the one-block leak they already show on the copy
+    branch. No shape becomes a use-after-free.
+  - **Where it is fixed.** The join's transfer is correct. The provenance walk
+    is the side to change, at a separate seam, and it is outside this contract.
+
+The halves cannot land separately:
+
+- the gate alone leaves the oracle comparing correct-on against wrong-off;
+- the polarity alone leaves the analysis-on failures.
+
+Two alternatives were rejected on evidence, and one on design:
+
+- An unconditional increment on the borrowed mutate branch was once
+  **falsified**: it leaked for a literal source and scaled allocation with the
+  iteration count in a recur loop. Both sources are now `Owned`: a literal is a
+  fresh temporary, and a recur loop's top-level COW on its parameter holds the
+  consuming claim. So the increment now falls only where a slot release
+  balances it.
+- A per-consumer alias increment at every consume shape was rejected as a
+  mirror family.
+- The binding-indirection consume contract is a different, structurally
+  discriminated rule
+  ([binding-indirection-consume.md](binding-indirection-consume.md)).
+
+Three ways to keep a COW rule at the match seam were rejected:
+
+- **"Is `Borrowed`" as its predicate** (this contract's first text). It was
+  measured unsound on the copy paths (ACT-1027).
+- **Freezing it on the old escape-gated verdict.**
+  - It leaves ACT-1027 open at escaping sites.
+  - It keeps the escape fact as a COW input.
+  - The producer's record would disagree with that verdict at every
+    `Some(false)` site.
+- **Retaining on the copy branch too, so the arm's release balances.** The
+  result's count would then depend on its consumer, which is the mirror family.
+
+**Status (2026-09-30): implemented in the working tree for ACT-1024,
+uncommitted, and not accepted.** The user approved the fix, the match
+exception's retirement with it (which fixes ACT-1027), and carrying ACT-1026
+and ACT-1028.
+
+- **Shape.** One change-set on top of the ACT-1021 amendment (§13.3), whose
+  claim it reuses: the two-state source, one claim set read by one reader
+  with the return-COW and self-tail issuers, and the match plan without a COW
+  input. The retain decisions, their reconciliation and the escape-fact
+  threading to the COW producer are deleted.
+- **A claimed site is not asserted to lower in place.** The return-COW claim
+  has no last-use condition, so a claimed site legitimately reaches the copy
+  extern (L9). The self-tail issuer derives in-place from the same last-use
+  predicate the lowering reads. An assertion that a claimed site takes the
+  in-place core was therefore false for one issuer and redundant for the
+  other, and it was removed (§15 row 2).
+- **Evidence.**
+  - `dev`: the producer, escape-axis and U-R3a/U-R3b cells went RED first and
+    are GREEN; the claimed-site and U-R3c legs stayed GREEN. With analysis
+    off, eight affected shapes emit byte-identical CLIF before and after.
+  - `test`'s V2, on the affected e2e binaries with the stale-release check
+    armed: W1 and its tail family, W-P, W-L, W-LOOP (reuse equal to its step
+    count), and both ACT-1027 faces (D2-C at marginal 0, D2-R) are GREEN. The
+    only REDs are the carried D1-M and D1-L. The goldens equal checkpoint A,
+    and the public API reads +0/−0.
+  - `review`(backend) found no blocking finding.
+  - K4 is complete and `qa` judged Phase 5's evidence
+    adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
+    User acceptance and phase approval are pending.
+- **Carried, measured unchanged.**
+  - ACT-1026's leak: D1-M and D1-L stay RED at one block, and W-M reads
+    exactly one.
+  - ACT-1028's leak is unchanged.
+  - L9 stays a leak lead.
+- **Grades** (the canonical row is [R14](../arch/safety-invariants.md)).
+  - The one-reference result, and no retain-less `Borrowed`, are structural.
+  - A `Var` source reaching `Owned` only through a claim whose issuer
+    suppresses the release is asserted, with the named falsifier above.
+  - Balance is measured on the V2 cells above only; W1's pre-fix RED proves
+    the check detects. It stays asserted beyond them, with named falsifiers:
+    any ACT-1024 shape RED under the armed stale-release check, or either
+    ACT-1027 face stopping it. Whole-compiler COW soundness is not inferred.
 
 ---
 
@@ -800,7 +1212,7 @@ assertion may never emit CLIF.
 | # | Seam | Kind | Assertion | State |
 |---|---|---|---|---|
 | 1 | `emit_rc_inc` / `emit_rc_dec` | A | the operand is heap-categorized, never a bare nullary tag | open |
-| 2 | COW consumed-source seam | A | `Owned` carries its drop materials; the borrowed mutate/grow inc follows the §13.7 escape gate | open |
+| 2 | COW consumed-source seam | — | No emitter assertion is owed. `Owned` carries its drop materials by representation, and the borrowed increment is structural. The `Var`-source `Owned` path is graded by census, asserted with its named falsifier; its promotion is representational, not an assertion (§13.7). A claimed site is not required to take the in-place core: the return-COW claim legitimately reaches the copy extern (L9, §13.3) | retired (2026-09-30) |
 | 3 | drop-glue builders | A | the glue identity for a value equals the keyed identity of its concrete type | open |
 | 4 | `compile_vec_lit` element move-in | A | a heap element moved into the container is a producing temporary, not a borrow | open |
 | 5 | `vec-get` element inc elision | A | elision fires only with the site fact present (§3.3) | built |

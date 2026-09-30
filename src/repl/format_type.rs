@@ -28,10 +28,7 @@ pub(crate) fn format_overloaded_variants<C: cranelisp_types::CodeStore>(
     docstring: Option<&str>,
 ) -> String {
     render(&format_overloaded_variants_doc(
-        name,
-        module,
-        variants,
-        docstring,
+        name, module, variants, docstring,
     ))
 }
 
@@ -655,12 +652,8 @@ mod overloaded_display_tests {
             variant(vec![Type::Int], Type::Int),
             variant(vec![Type::Int, Type::Int], Type::Int),
         ];
-        let out = format_overloaded_variants(
-            "pick",
-            &module,
-            &variants,
-            Some("Pick one or sum two"),
-        );
+        let out =
+            format_overloaded_variants("pick", &module, &variants, Some("Pick one or sum two"));
         let lines: Vec<&str> = out.lines().collect();
         assert!(
             lines[0].contains("Pick one or sum two"),
@@ -696,9 +689,7 @@ mod overloaded_display_tests {
     // spec: repl/spec.md §4.1.1 — a multi-sig variant that infers a bound displays it.
     #[test]
     fn overloaded_variant_reads_constrained_template_scheme() {
-        use cranelisp_types::{
-            FQTraitName, TypeId,
-        };
+        use cranelisp_types::{FQTraitName, TypeId};
         use std::collections::HashMap;
         let module = ModuleFullPath::from("user");
         // The 2-arg owned clause's template: `Num a => (Fn [a a] a)`.
@@ -715,13 +706,13 @@ mod overloaded_display_tests {
         };
         let declaration: cranelisp_types::OverloadedCallable<()> =
             cranelisp_types::OverloadedCallable::new(
-            None,
-            0,
-            vec![cranelisp_types::CallableArm::new(
-                scheme,
-                vec!["a".into(), "b".into()],
-                Life::Declared { prior: None },
-            )],
+                None,
+                0,
+                vec![cranelisp_types::CallableArm::new(
+                    scheme,
+                    vec!["a".into(), "b".into()],
+                    Life::Declared { prior: None },
+                )],
             )
             .expect("constrained display family is valid");
         let out = format_overloaded_variants("h", &module, &declaration.arms, None);
@@ -732,7 +723,6 @@ mod overloaded_display_tests {
              `(Fn [a a] a)`; got:\n{out}"
         );
     }
-
 }
 
 // ---------------------------------------------------------------------------

@@ -433,22 +433,29 @@ pub(crate) fn install_module_session_env(
         prelude_fallback.insert(module.clone(), true);
     }
 
-    // (b) Import `as`-aliases (`(import [(target alias) …])`) → `<module>.<alias>`
-    //     — the alias half of `install_imports` (the per-symbol Import bindings
-    //     themselves were serialized in the restored table; only the session-side
-    //     alias map needs re-populating). The target resolves against the
-    //     table's own declared children, as on the fresh path.
-    let declared = DeclaredChildren::of(module, &table.submodules);
-    for spec in &table.imports {
+    // (b)+(c) The module-path aliases its declarations make (the per-symbol
+    //     Import bindings themselves were serialized in the restored table;
+    //     only the session-side alias map needs re-populating).
+    install_declared_aliases(module, module_aliases, &table.imports, &table.submodules);
+}
+
+/// Install the module-path aliases `module`'s declarations make: each import
+/// `as`-alias (`(import [(target alias) …])`), targeting the module the spec
+/// resolves to among `submodules`, and each `(mod util)` short name, targeting
+/// `<module>.util`. Every entry is private and keyed by `module`, so an alias
+/// serves only `module`'s own qualified references. The same aliases Pass 0
+/// writes through `install_imports` and `register_submodule_alias`.
+pub(crate) fn install_declared_aliases(
+    module: &ModuleFullPath,
+    module_aliases: &ModuleAliases,
+    imports: &[ImportSpec],
+    submodules: &[ModDecl],
+) {
+    let declared = DeclaredChildren::of(module, submodules);
+    for spec in imports {
         install_import_alias(module, module_aliases, &declared.resolve_import(spec));
     }
-
-    // (c) Submodule short-name aliases (`(mod util)` → bare `util/…` resolves to
-    //     `<module>.util`) — mirror of `register_submodule_alias`, keyed by the
-    //     declaring module plus short name so aliases cannot leak across
-    //     module sessions. The resolver supplies that scope for §8.6.6
-    //     longest-prefix substitution.
-    for decl in &table.submodules {
+    for decl in submodules {
         let sub_path = declared_child_path(module, decl.name.as_ref());
         module_aliases.insert(
             cranelisp_types::module_alias_key(module, decl.name.as_ref()),

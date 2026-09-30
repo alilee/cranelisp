@@ -4,99 +4,52 @@ target: /dev
 filed_by: /sprint
 filed_at: 2026-07-26
 sprint_filed: 118
-refers_to: design/int/macro-turn-ownership.md (the S119 /design(int) protocol ruling — READ FIRST);
-  src/marshal.rs (header: "their RC is never decremented");
-  src/expander.rs §invoke_clause (result tree dropped unconsumed);
-  tests/plan/s118-test-plan.md §2.5 (Branch-F execution record);
-  sprints/archive/sprint-118.md §Notes 2026-07-26 (user decision)
+refers_to: design/int/macro-turn-ownership.md;
+  src/expander.rs::invoke_clause;
+  tests/macro_turn_marshal_leak_0889.rs;
+  tests/plan/s122-evidence-delta.md (Q5 matched measurement)
 status: open
 ---
 
-# Recover the macro-turn marshal leak (the ambient 1143 prelude residue)
+# Macro-turn marshal leak: the unclassified 46-allocation residue
 
-Surface: Binary/int (`src/marshal.rs` + `src/expander.rs`). `/design`(int)
-rules the ownership protocol BEFORE any `/dev` dispatch.
+## Open record
 
-**USER DECISION (2026-07-26, S118 Branch-F closure):** S118 makes the
-exit-balance *instrument* truthful (marginal/twin-control accounting in the
-affected cells) and explicitly accepts the leak for now; this FIXME is the
-user-required record that the leak itself must be recovered in a future
-sprint — accounting around it is not closure.
+A full stdlib-prelude session still ends with **46 allocations that are not
+freed**. The Q5 measurement is alloc 1,198 against dealloc 1,152. It was taken
+on the same input and configuration as S118's 1,143 residual; see the
+[evidence delta](../../../tests/plan/s122-evidence-delta.md).
 
-## The defect
+- The 46 are **unclassified**. The RC summary cannot tell whether they are
+  remaining macro-turn allocations, retained session or runtime owners, or
+  another allocation class.
+- The 46 are not a threshold, a gate or a zero-leak claim. Do not call them
+  harmless overhead, and do not call them a proven leak, without liveness or
+  provenance evidence.
+- **Closure.** Attribute the 46 by provenance. Then either fix a macro-turn
+  share, or re-home a share that belongs elsewhere to its owner, and retire
+  this record.
+- **Trigger.** Any claim of zero session residue must first resolve this
+  provenance or narrow the claim. No experiment is scheduled merely because
+  the number is nonzero.
+- **Out of scope.** Residue after a macro *runtime error* is
+  [ACT-0976](../../../sprints/actions/ACT-0976-macro-runtime-error-residue-intake.md).
+  The macro-turn contract's Rule 3 permits forfeiting the argument tree on
+  that path.
 
-Every macro expansion leaks, by documented design, at the int-side macro-turn
-marshal boundary:
+## Resolved in S122
 
-- marshalled argument trees are never RC-decremented (`src/marshal.rs` header
-  states this as intent; each cell further pinned by the FIXME-0638
-  `protect_marshalled_cell` +1);
-- the expansion-result tree is never consumed after `runtime_to_sexp` copies
-  it (`src/expander.rs` `invoke_clause` drops the `i64`).
+These claims of the original filing no longer hold, verified against source
+on 2026-09-30:
 
-Closed-form residual, exact on every S118 probe point: **|marshalled arg
-cells + args spine| + |non-aliased result-tree cells|, per expansion.** Full
-stdlib prelude: 1,143 allocations per session. Compile-time bounded; does not
-grow with runtime execution (P1/P2 probes = 0).
-
-## Resolution requirements
-
-- True balance at the macro-turn boundary: post-turn deep-release of the
-  marshalled argument trees + consume of the expansion result, with
-  result↔argument **aliasing** handled (P3c's result aliases its arg — a
-  naive release double-frees; the FIXME-0638 interior-alias double-free
-  history shows this has burned once already), OR an arena/epoch expansion
-  allocator that reclaims the whole turn wholesale (see
-  `design/arch/` S119 structural option paper, marginal-balance/arena
-  options).
-- The S118 exact-value probe pins (P3 +2, no-quote +1 class) flip from
-  documented-residual to zero in the fixing change-set.
-- The S118 marginal-accounting instrument remains valid afterwards (it
-  measures runtime behavior either way).
-
-Scheduled: S119, under the structural option paper's disposition.
-
-## `/design`(int) ruling — S119 Phase 3 (the precondition is DISCHARGED)
-
-This FIXME's precondition — *the ownership protocol is ruled before any `/dev`
-dispatch* — is met by **`design/int/macro-turn-ownership.md`**. Target moves to
-`/dev`(int); the design question is closed, the implementation is not.
-
-The ruling in four lines (§3 is normative; read it, not this summary):
-
-- **Rule 0** — the macro-clause ABI *declares* its ownership (arg consumed,
-  result transferred). It is not inferred; `Mode::Borrowed` is live and
-  per-function, so an inferred seam could differ per clause. FIXME 0922 to
-  `/arch` holds the enforcement question.
-- **Rules 1–3** — the marshaller produces **single-owner** trees (every cell at
-  RC = 1, held by its unique parent) and **transfers** them by crossing the C
-  ABI. `protect_marshalled_cell`, its four call sites, and `marshal::rc_inc` are
-  deleted. Int retains nothing and releases nothing on the argument side; the
-  JIT trap path is therefore correct by construction.
-- **Rule 4** — the result word is an `Owned` int observes via `runtime_to_sexp`
-  (a borrowing read) and then discharges **exactly once** through
-  `cranelisp_intrinsics::consume_sexp` — the observe-then-release order
-  `result-owner.md` §1 already makes binding, applied at a second seam.
-- **The 0638 trap is dissolved, not braved.** Interior aliasing is only a hazard
-  with two owners of one under-counted cell; after Rule 3 the argument tree is
-  not an ownership domain int holds at turn exit, and sharing inside the result
-  is counted sharing that `consume_sexp` stops at. **This is not a revert to
-  pre-0638 top-only protection** (asymmetric, and that asymmetry is what 0638
-  pinned) — it is the uniform single-owner state the S114 negative-control twin
-  proved correct and that neither the old nor the current code has ever had.
-
-**Arena/epoch is REJECTED as the primary** (§5): it cannot reach clause-code
-allocations without a second regime inside the shared alloc funnel, it must still
-answer escape (trace cells and lenient-eval sparks *do* escape the turn), it
-blinds the M1/M2/M3 ledger and every instrument built on it, and it hides counts
-rather than making them true. Retained as a fallback only under §7's entry
-condition, which is stricter than "tranche B was hard".
-
-**Gates before this binds** (§8): D0 pins the clause-side convention out of two
-clause shapes' CLIF; D1 re-clears all five `macro_expansion_interior_alias_double_free`
-pins under plain **and** M1+M2-armed lanes. A D1 failure re-attributes to
-`/dev`(backend) with the trace as the brief — it does not fall back to arena.
-
-Acceptance is unchanged: both `tests/macro_turn_marshal_leak_0889.rs` pins flip
-to `0`, the record is re-derived, and the S118 instrument set re-runs
-byte-identically across the churn.
+- **The marshaller produces single-owner trees and transfers them.**
+  `src/marshal.rs` returns `Owned` roots whose parents own their children.
+  `protect_marshalled_cell` and the marshal-side `rc_inc` no longer exist.
+- **A successful expansion discharges its result exactly once.**
+  `expander.rs::invoke_clause` reads the result through `runtime_to_sexp`,
+  then calls `consume_sexp`.
+- **Evidence.** Both balance cells in `tests/macro_turn_marshal_leak_0889.rs`
+  pass: `macro_turn_marshal_one_argument_expansion_is_balanced` and
+  `macro_turn_marshal_nullary_expansion_is_balanced`.
+- **Contract.** [`design/int/macro-turn-ownership.md`](../../int/macro-turn-ownership.md)
+  is the current protocol.

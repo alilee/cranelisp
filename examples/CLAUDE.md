@@ -50,8 +50,8 @@ for f in $EX; do o=target/ex-$(echo $f | tr / _); \
 ```
 
 - **Cold cells:** add `--no-cache` to the run loop. `--link` rejects
-  `--no-cache` (`user/cli-reference.md`), so for cold link cells remove
-  `examples/.cranelisp-cache/` first.
+  `--no-cache` (`user/cli-reference.md`), so for cold link cells first delete
+  the git-ignored `.cranelisp-cache/` the compiler generates in each entry's directory. <!-- doc-check: literal reason="Generated, git-ignored cache directory" -->
 - **Never set `CRANELISP_LIB`.** Library directories are an additive union
   ([lib directory configuration](../spec/08-modules.md#8114-lib-directory-configuration-tested-testsspec_platformscranelisp_toml_lib_dirs_resolves_module)), so it adds the real stdlib and breaks free-standing runs.
 - **Platform links.** `lib/platforms/` holds committed `stdio.so` and

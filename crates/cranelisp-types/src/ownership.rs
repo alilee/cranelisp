@@ -16,7 +16,10 @@
 //! - **ABI-bearing half** (`param_modes`, `result`): caller and callee MUST
 //!   agree — a mode-vector mismatch is a leak or a double-free. This half
 //!   joins the R3 redefinition summary-diff gate ([`ModeSummary::abi_eq`])
-//!   and the ABI-epoch slot-versioning discipline (spine §5.6).
+//!   and the ABI-epoch slot-versioning discipline (spine §5.6). A summary on a
+//!   [`Realization::ExternShim`](crate::Realization::ExternShim) callable is
+//!   analysis input only: its primary entry realizes the uniform consuming
+//!   convention, so neither half binds that entry (spine §3.1).
 //! - **Advisory half** (`param_flow`, `spark_ops`, `result_unique`):
 //!   may-optimize permissions. Ignoring any or all of them is correct, only
 //!   slower.
@@ -205,7 +208,8 @@ pub enum ParamFlow {
 /// [`Binding::mode_summary`](crate::Binding::mode_summary)), and
 /// (b) [`MonoDefnVariant.mode_summary`](crate::MonoDefnVariant) for the
 /// compile in hand. The same type carries Rust primitives' hand-declared
-/// fact-table payload (spine §3.1(a)).
+/// fact-table payload (spine §3.1(a)), which is analysis input only (see
+/// [`Realization::ExternShim`](crate::Realization::ExternShim)).
 ///
 /// Full `Eq` is load-bearing for the fixpoint's change detection: an
 /// advisory-half change must re-enter callers too

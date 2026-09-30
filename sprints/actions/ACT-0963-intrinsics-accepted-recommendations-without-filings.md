@@ -1,48 +1,46 @@
 ---
 id: ACT-0963
-title: Deliver the two accepted intrinsics audit recommendations that never received a filing
-status: open
+title: Narrow the public IntrinsicEntry::is_runtime field or name its production consumer
+status: deferred
 priority: required
 from: audit
 to: arch
 sprint: 122
 filed_at: 2026-09-21
 refers_to:
-  - crates/cranelisp-intrinsics/src/lib.rs
   - crates/cranelisp-intrinsics/src/catalog.rs
-  - crates/cranelisp-intrinsics/src/catalog/tests.rs
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11, public-API baseline batch).** First deferral of
+  this S122 filing; the S115 recommendation it restores lapsed unfiled, with
+  no recorded deferral. It lands in one `arch` batch with ACT-0955 and
+  ACT-0971, under the pre-implementation API gate.
+- Source on 2026-09-30: `pub is_runtime` is still in `catalog.rs`. The only
+  `.is_runtime` reads are in its module test `is_runtime_classification`
+  (`catalog/tests.rs`); the remaining mentions are prose in
+  `crates/cranelisp-intrinsics/src/lib.rs` and
+  `crates/cranelisp-backend/src/jit.rs`.
 
 ## Request
 
 Provenance: the S115 `cranelisp-intrinsics` whole-context assessment
-([historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-intrinsics-s115.md), §6 R-2 and R-4, §7
-trail). The user accepted both on 2026-07-22 as "FIXME 0849" and "FIXME 0851".
-Neither file was ever added (`git log --all --diff-filter=A -- 'design/arch/fixmes/0849*' 'design/arch/fixmes/0851*'`
-is empty), so both accepted items lapsed without an owner. This action is that
-missing filing; it approves nothing new.
+([historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-intrinsics-s115.md), §6 R-4, §7
+trail), accepted by the user on 2026-07-22 as "FIXME 0851", which was never
+filed. This action is that missing filing; it approves nothing new.
 
-1. **Catalog-count recurrence (R-2).** `crates/cranelisp-intrinsics/src/lib.rs`
-   crate rustdoc still states "16 core + the 12 `cranelisp_trace_*` family +
-   `catch-runtime-error`" and cites `name_set_is_exactly_the_expected_29`; the
-   live test is `name_set_is_exactly_the_expected_38`
-   (`crates/cranelisp-intrinsics/src/catalog/tests.rs`). This finding was closed
-   once (S87 HIGH-1) and recurred because the cited symbol's name encodes the
-   count. The accepted cure is at the mechanism: a count-free test name, and
-   rustdoc that states composition with no integer and no number-bearing symbol,
-   leaving `EXPECTED_NAMES.len()` as the only count.
-2. **`IntrinsicEntry::is_runtime` (R-4, remaining half; S87 F4 before it).**
-   The field is `pub` (`crates/cranelisp-intrinsics/src/catalog.rs`) with no
-   reader outside the crate's own derivation test; the only other hit is a
-   prose mention in `crates/cranelisp-backend/src/jit.rs`. The other half of
-   R-4 (`reset_counts`/`bytes_peak`) is gone from non-test source. Narrowing or
-   removing a `pub` field changes `public-api.txt`, so it passes the
-   inter-crate public-API user gate through `arch` before `dev` edits.
+**`IntrinsicEntry::is_runtime` (R-4, remaining half; S87 F4 before it).** The
+field is `pub` (`crates/cranelisp-intrinsics/src/catalog.rs`) with no reader
+outside the crate's own derivation test. The other half of R-4
+(`reset_counts`/`bytes_peak`) is gone from non-test source. Narrowing or
+removing a `pub` field changes `public-api.txt`, so it passes the inter-crate
+public-API user gate through `arch` before `dev` edits.
 
 ## Completion evidence
 
-- No integer catalog count and no count-bearing symbol name in crate rustdoc
-  or the catalog test name; the name-set test still pins the exact set.
 - `is_runtime` is either non-public (baseline regenerated in the same
   change-set, user-confirmed diff) or has a named production consumer; if the
   user instead declines, the decline and its reason are recorded here before

@@ -48,6 +48,13 @@ const ALLOW_ORIGINS: &[(&str, &str)] = &[
     // lifecycle policy gate — the shutdown-settle burn-down runs REPL-only;
     // allocate/settle-or-not, not program-meaning.
     ("src/session_v4/lifecycle.rs", "run_mode.is_repl() &&"),
+    // missing entry source (ACT-1004, `design/int/int.md` §6.1.1): the REPL
+    // starts an empty module and batch modes refuse. The CLI §0.5.5 rule 2
+    // entry-source policy is an invocation policy, not program meaning.
+    (
+        "src/session_v4/lifecycle.rs",
+        "None if self.shared.run_mode.is_repl()",
+    ),
 ];
 
 /// Cheap flag-laundering supplement (0517): a mode bit renamed into a bool

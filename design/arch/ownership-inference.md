@@ -355,7 +355,14 @@ value use of an inline primitive is fenced end to end by `tests/vec_query_value_
 
 - **Constructors:** field-store consumes; always `Owned` per param (the ADT owns its fields).
 - **Extern primitives / intrinsics — the ABI pin stands; the analysis facts do NOT ride it
-  (split ruling, user-directed 2026-07-02).** The Rust bodies dec their own heap args (§3.3
+  (split ruling, user-directed 2026-07-02).** The pin admits no exception (user-approved
+  2026-09-30, ACT-0974): every `Realization::ExternShim` primary entry takes ownership of
+  every heap argument — it releases it or moves that same reference into its result — and
+  transfers any heap result owned. A declared `Borrowed` mode or `IntoResult` flow is an
+  analysis fact that a statically-resolved call site adapts to; no primary entry realizes it,
+  and value wrappers do not adapt to it. A borrowing convention exists only as the distinct
+  (b) sibling entry, chosen explicitly at statically-resolved sites and never by a value
+  wrapper. The Rust bodies dec their own heap args (§3.3
   extern audit, `ring2-rc.md`) and the consuming convention is unchanged — but two separable
   things were previously conflated here, with the deferral miscalibrated:
   - **(a) Hand-declared per-primitive analysis facts — REQUIRED in increment I.** Per param:

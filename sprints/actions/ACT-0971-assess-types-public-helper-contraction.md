@@ -1,7 +1,7 @@
 ---
 id: ACT-0971
 title: Assess types public helper contraction before proposing an API removal
-status: open
+status: deferred
 priority: advisory
 from: sprint
 to: arch
@@ -12,6 +12,19 @@ refers_to:
   - design/arch/interfaces.md
   - design/arch/concrete-boundary-type.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11, public-API baseline batch).** First deferral of
+  this S122 filing. The assessment and any contraction proposal join the one
+  `arch` batch with ACT-0955 and ACT-0963 item 2. A removal still needs the
+  user's pre-implementation approval.
+- Source on 2026-09-30: no `settle_template` or `settle_concrete` reference
+  exists outside the types crate. The direct `MonoExpr::lenient_from_expr`
+  calls found in `src/` sit after each file's `#[cfg(test)]` boundary. This is
+  a text census, not the production-reachability assessment requested below.
 
 ## Candidates, not approved API changes
 

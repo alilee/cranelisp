@@ -1824,18 +1824,23 @@ fn exports_neg_nonexistent_module_not_found() {
 }
 
 // spec: repl/spec.md §3.5 — `/exports <mod>` lists the module's public
-// symbols. Define `bar` in `mymod`, switch back to `user`, then
-// `/exports mymod` MUST surface `bar`.
+// symbols. Define `bar` in the existing module `mymod`, switch back to `user`,
+// then `/exports mymod` MUST surface `bar`.
 // (carry: legacy/e2e.rs::e2e_s3_5_exports_lists_symbols)
 #[test]
 fn exports_lists_public_symbols_after_defn() {
-    let out = repl(
-        "/mod mymod
+    let out = Cranelisp::new()
+        .repl()
+        .file("mymod.cl", "(defn seed [] 0)\n")
+        .stdin(
+            "(mymod/seed)
+/mod mymod
 (defn bar [x] x)
 /mod user
 /exports mymod
 ",
-    );
+        )
+        .output();
     assert!(
         out.stdout.contains("bar"),
         "/exports mymod MUST list the public symbol 'bar'; got:\n{}",

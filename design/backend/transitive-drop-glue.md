@@ -1,7 +1,8 @@
 # Transitive drop glue and owned-value displacement
 
 > **Owner**: `design`, narrow-deployed to `cranelisp-backend`.
-> **Status**: current design, verified against source 2026-09-25. The S118
+> **Status**: current design, verified against source 2026-09-25 (§5
+> re-verified 2026-09-30). The S118
 > consumer migration it once planned has landed.
 > **Architecture inputs**: `design/arch/safety-invariants.md` R15;
 > `design/arch/bounded-contexts.md` §3 and §4b, invariant 16.
@@ -238,9 +239,20 @@ Rules that keep the plan sound:
   bindings. It is never registered for scope cleanup. Registering it as well
   would release the same value twice; making the owner depend on pattern kind
   would restore the per-spelling rule this plan removes.
-- **The COW exception travels per arm and keeps its polarity.** When the COW
-  producer retained the returned pointer, this arm's release is its balancing
-  decrement and fires even on a forwarding arm.
+- **A COW scrutinee has no rule of its own.** Its result owns one reference on
+  every branch and path
+  ([ownership codegen §13.7](ownership-codegen.md#137-cow-mutate-and-grow-branches--the-settled-contract)),
+  so it plans like any owned temporary.
+  - **What it replaces.** The exception forced a release on a forwarding arm
+    whenever the producer retained. On the copy paths that release freed the
+    value the arm forwarded (ACT-1027; D2-C and D2-R in
+    [QA's V1 record](../../tests/plan/s122-evidence-delta.md#act-1024--v1-record-and-the-w-m-ruling-2026-09-30)).
+  - **Status (2026-09-30).** Implemented in the working tree with ACT-1024,
+    uncommitted and not accepted: the arm plan reads only ownership and arm
+    shape. `dev`'s U-R3a/U-R3b cells went RED first and are GREEN, and the
+    ACT-1027 e2e faces are GREEN at `test`'s V2. K4 is complete and `qa` judged Phase 5's evidence
+    adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
+    User acceptance and phase approval are pending.
 - **Category before ownership.** A release is owed only when the scrutinee is a
   heap category as well as owned.
 - **No spelling is ownership authority.** An inline versus let-bound scrutinee
@@ -261,11 +273,18 @@ Both tail-jump flushes consult one pure predicate per old slot,
 
 - **The control-flow row must stay `Replace`.** Its bindings differ per
   branch, so a single static skip would keep the dead branch's binding alive.
-  The protect-then-flush strategy is the use-after-free cure
-  ([ownership codegen](ownership-codegen.md) §13.3).
+  The protect-then-flush strategy is the use-after-free cure, and it applies to
+  both frames. [Ownership codegen §13.3](ownership-codegen.md#133-wrapper-and-cow-contracts)
+  owns the branch increment, which covers both frames (ACT-1021).
 - **The in-place COW row is analysis-on only and positional-blind.** With
   ownership analysis off, the COW always copies and the release is always owed.
   The predicate takes the toggle as an input rather than reading it twice.
+- **"In-place" means the COW consumes the slot's reference.** The site must
+  lower through the in-place core, with its source at its last use, and its
+  source must be `Owned`, so the copy branch releases what the flush skips. A
+  COW whose source is used later in the argument list, directly or through an
+  uncounted alias, only copies, which is row 5. [Ownership codegen §13.3](ownership-codegen.md#133-wrapper-and-cow-contracts)
+  owns this fact and its two readers.
 - **The borrowed-shadow row (the fourth) means a shadowing borrow**, not merely
   a borrowed slot. A borrowed parameter carried forward as its own tail argument
   owes nothing.

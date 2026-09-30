@@ -1,7 +1,7 @@
 ---
 id: ACT-0997
 title: Route the rejection of renamed import and export entries
-status: open
+status: deferred
 priority: normal
 from: qa
 to: qa
@@ -13,6 +13,12 @@ refers_to:
   - crates/cranelisp-types/src/module.rs
   - src/save.rs
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K5, N1).** First deferral. The correction needs the `ImportNames` inter-crate API user gate.
 
 ## Observed defect
 

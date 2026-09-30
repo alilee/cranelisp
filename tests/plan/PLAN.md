@@ -289,28 +289,27 @@ active allocation cites them; they are not fresh source censuses.
 - Other open compiler findings retain their own records in the
   [sprint inventory](../../sprints/s122-candidate-inventory.md) and active
   allocation. This rewrite closes none of them.
-- [Annotation in macro-argument position, 0708](../../design/arch/fixmes/0708-annotation-not-folded-in-macro-argument-position.md):
-  the user's Reading A-structural ruling is scribed. The acceptance evidence is
+- Annotation in macro-argument position (0708, resolved in S122): the user's
+  Reading A-structural ruling is scribed. The acceptance evidence is
   `annotation_fold_macro_arg_0708::annotation_folds_in_macro_argument_position`
   and its unannotated control, both GREEN in the S122 CD-1 final suite. The
   witness asserts the folded `:primitives/Int 5` result, which a malformed-sexp
   failure cannot produce, so it supersedes the former polarity-safe
   `returned malformed sexp` pin; no pin is allocated. `test` owes only the
   witness's notation upkeep: `fixed=` and past-tense framing on its open
-  `// defect:` line and header. The filing's int mirror tail and spaced
-  `: Int` spelling stay with their owners.
-- The last allocator-balance threshold cell,
-  `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_residue_at_most_1400`,
-  still asserts `retained <= 1_400`, against the
-  [allocator-balance rule](../CLAUDE.md#allocator-balance-is-measured-marginally-never-absolutely).
-  S119 allocated its retirement to the change-set fixing 0917. That fix has
-  landed and the cell passes, but the bound was never re-derived. The
-  allocation stands for `test`: assert exact warm balance (`retained == 0`),
-  using `warm_cache_hit_control_carries_no_ambient_residual` in the same binary
-  as the executed ambient-free premise. A nonzero residual is new intake to
-  `qa`, never a new threshold. S122 completed the notation cleanup separately;
-  the executable assertion remains unchanged. Provenance: S119 §5.3,
-  `git show a07823d8:tests/plan/s119-test-plan.md`.
+  `// defect:` line and header. The int annotation-mirror tail is in
+  [`int.md` §16.0](../../design/int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21);
+  the spaced `: Int` spelling stays with its owner.
+- The exemplar warm-solve cell asserts exact warm balance:
+  `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_retains_nothing`,
+  with `warm_cache_hit_control_carries_no_ambient_residual` in the same binary
+  as the executed ambient-free premise. No allocator-balance threshold cell
+  remains.
+  - The cell is RED, with a residual of 51 against a premise of 0 (2026-09-30).
+    It is carried as intake under
+    [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md).
+  - A nonzero residual is intake to `qa`, never a threshold.
+  - Provenance: S119 §5.3, `git show a07823d8:tests/plan/s119-test-plan.md`.
 - **L-B1 corpus extension: QA disposition pending.** The retired S102
   exclusions promised capture after six shapes were fixed, but the corpus was
   not extended. Their existing regression guards pass in the S122 cache-work
@@ -416,7 +415,7 @@ active allocation cites them; they are not fresh source censuses.
     retention rows are allocated, not leads:
     [S122 evidence](s122-evidence-delta.md#startup-recovery-and-failed-source-retention--evidence-delta-2026-09-22);
   - the S117 module matrices allocated to `dev` and never verified
-    (`git show 7b1220c7:tests/plan/s117-test-plan.md` §5). A bounded name
+    ([S117 plan at `7b1220c7`](https://github.com/alilee/cranelisp/blob/7b1220c7/tests/plan/s117-test-plan.md) §5). A bounded name
     search on 2026-09-22 located the transaction-state cell
     (`src/worker/tests.rs::ordinary_replacement_compile_failure_restores_prior_instance_and_session_state`,
     now owned by the S122 Q2/D1 allocation) and the `/info` view cells
@@ -515,11 +514,11 @@ reuse. Retirement needs the citing owners to move their citations first.
   remainder named in each header: [S102](s102-test-plan.md),
   [S103](s103-test-plan.md), [S112](s112-0628-ic-wave.md),
   [S115](s115-test-plan.md), [S118](s118-test-plan.md),
-  [S119](s119-test-plan.md) and [S121](s121-test-plan.md). [S117](s117-test-plan.md) holds only its §3.3
-  failed-turn rows for ACT-0958 and retires with that action; its §3 e2e rows
-  are in the suite under their planned names, its §6 S115 band reconciliation
-  has no surviving `[Uncovered S115 …]` subject, and its §5 module-matrix
-  allocation is dispositioned in the unclassified leads above.
+  [S119](s119-test-plan.md) and [S121](s121-test-plan.md). The S117 record
+  retired with ACT-0958 on 2026-09-30. Its §3.3 failed-turn rows are carried by
+  the S122 Q2/D1 allocation. Its §5 module-matrix allocation is dispositioned in
+  the unclassified leads above. The text is at the
+  [last revision](https://github.com/alilee/cranelisp/blob/7b1220c7/tests/plan/s117-test-plan.md).
 - Kept whole, because citations reach most sections: [S116](s116-test-plan.md).
 - The S115 instrumentation matrix is retired to Git
   ([last revision](https://github.com/alilee/cranelisp/blob/a07823d8/tests/plan/s115-instrumentation-matrix.md)). Its row
@@ -537,7 +536,8 @@ reuse. Retirement needs the citing owners to move their citations first.
   [expansion qualification](../../design/int/expansion-qualification-scope.md),
   [the export-closure gate](../../design/int/int.md#67-public-candidate-exposure--the-export-closure-gate),
   [enforcement matrices](../../design/frontend/enforcement-matrices.md)), or
-  an open filing carrying its own subject (0694, 0708, 0745, 0811, 0857).
+  a filing carrying its own subject (0694, 0811 and 0857 open; 0708 and 0745
+  resolved in S122).
   Their standing rules are in §Standing coverage audit and §Traceability;
   their unlanded observation is the §15.2 persistence rows in §Active
   allocation. Their attributions, wave rulings and counts

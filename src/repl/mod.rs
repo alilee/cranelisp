@@ -551,7 +551,12 @@ impl CompilerSession {
                 CommandResult::Final(output)
             }
             ReplCommand::Mod(name) => match self.handle_mod(name) {
-                Some(failure) => CommandResult::Final(crate::style::repl_metadata_line(&failure)),
+                Some(commands::ModReport::Refused(refusal)) => {
+                    CommandResult::Final(crate::style::error_line(&refusal))
+                }
+                Some(commands::ModReport::RecompileFailed(failure)) => {
+                    CommandResult::Final(crate::style::repl_metadata_line(&failure))
+                }
                 None => CommandResult::Nothing,
             },
             ReplCommand::Source(name) => CommandResult::Final(self.handle_source(name)),
@@ -1118,14 +1123,7 @@ pub(crate) mod test_support {
             })
             .collect();
         table
-            .install_macro(
-                Symbol::from(name),
-                None,
-                0,
-                macro_sexp,
-                drafts,
-                visibility,
-            )
+            .install_macro(Symbol::from(name), None, 0, macro_sexp, drafts, visibility)
             .expect("macro fixture installs through the family funnel");
         table
             .get(name)

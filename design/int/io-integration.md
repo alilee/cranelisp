@@ -18,7 +18,8 @@ contract is `design/arch/platform-interface.md`.
 - **`main`.** Before running, `exe::validate_main` requires `main` to be
   `(Fn [] (IO _))` (`spec/10-io.md` §10.6.1). It also refuses an unresolved
   return-type-polymorphic dispatch in `main`'s body. `--run` and `--link`
-  share this gate.
+  share this gate. A missing entry source file must not reach it: batch entry
+  registration refuses that first ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
 - **Exit code.** An `Int` inner result is the exit code, and any other inner
   result exits 0. The rule has one predicate
   (`result_owner::result_is_exit_code`), which the linked stub bakes in as

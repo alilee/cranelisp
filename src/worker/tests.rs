@@ -472,7 +472,7 @@ fn prepare_uncheckable_cluster(
         OwedFacts {
             lookup_dependencies,
         },
-        None,
+        &crate::scheduler::SourceProvenance::Increment,
         &session.shared,
     )
     .unwrap()
@@ -3518,7 +3518,7 @@ fn prepared_failure_fixture(
         staging,
         &[transaction_top_def("f")],
         &shared,
-        &[],
+        &no_cycle_check(),
     )
     .expect("transaction fixture prepares");
     (shared, module, prepared)
@@ -3600,7 +3600,7 @@ fn prepared_multi_member_codegen_failure_is_all_or_nothing() {
         staging,
         &[transaction_top_def("good"), transaction_top_def("bad")],
         &shared,
-        &[],
+        &no_cycle_check(),
     )
     .expect("multi-member turn prepares");
 
@@ -3653,7 +3653,7 @@ fn prepared_publish_installs_entry_drop_glue_and_planned_retention_only() {
         staging,
         &[transaction_top_def("f")],
         &shared,
-        &[],
+        &no_cycle_check(),
     )
     .expect("publish fixture prepares");
     let mut processed = crate::cluster::ProcessedCluster::empty();
@@ -4446,4 +4446,212 @@ fn startup_recovery_placeholder_retires_nothing() {
     assert_eq!(user_slot(&session, "h"), h_slot, "`h` keeps its slot");
     assert_eq!(user_retired_slots(&session), retired, "no tombstone");
     session.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Module cycles at publication (design/int/int.md §6.11)
+// ---------------------------------------------------------------------------
+
+/// The publication inputs of a generation that owes no lookup dependency and
+/// belongs to no reload pass.
+fn no_cycle_check() -> PublicationCheck<'static> {
+    static NONE: std::sync::LazyLock<std::collections::BTreeSet<ModuleFullPath>> =
+        std::sync::LazyLock::new(std::collections::BTreeSet::new);
+    PublicationCheck {
+        lookup_dependencies: &NONE,
+        later_members: None,
+        working: &[],
+    }
+}
+
+/// Live tables in which each `(module, dependencies)` records a lookup
+/// dependency on each of its dependencies, as a qualified reference does.
+fn live_graph(
+    edges: &[(&str, &[&str])],
+) -> dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+    let tables = dashmap::DashMap::new();
+    for (module, dependencies) in edges {
+        let mut table =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from(*module));
+        for dependency in *dependencies {
+            table.record_lookup_dependency(ModuleFullPath::from(*dependency));
+        }
+        tables.insert(ModuleFullPath::from(*module), table);
+    }
+    tables
+}
+
+/// The cycle a cluster of `module` owing lookup dependencies on `owed` would
+/// close over `tables`, with `later` excluded as unsettled.
+fn cycle_of(
+    tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &str,
+    owed: &[&str],
+    later: Option<&[&str]>,
+) -> Option<String> {
+    let module = ModuleFullPath::from(module);
+    let staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+    let lookup_dependencies = owed.iter().map(|m| ModuleFullPath::from(*m)).collect();
+    let later: Option<std::collections::BTreeSet<ModuleFullPath>> =
+        later.map(|later| later.iter().map(|m| ModuleFullPath::from(*m)).collect());
+    publication_cycle(
+        tables,
+        &cranelisp_typecheck::PreludeFallback::default(),
+        PublicationEdges {
+            module: &module,
+            staging: &staging,
+            lookup_dependencies: &lookup_dependencies,
+        },
+        later.as_ref(),
+    )
+    .map(|cycle| cycle.render())
+}
+
+// spec: design/int/int.md §6.11 — a new edge from `a` to `b`, whose live table
+// reaches `a` through `c`, closes a cycle named along its path; the same edge
+// is admitted when `b` does not reach `a`.
+#[test]
+fn publication_cycle_names_the_path_back_and_admits_an_acyclic_edge() {
+    let cyclic = live_graph(&[("a", &[]), ("b", &["c"]), ("c", &["a"])]);
+    assert_eq!(
+        cycle_of(&cyclic, "a", &["b"], None).as_deref(),
+        Some("a -> b -> c -> a")
+    );
+    let acyclic = live_graph(&[("a", &[]), ("b", &["c"]), ("c", &[])]);
+    assert_eq!(cycle_of(&acyclic, "a", &["b"], None), None);
+}
+
+// spec: design/int/int.md §6.11 — `a`'s own live edges are new edges too: an
+// increment that adds nothing is refused when a live edge of `a` now reaches
+// back to it.
+#[test]
+fn publication_cycle_reads_the_module_s_live_edges() {
+    let tables = live_graph(&[("a", &["b"]), ("b", &["a"])]);
+    assert_eq!(
+        cycle_of(&tables, "a", &[], None).as_deref(),
+        Some("a -> b -> a")
+    );
+}
+
+// spec: design/int/int.md §6.11 (Unsettled members) — a rebuild whose new edge
+// reaches `x`, which its pass rebuilds later and whose pre-plan table reaches
+// `m`, is admitted; with `x` not excluded it is refused.
+#[test]
+fn publication_cycle_skips_members_rebuilt_later_in_the_pass() {
+    let tables = live_graph(&[("m", &[]), ("x", &["m"])]);
+    assert_eq!(cycle_of(&tables, "m", &["x"], Some(&["x"])), None);
+    assert_eq!(
+        cycle_of(&tables, "m", &["x"], Some(&[])).as_deref(),
+        Some("m -> x -> m")
+    );
+}
+
+/// A table of `module` declaring `imports` (a target with its names) and
+/// re-exports of `exports`.
+fn declaring(
+    module: &str,
+    imports: &[(&str, ImportNames)],
+    exports: &[&str],
+) -> crate::code::SessionSymbolTable {
+    let mut table = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from(module));
+    table.imports = imports
+        .iter()
+        .map(|(target, names)| ImportSpec {
+            module_path: ModuleFullPath::from(*target),
+            alias: None,
+            names: names.clone(),
+            span: Span::SYNTHETIC,
+        })
+        .collect();
+    table.exports = exports
+        .iter()
+        .map(|target| cranelisp_types::ExportSpec {
+            module_path: ModuleFullPath::from(*target),
+            names: ImportNames::Glob,
+            span: Span::SYNTHETIC,
+        })
+        .collect();
+    table
+}
+
+/// The cycle a generation `staging` of its module would close over `tables`,
+/// with the prelude fallback bit on for each of `with_bit`.
+fn prelude_cycle_of(
+    tables: &[crate::code::SessionSymbolTable],
+    with_bit: &[&str],
+    staging: &crate::code::SessionSymbolTable,
+) -> Option<String> {
+    let live = dashmap::DashMap::new();
+    for table in tables {
+        live.insert(table.path.clone(), table.clone());
+    }
+    let fallback = cranelisp_typecheck::PreludeFallback::default();
+    for module in with_bit {
+        fallback.insert(ModuleFullPath::from(*module), true);
+    }
+    publication_cycle(
+        &live,
+        &fallback,
+        PublicationEdges {
+            module: &staging.path,
+            staging,
+            lookup_dependencies: &std::collections::BTreeSet::new(),
+        },
+        None,
+    )
+    .map(|cycle| cycle.render())
+}
+
+const NULL_IMPORT_OF_PRELUDE: (&str, ImportNames) = ("prelude", ImportNames::None);
+
+// spec: spec/08-modules.md §8.8.1, §8.10.2; design/int/int.md §6.12 — a
+// prelude generation re-exporting `x`, whose fallback bit is on, closes the
+// cycle through `x`'s implicit prelude dependency; with `x` null-importing
+// the prelude it closes none.
+#[test]
+fn publication_cycle_follows_the_prelude_edge_of_a_module_with_the_bit() {
+    let prelude = declaring("prelude", &[], &["x"]);
+    let x_with_bit = declaring("x", &[], &[]);
+    assert_eq!(
+        prelude_cycle_of(std::slice::from_ref(&x_with_bit), &["x"], &prelude).as_deref(),
+        Some("prelude -> x -> prelude")
+    );
+    let x_opted_out = declaring("x", &[NULL_IMPORT_OF_PRELUDE], &[]);
+    assert_eq!(prelude_cycle_of(&[x_opted_out], &[], &prelude), None);
+}
+
+// spec: spec/08-modules.md §8.8.1, §8.10.2; design/int/int.md §6.11, §6.12 —
+// the helper end: a generation of `x` with its bit on, which the live prelude
+// re-exports, closes the cycle through `x`'s own implicit prelude dependency;
+// the same generation with the bit off closes none.
+#[test]
+fn publication_cycle_follows_the_staged_module_s_own_prelude_edge() {
+    let prelude = declaring("prelude", &[], &["x"]);
+    let x = declaring("x", &[], &[]);
+    assert_eq!(
+        prelude_cycle_of(std::slice::from_ref(&prelude), &["x"], &x).as_deref(),
+        Some("x -> prelude -> x")
+    );
+    assert_eq!(prelude_cycle_of(&[prelude], &[], &x), None);
+}
+
+// spec: spec/08-modules.md §8.3.7; design/int/int.md §6.12 (probe N2, face C) —
+// a null import of the prelude is no edge: an increment in the null-importing
+// `x` that the prelude imports is accepted, and so is a prelude generation
+// that imports a null-importing module and publishes a definition.
+#[test]
+fn publication_cycle_reads_no_edge_through_a_null_import() {
+    let prelude = declaring("prelude", &[("x", ImportNames::Glob)], &[]);
+    let x_opted_out = declaring("x", &[NULL_IMPORT_OF_PRELUDE], &[]);
+    assert_eq!(
+        prelude_cycle_of(std::slice::from_ref(&prelude), &[], &x_opted_out),
+        None
+    );
+
+    let mut prelude_with_definition = prelude.clone();
+    install_transaction_entry(&mut prelude_with_definition, "two", Type::Int, true);
+    assert_eq!(
+        prelude_cycle_of(&[x_opted_out], &[], &prelude_with_definition),
+        None
+    );
 }

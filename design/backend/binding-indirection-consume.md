@@ -16,9 +16,11 @@ acceptance cells in `tests/binding_indirection_consume.rs`. Subordinate to `desi
 **Boundary (F4 — binding):** this contract handles the analysis-INDEPENDENT
 binding-indirection family (fails under `CRANELISP_NO_OWNERSHIP=1`). It does **NOT**
 absorb the B-2 analysis-ON face — the match-var-pattern escape-recording bug is
-TYPECHECK work (Track A carrier wave), and the backend gate is correct and cannot
-distinguish a wrong-`Some(false)` from the recur-loop `Some(false)` (R14). §4 states
-which B-2 face is whose.
+TYPECHECK work (Track A carrier wave). Since ACT-1024 the COW producer does not
+read the escape fact at all, so a wrong `Some(false)` cannot reach it; see
+the COW contract in `ownership-codegen.md` §13.7.
+
+Which B-2 face is whose is stated in §4 below.
 
 ---
 
@@ -36,7 +38,7 @@ var-pattern, or a control-flow result into another consumer) falls in the gap.
 - **Call args** — `apply.rs::moded_arg_rc` (the owned-binding × mode matrix; ctor
   fields ride it). DIRECT; patched.
 - **Fn-return** — `fn_compiler.rs`: `skip_var` / `protect_return_value` /
-  `return_cow_source` — **three ad-hoc patches for ONE flow** (the contract's tail:
+  the return-COW claim (`return_cow_source_in_scope`) — **three ad-hoc patches for ONE flow** (the contract's tail:
   they collapse into it, §5 item 4).
 - **Vec-literal element store** — `vec_codegen.rs::compile_vec_lit` (`element_consuming_inc`).
   **LANDED S113 W5b** (the "missing owned-binding inc at a move-in store" direction) —
@@ -61,7 +63,7 @@ position keys its accounting off this ONE function instead of its local node syn
 
 ---
 
-## 2. The contract — consume-position × operand-provenance (why it is ONE rule, and why it is NOT the COW escape gate)
+## 2. The contract — consume-position × operand-provenance (why it is ONE rule, and why it is NOT the COW producer's retention)
 
 **The rule:** at every consume/cleanup position, the RC accounting is decided by
 whether the operand delivers (or forwards) an independently-owned count, computed by
@@ -79,14 +81,14 @@ makes ONE rule correct in BOTH toggles by construction):**
 | `match scrut [pat → result]…` | if the selected arm is a var-pattern `[r r]` (or a body forwarding `r`), the match forwards the scrutinee's provenance; else the arm result's own provenance |
 
 **Why this is analysis-independent — the load-bearing contrast with §13.7.** The COW
-producer's escape gate (R14 half 2, `ownership-codegen.md` §13.7) reads
-`node_escapes` — an ANALYSIS fact, absent under toggle-off, and `/arch` REJECTED
-re-deriving it per-consumer (the P7 mirror). This contract's discriminator is
+producer's retention (R14 half 2, `ownership-codegen.md` §13.7) follows its own
+analysis-on source classification, which is absent under toggle-off. `/arch`
+REJECTED re-deriving it per consumer (the P7 mirror). This contract's discriminator is
 **Var-rootedness / alias-forwarding**, a property of the AST/`MonoExpr` structure
 that is IDENTICAL in both toggle states. So one rule satisfies `CRANELISP_NO_OWNERSHIP`
 on and off by construction — which is exactly why 0668 is a *separate* family the
 R14 ruling's producer-side REJECT does not reach. The two never overlap: the COW
-producer decides whether ITS OWN result carries a count (escape); this contract
+producer decides whether ITS OWN result carries a count (source classification); this contract
 decides whether a value FORWARDED THROUGH a binding carries one (structure).
 
 **The whole-match approximation (recorded S115, FIXME 0697).** The §2 table's
@@ -211,9 +213,8 @@ rather than a new defect.
   today (0668 cell C, on=99✓). Its wrong-value residual is the **escape FACT** (typecheck
   records `escapes=Some(false)` for a match-var-pattern transfer that DOES escape). That
   is a TYPECHECK fix in the Track-A carrier wave (F4); its cache-coherence half rides the
-  Track-A schema window (F7). **No backend rule in this contract touches the escape fact**,
-  and no "distinguish wrong-`Some(false)`" backend workaround is added — R14 says the gate
-  is correct.
+  Track-A schema window (F7). **No backend rule in this contract touches the escape fact.**
+  Since ACT-1024 the COW producer no longer reads it either (§13.7).
 - The **B-2 toggle-OFF** face (C-off above) is a DIFFERENT mechanism — R3 forwarding
   suppression, analysis-independent. It is ours. The two faces of "B-2" split by the
   toggle; the split is the whole point of the 0669 disposition.
@@ -247,7 +248,7 @@ imbalance's seam against `CRANELISP_RC_TRACE`/`RC_STATS`/`CODEGEN_DUMP` (+
 | **W-B5 (retired)** | the planned collapse of the three fn-return patches onto one provenance contract. **Retired:** the three finders answer different questions and stay separate ([s122-closure.md](s122-closure.md) §5.1; [s115-carrier-and-rc-sweep.md](s115-carrier-and-rc-sweep.md) §6) | — | no source change |
 
 **Must-hold fences through every item** (`tests/binding_indirection_consume.rs`): A/E ×2, cell-H
-bare-match, `ownership_reuse::l_c3_*` ×2 (escape-gated reuse — untouched by this
+bare-match, `ownership_reuse::l_c3_*` ×2 (in-place reuse — untouched by this
 contract), the CLIF golden lane, `vec_lifecycle`, the B-2 analysis-ON twins
 (`match_scrutinee_cow_var_pattern_*` stay GREEN). W-B1..B4 order matters (the classifier
 precedes its consumers); W-B4 and the carrier consumer-flip both touch `match_codegen.rs`

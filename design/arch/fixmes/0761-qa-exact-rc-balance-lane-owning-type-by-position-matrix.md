@@ -5,8 +5,14 @@ filed_by: /dev (cranelisp-backend, S115 W3b)
 filed_at: 2026-07-21
 sprint_filed: 115
 refers_to: tests/helpers/e2e.rs::SafetyMatrix (the `check_rc_balance` face); design/backend/s115-carrier-and-rc-sweep.md §2.3
-status: open
+status: deferred
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11) into ACT-0962's coverage increment.** At least the second deferral; the user approved the repeat carry with the package.
 
 # The standing RC instrument is DIFFERENTIAL, and every leak W3b found is toggle-independent — it passed on both sides
 

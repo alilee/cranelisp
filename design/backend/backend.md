@@ -249,7 +249,7 @@ runtime lowers to `runtime/panic`.
 
 | Subject | Document | Standing |
 |---|---|---|
-| Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture and macro alias correction. Solution-golden selection and integrated acceptance remain open. |
+| Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture, macro alias and IO-combinator corrections, and the pointers to the ACT-0974, ACT-1021 and ACT-1024 corrections. Solution-golden evidence and the Q5 paired measurement are complete; K4 is complete and `qa` judged it adequate; user acceptance and phase approval remain open. |
 | Compilation entry shape | `compile-to-module.md` | The one entry's contract and phase order, constructor codegen, GOT emission, finalisation and publication, and its error contract. |
 | JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
 | Per-module GOT | `per-module-got.md` | The two-GOT model as emitted, and why it is shaped that way. |
@@ -258,7 +258,7 @@ runtime lowers to `runtime/panic`.
 | RC discipline | `ring2-rc.md` | The conservative lowering: the uniform consuming convention, extern and platform consumption, the IO extern's balance, scope cleanup and the binders that never transfer by last use, the opt-in spark-capture borrow and its open default-on condition. |
 | Ownership codegen | `ownership-codegen.md` | The mechanisms that consume the ownership analysis — borrow elision, stack placement, confined non-atomic RC, uniqueness and reuse, value flattening, redefinition machinery — with their built/open state. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; per-arm match release; the TCO slot predicate; no depth cutoff, no shallow fallback. |
-| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the open structural close (lifecycle disposition, refusal frame, census, wrapper discharge). |
+| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, the one entry-convention derivation for every call and wrapper, and the open structural close (lifecycle disposition, refusal frame, census). |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
 | Binding-indirection consume | `binding-indirection-consume.md` | The consume-position × operand-provenance contract. |
 | S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |

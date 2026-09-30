@@ -71,16 +71,21 @@ fn is_comment(line: &str) -> bool {
     t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')
 }
 
-/// Every fenced violation: a non-comment line performing a bare `MonoExpr`
-/// kind test inside a `matches!`.
+/// Is this line a fenced violation: non-comment code performing a bare
+/// `MonoExpr` kind test inside a `matches!`?
+fn is_violation(line: &str) -> bool {
+    !is_comment(line)
+        && line.contains("matches!")
+        && line.contains("MonoExpr::")
+        && line.contains("{ .. }")
+}
+
+/// Every fenced violation in the RC-decision files.
 fn violations() -> Vec<String> {
     let mut out = Vec::new();
     for (path, src) in RC_DECISION_SOURCES {
         for (i, line) in src.lines().enumerate() {
-            if is_comment(line) {
-                continue;
-            }
-            if line.contains("matches!") && line.contains("MonoExpr::") && line.contains("{ .. }") {
+            if is_violation(line) {
                 out.push(format!("{path}:{}: {}", i + 1, line.trim()));
             }
         }
@@ -114,35 +119,28 @@ fn no_rc_decision_reads_a_bare_monoexpr_node_kind() {
     );
 }
 
-// spec: FIXME 0781 — the fence's FALSE-FIRE control (METHOD §2.2: a validator
-// proves itself per variant, with a false-fire fence). The fence must not fire
-// on a comment that quotes the pattern (every fixed site carries one), nor on
-// a field-keeping test (`MonoExpr::Var { name, .. }` — a real identity
-// question, which `cow_source_has_separate_owner` still asks and must keep
-// asking). Without this cell the fence could be "passing" because it matches
+// spec: FIXME 0781 — the fence's detection and FALSE-FIRE controls (METHOD
+// §2.2: a validator proves itself per variant, with a false-fire fence). The
+// line predicate fires on a bare kind test in code, and must not fire on a
+// comment that quotes the pattern (every fixed site carries one) nor on a
+// field-keeping test (`MonoExpr::Var { name, .. }` — a real identity
+// question). Without this cell the fence could be "passing" because it matches
 // nothing at all.
 #[test]
 fn the_fence_ignores_comments_and_field_keeping_tests() {
-    assert!(is_comment(
-        "        // matches!(scrutinee, MonoExpr::Var { .. })"
-    ));
-    assert!(is_comment(
-        "    /// was `matches!(source, MonoExpr::Var { .. })`"
-    ));
-    assert!(is_comment("//! MonoExpr::Var { .. }"));
-    assert!(!is_comment(
+    assert!(is_violation(
         "        if matches!(v, MonoExpr::Var { .. }) {"
     ));
-
-    // The live field-keeping test in `cow_source_has_separate_owner` is real
-    // code and must NOT be a violation — it asks which BINDING this is.
-    let (_, vec_src) = RC_DECISION_SOURCES[0];
-    assert!(
-        vec_src.contains("MonoExpr::Var { name, .. } if return_cow_source == Some(name)"),
-        "the field-keeping identity test this control is calibrated against has \
-         moved; re-verify that the fence still distinguishes it from a bare \
-         kind test before editing this cell"
-    );
+    assert!(!is_violation(
+        "        // matches!(scrutinee, MonoExpr::Var { .. })"
+    ));
+    assert!(!is_violation(
+        "    /// was `matches!(source, MonoExpr::Var { .. })`"
+    ));
+    assert!(!is_violation("//! MonoExpr::Var { .. }"));
+    assert!(!is_violation(
+        "    if matches!(source, MonoExpr::Var { name, .. } if name == root) {"
+    ));
     // Deliberately does NOT re-assert `violations().is_empty()` — that is the
     // cell above's job, and duplicating it would make a real violation redden
     // both cells and blur which signal fired.

@@ -1,7 +1,7 @@
 ---
 id: ACT-0973
 title: Investigate non-entry platform declaration handling against the specification
-status: open
+status: deferred
 priority: normal
 from: qa
 to: qa
@@ -12,6 +12,12 @@ refers_to:
   - src/process_form/platform.rs
   - src/process_form/cache_restore.rs
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K6, C2).** First deferral.
 
 ## Observation and limit
 

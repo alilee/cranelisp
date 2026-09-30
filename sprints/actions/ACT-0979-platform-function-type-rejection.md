@@ -1,7 +1,7 @@
 ---
 id: ACT-0979
 title: Establish platform function-type rejection evidence
-status: open
+status: deferred
 priority: normal
 from: spec
 to: qa
@@ -11,6 +11,12 @@ refers_to:
   - spec/10-io.md
   - design/arch/platform-interface.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K6, C3).** First deferral. A `spec` question precedes the RED: does "contain" extend through a named ADT's fields?
 
 ## Approved requirement
 

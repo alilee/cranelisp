@@ -30,8 +30,13 @@ pub struct SourceContinuation {
 pub(crate) enum SourceProvenance {
     /// A module's re-read saved source, compiled into the fresh table of a
     /// whole-file rebuild. It carries the module's established reference, the
-    /// comparand of the restart boundary for types (§7.3.2).
-    WholeSource(std::sync::Arc<crate::code::SessionSymbolTable>),
+    /// comparand of the restart boundary for types (§7.3.2), and the modules
+    /// its reload pass rebuilds after it, whose live tables still hold their
+    /// pre-plan generation (`design/int/int.md` §6.11).
+    WholeSource {
+        reference: std::sync::Arc<crate::code::SessionSymbolTable>,
+        later_members: std::sync::Arc<BTreeSet<ModuleFullPath>>,
+    },
     /// Anything else. It merges into the live table, so it has no reference.
     Increment,
 }
@@ -47,14 +52,19 @@ impl SourceContinuation {
         }
     }
 
-    /// A module's whole re-read saved source, rebuilt against `reference`.
-    /// Only a reload establishes it.
+    /// A module's whole re-read saved source, rebuilt against `reference`
+    /// before the reload pass rebuilds `later_members`. Only a reload
+    /// establishes it.
     pub(crate) fn whole_source(
         forms: impl Into<std::sync::Arc<[Sexp]>>,
         reference: std::sync::Arc<crate::code::SessionSymbolTable>,
+        later_members: BTreeSet<ModuleFullPath>,
     ) -> Self {
         SourceContinuation {
-            provenance: SourceProvenance::WholeSource(reference),
+            provenance: SourceProvenance::WholeSource {
+                reference,
+                later_members: std::sync::Arc::new(later_members),
+            },
             ..SourceContinuation::source(forms)
         }
     }
@@ -84,6 +94,14 @@ impl SourceContinuation {
     pub(crate) fn macro_lookup_dependencies(&self) -> &BTreeSet<ModuleFullPath> {
         &self.macro_lookup_dependencies
     }
+}
+
+/// A module a failed-module reset forgot, with the modules its last
+/// generation failed with (`design/int/repl-lifecycle.md` §1.2.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetModule {
+    pub module: ModuleFullPath,
+    pub failure_dependencies: BTreeSet<ModuleFullPath>,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +250,13 @@ pub struct ModuleState {
     /// re-establishing with a different structure (`design/int/session-transaction.md`
     /// §2.6). Every registration starts it empty; a failed reload reads it.
     pub(crate) structural_type_refusal: Option<crate::redefine::StructuralTypeChange>,
+
+    /// The modules this generation failed with: the dependency it failed
+    /// through, the next module on a cycle it closed, and a failed
+    /// whole-source attempt's dependencies (`design/int/repl-lifecycle.md`
+    /// §1.2.1). Every registration starts it empty; it is read only after this
+    /// module's own outcome.
+    pub(crate) failure_dependencies: BTreeSet<ModuleFullPath>,
 }
 
 impl ModuleState {
@@ -252,6 +277,7 @@ impl ModuleState {
             generation_started: false,
             blocked_on: None,
             structural_type_refusal: None,
+            failure_dependencies: BTreeSet::new(),
         }
     }
 
@@ -276,6 +302,7 @@ impl ModuleState {
             generation_started: false,
             blocked_on: None,
             structural_type_refusal: None,
+            failure_dependencies: BTreeSet::new(),
         }
     }
 
@@ -303,6 +330,7 @@ impl ModuleState {
             generation_started: false,
             blocked_on: None,
             structural_type_refusal: None,
+            failure_dependencies: BTreeSet::new(),
         }
     }
 
@@ -1034,6 +1062,7 @@ impl CompileScheduler {
                 generation_started: false,
                 blocked_on: None,
                 structural_type_refusal: None,
+                failure_dependencies: BTreeSet::new(),
             };
         }
 
@@ -1225,6 +1254,47 @@ impl CompileScheduler {
         self.priority_work_available.notify_all();
     }
 
+    /// Fail `module`'s attempt with `dependency`'s recorded error when
+    /// `dependency` stands `Failed`, recording it as `module`'s failure
+    /// dependency (`design/int/int.md` §6.11, Pass-0 fail-fast). `Ok` otherwise.
+    pub(crate) fn refuse_failed_dependency(
+        &self,
+        module: &ModuleFullPath,
+        dependency: &ModuleFullPath,
+        ref_span: Span,
+    ) -> Result<(), CranelispError> {
+        Self::refuse_failed_dependency_locked(&mut self.lock(), module, dependency, ref_span)
+    }
+
+    fn refuse_failed_dependency_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+        dependency: &ModuleFullPath,
+        ref_span: Span,
+    ) -> Result<(), CranelispError> {
+        let Some(ms) = state
+            .modules
+            .get(dependency)
+            .filter(|ms| ms.pool == ModulePool::Failed)
+        else {
+            return Ok(());
+        };
+        // `CranelispError` is not `Clone`; reconstruct from the recorded
+        // message + span (the `await_signature_barrier` precedent). The
+        // dependency's own error span is preferred over `ref_span` — it points
+        // AT the real fault inside the failed dependency.
+        let (message, span) = ms
+            .error
+            .as_ref()
+            .map(|e| (e.to_string(), e.span()))
+            .unwrap_or_else(|| (format!("module '{dependency}' failed to load"), ref_span));
+        Self::record_failure_dependency_locked(state, module, dependency);
+        Err(CranelispError::ModuleError {
+            message,
+            location: ErrorLocation::from_span_file(span, None),
+        })
+    }
+
     pub fn block_for_typecheck(
         &self,
         module: &ModuleFullPath,
@@ -1235,30 +1305,12 @@ impl CompileScheduler {
         observability::record_module_event(SchedulerTraceTag::ModuleStateBlocked, module.as_ref());
         let mut state = self.lock();
 
-        // I3 fail-fast (0571.2): if the dependency has ALREADY FAILED, surface
-        // its error now instead of registering a waiter. A `Failed` module never
-        // reaches a terminal typecheck pool, so no future `notify_typecheck_done`
-        // sweep would ever fire — `module` would park in `TypecheckBlocked`
+        // I3 fail-fast (0571.2): a `Failed` module never reaches a terminal
+        // typecheck pool, so no future `notify_typecheck_done` sweep would wake
+        // a waiter registered on it — `module` would park in `TypecheckBlocked`
         // forever (the pool-path analogue of the hang `await_signature_barrier`'s
-        // closure-Failed fast-path closes for the eval waiter). Surface the dep's
-        // recorded error verbatim so the referencing turn sees the real cause.
-        if let Some(ms) = state.modules.get(needed_module)
-            && ms.pool == ModulePool::Failed
-        {
-            // `CranelispError` is not `Clone`; reconstruct from the recorded
-            // message + span (the `await_signature_barrier` precedent). The dep's
-            // own error span is preferred over `ref_span` — it points AT the real
-            // fault inside the failed dependency.
-            let (message, span) = ms
-                .error
-                .as_ref()
-                .map(|e| (e.to_string(), e.span()))
-                .unwrap_or_else(|| (format!("module '{needed_module}' failed to load"), ref_span));
-            return Err(CranelispError::ModuleError {
-                message,
-                location: ErrorLocation::from_span_file(span, None),
-            });
-        }
+        // closure-Failed fast-path closes for the eval waiter).
+        Self::refuse_failed_dependency_locked(&mut state, module, needed_module, ref_span)?;
 
         // S93 Invariant PP — lost-wakeup Blocker fix (mirror
         // `block_on_first_unready_closure_member`'s atomic check-and-act). The
@@ -1323,6 +1375,7 @@ impl CompileScheduler {
                 .collect::<Vec<_>>()
                 .join(" -> ");
             let msg = format!("circular dependency detected: {}", cycle_str);
+            Self::record_failure_dependency_locked(&mut state, module, &cycle[1]);
             // M2 (0571.2): attribute the circular-dependency error to the
             // REFERENCE site (the FQ/import ref that closed the cycle), not the
             // `Span::SYNTHETIC` module head — every diagnostic actionable (AL-3
@@ -1933,6 +1986,44 @@ impl CompileScheduler {
             .and_then(|ms| ms.structural_type_refusal.clone())
     }
 
+    /// Record that `module`'s current generation failed with each of
+    /// `dependencies` (`design/int/repl-lifecycle.md` §1.2.1). No-op for an
+    /// unregistered module.
+    pub(crate) fn record_failure_dependencies(
+        &self,
+        module: &ModuleFullPath,
+        dependencies: impl IntoIterator<Item = ModuleFullPath>,
+    ) {
+        if let Some(ms) = self.lock().modules.get_mut(module) {
+            ms.failure_dependencies.extend(
+                dependencies
+                    .into_iter()
+                    .filter(|dependency| dependency != module),
+            );
+        }
+    }
+
+    fn record_failure_dependency_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+        dependency: &ModuleFullPath,
+    ) {
+        if let Some(ms) = state.modules.get_mut(module)
+            && dependency != module
+        {
+            ms.failure_dependencies.insert(dependency.clone());
+        }
+    }
+
+    /// The modules `module`'s current generation failed with.
+    pub(crate) fn failure_dependencies(&self, module: &ModuleFullPath) -> BTreeSet<ModuleFullPath> {
+        self.lock()
+            .modules
+            .get(module)
+            .map(|ms| ms.failure_dependencies.clone())
+            .unwrap_or_default()
+    }
+
     /// Check whether a module is in the Failed pool.
     pub fn is_failed(&self, module: &ModuleFullPath) -> bool {
         let state = self.lock();
@@ -2172,6 +2263,9 @@ impl CompileScheduler {
     ) -> Result<Option<ModuleFullPath>, CranelispError> {
         let mut state = self.lock();
         if let Some(failed) = Self::failed_closure_member_locked(&state, closure) {
+            if let SchedulerError::ModuleFailed { module: member, .. } = &failed {
+                Self::record_failure_dependency_locked(&mut state, module, member);
+            }
             return Err(failed.into());
         }
         let member = closure
@@ -2200,6 +2294,7 @@ impl CompileScheduler {
                 .collect::<Vec<_>>()
                 .join(" -> ");
             let msg = format!("circular dependency detected: {}", cycle_str);
+            Self::record_failure_dependency_locked(&mut state, module, &cycle[1]);
             Self::notify_module_failed_locked(
                 &mut state,
                 module,
@@ -2400,8 +2495,9 @@ impl CompileScheduler {
     /// scheduler does not) can drop their stale live tables — a failed module's
     /// import bindings write to the LIVE table before its body-check failure, so
     /// a reset that leaves the table behind lets a later FQ ref read the module
-    /// as "loaded" (I1, 0571.2).
-    pub fn reset_all_failed_modules(&self) -> Vec<ModuleFullPath> {
+    /// as "loaded" (I1, 0571.2). Each carries its failure dependencies, which the
+    /// reset would otherwise forget (`design/int/repl-lifecycle.md` §1.2.1).
+    pub fn reset_all_failed_modules(&self) -> Vec<ResetModule> {
         let mut state = self.lock();
         let failed: Vec<ModuleFullPath> = state
             .modules
@@ -2410,14 +2506,23 @@ impl CompileScheduler {
             .map(|(path, _)| path.clone())
             .collect();
         observability::record_bulk_event(SchedulerTraceTag::ResetAllFailed, failed.len());
-        for m in &failed {
+        let mut reset = Vec::with_capacity(failed.len());
+        for m in failed {
             // Inline the reset logic to avoid re-locking.
-            state.modules.remove(m);
-            state.typecheck_first.retain(|x| x != m);
-            state.typecheck_next.retain(|x| x != m);
-            state.typecheck_done.retain(|x| x != m);
+            let failure_dependencies = state
+                .modules
+                .remove(&m)
+                .map(|ms| ms.failure_dependencies)
+                .unwrap_or_default();
+            state.typecheck_first.retain(|x| *x != m);
+            state.typecheck_next.retain(|x| *x != m);
+            state.typecheck_done.retain(|x| *x != m);
+            reset.push(ResetModule {
+                module: m,
+                failure_dependencies,
+            });
         }
-        failed
+        reset
     }
 
     // -----------------------------------------------------------------------
@@ -2736,6 +2841,7 @@ impl CompileScheduler {
                 ),
                 location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
             };
+            Self::record_failure_dependency_locked(state, &waiter_module, failed_module);
             // Recursive cascade.
             Self::notify_module_failed_locked(state, &waiter_module, error);
         }

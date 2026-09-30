@@ -16,7 +16,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::marginal::{Child, MarginalPair};
+use helpers::marginal::{Child, Marginal, MarginalPair};
 
 /// The measured program is deliberately trivial and IDENTICAL on both sides:
 /// the workload under measurement is the prelude's macro invocation, not
@@ -25,15 +25,29 @@ const TRIVIAL_PROGRAM: &str = "(import [primitives [Pure]])\n\
      (defn main [] (Pure 0))\n";
 
 /// A two-module mini-prelude. `macdef.cl` defines the macro, `macuse.cl` is the
-/// only thing that differs between control and subject.
+/// only thing that differs between control and subject. Both open with the null
+/// import: the prelude loads them, so the implicit prelude import would close a
+/// cycle (spec §8.8.1) and both children would fail alike.
 fn mini_prelude(macro_name: &str, macdef: &str, macuse: &str) -> Child {
+    const OPT_OUT: &str = "(import [prelude []])\n";
     Child::new(TRIVIAL_PROGRAM)
         .lib_file(
             "prelude.cl",
             &format!("(export [macdef [{macro_name}]])\n(export [macuse [use-one]])\n"),
         )
-        .lib_file("macdef.cl", macdef)
-        .lib_file("macuse.cl", macuse)
+        .lib_file("macdef.cl", &format!("{OPT_OUT}{macdef}"))
+        .lib_file("macuse.cl", &format!("{OPT_OUT}{macuse}"))
+}
+
+/// A pair whose children fail alike measures 0, so each must run to exit 0.
+fn assert_children_succeeded(m: &Marginal) {
+    assert!(
+        m.control().exit_code() == Some(0) && m.subject().exit_code() == Some(0),
+        "both children must exit 0\n{}\n--- control stderr ---\n{}\n--- subject stderr ---\n{}",
+        m.report(),
+        m.control().stderr,
+        m.subject().stderr
+    );
 }
 
 // S122 Q4 acceptance — one macro expansion with ONE marshalled argument must
@@ -68,6 +82,7 @@ fn macro_turn_marshal_one_argument_expansion_is_balanced() {
     )
     .measure();
 
+    assert_children_succeeded(&m);
     m.assert_balanced(
         "a successful one-argument macro expansion must discharge the marshalled \
          `SexpInt`, its `SCons` argument spine, and the returned alias exactly once",
@@ -106,8 +121,64 @@ fn macro_turn_marshal_nullary_expansion_is_balanced() {
     )
     .measure();
 
+    assert_children_succeeded(&m);
     m.assert_balanced(
         "a successful nullary macro expansion must discharge its constructor-built \
          expansion-result tree exactly once",
+    );
+}
+
+// ACT-0976 (S122 K2) — a macro clause that raises a language runtime error
+// leaves no residue beyond a successful twin's. The runtime error sets the
+// error flag and returns without the clause's compiled cleanup, and the host
+// discards the returned word, so any stranded argument or frame value would
+// read positive here.
+//
+// A REPL pair, since a failed expansion ends a batch compile before its exit
+// report. Both sessions define both macros and marshal the same `42`; the
+// invocation turn alone differs, `(okm 42)` versus `(boom 42)`. The last turn
+// shows each session continued.
+//
+// On 2026-09-30 (source `f0d1006f…`) the control balanced at 2/2 and the
+// subject read 2 allocations, 0 frees: the marshalled argument's two cells
+// stay live, with no seam violation. Attribution is QA's (ACT-0976).
+//
+// spec: spec/09-macros.md §9.9.4 — a runtime error during expansion is a clean
+// error at the call site; spec/12-runtime.md §12.3.1 — every allocation is
+// freed when it becomes unreachable.
+// defect: class=rc-miscount locus=src/expander.rs::invoke_clause found=S122 owner=/dev
+#[test]
+fn macro_runtime_error_expansion_balances_against_successful_twin() {
+    let session = |call: &str| {
+        Child::repl(&format!(
+            "(import [primitives [div-i64]])\n\
+             (defmacro okm [x] (let [_ (div-i64 1 1)] x))\n\
+             (defmacro boom [x] (let [_ (div-i64 1 0)] x))\n\
+             {call}\n\
+             (div-i64 84 2)\n"
+        ))
+        .env("CRANELISP_RC_DEC_CHECK", "1")
+    };
+    let m = MarginalPair::new(
+        "a macro expansion ending in a runtime error",
+        session("(okm 42)"),
+        session("(boom 42)"),
+    )
+    .measure();
+
+    assert_children_succeeded(&m);
+    assert!(
+        m.subject().stdout.to_lowercase().contains("error")
+            && !m.control().stdout.to_lowercase().contains("error")
+            && m.subject().stdout.contains("42"),
+        "only the subject's expansion fails, and its session continues\n{}\n\
+         --- control stdout ---\n{}\n--- subject stdout ---\n{}",
+        m.report(),
+        m.control().stdout,
+        m.subject().stdout
+    );
+    m.assert_balanced(
+        "a macro expansion ending in a runtime error must leave no residue beyond \
+         its successful twin",
     );
 }

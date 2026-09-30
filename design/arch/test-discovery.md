@@ -232,53 +232,26 @@ report.
 
 ### 4.3 The in-language runner over discovered pairs
 
-```clojure
-(import [primitives [discover-tests catch-runtime-error]])
+The runnable examples — an in-language runner (`run-all`, `run-matching`) and a
+direct `catch-runtime-error` use (`safe-div`) — are specified once, in
+[REPL §16.5](../../repl/spec/16-test-discovery.md#165-programmatic-use);
+`stdlib/testing/runner.cl` is the shipped runner. The architecture facts they
+rest on:
 
-;; (catch-runtime-error run) :: (Result (Option String) String)
-;;   (Err msg)        — the test panicked
-;;   (Ok None)        — the test passed
-;;   (Ok (Some why))  — the test reported an assertion failure
-(defn run-one [pair]
-  (match pair
-    [(Pair name run)
-     (match (catch-runtime-error run)
-       [(Err msg)  (str-concat name " PANIC: " msg)
-        (Ok r)     (match r
-                     [None       (str-concat name " ok")
-                      (Some why) (str-concat name " FAIL: " why)])])]))
-
-(defn run-all []
-  (vec-map run-one (discover-tests [])))
-
-(defn run-matching [substr]
-  (vec-map run-one
-           (vec-filter (fn [p] (match p [(Pair nm _) (contains? nm substr)]))
-                       (discover-tests []))))
-```
-
-The three-way fold is the payoff of the two rulings composing: ruling 2 turns
-"did it panic?" into the outer `Result`, and the test's own `(Option String)` is
-the inner pass/fail. Selection is plain `vec-filter` over the pairs, and because
-each callable is late-bound a `discover-tests` call evaluated after a new
-`test-*` is defined includes it. (Match arms are one bracket of alternating
-pattern/body pairs and constructor patterns bind symbols only, so the fold is a
-nested match — `stdlib/testing/runner.cl` is the shipped form.)
+- The three-way outcome is the two rulings composing: ruling 2 turns "did it
+  panic?" into the outer `Result`, and the test's own `(Option String)` is the
+  inner pass/fail.
+- Selection is ordinary user code over the pairs; no discovery-side filter
+  exists.
+- Each callable is late-bound, so a `discover-tests` call evaluated after a new
+  `test-*` is defined includes it.
 
 ### 4.4 The `catch-runtime-error` combinator, directly
 
-```clojure
-(import [primitives [catch-runtime-error]])
-
-(defn safe-div [a b]
-  (match (catch-runtime-error (fn [] (/ a b)))
-    [(Ok q)   q
-     (Err _)  0]))
-```
-
 The combinator invokes the thunk on the calling thread, reads-and-clears the
 thread-local slot, and returns `(Err msg)` on a lowered `runtime_panic` (match
-non-exhaustion, division by zero, vec out-of-bounds) or `(Ok result)`.
+non-exhaustion, division by zero, vec out-of-bounds) or `(Ok result)`. It is
+usable by any code, not only tests.
 
 ### 4.5 What `--run`, `--link` and `--test` users see
 

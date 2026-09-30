@@ -421,7 +421,17 @@ pub mod serialize;
 /// reference, deliberately without `#[serde(default)]`: an empty default would
 /// under-key the module's cache-validity edges. The version gate refuses a
 /// schema-29 sidecar and its paired object wholesale.
-pub const CACHE_SCHEMA_VERSION: u32 = 30;
+///
+/// **30 → 31 (S122 extern entry convention, ACT-0974 —
+/// `design/backend/non-concrete-release-contract.md` §7.6).** A **value-only**
+/// invalidation: the serde shape is identical either side. The paired object
+/// bakes the caller-side RC contract of every extern call, and that contract
+/// moved: a schema-30 caller hands `string-identity` a live binding without a
+/// retain, while the shim now takes ownership of it, so a warm hit on
+/// unchanged source frees a live binding. `BUILD_ID` does not separate an
+/// uncommitted landing build from its base sha (the S103 15 → 16 hole). The
+/// bump refuses every schema-30 sidecar and paired object wholesale.
+pub const CACHE_SCHEMA_VERSION: u32 = 31;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

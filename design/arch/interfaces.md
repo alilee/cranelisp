@@ -63,12 +63,13 @@ binary's expander, and retained for introspection.
   test is purely syntactic — a bare-symbol head and two children — and consults no shadow set
   or resolver, which is why it belongs with the datum rather than in a consumer
   (Principles 7 and 15).
-- The frontend quasiquote fold and the binary's scope-aware expansion and qualification
-  shields classify quotes through this one predicate. If their notions of "is a quote"
-  diverged, a quoted subtree would be double-desugared or mis-qualified.
+- Every consumer classifies quotes through this one predicate: the frontend quasiquote fold,
+  and the binary's scope-aware expansion shields (`src/expander.rs`), qualification shields
+  (`src/process_form/macro_resolution.rs`) and written-qualifier dependency walk
+  (`src/process_form/dependency.rs`). No consumer keeps a local classifier. If their notions
+  of "is a quote" diverged, a quoted subtree would be double-desugared, mis-qualified or
+  mis-recorded as a dependency.
 - The reader still lowers the quote sugars to list forms; the predicate only classifies them.
-- FIXME 0789 is the open filing that asked for this home; its disposition against source is
-  owed.
 
 ---
 
@@ -229,6 +230,9 @@ not a backend input and no function converts it into one. The backend's input is
 - `Mode`, `ModeSummary`, `ResultMode` and `ParamFlow` are the typecheck→backend memory-model
   carrier. A summary rides `Life::Concrete` or `Life::Inline` and is read through
   `Binding::mode_summary`; absence reads as the conservative top.
+- A summary on a `Realization::ExternShim` callable is analysis input only: the primary entry
+  follows the uniform consuming convention, and statically-resolved call sites adapt to the
+  declared facts ([ownership inference §3.1](ownership-inference.md#31-class-a--abi-bearing-the-per-param-mode-vector)).
 - `ResultMode` is a closed sum without `#[non_exhaustive]`, so a new variant forces each
   consumer match to be revisited. Two equality reads against `Fresh` — the backend's
   fresh-return test and `ModeSummary::is_abi_conservative` — escape that forcing by design

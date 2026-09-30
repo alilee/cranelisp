@@ -10,7 +10,8 @@
 //!     of exactly one — the harness cannot subtract a real defect away;
 //!  2. two identical children read exactly zero — the harness does not
 //!     manufacture a marginal out of run-to-run noise;
-//!  3. the ambient FIXME-0889 term that the retrofitted cells subtract is
+//!  3. the ambient stdlib-session term (FIXME 0889) that the retrofitted cells
+//!     subtract is
 //!     **deterministic run-to-run**, so it cancels exactly rather than
 //!     approximately. This is the load-bearing precondition of the whole
 //!     approach: a wandering ambient term would turn every marginal cell into
@@ -107,10 +108,11 @@ fn marginal_harness_reads_zero_for_identical_children() {
 }
 
 // The precondition the four retrofitted baseline cells rest on: the ambient
-// stdlib-prelude residual (FIXME 0889 — 1143 allocations at S118 HEAD) is the
-// SAME number in two independent children, so subtracting it is exact rather
-// than approximate. Stated as equality between the two runs, not against 1143,
-// so it survives the 0889 fix unchanged (both sides simply become balanced).
+// stdlib-prelude residual (FIXME 0889 — 1143 allocations at S118, 46
+// unclassified at S122) is the SAME number in two independent children, so
+// subtracting it is exact rather than approximate. Stated as equality between
+// the two runs, not against any particular number, so it survives each change
+// to that residual unchanged (both sides simply become balanced when it goes).
 //
 // This is the one cell here that pays for two full stdlib children; it is worth
 // it, because if this equality ever fails then `ms_p8_conj_leak` and

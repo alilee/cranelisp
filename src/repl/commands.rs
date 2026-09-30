@@ -5,6 +5,17 @@
 use super::format::*;
 use super::*;
 
+/// What `/mod` reports beyond the switch itself (`design/int/int.md` §8.5.1).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ModReport {
+    /// No switch: the target names no module or its load failed. The current
+    /// module is unchanged.
+    Refused(String),
+    /// The switch happened, and recompiling the cache-installed target from
+    /// its file failed: each failed module's notification.
+    RecompileFailed(String),
+}
+
 /// Classification of an imported symbol for category-based display.
 pub(crate) enum ImportClass {
     Macro,
@@ -340,34 +351,57 @@ impl CompilerSession {
         out
     }
 
-    /// /mod handler: switch module namespace. Returns the failed-reload
-    /// notification when the target had to be recompiled from its backing
-    /// file and that failed.
-    pub(crate) fn handle_mod(&mut self, name: &str) -> Option<String> {
-        // S78 §1.4: `/mod` with no argument returns to the "home" module — the
-        // ENTRY module — NOT a hardcoded "user". `"user"` is only the entry
-        // module's default name when no CLI target is given.
-        let path = if name.is_empty() {
+    /// /mod handler: switch to an existing module, loading it from its file
+    /// when it is not yet loaded, and never create one
+    /// (`design/int/int.md` §8.5.1; `repl/spec/03-slash-commands.md` §3.9).
+    /// Bare `/mod` returns to the entry module.
+    pub(crate) fn handle_mod(&mut self, name: &str) -> Option<ModReport> {
+        let target = if name.is_empty() {
             self.entry_module.clone()
         } else {
-            ModuleFullPath::from(name)
+            self.resolve_mod_target(name)
         };
-        let failure = self.recompile_cache_installed_module(&path);
-        self.set_current_module(path.clone());
-        // S102 CS-D3a (§6.2.3): establish the target module's session-env
-        // companions. `set_current_module` creates a blank table via
-        // `ensure_module_exists` for a not-yet-loaded module — a blank module
-        // cannot reference prelude, so its fallback bit is ON (its next defining
-        // turn must compile with the implicit prelude, exactly as its file body
-        // would). Idempotent for an already-loaded/cache-restored target
-        // (recomputes the same bit + aliases from its own structural fields).
-        crate::imports::install_module_session_env(
-            &self.shared.symbol_tables,
-            &path,
-            &self.shared.module_aliases,
-            &self.shared.prelude_fallback,
-        );
-        failure
+        if !self.shared.symbol_tables.contains_key(&target)
+            && let Err(refusal) = self.load_mod_target(&target)
+        {
+            return Some(ModReport::Refused(refusal));
+        }
+        let failure = self.recompile_cache_installed_module(&target);
+        self.set_current_module(target);
+        failure.map(ModReport::RecompileFailed)
+    }
+
+    /// The module `name` names from the current module, by the one
+    /// bare-module-name resolver over its declared children
+    /// (`design/int/int.md` §6.9). Import aliases are not module names.
+    fn resolve_mod_target(&self, name: &str) -> ModuleFullPath {
+        let current = self.current_module_path();
+        let spelling = ModuleFullPath::from(name);
+        match self.shared.symbol_tables.get(&current) {
+            Some(table) => {
+                crate::imports::DeclaredChildren::of(&current, &table.submodules).resolve(&spelling)
+            }
+            None => spelling,
+        }
+    }
+
+    /// Load `target` through the language's load-on-reference: the module
+    /// search, the dependency drive and the eval thread's wait. Returns the
+    /// refusal to report when no file backs it or its load fails; a failed
+    /// load's wait purges the table it never compiled.
+    fn load_mod_target(&mut self, target: &ModuleFullPath) -> Result<(), String> {
+        let lib_dirs = self.lib_dirs();
+        if crate::pipeline::resolve_module_file(target, &self.shared.project_root, &lib_dirs)
+            .is_none()
+        {
+            return Err(format!("Module '{target}' not found."));
+        }
+        let current = self.current_module_path();
+        self.with_eval_compiler(&current, |ctx| {
+            crate::process_form::drive_module_dep(ctx, &current, target, Span::SYNTHETIC)
+        })
+        .and_then(|()| self.register_dep_for_eval(target))
+        .map_err(|error| error.to_string())
     }
 
     /// Make a cache-installed module editable: rebuild it and its dependents

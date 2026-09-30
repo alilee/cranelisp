@@ -1120,7 +1120,14 @@ fn reset_all_failed_modules_returns_reset_list_and_unregisters() {
     sched.notify_module_failed(&bad, dummy_error("boom"));
 
     let reset = sched.reset_all_failed_modules();
-    assert_eq!(reset, vec![bad.clone()], "only the Failed module is reset");
+    assert_eq!(
+        reset,
+        vec![ResetModule {
+            module: bad.clone(),
+            failure_dependencies: BTreeSet::new(),
+        }],
+        "only the Failed module is reset"
+    );
     assert!(
         !sched.is_registered(&bad),
         "the reset module is unregistered"
@@ -1149,7 +1156,13 @@ fn was_ever_terminal_survives_terminal_then_failed_then_reset() {
     // Cascade failure marks it Failed; the autoload reset removes it.
     sched.notify_module_failed(&victim, dummy_error("cascade: awaited broken dep"));
     let reset = sched.reset_all_failed_modules();
-    assert_eq!(reset, vec![victim.clone()]);
+    assert_eq!(
+        reset,
+        vec![ResetModule {
+            module: victim.clone(),
+            failure_dependencies: BTreeSet::new(),
+        }]
+    );
     assert!(
         !sched.is_registered(&victim),
         "reset dropped the live state"
@@ -2270,4 +2283,155 @@ fn completed_claim_does_not_fail_the_module() {
     let ms = &state.modules[&cached];
     assert_eq!(ms.cached_load_state(), CachedLoadState::Loaded);
     assert_ne!(ms.pool, ModulePool::Failed);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Failure dependencies (design/int/repl-lifecycle.md §1.2.1): the module
+// through which one generation failed, kept on the module state until the
+// next registration and returned by the failed-module reset.
+// ══════════════════════════════════════════════════════════════════════
+
+// spec: design/int/repl-lifecycle.md §1.2.1 — a waiter failed in the cascade
+// records the dependency it waited on; the dependency that failed in its own
+// source records nothing.
+#[test]
+fn cascade_records_the_awaited_dependency() {
+    let sched = CompileScheduler::new();
+    let (lib, base) = (mod_path("lib"), mod_path("base"));
+    sched.register_module(lib.clone(), no_sexps(), false);
+    sched.register_module(base.clone(), no_sexps(), false);
+    sched
+        .block_for_typecheck(&lib, &base, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap();
+
+    sched.notify_module_failed(&base, dummy_error("undefined variable: nope"));
+
+    assert!(
+        sched.is_failed(&lib),
+        "precondition: the cascade failed `lib`"
+    );
+    assert_eq!(
+        sched.failure_dependencies(&lib),
+        BTreeSet::from([base.clone()])
+    );
+    assert!(sched.failure_dependencies(&base).is_empty());
+}
+
+// spec: design/int/repl-lifecycle.md §1.2.1 — a module that meets an
+// already-failed dependency at a dependency wait or at the signature barrier
+// records it.
+#[test]
+fn fail_fast_records_the_failed_dependency_at_both_waits() {
+    let sched = CompileScheduler::new();
+    let (waiter, gated, base) = (mod_path("waiter"), mod_path("gated"), mod_path("base"));
+    for module in [&waiter, &gated, &base] {
+        sched.register_module(module.clone(), no_sexps(), false);
+    }
+    sched.notify_module_failed(&base, dummy_error("boom"));
+
+    assert!(
+        sched
+            .block_for_typecheck(&waiter, &base, &Symbol::from("*"), Span::SYNTHETIC)
+            .is_err()
+    );
+    assert!(
+        sched
+            .block_on_first_unready_closure_member(&gated, &closure_of(&["base"]))
+            .is_err()
+    );
+
+    assert_eq!(
+        sched.failure_dependencies(&waiter),
+        BTreeSet::from([base.clone()])
+    );
+    assert_eq!(sched.failure_dependencies(&gated), BTreeSet::from([base]));
+}
+
+// spec: design/int/repl-lifecycle.md §1.2.1 — a module that closes a wait
+// cycle records the next module on it, at a dependency wait and at the
+// signature barrier.
+#[test]
+fn wait_cycle_records_the_next_module_on_the_cycle() {
+    let sched = CompileScheduler::new();
+    let (a, b) = (mod_path("a"), mod_path("b"));
+    sched.register_module(a.clone(), no_sexps(), false);
+    sched.register_module(b.clone(), no_sexps(), false);
+    sched
+        .block_for_typecheck(&a, &b, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap();
+    let cycle = sched
+        .block_for_typecheck(&b, &a, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap_err();
+    assert!(cycle.to_string().contains("b -> a -> b"), "{cycle}");
+    assert_eq!(sched.failure_dependencies(&b), BTreeSet::from([a]));
+
+    let barrier = CompileScheduler::new();
+    let (c, d) = (mod_path("c"), mod_path("d"));
+    barrier.register_module(c.clone(), no_sexps(), false);
+    barrier.register_module(d.clone(), no_sexps(), false);
+    barrier
+        .block_for_typecheck(&c, &d, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap();
+    assert!(
+        barrier
+            .block_on_first_unready_closure_member(&d, &closure_of(&["c"]))
+            .is_err()
+    );
+    assert_eq!(barrier.failure_dependencies(&d), BTreeSet::from([c]));
+}
+
+// spec: design/int/repl-lifecycle.md §1.2.1 — one generation's record is a
+// set: a cascade and a failed attempt's dependencies accumulate, and the
+// module itself is never its own failure dependency.
+#[test]
+fn one_generation_accumulates_every_failure_dependency() {
+    let sched = CompileScheduler::new();
+    let (lib, base, other) = (mod_path("lib"), mod_path("base"), mod_path("other"));
+    for module in [&lib, &base, &other] {
+        sched.register_module(module.clone(), no_sexps(), false);
+    }
+    sched
+        .block_for_typecheck(&lib, &base, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap();
+    sched.notify_module_failed(&base, dummy_error("boom"));
+    sched.record_failure_dependencies(&lib, [other.clone(), lib.clone()]);
+
+    assert_eq!(
+        sched.failure_dependencies(&lib),
+        BTreeSet::from([base, other])
+    );
+}
+
+// spec: design/int/repl-lifecycle.md §1.2.1 — a re-registration starts a new
+// generation with no failure dependency, and the failed-module reset returns
+// each forgotten module with its own.
+#[test]
+fn re_registration_clears_and_reset_returns_failure_dependencies() {
+    let sched = CompileScheduler::new();
+    let (lib, base) = (mod_path("lib"), mod_path("base"));
+    sched.register_module(lib.clone(), no_sexps(), false);
+    sched.register_module(base.clone(), no_sexps(), false);
+    sched.record_failure_dependencies(&lib, [base.clone()]);
+    sched.notify_module_failed(&lib, dummy_error("dependency 'base' failed"));
+    assert!(sched.re_register_module(&lib, no_sexps()));
+    assert!(sched.failure_dependencies(&lib).is_empty());
+
+    sched.record_failure_dependencies(&lib, [base.clone()]);
+    sched.notify_module_failed(&lib, dummy_error("dependency 'base' failed"));
+    sched.notify_module_failed(&base, dummy_error("boom"));
+    let mut reset = sched.reset_all_failed_modules();
+    reset.sort_by(|left, right| left.module.as_ref().cmp(right.module.as_ref()));
+    assert_eq!(
+        reset,
+        vec![
+            ResetModule {
+                module: base.clone(),
+                failure_dependencies: BTreeSet::new(),
+            },
+            ResetModule {
+                module: lib,
+                failure_dependencies: BTreeSet::from([base]),
+            },
+        ]
+    );
 }

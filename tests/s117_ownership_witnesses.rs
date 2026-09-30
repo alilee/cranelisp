@@ -88,23 +88,6 @@ fn r2_borrowed_scalar_result_live_and_temporary_all_modes() {
     run_through_all_modes(src, PreludeVariant::None).assert_all_equal(8);
 }
 
-// spec: design/typecheck/ownership-inference.md §9.1 — AliasOf(0) keeps the
-// return-protect/argument-transfer pair in emitted production CLIF.
-#[test]
-fn r2_alias_of_string_identity_has_production_clif_transfer() {
-    let ir = clif("(defn alias [s] (string-identity s))", "alias", false);
-    assert!(
-        ir.contains("store notrap aligned"),
-        "AliasOf(0) wrapper MUST protect the returned alias:\n{ir}"
-    );
-    assert_eq!(
-        glue_releases(&ir),
-        1,
-        "AliasOf(0) wrapper MUST release the transferred argument exactly once \
-         (one canonical glue call):\n{ir}"
-    );
-}
-
 // spec: design/typecheck/ownership-inference.md §9.1 — source and returned
 // AliasOf(0) value remain usable with distinct scope uses in all modes.
 #[test]

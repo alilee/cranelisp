@@ -275,14 +275,12 @@ user> /mem (list 1 2 3)
 
 Evaluation errors MUST still emit the delta line — observation is the point, and a failed allocation is itself interesting data. The header line in the error case uses the standard §5 error format.
 
-**The delta window MUST include the program-result release.** [S119 — FIXME 0914] The purpose of `/mem <expr>` is to let a user at the prompt answer "did my expression's memory get reclaimed?", so the window the delta measures MUST be closed *after* the turn's result has been released, not after evaluation. A window that closes earlier reports `live +N` for every heap-valued expression — including expressions whose result the runtime provably reclaims — which tells the user they have a leak when they do not. This is a **truthfulness** requirement on the instrument, not a precision one: a diagnostic that systematically over-reports growth is worse than no diagnostic, because a user debugging their own ownership will act on it.
+**The delta window MUST include the program-result release.** [Tested tests/repl_introspection::mem_with_expr_emits_signed_delta_line] The purpose of `/mem <expr>` is to let a user at the prompt answer "did my expression's memory get reclaimed?", so the window the delta measures MUST be closed *after* the turn's result has been released, not after evaluation. A window that closes earlier reports `live +N` for every heap-valued expression — including expressions whose result the runtime provably reclaims — which tells the user they have a leak when they do not. This is a **truthfulness** requirement on the instrument, not a precision one: a diagnostic that systematically over-reports growth is worse than no diagnostic, because a user debugging their own ownership will act on it.
 
 Because the REPL renders a turn's whole `StyledDoc` before releasing that turn's result (`src/CLAUDE.md` §"Program-result ownership" — observe, then release), the delta line is *part of the text emitted before the release*, so satisfying this requirement is an ordering question, not a counter question. Two shapes satisfy it; the choice is the implementation's:
 
 - the command takes responsibility for its own turn's release, releasing before it computes the closing counters; or
 - the delta line is emitted after the release rather than composed with the result line.
-
-Until this holds, the **snapshot** form is the truthful instrument and the delta form's exclusion MUST be treated as a known non-conformance rather than as the specified behaviour.
 
 `/mem` MUST NOT start the runtime; the counters are valid from process start. An empty runtime reports `; live: 0 bytes (0 allocations)` and `; allocs: 0  deallocs: 0`.
 
@@ -325,12 +323,22 @@ Unqualified type names or an unqualified symbol name in `/sig` output are non-co
 
 ### 3.9 `/mod` — Namespace Switch and Turn-Environment Parity [S102]
 
-`/mod [name]` switches the active module namespace. Its interactive behaviour — the prompt
-changes to the new module, no confirmation is printed, bare `/mod` returns to the entry
-module (§0.5) [Tested tests/repl_lifecycle.rs::mod_no_arg_returns_to_entry_module_not_user, tests/repl_lifecycle.rs::mod_no_arg_default_entry_is_user], an
-unknown module gives an actionable error — is specified by the §8 module scenarios; this
-section pins the **compilation-environment** contract, which is the load-bearing invariant for
-the file-backed dev loop (`/mod M` + a defining form, editing a module in place).
+`/mod [name]` switches the active module namespace. The prompt changes to the new module and
+no confirmation is printed (§8 Scenario 1); bare `/mod` returns to the entry
+module (§0.5) [Tested tests/repl_lifecycle.rs::mod_no_arg_returns_to_entry_module_not_user, tests/repl_lifecycle.rs::mod_no_arg_default_entry_is_user].
+
+**Target module (MUST).** `/mod <name>` switches only to an existing module; it never creates
+one. `<name>` is a module name resolved from the active module by the language's module-name
+resolution (spec `08-modules.md` §8.11.2, including the bare-name precedence of §8.11.2.1);
+`/mod` applies no resolution rule of its own. A module exists when it is loaded in the session
+or that resolution locates its backing file. A module not yet loaded is loaded when
+`/mod` switches to it ([§14.1](14-file-watching.md) watches the modules `/mod` loads). When `<name>` names no module,
+`/mod` MUST report an unknown-module error naming `<name>` and leave the active module
+unchanged (§8 Scenario 7). [Tested+Neg tests/repl_lifecycle::mod_unknown_module_neg_not_created_and_active_module_unchanged, tests/repl_lifecycle::mod_unloaded_module_is_loaded_and_its_file_kept, tests/repl_lifecycle::mod_bare_name_resolves_declared_submodule_over_root_module, tests/repl_lifecycle::mod_bare_name_resolves_root_module_without_declared_submodule_control, tests/repl_lifecycle::mod_import_alias_neg_not_a_module_name, tests/repl_lifecycle::mod_module_name_of_aliased_import_switches_to_it_control — an unknown name and an import alias are refused, and neither creates a module or a file; an unloaded file-backed module is loaded and keeps its file; a declared submodule beats a loaded root module, which is the target without the declaration] [S122 — no `/mod` cell for a dotted target or a lib-directory target (§8.11.2 tier 3); the shared resolver is evidenced for `import`]
+
+The rest of this section pins the **compilation-environment** contract, which is the
+load-bearing invariant for the file-backed dev loop (`/mod M` + a defining form, editing a
+module in place).
 
 **Turn-environment parity (MUST).** A form entered in a module-namespace turn (`/mod M`
 followed by a `defn`/`deftype`/expression) MUST compile in the **same environment the module

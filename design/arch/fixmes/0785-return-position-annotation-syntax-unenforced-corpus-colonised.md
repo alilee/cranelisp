@@ -8,8 +8,14 @@ refers_to: crates/cranelisp-frontend/src/reader.rs::read_colon_prefix;
   crates/cranelisp-frontend/src/reader/tests.rs::annotation_fold_rejects_dangling_delimiters_at_introducer;
   tests/spec_07_traits.rs::deftrait_method_annotated_named_param_accepted;
   spec/07-traits.md §7.1.1
-status: open
+status: deferred
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K11) into ACT-0962's coverage increment.** No deferral count is recorded.
 
 # Retain one exact solution guard for the structurally rejected trait-return annotation
 

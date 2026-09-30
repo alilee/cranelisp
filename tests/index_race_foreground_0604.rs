@@ -36,8 +36,11 @@ const RECIPE: &str = "(import [num.bits [bit-and]])\n\
 /// Read-only on project_root.
 const WORKSPACE_STDLIB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
 
+/// The reach signal: the entry compiled, so its imports did too.
+const REACHED: &str = "no 'main' function";
+
 /// Historical phantom-publication signatures. None may appear; the only
-/// expected error is the benign "no 'main' function".
+/// expected error is the benign [`REACHED`].
 const RACE_SIGNATURES: &[&str] = &[
     "ambiguous",
     "has no member 'bit-and'",
@@ -51,15 +54,25 @@ const RACE_SIGNATURES: &[&str] = &[
 // Each iteration uses a fresh tempdir and cold cache so compilation traverses
 // the guarded publication routes. This sweep is supplemental to the structural
 // route/gate evidence; a quiet run does not reconstruct the historical race.
+// Each iteration must also reach the entry's missing-`main` diagnostic, so a
+// run that stops before compiling the recipe cannot satisfy the absence checks.
 #[test]
 fn num_bits_import_not_poisoned_by_foreground_concurrent_compile_race() {
     for i in 0..8 {
         let out = Cranelisp::new()
-            .run("di.cl")
+            .run("user.cl")
             .env("CRANELISP_LIB", WORKSPACE_STDLIB)
             .env("CRANELISP_MODULE_TRACE", "1")
             .user(RECIPE)
             .output();
+        assert!(
+            out.stderr.contains(REACHED),
+            "iteration {i}: the recipe must compile through to the entry's \
+             {REACHED:?} diagnostic, or the absence checks below observe \
+             nothing.\nstdout:\n{}\nstderr:\n{}",
+            out.stdout,
+            out.stderr
+        );
         let hay = format!("{}\n{}", out.stdout, out.stderr);
         for sig in RACE_SIGNATURES {
             assert!(

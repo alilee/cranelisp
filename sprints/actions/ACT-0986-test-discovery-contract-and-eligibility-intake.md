@@ -16,6 +16,13 @@ refers_to:
   - crates/cranelisp-frontend/src/ast_builder/tests.rs
 ---
 
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Item 1 is carried to S123 (K9, C6).** First deferral. The requirement stands; the user may instead narrow it through `spec`.
+- **Item 2 is S122 work (K3).** `spec` makes the §16.5 example runnable, and frontend `dev` corrects the `test_discover_tests_no_arg_builds_as_apply` citation.
+
 ## Request
 
 Two discrepancies remain open. Both fall outside the compiler-owned runner.

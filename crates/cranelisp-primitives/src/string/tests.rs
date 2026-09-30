@@ -80,18 +80,16 @@ fn test_str_len() {
     assert_eq!(str_len(crate::abi_facts::test_owned(s)), 5);
 }
 
-// spec: design/runtime/s119-typed-consume-funnel.md §4.3 — the sole retained
-// shim argument mints one independent result owner without consuming the
-// caller's reference.
+// spec: design/primitives/primitives.md §2.4 — string-identity moves its
+// owner into its result: the same allocation, neither minted nor discharged,
+// so the result's one discharge frees it.
 #[test]
-fn string_identity_borrow_mints_one_distinct_owner() {
+fn string_identity_moves_its_owner_into_the_result() {
     let raw = alloc_string(b"identity") as i64;
-    let result = string_identity(crate::abi_facts::test_borrowed(raw));
+    let result = string_identity(crate::abi_facts::test_owned(raw));
     assert_eq!(result.raw_for_read(), raw);
 
     rc::consume_shallow(result);
-    assert!(alloc::is_live(raw as usize));
-    rc::consume_shallow(crate::abi_facts::test_owned(raw));
     assert!(!alloc::is_live(raw as usize));
 }
 

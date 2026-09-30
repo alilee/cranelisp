@@ -103,7 +103,9 @@ executable:
   of `Clone`/`Copy` on `Owned` and of a public element-callback alias;
 - primitives:
   `crates/cranelisp-primitives/src/abi_facts/tests.rs::typed_consume_trusted_base_matches_exact_production_callers`
-  pins the shim conversion sites and the three private adapters below.
+  pins the shim conversion sites, the three private adapters below, and the
+  conversion trait's implementing set (`i64` and `Owned` only). No shim adopts
+  a `Borrowed`.
 
 The guards are the authority for exact site sets; the table summarises them.
 
@@ -147,8 +149,8 @@ semantic correctness inside an allowed function (Principle 18).
 
 ## 4. The shim-fact derivation
 
-A primitive extern shim that wrapped a borrowed parameter as `Owned` would
-mis-declare as prose can. The shim's handle kinds are therefore generated from,
+A shim whose token disagreed with its declared type would mis-declare as prose
+can. The shim's handle kinds are therefore generated from,
 and checked against, the declaration row (Principle 7).
 
 ### 4.1 Three statements of one fact
@@ -158,20 +160,16 @@ and checked against, the declaration row (Principle 7).
 2. **The shim tokens** — the Rust types in the row's `shim:` clause. rustc
    checks them against (1) at the macro's call expansion; a compile-fail case
    proves a contradiction is rejected.
-3. **The declared Cranelisp type and `ParamFlow`** — tied to (2) by the §4.3
-   unit.
+3. **The declared Cranelisp type** — tied to (2) by the §4.3 unit.
 
 The rule, in `crates/cranelisp-primitives/src/abi_facts.rs`:
 
 ```text
-kind(i) = Scalar          if param_type[i] is Int, Bool or Float
-        = BorrowedHandle  if flow[i] == ParamFlow::IntoResult
-        = OwnedHandle     otherwise                 // Decision-24 consuming
+kind(i) = Scalar       if param_type[i] is Int, Bool or Float
+        = OwnedHandle  otherwise      // uniform consuming entry, BC §4a invariant 8
 ```
 
-**`Mode` is deliberately not an input.** Only-read heap parameters declare
-`Mode::Borrowed` as the analysis fact while the extern still consumes under
-Decision 24. A `Mode`-keyed derivation would silently delete those discharges.
+Neither `Mode` nor `ParamFlow` is an input; the summary is analysis-only.
 
 ### 4.2 One token, two manifestations
 
@@ -184,13 +182,15 @@ same `$argty` token drives both the entry conversion
 
 `crates/cranelisp-primitives/src/declarations/tests.rs::shim_abi_kinds_match_declared_facts`
 asserts, for every user-callable extern row, that its token-derived kinds equal
-those derived from its declared type and ownership summary. To lie at a shim, a
-row must contradict its own declaration, and the row fails.
+those derived from its declared type. To lie at a shim, a row must contradict
+its own declaration, and the row fails.
 
-`string-identity` shows the check is not a tautology: it is the sole
-`IntoResult` row, so its body borrows and mints once
-(`crates/cranelisp-primitives/src/string.rs::string_identity`). A flow-blind
-derivation would force it to leak or to drop its increment.
+The check is not a tautology. rustc accepts an `i64` token on a String
+parameter against an `i64` body, which would silently skip the discharge; the
+declared type derives `OwnedHandle`, so the check rejects the row.
+
+No shim token can be `Borrowed`: the conversion trait has no borrowed
+implementation ([primitives §2.4](../primitives/primitives.md#24-typed-abi-boundary)).
 
 ### 4.4 Coverage and the named exemption
 
@@ -289,6 +289,10 @@ consume_io_tree, consume_closure, dec_shallow_io}`; `trace::consume_trace_call`
   shims are `pub(crate)`.
 - The C ABI is unchanged: shims keep `extern "C" fn(i64, …) -> i64`; handle
   types appear only inside them. `cranelisp-types` is unaffected.
+- No serialized cache shape carries these types. Changing a shim's entry
+  convention still moves the caller-side RC contract that cached objects bake
+  in, so the change lands with backend's value-only `CACHE_SCHEMA_VERSION` bump
+  ([module caching §14.2](../backend/module-caching.md#142-cache_schema_version-ownership)).
 
 ## 9. Open obligation
 
@@ -313,7 +317,8 @@ consume_io_tree, consume_closure, dec_shallow_io}`; `trace::consume_trace_call`
 - **7** — one token derives both shim wrapping and ABI-kind data.
 - **18 and 20** — the move checker and the `Owned` type replace the "discharge
   every heap argument you do not return" rustdoc rule; the trusted base is an
-  executable enumeration.
+  executable enumeration; with no borrowed conversion kind, a borrowing shim
+  entry is unrepresentable.
 - **14 and 15** — the transparent handle keeps FFI layout; the facade types live
   with the discharge behaviour in intrinsics.
 - **25** — the drop bomb accompanies the narrowing "this frame is done with

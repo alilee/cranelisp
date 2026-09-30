@@ -12,6 +12,7 @@
 //! §Cluster-Atomic Orchestration`). `compile_macro_clause_*` stays a documented
 //! single-impl-with-adapters elsewhere; this module owns the dep protocol.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
@@ -163,6 +164,7 @@ pub(super) fn handle_import(
         // check is a no-op when the parent isn't loaded yet (deferred to
         // the next visit on resume).
         check_private_submodule_import(ctx, module, dep, spec.span)?;
+        refuse_failed_table(ctx, module, dep, spec.span)?;
 
         // Already loaded — register the import and continue.
         //
@@ -267,6 +269,23 @@ pub(super) fn handle_import(
     Ok(BlockAction::Continue)
 }
 
+/// Pass 0's fail-fast on a declared module that has a table and stands
+/// `Failed` (`design/int/int.md` §6.11): the attempt fails with that module's
+/// error, and no name resolves against its failed table. A failed module with
+/// no table takes the load path instead: its wait fails fast with the same
+/// error or, on the eval path, retries after the purge.
+fn refuse_failed_table(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    dep: &ModuleFullPath,
+    span: Span,
+) -> Result<(), CranelispError> {
+    if ctx.symbol_tables.contains_key(dep) {
+        ctx.scheduler.refuse_failed_dependency(module, dep, span)?;
+    }
+    Ok(())
+}
+
 /// Whether `dep` is fully loaded (typechecked) and therefore ready to satisfy
 /// an FQ reference without a load.
 ///
@@ -353,7 +372,7 @@ pub(super) fn block_dep(
     }
 }
 
-pub(super) fn drive_module_dep(
+pub(crate) fn drive_module_dep(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     dep: &ModuleFullPath,
@@ -568,6 +587,21 @@ fn mod_declarations(sexps: &[Sexp], module: &ModuleFullPath) -> Vec<cranelisp_ty
         .collect()
 }
 
+/// The `import` specs among `module`'s forms, including null imports. A form
+/// that fails to classify declares nothing here; Pass 0 reports it.
+fn import_declarations(sexps: &[Sexp], module: &ModuleFullPath) -> Vec<ImportSpec> {
+    sexps
+        .iter()
+        .filter_map(
+            |sexp| match super::form_dispatch::classify_form(sexp, module) {
+                Ok(super::form_dispatch::FormKind::Import(specs)) => Some(specs),
+                _ => None,
+            },
+        )
+        .flatten()
+        .collect()
+}
+
 /// The children a cluster of `module` may name in its `import` and `export`
 /// specs: the cluster's own `mod` forms together with the declarations earlier
 /// turns recorded on the module's table (`design/int/int.md` §6.9). Computed
@@ -585,50 +619,102 @@ pub(super) fn cluster_declared_children(
     DeclaredChildren::of(module, &declarations)
 }
 
-/// Extract the directly-imported modules from a module's parsed forms (its
-/// Pass-0 `(import …)` declarations), each resolved against `declared`. Null
-/// imports (`ImportNames::None`, §8.3.6 — suppress loading) contribute no
-/// edge. Returns the dep paths plus the span of the first import form (for the
-/// cycle diagnostic).
-fn direct_import_deps(
+/// Which declarations of a module's forms a walk reads as dependencies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclaredEdges {
+    /// `import` declarations that load: the static gate's walk, whose closure
+    /// is also the signature barrier's members.
+    Imports,
+    /// `import` declarations that load and every `export` target: a failed
+    /// attempt's dependencies and the prelude-reach walk
+    /// (`design/int/repl-lifecycle.md` §1.2.1, `design/int/int.md` §6.12).
+    ImportsAndExports,
+}
+
+/// The modules `module`'s `sexps` depend on through their declarations, each
+/// resolved against `declared`, with the span of the first such declaration
+/// (for a cycle diagnostic). A null import (`ImportNames::None`, spec §8.3.7)
+/// loads nothing and is no edge.
+fn declared_dependencies(
     sexps: &[Sexp],
     module: &ModuleFullPath,
     declared: &DeclaredChildren,
+    edges: DeclaredEdges,
 ) -> (Vec<ModuleFullPath>, Option<Span>) {
     let mut deps = Vec::new();
     let mut first_span: Option<Span> = None;
     for sexp in sexps {
-        if let Ok(super::form_dispatch::FormKind::Import(specs)) =
-            super::form_dispatch::classify_form(sexp, module)
-        {
-            for spec in specs {
-                if matches!(spec.names, cranelisp_types::ImportNames::None) {
-                    continue;
+        match super::form_dispatch::classify_form(sexp, module) {
+            Ok(super::form_dispatch::FormKind::Import(specs)) => {
+                for spec in specs {
+                    if matches!(spec.names, ImportNames::None) {
+                        continue;
+                    }
+                    first_span.get_or_insert(spec.span);
+                    deps.push(declared.resolve(&spec.module_path));
                 }
-                first_span.get_or_insert(spec.span);
-                deps.push(declared.resolve(&spec.module_path));
             }
+            Ok(super::form_dispatch::FormKind::Export(specs))
+                if edges == DeclaredEdges::ImportsAndExports =>
+            {
+                for spec in specs {
+                    first_span.get_or_insert(spec.span);
+                    deps.push(declared.resolve(&spec.module_path));
+                }
+            }
+            _ => {}
         }
     }
     (deps, first_span)
 }
 
+fn prelude_module() -> ModuleFullPath {
+    ModuleFullPath::from(crate::expander::PRELUDE_MODULE)
+}
+
+/// The implicit prelude dependency of `module`'s source `sexps` (spec §8.8.1;
+/// `design/int/int.md` §6.12): the prelude, unless `module` is the prelude,
+/// its source names the prelude in an `import` or `export`, or there is no
+/// prelude file to depend on.
+fn source_prelude_edge(
+    module: &ModuleFullPath,
+    sexps: &[Sexp],
+    prelude_file_exists: bool,
+) -> Option<ModuleFullPath> {
+    let prelude = prelude_module();
+    (prelude_file_exists && *module != prelude && !sexps_reference_prelude(sexps))
+        .then_some(prelude)
+}
+
+/// The parsed source of `module`'s file. `None` when the file cannot be
+/// resolved, read or parsed; every file walk treats such a module as a leaf.
+fn parse_module_file(ctx: &ModuleCompiler, module: &ModuleFullPath) -> Option<Vec<Sexp>> {
+    let file = crate::pipeline::resolve_module_file(module, ctx.project_root, ctx.lib_dirs)?;
+    let source = std::fs::read_to_string(file).ok()?;
+    cranelisp_frontend::parse(&source).ok()
+}
+
 /// Compute the static import closure rooted at `module` (topologically ordered,
 /// imports-first), returning a clean `ModuleError` cycle diagnostic if the
-/// declared import graph has a cycle (the D0030 disposition — mutual imports are
-/// a compile-time cycle-error, NOT compiled; `signature-body-prepass.md` §4).
+/// declared dependency graph has a cycle (the D0030 disposition — mutual imports
+/// are a compile-time cycle-error, NOT compiled; `signature-body-prepass.md` §4).
 ///
-/// Returns `None` when the cluster declares no imports (no closure → fast exit).
-/// The returned [`ClosureOrder`] is reused by the body-boundary signature
-/// barrier (S93 Invariant PP) — so the closure walk runs ONCE per cluster, both
-/// the cycle check and the barrier gate consuming it.
+/// The graph is each walked module's `import` declarations that load plus its
+/// implicit prelude dependency (`design/int/int.md` §6.12): the root's follows
+/// the fallback bit this attempt set, and each walked file's follows the spec
+/// §8.8.1 predicate over that file. The returned [`ClosureOrder`], which the
+/// body-boundary signature barrier (S93 Invariant PP) waits on, is the closure
+/// over written imports alone: a declared child of a module the prelude
+/// depends on keeps the implicit import, so a barrier wait on the prelude could
+/// deadlock the parent that waits for that child.
 ///
-/// Side-effect free: it reads + parses each transitively-imported module's
-/// source ONLY to peel its Pass-0 import decls — it does NOT register, block,
-/// typecheck, or mutate any shared state. A dependency whose file cannot be
-/// resolved or parsed is treated as an edge-free leaf (conservative — the gate
-/// reports a cycle only when one is definitively present in the declared import
-/// graph, never a false positive that would block a legitimate build).
+/// Returns `None` when the cluster has no dependency to walk (fast exit).
+///
+/// Side-effect free apart from the failure-dependency record of a cycle: it
+/// reads + parses each walked module's source ONLY to peel its declarations —
+/// it does NOT register, block, typecheck, or mutate any other shared state. A
+/// dependency whose file cannot be resolved or parsed is an edge-free leaf, so
+/// the gate reports a cycle only when one is definitively present.
 ///
 /// The root's imports resolve against the cluster's `declared` children; each
 /// walked module's imports resolve against the `mod` forms of its own file.
@@ -638,88 +724,281 @@ pub(super) fn static_import_closure(
     sexps: &[Sexp],
     declared: &DeclaredChildren,
 ) -> Result<Option<crate::scheduler::ClosureOrder>, CranelispError> {
-    let (root_deps, first_span) = direct_import_deps(sexps, module, declared);
-    if root_deps.is_empty() {
-        return Ok(None); // no imports → no closure → no cycle (fast exit).
+    let (root_imports, first_span) =
+        declared_dependencies(sexps, module, declared, DeclaredEdges::Imports);
+    let prelude_file_exists =
+        crate::session_setup::resolve_prelude(ctx.project_root, ctx.lib_dirs).is_some();
+    let root_prelude = (prelude_file_exists
+        && ctx.prelude_fallback.get(module).is_some_and(|bit| *bit))
+    .then(prelude_module);
+    if root_imports.is_empty() && root_prelude.is_none() {
+        return Ok(None); // nothing to walk → no closure → no cycle (fast exit).
     }
 
-    // S93 Task-3 — per-cluster memo. The transitive walk below does an
-    // `fs::read_to_string` + `parse` for every transitively-imported module, and
-    // `process_cluster_once` re-enters this function at the top of EVERY pass
-    // (including every retry-from-top a dependency gap triggers). Memo the
-    // computed `ClosureOrder` keyed by a cheap fingerprint of the cluster's
-    // DIRECT imports (the closure's root set, computed above without any IO): a
-    // hit reuses the walk; a different cluster on the same module scope (a new
-    // REPL form with different imports) misses on the fingerprint and recomputes.
-    // The filesystem is stable across a single cluster's retry sequence, so the
-    // root-set fingerprint is a sound key; `re_register_module` resets the memo
-    // when a module's source changes. A cycle (Err below) is NOT memoised — it
+    // S93 Task-3 — per-cluster memo. The transitive walk below reads and
+    // parses every walked module's file, and `process_cluster_once` re-enters
+    // this function at the top of EVERY pass (including every retry-from-top a
+    // dependency gap triggers). The memo is keyed by a cheap fingerprint of the
+    // root's direct dependencies; the filesystem is stable across a single
+    // cluster's retry sequence, and `re_register_module` resets the memo when
+    // a module's source changes. A cycle (Err below) is NOT memoised — it
     // aborts the cluster, so there is no retry to serve.
-    let fingerprint = closure_fingerprint(&root_deps);
+    let fingerprint = closure_fingerprint(&root_imports, root_prelude.is_some());
     if let Some(cached) = ctx.scheduler.cached_static_closure(module, fingerprint) {
         return Ok(Some(cached));
     }
 
-    let mut edges: Vec<(ModuleFullPath, Vec<ModuleFullPath>)> = Vec::new();
-    let mut visited: std::collections::HashSet<ModuleFullPath> = std::collections::HashSet::new();
-    edges.push((module.clone(), root_deps.clone()));
-    visited.insert(module.clone());
-
-    let mut queue: std::collections::VecDeque<ModuleFullPath> = root_deps.into_iter().collect();
+    let mut imports: Vec<(ModuleFullPath, Vec<ModuleFullPath>)> =
+        vec![(module.clone(), root_imports.clone())];
+    let mut dependencies: Vec<(ModuleFullPath, Vec<ModuleFullPath>)> = vec![(
+        module.clone(),
+        root_imports.iter().cloned().chain(root_prelude).collect(),
+    )];
+    let mut visited: std::collections::HashSet<ModuleFullPath> =
+        std::collections::HashSet::from([module.clone()]);
+    let mut queue: std::collections::VecDeque<ModuleFullPath> =
+        dependencies[0].1.iter().cloned().collect();
     while let Some(dep) = queue.pop_front() {
         if !visited.insert(dep.clone()) {
             continue; // already walked
         }
-        // Resolve + parse the dep's source to peel ITS imports. Any failure
-        // (unresolvable file, parse error) → treat as a leaf.
-        let Some(dep_file) =
-            crate::pipeline::resolve_module_file(&dep, ctx.project_root, ctx.lib_dirs)
-        else {
-            continue;
-        };
-        let Ok(source) = std::fs::read_to_string(&dep_file) else {
-            continue;
-        };
-        let Ok(parsed) = cranelisp_frontend::parse(&source) else {
+        let Some(parsed) = parse_module_file(ctx, &dep) else {
             continue;
         };
         let dep_declared = DeclaredChildren::of(&dep, &mod_declarations(&parsed, &dep));
-        let (dep_deps, _) = direct_import_deps(&parsed, &dep, &dep_declared);
-        for d in &dep_deps {
-            if !visited.contains(d) {
-                queue.push_back(d.clone());
-            }
-        }
-        edges.push((dep, dep_deps));
+        let (dep_imports, _) =
+            declared_dependencies(&parsed, &dep, &dep_declared, DeclaredEdges::Imports);
+        let dep_dependencies: Vec<ModuleFullPath> = dep_imports
+            .iter()
+            .cloned()
+            .chain(source_prelude_edge(&dep, &parsed, prelude_file_exists))
+            .collect();
+        queue.extend(
+            dep_dependencies
+                .iter()
+                .filter(|d| !visited.contains(*d))
+                .cloned(),
+        );
+        imports.push((dep.clone(), dep_imports));
+        dependencies.push((dep, dep_dependencies));
     }
 
-    match crate::scheduler::dependency_closure(module, &edges) {
+    let closure = crate::scheduler::dependency_closure(module, &dependencies)
+        .and_then(|_| crate::scheduler::dependency_closure(module, &imports));
+    match closure {
         Ok(closure) => {
             // Memoise for this cluster's subsequent retry-from-top passes.
             ctx.scheduler
                 .cache_static_closure(module, fingerprint, &closure);
             Ok(Some(closure))
         }
-        Err(cycle) => Err(CranelispError::ModuleError {
-            message: format!("circular dependency detected: {}", cycle.render()),
-            location: ErrorLocation::from_span_file(first_span.unwrap_or(Span::SYNTHETIC), None),
-        }),
+        Err(cycle) => {
+            // The next module on the cycle, or the cycle's first module when
+            // `module` only reaches it (`design/int/repl-lifecycle.md` §1.2.1).
+            let reached = cycle
+                .cycle
+                .iter()
+                .position(|member| member == module)
+                .and_then(|at| cycle.cycle.get(at + 1))
+                .or_else(|| cycle.cycle.first());
+            if let Some(reached) = reached {
+                ctx.scheduler
+                    .record_failure_dependencies(module, [reached.clone()]);
+            }
+            Err(CranelispError::ModuleError {
+                message: format!("circular dependency detected: {}", cycle.render()),
+                location: ErrorLocation::from_span_file(
+                    first_span.unwrap_or(Span::SYNTHETIC),
+                    None,
+                ),
+            })
+        }
     }
 }
 
-/// Cheap order-sensitive fingerprint of a cluster's DIRECT import dep paths —
-/// the key for the per-cluster static-closure memo (S93 Task-3). Hashing the
-/// direct-import root set (a handful of module paths) is orders of magnitude
-/// cheaper than the transitive `fs::read_to_string` + `parse` walk it gates, so
-/// the memo turns O(retries × closure-size) redundant IO into a single walk per
-/// cluster. The order is significant (it reflects the declared import order),
-/// which is fine — the same cluster re-peels its imports in the same order every
-/// retry, so the fingerprint is stable across a cluster's retry sequence.
-fn closure_fingerprint(root_deps: &[ModuleFullPath]) -> u64 {
+/// Cheap fingerprint of a cluster's direct dependencies — the key for the
+/// per-cluster static-closure memo (S93 Task-3). Hashing the direct imports
+/// and the prelude edge is orders of magnitude cheaper than the transitive
+/// file walk it gates. The import order is significant, which is fine — the
+/// same cluster re-peels its imports in the same order every retry.
+fn closure_fingerprint(root_imports: &[ModuleFullPath], prelude_edge: bool) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    root_deps.hash(&mut hasher);
+    root_imports.hash(&mut hasher);
+    prelude_edge.hash(&mut hasher);
     hasher.finish()
+}
+
+// ---------------------------------------------------------------------------
+// A failed whole-source attempt (design/int/repl-lifecycle.md §1.2.1;
+// design/int/int.md §6.12)
+// ---------------------------------------------------------------------------
+
+/// The module qualifier of every qualified symbol written in `forms` outside
+/// reader-quoted data, before alias substitution. A type annotation's
+/// qualifier counts. Quoted data is shielded as the expander shields it,
+/// through the one quote classifier `cranelisp_types::quote_head`: a `quote`
+/// subject is data, and inside a `quasiquote` only an `unquote` at the
+/// template's own depth is live.
+fn written_qualifiers<'a>(forms: impl IntoIterator<Item = &'a Sexp>) -> BTreeSet<ModuleFullPath> {
+    fn walk(node: &Sexp, quasiquote_depth: usize, out: &mut BTreeSet<ModuleFullPath>) {
+        match node {
+            Sexp::Symbol(name, _) if quasiquote_depth == 0 => {
+                let written = name.strip_prefix(':').unwrap_or(name);
+                if let Some((qualifier, member)) = written.split_once('/')
+                    && !qualifier.is_empty()
+                    && !member.is_empty()
+                {
+                    out.insert(ModuleFullPath::from(qualifier));
+                }
+            }
+            Sexp::List(children, _) => match cranelisp_types::quote_head(children) {
+                Some(cranelisp_types::QuoteHead::Quote) => {}
+                Some(cranelisp_types::QuoteHead::Quasiquote) => {
+                    walk(&children[1], quasiquote_depth + 1, out)
+                }
+                Some(
+                    cranelisp_types::QuoteHead::Unquote
+                    | cranelisp_types::QuoteHead::UnquoteSplicing,
+                ) => walk(&children[1], quasiquote_depth.saturating_sub(1), out),
+                None => children
+                    .iter()
+                    .for_each(|child| walk(child, quasiquote_depth, out)),
+            },
+            Sexp::Bracket(children, _) => children
+                .iter()
+                .for_each(|child| walk(child, quasiquote_depth, out)),
+            Sexp::Annotated {
+                annotation,
+                subject,
+                ..
+            } => {
+                walk(annotation, quasiquote_depth, out);
+                walk(subject, quasiquote_depth, out);
+            }
+            _ => {}
+        }
+    }
+    let mut out = BTreeSet::new();
+    for form in forms {
+        walk(form, 0, &mut out);
+    }
+    out
+}
+
+/// The modules `module`'s written qualified symbols in `forms` name, each
+/// substituted through `aliases` as qualified auto-loading substitutes it.
+fn qualified_modules<'a>(
+    aliases: &cranelisp_types::ModuleAliases,
+    module: &ModuleFullPath,
+    forms: impl IntoIterator<Item = &'a Sexp>,
+) -> BTreeSet<ModuleFullPath> {
+    written_qualifiers(forms)
+        .iter()
+        .map(|qualifier| cranelisp_types::substitute_module_alias(aliases, module, qualifier))
+        .collect()
+}
+
+/// The dependencies of one failed whole-source attempt of `module`
+/// (`design/int/repl-lifecycle.md` §1.2.1): the declarations in its forms, the
+/// prelude when its bit is on, its live table's reload edges, the modules its
+/// qualified symbols name in its forms and in what it expanded, and its
+/// accumulated macro heads. The union over-approximates, which selection
+/// tolerates.
+pub(super) fn attempt_dependencies(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    forms: &[Sexp],
+    expanded: &[Sexp],
+    macro_heads: &BTreeSet<ModuleFullPath>,
+) -> BTreeSet<ModuleFullPath> {
+    let fallback = ctx.prelude_fallback.get(module).is_some_and(|bit| *bit);
+    let declared = cluster_declared_children(ctx, module, forms);
+    let (declarations, _) =
+        declared_dependencies(forms, module, &declared, DeclaredEdges::ImportsAndExports);
+    let mut dependencies: BTreeSet<ModuleFullPath> = declarations.into_iter().collect();
+    if fallback {
+        dependencies.insert(prelude_module());
+    }
+    if let Some(table) = ctx.symbol_tables.get(module) {
+        dependencies.extend(crate::cache::dependency_record::reload_edges(
+            module, &table, fallback,
+        ));
+    }
+    dependencies.extend(qualified_modules(
+        ctx.module_aliases,
+        module,
+        forms.iter().chain(expanded),
+    ));
+    dependencies.extend(macro_heads.iter().cloned());
+    dependencies.retain(|dependency| {
+        dependency != module && !crate::cache::dependency_record::is_compiler_owned(dependency)
+    });
+    dependencies
+}
+
+/// The cycle `module -> prelude -> … -> module` when the prelude's source
+/// reaches `module` (`design/int/int.md` §6.12, cycle precedence). The walk
+/// starts at the prelude's file and follows each walked file's `import`
+/// declarations that load, its `export` targets and its written qualified
+/// symbols; it follows no prelude edge and no declared child. `None` when the
+/// prelude does not reach `module`.
+///
+/// A walked file's qualifiers are substituted through the aliases that file
+/// declares, not the session carrier, which the walked module's Pass 0 may not
+/// yet have written. Every alias the session writes is private to its
+/// declaring module, so those are all the aliases the file's qualifiers can
+/// read; a writable public module alias would falsify this.
+pub(super) fn prelude_reach_cycle(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+) -> Option<crate::scheduler::CycleError> {
+    let prelude = prelude_module();
+    let aliases = cranelisp_types::ModuleAliases::default();
+    let mut reached_from: std::collections::HashMap<ModuleFullPath, ModuleFullPath> =
+        std::collections::HashMap::new();
+    let mut queue = std::collections::VecDeque::from([prelude.clone()]);
+    while let Some(visiting) = queue.pop_front() {
+        let Some(parsed) = parse_module_file(ctx, &visiting) else {
+            continue;
+        };
+        let submodules = mod_declarations(&parsed, &visiting);
+        crate::imports::install_declared_aliases(
+            &visiting,
+            &aliases,
+            &import_declarations(&parsed, &visiting),
+            &submodules,
+        );
+        let declared = DeclaredChildren::of(&visiting, &submodules);
+        let (declarations, _) = declared_dependencies(
+            &parsed,
+            &visiting,
+            &declared,
+            DeclaredEdges::ImportsAndExports,
+        );
+        let qualified = qualified_modules(&aliases, &visiting, &parsed);
+        for next in declarations.into_iter().chain(qualified) {
+            if next == prelude
+                || next == visiting
+                || reached_from.contains_key(&next)
+                || crate::cache::dependency_record::is_compiler_owned(&next)
+            {
+                continue;
+            }
+            reached_from.insert(next.clone(), visiting.clone());
+            if next == *module {
+                let mut path = vec![module.clone()];
+                while let Some(previous) = reached_from.get(path.last()?) {
+                    path.push(previous.clone());
+                }
+                path.push(module.clone());
+                path.reverse();
+                return Some(crate::scheduler::CycleError { cycle: path });
+            }
+            queue.push_back(next);
+        }
+    }
+    None
 }
 
 /// Gate the cluster's body (Pass-1/Pass-2) on the signature barrier (S93,
@@ -825,6 +1104,7 @@ pub(super) fn handle_export(
     for resolved in &resolved_specs {
         let spec = resolved.spec();
         let dep = resolved.module();
+        refuse_failed_table(ctx, module, dep, spec.span)?;
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
@@ -1366,7 +1646,7 @@ pub(super) fn ensure_prelude_bit(
     sexps: &[Sexp],
     fresh: bool,
 ) {
-    let prelude_path = ModuleFullPath::from("prelude");
+    let prelude_path = prelude_module();
     if fresh {
         if *module != prelude_path && !sexps_reference_prelude(sexps) {
             ctx.prelude_fallback.insert(module.clone(), true);
@@ -1391,7 +1671,7 @@ pub(super) fn inject_prelude_if_needed(
     module: &ModuleFullPath,
     sexps: &[Sexp],
 ) -> Result<Option<ModuleFullPath>, CranelispError> {
-    let prelude_path = ModuleFullPath::from("prelude");
+    let prelude_path = prelude_module();
     if *module == prelude_path {
         return Ok(None);
     }
@@ -1557,18 +1837,15 @@ mod bare_module_name_tests {
             });
         }
 
-        /// Run `a`'s cluster prologue over `source`: `Ok(Some(dep))` names the
-        /// dependency its import blocked on.
-        #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
-        fn prologue(&self, source: &str) -> Result<Option<ModuleFullPath>, CranelispError> {
-            let a = ModuleFullPath::from("a");
-            let mut ctx = ModuleCompiler {
+        /// The session state one cluster of `module` runs against.
+        fn ctx(&self, module: &ModuleFullPath) -> ModuleCompiler<'_> {
+            ModuleCompiler {
                 symbol_tables: &self.tables,
                 next_type_id: &self.next_type_id,
                 module_aliases: &self.aliases,
                 prelude_fallback: &self.fallback,
-                check_state: cranelisp_typecheck::CheckState::new(a.clone()),
-                current_module: a.clone(),
+                check_state: cranelisp_typecheck::CheckState::new(module.clone()),
+                current_module: module.clone(),
                 scheduler: &self.scheduler,
                 typecheck_products: &self.products,
                 introspection: None,
@@ -1577,9 +1854,59 @@ mod bare_module_name_tests {
                 project_root: self.dir.path(),
                 shared_state: None,
                 eval_driven: true,
-            };
+            }
+        }
+
+        /// Run `a`'s cluster prologue over `source`: `Ok(Some(dep))` names the
+        /// dependency its import blocked on.
+        #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+        fn prologue(&self, source: &str) -> Result<Option<ModuleFullPath>, CranelispError> {
+            let a = ModuleFullPath::from("a");
+            let mut ctx = self.ctx(&a);
             let sexps = cranelisp_frontend::parse(source).unwrap();
             super::super::run_cluster_prologue(&mut ctx, &a, &sexps, ModuleStrategy::Additive)
+        }
+
+        /// The static import closure of `root`'s own file, with `root`'s
+        /// fallback bit set as its source implies (spec §8.8.1).
+        #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+        fn static_closure_of(
+            &self,
+            root: &str,
+        ) -> Result<Option<crate::scheduler::ClosureOrder>, CranelispError> {
+            let root = module(root);
+            let sexps = parse_module_file(&self.ctx(&root), &root).unwrap_or_default();
+            if source_prelude_edge(&root, &sexps, true).is_some() {
+                self.fallback.insert(root.clone(), true);
+            }
+            let ctx = self.ctx(&root);
+            let declared = cluster_declared_children(&ctx, &root, &sexps);
+            static_import_closure(&ctx, &root, &sexps, &declared)
+        }
+
+        /// The error a failed whole-source attempt of `root`'s own file
+        /// reports in place of `error`, with `root`'s fallback bit set as its
+        /// source implies.
+        fn failed_attempt_error(&self, root: &str, error: &str) -> String {
+            let root = module(root);
+            let sexps = parse_module_file(&self.ctx(&root), &root).unwrap_or_default();
+            if source_prelude_edge(&root, &sexps, true).is_some() {
+                self.fallback.insert(root.clone(), true);
+            }
+            let prefix = super::super::ExpandedPrefix::resuming(
+                &crate::scheduler::SourceContinuation::source(sexps.clone()),
+            );
+            super::super::fail_whole_source_attempt(
+                &self.ctx(&root),
+                &root,
+                &sexps,
+                &prefix,
+                CranelispError::TypeError {
+                    message: error.to_string(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                },
+            )
+            .to_string()
         }
     }
 
@@ -1645,6 +1972,295 @@ mod bare_module_name_tests {
                 "{message}"
             ),
             other => panic!("expected the root `q` cycle, got {other:?}"),
+        }
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2.1 — the static import-closure
+    // gate records the next module on the cycle the module closed.
+    #[test]
+    fn static_closure_cycle_records_the_next_module_as_failure_dependency() {
+        let project = root_q_importing_a();
+        project
+            .scheduler
+            .register_module(module("a"), std::sync::Arc::from(Vec::new()), false);
+        assert!(
+            project
+                .prologue("(import [q [g]])\n(defn h [] (g))\n")
+                .is_err()
+        );
+        assert_eq!(
+            project.scheduler.failure_dependencies(&module("a")),
+            BTreeSet::from([module("q")])
+        );
+    }
+
+    fn cycle_message(
+        outcome: Result<Option<crate::scheduler::ClosureOrder>, CranelispError>,
+    ) -> String {
+        match outcome {
+            Err(CranelispError::ModuleError { message, .. }) => message,
+            other => panic!("expected a cycle, got {other:?}"),
+        }
+    }
+
+    /// A project whose prelude imports `x`, and a third module `c`; `x`
+    /// carries the fallback bit unless it null-imports the prelude.
+    fn prelude_importing_x(x_opted_out: bool) -> Project {
+        let x = if x_opted_out {
+            "(import [prelude []])\n(defn one [] 1)\n"
+        } else {
+            "(defn one [] 1)\n"
+        };
+        Project::new(&[
+            ("prelude.cl", "(import [x [one]])\n"),
+            ("x.cl", x),
+            ("c.cl", "(defn c [] 1)\n"),
+        ])
+    }
+
+    // spec: spec/08-modules.md §8.8.1, §8.10.2; design/int/int.md §6.12 — the
+    // static gate walks the implicit prelude edge: from the prelude, from `x`
+    // and from a third module with the bit on, the prelude importing `x`,
+    // whose bit is on, is a cycle; with `x` null-importing the prelude, none.
+    #[test]
+    fn static_closure_walks_the_implicit_prelude_edge() {
+        for (root, cycle) in [
+            ("prelude", "prelude -> x -> prelude"),
+            ("x", "x -> prelude -> x"),
+            ("c", "prelude -> x -> prelude"),
+        ] {
+            let message = cycle_message(prelude_importing_x(false).static_closure_of(root));
+            assert!(
+                message.contains(&format!("circular dependency detected: {cycle}")),
+                "{root}: {message}"
+            );
+            assert!(
+                prelude_importing_x(true).static_closure_of(root).is_ok(),
+                "{root}"
+            );
+        }
+    }
+
+    // spec: design/int/int.md §6.12 (The barrier does not wait on the edge) —
+    // the signature barrier's members for a root with the bit on and no
+    // imports exclude the prelude.
+    #[test]
+    fn static_closure_barrier_members_exclude_the_prelude() {
+        let closure = prelude_importing_x(true).static_closure_of("c").unwrap();
+        let members = closure.map(|closure| closure.order).unwrap_or_default();
+        assert!(!members.contains(&module("prelude")), "{members:?}");
+    }
+
+    const X_FAILS_ON_P: &str = "(defn get [:P p] (P.n p))\n(defn one [] 3)\n";
+    const P_UNKNOWN: &str = "unknown type `P`";
+
+    // spec: spec/08-modules.md §8.5.4 item 6, §8.10.1; design/int/int.md §6.12
+    // (cycle precedence) — `x`, with the bit on, failing on a prelude type
+    // while the prelude reaches it through `export`, a qualified reference, or
+    // another module's import, reports the cycle instead of its own error.
+    #[test]
+    fn failed_attempt_reached_by_the_prelude_reports_the_cycle() {
+        for (prelude, extra, cycle) in [
+            (
+                "(export [x [one]])\n(deftype P [:Int n])\n",
+                None,
+                "x -> prelude -> x",
+            ),
+            (
+                "(deftype P [:Int n])\n(defn pone [] (x/one))\n",
+                None,
+                "x -> prelude -> x",
+            ),
+            (
+                "(export [a [f]])\n(deftype P [:Int n])\n",
+                Some(("a.cl", "(import [x [one]])\n(defn f [] (one))\n")),
+                "x -> prelude -> a -> x",
+            ),
+        ] {
+            let mut files = vec![("prelude.cl", prelude), ("x.cl", X_FAILS_ON_P)];
+            files.extend(extra);
+            let message = Project::new(&files).failed_attempt_error("x", P_UNKNOWN);
+            assert!(
+                message.contains(&format!("circular dependency detected: {cycle}")),
+                "{prelude}: {message}"
+            );
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5.4 item 6; design/int/int.md §6.12 (Aliases
+    // come from the walked file) — `a` reaches `x` only as `y/one` through its
+    // own `(import [(x y) []])`; with no alias in the session carrier, as before
+    // `a`'s Pass 0 runs, the walk still reports the cycle through `a`.
+    #[test]
+    fn failed_attempt_reached_through_a_walked_file_s_own_alias_reports_the_cycle() {
+        let project = Project::new(&[
+            ("prelude.cl", "(export [a [f]])\n(deftype P [:Int n])\n"),
+            (
+                "a.cl",
+                "(import [prelude []])\n(import [(x y) []])\n(defn f [] (y/one))\n",
+            ),
+            ("x.cl", X_FAILS_ON_P),
+        ]);
+        assert!(project.aliases.is_empty(), "precondition: no session alias");
+        let message = project.failed_attempt_error("x", P_UNKNOWN);
+        assert!(
+            message.contains("circular dependency detected: x -> prelude -> a -> x"),
+            "{message}"
+        );
+    }
+
+    // spec: design/int/int.md §6.12 (cycle precedence) — the precedence walk
+    // over-reaches nowhere: `x` keeps its own error when it null-imports the
+    // prelude, when the prelude names `x/one` only inside quoted data, and
+    // when `x` is a declared child of a module the prelude exports.
+    #[test]
+    fn failed_attempt_not_reached_by_the_prelude_keeps_its_own_error() {
+        let cases: [(&[(&str, &str)], &str); 3] = [
+            (
+                &[
+                    ("prelude.cl", "(export [x [one]])\n(deftype P [:Int n])\n"),
+                    ("x.cl", "(import [prelude []])\n(defn one [] (nope))\n"),
+                ],
+                "x",
+            ),
+            (
+                &[
+                    (
+                        "prelude.cl",
+                        "(deftype P [:Int n])\n(defmacro m [] `(x/one))\n(defn q [] (quote x/one))\n",
+                    ),
+                    ("x.cl", X_FAILS_ON_P),
+                ],
+                "x",
+            ),
+            (
+                &[
+                    ("prelude.cl", "(export [p [f]])\n(deftype P [:Int n])\n"),
+                    ("p.cl", "(mod x)\n(defn f [] 1)\n"),
+                    ("p/x.cl", X_FAILS_ON_P),
+                ],
+                "p.x",
+            ),
+        ];
+        for (files, failing) in cases {
+            let message = Project::new(files).failed_attempt_error(failing, P_UNKNOWN);
+            assert!(
+                message.contains(P_UNKNOWN) && !message.contains("circular"),
+                "{files:?}: {message}"
+            );
+        }
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2.1 — the qualifier enumeration
+    // shields reader-quoted data as the expander does: a `quote` subject and a
+    // `quasiquote` template are data, an `unquote` inside the template is live.
+    #[test]
+    fn written_qualifiers_skip_quoted_data_and_read_live_unquotes() {
+        let forms =
+            cranelisp_frontend::parse("(f a/x (quote b/y) `(c/z ~(d/w)) :e/T (/ 1 2))").unwrap();
+        let qualifiers: Vec<String> = written_qualifiers(&forms)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(qualifiers, ["a", "d", "e"]);
+    }
+
+    const W_REFUSAL: &str = "circular dependency detected: w -> prelude -> w";
+
+    /// A project whose `w` has a table defining `one`, standing `Failed` with
+    /// [`W_REFUSAL`] or compiled; `a` is registered so it can record failure
+    /// dependencies.
+    fn project_with_w(failed: bool) -> Project {
+        let project = Project::new(&[("w.cl", "(defn one [] 1)\n")]);
+        let (a, w) = (module("a"), module("w"));
+        cranelisp_types::ensure_module_exists(&project.tables, &a);
+        let mut table = SessionSymbolTable::new_with_params(w.clone());
+        let _ =
+            crate::repl::test_support::install_userfn(&mut table, "one", None, Visibility::Public);
+        project.tables.insert(w.clone(), table);
+        let empty = || std::sync::Arc::from(Vec::new());
+        project.scheduler.register_module(a, empty(), false);
+        project.scheduler.register_module(w.clone(), empty(), false);
+        if failed {
+            project.scheduler.notify_module_failed(
+                &w,
+                CranelispError::ModuleError {
+                    message: W_REFUSAL.to_string(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                },
+            );
+        } else {
+            project.scheduler.notify_typecheck_done(&w);
+        }
+        project
+    }
+
+    impl Project {
+        /// Run Pass 0 alone over `source` in module `a`.
+        #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+        fn pass0(&self, source: &str) -> Result<Option<ModuleFullPath>, CranelispError> {
+            let a = module("a");
+            let mut ctx = self.ctx(&a);
+            let sexps = cranelisp_frontend::parse(source).unwrap();
+            let declared = cluster_declared_children(&ctx, &a, &sexps);
+            super::super::pass0_peel_structural(&mut ctx, &a, &sexps, &declared)
+        }
+
+        fn a_names(&self, name: &str) -> bool {
+            self.tables.get(&module("a")).is_some_and(|table| {
+                !table
+                    .name_candidates(&cranelisp_types::Symbol::from(name))
+                    .is_empty()
+            })
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5.4 item 5, §8.10.3; design/int/int.md §6.11
+    // (Pass-0 fail-fast) — an `import` or `export` of a module standing
+    // `Failed` with a present table fails with that module's error, records
+    // it as a failure dependency and resolves no name against its table,
+    // whether or not the table holds the declared name.
+    #[test]
+    fn pass0_declaration_of_a_failed_module_fails_with_its_error() {
+        let mut failures = Vec::new();
+        for source in [
+            "(export [w [one]])\n",
+            "(export [w [two]])\n",
+            "(import [w [one]])\n",
+            "(import [w [two]])\n",
+        ] {
+            let project = project_with_w(true);
+            let outcome = project.pass0(source);
+            let carries_w_error = matches!(
+                &outcome,
+                Err(CranelispError::ModuleError { message, .. }) if message.contains(W_REFUSAL)
+            );
+            let recorded = project.scheduler.failure_dependencies(&module("a"));
+            if !carries_w_error
+                || recorded != BTreeSet::from([module("w")])
+                || project.a_names("one")
+            {
+                failures.push(format!("{source}{outcome:?}; recorded {recorded:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    // spec: design/int/int.md §6.11 (Pass-0 fail-fast) negative — with `w`
+    // compiled, the same declarations install as before and record nothing.
+    #[test]
+    fn pass0_declaration_of_a_compiled_module_installs_its_names() {
+        for source in ["(export [w [one]])\n", "(import [w [one]])\n"] {
+            let project = project_with_w(false);
+            assert_eq!(project.pass0(source).unwrap(), None, "{source}");
+            assert!(project.a_names("one"), "{source}");
+            assert!(
+                project
+                    .scheduler
+                    .failure_dependencies(&module("a"))
+                    .is_empty(),
+                "{source}"
+            );
         }
     }
 }

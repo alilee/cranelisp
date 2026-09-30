@@ -128,13 +128,12 @@
 //! ## The published Import-catalog (`intrinsics_table()`, BC §4b invariant 11)
 //!
 //! [`intrinsics_table`] returns the published flat `name → (signature, ptr)`
-//! catalog of this crate's backend-emitted-call targets — 16 core + the 12
-//! `cranelisp_trace_*` family (S76 trace ruling) + `catch-runtime-error` (the
-//! protected-call combinator). The authoritative entry count is the catalog's
-//! own test constant ([`catalog`]'s `EXPECTED_NAMES` /
-//! `name_set_is_exactly_the_expected_29`), not a literal restated here — cite
-//! that single owner when the catalog grows. This is the
-//! Decision-0048-for-intrinsics self-publication (the `PRIMITIVES_TABLE`
+//! catalog of this crate's backend-emitted-call targets: the core runtime
+//! targets, the `cranelisp_trace_*` family (S76 trace ruling) and
+//! `catch-runtime-error` (the protected-call combinator). The exact name set,
+//! and so the entry count, is owned by [`catalog`]'s `EXPECTED_NAMES`, pinned
+//! by `name_set_is_exactly_the_expected_names`; it is not restated here. This
+//! is the Decision-0048-for-intrinsics self-publication (the `PRIMITIVES_TABLE`
 //! precedent applied to intrinsics). Each [`IntrinsicEntry`] carries the
 //! emitted-call ABI `name`, the in-crate fn `ptr`, and the `(param_count,
 //! has_return)` scalar signature — NO `cranelisp-types` type is named

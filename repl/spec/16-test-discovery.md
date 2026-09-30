@@ -136,38 +136,52 @@ In the REPL, a program can run tests with ordinary code — no macro. `discover-
 - `(Ok (Some why))` — the test ran and reported an assertion failure
 
 ```clojure
-(import [primitives [discover-tests catch-runtime-error]])
+(import [primitives [discover-tests catch-runtime-error
+                     Pair Some None Ok Err
+                     str-concat contains? add-i64 eq-i64
+                     vec-len vec-get vec-push]])
 
 ;; Run one discovered test: returns a human-readable line.
 (defn run-one [pair]
   (match pair
     [(Pair name run)
      (match (catch-runtime-error run)
-       [(Err msg)        (str-concat name " PANIC: " msg)]
-       [(Ok None)        (str-concat name " ok")]
-       [(Ok (Some why))  (str-concat name " FAIL: " why)])]))
+       [(Err msg) (str-concat name (str-concat " PANIC: " msg))
+        (Ok outcome)
+          (match outcome
+            [None       (str-concat name " ok")
+             (Some why) (str-concat name (str-concat " FAIL: " why))])])]))
+
+;; Run the pairs from index i whose name satisfies keep?, appending one line each.
+(defn run-selected [pairs keep? i lines]
+  (if (eq-i64 i (vec-len pairs))
+      lines
+      (let [pair (vec-get pairs i)]
+        (run-selected pairs keep? (add-i64 i 1)
+          (match pair
+            [(Pair name _)
+             (if (keep? name) (vec-push lines (run-one pair)) lines)])))))
 
 ;; Run every test in the current module.
 (defn run-all []
-  (map run-one (discover-tests [])))
+  (run-selected (discover-tests []) (fn [name] true) 0 []))
 
 ;; Run only the tests whose name contains a substring — selection is in-language,
 ;; over the SAME pairs, and stays fresh because the callables are late-bound.
 (defn run-matching [substr]
-  (map run-one
-       (filter (fn [p] (match p [(Pair nm _) (contains? nm substr)])) (discover-tests []))))
+  (run-selected (discover-tests []) (fn [name] (contains? name substr)) 0 []))
 ```
 
 `catch-runtime-error` is usable by any code, not just tests:
 
 ```clojure
-(import [primitives [catch-runtime-error]])
+(import [primitives [catch-runtime-error div-i64 Ok Err]])
 
 ;; Try a risky computation; recover with a default on panic.
 (defn safe-div [a b]
-  (match (catch-runtime-error (fn [] (/ a b)))
-    [(Ok q)   q]
-    [(Err _)  0]))           ; division by zero panicked — recover with 0
+  (match (catch-runtime-error (fn [] (div-i64 a b)))
+    [(Ok q)  q
+     (Err _) 0]))            ; division by zero panicked — recover with 0
 ```
 
 Standard library convenience functions (e.g., `format-test-run`, `failures-only`, `test-passed?`) MAY be provided in a `core.testing` module but are not required by this specification.

@@ -409,6 +409,11 @@ ordering, the one reload executor and the module lock are
   overload arms, instances and macro clauses, enters the retention pool as a
   frozen entry before that table can drop (§6.1). The displaced table then
   becomes the module's reference or drops (§7.3.2).
+- **Order.** Swap, pool the displaced owners, hold the reference, and only
+  then run the fallible session-state reset. An early return from the reset
+  then cannot drop an unpooled `Code` or lose the reference (review A1). The
+  reset's one refusal is precluded today, since it removes only an
+  implementation shell; the order makes that irrelevant.
 - **Then the ordinary path.** Pass 0, macro checkpoints, the final cluster,
   codegen and publication run as a first registration on the fresh table.
   - The per-key guard finds no prior binding and passes. A rebuild may
@@ -463,8 +468,13 @@ ordering, the one reload executor and the module lock are
   compile records no callee edge and no lookup dependency, so without the
   reference a module that failed on `lib/h` would lose its edge to `lib`, and
   repairing `lib` would never release it (REPL §14.6; FQR-1, FQR-2, FL-3).
-- A module with no table at reload, which production does not reach, takes an
-  empty reference.
+- A module with no table at reload takes an empty reference. Production
+  reaches this for a startup-failed dependency whose never-compiled table
+  recovery purged
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)); it never
+  compiled, so there is no generation to compare against or to take edges
+  from. Its failure dependencies select it instead
+  ([§1.2.1](repl-lifecycle.md#121-failure-dependencies)).
 - **Grade: structural.** Only whole-source provenance can carry a reference,
   and only the success branch drops one.
 
@@ -485,11 +495,17 @@ ordering, the one reload executor and the module lock are
 - **Grade: asserted with a named falsifier.** Falsifier: after a completed
   plan, an evaluation reaches compiled code in a module that references a
   rebuilt module's GOT and was neither rebuilt after it in that plan nor
-  locked. Possible sources are an edge kind outside imports, exports, prelude,
-  callees and lookup dependencies; a dependent with no mapped file (below); a
-  compile-time cycle between two modules that both compile. Controls: FQR-1,
-  FQR-2 and the lookup-dependency cells for edge kinds; the order and
-  order-check units (§1.2); the executor for callers.
+  locked. Possible sources are an edge kind outside loading imports,
+  exports, the prelude fallback, callees and lookup dependencies, and a
+  dependent with no mapped file (below). A null import is no edge; a use
+  through it is a recorded callee or lookup edge.
+  A module cycle whose members all compile is no longer a source: the
+  publication check rejects the attempt that closes it
+  ([int §6.11](int.md#611-module-cycles-at-publication)), and a follow-on
+  root set that recurs anyway locks its modules
+  ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)). Controls:
+  FQR-1, FQR-2 and the lookup-dependency cells for edge kinds; the order,
+  order-check and recurrence units (§1.2); the executor for callers.
 - **Residuals.**
   - A dependent with compiled definitions and no mapped backing file is not
     rebuilt. Regeneration maps every file it writes, so this needs a module

@@ -7,21 +7,20 @@ use cranelisp_types::{CallableOrigin, Life, ModuleFullPath, Realization, SymbolT
 use super::{PrimitiveDecl, build_table, declarations, harvest_shims};
 use crate::abi_facts::{AbiKind, abi_kinds_for, result_kind_for};
 
-// spec: design/runtime/s119-typed-consume-funnel.md §4.3 — the private Rust
-// shim types and the declaration's language type/ParamFlow project the same
-// ABI ownership facts while the exported wrapper stays raw i64.
+// spec: design/primitives/primitives.md §2.4 — the private Rust shim types and
+// the declaration's language type project the same ABI ownership facts while
+// the exported wrapper stays raw i64.
 #[test]
 fn shim_abi_kinds_match_declared_facts() {
     for row in declarations() {
         match row {
             PrimitiveDecl::UserExtern {
                 scheme,
-                ownership,
                 abi_param_kinds,
                 abi_result_kind,
                 ..
             } => {
-                assert_eq!(abi_param_kinds, abi_kinds_for(&scheme.ty, &ownership));
+                assert_eq!(abi_param_kinds, abi_kinds_for(&scheme.ty));
                 assert_eq!(abi_result_kind, result_kind_for(&scheme.ty));
             }
             PrimitiveDecl::HarvestExtern {
@@ -259,6 +258,10 @@ fn malformed_declaration_rows_do_not_compile() {
         (
             "typed_shim_body_mismatch.rs",
             "expected `Owned`, found `i64`",
+        ),
+        (
+            "borrowed_shim_token.rs",
+            "the trait bound `Borrowed<'static>: AbiHandle` is not satisfied",
         ),
     ] {
         let source = manifest.join("src/declarations/ui").join(case);

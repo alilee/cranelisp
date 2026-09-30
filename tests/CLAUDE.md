@@ -161,7 +161,8 @@ MUST measure a control/subject **pair** and assert on the difference. Absolute
 this class.
 
 **Why:** every stdlib-prelude child carries a program-independent compile-time
-residual from the macro-turn marshal boundary (FIXME 0889). An absolute cell
+residual (FIXME 0889; its macro-turn share was fixed in S122, and an
+unclassified remainder stands). An absolute cell
 over such a child measures **only** that residual: it reads RED regardless of
 the runtime behaviour it is named after, and it would read GREEN again the
 moment 0889 is fixed even if that behaviour had rotted meanwhile. Either way it

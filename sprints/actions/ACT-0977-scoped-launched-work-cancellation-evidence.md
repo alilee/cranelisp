@@ -1,7 +1,7 @@
 ---
 id: ACT-0977
 title: Establish evidence and realize cancellation ownership for launched work
-status: open
+status: deferred
 priority: normal
 from: sprint
 to: qa
@@ -13,6 +13,12 @@ refers_to:
   - design/arch/effect-concurrency.md
   - design/intrinsics/reactor.md
 ---
+
+## S122 disposition (user-approved 2026-09-30)
+
+Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
+
+- **Carried to S123 (K7, R1).** First deferral. Any public or schema change follows the API gate.
 
 ## Approved requirement and current limit
 

@@ -706,7 +706,7 @@ fn match_over_dotted_covered_ctor_not_false_nonexhaustive_neg() {
 // meaning, dotted and bare: the bare `(Qtok x)` on a `Qwrap` scrutinee fences a
 // correction that lets the type win the spelling. Terms are distinct powers of
 // two; a wrong arm in the `Qa` matches adds 64.
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/infer.rs::instantiate_ctor found=S122 owner=/dev fixed=S122/63605970
 #[test]
 fn type_named_like_other_types_ctor_matches_its_own_ctors() {
     run_through_all_modes(

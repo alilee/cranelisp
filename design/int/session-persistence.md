@@ -211,7 +211,10 @@ until a reload of it succeeds (`repl/spec/14-file-watching.md` §14.5 item 5).
 - **Startup.** An entry backing file that does not parse is locked the same
   way (`repl/spec/15-session-persistence.md` §15.2.3). One that parses but
   fails keeps its definition-turn repair and the failed-form re-emission of
-  [§2.1](#21-content). Every other module a failed start leaves `Failed` is
+  [§2.1](#21-content) until its first whole-file rebuild, which a plan may
+  run as a dependent: a failed rebuild locks it, a successful one drops the
+  retained forms (`repl/spec/15-session-persistence.md` §15.2.3, final
+  paragraph). Every other module a failed start leaves `Failed` is
   locked. It is not a backing file, so no repair applies
   ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
 - **Restart.** The lock is session state. A restart compiles the saved
@@ -239,15 +242,10 @@ its preloaded table.
   definitions. `/mod` reports each failed module's notification. Persisted macro
   calls re-expand with the macro current at the recompile, as the template
   qualification of `repl/spec/15-session-persistence.md` §15.4 permits.
-- **No recompile otherwise.** `/mod` to the entry module, to a module
-  compiled from source this session or to a module not yet loaded switches
-  without recompiling.
-  - A module not yet loaded starts from an empty table, so a definition
-    turn there regenerates its file without the file's existing
-    definitions.
-  - Whether `/mod` to an existing unloaded file must load it, refuse, or may
-    replace it is an open spec question (ACT-1010 M2). This design does not
-    decide it.
+- **No recompile otherwise.** `/mod` to the entry module or to a module
+  compiled from source this session switches without recompiling. `/mod`
+  never creates a module: it loads a module not yet loaded from its file,
+  or refuses a name with no module ([int §8.5.1](int.md#851-mod-target)).
 - **Failure.** A failed recompile has the outcome of a failed reload of that
   module (`repl-lifecycle.md` §1.3–§1.4).
 - **Rejected alternatives.** Re-expansion during rehydration would run macros

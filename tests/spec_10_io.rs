@@ -252,6 +252,78 @@ fn platform_effect_unforced_discard_balances() {
     pair.assert_balanced("unforced Effect discard");
 }
 
+/// A `--run` program with a `Functor` instance over `IO` in scope, so the
+/// control's inline `bind` chain and the subject's `fmap` chain differ only in
+/// whether each step goes through the trait instance.
+fn functor_io_program(body: &str) -> Child {
+    Child::new(&format!(
+        "(import [primitives [IO Pure bind add-i64]])\n\
+         (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl (Functor f) (Functor IO)\n\
+           (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))\n\
+         (defn inc [x] (add-i64 x 1))\n\
+         (defn main [] {body})\n"
+    ))
+    .env("CRANELISP_RC_DEC_CHECK", "1")
+}
+
+// spec: spec/07-traits.md §7.3.4 — a `Functor` instance over `IO` dispatches;
+// spec/12-runtime.md §12.3.1 — each call through it leaks nothing its inline
+// `bind` twin does not (FIXME 0907 balance cell; S122 K2).
+//
+// Three steps per child, so a per-call retention (S118: about 68 bytes) would
+// read as a positive multiple of three. Exit 42 requires every step to run.
+#[test]
+fn functor_io_instance_calls_balance_against_inline_bind() {
+    let step = "(fn [x] (Pure (inc x)))";
+    let pair = MarginalPair::new(
+        "three fmap calls through the Functor IO instance",
+        functor_io_program(&format!(
+            "(bind (bind (bind (Pure 39) {step}) {step}) {step})"
+        )),
+        functor_io_program("(fmap inc (fmap inc (fmap inc (Pure 39))))"),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(42), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(42), "{}", pair.report());
+    pair.assert_balanced("Functor IO instance calls");
+}
+
+// spec: spec/10-io.md §10.8 — an IO value that is never forced performs
+// nothing; spec/12-runtime.md §12.3.1 — discarding it releases the heap payload
+// of the `Pure` inside its unrun `Bind` exactly once (FIXME 0934; S122 K2).
+//
+// The payload is a runtime `str-concat` result, so it is a counted heap block.
+// A stranded payload reads +1; a second release meets a freed block under the
+// armed `CRANELISP_RC_DEC_CHECK`.
+#[test]
+fn unrun_bind_over_heap_payload_pure_discard_balances() {
+    let program = |body: &str| {
+        Child::new(&format!(
+            "(import [primitives [Pure bind str-concat str-len]])\n\
+             (defn main [] {body})\n"
+        ))
+        .env("CRANELISP_RC_DEC_CHECK", "1")
+    };
+    let pair = MarginalPair::new(
+        "discarded unrun Bind over a heap-payload Pure",
+        program("(Pure 0)"),
+        program(
+            "(let [_ (bind (Pure (str-concat \"ab\" \"cd\")) (fn [s] (Pure (str-len s))))]\n\
+               (Pure 0))",
+        ),
+    )
+    .measure();
+    assert_eq!(pair.control().exit_code(), Some(0), "{}", pair.report());
+    assert_eq!(pair.subject().exit_code(), Some(0), "{}", pair.report());
+    assert!(
+        pair.allocs() >= 3,
+        "the subject must build the payload, its Pure and the Bind: {}",
+        pair.report()
+    );
+    pair.assert_balanced("discarded unrun Bind over a heap-payload Pure");
+}
+
 // =============================================================================
 // bind primitive — spec/10-io.md §10.3
 // =============================================================================

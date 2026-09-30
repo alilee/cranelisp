@@ -46,6 +46,26 @@ const WATCH_PRELUDE_NUM: &str = "\
 /// glob to the user site as bare names — spec §8.4 / §8.8 (FIXME 0263).
 const WATCH_PRELUDE_PRIMS: &str = "(export [primitives [*]])\n";
 
+// Every helper module a prelude here reaches opens with `(import [prelude []])`,
+// in its initial file and in each `/sh echo` rewrite. Without the null import
+// its implicit prelude import would close a cycle with the prelude (spec
+// §8.8.1), and the session would fail at startup rather than exercise the edit.
+
+/// The watched helper `mymod`, as the prelude first loads it.
+const MYMOD: &str = "(import [prelude []])\n(defn val [] 42)";
+
+/// Asserts that turn 1, the evaluation before the edit, gave `value`, so that
+/// the session started cleanly and any `[errors:]` belongs to the edit.
+fn assert_pre_edit_evaluation(out: &CrOutput, value: &str) {
+    let first = out.stdout.split("user>").nth(1).unwrap_or("");
+    assert!(
+        first.contains(value),
+        "precondition: the evaluation before the edit gives {value}: stdout={}\nstderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
 // =============================================================================
 // 1. Watch Scope (§14.1)
 // =============================================================================
@@ -63,7 +83,7 @@ fn watch_emits_notification_when_loaded_module_source_changes() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.3
-/sh echo '(defn val [] 99)' > mymod.cl
+/sh echo '(import [prelude []]) (defn val [] 99)' > mymod.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /quit
@@ -71,9 +91,10 @@ fn watch_emits_notification_when_loaded_module_source_changes() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("[updated: mymod.cl]") || combined.contains("[errors: mymod.cl]"),
@@ -107,9 +128,10 @@ fn watch_does_not_notify_on_metadata_only_change() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     assert!(
         !out.stdout.contains("[updated:") && !out.stdout.contains("[errors:"),
         "metadata-only change (touch, same content) should NOT trigger notification: stdout={}",
@@ -129,7 +151,7 @@ fn watch_cascade_invalidates_dependent_module_on_dep_change() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.3
-/sh echo '(defn val-b [] 99)' > mod_b.cl
+/sh echo '(import [prelude []]) (defn val-b [] 99)' > mod_b.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /quit
@@ -139,11 +161,12 @@ fn watch_cascade_invalidates_dependent_module_on_dep_change() {
         .file("prelude.cl", &prelude)
         .file(
             "mod_a.cl",
-            "(import [mod_b [val-b]])\n(defn val-a [] (val-b))",
+            "(import [prelude []])\n(import [mod_b [val-b]])\n(defn val-a [] (val-b))",
         )
-        .file("mod_b.cl", "(defn val-b [] 10)")
+        .file("mod_b.cl", "(import [prelude []])\n(defn val-b [] 10)")
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("[updated: mod_b.cl]") || combined.contains("[errors: mod_b.cl]"),
@@ -171,7 +194,7 @@ fn watch_notification_uses_bracketed_file_format() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.3
-/sh echo '(defn val [] 99)' > mymod.cl
+/sh echo '(import [prelude []]) (defn val [] 99)' > mymod.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /quit
@@ -179,9 +202,10 @@ fn watch_notification_uses_bracketed_file_format() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("[updated: mymod.cl]") || combined.contains("[errors: mymod.cl]"),
@@ -202,7 +226,7 @@ fn watch_emits_per_module_notifications_without_truncation() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.5
-/sh echo '(defn val-a [] 10)' > mod_a.cl; echo '(defn val-b [] 20)' > mod_b.cl
+/sh echo '(import [prelude []]) (defn val-a [] 10)' > mod_a.cl; echo '(import [prelude []]) (defn val-b [] 20)' > mod_b.cl
 /sh sleep 1.0
 (add-i64 10 20)
 /quit
@@ -210,10 +234,11 @@ fn watch_emits_per_module_notifications_without_truncation() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mod_a.cl", "(defn val-a [] 1)")
-        .file("mod_b.cl", "(defn val-b [] 2)")
+        .file("mod_a.cl", "(import [prelude []])\n(defn val-a [] 1)")
+        .file("mod_b.cl", "(import [prelude []])\n(defn val-b [] 2)")
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("[updated:") || combined.contains("[errors:"),
@@ -237,7 +262,7 @@ fn watch_notification_appears_at_prompt_boundary_not_mid_result() {
     let stdin = "\
 (val)
 /sh sleep 0.3
-/sh echo '(defn val [] 99)' > mymod.cl
+/sh echo '(import [prelude []]) (defn val [] 99)' > mymod.cl
 /sh sleep 0.5
 (val)
 /quit
@@ -245,7 +270,7 @@ fn watch_notification_appears_at_prompt_boundary_not_mid_result() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
     let details = format!(
@@ -304,22 +329,27 @@ fn generic_demand_reload_session(import_directly: bool) -> CrOutput {
 (call-string)
 31337
 /sh sleep 0.3
-/sh echo '(defn value-for [_] 42)' > generic_value.cl
+/sh echo '(import [prelude []]) (defn value-for [_] 42)' > generic_value.cl
 /sh sleep 0.5
 (call-int)
 (call-string)
 /quit
 "
     );
+    // The export route needs the null import; the direct-import control
+    // carries it too, so the pair still differs only in the edge.
     Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("generic_value.cl", "(defn value-for [_] 7)")
+        .file(
+            "generic_value.cl",
+            "(import [prelude []])\n(defn value-for [_] 7)",
+        )
         .stdin(&stdin)
         .output()
 }
 
-// spec: repl/spec.md §14.2 and design/int/s122-closure.md §2 — watcher reload
+// spec: repl/spec.md §14.2 and design/int/session-transaction.md §7.3 — watcher reload
 // recovers every prior concrete demand for a replaced generic dependency
 // without replaying stale prompt expressions. The transitive prelude-export
 // edge is the public subject; the direct-import sibling below is its control.
@@ -372,7 +402,7 @@ fn watch_reload_recovers_two_generic_demands_without_replaying_stale_expression(
     );
 }
 
-// spec: repl/spec.md §14.2 and design/int/s122-closure.md §2 — direct-import
+// spec: repl/spec.md §14.2 and design/int/session-transaction.md §7.3 — direct-import
 // control for the same two demands and stale-expression oracle. This keeps the
 // reload subject identical while making the changed dependency an explicit
 // edge of the user module rather than a transitive prelude export.
@@ -442,7 +472,7 @@ fn watch_recompiles_changed_module_eagerly() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.3
-/sh echo '(defn val [] 99)' > mymod.cl
+/sh echo '(import [prelude []]) (defn val [] 99)' > mymod.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /quit
@@ -450,9 +480,10 @@ fn watch_recompiles_changed_module_eagerly() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     assert!(
         out.stdout.contains("[updated: mymod.cl]"),
         "module should be eagerly recompiled with [updated: mymod.cl]: stdout={}",
@@ -508,7 +539,7 @@ fn watch_errors_notification_appears_on_broken_source() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.3
-/sh echo '(defn val []' > mymod.cl
+/sh echo '(import [prelude []]) (defn val []' > mymod.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /quit
@@ -516,9 +547,10 @@ fn watch_errors_notification_appears_on_broken_source() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     assert!(
         out.stdout.contains("[errors: mymod.cl]"),
         "reload failure should display [errors: mymod.cl]: stdout={}",
@@ -539,7 +571,7 @@ fn watch_errors_block_evaluation_no_last_known_good() {
     let stdin = "\
 (+ 1 2)
 /sh sleep 0.3
-/sh echo '(defn val []' > mymod.cl
+/sh echo '(import [prelude []]) (defn val []' > mymod.cl
 /sh sleep 0.5
 (+ 10 20)
 /quit
@@ -547,9 +579,10 @@ fn watch_errors_block_evaluation_no_last_known_good() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     assert!(
         out.stdout.contains("[errors:"),
         "syntax error should trigger [errors:] notification: stdout={}",
@@ -573,11 +606,11 @@ fn watch_clears_error_state_when_subsequent_edit_fixes_source() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.3
-/sh echo '(defn val []' > mymod.cl
+/sh echo '(import [prelude []]) (defn val []' > mymod.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /sh sleep 0.1
-/sh echo '(defn val [] 99)' > mymod.cl
+/sh echo '(import [prelude []]) (defn val [] 99)' > mymod.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /quit
@@ -585,9 +618,10 @@ fn watch_clears_error_state_when_subsequent_edit_fixes_source() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     assert!(
         out.stdout.contains("[errors:"),
         "first change (broken) should trigger [errors:] notification: stdout={}",
@@ -611,12 +645,13 @@ fn watch_clears_error_state_when_subsequent_edit_fixes_source() {
 // a refused reload of the entry module. The importer's worker registered as a
 // waiter on the already-failed dependency after its failure cascade had drained
 // the waiters, so nothing woke it.
-// defect: class=lost-wakeup locus=src/scheduler.rs::block_on_first_unready_closure_member found=S122 owner=/dev fixed=S122
+// defect: class=lost-wakeup locus=src/scheduler.rs::block_on_first_unready_closure_member found=S122 owner=/dev fixed=S122/63605970
 #[test]
 fn watch_type_error_reload_of_imported_module_blocks_without_hanging() {
     let stdin = "\
+(mymod/val)
 /sh sleep 0.3
-/sh echo '(defn val [] (val 1))' > mymod.cl
+/sh echo '(import [prelude []]) (defn val [] (val 1))' > mymod.cl
 /sh sleep 0.5
 5
 /quit
@@ -626,13 +661,14 @@ fn watch_type_error_reload_of_imported_module_blocks_without_hanging() {
         let out = Cranelisp::new()
             .repl()
             .file("prelude.cl", "(import [mymod [val]])\n")
-            .file("mymod.cl", "(defn val [] 42)")
+            .file("mymod.cl", MYMOD)
             .stdin(stdin)
             .timeout(std::time::Duration::from_secs(10))
             .try_output()
             .unwrap_or_else(|e| {
                 panic!("session {session}: the REPL MUST report the failed reload and read `/quit`; {e}")
             });
+        assert_pre_edit_evaluation(&out, ":primitives/Int 42");
         assert!(
             out.stdout.contains("[errors: mymod.cl]") && out.stdout.contains("Cannot evaluate"),
             "session {session}: the type error MUST be reported and block evaluation; stdout:\n{}",
@@ -656,7 +692,7 @@ fn watch_change_triggers_cache_directory_creation() {
     let stdin = "\
 (add-i64 1 2)
 /sh sleep 0.3
-/sh echo '(defn val [] 99)' > mymod.cl
+/sh echo '(import [prelude []]) (defn val [] 99)' > mymod.cl
 /sh sleep 0.5
 (add-i64 10 20)
 /quit
@@ -664,9 +700,10 @@ fn watch_change_triggers_cache_directory_creation() {
     let out = Cranelisp::new()
         .repl()
         .file("prelude.cl", &prelude)
-        .file("mymod.cl", "(defn val [] 42)")
+        .file("mymod.cl", MYMOD)
         .stdin(stdin)
         .output();
+    assert_pre_edit_evaluation(&out, ":primitives/Int 3");
     assert!(
         out.stdout.contains("[updated: mymod.cl]") || out.stdout.contains("[errors: mymod.cl]"),
         "change should be detected and recompiled: stdout={}",

@@ -1461,9 +1461,10 @@ fn test_discover_tests_builds_as_apply() {
     }
 }
 
-// spec: appendix-a-builtins §A.4 — no-arg `(discover-tests)` is an ordinary
-// zero-arg application now (the no-arg sugar is a stdlib-macro concern, not a
-// frontend special form).
+// spec: repl/spec/16-test-discovery.md §16 — `discover-tests` parses as a plain
+// application: the frontend synthesises no argument for `(discover-tests)`.
+// Rejecting that zero-argument call is typecheck's, evidenced by
+// tests/spec_12_runtime.rs::discover_tests_neg_no_argument_and_string_forms_are_type_errors.
 #[test]
 fn test_discover_tests_no_arg_builds_as_apply() {
     match parse_and_build_expr("(discover-tests)").unwrap() {

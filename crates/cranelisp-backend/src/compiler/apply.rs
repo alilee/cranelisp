@@ -4,7 +4,7 @@
 // emit_adt_construct, compile_extern_call,
 // compile_closure_call
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cranelift::prelude::*;
 use cranelift_module::Module;
@@ -21,7 +21,9 @@ use crate::primitives_inline;
 use super::control_flow::{
     LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_args, find_sparkable_args_with,
 };
+use super::entry_convention::{EntryConvention, ParamKind};
 use super::fn_compiler::TailTransferContext;
+use super::scope_chain::SlotRef;
 use super::{FnCompiler, signature_heap_category};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
@@ -187,15 +189,15 @@ pub(crate) fn tail_bare_var_names(args: &[MonoExpr]) -> std::collections::HashSe
 /// over.
 type PostCallDec = (Value, cranelisp_types::Type);
 
-/// Result of [`FnCompiler::compile_consuming_arg_list_moded`]: the compiled arg
-/// values and the post-call decs owed after the call returns.
+/// Result of [`FnCompiler::compile_entry_arg_list`]: the compiled arg values
+/// and the post-call decs owed after the call returns.
 type ModedArgList = (Vec<Value>, Vec<PostCallDec>);
 
 /// The per-position RC action the §3.1 caller-side borrow-elision emits for one
 /// argument (`design/backend/ownership-codegen.md` §3.1). The pure decision
-/// core of [`FnCompiler::compile_consuming_arg_list_moded`], factored out so the
-/// full `{arg-kind} × {mode} × {category}` matrix (§13.5 apply row, Principle 23)
-/// is unit-testable without a live `FnCompiler`.
+/// core of [`FnCompiler::compile_entry_arg_list`], factored out so the full
+/// `{arg-kind} × {param kind} × {category}` matrix (§13.5 apply row, Principle
+/// 23) is unit-testable without a live `FnCompiler`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModedArgRc {
     /// No RC op (scalar; or a transferred temporary; or an elided consuming inc).
@@ -211,25 +213,25 @@ pub(crate) enum ModedArgRc {
 }
 
 /// Decide the §3.1 per-argument RC action from the arg's heap category, the
-/// callee's param mode, and whether the arg is an **owned-binding** (a local
-/// variable whose enclosing scope decs it at exit) vs a **temporary** (a fresh
-/// rc=1 value with no scope owner — a non-`Var`, OR a `Var` naming a
-/// fn-as-value / constructor that mints a fresh closure/ADT).
+/// entry's derived [`ParamKind`] for the position, and whether the arg is an
+/// **owned-binding** (a local variable whose enclosing scope decs it at exit)
+/// vs a **temporary** (a fresh rc=1 value with no scope owner — a non-`Var`, OR
+/// a `Var` naming a fn-as-value / constructor that mints a fresh closure/ADT).
 ///
 /// The matrix (heap positions only; `NeverHeap` ⇒ [`ModedArgRc::None`] always):
 ///
-/// | owned-binding | mode | action |
+/// | owned-binding | param kind | action |
 /// |---|---|---|
-/// | yes | `Owned` | consuming inc (also the adaptation path) |
-/// | yes | `Borrowed`/`Copy` | none (owner's scope-dec is the single accounting) |
-/// | no (temp) | `Owned`/`Copy` | none (rc=1 transfers into the callee) |
-/// | no (temp) | `Borrowed` | post-call dec (the callee/adapter will not dec it) |
+/// | yes | `Consume` | consuming inc (also the adaptation path) |
+/// | yes | `Borrow`/`NoReference` | none (owner's scope-dec is the single accounting) |
+/// | no (temp) | `Consume`/`NoReference` | none (rc=1 transfers into the callee) |
+/// | no (temp) | `Borrow` | post-call dec (the callee/adapter will not dec it) |
 ///
-/// `Copy` is never minted for a heap category in increment I; it is mapped to
-/// pass-through here for total, defensive coverage.
+/// `NoReference` is never derived for a heap category in increment I; it is
+/// mapped to pass-through here for total, defensive coverage.
 /// §3.3: is `arg` a DIRECT `vec-get` read the ownership pass marked as a borrowed
 /// projection (`provenance` site fact set)? This is the only shape whose in-frame
-/// element inc `compile_consuming_arg_list_moded` elides — and only when the read
+/// element inc `compile_entry_arg_list` elides — and only when the read
 /// feeds a `Borrowed` parameter, so the borrowed element is consumed in-place and
 /// never escapes. An accessor / user-fn `ProjectionOf`-call is NOT matched here:
 /// its callee already materialized the result with an owned reference (its return
@@ -247,25 +249,24 @@ fn is_direct_vecget_projection(arg: &MonoExpr) -> bool {
 
 pub(crate) fn moded_arg_rc(
     category: HeapCategory,
-    mode: cranelisp_types::Mode,
+    kind: ParamKind,
     owned_binding: bool,
 ) -> ModedArgRc {
-    use cranelisp_types::Mode;
     match category {
         HeapCategory::NeverHeap | HeapCategory::Value => ModedArgRc::None,
         HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
             let guarded = matches!(category, HeapCategory::Mixed);
-            match (owned_binding, mode) {
-                (true, Mode::Owned) => {
+            match (owned_binding, kind) {
+                (true, ParamKind::Consume) => {
                     if guarded {
                         ModedArgRc::IncGuarded
                     } else {
                         ModedArgRc::Inc
                     }
                 }
-                (true, Mode::Borrowed | Mode::Copy) => ModedArgRc::None,
-                (false, Mode::Owned | Mode::Copy) => ModedArgRc::None,
-                (false, Mode::Borrowed) => {
+                (true, ParamKind::Borrow | ParamKind::NoReference) => ModedArgRc::None,
+                (false, ParamKind::Consume | ParamKind::NoReference) => ModedArgRc::None,
+                (false, ParamKind::Borrow) => {
                     if guarded {
                         ModedArgRc::PostDecGuarded
                     } else {
@@ -304,10 +305,6 @@ where
         // carrying the escape fact). Consumed only by `compile_var_apply`'s
         // constructor arm; `false` everywhere else ⇒ today's heap path verbatim.
         stack: bool,
-        // §13.7 (FIXME 0664): the recorded escape fact (`node_escapes`) of THIS
-        // `Apply`, threaded to the COW seam (`compile_builtin_fn_call` stashes it
-        // for `cow_source_ownership`'s escape gate). `None` ⇒ absent ⇒ inc default.
-        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         // An ordinary Apply must never lower a macro's private clause body.
         // Check the exact typecheck-selected storage key before TCO, sparking,
@@ -484,7 +481,6 @@ where
                             apply_type,
                             saved_tail,
                             false,
-                            apply_escapes,
                         );
                         this.sparked_args = saved_spark;
                         result
@@ -502,7 +498,6 @@ where
                             apply_type,
                             saved_tail,
                             false,
-                            apply_escapes,
                         )
                     },
                 );
@@ -522,7 +517,6 @@ where
             apply_type,
             saved_tail,
             stack,
-            apply_escapes,
         )
     }
 
@@ -545,8 +539,6 @@ where
         // B3.4 (§4.1): stack-eligibility hint for a use-site constructor call;
         // consumed by `compile_var_apply`.
         stack: bool,
-        // §13.7 (FIXME 0664): this Apply's escape fact, threaded to the COW seam.
-        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
@@ -557,7 +549,6 @@ where
                 span,
                 saved_tail,
                 apply_target,
-                apply_escapes,
             );
         }
 
@@ -614,7 +605,6 @@ where
     /// `FnCompiler` method per variant (S111 R5 §2 — pure protocol-boundary
     /// extraction, byte-identical). TraitMethod and SigDispatch share
     /// `compile_moded_user_call` (the P7 dedup: identical below the `sym` bind).
-    #[allow(clippy::too_many_arguments)] // +1 for the FIXME-0705 callee carrier
     fn compile_resolved_call(
         &mut self,
         resolved: ResolvedCall,
@@ -629,18 +619,11 @@ where
         // is the keyed-read carrier the S1/S2/S5/S6/S7/S8/S9 sites consume;
         // AutoCurry (a value-seam leg) is untouched this wave.
         apply_target: Option<&FQSymbol>,
-        // §13.7 (FIXME 0664): this Apply's escape fact, for the COW seam.
-        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         match resolved {
-            ResolvedCall::BuiltinFn { name: ref op_name } => self.compile_builtin_fn_call(
-                op_name,
-                args,
-                span,
-                saved_tail,
-                apply_target,
-                apply_escapes,
-            ),
+            ResolvedCall::BuiltinFn { name: ref op_name } => {
+                self.compile_builtin_fn_call(op_name, args, span, saved_tail, apply_target)
+            }
             ResolvedCall::TraitMethod {
                 ref mangled_name, ..
             } => {
@@ -720,11 +703,6 @@ where
         span: Span,
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
-        // §13.7 (FIXME 0664): this Apply's escape fact — stashed on `self` just
-        // before `compile_vec_op` so `cow_source_ownership` reads it for the
-        // escape gate. Set at the vec-op call (after args are compiled, so a
-        // nested-arg apply cannot clobber it).
-        apply_escapes: Option<bool>,
     ) -> Result<Value, CranelispError> {
         // Decision 24: uniform consuming convention. Extern primitives
         // dec their own heap args; inline builtins operate on NeverHeap
@@ -781,11 +759,6 @@ where
         if is_vec_primitive(op_name) {
             let arg_vals = self.compile_arg_list(args)?;
             self.in_tail_position = saved_tail;
-            // §13.7 (FIXME 0664): stash THIS COW Apply's escape fact for
-            // `cow_source_ownership`. Set AFTER `compile_arg_list` (so a nested-arg
-            // apply's own stash cannot clobber it) and immediately before the
-            // vec-op dispatch — no apply is compiled between here and the read.
-            self.pending_cow_escapes = apply_escapes;
             if let Some(val) = self.compile_vec_op(op_name, args, &arg_vals, span)? {
                 return Ok(val);
             }
@@ -845,9 +818,9 @@ where
     }
 
     /// The extern-primitive dispatch class (S111 R5 §2.3; was the
-    /// `is_extern_primitive` arm of `compile_builtin_fn_call`). Consuming
-    /// convention with the `string-identity` no-consume exception + the `str-len`
-    /// H3 RC-stat tally; then the §2.1 GOT-vs-direct-extern decision.
+    /// `is_extern_primitive` arm of `compile_builtin_fn_call`). Arguments follow
+    /// the keyed entry's derived convention, then the `str-len` H3 RC-stat tally
+    /// and the §2.1 GOT-vs-direct-extern decision.
     fn compile_extern_primitive_call(
         &mut self,
         op_name: &Symbol,
@@ -856,21 +829,11 @@ where
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // Decision 24 (Sprint 56 Step 2c): uniform consuming
-        // convention. Every extern dec's its own heap args via
-        // `rc::consume_shallow` (simple heap) or
-        // `crate::drop::consume_*` (complex heap — SList, Sexp,
-        // Vec, Trace ADT, IO tree). Caller incs heap-typed Var
-        // args here so the Var's scope still holds a live
-        // reference after the callee's dec. `string-identity`
-        // is special: it inc-and-returns its arg, so callers
-        // stay on plain arg compilation (the identity retains
-        // the original reference).
-        let arg_vals = if op_name.as_ref() == "string-identity" {
-            self.compile_arg_list(args)?
-        } else {
-            self.compile_consuming_arg_list(args)?
-        };
+        // An extern shim takes ownership of every heap argument (BC §4a
+        // invariant 8), so a heap `Var` argument is retained here and its
+        // scope keeps a live reference after the callee releases or moves it.
+        let convention = self.ctx.entry_convention_at(apply_target);
+        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
         // H3 per-extern adaptation-pair attribution (§9.2 / §13.2.1):
         // `str-len` is the single increment-I template instance of the
         // dual-symbol convention — a hand-audited only-read consuming
@@ -910,10 +873,13 @@ where
         // resolves. (Rev-2: no scan fallback — a slotless carrier is the
         // extern arm, a bare miss is the extern arm; both by-name.)
         let sym = Symbol::from(op_name.as_ref());
-        if self.apply_target_has_got_slot(apply_target) {
-            return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
-        }
-        self.compile_extern_call(op_name, &arg_vals, span)
+        let result = if self.apply_target_has_got_slot(apply_target) {
+            self.compile_direct_call(&sym, &arg_vals, span, apply_target)?
+        } else {
+            self.compile_extern_call(op_name, &arg_vals, span)?
+        };
+        self.emit_post_call_decs(&post_call_decs)?;
+        Ok(result)
     }
 
     /// The unrecognized-builtin dispatch class (S111 R5 §2.3; was the
@@ -927,9 +893,11 @@ where
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // Platform functions use the consuming convention — the DLL owns heap
-        // args (e.g. `CLString::own()` captures the string).
-        let arg_vals = self.compile_consuming_arg_list(args)?;
+        // Platform functions take ownership of their heap args (e.g.
+        // `CLString::own()` captures the string); an entry-less direct extern
+        // derives the same consuming convention.
+        let convention = self.ctx.entry_convention_at(apply_target);
+        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
         self.in_tail_position = saved_tail;
         // Platform GOT-indirect dispatch arm (TARGET shape;
         // platform-interface.md §6.2/§6.3, BC §3 "the
@@ -971,14 +939,18 @@ where
             // path alike — and it lands at node-construction time (before
             // the force), so the baked name survives a thunk panic on the
             // fault path.
-            return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
+            let result = self.compile_direct_call(&sym, &arg_vals, span, apply_target)?;
+            self.emit_post_call_decs(&post_call_decs)?;
+            return Ok(result);
         }
         // As-built fallback: direct `Linkage::Import` against the
         // mangled jit_name (the platform fn ptr reaches the JIT via
         // `JITBuilder::symbol(jit_name, ptr)`; the cache linker
         // registers it identically). Retires when the GOT flip
         // lands (§6.3 verdict).
-        self.compile_extern_call(op_name, &arg_vals, span)
+        let result = self.compile_extern_call(op_name, &arg_vals, span)?;
+        self.emit_post_call_decs(&post_call_decs)?;
+        Ok(result)
     }
 
     /// The inline Ring-0 primitive dispatch class (S111 R5 §2.3; was the inline
@@ -1045,8 +1017,8 @@ where
     /// "add-i64" }` directly for primitive-implemented trait
     /// methods, bypassing the `TraitMethod` route entirely.
     /// User (trait-impl) / sig-dispatch function — moded consuming convention
-    /// (§3.1): the callee's `ModeSummary` keys the per-position inc; temporaries
-    /// to `Borrowed` params owe a post-call dec.
+    /// (§3.1): the callee's derived entry convention keys the per-position inc;
+    /// temporaries to borrowed params owe a post-call dec.
     fn compile_moded_user_call(
         &mut self,
         sym: &Symbol,
@@ -1055,8 +1027,8 @@ where
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        let (arg_vals, post_call_decs) =
-            self.compile_consuming_arg_list_moded(args, apply_target)?;
+        let convention = self.ctx.entry_convention_at(apply_target);
+        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
         self.in_tail_position = saved_tail;
         let result = self.compile_direct_call(sym, &arg_vals, span, apply_target)?;
         self.emit_post_call_decs(&post_call_decs)?;
@@ -1070,8 +1042,8 @@ where
         span: Span,
         saved_tail: bool,
     ) -> Result<Value, CranelispError> {
-        let (arg_vals, post_call_decs) =
-            self.compile_consuming_arg_list_moded_target(args, target)?;
+        let convention = self.ctx.entry_convention_of(target);
+        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
         self.in_tail_position = saved_tail;
         let owner =
             crate::callable_target_owner(target).ok_or_else(|| CranelispError::CodegenError {
@@ -1337,8 +1309,8 @@ where
         // fully handled above, so a `None` carrier here is a genuine non-ctor
         // reference (a hard error downstream if the carrier is absent — Rev-2,
         // never a fall-through to the scan).
-        let (arg_vals, post_call_decs) =
-            self.compile_consuming_arg_list_moded(args, callee_target)?;
+        let convention = self.ctx.entry_convention_at(callee_target);
+        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
         self.in_tail_position = saved_tail;
         let result = self.compile_direct_call(name, &arg_vals, var_span, callee_target)?;
         self.emit_post_call_decs(&post_call_decs)?;
@@ -1462,89 +1434,47 @@ where
 
     /// §3.1 borrow-elision, caller side
     /// (`design/backend/ownership-codegen.md` §3.1): compile args for a
-    /// statically-resolved user-function call whose callee carries an ownership
-    /// [`ModeSummary`], keying the per-position RC emission off the callee's
-    /// param modes instead of the uniform Decision-24 consuming inc.
+    /// statically-resolved call, keying each position's RC emission off the
+    /// callee's derived [`EntryConvention`] (§7.6 of
+    /// `non-concrete-release-contract.md`).
     ///
     /// Returns `(arg_vals, post_call_decs)`. The caller MUST emit the returned
     /// post-call decs (via [`Self::emit_post_call_decs`]) AFTER the call
-    /// instruction returns — they release temporaries passed to `Borrowed`
+    /// instruction returns — they release temporaries passed to borrowed
     /// params that the callee will not dec.
     ///
     /// Per heap-typed position (scalars are never RC-touched):
-    /// - **Var arg, param `Owned`** — `emit_rc_inc[_guarded]`, verbatim today.
-    ///   This is ALSO the adaptation path (a caller-borrowed Var handed to an
-    ///   `Owned` position incs here, exactly as a match-field binding does).
-    /// - **Var arg, param `Borrowed`/`Copy`** — SKIP the inc; the caller retains
+    /// - **Var arg, `Consume`** — `emit_rc_inc[_guarded]`. This is ALSO the
+    ///   adaptation path (a caller-borrowed Var handed to a consuming position
+    ///   incs here, exactly as a match-field binding does).
+    /// - **Var arg, `Borrow`/`NoReference`** — SKIP the inc; the caller retains
     ///   ownership and its scope-cleanup dec is the single accounting; the callee
-    ///   (compiled against the same vector, §3.2) emits no param dec.
-    /// - **Temporary arg, param `Owned`** — no inc (ownership transfers at rc=1).
-    /// - **Temporary arg, param `Borrowed`** — no inc AND record a post-call dec
+    ///   (compiled against the same summary, §3.2) emits no param dec.
+    /// - **Temporary arg, `Consume`** — no inc (ownership transfers at rc=1).
+    /// - **Temporary arg, `Borrow`** — no inc AND record a post-call dec
     ///   (the callee will not dec the rc=1 temporary).
     ///
-    /// **Byte-identical-off:** a `None` summary (analysis off, or a non-summary
-    /// callee) reads every param `Owned` through [`ModeSummary::param_mode`], so
-    /// the emission collapses to exactly [`Self::compile_consuming_arg_list`] and
-    /// `post_call_decs` is empty — no moded edge, no new instruction (§2.2).
-    fn compile_consuming_arg_list_moded(
+    /// A convention that consumes every position routes through
+    /// [`Self::compile_consuming_arg_list`] and owes no post-call decs.
+    fn compile_entry_arg_list(
         &mut self,
         args: &[MonoExpr],
-        // S110 W1 (§1.1/§1.3 — S5): the callee's STORAGE FQ. The `ModeSummary`
-        // is read off the ONE fetched entry instead of the `resolve_callee_summary`
-        // scan (the callee-name param the scan needed is retired). `None` ⇒ no
-        // summary (the byte-identical-off fast path below).
-        resolved_target: Option<&FQSymbol>,
+        convention: &EntryConvention,
     ) -> Result<ModedArgList, CranelispError> {
-        let summary = resolved_target
-            .and_then(|fq| self.ctx.entry_at(fq))
-            .and_then(|(_, entry)| entry.mode_summary().cloned());
-        self.compile_consuming_arg_list_with_summary(args, summary)
-    }
-
-    fn compile_consuming_arg_list_moded_target(
-        &mut self,
-        args: &[MonoExpr],
-        target: &cranelisp_types::CallableTarget,
-    ) -> Result<ModedArgList, CranelispError> {
-        let summary = crate::callable_target_owner(target).and_then(|owner| {
-            self.ctx.symbol_tables.get(&owner.module).and_then(|table| {
-                table
-                    .callable_target(target)
-                    .and_then(|arm| match &arm.life {
-                        Life::Concrete { mode_summary, .. } | Life::Inline { mode_summary, .. } => {
-                            mode_summary.clone()
-                        }
-                        _ => None,
-                    })
-            })
-        });
-        self.compile_consuming_arg_list_with_summary(args, summary)
-    }
-
-    fn compile_consuming_arg_list_with_summary(
-        &mut self,
-        args: &[MonoExpr],
-        summary: Option<cranelisp_types::ModeSummary>,
-    ) -> Result<ModedArgList, CranelispError> {
-        // Fast path: no summary (or an ABI-conservative one) ⇒ the elision cannot
-        // fire on any position, so route through the unmodified consuming helper.
-        // This is the structural byte-identical-off guarantee — the moded arm
-        // below is never entered when no summary exists.
-        let Some(summary) = summary.filter(|s| !s.is_abi_conservative()) else {
+        if convention.consumes_every_param() {
             return Ok((self.compile_consuming_arg_list(args)?, Vec::new()));
-        };
+        }
 
         let args_ptr = args.as_ptr();
         let mut vals = Vec::with_capacity(args.len());
         let mut post_call_decs: Vec<PostCallDec> = Vec::new();
         for (i, arg) in args.iter().enumerate() {
-            let mode = summary.param_mode(i);
+            let kind = convention.param(i);
 
-            // Sparked argument: forced rc=1 temporary (like any temporary). With
-            // an `Owned` param it transfers; with `Borrowed` it owes a post-call
-            // dec.
+            // Sparked argument: forced rc=1 temporary (like any temporary). A
+            // consuming position takes it; a borrowed one owes a post-call dec.
             if let Some(forced) = self.maybe_force_sparked_arg(i, args_ptr, arg.span())? {
-                if mode == cranelisp_types::Mode::Borrowed {
+                if kind == ParamKind::Borrow {
                     // The forced value is a heap IVar result (rc=1); guarded dec
                     // is layout-safe whether AlwaysHeap or Mixed.
                     post_call_decs.push((forced, arg.ty().to_type()));
@@ -1567,7 +1497,7 @@ where
             // function return, a store) is parallel-unsound (an escaping view
             // races a concurrent COW/free — observed in f4_sudoku), so those keep
             // the materialization inc and take the ordinary temporary path below.
-            let elide_projection = mode == cranelisp_types::Mode::Borrowed
+            let elide_projection = kind == ParamKind::Borrow
                 && is_direct_vecget_projection(arg)
                 && matches!(
                     HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables)),
@@ -1615,7 +1545,7 @@ where
             // let-bindings today. The `_atomicity` mechanism is retained
             // (probe-reachable); it is fed `Atomic` here.
             let atomicity = heap::RcAtomicity::Atomic;
-            match moded_arg_rc(category, mode, owned_binding) {
+            match moded_arg_rc(category, kind, owned_binding) {
                 ModedArgRc::None => {}
                 ModedArgRc::Inc => {
                     heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity)
@@ -1637,8 +1567,8 @@ where
     }
 
     /// Emit the post-call decs recorded by
-    /// [`Self::compile_consuming_arg_list_moded`] for temporaries passed to
-    /// `Borrowed` params. Emitted AFTER the call returns; each releases an rc=1
+    /// [`Self::compile_entry_arg_list`] for temporaries passed to borrowed
+    /// params. Emitted AFTER the call returns; each releases an rc=1
     /// temporary the callee borrowed but did not consume (§3.1). Guarded/unguarded
     /// dec per the recorded [`HeapCategory`].
     fn emit_post_call_decs(&mut self, decs: &[PostCallDec]) -> Result<(), CranelispError> {
@@ -2380,18 +2310,33 @@ where
         // CRITICAL: Args are not in tail position.
         self.in_tail_position = false;
 
-        // Compile all arguments. A control-flow arg (`if`/`match`) can alias a
-        // live heap `let`-binding into the tail call with NO owning inc (the
-        // branch value is a raw `use_var`) — the uniform flush below would then
-        // free a value the next iteration still owns (F1 use-after-free). Under
-        // `tail_arg_protect`, `compile_if` / `compile_match` emit a protective
-        // inc on any branch/arm result that directly aliases a binding the flush
-        // will dec, so the value handed forward owns exactly one reference.
+        // Compile all arguments. A control-flow arg (`if`/`match`) can forward a
+        // frame-owned heap binding into the tail call with NO owning inc (the
+        // branch value is a raw `use_var`) — the flushes below would then free a
+        // value the next iteration still owns (F1 use-after-free, ACT-1021).
+        // Under `tail_arg_protect`, `compile_if` / `compile_match` emit a
+        // protective inc on any branch/arm result that is a bare `Var` whose
+        // slot the frame owns, in a `let` frame or the parameter frame, so the
+        // value handed forward owns exactly one reference.
         // A bare top-level `Var` arg needs no protection: it MOVES (no inc) and
         // is excluded from the flush by its exact transfer slot; a non-Var, non-
         // control-flow arg (`(wrap v)`) already inc's any binding it consumes via
         // `compile_consuming_arg_list`, so the flush dec is balanced.
-        let arg_vals: Vec<Value> = args
+        //
+        // A consuming in-place COW argument takes its source parameter slot's
+        // reference (§6 row 3). The fact is decided once, before any argument
+        // compiles, and issued as the site's consuming claim (§13.7): its
+        // producer lowers the source `Owned`, and the parameter flush below
+        // skips exactly that slot.
+        let consuming = self.consuming_cow_arguments_of(args);
+        let consuming_cow_slots: HashSet<SlotRef> = consuming.iter().map(|&(_, at)| at).collect();
+        let saved_claims = self.consuming_claims.clone();
+        self.consuming_claims.extend(
+            consuming
+                .iter()
+                .map(|&(source, _)| source as *const MonoExpr as usize),
+        );
+        let arg_vals: Result<Vec<Value>, _> = args
             .iter()
             .map(|a| {
                 if matches!(a, MonoExpr::If { .. } | MonoExpr::Match { .. }) {
@@ -2404,7 +2349,9 @@ where
                     self.compile_expr(a)
                 }
             })
-            .collect::<Result<_, _>>()?;
+            .collect();
+        self.consuming_claims = saved_claims;
+        let arg_vals = arg_vals?;
 
         // Flush the live LET-scope heap bindings BEFORE the jump: the enclosing
         // `compile_let_sequential`'s `pop_scope_with_cleanup` runs only AFTER
@@ -2422,17 +2369,19 @@ where
             args,
             transfer_slots: &transfer_slots,
             bare_var_names: &bare_tail_var_names,
+            consuming_cow_slots: &consuming_cow_slots,
         };
         // S118 slice S3 — protect BEFORE any teardown below: a borrowed pattern
         // view escaping into the next iteration must own a reference by the
         // time its owner is released (§2).
-        self.protect_escaping_borrows_before_tail_jump(args, &transfer_slots);
+        self.protect_escaping_borrows_before_tail_jump(tail);
         self.flush_let_scopes_before_tail_jump(tail)?;
         // MS-P8 (FIXME 0688 verdict a) — release the superseded heap LOOP-PARAM
         // slots too (the sibling seam the let flush does not cover): the jump
         // below overwrites each param slot, orphaning the old heap value's
         // reference (the conj/assoc persistent-op leak). The same exact-slot
-        // move-contract; in-place COW params are excluded inside.
+        // move-contract; a slot consumed by a consuming COW argument is
+        // excluded inside.
         self.flush_superseded_heap_params_before_tail_jump(tail)?;
         // S118 slice S3 — the third flushed seam: any match wrapper this frame
         // owns for an arm still being compiled. The end-of-arm release would
@@ -3000,6 +2949,9 @@ mod tail_transfer_skip_tests;
 
 #[cfg(test)]
 mod moded_arg_rc_tests;
+
+#[cfg(test)]
+pub(super) mod extern_entry_convention_tests;
 
 #[cfg(test)]
 mod keyed_miss_tests;
