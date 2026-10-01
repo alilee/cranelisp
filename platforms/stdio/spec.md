@@ -20,7 +20,7 @@
 
 ### Heap Parameter Ownership
 
-A platform function consumes every heap-typed argument: the caller transfers its reference and does not release it after the call ([bounded contexts](../../design/arch/bounded-contexts.md) §4b invariant 6). Reading an argument without taking over that reference leaks it.
+A platform function consumes every heap-typed argument: the caller transfers its reference and does not release it after the call ([bounded contexts §5](../../design/arch/bounded-contexts.md#5-platform-cratescranelisp-platform), "A platform function consumes its heap arguments"). Reading an argument without taking over that reference leaks it.
 
 `print`'s `String` argument is read when the returned `Effect` node is forced, which may be later and more than once ([spec/10-io.md](../../spec/10-io.md) §10.8.1). The node therefore holds the transferred reference for its whole life and releases it once, when the node is freed — not when `print` returns and not per force. The implementation mechanism is the [capture-RC protocol](../../design/platform/platform-dlls.md#4-the-capture-rc-protocol): capture the argument as the `CLOwned` from `into_owned_consuming`, which takes over the transferred reference without incrementing. `own()` increments, so on a transferred argument it leaks one reference per call.
 

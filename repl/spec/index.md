@@ -1,6 +1,6 @@
 # REPL Experience Specification
 
-Normative specification for the Cranelisp REPL user experience. A conforming REPL MUST satisfy all requirements tagged with the current ring or earlier.
+Normative specification for the Cranelisp REPL user experience. A conforming REPL MUST satisfy every requirement in this specification.
 
 While called repl, the repl experience encompasses the entire user experience from invoking the repl as well as its associated CLI invocation modes, exit codes, batch output format, and cache lifecycle.
 
@@ -20,7 +20,7 @@ not a second copy of those requirements.
 | 5. Error Presentation | [05-error-presentation.md](05-error-presentation.md) |
 | 6. Discoverability | [06-discoverability.md](06-discoverability.md) |
 | 7. Performance Targets | [07-performance.md](07-performance.md) |
-| 8. Ring 2B Module Demo Scenarios | [08-module-demos.md](08-module-demos.md) |
+| 8. Module Demo Scenarios | [08-module-demos.md](08-module-demos.md) |
 | 9. Ring Testability Matrix | [09-testability-matrix.md](09-testability-matrix.md) |
 | 10. Terminal Styling | [10-terminal-styling.md](10-terminal-styling.md) |
 | 11. Ring 3 REPL Requirements | [11-macro-introspection.md](11-macro-introspection.md) |
@@ -33,6 +33,22 @@ not a second copy of those requirements.
 | 17.17–17.19. Agent Language Awareness | [17a-agent-language-awareness.md](17a-agent-language-awareness.md) |
 | 17.20–17.22. Agent Observability | [17b-agent-observability.md](17b-agent-observability.md) |
 | 18. Redefinition Semantics | [18-redefinition.md](18-redefinition.md) |
+
+## Topic map
+
+Where the rules for common workflows live. This map is navigation only; links open the section file.
+
+| Topic | Sections |
+|---|---|
+| Saving a watched file: rebuild, dependents, notification | [§14.2–§14.3](14-file-watching.md) |
+| A failed save or startup: the session lock, clearing | [§14.4–§14.6](14-file-watching.md) |
+| Changing a type's structure needs a restart | [§14.8](14-file-watching.md), [§18.5](18-redefinition.md) |
+| Startup, restart and a failing backing file | [§15.2](15-session-persistence.md), [§15.2.3](15-session-persistence.md) |
+| What the backing file contains | [§15.1](15-session-persistence.md), [§15.4](15-session-persistence.md), [§15.7](15-session-persistence.md) |
+| Redefining a name at the prompt | [§15.6](15-session-persistence.md), [§18](18-redefinition.md) |
+| Moving between modules with `/mod` | [§3.9](03-slash-commands.md), [§8](08-module-demos.md) |
+| A missing entry source file | [§0.5.5](00-cli-invocation.md) |
+| Running tests: `--test`, `/run-tests`, `/run-all-tests` | [§0.2.2](00-cli-invocation.md), [§16.2](16-test-discovery.md) |
 
 ## Design Principle
 

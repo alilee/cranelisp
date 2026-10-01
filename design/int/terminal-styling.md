@@ -47,8 +47,8 @@ output and lays out code.
 - **Shared line builders** are single-sourced: `style::error_line`,
   `style::repl_metadata_line`, `push_warning_line` (`src/repl/format.rs`) and
   the display envelope (`src/display.rs`).
-- **Serialisation is not display.** Persisted `.cl` source, failed-form text
-  and introspection source fallbacks use `pretty::pretty_print_plain`, never
+- **Serialisation is not display.** Persisted `.cl` source and
+  introspection source fallbacks use `pretty::pretty_print_plain`, never
   the colour-gated `pretty_print`. A colour-on session would otherwise write
   SGR into stored source and break the next parse.
 

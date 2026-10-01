@@ -173,6 +173,7 @@ impl Session {
             cache: Arc::new(cache),
             promote_nice_workers: AtomicBool::new(false),
             file_to_module: Mutex::new(HashMap::new()),
+            recorded_sources: dashmap::DashMap::new(),
             symbol_tables: dashmap::DashMap::new(),
             next_type_id: AtomicU32::new(0),
             typecheck_products: dashmap::DashMap::new(),

@@ -1714,16 +1714,9 @@ fn conventional_impl_over_applied_target_rejected_no_dispatch_neg() {
 // over-applied reject: `(impl Disp (Option Int))` applies `Option` to exactly its
 // arity (1). It MUST accept (register) NOW and stay green when the arity guard
 // generalises `>` → `!=` (`provided == arity == 1`, so `!=` never fires) — the
-// guard-generalisation hazard fence (hkt.md §5.4 Case-1 "Care").
-//
-// NOTE (S112 W5.1 finding — see the /testing report): the design's LITERAL poly-
-// applied twin `(impl Disp (Option a))` — a BARE type variable — is NOT green
-// today. It wrong-rejects with `unknown type a` BEFORE reaching the arity gate
-// (pre-existing, orthogonal to I1's arity concern; the canonical inline-constrained
-// form `(impl Display (Option :Display a))` from spec §7.3.3 wrong-rejects the same
-// way, and spec §7.3.5 line 352 `(impl Display (Option a)) ✓` is un-annotated /
-// untested). The concrete `(Option Int)` reaches and passes the arity gate with
-// `provided == arity == 1`, so it is the sound green fence for the generalisation.
+// guard-generalisation hazard fence (hkt.md §5.4 Case-1 "Care"). The poly-applied
+// twins `(Option a)` and `(Option :Disp a)` are pinned by
+// `conventional_impl_poly_applied_target_accepts_and_dispatches` (TB-24).
 #[test]
 fn conventional_impl_exactly_arity_target_accepts_arity_gate_fence() {
     repl_prims(
@@ -2301,10 +2294,9 @@ fn return_type_dispatch_unresolved_bare_call_clean_ambiguity_neg() {
 }
 
 // =============================================================================
-// TB-24 — Case-1 × POLY-applied impl-target wrong-reject (S112 W6, plan §3.3a,
-// /qa ruling 3). The §7.3.5 Case-1 matrix's only `✓` row with no test — and it
-// was BROKEN on HEAD (admissible-untested-broken, the exact hole the matrix
-// discipline exists to close).
+// TB-24 — Case-1 × POLY-applied impl-target (S112 W6, plan §3.3a, /qa ruling 3).
+// The §7.3.5 Case-1 matrix's only `✓` row that had no test, and it was broken
+// when found.
 // =============================================================================
 
 // spec: spec/07-traits.md §7.3.5 Case 1 + §7.3.3 + §5.4.3 — a conventional
@@ -2313,15 +2305,12 @@ fn return_type_dispatch_unresolved_bare_call_clean_ambiguity_neg() {
 // a concrete `(Some 3)` resolves it. Likewise the canonical §7.3.3 constrained
 // form `(Option :Disp a)`.
 //
-// RED at HEAD (pre-existing WRONG-REJECT, /qa ruling 3): both forms die with
-// `unknown type a` BEFORE the arity gate — the impl-target TypeExpr resolution
-// context binds no type variables, so the lowercase var `a` resolves as an
-// unknown NAMED type (the 0590-tightening blast-radius shape landing on a
-// position that legitimately holds a var). Parse accepts (frontend delivers
-// `Applied(Option,[a])`); the error is the typecheck resolve-layer diagnostic;
-// backend never involved. Flips GREEN when the impl-target resolver binds the
-// pairing's lowercase con-vars.
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck impl-target TypeExpr resolution seam (lowercase con-var in `(Option a)`/`(Option :Disp a)` resolved as an unknown named type before the §7.3.5 arity gate) found=S112 owner=/dev
+// Found as a wrong-reject: both forms died with `unknown type a` before the
+// arity gate, because the impl-target TypeExpr resolution context bound no type
+// variables, so the lowercase `a` resolved as an unknown named type. Fixed in
+// S113 when the impl-target resolver began binding the pairing's lowercase
+// con-vars.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck impl-target TypeExpr resolution seam (lowercase con-var in `(Option a)`/`(Option :Disp a)` resolved as an unknown named type before the §7.3.5 arity gate) found=S112 owner=/dev fixed=S113/3297adf8
 #[test]
 fn conventional_impl_poly_applied_target_accepts_and_dispatches() {
     // Form A — the bare poly-applied target `(Option a)`.
@@ -2370,7 +2359,7 @@ fn conventional_impl_poly_applied_target_accepts_and_dispatches() {
 // form. Positive cell + its reject twin `(Box :NoSuchTrait a)`. Rides the TB-24
 // family (same impl-target con-var resolver).
 // spec: spec/07-traits.md §7.3.3 — constrained applied impl-target `(Box :Disp a)`.
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck impl-target TypeExpr resolution (constrained applied user-ctor target con-var) found=S113 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck impl-target TypeExpr resolution (constrained applied user-ctor target con-var) found=S113 owner=/dev fixed=S113/3297adf8
 #[test]
 fn constrained_applied_user_ctor_impl_target_accepts_and_dispatches() {
     let out = repl_prims(
@@ -2396,16 +2385,14 @@ fn constrained_applied_user_ctor_impl_target_accepts_and_dispatches() {
 
 // MC-TB24b reject TWIN — the SAME applied form naming a NON-EXISTENT trait
 // `NoSuchTrait` in the constraint slot MUST be rejected (the trait reference must
-// resolve, §8.5). Guards the accept above against over-acceptance. Was RED pre-W2:
-// the impl-target con-var resolver SILENTLY ACCEPTED the unknown-trait constraint —
-// `(impl Disp (Box :NoSuchTrait a) …)` echoed `impl user/Disp for user/Box` with
-// no error (the constraint slot's trait reference was never resolved). Coverage-
-// caught negative gap (the accept cell landed GREEN with W2a but its reject twin
-// was authored only at W2-close, surfacing this). FIXED in the W2 window: the
-// constraint trait ref now resolves. GREEN regression fence.
+// resolve, §8.5). Guards the accept above against over-acceptance. Found as a
+// silent accept: `(impl Disp (Box :NoSuchTrait a) …)` echoed
+// `impl user/Disp for user/Box` with no error, because the constraint slot's trait
+// reference was never resolved. Fixed in S113; the constraint trait reference now
+// resolves.
 // spec: spec/07-traits.md §7.3.3 + spec/08-modules.md §8.5 — a constraint naming an
 // unknown trait is rejected.
-// defect: class=silent-accept locus=crates/cranelisp-typecheck impl-target con-var constraint trait reference never resolved found=S113 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-typecheck impl-target con-var constraint trait reference never resolved found=S113 owner=/dev fixed=S113/3297adf8
 #[test]
 fn constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg() {
     let out = repl_prims(
@@ -2424,6 +2411,234 @@ fn constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg() {
         "the impl with an unknown-trait constraint MUST NOT silently accept; got:\n{}",
         out.stdout
     );
+}
+
+// =============================================================================
+// §7.3.3 — a parametric impl's method instance calling a polymorphic callee
+// (ACT-1034), and a later parametric impl beside a concrete one (ACT-1035)
+// =============================================================================
+//
+// Each program's `main` returns `(Pure n)`. The parametric impls are declared
+// before `impl Size Int`, except where a cell says otherwise, so that ACT-1035
+// cannot fire.
+
+const OPT_SIZE_HEADER: &str = "(deftype (Opt a) Nope (Yep [:a v]))\n\
+     (deftrait Size (size [self] Int))\n";
+
+/// The `(Opt :Size a)` impl whose body discharges its constraint on the payload.
+const OPT_SIZE_CONSTRAINED_IMPL: &str = "(impl Size (Opt :Size a)\n\
+       (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))\n";
+
+const SIZE_INT_IMPL: &str = "(impl Size Int (defn size [n] n))\n";
+
+const REPL: &str = "repl";
+const RUN: &str = "--run";
+const LINK: &str = "--link";
+
+/// The Int `main` yields in each named mode, with that mode's output. A REPL
+/// reads the last `:primitives/Int` echo after `(main)`; a failed link yields
+/// `None`, never the compiler's exit code.
+fn main_value_in_modes(
+    src: &str,
+    modes: &[&'static str],
+) -> Vec<(&'static str, Option<i32>, String)> {
+    modes
+        .iter()
+        .map(|&mode| {
+            let (out, value) = match mode {
+                REPL => {
+                    let out = repl_prims(&format!("{src}(main)\n"));
+                    let value = out
+                        .stdout
+                        .rfind(":primitives/Int ")
+                        .and_then(|at| {
+                            out.stdout[at + ":primitives/Int ".len()..]
+                                .split_whitespace()
+                                .next()
+                        })
+                        .and_then(|n| n.parse().ok());
+                    (out, value)
+                }
+                RUN => {
+                    let out = run_prims(src);
+                    let value = out.status.code();
+                    (out, value)
+                }
+                LINK => {
+                    let out = link_prims(src);
+                    let value = out.linked_execution_elapsed.and(out.status.code());
+                    (out, value)
+                }
+                other => panic!("unknown mode {other}"),
+            };
+            let diag = format!(
+                "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+                out.status, out.stdout, out.stderr
+            );
+            (mode, value, diag)
+        })
+        .collect()
+}
+
+/// Every named mode yields `expected`, and no mode reports `undefined function`.
+fn assert_main_value_in_modes(what: &str, src: &str, expected: i32, modes: &[&'static str]) {
+    let wrong: Vec<String> = main_value_in_modes(src, modes)
+        .into_iter()
+        .filter(|(_, value, diag)| *value != Some(expected) || diag.contains("undefined function"))
+        .map(|(mode, value, diag)| format!("--- {mode}: observed {value:?}\n{diag}"))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{what}: each of {modes:?} MUST yield {expected} with no `undefined function`\n{}",
+        wrong.join("\n")
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — the constrained `(Opt :Size a)` impl's
+// method, instantiated at `(Opt (Opt Int))`, calls `size` at `(Opt Int)`: the
+// same impl, satisfied through search tier 2. 1 + 1 + 3 = 5 in every mode.
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+#[test]
+fn parametric_impl_instance_calls_same_impl_at_nested_type_all_modes() {
+    let src = format!(
+        "{OPT_SIZE_HEADER}{OPT_SIZE_CONSTRAINED_IMPL}{SIZE_INT_IMPL}\
+         (defn main [] (Pure (size (Yep (Yep 3)))))\n"
+    );
+    assert_main_value_in_modes("A1 `(size (Yep (Yep 3)))`", &src, 5, &[REPL, RUN, LINK]);
+}
+
+// spec: spec/07-traits.md §7.3.3 — the `(Opt :Size a)` method instance at
+// `(Opt (Box Int))` calls `size` at `(Box Int)`, a different constrained impl.
+// 1 + 10 + 3 = 14 in every mode.
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+#[test]
+fn parametric_impl_instance_calls_other_parametric_impl_all_modes() {
+    let src = format!(
+        "{OPT_SIZE_HEADER}(deftype (Box a) (MkBox [:a v]))\n\
+         (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 10 (size x))])))\n\
+         {OPT_SIZE_CONSTRAINED_IMPL}{SIZE_INT_IMPL}\
+         (defn main [] (Pure (size (Yep (MkBox 3)))))\n"
+    );
+    assert_main_value_in_modes("A2 `(size (Yep (MkBox 3)))`", &src, 14, &[REPL, RUN, LINK]);
+}
+
+// spec: spec/07-traits.md §7.3.3 — an UNCONSTRAINED `(Opt a)` impl's method
+// instance at `(Opt Int)` calls the generic free function `k7` at `a = Int`.
+// 7 in every mode.
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+#[test]
+fn unconstrained_parametric_impl_instance_calls_generic_free_fn_all_modes() {
+    let src = format!(
+        "{OPT_SIZE_HEADER}(defn k7 [x] 7)\n\
+         (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)])))\n\
+         (defn main [] (Pure (size (Yep 3))))\n"
+    );
+    assert_main_value_in_modes(
+        "A3 `(size (Yep 3))` through `k7`",
+        &src,
+        7,
+        &[REPL, RUN, LINK],
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — the generic free function `twice` calls
+// `size` at `(Opt Int)`, instantiating the parametric impl from another
+// parametric instance. 4 + 4 = 8 in every mode.
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+#[test]
+fn generic_fn_instance_calls_parametric_impl_all_modes() {
+    let src = format!(
+        "{OPT_SIZE_HEADER}{OPT_SIZE_CONSTRAINED_IMPL}{SIZE_INT_IMPL}\
+         (defn twice [x] (add-i64 (size x) (size x)))\n\
+         (defn main [] (Pure (twice (Yep 3))))\n"
+    );
+    assert_main_value_in_modes("C3 `(twice (Yep 3))`", &src, 8, &[REPL, RUN, LINK]);
+}
+
+// spec: spec/07-traits.md §7.3.3 — control: the `(Opt a)` method instance calls
+// `size` at `Int`, a monomorphic target, so no callee instance depends on `a`.
+// 42 under `--run` and `--link`. The body's `(size 42)` needs `impl Size Int`
+// declared first, and that order crashes the REPL (ACT-1035), so the REPL leg
+// is left to that filing's cells.
+#[test]
+fn parametric_impl_instance_calls_monomorphic_target_batch_control() {
+    let src = format!(
+        "{OPT_SIZE_HEADER}{SIZE_INT_IMPL}\
+         (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size 42)])))\n\
+         (defn main [] (Pure (size (Yep 3))))\n"
+    );
+    assert_main_value_in_modes(
+        "C1 `(size (Yep 3))` through `(size 42)`",
+        &src,
+        42,
+        &[RUN, LINK],
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — control: the A1 body in a monomorphic
+// `(impl Size (Opt Int))`. 1 + 41 = 42 in every mode.
+#[test]
+fn monomorphic_impl_same_body_all_modes_control() {
+    let src = format!(
+        "{OPT_SIZE_HEADER}{SIZE_INT_IMPL}\
+         (impl Size (Opt Int) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))\n\
+         (defn main [] (Pure (size (Yep 41))))\n"
+    );
+    assert_main_value_in_modes("C2 `(size (Yep 41))`", &src, 42, &[REPL, RUN, LINK]);
+}
+
+/// `impl Size Int`, then a parametric `(Opt a)` impl, in that order.
+const CONCRETE_THEN_PARAMETRIC: &str = "(deftype (Opt a) Nope (Yep [:a v]))\n\
+     (deftrait Size (size [self] Int))\n\
+     (impl Size Int (defn size [n] n))\n\
+     (impl Size (Opt a) (defn size [o] 1))\n";
+
+// spec: repl/spec/05-error-presentation.md §5.1 — a REPL session survives a
+// call to a concrete impl's method after a parametric impl of the same trait
+// is entered: `(size 5)` echoes `:primitives/Int 5` and the session exits
+// normally at end of input.
+// defect: class=mode-divergence locus=src REPL impl registration found=S122 owner=/dev — provisional: seam unobserved; hypothesis: registering the later parametric impl leaves the concrete instance's dispatch slot invalid (ACT-1035)
+#[test]
+fn repl_concrete_impl_call_survives_later_parametric_impl() {
+    let out = repl_prims(&format!("{CONCRETE_THEN_PARAMETRIC}(size 5)\n"));
+    assert!(
+        out.status.success() && out.stdout.contains(":primitives/Int 5"),
+        "`(size 5)` MUST echo `:primitives/Int 5` and the session MUST survive \
+         (§5.1)\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 — control: the same impls with
+// the parametric impl entered first; `(size 5)` echoes 5.
+#[test]
+fn repl_concrete_impl_call_with_parametric_impl_first_control() {
+    let out = repl_prims(
+        "(deftype (Opt a) Nope (Yep [:a v]))\n\
+         (deftrait Size (size [self] Int))\n\
+         (impl Size (Opt a) (defn size [o] 1))\n\
+         (impl Size Int (defn size [n] n))\n\
+         (size 5)\n",
+    );
+    assert!(
+        out.status.success() && out.stdout.contains(":primitives/Int 5"),
+        "parametric-first `(size 5)` MUST echo 5\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — control: the ACT-1035 impl order under
+// `--run` dispatches `(size 5)` to the concrete impl and exits 5.
+#[test]
+fn concrete_then_parametric_impl_dispatch_run_control() {
+    run_prims(&format!(
+        "{CONCRETE_THEN_PARAMETRIC}(defn main [] (Pure (size 5)))\n"
+    ))
+    .assert_exit(5);
 }
 
 // =============================================================================

@@ -93,7 +93,7 @@
 ;; `quick` wins deterministically and `slow-work` is CANCELLED (its 300 ms
 ;; park never finishes; its value 222 is never produced).
 
-(defn test-race-immediate-wins []
+(defn check-race-immediate-wins []
   (bind (race (quick) (slow-work))
     (fn [r] (Pure (if (eq-i64 r 1) 1 0)))))  ;; winner = quick (1) -> pass 1
 
@@ -104,7 +104,7 @@
 ;; 111 is returned. `slow-work` is cancelled -- the whole race completes in
 ;; ~50 ms, NOT ~300 ms. (A race that ran both to completion would be a Par.)
 
-(defn test-race-faster-wins []
+(defn check-race-faster-wins []
   (bind (race (fast-work) (slow-work))
     (fn [r] (Pure (if (eq-i64 r 111) 1 0))))) ;; winner = fast-work (111) -> pass 1
 
@@ -133,7 +133,7 @@
 ;; the general rule for every effect-run-time error, not a select
 ;; special case (§12.7.2, "the bracket is temporal").
 
-(defn test-select-first-wins []
+(defn check-select-first-wins []
   (bind (select [(slow-work) (fast-work) (slow-work)])
     (fn [r] (Pure (if (eq-i64 r 111) 1 0))))) ;; winner = fast-work (111) -> pass 1
 
@@ -144,7 +144,7 @@
 ;; (50 ms, result 7) beats `deadline-long` (300 ms), so we get the real
 ;; result 7 -- NOT the sentinel 99. The deadline branch is cancelled.
 
-(defn test-timeout-completes []
+(defn check-timeout-completes []
   (bind (race (io-quick) (deadline-long))
     (fn [r] (Pure (if (eq-i64 r 7) 1 0)))))   ;; work won -> result 7 -> pass 1
 
@@ -157,7 +157,7 @@
 ;; appears. This is the per-request-timeout pattern: bound the work in time
 ;; and stop it cleanly when it overruns.
 
-(defn test-timeout-fires []
+(defn check-timeout-fires []
   (bind (race (io-slow) (deadline-short))
     (fn [r] (Pure (if (eq-i64 r 99) 1 0)))))  ;; deadline won -> sentinel 99 -> pass 1
 
@@ -167,7 +167,7 @@
 ;; `(sleep d)` parks the strand for d ms then resumes with 0. The bind
 ;; continuation runs AFTER the timer fires, proving the park-then-resume.
 
-(defn test-sleep-resumes []
+(defn check-sleep-resumes []
   (bind (sleep 50) (fn [_] (Pure 42))))       ;; continuation ran -> 42, then check below
 
 
@@ -182,11 +182,11 @@
 ;; Total runtime is a few hundred ms, not seconds.
 
 (defn main []
-  (bind (test-race-immediate-wins) (fn [a]
-  (bind (test-race-faster-wins) (fn [b]
-  (bind (test-select-first-wins) (fn [c]
-  (bind (test-timeout-completes) (fn [d]
-  (bind (test-timeout-fires) (fn [e]
-  (bind (test-sleep-resumes) (fn [r6]
+  (bind (check-race-immediate-wins) (fn [a]
+  (bind (check-race-faster-wins) (fn [b]
+  (bind (check-select-first-wins) (fn [c]
+  (bind (check-timeout-completes) (fn [d]
+  (bind (check-timeout-fires) (fn [e]
+  (bind (check-sleep-resumes) (fn [r6]
     (Pure (add-i64 a (add-i64 b (add-i64 c (add-i64 d (add-i64 e (if (eq-i64 r6 42) 1 0)))))))
   )))))))))))))

@@ -1,7 +1,7 @@
 ---
 id: ACT-1029
 title: A same-name alias binder may overwrite a live alias's root in the last-use map, so an in-place COW mutates a box that a live view still reads
-status: open
+status: deferred
 priority: required
 from: qa
 to: qa
@@ -71,6 +71,16 @@ the mechanism.
 - **Owners on confirmation.** `design`(backend) designs a scope-correct alias
   map, for example keyed by the resolved binder or restored at scope exit.
   `dev`(backend) implements it. The fix-or-carry decision is the user's.
+
+## Disposition: carried to S123 (user, 2026-09-30)
+
+The user deferred this investigation to S123, first deferral. The
+coordination action
+[ACT-1031](ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md)
+owns its resumption beside ACT-1030 and the remaining leads
+([checkpoint carries](../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+The redesigned R1 cell has not run. This filing keeps the observation, the
+falsifier and the completion evidence.
 
 ## Completion evidence
 

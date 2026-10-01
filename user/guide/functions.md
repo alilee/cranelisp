@@ -60,8 +60,8 @@ form). Both signatures echo the constraint:
 
 ```
 user> (defn h ([:Num x] (+ x x)) ([:Num x :Num y] (+ x y)))
-:(Fn [:Num a] a) user/h ; defn
-:(Fn [:Num a :Num a] a) user/h
+:(Fn [:num.num/Num a] a) user/h ; defn
+:(Fn [:num.num/Num a :num.num/Num a] a) user/h
 ```
 
 ### Clauses infer like separate mutually-recursive functions

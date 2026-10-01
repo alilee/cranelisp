@@ -6,7 +6,9 @@ Slash commands provide introspection and navigation. All commands start with `/`
 
 ### 3.1 Command Inventory
 
-Per-row annotations below indicate test coverage for each command. Ring 4 introspection commands (`/disasm`, `/time`, `/mod`, `/reload`) are legitimately pending. (`/mem` E2E coverage landed Sprint 58 Wave 5.)
+Per-row annotations below indicate test coverage for each command.
+
+While the session is locked, a command that evaluates code is refused; the other commands remain available ([§14.5](14-file-watching.md)). [Tested+Neg src/repl/mod.rs::locked_session_refuses_exactly_the_commands_that_run_program_code, tests/repl_persist::session_lock_refuses_every_code_turn_outside_the_failed_module — unit: every command is classified while locked; `/time` and `/mem` with an expression, `/run-tests` and `/run-all-tests` are refused, and every other command is admitted; e2e: `/mem EXPR` and `/time EXPR` are refused, naming the failing file, while `/sig` and `/help` answer]
 
 | Command | Aliases | Description | Ring | Test |
 |---|---|---|---|---|
@@ -37,7 +39,7 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/context <path>` | — | **Debug command** — write the agent's full **assembled** next-turn request (system primer, harvested context, tools, transcript, current turn) to `<path>` as readable text, **without calling the model** (works dormant/offline, no key; see §17.11); human-only, not an agent tool; prints "agent not built in" when the feature is off | 4 | [Tested+Neg tests/agent.rs::context_feature_off_prints_not_built_in, tests/agent.rs::agent_on_context_dumps_request_to_file_dormant] |
 | `/syntax [topic]` | — | Core-language syntax cheat-sheet — bare `/syntax` lists topics, `/syntax <topic>` shows that topic's dense, verified-compiling content (see §17.17); a human REPL command **and** an agent pull-tool; LLM-free (a static curated asset, works with the agent absent) | 4 | [S90] |
 | `/search <query>` | — | Search public non-macro symbols reachable on the lib search path ∪ the project root by name, scheme, or docstring (see §17.19). An exact in-scope name match remains visible as `already in scope — no import needed`; source indexing does not execute macro expansion. A **normal default-build session facility** (not agent-gated), also reached by the agent via the ordinary pull | 4 | [Tested+Neg tests/search::search_by_name_exact_returns_four_facets, tests/search::search_by_scheme_partial_contains, tests/search::search_neg_no_match_self_documenting_note] |
-| `/quit` | `/q` | Exit REPL | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/quit` | `/q` | Exit REPL with status 0 (§0.1) | 0 | [Tested+Neg tests/repl_persist::persist_function_replacement_persists_through_restart, tests/repl_persist::quit_while_locked_exits_zero_without_reprinting_errors — status 0 unlocked and while locked, with no reprint of the failure] |
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
 
@@ -76,7 +78,7 @@ Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitte
 The **bare** field name (e.g. `v`) is a **convenience alias** to the canonical accessor — it resolves when unambiguous and is an ambiguity error when two in-scope types share the field name. The bare alias is **NOT separately listed** by `/list` (option A — show canonical only): listing both `Box.v` and a bare `v` would double-count every field, and the bare alias is import-class (an alias into the current scope), so it falls under the existing "imported/alias names MUST NOT appear on `/list`" scope rule above. `/list` shows the canonical accessor exactly once, under its `Type.field` name. [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
 
 **Constructors — canonical qualified `Type.Ctor` form, listed once (S109).** With the
-dotted-`Type.Ctor` constructor capability (`sprints/SPRINT.md` bucket 2 — same-named constructors
+dotted-`Type.Ctor` constructor capability (`sprints/archive/sprint-109.md` bucket 2 — same-named constructors
 coexisting across in-scope types, e.g. `Maybe.Some`/`Option.Some`), each constructor has a
 **canonical** `Type.Ctor` key (`Maybe.Some`) and a **bare-name alias** (`Some`) — exactly the
 inverted model of field accessors above. `/list` MUST therefore treat constructors the **same way**
@@ -332,7 +334,7 @@ one. `<name>` is a module name resolved from the active module by the language's
 resolution (spec `08-modules.md` §8.11.2, including the bare-name precedence of §8.11.2.1);
 `/mod` applies no resolution rule of its own. A module exists when it is loaded in the session
 or that resolution locates its backing file. A module not yet loaded is loaded when
-`/mod` switches to it ([§14.1](14-file-watching.md) watches the modules `/mod` loads). When `<name>` names no module,
+`/mod` switches to it ([§14.1](14-file-watching.md) watches the modules `/mod` loads). When that load fails to compile, `/mod` reports the error, leaves the active module unchanged, and the session locks ([§14.5](14-file-watching.md)). [Tested tests/repl_persist::mod_load_failure_locks_session_until_its_save_compiles — `/mod bad` reports the failure, a definition and an expression are refused naming `bad.cl`, `user.cl` is unchanged, and the fixing save releases the lock; the unchanged active module is unit-pinned at src/session_v4/persistence_tests.rs::mod_load_failure_stands_failed_or_waits_and_a_code_turn_records_nothing] When `<name>` names no module,
 `/mod` MUST report an unknown-module error naming `<name>` and leave the active module
 unchanged (§8 Scenario 7). [Tested+Neg tests/repl_lifecycle::mod_unknown_module_neg_not_created_and_active_module_unchanged, tests/repl_lifecycle::mod_unloaded_module_is_loaded_and_its_file_kept, tests/repl_lifecycle::mod_bare_name_resolves_declared_submodule_over_root_module, tests/repl_lifecycle::mod_bare_name_resolves_root_module_without_declared_submodule_control, tests/repl_lifecycle::mod_import_alias_neg_not_a_module_name, tests/repl_lifecycle::mod_module_name_of_aliased_import_switches_to_it_control — an unknown name and an import alias are refused, and neither creates a module or a file; an unloaded file-backed module is loaded and keeps its file; a declared submodule beats a loaded root module, which is the target without the declaration] [S122 — no `/mod` cell for a dotted target or a lib-directory target (§8.11.2 tier 3); the shared resolver is evidenced for `import`]
 

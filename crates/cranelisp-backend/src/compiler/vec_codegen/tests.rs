@@ -1316,6 +1316,94 @@ fn vec_set_copy_path_preserves_original() {
     );
 }
 
+// spec: spec/12-runtime.md §12.7.2.1 — the static copy-only site (the source is
+//       read after the set) panics out of range instead of returning an
+//       unchanged copy (ACT-1037).
+#[test]
+fn vec_set_copy_path_panics_out_of_range() {
+    use cranelisp_types::ResolvedCall;
+    let mut res = HashMap::new();
+    let set_span = Span::new(2010, 2030);
+    res.insert(
+        set_span,
+        ResolvedCall::BuiltinFn {
+            name: Symbol::from("vec-set"),
+        },
+    );
+    // (let [v [10 20 30]] (let [_ (vec-set v 3 99)] (vec-get v 1)))
+    let set_expr = Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("vec-set"),
+            span: Span::new(2011, 2018),
+            resolved_call: None,
+            inferred_type: None,
+        }),
+        args: vec![
+            Expr::Var {
+                name: Symbol::from("v"),
+                span: Span::new(2019, 2020),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 3,
+                span: Span::new(2021, 2022),
+                inferred_type: None,
+            },
+            Expr::IntLit {
+                value: 99,
+                span: Span::new(2023, 2025),
+                inferred_type: None,
+            },
+        ],
+        span: set_span,
+        resolved_call: None,
+        inferred_type: None,
+    };
+    let read_original = vec_get(
+        Expr::Var {
+            name: Symbol::from("v"),
+            span: Span::new(2040, 2041),
+            resolved_call: None,
+            inferred_type: None,
+        },
+        1,
+        Span::new(2042, 2060),
+        &mut res,
+    );
+    let expr = Expr::Let {
+        bindings: vec![(Symbol::from("v"), vec_lit(&[10, 20, 30], 2001))],
+        body: Box::new(Expr::Let {
+            bindings: vec![(Symbol::from("_unused"), set_expr)],
+            body: Box::new(read_original),
+            span: Span::new(2005, 2061),
+            inferred_type: None,
+        }),
+        span: Span::new(2000, 2062),
+        inferred_type: None,
+    };
+    let check = TestCheckResult {
+        method_resolutions: res,
+        resolved_targets: HashMap::new(),
+        pattern_ctors: HashMap::new(),
+        constrained_fn_names: HashSet::new(),
+        mono_defns: Vec::new(),
+        expr_types: HashMap::new(),
+        default_method_defns: Vec::new(),
+        warnings: Vec::new(),
+        display: None,
+    };
+    let result = test_compile_and_run(&expr, &check, &empty_tables());
+    let message = match result {
+        Err(CranelispError::CodegenError { message, .. }) => message,
+        other => panic!("an out-of-range copy-only vec-set MUST panic; got {other:?}"),
+    };
+    assert!(
+        message.ends_with("runtime panic: vec-get: index out of bounds"),
+        "the §12.7.2.1 message; got {message:?}"
+    );
+}
+
 // spec: spec/12-runtime.md §12.3.3 — a vec-set preserves the values at
 //       OTHER positions. Backend kernel of the legacy
 //       `vec_set_preserves_other_elements` GAP (distinct from the

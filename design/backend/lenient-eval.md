@@ -112,7 +112,7 @@ Both sites skip admission entirely when any of these hold:
   once per arm, not O(2^depth) times.
 - **IO combinator callees (apply site only).** An apply whose resolved call is
   one of the inline IO combinators (`apply::IoCombinator`) never sparks its
-  arguments (`s122-closure.md` §8).
+  arguments (`design/backend/s122-closure.md` §8).
 
 ### 2.5 Apply-argument sparkability
 

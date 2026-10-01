@@ -28,7 +28,7 @@
 (defmacro my-inc [x]
   `(add-i64 ~x 1))
 
-(defn test-inc []
+(defn check-inc []
   (my-inc 41))                                           ;; -> 42
 
 ;; --- Control flow macros ---
@@ -42,13 +42,13 @@
 (defmacro unless [cond body]
   `(if ~cond 0 ~body))
 
-(defn test-when-true []
+(defn check-when-true []
   (when true 42))                                        ;; -> 42
 
-(defn test-when-false []
+(defn check-when-false []
   (when false 42))                                       ;; -> 0
 
-(defn test-unless []
+(defn check-unless []
   (unless false 99))                                     ;; -> 99
 
 ;; --- Boolean logic macros ---
@@ -61,19 +61,19 @@
 (defmacro my-or [a b]
   `(if ~a true ~b))
 
-(defn test-and-tt []
+(defn check-and-tt []
   (if (my-and true true) 1 0))                           ;; -> 1
 
-(defn test-and-tf []
+(defn check-and-tf []
   (if (my-and true false) 1 0))                          ;; -> 0
 
-(defn test-and-ft []
+(defn check-and-ft []
   (if (my-and false true) 1 0))                          ;; -> 0
 
-(defn test-or-ff []
+(defn check-or-ff []
   (if (my-or false false) 1 0))                          ;; -> 0
 
-(defn test-or-ft []
+(defn check-or-ft []
   (if (my-or false true) 1 0))                           ;; -> 1
 
 ;; --- Macros that generate let bindings ---
@@ -83,7 +83,7 @@
 (defmacro with-double [x body]
   `(let [doubled (add-i64 ~x ~x)] ~body))
 
-(defn test-with-double []
+(defn check-with-double []
   (with-double 21 doubled))                              ;; -> 42
 
 ;; --- Macros that nest other forms ---
@@ -92,17 +92,17 @@
 (defmacro add3 [a b c]
   `(add-i64 ~a (add-i64 ~b ~c)))
 
-(defn test-add3 []
+(defn check-add3 []
   (add3 10 20 30))                                       ;; -> 60
 
 ;; A macro that clamps a value to zero or above
 (defmacro max-zero [x]
   `(if (lt-i64 ~x 0) 0 ~x))
 
-(defn test-max-zero-neg []
+(defn check-max-zero-neg []
   (max-zero (sub-i64 0 7)))                              ;; -> 0
 
-(defn test-max-zero-pos []
+(defn check-max-zero-pos []
   (max-zero 5))                                          ;; -> 5
 
 ;; --- Multi-clause macros ---
@@ -114,13 +114,13 @@
   ([a b] `(add-i64 ~a ~b))
   ([a b c] `(add-i64 ~a (add-i64 ~b ~c))))
 
-(defn test-sum-1 []
+(defn check-sum-1 []
   (my-sum 42))                                           ;; -> 42
 
-(defn test-sum-2 []
+(defn check-sum-2 []
   (my-sum 20 22))                                        ;; -> 42
 
-(defn test-sum-3 []
+(defn check-sum-3 []
   (my-sum 10 12 20))                                     ;; -> 42
 
 ;; --- Macros composing with other macros ---
@@ -130,7 +130,7 @@
 (defmacro inc-twice [x]
   `(my-inc (my-inc ~x)))
 
-(defn test-inc-twice []
+(defn check-inc-twice []
   (inc-twice 40))                                        ;; -> 42
 
 ;; --- Macros with ADTs ---
@@ -141,10 +141,10 @@
 (defmacro some-or [opt default]
   `(match ~opt [(Some v) v None ~default]))
 
-(defn test-some-or-some []
+(defn check-some-or-some []
   (some-or (Some 42) 0))                                 ;; -> 42
 
-(defn test-some-or-none []
+(defn check-some-or-none []
   (some-or None 99))                                     ;; -> 99
 
 ;; Expected: 42+42+0+99 + 1+0+0+0+1 + 42+60+0+5 + 42+42+42+42 + 42+99 = 601
@@ -153,22 +153,22 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-inc)
-      (add-i64 (test-when-true)
-        (add-i64 (test-when-false)
-          (add-i64 (test-unless)
-            (add-i64 (test-and-tt)
-              (add-i64 (test-and-tf)
-                (add-i64 (test-and-ft)
-                  (add-i64 (test-or-ff)
-                    (add-i64 (test-or-ft)
-                      (add-i64 (test-with-double)
-                        (add-i64 (test-add3)
-                          (add-i64 (test-max-zero-neg)
-                            (add-i64 (test-max-zero-pos)
-                              (add-i64 (test-sum-1)
-                                (add-i64 (test-sum-2)
-                                  (add-i64 (test-sum-3)
-                                    (add-i64 (test-inc-twice)
-                                      (add-i64 (test-some-or-some)
-                                               (test-some-or-none)))))))))))))))))))))
+    (add-i64 (check-inc)
+      (add-i64 (check-when-true)
+        (add-i64 (check-when-false)
+          (add-i64 (check-unless)
+            (add-i64 (check-and-tt)
+              (add-i64 (check-and-tf)
+                (add-i64 (check-and-ft)
+                  (add-i64 (check-or-ff)
+                    (add-i64 (check-or-ft)
+                      (add-i64 (check-with-double)
+                        (add-i64 (check-add3)
+                          (add-i64 (check-max-zero-neg)
+                            (add-i64 (check-max-zero-pos)
+                              (add-i64 (check-sum-1)
+                                (add-i64 (check-sum-2)
+                                  (add-i64 (check-sum-3)
+                                    (add-i64 (check-inc-twice)
+                                      (add-i64 (check-some-or-some)
+                                               (check-some-or-none)))))))))))))))))))))

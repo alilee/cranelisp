@@ -10,7 +10,7 @@ This document covers how the IO ADT is seeded in the typechecker, how its constr
 
 ## Architectural Constraints
 
-Per the `/arch` review in `sprints/SPRINT.md`:
+Per the `/arch` review in `sprints/archive/sprint-16.md`:
 
 - **No `Type::IO` variant.** IO uses `Type::ADT`. The spec (10.1.1) states IO is an ordinary ADT with no special type-checking rules. A dedicated variant would add a branch to every `match` on `Type` across all crates.
 - **No `Par` constructor (tag=3) yet.** Automatic IO scheduling (spec 10.12) is scoped to a later sprint. Seeding Par now would create dead code and untested paths (principle 8).

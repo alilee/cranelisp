@@ -10,16 +10,20 @@ refers_to: design/backend/non-concrete-release-contract.md;
   crates/cranelisp-intrinsics/src/drop.rs;
   tests/spec_10_io.rs;
   tests/concurrency_fanout.rs
-status: open
+status: deferred
 retargeted_by: /arch
 retargeted_at: 2026-09-25
 ---
 
-## S122 disposition (user-approved 2026-09-30)
+## Disposition: carried to S123 under K7 (user, 2026-09-30)
 
-Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
-
-- **S122 work (K2), evidence only.** `test` measures one marginal pair for a heap payload in an unrun `Bind`. A balanced pair retires this filing. A confirmed ordinary leak becomes a committed RED carried to S123 under K7. A double discharge, use-after-free or corruption returns to the user with its attribution for a fix decision.
+- **Carried.** The cancellation face below carries to S123 in the K7 runtime
+  concurrency package, approved with the Phase-5 checkpoint
+  ([checkpoint carries](../../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+  First deferral of this face; no earlier count is recorded for the filing,
+  which has been open since S119.
+- **S122 K2 (done).** The unrun-`Bind` face balanced and is retired; see
+  below.
 
 # `Pure` payload release: only the cancellation face lacks an executing witness
 
@@ -53,9 +57,9 @@ The cancellation face has no executing balance observation. The 0907/0934 row of
 - **What the K2 cell does not establish.** It does not show that loser
   disposal shares the unrun-`Bind` teardown.
 
-The approved K2 package named only the unrun-`Bind` face, so this face has no
-approved package. `sprint` presents it to the user as a carry candidate (K7,
-runtime concurrency) or as S122 work.
+**First S123 act.** `test` runs one armed executing balance observation of a
+losing branch that holds a heap-payload `Pure`. Its control is the same
+program with a scalar payload.
 
 ## Closure
 

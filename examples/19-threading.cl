@@ -30,6 +30,11 @@
 
 ;; --- Threading macro definitions ---
 
+;; `&rest` marks a REST PARAMETER: `rest` collects every remaining argument
+;; as one (SList Sexp), and `~@rest` splices those arguments back into the
+;; template. `& rest`, with a space, is the same marker. `&` is reserved for
+;; this role and never appears inside a name.
+
 ;; Thread-first: (-> x (f a b)) becomes (f x a b)
 ;; If a step is a bare symbol, wrap it: (-> x f) becomes (f x)
 (defmacro ->
@@ -88,7 +93,7 @@
 ;; Thread-first inserts the value as the first argument after the function.
 ;; This reads top-to-bottom as "start with 5, then add 3, then multiply by 2".
 
-(defn test-thread-first-basic []
+(defn check-thread-first-basic []
   (-> 5
       (+ 3)
       (* 2)))                                        ;; (+ 5 3) = 8, (* 8 2) = 16
@@ -97,7 +102,7 @@
 ;; With threading, each step is clear.
 
 ;; Thread-first with more steps
-(defn test-thread-first-chain []
+(defn check-thread-first-chain []
   (-> 100
       (- 20)
       (/ 4)
@@ -107,11 +112,11 @@
 ;; A bare symbol f is treated as (f x).
 (defn negate [x] (sub-i64 0 x))
 
-(defn test-thread-first-bare []
+(defn check-thread-first-bare []
   (-> 7
       negate))                                       ;; (negate 7) = -7
 
-(defn test-thread-first-bare-chain []
+(defn check-thread-first-bare-chain []
   (-> 42
       negate
       negate))                                       ;; negate(negate(42)) = 42
@@ -122,12 +127,12 @@
 ;; This matters when the "data" goes in the last position.
 
 ;; With thread-last, x goes at the end: (sub-i64 100 x)
-(defn test-thread-last-basic []
+(defn check-thread-last-basic []
   (->> 10
        (sub-i64 100)
        (sub-i64 50)))                                ;; (sub-i64 100 10)=90, (sub-i64 50 90)=-40
 
-(defn test-thread-last-negate []
+(defn check-thread-last-negate []
   (->> 10
        (sub-i64 100)))                               ;; (sub-i64 100 10) = 90
 
@@ -137,14 +142,14 @@
 ;; the base string first: (str-concat base suffix).
 ;; Thread-first inserts the accumulating string as the first arg.
 
-(defn test-string-pipeline []
+(defn check-string-pipeline []
   (-> "hello"
       (str-concat ", ")
       (str-concat "world!")
       str-len))                                      ;; "hello, " -> "hello, world!" -> 13
 
 ;; Build a greeting string step by step
-(defn test-greeting []
+(defn check-greeting []
   (str-eq
     (-> "hello"
         (str-concat " ")
@@ -161,11 +166,11 @@
 ;;   (-> 10 (sub-i64 3))  = (sub-i64 10 3) = 7
 ;;   (->> 10 (sub-i64 3)) = (sub-i64 3 10) = -7
 
-(defn test-position-first []
+(defn check-position-first []
   (-> 10
       (sub-i64 3)))                                  ;; (sub-i64 10 3) = 7
 
-(defn test-position-last []
+(defn check-position-last []
   (->> 10
        (sub-i64 3)))                                 ;; (sub-i64 3 10) = -7
 
@@ -174,7 +179,7 @@
 ;; Compute the absolute value of a negative expression via pipeline
 (defn abs [x] (if (< x 0) (sub-i64 0 x) x))
 
-(defn test-practical-pipeline []
+(defn check-practical-pipeline []
   (-> 100
       (- 150)
       abs
@@ -186,39 +191,39 @@
 (defn clamp [x lo hi]
   (if (< x lo) lo (if (> x hi) hi x)))
 
-(defn test-clamp-pipeline []
+(defn check-clamp-pipeline []
   (-> 200
       (clamp 0 100)))                                ;; (clamp 200 0 100) = 100
 
 ;; --- Sum results ---
 
-;; test-thread-first-basic:     16
-;; test-thread-first-chain:     21
-;; test-thread-first-bare:      -7  (negate 7)
-;; test-thread-first-bare-chain: 42
-;; test-thread-last-basic:      -40
-;; test-thread-last-negate:     90
-;; test-string-pipeline:        13
-;; test-greeting:               1 (true as int)
-;; test-position-first:         7
-;; test-position-last:          -7
-;; test-practical-pipeline:     150
-;; test-clamp-pipeline:         100
+;; check-thread-first-basic:     16
+;; check-thread-first-chain:     21
+;; check-thread-first-bare:      -7  (negate 7)
+;; check-thread-first-bare-chain: 42
+;; check-thread-last-basic:      -40
+;; check-thread-last-negate:     90
+;; check-string-pipeline:        13
+;; check-greeting:               1 (true as int)
+;; check-position-first:         7
+;; check-position-last:          -7
+;; check-practical-pipeline:     150
+;; check-clamp-pipeline:         100
 ;; Total: 16+21+(-7)+42+(-40)+90+13+1+7+(-7)+150+100 = 386
 
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-thread-first-basic)
-      (add-i64 (test-thread-first-chain)
-        (add-i64 (test-thread-first-bare)
-          (add-i64 (test-thread-first-bare-chain)
-            (add-i64 (test-thread-last-basic)
-              (add-i64 (test-thread-last-negate)
-                (add-i64 (test-string-pipeline)
-                  (add-i64 (if (test-greeting) 1 0)
-                    (add-i64 (test-position-first)
-                      (add-i64 (test-position-last)
-                        (add-i64 (test-practical-pipeline)
-                                 (test-clamp-pipeline))))))))))))))
+    (add-i64 (check-thread-first-basic)
+      (add-i64 (check-thread-first-chain)
+        (add-i64 (check-thread-first-bare)
+          (add-i64 (check-thread-first-bare-chain)
+            (add-i64 (check-thread-last-basic)
+              (add-i64 (check-thread-last-negate)
+                (add-i64 (check-string-pipeline)
+                  (add-i64 (if (check-greeting) 1 0)
+                    (add-i64 (check-position-first)
+                      (add-i64 (check-position-last)
+                        (add-i64 (check-practical-pipeline)
+                                 (check-clamp-pipeline))))))))))))))

@@ -10,6 +10,8 @@ filed_at: 2026-09-22
 refers_to:
   - design/typecheck/typecheck.md
   - design/typecheck/hkt.md
+  - spec/05-definitions.md §5.13.1
+  - crates/cranelisp-typecheck/src/traits/impl_check.rs
 ---
 
 ## S122 disposition (user-approved 2026-09-30)
@@ -17,6 +19,38 @@ refers_to:
 Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
 
 - **Carried to S123 (K5, N3).** First deferral.
+
+## Confirmed: an impl body refused for an impl declared later (qa, 2026-09-30)
+
+The forward-reference lead has a confirmed batch face, found while checking
+ACT-1034's C1 control (`.local/qa-s122-6b/sentinel/c1.py`). The probe used a
+copy of `target/debug/cranelisp` built after `88bbbd12`, with the
+primitives-only prelude.
+
+```clojure
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size 42)])))
+(impl Size Int (defn size [n] n))
+(defn main [] (Pure (size (Yep 3))))   ; §5.13.1 requires 42
+```
+
+- `--run` and `--link` refuse it:
+  `impl of trait Size for user/Opt: method size does not conform: no impl of trait user/Size for type primitives/Int`.
+- **Control:** the same file with `impl Size Int` first exits 42 in both modes.
+  The two files differ only in declaration order.
+- §5.13.1 lets an implementation in one cluster reference definitions that
+  appear later, and a batch file is one cluster. The REPL refusal is correct,
+  because each REPL input is its own cluster (§5.13.2).
+- **Class:** `wrong-reject`. Hypothesis: impl conformance is checked against
+  the impl registry as it stands at that impl's source position
+  (`traits/impl_check.rs`). Refuted if both impls are registered before
+  either body is checked.
+- **Allocation:** `test` commits a failing, un-ignored `--run`/`--link` cell in
+  `tests/spec_05_definitions.rs` citing
+  `// spec: spec/05-definitions.md §5.13.1`, with the impl-first order as the
+  passing control. It is a discovered defect, so the RED lands now under
+  METHOD §2.2. The carry defers the correction, not the reproduction.
 
 ## Request
 

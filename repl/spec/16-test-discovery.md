@@ -38,6 +38,17 @@ for all three. [Tested+Neg tests/test_runner.rs::test_mode_runs_every_test_repor
   single line `No tests found`.
 - **Tracing.** The runner does not trace failing tests (§16.4).
 
+**Project and library modules.** The runner's selections (§0.2.2, §16.2.2)
+distinguish two kinds of module:
+
+- A **project module** is one whose source file is resolved from the project
+  root (`spec/08-modules.md` §8.11.1, §8.11.2 tier 2), or a submodule of a
+  project module.
+- A **library module** is one resolved from a lib directory
+  (`spec/08-modules.md` §8.11.2 tier 3, §8.11.4), or a submodule of a library
+  module. This holds even when the lib directory lies inside the project
+  directory, such as the default `{project_root}/stdlib/`.
+
 #### 16.2.1 `/run-tests [module]` [R4]
 
 Run the tests of one module. With no argument, it selects the current module;
@@ -60,7 +71,7 @@ user> /run-tests user.math.test
 
 #### 16.2.2 `/run-all-tests` [R4]
 
-Run the tests of all loaded modules whose source files are under the project root. Library modules (discovered through the lib search path) are excluded. [Tested+Neg tests/test_runner.rs::run_all_tests_neg_excludes_library_modules_under_the_project_root — a project module loaded only through a library module is included; a library module in a lib directory inside the project, and its child, are excluded]
+Run the tests of every loaded project module (§16.2). Library modules are excluded. [Tested+Neg tests/test_runner.rs::run_all_tests_neg_excludes_library_modules_under_the_project_root — a project module loaded only through a library module is included; a library module in a lib directory inside the project, and its child, are excluded]
 
 ```
 user> /run-all-tests

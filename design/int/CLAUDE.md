@@ -69,7 +69,7 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `step9-error-cascade.md` | Module failure: scheduler cascade, the user-visible error chain and REPL recovery. Spec-traced tests cite §4.1 and §4.2. |
 | `observability.md` | The trace and event sinks. |
 | `cranelisp-toml.md` | `Cranelisp.toml`, library and platform directory assembly, and the scaffold writer. |
-| `repl-lifecycle.md` | The file watcher, `/reset`, `/sh`, REPL cache use, `--link` wiring and project-root resolution. |
+| `repl-lifecycle.md` | The file watcher and reload executor, the session lock and REPL exit, `/reset`, `/sh`, REPL cache use, `--link` wiring and project-root resolution. |
 | `agent.md` | The embedded agent (dispatch, turn loop, harvest, write gates, rendering, log and trace), `/refs`, `/tests-for`, `/syntax` and the interim `/search` index. Section numbers are pinned by live source. |
 | `terminal-styling.md` | The layered styling interior below the `styled::render` role-span seam, and the pretty-printer layout. |
 | `concurrency/` | As-built structural, protocol and lifecycle diagrams for the scheduling axis. |

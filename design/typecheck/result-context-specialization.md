@@ -7,7 +7,7 @@ user-approved [instance identity funnel](../arch/interfaces.md#instance-identity
 current scheme-bearing key contract is the
 [full-signature identity design](../arch/s122-overload-reorder-publication.md).
 Whole-wave acceptance remains subject to the sprint's independent and cross-crate evidence gates.
-Approval and wave readiness are recorded in the [sprint ledger](../../sprints/SPRINT.md);
+Approval and wave readiness are recorded in the [sprint ledger](../../sprints/archive/sprint-122.md);
 the archived approval record is not the current gate state.
 
 This elaborates [monomorphisation.md](monomorphisation.md) under

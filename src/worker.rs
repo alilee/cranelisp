@@ -589,6 +589,7 @@ fn refuse_publication_cycle(
     shared
         .scheduler
         .record_failure_dependencies(module, [reached.clone()]);
+    shared.scheduler.record_cycle_failure(module);
     let working = check.working;
     let first_reference = staging
         .all_symbols()
@@ -3174,6 +3175,36 @@ pub(crate) fn handle_cached_codegen(
 /// items for the full session lifetime.
 ///
 /// Sprint 57 Wave 4 G9 per `persistent-workers.md` §4.1.
+/// Locate `module`'s own failure in its source file when the error names no
+/// file and points at a real offset: a type error carries no file, and a
+/// dependency's failure must be reported in the dependency's file, not the
+/// entry's (`design/int/repl-lifecycle.md` §1.3.1, PF-1 Batch). A failure that
+/// already names a file, such as a refusal by a failed dependency, keeps it.
+fn locate_in_own_file(
+    shared: &crate::session_v4::SharedState,
+    module: &ModuleFullPath,
+    mut error: CranelispError,
+) -> CranelispError {
+    let file = shared
+        .typecheck_products
+        .get(module)
+        .and_then(|product| product.file_path.clone());
+    if let (
+        Some(file),
+        CranelispError::ParseError { location, .. }
+        | CranelispError::TypeError { location, .. }
+        | CranelispError::CodegenError { location, .. }
+        | CranelispError::ModuleError { location, .. }
+        | CranelispError::MacroError { location, .. },
+    ) = (file, &mut error)
+        && location.file.is_none()
+        && location.span != Span::SYNTHETIC
+    {
+        location.file = Some(file);
+    }
+    error
+}
+
 pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
     use std::panic::AssertUnwindSafe;
     loop {
@@ -3198,6 +3229,7 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
                 match result {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
+                        let e = locate_in_own_file(shared, &module, e);
                         shared.scheduler.notify_module_failed(&module, e);
                         // E3 failure-edge hook (FIXME 0562): the symmetric peer of
                         // the `on_module_published` Done-arm call — a module popped

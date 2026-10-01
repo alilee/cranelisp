@@ -591,9 +591,9 @@ fn generate_exports(specs: &[ExportSpec]) -> String {
 }
 
 /// The (sexp, source) pair off a symbol's introspection record. The verbatim
-/// `source` text is the S102 CS-D2 emission authority (§15.4.7 authorship
-/// fidelity); the `sexp` remains the structural authority (dedup identity,
-/// dependency sort, render fallback).
+/// `source` text is the S102 CS-D2 emission authority (§15.4 rule 1, §15.1
+/// authorship fidelity); the `sexp` remains the structural authority (dedup
+/// identity, dependency sort, render fallback).
 fn introspection_sexp_and_source(
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
@@ -627,13 +627,13 @@ pub(crate) fn sexp_matches_source(sexp: &Sexp, source: &str) -> bool {
 }
 
 /// The consistency-gated verbatim slice of `form` out of `text` (S102 CS-D2,
-/// §15.4.7 authorship fidelity): the form's span slice must re-parse to
-/// exactly the recorded form (`sexp_matches_source` is reader-desugar-aware,
-/// so authored shorthand like `` `(… ~e) `` passes). Returns `None` — callers
-/// fall back to `pretty_print` — when the span is out of bounds / off a char
-/// boundary, or the slice does not match (e.g. a REPL turn's fresh 0-based
-/// spans against a module's load-time file text). Shared by
-/// `process_form::verbatim_source_slice` (live-turn capture) and the
+/// §15.4 rule 1, §15.1 authorship fidelity): the form's span slice must
+/// re-parse to exactly the recorded form (`sexp_matches_source` is
+/// reader-desugar-aware, so authored shorthand like `` `(… ~e) `` passes).
+/// Returns `None` — callers fall back to `pretty_print` — when the span is out
+/// of bounds / off a char boundary, or the slice does not match (e.g. a REPL
+/// turn's fresh 0-based spans against a module's load-time file text). Shared
+/// by `process_form::verbatim_source_slice` (live-turn capture) and the
 /// introspection rehydrator below (S102 W5R M-5 — single gate, Principle 7).
 pub(crate) fn verbatim_slice(form: &Sexp, text: &str) -> Option<String> {
     let span = form.span();
@@ -1615,7 +1615,8 @@ mod tests {
     // that authored form exactly once and MUST NOT emit the expansion
     // artifact — persisting both was /port D1's directory poison (the pair
     // does not co-load).
-    // spec: repl/spec.md §15.1 — round-trip; §15.4 invariant 7
+    // spec: repl/spec/15-session-persistence.md §15.4 — rule 1 round trip;
+    // §15.1 regeneration
     #[test]
     fn regen_macro_expansion_artifact_emits_authored_origin_once() {
         let module = ModuleFullPath::from("user");
@@ -1731,7 +1732,8 @@ mod tests {
     // The consistency gate is reader-desugar-aware: authored shorthand
     // re-parses to the recorded (desugared) sexp; garbage / stale / multi-form
     // sources fail.
-    // spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity)
+    // spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1
+    // (authorship fidelity)
     #[test]
     fn sexp_matches_source_desugar_aware_positive_and_negative_cells() {
         let shorthand = "(defmacro twice [e] `(add-i64 ~e ~e))";
@@ -1760,7 +1762,8 @@ mod tests {
     // rehydrator now route through (Principle 7). Positive: an in-bounds,
     // consistent slice returns byte-verbatim (reader shorthand preserved).
     // Negative: an out-of-bounds span and a stale/mismatched text return None.
-    // spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity)
+    // spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1
+    // (authorship fidelity)
     #[test]
     fn verbatim_slice_positive_and_negative_cells() {
         // The whole text is the single form — its span covers it exactly.
@@ -1794,7 +1797,8 @@ mod tests {
     // Matrix B {file-originated hand-authored × authorship fidelity}: an entry
     // whose record carries the verbatim authored text emits it BYTE-EXACT —
     // reader shorthand preserved, never the desugared render (/port D2).
-    // spec: repl/spec.md §15.4 — invariant 7
+    // spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1
+    // (authorship fidelity)
     #[test]
     fn regen_emits_verbatim_authored_source_reader_shorthand() {
         let module = ModuleFullPath::from("user");
@@ -1926,7 +1930,8 @@ mod tests {
     // Rehydration captures the VERBATIM span slice off the backing file (it
     // holds the file text at that moment), never `pretty_print(sexp)` — the
     // reader-shorthand-loss half of /port D2's rehydration compounding.
-    // spec: repl/spec.md §15.4 — invariant 7
+    // spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1
+    // (authorship fidelity)
     #[test]
     fn rehydrate_captures_verbatim_source_slice() {
         let module = ModuleFullPath::from("user");
@@ -2478,7 +2483,8 @@ mod tests {
     // formatted authored source that re-parses to the recorded sexp emits the
     // VERBATIM source byte-for-byte (formatting preserved), not the pretty-
     // printer's reflow.
-    // spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity), §5–7
+    // spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1
+    // (authorship fidelity), §5–7
     #[test]
     fn regen_type_decl_source_first_verbatim() {
         let module = ModuleFullPath::from("user");
@@ -2509,7 +2515,8 @@ mod tests {
     // Fallback: when the recorded source does NOT re-parse to the recorded sexp
     // (stale / mismatched), the pretty-printer render of the sexp is emitted —
     // never the stale source text.
-    // spec: repl/spec.md §15.4 — invariant 7 (consistency gate), §5–7
+    // spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1
+    // (consistency gate), §5–7
     #[test]
     fn regen_type_decl_falls_back_to_pretty_on_source_mismatch() {
         let module = ModuleFullPath::from("user");

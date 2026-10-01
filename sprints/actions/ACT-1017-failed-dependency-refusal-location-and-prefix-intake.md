@@ -24,6 +24,34 @@ refers_to:
   `src/scheduler.rs::refuse_failed_dependency_locked`; it copies the stored
   error's span and rendered message into a new error with no file.
 - This carry covers ACT-1017 only. It does not dispose of ACT-1015.
+- **Widened reach (qa, 2026-09-30, Phase-6a intake).** This was observed
+  with the binary built after `88bbbd12`, on a fresh scratch project. It
+  widens the evidence only; the carry and the open §5.5 reading are unchanged.
+  - **Batch `--run`, dependency failure.** An entry imports a module `helper`
+    that has a type error. The diagnostic prints
+    `p.cl:1:14: error: module error at 13..22: module 'helper' failed: type error at 13..22: …`.
+    That is `helper.cl`'s span rendered as a line and column of `p.cl`, the
+    same location face.
+  - **Batch `--link`, same program.** It prints
+    `p.cl:1:1: error: module error at 0..0: module 'p' failed: module error at 0..0: dependency 'helper' failed: type error at 13..22: …`.
+    That has three category prefixes and a `0..0` span. CLI §0.2.1 limits
+    parity to execution output, so this difference between modes is not a
+    parity defect.
+  - **Entry-module failure** (reported by `training`). A type error in the
+    entry itself prints
+    `p.cl:1:21: error: module error at 20..29: module 'p' failed: type error at 20..29: …`.
+    The location is correct. It repeats the span under two categories, and
+    the prefix belongs to the same §5.5 scope question.
+  - **REPL session end (qa, 2026-10-01, Phase-6b intake).** `docs` reported
+    this and QA reproduced it. `user.cl` imports `sq` from `math.cl`, and
+    `math.cl` is saved with a type error at 13..39. After `/quit`, stderr
+    prints
+    `user.cl:1:14: error: module error at 13..39: module 'user' failed: module error at 13..39: type error at 13..39: …`.
+    That is `math.cl`'s span rendered as a line and column of `user.cl`, with
+    three prefixes. The in-session `[errors: user.cl]` notice carries the same
+    span under `user.cl`'s header. Whether the REPL should print this line and
+    exit 1 at all is a separate spec question, routed through `sprint`. This
+    record covers only its location and prefix.
 
 ## Request
 

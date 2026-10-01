@@ -170,6 +170,13 @@ fn cache_validity_check(
     let CacheValidity::Valid { record } = shared.cache.validate(dep, &source_hash, &sources) else {
         return None;
     };
+    // The module is restored from what this read validated, so it is the
+    // state the session loaded (`design/int/repl-lifecycle.md` §1.2, Content
+    // hash, Writers).
+    shared.record_source(
+        dep_file,
+        crate::watch::FileState::Source(source_hash.clone()),
+    );
 
     // `CRANELISP_MODULE_TRACE` — the module-discovery / compile-order / cache-hit
     // observability channel (tests/CLAUDE.md §"Diagnostic Logging"). The `.meta`
@@ -609,7 +616,7 @@ fn register_cached_dependency(
     // for the regular handler to surface when it reaches the dependency.
     let dep_file_ref = dep_file.clone();
     let dep_for_err = dependency.clone();
-    let Ok(dep_sexps) = register_dep(ctx, dependency, &dep_file, |e| {
+    let Ok(dep_sexps) = register_dep(ctx, None, dependency, &dep_file, |e| {
         CranelispError::ModuleError {
             message: format!(
                 "failed to read transitive dep '{}' from '{}': {}",

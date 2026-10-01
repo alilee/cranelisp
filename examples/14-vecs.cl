@@ -31,33 +31,33 @@
 ;; --- Basic operations ---
 
 ;; Create and measure
-(defn test-literal []
+(defn check-literal []
   (vec-len [10 20 30 40 50]))
 
 ;; Access elements by index
-(defn test-get []
+(defn check-get []
   (let [v [10 20 30]]
     (add-i64 (vec-get v 0)
              (add-i64 (vec-get v 1)
                       (vec-get v 2)))))
 
 ;; Replace an element
-(defn test-set []
+(defn check-set []
   (vec-get (vec-set [10 20 30] 1 99) 1))
 
 ;; Append an element
-(defn test-push []
+(defn check-push []
   (let [v (vec-push [1 2] 3)]
     (add-i64 (vec-len v) (vec-get v 2))))
 
 ;; --- Building Vecs incrementally ---
 
 ;; Start empty and push elements
-(defn test-from-empty []
+(defn check-from-empty []
   (vec-len (vec-push (vec-push (vec-push [] 1) 2) 3)))
 
 ;; Chain multiple sets
-(defn test-set-chain []
+(defn check-set-chain []
   (let [v (vec-set (vec-set (vec-set [0 0 0] 0 1) 1 2) 2 3)]
     (add-i64 (vec-get v 0)
              (add-i64 (vec-get v 1)
@@ -68,7 +68,7 @@
 (defn sum-first-two [v]
   (add-i64 (vec-get v 0) (vec-get v 1)))
 
-(defn test-as-arg []
+(defn check-as-arg []
   (sum-first-two [100 200 300]))
 
 ;; --- Vec operations as ordinary values ---
@@ -76,38 +76,33 @@
 ;; The vec primitives are first-class: a name like `vec-get` is an
 ;; ordinary function value, so it can be passed to a higher-order
 ;; function just like a user-defined one (higher-order functions are
-;; example 13's capability). Each helper below forwards its function
-;; argument to a call.
+;; example 13's capability).
 ;;
-;; DELIBERATE SHAPE: there is one helper per operation, and each is
-;; instantiated at exactly ONE vec primitive. Collapsing them into a
-;; single generic helper used at two different vec primitives is the
-;; shape this example carefully avoids: it currently SIGBUSes (open
-;; compiler defect, FIXME 0483). Do not read the three near-identical
-;; helpers as a style choice — they are working around a live bug, and
-;; this comment exists so the reader does not "simplify" into the crash.
+;; `apply2` below is one generic helper, and it is used at two different
+;; vec primitives: `vec-get` (index in, element out) and `vec-push`
+;; (element in, Vec out). Each call site instantiates it at that
+;; primitive's own type.
 
-(defn call-get [f v i] (f v i))
-(defn call-set [f v i x] (f v i x))
-(defn call-push [f v x] (f v x))
+(defn apply2 [f v x] (f v x))
+(defn apply3 [f v i x] (f v i x))
 
 ;; Pass vec-get itself as the argument: (vec-get [7 8 9] 1) = 8
-(defn test-get-as-value []
-  (call-get vec-get [7 8 9] 1))
+(defn check-get-as-value []
+  (apply2 vec-get [7 8 9] 1))
 
 ;; Pass vec-set: replace index 0 with 40, then read it back.
-(defn test-set-as-value []
-  (vec-get (call-set vec-set [1 2 3] 0 40) 0))
+(defn check-set-as-value []
+  (vec-get (apply3 vec-set [1 2 3] 0 40) 0))
 
 ;; Pass vec-push: append a fourth element, then measure.
-(defn test-push-as-value []
-  (vec-len (call-push vec-push [1 2 3] 4)))
+(defn check-push-as-value []
+  (vec-len (apply2 vec-push [1 2 3] 4)))
 
 ;; --- Vecs in ADTs ---
 
 (deftype (Pair a b) (MkPair [:a fst :b snd]))
 
-(defn test-vec-in-adt []
+(defn check-vec-in-adt []
   (match (MkPair [10 20] 42)
     [(MkPair v n) (add-i64 (vec-get v 1) n)]))
 
@@ -119,14 +114,14 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-literal)
-      (add-i64 (test-get)
-        (add-i64 (test-set)
-          (add-i64 (test-push)
-            (add-i64 (test-from-empty)
-              (add-i64 (test-set-chain)
-                (add-i64 (test-as-arg)
-                  (add-i64 (test-vec-in-adt)
-                    (add-i64 (test-get-as-value)
-                      (add-i64 (test-set-as-value)
-                               (test-push-as-value)))))))))))))
+    (add-i64 (check-literal)
+      (add-i64 (check-get)
+        (add-i64 (check-set)
+          (add-i64 (check-push)
+            (add-i64 (check-from-empty)
+              (add-i64 (check-set-chain)
+                (add-i64 (check-as-arg)
+                  (add-i64 (check-vec-in-adt)
+                    (add-i64 (check-get-as-value)
+                      (add-i64 (check-set-as-value)
+                               (check-push-as-value)))))))))))))

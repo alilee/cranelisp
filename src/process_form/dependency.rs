@@ -241,14 +241,16 @@ pub(super) fn handle_import(
         let dep_file_for_err = dep_file.clone();
         let dep_clone_for_err = dep.clone();
         let spec_span = spec.span;
-        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| CranelispError::ModuleError {
-            message: format!(
-                "cannot read module '{}' from '{}': {}",
-                dep_clone_for_err,
-                dep_file_for_err.display(),
-                e
-            ),
-            location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
+        let dep_sexps = register_dep(ctx, Some(module), dep, &dep_file, |e| {
+            CranelispError::ModuleError {
+                message: format!(
+                    "cannot read module '{}' from '{}': {}",
+                    dep_clone_for_err,
+                    dep_file_for_err.display(),
+                    e
+                ),
+                location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
+            }
         })?;
 
         // Register dep with scheduler (idempotent — skips if already
@@ -427,14 +429,16 @@ pub(crate) fn drive_module_dep(
     // Read + parse dep sexps (shared per-dep prologue).
     let dep_file_for_err = dep_file.clone();
     let dep_clone_for_err = dep.clone();
-    let dep_sexps = register_dep(ctx, dep, &dep_file, |e| CranelispError::ModuleError {
-        message: format!(
-            "cannot read module '{}' from '{}': {}",
-            dep_clone_for_err,
-            dep_file_for_err.display(),
-            e
-        ),
-        location: ErrorLocation::from_span_file(span, Some(dep_file_for_err.clone())),
+    let dep_sexps = register_dep(ctx, Some(module), dep, &dep_file, |e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "cannot read module '{}' from '{}': {}",
+                dep_clone_for_err,
+                dep_file_for_err.display(),
+                e
+            ),
+            location: ErrorLocation::from_span_file(span, Some(dep_file_for_err.clone())),
+        }
     })?;
 
     // Register dep with scheduler (sexps ride the packet) and record the edge.
@@ -502,6 +506,7 @@ pub(crate) fn gap_member(gap: &cranelisp_types::ResolutionGap) -> String {
 /// wording) is produced by `prologue_err`.
 pub(super) fn register_dep(
     ctx: &mut ModuleCompiler,
+    loader: Option<&ModuleFullPath>,
     dep: &ModuleFullPath,
     dep_file: &Path,
     prologue_err: impl FnOnce(std::io::Error) -> CranelispError,
@@ -517,11 +522,24 @@ pub(super) fn register_dep(
             .insert(canonical, dep.clone());
     }
 
-    // 1. read source.
-    let source = std::fs::read_to_string(dep_file).map_err(prologue_err)?;
-    // 2. parse.
-    let dep_sexps: std::sync::Arc<[Sexp]> =
-        std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
+    // 1. read source, 2. parse. A failure is the dependency's own, located in
+    //    its file: it is recorded `Failed`, and the loader is refused by it
+    //    (`design/int/repl-lifecycle.md` §1.3.1, A dependency that fails
+    //    before it registers).
+    let text = std::fs::read_to_string(dep_file);
+    if let Some(shared) = ctx.shared_state
+        && let Some(state) = crate::watch::FileState::of_read(&text)
+    {
+        shared.record_source(dep_file, state);
+    }
+    let read = text.map_err(prologue_err).and_then(|source| {
+        let parsed = cranelisp_frontend::parse(&source)?;
+        Ok((source, parsed))
+    });
+    let (source, dep_sexps): (String, std::sync::Arc<[Sexp]>) = match read {
+        Ok((source, parsed)) => (source, std::sync::Arc::from(parsed)),
+        Err(error) => return Err(fail_before_registration(ctx, loader, dep, dep_file, error)),
+    };
 
     // 2b. Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
     //     capture the leading `;;` comment block from the SAME source string and
@@ -556,6 +574,51 @@ pub(super) fn register_dep(
     );
 
     Ok(dep_sexps)
+}
+
+/// Record `dep`'s read or parse failure as its failed generation, located in
+/// `dep_file`, and refuse `loader` by it (`design/int/repl-lifecycle.md`
+/// §1.3.1, A dependency that fails before it registers). A parse error keeps
+/// its own span, an offset in `dep_file`; a read error has no position there,
+/// so it sits at the file's start and never carries the loader's import span.
+/// Returns the loader's refusal, which wraps the error once, else the error.
+fn fail_before_registration(
+    ctx: &ModuleCompiler,
+    loader: Option<&ModuleFullPath>,
+    dep: &ModuleFullPath,
+    dep_file: &Path,
+    error: CranelispError,
+) -> CranelispError {
+    let located = |span: Span| ErrorLocation::from_span_file(span, Some(dep_file.to_path_buf()));
+    let recorded = match error {
+        CranelispError::ParseError { message, location } => CranelispError::ParseError {
+            message,
+            location: located(location.span),
+        },
+        read => CranelispError::ModuleError {
+            message: read.message().to_string(),
+            location: located(Span::new(0, 0)),
+        },
+    };
+    let unrefused = match &recorded {
+        CranelispError::ParseError { message, location } => CranelispError::ParseError {
+            message: message.clone(),
+            location: location.clone(),
+        },
+        other => CranelispError::ModuleError {
+            message: other.message().to_string(),
+            location: other.location().clone(),
+        },
+    };
+    ctx.scheduler.fail_generation(dep, recorded);
+    match loader {
+        Some(loader) => ctx
+            .scheduler
+            .refuse_failed_dependency(loader, dep, Span::SYNTHETIC)
+            .err()
+            .unwrap_or(unrefused),
+        None => unrefused,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -805,6 +868,7 @@ pub(super) fn static_import_closure(
                 ctx.scheduler
                     .record_failure_dependencies(module, [reached.clone()]);
             }
+            ctx.scheduler.record_cycle_failure(module);
             Err(CranelispError::ModuleError {
                 message: format!("circular dependency detected: {}", cycle.render()),
                 location: ErrorLocation::from_span_file(
@@ -1148,14 +1212,16 @@ pub(super) fn handle_export(
         let dep_file_for_err = dep_file.clone();
         let dep_clone_for_err = dep.clone();
         let spec_span = spec.span;
-        let dep_sexps = register_dep(ctx, dep, &dep_file, |e| CranelispError::ModuleError {
-            message: format!(
-                "cannot read module '{}' from '{}': {}",
-                dep_clone_for_err,
-                dep_file_for_err.display(),
-                e
-            ),
-            location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
+        let dep_sexps = register_dep(ctx, Some(module), dep, &dep_file, |e| {
+            CranelispError::ModuleError {
+                message: format!(
+                    "cannot read module '{}' from '{}': {}",
+                    dep_clone_for_err,
+                    dep_file_for_err.display(),
+                    e
+                ),
+                location: ErrorLocation::from_span_file(spec_span, Some(dep_file_for_err.clone())),
+            }
         })?;
 
         // Register dep with scheduler (sexps ride the packet) and record edge.
@@ -1342,14 +1408,16 @@ pub(super) fn enrol_declared_submodule(
     let dep_file_for_err = dep_file.clone();
     let sub_path_for_err = sub_path.clone();
     let decl_span = decl.span;
-    let dep_sexps = register_dep(ctx, &sub_path, &dep_file, |e| CranelispError::ModuleError {
-        message: format!(
-            "cannot read submodule '{}' from '{}': {}",
-            sub_path_for_err,
-            dep_file_for_err.display(),
-            e
-        ),
-        location: ErrorLocation::from_span_file(decl_span, Some(dep_file_for_err.clone())),
+    let dep_sexps = register_dep(ctx, Some(module), &sub_path, &dep_file, |e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "cannot read submodule '{}' from '{}': {}",
+                sub_path_for_err,
+                dep_file_for_err.display(),
+                e
+            ),
+            location: ErrorLocation::from_span_file(decl_span, Some(dep_file_for_err.clone())),
+        }
     })?;
 
     // Register dep with scheduler (sexps ride the packet) and record edge.
@@ -1702,19 +1770,20 @@ pub(super) fn inject_prelude_if_needed(
             // source hash, stash source text, update file_to_module). The
             // sexps ride the prelude's work packet (S78).
             let prelude_file_for_err = prelude_file.clone();
-            let prelude_sexps = register_dep(ctx, &prelude_path, &prelude_file, |e| {
-                CranelispError::ModuleError {
-                    message: format!(
-                        "cannot read prelude '{}': {}",
-                        prelude_file_for_err.display(),
-                        e
-                    ),
-                    location: ErrorLocation::from_span_file(
-                        Span::SYNTHETIC,
-                        Some(prelude_file_for_err.clone()),
-                    ),
-                }
-            })?;
+            let prelude_sexps =
+                register_dep(ctx, Some(module), &prelude_path, &prelude_file, |e| {
+                    CranelispError::ModuleError {
+                        message: format!(
+                            "cannot read prelude '{}': {}",
+                            prelude_file_for_err.display(),
+                            e
+                        ),
+                        location: ErrorLocation::from_span_file(
+                            Span::SYNTHETIC,
+                            Some(prelude_file_for_err.clone()),
+                        ),
+                    }
+                })?;
 
             ctx.scheduler
                 .register_module(prelude_path.clone(), prelude_sexps, true);
@@ -1731,6 +1800,15 @@ pub(super) fn inject_prelude_if_needed(
     } else {
         // Prelude already loaded — nothing to flatten; the bit set above
         // makes the fallback consult prelude's own table on a bare-name miss.
+        // A table does not mean the prelude compiled: a failed rebuild leaves
+        // a fresh one. The implicit import then refuses as an explicit one
+        // does, unless the prelude reaches `module`, which puts `module` on a
+        // cycle with it rather than below it (`design/int/int.md` §6.12,
+        // Refusal by a failed prelude).
+        if ctx.scheduler.is_failed(&prelude_path) && prelude_reach_cycle(ctx, module).is_none() {
+            ctx.scheduler
+                .refuse_failed_dependency(module, &prelude_path, Span::SYNTHETIC)?;
+        }
     }
 
     Ok(None)

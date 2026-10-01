@@ -816,6 +816,67 @@ fn defns_mutual_forward_references() {
         .assert_exit(18);
 }
 
+/// A batch file in which `impl Size (Opt a)`'s body calls `size` at `Int`.
+/// `impl Size Int` comes after it when `int_impl_first` is false. `main`
+/// returns 42 only if the `Opt` method dispatched to the `Int` impl.
+fn impl_body_needing_other_impl_program(int_impl_first: bool) -> String {
+    let opt_impl = "(impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size 42)])))\n";
+    let int_impl = "(impl Size Int (defn size [n] n))\n";
+    let (first, second) = if int_impl_first {
+        (int_impl, opt_impl)
+    } else {
+        (opt_impl, int_impl)
+    };
+    format!(
+        "(deftype (Opt a) Nope (Yep [:a v]))\n\
+         (deftrait Size (size [self] Int))\n\
+         {first}{second}\
+         (defn main [] (Pure (size (Yep 3))))\n"
+    )
+}
+
+fn assert_impl_order_exits_42_in_batch_modes(int_impl_first: bool, what: &str) {
+    let program = impl_body_needing_other_impl_program(int_impl_first);
+    let batch = |link: bool| {
+        let cr = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .user(&program);
+        if link {
+            cr.link_then_run("user.cl").output()
+        } else {
+            cr.run("user.cl").output()
+        }
+    };
+    let run = batch(false);
+    let link = batch(true);
+    let wrong: Vec<String> = [("--run", &run), ("--link", &link)]
+        .into_iter()
+        .filter(|(_, out)| out.status.code() != Some(42))
+        .map(|(mode, out)| format!("--- {mode}: {:?}\nstderr:\n{}", out.status, out.stderr))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{what}: `main` MUST exit 42 in both batch modes\n{}",
+        wrong.join("\n")
+    );
+}
+
+// spec: spec/05-definitions.md §5.13.1 — within one cluster an implementation
+// may use an implementation declared after it: `impl Size (Opt a)` calls
+// `size` at `Int` before `impl Size Int` appears, and the file runs.
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S122 owner=/dev — hypothesis: conformance is checked against the impl registry as of the impl's source position (ACT-0985)
+#[test]
+fn impl_body_uses_impl_declared_later_in_cluster() {
+    assert_impl_order_exits_42_in_batch_modes(false, "`impl Size Int` declared after its user");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — control: the same file with
+// `impl Size Int` first exits 42 in both batch modes.
+#[test]
+fn impl_body_uses_impl_declared_earlier_in_cluster_control() {
+    assert_impl_order_exits_42_in_batch_modes(true, "`impl Size Int` declared before its user");
+}
+
 // =============================================================================
 // Wave 5.6 ring1.rs GAP-COVER carry-forwards (chunks 2-3)
 // =============================================================================

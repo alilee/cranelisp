@@ -1,7 +1,7 @@
 ---
 id: ACT-1030
 title: A self-tail argument that forwards a released binding through a `let` gets no owned reference, so the parameter flush frees a box the next iteration reads
-status: open
+status: deferred
 priority: required
 from: qa
 to: qa
@@ -84,6 +84,15 @@ this fault until the L6 cell is RED for its intended reason.
   `dev`(backend) implements it.
 - **Fix or carry** is the user's decision.
 - **Until then**, QA retains this intake.
+- **Carried to S123 (user, 2026-09-30).** The user deferred the
+  investigation, first deferral;
+  [ACT-1031](ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md)
+  owns its resumption
+  ([checkpoint carries](../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+  The carry defers the investigation; it does not accept the fault. The
+  observed use-after-free stays open, and its guard stays failing and
+  un-ignored: it failed in the checkpoint suite at `88bbbd12`
+  (`.local/s122-checkpoint-suite/nextest.log`).
 
 ## Completion evidence
 

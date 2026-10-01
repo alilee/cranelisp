@@ -139,9 +139,10 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("18-macros.cl", &[89]),
         ("19-threading.cl", &[130]),
         ("20-adt-traits.cl", &[39]),
-        // 21: hello-io prints but does not read stdin. Sum-of-pass-counts
-        // = 499; truncated to u8 by process exit = 243.
-        ("21-hello-io.cl", &[243]),
+        // 21: hello-io prints but does not read stdin. Sum = 457 (pure IO
+        // parts) + 49 (platform print parts) = 506; the low byte is 250. Its
+        // stdout is pinned by `hello_io_example_prints_its_lines_in_order`.
+        ("21-hello-io.cl", &[250]),
         ("22-io-hello.cl", &[99]),
         ("23-io-sequence.cl", &[178]),
         // 24: read-line on closed (null) stdin lands on exit 20. With the
@@ -163,7 +164,9 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // matches an allowed *exit* code (see the `Outcome` split below).
         // Verified 2026-07-21 as a NORMAL exit(139) via `ExitStatus::code()`.
         ("25-curry.cl", &[139]),
-        ("26-functor.cl", &[91]),
+        // 26: functor. Sum 42 + 99 + 42 + 22 + 99 + 42 + 1 + 42 = 389 (the
+        // IO instance's `check-fmap-io` included); the low byte is 133.
+        ("26-functor.cl", &[133]),
         ("27-lazy-seq.cl", &[183]),
         ("28-parallel.cl", &[67]),
         // 29: type annotations (:Type binds the following form). Sum of
@@ -197,6 +200,10 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // Eight `pass=1` sub-tests (arity dispatch ×3, type dispatch ×3,
         // default-overload ×2) → exit 8; a drop below 8 signals a regression.
         ("36-multi-arity.cl", &[8]),
+        // 38: program tests. Under `--run`, `main` counts the four passing
+        // test functions → exit 4. The `--test` report is pinned by
+        // `program_tests_example_reports_four_passes_under_test_mode`.
+        ("38-program-tests.cl", &[4]),
     ]
 }
 
@@ -272,6 +279,99 @@ fn every_example_runs_with_documented_exit() {
             ))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+/// The documented exits of the two directory-project entries, which the
+/// top-level table cannot hold.
+const MODULES_EXIT: i32 = 47;
+const METHOD_IMPORT_EXIT: i32 = 5;
+
+/// Link the entry `path` from `examples/` into `artifact`, then execute it with
+/// the cwd, platform path and null stdin `run_example` uses. A link that fails
+/// or produces no executable is returned as its diagnostic.
+fn link_and_execute_example(path: &Path, artifact: &Path) -> Result<Output, String> {
+    let link = Command::new(binary_path())
+        .args([
+            "--link",
+            "-o",
+            artifact.to_str().unwrap(),
+            path.to_str().unwrap(),
+        ])
+        .env("CRANELISP_PLATFORM_PATH", platform_search_path())
+        .current_dir(examples_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run cranelisp --link");
+    if !link.status.success() || !artifact.exists() {
+        let stderr = String::from_utf8_lossy(&link.stderr);
+        return Err(format!(
+            "--link {}: {}",
+            Outcome::of(&link.status),
+            stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("")
+        ));
+    }
+    Ok(Command::new(artifact)
+        .env("CRANELISP_PLATFORM_PATH", platform_search_path())
+        .current_dir(examples_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute the linked example"))
+}
+
+// spec: examples/plan-examples.md §"Learning Sequence Design" — the
+//       `--link`-then-execute cell of the learning-sequence verification
+//       (examples/CLAUDE.md §Verification): every top-level entry in
+//       `expected_exits()` plus the `16-modules` and `37-method-import`
+//       directory projects links into a per-test directory and the executable
+//       exits with the documented code; a signal never matches. A maintenance
+//       check on the learning sequence, not acceptance for language rows: a
+//       failure is a suspected defect routed to `qa` (examples/CLAUDE.md rule 2).
+//       Cache behaviour belongs to `cache.rs`, so no cold-cache leg.
+#[test]
+fn every_example_links_and_executes_with_documented_exit() {
+    let artifacts = tempfile::tempdir().expect("TempDir creation");
+    let mut entries: Vec<(String, &'static [i32])> = expected_exits()
+        .into_iter()
+        .map(|(name, allowed)| (name.to_string(), allowed))
+        .collect();
+    entries.push(("16-modules/main.cl".to_string(), &[MODULES_EXIT]));
+    entries.push((
+        "37-method-import/main.cl".to_string(),
+        &[METHOD_IMPORT_EXIT],
+    ));
+
+    let mut failures = Vec::new();
+    for (name, allowed) in &entries {
+        let artifact = artifacts
+            .path()
+            .join(name.trim_end_matches(".cl").replace('/', "_"));
+        match link_and_execute_example(&examples_dir().join(name), &artifact) {
+            Err(diag) => failures.push(format!("  {name}: {diag}")),
+            Ok(out) => {
+                let outcome = Outcome::of(&out.status);
+                if !outcome.matches(allowed) {
+                    failures.push(format!(
+                        "  {name}: {outcome} (allowed {allowed:?}): {}",
+                        String::from_utf8_lossy(&out.stderr)
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} examples did not link and exit with their documented code:\n{}",
+        failures.len(),
+        entries.len(),
+        failures.join("\n")
     );
 }
 
@@ -413,7 +513,7 @@ fn modules_directory_example_runs_with_documented_exit_47() {
     let out = run_example(&main);
     assert_eq!(
         out.status.code(),
-        Some(47),
+        Some(MODULES_EXIT),
         "16-modules MUST exit 47; got {:?}\nstdout: {}\nstderr: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stdout),
@@ -424,10 +524,11 @@ fn modules_directory_example_runs_with_documented_exit_47() {
 // spec: spec/07-traits.md §7.11.2 — the method-import dispatch example is a
 //       multi-file DIRECTORY project (`37-method-import/main.cl` + `main/traits.cl`
 //       via `(mod traits)`); it dispatches trait methods with the METHOD (not the
-//       trait) in scope and runs to a documented exit 4 (1+1+1+1 sub-test pass
+//       trait) in scope, and implements the trait through a qualified trait
+//       reference, and runs to a documented exit 5 (1+1+1+1+1 sub-test pass
 //       counts). Directory-project row like 16-modules.
 #[test]
-fn method_import_directory_example_runs_exit_4() {
+fn method_import_directory_example_runs_exit_5() {
     // read-only on project_root — runs the checked-in examples/37-method-import.
     let main = examples_dir().join("37-method-import").join("main.cl");
     assert!(
@@ -437,11 +538,100 @@ fn method_import_directory_example_runs_exit_4() {
     let out = run_example(&main);
     assert_eq!(
         out.status.code(),
-        Some(4),
-        "37-method-import (unary ×2 + nullary return-dispatch ×2, one pass each) \
-         MUST exit 4; got {:?}\nstdout: {}\nstderr: {}",
+        Some(METHOD_IMPORT_EXIT),
+        "37-method-import (unary ×2 + nullary return-dispatch ×2 + qualified-trait \
+         impl, one pass each) MUST exit 5; got {:?}\nstdout: {}\nstderr: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+// spec: spec/10-io.md §10.3 `bind` — the platform `print` actions of example 21 run
+//       in bind order, once per sequencing: the reused `again` value prints
+//       twice, every other line once. An effect that ran early, twice or not
+//       at all changes the pinned transcript.
+#[test]
+fn hello_io_example_prints_its_lines_in_order() {
+    // read-only on project_root — runs the checked-in examples/21-hello-io.cl.
+    let out = run_example(&examples_dir().join("21-hello-io.cl"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        (out.status.code(), lines.as_slice()),
+        (
+            Some(250),
+            [
+                "Hello, world!",
+                "Hello,",
+                "world!",
+                "Computing...",
+                "Cranelisp",
+                "again",
+                "again",
+            ]
+            .as_slice()
+        ),
+        "21-hello-io MUST exit 250 and print exactly its seven lines in order\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.2.2 Test Mode (`--test`) — the
+//       learning-sequence tests example: `--test` runs its four test functions
+//       and writes one `ok` line for each, a blank line and the summary to
+//       stdout, warns about nothing (its helpers are not `test-` named), and
+//       exits 0. Its `--run` exit (4) is the umbrella row.
+#[test]
+fn program_tests_example_reports_four_passes_under_test_mode() {
+    // read-only on project_root — runs the checked-in examples/38-program-tests.cl.
+    let binary = binary_path();
+    let out = Command::new(&binary)
+        .args(["--test", "38-program-tests.cl"])
+        .current_dir(examples_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run cranelisp --test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stdout.lines().collect();
+    let diag = format!(
+        "status: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status
+    );
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "--test MUST exit 0 when every test passes\n{diag}"
+    );
+    assert_eq!(
+        lines.len(),
+        6,
+        "four result lines, a blank line and the summary\n{diag}"
+    );
+    for (line, test) in lines.iter().zip([
+        "test-addition",
+        "test-concat",
+        "test-division-truncates",
+        "test-sign",
+    ]) {
+        let head = line.trim_start();
+        assert!(
+            head.starts_with(&format!("38-program-tests/{test} ")) && head.ends_with(" ok"),
+            "expected `38-program-tests/{test} … ok`, got {line:?}\n{diag}"
+        );
+    }
+    assert_eq!(lines[4], "", "a blank line precedes the summary\n{diag}");
+    let summary = regex::Regex::new(r"^4 passed in [0-9.]+\S*$").unwrap();
+    assert!(
+        summary.is_match(lines[5]),
+        "summary MUST read `4 passed in <time>`\n{diag}"
+    );
+    assert!(
+        !stderr.contains("warning"),
+        "no function of 38 is a mistyped test, so --test MUST NOT warn\n{diag}"
     );
 }

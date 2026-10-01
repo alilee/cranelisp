@@ -58,7 +58,7 @@
 ;; function body, in one batch program. `first-of` is instantiated at
 ;; two different type PAIRS in the same expression for good measure.
 ;; Contributes 1 on success.
-(defn test-many-instantiations []
+(defn check-many-instantiations []
   (if (id true)
     (if (eq-i64 (str-len (id "abcd")) (id 4))
       (if (str-eq (first-of "yes" 0) "yes")
@@ -78,4 +78,4 @@
           (add-i64 (use-second)
             (add-i64 (same-pair 7)
               (add-i64 (pick-best 10 30 20)
-                       (test-many-instantiations)))))))))
+                       (check-many-instantiations)))))))))

@@ -20,7 +20,7 @@ pub(crate) use cranelisp_types::{
 
 pub(crate) use crate::code::{Code, SessionSymbolTable};
 pub(crate) use crate::display::format_type_qualified;
-use crate::session_v4::ModuleLock;
+use crate::session_v4::FailureCause;
 pub(crate) use crate::session_v4::{
     CommandResult, CompilerSession, EvalResult, Introspection, ReadOnlyMacroResolver,
     SymbolCategory, intrinsic_type_from_name, is_comment_only, parens_balanced,
@@ -414,45 +414,41 @@ fn is_operator_name(name: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// Is `src` a pure DEFINITION (or structural) turn — the §14.4/§15.2.3 error-
-/// blocking carve-out? While a module is error-blocked, expression turns are
-/// refused with the §14.4 message but definition turns MUST be accepted:
-/// they are the repair path (repl/spec/15-session-persistence.md §15.2.3). Pure over the text; every
-/// top-level form must be a defining or structural special form — any
-/// expression member (including inside a mixed input), an empty input, or a
-/// parse failure classifies as NOT-a-definition-turn (refused; the parse
-/// error re-surfaces once the module is repaired). `begin` is deliberately
-/// excluded: a begin cluster may embed expressions the gate exists to refuse.
-pub(crate) fn is_repair_definition_turn(src: &str) -> bool {
-    let Ok(forms) = cranelisp_frontend::parse(src) else {
-        return false;
-    };
-    if forms.is_empty() {
-        return false;
+/// Whether `command` runs the program's code, which a locked session refuses
+/// (`design/int/repl-lifecycle.md` §1.3.1, Turn admission). Compiling and
+/// expanding are not running: `/type` and `/expand` stay available. The match
+/// has no wildcard arm, so a new command cannot compile unclassified.
+fn runs_program_code(command: &ReplCommand<'_>) -> bool {
+    match command {
+        ReplCommand::Time(expr) | ReplCommand::Mem(expr) => !expr.trim().is_empty(),
+        ReplCommand::RunTests(_) | ReplCommand::RunAllTests => true,
+        ReplCommand::Help
+        | ReplCommand::Quit
+        | ReplCommand::Sig(_)
+        | ReplCommand::Doc(_)
+        | ReplCommand::Type(_)
+        | ReplCommand::Info(_)
+        | ReplCommand::List(_)
+        | ReplCommand::Expand(_)
+        | ReplCommand::Imports(_)
+        | ReplCommand::Exports(_)
+        | ReplCommand::Source(_)
+        | ReplCommand::SexpCmd(_)
+        | ReplCommand::Ast(_)
+        | ReplCommand::Clif(_)
+        | ReplCommand::Disasm(_)
+        | ReplCommand::Mod(_)
+        | ReplCommand::PlatformSchema(_)
+        | ReplCommand::Reset
+        | ReplCommand::Sh(_)
+        | ReplCommand::Ask(_)
+        | ReplCommand::Refs(_)
+        | ReplCommand::TestsFor(_)
+        | ReplCommand::Syntax(_)
+        | ReplCommand::Context(_)
+        | ReplCommand::Search(_)
+        | ReplCommand::Unknown(_) => false,
     }
-    forms.iter().all(|f| {
-        if let Sexp::List(items, _) = f
-            && let Some(Sexp::Symbol(head, _)) = items.first()
-        {
-            matches!(
-                head.as_str(),
-                "defn"
-                    | "defn-"
-                    | "defmacro"
-                    | "defmacro-"
-                    | "deftype"
-                    | "deftrait"
-                    | "impl"
-                    | "import"
-                    | "export"
-                    | "mod"
-                    | "mod-"
-                    | "platform"
-            )
-        } else {
-            false
-        }
-    })
 }
 
 impl CompilerSession {
@@ -471,8 +467,14 @@ impl CompilerSession {
             return CommandResult::Nothing;
         }
 
-        // Slash commands.
+        // Slash commands. While the session is locked, those that run the
+        // program's code are refused like any code turn.
         if let Some(cmd) = parse_slash_command(trimmed) {
+            if runs_program_code(&cmd)
+                && let Some(refusal) = self.session_lock_refusal()
+            {
+                return CommandResult::Final(refusal);
+            }
             return self.dispatch_command(cmd, stdout);
         }
 
@@ -481,26 +483,9 @@ impl CompilerSession {
             return CommandResult::Final(display);
         }
 
-        // Error blocking (§14.4): refuse eval when modules have errors —
-        // EXCEPT definition turns, which are always accepted while
-        // error-blocked (they are the repair; repl/spec/15-session-persistence.md §15.2.3's explicit
-        // carve-out — a successful definition clears its failed form via
-        // `clear_repaired_failed_form`).
-        if !self.error_modules.is_empty() && !is_repair_definition_turn(trimmed) {
-            let names: Vec<String> = self
-                .error_modules
-                .iter()
-                .map(|mp| mp.as_ref().to_string())
-                .collect();
-            let msg = format!(
-                "Cannot evaluate: module '{}' has errors. Fix the source file and save.",
-                names.join("', '"),
-            );
-            return CommandResult::Final(msg);
-        }
-        // A definition turn would regenerate the current module's file, which
-        // its lock keeps as saved.
-        if let Some(refusal) = self.module_lock_refusal() {
+        // The session lock (§14.5): every code turn is refused, whatever the
+        // current module, leaving the session and every file unchanged.
+        if let Some(refusal) = self.session_lock_refusal() {
             return CommandResult::Final(refusal);
         }
 
@@ -508,22 +493,30 @@ impl CompilerSession {
         CommandResult::Compile(trimmed.to_string())
     }
 
-    /// The refusal of a turn that would regenerate the current module's file
-    /// while that module is locked (`design/int/repl-lifecycle.md` §1.3.1),
-    /// naming the remedy for the lock's cause; `None` when it is not locked.
-    pub(crate) fn module_lock_refusal(&self) -> Option<String> {
-        let module = self.current_module_path();
-        match self.module_locks.get(&module)? {
-            ModuleLock::RestartRequired(type_name) => Some(format!(
-                "Cannot define in module '{module}': its saved file changes the structure of type \
-                 {type_name}, which takes effect only after a restart. Restart the REPL to \
-                 establish it, or save a declaration with the live structure."
-            )),
-            ModuleLock::FailedSource => Some(format!(
-                "Cannot define in module '{module}': its saved file does not compile. Save a \
-                 version that compiles to release the module."
-            )),
+    /// The refusal of a code turn while the session is locked
+    /// (`design/int/repl-lifecycle.md` §1.3.1, Refusal): the file of each
+    /// module standing failed, in the failed set's order, with its cause's
+    /// remedy. `None` when the session is not locked.
+    pub(crate) fn session_lock_refusal(&self) -> Option<String> {
+        if !self.is_locked() {
+            return None;
         }
+        let mut refusal =
+            String::from("Cannot evaluate: the session is locked while these files have errors:");
+        for (module, failed) in &self.failed_modules {
+            let file = crate::session_v4::file_display_name(&failed.file, module);
+            let remedy = match &failed.cause {
+                FailureCause::FailedSource => {
+                    "does not compile; fix it and save a version that compiles".to_string()
+                }
+                FailureCause::RestartRequired(type_name) => format!(
+                    "changes the structure of type {type_name}, which takes effect only after \
+                     a restart; restart the REPL, or save the live structure"
+                ),
+            };
+            refusal.push_str(&format!("\n  {file} — {remedy}"));
+        }
+        Some(refusal)
     }
 
     /// Dispatch a parsed slash command, returning a `CommandResult`.
@@ -635,20 +628,11 @@ impl CompilerSession {
                 CommandResult::Final(self.handle_platform_schema(name))
             }
             ReplCommand::Reset => {
-                // Clear file watcher state so stale watches don't persist.
+                // Clear file watcher state so stale watches don't persist. The
+                // failed set is untouched: only a reload releases a module.
                 if let Some(ref mut w) = self.watcher {
                     w.clear_all();
                 }
-                // Startup-failed source and its error block leave together,
-                // only on repair (repl/spec/15-session-persistence.md
-                // §15.2.3); `/reset` is not a repair.
-                // A module lock stands until a successful reload of its
-                // module or a restart.
-                let failed_forms = &self.failed_forms;
-                let module_locks = &self.module_locks;
-                self.error_modules.retain(|module| {
-                    failed_forms.contains_key(module) || module_locks.contains_key(module)
-                });
                 CommandResult::Final("command not yet available in v4 REPL".to_string())
             }
         }
@@ -1324,44 +1308,6 @@ pub(crate) mod test_support {
     }
 }
 
-// ==============================================================================
-// Tests migrated with their code from session_v4.rs (FIXME 0109 Wave D)
-// ==============================================================================
-
-#[cfg(test)]
-mod repair_definition_turn_tests {
-
-    use super::is_repair_definition_turn;
-
-    // spec: repl/spec/15-session-persistence.md §15.2.3 — a definition turn at the prompt MUST be
-    // accepted while the entry module is error-blocked (it is the repair);
-    // §14.4 — expression evaluation is refused.
-    #[test]
-    fn definition_and_structural_turns_pass_the_carve_out() {
-        assert!(is_repair_definition_turn("(defn k [:String y] (f y))"));
-        assert!(is_repair_definition_turn("(defmacro m [e] e)"));
-        assert!(is_repair_definition_turn("(deftype P [:Int x])"));
-        assert!(is_repair_definition_turn("(import [m [mf]])"));
-        // Multi-form all-definition input is still a repair turn.
-        assert!(is_repair_definition_turn("(defn a [] 1)\n(defn b [] 2)"));
-    }
-
-    // spec: repl/spec.md §14.4 — expressions (and anything not purely
-    // defining) stay refused: bare calls, literals, bare symbols, mixed
-    // defn+expression input, begin clusters (may embed expressions), empty
-    // and unparseable input.
-    #[test]
-    fn neg_expressions_mixed_and_malformed_are_refused() {
-        assert!(!is_repair_definition_turn("(k \"abcd\")"));
-        assert!(!is_repair_definition_turn("42"));
-        assert!(!is_repair_definition_turn("k"));
-        assert!(!is_repair_definition_turn("(defn a [] 1)\n(a)"));
-        assert!(!is_repair_definition_turn("(begin (defn a [] 1) (a))"));
-        assert!(!is_repair_definition_turn(""));
-        assert!(!is_repair_definition_turn("(defn broken ["));
-    }
-}
-
 #[cfg(test)]
 mod prelude_fallback_tests {
     use super::*;
@@ -1495,5 +1441,191 @@ mod prelude_fallback_tests {
                 .is_none(),
             "two public candidates remain unresolved without type context"
         );
+    }
+}
+
+#[cfg(test)]
+mod session_lock_admission_tests {
+    use super::*;
+    use crate::repl::test_support::session;
+    use crate::session_v4::FailedModule;
+    use std::path::Path;
+
+    /// Make `module` stand failed with `cause`, its file `file`.
+    fn plant(s: &mut CompilerSession, module: &str, file: &Path, cause: FailureCause) {
+        s.failed_modules.insert(
+            ModuleFullPath::from(module),
+            FailedModule {
+                file: file.to_path_buf(),
+                cause,
+            },
+        );
+    }
+
+    fn failed_source() -> FailureCause {
+        FailureCause::FailedSource
+    }
+
+    fn restart_required(module: &str, name: &str) -> FailureCause {
+        FailureCause::RestartRequired(cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from(module),
+            cranelisp_types::TypeName::from(name),
+        ))
+    }
+
+    fn final_text(result: CommandResult) -> Option<String> {
+        match result {
+            CommandResult::Final(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.5 (session lock);
+    // design/int/repl-lifecycle.md §1.3.1 (Turn admission), §1.3.2 (Admission)
+    // — while a module stands failed, every code turn is refused in a module
+    // that does not stand failed: a definition, an expression, a structural
+    // turn and a `begin` cluster, each refusal naming the failed file and the
+    // save remedy. With nothing failed, the same turns are admitted.
+    #[test]
+    fn locked_session_refuses_every_code_turn_in_any_module() {
+        const TURNS: [&str; 7] = [
+            "(defn h [] 2)",
+            "(primitives/add-i64 1 2)",
+            "(deftype U [:primitives/Int n])",
+            "(defmacro m [] 1)",
+            "(import [primitives [*]])",
+            "(begin (defn a [] 1) (a))",
+            "h",
+        ];
+        let mut s = session();
+        for turn in TURNS {
+            assert!(
+                matches!(
+                    s.process_commands(turn, &mut Vec::new()),
+                    CommandResult::Compile(_)
+                ),
+                "control: `{turn}` is admitted while unlocked"
+            );
+        }
+        let root = tempfile::tempdir().unwrap();
+        plant(&mut s, "lib", &root.path().join("lib.cl"), failed_source());
+        for turn in TURNS {
+            let refusal = final_text(s.process_commands(turn, &mut Vec::new()));
+            assert!(
+                refusal
+                    .as_deref()
+                    .is_some_and(|text| text.contains("lib.cl") && text.contains("save")),
+                "`{turn}` is refused naming lib.cl and the remedy: {refusal:?}"
+            );
+        }
+        s.shutdown();
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.5 (session lock) — with the
+    // user's 2026-10-01 ruling ("Session-lock boundary questions");
+    // design/int/repl-lifecycle.md §1.3.1 (Turn admission), §1.3.2 (Admission)
+    // — each command is classified by whether it runs the program's code:
+    // `/time` and `/mem` with an expression, `/run-tests` and
+    // `/run-all-tests` are refused; every other command, `/time` and `/mem`
+    // without an expression included, is admitted.
+    #[test]
+    fn locked_session_refuses_exactly_the_commands_that_run_program_code() {
+        const COMMANDS: &[(&str, bool)] = &[
+            ("/time (primitives/add-i64 1 2)", true),
+            ("/mem (primitives/add-i64 1 2)", true),
+            ("/run-tests", true),
+            ("/run-tests user", true),
+            ("/run-all-tests", true),
+            ("/time", false),
+            ("/mem", false),
+            ("/help", false),
+            ("/sig g", false),
+            ("/doc g", false),
+            ("/type 1", false),
+            ("/info g", false),
+            ("/list", false),
+            ("/expand (g)", false),
+            ("/imports", false),
+            ("/exports", false),
+            ("/source g", false),
+            ("/sexp g", false),
+            ("/ast g", false),
+            ("/clif g", false),
+            ("/disasm g", false),
+            ("/mod", false),
+            ("/reset", false),
+            ("/sh true", false),
+            ("/ask hello", false),
+            ("/refs g", false),
+            ("/tests-for g", false),
+            ("/syntax", false),
+            ("/context ctx.txt", false),
+            ("/search g", false),
+            ("/platform-schema none", false),
+            ("/no-such-command", false),
+        ];
+        let mut s = session();
+        let root = tempfile::tempdir().unwrap();
+        plant(&mut s, "lib", &root.path().join("lib.cl"), failed_source());
+        let refusal = final_text(s.process_commands("(g)", &mut Vec::new()))
+            .expect("precondition: an expression is refused");
+        for (command, refused) in COMMANDS {
+            let result = s.process_commands(command, &mut Vec::new());
+            let was_refused = matches!(&result, CommandResult::Final(text) if *text == refusal);
+            assert_eq!(was_refused, *refused, "`{command}`");
+        }
+        assert!(matches!(
+            s.process_commands("/quit", &mut Vec::new()),
+            CommandResult::Quit
+        ));
+        s.shutdown();
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.5 (session lock), §14.8;
+    // design/int/repl-lifecycle.md §1.3.1 (Refusal), §1.3.2 (Admission) — the
+    // refusal names every failed file, in the failed set's order, each with its
+    // cause's remedy: a save for failed source, a restart or a save of the live
+    // structure for a refused type.
+    #[test]
+    fn refusal_names_every_failed_file_in_order_with_its_remedy() {
+        let mut s = session();
+        let root = tempfile::tempdir().unwrap();
+        plant(
+            &mut s,
+            "zeta",
+            &root.path().join("zeta.cl"),
+            failed_source(),
+        );
+        plant(
+            &mut s,
+            "alpha",
+            &root.path().join("alpha.cl"),
+            restart_required("alpha", "T"),
+        );
+
+        let refusal = final_text(s.process_commands("(g)", &mut Vec::new()))
+            .expect("the expression is refused");
+
+        let (alpha, zeta) = (
+            refusal.find("alpha.cl").expect("names alpha.cl"),
+            refusal.find("zeta.cl").expect("names zeta.cl"),
+        );
+        assert!(alpha < zeta, "{refusal}");
+        let line_of = |file: &str| {
+            refusal
+                .lines()
+                .find(|line| line.contains(file))
+                .unwrap_or_default()
+                .to_lowercase()
+        };
+        assert!(
+            line_of("alpha.cl").contains("alpha/t") && line_of("alpha.cl").contains("restart"),
+            "{refusal}"
+        );
+        assert!(
+            line_of("zeta.cl").contains("save") && !line_of("zeta.cl").contains("restart"),
+            "{refusal}"
+        );
+        s.shutdown();
     }
 }

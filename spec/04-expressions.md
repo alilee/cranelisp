@@ -707,7 +707,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 
 The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing and first-error selection, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`bind!`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. [S92]
 
-## 4.12 Trace Expression [Tested+Neg tests/spec_04_expressions::trace_returns_trace_type]
+## 4.12 Trace Expression [S122 — partial. Tested+Neg tests/spec_04_expressions::trace_returns_trace_type; §4.12.2, §4.12.3 and §4.12.9 are partial (ACT-1038, ACT-1039) and §4.12.6 is untested]
 
 ```clojure
 (trace expr)
@@ -727,7 +727,7 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; call-tree recording is evidenced under §4.12.3 and §4.12.4]
+### 4.12.2 Semantics [S122 — partial. Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; call-tree recording is evidenced under §4.12.3 and §4.12.4. Items 2–3 are defective when a traced callee sparks: calls on a worker are not recorded and leak (ACT-1038; RED tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string)]
 
 Evaluation proceeds as follows:
 
@@ -745,7 +745,7 @@ E |- (trace expr) => TraceCall(root_name, root_params, root_result,
 
 The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
 
-### 4.12.3 What Is Traced [Tested tests/trace::trace_extern_primitive_appears_as_child]
+### 4.12.3 What Is Traced [S122 — partial. Tested tests/trace::trace_extern_primitive_appears_as_child (REPL); under `--run` user functions are not recorded (ACT-1039; RED tests/trace::trace_records_user_function_calls_in_every_mode)]
 
 Instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. There is no project-root filter and no library/standard-library exclusion: completeness is by construction — if a call goes through an indirection-table slot, it is recorded, regardless of which module the callee lives in or how the callee was reached. This includes: [S76]
 
@@ -877,7 +877,7 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => the Trace value -- no side effects occurred
 ```
 
-### 4.12.9 Build-Mode Availability [Tested tests/link::link_traced_extern_primitives_appear_as_children_exit_42]
+### 4.12.9 Build-Mode Availability [S122 — partial. Tested tests/link::link_traced_extern_primitives_appear_as_children_exit_42; `--run` diverges from the REPL and `--link` on user-function frames (ACT-1039; RED tests/trace::trace_records_user_function_calls_in_every_mode)]
 
 `(trace ...)` is available in **all** build modes — REPL, `--run`, and `--link` standalone binaries. The trace runtime is part of the language's runtime support and is present in every produced artefact. A `(trace ...)` form behaves identically across modes: the rules of [§4.12.1](#4121-type) through [§4.12.8](#4128-examples) apply unmodified in every mode. [S76]
 

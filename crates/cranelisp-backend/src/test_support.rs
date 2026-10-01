@@ -1586,6 +1586,13 @@ pub(crate) fn vec_elem_for_test(ptr: i64, idx: usize) -> i64 {
 /// entries and a `user` module with the given consumer defn, compiles the
 /// consumer, and runs it end-to-end. Returns the consumer's i64 result.
 pub(crate) fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
+    try_run_vec_query_value_consumer(consumer)
+        .unwrap_or_else(|msg| panic!("runtime panic running vec-query consumer: {msg}"))
+}
+
+/// [`run_vec_query_value_consumer`], returning the recorded runtime error
+/// instead of panicking on it.
+pub(crate) fn try_run_vec_query_value_consumer(consumer: Defn) -> Result<i64, String> {
     let user = ModuleFullPath::from("user");
     let prims = ModuleFullPath::from("primitives");
     let vec_int = || {
@@ -1681,10 +1688,10 @@ pub(crate) fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
     let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
     let result = func();
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        panic!("runtime panic running vec-query consumer: {msg}");
+    match cranelisp_intrinsics::panic::take_runtime_error() {
+        Some(msg) => Err(msg),
+        None => Ok(result),
     }
-    result
 }
 
 /// Fully-annotated `(Vec Int)` literal `[e0 e1 ...]` fixture node.

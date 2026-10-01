@@ -2,18 +2,18 @@
 
 ## 15. REPL Session Persistence [R4 S52]
 
-### 15.1 Source Regeneration [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session] [Tested+Neg tests/repl_persist::persist_import_omitted_by_save_is_not_in_scope_or_rewritten, tests/repl_persist::persist_import_kept_by_save_stays_in_scope_and_is_written_once_control — after a reload whose saved source omits an `import`, regeneration does not write it back; a kept import is written once]
+### 15.1 Source Regeneration [S122 — partial: a never-recorded backing file is overwritten (ACT-1047); the other rows are Tested] [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session] [Tested+Neg tests/repl_persist::persist_import_omitted_by_save_is_not_in_scope_or_rewritten, tests/repl_persist::persist_import_kept_by_save_stays_in_scope_and_is_written_once_control — after a reload whose saved source omits an `import`, regeneration does not write it back; a kept import is written once]
 
 The REPL MUST persist interactive definitions to disk by maintaining a backing `.cl` file for the entry module (e.g. `user.cl`). When the user enters a definition that compiles successfully:
 
 1. The definition MUST be compiled and installed in the session. [R4 S52]
-2. The entry module's backing `.cl` file MUST be **regenerated** atomically from the module's current state. The regeneration is performed by the REPL after eval — it is not part of the compilation or `.o` caching pipeline. [R4 S52]
+2. The entry module's backing `.cl` file MUST be **regenerated** atomically from the module's current state. The regeneration is performed by the REPL after eval — it is not part of the compilation or `.o` caching pipeline. [R4 S52] [Tested tests/repl_persist::watch_idle_readable_save_survives_the_next_definition, tests/repl_persist::watch_startup_save_is_loaded_and_later_definitions_reach_the_file, src/session_v4/persistence_tests.rs::regeneration_keeps_an_unseen_save — the module's current state includes a save the session has not yet loaded: a save at an idle prompt or during startup is reloaded before the definition is written, and regeneration refuses to write over a recorded file whose state on disk differs] [S122 — a backing file that exists but was never recorded, such as a `user.cl` created after a session started without one, is overwritten by the next definition (ACT-1047; RED allocated)]
 
 The regenerated source file MUST be valid, parseable Cranelisp source — loading it through the normal module graph pipeline MUST reproduce the same session state. [R4 S52]
 
-A file whose reload failed is not regenerated while its module is locked; §14.5 governs it. [Tested+Neg tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart, tests/repl_persist::persist_compatible_save_after_structural_reload_failure_releases_the_file, tests/repl_persist::persist_type_error_reload_locks_file_until_a_save_compiles, tests/repl_persist::persist_parse_error_reload_lock_survives_restart_until_a_save_compiles, tests/repl_persist::watch_cascade_failed_importer_locked_until_import_is_fixed, tests/repl_persist::watch_qualified_caller_fails_on_removed_callee_until_it_is_restored, tests/repl_persist::watch_qualified_type_dependent_locked_until_its_module_compiles, tests/repl_persist::persist_mod_definition_keeps_dependency_source_failed_at_startup — §14.8, type-error, parse-error, cascade-dependent and qualified-reference-dependent causes, and a dependency still failing at restart]
+While the session is locked, no backing file is regenerated; §14.5 governs it. [Tested tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart, tests/repl_persist::persist_compatible_save_after_structural_reload_failure_releases_the_file, tests/repl_persist::persist_type_error_reload_locks_file_until_a_save_compiles, tests/repl_persist::persist_parse_error_reload_lock_survives_restart_until_a_save_compiles, tests/repl_persist::watch_cascade_failed_importer_locked_until_import_is_fixed, tests/repl_persist::watch_qualified_caller_fails_on_removed_callee_until_it_is_restored, tests/repl_persist::watch_qualified_type_dependent_locked_until_its_module_compiles, tests/repl_persist::persist_mod_definition_keeps_dependency_source_failed_at_startup — §14.8, type-error, parse-error, dependency and dependent-failure causes, and a dependency still failing at restart: the failed module's file, or the entry's, stays as saved after a refused definition] [Tested tests/repl_persist::session_lock_refuses_every_code_turn_outside_the_failed_module, tests/repl_persist::persist_startup_load_failure_locks_session_until_a_save_compiles, tests/repl_persist::watch_unreadable_save_locks_session_and_keeps_its_bytes_until_a_readable_save, tests/repl_persist::watch_idle_unreadable_save_locks_before_the_next_definition_overwrites_it, tests/cli_missing_entry.rs::repl_unreadable_entry_file_locks_session_and_keeps_its_bytes — `user.cl` stays byte-identical while a module it does not depend on fails, while the entry fails at startup, and while it holds unreadable bytes saved mid-session, saved at an idle prompt or present at startup]
 
-A definition entered in the session that fails to compile MUST NOT trigger regeneration and is never written. The backing file reflects the last successfully compiled state, plus any startup-failed source retained under §15.2.3. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_failed_import_not_written_to_backing_neg, tests/repl_persist::persist_expression_only_session_leaves_hand_authored_user_cl_untouched — the failed-definition variant itself is not exercised; nearest cells are the failed structural form and the expression-only control]
+A definition entered in the session that fails to compile MUST NOT trigger regeneration and is never written. The backing file reflects the last successfully compiled state. [Tested+Neg tests/repl_persist::persist_typecheck_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_failed_import_not_written_to_backing_neg, tests/repl_persist::persist_expression_only_session_leaves_hand_authored_user_cl_untouched — a definition rejected at typecheck or at the commit gate and a failed `import` are not written by a later regeneration, which keeps the prior definition; an expression-only session leaves the file untouched]
 
 ### 15.2 Session Restore [Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
 
@@ -29,8 +29,6 @@ The backing `.cl` file is **authoritative for restoration only** — it establis
 2. **Redefinition wins.** Any definition entered in the session **replaces** a restored definition of the same name (§15.6) — just-entered source always governs. On-disk authority never overrides live input. [S113]
 3. **Input is session input, not a fresh program.** Both interactive typing and **piped stdin** (`cranelisp < script.cl` run in a directory with a persisted `user.cl`) are evaluated **against the restored definitions**. A script that references a name it does not itself (re)define resolves that name to the **previous session's** binding — the input augments a resumed session, it does not start a clean one. This is the correct behaviour, but it is a **sharp edge** for anyone applying the `--run` mental model (a self-contained program) to a piped REPL session: the same script piped into an empty directory versus a directory carrying prior state can produce different results. Fresh-program semantics are `cranelisp --run script.cl` (§0.2) or a REPL launched in an **empty** working directory. [S113]
 
-(Ruling record: PS-C1 in the S113 test plan at revision `7b1220c7` — the discriminator run settled that redefinition wins; the compiler behaves as designed. A companion note lives in the user guide's getting-started material.) [S113]
-
 #### 15.2.2 Startup Restore Notice [S113]
 
 Because a resumed session is not visually distinct from a fresh one, the self-documenting-REPL principle requires the session to **say** it resumed prior state. When startup restores a **non-empty** backing file, the REPL SHOULD emit a single R6-metadata line before the first prompt, naming how much state was restored and from where: [S113]
@@ -42,53 +40,36 @@ user>
 
 - The count is the number of restored **definitions** (the §15.7 persisted forms), not transient expressions. The count MUST be **singular-aware** — `1 definition`, `N definitions`. [S113]
 - The notice MUST be **suppressed when the backing file is absent or empty** — a first session in an empty directory MUST reach the prompt with no extra output, preserving the first-session experience (§6.2) and keeping fresh-directory session transcripts byte-identical. [S113]
+- When the entry module fails to compile at startup (§15.2.3), nothing is restored and the notice is not printed. [Tested+Neg src/session_v4/persistence_tests.rs::startup_restore_notice_is_emitted_only_when_the_entry_compiled — unit; an entry failing at startup yields no notice, and a compiling control counts its two definitions. The notice is TTY-only (below), so the piped e2e harness cannot observe it]
 - The notice is startup-only chrome (§10.3 metadata role), never persisted and never part of a value/definition response. [S113]
 
-**Notice, not banner — the aesthetic call is settled (`/repl`, S114).** The restore
-notice is rendered as an **R6 dim-metadata line** (§13 style register R6), grouped
-with the other startup notices (the search-index notice, the `Cranelisp.toml`
-create notice, §15.2.2's siblings), and is **not** part of the startup banner (§6.2).
-The banner keeps its own identity styling and its ≤3-line budget — language name,
-version, `/help` hint — describing *what the REPL is*; the restore notice is dim
-chrome describing *what this particular startup did* (it resumed prior state).
-Keeping the two visually distinct means the banner stays byte-stable across fresh
-and resumed sessions, and the resume signal reads as the transient metadata it is,
-in the same visual class as every other `[updated: …]` / index / config notice —
-never as a headline. [S114]
+**Rendering.** The restore notice is an R6 dim-metadata line (§10.3), grouped
+with the other startup notices, such as the search-index notice and the
+`Cranelisp.toml` create notice (§0.5.7). It is **not** part of the startup
+banner (§6.2), so the banner stays byte-stable across fresh and resumed
+sessions. [S114]
 
-**Interactive chrome — TTY-gated (`/repl` ruling, S114, FIXME 0700).** The restore notice is **interactive chrome for a human at the prompt**, in the same category as terminal styling (§10.1 TTY detection and suppression), the line editor and history (§10.8), and the search-index notice. Its whole purpose — telling a human that a resumed session is *not* the fresh one they might assume — has no addressee in a non-interactive session, whose consumer is a program or a golden-transcript harness that either already knows the working directory's state or requires byte-identity. The notice is therefore emitted **only when stdout/stdin is a TTY**; a **non-TTY session (piped stdin, harness, batch) MUST NOT emit it**, keeping restore-mode and fresh-mode non-interactive transcripts byte-identical (the §10.5 batch / mode-parity output-equivalence contract). This is the correct and settled behaviour, not a limitation: emitting the notice in non-TTY mode would diverge restore-mode transcripts from fresh-mode ones and disturb the output-equivalence harness for no reader benefit. [S114]
+**TTY gate.** The restore notice is interactive chrome for a human at the
+prompt, like terminal styling (§10.1) and the line editor (§10.8). It is
+emitted **only when stdout/stdin is a TTY**; a **non-TTY session (piped stdin,
+harness, batch) MUST NOT emit it**, so restore-mode and fresh-mode
+non-interactive transcripts stay byte-identical (§10.5). [S114]
 
-**Verification is split by tier.** Because the positive face is unauthorable in the non-TTY e2e harness, coverage divides: (a) the **decision** — `startup_restore_notice` returning the Some/None line with the correct singular-aware count and empty/absent suppression — is a **unit-tier** obligation (already unit-pinned in `src/session_v4/lifecycle.rs`); (b) the **non-emission in non-TTY mode** is the e2e-observable face, asserted by the mode-parity/output-equivalence goldens (a piped restart is byte-identical to a fresh one). The positive interactive face is confirmed by TTY session transcript, not a non-TTY golden. [S114]
+**Count.** The count MUST be the number of definitions that actually restored:
+a definition that failed to restore at startup (§15.2.3) is not counted, even
+though its source remains in the backing file. [S113/S114]
 
-**Implementation handoff (`/dev`, src/):** this notice is REPL boot-time runtime output — it requires `src/` code (the startup restore path), not a `repl/` config change. `/repl` specifies the wording, count semantics, empty-suppression rule, and the TTY gate above; `/dev` implements it at the session-restore seam behind the same `is_terminal()` gate the search-index notice uses. **Count source (`/dev`, Minor — FIXME 0707):** the count MUST be taken from the session's own restore record (the definitions that actually restored), **not** by re-reading and re-parsing the backing file — after a startup load failure (§15.2.3) a re-parse over-counts by including definitions that failed to restore, contradicting "restored definitions." [S113/S114]
+#### 15.2.3 Startup Load Failure [Tested+Neg]
 
-#### 15.2.3 Startup Load Failure [Tested+Neg tests/repl_persist::persist_startup_load_failure_reaches_prompt_blocks_then_repairs, tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition — reach the prompt, block, repair at the prompt with no recompilation, and retention; one module, non-TTY; report/refusal wording not spec-pinned; a backing file that parses but fails. The parse-failure and recompilation lock paragraphs are evidenced separately below]
+If a module's saved source fails to compile at startup, whether the entry
+module's backing `.cl` file (§15.1) or a file the session loads, the REPL MUST
+report the load error and still reach a prompt. The module then stands failed,
+and the session is locked (§14.5) until a save leaves no module standing
+failed. There is no repair at the prompt: definitions are refused like every
+other code turn, the failing file stays on disk as saved, and the remedy is to
+save a version that compiles. [Tested+Neg tests/repl_persist::persist_startup_load_failure_locks_session_until_a_save_compiles, tests/repl_persist::persist_reset_does_not_release_startup_lock, tests/repl_persist::persist_mod_definition_keeps_dependency_source_failed_at_startup, tests/repl_persist::startup_with_ill_typed_project_prelude_names_only_the_prelude — an entry failing at startup reaches a prompt and refuses a call, a same-name definition and an other-name definition, naming `user.cl` and the save remedy, with the file unchanged, until a compiling save; `/reset` does not release the lock; a dependency or prelude failing at startup locks the entry, and its file stays as saved] [Tested tests/repl_persist::persist_parse_error_reload_lock_survives_restart_until_a_save_compiles — a parse-failing entry at restart: the error is reported, `(g)` is refused, a definition is rejected, the file is unchanged, and a compiling save releases the lock] [Tested tests/repl_persist::persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles — an entry failing at startup stays locked when its dependency's save rebuilds it and it fails again: a definition is refused, the file is unchanged, and a compiling save of the entry releases it]
 
-If the persisted source (the backing `.cl` file, §15.1) fails to compile at startup, the REPL MUST report the load error and still reach a prompt.
-
-The affected module MUST then enter an error-blocked state:
-
-- ordinary expressions are refused;
-- definition updates are accepted, so the user can repair the module at the
-  prompt, until a failed recompilation locks it (below); and
-- a successful repair clears the error-blocked state.
-
-Each persisted definition that failed to compile at startup MUST keep its source text, verbatim, in every later regeneration of the backing file (§15.1) until a successful definition replaces it. A successful turn that defines a different name therefore MUST NOT remove the failed definition's source from the backing file. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition]
-
-A backing file that does not parse at startup has no definition source to
-retain this way. Its module is instead locked as after a failed reload
-(§14.5 item 5): the REPL MUST NOT overwrite the file, a definition update whose
-success would regenerate it is rejected, and the lock releases only when a
-later save of the file compiles successfully. [Tested+Neg tests/repl_persist::persist_parse_error_reload_lock_survives_restart_until_a_save_compiles — reached through a parse-error save and a restart that keeps the cache: the error is reported, `(g)` is refused, a definition is rejected, the file is unchanged, and a compiling save releases the lock]
-
-Once the session recompiles the module from its saved file (§14.2 steps 2–3),
-whatever caused the recompilation, including as a dependent of a changed
-module (§14.2 step 4), a failure of that recompilation locks the module as
-after any failed reload (§14.5 item 5). The at-prompt repair above then no
-longer applies: a definition update whose success would regenerate the file is
-rejected, and the lock releases as §14.5 item 5 and §14.6 specify. [Tested+Neg tests/repl_persist::persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles, tests/repl_persist::persist_startup_degraded_entry_repairs_at_prompt_without_dependency_change_control — reached as a dependent of a changed save of an imported module: the entry is reported and locked, a definition is refused, the file is unchanged, a compiling save of the entry releases it, and a later definition does not write back the startup-failed form; the control, without the dependency's save, repairs at the prompt]
-
-Error blocking caused by a watched file changing during a session is specified separately (§14.4–§14.6).
+A failure caused by a watched file changing during a session is specified in §14.4–§14.6.
 
 ### 15.3 Unified Development Model [Tested tests/repl_persist::persist_external_edit_changing_defn_body_reloads_control] [Tested tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart — a structural edit takes effect at restart]
 
@@ -97,17 +78,18 @@ This design unifies interactive and file-based development:
 - File watching (§14) applies uniformly — external edits to the backing file MUST be picked up by the watcher and recompiled. An edit that changes the structure of a live nominal type takes effect at restart, not by reload (§14.8).
 - The object cache (§14.7) accelerates both imported modules and the user's own work.
 
-### 15.4 Regeneration Integrity [Uncovered S122 — partial: rule 1 is evidenced as recorded on it, and rule 6 only for rule 1; rules 2–4 are unevidenced, and rule 7 is evidenced only for a `begin` spanning sections (tests/repl_persist::persist_repl_begin_spanning_sections_written_once, tests/repl_persist::persist_file_loaded_begin_spanning_sections_written_once); tests/repl_persist::persist_user_cl_is_valid_source_with_topological_ordering asserts presence and reload only, not order]
+### 15.4 Regeneration Integrity [Uncovered S122 — partial: rule 1 is tested, rule 6 only for rule 1, and rules 2–4 have no cell; rules 2 and 4 are a known nonconformance (ACT-1005); see the rows]
 
 The regenerated source file MUST satisfy the following invariants:
 
 1. **Round-trip correctness:** Loading the regenerated file through the compiler MUST produce the same types, values, and module exports as the interactive session. [Tested tests/repl_persist::persist_bug0220_cache_restored_userfns_survive_repl_edit_regen, tests/repl_persist::persist_cache_restored_declarations_survive_repl_edit_regen, tests/repl_persist::persist_file_loaded_declarations_survive_repl_edit_regen] [Tested tests/repl_persist::persist_reloaded_docstring_edit_of_repl_entered_type_survives_regeneration, tests/repl_persist::persist_reloaded_docstring_edit_of_file_loaded_type_survives_regeneration — after a docstring-only declaration reload]
-2. **Authorship ordering:** Definitions MUST appear in the order they were registered with the session — file-loaded modules in source declaration order; REPL-introduced symbols appended in the order they were entered. Redefinition MUST NOT reorder; a redefined symbol keeps its original position. Cranelisp's cluster-atomic typecheck handles forward references natively, so dependency ordering is not a correctness requirement — the regenerated file reflects authorship intent. [R4 S52]
-3. **Symbol qualification preservation:** The regenerated source MUST preserve the user's original qualification style. If the user wrote a fully-qualified reference (`core.option/Some`), it MUST remain fully-qualified. If the user wrote a bare name (`Some`) that was resolved via an import, it MUST remain bare. The regenerator MUST NOT rewrite bare names to qualified or vice versa. [R4 S52]
-4. **Structural sections at top in fixed order:** Structural sections MUST appear at the top of the regenerated file in this fixed order: (a) platforms — `(declare-platform ...)` forms; (b) submodules — `(mod ...)` declarations; (c) exports — `(export ...)` forms; (d) imports — `(import ...)` forms. Within each section, items appear in authorship order (file parse order + REPL append). Definitions follow the four structural sections. [R4 S52]
+2. **Authorship ordering:** Definitions MUST appear in the order they were registered with the session — file-loaded modules in source declaration order; REPL-introduced symbols appended in the order they were entered. Redefinition MUST NOT reorder; a redefined symbol keeps its original position. Cranelisp's cluster-atomic typecheck handles forward references natively, so dependency ordering is not a correctness requirement — the regenerated file reflects authorship intent. [Uncovered S122 — no cell observes order; tests/repl_persist::persist_user_cl_is_valid_source_with_topological_ordering asserts presence and reload only. Known nonconformance carried to S123/S124: the regenerator groups by kind and sorts by callee dependency (ACT-1005)]
+3. **Symbol qualification preservation:** The regenerated source MUST preserve the user's original qualification style. If the user wrote a fully-qualified reference (`core.option/Some`), it MUST remain fully-qualified. If the user wrote a bare name (`Some`) that was resolved via an import, it MUST remain bare. The regenerator MUST NOT rewrite bare names to qualified or vice versa. [Uncovered S122 — no cell]
+4. **Structural sections at top in fixed order:** Structural sections MUST appear at the top of the regenerated file in this fixed order: (a) platforms — `(declare-platform ...)` forms; (b) submodules — `(mod ...)` declarations; (c) exports — `(export ...)` forms; (d) imports — `(import ...)` forms. Within each section, items appear in authorship order (file parse order + REPL append). Definitions follow the four structural sections. [Uncovered S122 — no cell; known nonconformance carried to S123/S124 (ACT-1005)]
 5. **Comments:** The behaviour of comments in regenerated source is unspecified. The implementation MAY strip comments, preserve them, or handle them in any other way. [R4 S52]
 6. **Cache independence:** Rules 1–4 MUST hold whether the module's current definitions were compiled from source or restored from the object cache (§14.7). [Uncovered S122 — partial: rule 1 holds on both legs, restored by tests/repl_persist::persist_bug0220_cache_restored_userfns_survive_repl_edit_regen and tests/repl_persist::persist_cache_restored_declarations_survive_repl_edit_regen, compiled from source by tests/repl_persist::persist_file_loaded_declarations_survive_repl_edit_regen; no test observes rules 2–4 on either leg; rule 1 for a `/mod` turn in a cache-restored module holding a top-level macro call: tests/repl_persist::persist_mod_turn_on_cache_restored_macro_expanded_module, fresh control tests/repl_persist::persist_mod_turn_on_fresh_macro_expanded_module_control]
-7. **Authorship-intent rationale:** The regeneration invariants above (authorship ordering, fixed structural-section order, redef in place) collectively express a single intent — *principle of least surprise*. The regenerated file is a faithful record of what the user typed and when, not a derived form computed from compilation properties. The compiler's pipeline already handles forward references and dependency resolution; regeneration's job is authorship fidelity, not re-deriving correctness. [R4 S52]
+
+Rules 2 and 4 and in-place redefinition share one intent: the regenerated file is a faithful record of what the user typed and when, not a form derived from compilation properties. The compiler already handles forward references and dependency resolution, so regeneration does not reorder for correctness. [Tested tests/repl_persist::persist_repl_begin_spanning_sections_written_once, tests/repl_persist::persist_file_loaded_begin_spanning_sections_written_once — a `begin` spanning sections is written once, as authored ([design §1.4](../../design/int/session-persistence.md#14-dependency-ordering)); the note's other clauses are rules 2 and 4]
 
 **Template qualification to round-trip correctness. [S121]** Rule 1 reproduces
 the current authored source, types, exports, and ordinary values. It does not
@@ -148,11 +130,7 @@ or restart; introducing a new canonical name is the live-session alternative.
 
 The regenerated backing `.cl` file MUST contain **definitions and structural forms only**.
 Transient, **non-defining top-level expression evaluations are session-only and MUST NOT be
-persisted** to the backing source file. (`/arch` ruling, S106, FIXME 0549 — reconciled against the
-persisted-`__expr` reload model of FIXMEs 0532/0537; the exclusion is sound because nothing in the
-T1-reload / monomorphisation / cache-restore paths requires the expression to be in the *backing
-file* — the in-session symbol-table entry is unaffected, only its source emission is suppressed.)
-[S106]
+persisted** to the backing source file. [S106]
 
 The boundary is precise:
 
@@ -166,9 +144,6 @@ The boundary is precise:
   re-materialise the expression as module content on the next load — re-running it or leaving dead
   code — polluting the module the user is building. [S106]
 
-**Why this is clean, not a loss of behaviour:** top-level expressions are a **REPL-interactive-only
-construct** (`spec/02-grammar.md` §2.1; a top-level expression in module-body position is "ambiguous
-and fragile", `spec/08-modules.md` §8.16.6). There is no module-init-evaluates-top-level-expressions
-semantics to preserve — batch mode runs `main` — so excluding `__expr` forms from the backing file
-is semantically clean. This settled scribe **reverses** the earlier deliberate persist-`__expr`
-posture per the user ruling. [S106]
+Excluding expressions loses no behaviour: top-level expressions are a REPL-interactive-only
+construct (`spec/02-grammar.md` §2.1, `spec/08-modules.md` §8.16.6), and batch mode runs `main`,
+so no module-initialisation semantics evaluate them. [S106]

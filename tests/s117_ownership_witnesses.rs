@@ -145,10 +145,10 @@ fn r2_may_alias_vec_set_has_both_production_clif_cow_branches() {
     // the in-place arm only for the unique owner.
     assert!(
         ir.contains(
-            "v6 = load.i64 notrap aligned v1+8\n\
-             \x20   v7 = iconst.i64 1\n\
-             \x20   v8 = icmp eq v6, v7  ; v7 = 1\n\
-             \x20   brif v8, block2, block3"
+            "v15 = load.i64 notrap aligned v1+8\n\
+             \x20   v16 = iconst.i64 1\n\
+             \x20   v17 = icmp eq v15, v16  ; v16 = 1\n\
+             \x20   brif v17, block4, block5"
         ),
         "MayAliasOf(0) vec-set MUST retain its source-count protect/escape \
          gate and dispatch unique versus shared sources:\n{ir}"
@@ -158,11 +158,11 @@ fn r2_may_alias_vec_set_has_both_production_clif_cow_branches() {
     // allocation without releasing it.
     assert!(
         ir.contains(
-            "block2:\n\
-             \x20   v10 = load.i64 notrap aligned v1+32\n"
+            "block4:\n\
+             \x20   v19 = load.i64 notrap aligned v1+32\n"
         ) && ir.contains(
-            "store.i64 notrap aligned v3, v13  ; v3 = 9\n\
-             \x20   jump block4(v1)"
+            "store.i64 notrap aligned v3, v22  ; v3 = 9\n\
+             \x20   jump block6(v1)"
         ),
         "the unique COW branch MUST mutate and return the original Vec without \
          a source release:\n{ir}"
@@ -172,26 +172,26 @@ fn r2_may_alias_vec_set_has_both_production_clif_cow_branches() {
     // its strong-count slot, conditionally destroys it, and returns the copy.
     assert!(
         ir.contains(
-            "block3:\n\
-             \x20   v15 = call fn0(v1, v2, v3, v4)"
+            "block5:\n\
+             \x20   v24 = call fn1(v1, v2, v3, v4)"
         ) && ir.contains(
-            "v16 = iadd_imm.i64 v1, 8\n\
-             \x20   v17 = iconst.i64 1\n\
-             \x20   v18 = atomic_rmw.i64 sub v16, v17"
+            "v25 = iadd_imm.i64 v1, 8\n\
+             \x20   v26 = iconst.i64 1\n\
+             \x20   v27 = atomic_rmw.i64 sub v25, v26"
         ) && ir.contains(
-            "brif v19, block6, block5\n\n\
-             block6:\n\
+            "brif v28, block8, block7\n\n\
+             block8:\n\
              \x20   fence \n\
-             \x20   call fn1(v1, v5)"
-        ) && ir.contains("jump block4(v15)"),
+             \x20   call fn2(v1, v5)"
+        ) && ir.contains("jump block6(v24)"),
         "the shared COW branch MUST return its copied Vec after the exact \
          owned-source release/destruction gate:\n{ir}"
     );
 
     assert!(
         ir.contains(
-            "block4(v9: i64):\n\
-             \x20   return v9"
+            "block6(v18: i64):\n\
+             \x20   return v18"
         ) && ir.matches("atomic_rmw.i64 sub").count() == 1,
         "the original and copied Vec branches MUST converge at one result, \
          with the source release confined to the shared branch:\n{ir}"
@@ -216,9 +216,9 @@ fn r2_may_alias_summary_protects_control_flow_merged_return() {
     assert!(
         ir.contains(
             "block4(v4: i64):\n\
-             \x20   v26 = iadd_imm v4, 8\n\
-             \x20   v27 = iconst.i64 1\n\
-             \x20   v28 = atomic_rmw.i64 add v26, v27"
+             \x20   v35 = iadd_imm v4, 8\n\
+             \x20   v36 = iconst.i64 1\n\
+             \x20   v37 = atomic_rmw.i64 add v35, v36"
         ),
         "the non-Fresh MayAliasOf summary MUST protect the control-flow-merged \
          return at the producer boundary:\n{ir}"

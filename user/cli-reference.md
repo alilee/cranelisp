@@ -63,6 +63,7 @@ Run bare `/syntax` to list the available core-language topics, then
 `/syntax <topic>` for a compact form-and-example reference. An unknown topic
 prints the topic list again rather than leaving you at a dead end. The command
 is a static REPL asset: it works without an agent and in a feature-off binary.
+See the [`/syntax` guide](guide/syntax-command.md).
 
 #### Finding a function before importing it — `/search`
 
@@ -82,6 +83,10 @@ Search by **name** or by **type signature**, exact or partial:
 
 ```
 user> /search filter
+:(Fn [(Fn [a] primitives/Bool) (collections.list/List a)] (collections.list/List a)) filter-list
+  in collections.list   — (import [collections.list [filter-list]])
+:(Fn [(Fn [a] primitives/Bool) (primitives/Vec a)] (primitives/Vec a)) vec-filter
+  in collections.vec   — (import [collections.vec [vec-filter]])
 :(Fn [(Fn [a] primitives/Bool) (seq.lazy/Seq a)] (seq.lazy/Seq a)) seq-filter
   in seq.lazy   — (import [seq.lazy [seq-filter]])
 
@@ -137,35 +142,11 @@ Compiles the module graph exactly as `--run` does, then finds and runs your
 tests and exits. It does **not** call `main`, and the entry module does not
 need one.
 
-A test is a zero-argument function whose name starts with `test-` and whose type
-is exactly `(Fn [] (Option String))`: it returns `None` when it passes and
-`(Some reason)` when it fails.
-
-```clojure
-(defn test-add [] :(Option String)
-  (if (= (+ 2 2) 4) None (Some "2 + 2 should be 4")))
-```
-
-A `test-` function with any other type is not run; you get a warning on stderr
-naming it, so a mistyped test cannot pass silently. The convention is
-[`repl/spec/16-test-discovery.md` §16.1](../repl/spec/16-test-discovery.md#161-test-function-convention).
-
-`--test` uses the same runner as the REPL's `/run-tests` and `/run-all-tests`,
-so the report looks the same in all three. Only which modules are searched and
-what happens afterwards differ. The report goes to stdout, one line per test by
-fully-qualified name, then a summary:
-
-```
-  user/test-add ........................... ok
-  user/test-div-zero ...................... FAILED: expected error
-
-1 passed, 1 failed in 2.34ms
-```
-
-A test that fails does not stop the run. A test that hits a runtime error, such
-as division by zero, is reported as `PANIC: <message>`, counts as failed, and
-the remaining tests still run. If there are no tests, the report is
-`No tests found`. The runner is specified in
+It runs the same test runner as the REPL's `/run-tests` and `/run-all-tests`,
+so the report is the same: one line per test by fully-qualified name, then a
+summary. The report goes to stdout; warnings, including one for each `test-`
+function with the wrong type, go to stderr. How to write tests and read the
+report is in the [testing guide](guide/testing.md); the runner is specified in
 [`repl/spec/16-test-discovery.md` §16.2](../repl/spec/16-test-discovery.md#162-running-tests).
 
 #### Which modules are searched
@@ -186,7 +167,7 @@ modules** — modules found through the lib search path, including the default
 the tests of project modules reachable only through it. Test files are never
 found by scanning the disk: a module your program does not reach is not tested.
 The exact rules are in
-[`repl/spec/00-cli-invocation.md` §0.2.2](../repl/spec/00-cli-invocation.md#022-test-mode---test-s122).
+[`repl/spec/00-cli-invocation.md` §0.2.2](../repl/spec/00-cli-invocation.md#022-test-mode---test).
 
 #### Exit code
 
@@ -209,7 +190,7 @@ never called, before anything runs or is written. The error names
 `discover-tests` and a function that references it, and points you to the REPL,
 or to `--test` to have the compiler run your tests. Importing the name without
 using it is not refused. See
-[`repl/spec/16-test-discovery.md` §16.6](../repl/spec/16-test-discovery.md#166-availability-by-invocation-mode-s122).
+[`repl/spec/16-test-discovery.md` §16.6](../repl/spec/16-test-discovery.md#166-availability-by-invocation-mode).
 
 ### Link (`--link`)
 

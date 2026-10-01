@@ -28,12 +28,20 @@ formatting is [int.md §9](int.md#9-error-formatting-decisions-39--42).
 
 ## 3. Batch propagation
 
-Under `--run` and `--link`, the error propagates to `main`. There it is
-formatted with the entry file's location and printed to stderr, and the process
-exits 1.
+Under `--run`, `--test` and `--link`, the error propagates to `main`. There it
+is formatted and printed to stderr, and the process exits 1.
 
-A REPL start-up failure does not exit. It degrades to the form-by-form entry
-load (`recover_startup_failure`).
+- **Which error.** The whole-world wait reports the root failure: a `Failed`
+  module that nothing refused, the least by name, else the least `Failed`
+  module by name. A dependent refused by it is not the report, and map order
+  does not choose it.
+- **Where.** A fail-fast refusal keeps the refusing dependency's file in its
+  location, so the diagnostic names that file. The entry file is only the
+  fallback for an error that carries no file.
+
+A REPL start-up failure does not exit. It reaches the prompt with the session
+locked ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock),
+Startup).
 
 ## 4. Error chain
 
@@ -87,19 +95,22 @@ wrappers.
 After a failed dependency wait, the eval thread calls
 `CompilerSession::reset_failed_modules`.
 
-- It removes every `Failed` module from the scheduler
-  (`reset_all_failed_modules`), so a later reference re-registers and
-  recompiles it from source.
+- It removes from the scheduler each module that the failed wait left
+  `Failed` (`reset_all_failed_modules`), so a later reference re-registers
+  and recompiles it from source. A module that already stood `Failed`,
+  standing failed or waiting under the session lock, keeps its record, so a
+  later load that reaches it is still refused.
 - It drops the live table of a reset module that never reached a terminal
   state, so a later fully qualified reference cannot read a half-installed
   table as loaded.
 - A module that was once terminal and failed only as a cascade victim keeps its
   table.
 
-Start-up recovery and redefinition use the scheduler reset alone and keep
-every table. Start-up recovery also locks each module the reset returns,
-other than the entry
-([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
+Start-up recovery and a failed `/mod` load use
+the same reset and purge, then record each module that failed in its own
+source as standing failed and let each one a dependency refused wait
+([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)). Redefinition
+uses the scheduler reset alone and keeps every table.
 
 ## 6. Evidence
 

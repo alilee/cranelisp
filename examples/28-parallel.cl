@@ -57,7 +57,7 @@
 ;;   y depends on: fib (global)        -- independent
 ;;   z depends on: factorial (global)  -- independent
 
-(defn test-independent-let []
+(defn check-independent-let []
   (let [x (sum-to 100)          ;; = 5050
         y (fib 10)              ;; = 55
         z (factorial 5)]        ;; = 120
@@ -71,7 +71,7 @@
 ;;   base depends on: sum-to (global)  -- independent
 ;;   doubled depends on: base (local)  -- DEPENDENT on base
 
-(defn test-dependent-let []
+(defn check-dependent-let []
   (let [base (sum-to 50)            ;; = 1275
         doubled (mul-i64 base 2)]   ;; = 2550
     doubled))                                             ;; -> 2550
@@ -82,7 +82,7 @@
 ;; variable references, literal values) skip the thread pool.
 ;; The cost heuristic avoids parallelism overhead for fast ops.
 
-(defn test-cheap-not-sparked []
+(defn check-cheap-not-sparked []
   (let [a (add-i64 1 2)       ;; cheap arithmetic — not sparked
         b (mul-i64 3 4)       ;; cheap arithmetic — not sparked
         c (sub-i64 10 1)]     ;; cheap arithmetic — not sparked
@@ -97,7 +97,7 @@
 ;;   b depends on: sum-to (global)    -- independent
 ;;   c depends on: a, b (local)       -- DEPENDENT, sequential
 
-(defn test-mixed []
+(defn check-mixed []
   (let [a (fib 8)                 ;; = 21, sparked
         b (sum-to 20)             ;; = 210, sparked
         c (add-i64 a b)]          ;; = 231, sequential (depends on a, b)
@@ -108,7 +108,7 @@
 ;; Each `let` is analyzed independently. The outer let sparks
 ;; x and y; the inner let sparks p and q.
 
-(defn test-nested-lets []
+(defn check-nested-lets []
   (let [x (sum-to 30)             ;; = 465, sparked in outer let
         y (fib 7)]                ;; = 13, sparked in outer let
     (let [p (factorial 6)         ;; = 720, sparked in inner let
@@ -125,8 +125,8 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-independent-let)
-      (add-i64 (test-dependent-let)
-        (add-i64 (test-cheap-not-sparked)
-          (add-i64 (test-mixed)
-                   (test-nested-lets)))))))
+    (add-i64 (check-independent-let)
+      (add-i64 (check-dependent-let)
+        (add-i64 (check-cheap-not-sparked)
+          (add-i64 (check-mixed)
+                   (check-nested-lets)))))))

@@ -13,7 +13,7 @@
 ;; IMMEDIATELY-FOLLOWING form, in EVERY position, and unifies that form's
 ;; inferred type with the named type. Like `^`, the reader tolerates
 ;; WHITESPACE between the `:` and the form it binds: `: Int` is read
-;; identically to `:Int` (S114; spec Section 1.4.5). The no-space spelling is
+;; identically to `:Int` (spec Section 1.4.5). The no-space spelling is
 ;; the idiom -- this example uses it everywhere -- but the two are the SAME
 ;; annotation. `:Type` is never a standalone atom; it always attaches to the
 ;; next form.
@@ -116,7 +116,7 @@
 (defn annotate-literal []
   :Int 64)                                                ;; -> 64
 
-;; --- Whitespace tolerance: `: Int` is the SAME annotation as `:Int` (S114) --
+;; --- Whitespace tolerance: `: Int` is the SAME annotation as `:Int` ---
 ;;
 ;; Because `:` is a `^`-style reader macro, a space between it and the type
 ;; form is permitted, in EVERY position (param, let-value, return,

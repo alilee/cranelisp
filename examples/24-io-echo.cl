@@ -33,7 +33,7 @@
 ;; read-line returns (IO String). We bind it to get the string value.
 ;; With test-capture and an empty input queue, read-line returns "".
 
-(defn test-read-line-type []
+(defn check-read-line-type []
   ;; Verify read-line works by checking we can bind its result.
   ;; Empty input -> str-len "" = 0. Add 1 to prove the bind ran.
   (bind (read-line)
@@ -52,7 +52,7 @@
       (bind (print input)
         (fn [_] (Pure (add-i64 (str-len input) 1)))))))
 
-(defn test-echo []
+(defn check-echo []
   ;; Reads "" (empty queue), prints "", returns 0+1=1.
   (echo-once))                                        ;; -> 1
 
@@ -70,7 +70,7 @@
         (bind (print greeting)
           (fn [_] (Pure (str-len greeting))))))))
 
-(defn test-echo-greeting []
+(defn check-echo-greeting []
   ;; Reads "" -> greeting is "hello, " -> length 7.
   (echo-with-greeting))                               ;; -> 7
 
@@ -90,7 +90,7 @@
             (bind (print combined)
               (fn [_] (Pure (add-i64 (str-len combined) 1))))))))))
 
-(defn test-read-two []
+(defn check-read-two []
   ;; Both reads return "". Combined is "". Length 0 + 1 = 1.
   (read-two-and-combine))                             ;; -> 1
 
@@ -110,7 +110,7 @@
             (bind (print welcome)
               (fn [_] (Pure (str-len welcome))))))))))
 
-(defn test-prompt []
+(defn check-prompt []
   ;; Prints "Enter your name:", reads "" (empty queue),
   ;; prints "Welcome, " (9 chars), returns 9.
   (prompt-and-echo))                                  ;; -> 9
@@ -131,19 +131,19 @@
         (bind (print (str-concat "you said: " input))
           (fn [_] (Pure 2)))))))
 
-(defn test-respond-empty []
+(defn check-respond-empty []
   ;; Empty queue -> read-line returns "" -> length 0 -> "no input received"
   (respond-to-input))                                 ;; -> 1
 
 
 ;; --- Expected results ---
 ;;
-;; test-read-line-type:  1
-;; test-echo:            1
-;; test-echo-greeting:   7
-;; test-read-two:        1
-;; test-prompt:          9
-;; test-respond-empty:   1
+;; check-read-line-type:  1
+;; check-echo:            1
+;; check-echo-greeting:   7
+;; check-read-two:        1
+;; check-prompt:          9
+;; check-respond-empty:   1
 ;;
 ;; Total: 1 + 1 + 7 + 1 + 9 + 1 = 20
 ;;
@@ -154,12 +154,12 @@
 ;; and update the import to [platform.stdio [print read-line]].
 
 (defn main []
-  (bind (test-read-line-type) (fn [r1]
-  (bind (test-echo) (fn [r2]
-  (bind (test-echo-greeting) (fn [r3]
-  (bind (test-read-two) (fn [r4]
-  (bind (test-prompt) (fn [r5]
-  (bind (test-respond-empty) (fn [r6]
+  (bind (check-read-line-type) (fn [r1]
+  (bind (check-echo) (fn [r2]
+  (bind (check-echo-greeting) (fn [r3]
+  (bind (check-read-two) (fn [r4]
+  (bind (check-prompt) (fn [r5]
+  (bind (check-respond-empty) (fn [r6]
     (Pure (add-i64 r1
       (add-i64 r2
         (add-i64 r3

@@ -27,7 +27,7 @@ The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`,
 
 ### 0.1 REPL Mode [Tested]
 
-When invoked with no arguments, the binary MUST start the interactive REPL with cwd as the project root and `user` as the entry module: display the startup banner (see Section 6.2), load the prelude, and present the primary prompt. The REPL runs until the user enters `/quit` or sends EOF (Ctrl-D).
+When invoked with no arguments, the binary MUST start the interactive REPL with cwd as the project root and `user` as the entry module: display the startup banner (see Section 6.2), load the prelude, and present the primary prompt. The REPL runs until the user enters `/quit` or sends EOF (Ctrl-D). On `/quit` or EOF the process MUST exit with status 0, including while the session is locked (§14.5), and MUST NOT reprint outstanding errors. [Tested+Neg tests/repl_persist::quit_while_locked_exits_zero_without_reprinting_errors, tests/repl_persist::eof_while_entry_locked_exits_zero_without_reprinting_errors, tests/repl_persist::persist_function_replacement_persists_through_restart — `/quit` while a dependency's type failure locks the session, and EOF while the entry's own failure locks it, exit 0 with no reprint of the failure and no text after the last prompt; an unlocked `/quit` exits 0]
 
 When invoked with a positional target (e.g. `cranelisp mymod`, `cranelisp dir/mymod`), the REPL MUST resolve the project root and entry module per §0.5 and start the REPL in that context. [R4 S52]
 
@@ -128,13 +128,8 @@ every project module transitively reachable from it through that chain. [Tested+
   submodules, so a project module reachable only through a library module is
   not a test module. A prelude resolved from a lib directory is a library
   module and brings no tests into the run.
-- A **project module** is one whose source file is resolved from the project
-  root (`spec/08-modules.md` §8.11.1, §8.11.2 tier 2), or a submodule of a
-  project module.
-- A **library module** is one resolved from a lib directory
-  (`spec/08-modules.md` §8.11.2 tier 3, §8.11.4), or a submodule of a library
-  module. This holds even when the lib directory lies inside the project
-  directory, such as the default `{project_root}/stdlib/`.
+- Project modules and library modules are defined in
+  [§16.2](16-test-discovery.md).
 - Being compiled for the program does not make a module a test module. Test
   modules MUST NOT be found by searching the file system.
 
@@ -231,11 +226,12 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
 
 1. If the target contains a directory component and the directory does not exist, the binary MUST print an error to stderr naming the missing directory and exit with status code 1.
 2. If the resolved entry module source file (`{project_root}/{entry_module}.cl`) does not exist:
-   - In REPL mode: the binary SHOULD create an empty source file and proceed. This supports the common workflow of starting a new project from an empty directory. [Tested tests/cli_missing_entry.rs::repl_missing_entry_starts_an_empty_module]
+   - In REPL mode: the binary MUST start with an empty entry module and proceed (§15.2); the backing file is first written when a definition regenerates it (§15.1). This supports the common workflow of starting a new project from an empty directory. [Tested tests/cli_missing_entry.rs::repl_missing_entry_starts_an_empty_module — the empty entry module accepts a definition and evaluates, and the backing file exists after it; the start without a file is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::repl_mode_registers_a_missing_entry_as_empty. No cell observes that a session with no definition leaves no file]
    - In `--run` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested tests/cli_missing_entry.rs::run_missing_entry_file_is_named_on_stderr — exit 1 and the file named in the message body; the refusal before registration is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::run_mode_refuses_a_missing_entry_before_registration]
    - In `--link` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested tests/cli_missing_entry.rs::link_missing_entry_file_is_named_on_stderr — exit 1 and the file named in the message body; the refusal before registration is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::link_mode_refuses_a_missing_entry_before_registration]
    - In `--test` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested+Neg tests/cli_missing_entry.rs::test_mode_missing_entry_file_is_named_on_stderr, tests/test_runner.rs::test_mode_neg_missing_entry_file_errors_without_report — the first cell requires the file named in the message body; the second is credited only for the absent report, because its filename substring is satisfied by the location prefix alone]
 3. If the target is ambiguous (e.g. both a file `mymod.cl` and a directory `mymod/` exist in cwd), **the file wins**: the target resolves to the entry module `mymod` (file `mymod.cl`) with project root cwd, and `mymod/` is treated as the directory holding `mymod`'s submodules (per `spec/08-modules.md §8.11`). This is the normal shape of a project whose entry file declares submodules with `(mod child)`. Rule 3 in §0.5.1 (directory-as-project-root) only fires when there is *no* same-named `.cl` file beside the directory.
+4. If the resolved entry module source file exists but cannot be read, for example because it is not valid UTF-8 or permission is denied, the binary MUST report a located error naming the file, in every mode. In `--run`, `--link` and `--test` mode it then exits with status code 1. In REPL mode the entry module stands failed and the session locks (§14.5), so the file is never overwritten. [Tested tests/cli_missing_entry.rs::run_unreadable_entry_file_is_a_located_error_naming_it, tests/cli_missing_entry.rs::link_unreadable_entry_file_is_a_located_error_naming_it, tests/cli_missing_entry.rs::test_mode_unreadable_entry_file_is_a_located_error_naming_it, tests/cli_missing_entry.rs::repl_unreadable_entry_file_locks_session_and_keeps_its_bytes, tests/cli_missing_entry.rs::repl_unreadable_entry_first_readable_save_releases_lock — an entry that is not valid UTF-8: `--run`, `--link` and `--test` exit 1 with a located error naming the file; the REPL locks, keeps the bytes, and is released by the first readable compiling save. The read failure is unit-pinned at src/session_v4/lifecycle.rs::an_unreadable_entry_is_a_located_error_with_no_registration. Permission denied has no cell: it takes the same read-error arm, and a suite run as root can read a mode-000 file]
 
 #### 0.5.6 Dotted Module Paths [R4 S52]
 
@@ -343,7 +339,7 @@ When `--yes` is active and the agent first wants to write, the REPL MUST present
 
 The `cranelisp` binary reads a small set of **environment variables** that tune execution outside the flag set. This subsection is the **normative home** for the *execution* knobs — the ones that affect how a program is scheduled and run in every invocation mode. They are part of the CLI contract on equal footing with the flags of §0.6, and `user/cli-reference.md` cross-links this table rather than originating the contract.
 
-The execution knobs govern the runtime layer (the backend), so — unlike the REPL-only flags of §0.6 — they apply identically in **REPL, `--run`, and `--link`** modes. Each is read **once per process** (no per-evaluation re-read; an in-session `setenv` has no effect on an already-running binary). Both are **semantically invisible**: per `spec/12-runtime.md §12.4.3` (lenient evaluation / observational equivalence), neither changes what a program *computes* — only how the computation is scheduled. [S93]
+The execution knobs govern the runtime layer (the backend), so — unlike the REPL-only flags of §0.6 — they apply identically in **REPL, `--run`, `--link` and `--test`** modes. Each is read **once per process** (no per-evaluation re-read; an in-session `setenv` has no effect on an already-running binary). Both are **semantically invisible**: per `spec/12-runtime.md §12.4.3` (lenient evaluation / observational equivalence), neither changes what a program *computes* — only how the computation is scheduled. [S93]
 
 | Variable | Effect | Default | Scope |
 |---|---|---|---|

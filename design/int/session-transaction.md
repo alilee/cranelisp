@@ -175,7 +175,7 @@ effect only at restart.
   records the refused type on the module's scheduler state before returning
   the error. Every registration or re-registration starts that record empty,
   and only a failed reload reads it
-  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)).
   A refused live turn also leaves a record. Nothing reads it, and the
   module's next registration clears it first. This record is the typed
   discriminator: nothing matches message text, and `CranelispError` gains no
@@ -192,7 +192,7 @@ effect only at restart.
   `tests/repl_persist.rs::persist_live_deftype_changing_field_type_rejected_and_not_written_neg`
   checks the live-turn cadence. It covers the refusal, both value probes, the
   saved file and a cold restart.
-  [REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)
+  [REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)
   names the reload-cadence guards.
 - **Rejected alternatives.**
   - A foreground comparison before re-registration would avoid the worker
@@ -372,15 +372,23 @@ table (REPL §14.2 steps 2–3; §14.5 items 1–2). An interactive turn is an
 seam separates the two (Principle 11): whole-source provenance, which only
 `reload_module` establishes (§7.3.1). REPL §14.8's restart boundary for types
 is the only redefinition check a rebuild applies (§7.3.2). Plan selection,
-ordering, the one reload executor and the module lock are
-[REPL lifecycle §1.2–§1.3](repl-lifecycle.md#12-poll-and-reload).
+ordering, the one reload executor, waiting dependents and the session lock
+are [REPL lifecycle §1.2–§1.3](repl-lifecycle.md#12-poll-and-reload).
 
 #### 7.3.1 The whole-file rebuild
 
 - **Where.** In `reload_module`, after `wait_module_typecheck_settled` and
-  before the module preamble is captured and the source re-registered. It runs
-  once per attempt, on the eval thread, inside a reload plan between turns, so
-  no user code is in flight.
+  before anything that can fail: before the saved file is read and parsed,
+  and before the module preamble is captured and the source re-registered.
+  It runs once per attempt, on the eval thread, inside a reload plan between
+  turns, so no user code is in flight. The `ClearModuleState` trace event is
+  recorded here, where the clear happens. A waiting member that the executor
+  does not attempt runs this prologue and nothing after it
+  ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload), Waiting).
+  - **Why first.** A read or parse failure that returned before the swap
+    kept the previous generation: its names stayed resolvable and its
+    dependents compiled against it unlocked (ACT-1044). With the prologue
+    first, every failure cause leaves the same state.
 - **Swap.** Under the module's write guard, replace its table with
   `SymbolTable::new_with_params(module)` whose `got` is the displaced table's
   `Arc<GotTable>`, then release the guard. The GOT base address baked into
@@ -428,9 +436,14 @@ ordering, the one reload executor and the module lock are
     rebuild's own compile records them.
 - **Failure.** The module keeps its partial fresh table: normally only Pass 0
   records and checkpoint-published macros. That is the specified failure
-  state (cleared, unavailable), so there is no rollback. The module locks and
-  the error set blocks evaluation
-  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
+  state (cleared, unavailable), so there is no rollback. A read or parse
+  failure registers nothing, so `reload_module` records the module `Failed`
+  in the scheduler with that error, as a failed registration would have.
+  Every cause therefore leaves the same table, scheduler and session state,
+  and a later load that reaches the module is refused by the fail-fast. The
+  module stands failed, or waits when a dependency refused it, and the
+  session locks
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)).
 - **Increments never rebuild.** Only `reload_module` swaps, and only its
   registration of the re-read saved source carries whole-source provenance,
   including the first-seed fallback for a module the scheduler no longer
@@ -448,11 +461,12 @@ ordering, the one reload executor and the module lock are
 - **What it is.** The table displaced by the first whole-source attempt since
   the module's last successful one. It is the last successful generation,
   including every increment merged into it since.
-- **Where it is held.** The session holds it beside the module lock, keyed by
+- **Where it is held.** The session holds it beside the failed set, keyed by
   module. An attempt that finds one held keeps it and lets its own displaced
   (partial) table drop after pooling its owners. Only `reload_module`'s
-  success branch drops it, together with the lock and error-set clears. Every
-  failed attempt therefore leaves one held.
+  success branch drops it, together with the failed-set and
+  failure-dependency clears. Every failed or waiting attempt therefore
+  leaves one held.
 - **How it travels.** `SourceProvenance::WholeSource` carries it, in place of
   the retired instantiation-demand packet. The continuation keeps it across
   gaps into the final cluster's prepare step. An increment has no variant that
@@ -471,7 +485,7 @@ ordering, the one reload executor and the module lock are
 - A module with no table at reload takes an empty reference. Production
   reaches this for a startup-failed dependency whose never-compiled table
   recovery purged
-  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)); it never
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)); it never
   compiled, so there is no generation to compare against or to take edges
   from. Its failure dependencies select it instead
   ([§1.2.1](repl-lifecycle.md#121-failure-dependencies)).
@@ -484,25 +498,28 @@ ordering, the one reload executor and the module lock are
   and consumes no capacity (§7.5). Increments keep per-table tombstones
   (§7.1–§7.2).
 - **Invariant.** Every module whose compiled code references a rebuilt
-  module's GOT is rebuilt after it in the same plan, or is locked, before
-  evaluation resumes. A caller left behind would call through a reused slot
-  into a different function, possibly of a different ABI.
+  module's GOT is rebuilt, failed or waiting after it in the same plan,
+  each of which displaces its previous generation, before any of its code
+  can run. A caller left behind would call through a reused slot into a
+  different function, possibly of a different ABI. Macro expansion stays
+  available while the session is locked, so "evaluation is refused" alone
+  does not protect a generation left in place.
 - **Realization.** The selection predicate, plan order from the same
   predicate, the post-plan order check and the one executor
   ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)); every
-  failure locks and a locked module blocks evaluation
-  ([§1.3.1](repl-lifecycle.md#131-module-lock)).
+  outcome runs the prologue, and a failure, which every wait depends on,
+  locks the session ([§1.3.1](repl-lifecycle.md#131-session-lock)).
 - **Grade: asserted with a named falsifier.** Falsifier: after a completed
-  plan, an evaluation reaches compiled code in a module that references a
-  rebuilt module's GOT and was neither rebuilt after it in that plan nor
-  locked. Possible sources are an edge kind outside loading imports,
-  exports, the prelude fallback, callees and lookup dependencies, and a
-  dependent with no mapped file (below). A null import is no edge; a use
+  plan, code runs in a module that references a rebuilt module's GOT and was
+  neither rebuilt, failed nor waiting after it in that plan. Possible
+  sources are an edge kind outside loading imports, exports, the prelude
+  fallback, callees and lookup dependencies, and a dependent with no mapped
+  file (below). A null import is no edge; a use
   through it is a recorded callee or lookup edge.
   A module cycle whose members all compile is no longer a source: the
   publication check rejects the attempt that closes it
   ([int §6.11](int.md#611-module-cycles-at-publication)), and a follow-on
-  root set that recurs anyway locks its modules
+  root set that recurs anyway fails its modules
   ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)). Controls:
   FQR-1, FQR-2 and the lookup-dependency cells for edge kinds; the order,
   order-check and recurrence units (§1.2); the executor for callers.
@@ -524,8 +541,8 @@ Arm each positive row RED on the pre-fix source where its seam exists.
 |---|---|
 | Prologue | A module holds a function, an overload family, a template with a same-module instance, a type, a trait, an impl of a foreign trait, a macro, `(import [lib [id]])`, an aliased import, `(mod child)` and a preamble. A successful rebuild from a source omitting each leaves every one absent: `id` is unresolved and not in `explicit_import_sources`, the alias and submodule-alias keys are gone, the foreign trait home holds no shell, the preamble is `None` and `retired_slots` is empty. The new `got` is `Arc::ptr_eq` to the prior one, and the pool holds every displaced compiled owner. A rebuild keeping each item records it once |
 | Prelude bit | A rebuild adding `(import [prelude [...]])` leaves the fallback bit off; removing it again turns the bit on |
-| Increments | No module test; the grade is structural. The swap (`install_fresh_generation`, private) and whole-source provenance each have one caller, `rebuild_from_file`, reached only from `reload_module`, whose one production caller is `run_reload_plan`. A REPL turn, startup recovery's empty re-registration, a dispatch with no stored continuation and the retry after a submodule gap therefore cannot reach the swap |
-| Unresolved omission | A rebuild whose remaining body names an omitted function, and separately an omitted import, fails as unresolved and leaves the module locked and in the error set |
+| Increments | No module test; the grade is structural. Whole-source provenance has one caller, `rebuild_from_file`, reached only from `reload_module`, whose one production caller is `run_reload_plan`. The swap (`install_fresh_generation`, private) has that caller and two more that replace a whole generation without registering source: the executor's waiting member and startup recovery's entry that did not compile ([REPL lifecycle §1.2, §1.3.1](repl-lifecycle.md#131-session-lock)). A REPL turn, a dispatch with no stored continuation and the retry after a submodule gap therefore cannot reach the swap |
+| Unresolved omission | A rebuild whose remaining body names an omitted function, and separately an omitted import, fails as unresolved and leaves the module standing failed |
 | Empty source | A rebuild from a source with no checkable form succeeds with an empty table |
 | Reference | A first failing rebuild holds the established table. A second failing rebuild keeps it, so a structural type change refuses both times, also when the attempt resumes after a dependency gap. Success drops it. After a successful rebuild that removed type `T`, a rebuild re-adding `T` with another structure succeeds |
 | GOT reuse | `N` rebuilds of a module with `k` callables, `N·k > GOT_TABLE_SIZE` (for example `k = 128`, `N = 9`), all succeed; `got` stays pointer-equal and `retired_slots` stays empty. Negative leg: an increment's ABI-changing redefinition records the old slot in `retired_slots`, and the next mint does not reissue it |
@@ -641,10 +658,9 @@ diagnostic and definition confirmation are the user-visible record.
     ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)), which
     rebuilds the target and its dependents (§7.3);
   - **CS-2:** a successful reload pushes no `stale:` report;
-  - **CS-3:** a failed reload leaves its module locked like any failed rebuild
-    and keeps the `stale:` report; a suppressed module keeps the report. The
-    former repairable error block retires, because a locked module refuses
-    the definition turn that would repair it.
+  - **CS-3:** a failed reload leaves its module standing failed like any
+    failed rebuild, which locks the session, and keeps the `stale:` report;
+    a suppressed module keeps the report.
   REPL §18.1 now requires same-language-type generic edits to rematerialize
   their instances in the original candidate without re-typechecking callers
   (`design/int/s122-closure.md` §2), so this reload is not the cure. Its reachability is

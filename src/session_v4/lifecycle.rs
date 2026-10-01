@@ -11,7 +11,7 @@
 // `eval.rs`/`repl.rs`). Moved verbatim from `session_v4.rs` (S87 §2.1), with
 // `new` decomposed into phase-helpers (S87 §3.2).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
@@ -27,9 +27,10 @@ use crate::code::{Code, SessionSymbolTable};
 use crate::scheduler::CompileScheduler;
 
 use super::{
-    CompilerSession, FailedForm, ModuleIntroductionOutcome, ModuleLock, SessionSettings,
-    SharedState, SymbolCategory, SymbolInfo, TestRunnerState,
-    dedup_platform_names_preserving_order, nice_worker_loop, resolve_priority_worker_count,
+    CompilerSession, FailedModule, FailureCause, ModuleIntroductionOutcome, SessionSettings,
+    SharedState, StartupRecovery, SymbolCategory, SymbolInfo, TestRunnerState,
+    dedup_platform_names_preserving_order, file_display_name, nice_worker_loop,
+    resolve_priority_worker_count,
 };
 
 /// One read of the entry module's `main` entry (`read_main_entry`): the
@@ -135,9 +136,7 @@ impl CompilerSession {
 
         Ok(CompilerSession {
             shared,
-            error_modules: HashSet::new(),
-            failed_forms: HashMap::new(),
-            module_locks: HashMap::new(),
+            failed_modules: BTreeMap::new(),
             reload_references: HashMap::new(),
             failure_dependencies: HashMap::new(),
             watcher: None,
@@ -342,6 +341,7 @@ impl CompilerSession {
             cache: object_cache,
             promote_nice_workers: AtomicBool::new(false),
             file_to_module: Mutex::new(HashMap::new()),
+            recorded_sources: dashmap::DashMap::new(),
             symbol_tables,
             next_type_id,
             module_aliases: cranelisp_types::ModuleAliases::default(),
@@ -514,37 +514,19 @@ impl CompilerSession {
         self.current_repl_module.clone()
     }
 
-    /// Reset every Failed module in the scheduler AND drop the stale live symbol
-    /// table of each one that NEVER reached terminal typecheck (I1, 0571.2 +
-    /// 0571.3). A module that fails to load leaves live bindings behind:
-    /// `(import [primitives [Int]])` writes the `Int` import into the LIVE table
-    /// *before* the body-check failure, so the failed module's table is NON-empty
-    /// even though it never finished loading. If the reset leaves that table in
-    /// place, a later FQ reference reads the module as "loaded" (the table exists
-    /// and the scheduler has forgotten it) and reports a false "module X has no
-    /// member Y" on autoload RETRY (§8.5.4 edge 4/5). Dropping the table makes the
-    /// retry re-drive from scratch — `ensure_module_exists` re-seeds it.
-    ///
-    /// **Discriminate by MODULE HISTORY, not call-site (0571.3 fix (a)).** The
-    /// Failed set at an autoload-failure moment can include a **cascade victim** —
-    /// a previously-terminal (was-good) module that `cascade_failure_locked`
-    /// marked Failed only because it awaited the broken dep. Purging ITS table
-    /// would destroy valid definitions — the exact state-destruction the earlier
-    /// call-site scoping was meant to prevent. So purge only a module that was
-    /// **never terminal** (`!was_ever_terminal`): a fresh dep that never
-    /// successfully typechecked. A was-terminal module keeps its table.
-    pub(crate) fn reset_failed_modules(&self) -> Result<(), CranelispError> {
-        let reset = self.shared.scheduler.reset_all_failed_modules();
-        self.purge_never_compiled(&reset, None)
-    }
-
     /// The one failed-module purge rule, shared by the eval thread's
     /// dependency retry and startup recovery (`design/int/repl-lifecycle.md`
-    /// §1.3.1, Startup reset): drop the table of each `reset` module that never
-    /// reached a terminal typecheck, other than `keep`, and reset the session
-    /// state keyed by it from that table as the rebuild prologue does, so no
-    /// alias, export or introspection record outlives it.
-    fn purge_never_compiled(
+    /// §1.3.1, A failed load's record, step 4): drop the table of each `reset`
+    /// module that never reached a terminal typecheck, other than `keep`, and
+    /// reset the session state keyed by it from that table as the rebuild
+    /// prologue does, so no alias, export or introspection record outlives it.
+    ///
+    /// A failed load writes import bindings into the live table before its
+    /// body fails, so a kept never-compiled table reads as loaded to the
+    /// `import` fast path and to qualified resolution (I1, 0571.2; ACT-1013).
+    /// A module that once compiled keeps its table: a cascade victim's
+    /// definitions are valid (0571.3).
+    pub(crate) fn purge_never_compiled(
         &self,
         reset: &[crate::scheduler::ResetModule],
         keep: Option<&ModuleFullPath>,
@@ -808,48 +790,22 @@ impl CompilerSession {
     }
 }
 
-/// Is `form` a top-level **definition** form (§15.7 persisted forms) — one the
-/// startup restore notice counts (FIXME 0674)? A definition-shaped head:
-/// `defn`/`defn-`/`def`/`def-`/`const`/`const-`/`deftype`/`deftrait`/
-/// `defmacro`/`defmacro-`/`impl`. Imports/exports/`mod`/`platform`/expressions
-/// are NOT definitions and are excluded (so an imports-only file suppresses).
-/// FIXME 0707 — the restored-definition count, single-sourced from the restore
-/// record (not a bare re-parse). Counts persisted-definition forms in `source`,
-/// then subtracts the module's `failed` persisted-definition forms (form-granular:
-/// each failed form's verbatim `text` is re-parsed and its persisted-definition
-/// forms subtracted — a degraded startup re-emits the failed forms into the file,
-/// so a bare count over-reports them as "restored"). Returns `None` when the file
-/// is empty OR no definition actually restored (imports-only / all-failed),
-/// preserving the SUPPRESSED-notice contract (§15.2.2 / §6.2).
-fn restored_definition_count(source: &str, failed: &[FailedForm]) -> Option<usize> {
-    if source.trim().is_empty() {
-        return None; // empty backing file — suppress
-    }
+/// The number of persisted definitions `source` holds, for the startup restore
+/// notice (`repl/spec/15-session-persistence.md` §15.2.2). The notice is
+/// emitted only when the entry compiled, so every definition of the file was
+/// restored. `None` (no notice) for an empty file or one with no definition.
+fn restored_definition_count(source: &str) -> Option<usize> {
     let forms = cranelisp_frontend::parse(source).ok()?;
-    let total = forms
+    let count = forms
         .iter()
         .filter(|f| is_persisted_definition_form(f))
         .count();
-    let failed_persisted: usize = failed
-        .iter()
-        .map(|f| {
-            cranelisp_frontend::parse(&f.text)
-                .ok()
-                .map(|fs| {
-                    fs.iter()
-                        .filter(|x| is_persisted_definition_form(x))
-                        .count()
-                })
-                .unwrap_or(0)
-        })
-        .sum();
-    let count = total.saturating_sub(failed_persisted);
-    if count == 0 {
-        return None; // no definitions restored — suppress
-    }
-    Some(count)
+    (count > 0).then_some(count)
 }
 
+/// Is `form` a top-level definition form (§15.7 persisted forms), one the
+/// restore notice counts? Imports, exports, `mod`, `platform` and expressions
+/// are not.
 fn is_persisted_definition_form(form: &cranelisp_types::Sexp) -> bool {
     let cranelisp_types::Sexp::List(children, _) = form else {
         return false;
@@ -1145,8 +1101,12 @@ impl CompilerSession {
     /// Rebuild `roots` and their dependents from their saved files — the one
     /// executor every reload of a saved file runs through: the watcher poll,
     /// `/mod`'s recompile of a cache-installed module and the T1 and T2
-    /// residue (`design/int/repl-lifecycle.md` §1.2). It returns each rebuilt
-    /// module's last outcome, in the order the module was first rebuilt.
+    /// residue (`design/int/repl-lifecycle.md` §1.2). It returns each plan
+    /// member's last outcome, in the order the module first entered a plan.
+    ///
+    /// Each root is attempted, because its saved source decides what it
+    /// depends on. Any other member that reaches a module standing failed is
+    /// not attempted and waits (§1.2, Waiting).
     ///
     /// The plan is ordered from edges recorded before it runs, so a rebuilt
     /// module whose new source reaches a module the same plan rebuilt later
@@ -1156,50 +1116,222 @@ impl CompilerSession {
     /// modules its pass rebuilds after it, so the publication check does not
     /// read their unsettled edges (`design/int/int.md` §6.11). A follow-on set
     /// that recurs cannot come from acyclic successes: its modules are failed
-    /// and locked rather than reported rebuilt (§1.2, Recurrence stop).
+    /// rather than reported rebuilt (§1.2, Recurrence stop).
     pub(crate) fn run_reload_plan(
         &mut self,
         roots: Vec<(ModuleFullPath, PathBuf)>,
     ) -> Vec<ReloadOutcome> {
         let mut outcomes: Vec<ReloadOutcome> = Vec::new();
+        let mut newly_failed: Vec<ReloadOutcome> = Vec::new();
         let mut followed: HashSet<BTreeSet<ModuleFullPath>> = HashSet::new();
         let mut pending = roots;
         while !pending.is_empty() {
             let plan = self.reload_plan(&pending);
+            let mut deferred: Vec<DeferredAttempt> = Vec::new();
             for (index, (module, file)) in plan.iter().enumerate() {
-                let later_members = plan[index + 1..]
-                    .iter()
-                    .map(|(later, _)| later.clone())
-                    .collect();
-                let result = self.reload_module(module, file, later_members);
-                record_outcome(&mut outcomes, module, file, result);
+                let is_root = pending.iter().any(|(root, _)| root == module);
+                let reached = if is_root {
+                    None
+                } else {
+                    self.failed_module_reached(module)
+                };
+                let attempt = match reached {
+                    Some(failed) => Attempt::Settled(self.wait_unattempted(module, file, &failed)),
+                    None => {
+                        let later_members: BTreeSet<ModuleFullPath> = plan[index + 1..]
+                            .iter()
+                            .map(|(later, _)| later.clone())
+                            .collect();
+                        let unsettled = later_members
+                            .iter()
+                            .cloned()
+                            .chain(deferred.iter().map(|attempt| attempt.module.clone()))
+                            .collect();
+                        let reload = self.reload_module(module, file, later_members, &unsettled);
+                        newly_failed.extend(reload.newly_failed);
+                        reload.attempt
+                    }
+                };
+                match attempt {
+                    Attempt::Settled(status) => record_outcome(&mut outcomes, module, file, status),
+                    Attempt::Deferred(deferral) => {
+                        // Reported only by its final outcome, which replaces this.
+                        record_outcome(&mut outcomes, module, file, ReloadStatus::Waiting);
+                        deferred.push(DeferredAttempt {
+                            module: module.clone(),
+                            file: file.clone(),
+                            deferral,
+                        });
+                    }
+                }
             }
             pending = self.rebuilt_before_a_later_dependency(&plan, &outcomes);
+            let resumed = self.settle_deferred(deferred, &mut outcomes);
+            for attempt in &resumed {
+                if !pending.iter().any(|(module, _)| *module == attempt.module) {
+                    pending.push((attempt.module.clone(), attempt.file.clone()));
+                }
+            }
             if let Some(recurring) = recurring_follow_on(&mut followed, &pending) {
-                self.stop_unsettled_reload(&recurring, &mut outcomes);
+                self.stop_unsettled_reload(&recurring, &mut outcomes, resumed);
                 break;
+            }
+        }
+        // A module the pass newly loaded that came to stand failed is reported
+        // after the plan's own outcomes, unless a later plan already settled it
+        // (§1.2, Three outcomes).
+        for failed in newly_failed {
+            if !outcomes
+                .iter()
+                .any(|outcome| outcome.module == failed.module)
+            {
+                outcomes.push(failed);
             }
         }
         outcomes
     }
 
-    /// The recurrence stop (`design/int/repl-lifecycle.md` §1.2): fail and
-    /// lock each module of a recurring follow-on set, replacing its outcome.
+    /// Settle the members whose refusal by an unsettled member deferred their
+    /// outcome (`design/int/repl-lifecycle.md` §1.2, Refused by a later
+    /// member), each once the member that refused it has settled. A member
+    /// whose refusing member rebuilt, or itself resumes, is returned to join
+    /// the follow-on roots; any other is classified by its refusal chain as it
+    /// now stands, and its outcome replaced. Members deferred only on each
+    /// other refused each other: they are classified from the last in plan
+    /// order, so the last fails with the cycle diagnostic and the others wait
+    /// on it (§1.3.1, A refusal chain must end at a failure).
+    fn settle_deferred(
+        &mut self,
+        mut deferred: Vec<DeferredAttempt>,
+        outcomes: &mut Vec<ReloadOutcome>,
+    ) -> Vec<DeferredAttempt> {
+        let mut resumed: Vec<DeferredAttempt> = Vec::new();
+        while let Some(position) = deferred.iter().position(|attempt| {
+            !deferred
+                .iter()
+                .any(|other| other.module == attempt.deferral.refusing)
+        }) {
+            let attempt = deferred.remove(position);
+            let refusing = &attempt.deferral.refusing;
+            let refusing_rebuilt = resumed.iter().any(|other| other.module == *refusing)
+                || outcomes
+                    .iter()
+                    .any(|outcome| outcome.module == *refusing && outcome.status.is_rebuilt());
+            if refusing_rebuilt {
+                resumed.push(attempt);
+            } else {
+                self.settle_by_refusal_chain(attempt, outcomes);
+            }
+        }
+        while let Some(attempt) = deferred.pop() {
+            self.settle_by_refusal_chain(attempt, outcomes);
+        }
+        resumed
+    }
+
+    /// Classify a deferred member by its refusal chain and record its outcome.
+    fn settle_by_refusal_chain(
+        &mut self,
+        attempt: DeferredAttempt,
+        outcomes: &mut Vec<ReloadOutcome>,
+    ) {
+        let status = self.classify_failed_attempt(
+            &attempt.module,
+            &attempt.file,
+            *attempt.deferral.error,
+            attempt.deferral.cause,
+        );
+        record_outcome(outcomes, &attempt.module, &attempt.file, status);
+    }
+
+    /// A module standing failed, other than `module`, that `module` reaches
+    /// over the reload edges as they stand now (`design/int/repl-lifecycle.md`
+    /// §1.2, Waiting, before its attempt). Failures and waits earlier in the
+    /// pass have already recorded their edges, so waiting is transitive. The
+    /// implicit prelude edge is followed like any import.
+    ///
+    /// A failed prelude that itself reaches `module` is on a cycle with it,
+    /// not a dependency of it: `module` is attempted, and the cycle rules
+    /// decide it as a restart does (`design/int/int.md` §6.12, Refusal by a
+    /// failed prelude).
+    fn failed_module_reached(&self, module: &ModuleFullPath) -> Option<ModuleFullPath> {
+        if self.failed_modules.keys().all(|failed| failed == module) {
+            return None;
+        }
+        let graph = self.reload_edge_graph();
+        let prelude = ModuleFullPath::from(crate::expander::PRELUDE_MODULE);
+        reachable_from(&graph, module)
+            .into_iter()
+            .filter(|reached| self.failed_modules.contains_key(reached))
+            .find(|failed| *failed != prelude || !reachable_from(&graph, failed).contains(module))
+    }
+
+    /// Hold a plan member that waits on `failed` without an attempt
+    /// (`design/int/repl-lifecycle.md` §1.2, Waiting): run the rebuild
+    /// prologue and nothing after it, so no generation compiled against the
+    /// failed module stays reachable by name, and leave the module out of the
+    /// failed set, `Failed` in the scheduler with `failed` as its refusing
+    /// and failure dependency.
+    fn wait_unattempted(
+        &mut self,
+        module: &ModuleFullPath,
+        file: &Path,
+        failed: &ModuleFullPath,
+    ) -> ReloadStatus {
+        self.shared.scheduler.wait_module_typecheck_settled(module);
+        crate::observability::record_module_event(
+            crate::observability::SchedulerTraceTag::ClearModuleState,
+            module.as_ref(),
+        );
+        if let Err(error) = self.install_fresh_generation(module) {
+            self.shared
+                .scheduler
+                .fail_generation(module, scheduler_copy(&error));
+            self.stand_failed(module, file, FailureCause::FailedSource);
+            return ReloadStatus::Failed(Box::new(error));
+        }
+        self.shared
+            .scheduler
+            .hold_waiting_generation(module, failed);
+        self.record_failure_dependencies(module, [failed.clone()]);
+        self.failed_modules.remove(module);
+        ReloadStatus::Waiting
+    }
+
+    /// The recurrence stop (`design/int/repl-lifecycle.md` §1.2): fail each
+    /// module of a recurring follow-on set, replacing its outcome; each joins
+    /// the failed set and reports that the reload order did not settle. A
+    /// member `resumed` after a deferral whose attempt failed on a cycle keeps
+    /// that error: a cycle is a property of the saved sources, which the
+    /// recurrence confirms. Any other refusal is by a member that has since
+    /// rebuilt, so it is stale.
     fn stop_unsettled_reload(
         &mut self,
         recurring: &BTreeSet<ModuleFullPath>,
         outcomes: &mut [ReloadOutcome],
+        mut resumed: Vec<DeferredAttempt>,
     ) {
-        for module in recurring {
-            self.lock_failed_source(module);
-            if let Some(outcome) = outcomes.iter_mut().find(|prior| prior.module == *module) {
-                outcome.result = Err(CranelispError::ModuleError {
-                    message: format!(
-                        "the reload order of module '{module}' did not settle; save its file again once its dependencies compile"
-                    ),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                });
+        for outcome in outcomes
+            .iter_mut()
+            .filter(|outcome| recurring.contains(&outcome.module))
+        {
+            if let Some(position) = resumed
+                .iter()
+                .position(|attempt| attempt.module == outcome.module && attempt.deferral.cycle)
+            {
+                let attempt = resumed.swap_remove(position);
+                self.stand_failed(&outcome.module, &outcome.file, attempt.deferral.cause);
+                outcome.status = ReloadStatus::Failed(attempt.deferral.error);
+                continue;
             }
+            self.stand_failed(&outcome.module, &outcome.file, FailureCause::FailedSource);
+            outcome.status = ReloadStatus::Failed(Box::new(CranelispError::ModuleError {
+                message: format!(
+                    "the reload order of module '{}' did not settle; save its file again once its dependencies compile",
+                    outcome.module
+                ),
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            }));
         }
     }
 
@@ -1221,7 +1353,7 @@ impl CompilerSession {
             .filter(|(index, (module, _))| {
                 let rebuilt = outcomes
                     .iter()
-                    .any(|outcome| outcome.module == *module && outcome.result.is_ok());
+                    .any(|outcome| outcome.module == *module && outcome.status.is_rebuilt());
                 rebuilt
                     && graph.get(module).is_some_and(|edges| {
                         edges
@@ -1233,18 +1365,28 @@ impl CompilerSession {
             .collect()
     }
 
+    /// One watcher poll point (`design/int/repl-lifecycle.md` §1.2, Poll
+    /// points): watch newly loaded files, then reload changed files with their
+    /// dependents. The read loop runs it before each turn is admitted and
+    /// after each turn; it returns the notifications to print.
+    pub fn poll_watcher(&mut self) -> Vec<String> {
+        self.sync_watcher();
+        self.poll_and_reload()
+    }
+
     /// Poll the file watcher for changed source files and rebuild them with
     /// their dependents (`design/int/repl-lifecycle.md` §1.2).
     ///
-    /// Returns one §14 notification per rebuilt module: `[updated: file.cl]`
-    /// on success, `[errors: file.cl]` and the module's own error on failure.
+    /// Returns one §14 notification per rebuilt or failed module:
+    /// `[updated: file.cl]`, or `[errors: file.cl]` and the module's own
+    /// error. A waiting module has none.
     pub fn poll_and_reload(&mut self) -> Vec<String> {
         let watcher = match &mut self.watcher {
             Some(w) => w,
             None => return Vec::new(),
         };
 
-        let changed_paths = match watcher.poll_changes() {
+        let changed_paths = match watcher.poll_changes(&self.shared.recorded_sources) {
             Some(paths) => paths,
             None => return Vec::new(),
         };
@@ -1252,17 +1394,256 @@ impl CompilerSession {
         let roots = self.watcher_roots(&changed_paths);
         self.run_reload_plan(roots)
             .into_iter()
-            .map(|outcome| outcome.notice())
+            .filter_map(|outcome| outcome.notice())
             .collect()
     }
 
-    /// Lock `module` with failed source unless it is already locked, and
-    /// block it in the error set.
-    fn lock_failed_source(&mut self, module: &ModuleFullPath) {
-        self.error_modules.insert(module.clone());
-        self.module_locks
-            .entry(module.clone())
-            .or_insert(ModuleLock::FailedSource);
+    /// Whether the session is locked: some module stands failed
+    /// (`design/int/repl-lifecycle.md` §1.3.1).
+    pub fn is_locked(&self) -> bool {
+        !self.failed_modules.is_empty()
+    }
+
+    /// Make `module` stand failed with `cause`, awaiting a save of `file`.
+    pub(crate) fn stand_failed(
+        &mut self,
+        module: &ModuleFullPath,
+        file: &Path,
+        cause: FailureCause,
+    ) {
+        self.failed_modules.insert(
+            module.clone(),
+            FailedModule {
+                file: file.to_path_buf(),
+                cause,
+            },
+        );
+    }
+
+    /// Add `dependencies` to `module`'s failure dependencies since it last
+    /// compiled (`design/int/repl-lifecycle.md` §1.2.1, Session record).
+    fn record_failure_dependencies(
+        &mut self,
+        module: &ModuleFullPath,
+        dependencies: impl IntoIterator<Item = ModuleFullPath>,
+    ) {
+        let mut dependencies = dependencies.into_iter().peekable();
+        if dependencies.peek().is_some() {
+            self.failure_dependencies
+                .entry(module.clone())
+                .or_default()
+                .extend(dependencies);
+        }
+    }
+
+    /// The source file `module` is loaded from: the typecheck product's
+    /// recorded path, else the watcher's mapping, else the default backing
+    /// path.
+    fn source_file_of(&self, module: &ModuleFullPath) -> PathBuf {
+        self.shared
+            .typecheck_products
+            .get(module)
+            .and_then(|product| product.file_path.clone())
+            .or_else(|| self.find_module_source(module))
+            .unwrap_or_else(|| self.backing_file_path_for(module))
+    }
+
+    /// Classify a failed attempt of `module` from its refusing dependency
+    /// (`design/int/repl-lifecycle.md` §1.3.1, Failure and waiting): it waits
+    /// when the refusal chain ends at a module standing failed, fails with
+    /// the cycle diagnostic when the chain returns to it, and otherwise stands
+    /// failed with its own `error` and `cause`.
+    fn classify_failed_attempt(
+        &mut self,
+        module: &ModuleFullPath,
+        file: &Path,
+        error: CranelispError,
+        cause: FailureCause,
+    ) -> ReloadStatus {
+        let chain = refusal_chain(
+            module,
+            |refused| self.shared.scheduler.refusing_dependency(refused),
+            |dependency| self.failed_modules.contains_key(dependency),
+        );
+        match chain {
+            RefusalChain::EndsAtFailure => {
+                self.failed_modules.remove(module);
+                ReloadStatus::Waiting
+            }
+            RefusalChain::Cycle(cycle) => {
+                self.shared.scheduler.record_cycle_failure(module);
+                self.stand_failed(module, file, FailureCause::FailedSource);
+                ReloadStatus::Failed(Box::new(cycle_error(cycle)))
+            }
+            RefusalChain::Unrefused | RefusalChain::Broken => {
+                self.stand_failed(module, file, cause);
+                ReloadStatus::Failed(Box::new(error))
+            }
+        }
+    }
+
+    /// A failed load's record (`design/int/repl-lifecycle.md` §1.3.1, steps 2
+    /// and 3): carry each reset module's failure dependencies into the
+    /// session record, then classify it. A module nothing refused stands
+    /// failed; one whose refusal chain ends at a module standing failed waits.
+    /// Returns the error of each module that came to stand failed.
+    pub(crate) fn record_failed_load(
+        &mut self,
+        reset: &mut [crate::scheduler::ResetModule],
+    ) -> HashMap<ModuleFullPath, CranelispError> {
+        for module in reset.iter() {
+            self.record_failure_dependencies(
+                &module.module,
+                module.failure_dependencies.iter().cloned(),
+            );
+        }
+        // The recorded error itself, at its own location (review A2).
+        let take_error = |module: &mut crate::scheduler::ResetModule| {
+            module
+                .error
+                .take()
+                .unwrap_or_else(|| CranelispError::ModuleError {
+                    message: format!("module '{}' failed to load", module.module),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                })
+        };
+        let mut errors = HashMap::new();
+        for module in reset.iter_mut().filter(|m| m.refusing_dependency.is_none()) {
+            let file = self.source_file_of(&module.module);
+            self.stand_failed(&module.module, &file, FailureCause::FailedSource);
+            errors.insert(module.module.clone(), take_error(module));
+        }
+        let refusals: HashMap<ModuleFullPath, ModuleFullPath> = reset
+            .iter()
+            .filter_map(|m| {
+                m.refusing_dependency
+                    .clone()
+                    .map(|dependency| (m.module.clone(), dependency))
+            })
+            .collect();
+        // Every chain is judged against the failed set as it stands now, so
+        // the outcome does not depend on the reset's order, and a broken chain
+        // grounds no wait for another module of this record.
+        let standing: BTreeSet<ModuleFullPath> = self.failed_modules.keys().cloned().collect();
+        let chains: Vec<(usize, RefusalChain)> = reset
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.refusing_dependency.is_some())
+            .map(|(index, module)| {
+                let chain = refusal_chain(
+                    &module.module,
+                    |refused| match refusals.get(refused) {
+                        Some(dependency) => Some(dependency.clone()),
+                        None => self.shared.scheduler.refusing_dependency(refused),
+                    },
+                    |dependency| standing.contains(dependency),
+                );
+                (index, chain)
+            })
+            .collect();
+        for (index, chain) in chains {
+            let module = &mut reset[index];
+            let error = match chain {
+                RefusalChain::EndsAtFailure => {
+                    self.failed_modules.remove(&module.module);
+                    continue;
+                }
+                RefusalChain::Cycle(cycle) => cycle_error(cycle),
+                RefusalChain::Unrefused | RefusalChain::Broken => take_error(module),
+            };
+            let file = self.source_file_of(&module.module);
+            self.stand_failed(&module.module, &file, FailureCause::FailedSource);
+            errors.insert(module.module.clone(), error);
+        }
+        errors
+    }
+}
+
+/// Every module `start` reaches over `graph`'s edges, `start` excluded unless
+/// a cycle returns to it, in breadth-first order.
+fn reachable_from(
+    graph: &HashMap<ModuleFullPath, BTreeSet<ModuleFullPath>>,
+    start: &ModuleFullPath,
+) -> Vec<ModuleFullPath> {
+    let mut seen: HashSet<ModuleFullPath> = HashSet::new();
+    let mut order = Vec::new();
+    let mut frontier = std::collections::VecDeque::from([start.clone()]);
+    while let Some(current) = frontier.pop_front() {
+        for dependency in graph.get(&current).into_iter().flatten() {
+            if seen.insert(dependency.clone()) {
+                order.push(dependency.clone());
+                frontier.push_back(dependency.clone());
+            }
+        }
+    }
+    order
+}
+
+/// Where a refused module's refusal chain ends (`design/int/repl-lifecycle.md`
+/// §1.3.1, A refusal chain must end at a failure).
+#[derive(Debug, PartialEq, Eq)]
+enum RefusalChain {
+    /// No dependency refused the attempt: its failure is its own.
+    Unrefused,
+    /// The chain reaches a module standing failed: the module waits.
+    EndsAtFailure,
+    /// The chain returns to the module: a cycle whose check never ran
+    /// because a fail-fast fired first. Carries the chain, first and last
+    /// the module.
+    Cycle(Vec<ModuleFullPath>),
+    /// The chain stops at a module that neither stands failed nor was
+    /// refused, or loops without the module. Waiting would leave no failed
+    /// module to release it, so the module stands failed.
+    Broken,
+}
+
+/// Follow `module`'s refusing dependencies until one stands failed.
+fn refusal_chain(
+    module: &ModuleFullPath,
+    refusing: impl Fn(&ModuleFullPath) -> Option<ModuleFullPath>,
+    stands_failed: impl Fn(&ModuleFullPath) -> bool,
+) -> RefusalChain {
+    let Some(mut current) = refusing(module) else {
+        return RefusalChain::Unrefused;
+    };
+    let mut chain = vec![module.clone()];
+    loop {
+        if current == *module {
+            chain.push(current);
+            return RefusalChain::Cycle(chain);
+        }
+        if stands_failed(&current) {
+            return RefusalChain::EndsAtFailure;
+        }
+        if chain.contains(&current) {
+            return RefusalChain::Broken;
+        }
+        chain.push(current.clone());
+        match refusing(&current) {
+            Some(next) => current = next,
+            None => return RefusalChain::Broken,
+        }
+    }
+}
+
+/// The circular-dependency diagnostic for a refusal chain that closes a cycle.
+fn cycle_error(cycle: Vec<ModuleFullPath>) -> CranelispError {
+    CranelispError::ModuleError {
+        message: format!(
+            "circular dependency detected: {}",
+            crate::scheduler::CycleError { cycle }.render()
+        ),
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    }
+}
+
+/// The scheduler's copy of a failure it records: `CranelispError` is not
+/// `Clone`, so the copy keeps the message and the location, its file
+/// included, as the scheduler's fail-fast reconstruction does.
+fn scheduler_copy(error: &CranelispError) -> CranelispError {
+    CranelispError::ModuleError {
+        message: error.to_string(),
+        location: error.location().clone(),
     }
 }
 
@@ -1271,12 +1652,12 @@ fn record_outcome(
     outcomes: &mut Vec<ReloadOutcome>,
     module: &ModuleFullPath,
     file: &Path,
-    result: Result<(), CranelispError>,
+    status: ReloadStatus,
 ) {
     let outcome = ReloadOutcome {
         module: module.clone(),
         file: file.to_path_buf(),
-        result,
+        status,
     };
     match outcomes.iter_mut().find(|prior| prior.module == *module) {
         Some(prior) => *prior = outcome,
@@ -1476,27 +1857,94 @@ fn order_reload_modules(
     ordered
 }
 
-/// One module's outcome in a reload plan: success, or the module's own error.
+/// One module's outcome in a reload plan (`design/int/repl-lifecycle.md` §1.2,
+/// Three outcomes).
 pub(crate) struct ReloadOutcome {
     pub(crate) module: ModuleFullPath,
     file: PathBuf,
-    pub(crate) result: Result<(), CranelispError>,
+    pub(crate) status: ReloadStatus,
+}
+
+/// A plan member's attempt: settled, or deferred until the member that
+/// refused it settles (`design/int/repl-lifecycle.md` §1.2, Refused by a later
+/// member).
+pub(crate) enum Attempt {
+    Settled(ReloadStatus),
+    Deferred(Deferral),
+}
+
+/// A plan member's attempt with the outcome of each module it newly left
+/// standing failed.
+pub(crate) struct ReloadAttempt {
+    pub(crate) attempt: Attempt,
+    newly_failed: Vec<ReloadOutcome>,
+}
+
+impl ReloadAttempt {
+    fn settled(status: ReloadStatus) -> Self {
+        ReloadAttempt {
+            attempt: Attempt::Settled(status),
+            newly_failed: Vec::new(),
+        }
+    }
+}
+
+/// A failed attempt whose outcome waits for `refusing`, a member the same
+/// pass has not settled, with the error and cause it stands failed with if
+/// its refusal chain does not end at a failure.
+pub(crate) struct Deferral {
+    refusing: ModuleFullPath,
+    error: Box<CranelispError>,
+    cause: FailureCause,
+    /// Whether the attempt failed on a module cycle, the one failure the
+    /// recurrence stop reports as its own.
+    cycle: bool,
+}
+
+/// A deferred attempt and the plan member it belongs to.
+struct DeferredAttempt {
+    module: ModuleFullPath,
+    file: PathBuf,
+    deferral: Deferral,
+}
+
+/// How a plan member ended. Only `Rebuilt` counts as success for the order
+/// check, `/mod`, T1 and T2.
+pub(crate) enum ReloadStatus {
+    /// The module compiled from its saved file.
+    Rebuilt,
+    /// The module stands failed with its own error.
+    Failed(Box<CranelispError>),
+    /// The module waits on a dependency standing failed.
+    Waiting,
+}
+
+impl ReloadStatus {
+    pub(crate) fn is_rebuilt(&self) -> bool {
+        matches!(self, ReloadStatus::Rebuilt)
+    }
 }
 
 impl ReloadOutcome {
-    /// The §14 notification (`repl/spec/14-file-watching.md`):
-    /// `[updated: <file>]`, or `[errors: <file>]` and the indented error.
-    pub(crate) fn notice(&self) -> String {
-        let file_name = self
-            .file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_else(|| self.module.as_ref());
-        match &self.result {
-            Ok(()) => format!("[updated: {file_name}]"),
-            Err(e) => format!("[errors: {file_name}]\n  {e}"),
+    /// The §14 notification (`repl/spec/14-file-watching.md` §14.3):
+    /// `[updated: <file>]`, or `[errors: <file>]` and the indented error. A
+    /// waiting module is not reported (§14.5).
+    pub(crate) fn notice(&self) -> Option<String> {
+        match &self.status {
+            ReloadStatus::Rebuilt => Some(format!(
+                "[updated: {}]",
+                file_display_name(&self.file, &self.module)
+            )),
+            ReloadStatus::Failed(error) => Some(failure_notice(&self.file, &self.module, error)),
+            ReloadStatus::Waiting => None,
         }
     }
+}
+
+/// The §14.3 failure notification for `module`: `[errors: <file>]` and its
+/// own indented error. The reload notice and the startup report share it.
+fn failure_notice(file: &Path, module: &ModuleFullPath, error: &dyn std::fmt::Display) -> String {
+    format!("[errors: {}]\n  {error}", file_display_name(file, module))
 }
 
 impl CompilerSession {
@@ -1525,20 +1973,21 @@ impl CompilerSession {
     /// session in an empty directory reaches the prompt with no extra output
     /// (fresh-dir transcripts stay byte-identical, §6.2). Startup-only chrome —
     /// never persisted, never part of a value/definition response. REPL-only.
-    pub fn startup_restore_notice(&self, module: &ModuleFullPath) -> Option<String> {
+    ///
+    /// After a failed start, `recovery` says whether the entry compiled; when
+    /// it did not, there is no notice (`design/int/repl-lifecycle.md` §1.3.1,
+    /// Startup, Restore notice).
+    pub fn startup_restore_notice(
+        &self,
+        module: &ModuleFullPath,
+        recovery: Option<&StartupRecovery>,
+    ) -> Option<String> {
+        if recovery.is_some_and(|recovery| !recovery.entry_compiled) {
+            return None;
+        }
         let file_path = self.backing_file_path_for(module);
         let source = std::fs::read_to_string(&file_path).ok()?;
-        // FIXME 0707: count from the RESTORE RECORD, not a bare re-parse. Under a
-        // degraded startup (§15.2.3) the backing file re-emits the FAILED forms too
-        // (`append_failed_forms`), so a bare re-parse over-counts them as
-        // "restored". Subtract the module's persisted-definition FAILED forms —
-        // the count of definitions the session actually restored (§15.2.2).
-        let failed = self
-            .failed_forms
-            .get(module)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let count = restored_definition_count(&source, failed)?;
+        let count = restored_definition_count(&source)?;
         let name = file_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -1549,6 +1998,33 @@ impl CompilerSession {
             "definitions"
         };
         Some(format!("; resumed {count} {plural} from {name}"))
+    }
+
+    /// Whether the backing file at `path` was changed by a save the session
+    /// has not loaded: it exists, and its state on disk, from `on_disk`,
+    /// differs from the state the session last recorded for it
+    /// (`design/int/repl-lifecycle.md` §1.3.1, Write chokepoint, Unseen save).
+    /// Then regeneration must not write: the user's bytes win, and the watcher
+    /// reloads the file. A missing file is written. Every module regeneration
+    /// can write was loaded by a read that records its state, the cache-hit
+    /// restore included, so a file with no record is not reached today; it
+    /// would be written.
+    fn backing_file_changed_unseen(&self, path: &Path, on_disk: &std::io::Result<String>) -> bool {
+        let (Some(state), Some(recorded)) = (
+            crate::watch::FileState::of_read(on_disk),
+            self.shared.recorded_source(path),
+        ) else {
+            return false;
+        };
+        if state == recorded {
+            return false;
+        }
+        eprintln!(
+            "Warning: {} changed on disk since the session last read it; it is kept and \
+             will be reloaded, and until then this definition is in the session only",
+            path.display()
+        );
+        true
     }
 
     /// Resolve `module`'s backing `.cl` path — the typecheck product's recorded
@@ -1565,12 +2041,14 @@ impl CompilerSession {
     }
 
     pub fn regenerate_backing_file(&mut self) {
-        let module = self.current_module_path();
-        // A locked module's saved file holds source the session has not
-        // accepted; whatever the caller, the REPL must not overwrite it.
-        if self.module_locks.contains_key(&module) {
+        // While the session is locked a saved file may hold source the session
+        // has not accepted; whatever the caller and the current module, the
+        // REPL writes no file (`design/int/repl-lifecycle.md` §1.3.1, Write
+        // chokepoint).
+        if self.is_locked() {
             return;
         }
+        let module = self.current_module_path();
 
         // Get the backing file path (typecheck-product-recorded, else default).
         let file_path = self.backing_file_path_for(&module);
@@ -1593,13 +2071,20 @@ impl CompilerSession {
             return;
         }
 
+        // The one read of the backing file serves the unseen-save check and
+        // rehydration.
+        let on_disk = std::fs::read_to_string(&file_path);
+        if self.backing_file_changed_unseen(&file_path, &on_disk) {
+            return;
+        }
+
         // Entries installed from the backing file (cache restore, or a fresh
         // load of declarations) have no authored-form records; the file they
         // were installed from supplies them (session-persistence.md §2.4.2).
         if let Some(intro) = self.shared.introspection.as_ref()
-            && let Ok(backing_source) = std::fs::read_to_string(&file_path)
+            && let Ok(backing_source) = &on_disk
         {
-            crate::save::rehydrate_introspection_from_source(&st, intro, &module, &backing_source);
+            crate::save::rehydrate_introspection_from_source(&st, intro, &module, backing_source);
         }
 
         // Generate source text.
@@ -1619,18 +2104,6 @@ impl CompilerSession {
             }
         };
 
-        // S102 CS-0489 (§15.2.3 no-silent-drop): re-emit the retained
-        // failed-form verbatim texts — the degraded startup load's broken
-        // definitions never entered the live table, so a regen built from
-        // the table alone would silently drop them from the user's file.
-        // Repaired symbols have already left the set
-        // (`clear_repaired_failed_form`), so a fully-repaired module writes
-        // a green file with no residue.
-        let source = match self.failed_forms.get(&module) {
-            Some(failed) => append_failed_forms(&source, failed),
-            None => source,
-        };
-
         // Skip writing empty source (no user-defined content).
         if source.trim().is_empty() {
             return;
@@ -1645,14 +2118,11 @@ impl CompilerSession {
             return;
         }
 
-        // Update watcher content hash so the self-write is suppressed
-        // (design/int/session-persistence.md §4).
-        if let Some(ref mut watcher) = self.watcher {
-            let canonical = file_path
-                .canonicalize()
-                .unwrap_or_else(|_| file_path.clone());
-            watcher.update_content_hash(canonical.clone(), hash.clone());
-        }
+        // Record the written state: the watcher compares with it, so the
+        // session's own write is not reported (design/int/session-persistence.md
+        // §4; repl-lifecycle.md §1.2, Content hash).
+        self.shared
+            .record_source(&file_path, crate::watch::FileState::Source(hash.clone()));
 
         // Register the file in file_to_module so the watcher can find it.
         if let Ok(canonical) = file_path.canonicalize() {
@@ -1687,42 +2157,106 @@ impl CompilerSession {
 
     /// Rebuild `module_path` from its saved file: a whole-file rebuild whose
     /// new generation is exactly what the saved source establishes
-    /// (`design/int/session-transaction.md` §7.3; `repl-lifecycle.md` §1.2).
+    /// (`design/int/session-transaction.md` §7.3; `repl-lifecycle.md` §1.2,
+    /// §1.3.1). Visible only to the session's own modules: every other caller
+    /// reaches it through [`Self::run_reload_plan`], so no reload runs outside
+    /// a plan. `later_members` are the modules the pass rebuilds after it.
     ///
-    /// Visible only to the session's own modules: every other caller reaches
-    /// it through [`Self::run_reload_plan`], so no reload runs outside a plan.
-    /// Every failure locks the module (`repl-lifecycle.md` §1.3.1). Success
-    /// makes the new file content the authority: it drops any retained
-    /// degraded-startup failed forms, which regeneration would otherwise
-    /// re-append over the repair, and releases the error block, the lock and
-    /// the established reference.
+    /// Success
+    /// releases the module from the failed set, its established reference and
+    /// its failure dependencies. On failure, the modules the attempt newly
+    /// left `Failed`, such as a module it newly loaded that failed in its own
+    /// source, first run the failed load's record. The module then stands
+    /// failed with this attempt's cause, or waits when a dependency standing
+    /// failed refused it. A refusal by one of the `unsettled` members, whose
+    /// failure is not yet its outcome, defers the outcome until that member
+    /// settles.
     pub(in crate::session_v4) fn reload_module(
         &mut self,
         module_path: &ModuleFullPath,
         file_path: &Path,
         later_members: BTreeSet<ModuleFullPath>,
-    ) -> Result<(), CranelispError> {
-        let result = self.rebuild_from_file(module_path, file_path, later_members);
-        match &result {
+        unsettled: &BTreeSet<ModuleFullPath>,
+    ) -> ReloadAttempt {
+        let failed_before = self.shared.scheduler.failed_modules();
+        let error = match self.rebuild_from_file(module_path, file_path, later_members) {
             Ok(()) => {
-                self.failed_forms.remove(module_path);
-                self.error_modules.remove(module_path);
-                self.module_locks.remove(module_path);
+                self.failed_modules.remove(module_path);
                 self.reload_references.remove(module_path);
                 self.failure_dependencies.remove(module_path);
+                return ReloadAttempt::settled(ReloadStatus::Rebuilt);
             }
-            Err(_) => {
-                let dependencies = self.shared.scheduler.failure_dependencies(module_path);
-                if !dependencies.is_empty() {
-                    self.failure_dependencies
-                        .entry(module_path.clone())
-                        .or_default()
-                        .extend(dependencies);
-                }
-                self.lock_failed_source(module_path);
+            Err(error) => error,
+        };
+        let dependencies = self.shared.scheduler.failure_dependencies(module_path);
+        self.record_failure_dependencies(module_path, dependencies);
+        let newly_failed = match self.record_newly_failed(module_path, &failed_before) {
+            Ok(newly_failed) => newly_failed,
+            Err(purge_error) => {
+                self.stand_failed(module_path, file_path, FailureCause::FailedSource);
+                return ReloadAttempt::settled(ReloadStatus::Failed(Box::new(purge_error)));
             }
+        };
+        // The refusal record belongs to this attempt's generation, so a cause
+        // never carries over from an earlier attempt.
+        let cause = match self.shared.scheduler.structural_type_refusal(module_path) {
+            Some(refusal) => FailureCause::RestartRequired(refusal.type_name),
+            None => FailureCause::FailedSource,
+        };
+        let attempt = match self.shared.scheduler.refusing_dependency(module_path) {
+            Some(refusing) if unsettled.contains(&refusing) => Attempt::Deferred(Deferral {
+                refusing,
+                error: Box::new(error),
+                cause,
+                cycle: self.shared.scheduler.cycle_failure(module_path),
+            }),
+            _ => {
+                Attempt::Settled(self.classify_failed_attempt(module_path, file_path, error, cause))
+            }
+        };
+        ReloadAttempt {
+            attempt,
+            newly_failed,
         }
-        result
+    }
+
+    /// Run the failed load's record over the modules `module`'s failed attempt
+    /// newly left `Failed`: those `Failed` now that were not in `failed_before`,
+    /// other than `module` (`repl-lifecycle.md` §1.3.1, Set sites). They are
+    /// reset, classified and purged as a failed `/mod` load's are, so the
+    /// failed set accounts for every module the scheduler holds `Failed`.
+    /// Returns the outcome of each that came to stand failed, reported as any
+    /// failed module is (§1.4).
+    fn record_newly_failed(
+        &mut self,
+        module: &ModuleFullPath,
+        failed_before: &BTreeSet<ModuleFullPath>,
+    ) -> Result<Vec<ReloadOutcome>, CranelispError> {
+        let failed_now = self.shared.scheduler.failed_modules();
+        if failed_now
+            .iter()
+            .all(|failed| failed == module || failed_before.contains(failed))
+        {
+            return Ok(Vec::new());
+        }
+        let held: BTreeSet<ModuleFullPath> = failed_now
+            .into_iter()
+            .filter(|failed| failed == module || failed_before.contains(failed))
+            .collect();
+        let mut reset = self.shared.scheduler.reset_failed_modules(&held);
+        let errors = self.record_failed_load(&mut reset);
+        self.purge_never_compiled(&reset, None)?;
+        Ok(errors
+            .into_iter()
+            .filter_map(|(failed, error)| {
+                let file = self.failed_modules.get(&failed)?.file.clone();
+                Some(ReloadOutcome {
+                    module: failed,
+                    file,
+                    status: ReloadStatus::Failed(Box::new(error)),
+                })
+            })
+            .collect())
     }
 
     fn rebuild_from_file(
@@ -1735,34 +2269,6 @@ impl CompilerSession {
             crate::observability::SchedulerTraceTag::RecompileModule,
             module_path.as_ref(),
         );
-        let source =
-            std::fs::read_to_string(file_path).map_err(|e| CranelispError::ModuleError {
-                message: format!("cannot read {}: {e}", file_path.display()),
-                location: ErrorLocation::from_span_file(
-                    Span::new(0, 0),
-                    Some(file_path.to_path_buf()),
-                ),
-            })?;
-
-        crate::observability::record_module_event(
-            crate::observability::SchedulerTraceTag::ClearModuleState,
-            module_path.as_ref(),
-        );
-        // The fresh product keeps the backing path regeneration writes to and,
-        // for introspection, the re-read text that form processing slices
-        // verbatim records from (`design/int/repl-lifecycle.md` §1.2).
-        self.shared.typecheck_products.insert(
-            module_path.clone(),
-            crate::session_v4::TypecheckProduct {
-                file_path: Some(file_path.to_path_buf()),
-                source_text: self.shared.introspection.is_some().then(|| source.clone()),
-                unresolved_dispatch: Vec::new(),
-            },
-        );
-
-        let parsed = cranelisp_frontend::parse(&source)?;
-        let sexps: std::sync::Arc<[Sexp]> = std::sync::Arc::from(parsed);
-
         // A worker marks the module in-memory complete before its pass
         // settles; re-registering mid-pass would be skipped and the rebuild
         // silently dropped, and the swap below must not race the pass.
@@ -1770,7 +2276,30 @@ impl CompilerSession {
             .scheduler
             .wait_module_typecheck_settled(module_path);
 
-        let reference = self.install_fresh_generation(module_path)?;
+        // The prologue runs before anything that can fail, so every failure
+        // cause, a read or parse failure included, leaves the module with the
+        // fresh table (`design/int/session-transaction.md` §7.3.1, ACT-1044).
+        crate::observability::record_module_event(
+            crate::observability::SchedulerTraceTag::ClearModuleState,
+            module_path.as_ref(),
+        );
+        let prepared = self
+            .install_fresh_generation(module_path)
+            .and_then(|reference| {
+                self.read_saved_source(module_path, file_path)
+                    .map(|(source, sexps)| (reference, source, sexps))
+            });
+        // A failure before registration registers nothing, so the scheduler
+        // records the module `Failed` as a failed registration would have.
+        let (reference, source, sexps) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.shared
+                    .scheduler
+                    .fail_generation(module_path, scheduler_copy(&error));
+                return Err(error);
+            }
+        };
 
         // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md
         // §5): the leading `;;` block of the saved source, onto the fresh table.
@@ -1794,7 +2323,7 @@ impl CompilerSession {
 
         // The outcome is this module's own terminal state, never another
         // module still standing `Failed` (`repl-lifecycle.md` §1.3 Outcome).
-        let completion = match self
+        match self
             .shared
             .scheduler
             .wait_module_inmem_complete_blocking(module_path)
@@ -1807,31 +2336,61 @@ impl CompilerSession {
                 })
             }
             Ok(()) => Ok(()),
-        };
-        // The refusal record belongs to the generation registered above, so it
-        // is read only after that generation's own outcome.
-        if completion.is_err()
-            && let Some(refusal) = self.shared.scheduler.structural_type_refusal(module_path)
-        {
-            self.module_locks.insert(
-                module_path.clone(),
-                ModuleLock::RestartRequired(refusal.type_name),
-            );
         }
-        completion
+    }
+
+    /// Read and parse `module_path`'s saved file. The fresh typecheck product
+    /// keeps the backing path regeneration writes to and, for introspection,
+    /// the re-read text that form processing slices verbatim records from
+    /// (`design/int/repl-lifecycle.md` §1.2).
+    fn read_saved_source(
+        &self,
+        module_path: &ModuleFullPath,
+        file_path: &Path,
+    ) -> Result<(String, Arc<[Sexp]>), CranelispError> {
+        let read = std::fs::read_to_string(file_path);
+        if let Some(state) = crate::watch::FileState::of_read(&read) {
+            self.shared.record_source(file_path, state);
+        }
+        let source = read.map_err(|e| CranelispError::ModuleError {
+            message: format!("cannot read {}: {e}", file_path.display()),
+            location: ErrorLocation::from_span_file(Span::new(0, 0), Some(file_path.to_path_buf())),
+        })?;
+        self.shared.typecheck_products.insert(
+            module_path.clone(),
+            crate::session_v4::TypecheckProduct {
+                file_path: Some(file_path.to_path_buf()),
+                source_text: self.shared.introspection.is_some().then(|| source.clone()),
+                unresolved_dispatch: Vec::new(),
+            },
+        );
+        let sexps = Arc::from(cranelisp_frontend::parse(&source)?);
+        Ok((source, sexps))
     }
 
     /// The whole-file rebuild's prologue (`design/int/session-transaction.md`
-    /// §7.3.1): replace the module's table with a fresh one that keeps its
-    /// GOT, pool every compiled owner the displaced table holds, hold the
-    /// module's established reference (§7.3.2) — the one already held, else
-    /// the displaced table — and only then reset the session state keyed by
-    /// the module from the displaced table, so the reset's early return can
-    /// neither drop an unpooled owner nor lose the reference.
+    /// §7.3.1): displace the module's table, hold its established reference
+    /// (§7.3.2) — the one already held, else the displaced table — and only
+    /// then reset the session state keyed by the module from the displaced
+    /// table, so the reset's early return can neither drop an unpooled owner
+    /// nor lose the reference.
     fn install_fresh_generation(
         &mut self,
         module: &ModuleFullPath,
     ) -> Result<Arc<SessionSymbolTable>, CranelispError> {
+        let displaced = self.displace_table(module);
+        let reference = Arc::clone(
+            self.reload_references
+                .entry(module.clone())
+                .or_insert_with(|| Arc::clone(&displaced)),
+        );
+        self.reset_module_session_state(module, &displaced)?;
+        Ok(reference)
+    }
+
+    /// Replace `module`'s table with a fresh one that keeps its GOT, and pool
+    /// every compiled owner the displaced table holds before it can drop.
+    fn displace_table(&self, module: &ModuleFullPath) -> Arc<SessionSymbolTable> {
         let displaced = {
             let mut live = self
                 .shared
@@ -1843,13 +2402,7 @@ impl CompilerSession {
             Arc::new(std::mem::replace(&mut *live, fresh))
         };
         retain_compiled_owners(&self.shared.retained_code, module, &displaced);
-        let reference = Arc::clone(
-            self.reload_references
-                .entry(module.clone())
-                .or_insert_with(|| Arc::clone(&displaced)),
-        );
-        self.reset_module_session_state(module, &displaced)?;
-        Ok(reference)
+        displaced
     }
 
     /// Reset the session state the displaced generation of `module`
@@ -1936,16 +2489,16 @@ impl CompilerSession {
         // this (entry) module's live `SymbolTable.module_preamble`.
         crate::save::apply_module_preamble(&self.shared.symbol_tables, &module, source);
 
-        // S102 CS-D2 (§15.4.7 authorship fidelity): record the module's source
-        // text for verbatim introspection capture — REPL only, mirroring the
-        // dep-load path (`dependency.rs::register_dep` step 4). Without it the
-        // ENTRY module's load-time introspection records fall back to
-        // `pretty_print` (which desugars reader shorthand), so adopting a
-        // hand-authored backing file destroyed the user's authored text on the
-        // first regenerating turn (/port D2). Every consumer of the recorded
-        // text consistency-gates its span slice (`verbatim_source_slice`), so
-        // later REPL-turn spans against this load-time text can never
-        // mis-record.
+        // S102 CS-D2 (§15.4 rule 1, §15.1 authorship fidelity): record the
+        // module's source text for verbatim introspection capture — REPL only,
+        // mirroring the dep-load path (`dependency.rs::register_dep` step 4).
+        // Without it the ENTRY module's load-time introspection records fall
+        // back to `pretty_print` (which desugars reader shorthand), so adopting
+        // a hand-authored backing file destroyed the user's authored text on
+        // the first regenerating turn (/port D2). Every consumer of the
+        // recorded text consistency-gates its span slice
+        // (`verbatim_source_slice`), so later REPL-turn spans against this
+        // load-time text can never mis-record.
         if self.shared.introspection.is_some() && !source.is_empty() {
             crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, &module);
             if let Some(mut tp) = self.shared.typecheck_products.get_mut(&module) {
@@ -2320,190 +2873,100 @@ impl CompilerSession {
         crate::session_setup::scaffold_project_config(&self.shared.project_root)
     }
 
-    // -----------------------------------------------------------------------
-    // Degraded startup load (S102 CS-0489; repl/spec/15-session-persistence.md §15.2.3 restart floor;
-    // design/int/s102-defect-wave.md §5.2)
-    // -----------------------------------------------------------------------
+    /// Recover from a failed REPL startup load (`design/int/repl-lifecycle.md`
+    /// §1.3.1, Startup; `repl/spec/15-session-persistence.md` §15.2.3). The
+    /// prompt is reached; the session is locked while any module stands
+    /// failed, and only a save that compiles releases it. `error` is the
+    /// startup failure.
+    ///
+    /// 1. An entry the scheduler does not track failed before it registered,
+    ///    because its file does not parse: it stands failed with `error`.
+    /// 2. The failed load's record runs over every module the start left
+    ///    `Failed`: each stands failed or waits, and never-compiled tables
+    ///    other than the entry's are purged.
+    /// 3. An entry that did not compile gets a fresh table that keeps its GOT,
+    ///    with no definition and no established reference, and is
+    ///    re-registered empty as an increment, so it is terminal and
+    ///    eval-owned as on a healthy start.
+    ///
+    /// The returned report holds one notification per module standing failed,
+    /// in the failed set's order.
+    pub fn recover_startup_failure(
+        &mut self,
+        module_name: &str,
+        error: &CranelispError,
+    ) -> StartupRecovery {
+        let entry = ModuleFullPath::from(module_name);
+        let mut errors: HashMap<ModuleFullPath, String> = HashMap::new();
+        let entry_registered = self.shared.scheduler.is_registered(&entry);
+        if entry_registered {
+            // The start reports its first failed module; the entry may still be
+            // settling, and its outcome decides whether it compiled.
+            let _ = self
+                .shared
+                .scheduler
+                .wait_module_inmem_complete_blocking(&entry);
+        } else {
+            let file = self.source_file_of(&entry);
+            self.stand_failed(&entry, &file, FailureCause::FailedSource);
+            errors.insert(entry.clone(), error.to_string());
+        }
 
-    /// Recover from an entry-module startup failure in REPL mode: the §15.2.3
-    /// floor — "the restart MUST reach a prompt". Batch-cluster atomicity is
-    /// what turns one broken defn into a wholesale lockout; the REPL's own
-    /// per-form semantics are the natural degraded mode.
-    ///
-    /// 1. Reset the failed scheduler state, locking each other module the
-    ///    failed start left `Failed` with failed source, and re-register the
-    ///    entry EMPTY as an increment, reaching the ordinary fresh-REPL
-    ///    scheduler state (terminal pool; the eval thread becomes the sole
-    ///    orchestrator exactly as on a healthy start).
-    /// 2. Re-read the backing source (disk-read-only — the loader itself
-    ///    never regenerates) and drive it FORM-BY-FORM through the ordinary
-    ///    eval path, output suppressed. Green forms commit; failing forms
-    ///    are retained as [`FailedForm`]s (symbol + error + verbatim text).
-    /// 3. Report: `[errors: <file>]` + one indented line per failed form
-    ///    naming the symbol and carrying the underlying error (§5.1/§14.3
-    ///    format family); the caller prints it before the banner.
-    /// 4. While the failed set is non-empty the entry sits in
-    ///    `error_modules` (§14.4: expressions refused, definitions accepted
-    ///    as the repair — the `process_commands` carve-out).
-    ///
-    /// A backing source that does not parse yields no failed forms: it is
-    /// reported with its parse error and the entry is locked with failed
-    /// source, so no definition turn or regeneration writes the file until a
-    /// reload of it succeeds.
-    ///
-    /// Startup-print ruling (S102 W5, noted for /design): the degraded
-    /// re-drive against a warm (cache-preloaded) table classifies
-    /// Def-over-Def outcomes and would print `stale:`/cascade sections —
-    /// suppressed here (`pending_cascade_reports` drained), because startup
-    /// is a LOAD, not a user redefinition turn.
-    ///
-    /// Returns `Some(report)` when forms failed; `None` when the degraded
-    /// load came up fully green (the failure was transient — e.g. a
-    /// batch-order artifact) or no backing source could be read (the session
-    /// proceeds as an empty REPL).
-    pub fn recover_startup_failure(&mut self, module_name: &str) -> Option<String> {
-        let module = ModuleFullPath::from(module_name);
+        let mut reset = self.shared.scheduler.reset_failed_modules(&BTreeSet::new());
+        errors.extend(
+            self.record_failed_load(&mut reset)
+                .into_iter()
+                .map(|(module, error)| (module, error.to_string())),
+        );
+        if let Err(purge_error) = self.purge_never_compiled(&reset, Some(&entry)) {
+            let file = self.source_file_of(&entry);
+            self.stand_failed(&entry, &file, FailureCause::FailedSource);
+            errors.insert(entry.clone(), purge_error.to_string());
+        }
 
-        // 1. Reset failed scheduler state by the eval path's one rule
-        //    (`repl-lifecycle.md` §1.3.1, Startup reset): capture each reset
-        //    module's failure dependencies (§1.2.1), lock each failed dependency
-        //    (only the entry has the §15.2.3 repair), then purge every
-        //    never-compiled table but the entry's, which is re-seeded and
-        //    re-driven below. The degraded re-drive then loads each dependency
-        //    it references from source.
-        let reset = self.shared.scheduler.reset_all_failed_modules();
-        for failed in &reset {
-            if !failed.failure_dependencies.is_empty() {
-                self.failure_dependencies
-                    .entry(failed.module.clone())
-                    .or_default()
-                    .extend(failed.failure_dependencies.iter().cloned());
-            }
+        let entry_compiled = entry_registered && !reset.iter().any(|m| m.module == entry);
+        if !entry_compiled && let Err(prologue_error) = self.restart_entry_empty(&entry) {
+            let file = self.source_file_of(&entry);
+            self.stand_failed(&entry, &file, FailureCause::FailedSource);
+            errors.insert(entry.clone(), prologue_error.to_string());
         }
-        for failed in reset.iter().filter(|failed| failed.module != module) {
-            self.lock_failed_source(&failed.module);
+
+        let report: Vec<String> = self
+            .failed_modules
+            .iter()
+            .filter_map(|(module, failed)| {
+                errors
+                    .get(module)
+                    .map(|error| failure_notice(&failed.file, module, error))
+            })
+            .collect();
+        StartupRecovery {
+            report: (!report.is_empty()).then(|| report.join("\n")),
+            entry_compiled,
         }
-        if let Err(error) = self.purge_never_compiled(&reset, Some(&module)) {
-            self.lock_failed_source(&module);
-            return Some(format!(
-                "[errors: {module_name}]\n  {}",
-                first_line(&error.to_string())
-            ));
-        }
-        cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-        let empty: std::sync::Arc<[Sexp]> = std::sync::Arc::from(Vec::<Sexp>::new());
+    }
+
+    /// Give an entry that did not compile at startup a fresh table that keeps
+    /// its GOT, dropping every definition — a slot assignment or scheme that
+    /// registration preloaded from the cache included — and re-register it
+    /// empty as an increment. The entry never compiled, so it holds no
+    /// established reference to compare a later rebuild against.
+    fn restart_entry_empty(&mut self, entry: &ModuleFullPath) -> Result<(), CranelispError> {
+        let displaced = self.displace_table(entry);
+        self.reload_references.remove(entry);
+        self.reset_module_session_state(entry, &displaced)?;
+        let empty: Arc<[Sexp]> = Arc::from(Vec::<Sexp>::new());
         self.shared
             .scheduler
-            .register_module(module.clone(), empty, false);
-        let _ = self.shared.scheduler.wait_inmem_complete_blocking();
-
-        // 2. Disk-read-only re-read + degraded form-by-form load.
-        // S102 W5R M-4: a failed startup must not be zero-diagnostic — the
-        // resolve/read failure is eprinted (one line) before the session
-        // proceeds as an empty REPL.
-        let lib_dirs = self.lib_dirs();
-        let path = match crate::pipeline::resolve_module_file(
-            &module,
-            &self.shared.project_root,
-            &lib_dirs,
-        ) {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "Warning: startup recovery: no backing source file found for \
-                     module '{module_name}' — starting with an empty REPL"
-                );
-                return None;
-            }
-        };
-        let source = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "Warning: startup recovery: cannot read {}: {e} — starting \
-                     with an empty REPL",
-                    path.display()
-                );
-                return None;
-            }
-        };
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(module_name)
-            .to_string();
-        // An unparsable file has no definition source to retain as failed
-        // forms; the lock keeps it instead (`repl-lifecycle.md` §1.3.1).
-        let sexps = match cranelisp_frontend::parse(&source) {
-            Ok(sexps) => sexps,
-            Err(e) => {
-                self.lock_failed_source(&module);
-                return Some(format!(
-                    "[errors: {file_name}]\n  {}",
-                    first_line(&e.to_string())
-                ));
-            }
-        };
-        let failed = self.degraded_form_load(&source, &sexps);
-
-        // Startup-print suppression (ruling above).
-        self.pending_cascade_reports.clear();
-
-        if failed.is_empty() {
-            self.failed_forms.remove(&module);
-            self.error_modules.remove(&module);
-            return None;
-        }
-        let report = render_startup_error_report(&file_name, &failed);
-        self.error_modules.insert(module.clone());
-        self.failed_forms.insert(module, failed);
-        Some(report)
-    }
-
-    /// Drive the parsed `sexps` of `source` form-by-form through the ordinary
-    /// eval path (each toplevel form its own cluster, output suppressed),
-    /// collecting the forms that fail.
-    fn degraded_form_load(&mut self, source: &str, sexps: &[Sexp]) -> Vec<FailedForm> {
-        let mut failed = Vec::new();
-        for sexp in sexps {
-            match self.process_single_form(sexp) {
-                Ok(_) => {} // green form committed; output suppressed
-                Err(e) => {
-                    let span = sexp.span();
-                    let text = source
-                        .get(span.start as usize..span.end as usize)
-                        .map(str::to_string)
-                        .unwrap_or_else(|| crate::pretty::pretty_print_plain(sexp));
-                    failed.push(FailedForm {
-                        symbol: defined_symbol_of_form(sexp),
-                        error: first_line(&e.to_string()),
-                        text,
-                    });
-                }
-            }
-        }
-        failed
-    }
-
-    /// Remove a genuinely (re)defined symbol from its module's failed-form
-    /// set (§15.2.3: a successful definition turn IS the repair). When the set
-    /// empties, the module leaves `error_modules` — the §14.4 gate reopens
-    /// and the next regen writes a green backing file. Bare-symbol lookups
-    /// and expression turns never clear anything.
-    pub(crate) fn clear_repaired_failed_form(&mut self, result: &super::EvalResult) {
-        let super::EvalResult::Definitions { symbols, .. } = result else {
-            return;
-        };
-        for symbol in symbols {
-            let Some(list) = self.failed_forms.get_mut(&symbol.module) else {
-                continue;
-            };
-            list.retain(|f| f.symbol.as_ref() != Some(&symbol.symbol));
-            if list.is_empty() {
-                self.failed_forms.remove(&symbol.module);
-                self.error_modules.remove(&symbol.module);
-            }
-        }
+            .register_module(entry.clone(), empty, false);
+        let _ = self
+            .shared
+            .scheduler
+            .wait_module_inmem_complete_blocking(entry);
+        // A worker marks the module in-memory complete before its pass
+        // reaches the terminal pool that makes the entry eval-owned.
+        self.shared.scheduler.wait_module_typecheck_settled(entry);
+        Ok(())
     }
 
     /// §3.1: Register entry module by name. Session resolves the source
@@ -2524,13 +2987,28 @@ impl CompilerSession {
             crate::pipeline::resolve_module_file(&module, &self.shared.project_root, &lib_dirs);
         let (source, entry_path) = match file_path {
             Some(path) => {
-                let src = std::fs::read_to_string(&path).unwrap_or_default();
                 // Record the resolved file in every mode, as dependency loads
                 // do; `run_tests` reads it (`design/int/test-runner.md` §4.1).
+                // It is mapped for the watcher before the read, so a save can
+                // release an entry that cannot be read.
                 crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, &module);
                 if let Some(mut tp) = self.shared.typecheck_products.get_mut(&module) {
                     tp.file_path = Some(path.clone());
                 }
+                self.map_entry_file(&module, &path);
+                // A read failure, invalid UTF-8 included, is never an empty
+                // source (`design/int/int.md` §6.1.1, Unreadable entry).
+                let read = std::fs::read_to_string(&path);
+                if let Some(state) = crate::watch::FileState::of_read(&read) {
+                    self.shared.record_source(&path, state);
+                }
+                let src = read.map_err(|e| CranelispError::ModuleError {
+                    message: format!(
+                        "cannot read entry module source file `{}`: {e}",
+                        path.display()
+                    ),
+                    location: ErrorLocation::from_span_file(Span::new(0, 0), Some(path.clone())),
+                })?;
                 (src, path)
             }
             None if self.shared.run_mode.is_repl() => {
@@ -2552,13 +3030,7 @@ impl CompilerSession {
 
         // Register the entry module's own file in file_to_module so the
         // file watcher can detect changes to it (not just its dependencies).
-        if let Ok(canonical) = entry_path.canonicalize() {
-            self.shared
-                .file_to_module
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(canonical, module.clone());
-        }
+        self.map_entry_file(&module, &entry_path);
 
         // S101 persistence pins (ii)–(iv) (spine §5.6; design/int/
         // session-transaction.md §8): when the entry module's persisted
@@ -2575,6 +3047,17 @@ impl CompilerSession {
         self.preload_entry_slot_assignments(&module, &source);
 
         self.register_module_with_source(module_name, &source, &entry_path)
+    }
+
+    /// Map the entry's file to it for the watcher, when the file exists.
+    fn map_entry_file(&self, module: &ModuleFullPath, path: &Path) {
+        if let Ok(canonical) = path.canonicalize() {
+            self.shared
+                .file_to_module
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(canonical, module.clone());
+        }
     }
 
     /// Pre-seed the entry module's live table from its persisted `.meta.json`
@@ -2958,80 +3441,6 @@ impl Drop for CompilerSession {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Degraded-startup pure seams (S102 CS-0489; unit-tested below — the
-// lifecycle decision paths FIXME 0496 item 3 asks for)
-// ---------------------------------------------------------------------------
-
-/// The symbol a top-level form DEFINES, when it is a defining special form
-/// (`defn`/`defn-`/`defmacro`/`defmacro-`/`deftype`/`deftrait`). Structural
-/// forms (`import`/`export`/`mod`/`platform`), expressions, and malformed
-/// defining forms yield `None`. The degraded loader uses this to key
-/// [`FailedForm`]s so the load error can NAME the broken symbol (§18.8) and
-/// a later definition turn can repair it.
-pub(crate) fn defined_symbol_of_form(sexp: &Sexp) -> Option<Symbol> {
-    if let Sexp::List(items, _) = sexp
-        && items.len() >= 2
-        && let Sexp::Symbol(head, _) = &items[0]
-        && matches!(
-            head.as_str(),
-            "defn" | "defn-" | "defmacro" | "defmacro-" | "deftype" | "deftrait"
-        )
-        && let Sexp::Symbol(name, _) = &items[1]
-    {
-        return Some(Symbol::from(name.as_str()));
-    }
-    None
-}
-
-/// Render the degraded-load startup report: the §14.3/§14.4 `[errors: <file>]`
-/// header + one indented line per failed form, naming the symbol (§18.8's
-/// naming MUST) — or, for a symbol-less form, its leading text — and carrying
-/// the underlying error.
-pub(crate) fn render_startup_error_report(file_name: &str, failed: &[FailedForm]) -> String {
-    let mut out = format!("[errors: {file_name}]");
-    for f in failed {
-        let label = match &f.symbol {
-            Some(sym) => sym.to_string(),
-            None => f
-                .text
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(40)
-                .collect(),
-        };
-        out.push_str(&format!("\n  {} — {}", label, f.error));
-    }
-    out
-}
-
-/// Append the retained failed-form verbatim texts to a regenerated module
-/// source (§15.2.3 no-silent-drop: the failed forms never entered the live
-/// table, so a regen built from the table alone would drop them from the
-/// user's file). Re-emitted until each form's symbol is repaired or the user
-/// removes it externally.
-pub(crate) fn append_failed_forms(generated: &str, failed: &[FailedForm]) -> String {
-    if failed.is_empty() {
-        return generated.to_string();
-    }
-    let mut out = generated.trim_end().to_string();
-    for f in failed {
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(f.text.trim_end());
-    }
-    out.push('\n');
-    out
-}
-
-/// First line of an error rendering (report display).
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or(s).trim().to_string()
-}
-
 pub(crate) fn populate_ring0_got_slots(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
 ) {
@@ -3218,179 +3627,11 @@ mod link_output_path_tests {
 }
 
 #[cfg(test)]
-mod degraded_startup_tests {
-    use super::*;
-
-    fn p(src: &str) -> Sexp {
-        cranelisp_frontend::parse(src).unwrap().remove(0)
-    }
-
-    fn failed(symbol: Option<&str>, error: &str, text: &str) -> FailedForm {
-        FailedForm {
-            symbol: symbol.map(Symbol::from),
-            error: error.to_string(),
-            text: text.to_string(),
-        }
-    }
-
-    // spec: repl/spec.md §18.8; 07-traits §§7.1–7.1.1 — the load error names
-    // the broken symbol; the fixture uses the normative trait-method syntax;
-    // degraded loader keys failed forms by the DEFINING form's name. Matrix A
-    // "backing BROKEN" row, classification cells.
-    #[test]
-    fn defined_symbol_of_form_defining_heads_yield_symbol() {
-        assert_eq!(
-            defined_symbol_of_form(&p("(defn k [:Int y] (f y))")),
-            Some("k".into())
-        );
-        assert_eq!(
-            defined_symbol_of_form(&p("(defmacro m [e] e)")),
-            Some("m".into())
-        );
-        assert_eq!(
-            defined_symbol_of_form(&p("(deftype P [:Int x])")),
-            Some("P".into())
-        );
-        assert_eq!(
-            defined_symbol_of_form(&p("(deftrait Show (show [a] String))")),
-            Some("Show".into())
-        );
-    }
-
-    // Negative cells: structural forms define no repairable symbol;
-    // expressions and malformed defining forms yield None.
-    // spec: repl/spec.md §18.8
-    #[test]
-    fn defined_symbol_of_form_neg_structural_expression_malformed() {
-        assert_eq!(defined_symbol_of_form(&p("(import [m [mf]])")), None);
-        assert_eq!(defined_symbol_of_form(&p("(mod child)")), None);
-        assert_eq!(defined_symbol_of_form(&p("(k 1)")), None);
-        assert_eq!(defined_symbol_of_form(&p("42")), None);
-        // Defining head with a non-symbol name slot (the D1 poison shape).
-        assert_eq!(defined_symbol_of_form(&p("(defn (weird) [] 1)")), None);
-    }
-
-    // spec: repl/spec.md §18.8 + §14.3 format family — the startup report is
-    // `[errors: <file>]` + one indented line per failed form naming the
-    // symbol and carrying the underlying error; a symbol-less form is
-    // identified by its leading text.
-    #[test]
-    fn render_startup_error_report_names_symbols_and_errors() {
-        let report = render_startup_error_report(
-            "user.cl",
-            &[
-                failed(
-                    Some("k"),
-                    "type error at 49..60: expected Int",
-                    "(defn k [:Int y] (f y))",
-                ),
-                failed(None, "macro error: boom", "(mystery-form 1)"),
-            ],
-        );
-        assert_eq!(
-            report,
-            "[errors: user.cl]\n  k — type error at 49..60: expected Int\n  (mystery-form 1) — macro error: boom"
-        );
-    }
-
-    // spec: repl/spec/15-session-persistence.md §15.2.3 — regen MUST NOT silently drop a broken
-    // definition: retained failed-form texts are re-emitted VERBATIM after
-    // the generated source; an empty failed set leaves the source untouched.
-    #[test]
-    fn append_failed_forms_reemits_verbatim_and_is_noop_when_empty() {
-        let generated = "(defn f [:String s] (str-len s))\n";
-        let out = append_failed_forms(
-            generated,
-            &[failed(
-                Some("k"),
-                "type error",
-                "(defn k [:Int y]\n  (f y))",
-            )],
-        );
-        assert_eq!(
-            out, "(defn f [:String s] (str-len s))\n\n(defn k [:Int y]\n  (f y))\n",
-            "authored text is the authority — appended verbatim, own block"
-        );
-        assert_eq!(
-            append_failed_forms(generated, &[]),
-            generated,
-            "no failed forms — regen output unchanged"
-        );
-        // An empty generated source still carries the failed forms (a module
-        // whose every form failed must not regenerate to an empty file).
-        assert_eq!(
-            append_failed_forms("", &[failed(None, "parse error", "(broken (")]),
-            "(broken (\n"
-        );
-    }
-
-    // spec: repl/spec.md §18.8 (FIXME 0496 — src/ unit-tier drain; the T1
-    // full-cure CS-3 regen-fidelity adjacency). The PRIVATE defining heads
-    // (`defn-`/`defmacro-`) are repairable/regenerable symbols exactly like
-    // their public forms — a T1 reload failure that retains a private def as a
-    // FailedForm must key it by name so regen re-emits it and `/info` names it.
-    #[test]
-    fn defined_symbol_of_form_private_defining_heads_yield_symbol() {
-        assert_eq!(
-            defined_symbol_of_form(&p("(defn- helper [x] x)")),
-            Some("helper".into())
-        );
-        assert_eq!(
-            defined_symbol_of_form(&p("(defmacro- m- [e] e)")),
-            Some("m-".into())
-        );
-    }
-
-    // spec: repl/spec.md §18.8 (FIXME 0496) — the CS-3 error-blocked floor may
-    // retain MORE THAN ONE failed form (e.g. a caller AND a transitively
-    // ill-typed sibling). Each rides its own verbatim block, in order, after
-    // the generated source — never merged, never dropped, never reordered.
-    #[test]
-    fn append_failed_forms_multiple_forms_each_own_block_in_order() {
-        let out = append_failed_forms(
-            "(defn f ([:Int x] x) ([:String s] (str-len s)))\n",
-            &[
-                failed(Some("g"), "ambiguous call to 'f'", "(defn g [y] (f y))"),
-                failed(Some("h"), "ambiguous call to 'f'", "(defn h [z] (f z))"),
-            ],
-        );
-        assert_eq!(
-            out,
-            "(defn f ([:Int x] x) ([:String s] (str-len s)))\n\n\
-             (defn g [y] (f y))\n\n(defn h [z] (f z))\n",
-            "each retained failed form is a verbatim block, in retention order"
-        );
-    }
-
-    // spec: repl/spec.md §18.5 (FIXME 0496) — `first_line` reduces a
-    // multi-line error rendering to its §18.3 one-line reason (leading line,
-    // trimmed); a single-line or empty input passes through.
-    #[test]
-    fn first_line_reduces_to_leading_trimmed_line() {
-        assert_eq!(
-            first_line("  type error at 0..4: boom  \n  detail\n more"),
-            "type error at 0..4: boom"
-        );
-        assert_eq!(first_line("single line"), "single line");
-        assert_eq!(first_line(""), "");
-    }
-}
-
-#[cfg(test)]
 mod restore_notice_tests {
-    use super::FailedForm;
     use super::{is_persisted_definition_form, restored_definition_count};
 
     fn parse_one(src: &str) -> cranelisp_types::Sexp {
         cranelisp_frontend::parse(src).unwrap().remove(0)
-    }
-
-    fn failed_form(text: &str) -> FailedForm {
-        FailedForm {
-            symbol: None,
-            error: "load error".to_string(),
-            text: text.to_string(),
-        }
     }
 
     // FIXME 0674 — the startup restore notice counts §15.7 persisted DEFINITION
@@ -3432,55 +3673,22 @@ mod restore_notice_tests {
         }
     }
 
-    // FIXME 0707 — the count is taken from the restore RECORD: a backing file
-    // holding K succeeded + M failed persisted-definition forms (the degraded
-    // startup re-emits the M failed forms into the file, so a bare re-parse sees
-    // K+M) yields `K`, never `K+M`. Fail-on-revert: dropping the failed-form
-    // subtraction makes this return `Some(3)`.
-    // spec: repl/spec.md §15.2.2 — restored-definition count from the record.
+    // spec: repl/spec/15-session-persistence.md §15.2.2 — the notice counts
+    // the file's persisted definitions; it is emitted only when the entry
+    // compiled, so each of them was restored.
     #[test]
-    fn restored_count_subtracts_failed_persisted_forms() {
-        // 2 green defs + 1 failed def, all present in the (re-emitted) file.
-        let source = "(defn f [] 1)\n(defn g [] 2)\n(defn h [] (bad))\n";
-        let failed = [failed_form("(defn h [] (bad))")];
-        assert_eq!(
-            restored_definition_count(source, &failed),
-            Some(2),
-            "count reflects restored defs (K), not file forms (K+M)",
-        );
+    fn restored_count_counts_every_persisted_definition() {
+        let source = "(import [primitives [Int]])\n(defn f [] 1)\n(def x 1)\n";
+        assert_eq!(restored_definition_count(source), Some(2));
     }
 
-    // No failed forms → all persisted defs count (the ordinary green path).
-    #[test]
-    fn restored_count_all_green_counts_all() {
-        let source = "(defn f [] 1)\n(def x 1)\n";
-        assert_eq!(restored_definition_count(source, &[]), Some(2));
-    }
-
-    // Every persisted def failed → nothing restored → suppress (None), not 0.
-    #[test]
-    fn restored_count_all_failed_suppresses() {
-        let source = "(defn f [] (bad))\n";
-        let failed = [failed_form("(defn f [] (bad))")];
-        assert_eq!(restored_definition_count(source, &failed), None);
-    }
-
-    // A failed form that is NOT a persisted definition (an expression/import) is
-    // not subtracted — it never contributed to the count.
-    #[test]
-    fn restored_count_ignores_non_definition_failed_form() {
-        let source = "(defn f [] 1)\n";
-        let failed = [failed_form("(+ 1 2)")];
-        assert_eq!(restored_definition_count(source, &failed), Some(1));
-    }
-
-    // Empty / imports-only backing file suppresses (None), unchanged contract.
+    // Empty / imports-only backing file suppresses (None).
     #[test]
     fn restored_count_empty_and_imports_only_suppress() {
-        assert_eq!(restored_definition_count("", &[]), None);
-        assert_eq!(restored_definition_count("   \n", &[]), None);
+        assert_eq!(restored_definition_count(""), None);
+        assert_eq!(restored_definition_count("   \n"), None);
         assert_eq!(
-            restored_definition_count("(import [primitives [Int]])\n", &[]),
+            restored_definition_count("(import [primitives [Int]])\n"),
             None
         );
     }
@@ -3745,8 +3953,11 @@ mod watcher_reload_plan_tests {
         ] {
             std::fs::write(root.path().join(name), text).expect("write chain file");
         }
-        assert!(session.register_module("user").is_err(), "precondition");
-        assert!(session.recover_startup_failure("user").is_some());
+        let error = session
+            .register_module("user")
+            .expect_err("precondition: the start fails");
+        let recovery = session.recover_startup_failure("user", &error);
+        assert!(recovery.report().is_some());
         let base = root
             .path()
             .join("base.cl")
@@ -3793,10 +4004,11 @@ mod watcher_reload_plan_tests {
     }
 
     // spec: design/int/repl-lifecycle.md §1.2 (Recurrence stop) — the stop
-    // fails and locks every module of a recurring set and never reports it
-    // rebuilt; a module outside the set keeps its outcome.
+    // fails every module of a recurring set, each joining the failed set with
+    // failed source, and never reports it rebuilt; a module outside the set
+    // keeps its outcome.
     #[test]
-    fn recurrence_stop_fails_and_locks_the_recurring_set() {
+    fn recurrence_stop_fails_the_recurring_set() {
         let (mut session, _root) = plan_session();
         let mut outcomes = Vec::new();
         for module in ["a", "b", "c"] {
@@ -3804,23 +4016,140 @@ mod watcher_reload_plan_tests {
                 &mut outcomes,
                 &ModuleFullPath::from(module),
                 Path::new("x.cl"),
-                Ok(()),
+                ReloadStatus::Rebuilt,
             );
         }
         let recurring = BTreeSet::from([ModuleFullPath::from("a"), ModuleFullPath::from("b")]);
 
-        session.stop_unsettled_reload(&recurring, &mut outcomes);
+        session.stop_unsettled_reload(&recurring, &mut outcomes, Vec::new());
 
         for outcome in &outcomes {
             let in_set = recurring.contains(&outcome.module);
-            assert_eq!(outcome.result.is_err(), in_set, "{}", outcome.notice());
             assert_eq!(
-                session.module_locks.get(&outcome.module),
-                in_set.then_some(&ModuleLock::FailedSource)
+                matches!(outcome.status, ReloadStatus::Failed(_)),
+                in_set,
+                "{:?}",
+                outcome.notice()
             );
-            assert_eq!(session.error_modules.contains(&outcome.module), in_set);
+            assert_eq!(
+                session
+                    .failed_modules
+                    .get(&outcome.module)
+                    .map(|failed| &failed.cause),
+                in_set.then_some(&FailureCause::FailedSource)
+            );
         }
         session.shutdown();
+    }
+
+    /// A member resumed after a deferral whose attempt failed with `message`,
+    /// on a cycle when `cycle`.
+    fn resumed_attempt(module: &str, message: &str, cycle: bool) -> DeferredAttempt {
+        DeferredAttempt {
+            module: ModuleFullPath::from(module),
+            file: PathBuf::from(format!("{module}.cl")),
+            deferral: Deferral {
+                refusing: ModuleFullPath::from("x"),
+                error: Box::new(CranelispError::ModuleError {
+                    message: message.to_string(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                }),
+                cause: FailureCause::FailedSource,
+                cycle,
+            },
+        }
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 (Refused by a later member),
+    // §1.3.2 (Recurrence stop) — when the stop fires, a resumed member whose
+    // attempt failed on a cycle keeps that error; one refused on a non-cycle
+    // error by a since-rebuilt module reports that the order did not settle.
+    #[test]
+    fn recurrence_stop_keeps_only_a_cycle_failure_of_a_resumed_member() {
+        let (mut session, _root) = plan_session();
+        let mut outcomes = Vec::new();
+        for module in ["p", "q"] {
+            record_outcome(
+                &mut outcomes,
+                &ModuleFullPath::from(module),
+                Path::new("x.cl"),
+                ReloadStatus::Waiting,
+            );
+        }
+        let recurring = BTreeSet::from([ModuleFullPath::from("p"), ModuleFullPath::from("q")]);
+        let resumed = vec![
+            resumed_attempt("p", "circular dependency detected: x -> p -> x", true),
+            resumed_attempt("q", "stale refusal by x", false),
+        ];
+
+        session.stop_unsettled_reload(&recurring, &mut outcomes, resumed);
+
+        let notice = |module: &str| {
+            outcomes
+                .iter()
+                .find(|outcome| outcome.module.as_ref() == module)
+                .and_then(|outcome| outcome.notice())
+                .unwrap_or_default()
+        };
+        assert!(notice("p").contains("x -> p -> x"), "{}", notice("p"));
+        assert!(notice("q").contains("did not settle"), "{}", notice("q"));
+        assert!(!notice("q").contains("stale refusal"), "{}", notice("q"));
+        session.shutdown();
+    }
+
+    fn chain_of(module: &str, refusals: &[(&str, &str)], failed: &[&str]) -> RefusalChain {
+        let refusals: HashMap<ModuleFullPath, ModuleFullPath> = refusals
+            .iter()
+            .map(|(refused, by)| (ModuleFullPath::from(*refused), ModuleFullPath::from(*by)))
+            .collect();
+        refusal_chain(
+            &ModuleFullPath::from(module),
+            |refused| refusals.get(refused).cloned(),
+            |dependency| failed.contains(&dependency.as_ref()),
+        )
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.3.1 (A refusal chain must end at a
+    // failure), §1.3.2 (Refusal chain) — a module refused through a chain that
+    // ends at a module standing failed waits, directly or transitively; two
+    // modules refused only by each other, with no module standing failed, make
+    // a cycle, so the refused module fails with the circular-dependency
+    // diagnostic and the session stays locked; a chain stopping at a module
+    // that neither stands failed nor was refused does not wait.
+    #[test]
+    fn refusal_chain_waits_only_when_it_ends_at_a_failure() {
+        assert_eq!(chain_of("a", &[], &[]), RefusalChain::Unrefused);
+        assert_eq!(
+            chain_of("a", &[("a", "math")], &["math"]),
+            RefusalChain::EndsAtFailure
+        );
+        assert_eq!(
+            chain_of("a", &[("a", "b"), ("b", "math")], &["math"]),
+            RefusalChain::EndsAtFailure
+        );
+        assert_eq!(
+            chain_of("a", &[("a", "b"), ("b", "a")], &[]),
+            RefusalChain::Cycle(vec![
+                ModuleFullPath::from("a"),
+                ModuleFullPath::from("b"),
+                ModuleFullPath::from("a"),
+            ])
+        );
+        let diagnostic = cycle_error(vec![
+            ModuleFullPath::from("a"),
+            ModuleFullPath::from("b"),
+            ModuleFullPath::from("a"),
+        ])
+        .to_string();
+        assert!(
+            diagnostic.contains("circular dependency detected: a -> b -> a"),
+            "{diagnostic}"
+        );
+        assert_eq!(chain_of("a", &[("a", "fresh")], &[]), RefusalChain::Broken);
+        assert_eq!(
+            chain_of("a", &[("a", "b"), ("b", "c"), ("c", "b")], &[]),
+            RefusalChain::Broken
+        );
     }
 }
 
@@ -3906,6 +4235,33 @@ mod entry_registration_tests {
 
     // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2 is
     // about absence: an existing empty entry file registers in a batch mode.
+    // spec: design/int/int.md §6.1.1 (Unreadable entry) — an entry file that
+    // is not valid UTF-8 is a located error naming the file under `--run` and
+    // in the REPL, and nothing is registered.
+    #[test]
+    fn an_unreadable_entry_is_a_located_error_with_no_registration() {
+        for run_mode in [RunMode::Run, RunMode::Repl] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("user.cl");
+            std::fs::write(&path, b"(defn g [] \xff)\n").unwrap();
+            let mut s = session(root.path(), run_mode, Vec::new());
+            let error = s
+                .register_entry_module("user")
+                .expect_err("an unreadable entry is refused");
+            assert_eq!(
+                error.location().file.as_deref(),
+                Some(path.as_path()),
+                "{run_mode:?}"
+            );
+            assert!(
+                error.to_string().contains("user.cl"),
+                "{run_mode:?}: {error}"
+            );
+            assert!(!is_registered(&s), "{run_mode:?}");
+            s.shutdown();
+        }
+    }
+
     #[test]
     fn run_mode_registers_an_existing_empty_entry() {
         let root = tempfile::tempdir().unwrap();

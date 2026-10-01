@@ -52,8 +52,15 @@ enum Params {
 
 impl EntryConvention {
     /// Derive the convention of the callable arm `life` a call site already
-    /// keyed for dispatch; `None` is an entry with no table callable (a named
-    /// intrinsic, an absent carrier).
+    /// keyed for dispatch. `None` is a site with no table callable, such as an
+    /// absent carrier, and gets the conservative consuming convention.
+    ///
+    /// Named intrinsics have no `Realization` (bounded-contexts §4b invariant 6),
+    /// so a site that derives for one lands on a consuming row: `HostPromised`,
+    /// or `None`. The extern-primitive arm can route the `cranelisp_trace_*`
+    /// intrinsics here, and consuming matches their conventions. An intrinsic
+    /// whose convention is not consume-all is emitted by a site that applies
+    /// its own convention and must not derive one here.
     pub(crate) fn of<C: CodeStore>(life: Option<&Life<C>>) -> Self {
         use ResultKind::{OwnedUnverified, Transferred};
         let Some(life) = life else {

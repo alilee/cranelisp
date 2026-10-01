@@ -40,6 +40,7 @@ rediscover or divide the work into new tickets.
 | Whole-file rebuild: removed definitions (ACT-1007), omitted import (ACT-1012), qualified dependents (FQR-1, FQR-2) | `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/session_v4/types.rs`, `src/scheduler.rs`, `src/process_form.rs`, `src/cluster.rs`, `src/worker.rs`, `src/redefine.rs`, `src/repl/commands.rs`, `src/eval.rs` and `src/process_form/dependency.rs` (fixture fields only); the `worker`, `persistence`, `persistent_worker` and `process_form` test modules | The user approved the quiescent boundary on 2026-09-29; the realization is +0/−0 public API. Designed in `session-transaction.md` §7.3, `repl-lifecycle.md` §1.2–§1.3 and `int.md` §6.10. The uncommitted per-definition removal and the committed persisted-reload demand replay retire (`session-transaction.md` §7.3.5). Implemented, and QA judged it adequate on 2026-09-29 ([rebuild adequacy](../../tests/plan/s122-evidence-delta.md#whole-file-rebuild-and-qualified-dependents--final-adequacy-2026-09-29)). Open: the user's Phase-5 acceptance |
 | Reload next basket: startup-failed dependents (ACT-1011), qualified module cycles on reload, increment and fresh load (ACT-1013), and `/mod` targets (ACT-1010 M2, NAV-1) | `src/scheduler.rs`, `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/worker.rs`, `src/process_form/dependency.rs`, `src/eval.rs`, `src/repl/commands.rs`, `src/repl/mod.rs`, and `src/cache/dependency_record.rs` (the reload-edge predicate's shared home); the `scheduler`, `dependency`, `cache/dependency_record`, `persistence`, `worker` and `repl` test modules | Designed 2026-09-29: failure dependencies and the startup reset (`repl-lifecycle.md` §1.2.1, §1.3.1), the publication cycle check (`int.md` §6.11), the recurrence stop (`repl-lifecycle.md` §1.2), the `/mod` target (`int.md` §8.5.1) and review A1's prologue order (`session-transaction.md` §7.3.1). Implemented 2026-09-29, uncommitted, with public API +0/−0. `dev` reported its full suite green. The prelude-fallback reach rule the implementation adopted is retracted by the user's 2026-09-30 ruling. Tails designed 2026-09-30: the implicit prelude edge with null imports excluded (`int.md` §6.12; ACT-1014), the publication check at the shared commit-planning step that macro checkpoints also reach (§6.11; ACT-1013), and own-source attempt dependencies (`repl-lifecycle.md` §1.2.1; ACT-1011). Revised 2026-09-30 after QA's adjudication: the attempt dependencies are recorded at the one attempt failure exit for every stage, and that exit reports a prelude cycle in preference to the attempt's own error for export and qualified reach at fresh load (`int.md` §6.12). The same files and test modules carry them, plus `src/process_form.rs`, `src/process_form/macro_clause.rs` and `src/process_form/macro_resolution.rs`. Implemented 2026-09-30 at source `889b6d26…`, public API +0/−0. Review found no blocking finding, and the design was reconciled with the implementation on 2026-09-30. The §6.12 file-derived aliases in cycle precedence were delivered at source `d056842f…`. The helper-end row stayed RED there. After QA repaired its condition, the defect is the prelude's follow-on `export` of the refused `x`, which reports an unresolved name, so the cycle is never named. The correction is designed 2026-09-30 as §6.11's Pass-0 fail-fast, in `src/process_form/dependency.rs`. It is implemented at source `f0d1006f…`, uncommitted, with no public API change. The helper-end row and the two Pass-0 module rows are GREEN there, and bounded tiers passed 4,412 of 4,412; the full suite was not run. The finding-scoped review of the fail-fast and the alias change found no blocking or required finding, and QA judged ACT-1014 adequate and closed it on 2026-09-30 ([helper-end adequacy](../../tests/plan/s122-evidence-delta.md#act-1014-helper-end--final-adequacy-2026-09-30)). §6.11 also records the failed-dependency refusal for ACT-1016 Face 1, which is not implemented. The user carried ACT-1015, ACT-1016 and ACT-1017 to S123 on 2026-09-30. Open: the fresh final acceptance run (K4) and the user's Phase-5 acceptance |
 | Batch missing entry (K1, ACT-1004) | `src/session_v4/lifecycle.rs` (entry registration) and `src/session_v4/test_runner/run.rs` (its missing-entry check is deleted); the lifecycle and test-runner session test modules | The user approved K1 as fix-now on 2026-09-30. Designed in `int.md` §6.1.1. No public item, carrier, schema or ABI change. Implemented 2026-09-30 at source `fefd41e8…`, uncommitted: the `--run` and `--link` REDs are GREEN with their controls, and the five module rows pass. Review found no blocking or required finding, and QA judged the evidence adequate ([K1 adequacy](../../tests/plan/s122-evidence-delta.md#k1--bounded-adequacy-2026-09-30)). Open: commit, the fresh final run (K4) and the user's Phase-5 acceptance |
+| Session lock, `/quit` status and ACT-1044 (Phase 6b) | `src/session_v4/lifecycle.rs`, `src/session_v4.rs`, `src/session_v4/types.rs`, `src/scheduler.rs`, `src/eval.rs`, `src/repl/mod.rs`, `src/repl/commands.rs`, `src/main.rs`, `src/agent/pull.rs`, `src/redefine.rs` (outcome reads and its lock test); the `persistence`, `lifecycle`, `scheduler`, `repl` and `agent::pull` test modules; `src/CLAUDE.md` (`dev`'s memory) | Designed 2026-10-01 from the user's rulings of that day in `repl-lifecycle.md` §1.2–§1.3, with the seams in [§8](#8-session-lock-phase-6b). No public API, carrier, schema or ABI change. Open: QA's RED cells SL-1 to SL-11 and ACT-1044, then `dev`, review and acceptance |
 | Eval production follow-up | none selected | Open Binary/int source only if an approved live configuration proves the condition in §6 |
 
 `crates/cranelisp-exe-bundle/` remains inside the reservation and caller census,
@@ -522,3 +523,77 @@ which remains the canonical record of every item. Binary/int's share:
 
 The carries add no design here. Each is designed when its carried work
 resumes.
+
+## 8. Session lock (Phase 6b)
+
+Designed 2026-10-01 from the user's rulings in `sprints/archive/sprint-122.md` ("REPL
+rulings: failed-save lock, /quit status, --test environment", "Session-lock
+questions answered", "Session-lock boundary questions") and `spec`'s text:
+`repl/spec/14-file-watching.md` §14.5, with §14.2, §14.4, §14.6 and §14.8
+of that file; `repl/spec/15-session-persistence.md` §15.1 and §15.2.3;
+`repl/spec/18-redefinition.md` §18.8; `repl/spec/00-cli-invocation.md` §0.1
+and §0.7; and `repl/spec/03-slash-commands.md` §3.9. The design is
+[REPL lifecycle §1.2–§1.3](repl-lifecycle.md#13-failed-module-and-the-session-lock);
+the rebuild prologue order is
+[session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild),
+and the `--test` environment is [test runner §7.1](test-runner.md#71---test-mainrs).
+
+- **No boundary change.** Every seam is in `src/`. The root crate has no
+  generated API baseline; no `tests/` or other crate names an item this
+  removes. No carrier, schema, ABI or new cross-crate edge.
+- **`--test` environment.** Already holds; measured, no source change.
+
+### 8.1 Seams for `dev`(src)
+
+1. **Rebuild prologue first (ACT-1044).** `rebuild_from_file` settles the
+   module's pass and runs `install_fresh_generation`, with the
+   `ClearModuleState` event, before the read and the parse. A read or parse
+   failure then records the module `Failed` in the scheduler with that error.
+2. **Dependency refusal record.** In `src/scheduler.rs`, the module state
+   gains the refusing dependency of its current generation, set at
+   `refuse_failed_dependency_locked`, at the worker's barrier fail-fast on a
+   failed closure member (`block_on_first_unready_closure_member`), and at
+   `cascade_failure_locked`. Registration clears it. `ResetModule` carries
+   it and the module's recorded error. `reset_all_failed_modules` takes the
+   modules that were already `Failed` before the load and leaves them.
+3. **One failed set.** Replace `error_modules`, `module_locks` and
+   `failed_forms` with one ordered crate-private map from module to record
+   (file, cause), and the derived lock predicate. Retire `FailedForm`,
+   `ModuleLock`'s per-module role, `append_failed_forms`,
+   `render_startup_error_report`, `degraded_form_load`,
+   `clear_repaired_failed_form` and `is_repair_definition_turn`, with their
+   tests and the call in `eval.rs`.
+4. **Executor.** `run_reload_plan` holds the caller's roots, attempts each
+   root, skips each other member that reaches another module standing
+   failed (prologue, failure and refusing dependency, scheduler `Failed`),
+   and records three outcomes. `reload_module` classifies a failure as
+   failed or waiting from the refusing record, with the refusal-chain check,
+   and sets the cause from the structural refusal record of this attempt
+   only. `ReloadOutcome` gains the waiting outcome, which has no notice;
+   `/mod`, T1 and T2 read only the rebuilt outcome.
+5. **A failed load's record.** One session operation over the reset modules:
+   the failure-dependency union, the classification and the purge. Startup
+   recovery runs it after recording an unregistered entry's parse failure,
+   replaces a non-compiled entry's table through the prologue, re-registers
+   the entry empty and returns the startup report from the failed set.
+   `/mod`'s failed load runs it over the reset modules the eval thread's
+   wait returns; a code turn discards them.
+6. **Admission and chokepoint.** `process_commands` refuses code turns and
+   the code-executing slash commands while locked, with one exhaustive
+   classification over `ReplCommand`, and builds the one refusal from the
+   failed set. `run_document_edit` asks the same lock.
+   `regenerate_backing_file` returns while locked. `/reset` no longer
+   touches failure state.
+7. **Exit.** `run_repl`'s epilogue returns nothing, ignores the object wait's
+   failed-module answer and skips the EOF flush while locked. The
+   restore notice is emitted only when the entry compiled, and its count
+   drops the failed-form subtraction.
+8. **Memory.** `src/CLAUDE.md`'s "Degraded startup load" section describes
+   the retired repair and links the old `#131-module-lock` anchor; `dev`
+   rewrites it against
+   [REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock).
+
+Module evidence is
+[REPL lifecycle §1.3.2](repl-lifecycle.md#132-module-evidence-dev). The
+existing lock rows in `persistence_tests.rs`, `redefine.rs` and
+`agent/pull.rs` move to the session-level predicate.

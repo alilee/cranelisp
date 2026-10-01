@@ -3331,6 +3331,7 @@ fn test_shared_state() -> crate::session_v4::SharedState {
         cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),
         promote_nice_workers: AtomicBool::new(false),
         file_to_module: Mutex::new(std::collections::HashMap::new()),
+        recorded_sources: dashmap::DashMap::new(),
         symbol_tables: dashmap::DashMap::new(),
         next_type_id: AtomicU32::new(0),
         typecheck_products: dashmap::DashMap::new(),
@@ -4423,16 +4424,22 @@ fn dispatch_without_a_stored_continuation_retires_nothing() {
     session.shutdown();
 }
 
-// spec: design/int/session-transaction.md §7.3.1 negative (Placeholder);
-// repl/spec/15-session-persistence.md §15.2.3 — startup recovery's empty
-// re-registration of the entry retires nothing its populated table holds.
+// spec: design/int/session-transaction.md §7.3.1 (Swap, Retention);
+// design/int/repl-lifecycle.md §1.3.1 (Startup, Entry without a generation) —
+// startup recovery of an entry that did not compile replaces its table with a
+// fresh one that keeps its GOT: no definition survives, nothing is
+// tombstoned, and the displaced compiled owner is pooled.
 #[test]
-fn startup_recovery_placeholder_retires_nothing() {
+fn startup_recovery_of_an_uncompiled_entry_keeps_its_got_and_no_definition() {
     let (_root, mut session, _path) = removal_session(REMOVAL_V1);
     let user = ModuleFullPath::from("user");
     let h_slot = user_slot(&session, "h");
     assert!(h_slot.is_some(), "precondition");
-    let retired = user_retired_slots(&session);
+    let got = std::sync::Arc::clone(&session.shared.symbol_tables.get(&user).unwrap().got);
+    let error = CranelispError::ModuleError {
+        message: "startup failed".into(),
+        location: cranelisp_types::ErrorLocation::from_span_file(Span::new(0, 0), None),
+    };
     session.shared.scheduler.notify_module_failed(
         &user,
         CranelispError::ModuleError {
@@ -4441,10 +4448,26 @@ fn startup_recovery_placeholder_retires_nothing() {
         },
     );
 
-    assert_eq!(session.recover_startup_failure("user"), None);
+    let recovery = session.recover_startup_failure("user", &error);
 
-    assert_eq!(user_slot(&session, "h"), h_slot, "`h` keeps its slot");
-    assert_eq!(user_retired_slots(&session), retired, "no tombstone");
+    assert!(
+        recovery
+            .report()
+            .is_some_and(|report| report.contains("startup failed"))
+    );
+    assert_eq!(user_slot(&session, "h"), None, "no definition survives");
+    assert!(user_retired_slots(&session).is_empty(), "no tombstone");
+    let table = session.shared.symbol_tables.get(&user).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&table.got, &got), "the GOT is kept");
+    drop(table);
+    let pooled = session
+        .shared
+        .retained_code
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|retained| retained.fq.symbol.as_ref() == "h" && retained.slot == h_slot);
+    assert!(pooled, "the displaced owner is pooled");
     session.shutdown();
 }
 

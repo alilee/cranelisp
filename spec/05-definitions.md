@@ -567,7 +567,7 @@ remains a compile-time error.
 
 This implements Display for `(Option Int)` specifically. The `(show x)` call in the `Some` arm dispatches to the `Int` implementation.
 
-### 5.4.3 Polymorphic Implementation [S112 — pinned repro directed (plan/s112-0628-ic-wave.md §3.3a TB-24): the polymorphic/constrained impl target `(Option :Display a)` is a PRE-EXISTING wrong-reject on HEAD (`unknown type a` before the arity gate; owner /dev typecheck); the previous cite tests/spec_07_traits::polymorphic_impl_on_concrete_adt_instantiation exercises only the CONCRETE instantiation `(MyOpt Int)` — §5.4.2's cell, mis-pointed here; band corrected /qa 2026-07-18]
+### 5.4.3 Polymorphic Implementation [S122 — partial. Registration and constant-body dispatch are Tested+Neg: tests/spec_07_traits::conventional_impl_poly_applied_target_accepts_and_dispatches, tests/spec_07_traits::constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg. The monomorphised method calling its constraint (`(show x)`) is defective: ACT-1034 (RED tests/spec_07_traits::parametric_impl_instance_calls_same_impl_at_nested_type_all_modes and three sibling cells), ACT-1035 (RED tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl)]
 
 ```clojure
 (impl Display (Option :Display a)
@@ -907,7 +907,7 @@ by a prior input remains governed by
   ([x y] (qloop x)))
 ```
 
-### 5.13.1 Functions, Types, Traits, and Implementations [Tested tests/spec_05_definitions::defns_mutual_forward_references]
+### 5.13.1 Functions, Types, Traits, and Implementations [S122 — partial: Tested tests/spec_05_definitions::defns_mutual_forward_references; an impl body that needs an impl declared later in the cluster is refused, RED tests/spec_05_definitions::impl_body_uses_impl_declared_later_in_cluster (ACT-0985)]
 
 Non-macro definitions of functions, types, traits, and implementations in one
 cluster MAY reference each other freely, including by forward reference. The

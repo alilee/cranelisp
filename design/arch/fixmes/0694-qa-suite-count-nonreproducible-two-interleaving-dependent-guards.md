@@ -13,7 +13,7 @@ refers_to: tests/nullary_return_dispatch_method_only_import.rs;
   tests/spec_10_io.rs;
   crates/cranelisp-intrinsics/src/reactor.rs;
   tests/plan/s122-evidence-delta.md
-status: open
+status: deferred
 ---
 
 # Run-dependent guards: attribute each member; never count one as "flaky"
@@ -75,11 +75,16 @@ Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md
   load with an armed allocator mode, recording run count and load. A confirmed
   corruption returns to the user with its attribution for a fix decision.
 - **K2 result.** No corruption was confirmed, so nothing returns to the user
-  as a fix. Class I remains unattributed and has no approved package after K2.
-  `sprint` presents it to the user for a K10 carry beside the other members.
-- **Class II, Class III, the inverse-polarity member and the reactor panic
-  are carried to S123 (K10).** The prior deferral count is not recorded; the
-  filing has been open since S114.
+  as a fix. Class I remains unattributed.
+- **Every member now carries to S123 in K10.** Class II, Class III, the
+  inverse-polarity member and the reactor panic were carried with the final
+  disposition. Class I joined them when the user approved the Phase-5
+  checkpoint on 2026-09-30, beside the related worker observation
+  [ACT-1025](../../../sprints/actions/ACT-1025-worker-requeue-refused-once-intake.md)
+  ([checkpoint carries](../../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+  The prior deferral count is not recorded; the filing has been open since
+  S114. If `sprint`'s history shows two prior deferrals, METHOD §2.4.5
+  sign-off applies at S123.
 
 ## Closure
 

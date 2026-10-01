@@ -532,17 +532,20 @@ block1:
 ; === end CLIF user::main ===
 ; === CLIF user::set-item ===
 function %set-item(i64, i64, i64) -> i64 system_v {
-    gv0 = symbol colocated userextname3
+    gv0 = symbol colocated userextname1
+    gv1 = symbol colocated userextname5
     sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64, i64, i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
-    sig3 = (i64, i64) -> i64 system_v
-    sig4 = (i64) system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64, i64) -> i64 system_v
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64, i64) -> i64 system_v
+    sig5 = (i64) system_v
     fn0 = colocated u0:56 sig0
-    fn1 = u0:23 sig1
-    fn2 = u0:0 sig2
-    fn3 = u0:2 sig3
-    fn4 = colocated u0:51 sig4
+    fn1 = u0:2 sig1
+    fn2 = u0:23 sig2
+    fn3 = u0:0 sig3
+    fn4 = u0:2 sig4
+    fn5 = colocated u0:51 sig5
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -565,23 +568,38 @@ block6:
     v12 = iadd_imm.i64 v5, 8
     v13 = iconst.i64 1
     v14 = atomic_rmw.i64 add v12, v13  ; v13 = 1
-    v15 = call fn1(v10, v4, v5, v11)
-    v16 = iconst.i64 16
-    v17 = call fn2(v16)  ; v16 = 16
-    v18 = iconst.i64 0
-    store notrap aligned v18, v17+16  ; v18 = 0
-    store notrap aligned v15, v17+24
-    jump block2(v17)
+    v15 = load.i64 notrap aligned v10+16
+    v16 = iconst.i64 0
+    v17 = icmp.i64 slt v4, v16  ; v16 = 0
+    v18 = icmp.i64 sge v4, v15
+    v19 = bor v17, v18
+    brif v19, block8, block7
+
+block8:
+    v20 = global_value.i64 gv0
+    v21 = iconst.i64 28
+    v22 = call fn1(v20, v21)  ; v21 = 28
+    v23 = iconst.i64 0
+    return v23  ; v23 = 0
+
+block7:
+    v24 = call fn2(v10, v4, v5, v11)
+    v25 = iconst.i64 16
+    v26 = call fn3(v25)  ; v25 = 16
+    v27 = iconst.i64 0
+    store notrap aligned v27, v26+16  ; v27 = 0
+    store notrap aligned v24, v26+24
+    jump block2(v26)
 
 block3:
-    v19 = global_value.i64 gv0
-    v20 = iconst.i64 12
-    v21 = call fn3(v19, v20)  ; v20 = 12
-    v22 = iconst.i64 0
-    return v22  ; v22 = 0
+    v28 = global_value.i64 gv1
+    v29 = iconst.i64 12
+    v30 = call fn4(v28, v29)  ; v29 = 12
+    v31 = iconst.i64 0
+    return v31  ; v31 = 0
 
 block2(v6: i64):
-    call fn4(v5)
+    call fn5(v5)
     return v6
 }
 ; === end CLIF user::set-item ===

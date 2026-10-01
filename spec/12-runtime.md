@@ -222,7 +222,7 @@ In batch mode, a program MUST define a function named `main` with no parameters 
 
 This rule does not apply under `--test`, which neither requires nor calls `main`; a `main` that is present compiles as an ordinary definition ([REPL §0.2.2](../repl/spec/00-cli-invocation.md#022-test-mode---test-s122)). [S122]
 
-## 12.7 Error Model [Tested]
+## 12.7 Error Model [S122 — partial; see the subsections]
 
 Cranelisp distinguishes two error categories: **compile-time errors** (detected before execution) and **runtime panics** (detected during execution). There is no exception mechanism, no user-exposed `try`/`catch`, and no `Result`-based error propagation for runtime faults. Runtime panics are **fatal to the current evaluation** but the execution environment (REPL session) survives.
 
@@ -236,21 +236,21 @@ The following are compile-time errors:
 - Ambiguous name resolution [Tested tests/spec_06_pattern_matching::contested_bare_pattern_indeterminate_scrutinee_poisoned_neg]
 - Macro expansion errors (non-Sexp return type, expansion limit exceeded) [Tested tests/spec_09_macros::macro_body_non_sexp_int_rejected_neg, tests/spec_09_macros::neg_macro_expansion_depth_limit_exceeded]
 
-### 12.7.2 Runtime Panics [Tested]
+### 12.7.2 Runtime Panics [S122 — defective: a panic in a callee does not stop its caller. A heap-typed result kills the process, `catch-runtime-error` included (ACT-1040); a scalar result lets the evaluation resume with `0` (ACT-1042). §12.7.2.1 is partial]
 
 A **runtime panic** terminates the current evaluation. It does NOT terminate the process in REPL mode (see §12.7.4). The panicked evaluation itself cannot resume — it is unconditionally fatal to the expression being evaluated, and any heap values it had partially produced are in an indeterminate state (their drop glue did not run). User code MAY, however, **observe** a runtime panic as a value rather than letting it abort the enclosing computation, by bracketing the risky work in the `catch-runtime-error` combinator (`(Fn [(Fn [] a)] (Result a String))`, see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): the combinator invokes a thunk and returns `(Err message)` if it panicked or `(Ok result)` otherwise. This recovers the panic *message*, not a consistent heap from the aborted thunk — an `(Err …)` result means the bracketed evaluation is void. Only language-level panics (the §12.7.2.1 sources, lowered to a `runtime/panic` call) are observable this way; hardware signals are not (see §12.7.2.1).
 
 **The bracket is temporal, not just categorical.** `catch-runtime-error` observes a panic only if it is raised **synchronously while the thunk is being evaluated** — the thunk body plus the pure construction of any `IO` value it returns (§10.3). It does **not** reach a panic raised **later, when the trampoline runs that `IO` value**: at a `(Fn [] (IO x))` thunk the bracket ends when construction returns the `IO` node, and the node's effects execute afterward, outside it (Appendix A.3 catchability boundary). Such **effect-run-time** panics are therefore **fatal, non-catchable** runtime errors — process-terminating in batch mode, expression-aborting in the REPL (§12.7.4) — regardless of any enclosing `catch-runtime-error`. The canonical case is an **empty `select`** (`(select [])`, §10.12.8): the raise happens when the trampoline interprets the select node, never during construction, so no IO-wrapping brings it inside a bracket. This is the general rule for all run-time effect errors, not a select special case; wrapping a faulting effect in `(fn [] …)` only defers the raise past the bracket, it does not make the fault catchable. [S77 — tested-by /qa]
 
-#### 12.7.2.1 Panic Sources [Tested]
+#### 12.7.2.1 Panic Sources [S122 — partial: the stack-overflow row is untested; see the rows]
 
 The following conditions cause a runtime panic:
 
 | Condition | Message | Notes |
 |---|---|---|
 | Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Tested tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg] |
-| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [S18] |
-| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [S18] |
+| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run] |
+| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [Tested+Neg tests/spec_12_runtime::vec_get_index_past_length_panics_and_session_continues, tests/spec_12_runtime::vec_set_negative_index_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_equal_to_length_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_past_length_on_shared_vec_panics, tests/spec_12_runtime::vec_set_dynamic_out_of_range_index_panics_in_every_mode, tests/spec_12_runtime::vec_set_in_range_index_writes_without_panic_neg] |
 | Stack overflow | Implementation-defined message | Exhaustion of the call stack (e.g., unbounded recursion without TCO) [S18] |
 
 #### 12.7.2.2 Conditions That Are NOT Panics
@@ -274,11 +274,11 @@ Cranelisp uses **unchecked (wrapping) integer arithmetic** and **checked integer
 
 - **Modulo/remainder**: If provided, follows the same policy as integer division — zero divisor causes a runtime panic.
 
-### 12.7.4 REPL vs Batch Error Behavior [Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run]
+### 12.7.4 REPL vs Batch Error Behavior [S122 — partial: see §12.7.4.1; batch mode Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run]
 
 The execution environment determines what happens after a runtime panic:
 
-#### 12.7.4.1 REPL Mode [S18]
+#### 12.7.4.1 REPL Mode [S122 — defective: a callee's panic kills the session when the caller uses a heap-typed result (ACT-1040), and can hang it or report a later panic's message when the result is a scalar (ACT-1042)]
 
 In REPL mode, a runtime panic terminates the current expression evaluation but MUST NOT terminate the REPL session. The REPL MUST:
 
@@ -299,7 +299,7 @@ Heap allocations from the panicking evaluation MAY be leaked. This is acceptable
 
 In batch mode (`cranelisp --run file.cl`), a runtime panic terminates the process with a non-zero exit code. The implementation MUST print the panic message to stderr before exiting.
 
-### 12.7.5 Error Message Format [S18]
+### 12.7.5 Error Message Format [S122 — defective: `--run` renders a codegen error at 0..0 with a doubled prefix, RED tests/spec_12_runtime::uncaught_panic_report_is_not_a_codegen_error_run; the prefix disagrees with REPL §10.3 R8 and is not asserted (ACT-1041)]
 
 Runtime panic messages MUST be displayed with a consistent prefix that distinguishes them from normal output:
 
@@ -368,15 +368,15 @@ Programs that need to signal error conditions MUST use the type system:
 
 This design keeps the runtime simple (no unwinding machinery beyond the panic boundary) and encourages programs to make error conditions visible in their types.
 
-### 12.7.8 Implementation Requirements [S18]
+### 12.7.8 Implementation Requirements [S122 — defective; see the items]
 
 A conforming implementation MUST satisfy:
 
-1. **Panic boundary**: The implementation MUST catch runtime panics at the boundary between the runtime and JIT-compiled code. Panics MUST NOT propagate as uncaught signals or cause undefined behavior. [S18]
-2. **REPL survival**: The REPL MUST continue operating after a runtime panic, with all prior session state intact. [S18]
-3. **Batch exit**: In batch mode, a runtime panic MUST cause a non-zero process exit code and a message on stderr. [S18]
-4. **No UB on panic**: A runtime panic MUST NOT cause undefined behavior, even if it occurs during heap allocation, closure invocation, or IO trampoline execution. Heap leaks are acceptable; use-after-free and double-free are not. [S18]
-5. **Deterministic panics**: Given the same inputs, the same panic condition MUST be triggered. The implementation MUST NOT silently suppress panics or convert them to arbitrary values (except for integer overflow, which is specified as wrapping). [S18]
+1. **Panic boundary**: The implementation MUST catch runtime panics at the boundary between the runtime and JIT-compiled code. Panics MUST NOT propagate as uncaught signals or cause undefined behavior. [S122 — defective: ACT-1040]
+2. **REPL survival**: The REPL MUST continue operating after a runtime panic, with all prior session state intact. [S122 — defective: ACT-1040 (the session dies), ACT-1042 (the session can hang)]
+3. **Batch exit**: In batch mode, a runtime panic MUST cause a non-zero process exit code and a message on stderr. [S122 — partial. Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run; defective when a callee's panic reaches a heap consumer (ACT-1040)]
+4. **No UB on panic**: A runtime panic MUST NOT cause undefined behavior, even if it occurs during heap allocation, closure invocation, or IO trampoline execution. Heap leaks are acceptable; use-after-free and double-free are not. [S122 — defective: ACT-1040 (null-sentinel dereference). The out-of-range vec-set face is Tested tests/spec_12_runtime::vec_set_index_past_length_on_heap_element_vec_panics]
+5. **Deterministic panics**: Given the same inputs, the same panic condition MUST be triggered. The implementation MUST NOT silently suppress panics or convert them to arbitrary values (except for integer overflow, which is specified as wrapping). [S122 — defective: a callee's panic becomes the value `0` in its caller (ACT-1040, ACT-1042). The shared vec-set face is Tested tests/spec_12_runtime::vec_set_index_past_length_on_shared_vec_panics]
 
 ### 12.7.9 Supervised Detached Strands [S96]
 

@@ -1708,7 +1708,7 @@ fn module_grain_reload(session: &mut CompilerSession, module: &ModuleFullPath) -
     session
         .run_reload_plan(vec![(module.clone(), path)])
         .iter()
-        .any(|outcome| &outcome.module == module && outcome.result.is_ok())
+        .any(|outcome| &outcome.module == module && outcome.status.is_rebuilt())
 }
 
 // ---------------------------------------------------------------------------
@@ -1769,7 +1769,7 @@ impl CompilerSession {
     ///   report is pushed (the section renders empty). `stale_callers` cannot
     ///   distinguish a recompiled caller from a stale one — the empty render is
     ///   achieved by not pushing after a successful reload, not by a re-scan.
-    /// - **CS-3.** A failed reload leaves its module locked like any failed
+    /// - **CS-3.** A failed reload leaves its module failed like any failed
     ///   rebuild and keeps the interim `stale:` print; a module whose regen is
     ///   SUPPRESSED (FIXME-0343 `should_regenerate` guard) keeps the print
     ///   rather than reload stale disk source.
@@ -1795,9 +1795,9 @@ impl CompilerSession {
         let rebuilt = self
             .run_reload_plan(vec![(target.module.clone(), path)])
             .iter()
-            .any(|outcome| outcome.module == target.module && outcome.result.is_ok());
+            .any(|outcome| outcome.module == target.module && outcome.status.is_rebuilt());
         // CS-2: a successful reload recompiled the stale callers, so the
-        // section renders EMPTY. CS-3: a failed one left the module locked.
+        // section renders EMPTY. CS-3: a failed one left the session locked.
         if !rebuilt {
             self.push_stale_report(target, stale);
         }
@@ -1867,6 +1867,7 @@ impl CompilerSession {
         const MAX_DEP_RETRIES: usize = 100;
         let mut pending = crate::scheduler::SourceContinuation::source(sexps.to_vec());
         let mut generation_started = false;
+        let held = self.shared.scheduler.failed_modules();
 
         for _retry in 0..MAX_DEP_RETRIES {
             cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, module);
@@ -1899,7 +1900,9 @@ impl CompilerSession {
                 ModuleStrategy::Additive,
                 generation_started,
                 None,
-            )?;
+            );
+            drop(wctx);
+            let result = result.map_err(|error| self.reset_failed_load(&held, error))?;
 
             match result {
                 ClusterOnce::Done {
@@ -1914,7 +1917,7 @@ impl CompilerSession {
                     continuation,
                     generation_started: started,
                 } => {
-                    self.register_dep_for_eval(&dep)?;
+                    self.register_dep_for_eval(&dep, &held)?;
                     pending = continuation;
                     generation_started = started;
                 }
@@ -3108,16 +3111,16 @@ mod tests {
 #[cfg(test)]
 mod t1_reload_tests {
     use super::*;
-    use crate::session_v4::{ModuleLock, RunMode, SessionSettings};
+    use crate::session_v4::{FailureCause, RunMode, SessionSettings};
     use cranelisp_types::CodegenBehaviour;
 
     // spec: design/int/repl-lifecycle.md §1.3.1; design/int/session-transaction.md
     // §10 — the T1 cure's reload plan runs through the one executor, so a
-    // dependent that fails in it is locked and blocked like any failed rebuild,
-    // while the target module that rebuilt is not and no `stale:` report is
+    // dependent that fails in it stands failed like any failed rebuild, while
+    // the target module that rebuilt does not and no `stale:` report is
     // pushed.
     #[test]
-    fn t1_rooted_plan_locks_a_failed_dependent() {
+    fn t1_rooted_plan_stands_a_failed_dependent_failed() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
             root.path().join("lib.cl"),
@@ -3151,9 +3154,11 @@ mod t1_reload_tests {
             symbol: Symbol::from("f"),
         });
 
-        assert_eq!(s.module_locks.get(&app), Some(&ModuleLock::FailedSource));
-        assert!(s.error_modules.contains(&app));
-        assert!(!s.module_locks.contains_key(&lib));
+        assert_eq!(
+            s.failed_modules.get(&app).map(|failed| &failed.cause),
+            Some(&FailureCause::FailedSource)
+        );
+        assert!(!s.failed_modules.contains_key(&lib));
         assert!(s.take_cascade_report().is_none(), "the target rebuilt");
         s.shutdown();
     }

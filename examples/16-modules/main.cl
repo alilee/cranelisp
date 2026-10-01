@@ -34,36 +34,36 @@
 ;; --- Using functions from the main.math module ---
 
 ;; Qualified calls: module-path/function-name
-(defn test-double []
+(defn check-double []
   (main.math/double 21))                                ;; -> 42
 
-(defn test-triple []
+(defn check-triple []
   (main.math/triple 10))                                ;; -> 30
 
-(defn test-square []
+(defn check-square []
   (main.math/square 7))                                 ;; -> 49
 
-(defn test-abs []
+(defn check-abs []
   (main.math/abs (sub-i64 0 7)))                        ;; -> 7
 
-(defn test-sum-of-sq []
+(defn check-sum-of-sq []
   (main.math/sum-of-squares 3 4))                       ;; -> 25
 
 ;; --- Using types and constructors from the main.shapes module ---
 
 ;; Constructors are qualified just like functions
-(defn test-point []
+(defn check-point []
   (let [p (main.shapes/make-point 3 4)]
     (main.shapes/distance-sq p)))                       ;; -> 25
 
 ;; Constructors can be called directly with qualified names
-(defn test-circle []
+(defn check-circle []
   (main.shapes/area-approx (main.shapes/Circle 0 0 5))) ;; -> 75
 
 ;; --- Combining modules ---
 
 ;; Use math functions on values from shapes
-(defn test-combined []
+(defn check-combined []
   (main.math/double
     (main.shapes/distance-sq (main.shapes/Point 3 4)))) ;; -> 50
 
@@ -74,11 +74,11 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (low byte preserved).
   (Pure
-    (add-i64 (test-double)
-      (add-i64 (test-triple)
-        (add-i64 (test-square)
-          (add-i64 (test-abs)
-            (add-i64 (test-sum-of-sq)
-              (add-i64 (test-point)
-                (add-i64 (test-circle)
-                         (test-combined))))))))))
+    (add-i64 (check-double)
+      (add-i64 (check-triple)
+        (add-i64 (check-square)
+          (add-i64 (check-abs)
+            (add-i64 (check-sum-of-sq)
+              (add-i64 (check-point)
+                (add-i64 (check-circle)
+                         (check-combined))))))))))

@@ -5,9 +5,9 @@ use super::*;
 // `record_macro_introspection` writer; design/int/s102-defect-wave.md §4.2)
 // -----------------------------------------------------------------------
 
-// spec: repl/spec.md §15.4 — invariant 7 (the authored form is the single
-// regeneration authority). An expansion-produced defmacro records the
-// ORIGINAL outer form as the regen-facing introspection `sexp`; the
+// spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1 (the authored
+// form is the single regeneration authority). An expansion-produced defmacro
+// records the ORIGINAL outer form as the regen-facing introspection `sexp`; the
 // expanded artifact rides `.expanded`, and the entry's compile-path
 // `macro_sexp` keeps the expanded defmacro (clause recompilation).
 #[test]
@@ -58,7 +58,7 @@ fn record_macro_origin_is_regen_authority_for_expansion_artifact() {
 
 // Negative twin: a DIRECT-authored defmacro (authored == sexp) records the
 // defmacro form itself and sets NO `.expanded` (nothing was expanded).
-// spec: repl/spec.md §15.4 — invariant 7
+// spec: repl/spec/15-session-persistence.md §15.4 — rule 1, §15.1
 #[test]
 fn record_direct_macro_has_no_expanded_artifact() {
     let module = ModuleFullPath::from("user");

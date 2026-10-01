@@ -264,9 +264,12 @@ retention (binary); runtime helpers (intrinsics) and primitive bodies
    JIT and object differ only in the supplied module. Mode is not a parameter.
 2. **Uniform consuming calling convention.** The conservative call transfers
    ownership of heap arguments; the callee owns its heap parameters.
-   Constructors, user functions, trait methods, primitives and externs follow
-   the same rule. Ownership inference narrows from this point and never widens
-   past it ([ownership inference](ownership-inference.md)).
+   Constructors, user functions, trait methods, primitives, host-promised
+   externs (including the named intrinsics that are their bodies) and platform
+   functions follow the same rule. Every other named intrinsic has its own
+   convention (§4b invariant 6). Ownership inference
+   narrows from this point and never widens past it
+   ([ownership inference](ownership-inference.md)).
 3. **The GOT is the single home of callable addresses.** Backend writes the
    pointer to the target's slot; the lifecycle owner carries retention only.
 4. **Backend trusts `codegen_targets()`.** A requested target outside that
@@ -358,11 +361,14 @@ mounting (binary).
    left that category ambiguous, and intrinsics inside backend would put
    stable-ABI runtime code in the codegen context.
 8. **Consuming convention at the extern boundary.** Every extern primary entry
-   takes ownership of every heap argument: it releases it or moves that same
-   reference into its result; a heap result is transferred owned. A declared
-   `Borrowed` mode or `IntoResult` flow is an analysis fact that static call
-   sites adapt to; no primary entry realizes it, and there is no exception
+   (`Realization::ExternShim`) takes ownership of every heap argument: it
+   releases it or moves that same reference into its result; a heap result is
+   transferred owned. A declared `Borrowed` mode or `IntoResult` flow is an
+   analysis fact that static call sites adapt to; no primary entry realizes it,
+   and there is no exception
    ([ownership inference §3.1](ownership-inference.md#31-class-a--abi-bearing-the-per-param-mode-vector)).
+   Named intrinsics are not `ExternShim` entries and are outside this rule
+   (§4b invariant 6).
 
 **Rejected shapes** — each returns only with a new ruling:
 
@@ -432,6 +438,42 @@ and diagnostics composition (binary); platform DLL loading (binary).
   obligations are in
   [the allocation proposal](../../sprints/s122-primitives-allocation-proposal.md).
 
+**Heap-argument conventions of the named intrinsics** (invariant 6). Two
+populations, each with one source of its call convention:
+
+- **Bodies of host-promised entries:** `catch-runtime-error` and the Trace
+  field accessors `cranelisp_trace_{name,params,result,children,nanos}`. The
+  binary registers each as a host-promised symbol-table entry, so §3
+  invariant 2 governs their calls and this section does not restate it. Each
+  body realizes that convention: `catch-runtime-error` releases the thunk
+  closure on both outcomes and returns a fresh `Result`; an accessor releases
+  the Trace and returns any heap field with its own reference.
+- **Every other catalog entry that receives a counted heap reference** has
+  the convention in the table.
+
+| Entry | Convention |
+|---|---|
+| `cranelisp_trace_format` | Borrows the value; returns a fresh String |
+| `cranelisp_trace_enter` | Takes each formatted parameter String. On the thread holding the trace role it stores them in the trace frame; on any other thread it returns without storing or releasing them |
+| `cranelisp_trace_exit` | Returns `result` unchanged and takes the result String. On the thread holding the trace role it stores it in the trace frame; on any other thread it returns without storing or releasing it |
+| `cranelisp_trace_first_child_nanos` | Consumes the Trace; returns an Int |
+| `runtime/run_io` | Consumes the caller's tree; the trampoline it drives borrows that tree |
+| `cranelisp_ivar_create` | Takes the thunk into the new cell. Only the force that claims the cell releases the thunk, after evaluation; the cell's teardown does not. The emitting site therefore sparks every cell it creates |
+| `cranelisp_ivar_spark` | Borrows the cell; the spark task takes its own reference and releases it after its force |
+| `cranelisp_ivar_force` | Borrows the cell; returns the stored value without an increment. The cell never releases the value, so exactly one force per cell may treat its result as transferred: the joining site's. The spark task's force discards its result |
+| `vec-set-copy`, `vec-push-copy` | Borrow the source Vec; take the new element's reference, which the emitting site supplies; return a fresh Vec |
+| `vec-push-grow` | Takes the uniquely owned Vec and the new element's reference; returns the same Vec |
+| `runtime/dealloc`, `runtime/vec_drop`, `runtime/free_io_node`, `cranelisp_ivar_dealloc` | Teardown tails, called only after the caller's decrement reached zero; they free the allocation rather than release a reference |
+| `runtime/rc_dec_check` | Reads the count word; no ownership effect |
+
+`runtime/rc_underflow_check` and `runtime/string_read` have no emitting site.
+The first is a dead catalog entry
+([ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md));
+the second is a Rust-path operation the binary calls, writing a String's bytes
+pointer and length through two out-pointers without an ownership effect.
+`runtime/sleep_pollfn` is a poll function the reactor calls. The remaining
+entries take no counted heap argument.
+
 **Invariants.**
 
 1. **Runtime substrate only.** The dominant surface is emitted-call targets and
@@ -451,10 +493,14 @@ and diagnostics composition (binary); platform DLL loading (binary).
 5. **Closures embed their drop-glue pointer** beside the code pointer, so a
    closure released in another module needs no side table. The glue is
    backend-generated per lambda and null when nothing is captured by heap.
-6. **Consuming convention at the extern boundary.** Every extern consumes the
-   heap arguments it does not return. The convention binds the extern, not the
-   Rust helpers behind it: `cranelisp_run_io` consumes the caller's tree, while
-   the trampoline it drives borrows that tree.
+6. **Each named intrinsic has its own ownership convention.** Named intrinsics
+   are outside `Realization`, so the uniform consuming rule for extern primary
+   entries (§4a invariant 8) and the platform-function rule (§5) do not cover
+   them. The bodies of host-promised entries follow §3 invariant 2; the
+   conventions table above states every other entry's convention, and the
+   backend site that emits the call matches it: `cranelisp_trace_format`
+   borrows, so its caller keeps the value. A convention binds the extern, not
+   the Rust helpers behind it.
 7. **The trampoline releases only the IO nodes it owns, each through the
    single IO teardown tail.** It borrows the caller's tree, which the caller's
    structural walk releases. Fresh-`Bind` descent acquires the inner and
@@ -573,6 +619,12 @@ referenced by qualified name.
 - **Heap values cross as allocation-base pointers.** Wrapper increments and
   decrements match emitted-code atomicity. `CLOwned<T>` is the host-side
   ownership wrapper; the consuming conversion follows the consuming convention.
+- **A platform function consumes its heap arguments.** The caller transfers
+  its reference to every heap parameter and does not release it after the
+  call; the function releases each parameter or moves that reference into its
+  result, such as the Effect thunk it returns. This is the
+  conservative convention of §3 invariant 2. Mode vectors never cross this
+  edge ([ownership inference §3.1](ownership-inference.md#31-class-a--abi-bearing-the-per-param-mode-vector)).
 - **The schema is a machine-written artefact**, generated from the loaded
   platform's tables and embedded by the platform. The host never takes schema
   text from the DLL: at load it regenerates, hashes and compares. `--run` and

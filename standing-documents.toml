@@ -472,7 +472,7 @@ disposition = "established"
 
 [[document_class]]
 name = "user-documentation"
-patterns = ["user/cli-reference.md", "user/getting-started.md", "user/syntax-cheatsheet-plan.md", "user/guide/*.md", "user/errors/*.md"]
+patterns = ["user/cli-reference.md", "user/getting-started.md", "user/guide/*.md", "user/errors/*.md"]
 owner = "docs"
 purpose = "Current user instructions, feature guides and diagnostic explanations."
 established_by = "user/CLAUDE.md"
@@ -531,3 +531,47 @@ kind = "standing"
 owner = "training"
 purpose = "Examples-local library rules, exclusions, mechanics and current contents."
 established_by = "examples/CLAUDE.md"
+
+# The active sprint plan exists only while a sprint is open; between sprints
+# these generic "active sprint" pointers are intentionally unresolved.
+[[reference_exception]]
+source = "CLAUDE.md"
+target = "sprints/SPRINT.md"
+rule = "source-path"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "CLAUDE.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "sprints/METHOD.md"
+target = "sprints/SPRINT.md"
+rule = "source-path"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "sprints/METHOD.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "sprints/ROADMAP.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "tests/plan/PLAN.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "standing-documents.toml"
+target = "sprints/SPRINT.md"
+rule = "source-path"
+reason = "The sprint-delivery document class pattern names the active sprint plan, which is absent between sprints by design."

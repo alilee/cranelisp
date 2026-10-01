@@ -354,7 +354,7 @@ value use of an inline primitive is fenced end to end by `tests/vec_query_value_
 **Boundary pins (all Decision-24-by-construction — modes never cross these edges):**
 
 - **Constructors:** field-store consumes; always `Owned` per param (the ADT owns its fields).
-- **Extern primitives / intrinsics — the ABI pin stands; the analysis facts do NOT ride it
+- **Extern primitives — the ABI pin stands; the analysis facts do NOT ride it
   (split ruling, user-directed 2026-07-02).** The pin admits no exception (user-approved
   2026-09-30, ACT-0974): every `Realization::ExternShim` primary entry takes ownership of
   every heap argument — it releases it or moves that same reference into its result — and
@@ -395,8 +395,14 @@ value use of an inline primitive is fenced end to end by `tests/vec_query_value_
     (a) fact-table row.
 - **Platform effects (the C-ABI DLL edge):** the platform ABI (`platform-interface.md`) is
   version-gated and binary-decoupled; mode vectors do NOT join the manifest. Platform calls stay
-  Decision-24. Same for every named-extern intrinsic call.
+  Decision-24.
 - **The `--link`/exe-bundle startup contract** (DEF-6 class): untouched.
+
+**Named intrinsics are not one pin.** Modes never reach them. The bodies of host-promised entries
+are called under Decision 24 like any host-promised extern; every other named intrinsic has its
+own heap-argument convention
+([BC §4b invariant 6](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)). For example,
+`cranelisp_trace_format` borrows its value argument.
 
 ### 3.2 Class B — advisory: per-site facts
 
@@ -511,7 +517,7 @@ precision grows.
 
 ### 3.6 Conditional ruling — the `MutBorrowed` ABI mode (S105 Phase-2, gated on the stack-allocation build branch)
 
-**Conditional, not committed.** S105's build target is evidence-gated (`sprints/SPRINT.md`;
+**Conditional, not committed.** S105's build target is evidence-gated (`sprints/archive/sprint-105.md`;
 `effect-concurrency.md` §3.1.6). If the attribution gate selects the **escape∧uniqueness stack
 allocation** lever *and* that lever requires passing a unique non-escaping value by **mutable**
 reference to a callee that mutates through it in place, a new ABI-bearing mode `MutBorrowed` is
@@ -570,7 +576,7 @@ the implementing sprint; it is **not** landed speculatively in S105 (Phase-2 ant
 
 ### 3.7 The COW result-mode ruling — `MayAliasOf`, declared-fact reachability, and the `Fresh`-on-absence premise (S110 `/arch`, 2026-07-16; RULED, lands S111)
 
-> **Trigger:** the S110 W2 review finding R-W2-1 (`sprints/SPRINT.md` §"/review (W2)") — the
+> **Trigger:** the S110 W2 review finding R-W2-1 (`sprints/archive/sprint-110.md` §"/review (W2)") — the
 > vec-assoc UAF class (`(vec-set v i x)` returned from a fn whose scope-exit decs `v`;
 > deterministic REPL garbage / `--link` SIGABRT) survives the W2 direct-body fix on the
 > let-wrapped and match-arm sibling shapes. Both siblings go GREEN under

@@ -38,7 +38,7 @@
   (match p [(Point px py) py]))
 
 ;; Create a point and compute x + y
-(defn test-point []
+(defn check-point []
   (let [p (Point 3 4)]
     (add-i64 (get-x p) (get-y p))))
 
@@ -48,7 +48,7 @@
 (defn sum-triple [t]
   (match t [(Triple a b c) (add-i64 a (add-i64 b c))]))
 
-(defn test-triple []
+(defn check-triple []
   (sum-triple (Triple 10 20 30)))
 
 ;; A polymorphic sum type: Option
@@ -60,22 +60,22 @@
     [(Some x) x
      None     default]))
 
-(defn test-option-some []
+(defn check-option-some []
   (unwrap-or (Some 42) 0))
 
-(defn test-option-none []
+(defn check-option-none []
   (unwrap-or None 99))
 
 ;; Constructors are values -- they can be returned from functions
 (defn make-some [x] (Some x))
 
-(defn test-make-some []
+(defn check-make-some []
   (unwrap-or (make-some 7) 0))
 
 ;; Functions that return an ADT
 (defn origin [] (Point 0 0))
 
-(defn test-origin []
+(defn check-origin []
   (add-i64 (get-x (origin)) (get-y (origin))))
 
 ;; A sum type with two data constructors
@@ -86,7 +86,7 @@
     [(Left x)  x
      (Right y) y]))
 
-(defn test-either []
+(defn check-either []
   (add-i64 (get-either (Left 10)) (get-either (Right 20))))
 
 ;; A polymorphic product with two independently typed fields
@@ -95,7 +95,7 @@
 (defn sum-pair [p]
   (match p [(Pair a b) (add-i64 a b)]))
 
-(defn test-pair []
+(defn check-pair []
   (sum-pair (Pair 5 15)))
 
 ;; Expected: 7 + 60 + 42 + 99 + 7 + 0 + 30 + 20 = 265
@@ -104,11 +104,11 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-point)
-      (add-i64 (test-triple)
-        (add-i64 (test-option-some)
-          (add-i64 (test-option-none)
-            (add-i64 (test-make-some)
-              (add-i64 (test-origin)
-                (add-i64 (test-either)
-                         (test-pair))))))))))
+    (add-i64 (check-point)
+      (add-i64 (check-triple)
+        (add-i64 (check-option-some)
+          (add-i64 (check-option-none)
+            (add-i64 (check-make-some)
+              (add-i64 (check-origin)
+                (add-i64 (check-either)
+                         (check-pair))))))))))

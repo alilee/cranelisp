@@ -10,7 +10,8 @@
 ;;   1. Pure   -- lift a value into IO (no actual effect)
 ;;   2. bind   -- chain IO actions, threading values between them
 ;;   3. Helper combinators built from Pure and bind
-;;   4. Platform IO -- actual side effects via (platform stdio)
+;;   4. Platform IO -- actual side effects via (platform stdio), and
+;;      why an IO value can be run more than once
 ;;
 ;; When main returns (IO a), the runtime's trampoline forces the IO
 ;; tree and extracts the inner value. So (Pure 42) as main's return
@@ -20,45 +21,11 @@
 ;; Running:
 ;;   ./target/debug/cranelisp --run examples/21-hello-io.cl
 ;;
-;;   examples/platforms/ ships host-correct symlinks (stdio.so on Linux,
-;;   stdio.dylib on macOS) pointing at cargo's built libcranelisp_stdio.*,
-;;   so the stdio DLL resolves with no environment variable. If you build
-;;   for a host without a checked-in symlink, set the search path instead:
+;;   examples/lib/platforms/ ships a stdio.so symlink to cargo's built
+;;   libcranelisp_stdio.so, so on Linux the stdio DLL resolves with no
+;;   environment variable. On a host without a matching link, set the
+;;   search path instead:
 ;;     CRANELISP_PLATFORM_PATH=target/debug ./target/debug/cranelisp --run …
-;;
-;; ── KNOWN RED since Sprint 118: this example does not compile (FIXME 0907) ──
-;;
-;; Attributed in place, deliberately NOT repaired. Running it reports:
-;;
-;;   codegen failed for 21-hello-io/21-hello-io/map-io$Fn(Int;Int)+primitives/IO$Int:
-;;   constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'
-;;
-;; The cause is not in this file. `primitives/IO`'s `Bind` constructor is
-;; seeded with an existential encoding, so per-concrete drop glue cannot be
-;; derived for any concrete `IO T`; Sprint 118's canonical-glue migration
-;; turned a former silent shallow teardown into a loud refusal. The ruling is
-;; owed by `/design`(backend), co-ruled with FIXME 0903.
-;;
-;; WHAT IS ACTUALLY DARK — two definitions, Part 4 only. Measured at HEAD:
-;; delete `then` and `map-io` (and their two sub-tests) and the remaining 13
-;; of 15 sub-tests compile and run, exit 167, with all five stdout side
-;; effects. Parts 1, 2, 3, 5, 6 and 7 — Pure, bind chains, `if` between two
-;; IO branches, IO-returning helpers, recursive IO, and real `(platform
-;; stdio)` console output — are unaffected by the defect.
-;;
-;; WHY IT IS NOT RE-SPELLED. `/stdlib` falsified every re-spelling on this
-;; FIXME: a polymorphic combinator compiles at its definition and refuses at
-;; every concrete call, so a re-spelling moves the failure without removing
-;; it. A trait-method spelling (`impl (Functor IO)`) does compile — and leaks
-;; ~68 bytes per call (measured, FIXME 0907 §3). Every available dodge would
-;; teach the reader something untrue about the language.
-;;
-;; WHAT THIS EXAMPLE TEACHES AGAIN WHEN 0907 IS RULED: Part 4's lesson —
-;; that `Pure` and `bind` are the only IO primitives you need, and every
-;; combinator (`then`, `map-io`, and the standard library's `>>`, `when-io`,
-;; `sequence-io`) is an ordinary user-written function over them. Nothing in
-;; the file changes at that point except deleting this block and the Part 4
-;; marker; the documented exit code stays 243.
 
 ;; Platform declaration: load the stdio DLL for print/read-line.
 ;; This must appear before any platform function imports.
@@ -75,13 +42,13 @@
 ;; Pure wraps any value in an IO context. No effect occurs.
 ;; Type: Pure :: (Fn [a] (IO a))
 
-(defn test-pure-int []
+(defn check-pure-int []
   ;; (Pure 42) creates an (IO Int) value.
   ;; Roundtrip through bind to prove we can extract the value.
   (bind (Pure 42) (fn [x] (Pure x))))            ;; -> 42
 
 ;; Pure works with any type -- Bool, String, etc.
-(defn test-pure-bool []
+(defn check-pure-bool []
   (bind (Pure true) (fn [b] (Pure (if b 1 0))))) ;; -> 1
 
 
@@ -95,11 +62,11 @@
 ;; a new IO action. bind constructs a Bind node in the IO tree;
 ;; the runtime trampoline evaluates the chain iteratively.
 
-(defn test-bind-simple []
+(defn check-bind-simple []
   ;; Extract 10 from (Pure 10), add 5, wrap result in Pure.
   (bind (Pure 10) (fn [x] (Pure (add-i64 x 5)))))  ;; -> 15
 
-(defn test-bind-chain []
+(defn check-bind-chain []
   ;; Chain three steps: start with 1, add 10, then add 100.
   (bind (Pure 1)
     (fn [a]
@@ -107,7 +74,7 @@
         (fn [b]
           (Pure (add-i64 b 100)))))))             ;; -> 111
 
-(defn test-bind-multi-ref []
+(defn check-bind-multi-ref []
   ;; The continuation can reference earlier bindings (closures).
   ;; Here we bind three values and combine them all at the end.
   (bind (Pure 1)
@@ -125,14 +92,14 @@
 ;; Both branches must return the same type -- (IO a) -- so the
 ;; "do nothing" branch uses Pure to wrap a default value.
 
-(defn test-bind-with-if []
+(defn check-bind-with-if []
   (bind (Pure 10)
     (fn [x]
       (if (gt-i64 x 5)
         (Pure (add-i64 x 100))                   ;; x > 5: add 100
         (Pure x)))))                              ;; -> 110
 
-(defn test-conditional-io []
+(defn check-conditional-io []
   ;; Choose between two IO paths based on a condition.
   (bind (Pure 7)
     (fn [x]
@@ -145,12 +112,6 @@
 
 ;; === Part 4: Building combinators from Pure and bind ===
 ;;
-;; >>> THIS PART IS THE ONE THE COMPILER REFUSES (FIXME 0907). <<<
-;; `then` and `map-io` take an `(IO a)` as a PARAMETER; releasing a concrete
-;; `IO T` is what the backend cannot yet derive glue for. The definitions
-;; below are correct Cranelisp and are kept verbatim so the lesson is intact
-;; the day the ruling lands. See the header block for the full attribution.
-
 ;; The standard library provides combinators like >>, map-io,
 ;; when-io, etc. Here we build them from scratch to show that
 ;; Pure and bind are the only primitives you need.
@@ -160,7 +121,7 @@
 (defn then [a b]
   (bind a (fn [_] b)))
 
-(defn test-then []
+(defn check-then []
   ;; (then (Pure 999) (Pure 42)) discards 999, keeps 42.
   (bind (then (Pure 999) (Pure 42))
     (fn [x] (Pure (add-i64 x 8)))))              ;; -> 50
@@ -172,7 +133,7 @@
 
 (defn square [n] (mul-i64 n n))
 
-(defn test-map-io []
+(defn check-map-io []
   ;; map-io square (Pure 5) -> (IO 25), then add 1 -> 26.
   (bind (map-io square (Pure 5))
     (fn [x] (Pure (add-i64 x 1)))))              ;; -> 26
@@ -185,7 +146,7 @@
 (defn add-io [x y]
   (Pure (add-i64 x y)))
 
-(defn test-io-helpers []
+(defn check-io-helpers []
   (bind (Pure 10)
     (fn [a]
       (bind (Pure 20)
@@ -205,7 +166,7 @@
     (bind (sum-io (sub-i64 n 1))
       (fn [rest] (Pure (add-i64 n rest))))))
 
-(defn test-sum-io []
+(defn check-sum-io []
   (sum-io 10))                                   ;; 1+2+...+10 = 55
 
 
@@ -218,12 +179,12 @@
 ;; print :: (Fn [String] (IO Int))
 ;; The return value is 0 (number of bytes is an implementation detail).
 
-(defn test-print-hello []
+(defn check-print-hello []
   ;; The simplest IO program: print a string.
   ;; Side effect: writes "Hello, world!" to stdout.
   (print "Hello, world!"))
 
-(defn test-print-bind []
+(defn check-print-bind []
   ;; Chain two prints with bind. Each print executes in order.
   ;; The continuation receives the result of the previous print
   ;; (always 0) and ignores it with _.
@@ -231,7 +192,7 @@
   (bind (print "Hello,")
     (fn [_] (print "world!"))))
 
-(defn test-print-with-result []
+(defn check-print-with-result []
   ;; Print a message, then return a computed value.
   ;; bind sequences the effect, then the continuation produces
   ;; a pure result. The trampoline returns the final Pure value.
@@ -245,35 +206,44 @@
   ;; IO propagates through the call graph automatically.
   (print name))
 
-(defn test-greet []
+(defn check-greet []
   ;; Side effect: writes "Cranelisp" to stdout.
   (greet "Cranelisp"))
+
+(defn check-reuse []
+  ;; An IO value describes an effect; it is not the effect itself.
+  ;; Naming it with let runs nothing. Each time the value is sequenced,
+  ;; its effect runs again, so the same value may be used repeatedly.
+  ;; Side effect: writes "again" to stdout twice, then returns 7.
+  (let [again (print "again")]
+    (bind again (fn [_] (bind again (fn [_] (Pure 7)))))))
 
 
 ;; --- Expected output ---
 ;;
 ;; Parts 1-6 (pure computation, no stdout output):
-;;   test-pure-int:       42
-;;   test-pure-bool:      1
-;;   test-bind-simple:    15
-;;   test-bind-chain:     111
-;;   test-bind-multi-ref: 6
-;;   test-bind-with-if:   110
-;;   test-conditional-io: 11
-;;   test-then:           50
-;;   test-map-io:         26
-;;   test-io-helpers:     30
-;;   test-sum-io:         55
+;;   check-pure-int:       42
+;;   check-pure-bool:      1
+;;   check-bind-simple:    15
+;;   check-bind-chain:     111
+;;   check-bind-multi-ref: 6
+;;   check-bind-with-if:   110
+;;   check-conditional-io: 11
+;;   check-then:           50
+;;   check-map-io:         26
+;;   check-io-helpers:     30
+;;   check-sum-io:         55
 ;;   subtotal:            457
 ;;
 ;; Part 7 (platform IO, print returns 0):
-;;   test-print-hello:       0
-;;   test-print-bind:        0
-;;   test-print-with-result: 42
-;;   test-greet:             0
-;;   subtotal:               42
+;;   check-print-hello:       0
+;;   check-print-bind:        0
+;;   check-print-with-result: 42
+;;   check-greet:             0
+;;   check-reuse:             7
+;;   subtotal:               49
 ;;
-;; Total: 457 + 42 = 499
+;; Total: 457 + 49 = 506. The exit code is its low byte: 506 mod 256 = 250.
 ;;
 ;; Stdout side effects (in execution order):
 ;;   Hello, world!
@@ -281,24 +251,27 @@
 ;;   world!
 ;;   Computing...
 ;;   Cranelisp
+;;   again
+;;   again
 
 (defn main []
-  (bind (test-pure-int) (fn [r1]
-  (bind (test-pure-bool) (fn [r2]
-  (bind (test-bind-simple) (fn [r3]
-  (bind (test-bind-chain) (fn [r4]
-  (bind (test-bind-multi-ref) (fn [r5]
-  (bind (test-bind-with-if) (fn [r6]
-  (bind (test-conditional-io) (fn [r7]
-  (bind (test-then) (fn [r8]
-  (bind (test-map-io) (fn [r9]
-  (bind (test-io-helpers) (fn [r10]
-  (bind (test-sum-io) (fn [r11]
+  (bind (check-pure-int) (fn [r1]
+  (bind (check-pure-bool) (fn [r2]
+  (bind (check-bind-simple) (fn [r3]
+  (bind (check-bind-chain) (fn [r4]
+  (bind (check-bind-multi-ref) (fn [r5]
+  (bind (check-bind-with-if) (fn [r6]
+  (bind (check-conditional-io) (fn [r7]
+  (bind (check-then) (fn [r8]
+  (bind (check-map-io) (fn [r9]
+  (bind (check-io-helpers) (fn [r10]
+  (bind (check-sum-io) (fn [r11]
   ;; Part 7: platform IO tests
-  (bind (test-print-hello) (fn [r12]
-  (bind (test-print-bind) (fn [r13]
-  (bind (test-print-with-result) (fn [r14]
-  (bind (test-greet) (fn [r15]
+  (bind (check-print-hello) (fn [r12]
+  (bind (check-print-bind) (fn [r13]
+  (bind (check-print-with-result) (fn [r14]
+  (bind (check-greet) (fn [r15]
+  (bind (check-reuse) (fn [r16]
     (Pure (add-i64 r1
       (add-i64 r2
         (add-i64 r3
@@ -312,5 +285,6 @@
                         (add-i64 r11
                           (add-i64 r12
                             (add-i64 r13
-                              (add-i64 r14 r15)))))))))))))))
-  )))))))))))))))))))))))))))))))
+                              (add-i64 r14
+                                (add-i64 r15 r16))))))))))))))))
+  )))))))))))))))))))))))))))))))))

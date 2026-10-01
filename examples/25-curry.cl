@@ -31,7 +31,7 @@
 (defn add [a b] (add-i64 a b))
 
 ;; Partially apply to create increment
-(defn test-inc []
+(defn check-inc []
   (let [inc (add 1)]
     (inc 41)))
 
@@ -39,12 +39,12 @@
 (defn add3 [a b c] (add-i64 a (add-i64 b c)))
 
 ;; Apply one arg: get a two-arg function
-(defn test-partial-one []
+(defn check-partial-one []
   (let [add-from-10 (add3 10)]
     (add-from-10 20 12)))
 
 ;; Apply two args: get a one-arg function
-(defn test-partial-two []
+(defn check-partial-two []
   (let [add-30 (add3 10 20)]
     (add-30 12)))
 
@@ -54,7 +54,7 @@
 (defn apply-twice [f x] (f (f x)))
 
 ;; Use curried add with apply-twice
-(defn test-curry-compose []
+(defn check-curry-compose []
   (let [add5 (add 5)]
     (apply-twice add5 0)))
 
@@ -64,7 +64,7 @@
 (defn scale [factor x] (mul-i64 factor x))
 
 ;; Create specialised scalers via currying
-(defn test-scalers []
+(defn check-scalers []
   (let [double (scale 2)
         triple (scale 3)]
     (add-i64 (double 7) (triple 7))))
@@ -74,7 +74,7 @@
 ;; map-pair applies a function to two values and sums results
 (defn map-pair [f a b] (add-i64 (f a) (f b)))
 
-(defn test-curry-as-arg []
+(defn check-curry-as-arg []
   (map-pair (add 100) 1 2))
 
 ;; --- Currying a function VALUE, not just a named defn ---
@@ -83,12 +83,9 @@
 ;; The closure is an ordinary function value, so it curries like any
 ;; other: `(g 1)` supplies one of its two arguments and hands back a
 ;; function still waiting for the second.
-;;
-;; (Keep the captured value a scalar here. Auto-curried partials over
-;; HEAP captures currently reach an open compiler defect, FIXME 0796.)
 (defn make-adder [base] (fn [a b] (add-i64 base (add-i64 a b))))
 
-(defn test-closure-curry []
+(defn check-closure-curry []
   (let [g (make-adder 10)]
     ((g 1) 2)))                                   ;; -> 10 + 1 + 2 = 13
 
@@ -99,7 +96,7 @@
 ;; application works and KEEPS its dispatch. `(+ 5)` fixes the left
 ;; operand at Int, which is what selects the `Num Int` impl; the
 ;; resulting one-argument function is still that impl's `+`.
-(defn test-operator-partial []
+(defn check-operator-partial []
   (let [add5 (+ 5)]
     (add5 3)))                                    ;; -> 8
 
@@ -109,11 +106,11 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-inc)
-      (add-i64 (test-partial-one)
-        (add-i64 (test-partial-two)
-          (add-i64 (test-curry-compose)
-            (add-i64 (test-scalers)
-              (add-i64 (test-curry-as-arg)
-                (add-i64 (test-closure-curry)
-                         (test-operator-partial))))))))))
+    (add-i64 (check-inc)
+      (add-i64 (check-partial-one)
+        (add-i64 (check-partial-two)
+          (add-i64 (check-curry-compose)
+            (add-i64 (check-scalers)
+              (add-i64 (check-curry-as-arg)
+                (add-i64 (check-closure-curry)
+                         (check-operator-partial))))))))))

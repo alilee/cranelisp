@@ -11,23 +11,27 @@
 ;; Encode booleans as integers for the result (1 = true, 0 = false)
 (defn bool-to-int [b] (if b 1 0))
 
+;; Each `check-` function below is one check whose result `main` adds up.
+;; The names avoid the `test-` prefix on purpose: a `test-` function is a
+;; test the compiler can discover and run, which example 38 teaches.
+
 ;; Equality
-(defn test-eq [] (bool-to-int (eq-i64 5 5)))
+(defn check-eq [] (bool-to-int (eq-i64 5 5)))
 
 ;; Inequality (not equal)
-(defn test-neq [] (bool-to-int (not (eq-i64 1 2))))
+(defn check-neq [] (bool-to-int (not (eq-i64 1 2))))
 
 ;; Less than
-(defn test-lt [] (bool-to-int (lt-i64 2 3)))
+(defn check-lt [] (bool-to-int (lt-i64 2 3)))
 
 ;; Greater than
-(defn test-gt [] (bool-to-int (gt-i64 5 3)))
+(defn check-gt [] (bool-to-int (gt-i64 5 3)))
 
 ;; Less than or equal
-(defn test-le [] (bool-to-int (le-i64 3 3)))
+(defn check-le [] (bool-to-int (le-i64 3 3)))
 
 ;; Greater than or equal
-(defn test-ge [] (bool-to-int (ge-i64 4 5)))
+(defn check-ge [] (bool-to-int (ge-i64 4 5)))
 
 ;; Nested if: classify a number as positive (1), zero (0), or negative (-1)
 (defn sign [n]
@@ -40,12 +44,12 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-eq)
-      (add-i64 (test-neq)
-        (add-i64 (test-lt)
-          (add-i64 (test-gt)
-            (add-i64 (test-le)
-              (add-i64 (test-ge)
+    (add-i64 (check-eq)
+      (add-i64 (check-neq)
+        (add-i64 (check-lt)
+          (add-i64 (check-gt)
+            (add-i64 (check-le)
+              (add-i64 (check-ge)
                 (add-i64 (sign 42)
                   (add-i64 (sign 0)
                            (sign -7)))))))))))

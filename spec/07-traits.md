@@ -415,7 +415,7 @@ An impl MAY target a fully applied parameterized type:
 
 This provides a Display implementation specifically for `(Option Int)`.
 
-### 7.3.3 Polymorphic Implementation with Constraints [S112 — pinned repro directed: this canonical form `(impl Display (Option :Display a) …)` is a PRE-EXISTING wrong-reject on HEAD (`unknown type a` before the arity gate; owner /dev typecheck, impl-target TypeExpr-resolution seam); plan/s112-0628-ic-wave.md §3.3a TB-24]
+### 7.3.3 Polymorphic Implementation with Constraints [S122 — partial. Target admission and constant-body dispatch are Tested+Neg: tests/spec_07_traits::conventional_impl_poly_applied_target_accepts_and_dispatches, tests/spec_07_traits::constrained_applied_user_ctor_impl_target_accepts_and_dispatches, tests/spec_07_traits::constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg. A body that discharges the constraint on its payload, as the canonical example does, is defective: ACT-1034 (nested instantiation; RED tests/spec_07_traits::parametric_impl_instance_calls_same_impl_at_nested_type_all_modes and three sibling cells), ACT-1035 (REPL crash; RED tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl)]
 
 An impl MAY target a parameterized type with constrained type variables. Constraints are specified with `:TraitName` prefixes on type variables:
 
@@ -464,7 +464,7 @@ the trait applied to the constructor it is being implemented *about*:
 
 The constructor named in the slot-2 pairing (`Option`, `List`, `Seq`) is a bare type constructor, never an applied type. The implementation MUST validate that this constructor's arity matches the trait's constructor variable (§7.2.3). The pairing's **head** (`Functor` in `(Functor Option)`) is a **trait-name reference**, resolved under the normal reference rules (§8.5); it MUST resolve to the **same trait** slot 1 echoes — matched by **resolved identity, not written spelling** (see §7.3.5, Case 3, *Pairing-head identity*).
 
-### 7.3.5 Kind-Checking of Impl Targets [Tested+Neg — matrix as-built: plan/s112-0628-ic-wave.md §3 + §3.3a; per-row cites on the worked examples below] [S112 — one cell NOT closed: Case-1 poly-applied ✓ row (pinned repro directed, TB-24); pairing-head qualification SETTLED 2026-07-18 (user ruling, TB-25) — resolved-identity match, see Case 3 *Pairing-head identity*]
+### 7.3.5 Kind-Checking of Impl Targets [Tested+Neg — matrix as-built: plan/s112-0628-ic-wave.md §3 + §3.3a; per-row cites on the worked examples below]
 
 The `impl` **syntax** of §7.3 is settled: a conventional (kind-`*`) trait takes a **type** target, a higher-kinded trait takes a **trait-constructor pairing** `(Trait Constructor)`. This section settles the **impl-target kind-matching table** — exactly which targets are well-kinded for a given trait head, and which are rejected and with what diagnostic.
 
@@ -476,7 +476,7 @@ For a conventional trait, the slot-2 target MUST be **kind `*`** (a type). Worke
 
 - `(impl Display Int)` ✓ — a primitive is a type. [Tested tests/spec_07_traits::user_trait_simple]
 - `(impl Display (Option Int))` ✓ — a concrete applied type. [Tested tests/spec_07_traits::polymorphic_impl_on_concrete_adt_instantiation, tests/spec_07_traits::conventional_impl_exactly_arity_target_accepts_arity_gate_fence]
-- `(impl Display (Option a))` ✓ — polymorphic impl; `a` ranges and is discharged by monomorphisation (§7.3.3). [S112 — pinned repro directed: admissible-per-spec but a PRE-EXISTING wrong-reject on HEAD (`unknown type a` before the arity gate; owner /dev typecheck); plan/s112-0628-ic-wave.md §3.3a TB-24]
+- `(impl Display (Option a))` ✓ — polymorphic impl; `a` ranges and is discharged by monomorphisation (§7.3.3). [Tested tests/spec_07_traits::conventional_impl_poly_applied_target_accepts_and_dispatches]
 - `(impl Display Option)` ✗ — **kind-mismatch.** `Option` is a constructor (`* -> *`), not a type. The diagnostic MUST name the fix: apply the constructor, `(Option a)` or `(Option Int)`. [Tested tests/spec_07_traits::conventional_impl_bare_constructor_target_rejected_neg]
 
 A bare / under-applied constructor is the **sole** rejection for a conventional target. [Tested+Neg — over-APPLIED (`(Option Int Int)`, not a well-formed type: arity `!=`) also rejects, at the type-application arity gate rather than this kind rule: tests/spec_07_traits::conventional_impl_over_applied_target_rejected_no_dispatch_neg]

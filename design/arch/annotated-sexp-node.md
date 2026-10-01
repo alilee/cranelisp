@@ -91,7 +91,7 @@ Design rules:
   - Rebuild through the constructor or through `:` syntax in a quasiquote
     template. The stdlib's `core.syntax` helpers `annotated?`, `annotation`
     and `unannotate` are conveniences, not part of the mechanism
-    ([macro-authoring guide](../../user/syntax-cheatsheet-plan.md#macro-authoring-reader-annotations)).
+    ([macro-authoring guide](../../user/guide/syntax-command.md#macro-authoring-reader-annotations)).
 - **Expansion and qualification walks treat the halves alike.** The
   expander's scoped walk and int's qualify walk share one binder model
   ([expansion-qualification scope](../int/expansion-qualification-scope.md)):

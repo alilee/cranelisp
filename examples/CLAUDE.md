@@ -23,6 +23,9 @@ language is broken, and a reader cannot tell which of the two of you is wrong.
    in `tests/examples.rs` (owned by `test`). Any other exit, including 0, is a
    failure. The target form sums one pass per sub-test. Many existing examples
    still sum values instead, a gap recorded in `plan-examples.md` §4.4.
+   Name sub-test helpers `check-`. A `test-` name makes a function a test
+   under `--test`, which warns about every `test-` function that is not of
+   type `(Fn [] (Option String))`; only 38 defines tests.
 4. **Exit changes are coordinated.** Any added, removed or renamed example,
    and any deliberate exit change, needs `test` to reconcile
    `tests/examples.rs` in the same change-set. `training` does not edit
@@ -45,13 +48,15 @@ export CRANELISP_PLATFORM_PATH=$PWD/target/debug  # 34 needs async-demo, which h
 EX="examples/[0-9]*.cl examples/16-modules/main.cl examples/37-method-import/main.cl"
 for f in $EX; do ./target/debug/cranelisp --run "$f" >/dev/null 2>&1; echo "$f => $?"; done
 for f in $EX; do o=target/ex-$(echo $f | tr / _); \
-  ./target/debug/cranelisp --link "$f" -o "$o" >/dev/null 2>&1 && "$o" >/dev/null 2>&1; \
+  ./target/debug/cranelisp --link -o "$o" "$f" >/dev/null 2>&1 && "$o" >/dev/null 2>&1; \
   echo "$f => $?"; done
 ```
 
 - **Cold cells:** add `--no-cache` to the run loop. `--link` rejects
   `--no-cache` (`user/cli-reference.md`), so for cold link cells first delete
   the git-ignored `.cranelisp-cache/` the compiler generates in each entry's directory. <!-- doc-check: literal reason="Generated, git-ignored cache directory" -->
+- **Test mode:** `./target/debug/cranelisp --test examples/38-program-tests.cl`
+  must report four `ok` lines and exit 0.
 - **Never set `CRANELISP_LIB`.** Library directories are an additive union
   ([lib directory configuration](../spec/08-modules.md#8114-lib-directory-configuration-tested-testsspec_platformscranelisp_toml_lib_dirs_resolves_module)), so it adds the real stdlib and breaks free-standing runs.
 - **Platform links.** `lib/platforms/` holds committed `stdio.so` and

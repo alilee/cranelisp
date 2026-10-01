@@ -174,7 +174,7 @@ as the 0470 resolution:
    edge to each other (the L-R3(b) exactness negative at the unit grain).
 3. **Uniformity.** All positions record the same `Vec<FQSymbol>` carrier —
    call-position and value-position edges are indistinguishable to consumers
-   (the 0470 resolution shape; `sprints/SPRINT.md` FIXME table).
+   (the 0470 resolution shape; `sprints/archive/sprint-101.md` FIXME table).
 4. **Consumer-audit guards** (gate note 2): `save.rs::dependency_sort` emission
    order unchanged under the denser edge set (existing `repl_persist.rs` round-trips for
    `repl/spec/15-session-persistence.md` §15.4 are the e2e cover; `/dev` adds the unit assertion on

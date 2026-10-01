@@ -326,6 +326,17 @@ impl CompilerSession {
         stdout: &mut impl Write,
         consent: &mut dyn ConsentReader,
     ) -> ToolCallResult {
+        // While the session is locked the confirmed form would be refused at
+        // turn admission; refuse before validation and consent instead
+        // (`design/int/repl-lifecycle.md` §1.3.1, Turn admission).
+        if let Some(refusal) = self.session_lock_refusal() {
+            let _ = writeln!(stdout, "{refusal}");
+            return ToolCallResult {
+                id: call.id.clone(),
+                command: format!("({} refused)", call.name),
+                output: refusal,
+            };
+        }
         // (1) Validate + silently repair. The repair loop runs BEFORE any echo —
         // "the user structurally cannot see an agent compile failure" (§16.2) is
         // enforced by where the render call is: render happens only after this
@@ -576,9 +587,9 @@ impl CompilerSession {
                 output: msg,
             };
         }
-        // A document edit regenerates the current module's file, which its
-        // lock keeps as saved; refuse before asking consent.
-        if let Some(refusal) = self.module_lock_refusal() {
+        // A document edit regenerates a file, which the session lock keeps as
+        // saved, and bypasses turn admission; refuse before asking consent.
+        if let Some(refusal) = self.session_lock_refusal() {
             let _ = writeln!(stdout, "{refusal}");
             return ToolCallResult {
                 id: call.id.clone(),
@@ -1798,30 +1809,38 @@ mod tests {
         );
     }
 
-    // spec: repl/spec/14-file-watching.md §14.5 item 5, §14.8 — while the
-    // current module is locked, an agent write that would regenerate its file
-    // is refused before consent, the document tools and `submit` alike, with
-    // the remedy for the lock's cause.
+    // spec: repl/spec/14-file-watching.md §14.5 (session lock), §14.8 — while
+    // the session is locked, an agent write that would regenerate a file is
+    // refused before consent, the document tools and `submit` alike, with the
+    // remedy for the failed module's cause, whether the failed module is the
+    // current module or another.
     #[test]
-    fn agent_writes_refused_before_consent_in_locked_module() {
-        use crate::session_v4::ModuleLock;
+    fn agent_writes_refused_before_consent_in_locked_session() {
+        use crate::session_v4::{FailedModule, FailureCause};
         let module = cranelisp_types::ModuleFullPath::from("user");
         let causes = [
             (
-                ModuleLock::RestartRequired(cranelisp_types::FQTypeName::new(
+                "user",
+                FailureCause::RestartRequired(cranelisp_types::FQTypeName::new(
                     module.clone(),
                     "T".into(),
                 )),
-                "Restart",
+                "restart",
             ),
-            (ModuleLock::FailedSource, "does not compile"),
+            ("user", FailureCause::FailedSource, "does not compile"),
+            ("lib", FailureCause::FailedSource, "lib.cl"),
         ];
-        for (lock, remedy) in causes {
+        for (failed, lock, remedy) in causes {
             let mut s = repl_session();
             session_with_agent(&mut s, vec![], true);
             assert_eq!(s.current_module_path(), module);
-            s.error_modules.insert(module.clone());
-            s.module_locks.insert(module.clone(), lock.clone());
+            s.failed_modules.insert(
+                cranelisp_types::ModuleFullPath::from(failed),
+                FailedModule {
+                    file: std::path::PathBuf::from(format!("{failed}.cl")),
+                    cause: lock.clone(),
+                },
+            );
             for (id, tool, argument) in [
                 ("p1", "set-preamble", "user A module."),
                 ("d1", "set-doc", "f A function."),
@@ -1846,16 +1865,28 @@ mod tests {
                     "{lock:?} {tool}: consent must not be asked"
                 );
             }
-            let mut sink: Vec<u8> = Vec::new();
-            let result = s.run_pull(
-                &submit_call("(defn f [] 1)"),
-                &mut sink,
-                &mut crate::agent::types::NoConsent,
+            // `submit` without auto-accept, so a consent read is observable.
+            let mut s = repl_session();
+            session_with_agent(&mut s, vec![], false);
+            s.failed_modules.insert(
+                cranelisp_types::ModuleFullPath::from(failed),
+                FailedModule {
+                    file: std::path::PathBuf::from(format!("{failed}.cl")),
+                    cause: lock.clone(),
+                },
             );
+            let mut sink: Vec<u8> = Vec::new();
+            let mut consent = ScriptedConsent::new(&["y"]);
+            let result = s.run_pull(&submit_call("(defn f [] 1)"), &mut sink, &mut consent);
             assert!(
                 result.output.contains(remedy),
                 "{lock:?} submit: {}",
                 result.output
+            );
+            assert_eq!(
+                consent.0.len(),
+                1,
+                "{lock:?} submit: consent must not be asked"
             );
             let table = s.shared.symbol_tables.get(&module).unwrap();
             assert!(

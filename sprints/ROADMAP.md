@@ -15,7 +15,7 @@ owns technical contracts, and the [test plan](../tests/plan/PLAN.md) owns assura
 | E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | COMPLETE |
 | F | Ring 3 — Meta: macros, derive, standard library | COMPLETE |
 | G | Ring 4 — Effects: IO, platforms, parallelism, REPL, caching | COMPLETE (S80 closeout; pre-H mainline cleared through S83; **full IO auto-parallelism wired + witnessed S85** — FIXME 0367 resolved, the deferral closed) |
-| H | Release compiler: reliability, ownership/memory-model and release-performance work. | Active; current scope is S122. Future performance work follows its measured re-entry conditions below. |
+| H | Release compiler: reliability, ownership/memory-model and release-performance work. | Active; S122 closed 2026-10-02, S123 next. Future performance work follows its measured re-entry conditions below. |
 
 ## Sprints
 
@@ -32,20 +32,17 @@ roadmap.
 
 ## Forward Plan
 
-### Current sprint — S122
+### Next sprint — S123
 
-S122 is in approved Phase 5. The [active sprint](SPRINT.md) owns live delivery
-status and approvals; its [wave plan](s122-wave-plan.md) groups known-issue
-closure, document conformance and the REPL-agent evaluation baseline by source
-owner. The [candidate inventory](s122-candidate-inventory.md) preserves the
-opening assessment of 88 filings and audit findings; its recommendations are
-historical inputs, not current status. LLVM is excluded by user direction.
-Delivery-role models follow the shared allocation linked from root guidance.
-
-The approved limited private allocation ownership change proceeds within S122.
-[The full public allocation API redesign](actions/ACT-0959-public-allocation-api-redesign.md)
-is a future scoping item; it does not block the limited change. Other unresolved
-obligations remain in the current sprint and action/filing registers.
+S122 closed on 2026-10-02 ([record](archive/sprint-122.md)). No sprint is active.
+S123 Phase 1 opens with the backend audit disposition
+([cranelisp-backend S122 audit](../audits/cranelisp-backend-s122.md), R1–R12):
+the S119 option-2 measurement and decision come before
+[ACT-1031](actions/ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md)
+resumes instance fixes. The fundamental panic-propagation fix
+([ACT-1040](actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md))
+belongs with that disposition. The S122 record lists the other carries. LLVM
+stays excluded by user direction.
 
 ### Next increment — coverage assurance and shared standard
 
@@ -206,6 +203,11 @@ Delivered scope, evidence, accepted limitations and carries are retained in
 
 Delivered scope, evidence, accepted limitations and carries are retained in
 [the Sprint 121 record](archive/sprint-121.md).
+
+### Known-issue closure and REPL-agent evaluation — S122 CLOSED 2026-10-02
+
+Delivered scope, evidence, accepted limitations and carries are retained in
+[the Sprint 122 record](archive/sprint-122.md).
 
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 

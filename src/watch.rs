@@ -4,28 +4,65 @@
 // inotify on Linux). Watches parent directories of loaded `.cl` files
 // for reliable editor detection (atomic rename pattern).
 //
-// Per repl/spec.md §14: non-blocking poll before each prompt, content hash
-// comparison to skip metadata-only changes, cascade invalidation for
-// dependents, last-known-good error recovery.
+// Per repl/spec.md §14: non-blocking poll before each prompt, and content
+// state comparison to skip metadata-only changes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
+/// The session's record of each loaded source file's state, keyed by canonical
+/// path: `SharedState.recorded_sources`.
+pub(crate) type RecordedSources = dashmap::DashMap<PathBuf, FileState>;
+
 /// Filesystem watcher for REPL source file change detection.
 ///
-/// Watches parent directories of loaded `.cl` files. Polls for changes
-/// before each REPL prompt via non-blocking `try_recv`. Uses content
-/// hashing (SHA-256) to skip metadata-only changes per repl/spec.md §14.
+/// Watches parent directories of loaded `.cl` files and polls for changes via
+/// non-blocking `try_recv`. It keeps no baseline of its own: a candidate is
+/// changed when its state on disk differs from the session's record of what it
+/// last loaded or wrote (`design/int/repl-lifecycle.md` §1.2, Content hash).
 pub struct FileWatcher {
     watcher: RecommendedWatcher,
     rx: mpsc::Receiver<notify::Result<Event>>,
     watched_dirs: HashSet<PathBuf>,
-    /// Content hashes of watched files. Used to detect actual content changes
-    /// vs. metadata-only events (e.g., `touch foo.cl`). Keys are canonical paths.
-    content_hashes: HashMap<PathBuf, String>,
+    /// Every file this watcher has been asked to watch, by canonical path.
+    seen: HashSet<PathBuf>,
+    /// Files watched for the first time since the last poll. A save that
+    /// landed between the session's read and the directory watch queued no
+    /// event, so the next poll compares each of them with the record.
+    first_sight: HashSet<PathBuf>,
+}
+
+/// The state of a source file (`design/int/repl-lifecycle.md` §1.2, Content
+/// hash): its source hash, or that it exists but cannot be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FileState {
+    Source(String),
+    Unreadable,
+}
+
+impl FileState {
+    /// The state of a file whose content is `source`.
+    pub(crate) fn of_source(source: &str) -> Self {
+        FileState::Source(cranelisp_backend::cache::manifest::hash_source(source))
+    }
+
+    /// The state a read result implies; `None` when the file does not exist.
+    pub(crate) fn of_read(read: &std::io::Result<String>) -> Option<Self> {
+        match read {
+            Ok(content) => Some(FileState::of_source(content)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => Some(FileState::Unreadable),
+        }
+    }
+}
+
+/// The state of `path` now; `None` when it does not exist, which is never a
+/// change: a delete, or the moment between an editor's write and rename.
+fn observe(path: &Path) -> Option<FileState> {
+    FileState::of_read(&std::fs::read_to_string(path))
 }
 
 impl FileWatcher {
@@ -45,7 +82,8 @@ impl FileWatcher {
             watcher,
             rx,
             watched_dirs: HashSet::new(),
-            content_hashes: HashMap::new(),
+            seen: HashSet::new(),
+            first_sight: HashSet::new(),
         })
     }
 
@@ -53,29 +91,19 @@ impl FileWatcher {
     ///
     /// Watches at directory level (not individual files) for reliable editor
     /// detection — many editors save via atomic rename which would lose
-    /// file-level watches.
-    ///
-    /// Records the initial content hash only on first encounter. Subsequent
-    /// calls for the same file skip the hash update to avoid racing with
-    /// `poll_changes` — if `sync_watcher` re-reads a file that was modified
-    /// externally, it would silently overwrite the stored hash, making the
-    /// change invisible to the next poll.
+    /// file-level watches. Records no state: a file seen for the first time
+    /// is only queued for comparison with the session's record at the next
+    /// poll.
     pub fn watch_file(&mut self, path: &Path) {
         let dir = match path.parent() {
             Some(d) if !d.as_os_str().is_empty() => d,
             _ => return,
         };
-
-        // Record the initial content hash only if we haven't seen this file yet.
-        if let Ok(canonical) = path.canonicalize() {
-            if !self.content_hashes.contains_key(&canonical) {
-                if let Ok(content) = std::fs::read_to_string(&canonical) {
-                    let hash = cranelisp_backend::cache::manifest::hash_source(&content);
-                    self.content_hashes.insert(canonical, hash);
-                }
-            }
+        if let Ok(canonical) = path.canonicalize()
+            && self.seen.insert(canonical.clone())
+        {
+            self.first_sight.insert(canonical);
         }
-
         if self.watched_dirs.contains(dir) {
             return;
         }
@@ -86,15 +114,13 @@ impl FileWatcher {
 
     /// Non-blocking poll for changed `.cl` files.
     ///
-    /// Drains all queued events in one pass. Returns `None` if no changes,
-    /// `Some(paths)` with the set of changed `.cl` file paths otherwise.
-    /// Skips `.cl.tmp` files to avoid spurious events during atomic saves.
-    ///
-    /// Per repl/spec.md §14 and design review B-2: reads the file and computes
-    /// its SHA-256 hash, comparing against the stored hash. Only reports changes
-    /// where the content actually differs (skips metadata-only events).
-    pub fn poll_changes(&mut self) -> Option<Vec<PathBuf>> {
-        let mut candidates = HashSet::new();
+    /// Drains all queued events in one pass, adds the files first seen since
+    /// the last poll, and returns those whose state on disk differs from
+    /// `recorded`, or `None` when there are none. Skips `.cl.tmp` files to
+    /// avoid spurious events during atomic saves. The poll never updates the
+    /// record: the reload's own read does.
+    pub(crate) fn poll_changes(&mut self, recorded: &RecordedSources) -> Option<Vec<PathBuf>> {
+        let mut candidates: HashSet<PathBuf> = std::mem::take(&mut self.first_sight);
         while let Ok(event_result) = self.rx.try_recv() {
             if let Ok(event) = event_result {
                 match event.kind {
@@ -114,50 +140,22 @@ impl FileWatcher {
             }
         }
 
-        // Filter candidates by content hash comparison.
-        let mut changed = Vec::new();
-        for path in candidates {
-            if self.has_content_changed(&path) {
-                changed.push(path);
-            }
-        }
-
-        if changed.is_empty() {
-            None
-        } else {
-            Some(changed)
-        }
+        let changed: Vec<PathBuf> = candidates
+            .into_iter()
+            .filter(|path| Self::has_content_changed(path, recorded))
+            .collect();
+        (!changed.is_empty()).then_some(changed)
     }
 
-    /// Check whether a file's content has actually changed since last seen.
-    ///
-    /// Reads the file and computes SHA-256. If the hash differs from the stored
-    /// hash (or no hash was stored), returns true and updates the stored hash.
-    /// If the file cannot be read (deleted between event and check), returns false.
-    fn has_content_changed(&mut self, path: &Path) -> bool {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return false, // File gone (deleted or in-flight); skip.
+    /// Whether `path`'s state on disk differs from its recorded state. A file
+    /// never recorded was never loaded, and a missing file keeps its
+    /// generation: neither is a change (`design/int/repl-lifecycle.md` §1.2,
+    /// Content hash).
+    fn has_content_changed(path: &Path, recorded: &RecordedSources) -> bool {
+        let (Some(state), Some(record)) = (observe(path), recorded.get(path)) else {
+            return false;
         };
-        let new_hash = cranelisp_backend::cache::manifest::hash_source(&content);
-
-        match self.content_hashes.get(path) {
-            Some(old_hash) if old_hash == &new_hash => false, // Same content; skip.
-            _ => {
-                // Content changed (or first time seeing this file).
-                self.content_hashes.insert(path.to_path_buf(), new_hash);
-                true
-            }
-        }
-    }
-
-    /// Update the stored content hash for a file without triggering a reload.
-    ///
-    /// Used by session persistence: after saving `user.cl`, we update the
-    /// hash so the file watcher's next poll sees the saved content as
-    /// "already known" and skips it.
-    pub fn update_content_hash(&mut self, canonical_path: PathBuf, hash: String) {
-        self.content_hashes.insert(canonical_path, hash);
+        state != *record
     }
 
     /// Clear all watched directories and reset the watcher.
@@ -168,7 +166,8 @@ impl FileWatcher {
         for dir in self.watched_dirs.drain() {
             let _ = self.watcher.unwatch(&dir);
         }
-        self.content_hashes.clear();
+        self.seen.clear();
+        self.first_sight.clear();
         // Drain any pending events.
         while self.rx.try_recv().is_ok() {}
     }
@@ -178,83 +177,129 @@ impl FileWatcher {
 mod tests {
     use super::*;
 
-    // ══════════════════════════════════════════════════════════════════════
-    // Harvest from tests/legacy/sprint23.rs (FIXME 0144, S81 W-E /dev int).
-    //
-    // sprint23.rs's watch cluster is filesystem+subprocess (e2e), carried
-    // forward into tests/repl_watch.rs. The int-internal residue is the
-    // content-hash change-detection invariant (repl/spec.md §14): a
-    // metadata-only change (mtime touch, identical content rewrite) must NOT
-    // be reported as a change, and `update_content_hash` must suppress the
-    // self-write. Those are pure `FileWatcher` Rust-API properties — harvested
-    // here adjacent to the code under test. (`FileWatcher::new()` may return
-    // None if the OS notification API is unavailable in the sandbox; the
-    // tests no-op cleanly in that case.)
-    // ══════════════════════════════════════════════════════════════════════
+    /// Bytes that are not UTF-8, so the file exists but cannot be read.
+    const UNREADABLE: &[u8] = b"(defn f [] \xff)\n";
 
-    // spec: repl/spec.md §14 — content hashing skips metadata-only changes:
-    //       rewriting a file with IDENTICAL content (mtime moves, bytes don't)
-    //       MUST NOT be reported as a change; a real content change MUST be.
+    /// A file `name` in `dir` holding `content`, and its canonical path.
+    fn seeded(dir: &Path, name: &str, content: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, content).expect("seed");
+        path.canonicalize().expect("canonicalize")
+    }
+
+    /// Record `path` as the session would after reading it now.
+    fn record_now(recorded: &RecordedSources, path: &Path) {
+        if let Some(state) = observe(path) {
+            recorded.insert(path.to_path_buf(), state);
+        }
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.2; design/int/repl-lifecycle.md
+    // §1.2 (Content hash), §1.3.2 (Watcher state) — against the record, a
+    // same-content rewrite is no change and a real change is, every time until
+    // the record is updated: the poll does not update it.
     #[test]
     fn harvest_content_hash_skips_identical_rewrite_reports_real_change() {
-        let Some(mut w) = FileWatcher::new() else {
-            return; // notify API unavailable in this environment — skip.
-        };
         let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("m.cl");
-        std::fs::write(&path, "(defn f [] 1)\n").expect("seed");
-        let canonical = path.canonicalize().expect("canonicalize");
+        let path = seeded(dir.path(), "m.cl", b"(defn f [] 1)\n");
+        let recorded = RecordedSources::new();
+        record_now(&recorded, &path);
 
-        // First encounter records the baseline hash.
-        w.watch_file(&path);
-
-        // Identical-content rewrite (mtime advances, content does not) — must
-        // NOT count as a change.
-        std::fs::write(&path, "(defn f [] 1)\n").expect("rewrite identical");
+        std::fs::write(&path, "(defn f [] 1)\n").expect("identical rewrite");
         assert!(
-            !w.has_content_changed(&canonical),
-            "identical-content rewrite (metadata-only) MUST NOT be reported as a change"
+            !FileWatcher::has_content_changed(&path, &recorded),
+            "same content"
         );
-
-        // A genuine content change MUST be reported.
-        std::fs::write(&path, "(defn f [] 2)\n").expect("rewrite changed");
+        std::fs::write(&path, "(defn f [] 2)\n").expect("real change");
         assert!(
-            w.has_content_changed(&canonical),
-            "a real content change MUST be reported"
+            FileWatcher::has_content_changed(&path, &recorded),
+            "a real change"
         );
-
-        // After reporting, the new hash is stored: re-checking the same content
-        // is now a no-op.
         assert!(
-            !w.has_content_changed(&canonical),
-            "after a reported change, the updated hash makes a re-check a no-op"
+            FileWatcher::has_content_changed(&path, &recorded),
+            "still a change: only the reload's read updates the record"
         );
     }
 
-    // spec: repl/spec.md §14 + design/int/session-persistence.md §4 —
-    //       `update_content_hash` records the post-save hash so the watcher's
-    //       next poll treats the session's OWN write as already-known and does
-    //       not report it (self-write suppression).
+    // spec: design/int/repl-lifecycle.md §1.2 (Content hash), §1.3.2 (Watcher
+    // state, R1) — a file recorded unreadable at its load, then written
+    // readable, is a change, also when `watch_file` runs before the poll.
     #[test]
-    fn harvest_update_content_hash_suppresses_self_write() {
+    fn unreadable_at_first_watch_then_readable_is_a_change() {
         let Some(mut w) = FileWatcher::new() else {
             return;
         };
         let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("user.cl");
-        let content = "(defn g [] 42)\n";
-        std::fs::write(&path, content).expect("write self-saved file");
-        let canonical = path.canonicalize().expect("canonicalize");
-
-        // Simulate session persistence: compute + register the saved hash.
-        let hash = cranelisp_backend::cache::manifest::hash_source(content);
-        w.update_content_hash(canonical.clone(), hash);
-
-        // The watcher's change check now sees the self-write as already-known.
-        assert!(
-            !w.has_content_changed(&canonical),
-            "a session self-write whose hash was registered MUST NOT be reported \
-             as an external change"
+        let path = seeded(dir.path(), "user.cl", UNREADABLE);
+        let recorded = RecordedSources::new();
+        record_now(&recorded, &path);
+        assert_eq!(
+            recorded.get(&path).map(|s| s.clone()),
+            Some(FileState::Unreadable)
         );
+
+        std::fs::write(&path, "(defn f [] 5)\n").expect("readable save");
+        w.watch_file(&path);
+        assert_eq!(w.poll_changes(&recorded), Some(vec![path]));
+    }
+
+    // spec: design/int/repl-lifecycle.md §1.2 (Content hash), §1.3.2 (Watcher
+    // state, R3) — a recorded file rewritten unreadable is a change; once the
+    // rebuild records unreadable a second unreadable event is not; a deleted
+    // file is not a change; a file never recorded is not a change.
+    #[test]
+    fn unreadable_save_is_a_change_once_and_a_deleted_file_is_none() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = seeded(dir.path(), "user.cl", b"(defn f [] 1)\n");
+        let recorded = RecordedSources::new();
+        record_now(&recorded, &path);
+
+        std::fs::write(&path, UNREADABLE).expect("unreadable save");
+        assert!(
+            FileWatcher::has_content_changed(&path, &recorded),
+            "an unreadable save is a change"
+        );
+        record_now(&recorded, &path);
+        std::fs::write(&path, UNREADABLE).expect("unreadable again");
+        assert!(
+            !FileWatcher::has_content_changed(&path, &recorded),
+            "a repeated unreadable state is not"
+        );
+
+        std::fs::remove_file(&path).expect("delete");
+        assert!(
+            !FileWatcher::has_content_changed(&path, &recorded),
+            "a deleted file is not a change"
+        );
+
+        let other = seeded(dir.path(), "other.cl", b"(defn o [] 1)\n");
+        assert!(
+            !FileWatcher::has_content_changed(&other, &recorded),
+            "a file never loaded is not a change"
+        );
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.2; design/int/repl-lifecycle.md
+    // §1.2 (Content hash), §1.3.2 (One record) — the watcher keeps no
+    // baseline: a file whose state changed before its first sight is a change
+    // at the next poll, with no event queued for it; an unchanged file is not
+    // reloaded at first sight.
+    #[test]
+    fn first_sight_compares_with_the_record_and_keeps_no_baseline() {
+        let Some(mut w) = FileWatcher::new() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let saved = seeded(dir.path(), "saved.cl", b"(defn f [] 1)\n");
+        let unchanged = seeded(dir.path(), "unchanged.cl", b"(defn u [] 1)\n");
+        let recorded = RecordedSources::new();
+        record_now(&recorded, &saved);
+        record_now(&recorded, &unchanged);
+        std::fs::write(&saved, "(defn f [] 1)\n(defn k [] 9)\n").expect("save");
+
+        w.watch_file(&saved);
+        w.watch_file(&unchanged);
+
+        assert_eq!(w.poll_changes(&recorded), Some(vec![saved]));
     }
 }

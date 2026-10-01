@@ -789,8 +789,7 @@ fn main_returning_io_bool_exits_zero_run_and_linked() {
 // Entry-point return type enforcement — batch `main` MUST return `IO _`
 // =============================================================================
 //
-// FAILING-FIRST forcing function (S79). The spec REQUIRES a batch-mode
-// (`--run` / `--link`) `main` to return `IO _`:
+// The spec REQUIRES a batch-mode (`--run` / `--link`) `main` to return `IO _`:
 //   - spec/02-grammar.md §2.1 "Batch Mode" (~line 25): main "returns a value
 //     of type `IO _`".
 //   - spec/10-io.md §10.6 "Entry Point" (~line 244–247): "The return type of
@@ -798,13 +797,8 @@ fn main_returning_io_bool_exits_zero_run_and_linked() {
 //   - spec/12-runtime.md §12.6 "Entry Point" (~line 173): same MUST; exit code
 //     is the inner Int of the resulting `IO Int`.
 // REPL mode is EXEMPT (spec/10-io.md §10.6.2 — no `main` requirement).
-//
-// The compiler currently accepts a bare-`Int` `main` as an unenforced
-// leniency (e.g. `run_mode_main_returns_int_exit_code` above, and the
-// `(defn main [] 42)` corpus in tests/link.rs + tests/build_confidence.rs).
-// This test is RED today: a pure (non-`IO`) batch `main` is NOT yet rejected.
-// It is the forcing function — the suite cannot go green until `main : IO _`
-// is enforced. Un-ignored on purpose (memory/feedback_failing_not_ignored.md).
+// Written RED in S79 while a bare-`Int` `main` was still accepted; the
+// enforcement landed in S80 (`9a0c69e1`, `src/exe.rs::classify_main_return_type`).
 //
 // spec: spec/10-io.md §10.6 (Entry Point) + spec/02-grammar.md §2.1 (Batch Mode)
 // + spec/12-runtime.md §12.6 (Entry Point) — a batch `main` returning a bare
@@ -864,15 +858,6 @@ fn batch_main_pure_int_return_is_rejected() {
 // + spec/12-runtime.md §12.6 (Entry Point) — a batch `main` returning a bare
 // `Bool` (not `IO _`) MUST be rejected with the same `(Fn [] (IO _))`
 // diagnostic as the bare-`Int` case.
-//
-// FAILING-FIRST (RED until the Wave-1 int enforcement lands — the
-// `classify_main_return_type` one-arm deletion in `src/exe.rs`). This is the
-// `Bool`-main rejection subject from the Phase-3 "Mains that STAY non-IO" list:
-// `(defn main [] true)` has type `(Fn [] Bool)`, which violates
-// `main :: (Fn [] (IO _))`. Today the compiler leniently accepts a non-IO main
-// (e.g. `spec_12_runtime::main_returning_non_int_produces_zero_exit_code`
-// certifies the `true` main exits 0). Once enforcement lands, BOTH batch entry
-// modes MUST refuse it with the `(Fn [] (IO _))` error.
 #[test]
 fn batch_main_bool_return_is_rejected() {
     // A pure (bare-`Bool`) main: `(defn main [] true)` has type `(Fn [] Bool)`.
@@ -919,6 +904,44 @@ fn batch_main_bool_return_is_rejected() {
         "--link: rejection MUST name `main` and the `IO _` requirement \
          (spec/10-io.md §10.6, spec/12-runtime.md §12.6).\ncombined:\n{}",
         link_combined
+    );
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5 — the batch refusal of a
+// non-`IO` `main` is located at the user's `main` form: here line 2, so the
+// location is `user.cl:2:…` and never the synthetic `1:1` / `0..0`. The refusal
+// text itself stays as `batch_main_pure_int_return_is_rejected` pins it.
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S122 owner=/dev — provisional: both refusal arms raise at Span::SYNTHETIC; design(int) places the refusal and QA confirms the class
+#[test]
+fn batch_main_non_io_return_refusal_is_located_at_main() {
+    let program = "(import [primitives [Int]])\n(defn main [] 5)\n";
+    let run = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(program)
+        .output();
+    let link = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .link("user.cl")
+        .user(program)
+        .output();
+    let mut wrong = Vec::new();
+    for (mode, out) in [("--run", &run), ("--link", &link)] {
+        let combined = format!("{}{}", out.stdout, out.stderr);
+        let refused = !out.status.success() && combined.contains("main must return `IO _`");
+        let located = combined.contains("user.cl:2:") && !combined.contains("0..0");
+        if !(refused && located) {
+            wrong.push(format!(
+                "--- {mode}: refused={refused} located={located}\nstatus: {:?}\n{combined}",
+                out.status
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the `main must return `IO _`` refusal MUST be located at `main` on line 2 \
+         (`user.cl:2:`), with no synthetic `0..0` span (§5.5)\n{}",
+        wrong.join("\n")
     );
 }
 

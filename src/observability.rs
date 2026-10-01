@@ -158,7 +158,7 @@ pub enum SchedulerTraceTag {
     ReRegisterModule,
     /// `scheduler.reset_module` — Failed → removed (single module).
     ResetModule,
-    /// `scheduler.reset_all_failed_modules` — REPL cascade reset.
+    /// `scheduler.reset_failed_modules` — REPL cascade reset.
     ResetAllFailed,
     /// `scheduler.is_typechecked` returned `true` (fast-path hit — pool
     /// observed as TypecheckDone or Complete).

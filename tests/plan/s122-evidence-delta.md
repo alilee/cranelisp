@@ -1,6 +1,6 @@
 # S122 evidence allocation
 
-Owner: QA. Purpose: give design and test/dev the conditions needed to deliver the approved known-issue closure and REPL-agent eval outcome. Authority: [scope](../../sprints/SPRINT.md), [architecture review](../../sprints/s122-architecture-review.md), existing requirements cited below. Status: **Phase 5. QA's final adequacy is recorded ([K4 record](#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); acceptance and the Phase 5 → 6a transition are the user's.** The [acceptance reconciliation](#phase-5-acceptance-reconciliation-2026-09-27), with the [final disposition](#final-disposition-proposal-2026-09-30) the user approved on 2026-09-30, is the current disposition. The sections after it, including the Phase-3 open conditions, are dated evidence; a later dated judgment supersedes an earlier pending status.
+Owner: QA. Purpose: give design and test/dev the conditions needed to deliver the approved known-issue closure and REPL-agent eval outcome. Authority: [scope](../../sprints/archive/sprint-122.md), [architecture review](../../sprints/s122-architecture-review.md), existing requirements cited below. Status: **Phase 6a. QA's final Phase-5 adequacy is recorded ([K4 record](#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)). On 2026-09-30 the user approved the Phase-5 checkpoint (commit `88bbbd12`), the Phase 5 → 6a transition and the [Phase-5 checkpoint carries](#phase-5-checkpoint-carries-approved-2026-09-30). This is not acceptance of whole-compiler memory safety: ACT-1030 is an open, observed use-after-free.** The [acceptance reconciliation](#phase-5-acceptance-reconciliation-2026-09-27), with the [final disposition](#final-disposition-proposal-2026-09-30) the user approved on 2026-09-30, is the current disposition. The sections after it, including the Phase-3 open conditions, are dated evidence; a later dated judgment supersedes an earlier pending status.
 
 ## Phase 5 acceptance reconciliation (2026-09-27)
 
@@ -11,21 +11,22 @@ identifies: tracked diff `2ee0d8f3…`, untracked list `c00226be…`. The full
 suite, the agent lane, the checkers and both replays ran on that tree. QA read
 their logs and ran no probe or Cargo command.
 
-**Judgment: Phase 5's evidence is adequate. Acceptance is the user's.** The
+**Judgment: Phase 5's evidence is adequate for the approved scope.** The
 user approved the [final disposition](#final-disposition-proposal-2026-09-30)
-on 2026-09-30. Every step of the
+and then the Phase-5 checkpoint on 2026-09-30. Every step of the
 [final test visit](#final-test-visit-k4--settled-delta-2026-09-30) passed its
 gate. The four memory-unsafe corrections approved on 2026-09-30 are adequate,
-and their filings are deleted. None of the corrections is committed yet:
+and their filings are deleted. The corrections and the deletions are committed
+together in the Phase-5 checkpoint `88bbbd12`:
 - ACT-0974, the extern entry convention;
 - ACT-1021, the tail-call branch forward, with ACT-1023 folded in;
 - ACT-1024, the in-place COW on a frame-owned `Var`;
 - ACT-1027, the match seam's COW exception.
 
-The deletions are valid only in the change-set that commits these corrections.
 The [K4 record](#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)
-lists the owner link repairs the commit needs and the decisions left for the
-Phase 5 → 6a checkpoint.
+holds the checkpoint evidence; the
+[checkpoint carries](#phase-5-checkpoint-carries-approved-2026-09-30) hold
+the user's decisions on its residuals.
 K1 is adequate ([K1 adequacy](#k1--bounded-adequacy-2026-09-30)).
 A carried item keeps its filing, its measured observation and its named
 falsifier as the record; its RED is the carried work's first act, as for
@@ -44,7 +45,7 @@ ACT-1015–ACT-1017.
 | Shared test runner (`--test`, `/run-tests`, `/run-all-tests`) | Delivered | [Runner adequacy](#shared-test-runner--final-adequacy-2026-09-28). The user confirmed the delivered public diff on 2026-09-28 |
 | Shared document checker (D7) | Delivered | 0 findings at each S122 check |
 | REPL-agent eval | Delivered | E1 harness accepted; instrument current at `0272a5d9` (G-1). Haiku smoke: 2 of 2 tasks passed, one attempt each (`claude-haiku-4-5-20251001`). This is diagnostic, not a reliability estimate |
-| Known-issue inventory | Incomplete | After the K2 dispositions on 2026-09-30, 45 actions and 32 FIXMEs are live. Of these, 4 actions and all 32 FIXMEs are original filings, so 52 of the 88 are retired; the other 41 actions were filed in S122. These counts predate the later K3 deletions (0708, 0815 and others) and ACT-1021 to ACT-1029. ACT-1023, ACT-1024 and ACT-1027 were deleted on 2026-09-30 after [adequacy](#backend-corrections--bounded-adequacy-2026-09-30), and ACT-0974, ACT-1021 and 0914 after [K4](#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30); their corrections are uncommitted. ACT-1026 and ACT-1028 (ordinary leaks) carry to S123 with approval ([approved delta](#act-1024-with-the-r3-retirement--approved-evidence-delta-2026-09-30)). ACT-1019 (an unreadable entry file), ACT-1020 (the dotted-target file mapping) and ACT-1029 (the alias map overwrite, a memory-unsafe lead whose first probe was not marginal) are new intake with no disposition yet. So is ACT-1030, the use-after-free that probe's control observed. Every other item has a disposition in the [approved final disposition](#final-disposition-proposal-2026-09-30) |
+| Known-issue inventory | Incomplete | After the K2 dispositions on 2026-09-30, 45 actions and 32 FIXMEs are live. Of these, 4 actions and all 32 FIXMEs are original filings, so 52 of the 88 are retired; the other 41 actions were filed in S122. These counts predate the later K3 deletions (0708, 0815 and others) and ACT-1021 to ACT-1029. ACT-1023, ACT-1024 and ACT-1027 were deleted on 2026-09-30 after [adequacy](#backend-corrections--bounded-adequacy-2026-09-30), and ACT-0974, ACT-1021 and 0914 after [K4](#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30); their corrections are committed in `88bbbd12`. ACT-1026 and ACT-1028 (ordinary leaks) carry to S123 with approval ([approved delta](#act-1024-with-the-r3-retirement--approved-evidence-delta-2026-09-30)). ACT-1019, ACT-1020, ACT-1022, ACT-1025, ACT-1029, ACT-1030 and the new ACT-1032 carry under the [checkpoint carries](#phase-5-checkpoint-carries-approved-2026-09-30). Every other item has a disposition in the [approved final disposition](#final-disposition-proposal-2026-09-30) |
 
 **Closed gates.** G-1 is satisfied: the eval instrument was current at
 `0272a5d9` ([T1](#t1--eval-instrument-currency)). G-2 and G-4 are corrected
@@ -185,8 +186,255 @@ Evidence currency, checked 2026-09-30 against later deliveries:
   - Repeat carries in K11 (0747, 0761 and 0891, each at least a second
     deferral) are approved. Where the table says "unknown", no count exists
     and none is inferred.
+- **Phase-5 checkpoint (2026-09-30):** the residuals below carry to S123.
 
 No other item has an approved carry.
+
+#### Phase-5 checkpoint carries (approved 2026-09-30)
+
+The user approved these carries with the Phase-5 checkpoint, as proposed in
+`sprints/archive/sprint-122.md` "Phase-5 checkpoint proposal". QA verified each filing's
+central claim against its `refers_to` source on 2026-09-30, at `88bbbd12`,
+before recording it. Each filing keeps its observation, falsifier and
+completion evidence; its first S123 act is stated below. Deferral counts
+follow the rule above: "unknown" means no count was recorded.
+
+| Item | Class | Package | Filing | First S123 act | Deferral |
+|---|---|---|---|---|---|
+| Cancellation face: a losing `select` or `race` branch holding a `Pure` with a heap payload | E | K7 | [0934](../../design/arch/fixmes/0934-bind-payload-glue-word-dissolves-the-face4-residual.md) | `test`: one armed executing balance observation of the losing heap-payload branch. `concurrency_fanout::fresh_select_in_continuation_rc_balanced` covers a scalar payload only | This face: first. The filing, open since S119: unknown |
+| 0694 Class I, beside the K10 members | E | K10 | [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md) | Bounded attribution: the scrub mode, a single-threaded run at identical load, and the `--link` and REPL faces; otherwise an explicit user residual disposition | Unknown; open since S114 |
+| Worker requeue refused once | L | K10 | [ACT-1025](../../sprints/actions/ACT-1025-worker-requeue-refused-once-intake.md) | `dev`(src): the source read and the self-attributing pool assertion; QA classifies | First |
+| Exemplar warm solve retains 51 | D, ordinary leak | K7 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The ordinary-leak rule's use is confirmed. The RED stays committed and un-ignored; `test` reduces it to a stranded type and site | First |
+| Match-arm branch push reads +2 | L, ordinary leak | K7 | [ACT-1022](../../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) | `test` commits the `MarginalPair` the filing names; QA attributes | First |
+| Unreadable entry file | L | — | [ACT-1019](#act-1019--unreadable-entry-file-closed) | `spec` locates or asks for the requirement; `test` then reduces | First |
+| Dotted CLI entry target file mapping | L (requirements disagree) | — | [ACT-1020](../../sprints/actions/ACT-1020-dotted-entry-target-file-mapping-intake.md) | `spec` returns the user's answer; `test` then reduces | First |
+| Tail-argument ownership and alias shadowing, with leads L2–L7, L9 and L10 (`design/backend/ownership-codegen.md` §13.3) | ACT-1030 D, memory-unsafe (use-after-free); ACT-1029 and the leads L | — | [ACT-1031](../../sprints/actions/ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md), over [ACT-1029](../../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md) and [ACT-1030](../../sprints/actions/ACT-1030-let-wrapped-tail-forward-uaf-intake.md) | The [L6 and R1 cells](#act-1029-r1-probe--t0-control-fault-and-redesigned-delta-2026-09-30), halves observed separately; then the remaining leads against their falsifiers | First |
+| Test-cache directory isolation | E, maintenance | — | [ACT-1032](../../sprints/actions/ACT-1032-test-cache-directory-isolation.md) | `test` identifies every in-place writer and moves each to a fresh directory or `--no-cache` | First |
+
+- **ACT-1030 stays open and observed.** Its guard,
+  `vec_push_match_binder_same_name_shadow`, stays failing and un-ignored. The
+  carry defers the investigation; it does not accept the fault.
+- **Expected REDs at the checkpoint.** ACT-0976, ACT-1018, ACT-1026 D1-M and
+  D1-L, and the ACT-1030 guard. The checkpoint suite ran 6,515: 6,510 pass,
+  5 fail and 1 is skipped (`.local/s122-checkpoint-suite/nextest.log`).
+- **Not a carry.** The intrinsic ownership wording correction (safety
+  register R22) is `arch`'s S122 work.
+
+#### Phase-6a intake: two intrinsics leads (2026-09-30)
+
+`arch` reported both leads during its R22 visit. QA checked each against
+source at `88bbbd12` and ran no probe.
+
+- **`runtime/rc_underflow_check` — latent hazard, filed as
+  [ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md)
+  to `arch`.**
+  - Confirmed: the catalog declares one parameter, but the function takes
+    two. No backend site emits a call to it.
+  - Nothing can observe it, so there is no reproduction and no defect. The
+    public function must be retired or corrected, which needs the
+    public-API user gate.
+- **`ivar_dealloc` does not release the thunk — no defect and no filing.**
+  - Confirmed: `dealloc_ivar` frees the error String and the cell. Only the
+    force that claims the cell releases the thunk (`ivar.rs`).
+  - An unforced cell is never freed. Both emitters, `apply.rs` and
+    `let_if.rs`, call `cranelisp_ivar_spark` right after
+    `cranelisp_ivar_create`. The spark task holds its own reference and
+    releases it only after its own `ivar_force`. So a claiming force always
+    runs before the reference count can reach zero.
+  - Grade: asserted, with a named falsifier. The falsifier is an emitted
+    `cranelisp_ivar_create` that some path releases without sparking or
+    forcing, such as a later spark-cancellation change. The imbalance would
+    show under `CRANELISP_ALLOC_PARITY`.
+  - Routed synchronously to `arch`: state this precondition on the
+    `cranelisp_ivar_create` row of the
+    [named-intrinsic conventions table](../../design/arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics).
+    The row currently leaves the unclaimed case unstated.
+
+#### Phase-6a intake: training and docs leads (2026-09-30)
+
+QA probed each lead with `target/debug/cranelisp`, built after `88bbbd12`
+with no source edits since. Every probe ran in a fresh scratch directory under
+`.local/qa-s122-6a/`; no Cargo build was made. A release binary built on
+2026-09-29 at 09:31, before `e4062202`, served as the regression control.
+
+- **F1 (training): confirmed defect, filed as
+  [ACT-1034](../../sprints/actions/ACT-1034-parametric-impl-instance-body-polymorphic-callee-intake.md).**
+  - A parametric impl's method instance cannot call a polymorphic callee whose
+    instance depends on the impl's type variable.
+  - The refusal is `undefined function: <template>` at codegen. It violates
+    §7.3.3 and §5.4.3, whose canonical example has this shape.
+  - The constraint and self-recursion are not the cause; the controls in the
+    filing establish that.
+  - A3 and C3 add REPL/batch divergences in opposite directions.
+  - The fault predates `e4062202`. The attribution is provisional
+    (`carrier-loss` hypothesis, producer unobserved).
+- **F1 by-product: confirmed defect, filed as
+  [ACT-1035](../../sprints/actions/ACT-1035-repl-concrete-impl-crashes-after-later-parametric-impl-intake.md).**
+  - In the REPL, a parametric impl defined after a concrete impl of the same
+    trait makes calls to the concrete method crash the session with SIGSEGV,
+    in 10 of 10 sessions. `--run` is correct.
+  - This violates REPL §5.1. The fault predates `e4062202`.
+  - Training's reported control, "`(size (Yep 41))` exits 42", holds only in
+    batch mode.
+- **F1 stale records, repaired.**
+  - QA replaced the TB-24 "wrong-reject on HEAD" annotations on
+    `spec/07-traits.md` §7.3.3, §7.3.5 (heading and the Case-1 `(Option a)`
+    row) and `spec/05-definitions.md` §5.4.3. TB-24 was fixed in `3297adf8`
+    (S113), and all three target forms accept and dispatch at HEAD.
+  - Both polymorphic-implementation bands now read partial and cite ACT-1034
+    and ACT-1035.
+  - Routed to `test`, in its own files:
+    - the stale NOTE at `tests/spec_07_traits.rs` above
+      `conventional_impl_exactly_arity_target_accepts_arity_gate_fence`;
+    - the "RED at HEAD" framing and the missing `fixed=` field on the TB-24
+      and MC-TB24b cells;
+    - the "RED today" framing of `spec_10_io.rs::batch_main_pure_int_return_is_rejected`.
+- **F2 (training), entry-module prefix: widens
+  [ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md).**
+  - The entry-module wrapper repeats the span under `module error` and
+    `type error`.
+  - Whether §5.5 governs module-load wrappers is still `spec`'s reading, so
+    this is not yet classified as a defect.
+  - The same probe showed `--run` rendering a dependency's span as a line and
+    column of the entry file, and `--link` rendering `0..0` under three
+    prefixes. Both are recorded in ACT-1017. Its user-approved carry is
+    unchanged.
+- **F2 (training), `main` refusal location: confirmed defect, filed as
+  [ACT-1036](../../sprints/actions/ACT-1036-main-return-refusal-synthetic-location-intake.md).**
+  - `src/exe.rs::classify_main_return_type` raises its codegen-category
+    refusal at `Span::SYNTHETIC`.
+  - Batch output is `p.cl:1:1: error: codegen error at 0..0: main must return …`,
+    even when `main` is on line 2. This violates the first §5.5 bullet and
+    REPL §5.1.
+  - The existing cell `spec_10_io::batch_main_pure_int_return_is_rejected`
+    checks the refusal and its wording, not its location. That is the
+    coverage gap.
+  - Allocation: `test` extends that cell, RED, with `main` on line 2,
+    asserting a location at line 2 and no `0..0`, in both batch modes.
+    `design`(int) chooses the span, and `dev`(src) adds the unit row.
+  - Filed separately rather than folded into 0915: the raise site is in
+    `src/exe.rs`, outside 0915's named obligations, and has its own fix.
+- **FIXME 0915's K9 carry: falsifier fired.**
+  - K9 carried C5 because no public codegen error remained. Its falsifier is
+    "any public codegen error".
+  - ACT-1034's refusal and the `main` refusal are two public codegen errors
+    today:
+    - ACT-1034's has a doubled prefix, a module-doubled subject and a `$`
+      mangle;
+    - the `main` refusal has a `0..0` span.
+  - QA recommends that `sprint` return the K9 carry of 0915 to the user with
+    both witnesses. That filing belongs to `design`, so QA does not edit it.
+- **D1 (docs): confirmed.** The docs leg of 0907 obligation 2 is satisfied
+  (no refusal-era text at `dc78ddbe`, at `88bbbd12` or in the working tree).
+  QA recorded this on 0907.
+
+#### Phase-6a intake: audit and review leads (2026-09-30)
+
+QA probed with `target/debug/cranelisp`, built after `88bbbd12`, in fresh
+directories under `.local/qa-s122-6a/vs/`. The 2026-09-29 release binary was
+the regression control; all three defects below are present in it.
+
+- **Audit F2, `vec-set` bounds: confirmed memory-unsafe defect, filed as
+  ACT-1037 (closed; see [its record](#act-1037--vec-set-bounds-check-closed)).**
+  - On a uniquely held Vec, an index of −1, the length, or beyond corrupts the
+    heap (glibc abort or SIGSEGV). A shared Vec silently ignores the write.
+    `vec-get` panics at the same indices.
+  - The CLIF of a `vec-set` function has no index comparison; the `vec-get`
+    sibling has one.
+  - Coverage gap: no cell asserts either Vec bounds panic. The §12.7.2.1 band
+    now says so.
+  - It returns to the user under the K2 rule. QA recommends an S122 fix.
+- **Review finding 2, trace wrappers: confirmed defect, filed as
+  [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md).**
+  - `(trace (fib 12))` records 2 of 465 `fib` frames. It leaks exactly two
+    blocks per missing frame (926), because `fib`'s own body sparks and the
+    trace-body spark exclusion is only lexical.
+  - `CRANELISP_NO_LENIENT=1` records all 465 frames and balances.
+  - This violates §4.12.2 items 2 and 3.
+- **Found while attributing ACT-1038: filed as
+  [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md).**
+  - Under `--run`, a trace records no user-function frames. The REPL records
+    5 for `(trace (fib 3))`, and the committed `--link` cell records `work`.
+  - The attribution is provisional.
+- **Review "outside this diff", catalog signatures: latent, no defect.**
+  Recorded by widening
+  [ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md).
+  - No backend site emits `runtime/string_read`.
+  - All four `runtime/panic` sites discard the declared result.
+  - The common cause is hand-copied signatures. A derived signature is the
+    preferred control.
+- **Bands (annotation brackets only).**
+  - `spec/12-runtime.md`: the §12.7.2.1 heading and its Vec bounds row.
+  - `spec/04-expressions.md`: §4.12, §4.12.2, §4.12.3 and §4.12.9.
+- **Vocabulary.** `missing-runtime-check` is added to the `class=` list in
+  `tests/CLAUDE.md`, for ACT-1037.
+
+#### Phase-6b intake: the panic sentinel and test's RED questions (2026-09-30)
+
+QA probed with a copy of `target/debug/cranelisp` built after `88bbbd12`, while
+`dev`(backend) worked on ACT-1037. Each session ran in a fresh directory under
+`.local/qa-s122-6b/sentinel/`. The 2026-09-29 release binary was the
+regression control. QA ran no Cargo command.
+
+- **`design`(backend) lead, panic sentinel: confirmed memory-unsafe defect,
+  filed as
+  [ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md).**
+  - A panic in a callee returns `0`, and a caller that uses the result as a
+    heap value dereferences it. The process dies with SIGSEGV in the REPL,
+    `--run` and `--link`, and inside `catch-runtime-error`.
+  - The fault reproduces through a division-by-zero site and on a pure
+    release of the sentinel.
+  - Confirmed at the CLIF seam, with controls that each change the panic
+    frame, the consumer type or the index. It predates S122.
+  - It returns to the user as a fix decision. QA recommends committing the RED
+    now and having `design`(backend) cost the propagation mechanism first.
+  - New class `unpropagated-panic`.
+- **Found in ACT-1040's control, filed as
+  [ACT-1041](../../sprints/actions/ACT-1041-batch-runtime-panic-reported-as-codegen-error-intake.md).**
+  - `--run` reports an uncaught panic as `codegen error at 0..0` with a
+    doubled `runtime panic:` prefix. It is a second reader of the panic slot.
+  - §12.7.5 and REPL §10.3 R8 disagree on the prefix; that question goes to
+    `spec`.
+  - A third witness for 0915's K9 falsifier.
+- **Found in C1: widens
+  [ACT-0985](../../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md).**
+  - In one batch cluster, an impl body is refused when the impl it needs is
+    declared later. That is a §5.13.1 `wrong-reject`.
+  - The RED is allocated now; the approved carry defers only the correction.
+- **Test's open questions.**
+  - *ACT-1037 R4 locus:* `vec_set_copy` is accepted. The shared arm's silent
+    drop lived there, and a locus records where the bug lived.
+  - *ACT-1034 C1, batch-only:* accepted. With the parametric impl first,
+    every mode refuses the body (ACT-0985). With `impl Size Int` first, the
+    REPL crashes (ACT-1035). The filing's earlier REPL value of 42 did not
+    reproduce and is repaired. C2 carries the REPL control, and C1 gains a
+    REPL leg with ACT-1035's correction.
+  - *Class labels:* ACT-1038's `shared-state-write-race` is confirmed, and
+    the "provisional" suffix goes. The other labels stay provisional, each
+    with a named re-class point:
+    - ACT-1034's `carrier-loss` stays until the producer is observed.
+    - ACT-1035's `mode-divergence` is a face; the candidate mechanism class
+      is `null-got-slot`.
+    - ACT-1036's `check-gate-leak` stands if `design`(int) moves the refusal
+      check-side. If the refusal only gains a span, QA re-classes it.
+    - ACT-1039's `mode-divergence` becomes `enumeration-miss` if the wrapper
+      set is shown to omit the user module's slots.
+  - *ACT-1038 frame-count premise:* yes. A cheap premise leg on an untraced
+    child (`CRANELISP_SPARK_STATS` spawns > 0) stops a change to spark
+    admission from silently emptying the guard. Its detection is shown in
+    both directions (14 spawns lenient; no stats line with
+    `CRANELISP_NO_LENIENT`). Recorded on ACT-1038.
+- **Bands (annotation brackets only).**
+  - `spec/12-runtime.md`: §12.7, §12.7.2, §12.7.2.1 and its Vec bounds row,
+    §12.7.5, and §12.7.8 with items 1–5.
+  - `spec/07-traits.md` §7.3.3 and `spec/05-definitions.md` §5.4.3.
+  - `spec/04-expressions.md`: §4.12.2, §4.12.3 and §4.12.9.
+  - `repl/spec/05-error-presentation.md`: §5, §5.1 and §5.5.
+  - Three headings had claimed `[Tested]` over untested children: the
+    runtime Error Model and Runtime Panics headings, and the REPL Error
+    Presentation heading. Each now carries its lowest child's level.
+- **0907 obligation 2, training leg: satisfied.** Examples 21 and 23 carry no
+  refusal-era text in the working tree. Recorded on 0907.
 
 #### K3 — QA-owned records (2026-09-30)
 
@@ -302,7 +550,7 @@ Review dispositions:
   - `design`(int): the int §6.1.1 status and its line naming the renamed
     session test (the `dev` report).
 - **Residual.** An unreadable entry registers as empty:
-  [ACT-1019](../../sprints/actions/ACT-1019-unreadable-entry-file-registers-empty-intake.md),
+  [ACT-1019](#act-1019--unreadable-entry-file-closed),
   class L, with no requirement located. It and ACT-1020 go into the Phase 5 →
   6a presentation, not a separate question cycle.
 
@@ -558,7 +806,8 @@ No ACT-1025 worker RED and no 0694 member recurred.
   uncommitted, as is 0914's `handle_mem` change and its mirrors. These
   deletions are valid only in the change-set that commits them. If a
   correction does not land with its deletion, QA re-files the filing from the
-  [retained record](#retained-records-of-the-deleted-filings).
+  [retained record](#retained-records-of-the-deleted-filings). Satisfied: the
+  corrections and deletions landed together in `88bbbd12`.
 
 **Tree currency after the visit.** QA's deletions and plan edits change
 Markdown records only, and so do the owner link repairs below. No compiled,
@@ -604,7 +853,10 @@ three links and nothing else.
   confirms the `examples/` and `exemplar/` writers in a full run. The intake
   remains a Phase 5 → 6a presentation item and blocks no compiler acceptance.
 
-**For the Phase 5 → 6a checkpoint.**
+**For the Phase 5 → 6a checkpoint.** Decided by the user on 2026-09-30: the
+checkpoint is committed as `88bbbd12`, and the residuals below carry under the
+[checkpoint carries](#phase-5-checkpoint-carries-approved-2026-09-30). The
+list is kept as the record of what was presented.
 - **Blocks the commit (mechanical; no decision needed).**
   - The three owner link repairs above.
   - Then 0 findings from the document checker on the committing tree.
@@ -624,8 +876,8 @@ three links and nothing else.
     its disposition.
 - **Unchanged approved carries.** ACT-1026 (D1 at marginal 1, W-M at 1) and
   ACT-1028, as ordinary leaks to S123.
-- **Routing only.** The in-place cache writers and the stale 0913 narration,
-  both to `test`.
+- **Routing only.** The in-place cache writers (now carried as ACT-1032) and
+  the stale 0913 narration, both to `test`.
 
 ##### Retained records of the deleted filings
 
@@ -1895,8 +2147,9 @@ condition and the ACT-1024 scope are unchanged. The QA report is
     listed directories;
   - the unidentified writers of the `examples/` and `exemplar/` caches.
 
-  Every later purge also removes that fixture's cache. Each writer is a
-  Phase 5 → 6a presentation item. None blocks compiler acceptance.
+  Every later purge also removes that fixture's cache. None blocks compiler
+  acceptance. The repair carries to S123 as
+  [ACT-1032](../../sprints/actions/ACT-1032-test-cache-directory-isolation.md).
 
 **`mode_gating_guard::mode_gating_origins_are_allowlisted`: maintenance
 drift, not behaviour.**
@@ -2230,12 +2483,12 @@ The source is `.local/s122-persistence-review-result.md`.
 
 ##### F2 — the one user choice
 
-**Decided 2026-09-27: fix now** ([SPRINT](../../sprints/SPRINT.md), "Mixed-section
+**Decided 2026-09-27: fix now** ([SPRINT](../../sprints/archive/sprint-122.md), "Mixed-section
 begin repair approved"). The carry branch was not taken. The G-2/G-4
 correction was adequate without an F2 fix; the choice weighed:
 
 - **Risk.** Round trip held and the copy count was bounded, but the file was
-  less faithful to what the user wrote (§15.4 rule 7). An unprobed hazard
+  less faithful to what the user wrote (§15.4, the authorship-intent note after rule 6). An unprobed hazard
   (source read): an external edit of the first copy loses to the older second
   copy, which loads after it.
 - **Fix now, as delivered.** §1.4's single authored-form dedup extends to every
@@ -2276,7 +2529,7 @@ The outcome is [F2 correction — adequacy](#f2-correction--adequacy-2026-09-27)
 | ID | Condition and plausible wrong outcome | Layer, owner, class | Criteria |
 |---|---|---|---|
 | PC-7, PC-7m | **Retired 2026-09-27 as unconstructable.** Both needed a renamed import, which no build parses (F1). Their renamed-type and renamed-trait persistence conditions move to ACT-0997's correction | — | — |
-| PC-8 | **A `begin` spanning sections is written once (design §1.4; §15.4 rule 7 intent).** Wrong outcome: the type and impl sections each emit the shared form. Round trip is not the discriminator, because the duplicate reloads cleanly | e2e, `test`, `tests/repl_persist.rs` §15.4. Acceptance (the fix was taken) | REPL: `(deftrait Show (show [self] primitives/Int))`, then `(begin (deftype Token MkToken) (impl Show Token (defn show [_] 41)))`, then `(defn g [] 1)`. `user.cl` holds exactly one `(begin`. After removing the cache, a cold restart gives `(show MkToken)` 41 and `(g)` 1. Add a leg that seeds `user.cl` with the same `begin`, then defines `g`: again exactly one `(begin`. Both legs were RED before the fix; [outcome](#f2-correction--adequacy-2026-09-27) |
+| PC-8 | **A `begin` spanning sections is written once (design §1.4; §15.4 authorship-intent note).** Wrong outcome: the type and impl sections each emit the shared form. Round trip is not the discriminator, because the duplicate reloads cleanly | e2e, `test`, `tests/repl_persist.rs` §15.4. Acceptance (the fix was taken) | REPL: `(deftrait Show (show [self] primitives/Int))`, then `(begin (deftype Token MkToken) (impl Show Token (defn show [_] 41)))`, then `(defn g [] 1)`. `user.cl` holds exactly one `(begin`. After removing the cache, a cold restart gives `(show MkToken)` 41 and `(g)` 1. Add a leg that seeds `user.cl` with the same `begin`, then defines `g`: again exactly one `(begin`. Both legs were RED before the fix; [outcome](#f2-correction--adequacy-2026-09-27) |
 
 **Not allocated.**
 
@@ -2444,7 +2697,7 @@ regression; qualified calls failed before the G-7 fix.
   declaration, not the written spelling. No public-API or schema change.
 - **Basis.** The uncommitted tree on `0272a5d9`. The six hashes in
   `.local/s122-act0999-dev/post-fix-hashes.txt` match the tree; of the 39 suite
-  inputs, only `design/typecheck/traits.md` (review R-1) and `sprints/SPRINT.md`
+  inputs, only `design/typecheck/traits.md` (review R-1) and `sprints/archive/sprint-122.md`
   changed after the full run. `tests/spec_07_traits.rs` is byte-identical to
   the file that recorded the RED.
 
@@ -2633,7 +2886,7 @@ regression; qualified calls failed before the G-7 fix.
 | D5 — platform collision reachability | Distinguish a string-mint collision from an accepted two-module loaded/linkable program; establish current accepted names and coexistence before choosing refusal or reminting. | QA/test, arch |
 | D6 — live eval execution | Select provider/model/endpoint, allowed fixture disclosure, autonomy/consent, repeat count and request/time/spend budget. This gates live calls, not harness implementation. | user through sprint |
 | D8 — primitives construction/traversal/transfer | Approved by the user on 2026-09-10: the exact limited private trusted-base amendment in [the allocation packet](../../sprints/s122-primitives-allocation-proposal.md). Source implementation and executing evidence remain pending. The one bundle covers `adopt_produced_value` including the existing error sentinel, parent-lifetime `borrowed_field`, and exact ADT/Vec storage exits. Final primitives mapping is reviewed: 19 functions/20 adoption sites, six borrow projections, four storage exits. It expands private trusted sites with no new public API. | arch/design propagate the approved contract; dev/test realize under Phase-5 reservations and subsequent closure gates |
-| D7 — shared document-checking pilot | Approved on 2026-09-10 under [SPRINT scope](../../sprints/SPRINT.md): replace the narrow four-root proposal with the shared mechanism pilot below. The shared checker is integrated as the project gate ([adequacy](#d7-integrated-project-gate--adequacy-and-remaining-conformance)); project document conformance remains RED pending owner repairs and any specifically approved exceptions. Magic cutover and upstream publication are not approved here. | sprint coordinates shared-tool/project owners under Phase-5 reservations and subsequent closure gates |
+| D7 — shared document-checking pilot | Approved on 2026-09-10 under [SPRINT scope](../../sprints/archive/sprint-122.md): replace the narrow four-root proposal with the shared mechanism pilot below. The shared checker is integrated as the project gate ([adequacy](#d7-integrated-project-gate--adequacy-and-remaining-conformance)); project document conformance remains RED pending owner repairs and any specifically approved exceptions. Magic cutover and upstream publication are not approved here. | sprint coordinates shared-tool/project owners under Phase-5 reservations and subsequent closure gates |
 
 The existing `safe-dial` record supplies a task shape, not exact prompts, input data or expected answers. Bounded repository search found no full transcript. It is unavailable for replay and is not a prerequisite: the initial corpus below uses actual compiler-use cases, explicitly adapted into assistance prompts.
 
@@ -2724,7 +2977,7 @@ Reuse the existing stub DSL/provider. Test the runner's shared launch/grader pat
 
 ## Approved shared document-checking pilot — ACT-0950
 
-The user approved the replacement D7 scope on 2026-09-10; [SPRINT.md](../../sprints/SPRINT.md) is the scope authority. One offline shared `.agents` tool consumes project declarations, independently discovers all project-owned nonignored Markdown, checks establishment to root `CLAUDE.md` or justified exemptions, and checks document references, anchors and sections while preserving Cranelisp source-citation checks. Validate the candidate against both repositories read-only, then adopt it in Cranelisp and repair findings. Magic edits and upstream publication need subsequent approval. There is no blanket residual baseline migration.
+The user approved the replacement D7 scope on 2026-09-10; [SPRINT.md](../../sprints/archive/sprint-122.md) is the scope authority. One offline shared `.agents` tool consumes project declarations, independently discovers all project-owned nonignored Markdown, checks establishment to root `CLAUDE.md` or justified exemptions, and checks document references, anchors and sections while preserving Cranelisp source-citation checks. Validate the candidate against both repositories read-only, then adopt it in Cranelisp and repair findings. Magic edits and upstream publication need subsequent approval. There is no blanket residual baseline migration.
 
 This supersedes the narrow four-target-root proposal; measurements taken with the retired citation script do not describe the delivered checker's corpus or findings. Delivery state is recorded under [D7 integrated project gate](#d7-integrated-project-gate--adequacy-and-remaining-conformance).
 
@@ -2864,7 +3117,7 @@ No new tests, source implementation or builds were performed for this delta.
 QA records the following owner execution evidence on 2026-09-10 against HEAD
 `dc78ddbe` plus the evolving S122 working tree; it is not a pristine-checkpoint
 rerun or a QA build. Current reservations/status are in
-[SPRINT.md](../../sprints/SPRINT.md).
+[SPRINT.md](../../sprints/archive/sprint-122.md).
 
 | Surface | Available evidence and bounded credit |
 |---|---|
@@ -3089,7 +3342,7 @@ and its caller disposes exactly89 once. The scoped barrier releases on unwind
 and normal execution waits for the worker handoff to finish. This directly
 satisfies ACT0956's deterministic ready-state, exact-value/once and winner
 criteria; no additional public test or runtime mechanism is required. Root subsequently verified the source and resolved/deleted ACT0956; the durable
-[closure record](../../sprints/SPRINT.md#select-ready-loser-evidence-closure)
+[closure record](../../sprints/archive/sprint-122.md#select-ready-loser-evidence-closure)
 retains its disposition independently of the unrelated guard finding.
 
 Q3's shared-parent module RED now turns GREEN with its unique control and final
@@ -3966,7 +4219,7 @@ helper removal above.
 ### In-scope candidate display — listing rule
 
 Class: acceptance evidence for the user ruling recorded in
-[SPRINT](../../sprints/SPRINT.md) §"In-scope introspection — current ruling",
+[SPRINT](../../sprints/archive/sprint-122.md) §"In-scope introspection — current ruling",
 as `spec` records it in `repl/spec/04-self-documentation.md` §4.1.11 and
 `repl/spec/03-slash-commands.md` §3.8. Delivered and observed; the listing
 rule's requirement rows carry the cells below as their bands.
@@ -4126,7 +4379,7 @@ listing rule and the qualified lead.
 ## Reuse of an IO value — defect allocation
 
 Authority: the user's ruling of 2026-09-21, recorded at the
-[reuse checkpoint](../../sprints/SPRINT.md) and scribed in `spec/10-io.md`
+[reuse checkpoint](../../sprints/archive/sprint-122.md) and scribed in `spec/10-io.md`
 §10.8.1: IO values are reusable descriptions of work; every forcing is
 interpreted as the first is; refusing a reused `Pure` is a compiler defect;
 memory safety is preserved while ownership is corrected, and removing the guard
@@ -4689,12 +4942,19 @@ reports.
 
 ## Startup recovery and failed-source retention — evidence delta (2026-09-22)
 
+**Superseded (2026-10-01).** §15.2.3 no longer retains failed source or
+admits repair at the prompt; the
+[session-lock delta](#session-lock-quit-status-and---test-environment--evidence-delta-2026-10-01)
+governs. The failed-form carrier and the unit cells named below were removed
+with it; their names are kept as the record of what was evidenced then.
+
 Authority: [session persistence](../../repl/spec/15-session-persistence.md)
 §15.2.3 (restored by user ruling), §15.1's retention exception and the
 [redefinition](../../repl/spec/18-redefinition.md) §18.8 exception clause;
 their bands are restored below. The `dev`-owned unit cells that trace to
-§15.2.3 (`src/session_v4/lifecycle.rs::append_failed_forms_reemits_verbatim_and_is_noop_when_empty`,
-`src/session_v4/persistent_worker_tests.rs::reload_success_drops_failed_forms_and_error_block`
+§15.2.3 (`append_failed_forms_reemits_verbatim_and_is_noop_when_empty` in
+`lifecycle.rs`, `reload_success_drops_failed_forms_and_error_block` in
+`persistent_worker_tests.rs`
 and `…::reset_command_retains_failed_forms_and_their_error_block`) neither
 drive a real startup nor read the regenerated file back. Three `test`-owned
 solution cells sit at the end of `tests/repl_persist.rs`
@@ -4705,7 +4965,7 @@ exact envelope.
 
 | Condition / class | Plausible wrong outcome | Lowest discriminating observation |
 |---|---|---|
-| R1 A — a persisted file with one good definition and one definition referencing an undefined name reaches a `user>` prompt and reports the load error. §15.2.3 requires that a report exists; it prescribes neither the report's format nor that it names the file or symbol. | Exit before the prompt (the closed 0489 lockout), or a silent load with no report. | Cell A, session 1: seeded broken file, `assert_ok`, prompt present, report present. Detect the report by the substring the implementation emits today (`[errors: user.cl]`, `src/session_v4/lifecycle.rs::render_startup_error_report`) and mark that substring implementation-specific in the cell: a format change updates the cell, it is not a spec violation. |
+| R1 A — a persisted file with one good definition and one definition referencing an undefined name reaches a `user>` prompt and reports the load error. §15.2.3 requires that a report exists; it prescribes neither the report's format nor that it names the file or symbol. | Exit before the prompt (the closed 0489 lockout), or a silent load with no report. | Cell A, session 1: seeded broken file, `assert_ok`, prompt present, report present. Detect the report by the substring the implementation emits today (`[errors: user.cl]`, then rendered by `render_startup_error_report` in `lifecycle.rs`) and mark that substring implementation-specific in the cell: a format change updates the cell, it is not a spec violation. |
 | R2 A+Neg — while blocked, an ordinary expression is refused; the good definition's value is not produced for that turn. | The expression evaluates; the block is decorative. | Cell A: `(good 1)` before repair yields a refusal line and no `:primitives/Int` envelope for that turn. |
 | R3 A — a definition turn redefining the broken name is accepted and clears the block; the repaired name and the good name then evaluate. | The definition is refused, or the block outlives the repair. | Cell A, same session: `(defn broken [] 2)`, then `(broken)` → `:primitives/Int 2`, `(good 1)` → its value, no further refusal. |
 | R4 A+Neg — after a broken-file restart, a successful definition of a *different* name regenerates the backing file with the broken form's text still present verbatim. | The user's example: the broken definition disappears on the next save. | Cell B, session 1: `(defn other [] 3)` then EOF; `read_tmp("user.cl")` contains the seeded broken form text exactly once and `defn other`. |
@@ -4714,8 +4974,8 @@ exact envelope.
 Existing evidence to extend: `persist_defn_survives_restart_via_user_cl`
 (restart shape), `persist_failed_import_not_written_to_backing_neg` (the §15.1
 never-written rule for interactive failures, unchanged). Module evidence stays
-dev-owned and is not re-allocated: `src/repl/mod.rs::definition_and_structural_turns_pass_the_carve_out`
-(carve-out decision), the append_failed_forms tests in `src/session_v4/lifecycle.rs`
+dev-owned and is not re-allocated: `definition_and_structural_turns_pass_the_carve_out`
+in `src/repl/mod.rs` (carve-out decision), the append_failed_forms tests in `src/session_v4/lifecycle.rs`
 (verbatim re-emission) and `persistent_worker_tests::reload_success_drops_failed_forms_and_error_block`
 (§14.6 reload authority, mixed with §15.2.3). The no-silent-drop and
 repair-direction traces already cite §15.2.3 (`lifecycle.rs:1428, 2955`,
@@ -6149,7 +6409,7 @@ unstripped batch legs give IOT-B its authority.
 
 - The user's approval of the exact API and schema, and of module-wide
   insert-only maintenance
-  ([sprint record](../../sprints/SPRINT.md#lookup-dependency-implementation-approval--2026-09-26)).
+  ([sprint record](../../sprints/archive/sprint-122.md#lookup-dependency-implementation-approval--2026-09-26)).
 - The boundary design, [interfaces §Qualified lookup dependencies](../../design/arch/interfaces.md#qualified-lookup-dependencies):
   the recorded modules are validity edges, not load edges.
 - The opening rule of [`int.md` §7.6](../../design/int/int.md#76-dependency-record-and-validity).
@@ -8101,7 +8361,7 @@ if a change alters a message, a reader's scope or T1's condition.
 [§16.1, §16.2 and §16.6](../../repl/spec/16-test-discovery.md);
 [`design/int/test-runner.md`](../../design/int/test-runner.md); the approved
 `run_tests`/`TestRunReport` delta; and the 2026-09-28 rulings in
-[SPRINT](../../sprints/SPRINT.md). `/run-tests`, `/run-all-tests` and `--test`
+[SPRINT](../../sprints/archive/sprint-122.md). `/run-tests`, `/run-all-tests` and `--test`
 are one runner. They differ only in selection and in what the host does with
 the report. No condition below treats a shared behaviour as mode policy.
 ACT-0988 keeps configurable selection and failure diagnostics.
@@ -8997,6 +9257,11 @@ allocated.
 
 ## Failed-reload lock and removed definitions — evidence delta (2026-09-29)
 
+> **Superseded (2026-10-01).** This section and the records after it cite
+> "§14.5 item 5", the per-module lock. The session lock replaced it; its
+> conditions are in
+> [Session lock — evidence delta](#session-lock-quit-status-and---test-environment--evidence-delta-2026-10-01).
+
 **Basis.** Checkpoint `63605970`: 6336 passed, 1 skipped. QA read the source
 and ran nothing. The session could not execute the binary, so no probe ran.
 
@@ -9007,7 +9272,7 @@ and ran nothing. The session could not execute the binary, so no probe ran.
 - REPL §14.2 step 2 ([file watching](../../repl/spec/14-file-watching.md)),
   for ACT-1007.
 - The user's 2026-09-29 ruling
-  ([SPRINT](../../sprints/SPRINT.md#general-failed-file-policy--2026-09-29)),
+  ([SPRINT](../../sprints/archive/sprint-122.md#general-failed-file-policy--2026-09-29)),
   as `spec` recorded it in the working tree. Its reports are
   `.local/s122-failed-reload-policy-spec-result.md` and
   `.local/s122-failed-reload-restart-spec-result.md`; the second adds the
@@ -9876,7 +10141,8 @@ Each is named with its falsifier. None is a blanket carry.
   - A: a declared submodule lost to a root module;
   - B: an import alias created a module.
 - **Resolution:**
-  - the module lock ([REPL lifecycle §1.3.1](../../design/int/repl-lifecycle.md#131-module-lock));
+  - the module lock, since superseded by the session lock
+    ([REPL lifecycle §1.3.1](../../design/int/repl-lifecycle.md#131-session-lock));
   - [int §8.5.1](../../design/int/int.md#851-mod-target): shared
     bare-name resolution, load through the language's dependency path, and
     no creation.
@@ -10547,3 +10813,1373 @@ Pass-0 fail-fast and §6.12's helper-end outcome.
   - The helper-end row went RED, then GREEN, and both allocated plants turn
     it RED (above).
 - QA deleted ACT-1014; this subsection is its record.
+
+## ACT-1037 `vec-set` index guard — adequacy and Phase-6b intake (2026-10-01)
+
+**Authority.** `spec/12-runtime.md` §12.7.2.1 and §12.7.8 items 4 and 5;
+[s122-closure §9](../../design/backend/s122-closure.md#9-act-1037--vec-set-index-guard)
+and [backend §7](../../design/backend/backend.md#7-runtime-failure), "One Vec
+index guard".
+
+**Basis.**
+
+- **Source.** `88bbbd12` plus the Phase-6 working tree; the ACT-1037 change is
+  private to `crates/cranelisp-backend/src/compiler/`.
+- **Review.** `.local/s122-6a/review3-result.md`: no blocking finding. Both
+  of `dev`'s deviations are accepted. Finding 1, the design record, is
+  `design`'s; advisory 3 is consumed below.
+- **Pre-fix record.** `.local/s122-6b-test-focused.log` (2026-09-30 22:05).
+- **Runs.** QA's focused runs on 2026-10-01 against the current build, with
+  `/tmp` at 24 MB free: nextest `0e596ae5…` and `345164c1…`. `test`'s W3
+  focused run `1283700a…` (367 of 379; the 12 failures are the intended
+  REDs) is reported, not stored: nextest keeps no run record here.
+
+**Judgment.** ACT-1037 is adequately evidenced and **closed**. Every
+completion criterion is met: each cell went RED for the intended reason and is
+GREEN after the correction, in every mode, and C1 and C2 still pass. The
+`--link` leg's GREEN rests on `test`'s W3 run (limits below).
+
+### Executed evidence
+
+| Evidence | Pre-fix | Post-fix | Class |
+|---|---|---|---|
+| Five REPL cells: unique `9`, `-1`, `3`; shared `9`; heap elements `5` | all FAIL (22:05 log) | all PASS (`0e596ae5`) | Acceptance, §12.7.2.1 |
+| `vec_set_dynamic_out_of_range_index_panics_in_every_mode` | FAIL in all three modes, each observing `3` (the unchecked write) | REPL and `--run` observe `77` (`345164c1`); `--link` observed by `test`'s W3 run | Acceptance, §12.7.2.1 in every mode |
+| C1 `vec_get_index_past_length_panics_and_session_continues`; C2 `vec_set_in_range_index_writes_without_panic_neg`; the in-range every-mode control | PASS | PASS (the `--link` leg of the control as above) | Detection and silent legs of the predicate |
+| Backend module cells: `index_guard_tests` (8), the wrapper cells, `vec_set_copy_path_panics_out_of_range`, the COW polarity and `vec_set_rc` rows | the new cells were not run pre-fix | 101 of 101 PASS (`0e596ae5`) | Module evidence |
+| `clif_golden_lane_no_drift` after `test`'s re-baseline | — | PASS | Maintenance check; `test` reports the diff as guard-only |
+
+- The one failure in `0e596ae5` is the ACT-1040 `vec-set` sibling,
+  `callee_vec_set_bounds_panic_with_vec_consumer_is_reported`. It is RED for
+  its intended reason (SIGSEGV), as §9.2 predicts.
+- QA's `--link` legs failed with `No space left on device` from the linker in
+  `/tmp`. That is environmental. It is not a product observation in either
+  direction.
+
+### Limits
+
+- **Pre-fix module RED is not observed (review advisory 3).**
+  `index_guard_tests.rs` uses the new three-case type, so it cannot compile
+  on the pre-fix tree. No pre-fix run of the runnable module cells (the copy
+  path and value-position cells) is recorded. QA does not claim their RED.
+  - **Why this is sufficient.** The independent e2e cells observed RED then
+    GREEN for each case the guard serves: proven-unique (the literal cells),
+    known-shared (R4) and a compiled function with a dynamic index. Coverage
+    of every lowering is structural: one core opens with the guard, and
+    `vec-set-copy` has one emission site (verified by `review` at source).
+  - **Not re-established.** Running the module cells against the pre-fix
+    source needs a source revert, which is not `qa`'s. A second detection
+    proof would add no discrimination beyond the e2e cells.
+- **The `--link` GREEN is `test`'s observation.** W4's full suite
+  re-observes it. A RED there is a regression and new intake, not a
+  reopening of this record.
+- **The dynamic-rc-probe case has no e2e cell.** Its guard is the shared
+  opening of the core; its module cell is
+  `dynamic_vec_set_on_a_shared_source_panics_out_of_range`.
+- **The heap-element leak on a panic**, where `compile_vec_set` raises the
+  new element's count before the guard (review advisory 2), is permitted by
+  §12.7.8 item 4. It is not a condition.
+
+### Coverage-gap attribution
+
+The §12.7.2.1 row had been `[S18]` since S18, and no cell called `vec-set`
+out of range. The gap was per-operation: the row names two operations, and
+evidence existed for neither, so no single missing cell looked like a hole.
+The systematic control is the rule in §Traceability that each operation in a
+row gets its own evidence. The same reading of §12.7.2.1 found the stack
+overflow row still untested. The division row was evidenced by
+`uncaught_runtime_panic_surfaces_message_and_clean_exit_run` and is now
+annotated. Stack overflow stays `[S18]`; it is implementation-defined and no
+risk is allocated to it now.
+
+### Intake
+
+- **(a) Scalar-result callee panics: filed as
+  [ACT-1042](../../sprints/actions/ACT-1042-callee-panic-with-scalar-result-resumes-caller-intake.md).**
+  - `design`(backend)'s Q1 (a loop driven by a panicking helper's `Int`
+    result hangs the REPL) and Q2 (a later panic replaces the first message).
+  - The mechanism is ACT-1040's, reached through a result whose `0` is a
+    value. The overwrite is confirmed at `panic.rs::runtime_panic`, which,
+    unlike the ferry's `set_runtime_error`, does not keep the first error.
+  - Not memory-unsafe. Option A0 does not close it; option A does.
+  - The REDs are allocated now; the fix follows the user's ACT-1040 decision.
+  - QA did not re-probe (running the binary was unavailable). The filing
+    names the in-frame discriminator for `test`.
+- **(b) `lenient_vec_map_reduce_parallelizes` missed its threshold in 2 of 3
+  runs under external CPU load: no defect.**
+  - The cell already follows the speedup-witness rule in §Traceability:
+    best of four attempts, a 0.7 margin against about 3× measured in
+    isolation, and value equality on every attempt.
+  - Its premise is idle cores. External load that saturates them for the
+    whole cell removes the speedup it measures, and no number of attempts
+    restores it. The observation is outside the premise.
+  - No Phase-6 change reaches the path. The workload uses only `vec-get` and
+    `vec-len`, whose emission the ACT-1037 cells pin byte-identical, and the
+    `apply.rs` and `entry_convention.rs` edits are comments. It passed in the
+    checkpoint suite.
+  - **Falsifier.** A failure with no external load, such as in W4's full
+    suite, is a regression and intake.
+  - **Advisory allocation to `test`:** a contention-immune premise leg
+    (`CRANELISP_SPARK_STATS` spawns > 0 on the lenient leg, as in ACT-1038).
+    A future miss then separates "sparked but not faster", which is host
+    contention, from "not sparked", which is a product regression. The
+    threshold is unchanged. `sprint` schedules it or carries it.
+- **(c) Examples need a committed `--link` cell: warranted.**
+  - `examples/CLAUDE.md` makes `--link`-then-execute part of the
+    learning-sequence gate, but only a manual sweep at sprint open and close
+    runs it. W3's `--link` pass was a one-off.
+  - **Residual.** A `--link`-only regression in a composition that no
+    `run_through_all_modes` cell links: the platform-linking IO examples,
+    directory projects with `Cranelisp.toml` and `lib/`, or 38. It is found at
+    the next sweep, after a sprint of changes, rather than by the change
+    that caused it.
+  - **Cost.** One link and one execution per entry. The expected exits
+    already exist in `expected_exits()`.
+  - **Allocation to `test`:** a separate `#[test]` beside
+    `every_example_runs_with_documented_exit`, over the same table plus the
+    16 and 37 directory projects. It runs from `examples/` with
+    `CRANELISP_PLATFORM_PATH` set and null stdin, writes the artifact into a
+    per-test temporary directory with `-o`, and uses the same `Outcome`
+    distinction between signal and exit. Keep its added wall time near 20 s;
+    parallelize rows if it exceeds that. No cold-cache leg (`cache.rs` owns
+    cache behaviour).
+  - **Class.** A maintenance check on the learning sequence, not acceptance
+    authority for language rows. A failure is a suspected defect routed to
+    `qa` (`examples/CLAUDE.md` rule 2).
+- **(d) Six stale "RED on HEAD" framings in `tests/repl_persist.rs`: routed
+  to `test`, comment only.**
+  - The cells are `persist_macro_defining_macro_use_survives_restart`, whose
+    inline "exits 1 at load today" comment is also stale, and
+    `persist_failed_import_not_written_to_backing_neg`,
+    `persist_bad_import_then_run_succeeds_e2e`,
+    `persist_failed_export_not_written_to_backing_neg`,
+    `persist_bare_expr_not_written_to_backing_neg` and
+    `persist_bare_expr_then_run_module_clean_e2e`.
+  - All six pass in the checkpoint suite, and FIXMEs 0548 and 0549 are
+    closed.
+  - Restate each in the past tense, per the defect-repro rule in
+    `tests/CLAUDE.md`, at the next touch or the close commit. No filing.
+
+### Traceability
+
+- **`spec/12-runtime.md`:**
+  - the §12.7.2.1 Vec row is `Tested+Neg`, and the division row `Tested`;
+  - the §12.7.2.1 heading carries the untested stack-overflow row;
+  - §12.7.2, §12.7.4, §12.7.4.1 and §12.7.8 items 2, 4 and 5 cite
+    ACT-1040 and ACT-1042, with the corrected `vec-set` faces tested;
+  - §12.7.5 cites the ACT-1041 RED, observed RED for the intended reason on
+    2026-10-01.
+- **`spec/05-definitions.md` §5.13.1** is partial, citing the ACT-0985 RED
+  `impl_body_uses_impl_declared_later_in_cluster`. QA did not run it, because
+  its legs link.
+- **Navigation.** PLAN's coverage table gains the learning-sequence row for
+  the two new example cells.
+
+### ACT-1037 — `vec-set` bounds check (closed)
+
+- **Faces.** On a uniquely held Vec, an index of −1, the length or beyond
+  corrupted the heap. On a shared Vec, the write was silently dropped.
+- **Resolution.** One guard, shared with `vec-get`, opens the single
+  `vec-set` core in all three uniqueness cases
+  ([s122-closure §9](../../design/backend/s122-closure.md#9-act-1037--vec-set-index-guard)).
+- **Evidence.** Above. The `// defect:` loci stay where the bug lived:
+  `emit_vec_set_cow_core`, and `vec_set_copy` for R4.
+- QA deleted ACT-1037; this subsection is its record.
+
+## Phase-6b intake: `docs` transcript leads (2026-10-01)
+
+QA ran the debug binary built after `88bbbd12` with the Phase-6 working tree,
+in fresh directories under `.local/qa-s122-6b/`, with no stdlib. It ran no
+Cargo command.
+
+- **(1) Parse-failed reload: confirmed defect, filed as
+  [ACT-1044](#act-1044--parse-failed-reload-kept-the-previous-namespace-closed).**
+  - A module saved with a parse error keeps its previous namespace. Its
+    dependents recompile against that namespace, stay unlocked and have their
+    files regenerated.
+  - The discriminator is the type-error sibling, observed at the
+    introspection seam.
+  - The RED is allocated to `test` and the unit leg to `dev`.
+  - Coverage gap: §14.5's failure causes were varied only on the lock
+    observable.
+- **(2) `/quit` exit status: a spec gap, not a defect.**
+  - No REPL requirement states the process exit status at `/quit` or EOF, or
+    whether session end re-reports outstanding failures. It is routed to
+    `spec` through `sprint`, for the user to rule.
+  - The observed status is incidental. `run_repl` propagates
+    `wait_object_complete()`, and a failure reaching object completion
+    exits 1.
+    - A locked entry that fails at type check exits 1.
+    - A locked entry that fails to parse exits 0.
+    - A locked dependency whose failure does not reach the entry exits 0.
+  - The reprinted line's location and prefix widen
+    [ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md).
+- **(3) FIXME 0907 obligation 2, docs leg:** already recorded as satisfied
+  on 2026-09-30. QA re-checked `user/` for refusal-era text and found none.
+- **Traceability.** The REPL §14.5 heading and item 2 cite ACT-1044.
+
+## Session lock, `/quit` status and `--test` environment — evidence delta (2026-10-01)
+
+**Basis.** Tree `88bbbd12` plus the Phase-6 working tree. QA ran no Cargo.
+Probes ran a copy of `target/debug/cranelisp` (sha256 `f4e0939b…6dd16`,
+built 2026-10-01 00:09, after `88bbbd12`) in fresh directories under
+`.local/qa-s122-6b-lock/`, with no stdlib; `probe.py` there reproduces
+every observation below. The binary predates the uncommitted edits to
+`src/process_form.rs`, `src/save.rs` and `src/syntax.rs`. The lock seams
+(`src/repl/mod.rs::process_commands`, `src/session_v4/lifecycle.rs`,
+`src/main.rs::run_repl`) match `88bbbd12`.
+
+**Authority.**
+
+- User rulings in [SPRINT](../../sprints/archive/sprint-122.md): "REPL rulings:
+  failed-save lock, /quit status, --test environment" and "Session-lock
+  questions answered".
+- REPL [§14.2 step 4, §14.4–§14.6 and the §14.5 session lock](../../repl/spec/14-file-watching.md),
+  §14.8 (same file),
+  [§15.1 and §15.2.3](../../repl/spec/15-session-persistence.md),
+  [§18.8](../../repl/spec/18-redefinition.md),
+  [§0.1 and §0.7](../../repl/spec/00-cli-invocation.md) and
+  [§3.9](../../repl/spec/03-slash-commands.md).
+
+**Judgment: ready.** The three boundary questions LQ-1 to LQ-3 are answered
+by §14.5 (below). The review rulings of 2026-10-01 extend the cells
+([review findings 1–3](#review-findings-13--e2e-allocation-2026-10-01)), and
+so does the finding-scoped re-check
+([R1–R3](#review-re-check-r1r3--e2e-allocation-2026-10-02)).
+
+**Superseded citations.** Records in this plan dated before 2026-10-01 cite
+"§14.5 item 5", the per-module lock. That item no longer exists. Its
+content is now the §14.5 session-lock paragraph. Those records keep their
+historical wording; the conditions below govern.
+
+### Readings adopted
+
+- **The lock is one session state.** It stands while the error set is
+  non-empty, whatever put a module there. Cells observe refusal outside the
+  failed module as well as inside it.
+- **The refusal's content is normative; its wording is not.** A cell observes
+  that the refusal contains each failing file's name (`lib.cl`, not the module
+  name `lib`) and the save remedy, matched as the case-insensitive word
+  `save`. The §14.8 cells match `restart` in the same way. A cell reads a
+  refusal from a turn that no save notification shares.
+- **"Not reported" means no notification.** While a dependency stands failed,
+  no `[errors: <dependent>]` and no `[updated: <dependent>]` appears for its
+  dependents before the fixing save.
+- **The rebuild on release is observed by behaviour.** A call through the
+  dependent yields the fixed dependency's value. The existing chain cells
+  already pin the `[updated:]` notices for the rebuilt dependents; they stay.
+
+### Observed before the fix
+
+| Probe | Observed | Requirement violated |
+|---|---|---|
+| Entry type failure at startup, then `(defn broken [] 2)` and `(defn other [] 3)` | both accepted; `user.cl` regenerated | §15.2.3: no repair at the prompt |
+| Dependency `lib.cl` type failure at startup, then `(defn h [] 2)` in `user` | accepted; `user.cl` regenerated and reordered | §14.5: startup trigger |
+| `lib.cl` loaded by `/mod`, unrelated to `user`, saved with a type error; then `(defn h [] 2)` in `user` | accepted; `user.cl` regenerated; `(g)` refused | §14.5: every code turn refused |
+| `/mod bad` where `bad.cl` fails | load error printed; then `(defn h [] 2)` accepted and `(g)` evaluates | §14.5 and §3.9: `/mod` trigger |
+| `math.cl` saved with a type error | `[errors: math.cl]` and `[errors: user.cl]` | §14.5: dependents not reported |
+| `math.cl` saved with a parse error | `[updated: user.cl]`; `(defn g [] 1)` accepted; `user.cl` regenerated; `/sig math/sq` shows the signature | §14.2 step 2, §14.5 items 1–2, the lock (ACT-1044) |
+| Expression and definition refusals | `module 'math', 'user' has errors`; `Cannot define in module 'user'` | §14.5: names the failing files |
+| `/quit` while locked (entry type failure; dependency type failure; two failing dependencies) | exit 1; the failure reprinted on stderr | §0.1 |
+| EOF while locked (dependency type failure) | exit 1; the failure reprinted on stderr | §0.1 |
+| `/quit` while locked by a parse failure, or after release | exit 0 | — |
+| The fixing save after a dependency failure | `[updated: math.cl]`, `[updated: user.cl]`, and `(f)` gives the new value | — (conforms) |
+
+### Conditions (new or extended cells, `test`)
+
+All are acceptance evidence. All are e2e cells in `tests/repl_persist.rs`
+(lock) and `tests/repl_lifecycle.rs` (`/quit`), unless `test` chooses another
+REPL file. Each new or extended leg must be observed RED, for the reason
+recorded, before `dev` starts.
+
+| ID | Condition | Plausible wrong outcome | Before the fix |
+|---|---|---|---|
+| SL-1 | Session-wide refusal. `user.cl` holds `(defn g [] 1)`; `lib.cl` is loaded by `/mod lib` then `/mod user`, and `user` does not depend on it. Save `lib.cl` with a type error. Then: `(defn h [] 2)` and `(deftype U [:primitives/Int n])` are refused; `/sig h` and `/info U` show both undefined; `(g)` is refused; each refusal names `lib.cl` and the save remedy; `/help` answers; and a `/sh cp` snapshot shows `user.cl` byte-identical. A save of `user.cl` as `(defn g [] 7)` gives `[updated: user.cl]`, and `(g)` is still refused. A fixing save of `lib.cl` releases: `(g)` gives 7, `(defn h [] 2)` is accepted, and `user.cl` holds `g` 7 and `h` once each (§14.5, §14.2, §15.1) | The lock is scoped to the failed module (observed). A structural turn bypasses a definition-only gate. The lock suppresses the watcher, so the `user.cl` save is not recompiled. The refusal names the module, not the file (observed) | RED at the definition, file and naming legs |
+| SL-2 | Parse failure of a dependency (ACT-1044). `math.cl` is `(defn sq [x] (primitives/mul-i64 x x))`; `user.cl` imports `sq` and defines `(defn f [] (sq 3))`; `(f)` gives 9. Save `math.cl` with a parse error. Before the fixing save, no `[updated: user.cl]` or `[errors: user.cl]` appears; `(defn g [] 1)` is refused and `user.cl` is byte-identical; `/sig math/sq` reports an unknown symbol; `(f)` is refused. Fixing save `(defn sq [x] (primitives/add-i64 x x))`: `(f)` gives 6 (§14.2 steps 2 and 4, §14.5 items 1–2 and the lock) | The parse exit leaves the previous namespace, so the dependent recompiles against it, stays unlocked and is regenerated (observed) | RED at the notification, definition, file and `/sig` legs |
+| SL-3 | Extend `watch_cascade_failed_importer_locked_until_import_is_fixed` (FL-3, type failure of a dependency). Between the failing and fixing saves of `mymod.cl`, no `[errors: user.cl]` or `[updated: user.cl]` appears. The definition refusal names `mymod.cl` and the save remedy. The existing legs stay | The dependent is recompiled, fails and is reported (observed) | RED at both new legs |
+| SL-4 | Extend `watch_qualified_type_dependent_locked_until_its_module_compiles` (FQR-2): no `[errors: user.cl]` or `[updated: user.cl]` between the failing and fixing saves of `lib.cl` | The "not recompiled" cut covers `import` edges but not qualified-reference edges | Expected RED. If GREEN, report the output to QA; do not force a RED |
+| SL-5 | Extend `watch_fix_of_dependency_failed_in_session_recompiles_its_dependents_control`: between the failing and fixing saves of `base.cl`, no notification names `lib.cl` or `user.cl`. The cut is transitive | Only direct dependents are cut | Expected RED |
+| SL-6 | Two failures. `user.cl` imports from `a.cl` and `b.cl`. Save both with type errors: the expression refusal names `a.cl` and `b.cl`. Fix `a.cl`: `(defn h [] 2)` is still refused, and the refusal names `b.cl` and not `a.cl`. Fix `b.cl`: `(g)` evaluates and `(defn h [] 2)` is accepted (§14.5: released only when no module stands failed). Extension (LQ-1 answered): between the fix of `a.cl` and the fix of `b.cl`, no `[errors: user.cl]` or `[updated: user.cl]` appears, because `user` still waits on `b` | The lock tracks the latest failure, so the first fix releases it. The refusal names one file | RED at the naming legs (observed); the lock legs are expected GREEN |
+| SL-7 | `/mod` load failure. `bad.cl` fails to typecheck, and `user.cl` holds `(defn g [] 1)`. `/mod bad`, then `/mod user`: `(defn h [] 2)` and `(g)` are refused; the refusal names `bad.cl`; `user.cl` is byte-identical. A fixing save of `bad.cl` releases: `(g)` gives 1 and the definition is accepted (§3.9, §14.5) | A failed `/mod` load is reported but leaves no failed module (observed) | RED at every refusal leg |
+| SL-8 | Rewrite `persist_startup_load_failure_reaches_prompt_blocks_then_repairs` as the startup lock. `seeded_broken_session`: the load error is reported, and a prompt is reached. `(good 1)`, the same-name `(defn broken [] 2)` and the other-name `(defn other [] 3)` are all refused; the refusal names `user.cl` and the save remedy; and a snapshot shows `user.cl` byte-identical to the seed. A compiling save of `user.cl` (good and `(defn broken [] 2)`) gives `[updated: user.cl]`; then `(broken)` gives 2, `(good 1)` gives 11, `(defn other [] 3)` is accepted, and `user.cl` holds each name once (§15.2.3, §14.5) | The at-prompt repair still admits a definition (observed). The lock refuses only same-name definitions | RED at the refusal and file legs |
+| SL-9 | Rewrite `persist_startup_failed_source_survives_reset_then_other_definition` as "a command does not release the lock". `/reset` reaches its handler; `(defn other [] 3)` is then refused, and `user.cl` is byte-identical. Keep its `// defect: class=release-path-bypass` line: the class names this sibling face | `/reset` clears the error set or its carrier | RED (the definition is admitted today) |
+| SL-10 | Extend `persist_mod_definition_keeps_dependency_source_failed_at_startup` (M1). In both legs, before `/mod lib`, `(defn h [] 2)` in `user` is refused, `user.cl` is byte-identical, and the refusal names `lib.cl` (§14.5 startup trigger, §15.2.3) | A startup-failed dependency locks only itself (observed) | RED in the startup leg; the in-session leg expected RED only at naming |
+| SL-11 | Extend `watch_qualified_caller_fails_on_removed_callee_until_it_is_restored` (FQR-1). The definition refusal names `user.cl`, the dependent that failed, and the save remedy | The refusal names the changed file `lib.cl`, which compiled | RED (no file is named today) |
+| SQ-1 | `/quit` while locked. Fixture: `math.cl` saved with a type error, then `(f)`, then `/quit`. The exit status is 0; stderr has no `type mismatch`; stdout has no text after the last prompt (§0.1) | Session end propagates the failure to the exit status and reprints it (observed) | RED |
+| SQ-2 | EOF while locked by the entry's own failure. `user.cl` saved as `(defn g [] (undefined-name 1))`, then `(g)`, then end of input. The exit status is 0, and stderr has no `undefined-name` (§0.1) | Only `/quit` was corrected, or only dependency failures | Expected RED (the `/quit` form of this fixture exits 1) |
+
+### Rewrites, retirements and re-citations (`test`)
+
+- **Retire** `persist_startup_failed_source_retained_until_same_name_repair_neg`.
+  §15.2.3 no longer retains failed source, and SL-8 carries its refusal and
+  file legs.
+- **Retire** `persist_startup_degraded_entry_repairs_at_prompt_without_dependency_change_control`.
+  It asserts the at-prompt repair that §15.2.3 now forbids. SL-8 covers a
+  startup lock with no dependency change.
+- **Keep** `persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles`.
+  Its legs conform. The entry is locked from startup; the save of `lib.cl`
+  rebuilds it, and it fails again. Re-cite it; drop its reference to the
+  retired control; consider renaming it to say the entry stays locked.
+- **Keep, re-cite:** RB-3, RB-4, FL-1, FL-2, FQR-1, FQR-2, M1 and FL-3. Their
+  legs conform to the session lock. Replace "§14.5 item 5" with "§14.5
+  (session lock)" in every `// spec:` line (11 in `tests/repl_persist.rs`).
+  Correct comments that give the old mechanism: FL-3's "itself locked"; FQR-2's
+  "locks it"; M1's "locks the module"; the startup banner comment ("repair and
+  failed-source retention").
+- **Unchanged:** the ACT-1011 chain and own-source cells. Their legs conform:
+  a startup failure locks the session, and the dependency's save rebuilds the
+  dependents. `watch_imported_type_field_reorder_fails_requiring_restart` and
+  `watch_type_error_reload_of_imported_module_blocks_without_hanging` also
+  conform; the dependent is no longer scheduled, which removes the hang's
+  path, and the cells remain safety fences.
+
+### Module evidence (`dev`, `src/`)
+
+Write each unit RED first.
+
+- **One admission gate.** Every code turn passes one predicate: the session
+  is locked when the error set is non-empty. That covers REPL turns of every
+  kind (expression, `defn`, `deftype`, `deftrait`, `impl`, `defmacro`,
+  `import`, `export`, `mod`, `begin`), and the agent's submit and document
+  edits.
+  - Rows: refused when the failed module is the current module, another
+    module, or a dependency; admitted when the error set is empty.
+  - Slash commands are dispatched while locked.
+  - The startup repair carve-out (`is_repair_definition_turn`) no longer
+    admits a definition.
+  - Extend `agent_writes_refused_before_consent_in_restart_required_module`
+    with a failure in another module. It is feature-gated, so its execution
+    must be allocated with the agent lane.
+- **Regeneration.** `regenerate_backing_file` writes no module's file while
+  the session is locked, not only the failed module's.
+- **The error set's writers.** Each trigger adds the module: a parse failure,
+  a typecheck failure, a §14.8 refusal, a dependent failing under step 4,
+  startup (the entry and a dependency), and a failed `/mod` load.
+  - Parse: extend `reload_replaces_declaration_records_and_failed_reload_clears_them`
+    with a parse-error leg (ACT-1044). It leaves no record of the displaced
+    declarations, so it also covers the entry face.
+- **Release.** The lock releases exactly when the error set empties.
+  `/reset` and `/mod` do not release it. Extend
+  `restart_required_stands_until_a_successful_reload` to two failed
+  modules, where fixing one keeps the lock.
+- **Reload plan.** A plan whose changed module fails contains none of its
+  transitive dependents, including dependents reached only by qualified
+  references. A plan whose changed module compiles orders its dependents
+  topologically, beside `reload_plan_orders_qualified_dependent_after_its_dependency`.
+  A dependent with a second dependency still standing failed waits (LQ-1).
+- **Refusal text.** Rows for one and two failing files, each named by file,
+  and the remedy for each cause. For §14.8, the remedy is the restart or a
+  save with the live structure.
+- **Exit status.** Pin, at the seam that decides the REPL's exit status,
+  that session end returns success with a non-empty error set and writes
+  nothing. If that seam is not unit-reachable in `main.rs`, say so; SQ-1 and
+  SQ-2 are then the lowest layer.
+- **Re-cite** the `// spec:` lines that name "§14.5 item 5" in
+  `src/session_v4/persistence_tests.rs` (six) and `src/agent/pull.rs` (one),
+  and the "Degraded startup load" section of `src/CLAUDE.md`.
+
+### Inputs for `design`(int) — resolved
+
+[REPL lifecycle §1.3.1](../../design/int/repl-lifecycle.md#131-session-lock)
+and `design/int/session-persistence.md` now describe the session lock. The
+failed-form record is removed: no repair at the prompt, no failed-form
+record.
+
+### Boundary questions — answered by §14.5
+
+- **LQ-1. Mixed dependencies.** A module with any dependency standing failed
+  waits until every such dependency compiles, and a save of its own file
+  waits if one of its saved dependencies stands failed. SL-6 carries the
+  leg.
+- **LQ-2. Slash commands that evaluate.** `/mem EXPR`, `/time` and
+  `/run-tests` are refused as code turns, and an incomplete form pending at
+  EOF is dropped unevaluated. Evidence is
+  [reconciled below](#lq-2-legs--reconciled-with-145).
+- **LQ-3. Dependents at startup.** The dependents of a module that failed
+  at startup wait. They are pending, not failed, so the refusal names only
+  the module that failed.
+
+### `--test` and the §0.7 environment
+
+- **No cell is allocated.** Both knobs are read once, from the process
+  environment, by process-global readers with no mode input:
+  `cranelisp-backend/src/compiler/control_flow/sparkability.rs`
+  (`CRANELISP_NO_LENIENT`) and `cranelisp-intrinsics/src/ivar.rs`
+  (`CRANELISP_SPARK_BUDGET`). `--test` runs in the same process as the other modes.
+  `src/` spawns only linker tools and the `/sh` shell. The knobs are semantically
+  invisible, so an e2e cell could observe them only through timing or the
+  internal `CRANELISP_SPARK_STATS` line. Neither is an acceptance observable.
+- **Grade: asserted, with a named falsifier.** It is refuted by a `--test`
+  run under `CRANELISP_NO_LENIENT=1` whose `CRANELISP_SPARK_STATS` line
+  reports spark spawns, or by a process spawn or mode-conditioned read on the
+  `--test` path. §0.7 has no cell in any mode; this change adds no new debt.
+
+### Residuals, not allocated
+
+- **A cached object compiled with lenient evaluation may be served to a
+  `CRANELISP_NO_LENIENT=1` run.** The object-cache key showed no
+  environment input in a search of `src/cache/`. This is unverified: the
+  probe `.local/qa-s122-6b-lock/lenient_cache.sh` was not run. It is a
+  lead for intake, not part of this change.
+  - Falsifier: a cached `--run` under `CRANELISP_NO_LENIENT=1` prints no
+    spark-stats line, as the `--no-cache` control does.
+- **A save during an evaluation** is still without a cell (§14.2).
+
+### Gate
+
+- Every SL and SQ leg is observed RED for its recorded reason, then GREEN.
+  Legs expected GREEN before the fix are recorded with their output.
+- Retirements and rewrites land in the same change-set as the correction.
+- The §14.8, FL, FQR, ACT-1011 chain and watch-hang cells stay GREEN.
+  Changes to the scheduler, worker or reload plan also need RB-5 and the
+  watch-hang cell to pass 15 consecutive runs.
+- One full `cargo nextest run --no-fail-fast`, in which every RED traces to
+  an open filing.
+- QA then restores the §0.1, §14.5, §14.6, §15.1 and §15.2.3 bands.
+
+### Handoff to `test`
+
+1. Author SL-1 to SL-11 and SQ-1 to SQ-2, with the rewrites and
+   retirements above. Each cell gets a `// spec:` line for the sections
+   cited.
+2. SL-2 carries
+   `// defect: class=partial-record-update locus=src/session_v4/lifecycle.rs::rebuild_from_file found=S122 owner=/dev`.
+   SL-9 keeps its existing line. The other cells are requirement cells
+   for the 2026-10-01 rulings and carry none.
+3. Report each pre-fix outcome, with the test source hash.
+
+### Review findings 1–3 — e2e allocation (2026-10-01)
+
+**Basis.** The source is review findings 1–3 (required) in
+`.local/s122-6a/review4-result.md`. The rulings are
+[int §6.12](../../design/int/int.md#612-the-implicit-prelude-dependency)
+"Refusal by a failed prelude", and
+[REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload)
+"Refused by a later member" together with
+[§1.3.1](../../design/int/repl-lifecycle.md#131-session-lock) Set sites and
+Invariants. QA reran the review's probes and added its own against one copy
+of `target/debug/cranelisp` (sha256 `5dddfaf4…`, built 2026-10-01 22:03,
+before the rulings were implemented). The scripts are in
+`.local/qa-s122-6b-lock2/`: `probe.py` (the review's cases), `restart_prelude.py`
+and `parse_faces.py`. Each run's output is in `observed*.txt` there. QA ran no
+Cargo.
+
+**Judgment: ready.** The rulings determine every observable below. QA's
+probes found a further face, PF-1. It needs a `design`(int) ruling on its
+mechanism, but its cells follow from §14.5 and do not wait for that ruling.
+
+#### Observed before the fix
+
+| Probe | Observed | Requirement |
+|---|---|---|
+| In session, project `prelude.cl` saved so that it does not parse, and separately so that it does not typecheck | `[errors: prelude.cl]`, then `[errors: user.cl] … undefined variable: inc1`; the refusal names both files | §14.5: a waiting dependent is not reported; spec §8.8.1 |
+| The same shape through `(import [lib [inc1]])`, parse failure | only `[errors: lib.cl]`; the refusal names `lib.cl` | — (conforms) |
+| `b.cl` stands failed; one `/sh` turn writes `a.cl` (newly importing `b`) and a fixed `b.cl` | `[errors: a.cl]` carrying `b`'s stale error, then `[updated: b.cl]`; `(g)` and `(defn h [] 1)` are refused, naming `a.cl` | §14.5 release, §14.6 |
+| A restart on those saved files | `(g)` gives 4 | — (conforms; the parity anchor) |
+| A save of `user.cl` newly imports `n.cl`, which fails to typecheck | `[errors: user.cl] … dependency 'n' failed`; the refusal names `user.cl` | §14.5 names the failing file; §1.3.1 second invariant |
+| Then a save of `user.cl` drops the import | `[updated: user.cl]`; the session unlocks; `(defn h [] 2)` is accepted; `(n/nx)` reports `n`'s error | §14.5: `n` still stands failed |
+| Restart with `prelude.cl` failing to typecheck | before the banner, only `[errors: prelude.cl]`; the refusal names `prelude.cl`; `user.cl` is unchanged; the fixing save gives `[updated: prelude.cl]` and `[updated: user.cl]`, and `(g)` gives 3 | — (conforms) |
+| Restart with `prelude.cl` failing to parse | `[errors: user.cl]`, carrying the prelude's parse error; the refusal names `user.cl` | §14.5 (PF-1) |
+| Restart with an explicitly imported `lib.cl` failing to parse (control) | the same: `[errors: user.cl]`; the refusal names `user.cl` | PF-1 is not specific to the prelude |
+| A save newly imports `n.cl`, which fails to parse | `[errors: user.cl] … module 'user' failed: parse error`; the refusal names `user.cl` | PF-1 |
+| `/mod m`, where `m.cl` imports `n.cl`, which fails to parse | the refusal names `m.cl`. Type twin: it names `n.cl` | PF-1 |
+
+#### Conditions (new cells, `test`)
+
+All are acceptance evidence, in `tests/repl_persist.rs` unless `test` chooses
+another REPL file. Each RED leg must be observed RED, for its recorded reason,
+before `dev` starts.
+
+| ID | Condition | Plausible wrong outcome | Before the fix |
+|---|---|---|---|
+| RF-1 | Failing project prelude, in session. `prelude.cl` is `(defn inc1 [x] (primitives/add-i64 x 1))` and `user.cl` is `(defn g [] (inc1 1))`; `(g)` gives 2. Save `prelude.cl` failing, in two legs: an unclosed form (parse) and `(primitives/add-i64 x "a")` (type). Before the fixing save, `[errors: prelude.cl]` appears, and no `[errors: user.cl]` or `[updated: user.cl]` appears. `(g)` is refused, and the refusal names `prelude.cl` and not `user.cl`. Then the fixing save `(defn inc1 [x] (primitives/add-i64 x 2))` makes `(g)` give 3. A control leg from the same builder reaches `inc1` through `(import [lib [inc1]])`, with `lib.cl` failing to parse (int §6.12; §14.5; spec §8.8.1) | The wait skips the implicit edge, so `user` compiles against the prelude's fresh, empty table, fails on `inc1`, and is reported and named (observed) | RED at the notification and naming legs of both failing legs; the control is expected GREEN |
+| RF-2 | Failing project prelude, at startup. The fixture is RF-1's, with `prelude.cl` failing to typecheck when the session starts. Before the banner, only `[errors: prelude.cl]` appears, with no `[errors: user.cl]`. `(g)` and `(defn h [] 2)` are refused, each naming `prelude.cl` and not `user.cl`, and a snapshot shows `user.cl` byte-identical. The fixing save of `prelude.cl` makes `(g)` give 3, and `(defn h [] 2)` is then accepted. A second leg starts with `prelude.cl` failing to parse (PF-1) (int §6.12, "at a fresh load"; §14.5, startup trigger and dependents at startup; §15.2.3) | The injection refusal is realised only at a reload, so a restart and the session end differently. Or a parse failure is attributed to the entry (observed, PF-1) | Type leg: expected GREEN (observed conforming); it is the safety fence for the fresh-load half of the injection change. Parse leg: RED at the notification and naming legs |
+| RF-3 | One save repairs a failed module and makes another import it. `a.cl` is `(defn ax [] 1)` and `b.cl` is `(defn bx [] 2)`. `user.cl` imports `ax` and `bx` and defines `(defn g [] (primitives/add-i64 (ax) (bx)))`; `(g)` gives 3. Save `b.cl` as `(defn bx [] (undefined-name 2))`: the precondition is `[errors: b.cl]`. Then one `/sh` turn writes both `a.cl` as `(import [b [bx]]) (defn ax [] (bx))` and `b.cl` as `(defn bx [] 2)`. **Fixture property:** both writes must land before a single poll. Then that save's output holds `[updated: a.cl]` and `[updated: b.cl]` and no `[errors: a.cl]`; `(g)` gives 4; and `(defn h [] 1)` is accepted. The control is a session started on the saved files, in which `(g)` gives 4 (§14.5 release, §14.6; REPL lifecycle §1.2, Refused by a later member) | `a` is classified as failed by `b`'s refusal during the pass and is never re-attempted, so the lock is false and names a file that compiles (observed). Or the deferred `a` is reported twice | RED at the no-`[errors: a.cl]`, `[updated: a.cl]`, `(g)` and definition legs; the control GREEN. The twin in which `b` still fails is a module row (REPL lifecycle §1.3.2) and has no cell here |
+| RF-4 | A newly loaded module that fails. `n.cl` is `(defn nx [] (undefined-name 1))` and `user.cl` is `(defn g [] 1)`. Save `user.cl` as `(import [n [nx]]) (defn g [] 1)`. No `[errors: user.cl]` appears; `(g)` is refused, naming `n.cl` and not `user.cl`. Save `user.cl` as `(defn g [] 1)`, which drops the import. `(g)` and `(defn h [] 2)` are still refused, naming `n.cl`, and a snapshot shows `user.cl` exactly as saved. Save `n.cl` as `(defn nx [] 5)`: `(g)` gives 1, `(defn h [] 2)` is accepted and `(n/nx)` gives 5. A parse leg starts with `n.cl` as `(defn nx [] 1` and asserts the first save's legs (PF-1) (§14.5; REPL lifecycle §1.3.1, Set sites) | The importer stands failed with `n`'s error while `n` is unrecorded (observed). The session unlocks while the scheduler holds `n` `Failed` (observed; this is the falsifier of §1.3.1's second invariant) | RED at the naming and still-locked legs, in both legs |
+
+RF-4 does not assert whether the save that loads `n` prints
+`[errors: n.cl]` (LQ-4 below). No cell asserts that a restart releases `n`.
+The ruling states that, but no requirement does.
+
+#### PF-1 — a dependency that fails to parse is attributed to its importer
+
+- **Faces.** All were observed on the binary above:
+  - at startup, the entry `user.cl` is reported and named, carrying a
+    parse failure of `prelude.cl` or of an imported `lib.cl`;
+  - at a reload that newly loads the module, the importer is named:
+    "module 'user' failed: parse error";
+  - at `/mod`, the target is named.
+- **Control.** In each face, a type twin differs only in the stage of the
+  failure, and it names the failing file: startup with `prelude.cl`, SL-10's
+  startup dependency, and `/mod`. The reload twin is review finding 3.
+- **Requirement.** §14.5: the refusal names the failing files, and the
+  dependents of a module that failed at startup wait (LQ-3). An in-session
+  parse failure of a module that is already loaded conforms (SL-2, and
+  RF-1's control).
+- **Mechanism: hypothesis; attribution provisional.**
+  - The dependency's parse failure is raised inside its importer's load,
+    before the dependency registers. The scheduler then holds no `Failed`
+    state for it, and the failure becomes the importer's own.
+  - §1.3.1 provides for an unregistered entry and an unregistered `/mod`
+    target, but not for an unregistered dependency. The ruling for finding 3
+    ("modules newly left `Failed`") therefore does not reach this case.
+  - It is not the static import-closure walk, which treats an unparseable
+    file as an edge-free leaf (`static_import_closure` in
+    `src/process_form/dependency.rs`).
+  - The control was observed at the diagnostic, not at the scheduler.
+  - **Falsifier:** after the parse failure, the scheduler holds the dependency
+    `Failed`. The seam is then classification, not registration.
+- **Route.** `design`(int) rules, synchronously in this wave through
+  `sprint`, where a non-entry module's parse failure before registration is
+  recorded. `dev` then adds one module row for each set site the ruling
+  names. RF-2's and RF-4's parse legs carry the e2e. The `/mod` face gets a
+  module row only, unless the ruling routes `/mod` away from the shared
+  failed-load record.
+
+#### LQ-2 legs — reconciled with §14.5
+
+- **SL-1 `/mem EXPR` and `/time EXPR` legs: conform.** §14.5 refuses "a slash
+  command that evaluates code, such as `/mem EXPR`, `/time` or `/run-tests`".
+  These legs are refused, the refusal names `lib.cl`, and no value appears.
+  SL-1's `/sig g` and `/help` controls carry "other slash commands remain
+  available".
+- **`/run-tests`, `/run-all-tests` and `/mem` without an expression: no
+  cell.** The admission classification is one exhaustive match with no
+  wildcard arm (REPL lifecycle §1.3.1), so an unclassified command does not
+  compile. The admission module row then pins each variant's class. An e2e
+  cell for each variant would repeat that table, and it would discriminate
+  no further wrong outcome.
+- **`eof_while_locked_drops_pending_form_unevaluated`: conforms** to §14.5
+  ("an incomplete form pending at EOF is dropped unevaluated, and the
+  process exits as §0.1 states"). Its leg "no value and no diagnostic after
+  the last prompt" discriminates only because the unlocked twin shows that
+  diagnostic, and `tests/repl_negative.rs::parse_error_unclosed_paren_neg`
+  is that twin. Its comment still cites the closed FIXME 0142; that comment
+  is `test`'s.
+  - `test` reports this cell's pre-fix outcome. If it was not observed RED,
+    the unlocked twin is the detection evidence, and the report says so.
+
+#### Question for `spec` (not blocking; no condition encodes it)
+
+- **LQ-4. A newly loaded module that fails.** §14.2 step 5 and §14.3 notify
+  each recompiled module. Under the ruling, the importer waits silently and
+  `n` is loaded, not recompiled. Unless `n` is reported, the save shows
+  nothing, and the user first learns of the failure from a refusal. QA's
+  reading is `[errors: n.cl]` with `n`'s error.
+
+#### Gate (additional)
+
+- Every RF and PF-1 leg is observed RED for its recorded reason, then GREEN.
+  Legs expected GREEN are recorded with their output.
+- **The cycle exception stays GREEN.** Its safety fences are:
+  - `tests/repl_persist.rs::prelude_save_importing_module_without_opt_out_neg_refused_as_cycle_like_restart`;
+  - `prelude_save_exporting_x_neg_refused_as_cycle_like_restart`;
+  - `prelude_save_calling_x_qualified_neg_refused_as_cycle_like_restart`;
+  - `mod_prelude_import_of_module_without_opt_out_neg_refused_as_cycle`;
+  - `tests/spec_08_modules.rs::prelude_dependency_without_opt_out_neg_rejected_as_cycle_in_every_mode`.
+- The executor's follow-on change is a scheduler or reload-plan change, so
+  RB-5 and the watch-hang cell must pass 15 consecutive runs.
+- One finding-scoped re-review then covers findings 1–3 and PF-1.
+
+#### Handoff
+
+- **`test`:** author RF-1 to RF-4 and the SL-6 extension. Each new cell gets
+  a `// spec:` line naming the sections cited. Report each pre-fix outcome
+  with the test source hash. The RF cells and the PF-1 legs are requirement
+  cells for the 2026-10-01 rulings and carry no `// defect:` line.
+- **`design`(int):** rule on PF-1's mechanism, and route LQ-4 to `spec`
+  through `sprint` if the design finds the spec silent.
+- **`dev`(src):** add the module rows of REPL lifecycle §1.3.2 for findings
+  1–3, and the PF-1 rows once the ruling lands. Findings 4–5 are advisory
+  and stay `dev`'s.
+
+### Review re-check R1–R3 — e2e allocation (2026-10-02)
+
+**Basis.**
+
+- **Findings.** R1–R3 of the finding-scoped re-check,
+  `.local/s122-6a/review5-result.md`. The review's probes are
+  `.local/review-s122-lock/probe2.py`. They ran on the binary built
+  2026-10-01 22:50, which is not retained. Their outputs survive only as
+  quoted in the result.
+- **Rulings.**
+  - [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
+    Content hash: R1 and R3.
+  - [§1.3.1](../../design/int/repl-lifecycle.md#131-session-lock), PF-1
+    Spans: R2.
+- **QA probes.** QA ran `.local/qa-s122-6b-lock3/probe.py` against a copy of
+  the current binary (sha256 `cdd2ea42…`, built 2026-10-02 06:17). That build
+  includes `dev`'s edits for R1–R3 in `src/watch.rs` and
+  `src/process_form/dependency.rs`. The output is in `observed.txt` there.
+  QA ran no Cargo.
+
+**Judgment: ready.**
+
+- Every condition below follows from
+  [§0.5.5 rule 4](../../repl/spec/00-cli-invocation.md),
+  [§14.3, §14.5](../../repl/spec/14-file-watching.md) and
+  [§5.1 item 2](../../repl/spec/05-error-presentation.md) ("the source
+  location").
+- Every leg conforms on `cdd2ea42`.
+- **Limit: no new cell can be observed RED by its own run,** because the fix
+  was built before the cells. Each row names the recorded pre-fix output its
+  legs discriminate. That is detection by recorded output. It is not an
+  observed RED, and `test` must not report one.
+- **R3's authority.**
+  - The source is §14.5's first trigger, "the saved file does not parse",
+    with the user's 2026-10-01 ruling that an uncompilable file change locks
+    the session. A file that cannot be read cannot be parsed.
+  - §14.5 names an unreadable file only in the startup trigger. A
+    meaning-preserving request to name it in the save trigger as well goes
+    to `spec` through `sprint`. It does not block, and no condition depends
+    on it.
+- **Deletion is out of scope.** The user's question about deleting a loaded
+  file is open, and no condition here encodes an answer.
+  `src/watch.rs::unreadable_save_is_a_change_once_and_a_deleted_file_is_none`
+  pins the design's interim rule in its delete leg. That leg moves with the
+  answer.
+
+#### Conditions (`test`)
+
+All are acceptance evidence. `test` chooses each file: `tests/repl_persist.rs`
+for the REPL rows, and `tests/cli_missing_entry.rs` or a module-load batch
+file for the others.
+
+| ID | Condition | Plausible wrong outcome | Detection |
+|---|---|---|---|
+| R1 | Authored: `tests/cli_missing_entry.rs::repl_unreadable_entry_first_readable_save_releases_lock`. Its legs stand | — | Observed RED by `test` on 2026-10-02. It conforms on `cdd2ea42` (QA probe `r1-entry-fix`) |
+| UR-1 | Mid-session unreadable save (R3). `user.cl` is `(defn g [] 1)`, and `(g)` gives 1. A save writes `(defn g [] 1)\n\377\n`, and that save's output holds `[errors: user.cl]`. `(defn h [] 2)` and `(g)` are refused, each naming `user.cl` and the save remedy. A `/sh cp` snapshot equals the unreadable bytes. A readable save `(defn g [] 3)` gives `[updated: user.cl]`. Then `(g)` gives 3, and `(defn h [] 2)` is accepted (§14.5: save trigger, lock and release; §15.1) | The watcher takes the unreadable save for a deleted file. Nothing is reported or locked, and the definition regenerates `user.cl` over the user's bytes (observed). The release leg catches an over-correction: an unreadable state stored so that the readable save is absorbed, which is R1's face in mid-session | Review probe `entry-utf8-mid`: no report, and `user.cl` became `(defn g [] 1)\n\n(defn h [] 2)\n`. That fails the `[errors:]`, refusal and snapshot legs |
+| RS-1 | `--run`, parse failure at a non-zero offset (R2). `lib.cl` is `(defn a [] 1)`, a blank line, then `(defn inc1 [x] (primitives/add-i64 x 1)` unclosed on line 3. `user.cl` has two comment lines, `(import [lib [inc1]])` and a `main` calling `inc1`. The run exits 1, and the stderr location prefix is `lib.cl:3:` (§5.1 item 2) | The parse span is zeroed: `lib.cl:1:1 … parse error at 0..0` (observed) | Review probe `run-lib-parse-line3` (same fixture) |
+| RS-2 | `--run`, read failure (R2). `lib.cl` is `(defn inc1 [x] 1)\n\377\n`, and `user.cl` is as in RS-1. The run exits 1. The location prefix is `lib.cl:1:1:`, an empty span at the file's start, and stderr does not contain the import's span in `user.cl`, `23..33` | The loader's import span is carried into `lib.cl` (observed: "at 23..33") | Review probe `run-lib-utf8` (same fixture) |
+| RS-3 | `--run`, type failure. `lib.cl` is one comment line, then `(defn inc1 [x] (primitives/add-i64 x "a"))`. `user.cl` is as in RS-1. The location prefix is `lib.cl:2:` | A typecheck error carries no file, so it is reported in `user.cl` with `lib.cl`'s offsets (observed: `user.cl:1:16`) | Review probe `run-lib-type`, on an unpadded fixture. The file prefix discriminates either way |
+| RS-4 | A code turn that qualifies into an unparseable module (R2). `n.cl` is a comment line, then `(defn nx [] 1` unclosed, and `user.cl` is `(defn g [] 1)`. `(n/nx)` reports an error that names `n.cl` and is not located `at 0..0`. Then `(g)` gives 1, because a code turn's failure does not lock the session (§5.1 item 2; §14.5, triggers) | `parse error at 0..0`, with no file named (observed). Or an over-correction makes the code turn's failure lock the session | Review probe `qual-parse` (unpadded): the file leg and the span leg both discriminate. The `(g)` leg is a control, observed conforming by review choice 3 |
+| RF-4+ | Extend both RF-4 cells (`watch_save_newly_loading_failing_module_names_it_until_its_own_save_compiles` and `watch_save_newly_loading_unparseable_module_names_it_not_the_importer`), through `check_newly_loaded_failure_named`. The save that newly loads `n` prints `[errors: n.cl]`, and its block carries `n`'s own error: `undefined-name` in the type leg and `unclosed` in the parse leg (§14.3, "a save that newly loads a module whose file fails to compile"). Drop the comment sentence that says this is not asserted | The importer is reported instead, or nothing is reported (LQ-4) | QA pre-fix outputs on `5dddfaf4…`: `.local/qa-s122-6b-lock2/observed.txt` (`newly-loaded`) and `observed-parse-faces.txt` (`reload-newly-parse`) show `[errors: user.cl]` only |
+| LK-1 | `--link`, rule 4. `user.cl` is not valid UTF-8, and the run exits 1 with a located error naming the file (`names_unreadable_entry`; §0.5.5 rule 4) | `--link` reads the entry through its own path, which discards the read error | None before the fix: no `--link` pre-fix run exists. The `--run` twin was observed RED on `5dddfaf4…` with the same predicate. **Falsifier:** a read of the entry on the `--link` path that is not `register_entry_module`'s |
+
+#### Not allocated
+
+- **Permission denied.** A mode-000 file takes the same `Err` arm as invalid
+  UTF-8, both in `observe` (`src/watch.rs`) and in the entry read. A test
+  run as root can read a mode-000 file, so a cell would pass falsely there.
+  The review probed the face in `--run` and the REPL, and both conform.
+- **The loader's error wrapped once (R2).** No pre-fix text of the double
+  wrapper was recorded, so an e2e leg could not show detection. The span
+  rule's module row in REPL lifecycle §1.3.2 carries it.
+- **The span inside RF-4's `[errors: n.cl]` block (review A2).** It is a
+  module row, "Newly failed report (A2)". **Observation:** on `cdd2ea42`
+  the block still reads `module error at 0..0: type error at 13..27`, so the
+  row has not been realised in that build.
+- **R3 for a module other than the entry.** The watcher state is per file,
+  and the rebuild's read failure does not depend on the module. The unit row
+  `reload_that_cannot_parse_or_read_keeps_nothing_of_the_module` covers it.
+  The data-loss sink is regeneration of the current module's file, which
+  UR-1 observes.
+
+#### Defect class (R1, R3, ACT-1019)
+
+- **R1 is not `lost-wakeup`.** It has no waiter and no notification, and
+  nothing depends on interleaving. `sync_watcher` runs before the poll on
+  every turn, so the face is deterministic.
+- **QA adds `failure-collapse`** to the vocabulary in `tests/CLAUDE.md`. In
+  this class, a fallible read maps its failure, at the read site, onto a
+  legitimate outcome of the same reader. There are three instances, all
+  reads of a source file:
+  - ACT-1019: the entry read as empty;
+  - R1: an unreadable file treated as not yet watched;
+  - R3: an unreadable save treated as deleted.
+- **R1's mechanism is confirmed.**
+  - **Sibling.** The cell's ill-typed twin and the review's
+    `entry-parse-fix` differ from R1 only in whether the file was readable
+    when first watched. Both are released by their first save.
+  - **Discriminator.** In the review's `entry-utf8-fix-touch`, a
+    same-content touch after the first save releases nothing. So the first
+    save's hash had become the baseline: the baseline absorbed the change,
+    and no event was lost.
+  - **Seam.** `src/watch.rs::unreadable_at_first_watch_then_readable_is_a_change`
+    calls `watch_file` twice before the poll. `dev` reports whether that
+    row was observed RED before the fix.
+  - **Refuted if** that row passes against a watcher that stores no state
+    for an unreadable file.
+- **Notation.**
+  - The R1 cell takes
+    `// defect: class=failure-collapse locus=src/watch.rs::FileWatcher::watch_file found=S122 owner=/dev`.
+    `test` removes the trailing provisional prose. Once `test` observes the
+    cell GREEN, it rewrites the "DEFECT (open)" comment in the past tense
+    and removes "mechanism hypothesis, not confirmed".
+  - UR-1 takes
+    `// defect: class=failure-collapse locus=src/watch.rs::FileWatcher::has_content_changed found=S122 owner=/dev`.
+  - RS-1, RS-2 and RS-4 are requirement cells. R2 arose and was corrected
+    within the uncommitted change-set, so it never shipped.
+  - RS-3's face did ship. Its mechanism is the review's source reading,
+    unobserved at its seam, so it takes no `// defect:` line. A class would
+    assert a mechanism that no one has observed.
+  - `fixed=` is added once the closing commit exists.
+
+#### Intake from `test` (2026-10-02)
+
+- **§0.5.5 rule 4 under `--link`:** allocated as LK-1.
+- **`tests/spec_12_runtime.rs` banner:** the "NEGATIVE CONTROL
+  (prior-binding-stays-serial)" paragraph describes a majority-of-N
+  no-speedup control. That control was inverted into a value-equality cell
+  with no timing (FIXME 0458), so the paragraph is stale. `test` deletes it.
+  The edit is comment-only, and the cell's own comment governs.
+- **Class of the R1 RED:** `failure-collapse`, per the defect class above.
+
+#### Gate
+
+- Each new leg passes in `test`'s run. Its report names, for each leg, the
+  recorded output above that the leg's assertion rejects.
+- R1, ACT-1019's other rule-4 cells, SL-2 and the RF cells stay GREEN.
+- R1–R3 close on `dev`'s unit rows and these cells, with no further review
+  (review5's own direction).
+- QA restores the §0.5.5 rule 4 band, and the §14.3 and §14.5 bands, after
+  the W4 full suite.
+
+#### Handoff
+
+- **`test`:** author UR-1, RS-1 to RS-4 and LK-1, and make the RF-4+
+  extension, the R1 notation change and the banner deletion. Rewrite SL-2's
+  "DEFECT (open)" comment in the past tense (ACT-1044). In the same visit,
+  add the staged REPL harness and author IS-1 and IS-2
+  ([review N1](#review-n1--a-save-while-idle-at-the-prompt-2026-10-02)), and
+  observe their subject legs RED before `dev` starts. Report the test source
+  hash. One visit.
+- **`dev`(src):** report the pre-fix outcome of the R1 and R3 watcher rows
+  and of the R2 span row. Realise the A2 row, or report that it is deferred.
+- **`spec`, through `sprint`:** the non-blocking R3 wording request above.
+
+#### Review N1 — a save while idle at the prompt (2026-10-02)
+
+**Basis.**
+
+- **Finding.** N1 (required) in `.local/s122-6a/review6-result.md`. The
+  review's probe is `.local/review-s122-lock/probe3.py`.
+- **QA probe.** QA ran `.local/qa-s122-6b-lock4/probe.py` against a copy of
+  the current binary (sha256 `93f6ab4d…`, built 2026-10-02 07:17). That
+  build predates the N1 correction. The output is in `observed.txt` there.
+  Each case writes `user.cl` from outside the REPL about 1.5 s after a turn,
+  then sends the next line 0.8 s later. QA ran no Cargo.
+- **Ruling.** [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
+  Poll points ("before each turn is admitted"), and
+  [§1.3.1](../../design/int/repl-lifecycle.md#131-session-lock), Write
+  chokepoint ("unseen save").
+
+**Classification.**
+
+- **Defect, required: silent loss of user-authored source** in the ordinary
+  edit-in-editor workflow. It predates S122. Filed as ACT-1045, now closed
+  ([N1 closure](#n1-closure--adequate-2026-10-02)).
+- **Requirement.**
+  - [§14.2](../../repl/spec/14-file-watching.md): recompilation is eager,
+    "as soon as the change is detected", and a reload "runs between turns".
+    A save made between turns is therefore reloaded before the next turn
+    runs.
+  - §14.5: a save that leaves the program uncompilable locks the session,
+    and no file is regenerated while it is locked.
+  - [§15.1](../../repl/spec/15-session-persistence.md): regeneration writes
+    the module's current state, which after a reload is the saved source.
+- **Class: `lost-update`,** added to the vocabulary in `tests/CLAUDE.md`. A
+  definition turn's regeneration writes `user.cl` without comparing the file
+  with the state last recorded for it. It then records its own write as the
+  watcher's baseline (`update_content_hash`). The poll after the turn finds
+  no change, so the save is never reloaded and is already overwritten.
+- **Mechanism: confirmed at the regeneration write.**
+  - **Sibling.** `idle-readable-then-baddefn` differs from the subject only
+    in that its definition fails, so no regeneration write precedes the
+    poll. The save is reloaded (`[updated: user.cl]`), `(k)` gives 9, and
+    the file keeps the save. The unreadable twin locks and keeps the bytes.
+  - **Seam.** The baseline update in `regenerate_backing_file` was read in
+    source, not observed at its seam. The observation is consistent with it:
+    no notification follows the definition turn, although the save's event
+    was queued.
+  - **Refuted if** a module row that queues an external change, runs
+    `regenerate_backing_file` and then polls reports the change on pre-fix
+    code. `dev`'s chokepoint row is at that seam.
+- **Where it entered.** The poll ran only after each turn (REPL lifecycle
+  §1.2 before the ruling, realised in `src/main.rs::run_repl`), and the write
+  chokepoint trusted the recorded state.
+- **Why coverage missed it.** No cell saves while the REPL is idle.
+  `tests/repl_watch.rs::watch_notification_appears_at_prompt_boundary_not_mid_result`
+  saves through a `/sh` turn, and that turn's own poll reloads the save. Its
+  §14.2 band nevertheless claimed "a save between turns". QA has narrowed
+  that band.
+- **Second face: stale evaluation.** The first turn after an idle save runs
+  against the module as it was before the save. In
+  `idle-unreadable-then-expr`, `(g)` gives 1 although `user.cl` cannot be
+  read, and `[errors: user.cl]` follows. The requirement (§14.2) and the
+  correction (the pre-turn poll) are the same.
+
+#### Observed before the fix
+
+| Probe | Observed on `93f6ab4d…` |
+|---|---|
+| `idle-readable-then-defn`: save `(defn g [] 1)` and `(defn k [] 9)`, then `(defn h [] 2)`, then `(k)` | the definition is accepted; no notification; `(k)` is an undefined variable; the file is `(defn g [] 1)\n\n(defn h [] 2)\n` |
+| `idle-unreadable-then-defn`: save `(defn g [] 1)\n\377\n`, then `(defn h [] 2)`, then `(g)` | the definition is accepted; no notification and no lock; `(g)` gives 1; the file is overwritten as above |
+| `idle-readable-then-baddefn` (sibling) | type error, then `[updated: user.cl]`; `(k)` gives 9; the file equals the save |
+| `idle-unreadable-then-baddefn` (sibling) | type error, then `[errors: user.cl]` with the read error; the next definition is refused, naming `user.cl`; the bytes are kept |
+| `idle-readable-then-expr` (control) | `(g)` gives 1, then `[updated: user.cl]`; the definition is accepted; `(k)` gives 9; the file holds `g`, `h` and `k` |
+| `idle-unreadable-then-expr` (control) | `(g)` gives 1, then `[errors: user.cl]`; the definition is refused; the bytes are kept |
+| `idle-readable-then-quit`, `idle-unreadable-then-quit` (controls) | exit 0; the bytes are kept |
+
+#### Conditions (`test`)
+
+Both are acceptance evidence, in `tests/repl_persist.rs` unless `test`
+chooses another REPL file. Unlike R1–R3's cells, these can be observed RED:
+each subject leg must be observed RED on a pre-fix binary, for the reason
+recorded, before `dev` starts. The controls are expected GREEN before and
+after the fix.
+
+| ID | Condition | Plausible wrong outcome | Before the fix |
+|---|---|---|---|
+| IS-1 | Idle readable save, then a definition. `user.cl` is `(defn g [] 1)`, and `(g)` gives 1. After that turn's prompt, the test writes `user.cl` as `(defn g [] 5)\n(defn k [] 9)\n`, then sends `(defn h [] 2)`, then `(k)` and `(g)`. `(k)` gives 9 and `(g)` gives 5. The final file contains `(defn k [] 9)` and `(defn g [] 5)`, and not `(defn g [] 1)` (§14.2, eager and between turns; §15.1). **Control,** from the same builder: the same save, followed by `(defn h [] (undefined-name 2))` in place of the definition. `(k)` gives 9, and the file equals the save byte for byte | The definition's regeneration overwrites the save, and its own write becomes the baseline, so the save is never reloaded (observed). The control rules out a fixture whose save is never written or never delivered | Subject RED at the `(k)`, `(g)` and file legs. Control GREEN (observed) |
+| IS-2 | Idle unreadable save, then a definition. The start is IS-1's. After the prompt, the test writes `(defn g [] 1)\n\377\n`, then sends `(defn h [] 2)`, then `(g)`. `[errors: user.cl]` appears; `(g)` is refused, naming `user.cl` and the save remedy; and the final file equals the unreadable bytes (§14.5, save trigger and lock; §15.1). **Control:** the same save, followed by `(g)` and then `(defn h [] 2)`. The definition is refused, naming `user.cl`, and the bytes are kept. The control asserts nothing about the first `(g)` | The definition overwrites the unreadable bytes with regenerated source, and nothing locks (observed) | Subject RED at the `[errors:]`, refusal and file legs. Control GREEN at its asserted legs (observed) |
+
+#### Fixture property and harness
+
+- **Fixture property.** Each save lands after the previous turn's prompt is
+  printed, which is after that turn's poll, and before the next line is
+  sent. Gate each write and each following line on the prompt, not on a
+  sleep. A save made by a `/sh` turn does not satisfy this property.
+- **Harness.** The builder sends stdin in one piece, so the REPL is never
+  idle. `test` adds a prompt-gated staged REPL to `tests/helpers/e2e.rs`.
+  It sends a line, reads to the next prompt, runs a filesystem action in
+  the tmpdir, and continues. It uses the sanctioned harness, not a raw
+  `Command`. The API's shape is `test`'s.
+- **Determinism.**
+  - On a pre-fix binary, the subject legs fail whatever the event timing,
+    because the user's write precedes the turn's regeneration.
+  - On the corrected binary, the asserted legs hold whether the pre-turn
+    poll or the chokepoint catches the save. They assume only that the
+    save's event is delivered by the following turn, as every watch cell
+    does.
+  - Legs that need the pre-turn poll to see the event are not asserted
+    e2e. Examples are the definition `h` kept, the definition turn itself
+    refused, and the first turn observing the rebuilt module. They are
+    `dev`'s module rows, where the event can be queued deterministically.
+
+#### Module evidence (`dev`, `src/`)
+
+- The REPL lifecycle §1.3.2 rows "Pre-turn poll (N1)" and "Unseen-save
+  chokepoint (N1)", each observed RED before the fix.
+- QA asks the pre-turn row to assert two further legs:
+  - after an idle readable save, the turn's definition `h` is in the
+    session and in the file with the saved `k`;
+  - an expression turn after an idle save observes the rebuilt module (the
+    second face).
+
+#### Notation, band and gate
+
+- **Notation.** IS-1 and IS-2 carry
+  `// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::regenerate_backing_file found=S122 owner=/dev`.
+  `fixed=` is added once the closing commit exists.
+- **Band.** §14.2's band is narrowed now. QA restores it once IS-1 and IS-2
+  pass in the W4 full suite.
+- **Gate.**
+  - Each subject leg was observed RED with the test source hash, then
+    passes. The controls pass both times.
+  - The existing watch cells, UR-1 and R1 stay GREEN.
+  - The R1–R3 gate's full suite covers these cells.
+
+#### Not allocated
+
+- **`/quit` controls.** They were observed conforming. They discriminate
+  nothing beyond the sibling controls.
+- **A save during a turn,** which is the chokepoint's race. No e2e trigger
+  places the write deterministically inside a turn. `dev`'s chokepoint row
+  carries it. It joins the residual "a save during an evaluation" above.
+
+#### N1 closure — adequate (2026-10-02)
+
+- **Judgment: N1 is resolved and its evidence is adequate.** ACT-1045 is
+  deleted, and the §14.2 band cites IS-1, IS-2 and the pre-turn row.
+- **RED, then GREEN.**
+  - IS-1 and IS-2 record their REDs in their source comments: `test`
+    observed each subject leg RED on `93f6ab4d…`, with its control GREEN.
+  - Both cells and both controls pass in the W4 full suite
+    (`.local/s122-w4/nextest.log`, 6601/6628). That suite built the binary
+    the re-review used (07:43:40, sha256 `d205aad1…`). No `.rs` file under
+    `src/`, `crates/` or `tests/` is newer.
+- **Module rows.** `regeneration_keeps_an_unseen_save` and
+  `the_pre_turn_poll_reloads_an_idle_save_before_the_turn` pass in W4.
+  - The second row asserts both legs QA asked for: the saved `k` and the
+    turn's `h` are in the file, and `/sig g` and `(k)` observe the rebuilt
+    module.
+  - Their pre-fix REDs are `dev`'s report, relayed by `sprint`. QA has not
+    seen that run's output.
+- **Review.** The finding-scoped re-review
+  (`.local/s122-6a/review7-result.md`) re-ran `probe3` and found every face
+  conforming. It probed a save during a slow turn, both readable and
+  unreadable, and a save to a cache-restored module. It found no other
+  writer of a backing file in the REPL. Its advisories (a) and (b) are
+  `dev`'s notes and do not affect adequacy.
+- **Limit.** The re-review raised N2: a save before the watcher's first
+  sight. N2 is a separate defect in the same workflow
+  ([intake](#review-n2--a-save-before-the-watchers-first-sight-2026-10-02)).
+  N1's evidence does not cover it, because every N1 save landed after the
+  first prompt.
+
+### `lenient_vec_map_reduce_parallelizes` — classification (2026-10-01)
+
+- **Report (`test`).** The cell misses its threshold in about 3 of 8 runs at
+  light load. Sparks are present, and the ratio is about 0.72–0.74. It is
+  the one RED in the run that traces to no filing.
+- **This is the falsifier named at the
+  [ACT-1037 intake](#act-1037-vec-set-index-guard--adequacy-and-phase-6b-intake-2026-10-01),
+  item (b), firing:** a miss without external load is intake.
+- **Measurement.** QA ran `.local/qa-s122-6b-pmr/probe.py` on the binary
+  copy above, on 13 cores at a load average of 0.8–1.6, alternating ON and
+  OFF over 6 rounds.
+  - The cell's program took 51–59 ms ON and 81–88 ms OFF, a ratio of
+    0.60–0.70. Every lenient run spawned 14 sparks, and the exit values
+    matched.
+  - The same program with `work(1)` leaves measures the fixed cost of
+    compiling, linking and starting: 41–54 ms in either mode. That fixed
+    cost is about 55–60% of the OFF wall-clock. Even a perfect parallel
+    speedup leaves a ratio floor near 0.55–0.6, so the 0.7 threshold
+    clears it by a few milliseconds. That is inside the run-to-run noise of
+    the fixed cost.
+- **Sibling control: only the leaf differs, at 10×.** The program took
+  179–208 ms ON and 577–772 ms OFF, a ratio of 0.27–0.33. After the fixed
+  cost is subtracted, the ratio is 0.21–0.27, about a 4× speedup.
+- **Classification: the instrument fails, not the product.** It is a
+  maintenance-check failure of the cell's witness, not a §12.4.3 defect.
+  - **Mechanism: Amdahl dilution.** The cell's premise, that real parallel
+    work dominates the fixed cost, does not hold on this host. The S85
+    figure of about 3× was measured with the earlier `fib(35)` leaf. S92's
+    re-leaf to `work(30_000_000)` cut the work, and the wall-clock includes
+    compilation.
+  - **Not measured:** whether S122 raised the fixed cost. No control build
+    was run. The repair does not depend on it, because the ratio floor
+    nears the threshold at any fixed cost near the one observed.
+- **Allocation (`test`, this wave; no action filed).** Follow
+  [PLAN](PLAN.md): "widen the separation between regimes before loosening a
+  margin".
+  - Raise the leaf until the computation dominates the fixed cost. At 10×,
+    the measured ratio is about 0.3 against the threshold of 0.7.
+  - Keep the threshold, the attempt count, the spawn premise and value
+    equality.
+  - Scale the result's divisor so that the exit value stays below 256 and
+    distinct.
+  - Correct the cell's comments: the "~2.8–3.1×" figure and the premise.
+  - **Cost.** An OFF run takes about 0.6 s, so four attempts take about 4 s
+    at worst. `PMR_VEC` is shared with
+    `lenient_vec_map_reduce_prior_binding_result_identical_to_sequential`,
+    which asserts value equality only and gains about 1 s.
+  - **Completion.** Eight isolated runs and one full suite are all GREEN.
+- **State (2026-10-02).** The repair landed: the leaf is `300000000`, and
+  the comments cite the S122 ratio. The cell passes in the W4 full suite.
+  QA has not seen a record of the eight isolated runs.
+
+## Phase-6b intake: review N2 and the W4 suite (2026-10-02)
+
+### Review N2 — a save before the watcher's first sight (2026-10-02)
+
+**Basis.**
+
+- **Finding.** N2 (required) in `.local/s122-6a/review7-result.md`, with the
+  review's probe `.local/review-s122-lock/probe7.py`.
+- **QA probe.** QA ran `.local/qa-s122-6b-n2/probe.py` against
+  `target/debug/cranelisp` (sha256 `d205aad1…`, built 2026-10-02 07:43:40).
+  That is the N1-corrected binary, and it predates any N2 correction. QA ran
+  no Cargo.
+  - **Fixture.** `user.cl` holds `(defn g [] 1)` and a `w` that returns a
+    2000-element vector literal. The vector makes the startup compile slow
+    enough to widen the window.
+  - **Save.** S1 is the same source plus `(defn k [] 9)`.
+  - **Turns.** `(defn h [] 2)`, `(k)` and `(defn i [] 3)`, then `/quit`.
+- **Ruling.** `design`(int) is ruling the mechanism now.
+
+**Observed on `d205aad1…`.**
+
+| Case | Differs from the subject in | Observed |
+|---|---|---|
+| `subject` | — (S1 is written 0.30 s after spawn; the first prompt is at 0.48 s) | No notification. Both definitions are accepted, and each prints "changed on disk since the session last read it; it is kept and will be reloaded". `(k)` is an undefined variable. The final file equals S1, with neither `h` nor `i` |
+| `after` (timing sibling) | S1 is written after the first prompt | `[updated: user.cl]` before the first turn. `(k)` gives 9, with no warning. The final file holds `k`, `h` and `i` |
+| `resave` (seam) | S1 is written again, byte for byte, after the first prompt | The same as `subject`: no notification. The watcher's baseline is therefore S1, not the bytes the session read |
+| `newsave` | S2 (S1 plus `(defn m [] 7)`) is written after the first prompt | `[updated: user.cl]`; `(m)` gives 7 and `(k)` gives 9. The final file holds `k`, `m`, `h` and `i`. A different save releases the state |
+
+**Classification.**
+
+- **Defect, required.** It silently loses user-authored definitions, and its
+  warning promises a reload that never happens.
+  - The session runs on source older than the file, because the save is
+    never loaded.
+  - Every definition entered afterwards stays in the session only and is
+    lost at exit.
+  - The state persists until the user makes a save that differs from the
+    stuck one.
+  - The window is the startup load, and it grows with the project.
+- **Filed as**
+  [ACT-1046](#act-1046--startup-save-never-reloaded-closed).
+- **Requirement.**
+  - [§14.2](../../repl/spec/14-file-watching.md): a content change is
+    recompiled eagerly.
+  - [§15.1](../../repl/spec/15-session-persistence.md): regeneration writes
+    the module's current state.
+- **Class: `lost-wakeup`,** widened in `tests/CLAUDE.md`. The watcher is
+  armed after the change it must report:
+  - `watch_file` takes its first-sight baseline from the file on disk, not
+    from the state the session read (`SharedState.recorded_sources`);
+  - the directory watch is added at that moment too, after the save.
+
+  The registration site is `src/watch.rs::FileWatcher::watch_file`, reached
+  through `init_watcher` at startup and `sync_watcher` after a turn.
+- **Mechanism: confirmed for the baseline; inferred for the event.**
+  - **Sibling.** `after` differs only in when the save lands, and conforms.
+  - **Seam.** `resave` shows that the watcher's baseline holds S1. The
+    warning is the write chokepoint's own output
+    (`backing_file_changed_unseen`), so the chokepoint and the watcher
+    disagree about the file's last-seen state.
+  - **Inferred, not observed:** no OS event is queued for a save made before
+    the directory watch is added, because inotify reports only later
+    changes.
+  - **Refuted if** `resave` reported `[updated: user.cl]`, or if a module
+    row that records a read, changes the file and then runs the first
+    sight reported the change on current code.
+- **Where it entered.**
+  - The absorbed save predates S122: the first-sight baseline in
+    REPL lifecycle §1.2.
+  - The loss of later definitions entered in S122 with the N1 write
+    chokepoint (§1.3.1). The chokepoint compares with a second record of
+    the same fact, which the watcher never reconciles. Before N1, the next
+    definition overwrote the save instead.
+- **Why coverage missed it (QA's allocation).** The N1 fixture property
+  placed every save after a prompt. The "Not allocated" list named a save
+  during a turn, but not a save before the watcher first sees a file. The
+  allocation enumerated placements relative to turns, not relative to the
+  watcher's registration.
+- **Dependency face.** A dependency saved between its `register_dep` read and
+  the next `sync_watcher` reaches the same state (review7; not probed by QA).
+  `/reset` clears the watcher's baselines (`clear_all`), so `design` should
+  check whether it reopens the window.
+- **Input to `design`(int), not a ruling.** The subject queues no event (as
+  inferred above), so a correction that only seeds the watcher's baseline
+  from the recorded state would not reload the subject's save. Reloading it
+  needs a comparison at first sight. The e2e condition below discriminates
+  that outcome.
+
+#### Conditions (`test`)
+
+Acceptance evidence, in `tests/repl_persist.rs` beside IS-1 unless `test`
+chooses another REPL file.
+
+| ID | Condition | Plausible wrong outcome | Before the fix |
+|---|---|---|---|
+| FS-1 | Save during startup, then definitions. `user.cl` is `(defn g [] 1)` plus a definition slow enough to compile that the startup window is wide (QA used a 2000-element vector literal). The harness writes S1, the same source plus `(defn k [] 9)`, after the entry is read and before the first prompt. Then it sends `(defn h [] 2)`, `(k)` and `(defn i [] 3)`, and exits. `(k)` gives 9, and the final `user.cl` holds `(defn k [] 9)`, `(defn h [] 2)` and `(defn i [] 3)` (§14.2; §15.1). **Control,** from the same builder and bytes: S1 is written after the first prompt, with the same assertions | The save is absorbed into the watcher's baseline and never reloaded, so `(k)` is undefined. The chokepoint keeps both definitions out of the file (observed). The control rules out a fixture whose entry fails to compile or whose save does not define `k` | Subject RED at the `(k)` and file legs. Control GREEN (observed in the `after` case) |
+
+**Fixture property and harness.**
+
+- **Placement.** The save must follow the entry read and precede the
+  watcher's first sight. Neither event is observable at a prompt, so
+  `Stage::Write` cannot place it. `test` extends the staged harness with a
+  write placed after spawn and before the first prompt; the API's shape is
+  `test`'s.
+- **Why a timed placement is admissible.** A save that lands too early is
+  read at startup. A save that lands too late is an idle save, which N1
+  reloads. Both are conforming placements. A missed window can therefore
+  only let a defective build pass; it never fails a correct one.
+- **Margin.** Unloaded, QA measured the first prompt at about 0.5 s after
+  spawn with a 2000-element vector. `test` sizes the fixture so that the
+  window is at least twice the write delay. The cell should stay within
+  about 3 s.
+- **Detection.** On the current binary, `test` observes the subject RED at
+  its `(k)` and file legs in 5 of 5 runs, with the control GREEN, and
+  records the test source hash. A run that is not RED means the placement
+  missed; resize the fixture before handing the cell to `dev`.
+
+#### Module evidence (`dev`, `src/`)
+
+`design`(int) names the rows in REPL lifecycle §1.3.2. QA asks them to cover
+these legs, each observed RED before the fix:
+
+- the entry is read, its file changes on disk before the watcher first sees
+  it, and the next poll reloads the change; then a regeneration writes with
+  no warning;
+- the same for a dependency read by `register_dep` and first seen by
+  `sync_watcher`;
+- negative: a file unchanged since its read is not reloaded at first sight.
+  A spurious startup reload would also print `[updated:]` in many existing
+  REPL cells.
+
+#### Notation, band and gate
+
+- **Notation.** FS-1 carries
+  `// defect: class=lost-wakeup locus=src/watch.rs::FileWatcher::watch_file found=S122 owner=/dev`.
+- **Band.** The §14.2 band cites ACT-1046 as RED-allocated.
+- **Gate.**
+  - FS-1's subject is observed RED as above, then passes, and its control
+    passes both times.
+  - IS-1, IS-2 and the existing watch cells stay GREEN.
+  - The rows above pass, and the next full suite includes FS-1.
+
+### W4 full suite — the two unfiled REDs (2026-10-02)
+
+**Basis.** `.local/s122-w4/nextest.log`: 6628 run, 6601 passed, 27 failed.
+`sprint` relays that 25 of the failures trace to filed defect guards; QA did
+not re-trace them.
+
+The two others failed under a load average of about 11, with another agent
+probing at the same time. `sprint` relays that each passed 3 of 3 runs in
+isolation.
+
+| Cell | Assertion | Measured |
+|---|---|---|
+| `concurrency_poll_capacity::distinct_poll_effects_sharing_one_token_share_one_pool_nplus1_parks` | best of 3, `< 2.5·D` (375 ms; D = 150 ms) | 382 ms |
+| `concurrency_reactor::two_real_leaves_in_par_overlap_max_not_sum_one_thread` | one run, `< 2 × delay` (200 ms) | 254 ms; exit 200, so both leaves ran |
+
+**Classification.**
+
+- **Neither is a 0694 member or ACT-1025.**
+  - 0694's members are other tests: a compile diagnostic, a heap
+    corruption, and a reactor panic with "suspended with no armed
+    interest". These two cells produce their correct exit values and miss
+    only a wall-clock bound.
+  - ACT-1025 is an in-process worker module test whose requeue returned
+    `false`.
+- **The mechanism is the one found for `lenient_vec_map_reduce_parallelizes`
+  ([classification](#lenient_vec_map_reduce_parallelizes--classification-2026-10-01)).**
+  Each witness's wall-clock includes compiling and starting the child. That
+  fixed cost rises with external load, and each bound leaves it a small
+  budget: 0.5·D = 75 ms for the poll cell, and one delay (100 ms) for the
+  reactor cell.
+- **Poll cell: the product overlapped; confirmed by the measurement.** A
+  serial run takes at least 3·D = 450 ms. The minimum over three attempts
+  was 382 ms, below that floor, so every attempt overlapped. The fixed cost
+  was about 82 ms against a 75 ms budget. This is a maintenance-check
+  failure of the witness, not a §10.12.4.1 defect.
+- **Reactor cell: provisional.** One sample of 254 ms fits overlap with
+  154 ms of fixed cost, or serial execution with 54 ms. The sample does not
+  discriminate them; the isolated passes favour overlap.
+  - **Refuted if** a loaded run that measures the fixed cost alongside, with
+    a zero-delay twin, leaves at least 2 × delay after subtracting it.
+
+**Allocation (`test`; no action filed).**
+
+- Apply [PLAN](PLAN.md): "widen the separation between regimes before
+  loosening a margin". For each cell, measure the fixed cost with a
+  zero-delay twin in the same attempt, and assert the regime bounds on the
+  difference. The reactor cell also takes the best of N.
+  - Keep the regime thresholds, the exit-value legs and the poll cell's
+    parking lower bound.
+  - Raising D is an alternative if the twin costs more.
+  - This repair also makes the reactor cell self-attributing.
+- **Detection.** Run the new witness once against a program that runs
+  serially, such as the capacity-1 sibling's shape, and observe that it
+  fails the overlap bound.
+- **Completion.** Eight isolated runs and one full suite are GREEN.
+- **If not scheduled in S122,** QA files the two cells as one action carried
+  with this record.
+- **State (2026-10-02, final W4).** Both cells pass. Neither has been
+  repaired, so the residual stands: under external load either can miss its
+  budget again. `sprint` has not scheduled the repair; QA files the carry
+  when `sprint` allocates its number.
+
+## Phase-6b final adequacy (2026-10-02)
+
+### Basis
+
+- **Suite.** `.local/s122-w4b/nextest.log` (run `a6e47518…`): 6633 run,
+  6608 passed, 25 failed, 1 skipped. The run compiled the tree it tested.
+  No `.rs` file under `src/`, `crates/` or `tests/` is newer than the N2
+  re-review's brief (08:41:34). The re-review tested a binary built at
+  08:40:47 from the same sources.
+- **The 25 failures, re-traced by QA** through each cell's own comment and
+  `// defect:` line. All are filed guards, and none is a regression:
+  - ACT-1034 ×4, ACT-1035, ACT-0985, ACT-1030 and ACT-0976, named in each
+    cell's comment;
+  - ACT-1038 ×2 and ACT-1039, the trace cells;
+  - ACT-1036, `batch_main_non_io_return_refusal_is_located_at_main`;
+  - ACT-1026 ×2 and ACT-1018, named in their filings;
+  - nine `unpropagated-panic` cells in `spec_12_runtime.rs` (ACT-1040 and
+    ACT-1042), and `uncaught_panic_report_is_not_a_codegen_error_run`
+    (ACT-1041).
+- **Lib tier.** Every module row passes, including each row cited below.
+- **Other lanes (relayed by `sprint`, SPRINT "W4 verification on the final
+  Phase-6b tree").** Agent lane 81/81 (`agent-lane.log` checked by QA);
+  REPL discovery replay armed and unarmed; 13 showcase demos under
+  `DEMO_FAST`; document checker, both spec verifiers, fmt and public-API
+  baselines (+0/−0).
+- **Review.** N2's finding-scoped re-review,
+  `.local/s122-6a/review8-result.md`: N2 resolved; R1, R3 and N1 hold; one
+  new finding, N3 (below).
+
+### ACT-1046 — startup save never reloaded (closed)
+
+- **Face.** A save landing after the session read a file and before the
+  watcher first saw it became the watcher's baseline. It was never reloaded,
+  and every later definition was kept out of the file and lost at exit.
+- **Resolution.** `SharedState.recorded_sources` is the one record of what the
+  session last loaded or wrote. The watcher keeps no baseline and compares
+  each candidate, including a file first seen since the last poll, with the
+  record ([REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
+  Content hash).
+- **RED, then GREEN.**
+  - FS-1 (`watch_startup_save_is_loaded_and_later_definitions_reach_the_file`)
+    was observed RED by `test` in 5 of 5 runs on `d205aad1…`, with its control
+    GREEN. Both pass in the final W4.
+  - `dev` reports `a_save_before_the_watchers_first_sight_is_reloaded` RED on
+    its entry leg and `a_cache_hit_restore_records_the_state_it_validated` RED,
+    then both GREEN. The reload-read row was already true and serves as a
+    control. `dev` rewrote the watcher rows with the fix and proved them by two
+    planted faults. These are `dev`'s reports, relayed by `sprint`; QA has not
+    seen the runs.
+  - The re-review re-ran `probe7` at six delays from 0.05 s to 2.0 s, and every
+    run conformed.
+- **Limits.** The `register_dep` leg's RED is not separately reported; the
+  entry leg and FS-1 discriminate the shared mechanism. The OS-watcher
+  failure path (review advisory) is unchanged and already accepted.
+- QA deleted ACT-1046; this subsection is its record.
+
+### ACT-1044 — parse-failed reload kept the previous namespace (closed)
+
+- **Face.** A module saved so that it did not parse kept its previous
+  namespace. Its dependents recompiled against it, stayed unlocked and had
+  their files regenerated.
+- **Resolution.** The rebuild prologue settles the module before the parse
+  ([s122-closure](../../design/int/s122-closure.md)), under the session lock
+  (§14.5).
+- **Evidence.** SL-2
+  (`watch_parse_failed_dependency_locks_session_without_recompiling_dependents`)
+  and the unit row `reload_that_cannot_parse_or_read_keeps_nothing_of_the_module`
+  pass in the final W4. SL-2's comment is in the past tense.
+- **Limit.** SL-2's own pre-fix run was not recorded. Its detection rests on
+  QA's recorded pre-fix probe of the same fixture, which every SL-2 leg
+  rejects.
+- QA deleted ACT-1044; this subsection is its record.
+
+### ACT-1019 — unreadable entry file (closed)
+
+- **Face.** An entry file that existed but could not be read registered as
+  empty. `--run` reported a missing `main`, `--test` found no tests and exited
+  0, and the REPL's first definition overwrote the file. R1 (an unreadable
+  startup file released only by its second readable save) and R3 (an
+  unreadable save taken for a deleted file) were the same class at the
+  watcher's reads.
+- **Resolution.** A read failure is a located error naming the file in every
+  mode ([int §6.1.1](../../design/int/int.md#611-a-missing-entry-source-file));
+  the record holds an unreadable state.
+- **Evidence.** Every cell passes in the final W4: the `--run`, `--test` and
+  REPL cells (observed RED by `test` on `5dddfaf4…`), R1 (observed RED by
+  `test`), LK-1 and UR-1 (detection by recorded output only), and the watcher
+  and entry-registration rows. `dev` reported the R1 and R3 watcher rows as
+  failing first, then passing. The R1 cell carries the `failure-collapse`
+  line and a past-tense comment.
+- **Limit.** Permission denied has no cell. It shares the read-error arm, and
+  a root-run suite would pass falsely.
+- QA deleted ACT-1019; this subsection is its record.
+
+### Bands restored
+
+Each restoration cites cells that pass in the final W4:
+
+- **CLI:**
+  - §0.1 is `[Tested]`, with SQ-1 and SQ-2 on the exit-status sentence;
+  - §0.5.5 rule 4 cites the four mode cells and R1.
+- **Slash commands:** §3.1's locked-command sentence and `/quit` row, and
+  §3.9's failed-`/mod` sentence.
+- **§14.2:**
+  - step 4 cites SL-2 to SL-6;
+  - the first-sight clause cites FS-1 and its unit rows;
+  - the heading no longer cites ACT-1046.
+- **§14.3:** the newly loaded failing module cites RF-4+.
+- **§14.5:**
+  - the heading is `[Tested]`;
+  - item 2 adds the parse and read leg;
+  - each session-lock bullet and the release paragraph cite the SL, RF, UR-1
+    and SQ cells and the admission rows.
+- **§15.1:**
+  - the lock sentence adds SL-1, SL-8 and the unreadable-bytes cells;
+  - item 2 cites IS-1, FS-1 and the chokepoint row;
+  - the never-recorded file is `[S122]` RED-allocated (ACT-1047).
+- **§15.2.3** is `[Tested+Neg]`.
+- **§14.6** was already `[Tested]`. No cleared row remains unrestored.
+
+### Review N3 — a never-recorded backing file (2026-10-02)
+
+**Basis.** Review N3 (required) with `.local/review-s122-lock/probe9.py`.
+QA ran `.local/qa-s122-6b-final/n3_probe.py` against a copy of
+`target/debug/cranelisp` (sha256 `e332dc6b…`, built 2026-10-02 08:51:57 from
+the final W4 sources), with no stdlib. The output is in `n3_observed.txt`
+there. QA ran no Cargo.
+
+| Case | Differs from the subject in | Observed |
+|---|---|---|
+| `subject-absent-then-created` | — (no `user.cl` at start; `(defn k [] 9)` written after the first prompt; then `(defn h [] 2)`, `(k)`) | No notification and no warning. `(k)` is an undefined variable. The final file is `(defn h [] 2)\n` |
+| `absent-then-created-expr-first` | `(k)` before the definition | `(k)` is undefined; the file is overwritten as above |
+| `sibling-present-at-start` | `user.cl` is `(defn g [] 1)` at start | `[updated: user.cl]`; `(k)` gives 9; the file holds `k` and `h` |
+| `sibling-created-by-session` | `(defn g [] 1)` entered first, so the session writes the file | as above |
+
+- **Classification.** Defect, required: silent loss of user-authored source.
+  Filed as
+  [ACT-1047](../../sprints/actions/ACT-1047-never-recorded-backing-file-overwritten-intake.md),
+  class `lost-update`. It predates S122.
+- **Mechanism: confirmed by sibling and source.** The siblings differ only in
+  whether a record exists. `backing_file_changed_unseen` returns `false`
+  with no record. The seam was read in source, not observed.
+- **Requirement: open.** Whether the created file is loaded or only protected
+  is the user's decision, through `spec`. The allocated RED (FC-1) asserts only
+  the leg both answers share: the user's bytes survive.
+- **Not new intake.** In both siblings regeneration writes `h` before the
+  reloaded `k`. That is §15.4 rule 2, the accepted nonconformance carried
+  with ACT-1005.
+
+### Judgment: Phase 6b is adequately evidenced, with the residuals below
+
+The Phase-6b corrections are each evidenced RED, then GREEN, or by recorded
+output where noted. Each correction passes in one full suite on the final
+tree, and review found nothing further in their scope. The corrections are
+ACT-1037, the session lock with ACT-1044, the `/quit` and EOF status,
+ACT-1019 with R1–R3, PF-1, review findings 1–3, ACT-1045 and ACT-1046. Every
+RED in that suite traces to an open filing.
+
+**Evidence classes.**
+
+- **Acceptance:**
+  - the SL, SQ, RF, RS, UR-1, LK-1, IS and FS cells, and the ACT-1019 cells;
+  - the ACT-1037 cells;
+  - the module rows named on each band.
+- **Safety fences:**
+  - the watch-hang cell and RB-5;
+  - the §14.8 cells;
+  - the cycle-exception cells;
+  - the defect guards that stay RED.
+- **Diagnostic observers:** the REPL discovery replay and the 13 showcase
+  demos.
+- **Maintenance checks:**
+  - the document checker and both spec verifiers;
+  - public-API baselines;
+  - the golden-CLIF lanes;
+  - the three wall-clock witnesses (`lenient_vec_map_reduce_parallelizes`
+    and the two concurrency cells).
+
+**Residuals.**
+
+- **Open defect guards (25 REDs).** These are carried, not accepted:
+  - ACT-1040, ACT-1041 and ACT-1042: panic propagation, which is
+    memory-unsafe (ACT-1040);
+  - ACT-1030: an observed use-after-free;
+  - ACT-1034, ACT-1035 and ACT-1036;
+  - ACT-1038 and ACT-1039;
+  - ACT-0985 §5.13.1;
+  - ACT-1026 D1-M/D1-L, ACT-1018 and ACT-0976: leaks.
+
+  Whole-compiler memory safety is not accepted (SPRINT, Phase-5 checkpoint).
+- **New:** ACT-1047 (N3), RED-allocated and awaiting the user's ruling.
+- **Carried to S123** (SPRINT, Phase-5 checkpoint and Phase-6b approval):
+  0934, 0694 Class I with ACT-1025, ACT-1022, ACT-1020, ACT-1031 with its
+  leads, ACT-1032, and the audit's R1–R12.
+- **Unallocated cells:**
+  - a save during an evaluation (§14.2);
+  - an omitted export (§14.2);
+  - deleting a loaded file, which awaits the user;
+  - permission denied (§0.5.5 rule 4);
+  - the lenient-cache lead.
+- **Open instrument debt:**
+  - the two concurrency witnesses are unrepaired;
+  - QA has seen no record of the eight isolated
+    `lenient_vec_map_reduce_parallelizes` runs.
+
+**Release recommendation.** Phase 6b's corrections may be accepted. The 25
+guards and ACT-1047 are carried as open defects. They are not grounds to hold
+the Phase-6b artifacts, and the compiler is not memory-safe while ACT-1040 and
+ACT-1030 stand.

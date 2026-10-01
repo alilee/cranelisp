@@ -422,6 +422,24 @@ impl Cranelisp {
         invocation.spawn_and_capture()
     }
 
+    /// Run the REPL through `stages`, each gated on its prompt: a `Line` is
+    /// sent only after the previous turn's prompt has been printed, so a
+    /// `Write` between two lines lands while the REPL is idle, after the
+    /// previous turn's file-watcher poll. Stdin closes after the last stage.
+    /// A `/sh` turn cannot make such a write, because its own turn polls.
+    /// Leading `WriteAfterSpawn` stages land during startup, before the first
+    /// prompt is awaited. Panics on any `CrError`, as [`Cranelisp::output`] does.
+    pub fn staged_output(self, stages: &[Stage]) -> CrOutput {
+        assert!(
+            matches!(self.mode, Mode::Repl),
+            "staged_output drives the REPL"
+        );
+        match self.materialise().spawn_staged(stages) {
+            Ok(out) => out,
+            Err(e) => panic!("Cranelisp::staged_output failed: {e}"),
+        }
+    }
+
     /// Materialise the invocation snapshot just before spawn.
     fn materialise(self) -> CrInvocationOwned {
         // Lane-aware resolution (FIXME 0615): honor CARGO_TARGET_DIR so the
@@ -519,6 +537,43 @@ impl Default for Cranelisp {
     }
 }
 
+/// One step of a prompt-gated REPL session; see [`Cranelisp::staged_output`].
+pub enum Stage<'a> {
+    /// Send one complete input line, then wait for the REPL's next prompt.
+    Line(&'a str),
+    /// Write the bytes to a path under the TempDir while the REPL waits at
+    /// its prompt.
+    Write(&'a str, &'a [u8]),
+    /// Write the bytes to a path under the TempDir once the duration has
+    /// passed since spawn, without waiting for a prompt. It places a save
+    /// inside startup, which no prompt marks, so it may only precede every
+    /// other stage. The placement is timed: a caller sizes its fixture so a
+    /// missed window can only produce an outcome the cell accepts.
+    WriteAfterSpawn(Duration, &'a str, &'a [u8]),
+}
+
+type Drained = (
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    std::thread::JoinHandle<()>,
+);
+
+/// Copy `stream` into a shared buffer on a reader thread, so the child never
+/// blocks on a full pipe and the harness can inspect output before exit.
+fn drain(mut stream: impl io::Read + Send + 'static) -> Drained {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = buf.clone();
+    let reader = std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = stream.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&chunk[..n]);
+        }
+    });
+    (buf, reader)
+}
+
 // =============================================================================
 // CrInvocation — public snapshot
 // =============================================================================
@@ -560,12 +615,8 @@ struct CrInvocationOwned {
 }
 
 impl CrInvocationOwned {
-    fn spawn_and_capture(self) -> Result<CrOutput, CrError> {
-        if !self.binary.exists() {
-            return Err(CrError::BinaryNotFound(self.binary.clone()));
-        }
-
-        let started = Instant::now();
+    /// The child command with all three standard streams piped.
+    fn command(&self) -> Command {
         let mut cmd = Command::new(&self.binary);
         cmd.current_dir(&self.cwd)
             .args(&self.args)
@@ -578,8 +629,129 @@ impl CrInvocationOwned {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
+        cmd
+    }
 
-        let mut child = cmd.spawn().map_err(CrError::SpawnFailed)?;
+    /// Run a REPL child through `stages`, keeping its stdin open between
+    /// lines; see [`Cranelisp::staged_output`].
+    fn spawn_staged(self, stages: &[Stage]) -> Result<CrOutput, CrError> {
+        assert!(
+            self.stdin.is_empty() && self.link_then_run.is_none(),
+            "staged_output drives the REPL's stdin itself: no `.stdin` and no batch mode"
+        );
+        let timed = stages
+            .iter()
+            .take_while(|stage| matches!(stage, Stage::WriteAfterSpawn(..)))
+            .count();
+        let (timed, stages) = stages.split_at(timed);
+        assert!(
+            !stages
+                .iter()
+                .any(|stage| matches!(stage, Stage::WriteAfterSpawn(..))),
+            "Stage::WriteAfterSpawn must precede every other stage"
+        );
+        if !self.binary.exists() {
+            return Err(CrError::BinaryNotFound(self.binary.clone()));
+        }
+        let started = Instant::now();
+        let deadline = started + self.timeout;
+        let mut child = self.command().spawn().map_err(CrError::SpawnFailed)?;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let stdout = drain(child.stdout.take().expect("piped stdout"));
+        let stderr = drain(child.stderr.take().expect("piped stderr"));
+
+        // A fresh-form prompt, `<compile>+<eval>ms; <module>> `
+        // (src/repl/mod.rs::prompt_string). A line that leaves a form open
+        // gets a continuation prompt instead, which this does not count.
+        let prompt = Regex::new(r"\d+\+\d+ms; \S+> ").expect("prompt regex");
+        let mut prompts = 1;
+        // Returns false once the child has exited, so no further prompt can come.
+        let await_prompts = |child: &mut std::process::Child, n: usize| loop {
+            let text = String::from_utf8_lossy(&stdout.0.lock().unwrap()).into_owned();
+            if prompt.find_iter(&text).count() >= n {
+                return Ok(true);
+            }
+            match child.try_wait() {
+                Ok(Some(_)) => return Ok(false),
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CrError::Timeout(self.timeout));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => return Err(CrError::SpawnFailed(e)),
+            }
+        };
+
+        let write = |rel: &str, bytes: &[u8]| {
+            let path = self.cwd.join(rel);
+            fs::write(&path, bytes)
+                .unwrap_or_else(|e| panic!("staged write {}: {e}", path.display()));
+        };
+        for stage in timed {
+            if let Stage::WriteAfterSpawn(delay, rel, bytes) = stage {
+                std::thread::sleep((started + *delay).saturating_duration_since(Instant::now()));
+                write(rel, bytes);
+            }
+        }
+
+        let mut live = await_prompts(&mut child, prompts)?;
+        for stage in stages {
+            if !live {
+                break;
+            }
+            match stage {
+                Stage::Line(line) => {
+                    stdin
+                        .write_all(format!("{line}\n").as_bytes())
+                        .and_then(|()| stdin.flush())
+                        .map_err(CrError::StdinWriteFailed)?;
+                    prompts += 1;
+                    live = await_prompts(&mut child, prompts)?;
+                }
+                Stage::Write(rel, bytes) => write(rel, bytes),
+                Stage::WriteAfterSpawn(..) => unreachable!("timed stages precede the rest"),
+            }
+        }
+        drop(stdin);
+
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CrError::Timeout(self.timeout));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) => return Err(CrError::SpawnFailed(e)),
+            }
+        };
+        let elapsed = started.elapsed();
+        let collect = |(buf, reader): Drained| {
+            let _ = reader.join();
+            let bytes = std::mem::take(&mut *buf.lock().unwrap());
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        let tmpdir_path = self.tmpdir.path().to_path_buf();
+        Ok(CrOutput {
+            status,
+            stdout: collect(stdout),
+            stderr: collect(stderr),
+            elapsed,
+            linked_execution_elapsed: None,
+            tmpdir: tmpdir_path,
+            _td: Some(self.tmpdir),
+        })
+    }
+
+    fn spawn_and_capture(self) -> Result<CrOutput, CrError> {
+        if !self.binary.exists() {
+            return Err(CrError::BinaryNotFound(self.binary.clone()));
+        }
+
+        let started = Instant::now();
+        let mut child = self.command().spawn().map_err(CrError::SpawnFailed)?;
 
         if !self.stdin.is_empty() {
             let mut stdin = child.stdin.take().expect("piped stdin");

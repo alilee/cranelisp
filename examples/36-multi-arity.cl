@@ -53,9 +53,9 @@
   ([x y]   (mul-i64 x y))               ;; 2 args: product
   ([x y z] (add-i64 (mul-i64 x y) z)))  ;; 3 args: multiply-then-add
 
-(defn test-arity-one []   (pass (scale 5)      10))  ;; 5*2
-(defn test-arity-two []   (pass (scale 3 4)    12))  ;; 3*4
-(defn test-arity-three [] (pass (scale 2 3 7)  13))  ;; 2*3+7
+(defn check-arity-one []   (pass (scale 5)      10))  ;; 5*2
+(defn check-arity-two []   (pass (scale 3 4)    12))  ;; 3*4
+(defn check-arity-three [] (pass (scale 2 3 7)  13))  ;; 2*3+7
 
 ;; --- 2. Type dispatch: same arity (1), different concrete types ---
 
@@ -69,9 +69,9 @@
   ([:Blob b]      (match b [(MkBlob n) n]))
   ([:(Vec Int) v] (vec-len v)))
 
-(defn test-type-int []  (pass (measure 5)          5))
-(defn test-type-blob [] (pass (measure (MkBlob 9)) 9))
-(defn test-type-vec []  (pass (measure [1 2 3 4])  4))  ;; length 4
+(defn check-type-int []  (pass (measure 5)          5))
+(defn check-type-blob [] (pass (measure (MkBlob 9)) 9))
+(defn check-type-vec []  (pass (measure [1 2 3 4])  4))  ;; length 4
 
 ;; --- 3. Arity-overload for defaults, and back-flow inference (§5.1.2) ---
 ;;
@@ -106,8 +106,8 @@
                                (add-i64 lo (between (add-i64 lo by) hi by))
                                0)))
 
-(defn test-default-step []  (pass (between 1 3)   6))   ;; 1+2+3
-(defn test-explicit-step [] (pass (between 0 6 2) 12))  ;; 0+2+4+6
+(defn check-default-step []  (pass (between 1 3)   6))   ;; 1+2+3
+(defn check-explicit-step [] (pass (between 0 6 2) 12))  ;; 0+2+4+6
 
 ;; --- Summing sub-test results ---
 ;;
@@ -118,11 +118,11 @@
 ;; `--link`.
 (defn main []
   (Pure
-    (add-i64 (test-arity-one)
-      (add-i64 (test-arity-two)
-        (add-i64 (test-arity-three)
-          (add-i64 (test-type-int)
-            (add-i64 (test-type-blob)
-              (add-i64 (test-type-vec)
-                (add-i64 (test-default-step)
-                         (test-explicit-step))))))))))
+    (add-i64 (check-arity-one)
+      (add-i64 (check-arity-two)
+        (add-i64 (check-arity-three)
+          (add-i64 (check-type-int)
+            (add-i64 (check-type-blob)
+              (add-i64 (check-type-vec)
+                (add-i64 (check-default-step)
+                         (check-explicit-step))))))))))

@@ -631,7 +631,7 @@ documented-residual to zero; the marginal instrument stays valid unchanged.
 
 ## 9. Cross-references
 
-- `sprints/SPRINT.md` — the S118 record this paper cites throughout (W1
+- `sprints/archive/sprint-118.md` — the S118 record this paper cites throughout (W1
   findings, W2a/W2b arcs, Branch F, the commission text).
 - `design/runtime/s118-structural-embedding-ownership.md` — RE-1/RE-2/RE-3;
   the D0–D4 detector arc design.

@@ -25,13 +25,13 @@
 ;; Apply a function to a value
 (defn apply-fn [f x] (f x))
 
-(defn test-apply-fn []
+(defn check-apply-fn []
   (apply-fn (fn [x] (mul-i64 x 2)) 21))
 
 ;; Apply a function twice
 (defn apply-twice [f x] (f (f x)))
 
-(defn test-apply-twice []
+(defn check-apply-twice []
   (apply-twice (fn [x] (add-i64 x 1)) 0))
 
 ;; Apply a function n times using recursion
@@ -40,7 +40,7 @@
     x
     (repeat-fn f (sub-i64 n 1) (f x))))
 
-(defn test-repeat-fn []
+(defn check-repeat-fn []
   (repeat-fn (fn [x] (add-i64 x 1)) 5 0))
 
 ;; --- Named functions as values ---
@@ -49,7 +49,7 @@
 (defn inc [x] (add-i64 x 1))
 (defn double [x] (mul-i64 x 2))
 
-(defn test-named-as-value []
+(defn check-named-as-value []
   (add-i64 (apply-fn inc 41)
            (apply-twice double 3)))
 
@@ -63,7 +63,7 @@
 (defn make-multiplier [n]
   (fn [x] (mul-i64 n x)))
 
-(defn test-factories []
+(defn check-factories []
   (let [add5  (make-adder 5)
         mul3  (make-multiplier 3)]
     (add-i64 (add5 10) (mul3 10))))
@@ -75,13 +75,13 @@
   (fn [x] (f (g x))))
 
 ;; inc-then-double: first add 1, then multiply by 2
-(defn test-compose []
+(defn check-compose []
   (let [inc-then-double (compose (fn [x] (mul-i64 x 2))
                                  (fn [x] (add-i64 x 1)))]
     (inc-then-double 5)))
 
 ;; Compose named functions
-(defn test-compose-named []
+(defn check-compose-named []
   ((compose inc double) 10))
 
 ;; --- Combining patterns ---
@@ -91,7 +91,7 @@
   (let [result (transform x)]
     (if (check result) result 0)))
 
-(defn test-transform-check []
+(defn check-transform-check []
   (let [tripled (transform-and-check
                   (fn [x] (mul-i64 x 3))
                   (fn [x] (gt-i64 x 10))
@@ -102,7 +102,7 @@
 (defn pipeline3 [f g h x]
   (h (g (f x))))
 
-(defn test-pipeline []
+(defn check-pipeline []
   (pipeline3 (fn [x] (add-i64 x 1))    ;; 4 -> 5
              (fn [x] (mul-i64 x 2))    ;; 5 -> 10
              (fn [x] (sub-i64 x 3))    ;; 10 -> 7
@@ -113,12 +113,12 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-apply-fn)
-      (add-i64 (test-apply-twice)
-        (add-i64 (test-repeat-fn)
-          (add-i64 (test-named-as-value)
-            (add-i64 (test-factories)
-              (add-i64 (test-compose)
-                (add-i64 (test-compose-named)
-                  (add-i64 (test-transform-check)
-                           (test-pipeline)))))))))))
+    (add-i64 (check-apply-fn)
+      (add-i64 (check-apply-twice)
+        (add-i64 (check-repeat-fn)
+          (add-i64 (check-named-as-value)
+            (add-i64 (check-factories)
+              (add-i64 (check-compose)
+                (add-i64 (check-compose-named)
+                  (add-i64 (check-transform-check)
+                           (check-pipeline)))))))))))

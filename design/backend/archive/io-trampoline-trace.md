@@ -167,7 +167,7 @@ Both are re-exported at the `cranelisp-runtime` crate root as `IoTraceFlushGuard
 
 This event log is the instrument. No investigation document is authored until the log produces evidence.
 
-The three hypotheses from `sprints/SPRINT.md §Slice 4` that this infrastructure discriminates:
+The three hypotheses from `sprints/archive/sprint-61.md §Slice 4` that this infrastructure discriminates:
 
 1. **Trampoline continuation-state leak** (`/backend`-owned if confirmed): a `ContPush` without matching `ContPop` across a `TrampolineEnter`/`TrampolineExit` span, or a `BindEnter` whose `is_fresh=true` closure never shows up in a subsequent `ContPop`-with-consumed-dec.
 2. **Stdio DLL buffer ordering** (`/platform`-owned if confirmed): `PlatformEffect` events with `scheduling_class` indicating stdio, timing-correlated with exit 201 across concurrent subprocesses. Signature: same thunk invoked, different outcomes.

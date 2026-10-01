@@ -1,7 +1,7 @@
 ---
 id: ACT-1025
 title: A worker module test's requeue was refused once in a full run and passed in isolation
-status: open
+status: deferred
 priority: required
 from: qa
 to: qa
@@ -61,5 +61,12 @@ No repeated stress, and no source fix under this intake.
 ## Completion
 
 The failure is attributed, and either corrected with its evidence or carried
-with the user's approval. The item goes into the Phase 5 → 6a presentation. It
-does not block ACT-1021 or ACT-1024.
+with the user's approval.
+
+## Disposition: carried to S123 in K10 (user, 2026-09-30)
+
+Approved with the Phase-5 checkpoint, beside 0694's run-dependent members,
+as bounded attribution that preserves the observation and falsifier above
+([checkpoint carries](../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+First deferral. It did not recur in K4's full run or the checkpoint suite.
+Recommendation steps 1 and 2 are the first S123 acts.

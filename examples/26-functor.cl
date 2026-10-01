@@ -4,7 +4,7 @@
 ;; rather than concrete types. A regular trait like Eq abstracts over
 ;; types of kind * (e.g., Int, Bool). A higher-kinded trait like
 ;; Functor abstracts over type constructors of kind * -> * (e.g.,
-;; Option, List).
+;; Option, IO).
 ;;
 ;; The Functor trait defines fmap -- applying a function to the value(s)
 ;; inside a container while preserving the container's structure:
@@ -21,6 +21,9 @@
 ;; Prior examples used traits parameterized over concrete types (Num,
 ;; Eq, Ord, Display). This example introduces a trait parameterized
 ;; over a type constructor.
+
+;; IO and bind come from example 21; the IO instance near the end uses them.
+(import [primitives [IO bind]])
 
 ;; --- The Option type (from example 10) ---
 
@@ -65,44 +68,61 @@
 ;; --- Tests ---
 
 ;; fmap over Some: applies the function to the contained value
-(defn test-fmap-some []
+(defn check-fmap-some []
   (unwrap-or (fmap inc (Some 41)) 0))                     ;; -> 42
 
 ;; fmap over None: returns None unchanged
-(defn test-fmap-none []
+(defn check-fmap-none []
   (unwrap-or (fmap inc None) 99))                          ;; -> 99
 
 ;; fmap double over Some
-(defn test-fmap-double []
+(defn check-fmap-double []
   (unwrap-or (fmap double (Some 21)) 0))                   ;; -> 42
 
 ;; Chaining fmap: apply two transformations in sequence
-(defn test-fmap-chain []
+(defn check-fmap-chain []
   (unwrap-or (fmap double (fmap inc (Some 10))) 0))        ;; -> 22
 
 ;; Chaining fmap over None: both fmaps are no-ops
-(defn test-fmap-chain-none []
+(defn check-fmap-chain-none []
   (unwrap-or (fmap double (fmap inc None)) 99))            ;; -> 99
 
 ;; fmap with a closure that captures context
-(defn test-fmap-closure []
+(defn check-fmap-closure []
   (let [offset 40]
     (unwrap-or (fmap (fn [x] (add-i64 x offset)) (Some 2)) 0)))  ;; -> 42
 
 ;; fmap preserves None through any function
-(defn test-fmap-preserves-none []
+(defn check-fmap-preserves-none []
   (if (match (fmap double None) [None true _ false]) 1 0))       ;; -> 1
 
-;; Expected: 42 + 99 + 42 + 22 + 99 + 42 + 1 = 347
-;; The process EXIT CODE is the low byte of that sum: 347 mod 256 = 91.
+;; --- Implement Functor for IO ---
+
+;; A Functor need not be a container. IO is a type constructor too:
+;; `(IO a)` describes an effect that yields an `a`. fmap over IO
+;; transforms the value the effect will yield and runs nothing itself.
+;; This is example 21's `map-io`, written as an instance.
+(impl (Functor f) (Functor IO)
+  (defn fmap [f io]
+    (bind io (fn [x] (Pure (f x))))))
+
+;; fmap over IO: the functions apply to the value the action yields
+(defn check-fmap-io []
+  (fmap double (fmap inc (Pure 20))))                      ;; -> (IO 42)
+
+;; Expected: 42 + 99 + 42 + 22 + 99 + 42 + 1 + 42 = 389
+;; The process EXIT CODE is the low byte of that sum: 389 mod 256 = 133.
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
-    (add-i64 (test-fmap-some)
-      (add-i64 (test-fmap-none)
-        (add-i64 (test-fmap-double)
-          (add-i64 (test-fmap-chain)
-            (add-i64 (test-fmap-chain-none)
-              (add-i64 (test-fmap-closure)
-                       (test-fmap-preserves-none)))))))))
+  ;; check-fmap-io is an IO action, so main binds its result before
+  ;; adding it to the pure checks and wrapping the sum in `Pure`.
+  (bind (check-fmap-io)
+    (fn [io-result]
+      (Pure
+        (add-i64 io-result
+          (add-i64 (check-fmap-some)
+            (add-i64 (check-fmap-none)
+              (add-i64 (check-fmap-double)
+                (add-i64 (check-fmap-chain)
+                  (add-i64 (check-fmap-chain-none)
+                    (add-i64 (check-fmap-closure)
+                             (check-fmap-preserves-none))))))))))))

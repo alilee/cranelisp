@@ -4429,3 +4429,153 @@ fn prelude_dependency_with_null_import_runs_in_every_mode_control() {
         violated.join("\n- ")
     );
 }
+
+// =============================================================================
+// PF-1 — a dependency that does not parse is located in its own file (batch)
+// =============================================================================
+
+/// The file named by a diagnostic's leading `<file>:<line>:<col>: ` location,
+/// or `None` for a line without one.
+fn diagnostic_file(line: &str) -> Option<&str> {
+    let (location, _) = line.split_once(": ")?;
+    let mut parts = location.rsplitn(3, ':');
+    let numeric = |p: Option<&str>| p.is_some_and(|s| s.parse::<u32>().is_ok());
+    if numeric(parts.next()) && numeric(parts.next()) {
+        parts.next()
+    } else {
+        None
+    }
+}
+
+/// `--run main.cl` exits 1, and its located diagnostics name `dependency`'s
+/// file and never the entry `main.cl`.
+fn assert_run_locates_failure_in(out: &helpers::e2e::CrOutput, dependency: &str) {
+    let files: Vec<&str> = out.stderr.lines().filter_map(diagnostic_file).collect();
+    assert!(
+        out.status.code() == Some(1) && files.contains(&dependency) && !files.contains(&"main.cl"),
+        "`--run main.cl` must exit 1 with the parse failure located in \
+         `{dependency}`, not in the entry `main.cl`; located files: {files:?}\n\
+         --- exit {:?}\n--- stderr:\n{}",
+        out.status.code(),
+        out.stderr
+    );
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 Error Format — item 2, the
+// source location: under `--run`, an imported `lib.cl` that does not parse is
+// reported at a location in `lib.cl`, not in the entry `main.cl`, and the run
+// exits 1. Design: repl-lifecycle §1.3.1, a dependency that fails before it
+// registers (PF-1), Batch.
+// Pre-fix (binary `5dddfaf4…`, this cell run by `test` on 2026-10-02; QA's
+// REPL faces in `.local/qa-s122-6b-lock2/observed-parse-faces.txt`):
+// `main.cl:1:1: error: module error at 0..40: module 'main' failed: parse error
+// at 0..40: unclosed '('`.
+#[test]
+fn run_unparseable_imported_module_is_located_in_its_file() {
+    let out = Cranelisp::new()
+        .file("lib.cl", "(defn inc1 [x] (primitives/add-i64 x 1)\n")
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(import [lib [inc1]])\n(defn main [] (Pure (inc1 1)))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert_run_locates_failure_in(&out, "lib.cl");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 Error Format — item 2: the
+// prelude twin of the import cell. Under `--run`, a project `prelude.cl` that
+// does not parse, reached through the implicit prelude import
+// (spec/08-modules.md §8.8.1), is reported at a location in `prelude.cl`, not
+// in the entry `main.cl`, and the run exits 1. PF-1, Batch.
+// Pre-fix (binary `5dddfaf4…`, this cell run by `test` on 2026-10-02):
+// `main.cl:1:30: error: module error at 29..69: module 'main' failed: parse
+// error at 29..69: unclosed '('`, the prelude's span read against the entry.
+#[test]
+fn run_unparseable_project_prelude_is_located_in_its_file() {
+    let out = Cranelisp::new()
+        .prelude("(export [primitives [Pure]])\n(defn inc1 [x] (primitives/add-i64 x 1)\n")
+        .file("main.cl", "(defn main [] (Pure (inc1 1)))\n")
+        .run("main.cl")
+        .output();
+    assert_run_locates_failure_in(&out, "prelude.cl");
+}
+
+// =============================================================================
+// R2 — a dependency's load failure is located at its line in its own file
+// (batch)
+// =============================================================================
+//
+// The pre-fix outputs quoted below are the review's probes
+// (`.local/review-s122-lock/probe2.py`) on a binary built 2026-10-01 22:50
+// that is not retained; they survive only as quoted in
+// `.local/s122-6a/review5-result.md`. These cells were written after the
+// correction, so none of them was observed RED.
+
+/// An entry `user.cl` whose `inc1` import from `lib` starts on line 3, so a
+/// span taken from the entry cannot be mistaken for one in `lib.cl`.
+const RS_USER: &str = ";; pad\n;; pad\n(import [lib [inc1]])\n(defn main [] (inc1 1))\n";
+
+/// `--run user.cl` over `RS_USER` and `lib.cl` holding `lib`.
+fn run_with_failing_lib(lib: &[u8]) -> helpers::e2e::CrOutput {
+    let b = Cranelisp::new().user(RS_USER);
+    let path = b.tmpdir_path().join("lib.cl");
+    std::fs::write(&path, lib).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    b.run("user.cl").output()
+}
+
+/// Whether the run exited 1 with a diagnostic whose location starts `prefix`.
+fn exits_1_located_at(out: &helpers::e2e::CrOutput, prefix: &str) -> bool {
+    out.status.code() == Some(1) && out.stderr.lines().any(|l| l.starts_with(prefix))
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 Error Format — item 2, the
+// source location: under `--run`, an imported `lib.cl` that fails to parse on
+// line 3 is reported at `lib.cl:3:`, and the run exits 1. RS-1.
+// Pre-fix (review probe `run-lib-parse-line3`): `lib.cl:1:1 … parse error at
+// 0..0`, the parse span zeroed.
+#[test]
+fn run_unparseable_imported_module_is_located_at_its_line() {
+    let out = run_with_failing_lib(b"(defn a [] 1)\n\n(defn inc1 [x] (primitives/add-i64 x 1)\n");
+    assert!(
+        exits_1_located_at(&out, "lib.cl:3:"),
+        "exit 1 with the parse failure located at `lib.cl:3:`\n--- exit {:?}\n--- stderr:\n{}",
+        out.status.code(),
+        out.stderr
+    );
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 Error Format — item 2: under
+// `--run`, an imported `lib.cl` that is not valid UTF-8 is reported at
+// `lib.cl:1:1:`, an empty span at the file's start, and not at the import's
+// span in `user.cl` (`23..33`); the run exits 1. RS-2.
+// Pre-fix (review probe `run-lib-utf8`): the loader's import span was carried
+// into `lib.cl`, "at 23..33".
+#[test]
+fn run_unreadable_imported_module_is_located_at_its_start() {
+    let out = run_with_failing_lib(b"(defn inc1 [x] 1)\n\xff\n");
+    assert!(
+        exits_1_located_at(&out, "lib.cl:1:1:") && !out.stderr.contains("23..33"),
+        "exit 1 with the read failure located at `lib.cl:1:1:` and without the \
+         import's span `23..33`\n--- exit {:?}\n--- stderr:\n{}",
+        out.status.code(),
+        out.stderr
+    );
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 Error Format — item 2: under
+// `--run`, an imported `lib.cl` whose line 2 fails to typecheck is reported at
+// `lib.cl:2:`, not in the entry with `lib.cl`'s offsets; the run exits 1.
+// RS-3.
+// Pre-fix (review probe `run-lib-type`, on an unpadded fixture): `user.cl:1:16`,
+// the type error carrying no file.
+#[test]
+fn run_ill_typed_imported_module_is_located_at_its_line() {
+    let out = run_with_failing_lib(b";; c\n(defn inc1 [x] (primitives/add-i64 x \"a\"))\n");
+    assert!(
+        exits_1_located_at(&out, "lib.cl:2:"),
+        "exit 1 with the type failure located at `lib.cl:2:`\n--- exit {:?}\n--- stderr:\n{}",
+        out.status.code(),
+        out.stderr
+    );
+}

@@ -8,7 +8,7 @@
 
 > **Status: DESIGN (S102 Phase 3).** Companion to `design/int/session-transaction.md`
 > (amended this phase: §9.1.1 downgrade `stale:` contract; §10 T1 full-cure mechanics).
-> Scope authority: `sprints/SPRINT.md` Block A. Acceptance authority: the S101 6a/6b
+> Scope authority: `sprints/archive/sprint-102.md` Block A. Acceptance authority: the S101 6a/6b
 > guard set (the retired failure ledger, section "Sprint 101 Phase 6a/6b defect set") — every design
 > below names the guards it flips. Master design: `design/int/int.md` (§8 REPL flow,
 > §8.3 regeneration, §8.6 transaction).

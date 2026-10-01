@@ -7,12 +7,17 @@ agent feature.
 ```
 user> /syntax
 ; core-language syntax topics:
-;   defn  fn  match  traits  modules  ...
+;   defn
+;   defn-multi-sig
+;   let
+;   ...
+;   prelude-sugar
 ; Use /syntax <topic> for detail.
 
 user> /syntax fn
-TOPIC fn [core]
-...
+TOPIC fn  [core]
+  Anonymous function (lambda / closure). Captures free variables by value.
+  ...
 ```
 
 Bare `/syntax` is the topic index. `/syntax <topic>` prints a compact reference
@@ -20,9 +25,9 @@ with a form template and example. If the topic name is unknown, the REPL explain
 that and prints the index again so you can choose a valid name.
 
 The delivered topic content is the curated asset
-[`src/syntax/cheatsheet.txt`](../src/syntax/cheatsheet.txt). It is a practical
+[`src/syntax/cheatsheet.txt`](../../src/syntax/cheatsheet.txt). It is a practical
 syntax reference, not a second language specification; follow its links and the
-normative [language specification](../spec/) for full rules and edge cases.
+normative [language specification](../../spec/) for full rules and edge cases.
 
 ## What it covers
 
@@ -66,11 +71,11 @@ ordinary input unchanged). When you need both pieces, match the raw node instead
 
 `SexpAnnotated` stores the annotation first and subject second; both are raw
 `Sexp` values. The complete macro-facing representation is documented in
-[`design/arch/annotated-sexp-node.md §3`](../design/arch/annotated-sexp-node.md).
+[`design/arch/annotated-sexp-node.md §3`](../../design/arch/annotated-sexp-node.md).
 
 ## Related commands
 
-- [`cli-reference.md`](cli-reference.md#repl-default--no-mode-flag) — REPL and
+- [`cli-reference.md`](../cli-reference.md#repl-default--no-mode-flag) — REPL and
   command-line reference.
 - `/search` finds public non-macro callable symbols; it is not a macro lookup.
 - `/doc`, `/sig`, `/info`, `/list`, and `/imports` inspect what is already in

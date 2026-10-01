@@ -35,6 +35,7 @@ mod helpers;
 use std::time::Duration;
 
 use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::marginal::{Child, MarginalPair};
 
 // =============================================================================
 // Helpers
@@ -692,4 +693,195 @@ fn trace_adt_names_not_auto_imported_neg() {
 fn trace_adt_names_reachable_via_qualified_path_without_import() {
     repl_bare("(match (trace 42) [(primitives/TraceCall n p r c ns) n])\n")
         .assert_stdout_contains(":primitives/String");
+}
+
+// =============================================================================
+// §4.12.2 / §4.12.9 — every call of a traced callee is recorded, in every mode
+// (ACT-1038, ACT-1039)
+// =============================================================================
+//
+// `fib` is compiled outside the trace body, so its own recursive calls are
+// spark-admitted unless `CRANELISP_NO_LENIENT=1`. `frames` counts every
+// `TraceCall` in the recorded tree; `(fib 12)` makes 465 calls of `fib`, and
+// the primitives in its body are inline, so a complete tree has 465 frames.
+
+const FIB_AND_FRAMES: &str = "(import [primitives [add-i64 sub-i64 lt-i64 Int Pure Trace TraceCall]])\n\
+     (import [macros [SCons SNil]])\n\
+     (defn fib [n] (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))\n\
+     (defn frames [l] (match l [(SCons h t) (add-i64 (match h [(TraceCall n p r c ns) (add-i64 1 (frames c))]) (frames t)) SNil 0]))\n";
+
+const TRACED_FIB_12_FRAMES: &str = "(match (trace (fib 12)) [(TraceCall n p r c ns) (frames c)])\n";
+
+fn traced_fib_12_frames_repl(no_lenient: bool) -> helpers::e2e::CrOutput {
+    let cr = Cranelisp::new()
+        .repl()
+        .stdin(&format!("{FIB_AND_FRAMES}{TRACED_FIB_12_FRAMES}"));
+    let cr = if no_lenient {
+        cr.env("CRANELISP_NO_LENIENT", "1")
+    } else {
+        cr
+    };
+    cr.output()
+}
+
+// spec: spec/04-expressions.md §4.12.2 — item 3: every instrumented call in
+// the trace's extent is recorded, including calls a spark-admitted callee
+// makes. REPL only until ACT-1039 lets `--run` record user functions.
+// defect: class=shared-state-write-race locus=design/backend/lenient-eval.md §2.3 trace-body exclusion is lexical, so a callee sparks during the trace's dynamic extent found=S122 owner=/dev (ACT-1038)
+#[test]
+fn trace_records_every_call_of_spark_admitted_callee() {
+    let (spawns, premise) = untraced_fib_12_spawns(false);
+    assert!(
+        spawns.is_some_and(|n| n > 0),
+        "PREMISE LOST (not the ACT-1038 defect): this cell discriminates only while an \
+         untraced `(fib 12)` sparks, and `CRANELISP_SPARK_STATS=1` reported {spawns:?} spawns. \
+         Spark admission changed; re-derive a spark-admitted callee for this cell\n{premise}"
+    );
+    let out = traced_fib_12_frames_repl(false);
+    assert!(
+        out.stdout.contains(":primitives/Int 465"),
+        "`(trace (fib 12))` MUST record all 465 `fib` calls\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.2 — control: with sparks disabled the
+// same trace records all 465 calls.
+#[test]
+fn trace_records_every_call_with_sparks_disabled_control() {
+    traced_fib_12_frames_repl(true).assert_stdout_contains(":primitives/Int 465");
+}
+
+/// The `spawns=N` an untraced `(fib 12)` REPL child reports on stderr under
+/// `CRANELISP_SPARK_STATS=1`, or `None` when it prints no stats line, with a
+/// diagnostic of the run.
+fn untraced_fib_12_spawns(no_lenient: bool) -> (Option<u64>, String) {
+    let cr = Cranelisp::new()
+        .repl()
+        .env("CRANELISP_SPARK_STATS", "1")
+        .stdin(&format!("{FIB_AND_FRAMES}(fib 12)\n"));
+    let out = if no_lenient {
+        cr.env("CRANELISP_NO_LENIENT", "1")
+    } else {
+        cr
+    }
+    .output();
+    let spawns = out
+        .stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("[SPARK_STATS] spawns="))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok());
+    let diag = format!(
+        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    (spawns, diag)
+}
+
+// spec: spec/04-expressions.md §4.12.2 — the spark premise of
+// `trace_records_every_call_of_spark_admitted_callee` can fail: with sparks
+// disabled the untraced run reports no spawns, and it computes `(fib 12)`.
+#[test]
+fn untraced_fib_spark_premise_reports_no_spawns_with_sparks_disabled_control() {
+    let (spawns, diag) = untraced_fib_12_spawns(true);
+    assert!(
+        spawns.is_none_or(|n| n == 0) && diag.contains(":primitives/Int 144"),
+        "with CRANELISP_NO_LENIENT=1 the premise MUST report no spawns and `(fib 12)` be 144\n{diag}"
+    );
+}
+
+fn traced_vs_untraced_fib_12(no_lenient: bool) -> MarginalPair {
+    let child = |last_turn: &str| {
+        let c = Child::repl(&format!("{FIB_AND_FRAMES}{last_turn}"));
+        if no_lenient {
+            c.env("CRANELISP_NO_LENIENT", "1")
+        } else {
+            c
+        }
+    };
+    MarginalPair::new(
+        "(trace (fib 12)) against an untraced (fib 12)",
+        child("(fib 12)\n"),
+        child(TRACED_FIB_12_FRAMES),
+    )
+}
+
+// spec: spec/04-expressions.md §4.12.2 — the trace releases every argument
+// and result String it formats, including those formatted for calls a
+// spark-admitted callee makes: the traced session's marginal over the
+// untraced one is zero.
+// defect: class=shared-state-write-race locus=crates/cranelisp-intrinsics/src/trace.rs::cranelisp_trace_enter returns on a thread without TRACE_THREAD_ID without storing or releasing the formatted Strings found=S122 owner=/dev (ACT-1038)
+#[test]
+fn traced_spark_admitted_callee_releases_every_formatted_string() {
+    traced_vs_untraced_fib_12(false)
+        .measure()
+        .assert_balanced("the formatted Strings of every traced fib call");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — control: with sparks disabled the
+// traced session balances against the untraced one.
+#[test]
+fn traced_callee_releases_every_formatted_string_with_sparks_disabled_control() {
+    traced_vs_untraced_fib_12(true)
+        .measure()
+        .assert_balanced("the formatted Strings of every traced fib call, sparks disabled");
+}
+
+// spec: spec/04-expressions.md §4.12.9 — a trace behaves identically in every
+// mode: `(trace (fib 3))` records its 5 `fib` calls in the REPL, under `--run`
+// and in a linked binary. Sparks are disabled so ACT-1038 cannot drop frames;
+// the REPL leg is the control.
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S122 owner=/dev — provisional: mechanism unobserved (ACT-1039)
+#[test]
+fn trace_records_user_function_calls_in_every_mode() {
+    let program = format!(
+        "{FIB_AND_FRAMES}(defn main [] (Pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))\n"
+    );
+    let describe = |out: &helpers::e2e::CrOutput| {
+        format!(
+            "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+            out.status, out.stdout, out.stderr
+        )
+    };
+    let repl = Cranelisp::new()
+        .repl()
+        .env("CRANELISP_NO_LENIENT", "1")
+        .stdin(&format!("{program}(main)\n"))
+        .output();
+    let run = Cranelisp::new()
+        .env("CRANELISP_NO_LENIENT", "1")
+        .user(&program)
+        .run("user.cl")
+        .output();
+    let link = Cranelisp::new()
+        .env("CRANELISP_NO_LENIENT", "1")
+        .user(&program)
+        .link_then_run("user.cl")
+        .output();
+    let legs = [
+        (
+            "repl",
+            repl.stdout.contains(":primitives/Int 5"),
+            describe(&repl),
+        ),
+        ("--run", run.status.code() == Some(5), describe(&run)),
+        (
+            "--link",
+            link.linked_execution_elapsed.is_some() && link.status.code() == Some(5),
+            describe(&link),
+        ),
+    ];
+    let wrong: Vec<String> = legs
+        .iter()
+        .filter(|(_, ok, _)| !ok)
+        .map(|(mode, _, diag)| format!("--- {mode}\n{diag}"))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "`(trace (fib 3))` MUST record 5 `fib` frames in every mode\n{}",
+        wrong.join("\n")
+    );
 }

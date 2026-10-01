@@ -83,55 +83,55 @@
 
 ;; Logical primitives on two 4-bit patterns: 0b1100 (12) and 0b1010 (10).
 ;;   AND -> 0b1000 = 8 ; OR -> 0b1110 = 14 ; XOR -> 0b0110 = 6
-(defn test-and [] (b2i (eq-i64 (bit-and 12 10) 8)))
-(defn test-or  [] (b2i (eq-i64 (bit-or  12 10) 14)))
-(defn test-xor [] (b2i (eq-i64 (bit-xor 12 10) 6)))
+(defn check-and [] (b2i (eq-i64 (bit-and 12 10) 8)))
+(defn check-or  [] (b2i (eq-i64 (bit-or  12 10) 14)))
+(defn check-xor [] (b2i (eq-i64 (bit-xor 12 10) 6)))
 
 ;; Full-width complement: (bit-not 0) sets all 64 bits = -1.
-(defn test-not [] (b2i (eq-i64 (bit-not 0) -1)))
+(defn check-not [] (b2i (eq-i64 (bit-not 0) -1)))
 
 ;; Left shift zero-fills: 1 << 4 = 16.
-(defn test-shl [] (b2i (eq-i64 (shl 1 4) 16)))
+(defn check-shl [] (b2i (eq-i64 (shl 1 4) 16)))
 
 ;; Arithmetic right shift keeps the sign: -8 >> 1 = -4.
-(defn test-shr-arith [] (b2i (eq-i64 (shr -8 1) -4)))
+(defn check-shr-arith [] (b2i (eq-i64 (shr -8 1) -4)))
 
 ;; Shift count is taken modulo 64, so shifting by 64 is the same as by 0.
-(defn test-shift-mod-64 [] (b2i (eq-i64 (shl 1 64) 1)))
+(defn check-shift-mod-64 [] (b2i (eq-i64 (shl 1 64) 1)))
 
 ;; popcount counts set bits regardless of where they sit: 0b11111111 = 255
 ;; has 8 set bits.
-(defn test-popcount [] (b2i (eq-i64 (popcount 255) 8)))
+(defn check-popcount [] (b2i (eq-i64 (popcount 255) 8)))
 
 ;; Single-bit membership: bit 0 of 0b101 is set; bit 1 is not.
-(defn test-bit-test [] (b2i (bit-test 5 0)))
-(defn test-bit-test-neg [] (b2i (not (bit-test 5 1))))
+(defn check-bit-test [] (b2i (bit-test 5 0)))
+(defn check-bit-test-neg [] (b2i (not (bit-test 5 1))))
 
 ;; set / clear / flip a single bit.
-(defn test-bit-set   [] (b2i (eq-i64 (bit-set 0 3) 8)))     ;; 0 -> 0b1000
-(defn test-bit-clear [] (b2i (eq-i64 (bit-clear 15 0) 14))) ;; 0b1111 -> 0b1110
-(defn test-bit-flip  [] (b2i (eq-i64 (bit-flip 0 5) 32)))   ;; 0 -> 0b100000
+(defn check-bit-set   [] (b2i (eq-i64 (bit-set 0 3) 8)))     ;; 0 -> 0b1000
+(defn check-bit-clear [] (b2i (eq-i64 (bit-clear 15 0) 14))) ;; 0b1111 -> 0b1110
+(defn check-bit-flip  [] (b2i (eq-i64 (bit-flip 0 5) 32)))   ;; 0 -> 0b100000
 
 ;; The permission bitmask in action.
-(defn test-all-perms []
+(defn check-all-perms []
   (b2i (eq-i64 (all-perms) 7)))                 ;; read+write+exec = 0b111
-(defn test-can-write []
+(defn check-can-write []
   (b2i (can-write? (all-perms))))               ;; write bit is set
-(defn test-revoke-write []
+(defn check-revoke-write []
   ;; Clear the write bit, then confirm it is gone but the others remain.
   (let [reduced (bit-clear (all-perms) (flag-write))]
     (b2i (if (can-write? reduced) false true))))
-(defn test-count-perms []
+(defn check-count-perms []
   ;; popcount of the full mask is the number of granted permissions: 3.
   (b2i (eq-i64 (count-bits (all-perms)) 3)))
 
 ;; Union and intersection of two permission sets, as set operations.
-(defn test-perms-union []
+(defn check-perms-union []
   ;; {read} ∪ {write} = {read,write} = 0b011 = 3
   (let [r (bit-set 0 (flag-read))
         w (bit-set 0 (flag-write))]
     (b2i (eq-i64 (perms-union r w) 3))))
-(defn test-perms-intersection []
+(defn check-perms-intersection []
   ;; {read,write} ∩ {write,exec} = {write} = 0b010 = 2
   (let [rw (bit-or (bit-set 0 (flag-read))  (bit-set 0 (flag-write)))
         we (bit-or (bit-set 0 (flag-write)) (bit-set 0 (flag-exec)))]
@@ -142,22 +142,22 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-and)
-      (add-i64 (test-or)
-        (add-i64 (test-xor)
-          (add-i64 (test-not)
-            (add-i64 (test-shl)
-              (add-i64 (test-shr-arith)
-                (add-i64 (test-shift-mod-64)
-                  (add-i64 (test-popcount)
-                    (add-i64 (test-bit-test)
-                      (add-i64 (test-bit-test-neg)
-                        (add-i64 (test-bit-set)
-                          (add-i64 (test-bit-clear)
-                            (add-i64 (test-bit-flip)
-                              (add-i64 (test-all-perms)
-                                (add-i64 (test-can-write)
-                                  (add-i64 (test-revoke-write)
-                                    (add-i64 (test-count-perms)
-                                      (add-i64 (test-perms-union)
-                                        (test-perms-intersection)))))))))))))))))))))
+    (add-i64 (check-and)
+      (add-i64 (check-or)
+        (add-i64 (check-xor)
+          (add-i64 (check-not)
+            (add-i64 (check-shl)
+              (add-i64 (check-shr-arith)
+                (add-i64 (check-shift-mod-64)
+                  (add-i64 (check-popcount)
+                    (add-i64 (check-bit-test)
+                      (add-i64 (check-bit-test-neg)
+                        (add-i64 (check-bit-set)
+                          (add-i64 (check-bit-clear)
+                            (add-i64 (check-bit-flip)
+                              (add-i64 (check-all-perms)
+                                (add-i64 (check-can-write)
+                                  (add-i64 (check-revoke-write)
+                                    (add-i64 (check-count-perms)
+                                      (add-i64 (check-perms-union)
+                                        (check-perms-intersection)))))))))))))))))))))

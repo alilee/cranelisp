@@ -58,6 +58,11 @@ is what keeps every platform a thin, stateless C-ABI leaf:
   writing that callback **in Rust, inside your platform**, and exposing only a
   poll-shaped effect to cranelisp. The re-entrant callback never becomes a
   cranelisp-closure-across-the-C-ABI contract.
+- No function value crosses the boundary in either direction: a platform
+  function's parameter and result types must not contain a function type
+  ([`spec/10-io.md §10.10.1`](../../spec/10-io.md#10101-calling-convention)).
+  The compiler does not reject such a declaration yet, so keep to the rule
+  yourself.
 
 Because you never block (you return `Pending` instead), **cancellation is free**: the
 host simply stops polling you and drops the suspended state. Nothing is ever stuck

@@ -439,7 +439,7 @@ for trait-implementation registration.
 
 **Status: implemented at `56e4d2e1` (2026-09-26); QA evidence adequate; phase acceptance pending.**
 - The exact three-entry types API and cache schema 30 match the user's approval
-  (`sprints/SPRINT.md` §"Lookup dependency implementation approval — 2026-09-26").
+  (`sprints/archive/sprint-122.md` §"Lookup dependency implementation approval — 2026-09-26").
   The user confirmed the generated types baseline diff (+3/−0) on 2026-09-26.
 - One full suite passed on the delivered source (6,144 of 6,144). Independent types
   and int reviews leave no open blocking or required finding, and QA's evidence

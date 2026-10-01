@@ -1,7 +1,7 @@
 # `--test` and the shared test runner
 
 **Owner:** `design` (int). **Status:** implemented and verified in `src/`.
-Verification evidence and acceptance status are recorded in `sprints/SPRINT.md`.
+Verification evidence and acceptance status are recorded in `sprints/archive/sprint-122.md`.
 A missing entry file is refused at entry registration, not by the runner
 ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
 **Subordinate to:** [`int.md`](int.md). **Scope:** `src/`.
@@ -10,12 +10,12 @@ Governing inputs, cited rather than restated:
 
 - Requirements: [CLI invocation §0.2.2](../../repl/spec/00-cli-invocation.md#022-test-mode---test-s122)
   and [test discovery](../../repl/spec/16-test-discovery.md) §§16.1–16.2 and
-  §16.6. The user's rulings of 2026-09-28 in `sprints/SPRINT.md` ("Automatic
+  §16.6. The user's rulings of 2026-09-28 in `sprints/archive/sprint-122.md` ("Automatic
   test-runner scope settled") govern wherever `spec` has not yet absorbed
   them, notably the library stop and the `--test` refusal (section 2).
 - Boundary: [test discovery, explicit harness](../arch/test-discovery.md#explicit-test-harness--the-compiler-runner).
 - Public entry point: the user-approved delta of 2026-09-28, recorded in
-  `sprints/SPRINT.md`. It adds `CompilerSession::run_tests(&self) ->
+  `sprints/archive/sprint-122.md`. It adds `CompilerSession::run_tests(&self) ->
   Result<TestRunReport, CranelispError>`, a `TestRunReport` with private fields
   and `text`, `warnings` and `exit_code` accessors, and one `session_v4`
   re-export. This design adds no public item.
@@ -340,6 +340,25 @@ cannot be built (Principle 20).
   6. `process::exit(report.exit_code())`.
 - The `RunMode::Run` rustdoc and the `src/lib.rs` consumer comment name
   `--test`.
+- **Execution environment** ([CLI §0.7](../../repl/spec/00-cli-invocation.md#07-execution-environment-variables-s93);
+  user ruling of 2026-10-01). `CRANELISP_NO_LENIENT` and
+  `CRANELISP_SPARK_BUDGET` apply under `--test` as in every mode, with no
+  int change. Each is read once per process by its owner:
+  `CRANELISP_NO_LENIENT` by backend's sparkability decision at codegen,
+  and `CRANELISP_SPARK_BUDGET` by intrinsics' spark gate at the first
+  admission. `--test` compiles through `RunMode::Run`, and its tests run in
+  process through the same emitted spark sites and gate, so no mode branch
+  exists for a knob to miss. Do not add a `--test`-specific read or
+  override.
+  - **Measured 2026-10-01** on the debug binary from `88bbbd12` with the
+    Phase-6 tree, `--test --no-cache`, one test calling a doubly recursive
+    `fib 20`, with `CRANELISP_SPARK_STATS=1`: the default run spawned 14
+    sparks; `CRANELISP_SPARK_BUDGET=0` spawned 0, with every gate taking
+    the direct arm; `CRANELISP_NO_LENIENT=1` emitted no spark site, so no
+    statistics were printed. The test passed in all three.
+  - Grade: measured once, not continuously. A permanent cell is QA's to
+    allocate. Falsifier: a `--test` run in which either knob leaves the
+    spawn count of a sparking test unchanged.
 
 ### 7.2 REPL commands
 

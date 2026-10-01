@@ -23,10 +23,10 @@
 (defn twice [x] (step (step x)))
 (defn step [x] (mul-i64 x 3))
 
-(defn test-direct []
+(defn check-direct []
   (if (eq-i64 (step 2) 6) 1 0))
 
-(defn test-forward-call []
+(defn check-forward-call []
   (if (eq-i64 (twice 2) 18) 1 0))
 
 ;; --- Forward references through a dependency chain ---
@@ -36,7 +36,7 @@
 (defn mid [] (add-i64 (base) 10))
 (defn base [] 2)
 
-(defn test-forward-chain []
+(defn check-forward-chain []
   (if (eq-i64 (top) 112) 1 0))
 
 ;; --- Callers before a trait implementation ---
@@ -54,21 +54,21 @@
 (impl Sized Box
   (defn size [b] (match b [(Box v) (mul-i64 v 10)])))
 
-(defn test-impl-direct []
+(defn check-impl-direct []
   (if (eq-i64 (size (Box 5)) 50) 1 0))
 
-(defn test-impl-forward-call []
+(defn check-impl-forward-call []
   (if (eq-i64 (boxed-size (Box 5)) 50) 1 0))
 
-(defn test-impl-forward-chain []
+(defn check-impl-forward-chain []
   (if (eq-i64 (twice-boxed-size (Box 5)) 100) 1 0))
 
 ;; main returns the six pass counts in IO, using Pure as in example 21.
 (defn main []
   (Pure
-    (add-i64 (test-direct)
-      (add-i64 (test-forward-call)
-        (add-i64 (test-forward-chain)
-          (add-i64 (test-impl-direct)
-            (add-i64 (test-impl-forward-call)
-                     (test-impl-forward-chain))))))))
+    (add-i64 (check-direct)
+      (add-i64 (check-forward-call)
+        (add-i64 (check-forward-chain)
+          (add-i64 (check-impl-direct)
+            (add-i64 (check-impl-forward-call)
+                     (check-impl-forward-chain))))))))

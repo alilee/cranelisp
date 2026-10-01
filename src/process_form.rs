@@ -194,10 +194,13 @@ fn fail_whole_source_attempt(
         return error;
     }
     match dependency::prelude_reach_cycle(ctx, module) {
-        Some(cycle) => CranelispError::ModuleError {
-            message: format!("circular dependency detected: {}", cycle.render()),
-            location: error.location().clone(),
-        },
+        Some(cycle) => {
+            ctx.scheduler.record_cycle_failure(module);
+            CranelispError::ModuleError {
+                message: format!("circular dependency detected: {}", cycle.render()),
+                location: error.location().clone(),
+            }
+        }
         None => error,
     }
 }
@@ -1273,14 +1276,14 @@ fn store_pool_continuation(
 }
 
 /// The verbatim authored text of `form`, sliced from the module's recorded
-/// `source_text` by span and CONSISTENCY-GATED (S102 CS-D2, §15.4.7) via the
-/// shared `save::verbatim_slice` gate (S102 W5R M-5 — Principle 7): the slice
-/// must re-parse to exactly the recorded form (reader-desugar-aware, so
-/// authored shorthand like `` `(… ~e) `` passes). Returns `None` — callers
-/// fall back to `pretty_print` — when the module has no `source_text`, the
-/// span is out of bounds / off a char boundary, or the slice does not match
-/// (e.g. a REPL turn's fresh 0-based spans against the module's load-time
-/// file text).
+/// `source_text` by span and CONSISTENCY-GATED (S102 CS-D2, §15.4 rule 1,
+/// §15.1) via the shared `save::verbatim_slice` gate (S102 W5R M-5 —
+/// Principle 7): the slice must re-parse to exactly the recorded form
+/// (reader-desugar-aware, so authored shorthand like `` `(… ~e) `` passes).
+/// Returns `None` — callers fall back to `pretty_print` — when the module has
+/// no `source_text`, the span is out of bounds / off a char boundary, or the
+/// slice does not match (e.g. a REPL turn's fresh 0-based spans against the
+/// module's load-time file text).
 fn verbatim_source_slice(
     ctx: &ModuleCompiler,
     module: &ModuleFullPath,

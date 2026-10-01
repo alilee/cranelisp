@@ -17,29 +17,29 @@
 
 ;; Basic float arithmetic checks
 ;; 1.5 + 2.5 = 4.0, so (eq-f64 (add-f64 1.5 2.5) 4.0) is true
-(defn test-add []
+(defn check-add []
   (bool-to-int (eq-f64 (add-f64 1.5 2.5) 4.0)))
 
 ;; 10.0 - 3.5 = 6.5
-(defn test-sub []
+(defn check-sub []
   (bool-to-int (eq-f64 (sub-f64 10.0 3.5) 6.5)))
 
 ;; 3.0 * 4.0 = 12.0
-(defn test-mul []
+(defn check-mul []
   (bool-to-int (eq-f64 (mul-f64 3.0 4.0) 12.0)))
 
 ;; 10.0 / 2.0 = 5.0
-(defn test-div []
+(defn check-div []
   (bool-to-int (eq-f64 (div-f64 10.0 2.0) 5.0)))
 
 ;; Float comparisons
-(defn test-lt [] (bool-to-int (lt-f64 1.0 2.0)))
-(defn test-gt [] (bool-to-int (gt-f64 3.0 2.0)))
-(defn test-le [] (bool-to-int (le-f64 2.0 2.0)))
-(defn test-ge [] (bool-to-int (ge-f64 2.0 1.0)))
+(defn check-lt [] (bool-to-int (lt-f64 1.0 2.0)))
+(defn check-gt [] (bool-to-int (gt-f64 3.0 2.0)))
+(defn check-le [] (bool-to-int (le-f64 2.0 2.0)))
+(defn check-ge [] (bool-to-int (ge-f64 2.0 1.0)))
 
 ;; Negation via subtraction from zero (no float-neg primitive)
-(defn test-neg []
+(defn check-neg []
   (bool-to-int (eq-f64 (sub-f64 0.0 3.14) -3.14)))
 
 ;; A float function: compute the area of a circle (pi * r * r)
@@ -47,7 +47,7 @@
 (defn circle-area [r]
   (mul-f64 3.14159 (mul-f64 r r)))
 
-(defn test-area []
+(defn check-area []
   (bool-to-int (gt-f64 (circle-area 1.0) 3.0)))
 
 ;; Every sub-test asserts a TRUE proposition, so each correct result
@@ -58,13 +58,13 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-add)
-      (add-i64 (test-sub)
-        (add-i64 (test-mul)
-          (add-i64 (test-div)
-            (add-i64 (test-lt)
-              (add-i64 (test-gt)
-                (add-i64 (test-le)
-                  (add-i64 (test-ge)
-                    (add-i64 (test-neg)
-                             (test-area))))))))))))
+    (add-i64 (check-add)
+      (add-i64 (check-sub)
+        (add-i64 (check-mul)
+          (add-i64 (check-div)
+            (add-i64 (check-lt)
+              (add-i64 (check-gt)
+                (add-i64 (check-le)
+                  (add-i64 (check-ge)
+                    (add-i64 (check-neg)
+                             (check-area))))))))))))

@@ -22,6 +22,22 @@ use crate::session_v4::{
     set_test_runner_state,
 };
 use crate::worker::ModuleCompiler;
+use std::collections::BTreeSet;
+
+/// A dependency load that failed: its error and the modules the failure reset
+/// (`design/int/repl-lifecycle.md` §1.3.1, A failed load's record).
+pub(crate) struct FailedLoad {
+    pub(crate) error: CranelispError,
+    pub(crate) reset: Vec<crate::scheduler::ResetModule>,
+}
+
+/// A code turn reports the load's error and discards the reset modules: an
+/// increment's failure changes nothing and locks nothing.
+impl From<FailedLoad> for CranelispError {
+    fn from(failed: FailedLoad) -> Self {
+        failed.error
+    }
+}
 
 /// Record the turn's verbatim source text on the defined symbol's
 /// introspection record — for GENUINE definition turns only (Matrix E
@@ -89,10 +105,17 @@ impl CompilerSession {
     /// those steps fed is deleted, and the caller's cluster state lives on the
     /// eval thread's own stack frame (no worker reads it). Its sole job is the
     /// scoped wait.
+    ///
+    /// When the load fails, the modules it left `Failed` are reset — every one
+    /// outside `held`, the modules that stood `Failed` before it — and their
+    /// never-compiled tables purged (`design/int/repl-lifecycle.md` §1.3.1, A
+    /// failed load's record). A code turn discards the reset modules; `/mod`
+    /// records them.
     pub(crate) fn register_dep_for_eval(
         &mut self,
         dep_module: &ModuleFullPath,
-    ) -> Result<(), CranelispError> {
+        held: &BTreeSet<ModuleFullPath>,
+    ) -> Result<(), FailedLoad> {
         // S78 Step 3 (OQ-3): the `eval_in_flight` guard is GONE. The
         // in-call-stack model keeps the caller's cluster state on the eval
         // thread's own stack frame — no worker reads it — so there is no race
@@ -125,13 +148,25 @@ impl CompilerSession {
             .scheduler
             .clear_dep_edge(&self.current_module_path());
 
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                self.reset_failed_modules()?;
-                Err(CranelispError::from(e))
-            }
-        }
+        result.map_err(|e| self.reset_failed_load(held, CranelispError::from(e)))
+    }
+
+    /// Reset what a failed load left `Failed` — every `Failed` module outside
+    /// `held` — and purge each reset table that never compiled
+    /// (`design/int/repl-lifecycle.md` §1.3.1, A failed load's record, steps 1
+    /// and 4). A dependency can fail before the wait, when its file cannot be
+    /// read or parsed, so every failed load runs this, not only a failed wait.
+    pub(crate) fn reset_failed_load(
+        &self,
+        held: &BTreeSet<ModuleFullPath>,
+        error: CranelispError,
+    ) -> FailedLoad {
+        let reset = self.shared.scheduler.reset_failed_modules(held);
+        let error = match self.purge_never_compiled(&reset, None) {
+            Ok(()) => error,
+            Err(purge_error) => purge_error,
+        };
+        FailedLoad { error, reset }
     }
 
     /// Run `drive` with the eval thread's [`ModuleCompiler`] for `module`, the
@@ -251,11 +286,6 @@ impl CompilerSession {
                             src,
                         );
                     }
-                    // S102 CS-0489 (repl/spec/15-session-persistence.md §15.2.3 repair direction): a genuine
-                    // definition turn removes its symbol from the module's
-                    // degraded-load failed set; when the set empties the
-                    // module leaves the §14.4 error-blocked state.
-                    self.clear_repaired_failed_form(&result);
                     all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
                 }
@@ -344,6 +374,7 @@ impl CompilerSession {
         let mut pending = crate::scheduler::SourceContinuation::source(cluster.to_vec());
         let mut generation_started = false;
         let mut turn_definitions = crate::session_v4::TurnDefinitions::default();
+        let held = self.shared.scheduler.failed_modules();
 
         for retry in 0..MAX_DEP_RETRIES {
             // 0571 D2: a bare QUALIFIED symbol (`mathx/gcount`) is introspectable
@@ -361,16 +392,18 @@ impl CompilerSession {
             let module = self.current_module_path();
 
             cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-            let result = self.with_eval_compiler(&module, |wctx| {
-                process_form::process_cluster_once(
-                    wctx,
-                    &module,
-                    &pending,
-                    ModuleStrategy::Additive,
-                    generation_started,
-                    Some(&mut turn_definitions),
-                )
-            })?;
+            let result = self
+                .with_eval_compiler(&module, |wctx| {
+                    process_form::process_cluster_once(
+                        wctx,
+                        &module,
+                        &pending,
+                        ModuleStrategy::Additive,
+                        generation_started,
+                        Some(&mut turn_definitions),
+                    )
+                })
+                .map_err(|error| self.reset_failed_load(&held, error))?;
 
             match result {
                 ClusterOnce::Done {
@@ -458,7 +491,7 @@ impl CompilerSession {
                     // The dep has already been registered + blocked on inside
                     // `process_cluster_once`; block on the persistent worker
                     // pool driving it to completion, then retry from the top.
-                    self.register_dep_for_eval(&dep)?;
+                    self.register_dep_for_eval(&dep, &held)?;
                     pending = continuation;
                     generation_started = started;
                     if retry == MAX_DEP_RETRIES - 1 {

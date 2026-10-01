@@ -73,7 +73,8 @@ REPL and `--run` behave identically here: without the import, both report
 
 ## A minimal working example
 
-Put this in `hello.cl` and run it with `--run`:
+Put this in `hello.cl` and run it with `--run`, with the platform on the search
+path ([below](#finding-the-dll--the-platform-search-path)):
 
 ```clojure
 (platform stdio)
@@ -83,7 +84,7 @@ Put this in `hello.cl` and run it with `--run`:
 ```
 
 ```
-$ cranelisp hello.cl --run
+$ CRANELISP_PLATFORM_PATH=/path/to/cranelisp/target/debug cranelisp --run hello.cl
 hello world
 ```
 
@@ -95,12 +96,19 @@ worked [`examples/21-hello-io.cl`](../../examples/21-hello-io.cl).
 ## Finding the DLL — the platform search path
 
 `(platform stdio)` can only load the platform if the DLL is on the **platform search
-path**. The `examples/` and `exemplar/` trees ship checked-in symlinks so `stdio`
-resolves with no configuration. In your own project, add the directory holding the
-built library — during development this is typically Cargo's output:
+path**: a `platforms/` directory under the project root or under a lib directory,
+then any configured platform directories. The learning sequence's
+`examples/lib/platforms/` holds checked-in Linux symlinks (`stdio.so`,
+`test-capture.so`) to Cargo's `target/debug/` output, so `stdio` resolves there
+with no configuration on Linux. On macOS, in `exemplar/`, and in your own project,
+add the directory holding the built library — during development this is
+typically Cargo's output:
 
-- set `CRANELISP_PLATFORM_PATH=target/debug` in the environment, **or**
-- add `platform-dirs = ["target/debug"]` to your project's `Cranelisp.toml`.
+- set `CRANELISP_PLATFORM_PATH=/path/to/cranelisp/target/debug` in the
+  environment, **or**
+- add `platform-dirs = ["/path/to/cranelisp/target/debug"]` to your project's
+  `Cranelisp.toml` (a relative entry resolves against the `Cranelisp.toml`
+  directory).
 
 Both are **additive** and follow the same union model as lib directories — see
 [cli-reference § libraries](../cli-reference.md#where-cranelisp-looks-for-libraries-cranelisptoml)

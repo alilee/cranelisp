@@ -2,7 +2,7 @@
 ;;
 ;; Examples 15/17/20 declared traits and dispatched their methods with the
 ;; trait in scope. This example shows the subtler rule (spec/07-traits.md
-;; §7.11.2, settled S113): to CALL a trait method you only need the METHOD in
+;; §7.11.2): to CALL a trait method you only need the METHOD in
 ;; scope -- the trait itself need NOT be imported.
 ;;
 ;; A method reference carries the method's fully-qualified identity, and that
@@ -14,9 +14,11 @@
 ;;
 ;;   Declaration reaches the TRAIT; dispatch reaches the METHOD.
 ;;
-;; (Declaring an impl -- `(impl Describe ...)` -- still needs the trait name in
-;; scope, §7.11.2 edge (d). That is why the impls live in main/traits.cl,
-;; where `Describe` is declared. This entry module never imports `Describe`.)
+;; (Declaring an impl is different: slot 1 of `(impl Describe ...)` must
+;; resolve the trait, §7.11.2 edge (d). A bare `Describe` resolves only where
+;; it is declared or imported, which is why the two main impls live in
+;; main/traits.cl. The last section declares one more impl here, through a
+;; qualified trait reference. This entry module never imports `Describe`.)
 
 ;; Load the helper module main/traits.cl (module main.traits).
 (mod traits)
@@ -24,7 +26,7 @@
 ;; The entry module names the primitives it uses (a subdirectory entry is its
 ;; own project root, so it inherits no ancestor prelude -- keeps the example
 ;; free-standing, spec/08-modules.md §8.3).
-(import [primitives [Pure add-i64 eq-i64]])
+(import [primitives [Int Pure add-i64 mul-i64 eq-i64]])
 
 ;; Import the METHODS `describe` and `blank`, plus the two TYPES -- but NOT the
 ;; trait `Describe`. This is the whole point: `Describe` is never in this
@@ -34,12 +36,12 @@
 ;; --- Unary dispatch: the argument's concrete type selects the impl ---
 
 ;; `describe` on a Shape runs the Shape impl -> side count.
-(defn test-unary-shape []
+(defn check-unary-shape []
   (if (eq-i64 (describe (Shape 7)) 7) 1 0))              ;; -> 1
 
 ;; The SAME method name on a Circle runs the Circle impl -> r*r. One imported
 ;; method, two impls, dispatch chosen by the argument type.
-(defn test-unary-circle []
+(defn check-unary-circle []
   (if (eq-i64 (describe (Circle 4)) 16) 1 0))           ;; -> 1
 
 ;; --- Nullary return-type dispatch: the EXPECTED TYPE selects the impl ---
@@ -48,20 +50,37 @@
 ;; A `:Type` annotation supplies the expected return type, and THAT drives the
 ;; dispatch. Here the let-binding annotation `:Shape` picks Shape's `blank`
 ;; (which yields `(Shape 3)`), so `describe` then reads 3.
-(defn test-nullary-shape []
+(defn check-nullary-shape []
   (if (eq-i64 (let [x :Shape (blank)] (describe x)) 3) 1 0))   ;; -> 1
 
 ;; The annotation can also sit inline directly on the dispatch call: `:Circle`
 ;; binds the following form `(blank)`, picking Circle's `blank` -> `(Circle 5)`,
 ;; and `describe` reads 5*5 = 25.
-(defn test-nullary-circle []
+(defn check-nullary-circle []
   (if (eq-i64 (describe :Circle (blank)) 25) 1 0))            ;; -> 1
 
-;; Sum of pass counts: 1 + 1 + 1 + 1 = 4. Every sub-test contributes 1 on
-;; success, so any dispatch regression lowers the exit code below 4.
+;; --- Declaring an impl with a qualified trait reference ---
+
+;; `Describe` is not in scope here, so a bare `(impl Describe Square ...)`
+;; would not resolve. The module-qualified reference `main.traits/Describe`
+;; resolves on its own, so this module can implement the trait for its own
+;; type without importing the trait.
+(deftype Square [:Int side])
+
+(impl main.traits/Describe Square
+  (defn describe [s] (match s [(Square n) (mul-i64 n n)]))
+  (defn blank [] (Square 2)))
+
+;; The imported method `describe` dispatches to the impl declared here.
+(defn check-local-impl []
+  (if (eq-i64 (describe (Square 3)) 9) 1 0))                  ;; -> 1
+
+;; Sum of pass counts: 1 + 1 + 1 + 1 + 1 = 5. Every sub-test contributes 1 on
+;; success, so any dispatch regression lowers the exit code below 5.
 (defn main []
   (Pure
-    (add-i64 (test-unary-shape)
-      (add-i64 (test-unary-circle)
-        (add-i64 (test-nullary-shape)
-                 (test-nullary-circle))))))
+    (add-i64 (check-unary-shape)
+      (add-i64 (check-unary-circle)
+        (add-i64 (check-nullary-shape)
+          (add-i64 (check-nullary-circle)
+                   (check-local-impl)))))))

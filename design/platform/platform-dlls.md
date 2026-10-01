@@ -169,7 +169,7 @@ fault catch on both paths. For an author, this means:
 
 A platform function is an extern, so it owns every heap parameter: the caller
 has transferred the reference
-([bounded contexts](../arch/bounded-contexts.md) §4b invariant 6). The function
+([bounded contexts §5](../arch/bounded-contexts.md#5-platform-cratescranelisp-platform)). The function
 releases each parameter it does not return; the per-parameter fates are
 [RC discipline](../backend/ring2-rc.md) §3.3.
 

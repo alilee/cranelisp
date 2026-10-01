@@ -507,6 +507,60 @@ fn vec_set_as_value_wrapper_inline_emits_and_updates_element() {
     assert_eq!(vec_elem_for_test(vec_ptr, 0), 10, "element 0 retained");
 }
 
+/// `(let [f vec-set] (f [10 20 30] idx 99))`.
+fn vec_set_value_consumer(idx: i64) -> Defn {
+    let vec_int = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    );
+    let prim_ty = Type::Fn(
+        vec![vec_int.clone(), Type::Int, Type::Int],
+        Box::new(vec_int.clone()),
+    );
+    vec_query_value_consumer(
+        "vec-set",
+        prim_ty,
+        vec![
+            vec_int_lit(&[10, 20, 30], 30),
+            Expr::IntLit {
+                value: idx,
+                span: Span::new(40, 41),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            Expr::IntLit {
+                value: 99,
+                span: Span::new(42, 44),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+        ],
+        vec_int,
+    )
+}
+
+// spec: spec/12-runtime.md §12.7.2.1 — `vec-set` as a VALUE panics out of range:
+// the wrapper body reaches the same guarded core as a static site (ACT-1037).
+#[test]
+fn vec_set_as_value_wrapper_panics_out_of_range() {
+    for idx in [-1, 3, 100_000_000] {
+        assert_eq!(
+            try_run_vec_query_value_consumer(vec_set_value_consumer(idx)),
+            Err("runtime panic: vec-get: index out of bounds".to_string()),
+            "value-position vec-set at index {idx} MUST raise the bounds panic"
+        );
+    }
+}
+
+// spec: spec/12-runtime.md §12.7.2.1 (NEGATIVE) — the last in-range index is
+// written without a panic.
+#[test]
+fn vec_set_as_value_wrapper_writes_last_index_neg() {
+    let vec_ptr = try_run_vec_query_value_consumer(vec_set_value_consumer(2))
+        .expect("an in-range value-position vec-set MUST NOT panic");
+    assert_eq!(vec_len_for_test(vec_ptr), 3, "length preserved");
+    assert_eq!(vec_elem_for_test(vec_ptr, 2), 99, "last element updated");
+}
+
 // spec: design/backend/ownership-codegen.md §12.7 — `vec-push` as a VALUE:
 // same owned-temporary polarity; COW rc==1 fast path appends. RED on HEAD:
 // SIGSEGV.

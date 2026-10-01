@@ -238,21 +238,11 @@ That is the governing idea, and it is worth carrying around: **types are
 inferred; annotations add constraints.** A default method is not a special form
 of signature — it is a parameter list and an expression.
 
-> **The compiler has not caught up with this spelling yet.** At the current build,
-> `(tag [x] (add-i64 (size x) 1000))` is rejected — `parse error: invalid type
-> expression` — because the parser still commits the element after the bracket to
-> a return-type slot before it can tell a type from an expression. Today you must
-> write the return type **and** the body, `(tag [x] Int (add-i64 (size x) 1000))`,
-> which the settled [spec §7.1](../../spec/07-traits.md#71-trait-declaration)
-> no longer has a production for. The transcripts below use the spelling that
-> works today; the *model* they teach — inference, override, per-impl templates —
-> is the settled one and does not change. (FIXME 0838.)
-
 ### An impl inherits the default, or overrides it
 
 ```
 user> (import [primitives [add-i64]])
-user> (deftrait Sized (size [x] Int) (tag [x] Int (add-i64 (size x) 1000)))
+user> (deftrait Sized (size [x] Int) (tag [x] (add-i64 (size x) 1000)))
 :user/Sized ; deftrait
 ; defn:
 ;  size tag
@@ -288,7 +278,7 @@ user> (deftrait Display2 (show2 [x] String))
 ; defn:
 ;  show2
 
-user> (deftrait Named (nm [x] String) (label [x] String (show2 x)))
+user> (deftrait Named (nm [x] String) (label [x] (show2 x)))
 :user/Named ; deftrait
 ; defn:
 ;  label nm

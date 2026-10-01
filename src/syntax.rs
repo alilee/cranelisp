@@ -3,7 +3,7 @@
 //
 // A static, token-dense, verified-compiling, topic-keyed core-language syntax
 // reference. The asset (`syntax/cheatsheet.txt`) is `/docs`-owned content
-// (`user/syntax-cheatsheet-plan.md`); the UX is `/repl`-owned (`repl/spec.md
+// (`user/guide/syntax-command.md`); the UX is `/repl`-owned (`repl/spec.md
 // §17.17`); this module is the int wiring: a pure, order-preserving delimiter
 // parser over the embedded asset.
 //

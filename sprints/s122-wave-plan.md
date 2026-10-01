@@ -2,7 +2,7 @@
 
 Phase 4 organization and Phase 5 implementation were authorized 2026-09-10.
 This is the active Phase-5 execution plan. Scope and the exact
-88-filing closure allocation remain in [SPRINT.md](SPRINT.md). The
+88-filing closure allocation remain in [sprint-122.md](archive/sprint-122.md). The
 [QA delta](../tests/plan/s122-evidence-delta.md) owns Q1–Q14, E1/E2 and D7 evidence.
 ACT-0959 is the approved future public-allocation assessment, outside this
 sprint's original inventory and not a prerequisite for delivery.
@@ -103,7 +103,7 @@ wave passes.
 ### Current maintenance handoff
 
 Current reservations, completed evidence and unresolved gates live in the
-[active sprint](SPRINT.md). The user-approved
+[active sprint](archive/sprint-122.md). The user-approved
 [information map and retention policy](METHOD.md#31-where-things-live) govern
 D7 cleanup: assess canonical content, fold useful missing substance, retire
 superseded originals and establish retained documents. QA and architecture
@@ -187,7 +187,7 @@ Failure to obtain a live run does not silently satisfy the baseline outcome.
 Each original filing receives its allocated owner disposition with current
 source/evidence; resolve/delete only when its own closure criteria hold.
 ACT-0947's approved scratch cleanup is complete after the source-owner check,
-retaining NOTES; see [the closure record](SPRINT.md#runtime-before-state-and-scratch-cleanup).
+retaining NOTES; see [the closure record](archive/sprint-122.md#runtime-before-state-and-scratch-cleanup).
 The future ACT-0959 stays open. Specific unsatisfied obligations return
 to the user rather than being erased by aggregate green results.
 

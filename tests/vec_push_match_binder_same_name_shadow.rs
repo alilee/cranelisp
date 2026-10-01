@@ -1,14 +1,17 @@
-//! A `match` binder shadowed by a same-name `match` binder over a different
-//! vector (S122, ACT-1029 R1 probe, `tests/plan/s122-evidence-delta.md`
-//! "ACT-1029 R1 probe — settled handoff").
+//! The first ACT-1029 R1 probe pair (S122, `tests/plan/s122-evidence-delta.md`
+//! "ACT-1029 R1 probe — T0 control fault and redesigned delta").
 //!
-//! The outer `(match q [alias …])` views `q`'s box; an inner
-//! `(match p [alias alias])` in the tail argument binds a second `alias` over
-//! `p`. The outer `alias` is still forwarded as the new `q`, so the push on `q`
-//! is not at `q`'s last use and must copy. The control renames only the inner
-//! binder, so a difference between the halves is attributable to the shared
-//! name alone. Under value semantics both halves compute 3: each step makes
-//! `p` = [9 1] and keeps `q` = [9].
+//! The outer `(match q [alias …])` views `q`'s box. The tail argument
+//! `(let [t (match p [X X])] alias)` forwards the outer `alias` as the new `q`,
+//! so the push on `q` is not at `q`'s last use and must copy. The halves differ
+//! only in the inner binder `X`: `b` (control) or `alias` (subject). Under value
+//! semantics both compute 3: each step makes `p` = [9 1] and keeps `q` = [9].
+//!
+//! The pair is not marginal for the alias-shadowing lead (ACT-1029): both
+//! halves carry the `let`-wrapped tail argument, and the control stops armed
+//! with `USE-AFTER-FREE` before the subject runs. The cell stays the failing
+//! guard for that observed fault (ACT-1030) until the L6 cell replaces it
+//! (ACT-1031).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -31,13 +34,12 @@ fn shadowed_alias_loop(inner_binder: &str) -> Child {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — every reference is released exactly once
-// when a vector viewed by a `match`-binder alias is shadowed by a same-name
-// alias over a different root.
-// defect: class=binder-name-underkey locus=crates/cranelisp-backend/src/heap.rs::register_alias found=S122 owner=/design
+// when a self-tail argument forwards a `match`-binder alias through a `let`.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/design — provisional: the observed use-after-free is ACT-1030's; its mechanism is a source-read hypothesis until the L6 cell confirms it
 #[test]
 fn push_under_a_same_name_shadowed_match_binder_balances() {
     let pair = MarginalPair::new(
-        "(vec-push q 1) with q's match binder shadowed by a same-name binder over p",
+        "(vec-push q 1) beside a let-wrapped tail argument forwarding q's match binder",
         shadowed_alias_loop("b"),
         shadowed_alias_loop("alias"),
     )
@@ -49,5 +51,5 @@ fn push_under_a_same_name_shadowed_match_binder_balances() {
         pair.control().stderr,
         pair.subject().stderr
     );
-    pair.assert_balanced("the push beside a same-name shadowed match binder");
+    pair.assert_balanced("the push beside a let-wrapped tail argument");
 }

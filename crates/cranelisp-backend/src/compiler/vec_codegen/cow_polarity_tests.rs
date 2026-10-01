@@ -23,7 +23,9 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::Span;
 
-use super::{SourceOwnership, VecSetCow, emit_vec_push_cow_core, emit_vec_set_cow_core};
+use super::{
+    SourceOwnership, VecSetCow, VecSetUniqueness, emit_vec_push_cow_core, emit_vec_set_cow_core,
+};
 use crate::jit::Jit;
 
 /// COW source polarity for the probe harness (§13.7).
@@ -58,6 +60,13 @@ fn cow_core_clif(set: bool, own: Own) -> String {
     let vec_drop_id = module
         .declare_function("test_vec_drop", Linkage::Import, &vd_sig)
         .expect("declare vec_drop");
+
+    let mut panic_sig = module.make_signature();
+    panic_sig.params.push(AbiParam::new(types::I64));
+    panic_sig.params.push(AbiParam::new(types::I64));
+    let panic_id = module
+        .declare_function("test_panic", Linkage::Import, &panic_sig)
+        .expect("declare panic");
 
     let mut ctx = module.make_context();
     let mut fctx = FunctionBuilderContext::new();
@@ -94,10 +103,9 @@ fn cow_core_clif(set: bool, own: Own) -> String {
                 inc_fn_ptr: inc_fn,
                 old_elem_category: None,
                 dealloc_id,
-                source_ownership,
-                // Source-ownership polarity harness exercises the DYNAMIC rc==1
-                // token path (no static proof) — the copy branch must be reachable.
-                elide_rc_check: false,
+                panic_id,
+                // The polarity harness needs both arms reachable.
+                uniqueness: VecSetUniqueness::Dynamic(source_ownership),
             },
             Span::SYNTHETIC,
         )

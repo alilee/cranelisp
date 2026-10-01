@@ -154,11 +154,11 @@ is a located reader error).
 
 A `:` annotation binds the single form that immediately follows it, and that form
 **must be a type**. Pointing `:` at a value — an integer literal, say — is a
-compile-time error that names what it found:
+located compile-time error:
 
 ```
 user> :3 5
-Error: parse error at 0..1: the form bound by `:` must be a type expression; found `3`
+Error: parse error at 1..2: invalid type expression
 ```
 
 **Fix:** put a type after the `:` (`:Int`, `:String`, `:(Fn [Int] Int)`), or drop
@@ -199,7 +199,7 @@ bare-head + `self` form:
 
 ```
 user> (deftrait (Boxy f) (make [:Int n] Int))
-Error: type error: trait `Boxy`'s type parameter `f` is never applied `(f …)`; a trait that returns the implementing type uses the bare head and `self`: `(deftrait Boxy (make [] self))`.
+Error: type error at 0..39: trait `Boxy`'s type parameter `f` is never applied `(f …)`; a trait that returns the implementing type uses the bare head and `self`: `(deftrait Boxy (make [] self))`.
 ```
 
 **Fix:** if you meant a conventional trait, use the bare head `(deftrait Boxy …)`
@@ -253,17 +253,8 @@ the target type. When it does not, the impl is rejected:
 user> (deftrait Sizeable (size [x] Int) (tag [x] Int))
 user> (deftype Box [:Int w :Int h])
 user> (impl Sizeable Box (defn size [b] "nope") (defn tag [b] 7))
-Error: type error at 19..41: type mismatch: expected primitives/String, got primitives/Int
+Error: type error at 19..41: impl of trait `Sizeable` for `user/Box`: method `size` does not conform: type mismatch: expected primitives/Int, got primitives/String
 ```
-
-> **Warning — this message reads backwards.** The trait declares `size` returning
-> `Int`; the body returns a `String`. The message you would expect is *expected
-> Int, got String*, and the emitted text says the opposite, because it reports the
-> unifier's argument order rather than the declaration's direction. It also names
-> neither the trait, nor the method, nor the fact that this is an
-> **impl-conformance** failure rather than an ordinary expression mismatch. Read
-> the two types as "these two disagree" and check the trait declaration to see
-> which is which. The rejection itself is correct. Tracked as FIXME 0806.
 
 **Fix:** make the body's type match the signature the trait declares for the
 method, or change the trait. This is also the message a **re-`impl`** hits when
@@ -295,7 +286,7 @@ whose **head must be the trait** being implemented:
 
 ```
 user> (impl (Functor f) (Foo Option) (defn fmap [g x] x))
-Error: type error: impl of trait `Functor` (slot 1) pairs slot 2 with head `Foo`: a trait-constructor pairing's head must name the trait being implemented — write `(Functor Option)`, not `(Foo Option)`.
+Error: type error at 0..51: impl of trait `Functor` (slot 1) pairs slot 2 with head `Foo`: a trait-constructor pairing's head must name the trait being implemented — write `(Functor Option)`, not `(Foo Option)`.
 ```
 
 **Fix:** make slot 2's head the same trait as slot 1 — the message shows the
@@ -310,7 +301,7 @@ constructor is required is rejected:
 
 ```
 user> (impl (Functor f) (Functor Int) (defn fmap [g x] x))
-Error: type error: Int is not a type constructor (trait Functor expects arity 1)
+Error: type error at 0..52: Int is not a type constructor (trait Functor expects arity 1)
 ```
 
 **Fix:** target a constructor of the right arity (`Option`, `List`, a user
@@ -324,7 +315,7 @@ dispatch-ambiguity error, reported at the definition:
 
 ```
 user> (defn amb ([:Num x] x) ([:Num y] y))
-Error: type error: ambiguous dispatch for 'amb': the 1-arg arity clauses #1 and #2 have unifiable (overlapping) parameter types — a call matching one matches both signatures (spec §5.1.1 dispatch coherence); make their parameter types disjoint
+Error: type error at 23..35: ambiguous dispatch for 'amb': the 1-arg arity clauses #1 and #2 have unifiable (overlapping) parameter types — a call matching one matches both signatures (spec §5.1.1 dispatch coherence); make their parameter types disjoint
 ```
 
 **Fix:** annotate a clause so the written signatures no longer overlap — see the
@@ -341,7 +332,7 @@ trait:
 ```
 user> (import [shapes [area]])
 user> (area 7)
-Error: type error: no impl of trait shapes/Area for type Int
+Error: type error at 0..8: no impl of trait shapes/Area for type primitives/Int
 ```
 
 **Fix:** provide an `(impl Area Int …)`, or call on a type that has one. This is
@@ -358,7 +349,7 @@ it, the call is ambiguous:
 ```
 user> (import [default [default]])
 user> (default)
-Error: type error: ambiguous type: the return-type-polymorphic call to `default` selects no impl — no argument, annotation, or context pins its return type; add a `:Type` annotation to disambiguate (spec §3.11)
+Error: type error at 0..9: ambiguous type: the return-type-polymorphic call to `default` selects no impl — no argument, annotation, or context pins its return type; add a `:Type` annotation to disambiguate (spec §3.11)
 ```
 
 **Fix:** add a `:Type` annotation to the call so the compiler can select the

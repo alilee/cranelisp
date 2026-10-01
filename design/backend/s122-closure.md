@@ -10,7 +10,11 @@ correction with the match-seam retirement it requires, are implemented in the
 working tree, uncommitted and not accepted; `test`'s V2 passed and
 `review`(backend) found no blocking finding; K4 is complete and `qa` judged
 Phase 5's evidence adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); user acceptance and phase
-approval pending**. The
+approval pending**. The Phase-6b ACT-1037 `vec-set` index guard (§9) is
+built and independently reviewed, and `qa` closed ACT-1037 on 2026-10-01
+([closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed)); its `--link` GREEN rests on `test`'s W3 run, which
+W4's full suite re-observes. The ACT-1040 panic-propagation options (§10) are
+costed as a proposal awaiting the user's decision. The
 Phase-3 scope and existing contracts were authorized 2026-09-09 against
 compiler checkpoint `dc78ddbe` and package checkpoint `98436c9`; this design
 has completed independent runtime review with no material findings. This
@@ -45,6 +49,7 @@ remain open:
 | ACT-0974 extern entry convention | `compiler/apply.rs`, `compiler/control_flow/fn_as_value.rs`, `compiler/fn_compiler.rs`, `cache/mod.rs` (value-only schema bump) | designed at [non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6 and implemented in the working tree, co-landed with the primitives half (`string-identity` moves its argument). The SI cells went RED first; `string_primitive_value_discharge` is 10/10 at V2, and neither the primitives nor the backend review found a blocking issue. K4 is complete and `qa` judged it adequate, retiring ACT-0974 ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); user acceptance is pending |
 | ACT-1021 parameter forwarded through a tail-argument branch | `compiler/fn_compiler.rs` and `compiler/vec_codegen.rs`, plus `heap.rs` for last-use aliases; the four protect paths in `compiler/control_flow/let_if.rs` and `compiler/match_codegen.rs` read the same fact unchanged | designed at [ownership-codegen.md](ownership-codegen.md) §13.3 (branch-forward rule, one ownership fact, consuming COW argument and its last-use alias correction); the rule, the amendment and the alias correction are in the working tree; `test`'s after-fix run passed with `copy_only_tail_push_protects_its_forwarded_match_alias` GREEN, V2 kept the tail family GREEN, and review found no blocking finding; K4 is complete and `qa` judged it adequate, retiring ACT-1021 on K4's armed and unarmed replay ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); user acceptance is pending |
 | ACT-1024 in-place COW on a frame-owned `Var` released twice | `compiler/vec_codegen.rs` (two-state source classification; the recorded retain decisions are deleted), `compiler/apply.rs` (the claim set around the self-tail arguments; the escape threading is deleted), `compiler/fn_compiler.rs` (the claim set and its one reader; the return-COW claim, keyed by site; the retain reconciliation is deleted), `compiler/match_codegen.rs` (the arm plan without a COW input) | designed at [ownership-codegen.md](ownership-codegen.md) §13.7 and implemented in the working tree on top of the ACT-1021 amendment, with the match-seam retirement that fixes ACT-1027 (user-approved for S122). `dev`'s release gate and affected e2e pass; V2 passed with the ACT-1024 cells and both ACT-1027 faces GREEN, and review found no blocking finding; K4 is complete and `qa` judged it adequate; user acceptance is pending. ACT-1026's leak is exposed on the mutate branch and is carried, as is ACT-1028 |
+| ACT-1037 `vec-set` index guard | `compiler/vec_codegen.rs`, with the wrapper cells beside `compiler/control_flow/fn_as_value.rs` | designed at §9; the user approved the fix for S122. Built in the working tree; review found no blocking finding; `qa` judged it adequately evidenced and closed ACT-1037 ([closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed)), with the `--link` GREEN resting on `test`'s W3 run and re-observed by W4's full suite; user acceptance is pending |
 
 No `tests/` path is part of the backend reservation. Any actual affected CLIF
 golden is test-owned and is selected from the produced diff, not predicted from
@@ -374,3 +379,330 @@ The pre-fix failure, confirmed by emitted-code observation:
   double release or changed value refutes the correction.
 - The reused-Pure program returns 7 in run, linked and REPL observations with
   checks armed. Existing CLIF goldens pass without regeneration.
+
+## 9. ACT-1037 — `vec-set` index guard
+
+Built in S122 Phase 6b and accepted by independent review with no blocking
+finding. The requirement is `spec/12-runtime.md` §12.7.2.1. `qa` closed
+ACT-1037 on 2026-10-01 and deleted the filing; [its closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed)
+holds the reproductions, attribution and evidence. Every cell went RED for the
+intended reason and is GREEN in every mode; the `--link` leg's GREEN is
+`test`'s W3 observation, which W4's full suite re-observes. The standing rule
+is [backend.md §7](backend.md#7-runtime-failure), "One Vec index guard".
+
+### 9.1 Mechanism, read at source
+
+- `emit_vec_set_cow_core`'s in-place arm computes `data_ptr + idx*8`, then
+  decrements the old element and stores the new one there, with no index
+  comparison.
+- `compile_vec_set`'s non-last-use arm calls `vec-set-copy` directly. The helper
+  (`cranelisp-intrinsics` `vec_runtime.rs::vec_set_copy`) stores the new element
+  only at an in-range index. Otherwise it returns an unchanged copy, and the
+  new element's reference is lost.
+- `emit_vec_query_into`'s `vec-set` arm reaches the same core, so value-position
+  and auto-curry uses share the fault.
+- Only `emit_vec_get_core` compares the index. The CLIF in ACT-1037 confirms
+  the difference.
+
+### 9.2 Correction
+
+- **Share `vec-get`'s guard.** Extract the comparison, panic block and message
+  from `emit_vec_get_core` without changing `vec-get`'s emitted instructions.
+  The `vec-set` core then opens with the same guard. It needs the
+  `runtime/panic` entry, resolved as `vec-get`'s callers already resolve it: a
+  missing declaration is a located codegen error.
+- **Fold the copy-only site into the core.** The core's uniqueness input
+  becomes one closed choice with three cases. Each carries only what its arms
+  need:
+
+  | Case | Emitted arms | Source release on copy |
+  |---|---|---|
+  | Proven unique, with no separate owner | in place only; no rc probe | none, because the copy arm is not emitted |
+  | Dynamic | rc probe, in place or copy | the owned or borrowed polarity, as today |
+  | Known shared (not last use) | copy only; no probe, merge or reuse tally | none, because the source is not consumed |
+
+  - The proven-unique case also requires that the source have no separate
+    owner, which is the condition under which it would classify `Owned`. It
+    never retains the source, so a proven-unique source that a slot also
+    releases would lose a needed retain. Such a source takes the dynamic case.
+    On today's inputs no site moves: every node carrying the uniqueness proof
+    yields an owned temporary. The condition stops typecheck's proof and the
+    backend's ownership classification from disagreeing silently.
+  - A known-shared site with an owned-source release is then inexpressible
+    (Principles 07, 18 and 20).
+  - Afterwards `vec-set-copy` is named by exactly one backend emission site,
+    inside the core.
+- **Emitted change.** Every `vec-set` lowering gains the guard.
+  - The known-shared case emits the previous copy-only instructions after the
+    guard.
+  - The proven-unique case no longer emits its unreachable copy block, so its
+    instructions change beyond the guard. Runtime reuse counts do not change,
+    because the block never ran.
+- **Unchanged.**
+  - No `cranelisp-types` or public API change, and no `public-api.txt` delta.
+  - No emitted-call ABI, intrinsics or platform change.
+  - No cache-schema bump. The guard is confined to each frame's own emission
+    ([bump rule](module-caching.md#142-cache_schema_version-ownership)).
+- **Goldens.** CLIF goldens that contain `vec-set` change, attributed to
+  ACT-1037, and `test` re-baselines them. Review found no golden under
+  `tests/` containing a proven-unique site. `vec-get` goldens stay
+  byte-identical. A `vec-get` diff refutes the extraction.
+- **Not in scope.** The sentinel-escape crash of
+  [backend.md §7](backend.md#7-runtime-failure) (ACT-1040, §10) survives this
+  correction.
+  After `(defn g [v i] (vec-set v i 99))`, the guard raises the panic inside
+  `g`, but a caller that computes `(vec-len (g [1 2 3] 9))` then dereferences
+  the sentinel. ACT-1037's cells consume the result inside the panicking
+  function, so they do not reach it.
+- **Routed, not required.** The helper's caller precondition,
+  `0 <= idx < len`, is unstated in the helper's rustdoc and in the
+  [catalog convention](../arch/bounded-contexts.md) row for `vec-set-copy`.
+  Those carriers belong to `dev`(intrinsics) and `arch`. The correction does
+  not depend on them.
+
+### 9.3 Seam and module evidence
+
+`dev`(backend) changed `crates/cranelisp-backend/src/compiler/vec_codegen.rs`:
+
+- `emit_vec_get_core`: extract the guard.
+- `emit_vec_set_cow_core` and its operand bundle: add the guard and the
+  three-case uniqueness input.
+- `compile_vec_set`: route the non-last-use arm through the core.
+- `emit_vec_query_into`: pass the dynamic case.
+
+Module cells, observed RED on the pre-fix tree in the same change-set:
+
+- **Execution, per case.** New cells in `vec_codegen/` cover the
+  proven-unique, dynamic and known-shared cases. Each uses the indices `-1`,
+  the length and `100000000`, expects the exact §12.7.2.1 message, and has an
+  in-range control that returns the updated value.
+  - On the pre-fix tree the unique cases corrupt or crash, and the known-shared
+    case returns silently.
+- **Heap elements.** Repeat the in-place case with String elements. The wild
+  old-element decrement is its unsafe step.
+- **Wrapper.** Add out-of-range and in-range cells for value-position
+  `vec-set` beside `vec_set_as_value_wrapper_inline_emits_and_updates_element`
+  in `control_flow/fn_as_value/value_use_tests.rs`.
+- **Structure.** For each case, the emitted CLIF shows the index comparison
+  against the loaded length and the `runtime/panic` call before the element
+  store and before the `vec-set-copy` call. This holds in the proven-unique
+  case, where the rc probe is absent.
+- **Negative.**
+  - `vec-get`'s emitted CLIF is unchanged.
+  - `cow_polarity_tests.rs` keeps its release and retain counts, with the
+    fixture declaring `runtime/panic`.
+  - The in-range RC cells in `vec_set_rc_tests.rs` and the `cow_*` modules
+    stay green.
+- **Acceptance.** ACT-1037's cells turn GREEN in every mode, and C1 and C2
+  still pass. `qa` judged this met on 2026-10-01
+  ([closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed)); the `--link` leg rests on `test`'s W3 run.
+
+## 10. ACT-1040 — panic propagation (proposal)
+
+**Status: proposal, not adopted.** The user decides between a correction in
+S122 and a carry to S123. [backend.md §7](backend.md#7-runtime-failure) stays the
+standing rule until then, with its falsification recorded there. The
+requirements are `spec/12-runtime.md` §12.7.2, §12.7.4 and §12.7.8 items 1, 2, 4
+and 5. [ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md)
+holds `qa`'s cells, attribution and allocation.
+
+### 10.1 Mechanism, read at source
+
+- The panic shape returns `0` from the faulting frame only. No emitted code
+  reads the error slot. After the call instruction, the result from each
+  call primitive in `compiler/apply.rs` flows straight into post-call
+  decrements, the closure-result protecting increment and the consumer. The
+  call primitives are the direct, GOT-indirect, closure and extern calls,
+  including `cranelisp_ivar_force`.
+- Every slot reader is outside JIT code: the int hosts,
+  `cranelisp_run_program`'s pre-IO and post-IO peeks, `catch-runtime-error`,
+  the IO trampoline's peek after each continuation, and the IVar ferry.
+- `runtime/panic` overwrites the slot on every raise. So a later panic raised
+  while a frame is still using the sentinel replaces the first message.
+- Two scalar faces are not among ACT-1040's cells. Observed 2026-10-01 with a
+  copy of the debug binary built after `88bbbd12` and the primitives-only
+  prelude, after `(defn lookup [v i] (vec-get v i))`:
+  - Q1: `(defn scan [v i] (if (lt-i64 (lookup v i) 100) (scan v (add-i64 i 1)) i))`,
+    then `(scan [1 2] 0)`. The REPL never returns: each iteration panics and
+    continues with `0`.
+  - Q2: `(div-i64 10 (lookup [1 2] 9))` reports `division by zero`, not the
+    index panic.
+  - Both are memory-safe, but they violate §12.7.2 ("cannot resume") and
+    §12.7.4.1.
+
+### 10.2 The fact every option rests on
+
+- Every JIT function returns one `i64`. Every raising frame returns `0` with
+  the slot set:
+  - the panic shape and the trap stub;
+  - the out-of-line `div-i64` primitive and `quote-sexp`'s error sentinel;
+  - `cranelisp_ivar_force`, which passes the thunk's result through;
+  - the trampoline.
+- **For an `AlwaysHeap` result, `0` is not an inhabitant.** Allocation never
+  yields null, and stack placement yields a frame address. So a `0` there
+  proves a pending panic without reading the slot.
+- For `NeverHeap`, `Value` and `Mixed` results, `0` is an ordinary value:
+  `Int` 0, `false`, `0.0` or nullary tag 0. Only the slot can tell those apart.
+  A `Mixed` consumer tests the nullary threshold before any dereference, so
+  it reads `0` as a tag. That is why these faces are not memory-unsafe.
+
+### 10.3 Options
+
+| | Mechanism | Gate | Cache | Size | Closes |
+|---|---|---|---|---|---|
+| **A0** | Typed zero test after each `AlwaysHeap` call | none | no bump | about ACT-1037's scale | every ACT-1040 cell and the memory-unsafe face |
+| **A** | A0, plus a slot query on a zero result of any other category | arch + user (a new intrinsic) | no bump | A0 plus a small increment | A0's scope, Q1 and Q2 |
+| C | `runtime/panic` jumps non-locally to the nearest boundary | arch + user (the panic ABI and new boundary API) | none | large, 3–4 crates | all, with a UB risk |
+| D | Native unwinding through Cranelift unwind tables | arch + user (public API and technology) | bump | multi-sprint | all, and enables cleanup |
+
+#### A0 — typed zero-sentinel propagation
+
+- **Mechanism.** Immediately after the call instruction, before any post-call
+  decrement, protecting increment or consumer, a call whose result category
+  is `AlwaysHeap` branches on the result. `0` goes to one shared block per
+  function that returns `0`. The frame's owned values leak, which
+  §12.7.4.1 and §12.7.8 item 4 permit. The result is used only in the
+  non-zero continuation.
+  - Other categories get no test.
+  - An emitted wrapper whose only use of the result is `return` needs no test.
+    Its Decision-24 parameter decrements act on live values, and the return
+    passes the `0` on. Examples are the curry and value-position adapters and
+    the GOT-slot literal wrapper.
+  - The category comes from the `Apply` node's type through the one
+    category derivation. That type is always present at the single dispatch
+    in `fn_compiler.rs`.
+- **Surfaces.** Backend emission only:
+  - the four call primitives in `compiler/apply.rs`, each taking the result
+    category as a required input so that no caller can omit it;
+  - the three `cranelisp_ivar_force` sites;
+  - the trace wrapper, which formats the original call's result.
+- **Gate.** None. No public-API, `cranelisp-types`, intrinsics, platform or
+  emitted-call ABI change, and `runtime/panic` is unchanged. The existing
+  sentinel convention gains its first in-code reader.
+- **Cache.** No bump. The change is confined to each caller frame's emission
+  ([bump rule](module-caching.md#142-cache_schema_version-ownership)). A stale
+  frame behaves as today until its module rebuilds, and a rebuilt compiler
+  invalidates it through build identity and the compiler fingerprint.
+- **Size.** Roughly 100–150 source lines and 150–250 module-test lines in one
+  `dev`(backend) pass. `test` re-baselines the CLIF goldens that contain an
+  `AlwaysHeap` call, attributed to ACT-1040. It runs after ACT-1037 lands,
+  because both touch the backend crate.
+- **Evidence.**
+  - *Module, RED first.* Execution cells: a String-returning callee panics,
+    and the caller consumes the result, releases it unused, or reaches it
+    through the GOT, closure and IVar-force paths. The panic is reported with
+    no fault. Structure cells: the zero test precedes every post-call RC
+    operation. `NeverHeap`, `Value` and `Mixed` calls and tail-returning
+    wrappers carry no test. In-range controls keep their values and RC counts.
+  - *End to end.* `test`'s allocated R1–R6 cells in every mode, the C2 and C3
+    controls, and the `vec-set` sibling after ACT-1037.
+  - *Non-null premise.* A false propagation silently truncates an evaluation,
+    so the full suite measures the premise. Prove detection with a one-off
+    mutant that tests every category: the suite must go RED.
+  - *Cost.* One compare-and-branch on a register per such call. Check the
+    order of magnitude once on the exemplar, with stats off.
+- **Residual.**
+  - Q1 and Q2 remain. They are pre-existing and not memory-unsafe, but they
+    violate §12.7.2 and §12.7.4.1. `qa` should take them in as a separate
+    intake, since ACT-1040's cells do not cover them.
+  - A heap type that the category seam misclassifies as `Mixed` gets no test.
+    This is asserted with a falsifier: a `Mixed` consumer that dereferences
+    without the threshold test.
+  - Only `catch-runtime-error` clears the trace guard on a panic; the int
+    hosts do not. A callee panic inside a `(trace …)` body in the REPL
+    can leave the guard set. This is read at source and not observed, and
+    in-frame panics share it today. It routes to `design`(intrinsics).
+  - Optional companion: first-error-wins in `runtime/panic` would close Q2
+    under A0 without an API change. It is `design`(intrinsics)'s decision, and
+    `arch` must confirm it is not a panic-ABI change.
+
+#### A — complete propagation
+
+- **Mechanism.** A0, plus one change: a zero result of any other category
+  calls a new slot-query intrinsic that reads the slot without clearing it.
+  If a panic is pending, the frame propagates. A non-zero result pays nothing
+  more than under A0.
+- **Surfaces.**
+  - `cranelisp-intrinsics`: one exported function beside the slot, and its
+    catalog entry.
+  - Backend: the slow path in A0's helper.
+  - The `--link` bundle must export the new symbol.
+- **Gate.** The inter-crate public-API user gate applies. There is a new
+  catalog entry, a new public export in the intrinsics `panic` module, and a
+  new consumer edge from backend emission. `arch` presents the delta. The
+  slot gains a reader, but `runtime/panic`'s contract is unchanged. `arch`
+  rules whether that counts as a panic-ABI change.
+- **Cache.** No bump. Old objects do not import the symbol, and the runtime
+  always ships with its compiler. The evidence must show that no sidecar
+  persists a table derived from the catalog.
+- **Size.** A0 plus about 20 intrinsics lines and about 30 backend lines, with
+  cells, the `arch` packet, user approval and confirmation of the generated
+  `public-api.txt` diff. A0's work is reused whole.
+- **Evidence.**
+  - A0's evidence.
+  - Q1 and Q2 as RED-then-GREEN cells in every mode.
+  - A module cell showing that a zero `Int` result with an empty slot
+    continues.
+  - A performance measurement inside the design window. `false`, `0` and
+    nullary tag 0 are common results, so the slot query's frequency must be
+    measured, not assumed. If it is material, an exported process-wide
+    pending counter can filter the query. That counter falls under the same
+    gate.
+- **Residual.** The leaks on propagation, which the spec permits. The
+  category seam no longer matters for propagation.
+
+#### C — non-local exit (rejected)
+
+- `runtime/panic` stops returning and jumps to the innermost boundary on the
+  thread. The boundaries are:
+  - the int hosts and the expander;
+  - `cranelisp_run_program` and `catch-runtime-error`;
+  - trampoline continuation calls;
+  - IVar thunk runs;
+  - the strand and reactor completion boundaries.
+- There is no codegen change and no cache impact.
+- It is a panic-ABI change with new boundary API across intrinsics, primitives
+  and int, so it needs arch and user approval.
+- Rust does not support returns-twice calls. The project's existing
+  `sigsetjmp` uses recover only from faults.
+- Soundness requires that no skipped Rust frame holds a pending destructor.
+  Examples are IVar's spark-depth and peak guards and the primitives' `Owned`
+  locals. Nothing can make that structural, and a missed frame corrupts guard
+  or lock state.
+
+#### D — native unwinding (potential extension)
+
+- **Mechanism.**
+  - Register Cranelift unwind information for JIT code.
+  - Emit `.eh_frame` into each object, which needs a new dependency.
+  - Make `runtime/panic` and every export that JIT code calls `C-unwind`.
+  - Catch the panic at the boundaries.
+- **What it buys.** Rust destructors run, the non-panic path costs nothing,
+  and landing pads could later remove the leak.
+- **What it costs.** A public-API and technology change, a
+  `CACHE_SCHEMA_VERSION` bump, and multi-sprint work.
+- **Triggers.**
+  - A spec requirement for panic locations or backtraces.
+  - Leaks accumulating in long-running supervised strands, such as a
+    §12.7.9 server with frequent faulted requests.
+  - A's measured cost exceeding budget.
+
+#### Rejected without costing
+
+- *Sentinel-tolerant consumers.* Every dereference site would need a guard,
+  and the evaluation would still resume, against §12.7.2.
+- *Host fault recovery.* It turns the panic into a signal, against §12.7.8
+  item 1. `catch-runtime-error` would still fail, and the recovery skips Rust
+  frames as C does.
+
+### 10.4 Recommendation
+
+- Land **A0 in S122**, after ACT-1037.
+  - It closes every ACT-1040 cell and the memory-unsafe face in every mode.
+  - It needs no gate and no cache bump, at about ACT-1037's scale.
+- `qa` takes Q1 and Q2 in as a separate intake.
+- **Carry A to S123** through the `arch` packet and the user gate. It finishes
+  on A0's seam.
+- Record D as a potential extension with the triggers above. Reject C.
+- Carrying ACT-1040 whole to S123 would ship the release compiler with a
+  reachable null dereference that also defeats the only recovery construct.

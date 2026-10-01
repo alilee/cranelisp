@@ -5,7 +5,7 @@
 // routes through process_module_forms(Additive) with serial per-form processing
 // (Step 7).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
@@ -43,12 +43,12 @@ mod types;
 pub(crate) use self::types::impl_echo_type_name;
 pub use self::types::{
     CommandResult, EvalResult, Introspection, ModuleIntroductionOutcome, RunMode, SessionSettings,
-    SymbolCategory, SymbolInfo, TypecheckProduct, parens_balanced_pub,
+    StartupRecovery, SymbolCategory, SymbolInfo, TypecheckProduct, parens_balanced_pub,
 };
 pub(crate) use self::types::{
-    FailedForm, ModuleLock, TurnDefinitions, dedup_platform_names_preserving_order,
-    definition_result_symbol, intrinsic_type_from_name, is_comment_only, parens_balanced,
-    resolve_priority_worker_count,
+    FailedModule, FailureCause, TurnDefinitions, dedup_platform_names_preserving_order,
+    definition_result_symbol, file_display_name, intrinsic_type_from_name, is_comment_only,
+    parens_balanced, resolve_priority_worker_count,
 };
 
 // test_runner — the shared test runner behind `--test`, `/run-tests` and
@@ -90,6 +90,7 @@ pub(crate) use self::shared_state::ReadOnlyMacroResolver;
 // module; the struct defs stay in this parent (§2.0). `populate_ring0_got_slots`
 // is module-internal to `lifecycle` (only `new` calls it), so no re-export.
 mod lifecycle;
+pub(crate) use self::lifecycle::ReloadStatus;
 
 // ---------------------------------------------------------------------------
 // CompilerSession (pipeline-v4.md §5)
@@ -168,6 +169,13 @@ pub struct SharedState {
     /// when modules are first discovered. Used by the file watcher to
     /// identify which module changed.
     pub file_to_module: Mutex<HashMap<PathBuf, ModuleFullPath>>,
+
+    /// The state of each source file as the session last loaded, reloaded or
+    /// wrote it, keyed by canonical path (`design/int/repl-lifecycle.md`
+    /// §1.3.1, Write chokepoint, Unseen save). Kept whether or not the OS
+    /// watcher started; regeneration refuses to write over a file whose state
+    /// on disk differs from it.
+    pub(crate) recorded_sources: dashmap::DashMap<PathBuf, crate::watch::FileState>,
 
     // Sprint 67 Cluster B sub-fire 3: `cache_state: Mutex<Option<CacheState>>`
     // was here. Folded into `ObjectCache` (above) as interior state — callers
@@ -386,27 +394,12 @@ pub struct CompilerSession {
     pub shared: Arc<SharedState>,
 
     // -- REPL-specific state (pipeline-v4.md §6) --
-    /// Modules that failed reload (file watcher) or the degraded startup load
-    /// (§15.2.3). While non-empty, expression evaluation is refused with the
-    /// §14.4 message — but DEFINITION turns are always accepted (they are the
-    /// repair; the `process_commands` carve-out).
-    pub error_modules: HashSet<ModuleFullPath>,
-
-    /// Failed-form registry for the degraded form-by-form startup load
-    /// (repl/spec/15-session-persistence.md §15.2.3 restart floor; FIXME 0489). Keyed by module. While
-    /// a module's set is non-empty it sits in `error_modules`, and
-    /// `regenerate_backing_file` re-emits each failed form's verbatim text so
-    /// regen never silently drops a broken definition from the user's file.
-    /// A successful definition turn removes its symbol
-    /// (`clear_repaired_failed_form`); when the set empties, the module
-    /// leaves `error_modules` and the next regen writes a green backing file.
-    pub(crate) failed_forms: std::collections::HashMap<ModuleFullPath, Vec<FailedForm>>,
-
-    /// Locked modules and the cause of each lock
-    /// (`design/int/repl-lifecycle.md` §1.3.1). Every locked module is also
-    /// in `error_modules`. Session state only, so a restart compiles the
-    /// saved source afresh.
-    pub(crate) module_locks: HashMap<ModuleFullPath, ModuleLock>,
+    /// The failed set: each module standing failed, ordered by module, with
+    /// the file whose save the session awaits and the cause
+    /// (`design/int/repl-lifecycle.md` §1.3.1). The session is locked exactly
+    /// when it is non-empty ([`Self::is_locked`]); no lock flag is stored.
+    /// Session state only, so a restart compiles the saved source afresh.
+    pub(crate) failed_modules: BTreeMap<ModuleFullPath, FailedModule>,
 
     /// Each module's established reference while its whole-file rebuilds keep
     /// failing: the table the first failing rebuild displaced

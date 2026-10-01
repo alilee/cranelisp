@@ -2,7 +2,7 @@
 //
 // compile_vec_lit: allocate a Vec via runtime/vec_new, store each element
 // compile_vec_get: bounds-checked element access with RC inc for heap elements
-// compile_vec_set: COW inline + extern fallback
+// compile_vec_set: the guarded COW core for every uniqueness case
 // compile_vec_push: COW inline + extern fallback
 // compile_vec_len: inline load of len field
 //
@@ -20,9 +20,8 @@ use crate::heap::{self, HeapCategory, HeapVec, RcAtomicity};
 use super::control_flow::emit_extern_call_in_wrapper;
 use super::{FnCompiler, signature_heap_category};
 
-/// Bundled operands for [`emit_vec_set_cow_core`] (argument-count budget — the
-/// successor of the former `VecSetElem` bundle after the COW core was
-/// builder-parameterized for the §12.7 wrapper emission).
+/// Bundled operands for [`emit_vec_set_cow_core`], shared by the static site
+/// and the §12.7 wrapper emission.
 ///
 /// The new-element consuming inc is the CALLER's decision (static sites gate on
 /// `element_consuming_inc`; wrapper params arrive owned and transfer) — it is
@@ -37,16 +36,30 @@ pub(crate) struct VecSetCow {
     /// The OLD element's heap category (drives the mutate-in-place dec).
     pub old_elem_category: Option<HeapCategory>,
     pub dealloc_id: cranelift_module::FuncId,
-    /// The consumed-source RC polarity (§13.3 Ruling 2) — whether the copy
-    /// branch must release an owned reference to the source Vec.
-    pub source_ownership: SourceOwnership,
-    /// Increment-II static-uniqueness proof (§6.4): `true` when the source Vec
-    /// node carries `unique_static == Some(true)` — proven a fresh unique single-
-    /// use root. The dynamic `rc == 1` probe is then ELIDED (the branch is dead,
-    /// take the in-place arm unconditionally); the reuse mechanism is unchanged,
-    /// one load+cmp+brif fewer. `false` ⇒ emit the dynamic token verbatim
-    /// (proof absent/`None` ⇒ Decision-24, the §2.2 else-arm discipline).
-    pub elide_rc_check: bool,
+    /// `runtime/panic`, called by the index guard.
+    pub panic_id: cranelift_module::FuncId,
+    pub uniqueness: VecSetUniqueness,
+}
+
+/// What a `vec-set` site knows about its source Vec's uniqueness. Each case
+/// carries only what its emitted arms need
+/// (`design/backend/s122-closure.md` §9.2).
+pub(crate) enum VecSetUniqueness {
+    /// A fresh node proven unique (§6.4) with no separate owner: the in-place
+    /// arm alone, with no rc probe. The consumed reference becomes the result's.
+    ///
+    /// The no-separate-owner condition is what makes that transfer sound. This
+    /// case never retains the source, which is correct only for a source that
+    /// would classify [`SourceOwnership::Owned`]. A proven-unique source that a
+    /// slot also releases needs the `Borrowed` in-place retain; without it the
+    /// box would be released twice. Such a source takes `Dynamic` instead.
+    ProvenUnique,
+    /// The rc probe chooses the in-place or the copy arm; the polarity fixes
+    /// each arm's retain or release of the source (§13.7).
+    Dynamic(SourceOwnership),
+    /// The source is read later: the copy arm alone. The site does not consume
+    /// the source, so nothing is released.
+    KnownShared,
 }
 
 /// Consumed-source RC polarity for the shared COW cores
@@ -382,7 +395,7 @@ where
         )
     }
 
-    /// Compile `vec-set`: COW inline + extern fallback.
+    /// Compile `vec-set` through the guarded core, which is its only lowering.
     ///
     /// arg_vals: [vec_val, idx_val, new_val]
     ///
@@ -435,51 +448,69 @@ where
             }
         }
 
-        // Check if vec is at last use (compile-time).
-        let is_last = self.is_vec_last_use(vec_expr);
+        let panic_id = self
+            .ctx
+            .panic_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/panic not declared".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let old_elem_category = elem_type
+            .as_ref()
+            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
+        let uniqueness = self.vec_set_uniqueness(vec_expr, vec_val, &elem_type, span)?;
+        emit_vec_set_cow_core(
+            &mut self.builder,
+            self.module,
+            VecSetCow {
+                vec_val,
+                idx_val,
+                new_val,
+                inc_fn_ptr,
+                old_elem_category,
+                dealloc_id: self.ctx.dealloc_func_id,
+                panic_id,
+                uniqueness,
+            },
+            span,
+        )
+    }
 
-        if is_last {
-            // Runtime COW: check rc == 1. Shared core with the §12.7 wrapper
-            // emission (Principle 7).
-            let old_elem_category = elem_type
-                .as_ref()
-                .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
-            // Increment-II static-uniqueness proof (§6.4): if the Vec arg is a
-            // FRESH-PRODUCING node proven unique (`unique_static == Some(true)`),
-            // the dynamic rc==1 probe is dead — take the in-place arm and elide
-            // the check. Read off the fresh node, NEVER a consuming-use Var.
-            let elide_rc_check = node_unique_static(vec_expr) == Some(true);
-            // R14 count-truth (toggle-off): count a live-`Var` source so rc≥2 ⇒
-            // copy branch ⇒ conservative + correct. No-op analysis-ON.
-            if self.cow_source_needs_toggle_off_count(vec_expr) {
-                heap::emit_rc_inc(&mut self.builder, self.module, vec_val);
-            }
-            let source_ownership = self.cow_source_ownership(vec_expr, &elem_type, span)?;
-            emit_vec_set_cow_core(
-                &mut self.builder,
-                self.module,
-                VecSetCow {
-                    vec_val,
-                    idx_val,
-                    new_val,
-                    inc_fn_ptr,
-                    old_elem_category,
-                    dealloc_id: self.ctx.dealloc_func_id,
-                    source_ownership,
-                    elide_rc_check,
-                },
-                span,
-            )
-        } else {
-            // Copy path (non-last-use Vec): call vec-set-copy extern. The runtime
-            // inc's only the retained copied-over elements; the new `val`'s
-            // consuming inc was already emitted up-front above.
-            self.emit_extern_call(
-                "vec-set-copy",
-                &[vec_val, idx_val, new_val, inc_fn_ptr],
-                span,
-            )
+    /// Classify a static `vec-set` site's source. A source that is not at its
+    /// last use is known shared. At last use, the §6.4 proof elides the rc
+    /// probe only when the source has no separate owner; otherwise the probe
+    /// decides.
+    ///
+    /// The owner condition matters because [`VecSetUniqueness::ProvenUnique`]
+    /// never retains the source: a separately owned source needs the retain its
+    /// `Borrowed` polarity supplies. Every node that carries the proof today
+    /// yields an owned temporary, so the condition moves no site; it keeps
+    /// typecheck's proof and this crate's ownership classification from
+    /// disagreeing silently (`design/backend/s122-closure.md` §9.2).
+    fn vec_set_uniqueness(
+        &mut self,
+        vec_expr: &MonoExpr,
+        vec_val: Value,
+        elem_type: &Option<Type>,
+        span: Span,
+    ) -> Result<VecSetUniqueness, CranelispError> {
+        if !self.is_vec_last_use(vec_expr) {
+            return Ok(VecSetUniqueness::KnownShared);
         }
+        let claimed = self.holds_consuming_claim(vec_expr);
+        if node_unique_static(vec_expr) == Some(true)
+            && !cow_source_has_separate_owner(vec_expr, claimed)
+        {
+            return Ok(VecSetUniqueness::ProvenUnique);
+        }
+        // R14 count-truth (toggle-off): count a live-`Var` source so rc≥2 ⇒
+        // copy branch ⇒ conservative + correct. No-op analysis-ON.
+        if self.cow_source_needs_toggle_off_count(vec_expr) {
+            heap::emit_rc_inc(&mut self.builder, self.module, vec_val);
+        }
+        Ok(VecSetUniqueness::Dynamic(
+            self.cow_source_ownership(vec_expr, elem_type, span)?,
+        ))
     }
 
     /// Compile `vec-push`: COW inline + extern fallback.
@@ -988,6 +1019,13 @@ where
                 Ok(elem)
             }
             ("vec-set", 3) => {
+                let panic_id =
+                    self.ctx
+                        .panic_func_id
+                        .ok_or_else(|| CranelispError::CodegenError {
+                            message: "runtime/panic not declared".into(),
+                            location: ErrorLocation::from_span(span),
+                        })?;
                 let inc_fn_ptr = self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
                 // Wrapper / curry body: params arrive OWNED (consuming-closure
                 // protocol), so the copy branch must release the source Vec's
@@ -1004,12 +1042,10 @@ where
                         inc_fn_ptr,
                         old_elem_category: elem_category,
                         dealloc_id: self.ctx.dealloc_func_id,
-                        source_ownership,
-                        // Wrapper/curry body: the Vec arrives as an OWNED closure
-                        // param (a `Value`, not a fact-bearing MonoExpr node), so
-                        // no static uniqueness proof is available here — keep the
-                        // dynamic rc==1 token (conservative, §6.4).
-                        elide_rc_check: false,
+                        panic_id,
+                        // The Vec arrives as an owned closure param, a `Value`
+                        // with no fact-bearing node, so no §6.4 proof exists.
+                        uniqueness: VecSetUniqueness::Dynamic(source_ownership),
                     },
                     span,
                 )
@@ -1046,8 +1082,44 @@ where
 // Free functions
 // ---------------------------------------------------------------------------
 
-/// Shared emission core for `vec-get`: bounds check (trap via `runtime/panic`)
-/// + element load + element RC inc per `elem_category`.
+/// The one Vec index guard (`design/backend/backend.md` §7). Loads the length;
+/// an index below zero or not below the length raises the spec §12.7.2.1 panic
+/// and returns the sentinel from the enclosing function. Leaves the builder in
+/// the in-range block, so everything the caller emits next is dominated by the
+/// comparison.
+fn emit_vec_index_guard<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    panic_id: cranelift_module::FuncId,
+    vec_val: Value,
+    idx_val: Value,
+    span: Span,
+) -> Result<(), CranelispError> {
+    let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
+    let zero = builder.ins().iconst(types::I64, 0);
+    let neg_check = builder.ins().icmp(IntCC::SignedLessThan, idx_val, zero);
+    let bounds_check = builder
+        .ins()
+        .icmp(IntCC::SignedGreaterThanOrEqual, idx_val, len);
+    let out_of_bounds = builder.ins().bor(neg_check, bounds_check);
+
+    let ok_block = builder.create_block();
+    let panic_block = builder.create_block();
+    builder
+        .ins()
+        .brif(out_of_bounds, panic_block, &[], ok_block, &[]);
+
+    builder.switch_to_block(panic_block);
+    builder.seal_block(panic_block);
+    emit_vec_bounds_panic(builder, module, panic_id, span)?;
+
+    builder.switch_to_block(ok_block);
+    builder.seal_block(ok_block);
+    Ok(())
+}
+
+/// Shared emission core for `vec-get`: the index guard, element load and
+/// element RC inc per `elem_category`.
 ///
 /// Builder-parameterized (the `emit_adt_construct_into` precedent) so ONE body
 /// serves both the statically-resolved inline site (`compile_vec_get`, over
@@ -1072,32 +1144,7 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     // which always materializes).
     elide_elem_inc: bool,
 ) -> Result<Value, CranelispError> {
-    // Load len from Vec.
-    let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
-
-    // Bounds check: idx < 0 || idx >= len → panic.
-    let zero = builder.ins().iconst(types::I64, 0);
-    let neg_check = builder.ins().icmp(IntCC::SignedLessThan, idx_val, zero);
-    let bounds_check = builder
-        .ins()
-        .icmp(IntCC::SignedGreaterThanOrEqual, idx_val, len);
-    let out_of_bounds = builder.ins().bor(neg_check, bounds_check);
-
-    let ok_block = builder.create_block();
-    let panic_block = builder.create_block();
-
-    builder
-        .ins()
-        .brif(out_of_bounds, panic_block, &[], ok_block, &[]);
-
-    // Panic path: call runtime/panic with error message.
-    builder.switch_to_block(panic_block);
-    builder.seal_block(panic_block);
-    emit_vec_bounds_panic(builder, module, panic_id, span)?;
-
-    // OK path: load element.
-    builder.switch_to_block(ok_block);
-    builder.seal_block(ok_block);
+    emit_vec_index_guard(builder, module, panic_id, vec_val, idx_val, span)?;
 
     // Load data_ptr.
     let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
@@ -1132,15 +1179,16 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     Ok(elem)
 }
 
-/// Shared emission core for the `vec-set` COW path: rc==1 → mutate-in-place
-/// (dec old element, store new, return the same Vec); rc>1 → `vec-set-copy`
-/// extern (the runtime inc's only the retained copied-over elements).
+/// The only lowering of `vec-set`: the index guard, then the arms its
+/// uniqueness case needs. The in-place arm releases the old element, stores
+/// the new one and returns the same Vec; the copy arm calls `vec-set-copy`,
+/// which increments only the retained elements. `vec-set-copy` has no
+/// out-of-range behaviour to rely on, so the guard must dominate its call.
 ///
-/// Builder-parameterized single source (Principle 7) for the static
-/// `compile_vec_set` last-use arm and the §12.7 wrapper emission. The
-/// new-element consuming inc is the CALLER's decision (static sites gate on
-/// `element_consuming_inc`; wrapper params arrive owned and transfer) — both
-/// sub-paths store `new_val` WITHOUT an additional inc.
+/// Builder-parameterized for the static site (`compile_vec_set`) and the §12.7
+/// wrapper emission. The new-element consuming inc is the CALLER's decision
+/// (static sites gate on `element_consuming_inc`; wrapper params arrive owned
+/// and transfer), so both arms store `new_val` without an additional inc.
 pub(crate) fn emit_vec_set_cow_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -1154,21 +1202,45 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         inc_fn_ptr,
         old_elem_category,
         dealloc_id,
-        source_ownership,
-        elide_rc_check,
+        panic_id,
+        uniqueness,
     } = op;
 
-    // Uniqueness discriminator (§6.4): with a static proof (`elide_rc_check`) the
-    // in-place arm is proven-taken — emit `is_unique = true` and skip the rc
-    // load+cmp (the copy block is then dead, DCE'd). Absent the proof, load rc
-    // and compare == 1 (the dynamic token, verbatim pre-II behaviour).
-    let is_unique = if elide_rc_check {
-        builder.ins().iconst(types::I64, 1)
-    } else {
-        let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
-        let one = builder.ins().iconst(types::I64, 1);
-        builder.ins().icmp(IntCC::Equal, rc, one)
+    emit_vec_index_guard(builder, module, panic_id, vec_val, idx_val, span)?;
+
+    let in_place = |builder: &mut FunctionBuilder, module: &mut M| {
+        emit_vec_set_in_place(
+            builder,
+            module,
+            vec_val,
+            idx_val,
+            new_val,
+            old_elem_category,
+            dealloc_id,
+        )
     };
+    let copy = |builder: &mut FunctionBuilder, module: &mut M| {
+        emit_extern_call_in_wrapper(
+            builder,
+            module,
+            "vec-set-copy",
+            &[vec_val, idx_val, new_val, inc_fn_ptr],
+            span,
+        )
+    };
+
+    let source_ownership = match uniqueness {
+        VecSetUniqueness::ProvenUnique => {
+            in_place(builder, module);
+            return Ok(vec_val);
+        }
+        VecSetUniqueness::KnownShared => return copy(builder, module),
+        VecSetUniqueness::Dynamic(source_ownership) => source_ownership,
+    };
+
+    let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
+    let one = builder.ins().iconst(types::I64, 1);
+    let is_unique = builder.ins().icmp(IntCC::Equal, rc, one);
 
     let mutate_block = builder.create_block();
     let copy_block = builder.create_block();
@@ -1179,17 +1251,48 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         .ins()
         .brif(is_unique, mutate_block, &[], copy_block, &[]);
 
-    // Mutate-in-place path: dec old element, store new, return same vec.
     builder.switch_to_block(mutate_block);
     builder.seal_block(mutate_block);
+    in_place(builder, module);
+    // §13.7: a Borrowed source's result takes its own reference on this
+    // same-pointer return.
+    retain_reused_source(builder, module, vec_val, &source_ownership);
+    builder.ins().jump(merge_block, &[vec_val]);
 
+    builder.switch_to_block(copy_block);
+    builder.seal_block(copy_block);
+    // Increment-II reuse tally (§6.5): the copy arm cannot reuse (rc>1) — a
+    // reuse MISS. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
+    heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_miss");
+    let copy_result = copy(builder, module)?;
+    // §13.3 Ruling 2: the copy branch returns a NEW Vec, so release the
+    // consumed source's owned reference here (iff Owned). AFTER the copy extern
+    // so its retained-element incs land before a last-reference source teardown.
+    release_consumed_source(builder, module, vec_val, &source_ownership);
+    builder.ins().jump(merge_block, &[copy_result]);
+
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    Ok(builder.block_params(merge_block)[0])
+}
+
+/// The `vec-set` in-place arm: release the old element and store the new one
+/// in the uniquely held buffer.
+fn emit_vec_set_in_place<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    vec_val: Value,
+    idx_val: Value,
+    new_val: Value,
+    old_elem_category: Option<HeapCategory>,
+    dealloc_id: cranelift_module::FuncId,
+) {
     // Increment-II reuse tally (§6.5): the in-place arm reuses the owned buffer
     // (a reuse HIT — dynamically taken, or the proof-elided codegen-certain hit).
     // Runtime tally gated on the codegen-time `CRANELISP_RC_STATS` switch (off ⇒
     // no emitted IR).
     heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
 
-    // Load data_ptr and old element.
     let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
     let eight = builder.ins().iconst(types::I64, 8);
     let byte_off = builder.ins().imul(idx_val, eight);
@@ -1198,7 +1301,6 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         .ins()
         .load(types::I64, MemFlags::trusted(), elem_addr, 0);
 
-    // Dec the old element (if heap type).
     match old_elem_category {
         Some(HeapCategory::AlwaysHeap) => {
             heap::emit_rc_dec(builder, module, old_elem, dealloc_id, None);
@@ -1209,40 +1311,9 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
     }
 
-    // Store new value (the consuming inc was the caller's decision — none here).
     builder
         .ins()
         .store(MemFlags::trusted(), new_val, elem_addr, 0);
-
-    // §13.7: a Borrowed source's result takes its own reference on this
-    // same-pointer return.
-    retain_reused_source(builder, module, vec_val, &source_ownership);
-
-    builder.ins().jump(merge_block, &[vec_val]);
-
-    // Copy path: call vec-set-copy extern.
-    builder.switch_to_block(copy_block);
-    builder.seal_block(copy_block);
-    // Increment-II reuse tally (§6.5): the copy arm cannot reuse (rc>1) — a
-    // reuse MISS. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
-    heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_miss");
-    let copy_result = emit_extern_call_in_wrapper(
-        builder,
-        module,
-        "vec-set-copy",
-        &[vec_val, idx_val, new_val, inc_fn_ptr],
-        span,
-    )?;
-    // §13.3 Ruling 2: the copy branch returns a NEW Vec, so release the
-    // consumed source's owned reference here (iff Owned). AFTER the copy extern
-    // so its retained-element incs land before a last-reference source teardown.
-    release_consumed_source(builder, module, vec_val, &source_ownership);
-    builder.ins().jump(merge_block, &[copy_result]);
-
-    // Merge.
-    builder.switch_to_block(merge_block);
-    builder.seal_block(merge_block);
-    Ok(builder.block_params(merge_block)[0])
 }
 
 /// Shared emission core for the `vec-push` COW path: rc==1 → len<cap fast
@@ -1453,7 +1524,8 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
     builder.seal_block(cont_block);
 }
 
-/// Emit a bounds-check panic for vec-get.
+/// Emit the index guard's panic block: the spec §12.7.2.1 message, shared by
+/// `vec-get` and `vec-set`.
 fn emit_vec_bounds_panic<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -1588,3 +1660,6 @@ mod element_release_tests;
 
 #[cfg(test)]
 mod guard_convergence_tests;
+
+#[cfg(test)]
+mod index_guard_tests;

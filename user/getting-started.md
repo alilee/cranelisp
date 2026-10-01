@@ -44,8 +44,9 @@ this repository's root, as above, and the prelude is found in `stdlib/`.
 The REPL is a live development environment: redefine a function and the change
 takes effect immediately — body edits are picked up by every caller on the next
 call. A different type with a direct blocking dependent is rejected before it
-replaces the old definition. See the
-[live development guide](guide/live-development.md).
+replaces the old definition. The REPL also watches the module files it has
+loaded, so saving a file in your editor recompiles it in the running session.
+See the [live development guide](guide/live-development.md).
 
 ### A REPL session resumes prior state — a sharp edge for piped input
 
@@ -75,22 +76,27 @@ Start with [`examples/01-integers.cl`](../examples/01-integers.cl). It defines a
 few arithmetic functions and combines them in `main`:
 
 ```
-cranelisp examples/01-integers --run
+cranelisp --run examples/01-integers
 ```
 
-It prints nothing — a program's only output comes from IO effects, and this one is
-pure. Its `main` returns an `Int`, which becomes the **process exit code**
-(`01-integers` computes `69`, so the process exits with code `69`). You can confirm
-it ran cleanly by inspecting the exit code:
+It prints nothing — a program's only output comes from IO effects, and this one
+performs none. Every `main` returns an `IO` action; this one wraps its result in
+`Pure`, which performs no effect. When that result is an `Int`, it becomes the
+**process exit code** (`01-integers` computes `69`, so the process exits with
+code `69`). You can confirm it ran cleanly by inspecting the exit code:
 
 ```
-$ cranelisp examples/01-integers --run
+$ cranelisp --run examples/01-integers
 $ echo $?
 69
 ```
 
-A pure example like this needs nothing beyond the binary — no platform DLL, no
-environment — so it is the safest place to confirm your build works on any host.
+A `main` that returns a plain `Int` is rejected before anything runs, with
+``main must return `IO _` ``.
+
+An example like this needs nothing beyond the binary and the `examples/`
+directory — no platform DLL, no environment — so it is the safest place to
+confirm your build works on any host.
 
 ### A program that does IO
 
@@ -106,7 +112,7 @@ platform two-step plus a `main` that prints:
 ```
 
 ```
-$ CRANELISP_PLATFORM_PATH=target/debug cranelisp hello.cl --run
+$ CRANELISP_PLATFORM_PATH=/path/to/cranelisp/target/debug cranelisp --run hello.cl
 hello world
 ```
 
@@ -115,17 +121,20 @@ and [`examples/23-io-sequence.cl`](../examples/23-io-sequence.cl) are part of th
 learning sequence and run with the platform setup above.
 
 IO requires a **platform** — a small native library that provides the host's
-side-effecting operations (here, `print`). The `examples/` directory ships a
-checked-in platform symlink for the common hosts (`stdio.so` on Linux, `stdio.dylib`
-on macOS) pointing at the `libcranelisp_stdio` library Cargo builds, so an entry
-module **inside `examples/`** — whose project root is that directory — finds the DLL
-with **no environment variable** on those hosts.
+side-effecting operations (here, `print`). The binary looks for platforms in a
+`platforms/` directory under the project root and under each lib directory. The
+learning sequence puts its own `lib/` on the lib search path, and
+`examples/lib/platforms/` holds checked-in symlinks to the libraries Cargo builds
+in `target/debug/`. Only Linux links (`stdio.so`, `test-capture.so`) are checked
+in, so on Linux an entry module **inside `examples/`** finds the platform with
+**no environment variable**, once `cargo build` has run.
 
-Anywhere else — including the `hello.cl` above, written in a directory of your own —
-point the binary at the built library with `CRANELISP_PLATFORM_PATH`:
+On macOS, and for any program outside `examples/` — including the `hello.cl`
+above, written in a directory of your own — point the binary at the directory
+holding the built library with `CRANELISP_PLATFORM_PATH`:
 
 ```
-CRANELISP_PLATFORM_PATH=target/debug cranelisp hello.cl --run
+CRANELISP_PLATFORM_PATH=/path/to/cranelisp/target/debug cranelisp --run hello.cl
 ```
 
 If the platform cannot be found you will see `platform 'stdio' not found` — that
@@ -160,6 +169,23 @@ scope by itself — the `(import [platform.stdio [*]])` does. Without it, `(prin
 fails with `undefined variable: print`. For the full walkthrough — the two steps, the
 `platform.<name>` naming, and a troubleshooting checklist — see
 [guide/using-platforms.md](guide/using-platforms.md).
+
+At the REPL, an expression whose type is `IO` runs as soon as you enter it. The
+REPL prints `Executing IO…`, then whatever the action outputs, then the value it
+returns under that value's own type. Start the REPL with `CRANELISP_PLATFORM_PATH`
+set as above so it can find the platform:
+
+```
+user> (platform stdio)
+user> (import [platform.stdio [print]])
+user> (print "hello")
+Executing IO…
+hello
+:primitives/Int 0
+```
+
+An ordinary expression such as `(+ 1 2)` prints no notice. The presentation is
+specified in [`repl/spec/01-display-format.md` §1.2.1](../repl/spec/01-display-format.md#121-io-expression-results).
 
 ## Automatic parallelism
 
@@ -218,12 +244,15 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
 
   ```
   CRANELISP_LIB=stdlib CRANELISP_PLATFORM_PATH=target/debug \
-    cranelisp exemplar/user.cl --run
+    cranelisp --run exemplar/user.cl
   ```
 
 - **Guide** — feature-by-feature pages:
   - [`guide/live-development.md`](guide/live-development.md) — redefining
-    functions in a live session: late binding and guarded type changes.
+    functions in a live session, editing module files while the REPL runs, and
+    moving between modules with `/mod`.
+  - [`guide/testing.md`](guide/testing.md) — writing tests and running them with
+    `/run-tests` or `cranelisp --test`.
   - [`guide/functions.md`](guide/functions.md) — `fn` is single-arity; multi-arity
     `defn` and how its clauses infer like separate mutually-recursive functions.
   - [`guide/constructors.md`](guide/constructors.md) — `Type.Ctor` constructors, the
@@ -250,11 +279,11 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
 - **Errors** — [`errors/trait-impl-diagnostics.md`](errors/trait-impl-diagnostics.md)
   explains the diagnostics for traits, impls, method dispatch and definition
   binders, with the fix each one names.
-- [`syntax-cheatsheet-plan.md`](syntax-cheatsheet-plan.md) — the `/syntax`
+- [`guide/syntax-command.md`](guide/syntax-command.md) — the `/syntax`
   command for recalling a language form at the REPL, and reader annotations for
   macro authors.
 - [`cli-reference.md`](cli-reference.md) — every command-line mode and option,
-  including [writing and running tests](cli-reference.md#test---test), how the
+  including the [`--test` mode](cli-reference.md#test---test), how the
   entry-module target is resolved, how the lib search path / `Cranelisp.toml`
   works, and the `/search` command for finding an importable function.
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display

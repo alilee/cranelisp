@@ -4,8 +4,7 @@
 ;; The core language exposes monomorphic named primitives for arithmetic:
 ;;   add-i64, sub-i64, mul-i64, div-i64
 ;;
-;; The last zero-arg function (main) is the program entry point.
-;; Its return value is the program result.
+;; The zero-argument function named `main` is the program entry point.
 
 ;; Addition
 (defn add-example [] (add-i64 3 4))

@@ -2715,9 +2715,19 @@ where
 
 /// Check if a builtin name is an extern primitive (requires a call, not inline IR).
 ///
-/// Under Decision 24 (uniform consuming convention) these externs dec their
-/// own heap arguments in their Rust implementations. The backend uses
-/// `compile_consuming_arg_list` at every call site — no per-callee classification.
+/// Every listed name is lowered by `compile_extern_primitive_call`, which builds
+/// arguments with `compile_entry_arg_list` from the keyed entry's derived
+/// convention — no per-callee classification. The list holds two populations:
+///
+/// - The string and conversion names are extern shims, which take ownership of
+///   every heap argument (bounded-contexts §4a invariant 8).
+/// - The six `cranelisp_trace_*` names are named intrinsics, outside that rule
+///   (§4b invariant 6). Five are bodies of host-promised entries and follow §3
+///   invariant 2; `cranelisp_trace_first_child_nanos` consumes its Trace per the
+///   §4b conventions table. A Trace accessor call normally takes the Trace-typed
+///   intercept in `compile_builtin_fn_call` first. One that reaches this arm by
+///   its intrinsic name derives a consuming convention (a host-promised entry,
+///   or no table callable), which matches each of the six.
 fn is_extern_primitive(name: &str) -> bool {
     matches!(
         name,
@@ -2742,9 +2752,10 @@ fn is_extern_primitive(name: &str) -> bool {
             | "contains?"
             | "to-upper"
             | "to-lower"
-            // Trace ADT field accessors: consuming convention (Decision 24).
-            // Each inc-and-returns the heap field being read; the Trace arg is
-            // consumed on the Rust side via `consume_trace_call`.
+            // Named intrinsics, not extern shims (§4b invariant 6). Each
+            // consumes its Trace argument on the Rust side via
+            // `consume_trace_call`; the field accessors return the heap field
+            // they read with its own reference.
             | "cranelisp_trace_name"
             | "cranelisp_trace_params"
             | "cranelisp_trace_result"

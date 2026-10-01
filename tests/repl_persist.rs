@@ -910,9 +910,9 @@ const MDEF_MODULE: &str = "(import [primitives [*]])\n\
 
 // spec: repl/spec.md §15.1 — loading the regenerated backing file MUST
 // reproduce the same session state (round-trip MUST, §15.4 invariant 1).
-// RED on HEAD (/port D1): session 2 exits 1 before the first prompt with
-// `defmacro name must be a symbol` — the regenerated file persists both the
-// macro-expansion artifact and the original call form, which do not co-load.
+// Formerly RED (/port D1): session 2 exited 1 before the first prompt with
+// `defmacro name must be a symbol` — the regenerated file persisted both the
+// macro-expansion artifact and the original call form, which did not co-load.
 #[test]
 fn persist_macro_defining_macro_use_survives_restart() {
     let first = Cranelisp::new()
@@ -938,18 +938,17 @@ fn persist_macro_defining_macro_use_survives_restart() {
         .repl()
         .stdin("x\n")
         .output()
-        .assert_ok() // D1: exits 1 at load today, before any prompt
+        .assert_ok() // D1 exited 1 at load, before any prompt
         .assert_stdout_does_not_contain("defmacro name must be a symbol")
         .assert_stdout_contains(":primitives/Int 1");
 }
 
-// spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity: "the
-// regenerated file is a faithful record of what the user typed") + invariant
-// 3's preservation spirit: a defining turn that never touches a hand-authored
-// definition MUST NOT destroy the user's source text for it. RED on HEAD
-// (/port D2, data-loss arm): the adopted batch `user.cl`'s reader-shorthand
-// macro text is re-rendered from sexps (`` ` ``/`~` become
-// `quasiquote`/`unquote`), losing the authored form.
+// spec: repl/spec/15-session-persistence.md §15.4 — rule 1 round trip, with
+// §15.1's regeneration from the module's current state: a defining turn that
+// never touches a hand-authored definition MUST NOT destroy the user's source
+// text for it. Formerly RED (/port D2, data-loss arm): the adopted batch
+// `user.cl`'s reader-shorthand macro text was re-rendered from sexps
+// (`` ` ``/`~` became `quasiquote`/`unquote`), losing the authored form.
 #[test]
 fn persist_defining_turn_preserves_hand_authored_macro_source_text() {
     let original_macro_line = "(defmacro twice [e] `(add-i64 ~e ~e))";
@@ -969,7 +968,7 @@ fn persist_defining_turn_preserves_hand_authored_macro_source_text() {
     assert!(
         regenerated.contains(original_macro_line),
         "a defining turn MUST NOT re-render an untouched hand-authored \
-         definition's source text (§15.4 authorship fidelity; /port D2 \
+         definition's source text (§15.4 rule 1, §15.1; /port D2 \
          data-loss arm); regenerated user.cl:\n{regenerated}"
     );
     drop(out);
@@ -1009,14 +1008,14 @@ fn persist_expression_only_session_leaves_hand_authored_user_cl_untouched() {
 // took effect MUST NOT be persisted (0548); a transient non-defining top-level
 // EXPRESSION evaluation MUST NOT be persisted (0549, repl/spec.md §15.7); and the
 // §5–7 trait/type regen sections MUST render the authored declaration faithfully
-// (0538). All RED-first on S106 HEAD; each flips green in its owning /dev change-set.
+// (0538). Each was RED first on S106 HEAD and turned green with its owning /dev change-set.
 // =============================================================================
 
 // spec: repl/spec.md §15.4 — a REPL import that FAILS resolution MUST NOT be
 // written into the regenerated backing file when a later successful form triggers
-// regeneration. RED on HEAD (FIXME 0548): the Pass-0 peel records the import onto
-// `symbol_table.imports` BEFORE `handle_import` resolves, so the failed import
-// survives to the next regen and corrupts the backing `.cl`.
+// regeneration. Formerly RED (FIXME 0548, closed): the Pass-0 peel recorded the
+// import onto `symbol_table.imports` BEFORE `handle_import` resolved, so the
+// failed import survived to the next regen and corrupted the backing `.cl`.
 #[test]
 fn persist_failed_import_not_written_to_backing_neg() {
     let out = Cranelisp::new()
@@ -1047,8 +1046,8 @@ fn persist_failed_import_not_written_to_backing_neg() {
 
 // spec: repl/spec.md §15.4 — end-to-end integrity: a session that fails an import
 // then defines `main` MUST regenerate a backing project that `--run`s cleanly (no
-// phantom `module ... not found`). RED on HEAD (FIXME 0548): the persisted phantom
-// import breaks the subsequent `--run`.
+// phantom `module ... not found`). Formerly RED (FIXME 0548, closed): the
+// persisted phantom import broke the subsequent `--run`.
 #[test]
 fn persist_bad_import_then_run_succeeds_e2e() {
     let first = Cranelisp::new()
@@ -1082,8 +1081,8 @@ fn persist_bad_import_then_run_succeeds_e2e() {
 
 // spec: repl/spec.md §15.4 — the record-after-success fix MUST apply uniformly to
 // every structural form, not just `import`. A FAILED `export` (of a nonexistent
-// module) likewise MUST NOT be persisted. RED on HEAD (FIXME 0548): the same
-// record-before-resolve ordering afflicts export/mod/platform.
+// module) likewise MUST NOT be persisted. Formerly RED (FIXME 0548, closed): the
+// same record-before-resolve ordering afflicted export/mod/platform.
 #[test]
 fn persist_failed_export_not_written_to_backing_neg() {
     let out = Cranelisp::new()
@@ -1112,8 +1111,9 @@ fn persist_failed_export_not_written_to_backing_neg() {
 
 // spec: repl/spec.md §15.7 — a bare top-level EXPRESSION evaluation is transient
 // session output and MUST NOT be persisted to the backing file, while the eval
-// itself still happens in-session. RED on HEAD (FIXME 0549): `generate_fns_and_macros`
-// has no `__expr` filter, so `(add-i64 1 2)` is re-emitted as module content.
+// itself still happens in-session. Formerly RED (FIXME 0549, closed):
+// `generate_fns_and_macros` had no `__expr` filter, so `(add-i64 1 2)` was
+// re-emitted as module content.
 #[test]
 fn persist_bare_expr_not_written_to_backing_neg() {
     let out = Cranelisp::new()
@@ -1150,7 +1150,8 @@ fn persist_bare_expr_not_written_to_backing_neg() {
 
 // spec: repl/spec/15-session-persistence.md §15.7 — after persisting a session that evaluated a bare
 // expression, re-running the project MUST load cleanly with no re-materialised dead
-// top-level expression (no double-eval, no error). RED on HEAD (FIXME 0549).
+// top-level expression (no double-eval, no error). Formerly RED (FIXME 0549,
+// closed).
 #[test]
 fn persist_bare_expr_then_run_module_clean_e2e() {
     let first = Cranelisp::new()
@@ -1535,9 +1536,9 @@ fn prelude_trait_impl_survives_restart() {
 }
 
 // =============================================================================
-// Startup load failure: prompt, error block, repair and failed-source retention
-// (repl/spec/15-session-persistence.md §15.2.3, with the §15.1 and
-// repl/spec/18-redefinition.md §18.8 retention exceptions)
+// Startup load failure: prompt, report and the session lock
+// (repl/spec/15-session-persistence.md §15.2.3, repl/spec/14-file-watching.md
+// §14.5 session lock)
 // =============================================================================
 
 const STARTUP_GOOD: &str = "(defn good [:Int x] (add-i64 x 10))";
@@ -1557,130 +1558,133 @@ fn turns(stdout: &str) -> Vec<&str> {
 }
 
 // spec: repl/spec/15-session-persistence.md §15.2.3 — a backing file that fails
-// to compile at startup is reported and the REPL still reaches a prompt; while
-// blocked an ordinary expression is refused; a definition repairing the broken
-// name is accepted and clears the block.
+// to compile at startup is reported, the REPL reaches a prompt, and there is no
+// repair at the prompt: `(good 1)`, the same-name `(defn broken [] 2)` and the
+// other-name `(defn other [] 3)` are all refused, and `user.cl` stays as
+// saved. repl/spec/14-file-watching.md §14.5 (session lock) — each refusal
+// names `user.cl` and the save remedy. A compiling save of `user.cl` releases
+// the lock (§14.6): `(broken)` gives 2, `(good 1)` gives 11, the other-name
+// definition is accepted, and regeneration (§15.1) writes each name once. SL-8.
 #[test]
-fn persist_startup_load_failure_reaches_prompt_blocks_then_repairs() {
+fn persist_startup_load_failure_locks_session_until_a_save_compiles() {
+    // Turns: 1 (good 1), 2 (defn broken), 3 (defn other), 4 snapshot,
+    // 5–7 save, 8 (broken), 9 (good 1), 10 (defn other).
+    let seed = format!("{STARTUP_GOOD}\n{STARTUP_BROKEN}\n");
     let out = seeded_broken_session()
-        .stdin("(good 1)\n(defn broken [] 2)\n(broken)\n(good 1)\n")
-        .output()
-        .assert_ok();
-    let all = format!("{}{}", out.stdout, out.stderr);
-    // Implementation-specific report text (lifecycle.rs render_startup_error_report);
-    // §15.2.3 requires a report, not this wording. A format change updates this line.
-    assert!(
-        all.contains("[errors: user.cl]"),
-        "startup MUST report the load error; got:\n{all}"
-    );
+        .stdin(&format!(
+            "(good 1)\n(defn broken [] 2)\n(defn other [] 3)\n/sh cp user.cl after-refusals.txt\n\
+             {}(broken)\n(good 1)\n(defn other [] 3)\n/quit\n",
+            save("user.cl", &format!("{STARTUP_GOOD} (defn broken [] 2)"))
+        ))
+        .output();
     let t = turns(&out.stdout);
-    assert!(
-        t.len() >= 5,
-        "expected a prompt before each of 4 turns; stdout:\n{}",
-        out.stdout
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_refusals = out.read_tmp("after-refusals.txt");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    // Implementation-specific report text (lifecycle.rs render_startup_error_report);
+    // §15.2.3 requires a report, not this wording.
+    legs.check(
+        format!("{}{}", turn(0), out.stderr).contains("[errors: user.cl]") && t.len() > 1,
+        "startup reports the load error and reaches a prompt",
     );
-    // "has errors" is the implementation's refusal line, not spec-pinned wording.
-    assert!(
-        t[1].contains("has errors") && !t[1].contains(":primitives/Int"),
-        "turn 1 `(good 1)` MUST be refused while blocked; stdout:\n{}",
-        out.stdout
+    legs.check(
+        !turn(1).contains(":primitives/Int"),
+        "`(good 1)` is refused while locked",
     );
-    for (n, needle) in [(3, ":primitives/Int 2"), (4, ":primitives/Int 11")] {
-        assert!(
-            t[n].contains(needle),
-            "turn {n} after the repair MUST yield {needle}; stdout:\n{}",
-            out.stdout
-        );
+    legs.check(
+        !turn(2).contains("user/broken"),
+        "the same-name `(defn broken [] 2)` is refused: no repair at the prompt",
+    );
+    legs.check(
+        !turn(3).contains("user/other"),
+        "the other-name `(defn other [] 3)` is refused",
+    );
+    for (i, what) in [
+        (
+            1,
+            "the `(good 1)` refusal names `user.cl` and the save remedy",
+        ),
+        (
+            2,
+            "the same-name refusal names `user.cl` and the save remedy",
+        ),
+        (
+            3,
+            "the other-name refusal names `user.cl` and the save remedy",
+        ),
+    ] {
+        legs.check(refusal_names(turn(i), &["user.cl"]), what);
     }
-    for n in 2..=4 {
-        assert!(
-            !t[n].contains("has errors"),
-            "turn {n}: the block MUST clear once the definition repairs it; stdout:\n{}",
-            out.stdout
-        );
-    }
+    legs.check(
+        after_refusals == seed,
+        "user.cl is byte-identical to the seed after the refused turns",
+    );
+    legs.check(
+        save_notice(&t, 5).contains("[updated: user.cl]"),
+        "the compiling save reloads: `[updated: user.cl]`",
+    );
+    legs.check(
+        turn(8).contains(":primitives/Int 2"),
+        "the released session evaluates the saved `(broken)`: 2",
+    );
+    legs.check(
+        turn(9).contains(":primitives/Int 11"),
+        "the released session evaluates `(good 1)`: 11",
+    );
+    legs.check(
+        turn(10).contains("user/other"),
+        "the released session accepts `(defn other [] 3)`",
+    );
+    legs.check(
+        saved.matches("defn good").count() == 1
+            && saved.matches("defn broken").count() == 1
+            && saved.matches("(defn broken [] 2)").count() == 1
+            && saved.matches("defn other").count() == 1
+            && !saved.contains("undefined-name"),
+        "user.cl holds `good`, `broken` 2 and `other` exactly once each",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turns:\n{after_refusals}\nuser.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
 }
 
-// spec: repl/spec/15-session-persistence.md §15.2.3 — startup-failed source is
-// retained verbatim through a regeneration triggered by a different name, and
-// released once a successful same-name definition replaces it (§15.1, §18.8).
-#[test]
-fn persist_startup_failed_source_retained_until_same_name_repair_neg() {
-    let first = seeded_broken_session()
-        .stdin("(defn other [] 3)\n")
-        .output()
-        .assert_ok();
-    let saved = first.read_tmp("user.cl");
-    assert!(
-        saved.contains("defn other") && saved.contains("defn good"),
-        "the different-name definition MUST regenerate the file; user.cl:\n{saved}"
-    );
-    assert_eq!(
-        saved.matches(STARTUP_BROKEN).count(),
-        1,
-        "a different-name definition MUST NOT drop (or duplicate) the failed \
-         source; user.cl:\n{saved}"
-    );
-
-    let second = first
-        .run_again()
-        .repl()
-        .stdin("(defn broken [] 2)\n")
-        .output()
-        .assert_ok();
-    let repaired = second.read_tmp("user.cl");
-    assert!(
-        !repaired.contains("undefined-name") && repaired.matches("defn broken").count() == 1,
-        "the same-name repair MUST replace the failed source exactly once; \
-         user.cl:\n{repaired}"
-    );
-
-    let third = second
-        .run_again()
-        .repl()
-        .stdin("(broken)\n")
-        .output()
-        .assert_ok();
-    let all = format!("{}{}", third.stdout, third.stderr);
-    assert!(
-        third.stdout.contains(":primitives/Int 2") && !all.contains("[errors:"),
-        "the repaired file MUST restore cleanly; got:\n{all}"
-    );
-}
-
-// spec: repl/spec/15-session-persistence.md §15.2.3 — every later regeneration
-// keeps startup-failed source until a successful definition replaces it;
-// `/reset` is not such a definition. Was RED when authored (S122): the
-// `ReplCommand::Reset` arm cleared `failed_forms`, so regeneration after
-// `/reset` omitted the failed source. Reset-free control: session 1 of
-// persist_startup_failed_source_retained_until_same_name_repair_neg.
+// spec: repl/spec/15-session-persistence.md §15.2.3 — a command does not
+// release the startup lock: `/reset` reaches its handler, and `(defn other [] 3)`
+// is then refused and leaves `user.cl` byte-identical to the seed.
+// repl/spec/14-file-watching.md §14.5 (session lock) — the lock releases only
+// when a save leaves no module standing failed; §14.6. SL-9.
+// History: written S122 against the superseded failed-source retention, when
+// the `ReplCommand::Reset` arm cleared `failed_forms` and regeneration after
+// `/reset` omitted the failed source (fixed). The class names this sibling
+// face too: a command lifting an error-set membership.
 // defect: class=release-path-bypass locus=src/repl/mod.rs::dispatch_command (the `ReplCommand::Reset` arm) found=S122 owner=/dev fixed=S122/9d4f18f5
 #[test]
-fn persist_startup_failed_source_survives_reset_then_other_definition() {
+fn persist_reset_does_not_release_startup_lock() {
+    let seed = format!("{STARTUP_GOOD}\n{STARTUP_BROKEN}\n");
     let out = seeded_broken_session()
-        .stdin("/reset\n(defn other [] 3)\n")
-        .output()
-        .assert_ok();
-    // Implementation-specific `/reset` reply (src/repl/mod.rs); it proves turn 1
-    // reached the reset handler, not spec-pinned wording. A reply change updates this line.
-    assert!(
-        turns(&out.stdout)
-            .get(1)
-            .is_some_and(|t| t.contains("command not yet available")),
-        "turn 1 `/reset` MUST reach the reset handler; stdout:\n{}",
-        out.stdout
-    );
+        .stdin("/reset\n(defn other [] 3)\n/quit\n")
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
     let saved = out.read_tmp("user.cl");
-    assert!(
-        saved.contains("defn other"),
-        "the definition after /reset MUST regenerate the file; user.cl:\n{saved}"
+    let mut legs = Legs::default();
+    // Implementation-specific `/reset` reply (src/repl/mod.rs); it proves turn 1
+    // reached the reset handler, not spec-pinned wording.
+    legs.check(
+        turn(1).contains("command not yet available"),
+        "precondition: `/reset` reaches the reset handler",
     );
-    assert_eq!(
-        saved.matches(STARTUP_BROKEN).count(),
-        1,
-        "regeneration after /reset MUST retain the unrepaired failed source; \
-         user.cl:\n{saved}"
+    legs.check(
+        !turn(2).contains("user/other"),
+        "`(defn other [] 3)` after `/reset` is refused: the lock stands",
     );
+    legs.check(
+        saved == seed,
+        "user.cl is byte-identical to the seed at exit",
+    );
+    legs.assert_all(&format!("{}\nuser.cl at exit:\n{saved}", transcript(&out)));
 }
 
 // =============================================================================
@@ -1989,9 +1993,10 @@ fn assert_spanning_begin_written_once(session: e2e::CrOutput) {
     }
 }
 
-// spec: repl/spec/15-session-persistence.md §15.4 — rule 7 authorship fidelity
-// and rule 1 round trip: a REPL-entered `begin` whose members span the type and
-// impl sections is regenerated as the one form the user typed. PC-8, REPL leg.
+// spec: repl/spec/15-session-persistence.md §15.4 — rule 1 round trip, with
+// §15.1's regeneration from the module's current state: a REPL-entered `begin`
+// whose members span the type and impl sections is regenerated as the one form
+// the user typed. PC-8, REPL leg.
 // RED before the S122 F2 fix: the file held the `begin` twice; the cold
 // restart still gave 41 and 1.
 // defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122/63605970
@@ -2013,9 +2018,9 @@ fn persist_repl_begin_spanning_sections_written_once() {
     assert_spanning_begin_written_once(first);
 }
 
-// spec: repl/spec/15-session-persistence.md §15.4 — rule 6 over rules 7 and 1:
-// the same spanning `begin`, loaded uncached from the backing file rather than
-// entered at the REPL, is regenerated once. PC-8, seeded-file leg. RED before
+// spec: repl/spec/15-session-persistence.md §15.4 — rule 6 over rule 1, with
+// §15.1: the same spanning `begin`, loaded uncached from the backing file
+// rather than entered at the REPL, is regenerated once. PC-8, seeded-file leg. RED before
 // the S122 F2 fix: the file held the `begin` twice; the cold restart still gave
 // 41 and 1.
 // defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122/63605970
@@ -2077,6 +2082,40 @@ fn error_blocks<'a>(out: &'a e2e::CrOutput, file: &str) -> Vec<&'a str> {
             })
         })
         .collect()
+}
+
+/// Whether `text` names the file `file` as a whole name, so that `lib.cl` does
+/// not answer for `b.cl`.
+fn names_file(text: &str, file: &str) -> bool {
+    let name_char = |c: char| c.is_alphanumeric() || "-_".contains(c);
+    text.match_indices(file).any(|(i, _)| {
+        !text[..i].chars().next_back().is_some_and(name_char)
+            && !text[i + file.len()..].chars().next().is_some_and(name_char)
+    })
+}
+
+/// Whether a refused turn states §14.5's refusal content: it names each of
+/// `files` and the remedy, matched as the case-insensitive word `save`. The
+/// wording is implementation-defined. A turn that carries a reload
+/// notification does not qualify, since the notice would supply the file name.
+fn refusal_names(turn: &str, files: &[&str]) -> bool {
+    !turn.contains("[errors:")
+        && !turn.contains("[updated:")
+        && files.iter().all(|file| names_file(turn, file))
+        && turn
+            .split(|c: char| !c.is_alphabetic())
+            .any(|word| word.eq_ignore_ascii_case("save"))
+}
+
+/// Whether no reload notification in the turns `range` of `t` names any of
+/// `files`.
+fn notifies_none_of(t: &[&str], range: std::ops::RangeInclusive<usize>, files: &[&str]) -> bool {
+    range.filter_map(|i| t.get(i)).all(|turn| {
+        files.iter().all(|file| {
+            !turn.contains(&format!("[errors: {file}]"))
+                && !turn.contains(&format!("[updated: {file}]"))
+        })
+    })
 }
 
 /// Whether an error block states §14.8's diagnostic: it names the type `ty`
@@ -2181,7 +2220,7 @@ fn persist_external_edit_changing_field_type_fails_requiring_restart() {
     legs.assert_all(&transcript(&out));
 }
 
-// spec: repl/spec/14-file-watching.md §14.8, §14.5 item 5 — the failure and
+// spec: repl/spec/14-file-watching.md §14.8, §14.5 (session lock) — the failure and
 // its lock stand until a later save reloads successfully (§14.4 item 4): a
 // save structurally identical to the live `T` reloads, evaluation resumes, and
 // a definition turn is accepted and regenerates the file from the saved
@@ -2661,8 +2700,8 @@ fn persist_reloaded_docstring_edit_of_file_loaded_type_survives_regeneration() {
     );
 }
 
-// spec: repl/spec/14-file-watching.md §14.8, §14.5 item 5 — after a
-// file-loaded `T` gains a field, the reload fails and the module is locked, so
+// spec: repl/spec/14-file-watching.md §14.8, §14.5 (session lock) — after a
+// file-loaded `T` gains a field, the reload fails and the session is locked, so
 // the saved edit is retained: a definition turn that would regenerate the file
 // is rejected and leaves the session and the file unchanged; evaluation stays
 // blocked (§14.4); a second structurally different save fails again. A restart that keeps the cache compiles the
@@ -3030,7 +3069,7 @@ fn persist_save_omitting_generic_caller_and_its_callee_reloads_unlocked() {
 // spec: repl/spec/14-file-watching.md §14.2 — steps 2 and 4: `lib.cl` saved
 // without the generic `id` reloads, and the cascade recompiles its importer,
 // whose import of `id` no longer resolves, so it reports `[errors: user.cl]`
-// and `(call)` does not give 5. §14.5 item 5 — the importer's own save that
+// and `(call)` does not give 5. §14.5 (session lock) — the importer's own save that
 // compiles releases it: `[updated: user.cl]`, no further `[errors: user.cl]`,
 // `(k)` gives 3 and a definition is accepted. repl/spec/15-session-persistence.md
 // §15.1 — regeneration writes `k` and `m` and not the omitted `call`. RM-5
@@ -3217,15 +3256,15 @@ fn persist_import_kept_by_save_stays_in_scope_and_is_written_once_control() {
 }
 
 // =============================================================================
-// §14.5 item 5, §14.6, §15.2.3 — a failed reload locks its module's file
+// §14.5 (session lock), §14.6, §15.2.3 — a failed reload locks the session
 // =============================================================================
 
 const FL_TYPE_ERROR: &str = "(defn g [] (undefined-name 1))";
 const FL_PARSE_ERROR: &str = "(defn g [] ";
 const FL_FIXED: &str = "(defn g [] 5)";
 
-// spec: repl/spec/14-file-watching.md §14.5 item 5 — a save that fails to
-// typecheck locks `user.cl`: `[errors: user.cl]` lists the error, a definition
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — a save of `user.cl`
+// that fails to typecheck locks the session: `[errors: user.cl]` lists the error, a definition
 // turn is rejected and leaves the session (`/sig h`) and the file unchanged,
 // and evaluation is refused (§14.4). A later parse-error save fails again and
 // the lock stands. A save that compiles releases it (§14.4 item 4, §14.6);
@@ -3315,8 +3354,8 @@ fn persist_type_error_reload_locks_file_until_a_save_compiles() {
     ));
 }
 
-// spec: repl/spec/14-file-watching.md §14.5 item 5 — a save that does not
-// parse locks `user.cl`: a definition turn is rejected, `/sig h` shows `h`
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — a save of `user.cl`
+// that does not parse locks the session: a definition turn is rejected, `/sig h` shows `h`
 // undefined and the file keeps the saved text. §14.6 and
 // repl/spec/15-session-persistence.md §15.2.3 (parse-failure lock paragraph) —
 // a restart does not bypass the failure: the load error is reported and a
@@ -3408,12 +3447,14 @@ fn persist_parse_error_reload_lock_survives_restart_until_a_save_compiles() {
     ));
 }
 
-// spec: repl/spec/14-file-watching.md §14.5 item 5 — a module that fails in
-// the cascade of a failed imported file is itself locked: `user`, importing
-// `val` from `mymod.cl`, rejects a definition and keeps `user.cl` unchanged
-// while `mymod.cl` has a type error. §14.6 — fixing `mymod.cl` recompiles both
-// modules, which releases `user` without a save of `user.cl`; the next
-// definition regenerates `user.cl` keeping the import and `g`. FL-3.
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — while `mymod.cl`
+// has a type error the session is locked: `user`, importing `val` from it, is
+// not recompiled or reported (no `[errors: user.cl]` or `[updated: user.cl]`
+// before the fixing save), and a definition in `user` is refused, naming
+// `mymod.cl` and the save remedy, and keeps `user.cl` unchanged. §14.2 step 4
+// and §14.6 — fixing `mymod.cl` rebuilds `user` without a save of `user.cl`;
+// the next definition regenerates `user.cl` keeping the import and `g`. FL-3,
+// extended by SL-3.
 #[test]
 fn watch_cascade_failed_importer_locked_until_import_is_fixed() {
     const USER: &str = "(import [mymod [val]])\n(defn g [] 1)\n";
@@ -3443,8 +3484,17 @@ fn watch_cascade_failed_importer_locked_until_import_is_fixed() {
         "the type-error save fails: `[errors: mymod.cl]`",
     );
     legs.check(
+        notifies_none_of(&t, 2..=7, &["user.cl"]),
+        "no `[errors: user.cl]` or `[updated: user.cl]` before the fixing save: \
+         the dependent of the failing module is not recompiled",
+    );
+    legs.check(
         !turn(5).contains("user/h"),
-        "the cascade-failed `user` rejects the definition turn",
+        "the locked session rejects the definition turn",
+    );
+    legs.check(
+        refusal_names(turn(5), &["mymod.cl"]),
+        "the definition refusal names `mymod.cl` and the save remedy",
     );
     legs.check(
         after_rejection == USER,
@@ -3478,10 +3528,12 @@ fn watch_cascade_failed_importer_locked_until_import_is_fixed() {
 // 2026-09-29 ruling: `user`, reaching `lib` only through the qualified call
 // `(lib/h)` and no `import`, is a dependent of `lib`. A save of `lib.cl`
 // omitting `h` fails it: `[errors: user.cl]`, and `(call)` does not give 2.
-// §14.5 item 5 — the failed `user` rejects a definition and keeps `user.cl`
-// byte-identical. §14.6 — restoring `h` releases it without a save of
-// `user.cl`: `(call)` gives the new 5 and the definition is accepted. FQR-1;
-// RM-2 and FL-3 are the same removal and lock reached through an `import`.
+// §14.5 (session lock) — the failed `user` locks the session: a definition is
+// refused, naming `user.cl` (the dependent that failed, not the `lib.cl` that
+// compiled) and the save remedy, and `user.cl` stays byte-identical. §14.6 —
+// restoring `h` releases it without a save of `user.cl`: `(call)` gives the new
+// 5 and the definition is accepted. FQR-1, extended by SL-11; RM-2 and FL-3
+// are the same removal and lock reached through an `import`.
 #[test]
 fn watch_qualified_caller_fails_on_removed_callee_until_it_is_restored() {
     const USER: &str = "(defn call [] (lib/h))\n";
@@ -3519,6 +3571,10 @@ fn watch_qualified_caller_fails_on_removed_callee_until_it_is_restored() {
         "the failed `user` rejects the definition turn",
     );
     legs.check(
+        refusal_names(turn(5), &["user.cl"]),
+        "the definition refusal names `user.cl` and the save remedy",
+    );
+    legs.check(
         after_rejection == USER,
         "user.cl is byte-identical to its initial content after the rejected turn",
     );
@@ -3549,12 +3605,14 @@ fn watch_qualified_caller_fails_on_removed_callee_until_it_is_restored() {
     ));
 }
 
-// spec: repl/spec/14-file-watching.md §14.5 item 5 — with the user's
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — with the user's
 // 2026-09-29 ruling: `user`, reaching `lib` only through the qualified type
-// `:lib/T` and no `import`, is a dependent of `lib`, so a save of `lib.cl`
-// that fails typecheck with `T` unchanged locks it: a definition is rejected
-// and `user.cl` stays byte-identical. §14.2 step 4 and §14.6 — the compiling
-// save recompiles `user` and releases it without a save of `user.cl`. FQR-2;
+// `:lib/T` and no `import`, is a dependent of `lib`. A save of `lib.cl` that
+// fails typecheck with `T` unchanged locks the session: `user` is not
+// recompiled or reported (no `[errors: user.cl]` or `[updated: user.cl]`
+// before the fixing save), a definition is rejected and `user.cl` stays
+// byte-identical. §14.2 step 4 and §14.6 — the compiling save rebuilds `user`
+// and releases the lock without a save of `user.cl`. FQR-2, extended by SL-4;
 // FL-3 is the same failure reached through an `import`.
 #[test]
 fn watch_qualified_type_dependent_locked_until_its_module_compiles() {
@@ -3592,8 +3650,13 @@ fn watch_qualified_type_dependent_locked_until_its_module_compiles() {
         "the ill-typed save fails: `[errors: lib.cl]`",
     );
     legs.check(
+        notifies_none_of(&t, 2..=7, &["user.cl"]),
+        "no `[errors: user.cl]` or `[updated: user.cl]` before the fixing save: \
+         the qualified-reference dependent is not recompiled",
+    );
+    legs.check(
         !turn(5).contains("user/k"),
-        "the locked `user` rejects the definition turn",
+        "the locked session rejects the definition turn",
     );
     legs.check(
         after_rejection == USER,
@@ -3624,10 +3687,13 @@ fn watch_qualified_type_dependent_locked_until_its_module_compiles() {
 
 // spec: repl/spec/14-file-watching.md §14.6 — a restart does not bypass a
 // failure: `lib.cl`, imported by `user.cl`, fails at startup, and `/mod lib`
-// plus a definition leaves the failing `keep-me` source in `lib.cl`, whether
-// the turn is rejected or the source retained. §14.5 item 5 — control: the
-// same failing `lib.cl` produced by an in-session save locks the module, and
-// the same turns keep the file. M1 (ACT-1010).
+// plus a definition leaves the failing `keep-me` source in `lib.cl`.
+// §14.5 (session lock) and repl/spec/15-session-persistence.md §15.2.3 — the
+// startup failure locks the session: before `/mod lib`, `(defn h [] 2)` in
+// `user` is refused, naming `lib.cl` and the save remedy, and `user.cl` stays
+// byte-identical. Control: the same failing `lib.cl` produced by an in-session
+// save locks the session in the same way, and the same turns keep the file.
+// M1 (ACT-1010), extended by SL-10.
 // The startup-failed dependency was not locked, so the turns regenerated
 // `lib.cl` as `(defn z [] 1)` and the failing source was lost.
 // defect: class=release-path-bypass locus=src/session_v4/lifecycle.rs::recover_startup_failure found=S122 owner=/dev fixed=S122/e4062202
@@ -3635,16 +3701,22 @@ fn watch_qualified_type_dependent_locked_until_its_module_compiles() {
 fn persist_mod_definition_keeps_dependency_source_failed_at_startup() {
     const USER: &str = "(import [lib [keep-me]])\n(defn g [] 1)\n";
     const FAILING: &str = "(defn keep-me [] (undefined-name 1))";
+    const USER_TURNS: &str = "(defn h [] 2)\n/sh cp user.cl before-mod.txt\n";
     const TURNS: &str = "/mod lib\n(defn z [] 1)\n/mod user\n/quit\n";
 
+    // Turns: 1 (keep-me), 2–4 save, 5 (defn h), 6 snapshot, then TURNS.
     let in_session = Cranelisp::new()
         .file("lib.cl", "(defn keep-me [] 42)\n")
         .user(USER)
         .repl()
-        .stdin(&format!("(keep-me)\n{}{TURNS}", save("lib.cl", FAILING)))
+        .stdin(&format!(
+            "(keep-me)\n{}{USER_TURNS}{TURNS}",
+            save("lib.cl", FAILING)
+        ))
         .output();
     let t = turns(&in_session.stdout);
     let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let in_session_user = in_session.read_tmp("before-mod.txt");
     let in_session_lib = in_session.read_tmp("lib.cl");
     let mut legs = Legs::default();
     legs.check(
@@ -3656,31 +3728,998 @@ fn persist_mod_definition_keeps_dependency_source_failed_at_startup() {
         "control: the in-session save fails: `[errors: lib.cl]`",
     );
     legs.check(
+        !turn(5).contains("user/h"),
+        "control: after the in-session failure `(defn h [] 2)` is refused",
+    );
+    legs.check(
+        refusal_names(turn(5), &["lib.cl"]),
+        "control: the refusal names `lib.cl` and the save remedy",
+    );
+    legs.check(
+        in_session_user == USER,
+        "control: user.cl is byte-identical after the refused turn",
+    );
+    legs.check(
         in_session_lib.contains(FAILING),
         "control: after the in-session failure lib.cl keeps the failing source",
     );
 
+    // Turns: 1 (defn h), 2 snapshot, then TURNS.
     let startup = Cranelisp::new()
         .file("lib.cl", &format!("{FAILING}\n"))
         .user(USER)
         .repl()
-        .stdin(TURNS)
+        .stdin(&format!("{USER_TURNS}{TURNS}"))
         .output();
+    let t = turns(&startup.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let startup_user = startup.read_tmp("before-mod.txt");
     let startup_lib = startup.read_tmp("lib.cl");
     legs.check(
         format!("{}{}", startup.stdout, startup.stderr).contains("[errors:"),
         "precondition: startup reports the load failure",
     );
     legs.check(
+        !turn(1).contains("user/h"),
+        "after the startup failure `(defn h [] 2)` is refused",
+    );
+    legs.check(
+        refusal_names(turn(1), &["lib.cl"]),
+        "after the startup failure the refusal names `lib.cl` and the save remedy",
+    );
+    legs.check(
+        startup_user == USER,
+        "after the startup failure user.cl is byte-identical after the refused turn",
+    );
+    legs.check(
         startup_lib.contains(FAILING),
         "after the startup failure lib.cl keeps the failing source",
     );
     legs.assert_all(&format!(
-        "--- in-session control ---\n{}\nlib.cl at exit:\n{in_session_lib}\n\
-         --- startup failure ---\n{}\nlib.cl at exit:\n{startup_lib}",
+        "--- in-session control ---\n{}\nuser.cl after the refused turn:\n{in_session_user}\n\
+         lib.cl at exit:\n{in_session_lib}\n--- startup failure ---\n{}\n\
+         user.cl after the refused turn:\n{startup_user}\nlib.cl at exit:\n{startup_lib}",
         transcript(&in_session),
         transcript(&startup)
     ));
+}
+
+// =============================================================================
+// §14.5 session lock — one session state, whatever module failed and however
+// =============================================================================
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — the lock is one
+// session state: `lib.cl`, loaded by `/mod` and not a dependency of `user`,
+// fails a save, and every code turn in `user` is refused — a definition, a
+// `deftype`, an expression, and the slash commands that evaluate code,
+// `/mem EXPR` and `/time EXPR` (user ruling 2026-10-01, "Session-lock boundary
+// questions") — each refusal naming `lib.cl` and the save remedy and leaving
+// the session (`/sig h`, `/info U`) and `user.cl` unchanged (§15.1).
+// Introspection (`/sig g`), `/help` and `/sh` answer. §14.2 — a save of
+// `user.cl` is still recompiled (`[updated: user.cl]`), and `(g)` stays
+// refused. §14.6 — the fixing save of `lib.cl` releases the lock: `(g)` gives
+// the saved 7, and the next definition regenerates `user.cl` with `g` and `h`
+// once each. SL-1.
+#[test]
+fn session_lock_refuses_every_code_turn_outside_the_failed_module() {
+    const USER: &str = "(defn g [] 1)\n";
+    // Turn 1 is `/mod lib` and `/mod user`: the `lib>` prompt between them does
+    // not split turns. Then: 2 (g), 3–5 save of lib.cl, 6 (defn h),
+    // 7 (deftype U), 8 (g), 9 /mem, 10 /time, 11 /sig h, 12 /info U, 13 /sig g,
+    // 14 /help, 15 snapshot, 16–18 save of user.cl, 19 (g), 20–22 save of
+    // lib.cl, 23 (g), 24 (defn h).
+    let out = Cranelisp::new()
+        .file("lib.cl", "(defn x [] 1)\n")
+        .user(USER)
+        .repl()
+        .stdin(&format!(
+            "/mod lib\n/mod user\n(g)\n{}(defn h [] 2)\n(deftype U [:primitives/Int n])\n(g)\n\
+             /mem (primitives/add-i64 40 2)\n/time (primitives/add-i64 40 2)\n\
+             /sig h\n/info U\n/sig g\n/help\n/sh cp user.cl after-refusals.txt\n\
+             {}(g)\n{}(g)\n(defn h [] 2)\n/quit\n",
+            save("lib.cl", "(defn x [] (primitives/add-i64 1 \"a\"))"),
+            save("user.cl", "(defn g [] 7)"),
+            save("lib.cl", "(defn x [] 2)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_refusals = out.read_tmp("after-refusals.txt");
+    let saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(2).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the save",
+    );
+    legs.check(
+        !error_blocks(&out, "lib.cl").is_empty(),
+        "precondition: the ill-typed save fails: `[errors: lib.cl]`",
+    );
+    legs.check(
+        !turn(6).contains("user/h"),
+        "`(defn h [] 2)` in `user` is refused",
+    );
+    legs.check(
+        !turn(7).contains("user/U"),
+        "`(deftype U …)` in `user` is refused",
+    );
+    legs.check(!turn(8).contains(":primitives/Int"), "`(g)` is refused");
+    legs.check(
+        !turn(9).contains(":primitives/Int 42"),
+        "`/mem (primitives/add-i64 40 2)` is refused: it evaluates code",
+    );
+    legs.check(
+        !turn(10).contains(":primitives/Int 42"),
+        "`/time (primitives/add-i64 40 2)` is refused: it evaluates code",
+    );
+    for (i, what) in [
+        (
+            6,
+            "the definition refusal names `lib.cl` and the save remedy",
+        ),
+        (
+            7,
+            "the `deftype` refusal names `lib.cl` and the save remedy",
+        ),
+        (
+            8,
+            "the expression refusal names `lib.cl` and the save remedy",
+        ),
+        (
+            9,
+            "the `/mem EXPR` refusal names `lib.cl` and the save remedy",
+        ),
+        (
+            10,
+            "the `/time EXPR` refusal names `lib.cl` and the save remedy",
+        ),
+    ] {
+        legs.check(refusal_names(turn(i), &["lib.cl"]), what);
+    }
+    legs.check(!turn(11).contains("user/h"), "`/sig h` shows `h` undefined");
+    legs.check(
+        !turn(12).contains("user/U"),
+        "`/info U` shows `U` undefined",
+    );
+    legs.check(
+        turn(13).contains("user/g"),
+        "control: introspection answers while locked: `/sig g` shows `user/g`",
+    );
+    legs.check(
+        turn(14).contains("/quit"),
+        "control: `/help` answers while locked",
+    );
+    legs.check(
+        after_refusals == USER,
+        "user.cl is byte-identical to its initial content after the refused turns",
+    );
+    legs.check(
+        save_notice(&t, 16).contains("[updated: user.cl]"),
+        "a save of `user.cl` while locked is recompiled: `[updated: user.cl]`",
+    );
+    legs.check(
+        !turn(19).contains(":primitives/Int"),
+        "`(g)` is still refused after the save of `user.cl`",
+    );
+    legs.check(
+        save_notice(&t, 20).contains("[updated: lib.cl]"),
+        "the fixing save of lib.cl reloads: `[updated: lib.cl]`",
+    );
+    legs.check(
+        turn(23).contains(":primitives/Int 7"),
+        "the released session evaluates the saved `g`: 7",
+    );
+    legs.check(
+        turn(24).contains("user/h"),
+        "the released session accepts `(defn h [] 2)`",
+    );
+    legs.check(
+        saved.matches("defn g").count() == 1
+            && saved.matches("(defn g [] 7)").count() == 1
+            && saved.matches("defn h").count() == 1
+            && saved.matches("(defn h [] 2)").count() == 1
+            && !saved.contains("deftype U"),
+        "user.cl holds `g` 7 and `h` exactly once each, and no `U`",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turns:\n{after_refusals}\nuser.cl at exit:\n{saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — steps 2 and 4: `math.cl`, saved
+// so that it does not parse, keeps nothing of its previous state, and its
+// dependent `user` is not recompiled against it. §14.5 — items 1–2: `/sig
+// math/sq` shows no signature; and the session lock: no `[updated: user.cl]` or
+// `[errors: user.cl]` appears before the fixing save, `(defn g [] 1)` is
+// refused and leaves `user.cl` byte-identical, and `(f)` is refused. The fixing
+// save rebuilds `user`, and `(f)` gives the new 6. SL-2 (ACT-1044); its
+// type-failure sibling is FL-3,
+// `watch_cascade_failed_importer_locked_until_import_is_fixed`.
+// The defect: the parse failure left the previous namespace, so `user`
+// recompiled against it, was reported `[updated: user.cl]`, stayed unlocked
+// and had its file regenerated by the definition.
+// defect: class=partial-record-update locus=src/session_v4/lifecycle.rs::rebuild_from_file found=S122 owner=/dev
+#[test]
+fn watch_parse_failed_dependency_locks_session_without_recompiling_dependents() {
+    const USER: &str = "(import [math [sq]])\n(defn f [] (sq 3))\n";
+    // Turns: 1 (f), 2–4 save, 5 (defn g), 6 snapshot, 7 /sig math/sq, 8 (f),
+    // 9–11 save, 12 (f).
+    let out = Cranelisp::new()
+        .file("math.cl", "(defn sq [x] (primitives/mul-i64 x x))\n")
+        .user(USER)
+        .repl()
+        .stdin(&format!(
+            "(f)\n{}(defn g [] 1)\n/sh cp user.cl after-refusal.txt\n/sig math/sq\n(f)\n{}(f)\n/quit\n",
+            save("math.cl", "(defn sq [x] (primitives/mul-i64 x x)"),
+            save("math.cl", "(defn sq [x] (primitives/add-i64 x x))")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_refusal = out.read_tmp("after-refusal.txt");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 9"),
+        "precondition: `(f)` gives 9 before the save",
+    );
+    legs.check(
+        !error_blocks(&out, "math.cl").is_empty(),
+        "precondition: the unparseable save fails: `[errors: math.cl]`",
+    );
+    legs.check(
+        notifies_none_of(&t, 2..=9, &["user.cl"]),
+        "no `[updated: user.cl]` or `[errors: user.cl]` before the fixing save: \
+         the dependent is not recompiled",
+    );
+    legs.check(
+        !turn(5).contains("user/g"),
+        "`(defn g [] 1)` is refused while locked",
+    );
+    legs.check(
+        after_refusal == USER,
+        "user.cl is byte-identical to its initial content after the refused turn",
+    );
+    legs.check(
+        !turn(7).contains("(Fn"),
+        "`/sig math/sq` shows no signature: the failed module keeps nothing",
+    );
+    legs.check(
+        !turn(8).contains(":primitives/Int"),
+        "`(f)` is refused while locked",
+    );
+    legs.check(
+        save_notice(&t, 9).contains("[updated: math.cl]"),
+        "the fixing save reloads: `[updated: math.cl]`",
+    );
+    legs.check(
+        turn(12).contains(":primitives/Int 6"),
+        "the rebuilt dependent calls the fixed `sq`: `(f)` gives 6",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turn:\n{after_refusal}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — the lock stands
+// while any module stands failed. `user.cl` imports from `a.cl` and `b.cl`,
+// and both are saved with type errors: the expression refusal names `a.cl`
+// and `b.cl`. After `a.cl` is fixed, `(defn h [] 2)` is still refused, and the
+// refusal names `b.cl` and not `a.cl`. Between the fix of `a.cl` and the fix
+// of `b.cl`, no `[errors: user.cl]` or `[updated: user.cl]` appears: `user`
+// still waits on `b` (a module with any dependency standing failed is not
+// recompiled or reported; LQ-1). After `b.cl` is fixed, `(g)` evaluates and
+// the definition is accepted (§14.6). SL-6, with its LQ-1 extension.
+// Pre-fix (QA, 2026-10-01, binary `f4e0939b…`): the naming legs were RED; the
+// lock legs were expected GREEN. The LQ-1 leg passed against the pre-ruling
+// binary `5dddfaf4…` (`test`, 2026-10-02), as expected.
+#[test]
+fn session_lock_stands_until_no_module_fails_and_names_each_failing_file() {
+    // Turns: 1 (g), 2–4 save of a.cl, 5–7 save of b.cl, 8 (g), 9–11 save of
+    // a.cl, 12 (defn h), 13–15 save of b.cl, 16 (g), 17 (defn h).
+    let out = Cranelisp::new()
+        .file("a.cl", "(defn x [] 1)\n")
+        .file("b.cl", "(defn y [] 1)\n")
+        .user("(import [a [x]])\n(import [b [y]])\n(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "(g)\n{}{}(g)\n{}(defn h [] 2)\n{}(g)\n(defn h [] 2)\n/quit\n",
+            save("a.cl", "(defn x [] (primitives/add-i64 1 \"a\"))"),
+            save("b.cl", "(defn y [] (primitives/add-i64 1 \"b\"))"),
+            save("a.cl", "(defn x [] 2)"),
+            save("b.cl", "(defn y [] 2)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the saves",
+    );
+    legs.check(
+        !error_blocks(&out, "a.cl").is_empty() && !error_blocks(&out, "b.cl").is_empty(),
+        "precondition: both ill-typed saves fail: `[errors: a.cl]` and `[errors: b.cl]`",
+    );
+    legs.check(
+        !turn(8).contains(":primitives/Int"),
+        "`(g)` is refused while both fail",
+    );
+    legs.check(
+        refusal_names(turn(8), &["a.cl", "b.cl"]),
+        "the expression refusal names `a.cl` and `b.cl` and the save remedy",
+    );
+    legs.check(
+        !turn(12).contains("user/h"),
+        "after `a.cl` is fixed, `(defn h [] 2)` is still refused: `b.cl` fails",
+    );
+    legs.check(
+        refusal_names(turn(12), &["b.cl"]),
+        "after `a.cl` is fixed, the refusal names `b.cl` and the save remedy",
+    );
+    legs.check(
+        !names_file(turn(12), "a.cl"),
+        "after `a.cl` is fixed, the refusal does not name `a.cl`",
+    );
+    legs.check(
+        notifies_none_of(&t, 9..=13, &["user.cl"]),
+        "between the fixes of `a.cl` and `b.cl`, no `[errors: user.cl]` or \
+         `[updated: user.cl]`: `user` still waits on `b`",
+    );
+    legs.check(
+        turn(16).contains(":primitives/Int 1"),
+        "after `b.cl` is fixed, `(g)` evaluates: 1",
+    );
+    legs.check(
+        turn(17).contains("user/h"),
+        "after `b.cl` is fixed, `(defn h [] 2)` is accepted",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — a module that fails
+// when `/mod` loads it stands failed: after `/mod bad` reports the failure of
+// `bad.cl` and `/mod user` returns, `(defn h [] 2)` and `(g)` are refused,
+// each refusal naming `bad.cl` and the save remedy, and `user.cl` stays
+// byte-identical. repl/spec/03-slash-commands.md §3.9 — `/mod` stays available.
+// §14.6 — a fixing save of `bad.cl` releases the lock: `(g)` gives 1 and the
+// definition is accepted. SL-7.
+#[test]
+fn mod_load_failure_locks_session_until_its_save_compiles() {
+    const USER: &str = "(defn g [] 1)\n";
+    // Turns: 1 (g), 2 /mod bad, 3 /mod user, 4 (defn h), 5 (g), 6 snapshot,
+    // 7–9 save, 10 (g), 11 (defn h).
+    let out = Cranelisp::new()
+        .file("bad.cl", "(defn x [] (undefined-name 1))\n")
+        .user(USER)
+        .repl()
+        .stdin(&format!(
+            "(g)\n/mod bad\n/mod user\n(defn h [] 2)\n(g)\n/sh cp user.cl after-refusals.txt\n\
+             {}(g)\n(defn h [] 2)\n/quit\n",
+            save("bad.cl", "(defn x [] 1)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_refusals = out.read_tmp("after-refusals.txt");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before `/mod bad`",
+    );
+    legs.check(
+        turn(2).contains("undefined-name"),
+        "precondition: `/mod bad` reports the load failure",
+    );
+    legs.check(
+        !turn(4).contains("user/h"),
+        "`(defn h [] 2)` is refused after the failed load",
+    );
+    legs.check(
+        refusal_names(turn(4), &["bad.cl"]),
+        "the definition refusal names `bad.cl` and the save remedy",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int"),
+        "`(g)` is refused after the failed load",
+    );
+    legs.check(
+        refusal_names(turn(5), &["bad.cl"]),
+        "the expression refusal names `bad.cl` and the save remedy",
+    );
+    legs.check(
+        after_refusals == USER,
+        "user.cl is byte-identical to its initial content after the refused turns",
+    );
+    legs.check(
+        save_notice(&t, 7).contains("[updated: bad.cl]"),
+        "the fixing save reloads: `[updated: bad.cl]`",
+    );
+    legs.check(
+        turn(10).contains(":primitives/Int 1"),
+        "the released session evaluates `(g)`: 1",
+    );
+    legs.check(
+        turn(11).contains("user/h"),
+        "the released session accepts `(defn h [] 2)`",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turns:\n{after_refusals}",
+        transcript(&out)
+    ));
+}
+
+// =============================================================================
+// §14.5 session lock — review findings 1–3 and PF-1: the refusal names the
+// file that fails, and the modules that depend on it wait
+// =============================================================================
+//
+// Pre-fix evidence for these cells is the review's probe
+// (`.local/review-s122-lock/probe.py`, findings in
+// `.local/s122-6a/review4-result.md`) and QA's rerun and further probes
+// (`.local/qa-s122-6b-lock2/`: `probe.py`, `restart_prelude.py`,
+// `parse_faces.py`, outputs in `observed*.txt`), all against one binary copy,
+// sha256 `5dddfaf4…`, built before the rulings were implemented. `test` also
+// ran each cell against that copy on 2026-10-02: every leg recorded below as
+// pre-fix RED failed, and the legs expected GREEN passed.
+
+const RF_INC1: &str = "(defn inc1 [x] (primitives/add-i64 x 1))";
+const RF_INC1_FIXED: &str = "(defn inc1 [x] (primitives/add-i64 x 2))";
+const RF_INC1_UNPARSEABLE: &str = "(defn inc1 [x] (primitives/add-i64 x 1)";
+const RF_INC1_ILL_TYPED: &str = "(defn inc1 [x] (primitives/add-i64 x \"a\"))";
+const RF_USER: &str = "(defn g [] (inc1 1))\n";
+
+/// A session in which `user` reaches `inc1` through `dependency`: the project
+/// `prelude.cl` (the implicit import, spec/08-modules.md §8.8.1) or `lib.cl`
+/// through `(import [lib [inc1]])`. The dependency is saved as `failing`, then
+/// fixed so that `(g)` gives 3. Turns: 1 `(g)`, 2–4 failing save, 5 `(g)`, 6–8
+/// fixing save, 9 `(g)`.
+fn inc1_dependency_fails_in_session(dependency: &str, failing: &str) -> e2e::CrOutput {
+    let b = if dependency == "prelude.cl" {
+        Cranelisp::new()
+            .prelude(&format!("{RF_INC1}\n"))
+            .user(RF_USER)
+    } else {
+        Cranelisp::new()
+            .file(dependency, &format!("{RF_INC1}\n"))
+            .user(&format!("(import [lib [inc1]])\n{RF_USER}"))
+    };
+    b.repl()
+        .stdin(&format!(
+            "(g)\n{}(g)\n{}(g)\n/quit\n",
+            save(dependency, failing),
+            save(dependency, RF_INC1_FIXED)
+        ))
+        .output()
+}
+
+/// RF-1's legs: only `dependency` is reported and named while it fails, `user`
+/// is neither recompiled nor reported, and the fixing save releases the lock.
+fn assert_only_dependency_named_while_it_fails(out: &e2e::CrOutput, dependency: &str) {
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 2"),
+        "precondition: `(g)` gives 2 before the save",
+    );
+    legs.check(
+        save_notice(&t, 2).contains(&format!("[errors: {dependency}]")),
+        "the failing save reports the dependency's own file",
+    );
+    legs.check(
+        notifies_none_of(&t, 2..=5, &["user.cl"]),
+        "no `[errors: user.cl]` or `[updated: user.cl]` before the fixing save: \
+         `user` waits on its failed dependency",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int"),
+        "`(g)` is refused while the dependency fails",
+    );
+    legs.check(
+        refusal_names(turn(5), &[dependency]),
+        "the refusal names the dependency's file and the save remedy",
+    );
+    legs.check(
+        !names_file(turn(5), "user.cl"),
+        "the refusal does not name `user.cl`",
+    );
+    legs.check(
+        save_notice(&t, 6).contains(&format!("[updated: {dependency}]")),
+        "the fixing save reloads the dependency",
+    );
+    legs.check(
+        turn(9).contains(":primitives/Int 3"),
+        "the released `user` calls the fixed `inc1`: `(g)` gives 3",
+    );
+    legs.assert_all(&format!("dependency: {dependency}\n{}", transcript(out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — a project
+// `prelude.cl` saved so that it does not parse stands failed, and `user`, which
+// reaches `inc1` only through the implicit prelude import (spec/08-modules.md
+// §8.8.1, an ordinary import), waits: no `[errors: user.cl]` or
+// `[updated: user.cl]` before the fixing save, and the refusal of `(g)` names
+// `prelude.cl` and not `user.cl`. §14.6 — the fixing save makes `(g)` give 3.
+// Design: int §6.12, refusal by a failed prelude. RF-1, parse leg.
+// Pre-fix (review probe `prelude-parse`): `[errors: user.cl] … undefined
+// variable: inc1`, and the refusal named both files.
+#[test]
+fn watch_project_prelude_parse_failure_names_only_the_prelude() {
+    let out = inc1_dependency_fails_in_session("prelude.cl", RF_INC1_UNPARSEABLE);
+    assert_only_dependency_named_while_it_fails(&out, "prelude.cl");
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — the type twin of
+// the parse leg: a project `prelude.cl` saved so that it does not typecheck
+// stands failed, its implicit dependent `user` (spec/08-modules.md §8.8.1)
+// waits unreported, and the refusal names `prelude.cl` and not `user.cl`.
+// §14.6 — the fixing save makes `(g)` give 3. RF-1, type leg.
+// Pre-fix (review probe `prelude-type`): `[errors: user.cl] … undefined
+// variable: inc1`, and the refusal named both files.
+#[test]
+fn watch_project_prelude_type_failure_names_only_the_prelude() {
+    let out = inc1_dependency_fails_in_session("prelude.cl", RF_INC1_ILL_TYPED);
+    assert_only_dependency_named_while_it_fails(&out, "prelude.cl");
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — control for the
+// prelude legs: the same shape through an explicit `(import [lib [inc1]])`,
+// with `lib.cl` saved so that it does not parse. Only `lib.cl` is reported and
+// named, and the fixing save makes `(g)` give 3. RF-1, control.
+// Pre-fix (review probe `dep-control`): conforming, expected GREEN.
+#[test]
+fn watch_imported_dependency_parse_failure_names_only_it_control() {
+    let out = inc1_dependency_fails_in_session("lib.cl", RF_INC1_UNPARSEABLE);
+    assert_only_dependency_named_while_it_fails(&out, "lib.cl");
+}
+
+/// A session started with `prelude.cl` as `failing` and `user.cl` calling the
+/// prelude's `inc1`. Turns: 0 startup, 1 `(g)`, 2 `(defn h [] 2)`, 3 snapshot
+/// of `user.cl`, 4–6 the fixing save of `prelude.cl`, 7 `(g)`, 8
+/// `(defn h [] 2)`.
+fn assert_startup_prelude_failure_names_only_the_prelude(failing: &str) {
+    let out = Cranelisp::new()
+        .prelude(&format!("{failing}\n"))
+        .user(RF_USER)
+        .repl()
+        .stdin(&format!(
+            "(g)\n(defn h [] 2)\n/sh cp user.cl after-refusals.txt\n{}(g)\n(defn h [] 2)\n/quit\n",
+            save("prelude.cl", RF_INC1_FIXED)
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let startup = format!("{}{}", turn(0), out.stderr);
+    let after_refusals = out.read_tmp("after-refusals.txt");
+    let mut legs = Legs::default();
+    legs.check(
+        startup.contains("[errors: prelude.cl]"),
+        "startup reports `[errors: prelude.cl]`",
+    );
+    legs.check(
+        !startup.contains("[errors: user.cl]"),
+        "startup does not report `user.cl`: its dependent waits",
+    );
+    legs.check(!turn(1).contains(":primitives/Int"), "`(g)` is refused");
+    legs.check(!turn(2).contains("user/h"), "`(defn h [] 2)` is refused");
+    for (i, what) in [
+        (
+            1,
+            "the `(g)` refusal names `prelude.cl` and the save remedy",
+        ),
+        (
+            2,
+            "the definition refusal names `prelude.cl` and the save remedy",
+        ),
+    ] {
+        legs.check(refusal_names(turn(i), &["prelude.cl"]), what);
+    }
+    for (i, what) in [
+        (1, "the `(g)` refusal does not name `user.cl`"),
+        (2, "the definition refusal does not name `user.cl`"),
+    ] {
+        legs.check(!names_file(turn(i), "user.cl"), what);
+    }
+    legs.check(
+        after_refusals == RF_USER,
+        "user.cl is byte-identical to its initial content after the refused turns",
+    );
+    legs.check(
+        turn(7).contains(":primitives/Int 3"),
+        "after the fixing save, `(g)` gives 3",
+    );
+    legs.check(
+        turn(8).contains("user/h"),
+        "after the fixing save, `(defn h [] 2)` is accepted",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turns:\n{after_refusals}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — the startup
+// trigger and the dependents of a module that failed at startup: a session
+// started with `prelude.cl` failing to typecheck reports only
+// `[errors: prelude.cl]`; `(g)` and `(defn h [] 2)` are refused, each naming
+// `prelude.cl` and not `user.cl`; and `user.cl` stays byte-identical
+// (repl/spec/15-session-persistence.md §15.2.3). §14.6 — the fixing save of
+// `prelude.cl` makes `(g)` give 3, and the definition is then accepted.
+// Design: int §6.12, at a fresh load. RF-2, type leg: the safety fence for the
+// fresh-load half of the injection refusal.
+// Pre-fix (QA probe `restart-prelude-type`): conforming, expected GREEN.
+#[test]
+fn startup_with_ill_typed_project_prelude_names_only_the_prelude() {
+    assert_startup_prelude_failure_names_only_the_prelude(RF_INC1_ILL_TYPED);
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — the parse twin of
+// the startup leg (PF-1): a session started with `prelude.cl` failing to parse
+// reports only `[errors: prelude.cl]`, the refusals name `prelude.cl` and not
+// `user.cl`, and `user.cl` stays byte-identical
+// (repl/spec/15-session-persistence.md §15.2.3); the fixing save releases the
+// lock (§14.6). Design: repl-lifecycle §1.3.1, a dependency that fails before
+// it registers. RF-2, parse leg.
+// Pre-fix (QA probe `restart-prelude-parse`): startup reported
+// `[errors: user.cl]` carrying the prelude's parse error, and the refusal named
+// `user.cl`.
+#[test]
+fn startup_with_unparseable_project_prelude_names_only_the_prelude() {
+    assert_startup_prelude_failure_names_only_the_prelude(RF_INC1_UNPARSEABLE);
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — the lock releases
+// when a save leaves no module standing failed: `b.cl` stands failed, and one
+// save repairs it and makes `a.cl` newly import it. Both writes happen inside
+// one `/sh` turn, and the watcher polls only between turns, so they land
+// before a single poll. That save reports `[updated: a.cl]` once and
+// `[updated: b.cl]`, and never `[errors: a.cl]`; `(g)` gives 4 and
+// `(defn h [] 1)` is accepted. §14.6 — a session restarted on the saved files
+// agrees: `(g)` gives 4. Design: repl-lifecycle §1.2, Refused by a later
+// member. RF-3.
+// Pre-fix (review probe `two-roots`): `[errors: a.cl]` carrying `b`'s stale
+// error, then `[updated: b.cl]`; `(g)` and the definition were refused, naming
+// `a.cl`. The restart control (`two-roots-restart`) gave 4.
+#[test]
+fn watch_one_save_repairing_a_module_and_importing_it_releases_the_lock() {
+    // Turns: 1 `(g)`, 2–4 save of b.cl, 5 settle, 6 the two-file write,
+    // 7 settle, 8 `(g)`, 9 `(defn h [] 1)`.
+    let out = Cranelisp::new()
+        .file("a.cl", "(defn ax [] 1)\n")
+        .file("b.cl", "(defn bx [] 2)\n")
+        .user(
+            "(import [a [ax]])\n(import [b [bx]])\n\
+             (defn g [] (primitives/add-i64 (ax) (bx)))\n",
+        )
+        .repl()
+        .stdin(&format!(
+            "(g)\n{}/sh sleep 0.3\n\
+             /sh echo '(import [b [bx]]) (defn ax [] (bx))' > a.cl && echo '(defn bx [] 2)' > b.cl\n\
+             /sh sleep 0.5\n(g)\n(defn h [] 1)\n/quit\n",
+            save("b.cl", "(defn bx [] (undefined-name 2))")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let notice = save_notice(&t, 5);
+    let session_transcript = transcript(&out);
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 3"),
+        "precondition: `(g)` gives 3 before the saves",
+    );
+    legs.check(
+        save_notice(&t, 2).contains("[errors: b.cl]"),
+        "precondition: the failing save reports `[errors: b.cl]`",
+    );
+    legs.check(
+        notice.contains("[updated: a.cl]") && notice.contains("[updated: b.cl]"),
+        "the two-file save reports `[updated: a.cl]` and `[updated: b.cl]`",
+    );
+    legs.check(
+        out.stdout.matches("[updated: a.cl]").count() == 1,
+        "`a.cl` is reported once",
+    );
+    legs.check(
+        error_blocks(&out, "a.cl").is_empty(),
+        "no `[errors: a.cl]`: `a` compiles once `b` does",
+    );
+    legs.check(
+        turn(8).contains(":primitives/Int 4"),
+        "the released session evaluates `(g)`: 4",
+    );
+    legs.check(
+        turn(9).contains("user/h"),
+        "the released session accepts `(defn h [] 1)`",
+    );
+    let restart = out
+        .run_again()
+        .repl()
+        .cli_flag("--no-cache")
+        .stdin("(g)\n/quit\n")
+        .output();
+    legs.check(
+        turns(&restart.stdout)
+            .get(1)
+            .is_some_and(|turn| turn.contains(":primitives/Int 4")),
+        "control: a restart on the saved files gives `(g)` 4",
+    );
+    legs.assert_all(&format!(
+        "--- session ---\n{session_transcript}\n--- restart ---\n{}",
+        transcript(&restart)
+    ));
+}
+
+/// A session over `user.cl` as `(defn g [] 1)` and `n.cl` as `n_source`, in
+/// which a save of `user.cl` newly imports `nx` from `n`, then `rest` follows.
+/// Turns: 1 `(g)`, 2–4 the save, 5 `(g)`, then `rest`.
+fn save_newly_loading_n(n_source: &str, rest: &str) -> e2e::CrOutput {
+    Cranelisp::new()
+        .file("n.cl", n_source)
+        .user("(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "(g)\n{}(g)\n{rest}/quit\n",
+            save("user.cl", "(import [n [nx]]) (defn g [] 1)")
+        ))
+        .output()
+}
+
+/// RF-4's legs for the save that newly loads the failing `n`: the save
+/// reports `[errors: n.cl]` with `own_error`, `n`'s own error; `user` is not
+/// reported; and the refusal of `(g)` names `n.cl` and not `user.cl`.
+fn check_newly_loaded_failure_named(
+    legs: &mut Legs,
+    out: &e2e::CrOutput,
+    t: &[&str],
+    own_error: &str,
+) {
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the save",
+    );
+    legs.check(
+        save_notice(t, 2).contains("[errors: n.cl]"),
+        "the save that newly loads `n` reports `[errors: n.cl]`",
+    );
+    legs.check(
+        error_blocks(out, "n.cl")
+            .first()
+            .is_some_and(|block| block.contains(own_error)),
+        "the `[errors: n.cl]` block carries `n`'s own error",
+    );
+    legs.check(
+        error_blocks(out, "user.cl").is_empty(),
+        "no `[errors: user.cl]`: `user` waits on the failed `n`",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int"),
+        "`(g)` is refused after the save loads the failing `n`",
+    );
+    legs.check(
+        refusal_names(turn(5), &["n.cl"]),
+        "the refusal names `n.cl` and the save remedy",
+    );
+    legs.check(
+        !names_file(turn(5), "user.cl"),
+        "the refusal does not name `user.cl`",
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — a save of
+// `user.cl` that newly loads `n`, which fails in its own source, leaves `n`
+// standing failed and `user` waiting: no `[errors: user.cl]`, and `(g)` is
+// refused naming `n.cl` and not `user.cl`. A later save of `user.cl` dropping
+// the import does not release the lock, because `n` still stands failed:
+// `(g)` and `(defn h [] 2)` are refused naming `n.cl`, and `user.cl` stays
+// exactly as saved (§15.1). §14.6 — the save that fixes `n.cl` releases it:
+// `(g)` gives 1, the definition is accepted, and `(n/nx)` gives 5. Design:
+// repl-lifecycle §1.3.1, Set sites. RF-4, type leg. §14.3 — the save that
+// newly loads `n` prints `[errors: n.cl]` carrying `undefined-name` (RF-4+).
+// Pre-fix (review probe `newly-loaded`): `[errors: user.cl] … dependency 'n'
+// failed`, the refusal named `user.cl`, and the save dropping the import
+// unlocked the session while `n` stayed failed. RF-4+ pre-fix (QA probe
+// `newly-loaded` on `5dddfaf4…`, `.local/qa-s122-6b-lock2/observed.txt`):
+// `[errors: user.cl]` only.
+#[test]
+fn watch_save_newly_loading_failing_module_names_it_until_its_own_save_compiles() {
+    const DROPPED: &str = "(defn g [] 1)";
+    // Turns: 1 `(g)`, 2–4 save newly importing `n`, 5 `(g)`, 6–8 save dropping
+    // the import, 9 `(g)`, 10 `(defn h [] 2)`, 11 snapshot, 12–14 save of n.cl,
+    // 15 `(g)`, 16 `(defn h [] 2)`, 17 `(n/nx)`.
+    let out = save_newly_loading_n(
+        "(defn nx [] (undefined-name 1))\n",
+        &format!(
+            "{}(g)\n(defn h [] 2)\n/sh cp user.cl after-refusals.txt\n{}(g)\n(defn h [] 2)\n(n/nx)\n",
+            save("user.cl", DROPPED),
+            save("n.cl", "(defn nx [] 5)")
+        ),
+    );
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_refusals = out.read_tmp("after-refusals.txt");
+    let mut legs = Legs::default();
+    check_newly_loaded_failure_named(&mut legs, &out, &t, "undefined-name");
+    legs.check(
+        !turn(9).contains(":primitives/Int"),
+        "after the import is dropped, `(g)` is still refused: `n` stands failed",
+    );
+    legs.check(
+        !turn(10).contains("user/h"),
+        "after the import is dropped, `(defn h [] 2)` is still refused",
+    );
+    for (i, what) in [
+        (
+            9,
+            "the `(g)` refusal after the drop names `n.cl` and the save remedy",
+        ),
+        (
+            10,
+            "the definition refusal after the drop names `n.cl` and the save remedy",
+        ),
+    ] {
+        legs.check(refusal_names(turn(i), &["n.cl"]), what);
+    }
+    legs.check(
+        after_refusals == format!("{DROPPED}\n"),
+        "user.cl stays exactly as saved after the refused turns",
+    );
+    legs.check(
+        turn(15).contains(":primitives/Int 1"),
+        "after `n.cl` compiles, `(g)` gives 1",
+    );
+    legs.check(
+        turn(16).contains("user/h"),
+        "after `n.cl` compiles, `(defn h [] 2)` is accepted",
+    );
+    legs.check(
+        turn(17).contains(":primitives/Int 5"),
+        "after `n.cl` compiles, `(n/nx)` gives 5",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turns:\n{after_refusals}",
+        transcript(&out)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — the parse twin of
+// the newly loaded failure (PF-1): a save of `user.cl` that newly loads `n`,
+// whose file does not parse, leaves `user` unreported, and the refusal of
+// `(g)` names `n.cl` and not `user.cl`. Design: repl-lifecycle §1.3.1, a
+// dependency that fails before it registers. RF-4, parse leg. §14.3 — the
+// save prints `[errors: n.cl]` carrying `unclosed` (RF-4+).
+// Pre-fix (QA probe `reload-newly-parse` on `5dddfaf4…`,
+// `.local/qa-s122-6b-lock2/observed-parse-faces.txt`): `[errors: user.cl] …
+// module 'user' failed: parse error`, and the refusal named `user.cl`.
+#[test]
+fn watch_save_newly_loading_unparseable_module_names_it_not_the_importer() {
+    let out = save_newly_loading_n("(defn nx [] 1\n", "");
+    let t = turns(&out.stdout);
+    let mut legs = Legs::default();
+    check_newly_loaded_failure_named(&mut legs, &out, &t, "unclosed");
+    legs.assert_all(&transcript(&out));
+}
+
+// =============================================================================
+// repl/spec/00-cli-invocation.md §0.1 — session end while locked
+// =============================================================================
+
+const SQ_MATH: &str = "(defn sq [x] (primitives/mul-i64 x x))\n";
+const SQ_USER: &str = "(import [math [sq]])\n(defn f [] (sq 3))\n";
+
+/// A session over `math.cl` and its importer `user.cl` in which `math.cl` is
+/// saved with a type error and `(f)` is refused; `ending` follows.
+/// Turns: 1 (f), 2–4 save, 5 (f), then `ending`.
+fn session_locked_by_dependency(ending: &str) -> e2e::CrOutput {
+    Cranelisp::new()
+        .file("math.cl", SQ_MATH)
+        .user(SQ_USER)
+        .repl()
+        .stdin(&format!(
+            "(f)\n{}(f)\n{ending}",
+            save("math.cl", "(defn sq [x] (primitives/mul-i64 x \"a\"))")
+        ))
+        .output()
+}
+
+/// The precondition legs of `session_locked_by_dependency`: `(f)` gave 9, and
+/// is refused after the failing save.
+fn check_locked_by_dependency(legs: &mut Legs, t: &[&str]) {
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    legs.check(
+        turn(1).contains(":primitives/Int 9"),
+        "precondition: `(f)` gives 9 before the save",
+    );
+    legs.check(
+        save_notice(t, 2).contains("[errors: math.cl]") && !turn(5).contains(":primitives/Int"),
+        "precondition: the save fails (`[errors: math.cl]`) and `(f)` is refused",
+    );
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.1 — `/quit` while the session is
+// locked (repl/spec/14-file-watching.md §14.5) exits with status 0 and does
+// not reprint the outstanding error: stderr has no `type mismatch`, and stdout
+// has no text after the last prompt. SQ-1.
+#[test]
+fn quit_while_locked_exits_zero_without_reprinting_errors() {
+    let out = session_locked_by_dependency("/quit\n");
+    let t = turns(&out.stdout);
+    let mut legs = Legs::default();
+    check_locked_by_dependency(&mut legs, &t);
+    legs.check(out.status.code() == Some(0), "`/quit` exits with status 0");
+    legs.check(
+        !out.stderr.contains("type mismatch"),
+        "stderr does not reprint the outstanding error",
+    );
+    legs.check(
+        t.last().is_some_and(|tail| tail.trim().is_empty()),
+        "stdout has no text after the last prompt",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.1 — end of input while the session
+// is locked by the entry module's own failure exits with status 0 and does not
+// reprint the error: `user.cl` is saved as `(defn g [] (undefined-name 1))`,
+// `(g)` is refused, and input ends; stderr has no `undefined-name`. SQ-2.
+#[test]
+fn eof_while_entry_locked_exits_zero_without_reprinting_errors() {
+    // Turns: 1–3 save, 4 (g), then end of input.
+    let out = Cranelisp::new()
+        .user("(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "{}(g)\n",
+            save("user.cl", "(defn g [] (undefined-name 1))")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        save_notice(&t, 1).contains("[errors: user.cl]") && !turn(4).contains(":primitives/Int"),
+        "precondition: the save fails (`[errors: user.cl]`) and `(g)` is refused",
+    );
+    legs.check(
+        out.status.code() == Some(0),
+        "end of input exits with status 0",
+    );
+    legs.check(
+        !out.stderr.contains("undefined-name"),
+        "stderr does not reprint the outstanding error",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.1 — with the user's 2026-10-01
+// ruling ("Session-lock boundary questions"): a form left unfinished when
+// input ends while the session is locked (repl/spec/14-file-watching.md §14.5)
+// is dropped unevaluated — no value and no diagnostic for it follow the last
+// prompt — and the exit status is 0 without a reprint of the outstanding
+// error.
+#[test]
+fn eof_while_locked_drops_pending_form_unevaluated() {
+    let out = session_locked_by_dependency("(primitives/add-i64 40 2");
+    let t = turns(&out.stdout);
+    let tail = t.last().copied().unwrap_or("");
+    let mut legs = Legs::default();
+    check_locked_by_dependency(&mut legs, &t);
+    legs.check(
+        !tail.contains(":primitives/Int") && !tail.to_lowercase().contains("error"),
+        "the pending form is dropped: no value and no diagnostic after the last prompt",
+    );
+    legs.check(
+        out.status.code() == Some(0),
+        "end of input exits with status 0",
+    );
+    legs.check(
+        !out.stderr.contains("type mismatch"),
+        "stderr does not reprint the outstanding error",
+    );
+    legs.assert_all(&transcript(&out));
 }
 
 // =============================================================================
@@ -3782,9 +4821,12 @@ fn watch_fix_of_dependency_failed_at_startup_recompiles_its_dependents() {
 
 // spec: repl/spec/14-file-watching.md §14.2 — step 4: `base.cl` compiles at
 // startup and fails through a save, and the save that fixes it recompiles
-// `lib` and `user`. §14.6 — the fix clears their errors and `(f)` gives 7.
-// ACT-1011's control for
-// `watch_fix_of_dependency_failed_at_startup_recompiles_its_dependents`.
+// `lib` and `user`. §14.5 (session lock) — while `base` fails, neither its
+// importer `lib` nor `lib`'s importer `user` is recompiled or reported: no
+// notification names `lib.cl` or `user.cl` before the fixing save. §14.6 — the
+// fix rebuilds them and `(f)` gives 7. ACT-1011's control for
+// `watch_fix_of_dependency_failed_at_startup_recompiles_its_dependents`,
+// extended by SL-5.
 #[test]
 fn watch_fix_of_dependency_failed_in_session_recompiles_its_dependents_control() {
     let (out, after_fix) = chain_fixed_after_dependency_failure(false);
@@ -3799,18 +4841,32 @@ fn watch_fix_of_dependency_failed_in_session_recompiles_its_dependents_control()
         !error_blocks(&out, "base.cl").is_empty(),
         "precondition: the failing save reports `[errors: base.cl]`",
     );
+    legs.check(
+        notifies_none_of(&t, 2..=after_fix - 3, &["lib.cl", "user.cl"]),
+        "no notification names `lib.cl` or `user.cl` before the fixing save: \
+         the transitive dependents of the failing module are not recompiled",
+    );
     check_chain_released_by_fix(&mut legs, &t, after_fix);
     legs.assert_all(&transcript(&out));
 }
 
-// spec: repl/spec/14-file-watching.md §14.2 — step 4: a save of `user.cl`
-// adds `(import [c [x]])` while `c.cl` fails, so `user` fails through it; the
-// save that fixes `c.cl` recompiles `user`, reporting `[updated: user.cl]`.
-// §14.6 — the fix clears `user`'s error: `(g)` gives 9 and `(defn k [] 2)` is
-// accepted, and the regenerated `user.cl` holds the import exactly once.
-// ACT-1011.
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — a save of
+// `user.cl` adds `(import [c [x]])` while `c.cl` fails to typecheck, so the
+// save newly loads `c`: `c` stands failed and `user`, which depends on it,
+// waits, so no `[errors: user.cl]` appears, and `(g)` is refused naming `c.cl`
+// and not `user.cl`. §14.3 — the save reports `[errors: c.cl]` for the newly
+// loaded module. §14.2 step 4 and §14.6 — the save that fixes `c.cl` rebuilds
+// the waiting `user`, reporting `[updated: c.cl]` and `[updated: user.cl]`;
+// `(g)` gives 9, `(defn k [] 2)` is accepted, and the regenerated `user.cl`
+// holds the import exactly once. ACT-1011; the waiting precondition follows the
+// review-finding-3 ruling (design/int/repl-lifecycle.md §1.3.1, Set sites).
 // At e4062202 the fix reported only `[updated: c.cl]`, and `user` stayed
-// refused as a module with errors.
+// refused as a module with errors. Before the ruling (review probe
+// `newly-loaded`, `.local/s122-6a/review4-result.md` finding 3; QA rerun
+// `.local/qa-s122-6b-lock2/observed.txt`, binary `5dddfaf4…`) the failing save
+// reported `[errors: user.cl] … dependency 'n' failed` and the refusal named
+// `user.cl`; this cell, run against that binary by `test` on 2026-10-02, failed
+// at the `[errors: c.cl]`, no-`[errors: user.cl]` and naming legs.
 // defect: class=enumeration-miss locus=src/session_v4/lifecycle.rs::reload_edge_graph found=S122 owner=/dev
 #[test]
 fn watch_fix_of_module_newly_imported_by_failing_save_recompiles_importer() {
@@ -3836,8 +4892,20 @@ fn watch_fix_of_module_newly_imported_by_failing_save_recompiles_importer() {
         "precondition: `(g)` gives 1 before the saves",
     );
     legs.check(
-        !error_blocks(&out, "user.cl").is_empty() && !turn(5).contains(":primitives/Int"),
-        "precondition: the save of user.cl fails through `c`, and `(g)` is refused",
+        save_notice(&t, 2).contains("[errors: c.cl]"),
+        "the save newly loading the failing `c` reports `[errors: c.cl]`",
+    );
+    legs.check(
+        error_blocks(&out, "user.cl").is_empty(),
+        "no `[errors: user.cl]`: `user` waits on the failed `c`",
+    );
+    legs.check(
+        !turn(5).contains(":primitives/Int"),
+        "`(g)` is refused while `c` stands failed",
+    );
+    legs.check(
+        refusal_names(turn(5), &["c.cl"]) && !names_file(turn(5), "user.cl"),
+        "the refusal names `c.cl` and the save remedy, and not `user.cl`",
     );
     legs.check(
         notice.contains("[updated: c.cl]") && notice.contains("[updated: user.cl]"),
@@ -3999,12 +5067,12 @@ fn degraded_entry_session(stdin: &str) -> e2e::CrOutput {
 // spec: repl/spec/15-session-persistence.md §15.2.3 — `user.cl` fails at
 // startup, and a changed save of its import `lib.cl` recompiles it as a
 // dependent (repl/spec/14-file-watching.md §14.2 step 4). That recompilation
-// fails, so `user` is locked (§14.5 item 5): the at-prompt repair
-// `(defn bad [] 1)` is refused and `user.cl` is unchanged. A compiling save of
-// `user.cl` releases it (§14.6), `(ok)` gives the new 2, and a later definition
-// regenerates `user.cl` without the startup-failed `(nope)`. R1; the control
-// `persist_startup_degraded_entry_repairs_at_prompt_without_dependency_change_control`
-// differs only in the save of `lib.cl`.
+// fails, so the session stays locked (§14.5, session lock): `(defn bad [] 1)`
+// is refused and `user.cl` is unchanged. A compiling save of `user.cl`
+// releases it (§14.6), `(ok)` gives the new 2, and a later definition
+// regenerates `user.cl` without the startup-failed `(nope)`. R1; the startup
+// lock without a dependency change is SL-8,
+// `persist_startup_load_failure_locks_session_until_a_save_compiles`.
 #[test]
 fn persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles() {
     // Turns: 1 (ok), 2–4 save of lib.cl, 5 (defn bad), 6 snapshot,
@@ -4061,33 +5129,6 @@ fn persist_dependency_change_locks_startup_degraded_entry_until_its_save_compile
         "{}\nuser.cl after the refused turn:\n{after_rejection}\nuser.cl at exit:\n{saved}",
         transcript(&out)
     ));
-}
-
-// spec: repl/spec/15-session-persistence.md §15.2.3 — with no recompilation,
-// the startup-degraded `user` accepts the at-prompt repair `(defn bad [] 1)`,
-// and the regenerated `user.cl` holds it in place of the failed `(nope)`. R1's
-// control for
-// `persist_dependency_change_locks_startup_degraded_entry_until_its_save_compiles`.
-#[test]
-fn persist_startup_degraded_entry_repairs_at_prompt_without_dependency_change_control() {
-    let out = degraded_entry_session("(ok)\n(defn bad [] 1)\n/quit\n");
-    let t = turns(&out.stdout);
-    let saved = out.read_tmp("user.cl");
-    let mut legs = Legs::default();
-    legs.check(
-        t.first()
-            .is_some_and(|startup| startup.contains("[errors: user.cl]")),
-        "precondition: startup reports `[errors: user.cl]`",
-    );
-    legs.check(
-        t.get(2).is_some_and(|turn| turn.contains("user/bad")),
-        "the degraded `user` accepts `(defn bad [] 1)`",
-    );
-    legs.check(
-        saved.contains("(defn bad [] 1)") && !saved.contains("(nope)"),
-        "user.cl holds `(defn bad [] 1)` and not `(nope)`",
-    );
-    legs.assert_all(&format!("{}\nuser.cl at exit:\n{saved}", transcript(&out)));
 }
 
 // =============================================================================
@@ -4735,4 +5776,485 @@ fn prelude_save_exporting_opted_out_x_reloads_like_restart_control() {
         "--- session ---\n{session_transcript}\n--- restart ---\n{}",
         transcript(&restart)
     ));
+}
+
+// =============================================================================
+// R2, R3 — an unreadable save mid-session locks; a code turn's load failure is
+// located in its file and does not lock
+// =============================================================================
+//
+// The pre-fix outputs quoted below are the review's probes
+// (`.local/review-s122-lock/probe2.py`) on a binary built 2026-10-01 22:50
+// that is not retained; they survive only as quoted in
+// `.local/s122-6a/review5-result.md`. These cells were written after the
+// correction, so neither was observed RED.
+
+const UR_UNREADABLE: &[u8] = b"(defn g [] 1)\n\xff\n";
+
+// spec: repl/spec/14-file-watching.md §14.5 Module State on Error — the save
+// trigger, the lock and its release: a mid-session save of `user.cl` that is
+// not valid UTF-8 cannot be parsed, so it prints `[errors: user.cl]`, and
+// `(defn h [] 2)` and `(g)` are refused, each naming `user.cl` and the save
+// remedy. repl/spec/15-session-persistence.md §15.1 — while locked, nothing is
+// regenerated: `user.cl` keeps the unreadable bytes. The readable save
+// `(defn g [] 3)` releases the lock: `[updated: user.cl]`, `(g)` gives 3, and
+// `(defn h [] 2)` is accepted. UR-1.
+// Pre-fix (review probe `entry-utf8-mid`): no report, and `user.cl` became
+// `(defn g [] 1)\n\n(defn h [] 2)\n`, the unreadable save taken for a deleted
+// file. The release legs reject the over-correction in which the unreadable
+// state absorbs the next readable save.
+// defect: class=failure-collapse locus=src/watch.rs::FileWatcher::has_content_changed found=S122 owner=/dev
+#[test]
+fn watch_unreadable_save_locks_session_and_keeps_its_bytes_until_a_readable_save() {
+    // Turns: 1 (g), 2–4 unreadable save, 5 (defn h), 6 (g), 7 snapshot,
+    // 8–10 readable save, 11 (g), 12 (defn h).
+    let out = Cranelisp::new()
+        .user("(defn g [] 1)\n")
+        .repl()
+        .stdin(&format!(
+            "(g)\n/sh sleep 0.3\n/sh printf '(defn g [] 1)\\n\\377\\n' > user.cl\n/sh sleep 0.5\n\
+             (defn h [] 2)\n(g)\n/sh cp user.cl after-refusals.bin\n{}(g)\n(defn h [] 2)\n/quit\n",
+            save("user.cl", "(defn g [] 3)")
+        ))
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let after_refusals = std::fs::read(out.tmpdir.join("after-refusals.bin")).unwrap_or_default();
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the save",
+    );
+    legs.check(
+        save_notice(&t, 2).contains("[errors: user.cl]"),
+        "the unreadable save reports `[errors: user.cl]`",
+    );
+    legs.check(!turn(5).contains("user/h"), "`(defn h [] 2)` is refused");
+    legs.check(
+        refusal_names(turn(5), &["user.cl"]),
+        "the definition refusal names `user.cl` and the save remedy",
+    );
+    legs.check(!turn(6).contains(":primitives/Int"), "`(g)` is refused");
+    legs.check(
+        refusal_names(turn(6), &["user.cl"]),
+        "the `(g)` refusal names `user.cl` and the save remedy",
+    );
+    legs.check(
+        after_refusals == UR_UNREADABLE,
+        "user.cl keeps the unreadable bytes after the refused turns",
+    );
+    legs.check(
+        save_notice(&t, 8).contains("[updated: user.cl]"),
+        "the readable save reports `[updated: user.cl]`",
+    );
+    legs.check(
+        turn(11).contains(":primitives/Int 3"),
+        "after the readable save, `(g)` gives 3",
+    );
+    legs.check(
+        turn(12).contains("user/h"),
+        "after the readable save, `(defn h [] 2)` is accepted",
+    );
+    legs.assert_all(&format!(
+        "{}\nuser.cl after the refused turns: {:?}",
+        transcript(&out),
+        String::from_utf8_lossy(&after_refusals)
+    ));
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 Error Format — item 2, the
+// source location: `(n/nx)` qualifies into `n`, whose file does not parse, and
+// the error names `n.cl` and is not located `at 0..0`.
+// repl/spec/14-file-watching.md §14.5 Module State on Error — the triggers are
+// saves and startup, so a code turn's failure does not lock the session:
+// `(g)` gives 1 next. RS-4.
+// Pre-fix (review probe `qual-parse`): `parse error at 0..0`, with no file
+// named. The `(g)` leg is a control against an over-correction that locks.
+#[test]
+fn qualified_reference_to_unparseable_module_names_its_file_without_locking() {
+    // Turns: 1 (n/nx), 2 (g).
+    let out = Cranelisp::new()
+        .file("n.cl", ";; c\n(defn nx [] 1\n")
+        .user("(defn g [] 1)\n")
+        .repl()
+        .stdin("(n/nx)\n(g)\n/quit\n")
+        .output();
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(
+        names_file(turn(1), "n.cl"),
+        "the `(n/nx)` error names `n.cl`",
+    );
+    legs.check(
+        !turn(1).contains("at 0..0"),
+        "the `(n/nx)` error is not located `at 0..0`",
+    );
+    legs.check(
+        turn(2).contains(":primitives/Int 1"),
+        "control: the code turn's failure does not lock: `(g)` gives 1",
+    );
+    legs.assert_all(&transcript(&out));
+}
+
+// =============================================================================
+// §14.2 — a save made while the REPL is idle at the prompt (ACT-1045)
+// =============================================================================
+//
+// Each save is written by the harness after the previous turn's prompt, which
+// follows that turn's watcher poll, and before the next line is sent
+// (`e2e::Stage`). A `/sh` turn cannot place a save there, because its own turn
+// polls. The asserted legs hold whether the corrected REPL catches the save
+// before the turn or at its regeneration write; they assume only that the
+// save's event arrives by the end of the following turn. Legs that need the
+// save seen before the turn runs are `dev`'s module rows.
+
+const IS_READABLE: &[u8] = b"(defn g [] 5)\n(defn k [] 9)\n";
+const IS_UNREADABLE: &[u8] = b"(defn g [] 1)\n\xff\n";
+
+/// A session over `user.cl` as `(defn g [] 1)`: turn 1 `(g)`, then `saved` is
+/// written while the REPL is idle at the next prompt, then the `after` lines
+/// are turns 2 onwards.
+fn idle_save_then(saved: &'static [u8], after: &[&'static str]) -> e2e::CrOutput {
+    let mut stages = vec![e2e::Stage::Line("(g)"), e2e::Stage::Write("user.cl", saved)];
+    stages.extend(after.iter().map(|line| e2e::Stage::Line(line)));
+    Cranelisp::new()
+        .user("(defn g [] 1)\n")
+        .repl()
+        .staged_output(&stages)
+}
+
+/// The final bytes of `user.cl`, after the session has exited.
+fn final_user_cl(out: &e2e::CrOutput) -> Vec<u8> {
+    std::fs::read(out.tmpdir.join("user.cl")).unwrap_or_default()
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 Eager Recompilation — a save made
+// between turns is reloaded, eagerly: after an idle save of `user.cl` as
+// `(defn g [] 5)` and `(defn k [] 9)`, a definition turn `(defn h [] 2)`
+// follows, then `(k)` gives 9 and `(g)` gives 5.
+// repl/spec/15-session-persistence.md §15.1 — regeneration writes the reloaded
+// state: the final `user.cl` holds `(defn k [] 9)` and `(defn g [] 5)` and not
+// `(defn g [] 1)`. IS-1; its control is
+// `watch_idle_readable_save_before_failing_definition_is_reloaded_control`.
+// Pre-fix (QA probe `idle-readable-then-defn` on `93f6ab4d…`,
+// `.local/qa-s122-6b-lock4/observed.txt`): the definition was accepted with no
+// notification, `(k)` was an undefined variable, and the file became
+// `(defn g [] 1)\n\n(defn h [] 2)\n`. `test` observed this cell RED at the
+// `(k)`, `(g)` and file legs on 2026-10-02, on binary `93f6ab4d…` (before the
+// N1 correction), with its control GREEN.
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::regenerate_backing_file found=S122 owner=/dev
+#[test]
+fn watch_idle_readable_save_survives_the_next_definition() {
+    // Turns: 1 (g), idle save, 2 (defn h), 3 (k), 4 (g).
+    let out = idle_save_then(IS_READABLE, &["(defn h [] 2)", "(k)", "(g)"]);
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let file = String::from_utf8_lossy(&final_user_cl(&out)).into_owned();
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the save",
+    );
+    legs.check(
+        turn(3).contains(":primitives/Int 9"),
+        "the saved `k` is loaded: `(k)` gives 9",
+    );
+    legs.check(
+        turn(4).contains(":primitives/Int 5"),
+        "the saved `g` is loaded: `(g)` gives 5",
+    );
+    legs.check(
+        file.contains("(defn k [] 9)") && file.contains("(defn g [] 5)"),
+        "the final user.cl holds the saved `k` and `g`",
+    );
+    legs.check(
+        !file.contains("(defn g [] 1)"),
+        "the final user.cl does not hold the pre-save `g`",
+    );
+    legs.assert_all(&format!("{}\nfinal user.cl:\n{file}", transcript(&out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 Eager Recompilation — IS-1's
+// control: the same idle save followed by a definition that fails to
+// typecheck, which writes nothing, so the save is reloaded: `(k)` gives 9 and
+// `user.cl` equals the save byte for byte. It rules out a fixture whose save
+// is never written or never delivered.
+#[test]
+fn watch_idle_readable_save_before_failing_definition_is_reloaded_control() {
+    // Turns: 1 (g), idle save, 2 failing (defn h), 3 (k).
+    let out = idle_save_then(IS_READABLE, &["(defn h [] (undefined-name 2))", "(k)"]);
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let file = final_user_cl(&out);
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the save",
+    );
+    legs.check(
+        turn(3).contains(":primitives/Int 9"),
+        "the saved `k` is loaded: `(k)` gives 9",
+    );
+    legs.check(file == IS_READABLE, "user.cl equals the save byte for byte");
+    legs.assert_all(&format!(
+        "{}\nfinal user.cl: {:?}",
+        transcript(&out),
+        String::from_utf8_lossy(&file)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 Module State on Error — the save
+// trigger and the lock: an idle save of `user.cl` that is not valid UTF-8,
+// followed by the definition `(defn h [] 2)`, prints `[errors: user.cl]`, and
+// the next `(g)` is refused, naming `user.cl` and the save remedy.
+// repl/spec/15-session-persistence.md §15.1 — nothing is regenerated while
+// locked: the final `user.cl` equals the unreadable bytes. IS-2; its control
+// is `watch_idle_unreadable_save_before_expression_locks_control`.
+// Pre-fix (QA probe `idle-unreadable-then-defn` on `93f6ab4d…`,
+// `.local/qa-s122-6b-lock4/observed.txt`): the definition was accepted with no
+// notification and no lock, `(g)` gave 1, and the file was overwritten with
+// regenerated source. `test` observed this cell RED at the `[errors:]`,
+// refusal and file legs on 2026-10-02, on binary `93f6ab4d…` (before the N1
+// correction), with its control GREEN.
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::regenerate_backing_file found=S122 owner=/dev
+#[test]
+fn watch_idle_unreadable_save_locks_before_the_next_definition_overwrites_it() {
+    // Turns: 1 (g), idle save, 2 (defn h), 3 (g).
+    let out = idle_save_then(IS_UNREADABLE, &["(defn h [] 2)", "(g)"]);
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let file = final_user_cl(&out);
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the save",
+    );
+    legs.check(
+        !error_blocks(&out, "user.cl").is_empty(),
+        "the unreadable save reports `[errors: user.cl]`",
+    );
+    legs.check(!turn(3).contains(":primitives/Int"), "`(g)` is refused");
+    legs.check(
+        refusal_names(turn(3), &["user.cl"]),
+        "the `(g)` refusal names `user.cl` and the save remedy",
+    );
+    legs.check(
+        file == IS_UNREADABLE,
+        "the final user.cl equals the unreadable bytes",
+    );
+    legs.assert_all(&format!(
+        "{}\nfinal user.cl: {:?}",
+        transcript(&out),
+        String::from_utf8_lossy(&file)
+    ));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 Module State on Error — IS-2's
+// control: the same idle save followed by `(g)`, whose turn polls after it
+// runs, then `(defn h [] 2)`. The definition is refused, naming `user.cl`, and
+// the bytes are kept. Nothing is asserted about the first `(g)`, which a
+// corrected REPL refuses and the pre-fix REPL evaluated against the old module.
+#[test]
+fn watch_idle_unreadable_save_before_expression_locks_control() {
+    // Turns: 1 (g), idle save, 2 (g), 3 (defn h).
+    let out = idle_save_then(IS_UNREADABLE, &["(g)", "(defn h [] 2)"]);
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let file = final_user_cl(&out);
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: `(g)` gives 1 before the save",
+    );
+    legs.check(!turn(3).contains("user/h"), "`(defn h [] 2)` is refused");
+    legs.check(
+        refusal_names(turn(3), &["user.cl"]),
+        "the definition refusal names `user.cl` and the save remedy",
+    );
+    legs.check(
+        file == IS_UNREADABLE,
+        "the final user.cl equals the unreadable bytes",
+    );
+    legs.assert_all(&format!(
+        "{}\nfinal user.cl: {:?}",
+        transcript(&out),
+        String::from_utf8_lossy(&file)
+    ));
+}
+
+// =============================================================================
+// §14.2 — a save made during startup, before the watcher first sees the file
+// (ACT-1046)
+// =============================================================================
+//
+// The entry's `w` returns a 3000-element vector literal, so the first prompt
+// comes about 0.9 s after spawn, unloaded, and the entry is read within about
+// 15 ms of spawn. The subject's save lands 0.4 s after spawn, inside that
+// window, leaving margin for a slow exec under load on the early side. No
+// prompt marks the watcher's first sight, so the placement is timed
+// (`e2e::Stage::WriteAfterSpawn`). A save that lands too early is read at
+// startup, and one that lands too late is an idle save, which the REPL
+// reloads. Both conform, so a missed window can only let a defective build
+// pass. The leading `(g)` turn polls after it runs, so the control's idle save
+// is loaded before its first definition, whenever its event arrives.
+
+const STARTUP_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// A session over `user.cl` as `(defn g [] 1)` and the slow-to-compile `w`.
+/// `user.cl` is saved as the same source plus `(defn k [] 9)`: during startup
+/// when `during_startup`, else while the REPL is idle at the first prompt.
+/// Then the turns are 1 `(g)`, 2 `(defn h [] 2)`, 3 `(k)` and 4 `(defn i [] 3)`.
+fn save_then_definitions(during_startup: bool) -> e2e::CrOutput {
+    let elements: Vec<String> = (0..3000).map(|i| i.to_string()).collect();
+    let entry = format!("(defn g [] 1)\n(defn w [] [{}])\n", elements.join(" "));
+    let saved = format!("{entry}(defn k [] 9)\n");
+    let save = if during_startup {
+        e2e::Stage::WriteAfterSpawn(STARTUP_SAVE_DELAY, "user.cl", saved.as_bytes())
+    } else {
+        e2e::Stage::Write("user.cl", saved.as_bytes())
+    };
+    Cranelisp::new().user(&entry).repl().staged_output(&[
+        save,
+        e2e::Stage::Line("(g)"),
+        e2e::Stage::Line("(defn h [] 2)"),
+        e2e::Stage::Line("(k)"),
+        e2e::Stage::Line("(defn i [] 3)"),
+    ])
+}
+
+/// The legs FS-1 and its control share: the save is loaded, no later
+/// definition is kept out of the file, and the file holds the save and both
+/// definitions.
+fn assert_save_loaded_and_definitions_written(out: &e2e::CrOutput) {
+    let t = turns(&out.stdout);
+    let turn = |i: usize| t.get(i).copied().unwrap_or("");
+    let file = String::from_utf8_lossy(&final_user_cl(out)).into_owned();
+    let mut legs = Legs::default();
+    legs.check(
+        turn(1).contains(":primitives/Int 1"),
+        "precondition: the entry compiles: `(g)` gives 1",
+    );
+    legs.check(
+        turn(3).contains(":primitives/Int 9"),
+        "the saved `k` is loaded: `(k)` gives 9",
+    );
+    legs.check(
+        !out.stderr.contains("changed on disk") && !out.stdout.contains("changed on disk"),
+        "no definition is kept out of user.cl as `changed on disk`",
+    );
+    legs.check(
+        file.contains("(defn k [] 9)"),
+        "the final user.cl holds the saved `k`",
+    );
+    legs.check(
+        file.contains("(defn h [] 2)") && file.contains("(defn i [] 3)"),
+        "the final user.cl holds both later definitions",
+    );
+    legs.assert_all(&format!("{}\nfinal user.cl:\n{file}", transcript(out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 Eager Recompilation — a save made
+// after the session reads the entry and before the watcher first sees it is
+// reloaded: `(k)` gives 9, and no later definition is kept out of the file.
+// repl/spec/15-session-persistence.md §15.1 — regeneration writes the reloaded
+// state: the final `user.cl` holds `(defn k [] 9)`, `(defn h [] 2)` and
+// `(defn i [] 3)`. FS-1; its control is
+// `watch_save_after_first_prompt_is_loaded_and_later_definitions_reach_the_file_control`.
+// Pre-fix (QA probe on `d205aad1…`, `tests/plan/s122-evidence-delta.md`
+// §Review N2): no notification, `(k)` was an undefined variable, each
+// definition warned that `user.cl` "changed on disk" and would be reloaded,
+// and the final file equalled the save. `test` observed this cell RED at the
+// `(k)`, warning and definition-file legs in 5 of 5 runs on 2026-10-02, on
+// binary `d205aad1…` (before the N2 correction), with its control GREEN.
+// defect: class=lost-wakeup locus=src/watch.rs::FileWatcher::watch_file found=S122 owner=/dev
+#[test]
+fn watch_startup_save_is_loaded_and_later_definitions_reach_the_file() {
+    assert_save_loaded_and_definitions_written(&save_then_definitions(true));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 Eager Recompilation — FS-1's
+// control: the same save, written while the REPL is idle at the first prompt,
+// with the same legs. It rules out a fixture whose entry fails to compile or
+// whose save does not define `k`.
+#[test]
+fn watch_save_after_first_prompt_is_loaded_and_later_definitions_reach_the_file_control() {
+    assert_save_loaded_and_definitions_written(&save_then_definitions(false));
+}
+
+// =============================================================================
+// §15.1 — a backing file created after a session started without one (ACT-1047)
+// =============================================================================
+//
+// The user rules whether the created file is loaded or only protected, so each
+// cell asserts only the leg both outcomes share: the saved bytes survive the
+// next definition's regeneration. The save is written while the REPL is idle at
+// a prompt and precedes the definition turn.
+
+const CREATED_SAVE: &[u8] = b"(defn k [] 9)\n";
+
+/// Where the session's `user.cl` comes from before the external save.
+enum BackingFile {
+    /// No `user.cl` exists until the save creates it.
+    Absent,
+    /// `user.cl` is `(defn g [] 1)` at start, so the session reads it.
+    PresentAtStart,
+    /// No `user.cl` at start; turn 1 `(defn g [] 1)` makes the session write it.
+    WrittenBySession,
+}
+
+/// Save `user.cl` as `(defn k [] 9)` at the prompt after `backing` is set up,
+/// then enter `(defn h [] 2)`, and assert that the final `user.cl` keeps `k`.
+fn assert_created_save_survives(backing: BackingFile) {
+    let mut builder = Cranelisp::new();
+    let mut stages = Vec::new();
+    match backing {
+        BackingFile::Absent => {}
+        BackingFile::PresentAtStart => builder = builder.user("(defn g [] 1)\n"),
+        BackingFile::WrittenBySession => stages.push(e2e::Stage::Line("(defn g [] 1)")),
+    }
+    stages.push(e2e::Stage::Write("user.cl", CREATED_SAVE));
+    stages.push(e2e::Stage::Line("(defn h [] 2)"));
+    let out = builder.repl().staged_output(&stages);
+    let file = String::from_utf8_lossy(&final_user_cl(&out)).into_owned();
+    assert!(
+        file.contains("(defn k [] 9)"),
+        "the final user.cl keeps the saved `(defn k [] 9)`\n{}\nfinal user.cl: {file:?}",
+        transcript(&out)
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1 — rule 2 regenerates from
+// the module's current state, which includes a save the session has not
+// loaded, and the user's bytes win over regeneration
+// (design/int/repl-lifecycle.md §1.3.1, Write chokepoint): with no `user.cl`
+// at start, a `user.cl` saved at the prompt as `(defn k [] 9)` still holds it
+// after the definition `(defn h [] 2)`. FC-1;
+// its controls are `persist_save_over_backing_file_present_at_start_survives_definition_control`
+// and `persist_save_over_backing_file_written_by_session_survives_definition_control`.
+// Pre-fix (QA probe `.local/qa-s122-6b-final/n3_probe.py` on `e332dc6b…`):
+// the definition was accepted without a warning, `(k)` was an undefined
+// variable, and the file became `(defn h [] 2)\n`.
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev
+#[test]
+fn persist_save_creating_backing_file_survives_definition() {
+    assert_created_save_survives(BackingFile::Absent);
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1 — FC-1's control: the same
+// save and definition over a `user.cl` the session read at start. It rules out
+// a fixture whose save is never written or is lost for a reason other than the
+// missing record.
+#[test]
+fn persist_save_over_backing_file_present_at_start_survives_definition_control() {
+    assert_created_save_survives(BackingFile::PresentAtStart);
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1 — FC-1's control: no
+// `user.cl` at start, as in FC-1, but the session's own regeneration writes it
+// before the save. Only whether the session recorded the file differs from
+// FC-1.
+#[test]
+fn persist_save_over_backing_file_written_by_session_survives_definition_control() {
+    assert_created_save_survives(BackingFile::WrittenBySession);
 }

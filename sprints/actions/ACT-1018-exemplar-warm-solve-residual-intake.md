@@ -41,9 +41,13 @@ spec-traced failing reproduction and route the repair to its owner.
 S122 applies the approved K2/K7 ordinary-leak rule
 ([final disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30)).
 The RED stays committed and un-ignored as the record, and it is carried to S123
-under K7. This is the first deferral. `sprint` confirms the application with the
-user at the Phase-5 checkpoint, because the RED came from K3 rather than a K2
-pair.
+under K7. This is the first deferral. Because the RED came from K3 rather than
+a K2 pair, the user confirmed this use of the rule separately, with the
+Phase-5 checkpoint on 2026-09-30
+([checkpoint carries](../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+It carries beside the ordinary-leak lead
+[ACT-1022](ACT-1022-match-arm-branch-push-residual-lead.md); no link between
+the two is established.
 
 ## Completion evidence
 

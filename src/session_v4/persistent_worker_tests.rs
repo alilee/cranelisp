@@ -116,8 +116,14 @@ fn reload_during_compile_race_completes() {
     // Overwrite with new content and trigger reload.
     std::fs::write(&file_path, "(defn updated [] 2)\n").expect("rewrite reload_target.cl");
     let module = ModuleFullPath::from("reload_target");
-    s.reload_module(&module, &file_path, Default::default())
-        .expect("reload should succeed via persistent workers");
+    assert!(
+        matches!(
+            s.reload_module(&module, &file_path, Default::default(), &Default::default())
+                .attempt,
+            lifecycle::Attempt::Settled(ReloadStatus::Rebuilt)
+        ),
+        "reload should succeed via persistent workers"
+    );
 
     // Module must be in a non-failed state after reload. The post-reload
     // symbol table should carry `updated` (the new defn).
@@ -441,14 +447,11 @@ fn strip_cfg_test_regions(content: &str) -> Vec<(usize, String)> {
     live
 }
 
-// spec: repl/spec/15-session-persistence.md §15.2.3 — S102 W5R B-1 (data-loss Blocker). A successful
-// reload makes the new file content the authority: the reloaded module's
-// retained degraded-startup `failed_forms` MUST be dropped (and the §14.4
-// error block lifted) so the next regen does not re-append stale broken
-// text over the user's external repair — silently undoing the hand-edit
-// and re-poisoning the file for the next restart.
+// spec: repl/spec/14-file-watching.md §14.6; design/int/repl-lifecycle.md
+// §1.3.1 (Release) — a successful reload of a module standing failed removes
+// it from the failed set, so the session unlocks.
 #[test]
-fn reload_success_drops_failed_forms_and_error_block() {
+fn reload_success_releases_the_module_from_the_failed_set() {
     let (mut s, root) = test_session(2);
 
     let file_path = root.join("repairme.cl");
@@ -456,77 +459,43 @@ fn reload_success_drops_failed_forms_and_error_block() {
     s.register_module_with_source("repairme", "(defn fixed [] 1)", &file_path)
         .expect("initial register");
     let module = ModuleFullPath::from("repairme");
+    s.stand_failed(&module, &file_path, FailureCause::FailedSource);
+    assert!(s.is_locked(), "precondition");
 
-    // Simulate degraded-startup residue: a broken FailedForm retained for
-    // the module + the module error-blocked (the §15.2.3 state).
-    s.failed_forms.insert(
-        module.clone(),
-        vec![FailedForm {
-            symbol: Some("broken".into()),
-            error: "undefined variable: nope".to_string(),
-            text: "(defn broken [] nope)".to_string(),
-        }],
-    );
-    s.error_modules.insert(module.clone());
-
-    // External repair: the user hand-edited the file; the watcher-driven
-    // reload succeeds.
     std::fs::write(&file_path, "(defn fixed [] 1)\n(defn broken [] 2)\n")
         .expect("rewrite repairme.cl");
-    s.reload_module(&module, &file_path, Default::default())
-        .expect("reload of the repaired file succeeds");
+    assert!(
+        matches!(
+            s.reload_module(&module, &file_path, Default::default(), &Default::default())
+                .attempt,
+            lifecycle::Attempt::Settled(ReloadStatus::Rebuilt)
+        ),
+        "reload of the repaired file succeeds"
+    );
 
-    assert!(
-        !s.failed_forms.contains_key(&module),
-        "reload success MUST drop the module's stale failed forms — \
-             regen would otherwise re-append the broken text after the repair"
-    );
-    assert!(
-        !s.error_modules.contains(&module),
-        "reload success MUST lift the module's §14.4 error block"
-    );
+    assert!(!s.failed_modules.contains_key(&module));
+    assert!(!s.is_locked());
 
     s.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// spec: repl/spec/15-session-persistence.md §15.2.3 — startup-failed source
-// stays in every later regeneration until a successful definition replaces
-// it, and its module stays error-blocked until that repair. `/reset` is not a
-// repair: it MUST leave both the failed set and its `error_modules`
-// membership in place (a non-empty failed set implies membership).
+// spec: repl/spec/14-file-watching.md §14.5 (session lock) — `/reset` does not
+// release the lock: the failed set is unchanged.
 #[test]
-fn reset_command_retains_failed_forms_and_their_error_block() {
+fn reset_command_leaves_the_failed_set() {
     let (mut s, root) = test_session(1);
 
     let module = ModuleFullPath::from("user");
-    let broken_text = "(defn broken [] nope)";
-    s.failed_forms.insert(
-        module.clone(),
-        vec![FailedForm {
-            symbol: Some("broken".into()),
-            error: "type error".to_string(),
-            text: broken_text.to_string(),
-        }],
-    );
-    s.error_modules.insert(module.clone());
+    s.stand_failed(&module, &root.join("user.cl"), FailureCause::FailedSource);
 
     let mut out: Vec<u8> = Vec::new();
     let _ = s.dispatch_command(crate::repl::ReplCommand::Reset, &mut out);
 
-    let retained: Vec<&str> = s
-        .failed_forms
-        .get(&module)
-        .map(|forms| forms.iter().map(|f| f.text.as_str()).collect())
-        .unwrap_or_default();
     assert_eq!(
-        retained,
-        vec![broken_text],
-        "/reset MUST NOT discard unrepaired startup-failed source"
-    );
-    assert!(
-        s.error_modules.contains(&module),
-        "/reset MUST NOT lift the error block of a module holding failed source"
+        s.failed_modules.get(&module).map(|failed| &failed.cause),
+        Some(&FailureCause::FailedSource),
+        "/reset MUST NOT release a failed module"
     );
 
     s.shutdown();

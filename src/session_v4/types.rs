@@ -637,45 +637,49 @@ pub struct Introspection {
     pub code_size: Option<usize>,
 }
 
-/// One backing-file form that failed the degraded form-by-form startup load
-/// (`repl/spec/15-session-persistence.md` §15.2.3 restart floor; FIXME 0489,
-/// `design/int/s102-defect-wave.md` §5.2). Retained on
-/// `CompilerSession.failed_forms` so that:
-///
-///  (a) the startup report can NAME the broken symbol (§18.8's naming MUST —
-///      unachievable from the raw batch-cluster error, it falls out of the
-///      form grain);
-///  (b) `regenerate_backing_file` re-emits the verbatim authored text until
-///      the symbol is repaired or the user removes it externally — ordinary
-///      regen rebuilds the file from the live table, which the failed forms
-///      never entered, so a regen that ignored them would silently DROP the
-///      broken definition from the user's file (`repl/spec/15-session-persistence.md`
-///      §15.2.3 failed-source retention);
-///  (c) the §14.4 expression gate knows when the module is repaired (the set
-///      empties → the module leaves `error_modules`).
-#[derive(Debug, Clone)]
-pub(crate) struct FailedForm {
-    /// The defining form's name when the form is a defining special form
-    /// (`defn`/`defn-`/`defmacro`/`defmacro-`/`deftype`/`deftrait`); `None`
-    /// for structural / expression / unparseable forms (those clear only via
-    /// an external file fix).
-    pub symbol: Option<cranelisp_types::Symbol>,
-    /// First line of the load error (report display).
-    pub error: String,
-    /// Verbatim source text of the form (regen re-emission).
-    pub text: String,
-}
-
-/// Why a module's saved file is locked: the REPL writes nothing over it until
-/// a reload of the module succeeds (`design/int/repl-lifecycle.md` §1.3.1).
+/// Why a module stands failed (`design/int/repl-lifecycle.md` §1.3.1). Each
+/// cause names its own remedy in the session-lock refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ModuleLock {
+pub(crate) enum FailureCause {
+    /// The saved source did not compile: any failure other than a refused type.
+    FailedSource,
     /// The reload was refused because it changes this live type's structure,
     /// which only a restart can establish (`repl/spec/14-file-watching.md` §14.8).
     RestartRequired(cranelisp_types::FQTypeName),
-    /// The saved source did not compile, or the module failed in the cascade
-    /// from a dependency whose source did not.
-    FailedSource,
+}
+
+/// A module standing failed: the file whose save the session awaits, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FailedModule {
+    pub(crate) file: PathBuf,
+    pub(crate) cause: FailureCause,
+}
+
+/// How notifications and the session-lock refusal name `module`'s `file`:
+/// its bare file name (`design/int/repl-lifecycle.md` §1.4).
+pub(crate) fn file_display_name<'a>(
+    file: &'a std::path::Path,
+    module: &'a ModuleFullPath,
+) -> &'a str {
+    file.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| module.as_ref())
+}
+
+/// The outcome of a failed REPL startup's recovery
+/// (`design/int/repl-lifecycle.md` §1.3.1, Startup).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupRecovery {
+    pub(crate) report: Option<String>,
+    pub(crate) entry_compiled: bool,
+}
+
+impl StartupRecovery {
+    /// One notification per module standing failed, to print before the
+    /// banner; `None` when no module stands failed.
+    pub fn report(&self) -> Option<&str> {
+        self.report.as_deref()
+    }
 }
 
 // ---------------------------------------------------------------------------

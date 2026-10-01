@@ -83,7 +83,7 @@
 
 ;; Take 5 from range-from 0: [0, 1, 2, 3, 4]
 ;; Sum = 0+1+2+3+4 = 10
-(defn test-range-take []
+(defn check-range-take []
   (let [v (seq-take 5 (range-from 0))]
     (add-i64 (vec-get v 0)
       (add-i64 (vec-get v 1)
@@ -93,7 +93,7 @@
 
 ;; Sum first 10 integers (1..10) via reduce
 ;; 1+2+3+4+5+6+7+8+9+10 = 55
-(defn test-range-reduce []
+(defn check-range-reduce []
   (seq-reduce (fn [acc x] (add-i64 acc x)) 0
     (seq-take-as-seq 10 (range-from 1))))                   ;; -> 55
 
@@ -106,12 +106,12 @@
 
 ;; iterate: powers of 2 (1, 2, 4, 8, 16, 32, ...)
 ;; 6th element (index 5) = 32
-(defn test-iterate []
+(defn check-iterate []
   (seq-nth 5 (iterate (fn [x] (mul-i64 x 2)) 1)))          ;; -> 32
 
 ;; repeat: constant sequence
 ;; Take 3 of (repeat 7), sum = 21
-(defn test-repeat []
+(defn check-repeat []
   (let [v (seq-take 3 (repeat 7))]
     (add-i64 (vec-get v 0)
       (add-i64 (vec-get v 1)
@@ -121,7 +121,7 @@
 ;; range-from 1 => 1,2,3,4,5,...
 ;; seq-map double => 2,4,6,8,10,...
 ;; take 4 => [2,4,6,8], sum = 20
-(defn test-seq-map []
+(defn check-seq-map []
   (let [doubled (seq-map (fn [x] (mul-i64 x 2)) (range-from 1))
         v (seq-take 4 doubled)]
     (add-i64 (vec-get v 0)
@@ -133,13 +133,13 @@
 ;; range-from 0 => 0,1,2,3,4,5,6,...
 ;; drop 5 => 5,6,7,...
 ;; nth 0 => 5
-(defn test-drop []
+(defn check-drop []
   (seq-nth 0 (seq-drop 5 (range-from 0))))                 ;; -> 5
 
 ;; Composition: map then take
 ;; iterate (* 3) from 1 => 1, 3, 9, 27, 81, ...
 ;; take 4 => [1, 3, 9, 27], sum = 40
-(defn test-compose []
+(defn check-compose []
   (let [powers (iterate (fn [x] (mul-i64 x 3)) 1)
         v (seq-take 4 powers)]
     (add-i64 (vec-get v 0)
@@ -152,10 +152,10 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-range-take)
-      (add-i64 (test-range-reduce)
-        (add-i64 (test-iterate)
-          (add-i64 (test-repeat)
-            (add-i64 (test-seq-map)
-              (add-i64 (test-drop)
-                       (test-compose)))))))))
+    (add-i64 (check-range-take)
+      (add-i64 (check-range-reduce)
+        (add-i64 (check-iterate)
+          (add-i64 (check-repeat)
+            (add-i64 (check-seq-map)
+              (add-i64 (check-drop)
+                       (check-compose)))))))))

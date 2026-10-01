@@ -1,8 +1,8 @@
 > [REPL specification index](index.md)
 
-## 8. Ring 2B Module Demo Scenarios [R4 S10]
+## 8. Module Demo Scenarios [R4 S10]
 
-When the module system is fully wired (Ring 2B), these 7 REPL scenarios validate the module experience. Each scenario has a concrete expected behavior.
+These seven REPL scenarios show the module experience. Each scenario has a concrete expected behavior.
 
 **Scenario 1: `/mod math` switches namespace**
 ```

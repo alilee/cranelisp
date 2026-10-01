@@ -67,7 +67,7 @@
 ;; `(async-read 4)` suspends ~4 ms on the reactor, then resumes producing 4.
 ;; The bind continuation observes the resumed value.
 
-(defn test-single-read []
+(defn check-single-read []
   (bind (async-read 4)
     (fn [r] (Pure (if (eq-i64 r 4) 1 0)))))            ;; resumed with 4 -> pass 1
 
@@ -78,7 +78,7 @@
 ;; then `(add-i64 r 1)` in the continuation sees 4 and yields 5. A continuation
 ;; that ran before the resume would see garbage.
 
-(defn test-continuation-after-resume []
+(defn check-continuation-after-resume []
   (bind (async-read 4)
     (fn [r] (Pure (if (eq-i64 (add-i64 r 1) 5) 1 0))))) ;; continuation saw 4 -> pass 1
 
@@ -89,7 +89,7 @@
 ;; leaves MUST run in order: read a = 3, then read b = a+1 = 4. Their sum is 7.
 ;; Two suspend/resume cycles, sequenced by the dataflow.
 
-(defn test-dependent-reads []
+(defn check-dependent-reads []
   (bind (async-read 3)
     (fn [a]
       (bind (async-read (add-i64 a 1))
@@ -103,7 +103,7 @@
 ;; (wall-clock ~5 ms, not ~10 ms), with no extra threads. Both resume; the sum
 ;; is 10. We assert the value; the overlap is the reactor's doing.
 
-(defn test-independent-overlap []
+(defn check-independent-overlap []
   (bind (async-read 5)
     (fn [a]
       (bind (async-read 5)
@@ -118,8 +118,8 @@
 ;; of ms: every wait is a handful of ms, and the independent pair overlaps.
 
 (defn main []
-  (bind (test-single-read) (fn [a]
-  (bind (test-continuation-after-resume) (fn [b]
-  (bind (test-dependent-reads) (fn [c]
-  (bind (test-independent-overlap) (fn [d]
+  (bind (check-single-read) (fn [a]
+  (bind (check-continuation-after-resume) (fn [b]
+  (bind (check-dependent-reads) (fn [c]
+  (bind (check-independent-overlap) (fn [d]
     (Pure (add-i64 a (add-i64 b (add-i64 c d)))))))))))))

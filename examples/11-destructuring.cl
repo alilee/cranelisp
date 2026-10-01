@@ -33,7 +33,7 @@
 (defn swap-point [p]
   (match p [(Point x y) (Point y x)]))
 
-(defn test-swap []
+(defn check-swap []
   (let [swapped (swap-point (Point 3 7))]
     (match swapped [(Point x y) (sub-i64 x y)])))
 
@@ -45,7 +45,7 @@
            ay (if (lt-i64 y 0) (sub-i64 0 y) y)]
        (add-i64 ax ay))]))
 
-(defn test-manhattan []
+(defn check-manhattan []
   (manhattan (Point -3 4)))
 
 ;; --- Discriminating sum types ---
@@ -56,7 +56,7 @@
     [(Some _) 1
      _        0]))
 
-(defn test-is-some []
+(defn check-is-some []
   ;; `(is-some (Some 42))` pins the Option element type via the `(Some 42)` value.
   ;; A bare `(is-some None)` would reach codegen with `None`'s `(Option a)` element
   ;; type unpinned — an ambiguity error under spec §3.11.1 (no representation-based
@@ -69,7 +69,7 @@
     [(Some x) x
      None     default]))
 
-(defn test-get-or-default []
+(defn check-get-or-default []
   (add-i64 (get-or-default (Some 10) 0)
            (get-or-default None 5)))
 
@@ -82,7 +82,7 @@
         cc (match c [(Some _) 1 _ 0])]
     (add-i64 ca (add-i64 cb cc))))
 
-(defn test-count-some []
+(defn check-count-some []
   ;; The bare `None` is `(Option a)` with the element type unpinned; under the
   ;; tightened §3.11.1 (full-concreteness) it must be annotated concrete at the
   ;; codegen-reaching call site. `(Some 1)`/`(Some 3)` are already `(Option Int)`.
@@ -99,7 +99,7 @@
          [None     x
           (Some y) (add-i64 x y)])]))
 
-(defn test-add-opts []
+(defn check-add-opts []
   (add-i64 (add-opts (Some 10) (Some 20))
            (add-opts (Some 5) None)))
 
@@ -119,7 +119,7 @@
                 [None     0
                  (Some s) s])]))
 
-(defn test-chain-div []
+(defn check-chain-div []
   (add-i64 (chain-div 100 5 4)     ;; 100/5=20, 20/4=5
            (chain-div 100 0 4)))    ;; division by zero -> 0
 
@@ -128,10 +128,10 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-swap)
-      (add-i64 (test-manhattan)
-        (add-i64 (test-is-some)
-          (add-i64 (test-get-or-default)
-            (add-i64 (test-count-some)
-              (add-i64 (test-add-opts)
-                       (test-chain-div)))))))))
+    (add-i64 (check-swap)
+      (add-i64 (check-manhattan)
+        (add-i64 (check-is-some)
+          (add-i64 (check-get-or-default)
+            (add-i64 (check-count-some)
+              (add-i64 (check-add-opts)
+                       (check-chain-div)))))))))

@@ -32,8 +32,6 @@ Its exact file patterns are declared in `standing-documents.toml`.
 - `cli-reference.md` — the `cranelisp` command-line reference.
 - `getting-started.md` — installation, REPL basics, first programs and pointers
   onward.
-- `syntax-cheatsheet-plan.md` — the delivered `/syntax` command guide and
-  reader-annotation macro helpers.
 - `guide/` — feature-by-feature reference paralleling `spec/`.
 - `errors/` — error-message explanations, written as each error is confirmed.
 

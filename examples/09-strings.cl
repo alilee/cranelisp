@@ -17,37 +17,37 @@
 ;; to convert string results to integers for verification.
 
 ;; String literal length
-(defn test-literal-len [] (str-len "hello"))
+(defn check-literal-len [] (str-len "hello"))
 
 ;; Empty string has length zero
-(defn test-empty-len [] (str-len ""))
+(defn check-empty-len [] (str-len ""))
 
 ;; Concatenation produces a new string
-(defn test-concat []
+(defn check-concat []
   (str-len (str-concat "hello" " world")))
 
 ;; Chained concatenation
-(defn test-concat-chain []
+(defn check-concat-chain []
   (str-len (str-concat (str-concat "a" "b") "c")))
 
 ;; String equality: same content
-(defn test-eq-same []
+(defn check-eq-same []
   (if (str-eq "abc" "abc") 1 0))
 
 ;; String equality: different content
-(defn test-eq-diff []
+(defn check-eq-diff []
   (if (str-eq "abc" "xyz") 1 0))
 
 ;; Convert an integer to a string
-(defn test-int-to-string []
+(defn check-int-to-string []
   (str-len (int-to-string 42)))
 
 ;; Convert a boolean to a string ("true" has length 4)
-(defn test-bool-to-string []
+(defn check-bool-to-string []
   (str-len (bool-to-string true)))
 
 ;; Strings in let bindings
-(defn test-let-string []
+(defn check-let-string []
   (let [greeting "hello"
         name     "world"
         msg      (str-concat (str-concat greeting ", ") name)]
@@ -57,11 +57,11 @@
 (defn make-greeting [who]
   (str-concat "hello, " who))
 
-(defn test-fn-string []
+(defn check-fn-string []
   (str-len (make-greeting "cranelisp")))
 
 ;; Build a string from a number and check its content
-(defn test-number-string []
+(defn check-number-string []
   (if (str-eq (int-to-string 0) "0") 1 0))
 
 ;; Expected: 5 + 0 + 11 + 3 + 1 + 0 + 2 + 4 + 12 + 16 + 1 = 55
@@ -69,14 +69,14 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-literal-len)
-      (add-i64 (test-empty-len)
-        (add-i64 (test-concat)
-          (add-i64 (test-concat-chain)
-            (add-i64 (test-eq-same)
-              (add-i64 (test-eq-diff)
-                (add-i64 (test-int-to-string)
-                  (add-i64 (test-bool-to-string)
-                    (add-i64 (test-let-string)
-                      (add-i64 (test-fn-string)
-                               (test-number-string)))))))))))))
+    (add-i64 (check-literal-len)
+      (add-i64 (check-empty-len)
+        (add-i64 (check-concat)
+          (add-i64 (check-concat-chain)
+            (add-i64 (check-eq-same)
+              (add-i64 (check-eq-diff)
+                (add-i64 (check-int-to-string)
+                  (add-i64 (check-bool-to-string)
+                    (add-i64 (check-let-string)
+                      (add-i64 (check-fn-string)
+                               (check-number-string)))))))))))))

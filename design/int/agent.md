@@ -614,7 +614,7 @@ and the validator still gates correctness. Wording is
 ## 22. `/syntax` cheat-sheet
 
 The cheat-sheet is a default-build command for humans and the agent. Content
-is `/docs`-owned (`user/syntax-cheatsheet-plan.md`); the experience is
+is `/docs`-owned (`user/guide/syntax-command.md`); the experience is
 `repl/spec/17a-agent-language-awareness.md` §17.17.
 
 ### 22.1 Asset and parser

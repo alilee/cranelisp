@@ -1,7 +1,7 @@
 ---
 id: ACT-1020
 title: Reconcile the file a dotted CLI entry target names with the module path mapping
-status: open
+status: deferred
 priority: advisory
 from: qa
 to: qa
@@ -38,10 +38,14 @@ classify the as-built resolver against that answer.
 
 ## Disposition
 
-- **Not an S122 package item and not carried.** K1 did not introduce the
-  mapping. It only made the batch refusal name the resolver's path.
-- `sprint` should put the `spec` question in the Phase 5 → 6a presentation,
-  not in a separate question cycle.
+- **Carried to S123 (user, 2026-09-30).** Approved with the Phase-5
+  checkpoint as requirement clarification and narrow reproduction
+  ([checkpoint carries](../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+  First deferral. K1 did not introduce the mapping; it only made the batch
+  refusal name the resolver's path. The source fact was re-read at
+  `88bbbd12`, unchanged.
+- The `spec` question is the carried work's first act; S122 did not put it to
+  the user.
 - **When answered:**
   - `test` reduces a dotted-target cell in `--run` and the REPL;
   - the owner of any change is `dev`(src) at the resolver, or `spec` if the

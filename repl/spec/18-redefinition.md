@@ -294,22 +294,10 @@ current impl for the pair, not its replacement history.
 
 ### 18.8 Persistence and Reload [Uncovered S121]
 
-The backing file contains only the latest **successful** source for each
-definition or declaration under §15.6, plus startup-failed source retained
-under §15.2.3 until a successful definition replaces it. [Tested+Neg tests/repl_persist::persist_startup_failed_source_retained_until_same_name_repair_neg, tests/repl_persist::persist_startup_failed_source_survives_reset_then_other_definition] [Tested tests/repl_persist::persist_function_replacement_persists_through_restart, tests/repl_persist::persist_macro_replacement_persists_through_restart] A
-rejected redefinition is never written. [Tested tests/repl_persist::persist_typecheck_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration] Reload and restart compile that current authored source; they do not
+Redefinitions persist as §15.1 and §15.6 specify [Tested tests/repl_persist::persist_function_replacement_persists_through_restart, tests/repl_persist::persist_macro_replacement_persists_through_restart],
+including the rule that a rejected redefinition is never written. [Tested tests/repl_persist::persist_typecheck_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration] Reload and restart compile the current authored source; they do not
 replay the interactive edit history and do not restore obsolete callable
 generations, broken-symbol state, cascade reports, or trap stubs.
 
-Two template boundaries qualify §15.4's round-trip rule:
-
-- persisted macro invocations are re-expanded with the macro definition
-  current at reload or restart, so an already-compiled pre-redefinition
-  expansion is not promised to survive source reconstruction; and
-- an impl that omitted a default method re-materializes that method from the
-  trait default body current at reload or restart, so a historical generated
-  default body is not promised to survive source reconstruction.
-
-These are source-reconstruction rules, not hidden runtime updates. In the live
-session, an existing expanded definition or materialized default method changes
-only at the explicit future-typecheck or re-`impl` boundaries stated above.
+Persisted macro invocations and impls that omit a default method are
+reconstructed under §15.4's template qualification.

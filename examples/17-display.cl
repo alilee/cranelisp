@@ -36,13 +36,13 @@
 
 ;; --- Test Display on primitives ---
 
-(defn test-show-int []
+(defn check-show-int []
   (if (str-eq (show 42) "42") 1 0))                     ;; -> 1
 
-(defn test-show-neg []
+(defn check-show-neg []
   (if (str-eq (show (sub-i64 0 7)) "-7") 1 0))          ;; -> 1
 
-(defn test-show-bool []
+(defn check-show-bool []
   (if (str-eq (show true) "true") 1 0))                 ;; -> 1
 
 ;; --- Implementing Display for user-defined types ---
@@ -58,10 +58,10 @@
        Autumn "autumn"
        Winter "winter"])))
 
-(defn test-show-season []
+(defn check-show-season []
   (if (str-eq (show Spring) "spring") 1 0))              ;; -> 1
 
-(defn test-show-winter []
+(defn check-show-winter []
   (if (str-eq (show Winter) "winter") 1 0))              ;; -> 1
 
 ;; --- A custom trait: Measurable ---
@@ -82,10 +82,10 @@
   (defn measure [r]
     (match r [(Rectangle w h) (mul-i64 w h)])))
 
-(defn test-measure-segment []
+(defn check-measure-segment []
   (measure (Segment 42)))                                ;; -> 42
 
-(defn test-measure-rect []
+(defn check-measure-rect []
   (measure (Rectangle 6 7)))                             ;; -> 42
 
 ;; --- Display for ADT types ---
@@ -104,10 +104,10 @@
             (str-concat "x"
               (str-concat (int-to-string h) ")"))))])))
 
-(defn test-show-segment []
+(defn check-show-segment []
   (if (str-eq (show (Segment 10)) "Segment(10)") 1 0))            ;; -> 1
 
-(defn test-show-rect []
+(defn check-show-rect []
   (if (str-eq (show (Rectangle 3 4)) "Rectangle(3x4)") 1 0))     ;; -> 1
 
 ;; --- Polymorphic use with concrete types ---
@@ -117,16 +117,16 @@
 (defn show-len-int [x] (str-len (show x)))
 (defn show-len-bool [x] (str-len (show x)))
 
-(defn test-show-len-int []
+(defn check-show-len-int []
   (show-len-int 12345))                                  ;; -> 5
 
-(defn test-show-len-bool []
+(defn check-show-len-bool []
   (show-len-bool false))                                 ;; -> 5
 
 ;; --- Combining traits ---
 
 ;; A type that implements both Display and Measurable
-(defn test-both-traits []
+(defn check-both-traits []
   (let [r (Rectangle 12 5)]
     (add-i64 (measure r) (str-len (show r)))))           ;; -> 60 + 15 = 75
 
@@ -135,15 +135,15 @@
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (test-show-int)
-      (add-i64 (test-show-neg)
-        (add-i64 (test-show-bool)
-          (add-i64 (test-show-season)
-            (add-i64 (test-show-winter)
-              (add-i64 (test-measure-segment)
-                (add-i64 (test-measure-rect)
-                  (add-i64 (test-show-segment)
-                    (add-i64 (test-show-rect)
-                      (add-i64 (test-show-len-int)
-                        (add-i64 (test-show-len-bool)
-                                 (test-both-traits))))))))))))))
+    (add-i64 (check-show-int)
+      (add-i64 (check-show-neg)
+        (add-i64 (check-show-bool)
+          (add-i64 (check-show-season)
+            (add-i64 (check-show-winter)
+              (add-i64 (check-measure-segment)
+                (add-i64 (check-measure-rect)
+                  (add-i64 (check-show-segment)
+                    (add-i64 (check-show-rect)
+                      (add-i64 (check-show-len-int)
+                        (add-i64 (check-show-len-bool)
+                                 (check-both-traits))))))))))))))

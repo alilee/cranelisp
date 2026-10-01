@@ -2,7 +2,7 @@
 
 **Author:** `/qa` · **Date:** 2026-07-03 · **Status:** isolation COMPLETE — all
 three signatures attributed; NO fix authored (attribution-only wave per
-`sprints/SPRINT.md` §Scope Block A item 3).
+`sprints/archive/sprint-102.md` §Scope Block A item 3).
 
 **Inputs:** the 3 committed guards (`tests/generic_value_use_mono.rs`), FIXME
 `design/arch/fixmes/0488-…-missing-mono.md`, the isolation plan

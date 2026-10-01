@@ -1,6 +1,56 @@
-# Sprint 122: Known-issue closure and REPL-agent evaluation
+# Sprint 122: Known-issue closure and REPL-agent evaluation — CLOSED 2026-10-02
 
-**Current work:** PHASE 6a (user-facing assessment), approved 2026-09-30.
+## Close summary
+
+**Outcome.** The sprint resolved known compiler and language defects. It also
+delivered the REPL-agent evaluation baseline (agent lane 81/81) and left the
+issue records truthful. The Phase-5 corrections were checkpointed at
+`88bbbd12`:
+- the consuming extern entry convention;
+- tail forwarding and match-alias last use;
+- Borrowed/Owned vector COW ownership;
+- the whole-file REPL namespaces and reload;
+- the missing-entry diagnostic.
+
+Phase 6 delivered:
+- the user-facing REPL spec, docs and examples passes (`38-program-tests`, the `check-` rename and a permanent examples `--link` cell);
+- the `vec-set` bounds fix (ACT-1037);
+- the REPL session lock that replaces the per-module lock (ACT-1044, PF-1, ACT-1019);
+- `/quit` always exiting 0;
+- the §0.7 environment applied under `--test`;
+- the elimination of two pre-existing data-loss paths: an idle save (ACT-1045) and a startup save (ACT-1046).
+
+**Evidence (final tree).** The full suite ran 6,633: 6,608 passed and 1 was
+skipped. All 25 failures are filed defect guards; the ACT-1047 RED was added
+after this run. Also on the final tree:
+- agent lane 81/81;
+- discovery replay clean armed and unarmed;
+- all 13 showcase demos exit 0;
+- document checker 0, spec link and coverage checks clean, fmt clean;
+- public APIs +0/−0.
+QA judges Phase 6b adequate with residuals. The canonical record is
+`tests/plan/s122-evidence-delta.md`.
+
+**Carried to S123:**
+- K5–K11; ACT-1015/1016/1017; ACT-1026/1028; ACT-1031 (ACT-1029/1030).
+- 0934; 0694 with ACT-1025; ACT-1018/1022; ACT-1020; ACT-1032.
+- ACT-1033 (needs the public-API gate); ACT-1034/1035/1036/1038/1039/1041.
+- ACT-1040/1042, the fundamental panic-propagation fix.
+- ACT-1047 (N3); ACT-1048 (the deleted-file rule).
+- Backend audit R1–R12, opening S123 Phase 1 with the S119 option-2 measurement and decision before ACT-1031 resumes instance fixes.
+- A session-lock and live-reload sprint demo.
+- Modules and macros user guides.
+- The panic-prefix wording question for spec.
+
+**Learning.**
+- Phase 5 ran three weeks, because each verification probe found another unsafe instance in a backend with 13 independent ownership decision points. The audit's structural recommendation, not instance fixes, is the S123 lever.
+- Phase 6b's session lock took six review-and-correct rounds. Each round found real defects, two of them data loss. A coordinator stop rule ("carry new findings unless data loss or crash") kept the scope bounded.
+- Running finding-scoped reviews with live probes against the built binary repeatedly found what static review and the suite did not.
+
+---
+
+
+**Current work:** CLOSED 2026-10-02.
 The Phase-5 fixing change-set is checkpointed; the residual carries are
 approved (see "Phase-5 checkpoint approved" at the end of this plan). ACT-1030's
 use-after-free guard stays failing and visible; ACT-1031 resumes that
@@ -78,8 +128,8 @@ proposed dispositions below rather than being audited again.
 | Phase 3 → Phase 4 | Settled designs, user rulings and QA evidence deltas | 2026-09-10: “yes” to the explicit transition request | approved; complete |
 | Phase 4 → Phase 5 | Exact producer/consumer sequence, source reservations and wave exits | 2026-09-10: “yes” to the explicit implementation request | approved; in progress |
 | Phase 5 → Phase 6a | Delivered compiler/eval capability and evidence | 2026-09-30: “approved” in response to the checkpoint commit, carry batch and transition request | approved; in progress |
-| Phase 6a → Phase 6b | User-facing assessment and action plan | — | pending |
-| Phase 6b → Phase 7 | Accepted artifacts and exact close operations | — | pending |
+| Phase 6a → Phase 6b | User-facing assessment and action plan | 2026-09-30: “approved” to the 6b scope, fix/carry and N1–N6 checkpoint | approved; in progress |
+| Phase 6b → Phase 7 | Accepted artifacts and exact close operations | 2026-10-02: “yes” to the outcome, carries and exact close operations | approved; complete |
 
 “Complete the plan” authorizes this scope artifact, not later-phase technical
 work. Proposed role handoffs and wave structure below are reviewable planning
@@ -7214,3 +7264,172 @@ recommended a commit, one carry decision and advancement. The user answered
   user.
 
 `session.md` has been absorbed into this plan and deleted.
+
+### 2026-09-30 — Phase 6a assessment complete; checkpoint pending
+
+All roles ran on Claude Opus 5.5/high. The Fable-allocated roles ran under
+the per-run exception; results are in `.local/s122-6a/`.
+
+- **qa:** recorded the S123 carries and filed ACT-1032 (test-cache
+  isolation). Took intake of later leads: ACT-1033 (dead catalog entry and
+  hand-copied intrinsic signatures), ACT-1034 (nested constrained-impl
+  codegen failure), ACT-1035 (REPL crash when a concrete impl follows a later
+  parametric impl), ACT-1036 (`main` refusal reported at a synthetic
+  location), ACT-1037 (`vec-set` has no bounds check; memory-unsafe),
+  ACT-1038 (traced calls on spark workers leak and are not recorded) and
+  ACT-1039 (`--run` traces omit user functions). Each has an allocated RED;
+  none is committed yet.
+- **arch:** the R22 intrinsic-wording correction is delivered. Review
+  finding 1 was repaired and the finding-scoped re-review confirms it;
+  findings 2–7 were fixed as wording. The design(platform) and qa citation
+  repairs are done. The advisory backend comment and single-source
+  observations are queued for dev(backend).
+- **audit(backend):** `audits/cranelisp-backend-s122.md`. Requirement
+  fulfilment: not fulfilled. Economy: D. It counts 13 separate ownership
+  decision points and notes the lapsed S119 option-2 measurement.
+  Recommendations R1–R12 await disposition in S123 Phase 1.
+- **spec(repl), docs, training:** Phase-6b plans returned in their reports.
+  Spec: normative questions N1–N6 and meaning-preserving edits C1–C8. Docs:
+  items 1–9. Training: E1–E11, including the proposed `38-program-tests`
+  exception.
+
+Pending user decisions: fix or carry for ACT-1034–1039, N1–N6, the E10
+exception and the Phase 6a → 6b transition.
+
+### 2026-09-30 — Phase 6b approved
+
+The user answers “approved” to the checkpoint as recommended:
+- **Fix in S122:** ACT-1037.
+- **Carry to S123 with REDs committed now:** ACT-1034, 1035, 1036 (with FIXME 0915), 1038 and 1039.
+- **REPL spec rulings:** N1 yes, N2 yes, N3 “not loaded”, N4 align §0.5.5 with what shipped (§15.2), N5 no (the self-documenting principle covers it), N6 replace the ring conformance sentence now.
+- **Training:** the E10 `38-program-tests` exception.
+- **Deferred to S123 Phase 1:** the audit's R1–R12, opening with the S119 option-2 measurement and decision before ACT-1031 resumes. Modules and macros guides also go to S123.
+
+Waves: one Cargo owner at a time.
+- **W1 (parallel):** spec (repl/spec), docs (user/), training (examples/, no Cargo), design(backend) for ACT-1037, and test (REDs for ACT-1034–1039; Cargo owner).
+- **W2:** dev(backend) fixes ACT-1037 plus the advisory comment fixes; qa does Q1–Q3 after spec.
+- **W3:** test re-pins the example exits after training; review(backend) inspects ACT-1037.
+- **W4:** full suite and demo replays.
+
+### 2026-10-01 — ACT-1040 carried to S123 for the fundamental fix
+
+The user directs: “leave 1040 for the fundamental fix in next sprint”.
+ACT-1040 (panic sentinel escape) and ACT-1042 (its scalar-result faces) go to
+S123. Their REDs stay committed and visible. Design's costed options are in
+`design/backend/s122-closure.md` §10; the fundamental fix belongs with the
+audit's ownership and option-2 disposition in S123 Phase 1. A0 is not
+implemented in S122.
+
+Phase 6b progress:
+- spec (repl/spec), docs (user/) and training (examples/) are delivered.
+- ACT-1037 is fixed, reviewed with no blocking finding, and closed by qa.
+- test has committed-ready REDs for ACT-1034–1036 and ACT-1038–1042 plus the
+  ACT-0985 §5.13.1 RED; it re-baselined the goldens (guard-only) and re-pinned
+  the examples.
+- Cross-owner link repairs are done and the document checker is at zero.
+- Remaining: qa intake of docs' parse-failure cascade and `/quit` leads; a
+  dev(backend) comment pass on review advisories; then W4 (full suite and demo
+  replays).
+
+### 2026-10-01 — REPL rulings: failed-save lock, /quit status, --test environment
+
+User rulings, verbatim:
+- ACT-1044: “uncompilable file changes should lock the repl until they are
+  fixed - then it doesn't matter that foreign modules are pointing to an
+  errored module.”
+- “quit should always return 0 and not reprint”.
+- “execution environment applies to test.”
+
+Coordinator reading, for spec to confirm or query: a saved file change that
+fails to compile (parse or type) locks the REPL session, not only the module,
+until a save compiles. This supersedes the per-module cascade question
+ACT-1044 raised. It is treated as in-scope S122 work under the Phase-6b
+approval to fix confirmed defects, following the flow spec → qa → test RED
+→ design(int) → dev(src) → review → W4. `/quit` and EOF exit 0 with no reprint
+of outstanding errors. The §0.7 execution environment applies in `--test`
+mode.
+
+### 2026-10-01 — Session-lock questions answered
+
+The user answers “yes” to the coordinator's five recommendations on spec's
+open questions:
+1. Any save that leaves the loaded program uncompilable locks the session.
+   This includes a structural-change refusal (§14.8) and a dependent broken by
+   a changed dependency.
+2. While locked, dependents are not recompiled, reported or locked; they are
+   rebuilt when the fix compiles.
+3. While locked, every code turn (definitions and expressions) is refused;
+   slash commands, including `/sh`, stay available.
+4. A file that fails at startup also holds the session lock until a save
+   compiles.
+5. The refusal names the failing file(s) and the remedy; the wording is left
+   to the implementation, under the self-documenting principle.
+
+### 2026-10-01 — Session-lock boundary questions
+
+The user accepts the LQ-2 recommendation: while locked, slash commands that
+evaluate code (`/mem EXPR`, `/time`, `/run-tests` and similar) count as code
+turns and are refused. Introspection commands, `/sh`, `/mod` and `/quit` stay
+available. A pending form at EOF is dropped unevaluated and the exit status is
+still 0. LQ-1 (a module that depends on a still-failing module waits) and LQ-3
+(dependents of a startup-failed module are pending, not failed) follow from
+the approved rule 2; they are recorded as derived, not as new rulings.
+
+### 2026-10-01 — Session lock implemented; review dispatched
+
+dev(src) delivered the session lock, the /quit and EOF exit status and the
+ACT-1044 fix. The SL-1…SL-11, SQ-1, SQ-2, EOF and ACT-1044 cells are green;
+lib 1003/1003; repl_persist 95/95; watch, lifecycle and examples 75/75;
+public API +0/−0. It reports six deviations from the design and a residual: a
+newly loaded module that fails is not itself in failed_modules, so the session
+could unlock while the scheduler still holds it Failed. Review(src) is
+dispatched. design(int) records the deviations. ACT-1019 has new evidence
+(a non-UTF-8 user.cl is read as empty and then overwritten, losing data); a
+fold-in decision is pending with the user.
+
+### 2026-10-01 — Session-lock readings and ACT-1019 fold-in
+
+The user answers “agree” to the four recommendations:
+- Q-A: a waiting dependent's definitions are unavailable while it waits.
+- Q-B: `/expand` and the other compile-only diagnostics (`/type`, `/sexp`, `/ast`, `/clif`, `/disasm`) stay available while locked.
+- Q-C: a failed `/mod` load reports the error and keeps the current module; the session locks.
+- ACT-1019 is folded into S122. An entry file that exists but cannot be read (invalid UTF-8, permissions) is a located error naming the file in every mode. `--run`, `--link` and `--test` exit 1; the REPL makes the entry stand failed and locks the session, so the file is never overwritten. Design: `design/int/int.md` §6.1.1.
+
+Review(src) found three required items in the first session-lock build. design(int) ruled on them; dev(src) is implementing them, with PF-1 (an unparseable unregistered dependency is mis-attributed to its loader) being ruled now.
+
+### 2026-10-02 — W4 verification on the final Phase-6b tree
+
+This is the coordinator's run (local route), from provenance HEAD 88bbbd12 plus
+the working-tree diff recorded in `.local/s122-w4b/provenance.txt`.
+- **Full suite:** 6,633 run, 6,608 pass, 1 skipped. The 25 failures are all filed defect guards: ACT-0976, ACT-1018, ACT-1026 ×2, ACT-0985, ACT-1030, ACT-1034 ×4, ACT-1035, ACT-1036, ACT-1038 ×2, ACT-1039, and the ACT-1040, ACT-1041 and ACT-1042 panic cells ×10. No regression. In an earlier run the same day, two concurrency wall-clock witnesses failed under load; qa classified that as budget overrun under load, and both pass in this run.
+- **Agent lane:** 81/81.
+- **REPL discovery replay:** exit 0 armed and unarmed; output matches K4 apart from timings.
+- **All 13 active showcase demos:** exit 0 under DEMO_FAST; every error line is a deliberate teaching error.
+- **Checks:** document checker 529/0; spec_link_check and spec_coverage_reconcile clean; fmt clean; public-API baselines unchanged since 88bbbd12 (+0/−0), and public_api_check passes for all seven crates.
+
+Corrections delivered in Phase 6b and closed or pending closure by qa:
+- ACT-1037 (vec-set bounds);
+- the REPL session lock (ACT-1044);
+- /quit exit status;
+- ACT-1019 (unreadable entry);
+- review findings 1–3 and R1–R3;
+- ACT-1045 (idle save, N1);
+- ACT-1046 (startup save, N2).
+Open: N3 (a backing file created after start, never recorded, is overwritten) and the user question on deleting a loaded file.
+
+### 2026-10-02 — N3 and deletion carried
+
+The user directs “carry both”. ACT-1047 (N3: a backing file created after
+start, never recorded, is overwritten by the next definition) is carried to
+S123, with its FC-1 RED committed now as the defect record. The deleted-file
+rule is carried as ACT-1048 (to spec); the current skip stands.
+
+### 2026-10-02 — Phase 7 close approved and executed
+
+The user answers “yes” to Phase 6b → 7 with the exact close operations:
+- one close commit, excluding NOTES and the `.agents` pointer, then a follow-up commit for the `fixed=` stamps;
+- archive this plan to `sprints/archive/sprint-122.md`;
+- a ROADMAP entry;
+- a rule-deletion proposal for the user to decide;
+- no push.
+The new sprint demo is carried.

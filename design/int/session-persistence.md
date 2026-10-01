@@ -18,8 +18,9 @@ watcher suppression and restore.
 The session regenerates the current module's backing file after every
 successful definition-like turn: a definition, a structural form (`import`,
 `mod`, `platform`), an accepted agent write (`design/int/agent.md` §15.3,
-§17.1) or a committed redefinition. Expression turns and failed forms never
-trigger it.
+§17.1) or a committed redefinition. Expression turns and failed turns never
+trigger it, and nothing regenerates while the session is locked
+([§2.4.4](#244-failed-source)).
 
 ### 1.2 Stateless generation
 
@@ -68,10 +69,8 @@ After a whole-file rebuild, these fields hold exactly the saved source's forms
 The file holds definitions and structural forms only
 (`repl/spec/15-session-persistence.md` §15.7). The synthetic `__expr` wrapper,
 internal `$`-mangled entries and compiler-generated keys are never written.
-Forms that failed to load during a degraded start-up are re-emitted verbatim
-until repaired, so regeneration never silently deletes the user's text
-(`append_failed_forms`). A backing file that does not parse yields no forms;
-it is kept by the module lock instead (§2.4.4).
+A file whose module failed is never regenerated, so its saved text, broken
+forms included, stays on disk as saved (§2.4.4).
 
 ### 2.2 Render source per kind
 
@@ -165,8 +164,7 @@ A cache hit requires the file's hash to equal the manifest
 - **Liveness.** A keyed form is rehydrated only if the key names a live
   entry. For an ordinary entry, the key is in the module's table. For an
   `impl`, it is in the table's `written_trait_impls`, which also covers impls
-  of imported traits whose shells live elsewhere. A startup-failed form is
-  not live; it stays with `append_failed_forms`.
+  of imported traits whose shells live elsewhere.
 - **Absence.** A key is filled only when its record has neither form nor
   text. A record written by codegen alone, such as CLIF metadata, counts as
   absent. The record takes the form and its consistency-gated verbatim slice.
@@ -199,27 +197,26 @@ the file.
 
 #### 2.4.4 Failed source
 
-A failed reload publishes nothing, so it changes no record (§2.4.1). Its
-saved file holds the edit the session has not accepted, and the module lock
-([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)) keeps it: turn
-admission and the regeneration chokepoint withhold every write to that module
-until a reload of it succeeds (`repl/spec/14-file-watching.md` §14.5 item 5).
+A failed reload publishes nothing, so it changes no record (§2.4.1). While
+any module stands failed the session is locked
+([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)): turn
+admission and the regeneration chokepoint withhold every write to every
+backing file until a save leaves no module standing failed
+(`repl/spec/14-file-watching.md` §14.5; `15-session-persistence.md` §15.1).
+Each saved file, including the one that does not compile, therefore stays on
+disk as saved.
 
-- **Every cause.** The lock covers a §14.8 refusal, a read, parse, typecheck,
-  codegen or publication failure, and a dependent that failed in the cascade.
-  Candidate records are never restored to fill the file.
-- **Startup.** An entry backing file that does not parse is locked the same
-  way (`repl/spec/15-session-persistence.md` §15.2.3). One that parses but
-  fails keeps its definition-turn repair and the failed-form re-emission of
-  [§2.1](#21-content) until its first whole-file rebuild, which a plan may
-  run as a dependent: a failed rebuild locks it, a successful one drops the
-  retained forms (`repl/spec/15-session-persistence.md` §15.2.3, final
-  paragraph). Every other module a failed start leaves `Failed` is
-  locked. It is not a backing file, so no repair applies
-  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
+- **Every cause.** The lock covers a §14.8 refusal; a read, parse,
+  typecheck, codegen or publication failure; a dependent that fails in its
+  own source after its dependency compiled; and a failure at startup or in a
+  `/mod` load. Candidate records are never restored to fill a file.
+- **Startup.** A module that fails at startup holds no definition and its
+  file is not regenerated. There is no repair at the prompt and nothing is
+  re-emitted: the remedy is a save that compiles
+  (`repl/spec/15-session-persistence.md` §15.2.3).
 - **Restart.** The lock is session state. A restart compiles the saved
   source ([§3.4](#34-restore)), so source that compiles is established and
-  source that still fails follows the startup rule above.
+  source that still fails locks the restarted session.
 
 #### 2.4.5 Editing a cache-installed module
 
@@ -229,8 +226,8 @@ its preloaded table.
 
 - **Rule.** When `/mod M` names a module whose live generation was installed
   from the object cache, the session first recompiles M from its backing file
-  through a reload plan rooted at M (`repl-lifecycle.md` §1.2). A module
-  whose load failed is locked ([§2.4.4](#244-failed-source)). A generation
+  through a reload plan rooted at M (`repl-lifecycle.md` §1.2). A failed
+  load locks the session ([§2.4.4](#244-failed-source)). A generation
   that regeneration writes for a loaded module is therefore compiled from
   source this session, and each of its definitions has a publication record
   ([§2.4.1](#241-who-writes-a-record)), including those a top-level macro
@@ -278,23 +275,29 @@ and the REPL never aborts because a save failed.
   cache hit is a fast restart. There is no REPL-specific restore path.
 - With no backing file, the module starts empty and the file is created by
   the first regeneration.
-- A backing file with broken forms loads its good forms and retains the
-  failed ones for re-emission (§2.1); the file is never deleted
-  (`repl/spec/14-file-watching.md` §14.4–§14.5).
-- A backing file that does not parse loads nothing, and its module is locked
-  until a save of it compiles ([§2.4.4](#244-failed-source)).
-- The start-up restore notice counts definitions from the restore record, not
-  from a re-parse of the file (`repl/spec/15-session-persistence.md` §15.2.2).
+- A backing file that fails to compile, whether it does not parse or a form
+  fails, loads no definition. Its module stands failed, the session is
+  locked until a save of it compiles, and the file is never rewritten or
+  deleted ([§2.4.4](#244-failed-source)).
+- The start-up restore notice is emitted only when the entry module
+  compiled. Every definition of the file then restored, so the file's
+  definitions are the count (`repl/spec/15-session-persistence.md`
+  §15.2.2).
 
 ## 4. Watcher self-write suppression
 
-The watcher compares content hashes before reloading. After a successful
-write, `regenerate_backing_file` records the written content's hash
-(`update_content_hash`) and maps the file to its module before returning. The
+The watcher compares each file's state on disk with the session's one record
+of what it last loaded or wrote (`recorded_sources`;
+[REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload), Content hash).
+After a successful write, `regenerate_backing_file` records the written
+content's state there and maps the file to its module before returning. The
 watcher polls at the next prompt boundary, sees a matching hash, and skips the
 reload; repeated events for one write are each hash-checked. An external edit
 changes the hash and triggers an ordinary reload, which unifies interactive and
-file-based development.
+file-based development. An external save that the session has not yet
+reloaded is never overwritten: the watcher polls before each turn, and the
+write chokepoint refuses when the file on disk differs from the recorded
+state ([REPL lifecycle §1.2, §1.3.1](repl-lifecycle.md#131-session-lock)).
 
 ## 10. Inline `(mod …)` extraction path
 

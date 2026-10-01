@@ -107,7 +107,7 @@ and imported symbols — at **name + full type signature + docstring** grain, ev
 **without** the agent first having to spend a turn on `/imports`/`/list`/`/exports`. This is
 the user-directed "keep prelude plus imported symbols in context" delivered the user-owned
 way — **harvest, not primer** (`agent-prelude-awareness-via-harvest-not-primer`;
-`sprints/SPRINT.md §Pillar 2`). [S90]
+`sprints/archive/sprint-90.md §Pillar 2`). [S90]
 
 **This is ambient, not a command.** There is **no `/harvest` command** and nothing extra
 appears in the human's REPL — the enrichment lives entirely in the context the agent
@@ -393,7 +393,7 @@ introspection surfaces in §11.2.
 
 ##### 17.19.2b A Constructor Is Listed Once, Under Its Canonical `Type.Ctor` Form [S109]
 
-With the dotted-`Type.Ctor` constructor capability (`sprints/SPRINT.md` bucket 2 — same-named
+With the dotted-`Type.Ctor` constructor capability (`sprints/archive/sprint-109.md` bucket 2 — same-named
 constructors coexisting across types, minting a canonical `Type.Ctor` key plus a bare-name alias),
 a constructor now has **two** symbol-table entries: the canonical `Maybe.Some` and the bare alias
 `Some`. `/search` MUST surface a constructor **exactly once**, under its **canonical qualified

@@ -1040,8 +1040,8 @@ result, while the macro checkpoint remains live under §1.1.2.
    published row. `format_eval_result` renders each symbol through the existing
    single-symbol `ModuleEntry` formatter, separated by newlines. Warnings are
    attached once to the batch.
-5. Persistence and failed-form repair consume the same complete symbol list;
-   they do not infer a primary definition.
+5. Persistence consumes the same complete symbol list; it does not infer a
+   primary definition.
 
 For the current stdlib expansion:
 

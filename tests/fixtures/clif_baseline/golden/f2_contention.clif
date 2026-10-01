@@ -221,25 +221,28 @@ block1:
 ; === end CLIF user::copies ===
 ; === CLIF user::copy-work ===
 function %copy-work(i64, i64, i64, i64) -> i64 system_v {
-    gv0 = symbol colocated userextname3
-    gv1 = symbol userextname5
+    gv0 = symbol colocated userextname2
+    gv1 = symbol colocated userextname5
+    gv2 = symbol userextname6
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
-    sig2 = (i64, i64, i64, i64) -> i64 system_v
-    sig3 = (i64, i64) -> i64 system_v
-    sig4 = (i64) -> i64 system_v
-    sig5 = (i64) system_v
+    sig2 = (i64, i64) -> i64 system_v
+    sig3 = (i64, i64, i64, i64) -> i64 system_v
+    sig4 = (i64, i64) -> i64 system_v
+    sig5 = (i64) -> i64 system_v
     sig6 = (i64) system_v
     sig7 = (i64) system_v
     sig8 = (i64) system_v
+    sig9 = (i64) system_v
     fn0 = u0:0 sig0
     fn1 = colocated u0:54 sig1
-    fn2 = u0:23 sig2
-    fn3 = u0:2 sig3
-    fn4 = colocated u0:52 sig5
-    fn5 = colocated u0:51 sig6
+    fn2 = u0:2 sig2
+    fn3 = u0:23 sig3
+    fn4 = u0:2 sig4
+    fn5 = colocated u0:52 sig6
     fn6 = colocated u0:51 sig7
     fn7 = colocated u0:51 sig8
+    fn8 = colocated u0:51 sig9
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
@@ -260,52 +263,67 @@ block3:
     store notrap aligned v14, v13+16  ; v14 = 1
     store.i64 notrap aligned v6, v13+24
     v15 = func_addr.i64 fn1
-    v16 = call fn2(v4, v5, v13, v15)
-    v17 = iconst.i64 1
-    v18 = isub.i64 v6, v17  ; v17 = 1
-    v19 = load.i64 notrap aligned v16+16
-    v20 = iconst.i64 0
-    v21 = icmp.i64 slt v5, v20  ; v20 = 0
-    v22 = icmp.i64 sge v5, v19
-    v23 = bor v21, v22
-    brif v23, block6, block5
+    v16 = load.i64 notrap aligned v4+16
+    v17 = iconst.i64 0
+    v18 = icmp.i64 slt v5, v17  ; v17 = 0
+    v19 = icmp.i64 sge v5, v16
+    v20 = bor v18, v19
+    brif v20, block6, block5
 
 block6:
-    v24 = global_value.i64 gv0
-    v25 = iconst.i64 28
-    v26 = call fn3(v24, v25)  ; v25 = 28
-    v27 = iconst.i64 0
-    return v27  ; v27 = 0
+    v21 = global_value.i64 gv0
+    v22 = iconst.i64 28
+    v23 = call fn2(v21, v22)  ; v22 = 28
+    v24 = iconst.i64 0
+    return v24  ; v24 = 0
 
 block5:
-    v28 = load.i64 notrap aligned v16+32
-    v29 = iconst.i64 8
-    v30 = imul.i64 v5, v29  ; v29 = 8
-    v31 = iadd v28, v30
-    v32 = load.i64 notrap aligned v31
-    v33 = iadd_imm v32, 8
-    v34 = iconst.i64 1
-    v35 = atomic_rmw.i64 add v33, v34  ; v34 = 1
-    v36 = global_value.i64 gv1
-    v37 = iadd_imm v36, 24
-    v38 = load.i64 notrap aligned v37
-    v39 = call_indirect sig4, v38(v32)
-    call fn4(v32)
-    v40 = iadd.i64 v7, v39
-    call fn5(v16)
-    jump block1(v4, v5, v18, v40)
+    v25 = call fn3(v4, v5, v13, v15)
+    v26 = iconst.i64 1
+    v27 = isub.i64 v6, v26  ; v26 = 1
+    v28 = load.i64 notrap aligned v25+16
+    v29 = iconst.i64 0
+    v30 = icmp.i64 slt v5, v29  ; v29 = 0
+    v31 = icmp.i64 sge v5, v28
+    v32 = bor v30, v31
+    brif v32, block8, block7
+
+block8:
+    v33 = global_value.i64 gv1
+    v34 = iconst.i64 28
+    v35 = call fn4(v33, v34)  ; v34 = 28
+    v36 = iconst.i64 0
+    return v36  ; v36 = 0
 
 block7:
-    v46 = iconst.i64 0
-    v45 -> v46
-    v43 = iconst.i64 0
-    v42 -> v43
-    v41 = iconst.i64 0
-    call fn6(v43)  ; v43 = 0
-    jump block4(v41, v46)  ; v41 = 0, v46 = 0
+    v37 = load.i64 notrap aligned v25+32
+    v38 = iconst.i64 8
+    v39 = imul.i64 v5, v38  ; v38 = 8
+    v40 = iadd v37, v39
+    v41 = load.i64 notrap aligned v40
+    v42 = iadd_imm v41, 8
+    v43 = iconst.i64 1
+    v44 = atomic_rmw.i64 add v42, v43  ; v43 = 1
+    v45 = global_value.i64 gv2
+    v46 = iadd_imm v45, 24
+    v47 = load.i64 notrap aligned v46
+    v48 = call_indirect sig5, v47(v41)
+    call fn5(v41)
+    v49 = iadd.i64 v7, v48
+    call fn6(v25)
+    jump block1(v4, v5, v27, v49)
 
-block4(v11: i64, v44: i64):
-    call fn7(v44)
+block9:
+    v55 = iconst.i64 0
+    v54 -> v55
+    v52 = iconst.i64 0
+    v51 -> v52
+    v50 = iconst.i64 0
+    call fn7(v52)  ; v52 = 0
+    jump block4(v50, v55)  ; v50 = 0, v55 = 0
+
+block4(v11: i64, v53: i64):
+    call fn8(v53)
     return v11
 }
 ; === end CLIF user::copy-work ===

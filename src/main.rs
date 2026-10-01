@@ -383,7 +383,7 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
                 auto_accept,
                 is_rule3,
                 startup,
-            )?;
+            );
         }
     }
 
@@ -393,6 +393,11 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
 
 /// The REPL arm of [`run`] (§6): startup recovery, prologue, the read-eval loop,
 /// and the EOF/persist epilogue. The final `s.shutdown()` is the caller's.
+///
+/// It returns nothing: `/quit` and end of input exit with status 0 and reprint
+/// nothing, locked or not (`repl/spec/00-cli-invocation.md` §0.1;
+/// `design/int/repl-lifecycle.md` §1.3.1, Exit), so no session-end outcome may
+/// reach `main`'s error path.
 fn run_repl(
     s: &mut CompilerSession,
     project_root: &Path,
@@ -401,7 +406,7 @@ fn run_repl(
     auto_accept: bool,
     is_rule3: bool,
     startup: Result<(), CranelispError>,
-) -> Result<(), CranelispError> {
+) {
     use std::io::{self, Write};
 
     let stdout = io::stdout();
@@ -438,9 +443,17 @@ fn run_repl(
     // submitted/executed, so an incomplete form at EOF MUST error
     // (repl/spec.md §5.1 + spec/05-definitions.md §5.13.2; user ruling
     // 2026-06-09; FIXME 0142). Slash commands and whitespace/comment-
-    // only buffers are not incomplete forms.
+    // only buffers are not incomplete forms. While the session is locked
+    // the pending form is dropped unevaluated and unreported (§14.5).
+    // The flush is a turn too: a save made while idle is reloaded first, and
+    // a failure it reports locks the session before the form is admitted.
+    poll_watcher(s, &mut stdout);
     let pending = buffer.trim();
-    if !pending.is_empty() && !pending.starts_with('/') && !s.parens_balanced(&buffer) {
+    if !pending.is_empty()
+        && !pending.starts_with('/')
+        && !s.parens_balanced(&buffer)
+        && !s.is_locked()
+    {
         match s.eval(&buffer) {
             Err(e) => {
                 let _ = writeln!(stdout, "{}", cranelisp::style::error_line(&e.to_string()));
@@ -466,10 +479,12 @@ fn run_repl(
     let _ = writeln!(stdout);
     // S101 R18: pin the final `.o`/`.meta` persist to the session's
     // FINAL table state (expression turns mutate the table without a
-    // per-turn persist trigger), then drain it deterministically.
+    // per-turn persist trigger), then drain it deterministically. The wait
+    // returns at the first `Failed` module, whose error was reported when it
+    // failed; the object writes still pending are abandoned and the next
+    // session compiles those modules from source.
     s.flush_final_persist();
-    s.wait_object_complete()?;
-    Ok(())
+    let _ = s.wait_object_complete();
 }
 
 /// The REPL read-eval loop: prompt, read a line (accumulating unbalanced forms),
@@ -481,8 +496,6 @@ fn repl_read_eval_loop(
     input: &mut ReplInput,
     stdout: &mut std::io::StdoutLock<'_>,
 ) -> String {
-    use std::io::Write;
-
     let mut buffer = String::new();
     let mut compile_ms: u64 = 0;
     let mut eval_ms: u64 = 0;
@@ -522,6 +535,12 @@ fn repl_read_eval_loop(
         let input_str = buffer.trim().to_string();
         buffer.clear();
 
+        // A save made while the REPL sat idle at the prompt is reloaded before
+        // anything dispatches the turn, so the turn observes it and a
+        // definition cannot regenerate over it (`design/int/repl-lifecycle.md`
+        // §1.2, Poll points).
+        poll_watcher(s, stdout);
+
         // §5.3 dispatch classifier + §15.2 `/ask` interception (agent build
         // only; `try_agent_dispatch` diverts + returns `true` when the input
         // routes to the agent). Feature-off this call is absent and the
@@ -543,14 +562,8 @@ fn repl_read_eval_loop(
             }
         }
 
-        // Sync watcher with any newly-loaded modules (e.g. from import).
-        s.sync_watcher();
-
-        // Poll file watcher for changed source files (repl/spec.md §14).
-        for msg in s.poll_and_reload() {
-            // §10.3 R6: watcher/reload notes are REPL metadata (dim).
-            let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&msg));
-        }
+        // A save made during the turn is reported at the prompt boundary.
+        poll_watcher(s, stdout);
 
         // Loop back: the top prints the next prompt.
     }
@@ -558,9 +571,19 @@ fn repl_read_eval_loop(
     buffer
 }
 
-/// REPL startup prologue: wait for (or degrade) the entry-module load, transfer
+/// One watcher poll point: watch newly loaded files, reload changed ones and
+/// print each notification as REPL metadata (`repl/spec/10-terminal-styling.md`
+/// §10.3 R6; `design/int/repl-lifecycle.md` §1.2, Poll points).
+fn poll_watcher(s: &mut CompilerSession, stdout: &mut std::io::StdoutLock<'_>) {
+    use std::io::Write;
+    for msg in s.poll_watcher() {
+        let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&msg));
+    }
+}
+
+/// REPL startup prologue: wait for (or recover from) the entry-module load, transfer
 /// eval-thread ownership, arm the watcher + importable index, wire the agent,
-/// scaffold a rule-3 `Cranelisp.toml`, print the degraded-load report and banner.
+/// scaffold a rule-3 `Cranelisp.toml`, print the startup report and banner.
 fn repl_prologue(
     s: &mut CompilerSession,
     entry_module_name: &str,
@@ -575,19 +598,16 @@ fn repl_prologue(
     #[cfg(not(feature = "agent"))]
     let _ = (agent_enabled, auto_accept);
 
-    // Wait for entry module (prelude) to be ready. §15.2.3 restart
-    // floor (S102 CS-0489): an entry-restore failure MUST NOT
-    // prevent the REPL from starting — catch it and degrade to the
-    // form-by-form entry load (green forms commit; failed forms are
-    // retained + reported below, and the module enters the §14.4
-    // error-blocked state with the definition-turn carve-out).
+    // Wait for the entry module (and the prelude) to be ready. §15.2.3: a
+    // failed startup load still reaches the prompt. Recovery records what
+    // failed, which locks the session (§14.5), and reports it below.
     let startup = match startup {
         Ok(()) => s.wait_inmem_complete().map_err(CranelispError::from),
         Err(e) => Err(e),
     };
-    let degraded_report = match startup {
+    let recovery = match startup {
         Ok(()) => None,
-        Err(_) => s.recover_startup_failure(entry_module_name),
+        Err(error) => Some(s.recover_startup_failure(entry_module_name, &error)),
     };
 
     // S78 §3 / B1: startup typecheck is done — the eval thread now
@@ -630,12 +650,9 @@ fn repl_prologue(
         let _ = writeln!(stdout, "[created Cranelisp.toml]");
     }
 
-    // §18.8/§5.1: the degraded-load report — one error line per
-    // failed form, naming the broken symbol — prints before the
-    // banner, so the first thing a locked-out user used to see (the
-    // fatal load error) is now the same information followed by a
-    // usable prompt.
-    if let Some(report) = &degraded_report {
+    // §15.2.3: the startup report — one notification per module standing
+    // failed — prints before the banner, followed by a usable prompt.
+    if let Some(report) = recovery.as_ref().and_then(|recovery| recovery.report()) {
         let _ = writeln!(stdout, "{report}");
     }
 
@@ -648,8 +665,10 @@ fn repl_prologue(
     // non-TTY session's restore transcript must not diverge from its fresh-mode
     // sibling (the `output_equivalence` mode-parity harness). R6 metadata (dim).
     if std::io::stdin().is_terminal()
-        && let Some(notice) =
-            s.startup_restore_notice(&cranelisp_types::ModuleFullPath::from(entry_module_name))
+        && let Some(notice) = s.startup_restore_notice(
+            &cranelisp_types::ModuleFullPath::from(entry_module_name),
+            recovery.as_ref(),
+        )
     {
         let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&notice));
     }
@@ -705,8 +724,6 @@ fn try_agent_dispatch(
     input: &mut ReplInput,
     stdout: &mut std::io::StdoutLock<'_>,
 ) -> bool {
-    use std::io::Write;
-
     let ask_text: Option<String> = input_str
         .strip_prefix("/ask")
         .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
@@ -723,11 +740,7 @@ fn try_agent_dispatch(
         let mut consent = cranelisp::agent::types::FnConsent(|| input.read_consent_line());
         s.agent_turn(&text, stdout, &mut consent);
         drop(consent);
-        s.sync_watcher();
-        for msg in s.poll_and_reload() {
-            // §10.3 R6: watcher/reload notes are REPL metadata (dim).
-            let _ = writeln!(stdout, "{}", cranelisp::style::repl_metadata_line(&msg));
-        }
+        poll_watcher(s, stdout);
         return true;
     }
     false

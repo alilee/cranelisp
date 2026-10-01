@@ -166,7 +166,7 @@ The two structural facts that dominate the tree today:
 | Bootstrap seeds | `bootstrap.rs` — `mount_synthetic_modules` (special forms, intrinsic types, `macros`/`Option`/`IO`/`Trace` seeds) |
 | Macro execution | `expander.rs` (the `JitMacroExpander` invocation core + expand loop); `marshal.rs` (sexp marshaling) |
 | Display / pretty-print | `display.rs` (`display::envelope` + value render); `pretty.rs` (`pretty_print`/`pretty_print_plain`); `styled.rs` (the `Role`/`StyledDoc` vocabulary + `styled::render`, the sole style-table site); `style.rs` (raw style helpers); `syntax.rs` |
-| Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/CLAUDE.md` §Degraded startup) |
+| Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/CLAUDE.md` §"Regeneration source") |
 | Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `callee_edges.rs` (the one callee enumeration, shared with `redefine.rs`, §7.6.1); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller |
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
@@ -563,11 +563,42 @@ report is written and no executable is produced. `main.rs` does not change.
   are inside the root crate, which has no generated API baseline, so there is
   no baseline effect and no inter-crate gate.
 
-**Not decided here.** An entry file that exists but cannot be read registers as
-an empty module in every mode, because the read error is discarded. §0.5.5
-does not name this case;
-[ACT-1019](../../sprints/actions/ACT-1019-unreadable-entry-file-registers-empty-intake.md)
-establishes the requirement first.
+An entry file that exists but cannot be read is governed by §0.5.5 rule 4,
+designed below
+([ACT-1019](../../tests/plan/s122-evidence-delta.md#act-1019--unreadable-entry-file-closed),
+closed).
+
+**Unreadable entry (ACT-1019).** Implemented 2026-10-01 under
+[CLI §0.5.5](../../repl/spec/00-cli-invocation.md#055-error-handling-r4-s52)
+rule 4.
+
+- **Rule.** Entry registration reads a resolved entry file once. A read
+  failure, including invalid UTF-8 and a permission error, is a located
+  module error naming the file, in every mode. It is never an empty source.
+  - **Batch** (`--run`, `--link`, `--test`): the error propagates from
+    `startup?`, is printed to stderr and exits 1, as a missing entry does.
+  - **REPL:** the entry fails before registration, so startup recovery makes
+    it stand failed with that error
+    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock), Startup,
+    step 1). The session is locked, the startup report names the file, and
+    the chokepoint keeps it as saved. A save that the watcher can read and
+    compile releases it.
+- **Why at registration.** It is the same seam and the same reason as the
+  missing-entry rule above: one decision point, reading the resolver's own
+  file. A whole-file rebuild and a dependency load fail on a read error.
+  The watcher's change test also swallowed one, treating any read error as
+  a deleted file, so a save that made a loaded file unreadable went
+  unreported and the next definition overwrote it (review R3). Its rule is
+  [REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload), Content
+  hash.
+- **Module evidence** (`lifecycle::entry_registration_tests`): a non-UTF-8
+  entry under `RunMode::Run` and under `RunMode::Repl` returns a located
+  error naming the file, and the scheduler has no registration for it;
+  control: a readable entry registers. In `persistence_tests`, startup
+  recovery over a non-UTF-8 entry leaves it standing failed, and its bytes
+  are unchanged after a refused definition. The first readable compiling
+  save releases it (review R1; the watcher row of
+  [REPL lifecycle §1.3.2](repl-lifecycle.md#132-module-evidence-dev)).
 
 **Module evidence** (`lifecycle::entry_registration_tests`):
 
@@ -1171,17 +1202,17 @@ and `platform` records are rebuilt the same way.
 **Consequences.**
 
 - A body that still names an omitted import fails as an unresolved name, and
-  the module locks.
+  the module stands failed, which locks the session.
 - A failed rebuild's record holds only the forms Pass 0 resolved. Its cascade
   edges come from its established reference instead
   ([session transaction §7.3.2](session-transaction.md#732-the-established-reference)),
   so a save of the module whose import made it fail still reaches it. FL-3
   (`watch_cascade_failed_importer_locked_until_import_is_fixed`) is the
   end-to-end guard.
-- Nothing that persists or evaluates reads a locked module's partial
-  generation: regeneration returns early, expression turns are refused while
-  the error set is non-empty, and a failed module never reaches
-  `TypecheckDone`, so no cache entry is written for it.
+- Nothing that persists or evaluates reads a failed module's partial
+  generation: regeneration returns early and code turns are refused while
+  the session is locked, and a failed module never reaches `TypecheckDone`,
+  so no cache entry is written for it.
 
 **Evidence.** The Prologue, Prelude bit, Increments and Unresolved omission
 rows of [session transaction §7.3.4](session-transaction.md#734-module-tests-dev);
@@ -1286,11 +1317,10 @@ a pool cluster fails its module, and a rebuild fails and locks it.
     bit on beside a failed prelude when it names no prelude name, and the
     session must end the same way (ACT-1014).
   - An increment is exempt. Its live table holds earlier generations, whose
-    edges were checked when they published. Refusing on those edges would
-    refuse every turn in a module while any dependency is failed. That
-    would change the definition-turn admission of
-    [REPL lifecycle §1.3](repl-lifecycle.md#13-failed-reload), which carries
-    the startup repair of `repl/spec/15-session-persistence.md` §15.2.3.
+    edges were checked when they published. An increment runs only while
+    the session is unlocked, when no module stands failed or waits
+    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)), so those
+    edges reach no failed module.
 - **Refusal.** A path from a new-edge target back to `M` refuses the cluster
   with `circular dependency detected: M -> X -> … -> M`, rendered by
   `scheduler::CycleError::render`, the format every cycle diagnostic shares.
@@ -1505,6 +1535,33 @@ remedy the spec names.
   site. The cache-validity edge set keeps null imports
   ([§7.6](#76-dependency-record-and-validity)); over-invalidation there is
   harmless.
+
+**Refusal by a failed prelude** (review of 2026-10-01; REPL §14.5, spec
+§8.8.1). An implicit import must refuse against a failed prelude as an
+explicit `(import [prelude [*]])` does through the Pass-0 fail-fast.
+`inject_prelude_if_needed` loads the prelude when it has no table, and the
+dependency wait then refuses a module whose prelude fails. When the prelude
+already has a table, a failed rebuild's fresh, empty one included, it loads
+nothing and refused nothing, so a dependent compiled against that table and
+failed on its own names.
+
+- **Rule.** When the prelude stands `Failed` in the scheduler, the injection
+  refuses a module whose fallback bit is on through `refuse_failed_dependency`,
+  recording the prelude as its failure and refusing dependency. The module
+  then waits ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)).
+  This holds at a whole-file rebuild and at a fresh load, so a restart and
+  the session end the same way.
+- **Cycle exception.** A module that the failed prelude reaches is on a cycle
+  with it, not a dependent of it. The injection does not refuse it, and the
+  reload executor's waiting check does not hold it
+  ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload), Waiting).
+  It proceeds as at a fresh load: it compiles when it names no prelude name,
+  and otherwise cycle precedence at the failure exit names the cycle. The
+  reach is the one this section's failure-exit walk computes; no second walk
+  is added.
+- **Barrier unchanged.** The refusal reads the prelude's settled state; it is
+  not a barrier wait, so the deadlock the barrier bullet describes cannot
+  arise.
 
 **Reach the static gate does not see.** The static walk follows loading
 imports only, because its closure is also the barrier's members. At a fresh
@@ -1882,8 +1939,8 @@ Step that runs compiled code (REPL expression turn, /run-tests, /run-all-tests;
       the corrected build whose module trace shows that module restored by a
       pool worker during the turn.
     - *Forgotten failed load.* Every failed-module reset (after a failed
-      dependency wait, a T1 redefinition rollback, or degraded startup
-      recovery) also resets a failed cached load, but it leaves the
+      dependency wait, a T1 redefinition rollback, or a failed load's
+      record at startup or for `/mod`) also resets a failed cached load, but it leaves the
       module's table installed, because the module was once terminal. A later
       step then no longer refuses, and a call into that module can reach an
       unfilled slot. This predates RR-1. Falsifier: force a cached load
@@ -2273,7 +2330,7 @@ was observed before the final lint edits; the LD-8 deferral trace was
 re-observed on the final binary ([evidence plan](../../tests/plan/s122-evidence-delta.md#qualified-lookup-dependencies--evidence-delta-2026-09-26)).
 Int adds no public API: it consumes the approved types recorder unchanged.
 The user approved module-wide insert-only maintenance, the exact types API and
-cache schema 30 (`sprints/SPRINT.md` §"Lookup dependency implementation
+cache schema 30 (`sprints/archive/sprint-122.md` §"Lookup dependency implementation
 approval — 2026-09-26"). [Qualified lookup dependencies](../arch/interfaces.md#qualified-lookup-dependencies)
 defines the fact, carriers and maintenance. This section designs int's
 producer, consumers and lifecycle within them.
@@ -2735,8 +2792,8 @@ to the entry module.
 2. **Loaded.** If the session holds a table for the resolved module, switch
    to it. A cache-installed generation is first recompiled from source
    ([session persistence §2.4.5](session-persistence.md#245-editing-a-cache-installed-module)).
-   A locked module is loaded: `/mod` switches, and the lock refuses its
-   definition turns.
+   A module standing failed is loaded: `/mod` switches, and the session
+   lock refuses code turns in every module.
 3. **Search.** Otherwise locate its file with `pipeline::resolve_module_file`,
    the root-then-lib search every `import` and qualified reference uses. No
    file reports `Module '<name>' not found.` through the error line; the
@@ -2748,9 +2805,13 @@ to the entry module.
    for `eval.rs` and `/mod`; do not add another inline construction. A
    cache hit takes step 2's recompile. On success, switch; `sync_watcher`
    after the turn watches the file (REPL §14.1). On failure, report the load
-   error, the chained §8.5.4 edge-5 diagnostic, and do not switch. The wait's
-   failed-module reset purges the never-compiled table, so no phantom
-   remains.
+   error, the chained §8.5.4 edge-5 diagnostic, and do not switch. The
+   failed load's record
+   ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)) then
+   resets only the modules this load left `Failed`, records each one that
+   failed in its own source in the failed set, which locks the session
+   (REPL §3.9, §14.5), lets each one a dependency refused wait, and purges
+   the never-compiled tables, so no phantom remains.
 
 **Structure.** `set_current_module` no longer creates a table: `/mod` is its
 only production caller and reaches it only with a loaded module, so the
@@ -2763,13 +2824,15 @@ unchanged.
 **Consequences.**
 
 - A startup-failed dependency has no table after recovery
-  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)), so `/mod` to
-  it loads it, reports its failure and stays put. Its file stays intact.
+  ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)), so `/mod` to
+  it loads it, reports its failure and stays put. It still stands failed,
+  and its file stays intact.
 - A module loaded from a file this way is compiled from source this session,
   so regeneration writes every definition the file held.
-- Loading a locked module whose saved file has since been fixed, before the
-  watcher polls, loads it while the lock stands. The next poll's reload
-  releases the lock.
+- Loading a module that stood failed and whose saved file has since been
+  fixed, before the watcher polls, compiles it while it still stands
+  failed. The next poll's reload of that file removes it from the failed
+  set.
 
 **Module evidence (`dev`).**
 
@@ -2778,8 +2841,9 @@ unchanged.
 - On an unloaded file-backed module it loads the file and switches; the
   module's definitions resolve.
 - A declared submodule wins over a root module of the same name.
-- On a file that fails to compile it reports the error, stays put and leaves
-  no table.
+- On a file that fails to compile it reports the error, stays put, leaves
+  no table and leaves the module standing failed; the session-lock rows
+  are [REPL lifecycle §1.3.2](repl-lifecycle.md#132-module-evidence-dev).
 
 End to end: NAV-1, NAV-2 and the six NAV-3 fixture repairs
 ([navigation](../../tests/plan/s122-evidence-delta.md#mod-navigation-nav-1nav-3));
@@ -3091,22 +3155,25 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     The design is the guard's type pass
     ([session transaction §2.6](session-transaction.md#26-type-re-establishment-repl-185-148)).
     A reload's outcome is the reloaded module's own state
-    ([§1.3 Outcome](repl-lifecycle.md#13-failed-reload)). The imported-module
+    ([§1.3 Outcome](repl-lifecycle.md#13-failed-module-and-the-session-lock)). The imported-module
     case relies on the barrier fail-fast
     ([error cascade §4.1](step9-error-cascade.md#41-cascade-construction)).
     Each of these sections names its guards. There is no public API change.
     - The open design risks are the §1.3 Outcome coverage hypothesis and
       §4.1's order-dependent stranding face. Each is asserted with a named
       falsifier, and neither is measured.
-  - **Failed-source lock.** Every failed reload, an entry backing file
-    that does not parse at startup and every other module a failed start
-    leaves `Failed` lock the module: its saved file is not overwritten until
-    a reload of it succeeds (REPL §14.5, §14.6, §15.2.3). The §14.8 refusal
-    is one cause of the one lock
-    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-module-lock)).
+  - **Session lock (Phase 6b, user rulings of 2026-10-01).** A module
+    standing failed, after a save, at startup or in a `/mod` load, locks the
+    session: every code turn is refused, no backing file is regenerated, the
+    dependents of a failed module wait, and `/quit` and EOF exit 0 (REPL
+    §14.5, §0.1). The §14.8 refusal is one cause of the one failed set
+    ([REPL lifecycle §1.2, §1.3.1](repl-lifecycle.md#131-session-lock)). It
+    replaces the per-module lock and the startup repair at the prompt, and
+    repairs ACT-1044's parse-failure exit. Designed 2026-10-01; the source
+    reservation is [S122 closure §8](s122-closure.md#8-session-lock-phase-6b).
     Delivery and acceptance status is in the
     [evidence delta](../../tests/plan/s122-evidence-delta.md) and the
-    ACT-1010 filing.
+    ACT-1010 and ACT-1044 filings.
   - **Whole-file rebuild (ACT-1007, ACT-1012, qualified dependents).** A
     reload rebuilds its module from a fresh table that keeps the module's GOT,
     so everything its saved source omits — definitions of every class,

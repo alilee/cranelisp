@@ -31,6 +31,23 @@ Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md
   - The S118 retention of about 68 bytes per call no longer reproduces.
 - **The refusal face is closed.** The seven S118 cells pass in the last full run; QA accepts that as closure evidence for the refusal.
 - **Later phases.** The refusal-era text (obligation 2) routes in Phase 6a/6b; obligation 3, whether `/info Bind` must introspect, goes to `spec` on `repl/` in Phase 6a.
+- **Obligation 2, docs leg: satisfied (qa, 2026-09-30).**
+  - `user/getting-started.md` and `user/guide/concurrency.md` carry no IO
+    release or `Bind` refusal or limitation text at `dc78ddbe`, at
+    `88bbbd12`, or in the working tree.
+  - The concurrency guide's "Honest scope" limitations cover launch
+    cancellation and disconnect or shutdown effects, which are unrelated.
+  - `docs` owes no edit here.
+- **Obligation 2, training leg: satisfied (qa, 2026-09-30).**
+  - `training` reported the refusal-era text removed from examples 21 and 23.
+  - QA checked the working tree. Neither file, nor `examples/CLAUDE.md` or
+    `examples/plan-examples.md`, still carries the known-red header, the
+    `disagrees on declared parameter identity` refusal, a 0907 reference or a
+    dark-part marker. The remaining `=== Part N ===` headings are ordinary
+    lesson sections.
+  - The removal is uncommitted, so this holds only in the change-set that
+    commits it.
+  - The `test` and stdlib legs remain.
 
 # IO release after the runtime-directed teardown — evidence and rider reconciliation
 
@@ -60,13 +77,12 @@ Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md
    the balance obligation on the K2 cell above.
 2. **Stale refusal text (route to owners).** Once the cells pass:
    - `test` updates the `// defect:` notation on those cells;
-   - `training` removes the known-red headers and part markers in examples 21
-     and 23;
+   - `training`'s leg for examples 21 and 23 is satisfied; the S122
+     disposition records the check;
    - `test` flips the retained red segment in `repl/demos/archive/ring4s.demo`;
    - `dev` (stdlib) authors the six `core.io` self-tests listed in
-     `stdlib/plan-stdlib.md` §6.2;
-   - `docs` removes the limitation notes in `user/getting-started.md` and
-     `user/guide/concurrency.md`.
+     `stdlib/plan-stdlib.md` §6.2.
+   - The `docs` leg is satisfied; the S122 disposition records the check.
 3. **Introspection (`spec`/`design` int).** `Bind` and `IO` are named by
    diagnostics yet `/info Bind` and `/info IO` report unknown symbols while
    `Pure` introspects. Decide whether the manually seeded `Bind` must be

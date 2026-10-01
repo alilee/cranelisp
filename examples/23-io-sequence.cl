@@ -20,34 +20,6 @@
 ;;   ./target/debug/cranelisp --run examples/23-io-sequence.cl
 ;;   (examples/lib/platforms/ ships host-correct symlinks for the
 ;;    test-capture DLL, so no environment variable is required.)
-;;
-;; ── KNOWN RED since Sprint 118: this example does not compile (FIXME 0907) ──
-;;
-;; Attributed in place, deliberately NOT repaired. Running it reports:
-;;
-;;   codegen failed for 23-io-sequence/23-io-sequence/map-io$Fn(Int;Int)+primitives/IO$Int:
-;;   constructor 'Bind' disagrees on declared parameter identity for 'primitives/IO'
-;;
-;; Same cause as example 21: `primitives/IO`'s `Bind` constructor uses an
-;; existential encoding, so per-concrete drop glue cannot be derived for any
-;; concrete `IO T`, and every release of one now refuses. Ruling owed by
-;; `/design`(backend), co-ruled with FIXME 0903. Not a defect in this file.
-;;
-;; WHAT IS ACTUALLY DARK — one definition, Part 4 only. Measured at HEAD:
-;; delete `map-io` and its sub-test and the remaining 7 of 8 sub-tests compile
-;; and run, exit 136. Parts 1, 2, 3, 5 and 6 — discard sequencing, nested
-;; accumulation, conditional IO, recursive IO sequences, and IO-returning
-;; helpers — are unaffected.
-;;
-;; NO WORKAROUND IS SHIPPED ON PURPOSE. A polymorphic re-spelling compiles the
-;; definition and refuses at the call; a trait-method spelling compiles and
-;; silently leaks (both measured — FIXME 0907 §3 and the `/stdlib` evidence
-;; section). Any of them would teach the reader a false thing about IO.
-;;
-;; WHAT THIS EXAMPLE TEACHES AGAIN WHEN 0907 IS RULED: Part 4 — that the
-;; "run an IO action, then transform its result with a pure function" pattern
-;; is a two-line user-written function, not a builtin. Deleting this block and
-;; the Part 4 marker restores the file; documented exit code stays 178.
 
 (platform test-capture)
 (import [primitives [Pure bind]])
@@ -59,12 +31,12 @@
 ;; The simplest sequencing pattern: run an action, ignore its result
 ;; with _ in the continuation, then run another action.
 
-(defn test-discard []
+(defn check-discard []
   ;; Bind discards 999 (via _) and keeps the final 42.
   (bind (Pure 999)
     (fn [_] (Pure 42))))                              ;; -> 42
 
-(defn test-print-sequence []
+(defn check-print-sequence []
   ;; Print three lines in order. Each bind discards the previous
   ;; print's result (always 0) and starts the next print.
   ;; Side effects: "one", "two", "three" in order.
@@ -79,7 +51,7 @@
 ;; When you need the results of multiple IO actions, nest bind calls.
 ;; Each continuation closes over earlier results.
 
-(defn test-accumulate []
+(defn check-accumulate []
   ;; Bind three pure values and combine them at the end.
   (bind (Pure 10)
     (fn [a]
@@ -102,21 +74,16 @@
       (fn [_] (Pure n)))
     (Pure n)))
 
-(defn test-conditional-positive []
+(defn check-conditional-positive []
   ;; n=5 > 0, so print fires. Side effect: "positive!"
   (greet-if-positive 5))                              ;; -> 5
 
-(defn test-conditional-negative []
+(defn check-conditional-negative []
   ;; n=-1 <= 0, so no print. Pure path only.
   (greet-if-positive (sub-i64 0 1)))                  ;; -> -1
 
 
 ;; === Part 4: map-io -- applying a pure function to IO ===
-;;
-;; >>> THIS PART IS THE ONE THE COMPILER REFUSES (FIXME 0907). <<<
-;; `map-io` takes an `(IO a)` as a PARAMETER; releasing a concrete `IO T` is
-;; what the backend cannot yet derive glue for. Kept verbatim so the lesson is
-;; intact the day the ruling lands. See the header block for the attribution.
 
 ;; A common pattern: run an IO action, then transform the result
 ;; with a pure function. We define map-io for this.
@@ -126,7 +93,7 @@
 
 (defn double [n] (mul-i64 n 2))
 
-(defn test-map-io []
+(defn check-map-io []
   ;; Double the result of a pure IO value.
   (map-io double (Pure 21)))                          ;; -> 42
 
@@ -142,7 +109,7 @@
     (bind (print (int-to-string n))
       (fn [_] (print-countdown (sub-i64 n 1))))))
 
-(defn test-countdown []
+(defn check-countdown []
   ;; Side effects: "3", "2", "1", "go!" in order.
   (print-countdown 3))                                ;; -> 0
 
@@ -157,33 +124,33 @@
     (bind (print (int-to-string result))
       (fn [_] (Pure result)))))
 
-(defn test-add-announce []
+(defn check-add-announce []
   ;; Side effect: prints "30".
   (add-and-announce 10 20))                           ;; -> 30
 
 
 ;; --- Expected results ---
 ;;
-;; test-discard:              42
-;; test-print-sequence:        0
-;; test-accumulate:           60
-;; test-conditional-positive:  5
-;; test-conditional-negative: -1
-;; test-map-io:               42
-;; test-countdown:             0
-;; test-add-announce:         30
+;; check-discard:              42
+;; check-print-sequence:        0
+;; check-accumulate:           60
+;; check-conditional-positive:  5
+;; check-conditional-negative: -1
+;; check-map-io:               42
+;; check-countdown:             0
+;; check-add-announce:         30
 ;;
 ;; Total: 42 + 0 + 60 + 5 + (-1) + 42 + 0 + 30 = 178
 
 (defn main []
-  (bind (test-discard) (fn [r1]
-  (bind (test-print-sequence) (fn [r2]
-  (bind (test-accumulate) (fn [r3]
-  (bind (test-conditional-positive) (fn [r4]
-  (bind (test-conditional-negative) (fn [r5]
-  (bind (test-map-io) (fn [r6]
-  (bind (test-countdown) (fn [r7]
-  (bind (test-add-announce) (fn [r8]
+  (bind (check-discard) (fn [r1]
+  (bind (check-print-sequence) (fn [r2]
+  (bind (check-accumulate) (fn [r3]
+  (bind (check-conditional-positive) (fn [r4]
+  (bind (check-conditional-negative) (fn [r5]
+  (bind (check-map-io) (fn [r6]
+  (bind (check-countdown) (fn [r7]
+  (bind (check-add-announce) (fn [r8]
     (Pure (add-i64 r1
       (add-i64 r2
         (add-i64 r3

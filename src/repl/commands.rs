@@ -387,8 +387,12 @@ impl CompilerSession {
 
     /// Load `target` through the language's load-on-reference: the module
     /// search, the dependency drive and the eval thread's wait. Returns the
-    /// refusal to report when no file backs it or its load fails; a failed
-    /// load's wait purges the table it never compiled.
+    /// refusal to report when no file backs it or its load fails.
+    ///
+    /// A failed load runs the failed load's record over the modules it left
+    /// `Failed` (`design/int/repl-lifecycle.md` §1.3.1): the target stands
+    /// failed for a failure in its own source, its file failing to parse
+    /// included, and waits when a dependency standing failed refused it.
     fn load_mod_target(&mut self, target: &ModuleFullPath) -> Result<(), String> {
         let lib_dirs = self.lib_dirs();
         if crate::pipeline::resolve_module_file(target, &self.shared.project_root, &lib_dirs)
@@ -396,12 +400,18 @@ impl CompilerSession {
         {
             return Err(format!("Module '{target}' not found."));
         }
+        let held = self.shared.scheduler.failed_modules();
         let current = self.current_module_path();
-        self.with_eval_compiler(&current, |ctx| {
+        let loaded = match self.with_eval_compiler(&current, |ctx| {
             crate::process_form::drive_module_dep(ctx, &current, target, Span::SYNTHETIC)
+        }) {
+            Err(error) => Err(self.reset_failed_load(&held, error)),
+            Ok(()) => self.register_dep_for_eval(target, &held),
+        };
+        loaded.map_err(|mut failure| {
+            self.record_failed_load(&mut failure.reset);
+            failure.error.to_string()
         })
-        .and_then(|()| self.register_dep_for_eval(target))
-        .map_err(|error| error.to_string())
     }
 
     /// Make a cache-installed module editable: rebuild it and its dependents
@@ -422,8 +432,8 @@ impl CompilerSession {
         let failures: Vec<String> = self
             .run_reload_plan(vec![(module.clone(), backing)])
             .into_iter()
-            .filter(|outcome| outcome.result.is_err())
-            .map(|outcome| outcome.notice())
+            .filter(|outcome| matches!(outcome.status, crate::session_v4::ReloadStatus::Failed(_)))
+            .filter_map(|outcome| outcome.notice())
             .collect();
         (!failures.is_empty()).then(|| failures.join("\n"))
     }

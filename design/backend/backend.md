@@ -232,6 +232,32 @@ runtime lowers to `runtime/panic`.
   [trap stub](ownership-codegen.md#81-the-trap-stub) raises through the same
   slot with its own provenance message. A new trapping operation, such
   as a remainder primitive, adopts the same shape.
+- **One Vec index guard.** Load the length and raise the panic shape when the
+  index is negative or not below it. The `vec-get` and `vec-set` emission cores
+  each open with this one guard, before any element load, RC operation,
+  uniqueness probe or runtime-helper call.
+  - Status: built for both operations; `qa` closed ACT-1037 on 2026-10-01
+    ([s122-closure.md §9](s122-closure.md#9-act-1037--vec-set-index-guard)
+    states the `--link` limit).
+  - The `vec-set` core is the only lowering of `vec-set`. The static last-use
+    site, the static non-last-use (copy-only) site and the value-position and
+    auto-curry wrappers all reach the element write or `vec-set-copy` through
+    it, so the guard dominates both copy-on-write arms by construction.
+  - A static uniqueness proof elides the rc probe, never the guard. It
+    elides the probe only when the source has no separate owner; otherwise
+    the probe runs.
+  - Both operations report the spec's single message,
+    `"vec-get: index out of bounds"`. A `vec-set`-specific message is a `spec`
+    question.
+  - `vec-set-copy` is never called out of range. It cannot raise the panic
+    itself: its result is a Vec that the emitted code consumes before
+    returning. So the check lives only in emission.
+  - "Before any RC operation" holds inside the core, not across the whole
+    static site. The site raises the new element's consuming count before the
+    core. With ownership analysis off, it also raises a separately owned
+    source's count before the core. The panic path undoes neither. They leak,
+    which §12.7.8 item 4 permits and `vec-get`'s panic path already does. The
+    structure test checks only the core.
 - **`MIN / -1` reports `"division by zero"`** because the spec table gives one
   message for the division family. A distinct message is a `spec` question. The
   out-of-line `div-i64` primitive applies the same two guards, so inline and
@@ -241,15 +267,29 @@ runtime lowers to `runtime/panic`.
   language requires.
 - **What the shape does not do.** It stops only the faulting function. Frames
   above it are not unwound by codegen and continue with the sentinel until the
-  invocation returns. Whether every consumer of that sentinel is safe is
-  asserted, not measured: a panic site whose `0` reaches a heap dereference
-  before the invocation returns would falsify it.
+  invocation returns. That this is safe for every consumer of the sentinel was
+  asserted, and it is **falsified**. On 2026-09-30, with the debug binary built
+  after `88bbbd12` and the primitives-only prelude:
+  - After `(defn h [v i] (vec-get v i))`, the form
+    `(str-len (h ["a" "bc"] 9))` kills the REPL with SIGSEGV.
+  - The controls `(h ["a" "bc"] 9)` and `(add-i64 1 (h [1 2] 9))` report the
+    panic and the session continues. `(str-len (h ["a" "bc"] 1))` returns 2.
+  - `qa` reproduced it through the division and match-failure sites, on a
+    plain release of the sentinel, inside `catch-runtime-error` and in batch
+    mode, and filed it as
+    [ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md).
+    The Vec index guard does not close it.
+  - A scalar sentinel is memory-safe, but its caller still resumes, which can
+    hang or replace the message
+    ([s122-closure.md §10.1](s122-closure.md#101-mechanism-read-at-source)).
+  - Propagation options are costed, not adopted, in
+    [s122-closure.md §10](s122-closure.md#10-act-1040--panic-propagation-proposal).
 
 ## 8. Subordinate designs
 
 | Subject | Document | Standing |
 |---|---|---|
-| Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture, macro alias and IO-combinator corrections, and the pointers to the ACT-0974, ACT-1021 and ACT-1024 corrections. Solution-golden evidence and the Q5 paired measurement are complete; K4 is complete and `qa` judged it adequate; user acceptance and phase approval remain open. |
+| Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture, macro alias and IO-combinator corrections, and the pointers to the ACT-0974, ACT-1021 and ACT-1024 corrections. Solution-golden evidence and the Q5 paired measurement are complete; K4 is complete and `qa` judged it adequate; user acceptance and phase approval remain open. The Phase-6b ACT-1037 `vec-set` index guard is built and reviewed there (§9), and `qa` has closed ACT-1037; §9 states the `--link` evidence limit. The ACT-1040 panic-propagation options are a proposal there (§10), awaiting the user's decision. |
 | Compilation entry shape | `compile-to-module.md` | The one entry's contract and phase order, constructor codegen, GOT emission, finalisation and publication, and its error contract. |
 | JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
 | Per-module GOT | `per-module-got.md` | The two-GOT model as emitted, and why it is shaped that way. |

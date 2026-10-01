@@ -1,8 +1,8 @@
 > [REPL specification index](index.md)
 
-## 5. Error Presentation [Tested]
+## 5. Error Presentation [S122 — partial; see the subsections]
 
-### 5.1 Error Format [Tested]
+### 5.1 Error Format [S122 — partial. The items are Tested; a REPL crash that displays no error is defective, RED tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl (ACT-1035)]
 
 All errors MUST display:
 
@@ -97,7 +97,7 @@ seam (FIXME 0708); the requirement above is on the **located +
 self-documenting + no-silent-degradation** contract, which holds for every case,
 not on any single message's exact prose. [S115]
 
-### 5.5 Compiler-Stage Diagnostics Name User-Facing Subjects [S119 — FIXME 0915]
+### 5.5 Compiler-Stage Diagnostics Name User-Facing Subjects [S119 — FIXME 0915; the batch `main` refusal's location is defective, RED tests/spec_10_io::batch_main_non_io_return_refusal_is_located_at_main (ACT-1036)]
 
 §5.4 carried the self-documenting contract *down* to the reader. This section
 carries it *up* to the stages a user never names: monomorphisation, code

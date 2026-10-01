@@ -1,7 +1,7 @@
 ---
 id: ACT-1022
 title: Lead — a non-recursive match arm whose if-branch pushes into a vector reads two unreleased allocations
-status: open
+status: deferred
 priority: advisory
 from: qa
 to: qa
@@ -35,6 +35,11 @@ not committed evidence.
   The balanced P4 suggests the match wrapper, but that is not established.
 
 ## Disposition
+
+**Carried to S123 under K7 (user, 2026-09-30).** Approved with the Phase-5
+checkpoint as an ordinary-leak carry that still requires attribution
+([checkpoint carries](../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
+First deferral.
 
 Under the approved K2 ordinary-leak rule, this gets no S122 fix. It is a lead,
 not a committed RED, like ACT-1015. When it is resumed, `test` first commits a
