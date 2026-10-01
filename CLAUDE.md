@@ -88,13 +88,14 @@ implementation starts. This includes additions, removals, renames, signature,
 generic, bound, variant, field or visibility changes, facade re-exports, and a
 new or removed cross-crate consumer edge. `arch` presents the exact proposed
 delta, affected producers and consumers, compatibility and schema/ABI impact,
-and the expected `public-api.txt` effect. After implementation, a non-empty
-generated baseline diff returns to the user for confirmation before the wave
-passes. An unchanged baseline (+0/−0) is recorded as verification evidence and
-requires no user confirmation. This does not waive prior approval for semantic
-contract changes that the baseline cannot represent. A phase, wave or general
-architecture approval does not satisfy a required gate; an unapproved or
-mismatching delta stops the wave and returns to the user.
+and the expected `public-api.txt` effect. The generated baselines are
+regenerated once per phase, at its checkpoint. A non-empty diff returns to the
+user for confirmation before the phase advances. An unchanged baseline
+(+0/−0) is recorded as verification evidence and requires no user
+confirmation. This does not waive prior approval for semantic contract changes
+that the baseline cannot represent. A phase, wave or general architecture
+approval does not satisfy a required gate; an unapproved or mismatching delta
+stops the work and returns to the user.
 
 **Models.** The pinned shared package owns each subordinate role's provider,
 model and effort; see `.agents/CONSUMING.md` §Role allocation and dispatch.

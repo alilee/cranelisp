@@ -170,6 +170,13 @@ scope; recommend continue within it, re-scope, advance or close. Scope changes
 and every phase transition require user sign-off. `sprint` never advances or
 closes unilaterally.
 
+**Correction-loop stop rule.** After the first review-and-correct round on a
+change within a phase, `sprint` carries each newly found defect on that change
+to the next sprint, as an action with a committed RED, unless it loses user
+data or crashes. Present carried findings at the next checkpoint. The user may
+pull any of them back in. S122's session lock took six rounds; each round found
+real defects, but only the data-loss ones needed to block closure.
+
 ### 2.6 Escalation
 
 **Decider**: `sprint`, within the currently approved phase and its orchestration
@@ -256,6 +263,8 @@ its normal file tools can access them within the repository scope.
   obsolete originals when Git suffices; first extract any useful missing
   rules, rationale or evidence in the destination's form. Preserve unresolved
   obligations independently; deleting a record does not resolve its findings.
+- Keep continuation state in `SPRINT.md`. Do not create separate session
+  handoff files; S122's root `session.md` was folded back into the plan.
 - Retire working plans after incorporating their useful results. Keep closed
   records only for an explicit evidence or rationale need beyond Git. Preserve
   irreplaceable raw evidence in an established location with its purpose.

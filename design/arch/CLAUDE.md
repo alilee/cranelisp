@@ -116,11 +116,9 @@ crate. [Source conventions](../../src/CLAUDE.md) apply to source work.
 ## Public-API discipline
 
 `pub(crate)` is the default; each public item needs rustdoc explaining the
-cross-boundary promise. Root [API approval rules](../../CLAUDE.md#roles) require
-exact pre-implementation approval for public surface and consumer-edge changes,
-then user confirmation of a non-empty generated delta before the wave passes; an
-unchanged baseline is verification evidence only. Phase or wave approval does
-not replace either gate.
+cross-boundary promise. Public-surface and consumer-edge changes pass the root
+[inter-crate public-API user gate](../../CLAUDE.md#roles), which owns the
+approval, baseline-regeneration timing and generated-delta confirmation rules.
 
 `arch` owns the contract and approval packet; the implementing crate regenerates
 its baseline, and independent review compares the source, rustdoc and actual
