@@ -3020,7 +3020,7 @@ fn vec_set_in_range_index_writes_without_panic_neg() {
 
 // spec: spec/12-runtime.md §12.7.2.1 — `vec-set` past the end of a uniquely
 // held Vec panics.
-// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122
+// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122/aed0fcb1
 #[test]
 fn vec_set_index_past_length_on_unique_vec_panics() {
     assert_vec_set_bounds_panic("(vec-set [1 2 3] 9 99)");
@@ -3028,7 +3028,7 @@ fn vec_set_index_past_length_on_unique_vec_panics() {
 
 // spec: spec/12-runtime.md §12.7.2.1 — `vec-set` at a negative index on a
 // uniquely held Vec panics.
-// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122
+// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122/aed0fcb1
 #[test]
 fn vec_set_negative_index_on_unique_vec_panics() {
     assert_vec_set_bounds_panic("(vec-set [1 2 3] -1 99)");
@@ -3036,7 +3036,7 @@ fn vec_set_negative_index_on_unique_vec_panics() {
 
 // spec: spec/12-runtime.md §12.7.2.1 — `vec-set` at index = length on a
 // uniquely held Vec panics (the off-by-one boundary).
-// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122
+// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122/aed0fcb1
 #[test]
 fn vec_set_index_equal_to_length_on_unique_vec_panics() {
     assert_vec_set_bounds_panic("(vec-set [1 2 3] 3 99)");
@@ -3044,7 +3044,7 @@ fn vec_set_index_equal_to_length_on_unique_vec_panics() {
 
 // spec: spec/12-runtime.md §12.7.2.1 — `vec-set` past the end of a shared Vec
 // panics. `v` is read after the set, so the set takes the copy arm.
-// defect: class=missing-runtime-check locus=crates/cranelisp-intrinsics/src/vec_runtime.rs::vec_set_copy found=S122 owner=/dev fixed=S122
+// defect: class=missing-runtime-check locus=crates/cranelisp-intrinsics/src/vec_runtime.rs::vec_set_copy found=S122 owner=/dev fixed=S122/aed0fcb1
 #[test]
 fn vec_set_index_past_length_on_shared_vec_panics() {
     assert_vec_set_bounds_panic(
@@ -3054,7 +3054,7 @@ fn vec_set_index_past_length_on_shared_vec_panics() {
 
 // spec: spec/12-runtime.md §12.7.2.1 — `vec-set` past the end of a Vec of
 // heap elements panics.
-// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122
+// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122/aed0fcb1
 #[test]
 fn vec_set_index_past_length_on_heap_element_vec_panics() {
     assert_vec_set_bounds_panic("(vec-len (vec-set [\"a\" \"b\"] 5 \"c\"))");
@@ -3133,7 +3133,7 @@ fn vec_set_dynamic_in_range_index_completes_in_every_mode() {
 // spec: spec/12-runtime.md §12.7.2.1 — a compiled function's out-of-range
 // `vec-set` panics in every mode, observed as the `catch-runtime-error` Err
 // arm (77) rather than the length of an unchecked write (3).
-// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122
+// defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122/aed0fcb1
 #[test]
 fn vec_set_dynamic_out_of_range_index_panics_in_every_mode() {
     assert_main_value_in_every_mode(
