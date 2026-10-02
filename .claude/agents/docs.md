@@ -1,9 +1,9 @@
 ---
 name: docs
 description: Own user/ so a reader can understand the language from prose
-provider: claude
-model: opus
-effort: high
+provider: codex
+model: gpt-6.1-sol
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

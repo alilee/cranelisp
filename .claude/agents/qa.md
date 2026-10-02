@@ -2,8 +2,8 @@
 name: qa
 description: Risk, evidence allocation, defect intake and attribution, the traceability band
 provider: claude
-model: fable
-effort: high
+model: claude-opus-5-5
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

@@ -1,9 +1,9 @@
 ---
 name: audit
 description: Read-only whole-context assessment of one bounded context, in rotation
-provider: claude
-model: fable
-effort: high
+provider: codex
+model: gpt-6.1-sol
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

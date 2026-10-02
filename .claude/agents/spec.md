@@ -1,9 +1,9 @@
 ---
 name: spec
 description: Scribe the language specification; the user arbitrates every normative question
-provider: claude
-model: opus
-effort: high
+provider: codex
+model: gpt-6.1-sol
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

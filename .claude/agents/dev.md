@@ -2,8 +2,8 @@
 name: dev
 description: Implement one crate-shaped surface, with its module tests
 provider: claude
-model: opus
-effort: high
+model: claude-opus-5-5
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

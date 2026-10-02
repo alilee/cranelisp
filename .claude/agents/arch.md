@@ -2,7 +2,7 @@
 name: arch
 description: Architecture: principles, bounded contexts, cross-crate types, public-API approvals
 provider: claude
-model: fable
+model: claude-opus-5-5
 effort: high
 ---
 

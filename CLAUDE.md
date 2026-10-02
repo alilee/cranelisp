@@ -104,8 +104,9 @@ adapters match the shared allocation and add repository entry context only.
 
 **Dispatch.** Use a fresh named subagent in the primary harness when it offers
 the exact shared provider, model and effort; fresh context supplies review
-independence. The package currently allocates subordinate roles to Claude;
-Codex dispatches them through the shared Claude transport.
+independence. The package allocates `arch`, `dev` and `qa` to Claude and the
+other subordinate roles to Codex; see `.agents/CONSUMING.md` §Role allocation
+and dispatch.
 For a role hosted by another provider, use the corresponding shared transport
 from the repository root: `python3 .agents/tools/codex_role.py <role> <brief-file>`
 or `python3 .agents/tools/claude_role.py <role> <brief-file>`, as selected by the

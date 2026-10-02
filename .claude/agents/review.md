@@ -1,9 +1,9 @@
 ---
 name: review
 description: Independently inspect delivered design, code, and tests without fixing them or deciding release
-provider: claude
-model: fable
-effort: high
+provider: codex
+model: gpt-6.1-sol
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

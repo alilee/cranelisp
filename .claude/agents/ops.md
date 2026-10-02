@@ -1,9 +1,9 @@
 ---
 name: ops
 description: Provenance, artifacts, environments and release; currently unused here
-provider: claude
-model: opus
-effort: high
+provider: codex
+model: gpt-6.1-sol
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`
