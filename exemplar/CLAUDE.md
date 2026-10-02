@@ -69,7 +69,7 @@ State only what these tests show:
 ## Known Issues
 
 - **Do not run a REPL with `exemplar/` as the working directory.** The REPL
-  `user` module adopts `./user.cl` as its backing file and shares the `user`
+  `user` module adopts `./user.cl` as its backing file and shares the `user` <!-- doc-check: literal reason="REPL backing file in the working directory, not a tracked file" -->
   cache slot. It can rewrite the headline entry and poison the cache. Use a
   scratch directory with copies of the modules.
 - **Hard-puzzle backtracking is quadratic.** This is performance, not

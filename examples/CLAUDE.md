@@ -54,7 +54,7 @@ for f in $EX; do o=target/ex-$(echo $f | tr / _); \
 
 - **Cold cells:** add `--no-cache` to the run loop. `--link` rejects
   `--no-cache` (`user/cli-reference.md`), so for cold link cells first delete
-  the git-ignored `.cranelisp-cache/` the compiler generates in each entry's directory. <!-- doc-check: literal reason="Generated, git-ignored cache directory" -->
+  the git-ignored directory named `.cranelisp-cache` that the compiler generates in each entry's directory.
 - **Test mode:** `./target/debug/cranelisp --test examples/38-program-tests.cl`
   must report four `ok` lines and exit 0.
 - **Never set `CRANELISP_LIB`.** Library directories are an additive union

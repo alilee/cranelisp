@@ -215,7 +215,7 @@ or the player.
 
 ### Run isolation
 
-Each playback creates a timestamped directory under `repl/demos/runs/`. The REPL
+Each playback creates a timestamped directory under `repl/demos/runs/`. The REPL <!-- doc-check: literal reason="Generated, git-ignored playback directory" -->
 `chdir`s into it, so `.cache` artifacts are isolated per run. `runs/` is
 git-ignored.
 

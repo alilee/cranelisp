@@ -1050,7 +1050,8 @@ evidence for this delta.
 #### ACT-0974 extern entry convention — prepared evidence delta (2026-09-30)
 
 **Status: binding.** On 2026-09-30 the user approved the semantic contract in
-`.local/s122-0974-prevention-arch-result.md` §2 and §4:
+sections 2 and 4 of
+`.local/s122-0974-prevention-arch-result.md`:
 
 - every `ExternShim` primary entry takes ownership of every heap argument;
 - a heap result is transferred owned.
@@ -1058,7 +1059,7 @@ evidence for this delta.
 Intake and attribution are retained in the
 [K4 record](#retained-records-of-the-deleted-filings).
 
-**Committed and confirmed** (`.local/s122-0974-test-result.md` §1, before any
+**Committed and confirmed** (section 1 of `.local/s122-0974-test-result.md`, before any
 behaviour change):
 - SI-1 to SI-4 are RED with residual +1, and each pair has matching exits;
 - SI-5 and SI-6 are GREEN;
@@ -1319,7 +1320,7 @@ final log `.local/s122-tail-test/pre-fix-final.log`, 24 run, 18 passed,
   mechanism; C-PT RED with C-LT GREEN confirms the slot-ownership key.
 - **C-M.** The gate's GREEN was vacuous: the fixture did not parse, and both
   halves exited 1, the expected value. `test` repaired it
-  (`.local/s122-tail-cm-baseline-test-result.md` §1): it expects 3 and 2,
+  (section 1 of `.local/s122-tail-cm-baseline-test-result.md`): it expects 3 and 2,
   fails on a planted parse error, is RED at HEAD and GREEN on the ACT-1021
   tree. It is an acceptance cell, not a fence.
 - **C-C2.** The allocated `Consumed` fence balances as predicted. Its
@@ -1375,8 +1376,8 @@ Where the pre-fix code differs, the cells are written failing first.
   lands in the same S122 window.
 - **Final §16.5 replay (safety fence for the observed abort).**
   - **When:** after both corrections.
-  - **What:** `sprint` replays the transcript run in
-    `.local/s122-0974-test-result.md` §3 in a bare REPL, once armed with
+  - **What:** `sprint` replays the transcript run in section 3 of
+    `.local/s122-0974-test-result.md` in a bare REPL, once armed with
     `CRANELISP_RC_DEC_CHECK` and once unarmed. The replay runs through
     `(run-all)`, `(run-matching "pa")`, the redefinition and second
     `(run-all)`, and `safe-div`.
@@ -1390,8 +1391,9 @@ Where the pre-fix code differs, the cells are written failing first.
 ##### Amendment — the consuming COW argument (2026-09-30)
 
 **Governs:** `ownership-codegen.md` §13.3, "The consuming in-place COW
-argument", and `.local/s122-tail-cow-design-result.md` §3. It corrects the
-reading of §6 row 3; the verdict table, the public API and the cache schema
+argument", and section 3 of `.local/s122-tail-cow-design-result.md`. It corrects
+the reading of row 3 of
+[transitive-drop-glue §6](../../design/backend/transitive-drop-glue.md#6-tco-replacementtransfer-predicate); the verdict table, the public API and the cache schema
 are unchanged.
 
 **Mechanism: confirmed at CLIF.** `test`'s seam view of C-C2 on the ACT-1021
@@ -1571,7 +1573,7 @@ attribution and one of these recommendations:
 
 ##### Attribution (2026-09-30)
 
-The bounded evidence ran (`.local/s122-tail-cm-baseline-test-result.md` §§2–3).
+The bounded evidence ran (sections 2–3 of `.local/s122-tail-cm-baseline-test-result.md`).
 QA added armed siblings on the ACT-1021 binary and on the HEAD `e4062202`
 export (`.local/s122-tail-cow-qa/`). Neither fault is a regression.
 
@@ -1628,8 +1630,8 @@ export (`.local/s122-tail-cow-qa/`). Neither fault is a regression.
 **Status: binding for the approved fix (user, 2026-09-30), as amended by the
 [approved R3 delta](#act-1024-with-the-r3-retirement--approved-evidence-delta-2026-09-30).**
 The rule is `ownership-codegen.md` §13.7 and its §13.5 COW-cores row; the
-exact change is `.local/s122-1024-design-result.md` §3, with item 4 replaced
-by `.local/s122-1024-r3-design-result.md` §4. It lands after the ACT-1021 amendment
+exact change is section 3 of `.local/s122-1024-design-result.md`, with item 4
+replaced by section 4 of `.local/s122-1024-r3-design-result.md`. It lands after the ACT-1021 amendment
 and reuses its consuming claim. No public-API, cache-schema or typecheck
 contract change is expected.
 
@@ -1893,7 +1895,7 @@ dispositions are in the approved R3 delta below.
 **Status: binding (user, 2026-09-30).**
 
 - **Scope.** ACT-1024's correction plus option A, the retirement of the match
-  seam's COW exception (`.local/s122-1024-r3-design-result.md` §4; rule
+  seam's COW exception (section 4 of `.local/s122-1024-r3-design-result.md`; rule
   `ownership-codegen.md` §13.7). They land in one change-set.
 - **ACT-1027** is fixed by that change-set. It closes only on the conditions
   below.
@@ -2059,7 +2061,7 @@ names ACT-1028 as the owner of the control's leak. This does not block `dev`.
 ##### ACT-1021 amendment — final intake (2026-09-30)
 
 These are the consequences of the amendment's `dev` visit
-(`.local/s122-tail-cow-dev-result.md` §§4–5) and of the alias design
+(sections 4–5 of `.local/s122-tail-cow-dev-result.md`) and of the alias design
 (`.local/s122-tail-alias-design-result.md`). The ACT-1021 no-regression
 condition and the ACT-1024 scope are unchanged. The QA report is
 `.local/s122-tail-final-intake-qa-result.md`.
@@ -7575,7 +7577,7 @@ the [face (ii) decision](#defects-and-questions-for-the-user) sequences after
 it. No residual is accepted here.
 
 **Pre-fix baseline (reused, not re-run).** Recorded in
-`.local/s122-batch-followup-test-result.md` §RR-1 on the same fixture and
+section RR-1 of `.local/s122-batch-followup-test-result.md`, on the same fixture and
 harness: committed cell RED in 10 of 10 runs; subject sessions alone 97 of
 400 failed (a classified 200: 20 face (i), 21 face (ii)); `c`-first control
 9 of 400, all face (ii); under whole-binary load 27 of 200 face (i); rewrite
