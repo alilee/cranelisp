@@ -113,7 +113,7 @@ The guards are the authority for exact site sets; the table summarises them.
 |---|---|---|
 | Vocabulary definitions: `Owned::from_abi`, `Owned::into_raw`, `Borrowed::from_abi`, debug `Drop` | `handle.rs` | 4 definitions |
 | Shim entry/exit conversion, derived per §4 | `crates/cranelisp-primitives/src/declaration_macro.rs` | 1 generator |
-| Produced-value adoption | `crates/cranelisp-primitives/src/abi_facts.rs::adopt_produced_value` | 19 functions / 20 sites |
+| Produced-value adoption | `crates/cranelisp-primitives/src/abi_facts.rs::adopt_produced_value` | 18 functions / 19 sites |
 | Parent-lifetime child projection | `crates/cranelisp-primitives/src/marshal.rs::borrowed_field` | 2 functions / 6 sites |
 | Owner transfer into raw storage (`into_raw`) | primitives `alloc_adt_2`, `alloc_adt_3`, `vec_strings_from_owned_handles` | 4 sites |
 | Teardown field mints | `crates/cranelisp-intrinsics/src/drop.rs` — `owned_field` and `consume_vec_with`'s element loop | 2 sites |

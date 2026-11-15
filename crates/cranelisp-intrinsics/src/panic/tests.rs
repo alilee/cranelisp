@@ -52,6 +52,82 @@ fn backstop_report_is_the_diagnostic_with_its_own_status() {
     assert_eq!(backstop.exit_status(), 70);
 }
 
+/// Every report kind, each carrying `text` in every interpolated field.
+fn reports_carrying(text: &str) -> [String; 4] {
+    [
+        Fault::Panic(text).report(),
+        Fault::Dispatch {
+            fn_name: text,
+            cause: text,
+        }
+        .report(),
+        Fault::RuntimeDefect(text).report(),
+        Fault::BackstopExpired(text).report(),
+    ]
+}
+
+// spec: spec/12-runtime.md §12.7.5, §12.7.6; design/intrinsics/process-lifecycle.md
+// §1.1 — every report is one stderr line, whatever its payload carries.
+#[test]
+fn a_multi_line_payload_yields_a_one_line_report_of_every_kind() {
+    for report in reports_carrying("first\nsecond\r\nthird\u{2028}fourth\u{85}fifth") {
+        assert_eq!(report.lines().count(), 1, "{report:?}");
+        assert!(report.ends_with('\n'), "{report:?}");
+        assert!(
+            !report[..report.len() - 1].contains(['\n', '\r', '\u{2028}', '\u{85}']),
+            "{report:?}"
+        );
+    }
+}
+
+// spec: spec/12-runtime.md §12.7.6 — a dispatch fault's cause cannot forge a
+// line that reads as a language panic.
+#[test]
+fn a_dispatch_cause_cannot_forge_a_panic_prefixed_line() {
+    let report = Fault::Dispatch {
+        fn_name: "platform.device/read",
+        cause: "device failed\nerror: runtime panic: unrelated",
+    }
+    .report();
+    assert_eq!(
+        report,
+        "platform fn `platform.device/read` dispatch failed: \
+         device failed\\nerror: runtime panic: unrelated\n"
+    );
+    assert!(
+        report.lines().all(|l| !l.starts_with(PANIC_REPORT_PREFIX)),
+        "{report:?}"
+    );
+}
+
+// spec: design/intrinsics/process-lifecycle.md §1.1 — line breaks and other
+// control characters are written as escapes; printable text, including a
+// backslash, passes through unchanged.
+#[test]
+fn control_characters_are_escaped_and_printable_text_is_unchanged() {
+    let [panic, ..] = reports_carrying("a\tb\u{1b}[31mc\u{0}d\\e \u{e9}");
+    assert_eq!(
+        panic,
+        "error: runtime panic: a\\tb\\u{1b}[31mc\\u{0}d\\e \u{e9}\n"
+    );
+}
+
+// spec: design/intrinsics/process-lifecycle.md §1.1 — the single-line control:
+// a payload with no control characters is reported verbatim in every kind.
+#[test]
+fn a_single_line_payload_is_reported_verbatim_in_every_kind() {
+    let text = "src/m.cl:3: division by zero; path C:\\tmp";
+    assert_eq!(
+        reports_carrying(text),
+        [
+            format!("error: runtime panic: {text}\n"),
+            format!("platform fn `{text}` dispatch failed: {text}\n"),
+            format!("error: runtime defect: {text}\n"),
+            format!("{text}\n"),
+        ]
+    );
+}
+
 // spec: design/intrinsics/process-lifecycle.md §1.1 — termination is claimed
 // once per process; every later claimant loses (P-14 claim transition).
 #[test]
@@ -159,6 +235,43 @@ fn child_leaks_then_panics() {
     // One counted inc reads the RC-stats gate, which registers its exit printer.
     crate::rc::rc_inc(leaked);
     raise("leaking panic");
+}
+
+#[test]
+fn child_dispatch_fault_with_a_forged_panic_line() {
+    if !selected("child_dispatch_fault_with_a_forged_panic_line") {
+        return;
+    }
+    terminate(Fault::Dispatch {
+        fn_name: "platform.device/read",
+        cause: "device failed\nerror: runtime panic: unrelated",
+    });
+}
+
+// spec: spec/12-runtime.md §12.7.6 — a dispatch fault whose cause carries a
+// line break and the panic prefix ends the process with one unprefixed stderr
+// line.
+#[test]
+fn terminator_writes_a_multi_line_dispatch_cause_as_one_unprefixed_line() {
+    let end = test_child::run(&child("child_dispatch_fault_with_a_forged_panic_line"), &[]);
+    assert_eq!(end.code, Some(PANIC_EXIT_STATUS), "{}", end.stderr);
+    assert!(
+        end.report_lines().is_empty(),
+        "forged panic line:\n{}",
+        end.stderr
+    );
+    let reports: Vec<_> = end
+        .stderr
+        .lines()
+        .filter(|l| l.contains("device failed") || l.contains("unrelated"))
+        .collect();
+    assert_eq!(
+        reports,
+        ["platform fn `platform.device/read` dispatch failed: \
+          device failed\\nerror: runtime panic: unrelated"],
+        "{}",
+        end.stderr
+    );
 }
 
 // spec: spec/12-runtime.md §12.7.4, §12.7.5 — a panic reports once on stderr

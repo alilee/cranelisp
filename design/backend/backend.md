@@ -240,40 +240,53 @@ is [process-ending panics](../arch/s123-panics-and-environment.md) §1: one
 terminal funnel in intrinsics, no slot, no sentinel and no ferry. The backend's
 part is its §1.3 emitted half: a raise is never followed by reachable code.
 
-**Status: adopted design, not built.** As built, `runtime/panic` returns and
-the faulting frame returns the sentinel `0`. Frames above it continue with
-that sentinel, which is
-[ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md)'s
-SIGSEGV and
-[ACT-1042](../../sprints/actions/ACT-1042-callee-panic-with-scalar-result-resumes-caller-intake.md)'s
-resumed caller. Both close when this design lands.
+**Status: the emitted half is built (S123 W1).** Every raise ends its block
+with a trap, and no raising frame returns a sentinel. Closing
+[ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md)
+(the SIGSEGV on a sentinel) and
+[ACT-1042](../../sprints/actions/ACT-1042-callee-panic-with-scalar-result-resumes-caller-intake.md)
+(the resumed caller) is `qa`'s decision, on their end-to-end cells.
 
-- **Shape.** Place the message bytes in an anonymous data object, call
-  `runtime/panic(msg_ptr, msg_len)`, and terminate the block with an
-  unreachable terminator. There is no sentinel and no return.
-  - The terminator never executes, because `runtime/panic` never returns
-    (below). If that contract were broken, the process would stop at the
-    terminator instead of resuming a caller with a fabricated value. That is
-    the safer failure.
+- **Shape.** Place the message bytes, call `runtime/panic(msg_ptr, msg_len)`,
+  and end the block with a trap. There is no sentinel and no return.
+  - The trap never executes, because `runtime/panic` never returns (below).
+    If that contract were broken, the process would stop at the trap instead
+    of resuming a caller with a fabricated value. That is the safer failure.
   - No other site emits a trap. An unguarded `sdiv` stays excluded, because a
     hardware fault would bypass the message.
-- **One emission helper.** The shape is spelled three times today
-  (`primitives_inline::emit_panic_return`, its copy in `vec_codegen.rs`, and
-  `match_codegen::emit_match_panic`), plus the trap stub's body in `lib.rs`.
-  All converge on one helper that emits the message, the call and the
-  terminator together, so a raise without a terminator cannot be written
-  (Principle 07). That makes the emitted half of the architecture's §1.3
-  invariant structural. Until the convergence lands, it is asserted with the
-  architecture's falsifier: an emitted `runtime/panic` call followed by
-  reachable code.
+- **One emission helper.** `raise::emit_raise` emits the message, the call and
+  the trap together (Principle 07, Single source of truth). Its four
+  consumers are the match-failure block, the division guard, the shared Vec
+  index guard and the trap stub. A site's message is either one of the
+  spec's §12.7.2.1 messages, placed in an anonymous data object, or the trap
+  stub's baked session-owned bytes.
+  - **Grade: measured, with a known bypass.** Nothing structural stops a new
+    site from emitting the call itself: the helper takes a raw `FuncId`, and
+    any code holding `runtime/panic`'s id can make its own `FuncRef`. The
+    census `raise::tests::raise_helper_is_the_only_panic_call_emitter` scans
+    production sources for a `FuncRef` made for `runtime/panic` outside the
+    helper. Its detection proof fires on both spellings the crate uses and
+    stays silent for another intrinsic.
+  - **Residual.** The census matches identifier spelling, not function
+    identity. It counts a `declare_func_in_func` call only when that call's
+    first argument contains `panic`. An emitter that first binds the id to an
+    unrelated name (`let id = …panic_func_id…; declare_func_in_func(id, …)`)
+    is not counted, and the planted-emitter proof does not cover that case
+    (W1 review advisory B1). Until it is closed, the architecture's
+    falsifier still applies: a `runtime/panic` call followed by reachable
+    code. Each consumer's structure cell reads its CLIF for that.
+  - Making the bypass unwritable needs a type that only the helper can
+    consume, such as an opaque handle in place of the raw `FuncId`. That
+    changes the boundary the id crosses, so it is `arch`'s question (open
+    handoff). `qa` owns the grade.
 - **What the backend relies on, in intrinsics' terms.** `runtime/panic` never
   returns, on any thread, and its catalog entry declares no result (ACT-1033's
   derived pair). The import is declared from that entry. The exit path, the
   message's rendering, a spark worker's panic and the order among concurrent
   panics (open question S123-Q7) are `design`(intrinsics)'s and `spec`'s.
 - **A missing `runtime/panic` declaration** is a located codegen error.
-- **Sites.** Non-exhaustive match (`"match failed"`), division by zero and
-  `i64::MIN / -1` (both `"division by zero"`), and Vec bounds. The messages are
+- **Sites.** Non-exhaustive match (`"match failed"`), division by zero
+  (`"division by zero"`), and Vec bounds. The messages are
   the spec's §12.7.2.1 table and are observable. The redefinition
   [trap stub](ownership-codegen.md#81-the-trap-stub) raises through the same
   call with its own provenance message, so under the ruling a call to a
@@ -303,26 +316,27 @@ resumed caller. Both close when this design lands.
     static site. Counts raised before the core are never undone, which is
     moot once the process ends at the raise. The structure test checks only
     the core.
-- **`MIN / -1` reports `"division by zero"`** because the spec table gives one
-  message for the division family. A distinct message is a `spec` question. The
-  out-of-line `div-i64` primitive applies the same two guards, so inline and
-  out-of-line division agree.
+- **`i64::MIN / -1` wraps to `i64::MIN`**, like `+`, `-` and `*` (user ruling,
+  2026-11-15; spec §12.7.3). Only a zero divisor raises. `emit_checked_div` keeps the
+  hardware-faulting pair away from `sdiv`: a divisor of `-1` is replaced by
+  `1`, and the result is selected as the wrapping negation of the dividend.
+  Every other divisor keeps `sdiv`'s truncation. The out-of-line `div-i64`
+  primitive (`a.wrapping_div(b)` after its zero test) behaves the same, so a
+  value-use call and an inline call agree.
 - **`+`, `-` and `*` wrap unguarded** (spec §12.7.3). Only an operation that would
   fault in hardware earns a guard; checked arithmetic would be stricter than the
   language requires.
-- **What the ruling removes from this crate.**
+- **What the ruling removed from this crate.**
   - The sentinel return after every raise, and with it every question of what a
     caller does with a panicking callee's result. The propagation options
-    costed in [s122-closure.md §10](s122-closure.md#10-act-1040--panic-propagation-proposal)
-    are withdrawn, including option A's `runtime/panic_pending` delta.
-  - The leak caveats on the raise paths (here, and the trap stub's in
-    [ownership-codegen.md](ownership-codegen.md) §8.1).
-  - The in-process unit tests that run a panicking JIT body and read the error
-    slot afterwards (`test_support`'s `take_runtime_error` readers and the
-    executing cells of `vec_codegen/index_guard_tests.rs`). A raise now ends
-    the test process. Their module evidence becomes structural, reading the
-    CLIF: the guard dominates the core, and the raise is followed by the
-    terminator. Their executing evidence moves to e2e.
+    in [s122-closure.md §10](s122-closure.md#10-act-1040--panic-propagation-proposal)
+    are withdrawn.
+  - The leak caveats on the raise paths, including the trap stub's.
+  - Module cells that ran a panicking JIT body and then read the error slot. A
+    raise now ends the process, so the executing cells run the body in a child
+    process (`test_child`) and observe its exit and its single message. The
+    structure cells read the CLIF: the guard dominates the core, and the raise
+    is followed by the trap.
   - No backend site lowers `catch-runtime-error`, so its removal has no
     emission counterpart here.
 - **Messages (ACT-1041, ACT-1036).** The backend supplies only the message

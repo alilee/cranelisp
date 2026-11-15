@@ -185,9 +185,10 @@ Beyond those, three private
 operations touch raw handles, each at an exact approved site set:
 
 - a produced-value adapter, whose precondition is a fully initialised fresh
-  RC=1 value, a canonical produced nullary value, or `quote-sexp`'s existing
-  raw-zero error sentinel after `runtime_panic` has recorded an unknown tag.
-  The sentinel is carried and returned, never treated as a valid Sexp;
+  RC=1 value or a canonical produced nullary value. No error path returns a
+  sentinel through it: `runtime_panic` never returns, so `quote-sexp`'s
+  unknown-tag arm ends there. `parse-int` and `checked-quot` share one
+  `Option Int` constructor as their single adoption point;
 - a parent-lifetime child view over a live Sexp/SList node's heap payload,
   which is never an owner or a discharge right; and
 - owner-to-raw storage exits into ADT fields and the reserved Vec capacity.
@@ -197,7 +198,10 @@ The site sets are enforced by
 and their counts are recorded in the [shared trusted base](../runtime/s119-typed-consume-funnel.md#3-the-trusted-base-counted). The guard
 makes the assertions enumerable; it does not prove raw provenance. Adding an
 operation or site changes the shared trusted base: route it to `arch` and the
-user before implementation. The current base adds no public item, C ABI,
+user before implementation. A helper that wraps an adapter counts as a new site
+only if it adopts a raw word its callers pass in. A helper that builds the
+value itself and never takes a raw word from its callers is not a new site
+(`arch`, S123). The current base adds no public item, C ABI,
 Cargo edge, serialized cache shape, heap layout or language behavior.
 
 ## 3. Data flows

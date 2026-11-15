@@ -468,18 +468,11 @@ pub fn publish_thread_buffer() {
     }
 }
 
-/// Merge every published buffer plus the calling thread's live buffer
-/// into a single sorted vector. Sort key is `(timestamp, thread_ord_id)`
-/// so ties break deterministically.
+/// Take every published buffer plus the calling thread's live buffer
+/// into a single sorted vector, leaving them empty. Sort key is
+/// `(timestamp, thread_ord_id)` so ties break deterministically.
 pub fn dump_all_buffers() -> Vec<SchedulerTraceEvent> {
-    let mut all: Vec<SchedulerTraceEvent> = Vec::new();
-    if let Ok(guard) = published_buffers().lock() {
-        for b in guard.iter() {
-            all.extend_from_slice(b);
-        }
-    }
-    let local = dump_thread_buffer();
-    all.extend(local);
+    let mut all = crate::trace_ring::drain_all(&SCHEDULER_TRACE_BUF, published_buffers);
     all.sort_by_key(|e| (e.timestamp, e.thread_ord_id));
     all
 }

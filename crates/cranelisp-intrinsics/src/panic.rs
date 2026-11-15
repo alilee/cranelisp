@@ -50,15 +50,19 @@ pub(crate) enum Fault<'a> {
 }
 
 impl Fault<'_> {
-    /// The complete report, including its line terminator.
+    /// The complete report: one line, including its terminator.
     pub(crate) fn report(&self) -> String {
         match self {
-            Fault::Panic(msg) => format!("{PANIC_REPORT_PREFIX}{msg}\n"),
-            Fault::Dispatch { fn_name, cause } => {
-                format!("platform fn `{fn_name}` dispatch failed: {cause}\n")
+            Fault::Panic(msg) => format!("{PANIC_REPORT_PREFIX}{}\n", OneLine(msg)),
+            Fault::Dispatch { fn_name, cause } => format!(
+                "platform fn `{}` dispatch failed: {}\n",
+                OneLine(fn_name),
+                OneLine(cause)
+            ),
+            Fault::RuntimeDefect(payload) => {
+                format!("error: runtime defect: {}\n", OneLine(payload))
             }
-            Fault::RuntimeDefect(payload) => format!("error: runtime defect: {payload}\n"),
-            Fault::BackstopExpired(diagnostic) => format!("{diagnostic}\n"),
+            Fault::BackstopExpired(diagnostic) => format!("{}\n", OneLine(diagnostic)),
         }
     }
 
@@ -67,6 +71,25 @@ impl Fault<'_> {
             Fault::Panic(_) | Fault::Dispatch { .. } | Fault::RuntimeDefect(_) => PANIC_EXIT_STATUS,
             Fault::BackstopExpired(_) => BACKSTOP_EXIT_STATUS,
         }
+    }
+}
+
+/// Report text that cannot break the report's line: control characters and the
+/// Unicode line and paragraph separators are written as Rust-style escapes
+/// (`\n`, `\u{1b}`). Everything else, a backslash included, passes unchanged.
+struct OneLine<'a>(&'a str);
+
+impl std::fmt::Display for OneLine<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        for c in self.0.chars() {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                write!(f, "{}", c.escape_default())?;
+            } else {
+                f.write_char(c)?;
+            }
+        }
+        Ok(())
     }
 }
 

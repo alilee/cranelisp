@@ -123,7 +123,7 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("08-floats.cl", &[10]),
         ("09-strings.cl", &[55]),
         ("10-adts.cl", &[9]),
-        ("11-destructuring.cl", &[69]),
+        ("11-destructuring.cl", &[71]),
         ("12-closures.cl", &[7]),
         ("13-higher-order.cl", &[203]),
         // 14: vecs. S101 6b added a vec-ops-as-values section (one

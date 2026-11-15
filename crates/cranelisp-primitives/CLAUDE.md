@@ -91,5 +91,9 @@ question.
   allow-list is in `src/tests.rs::extern_shims_harvest_covers_full_inventory`.
   `neq-string` is a real table entry so it carries the same `Borrowed` facts as
   `str-eq`.
-- **`div-i64` reports `i64::MIN / -1` as "division by zero"** to match the
-  backend's inline `emit_checked_div` observably.
+- **`div-i64` wraps `i64::MIN / -1` to `i64::MIN`; `checked-quot` returns
+  `None` for it.** Only a zero divisor makes `div-i64` raise
+  `"division by zero"`. The shim must not panic on the overflow pair: it must
+  agree with the backend's inline `emit_checked_div` and with
+  `+`, `-`, `*` (spec §12.7.3, `src/ring0.rs` §Integer division).
+  `checked-quot` is the form that reports overflow.

@@ -72,13 +72,20 @@ const PRELUDE_ONE_HELPER: &str = "(export [primitives [*]])\n\
 // raises TRACE_BODY_RUNNING before the inner form's swap_got runs. PASSES.
 #[test]
 fn trace_nested_dynamic_raises_runtime_error() {
-    repl_prims(
+    let out = repl_prims(
         "(defn id [x] x)\n\
          (defn h [x] (id x))\n\
          (defn g [x] (let [a (h x)] (trace (id a))))\n\
-         (trace (g 5))\n",
-    )
-    .assert_stdout_contains("nested trace is not supported");
+         (trace (g 5))\n\
+         (add-i64 800 13)\n",
+    );
+    let out = out.assert_exit(1);
+    helpers::e2e::assert_panic_exit(
+        &out,
+        "nested trace is not supported: (trace ...) may not appear inside an actively-tracing (trace ...)",
+        Some(4),
+        false,
+    );
 }
 
 // spec: spec/04-expressions.md §4.12.5 — lexical `(trace (trace expr))` MUST
@@ -88,11 +95,18 @@ fn trace_nested_dynamic_raises_runtime_error() {
 // S81; the prior lexical re-entrancy escape was fixed).
 #[test]
 fn trace_nested_lexical_raises_runtime_error() {
-    repl_prims(
+    let out = repl_prims(
         "(defn id [x] x)\n\
-         (trace (trace (id 7)))\n",
-    )
-    .assert_stdout_contains("nested trace is not supported");
+         (trace (trace (id 7)))\n\
+         (add-i64 800 13)\n",
+    );
+    let out = out.assert_exit(1);
+    helpers::e2e::assert_panic_exit(
+        &out,
+        "nested trace is not supported: (trace ...) may not appear inside an actively-tracing (trace ...)",
+        Some(2),
+        false,
+    );
 }
 
 // spec: spec/12-runtime.md §12.7.4.1 — C-1: panic during tracing ends the process.

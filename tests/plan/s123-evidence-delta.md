@@ -19,7 +19,8 @@
 > [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
 > and the [API packet](../../sprints/s123-api-packet.md).
 > **Checkpoint:** HEAD `b35bfb87`, 2026-11-15; design citations verified
-> against the designs committed there. No compiler source is changed at this checkpoint.
+> against the designs committed there. §3.2, §3.3 and M-2 were re-verified
+> against the W1 tree on 2026-11-15.
 
 Each design's "evidence conditions for `qa`" is a proposal; this record is the
 allocation. Condition IDs are local to this record.
@@ -194,11 +195,14 @@ not a language panic and has its own report shape (P-7).
   existing `vec_set_*` cells re-pointed (C-1). The runtime match face is
   reached through an IO value built by `bind`, because exhaustiveness
   checking rejects every other incomplete match; its matched twin is the
-  control. `MIN / -1`: §12.7.3 requires a panic but §12.7.2.1 lists neither
-  the condition nor a message, so the cell asserts the panic shape with a
-  non-empty message and no quotient on stdout. It asserts the exact message
-  once `spec` records one. *Wrong:* `MIN / -1` wrapping to a value, or
-  trapping by signal. *Class:* acceptance. *Owner:* `test`.
+  control. `Int.MIN / -1` wraps to `Int.MIN` without a panic (§12.7.3, user
+  ruling 2026-11-15), in a direct call and through a function value, in every
+  mode; each compares the full quotient with `Int.MIN`, and the same shape
+  with divisor `1` is the control. *Wrong:* a panic or hardware signal on
+  `MIN / -1`; a quotient other than `Int.MIN`, including one sharing its low
+  exit byte; the inline division and `div-i64` disagreeing. *Class:*
+  acceptance. *Owner:* `test`, with `dev`(backend) and `dev`(primitives) unit
+  rows.
 - **P-4 — concurrent sources.** A panic in a spark, a `Par` branch, a
   detached strand and an empty `select` each ends the process with its
   message. Two sparks panicking with distinct messages produce exactly one
@@ -262,14 +266,25 @@ not a language panic and has its own report shape (P-7).
   parity armed with a panic exits with the panic status and one stand-down
   line, not an abort; `[RC_STATS]` still prints. *Class:* safety fence.
 - **P-14 — the terminator** (`dev`, intrinsics). Report composition per
-  fault kind; claim-once as a pure transition; child-process cells for
-  status and report, ordering and two simultaneous raisers. *Detection
-  proof:* a terminator that returns turns the ordering and one-report cells
-  red. *Class:* safety fence.
+  fault kind, one line for every payload; claim-once as a pure transition;
+  child-process cells for status and report, ordering and two simultaneous
+  raisers. *Detection proof:* a terminator that returns turns the ordering
+  and one-report cells red. *Limit:* the two-raiser cell detects a skipped
+  claim only when both threads reach the report together (two of three runs
+  under the planted fault); the pure transition row is the deterministic
+  evidence for claim-once, and the cell is a diagnostic observer of its
+  wiring. *Class:* safety fence.
 - **P-15 — no reachable code after a raise** (`dev`, backend). CLIF
-  structure rows: each site (match, division, Vec bounds) emits the call and
-  the terminator through one helper. Until the helper is the only emitter,
-  the census falsifier of arch §1.3 stands. *Class:* safety fence.
+  structure rows: each site (match, division, Vec bounds, trap stub) emits
+  the call and the terminator through one helper. *Grade:* measured for the
+  emitted shape of each site. The single-emitter claim is
+  asserted with a named falsifier: the source census matches a
+  `declare_func_in_func` whose first argument is spelled with `panic`, so an
+  emitter reaching the `FuncId` through another name passes it. *Falsifier:*
+  a `runtime/panic` `FuncRef` made outside `raise.rs`, or an emitted
+  `runtime/panic` call followed by reachable code. The structural form needs
+  a wrapper for `CompileContext::panic_func_id`, an `arch` API decision.
+  *Class:* safety fence.
 - **P-16 — `runtime/panic` declares no result** (`dev`, intrinsics; ACT-1033's
   derivation). A planted wrong row fails. *Class:* safety fence.
 - **P-17 — crash-consistent writers.** Named residual (§5); `dev` unit rows
@@ -283,8 +298,11 @@ not a language panic and has its own report shape (P-7).
   rows of [session transaction §5.2](../../design/int/session-transaction.md#52-no-symbol-is-left-broken)
   with their detection proof. *Class:* acceptance. *Owner:* `test`, `dev`.
 - **P-19 — report wording.** ACT-1041: the `--run` report is P-1's single
-  line, with no `codegen error` and no `0..0`. ACT-1036's committed RED flips
-  unchanged. *Class:* acceptance.
+  line, with no `codegen error` and no `0..0`. *Class:* acceptance.
+  ACT-1036's RED (`spec_10_io::batch_main_non_io_return_refusal_is_located_at_main`)
+  is a compile-time refusal raised in `src/exe.rs::classify_main_return_type`
+  at a synthetic span; the panic terminator does not reach it, so it flips
+  only with its own location fix.
 
 ### 3.3 The compiler test runner
 
@@ -467,16 +485,10 @@ control.
   `examples/` and `exemplar/` are purged before U-8, with the purge recorded.
   At the Phase 5 checkpoint `qa` runs `git status --ignored` after the suite
   and attributes any new cache. *Owner:* `test`. Required before U-8.
-- **M-2 — ACT-1025, a fixture assumption.** The in-memory wait in
-  `register_module` returns before the entry's terminal pool, so
-  `removal_session` waits for `user`'s typecheck to settle, and
-  `dispatch_without_a_stored_continuation_retires_nothing` asserts the
-  terminal pool, naming it, before the requeue.
-  `scheduler::tests::inmem_wait_returns_before_the_terminal_pool_so_a_requeue_waits_for_settling`
-  pins the seam: an unsettled pool refuses the requeue and a settled one
-  accepts it. Product reloads already settle before re-registering
-  (`src/session_v4/lifecycle.rs`). *Class:* maintenance check for the worker
-  module fixtures. *Owner:* `dev`.
+- **M-2 — ACT-1025, a fixture assumption.**
+  `dispatch_without_a_stored_continuation_retires_nothing` asserts `user`'s
+  terminal pool, naming it, before the requeue. *Class:* maintenance check
+  for the worker module fixtures. *Owner:* `dev`.
   The product residual, a hand-off of the entry before its pool is terminal,
   is [int §6.1.2](../../design/int/int.md#612-the-entry-is-settled-before-the-eval-thread-owns-it)'s:
   one scheduler transition publishes in-memory completion and
@@ -486,10 +498,10 @@ control.
   accepted requeue) and its negative legs, of which
   `notify_inmem_codegen_complete` leaving a `TypecheckWorking` module
   incomplete is the executing check on the one remaining partial writer.
-  Before the change the pinning test above observes the gap; it is deleted
-  in the change-set. Its compile failure is recorded, but it alone is not
-  detection, because the removed argument breaks it whether or not another
-  call can still build the state. The session and recovery rows are
+  The W0 seam test that built the unsettled state was deleted with the
+  change; its compile failure alone is not detection, because the removed
+  argument breaks it whether or not another call can still build the state.
+  The session and recovery rows are
   reachability checks. *Residual:* a scheduler edit adding a fourth writer of
   in-memory completion, asserted with the design's falsifier; `review` runs
   the writer census on any change-set touching the field. *Class:* safety
@@ -565,6 +577,8 @@ acceptance.
 | Linked worker count ignores `RAYON_NUM_THREADS` | No program observes the pool size | `dev` row (B-5) |
 | A platform sees the launch environment | No platform in the suite reads it | Structural: the stub does not mutate the environment |
 | Stack overflow panic row (§12.7.2.1) | Implementation-defined message | Unchanged `[S18]` |
+| A `runtime/panic` emitter outside the raise helper (P-15) | The census reads spelling, not identity; the structural form is an `arch` API decision | Per-site CLIF rows; the census for spelled references; `review` on any backend change-set naming `panic_func_id` |
+| A terminator wired to skip its claim (P-14) | Two raisers meet at the report only probabilistically | The deterministic claim-transition row; the two-raiser cell as observer |
 
 ## 6. Completion criteria
 

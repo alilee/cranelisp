@@ -16,9 +16,11 @@
 ;; supervisor's, which restarts its child after a panic
 ;; (design/arch/s123-panics-and-environment.md §1.5).
 ;;
-;; `discover-tests` resolves only in a live REPL session, so `run-all` and
-;; `run-matching` run only there (REPL spec §16.6). The pure helpers (run-one,
-;; present-one, tally, report, passed?) work in every mode.
+;; REPL ONLY, WHOLE MODULE. `run-all` and `run-matching` reference
+;; `discover-tests`, and importing any name from this module (or from
+;; `testing`) compiles them. `--run`, `--link`, `--test` and every test child
+;; therefore refuse the program before it runs, even when it imports only a
+;; pure helper such as `run-one` and never calls discovery (REPL spec §16.6).
 ;;
 ;; Spec: design/arch/test-discovery.md §4.3/§5/§6, plan-stdlib.md §3.3
 

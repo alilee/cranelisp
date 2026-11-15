@@ -397,15 +397,10 @@ pub fn publish_thread_buffer() {
     }
 }
 
+/// Take every published buffer plus the calling thread's live buffer,
+/// leaving them empty, sorted by `(timestamp_ns, thread_ord_id)`.
 pub fn dump_all_buffers() -> Vec<IoTraceEvent> {
-    let mut all: Vec<IoTraceEvent> = Vec::new();
-    if let Ok(guard) = published_buffers().lock() {
-        for b in guard.iter() {
-            all.extend_from_slice(b);
-        }
-    }
-    let local = dump_thread_buffer();
-    all.extend(local);
+    let mut all = crate::trace_ring::drain_all(&IO_TRACE_BUF, published_buffers);
     all.sort_by_key(|e| (e.timestamp_ns, e.thread_ord_id));
     all
 }
@@ -619,6 +614,43 @@ mod tests {
     fn event_size_is_bounded() {
         let sz = std::mem::size_of::<IoTraceEvent>();
         assert!(sz <= 64, "IoTraceEvent grew to {sz} bytes (cap 64)");
+    }
+
+    // spec: design/int/observability.md §7.1 — each event prints once: a
+    // worker's events published when its ring is destroyed are consumed by the
+    // first dump, so the exit hook's dump after the flush guard's does not
+    // repeat them.
+    #[test]
+    fn repeated_dump_does_not_repeat_a_published_worker_event() {
+        let event = |value: i64| IoTraceEvent {
+            timestamp_ns: 1,
+            thread_id: std::thread::current().id(),
+            thread_ord_id: thread_ord_id(),
+            tag: IoTraceTag::PureStep,
+            payload: IoTracePayload::PureStep {
+                value,
+                is_fresh: false,
+            },
+        };
+        let values = |events: Vec<IoTraceEvent>| -> Vec<i64> {
+            let mut values: Vec<i64> = events
+                .into_iter()
+                .map(|e| match e.payload {
+                    IoTracePayload::PureStep { value, .. } => value,
+                    _ => unreachable!("only pure steps planted"),
+                })
+                .collect();
+            values.sort();
+            values
+        };
+        let _ = dump_all_buffers();
+        std::thread::spawn(move || crate::trace_ring::push(&IO_TRACE_BUF, event(7)))
+            .join()
+            .unwrap();
+        crate::trace_ring::push(&IO_TRACE_BUF, event(9));
+
+        assert_eq!(values(dump_all_buffers()), [7, 9]);
+        assert_eq!(values(dump_all_buffers()), Vec::<i64>::new());
     }
 
     // -- Ring buffer discipline --

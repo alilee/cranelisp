@@ -17,13 +17,13 @@ A **test function** is any zero-argument function whose name begins with `test-`
 
 There is no module naming requirement. Test functions may be defined in any module. A `test-`prefixed function whose scheme is not exactly `(Fn [] (Option String))` is **excluded from discovery**. **User ruling, 2026-11-15:** only the compiler runners (`/run-tests`, `/run-all-tests` and `--test`) warn about it; in-language `discover-tests` excludes it silently. [Tested+Neg tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests, tests/test_runner.rs::test_mode_selects_exactly_the_import_chain_fresh_and_cached, tests/spec_12_runtime::discover_tests_excludes_mistyped_test_neg — `None` passes and `(Some reason)` fails with its reason; tests in several modules run; the pinned bare-`None` test runs and a mistyped `(Fn [] (Option Int))` test is excluded, and the shared runner warns by FQ name under `--test` and `/run-tests`; the excluded-signature matrix is unit-pinned at src/session_v4/test_runner/discovery/tests.rs::each_mistyped_test_is_excluded_with_one_warning_naming_it. In-language `discover-tests` excludes without a warning, so the warning clause is unrealized there (design/int/test-runner.md §12; ACT-0986)]
 
-### 16.2 Running Tests [S123]
+### 16.2 Running Tests [Tested+Neg — except the Tracing bullet; see the paragraph]
 
 `/run-tests`, `/run-all-tests` and `--test` (§0.2.2) are one test runner. They
 differ only in the modules they select, and in what the host does with the
 outcome: `--test` writes the report to stdout and sets the process exit status
 (§0.2.2), and the REPL continues after the run. A panic ends the child executing the test, as specified below (user ruling, 2026-11-15). Everything else in this section is the same
-for all three. [Uncovered S123 — was Tested+Neg tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests, tests/test_runner.rs::test_mode_empty_run_reports_no_tests_found_and_exits_zero, tests/spec_12_runtime::run_tests_empty_module_reports_no_tests — one runner: `--test` and `/run-tests` print identical FQ result lines and summaries; a failure and a panic do not stop the run; `ok`, `FAILED: <reason>` and `PANIC: <message>`; a mistyped test is excluded; the empty run is `No tests found` in both hosts. The blank line before the summary is unit-pinned at src/session_v4/test_runner/run/tests.rs::report_text_and_exit_code_come_from_the_same_outcomes. The Tracing bullet has no committed evidence]
+for all three. [Tested+Neg tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests, tests/test_runner.rs::panicking_test_does_not_end_run_or_repl, tests/test_runner.rs::two_panicking_tests_run_each_remaining_test_once, tests/test_runner.rs::mistyped_test_warns_once_beside_panicking_test, tests/test_runner.rs::all_pass_run_keeps_existing_report, tests/test_runner.rs::test_mode_empty_run_reports_no_tests_found_and_exits_zero, tests/spec_12_runtime::run_tests_empty_module_reports_no_tests — one runner: `--test` and `/run-tests` print identical FQ result lines and summaries; a panicking test is reported `PANIC: <message>` once, counted as a failure, and the restarted child runs each remaining test once; the REPL parent survives; the empty run is `No tests found` in both hosts. The blank line before the summary is unit-pinned at src/session_v4/test_runner/run/tests.rs::report_text_and_exit_code_come_from_the_same_outcomes; the child endings without a result are unit-pinned at src/session_v4/test_runner/child/tests.rs::classification_maps_each_row_of_the_ending_table and ::a_status_fail_names_the_final_stderr_line, because no eligible test can end its child by signal or dispatch fault. The Tracing bullet has no committed evidence]
 
 - **Eligibility.** The runner runs the test functions (§16.1) of the selected
   modules. A mis-typed `test-` function is excluded and warned (§16.1).
@@ -44,7 +44,10 @@ for all three. [Uncovered S123 — was Tested+Neg tests/test_runner.rs::test_mod
 
 **Panic message placement (user ruling, 2026-11-15).** For all three compiler runners, a test child's panic report MUST appear on the parent's stderr as it arrives. The panic message MUST also appear in that test's `PANIC: <message>` report line. This repetition is required, as accepted from [test-runner design §6.5](../../design/int/test-runner.md#65-the-test-child); the report follows the host's output rules above.
 
-**Child ending without a result (open, 2026-11-15; non-normative).** The report form for a test whose child ends without a result and is not classified as a panic awaits the user's decision in [S123-Q13](../../spec/appendix-d-open-questions.md#s123-q13-test-child-ending-without-a-result). The design and built diagnostic wording cited there do not establish a required display format.
+**Child ending without a result (user ruling, 2026-11-15; S123-Q13).** Under `--test`, the runner MUST report the following test-child endings without a result, when not classified as a panic, as `FAILED: <reason>` with these exact reasons:
+
+- A non-zero exit status: `test process exited with status N without a result`, with `: <the child's final stderr line>` appended when there is one. Here `N` is the exit status.
+- Signal termination: `test process was killed by signal N`. Here `N` is the signal number.
 
 **Project and library modules.** The runner's selections (§0.2.2, §16.2.2)
 distinguish two kinds of module:
@@ -140,7 +143,7 @@ Trace and test are independent, composable features — the user decides when tr
 
 ### 16.5 Programmatic Use
 
-A REPL program can select `(Pair name callable)` values from `discover-tests` and invoke each callable. `None` reports success and `(Some reason)` reports an assertion failure. A panic ends that process (§12.7); programmatic iteration cannot catch it and continue.
+A REPL program can select `(Pair name callable)` values from `discover-tests` and invoke each callable. `None` reports success and `(Some reason)` reports an assertion failure. A panic ends that process (§12.7); programmatic iteration cannot catch it and continue. [Tested+Neg tests/spec_12_runtime::discover_tests_direct_run_stops_at_panicking_test]
 
 **User ruling, 2026-11-15:** the test runner uses the restarting child-process policy of §16.2. Process launching belongs to the runner, not to `discover-tests`.
 
@@ -152,7 +155,7 @@ Standard library convenience functions (e.g., `format-test-run`, `failures-only`
 is not available under `--run`, `--link` or `--test`. Under `--test` the
 compiler discovers and runs the tests itself (§0.2.2). [Tested+Neg tests/spec_12_runtime::discover_tests_direct_run_stops_at_panicking_test, tests/test_runner.rs::batch_modes_neg_refuse_uncalled_discover_tests_reference_with_one_diagnostic, tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests — the REPL calls it; `--run`, `--link` and `--test` refuse it; `--test` runs the tests without it]
 
-**User ruling, 2026-11-15.** `discover-tests` is also refused inside a test child (§16.2), including a child launched by a REPL runner. The compile-time refusal below applies there too.
+**User ruling, 2026-11-15.** `discover-tests` is also refused inside a test child (§16.2), including a child launched by a REPL runner. The compile-time refusal below applies there too. [Tested+Neg tests/test_runner.rs::repl_test_child_refuses_discover_tests_before_any_test_runs]
 
 Under `--run`, `--link` and `--test`, a program in which any function compiled
 for the program references `discover-tests` MUST be rejected before any code

@@ -51,7 +51,7 @@ and the two shapes differ sharply.
 
 | Call shape | Fault containment | Observed failure on a name mismatch |
 |---|---|---|
-| Blocking effect thunk | DLL-local panic catch, monomorphised into the DLL, returned as an `EffectOutcome` fault | a diagnosed dispatch fault carrying the message and the effect's name |
+| Blocking effect thunk | DLL-local panic catch, monomorphised into the DLL, returned as an `EffectOutcome` fault | one report carrying the message and the effect's name, then process exit (`spec/12-runtime.md` §12.7.6) |
 | **Poll-shape leaf** | **none** — there is no panic catch anywhere on this crate's poll path, and the host does not wrap the call | an unwind out of an `extern "C"` frame ⇒ **process abort, no attribution** |
 | Construct-only marker | n/a | never detected |
 

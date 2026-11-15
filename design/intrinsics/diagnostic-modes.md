@@ -65,9 +65,10 @@ Nothing new is tracked.
 
 All three are off by default, read their switch once per process through a
 cached `LazyLock`, and live in Rust bodies, so every execution mode behaves the
-same. From S123 the value comes from the runtime switch source: the process
-environment in the compiler, and the value baked at `--link` in a linked
-program ([`process-lifecycle.md`](process-lifecycle.md) §2).
+same. Each reads the process environment today. Once the runtime switch
+source is built, the value comes from it: the process environment in the
+compiler, and the value baked at `--link` in a linked program
+([`process-lifecycle.md`](process-lifecycle.md) §2).
 
 ### M1 — no-reuse quarantine
 

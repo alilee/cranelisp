@@ -42,9 +42,9 @@ surface for zero codegen gain.
 
 ### 2.1 The pair is derived from the function's type (ACT-1033)
 
-**Status: S123 design; implementation pending (`dev`(intrinsics)).** Today each
-row hand-copies the pair. Three copies disagree with their functions:
-`runtime/panic`, `runtime/rc_underflow_check` and `runtime/string_read`.
+**Status: built in S123.** It replaced hand-copied pairs, three of which
+disagreed with their functions: `runtime/panic`, `runtime/rc_underflow_check`
+and `runtime/string_read`.
 
 - **Each row is written once.** It gives the name, the function path and the
   function's `extern "C"` pointer type. A crate-private row constructor casts
@@ -68,21 +68,17 @@ row hand-copies the pair. Three copies disagree with their functions:
 - **The table stays a promoted `'static` slice.** The derived fields are
   associated constants of concrete types, and the pointer is the same
   function-to-pointer cast the rows use today.
-- **The arity test changes.** `arity_matches_historical_signature` pins
-  copies, not functions. It retires in favour of the compile-time agreement.
-  A module test still pins the three corrected rows' derived values:
+- **The compile-time agreement replaces the old arity test**, which pinned
+  copies rather than functions. A module test pins the three corrected rows'
+  derived values:
   `runtime/panic` has no return, `rc_underflow_check` takes 2 parameters and
   `string_read` takes 3 and returns nothing.
-- **Asserted, with a named falsifier.** The shape was not compiled inside the
-  design window: no scratch directory was available. Its first compile is
-  `dev`'s first act. The falsifier is a stable-toolchain refusal of either the
-  promoted associated constants or a trait implementation for a `-> !`
-  pointer type. On the second, `runtime_panic` keeps its `()` return (the
-  derivation still gives `has_return: false`) and the divergence becomes a
-  convention instead of a type.
-- **Detection proof**, in the same change-set: deliberately mismatched rows,
-  run as compile-fail cells for arity, return and narrow-word parameters, must
-  each be refused. The matched control must compile.
+- **Structural.** The stable toolchain accepts both the promoted associated
+  constants and the implementation for a `-> !` pointer type, so
+  `runtime_panic`'s divergence is part of its type.
+- **Detection proof:** compile-fail cells in the catalog's module tests plant
+  mismatched rows for arity, return and narrow-word parameters, and each must
+  be refused with the expected error class. A matched control must compile.
 
 Retiring the entries that have no emitter (`rc_underflow_check`,
 `string_read`) is a separate public-API decision and is not part of this
@@ -164,7 +160,7 @@ Three resolution points, none of them at codegen:
 From this crate's side the contract is: the table is iterable, every `name` is
 the exact emitted-call ABI string, every `ptr` is a valid function address for
 the process lifetime, and `param_count`/`has_return` exactly describe the
-extern's `i64` ABI — by construction once §2.1 lands. That promise covers
+extern's `i64` ABI, by construction (§2.1). That promise covers
 call-target rows. The address-only poll-leaf row is governed by §2.2.
 
 ## 5. The ABI name agreement
@@ -188,7 +184,7 @@ recurring error:
 | Half | What it holds | Home | Closure |
 |---|---|---|---|
 | **Runtime targets** | this catalog's `name → (arity, ptr)` rows, emitted as `Linkage::Import` | `cranelisp-intrinsics` | **measured**: the §3 closed-set guard fails on a silent addition |
-| **Slot-less generic user callables** | `bind`, `race`, `select` — and `catch-runtime-error` until its S123 removal ([`process-lifecycle.md`](process-lifecycle.md) §1.3) — host-promised, mounted in the synthetic `primitives` module by `src/bootstrap.rs`, backend-intercepted by name | `src/` | **measured**: `src/bootstrap.rs::bootstrap_generic_uniform_body_roster_is_closed` fails on an added or reclassified member |
+| **Slot-less generic user callables** | `bind`, `race`, `select` — host-promised, mounted in the synthetic `primitives` module by `src/bootstrap.rs`, backend-intercepted by name | `src/` | **measured**: `src/bootstrap.rs::bootstrap_generic_uniform_body_roster_is_closed` fails on an added or reclassified member |
 
 Each catalog row also carries **declared representation dependencies**: facts
 about the layouts it reads (the uniform `i64` value word, the IO node tag

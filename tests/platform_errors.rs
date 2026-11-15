@@ -183,23 +183,8 @@ fn platform_unknown_name_emits_structured_not_found() {
 
 // spec: spec/12-runtime.md §12.8 Platform ABI
 //
-// Platform-fn DISPATCH works end-to-end: a `(platform stdio)` form loads
-// the DLL, `(import [platform.stdio [print]])` binds the platform fn, and
-// invoking it from `main` dispatches through the GOT-indirect platform
-// path so the effect (the printed string) reaches stdout. This is the
-// honest e2e-observable analogue of "dispatch carries the offending fn
-// name": it proves the named platform fn is resolved and invoked across
-// the host↔DLL boundary, exit clean.
-//
-// NOTE — the original `platform_dispatch_error_during_run_carries_fn_name`
-// asserted `PlatformError::DispatchError { fn_name }` but had no way to
-// trigger a dispatch-time error against the real platforms (its else-branch
-// `panic!("synthetic DLL fixture not yet available")` was a placeholder, not
-// a real assertion). The structured `DispatchError { fn_name }` carrier and
-// the dispatch-error round-trip both require the ADT-typed `shapes` test-DLL
-// fixture — deferred to FIXME 0289 (the platform-interface e2e walk slice).
-// Until then this test exercises the SUCCESS half of the dispatch path,
-// which is fully e2e-observable today.
+// A platform declaration and import resolve `print` across the host↔DLL
+// boundary; invoking it writes the argument and exits successfully.
 #[test]
 fn platform_fn_dispatches_across_dll_boundary() {
     let out = Cranelisp::new()
@@ -211,8 +196,6 @@ fn platform_fn_dispatches_across_dll_boundary() {
         )
         .run("user.cl")
         .output();
-    // The platform fn resolved + dispatched: the effect reached stdout and
-    // the program exited clean (no unresolved-symbol / dispatch error).
     assert!(
         out.status.success(),
         "platform-fn dispatch MUST complete cleanly; status: {:?}\nstderr:\n{}",
@@ -229,13 +212,8 @@ fn platform_fn_dispatches_across_dll_boundary() {
 }
 
 // =============================================================================
-// FIXME 0289 items 4-5 — perturbed-ABI + dispatch-error e2e (RED until the
-// Wave-1 `/platform` test-DLLs land: `platforms/shapes-badabi/` for item 4 and
-// the dispatch-failure sibling DLL for item 5). These are the e2e companions to
-// the already-unit-proven `PlatformError::{AbiVersionMismatch, DispatchError}`
-// carriers (`src/platform.rs`). They ride RED — the real `stdio`/`test-capture`
-// platforms cannot trigger either error path (no ADT-typed fns, host-matching
-// ABI), so an ADT-typed / perturbed test-DLL is required.
+// Platform load refusals and dispatch faults use the dedicated bad-ABI and
+// faulting DLL fixtures below.
 // =============================================================================
 
 // The `shapes.cl` module the perturbed-ABI program imports `Rectangle` from

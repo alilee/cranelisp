@@ -6,7 +6,8 @@
 **Status:** the current design of the backend mechanisms that consume the
 ownership analysis — what is built, the contracts it rests on, and the parts
 that are designed but not built. Verified against source on 2026-09-21;
-§3.4, §13.3, §13.5, §13.7 and §15 row 2 re-verified on 2026-09-30. Section
+§3.4, §13.3, §13.5, §13.7 and §15 row 2 re-verified on 2026-09-30; §8.1
+re-verified on 2026-11-15. Section
 numbers are cited from source and tests and are kept stable; the increment
 ladders, as-built narratives and falsified analyses that used to fill this
 document are in Git history.
@@ -474,7 +475,8 @@ backend's contribution. Slot holes are never reclaimed.
 ### 8.1 The trap stub
 
 A symbol broken by a redefinition cascade gets a per-symbol stub:
-`iconst msg_ptr; iconst msg_len; call runtime/panic; return 0`. It compiles with
+`iconst msg_ptr; iconst msg_len; call runtime/panic; trap`, emitted by the one
+raise helper ([backend.md §7](backend.md#7-runtime-failure)). It compiles with
 signature `() -> i64` and never reads its arguments, so one body is safe for any
 caller arity under the uniform all-i64 convention on SysV x86-64 and AAPCS64
 (register arguments are caller scratch, stack arguments are caller-cleaned).
@@ -486,10 +488,9 @@ one bare pointer and no side channel says which symbol was hit.
   `(ptr, len)`. It must live exactly as long as the returned `Code` handle; a
   broken symbol later recovered with a new ABI leaves its old slot on the stub
   for the session's life.
-- **Raise shape:** the stub's `call runtime/panic; return 0` becomes the one
-  raise helper's call and terminator, with the signature unchanged
-  ([backend.md](backend.md#7-runtime-failure); not built). The leak of the
-  caller's consuming increments is moot once the raise ends the process.
+- **No return.** The `() -> i64` signature is kept only so the stub can occupy
+  the broken symbol's slot. The stub never returns, so the caller's consuming
+  increments are never balanced; the process ends at the raise.
 
 ### 8.2 Fresh slots and frozen slots
 

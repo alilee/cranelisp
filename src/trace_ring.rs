@@ -76,5 +76,22 @@ pub(crate) fn drain_local<E: 'static>(ring: &'static LocalKey<LocalRing<E>>) -> 
     ring.try_with(LocalRing::drain).unwrap_or_default()
 }
 
+/// Take every published buffer and drain this thread's ring. Both are left
+/// empty, so a later flush prints none of these events again.
+pub(crate) fn drain_all<E: 'static>(
+    ring: &'static LocalKey<LocalRing<E>>,
+    registry: Registry<E>,
+) -> Vec<E> {
+    let mut all: Vec<E> = registry()
+        .lock()
+        .map(|mut published| std::mem::take(&mut *published))
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect();
+    all.extend(drain_local(ring));
+    all
+}
+
 #[cfg(test)]
 mod tests;

@@ -217,10 +217,16 @@ The compiler rejects a capture that cannot meet them; the surface adds no
 runtime check and no per-node lock (Principle 20).
 
 **The wrapper, per force.** It calls the author closure by reference under
-`catch_unwind`, converting a panic into an `EffectOutcome` fault. Because the
-closure survives a caught panic, a later force of the same node runs it again; a capture left inconsistent by that panic is the author's
-to guard (a `Mutex` capture poisons). A hardware trap that the host's signal
-guard recovers from leaves the thunk intact, so discharge still runs.
+`catch_unwind`, converting a panic into an `EffectOutcome` fault. That catch
+is fault *transport*, not application recovery: it exists so the unwind stops
+inside the DLL's own panic runtime (below) and the cause crosses as a value the
+host can attribute. The host does not resume: intrinsics' force guard hands a
+faulted outcome — or a hardware trap its signal guard intercepts — to the
+process terminator, which reports the fault against the effect's name and
+ends the process (`design/arch/s123-panics-and-environment.md` §1.6;
+`spec/12-runtime.md` §12.7.6). No later force of a faulted node is part of
+the contract, and the closure's survival of the catch is a property of the
+wrapper, not a retry path. Clean forces repeat freely, as the table states.
 
 **Discharge and capture-destructor containment.** Capture destructors run at
 discharge, outside the per-force catch, and a DLL-originated unwind must
@@ -243,12 +249,16 @@ in one panic runtime, so it proves the holder catches but not that the catch
 runs on the DLL's side of a cdylib boundary. The falsifier is a real platform
 DLL whose `Effect` capture panics in its destructor: discharge must leave the
 host running with the DLL's panic message, not abort. The force path has that
-measurement (`platforms/boom`); discharge does not. Whether a fixture earns its
-cost is `qa`'s decision.
+measurement (`platforms/boom`) of its catch running DLL-side; discharge does
+not. Whether a fixture earns its cost is `qa`'s decision.
 
-Aborting was rejected, because it would let one DLL destructor end the host
-process when the force path already contains the same failure. A host-side
-catch is impossible for the reason below.
+Aborting was rejected when the force path recovered from the same failure.
+Since the force path now ends the process on a fault (§1.6 of the S123
+contract), that comparison no longer supports the containment policy; the
+policy itself is unchanged here, and whether discharge should instead
+terminate is an open question routed to `arch` and `intrinsics`, which own the
+termination contract and teardown. A host-side catch is impossible either way,
+for the reason below.
 
 The panic catch is **DLL-local** on both paths, and that is the only sound
 arrangement: a platform cdylib statically links its own panic runtime, so a
@@ -407,12 +417,17 @@ a reader of this crate:
    glue word is the `0` sentinel; the host adopts the node at the crossing. A
    DLL-side write of any other value is a second release mechanism, and a
    callback added to supply one would reopen invariant 3.
-10. **Fault-guarded dispatch.** A platform-fn fault surfaces as a located
-    `PlatformError::DispatchError { fn_name }`, never a process abort. Three
-    coordinates: the fn-name travels *with* the Effect node (a thread-local
-    cannot work — the node is forced far from where it was produced); the panic
-    catch is DLL-local (§4.2); intrinsics captures the fault and int composes the
-    diagnostic, keeping the runtime crate diagnostics-free.
+10. **Attributed dispatch faults end the process.** A platform-fn fault at the
+    force site is reported against the fully qualified function and then ends
+    the process; it is never returned for recovery, and it is never an
+    unattributed abort (`spec/12-runtime.md` §12.7.6;
+    `design/arch/s123-panics-and-environment.md` §1.6). Three coordinates: the
+    fn-name travels *with* the Effect node (a thread-local cannot work — the
+    node is forced far from where it was produced); the panic catch is
+    DLL-local and transports the cause as an `EffectOutcome` value (§4.2);
+    intrinsics' force guard is the sole consumer and hands every fault to its
+    terminator, which prints the one report. This crate carries no error
+    value for a dispatch fault — `PlatformError` is load-time only.
 
 ### 5.1 No capability vocabulary
 
@@ -480,7 +495,7 @@ unattributable process abort, because poll frames carry no fault containment —
 | **Simplicity** | Strong, and structurally bounded: the crate's purpose is "stable contract", so its complexity is capped by the C-ABI surface. Six modules, six concerns, no internal cadence, no second path for any operation. |
 | **Maintainability** | Strong. One version gate protects layout; the dependency story is one crate, no `libloading`, no frontend. Blast radius for a change is the boundary itself, which is exactly where the version gate sits. |
 | **Testability** (Principle 5) | Strong. Nothing in the crate requires a live DLL: `manifest_to_descriptors` takes a reference and returns owned data, the schema parser is a total function over `&str`, and the const scanners are pure. The `#[repr(C)]` layout pins make a field-order change conspicuous. |
-| **Observability** | Adequate, and improving where it matters. Load and dispatch failures carry `PlatformError` with a location rather than a bare string. The remaining weak axis is field-name misses, which are runtime panics. |
+| **Observability** | Adequate, and improving where it matters. Load failures carry `PlatformError` with a location rather than a bare string; a dispatch fault carries its cause and the effect's name to the terminator's one report (§5 invariant 10). The remaining weak axis is field-name misses, which are runtime panics. |
 | **Concurrency-safety** | The crate has no threads. Its invariants: the two allocator slots and the callbacks pointer are `AtomicPtr`/`SeqCst`; RC is `SeqCst` deliberately, because `Relaxed` is unsound here (a dec reordering before a field read is a read-after-free); DLL handles are session-global (invariant 6), which is what justifies the `unsafe impl Send + Sync` on `PlatformFn`. |
 | **Performance** | `i64` passthrough where possible; only strings, ADTs and IO nodes allocate. An owned wrapper is one atomic increment on construct and one decrement on drop — the deliberate cost of RC compatibility with a concurrent runtime. |
 

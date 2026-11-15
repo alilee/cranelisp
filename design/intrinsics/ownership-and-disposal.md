@@ -131,12 +131,11 @@ Three collaborating pieces per family:
   fall-through. In an ordinary build it discharges no guessed fields and still
   deallocates the outer node; under the existing `CRANELISP_RC_DEC_CHECK` gate it
   raises the crate's located seam message and hard-fails before deallocation.
-  There is deliberately no unconditional debug assertion: as built, teardown
-  may follow an already-supervised language error, and a second panic across
-  an `extern "C"` boundary would abort an otherwise recoverable process. Once
-  the S123 terminator lands ([`process-lifecycle.md`](process-lifecycle.md)
-  §1), no teardown follows a language panic, so that reason lapses. Whether to
-  add the assertion is a separate decision.
+  There is no unconditional debug assertion. Its original reason, that
+  teardown could follow a recovered language error, lapsed once panics ended
+  the process: no teardown follows a language panic
+  ([`process-lifecycle.md`](process-lifecycle.md) §1). Whether to add the
+  assertion is a separate, open decision.
 - **A per-tag declared field list** — data, not control flow: for each tag, the
   fields it owns as `(offset, kind)`, where the kind names the discharge the
   field needs (shallow, `SList`, `Sexp`, closure, IO sub-tree, an IO branch
@@ -447,19 +446,12 @@ balanced by that consumer's own disposer. The pairing is symmetric on the
 cancelled path too: the frame's release discharges the node's reference while
 `ProducedValue`'s armed drop discharges the minted one.
 
-**One path is not balanced, and this design does not cure it.** The S123
-terminator removes the path rather than repairing it: no arm returns after a
-fault ([`process-lifecycle.md`](process-lifecycle.md) §1.3). As built, when an arm
-raises a runtime error or a dispatch fault, the loop disarms the frame *and*
-returns without releasing the fresh `current` node or the un-popped fresh
-continuations, so they leak. That is a pre-existing defect of the abort path,
-independent of the `Pure` rule and reachable through any node kind. Its only
-interaction with §6.1 is magnitude: a forced `Pure` leaked there now leaks one
-payload reference with its node, where under the claim rule the payload had
-already moved to the consumer. The direction stays monotone-safe — a leak, never
-a second owner or a use-after-free — and the repair (release the frame's owners
-before the abort return, rather than disarming) is `qa` intake, not part of this
-correction.
+**No fault path returns through the loop.** An arm that faults ends the
+process ([`process-lifecycle.md`](process-lifecycle.md) §1.3), so the frame
+never releases its owners on a fault. The removed abort return disarmed the
+frame and leaked the fresh `current` node and its un-popped continuations; it
+must not return. Values a terminated process never releases are leaks, which
+`spec/12-runtime.md` §12.7.8 permits.
 
 **Result-handoff disposal authority.** A tree does not own a value already
 returned by an entered foreign call, so the disposal authority rides the

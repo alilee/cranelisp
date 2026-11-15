@@ -24,6 +24,13 @@ fn div_i64_basic() {
     assert_eq!(div_i64(-7, 2), -3); // truncated toward zero (matches sdiv)
 }
 
+// spec: spec/12-runtime.md §12.7.3 — `Int.MIN / -1` wraps, like `+`, `-`, `*`
+#[test]
+fn div_i64_min_by_neg_one_wraps_to_min() {
+    assert_eq!(div_i64(i64::MIN, -1), i64::MIN);
+    assert_eq!(div_i64(i64::MAX, -1), -i64::MAX);
+}
+
 #[test]
 fn add_f64_round_trip() {
     let a: f64 = 1.5;

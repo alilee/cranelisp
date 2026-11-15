@@ -74,24 +74,25 @@ Recommendation steps 1 and 2 are the first S123 acts.
 ## Resolution (qa, 2026-11-15, S123 W0)
 
 - **Classified: a fixture assumption, not a product ordering defect.**
-  Opened `src/worker.rs::notify_processed_ready`: it publishes in-memory
+  At W0, `src/worker.rs::notify_processed_ready` published in-memory
   completion before `notify_typecheck_done`, so `wait_inmem_complete_blocking`
-  can return while `user` is `TypecheckWorking`, and `requeue_for_typecheck`
-  then refuses. The fixture assumed a terminal pool.
-- **Control.**
-  `src/scheduler/tests.rs::inmem_wait_returns_before_the_terminal_pool_so_a_requeue_waits_for_settling`
-  reaches that state deterministically: the unsettled pool refuses the
-  requeue, and the same module accepts it once settled. `dev` observed it
-  failing first with this action's symptom. Refuted if a requeue is refused
-  with the pool terminal.
-- **Correction.** `removal_session` in `src/worker/tests.rs` waits with
-  `wait_module_typecheck_settled`, and
-  `dispatch_without_a_stored_continuation_retires_nothing` asserts the
-  terminal pool, naming it, before the requeue. QA ran both cells green.
-- **Product reach.** The reload paths in `src/session_v4/lifecycle.rs`
-  already settle before re-registering. The startup residual that `dev`
-  reported, a non-empty entry returning from registration unsettled, is
-  routed to `design`(int) through `sprint`; it is not this action.
+  could return while `user` was `TypecheckWorking`, and `requeue_for_typecheck`
+  then refused. The fixture assumed a terminal pool.
+- **Control.** At W0 a scheduler unit test reached the unsettled pool
+  deterministically and `dev` observed it failing first with this action's
+  symptom. W1's fused source-pass transition
+  ([int §6.1.2](../../design/int/int.md#612-the-entry-is-settled-before-the-eval-thread-owns-it))
+  made that state unconstructable and deleted the test; the current pins are
+  `src/scheduler/tests.rs::source_pass_ready_leaves_a_terminal_pool_so_a_requeue_is_accepted`
+  and `src/scheduler/tests.rs::symbol_completion_never_completes_a_working_module`.
+  Refuted if a requeue is refused with the pool terminal.
+- **Correction.** `dispatch_without_a_stored_continuation_retires_nothing`
+  in `src/worker/tests.rs` asserts the terminal pool, naming it, before the
+  requeue; the fixture's extra settle wait was removed once the fused
+  transition landed.
+- **Product reach.** The startup hand-off residual that `dev` reported is
+  closed by the same fused transition.
 - Delete this action once
-  [FIXME 0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md)
-  no longer links it.
+  [FIXME 0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md),
+  `design/int/int.md` and `tests/plan/s122-evidence-delta.md` no longer link
+  it. Verified 2026-11-15 (S123 W1): FIXME 0694 still links it.

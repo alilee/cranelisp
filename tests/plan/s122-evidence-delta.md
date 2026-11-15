@@ -3486,10 +3486,10 @@ is not discharged by synthetic `UniformRust` fixtures or a designer's witness
 assertion. The historical four-member set and I-ABI rationale are superseded;
 0932's vec-len inline/no-slot/no-shim obligation is already satisfied.
 
-Current source requires a narrower, accurate projection: bootstrap mounts
-`catch-runtime-error` through `insert_primitive`, and its existing
-`src/bootstrap.rs::mounts_catch_runtime_error_primitive` checks a polymorphic
-`Life::HostPromised` with no slot. `TemplateBody::UniformRust` is a supported
+Source at this record's date required a narrower, accurate projection:
+bootstrap mounted `catch-runtime-error` through `insert_primitive`, and a
+bootstrap unit test checked a polymorphic `Life::HostPromised` with no slot.
+S123 W1 removed the primitive and that test. `TemplateBody::UniformRust` is a supported
 recipe, but its presence in a synthetic typecheck fixture is not a production
 roster. A UniformRust-only empty census would miss the actual hand-written
 polymorphic body and falsely discharge the contract. No new lifecycle or API

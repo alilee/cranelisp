@@ -63,12 +63,12 @@ function %build-grid(i64, i64, i64) -> i64 system_v {
     sig6 = (i64, i64) system_v
     sig7 = (i64) system_v
     fn0 = u0:0 sig1
-    fn1 = colocated u0:54 sig2
-    fn2 = colocated u0:53 sig3
-    fn3 = u0:25 sig4
-    fn4 = u0:24 sig5
-    fn5 = u0:14 sig6
-    fn6 = colocated u0:51 sig7
+    fn1 = colocated u0:53 sig2
+    fn2 = colocated u0:52 sig3
+    fn3 = u0:24 sig4
+    fn4 = u0:23 sig5
+    fn5 = u0:13 sig6
+    fn6 = colocated u0:50 sig7
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -163,7 +163,7 @@ block4(v8: i64, v49: i64):
 ; === CLIF user::cell-value ===
 function %cell-value(i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
-    sig0 = (i64, i64) -> i64 system_v
+    sig0 = (i64, i64) system_v
     fn0 = u0:2 sig0
 
 block0(v0: i64):
@@ -201,9 +201,8 @@ block9:
 block3:
     v11 = global_value.i64 gv0
     v12 = iconst.i64 12
-    v13 = call fn0(v11, v12)  ; v12 = 12
-    v14 = iconst.i64 0
-    return v14  ; v14 = 0
+    call fn0(v11, v12)  ; v12 = 12
+    trap user1
 
 block2(v2: i64):
     return v2
@@ -226,23 +225,23 @@ function %copy-work(i64, i64, i64, i64) -> i64 system_v {
     gv2 = symbol userextname6
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
-    sig2 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64) system_v
     sig3 = (i64, i64, i64, i64) -> i64 system_v
-    sig4 = (i64, i64) -> i64 system_v
+    sig4 = (i64, i64) system_v
     sig5 = (i64) -> i64 system_v
     sig6 = (i64) system_v
     sig7 = (i64) system_v
     sig8 = (i64) system_v
     sig9 = (i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:54 sig1
+    fn1 = colocated u0:53 sig1
     fn2 = u0:2 sig2
-    fn3 = u0:23 sig3
+    fn3 = u0:22 sig3
     fn4 = u0:2 sig4
-    fn5 = colocated u0:52 sig6
-    fn6 = colocated u0:51 sig7
-    fn7 = colocated u0:51 sig8
-    fn8 = colocated u0:51 sig9
+    fn5 = colocated u0:51 sig6
+    fn6 = colocated u0:50 sig7
+    fn7 = colocated u0:50 sig8
+    fn8 = colocated u0:50 sig9
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
@@ -273,57 +272,55 @@ block3:
 block6:
     v21 = global_value.i64 gv0
     v22 = iconst.i64 28
-    v23 = call fn2(v21, v22)  ; v22 = 28
-    v24 = iconst.i64 0
-    return v24  ; v24 = 0
+    call fn2(v21, v22)  ; v22 = 28
+    trap user1
 
 block5:
-    v25 = call fn3(v4, v5, v13, v15)
-    v26 = iconst.i64 1
-    v27 = isub.i64 v6, v26  ; v26 = 1
-    v28 = load.i64 notrap aligned v25+16
-    v29 = iconst.i64 0
-    v30 = icmp.i64 slt v5, v29  ; v29 = 0
-    v31 = icmp.i64 sge v5, v28
-    v32 = bor v30, v31
-    brif v32, block8, block7
+    v23 = call fn3(v4, v5, v13, v15)
+    v24 = iconst.i64 1
+    v25 = isub.i64 v6, v24  ; v24 = 1
+    v26 = load.i64 notrap aligned v23+16
+    v27 = iconst.i64 0
+    v28 = icmp.i64 slt v5, v27  ; v27 = 0
+    v29 = icmp.i64 sge v5, v26
+    v30 = bor v28, v29
+    brif v30, block8, block7
 
 block8:
-    v33 = global_value.i64 gv1
-    v34 = iconst.i64 28
-    v35 = call fn4(v33, v34)  ; v34 = 28
-    v36 = iconst.i64 0
-    return v36  ; v36 = 0
+    v31 = global_value.i64 gv1
+    v32 = iconst.i64 28
+    call fn4(v31, v32)  ; v32 = 28
+    trap user1
 
 block7:
-    v37 = load.i64 notrap aligned v25+32
-    v38 = iconst.i64 8
-    v39 = imul.i64 v5, v38  ; v38 = 8
-    v40 = iadd v37, v39
-    v41 = load.i64 notrap aligned v40
-    v42 = iadd_imm v41, 8
-    v43 = iconst.i64 1
-    v44 = atomic_rmw.i64 add v42, v43  ; v43 = 1
-    v45 = global_value.i64 gv2
-    v46 = iadd_imm v45, 24
-    v47 = load.i64 notrap aligned v46
-    v48 = call_indirect sig5, v47(v41)
-    call fn5(v41)
-    v49 = iadd.i64 v7, v48
-    call fn6(v25)
-    jump block1(v4, v5, v27, v49)
+    v33 = load.i64 notrap aligned v23+32
+    v34 = iconst.i64 8
+    v35 = imul.i64 v5, v34  ; v34 = 8
+    v36 = iadd v33, v35
+    v37 = load.i64 notrap aligned v36
+    v38 = iadd_imm v37, 8
+    v39 = iconst.i64 1
+    v40 = atomic_rmw.i64 add v38, v39  ; v39 = 1
+    v41 = global_value.i64 gv2
+    v42 = iadd_imm v41, 24
+    v43 = load.i64 notrap aligned v42
+    v44 = call_indirect sig5, v43(v37)
+    call fn5(v37)
+    v45 = iadd.i64 v7, v44
+    call fn6(v23)
+    jump block1(v4, v5, v25, v45)
 
 block9:
-    v55 = iconst.i64 0
-    v54 -> v55
-    v52 = iconst.i64 0
-    v51 -> v52
-    v50 = iconst.i64 0
-    call fn7(v52)  ; v52 = 0
-    jump block4(v50, v55)  ; v50 = 0, v55 = 0
+    v51 = iconst.i64 0
+    v50 -> v51
+    v48 = iconst.i64 0
+    v47 -> v48
+    v46 = iconst.i64 0
+    call fn7(v48)  ; v48 = 0
+    jump block4(v46, v51)  ; v46 = 0, v51 = 0
 
-block4(v11: i64, v53: i64):
-    call fn8(v53)
+block4(v11: i64, v49: i64):
+    call fn8(v49)
     return v11
 }
 ; === end CLIF user::copy-work ===
@@ -336,7 +333,7 @@ function %leaf-work(i64, i64) -> i64 system_v {
     sig1 = () -> i64 system_v
     sig2 = (i64, i64, i64, i64) -> i64 system_v
     sig3 = (i64) system_v
-    fn0 = colocated u0:51 sig3
+    fn0 = colocated u0:50 sig3
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -387,8 +384,8 @@ function %main() -> i64 system_v {
     sig4 = (i64, i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
     sig6 = (i64) system_v
-    fn0 = u0:13 sig0
-    fn1 = colocated u0:51 sig6
+    fn0 = u0:12 sig0
+    fn1 = colocated u0:50 sig6
 
 block0:
     jump block1
@@ -433,11 +430,8 @@ block1:
 ; === CLIF user::mid-of ===
 function %mid-of(i64, i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
-    gv1 = symbol colocated userextname2
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
+    sig0 = (i64, i64) system_v
     fn0 = u0:2 sig0
-    fn1 = u0:2 sig1
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -445,36 +439,24 @@ block0(v0: i64, v1: i64):
 block1(v2: i64, v3: i64):
     v4 = isub v3, v2
     v5 = iconst.i64 2
-    v6 = iconst.i64 0
-    v7 = icmp eq v5, v6  ; v5 = 2, v6 = 0
-    brif v7, block3, block2
+    v6 = icmp_imm eq v5, 0  ; v5 = 2
+    brif v6, block3, block2
 
 block3:
-    v8 = global_value.i64 gv0
-    v9 = iconst.i64 16
-    v10 = call fn0(v8, v9)  ; v9 = 16
-    v11 = iconst.i64 0
-    return v11  ; v11 = 0
+    v7 = global_value.i64 gv0
+    v8 = iconst.i64 16
+    call fn0(v7, v8)  ; v8 = 16
+    trap user1
 
 block2:
-    v12 = iconst.i64 -9223372036854775808
-    v13 = iconst.i64 -1
-    v14 = icmp.i64 eq v4, v12  ; v12 = -9223372036854775808
-    v15 = icmp.i64 eq v5, v13  ; v5 = 2, v13 = -1
-    v16 = band v14, v15
-    brif v16, block5, block4
-
-block5:
-    v17 = global_value.i64 gv1
-    v18 = iconst.i64 16
-    v19 = call fn1(v17, v18)  ; v18 = 16
-    v20 = iconst.i64 0
-    return v20  ; v20 = 0
-
-block4:
-    v21 = sdiv.i64 v4, v5  ; v5 = 2
-    v22 = iadd.i64 v2, v21
-    return v22
+    v9 = icmp_imm.i64 eq v5, -1  ; v5 = 2
+    v10 = iconst.i64 1
+    v11 = select v9, v10, v5  ; v10 = 1, v5 = 2
+    v12 = sdiv.i64 v4, v11
+    v13 = ineg.i64 v4
+    v14 = select v9, v13, v12
+    v15 = iadd.i64 v2, v14
+    return v15
 }
 ; === end CLIF user::mid-of ===
 ; === CLIF user::reduce-tree ===
@@ -505,22 +487,22 @@ function %reduce-tree(i64, i64, i64) -> i64 system_v {
     sig18 = (i64, i64) -> i64 system_v
     sig19 = (i64, i64, i64) -> i64 system_v
     sig20 = (i64) system_v
-    fn0 = u0:22 sig1
+    fn0 = u0:21 sig1
     fn1 = u0:0 sig2
-    fn2 = colocated u0:55 sig3
-    fn3 = colocated u0:56 sig4
-    fn4 = u0:18 sig5
-    fn5 = u0:19 sig6
+    fn2 = colocated u0:54 sig3
+    fn3 = colocated u0:55 sig4
+    fn4 = u0:17 sig5
+    fn5 = u0:18 sig6
     fn6 = u0:0 sig7
-    fn7 = colocated u0:57 sig8
-    fn8 = colocated u0:58 sig9
-    fn9 = u0:18 sig10
-    fn10 = u0:19 sig11
-    fn11 = u0:20 sig12
-    fn12 = u0:21 sig13
-    fn13 = u0:20 sig14
-    fn14 = u0:21 sig15
-    fn15 = colocated u0:51 sig20
+    fn7 = colocated u0:56 sig8
+    fn8 = colocated u0:57 sig9
+    fn9 = u0:17 sig10
+    fn10 = u0:18 sig11
+    fn11 = u0:19 sig12
+    fn12 = u0:20 sig13
+    fn13 = u0:19 sig14
+    fn14 = u0:20 sig15
+    fn15 = colocated u0:50 sig20
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -650,46 +632,31 @@ block4(v10: i64):
 ; === CLIF user::rem-i64 ===
 function %rem-i64(i64, i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
-    gv1 = symbol colocated userextname2
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
+    sig0 = (i64, i64) system_v
     fn0 = u0:2 sig0
-    fn1 = u0:2 sig1
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
 
 block1(v2: i64, v3: i64):
-    v4 = iconst.i64 0
-    v5 = icmp eq v3, v4  ; v4 = 0
-    brif v5, block3, block2
+    v4 = icmp_imm eq v3, 0
+    brif v4, block3, block2
 
 block3:
-    v6 = global_value.i64 gv0
-    v7 = iconst.i64 16
-    v8 = call fn0(v6, v7)  ; v7 = 16
-    v9 = iconst.i64 0
-    return v9  ; v9 = 0
+    v5 = global_value.i64 gv0
+    v6 = iconst.i64 16
+    call fn0(v5, v6)  ; v6 = 16
+    trap user1
 
 block2:
-    v10 = iconst.i64 -9223372036854775808
-    v11 = iconst.i64 -1
-    v12 = icmp.i64 eq v2, v10  ; v10 = -9223372036854775808
-    v13 = icmp.i64 eq v3, v11  ; v11 = -1
-    v14 = band v12, v13
-    brif v14, block5, block4
-
-block5:
-    v15 = global_value.i64 gv1
-    v16 = iconst.i64 16
-    v17 = call fn1(v15, v16)  ; v16 = 16
-    v18 = iconst.i64 0
-    return v18  ; v18 = 0
-
-block4:
-    v19 = sdiv.i64 v2, v3
-    v20 = imul v19, v3
-    v21 = isub.i64 v2, v20
-    return v21
+    v7 = icmp_imm.i64 eq v3, -1
+    v8 = iconst.i64 1
+    v9 = select v7, v8, v3  ; v8 = 1
+    v10 = sdiv.i64 v2, v9
+    v11 = ineg.i64 v2
+    v12 = select v7, v11, v10
+    v13 = imul v12, v3
+    v14 = isub.i64 v2, v13
+    return v14
 }
 ; === end CLIF user::rem-i64 ===

@@ -4,8 +4,8 @@ function %(macros/SList.SCons [macros/Sexp (macros/SList macros/Sexp)] (macros/S
     sig1 = (i64) system_v
     sig2 = (i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:41 sig1
-    fn2 = colocated u0:40 sig2
+    fn1 = colocated u0:40 sig1
+    fn2 = colocated u0:39 sig2
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -90,21 +90,21 @@ function %twice$macro-clause$0(i64) -> i64 system_v {
     sig4 = (i64, i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
     sig6 = (i64) -> i64 system_v
-    sig7 = (i64, i64) -> i64 system_v
+    sig7 = (i64, i64) system_v
     sig8 = (i64) system_v
-    fn0 = u0:11 sig0
+    fn0 = u0:10 sig0
     fn1 = u0:0 sig1
     fn2 = u0:0 sig5
     fn3 = u0:0 sig6
     fn4 = u0:2 sig7
-    fn5 = colocated u0:40 sig8
+    fn5 = colocated u0:39 sig8
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v46 -> v1
-    v47 -> v1
+    v44 -> v1
+    v45 -> v1
     jump block4
 
 block4:
@@ -167,9 +167,8 @@ block5:
 block3:
     v42 = global_value.i64 gv4
     v43 = iconst.i64 12
-    v44 = call fn4(v42, v43)  ; v43 = 12
-    v45 = iconst.i64 0
-    return v45  ; v45 = 0
+    call fn4(v42, v43)  ; v43 = 12
+    trap user1
 
 block2(v2: i64):
     call fn5(v1)

@@ -37,8 +37,8 @@ function %main() -> i64 system_v {
     sig3 = (i64) -> i64 system_v
     sig4 = (i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:41 sig1
-    fn2 = colocated u0:42 sig4
+    fn1 = colocated u0:40 sig1
+    fn2 = colocated u0:41 sig4
 
 block0:
     jump block1

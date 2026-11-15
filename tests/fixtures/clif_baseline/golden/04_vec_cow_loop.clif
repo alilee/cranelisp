@@ -23,10 +23,10 @@ function %build(i64, i64, i64) -> i64 system_v {
     sig1 = (i64, i64, i64) -> i64 system_v
     sig2 = (i64, i64) system_v
     sig3 = (i64) system_v
-    fn0 = u0:25 sig0
-    fn1 = u0:24 sig1
-    fn2 = u0:14 sig2
-    fn3 = colocated u0:42 sig3
+    fn0 = u0:24 sig0
+    fn1 = u0:23 sig1
+    fn2 = u0:13 sig2
+    fn3 = colocated u0:41 sig3
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -115,19 +115,19 @@ function %main() -> i64 system_v {
     gv4 = symbol userextname1
     sig0 = (i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
-    sig2 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64) system_v
     sig3 = (i64, i64, i64, i64) -> i64 system_v
     sig4 = (i64, i64, i64, i64) -> i64 system_v
-    sig5 = (i64, i64) -> i64 system_v
+    sig5 = (i64, i64) system_v
     sig6 = (i64) -> i64 system_v
     sig7 = (i64) system_v
     sig8 = (i64) system_v
-    fn0 = u0:13 sig0
+    fn0 = u0:12 sig0
     fn1 = u0:2 sig2
-    fn2 = u0:23 sig3
+    fn2 = u0:22 sig3
     fn3 = u0:2 sig5
-    fn4 = colocated u0:42 sig7
-    fn5 = colocated u0:42 sig8
+    fn4 = colocated u0:41 sig7
+    fn5 = colocated u0:41 sig8
 
 block0:
     jump block1
@@ -157,54 +157,52 @@ block1:
 block3:
     v18 = global_value.i64 gv1
     v19 = iconst.i64 28
-    v20 = call fn1(v18, v19)  ; v19 = 28
-    v21 = iconst.i64 0
-    return v21  ; v21 = 0
+    call fn1(v18, v19)  ; v19 = 28
+    trap user1
 
 block2:
-    v22 = call fn2(v9, v10, v11, v12)  ; v10 = 0, v11 = 100, v12 = 0
+    v20 = call fn2(v9, v10, v11, v12)  ; v10 = 0, v11 = 100, v12 = 0
+    v21 = iconst.i64 0
+    v22 = load.i64 notrap aligned v9+16
     v23 = iconst.i64 0
-    v24 = load.i64 notrap aligned v9+16
-    v25 = iconst.i64 0
-    v26 = global_value.i64 gv2
-    v27 = iadd_imm v26, 16
-    v28 = load.i64 notrap aligned v27
-    v29 = call_indirect sig4, v28(v9, v23, v24, v25)  ; v23 = 0, v25 = 0
+    v24 = global_value.i64 gv2
+    v25 = iadd_imm v24, 16
+    v26 = load.i64 notrap aligned v25
+    v27 = call_indirect sig4, v26(v9, v21, v22, v23)  ; v21 = 0, v23 = 0
+    v28 = iconst.i64 0
+    v29 = load.i64 notrap aligned v20+16
     v30 = iconst.i64 0
-    v31 = load.i64 notrap aligned v22+16
-    v32 = iconst.i64 0
-    v33 = icmp slt v30, v32  ; v30 = 0, v32 = 0
-    v34 = icmp sge v30, v31  ; v30 = 0
-    v35 = bor v33, v34
-    brif v35, block5, block4
+    v31 = icmp slt v28, v30  ; v28 = 0, v30 = 0
+    v32 = icmp sge v28, v29  ; v28 = 0
+    v33 = bor v31, v32
+    brif v33, block5, block4
 
 block5:
-    v36 = global_value.i64 gv3
-    v37 = iconst.i64 28
-    v38 = call fn3(v36, v37)  ; v37 = 28
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v34 = global_value.i64 gv3
+    v35 = iconst.i64 28
+    call fn3(v34, v35)  ; v35 = 28
+    trap user1
 
 block4:
-    v40 = load.i64 notrap aligned v22+32
-    v41 = iconst.i64 8
-    v42 = imul.i64 v30, v41  ; v30 = 0, v41 = 8
-    v43 = iadd v40, v42
+    v36 = load.i64 notrap aligned v20+32
+    v37 = iconst.i64 8
+    v38 = imul.i64 v28, v37  ; v28 = 0, v37 = 8
+    v39 = iadd v36, v38
+    v40 = load.i64 notrap aligned v39
+    v41 = iadd.i64 v27, v40
+    v42 = global_value.i64 gv4
+    v43 = iadd_imm v42, 0
     v44 = load.i64 notrap aligned v43
-    v45 = iadd.i64 v29, v44
-    v46 = global_value.i64 gv4
-    v47 = iadd_imm v46, 0
-    v48 = load.i64 notrap aligned v47
-    v49 = call_indirect sig6, v48(v45)
+    v45 = call_indirect sig6, v44(v41)
     call fn4(v9)
-    call fn5(v22)
-    return v49
+    call fn5(v20)
+    return v45
 }
 ; === end CLIF user::main ===
 ; === CLIF user::sum ===
 function %sum(i64, i64, i64, i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
-    sig0 = (i64, i64) -> i64 system_v
+    sig0 = (i64, i64) system_v
     fn0 = u0:2 sig0
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
@@ -231,22 +229,21 @@ block3:
 block6:
     v18 = global_value.i64 gv0
     v19 = iconst.i64 28
-    v20 = call fn0(v18, v19)  ; v19 = 28
-    v21 = iconst.i64 0
-    return v21  ; v21 = 0
+    call fn0(v18, v19)  ; v19 = 28
+    trap user1
 
 block5:
-    v22 = load.i64 notrap aligned v4+32
-    v23 = iconst.i64 8
-    v24 = imul.i64 v5, v23  ; v23 = 8
-    v25 = iadd v22, v24
-    v26 = load.i64 notrap aligned v25
-    v27 = iadd.i64 v7, v26
-    jump block1(v4, v12, v6, v27)
+    v20 = load.i64 notrap aligned v4+32
+    v21 = iconst.i64 8
+    v22 = imul.i64 v5, v21  ; v21 = 8
+    v23 = iadd v20, v22
+    v24 = load.i64 notrap aligned v23
+    v25 = iadd.i64 v7, v24
+    jump block1(v4, v12, v6, v25)
 
 block7:
-    v28 = iconst.i64 0
-    jump block4(v28)  ; v28 = 0
+    v26 = iconst.i64 0
+    jump block4(v26)  ; v26 = 0
 
 block4(v10: i64):
     return v10

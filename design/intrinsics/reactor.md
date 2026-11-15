@@ -164,11 +164,8 @@ synchronously between awaits.
    root `Effect` node, acquires a permit on the reactor thread, starts a bridge
    lease (§2.21) and `rayon::spawn`s the synchronous stepper. Completion
    returns through a `oneshot` woken via the executor waker. The permit is held
-   across the bridge. As built, if a runtime error or dispatch fault is
-   already set when a parked branch is admitted, the branch returns without
-   spawning. Under the S123 terminator a failed sibling has already ended the
-   process ([`process-lifecycle.md`](process-lifecycle.md) §1), so this check
-   retires.
+   across the bridge. Admission checks no fault state, because a failed
+   sibling has already ended the process.
 4. **Reactor partition.** Each branch runs the async trampoline under a fresh
    child strand; poll leaves inside it acquire through the `ctx` vtable (§7).
 5. Join both partitions concurrently on the reactor thread and merge the
@@ -178,11 +175,10 @@ synchronously between awaits.
 - **Never block the reactor on rayon.** `block_on(rayon_join)` on the reactor
   thread starves every poll leaf; the wakeable bridge is the only rayon→reactor
   handoff.
-- **A branch panic ends the process where it is raised** (S123,
-  [`process-lifecycle.md`](process-lifecycle.md) §1.2). As built, a
-  worker-to-join error ferry carries it back instead, at two sites:
-  `run_blocking_branch` (async) and the synchronous
-  `dispatch_par_branches_with_trace`. Both ferry sites retire together.
+- **A branch panic ends the process where it is raised**
+  ([`process-lifecycle.md`](process-lifecycle.md) §1.2). No worker-to-join
+  error ferry exists at either dispatch site, the async blocking branch or the
+  synchronous dispatcher.
 - **Nested `Par` on a worker** uses the synchronous dispatcher, which still
   groups branches by token and runs each non-zero-token group serially.
 - **Blocking I/O is uncapped by design.** A slow but completing blocking branch
@@ -244,7 +240,7 @@ and poll-leaf overlap; the pool's sizing, parking, FIFO and first-writer-wins
 behaviour; the degree throttle; release on `Ready` and on drop, with no double
 release; stale-waiter removal and permit forwarding on a cancelled parked
 acquire; reactor-interest deregistration on drop; the `sleep` deadline;
-supervisor panic capture (runtime-error capture retires in S123); the
+supervisor runtime-defect capture; the
 trampoline-frame guard; the
 keep-alive; the bridge-join ordering observer and its planted early-release
 detection proof; and the liveness predicates
@@ -294,9 +290,8 @@ Each supervised strand:
 **No failure policy (S123; `spec/12-runtime.md` §12.7.9).** A language panic
 in a strand ends the process where it is raised. A Rust panic caught by the
 strand's `catch_unwind` is a runtime defect, and goes to the same terminator
-([`process-lifecycle.md`](process-lifecycle.md) §1.1). As built, the strand
-instead takes the runtime-error slot at its completion boundary and applies
-`LogAndDrop`, emitting `StrandFailed`; both retire.
+([`process-lifecycle.md`](process-lifecycle.md) §1.1). The strand has no
+error to take at its completion boundary and emits no failure event.
 
 The supervisor does not decide when a strand is cancelled; that is its
 cancellation context's (§2.19).
@@ -515,7 +510,7 @@ While not recording, `emit_strand_event` costs one lock and an `is_none` check.
 | `TokenAcquired` / `TokenParked` / `TokenReleased` / `TokenCapacityMismatch` | the `AcquirePermit`/`Permit` path only — rayon-partition branches (§2.8) |
 | `GlobalBudgetParked` / `GlobalBudgetAcquired` / `GlobalBudgetReleased` | the global budget (§2.13) |
 | `StrandLaunched` | the launch arm (§2.11) |
-| `StrandCompleted` (`StrandFailed` retires with the S123 failure policy) | supervised strands (§2.12) |
+| `StrandCompleted` | supervised strands (§2.12) |
 | `StrandCancelled { RaceLost }` | `select` losers (§2.15) |
 
 As built:
@@ -538,10 +533,8 @@ process-per-test isolation.
 | `Launch` | detached (§2.11) | not interpreted |
 | `Select` | raced (§2.15) | not interpreted |
 
-As built, after each arm the async trampoline checks the runtime-error and
-dispatch-fault slots and stops before feeding a continuation. Under the S123
-terminator no arm returns after a fault, so these checks retire and the
-trampoline stops only for cancellation
+No arm returns after a fault, so the async trampoline checks no fault state
+between arms and stops only for cancellation
 ([`process-lifecycle.md`](process-lifecycle.md) §1.3). **The synchronous
 stepper panics on an unknown tag**, so a poll, launch or select node reached
 inside a rayon-partition branch — a `Bind`-rooted branch whose chain later
@@ -698,8 +691,8 @@ no-progress wall-clock backstop that catches an armed leaf that never readies:
   backstop fires on time.
 - A fired backstop clears the supervisor, prints the diagnostic and **exits
   with status 70** (`EX_SOFTWARE`), not a panic. A panic would cross the
-  `cannot_unwind` program boundary and core-dump. From S123 the exit goes
-  through the one terminator, with its claim-once and flush
+  `cannot_unwind` program boundary and core-dump. The exit goes through the
+  one terminator, with its claim-once and flush
   ([`process-lifecycle.md`](process-lifecycle.md) §1.1); the status and
   diagnostic are unchanged. The unit-test seam
   (`block_on_reactor_capped`) panics instead, so tests can observe the trip.
@@ -727,9 +720,8 @@ propose the flag to `arch`.
 
 `(select [])` raises the panic `select over empty collection`
 (`spec/10-io.md` §10.12.8; `spec/12-runtime.md` §12.7.2) before constructing the
-race. From S123 the arm calls the terminator, which ends the process
-([`process-lifecycle.md`](process-lifecycle.md) §1.1). As built, it sets the
-runtime-error slot and the trampoline's post-arm check stops the walk.
+race. The arm calls the terminator, which ends the process
+([`process-lifecycle.md`](process-lifecycle.md) §1.1).
 
 ## 10. Cross-references
 

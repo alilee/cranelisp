@@ -310,9 +310,10 @@ tables and compares the canonical layout hash against the DLL's exported one:
 (`platform.md` §6).
 
 Failures are `PlatformError` values carrying a location, not bare strings:
-`LoadFailed`, `ManifestNotFound`, `AbiVersionMismatch`, `LayoutHashMismatch`, and
-at dispatch time `DispatchError`. The variants and their payloads are
-`cranelisp-types`' to define.
+`LoadFailed`, `ManifestNotFound`, `AbiVersionMismatch` and `LayoutHashMismatch`.
+The variants and their payloads are `cranelisp-types`' to define. There is no
+dispatch-time variant: a fault while forcing an effect ends the process with
+one report naming the function (`platform.md` §5, invariant 10).
 
 Only the entry module may carry a `(platform …)` declaration (spec §10.9.1).
 Other modules reach the effects by importing `platform.<name>`.

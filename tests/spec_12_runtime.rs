@@ -828,36 +828,25 @@ fn lenient_no_lenient_env_var_preserves_correctness() {
 // by checkout-and-run at 48dcea3 and at the S81 funnel-1/4 commit aeff79d).
 // =============================================================================
 
-// spec: spec/12-runtime.md §12.4.3 — a div-by-zero inside a lenient `let`
-// binding MUST abort the whole expression with a runtime panic; it MUST NOT be
-// swallowed.
-//
-// AS-LANDED BEHAVIOUR (PASSING regression guard): with lenient evaluation ON
-// (the default), `(let [a (div-i64 10 0) b (add-i64 1 2)] a)` correctly surfaces
-// the "division by zero" runtime panic rather than binding `a` to the sentinel
-// `0`. The fork-join error-slot ferry obligation (worker-side
-// `take_runtime_error()` -> join-side re-raise) is satisfied as of the IVar
-// ferry landing (S76 Wave 4 — commits 9491ccc + e53ef13). Deterministic across
-// runs.
+// spec: spec/12-runtime.md §12.4.3, §12.7.4.1 — a lenient binding panic ends the process.
 #[test]
 fn lenient_binding_panic_not_swallowed_neg() {
-    repl_prims("(let [a (div-i64 10 0) b (add-i64 1 2)] a)\n")
-        // MUST surface the panic — MUST NOT bind `a` to the sentinel 0.
-        .assert_stdout_contains("division by zero");
+    let out = repl_prims("(let [a (div-i64 10 0) b (add-i64 1 2)] a)\n(add-i64 800 13)\n");
+    let out = out.assert_exit(1);
+    helpers::e2e::assert_panic_exit(&out, "division by zero", Some(1), false);
 }
 
-// spec: spec/12-runtime.md §12.4.3 — the same `let` under CRANELISP_NO_LENIENT=1
-// DOES panic, proving lenient evaluation (the spark path) is the trigger for
-// the swallow. This control test PASSES today and pins the spark as the cause.
+// spec: spec/12-runtime.md §12.4.3, §12.7.4.1 — disabling lenient evaluation preserves panic termination.
 #[test]
 fn lenient_binding_panic_surfaces_with_no_lenient_control() {
-    Cranelisp::new()
+    let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .repl()
-        .stdin("(let [a (div-i64 10 0) b (add-i64 1 2)] a)\n")
+        .stdin("(let [a (div-i64 10 0) b (add-i64 1 2)] a)\n(add-i64 800 13)\n")
         .env("CRANELISP_NO_LENIENT", "1")
-        .output()
-        .assert_stdout_contains("division by zero");
+        .output();
+    let out = out.assert_exit(1);
+    helpers::e2e::assert_panic_exit(&out, "division by zero", Some(1), false);
 }
 
 // =============================================================================
@@ -1607,26 +1596,56 @@ fn three_level_cascade_does_not_duplicate_error_output_neg() {
     );
 }
 
-// spec: spec/12-runtime.md §12.7.3 — P-3: MIN / -1 panics, never wraps or traps.
+// spec: spec/12-runtime.md §12.7.3 — P-3: MIN / -1 wraps to MIN without a panic in every mode.
 #[test]
-fn integer_div_min_by_neg_one_panics_neg() {
-    let out = Cranelisp::new()
-        .user(
-            "(import [primitives [*]])\n(defn main [] (Pure (div-i64 -9223372036854775808 -1)))\n",
-        )
-        .run("user.cl")
-        .output();
-    let report = regex::Regex::new(r"^error: runtime panic: (?:.+:[0-9]+: )?(.+)$").unwrap();
-    assert!(
-        matches!(out.status.code(), Some(c) if c != 0)
-            && out.stderr.lines().count() == 1
-            && report.is_match(out.stderr.trim_end())
-            && out.stdout.trim().is_empty(),
-        "MIN / -1 must exit with one non-empty panic report and no quotient: status:{:?}\nstdout:{}\nstderr:{}",
-        out.status,
-        out.stdout,
-        out.stderr
+fn integer_div_min_by_neg_one_wraps_without_panic() {
+    assert_min_division_in_every_mode("(div-i64 -9223372036854775808 -1)");
+}
+
+// spec: spec/12-runtime.md §12.7.3 — division through a function value also wraps MIN / -1.
+// defect: class=wrong-reject locus=crates/cranelisp-primitives/src/ring0.rs::div_i64 found=S123 owner=/dev
+#[test]
+fn integer_div_value_use_min_by_neg_one_wraps_without_panic() {
+    assert_min_division_in_every_mode("(let [f div-i64] (f -9223372036854775808 -1))");
+}
+
+// spec: spec/12-runtime.md §12.7.3 — an in-range quotient through a function value does not panic.
+#[test]
+fn integer_div_value_use_min_by_one_does_not_panic_control() {
+    assert_min_division_in_every_mode("(let [f div-i64] (f -9223372036854775808 1))");
+}
+
+fn assert_min_division_in_every_mode(form: &str) {
+    // Batch modes compare the full quotient before exit truncation to a byte.
+    let program = format!(
+        "(import [primitives [*]])\n(defn main [] (Pure (if (eq-i64 {form} -9223372036854775808) 0 97)))\n"
     );
+    let mut failures = Vec::new();
+    for mode in ["repl", "run", "link"] {
+        let builder = Cranelisp::new().with_prelude(PreludeVariant::PrimitivesOnly);
+        let out = match mode {
+            "repl" => builder.stdin(&format!("{form}\n")).output(),
+            "run" => builder.user(&program).run("user.cl").output(),
+            _ => builder.user(&program).link_then_run("user.cl").output(),
+        };
+        let stderr: Vec<_> = out
+            .stderr
+            .lines()
+            .filter(|line| !line.starts_with("; Linking:"))
+            .collect();
+        let value_ok = if mode == "repl" {
+            out.stdout.contains(":primitives/Int -9223372036854775808")
+        } else {
+            out.stdout.is_empty() && (mode != "link" || out.linked_execution_elapsed.is_some())
+        };
+        if out.status.code() != Some(0) || !stderr.is_empty() || !value_ok {
+            failures.push(format!(
+                "{mode}: {form} must return MIN with no panic: status:{:?}\nstdout:{}\nstderr:{}",
+                out.status, out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "MIN division clauses: {failures:#?}");
 }
 
 // =============================================================================
@@ -3370,15 +3389,5 @@ fn checked_quot_option_observation_control() {
 // spec: spec/12-runtime.md §12.7.3 — P-3 control: MIN / 1 remains a non-panicking quotient.
 #[test]
 fn integer_div_min_by_one_does_not_panic_control() {
-    let out = Cranelisp::new()
-        .user("(import [primitives [*]])\n(defn main [] (Pure (div-i64 -9223372036854775808 1)))\n")
-        .run("user.cl")
-        .output()
-        .assert_ok();
-    assert!(
-        out.stdout.is_empty() && out.stderr.is_empty(),
-        "stdout:{}\nstderr:{}",
-        out.stdout,
-        out.stderr
-    );
+    assert_min_division_in_every_mode("(div-i64 -9223372036854775808 1)");
 }

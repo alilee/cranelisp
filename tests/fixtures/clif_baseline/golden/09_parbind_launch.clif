@@ -56,11 +56,8 @@ block1:
 ; === CLIF user::mid-of ===
 function %mid-of(i64, i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
-    gv1 = symbol colocated userextname2
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
+    sig0 = (i64, i64) system_v
     fn0 = u0:2 sig0
-    fn1 = u0:2 sig1
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -68,36 +65,24 @@ block0(v0: i64, v1: i64):
 block1(v2: i64, v3: i64):
     v4 = isub v3, v2
     v5 = iconst.i64 2
-    v6 = iconst.i64 0
-    v7 = icmp eq v5, v6  ; v5 = 2, v6 = 0
-    brif v7, block3, block2
+    v6 = icmp_imm eq v5, 0  ; v5 = 2
+    brif v6, block3, block2
 
 block3:
-    v8 = global_value.i64 gv0
-    v9 = iconst.i64 16
-    v10 = call fn0(v8, v9)  ; v9 = 16
-    v11 = iconst.i64 0
-    return v11  ; v11 = 0
+    v7 = global_value.i64 gv0
+    v8 = iconst.i64 16
+    call fn0(v7, v8)  ; v8 = 16
+    trap user1
 
 block2:
-    v12 = iconst.i64 -9223372036854775808
-    v13 = iconst.i64 -1
-    v14 = icmp.i64 eq v4, v12  ; v12 = -9223372036854775808
-    v15 = icmp.i64 eq v5, v13  ; v5 = 2, v13 = -1
-    v16 = band v14, v15
-    brif v16, block5, block4
-
-block5:
-    v17 = global_value.i64 gv1
-    v18 = iconst.i64 16
-    v19 = call fn1(v17, v18)  ; v18 = 16
-    v20 = iconst.i64 0
-    return v20  ; v20 = 0
-
-block4:
-    v21 = sdiv.i64 v4, v5  ; v5 = 2
-    v22 = iadd.i64 v2, v21
-    return v22
+    v9 = icmp_imm.i64 eq v5, -1  ; v5 = 2
+    v10 = iconst.i64 1
+    v11 = select v9, v10, v5  ; v10 = 1, v5 = 2
+    v12 = sdiv.i64 v4, v11
+    v13 = ineg.i64 v4
+    v14 = select v9, v13, v12
+    v15 = iadd.i64 v2, v14
+    return v15
 }
 ; === end CLIF user::mid-of ===
 ; === CLIF user::reduce-range ===
@@ -123,19 +108,19 @@ function %reduce-range(i64, i64) -> i64 system_v {
     sig14 = (i64) -> i64 system_v
     sig15 = (i64, i64) -> i64 system_v
     sig16 = (i64, i64) -> i64 system_v
-    fn0 = u0:22 sig2
+    fn0 = u0:21 sig2
     fn1 = u0:0 sig3
-    fn2 = colocated u0:43 sig4
-    fn3 = u0:18 sig5
-    fn4 = u0:19 sig6
+    fn2 = colocated u0:42 sig4
+    fn3 = u0:17 sig5
+    fn4 = u0:18 sig6
     fn5 = u0:0 sig7
-    fn6 = colocated u0:44 sig8
-    fn7 = u0:18 sig9
-    fn8 = u0:19 sig10
-    fn9 = u0:20 sig11
-    fn10 = u0:21 sig12
-    fn11 = u0:20 sig13
-    fn12 = u0:21 sig14
+    fn6 = colocated u0:43 sig8
+    fn7 = u0:17 sig9
+    fn8 = u0:18 sig10
+    fn9 = u0:19 sig11
+    fn10 = u0:20 sig12
+    fn11 = u0:19 sig13
+    fn12 = u0:20 sig14
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)

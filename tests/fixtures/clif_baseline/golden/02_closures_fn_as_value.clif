@@ -56,8 +56,8 @@ function %main() -> i64 system_v {
     sig7 = (i64) -> i64 system_v
     sig8 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:45 sig1
-    fn2 = colocated u0:43 sig3
+    fn1 = colocated u0:44 sig1
+    fn2 = colocated u0:42 sig3
     fn3 = u0:1 sig7
 
 block0:
@@ -119,7 +119,7 @@ function %make-adder(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:44 sig1
+    fn1 = colocated u0:43 sig1
 
 block0(v0: i64):
     jump block1(v0)

@@ -1,6 +1,6 @@
 # Sprint 123: One ownership answer, contained panics, agent on by default
 
-**Status**: PHASE 5 LANGUAGE — W1
+**Status**: PHASE 5 LANGUAGE — W2
 
 **Goal**: Decide the ownership stratum's shape on a measured number and fix
 the observed memory-unsafe faults under it; make a callee's runtime panic a
@@ -264,6 +264,22 @@ separate approval.
 | 5 W1 | `dev` | exemplar: panic-free request paths | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; `safe-handle` and the 500 page removed; one guarded `get`; `tests.cl` now exits 41; exemplar tests pass |
 | 5 W1 | `dev` | `src/`: `--test` fail reason carries the last stderr line | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; row 9 failing then passing; 16 test-runner e2e cells green |
 | 5 W1 | `training` | `examples/` without `catch-runtime-error` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `2744c58e`; example 11 teaches `checked-quot` (exit 69 → 71); 32 and 38 updated |
+| 5 W1 | `spec` | `Int.MIN / -1` wraps; S123-Q13 messages | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15 |
+| 5 W1 | `test` | `MIN / -1` re-point; four stale cells; example 11 re-pin; golden CLIF; dispatch prose | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `77c7c41c`; 12 pass, `MIN / -1` RED; 16 goldens re-baselined, function-ID and GOT-offset shifts recorded separately |
+| 5 W1 | `dev` | backend: `Int.MIN / -1` wraps in `emit_checked_div` | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; branch-free wrap; 643 backend tests pass; e2e direct-call cell green |
+| 5 W1 | `test` | value-use `MIN / -1` cell; five golden re-captures | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `d8ada60d`; value-use cell RED in all three modes; goldens match the lowering change |
+| 5 W1 | `dev` | primitives: `div_i64` wraps `Int.MIN / -1` | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; row failing then passing; four division e2e cells green in all modes; `public-api.txt` +0 |
+| 5 W1 | `review` ×9 | intrinsics, backend, primitives, types, platform, `src/`, `stdlib/`, `exemplar/`, `examples/` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; findings in `.local/s123-w1/review/`; required: src R1, intrinsics I1, platform 1, primitives 1 |
+| 5 W1 | `dev` | `src/`: review R1–R3 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; R1 forged-record reproduction now reports 1 passed; R2 0 duplicates; 160 targeted tests pass |
+| 5 W1 | `dev` | intrinsics: review I1 (one-line reports), I2 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; `OneLine` escaping; 375 crate tests pass; `public-api.txt` +0 |
+| 5 W1 | `dev` | primitives: guidance for the wrapping division | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; one stale `CLAUDE.md` bullet fixed |
+| 5 W1 | `dev` | platform: thunk and `EffectOutcome` rustdoc | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 87 tests pass; docs build without warnings |
+| 5 W1 | `dev` | stdlib: runner batch-availability guidance | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; the module is REPL-only, verified in all modes |
+| 5 W1 | `qa` | W1 adequacy: full suite, filings, band | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 6,738 run, 6,711 pass, 27 fail (23 filed guards, 4 W1 consequences, 0 regressions); adequate with residuals |
+| 5 W1 | `test` | re-pin two CLIF witnesses; delete the obsolete 0889 macro cell and ACT-0976 cell | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `0b92b93f`; 10/10 focused; `qa` repointed the two citations |
+| 5 W1 | `review` ×2 | finding-scoped re-reviews: `src/` R1–R3, intrinsics I1–I2 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; no finding survives |
+| 5 W1 | `design` | intrinsics: report escaping rule; as-built wording | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; both escaping points accepted; no `dev` change |
+| 5 W1 | `design` ×3 | platform invariant 10; primitives and runtime records; backend records | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; no checker findings in their files |
 | 5 W1 | `design` | int: as-built updates (trace ring, §6.1.2 census, §6.5 cache, child arguments) | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; no findings in `design/int/` |
 | 5 W1 | `design` | int: dispatch-fault cause in the `--test` outcome line | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; the fail reason carries the child's last stderr line (test-runner design, "The cause of a fail" and test-child row 9) |
 | 5 W1 | `spec` | dispatch-fault report form; open-test result wording | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `4936b313`; dispatch-fault form recorded in `spec/12-runtime.md` §12.7.6; S123-Q13 opened |
@@ -465,7 +481,8 @@ Rules for every wave:
 | 3b | `dev` | intrinsics | `design`(intrinsics) follow-up: poll-leaf catalog constructor for `runtime/sleep_pollfn`; defect-report module test (`process-lifecycle.md` §1.1, §1.7, §2.2) |
 | 3c | `dev` | types | P9: remove `PlatformError::DispatchError` |
 | 4 | `dev` | `src/` | host boundaries, ACT-1041, the test supervisor and child (P12); the ACT-1017 single prefix (`int.md` §6.11); the fused scheduler transition so in-memory completion implies a terminal pool (`int.md` §6.1.2) |
-| 4b | `dev` | primitives | `checked-quot` (P-10 unit rows first); `Int.MIN / -1` per the user's pending ruling |
+| 4b | `dev` | primitives | `checked-quot` (P-10 unit rows first) |
+| 5c | `dev` | backend, then primitives | `Int.MIN / -1` wraps in the inline division and in `div_i64` |
 | 4c | `dev` | platform | retire or re-point `platform_error_dispatch_error_carries_fn_name`; stale dispatch-error rustdoc in `lib.rs` |
 | 5 | `dev` | `stdlib/`, `exemplar/` | the in-language runner without isolation (T-8); the web server with checked operations; `checked-quot` users |
 | 5b | `dev` | `src/` | the `--test` fail reason carries the child's last stderr line (`test-runner.md` §6.5, row 9) |
@@ -612,3 +629,57 @@ judges adequacy for the Phase 5 → 6a checkpoint.
   W0 (complete) and W1 (implementation done; review, re-points, golden
   re-baselines and `qa` adequacy still open). `.agents`, the local `design`
   adapter and the root allocation sentence stay out until close.
+- 2026-11-15, user ruling: `Int.MIN / -1` wraps to `Int.MIN`, matching the
+  wrapping rule for `+`, `-` and `*`; it is no longer a panic source.
+  `checked-quot` still returns `None` for it. Checkpoint commit `0a9842c6`
+  holds W0 and W1's implementation before this ruling.
+- W1, 2026-11-15: `spec/07-traits.md` §7.7.1 contradicts the runtime arithmetic policy in `spec/12-runtime.md` §12.7: it says
+  `Num`'s `Int` `+`, `-`, `*` panic on overflow and defines an `Unchecked`
+  trait that was never built. The built `impl Num Int` maps them to the
+  wrapping `add-i64`, `sub-i64`, `mul-i64`. Put to the user.
+- W1, 2026-11-15, `dev`(backend): regenerating the backend `public-api.txt`
+  differed from the committed file by 85 derive-impl lines at `-s`; `dev`
+  judged it generator flag or version drift, not its change (no `pub` line
+  changed). The earlier W1 backend dispatch reported an identical
+  regeneration. Check at the W5 baseline regeneration with the exact
+  `tests/CLAUDE.md` command.
+- W1, 2026-11-15: `crates/cranelisp-primitives/CLAUDE.md`'s "Deliberate
+  asymmetries" bullet still says `div-i64` reports `Int.MIN / -1` as
+  "division by zero"; `dev`(primitives) removes it in the W1 review-fix pass.
+- W1 review basket, 2026-11-15 (`.local/s123-w1/review/`):
+  - required: `src/` R1, the `--test` supervisor accepts a pre-existing
+    predictable record directory (demonstrated forged pass); intrinsics I1,
+    a multi-line fault payload breaks the one-line report contract;
+    platform 1, `design/platform/platform.md` invariant 10 still requires the
+    retired dispatch-error path; primitives 1, trusted-base design records.
+  - advisory: `src/` R2, worker trace events print twice on normal REPL
+    return (demonstrated); backend B1, the single-emitter census matches
+    spelling, not identity; intrinsics I2, platform 2, primitives 2 and
+    stdlib 1, stale guidance or rustdoc.
+  - clean: types, `exemplar/`, `examples/`.
+  Order: `dev`(src) R1–R3, then `dev`(intrinsics) I1–I2, then the
+  guidance-only `dev` passes (primitives, platform, stdlib); design records in
+  parallel; then `qa` adequacy.
+- W1, 2026-11-15: `design/arch/bounded-contexts.md` line 552 cites "§5
+  invariant 9" for `PlatformError`, which that invariant does not cover;
+  routed to `arch`.
+- W1 adequacy, 2026-11-15 (`qa`): adequate. New §5 residuals for user
+  acceptance at the Phase 5 checkpoint: P-15's single-emitter claim is
+  asserted with a named falsifier (an alias bypasses the spelling-based
+  census; structural form needs an `arch` API decision); the two-raiser cell
+  detects a planted no-claim fault 2 of 3 runs. Filings resolved in place:
+  ACT-1017, ACT-1040, ACT-1041, ACT-1042, ACT-1033 (catalog part), ACT-0976;
+  deletion waits on inbound link repoints. Not blocking, to route:
+  `spec/09-macros.md` §9.9.4 still says a runtime error during expansion is a
+  compile error; stale `DispatchError` wording in `platforms/test-capture/`
+  (`qa`); ACT-1036 scheduling.
+- W1 closed 2026-11-15: evidence accepted, nine surface reviews and two
+  finding-scoped re-reviews clean, `qa` adequate with residuals, full suite
+  6,738 run with 0 regressions. Carried from W1 to later waves: `fixed=`
+  stamps (`test`, after the commit); `spec/12-runtime.md` §12.3.1 item 2's
+  stale RED tag for ACT-0974 (`qa`); `spec/09-macros.md` §9.9.4 (`spec`);
+  `platforms/test-capture/` wording (`qa`); `design/arch/test-discovery.md`
+  and `bounded-contexts.md` line 552 (`arch`); `user/guide/testing.md`
+  (`docs`, Phase 6b); the exemplar web-platform 400/405 comment
+  (`dev`(exemplar)); inbound link repoints so the resolved filings can be
+  deleted.

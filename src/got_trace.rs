@@ -166,14 +166,7 @@ pub fn publish_thread_buffer() {
 }
 
 fn dump_all_buffers() -> Vec<StoredGotEvent> {
-    let mut all: Vec<StoredGotEvent> = Vec::new();
-    if let Ok(guard) = published_buffers().lock() {
-        for b in guard.iter() {
-            all.extend(b.iter().cloned());
-        }
-    }
-    let local = dump_thread_buffer();
-    all.extend(local);
+    let mut all = crate::trace_ring::drain_all(&GOT_TRACE_BUF, published_buffers);
     all.sort_by_key(|e| (e.timestamp_ns, e.thread_ord_id));
     all
 }
@@ -397,6 +390,38 @@ fn record_int_event(
 mod tests {
     use super::*;
     use cranelisp_types::{ModuleFullPath, Symbol};
+
+    // spec: design/int/observability.md §7.1 — each event prints once: a
+    // worker's events published when its ring is destroyed are consumed by the
+    // first dump, so the exit hook's dump after the flush guard's does not
+    // repeat them.
+    #[test]
+    fn repeated_dump_does_not_repeat_a_published_worker_event() {
+        let event = |slot: usize| StoredGotEvent {
+            timestamp_ns: 1,
+            thread_id: std::thread::current().id(),
+            thread_ord_id: thread_ord_id(),
+            tag: StoredTag::SlotFreeze,
+            module: "user".to_string(),
+            symbol: "f".to_string(),
+            slot,
+            ptr: 0,
+            provenance: GotProvenance::Jit { jit_addr: 0 },
+        };
+        let slots = |events: Vec<StoredGotEvent>| -> Vec<usize> {
+            let mut slots: Vec<usize> = events.into_iter().map(|e| e.slot).collect();
+            slots.sort();
+            slots
+        };
+        let _ = dump_all_buffers();
+        std::thread::spawn(move || crate::trace_ring::push(&GOT_TRACE_BUF, event(7)))
+            .join()
+            .unwrap();
+        crate::trace_ring::push(&GOT_TRACE_BUF, event(9));
+
+        assert_eq!(slots(dump_all_buffers()), [7, 9]);
+        assert_eq!(slots(dump_all_buffers()), Vec::<usize>::new());
+    }
 
     #[test]
     fn record_no_op_when_filter_disabled() {

@@ -61,10 +61,11 @@ fn render(
     (ctx.func.display().to_string(), panic)
 }
 
-// spec: design/backend/backend.md §7 "One emission helper" — both division
-// guards (zero divisor and `MIN / -1`) raise and terminate.
+// spec: design/backend/backend.md §7 "One emission helper" — the division
+// guard's one raise (a zero divisor; `MIN / -1` wraps, spec §12.7.3)
+// terminates its block.
 #[test]
-fn division_raises_end_their_blocks() {
+fn division_raise_ends_its_block() {
     let (clif, panic) = render(|builder, module, panic, a, b| {
         crate::primitives_inline::try_emit_inline_primitive(
             builder,
@@ -79,7 +80,7 @@ fn division_raises_end_their_blocks() {
     });
     assert_eq!(
         assert_raise_terminates(&clif, panic, "div-i64"),
-        2,
+        1,
         "{clif}"
     );
 }

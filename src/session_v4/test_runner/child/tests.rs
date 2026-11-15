@@ -425,3 +425,61 @@ fn relay_keeps_the_final_line_and_the_last_prefixed_line_separately() {
         }
     );
 }
+
+// spec: design/int/test-runner.md §6.5 — the record transport is per run: the
+// supervisor owns a fresh directory, so records it did not cause cannot reach
+// its report (REPL §16.2, one result per selected test). A directory already at
+// a candidate name, here holding a forged record, is passed over and survives
+// the run untouched.
+#[test]
+fn run_directory_is_fresh_and_never_another_runs() {
+    let base = tempfile::tempdir().unwrap();
+    let taken = base.path().join("taken");
+    std::fs::create_dir(&taken).unwrap();
+    let forged = "start user/test-forged\npass\n";
+    std::fs::write(taken.join("records-1"), forged).unwrap();
+
+    let dir = RunDir::create_in(base.path(), ["taken".to_string(), "fresh".to_string()])
+        .expect("a fresh candidate remains");
+    assert_eq!(dir.path, base.path().join("fresh"));
+    assert!(
+        read_records(&dir.path.join("records-1"))
+            .unwrap()
+            .is_empty()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&dir.path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the run directory is private: {mode:o}");
+    }
+    drop(dir);
+
+    assert!(!base.path().join("fresh").exists());
+    assert_eq!(
+        std::fs::read_to_string(taken.join("records-1")).unwrap(),
+        forged
+    );
+    let refused = RunDir::create_in(base.path(), ["taken".to_string()]);
+    assert!(refused.is_err(), "an existing directory is never adopted");
+    assert!(taken.join("records-1").exists());
+}
+
+// spec: design/int/test-runner.md §6.5 — each child writes a fresh record file;
+// an existing file at the path is refused rather than appended to.
+#[test]
+fn record_sink_refuses_an_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("records-1");
+    std::fs::write(&path, "start user/test-forged\n").unwrap();
+    assert!(RecordSink::create(&path).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "start user/test-forged\n"
+    );
+
+    let fresh = dir.path().join("records-2");
+    let mut sink = RecordSink::create(&fresh).unwrap();
+    sink.write(&Record::End).unwrap();
+    assert_eq!(read_records(&fresh).unwrap(), [Record::End]);
+}

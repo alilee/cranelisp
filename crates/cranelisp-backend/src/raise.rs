@@ -22,7 +22,7 @@ const RAISE_RETURNED: TrapCode = TrapCode::unwrap_user(1);
 pub(crate) enum PanicSource {
     /// A match whose arms all failed.
     MatchFailed,
-    /// A zero divisor, and `i64::MIN / -1`.
+    /// A zero divisor.
     DivisionByZero,
     /// A `vec-get` or `vec-set` index below zero or not below the length.
     VecIndexOutOfBounds,

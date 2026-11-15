@@ -1,7 +1,7 @@
 ---
 id: ACT-0976
 title: Assess ownership residue after a macro clause reports a runtime error
-status: deferred
+status: resolved
 priority: normal
 from: design
 to: qa
@@ -14,6 +14,26 @@ refers_to:
   - crates/cranelisp-backend/src/primitives_inline.rs
   - tests/macro_turn_marshal_leak_0889.rs
 ---
+
+## Resolution (qa, 2026-11-15, S123 W1): retired by the panic ruling
+
+- **Premise gone.** The residue was an argument tree left live in a session
+  that continued after a macro clause's runtime error. Under the user's
+  2026-11-15 ruling a panic during macro expansion ends the process
+  (`spec/12-runtime.md` §12.7.2), so no session continues to hold it.
+  `tests/spec_09_macros::runtime_error_during_expansion_clean_report` (P-6)
+  evidences the exit in the REPL and `--run`.
+- **Source opened.** `crates/cranelisp-intrinsics/src/panic.rs::runtime_panic`
+  diverges into `terminate`; the error flag and the returned word that
+  `src/expander.rs::invoke_clause` discarded no longer exist.
+- **The RED cell was obsolete, not fixed.** Its runtime-error pair in
+  `tests/macro_turn_marshal_leak_0889.rs` failed its own precondition (the
+  subject exits 1, as the ruling requires), not a balance clause. `test`
+  deleted it in W1 as a missed C-1 member; the successful-expansion pairs in
+  that file stay.
+- Delete this action once
+  [FIXME 0889](../../design/arch/fixmes/0889-recover-the-macro-turn-marshal-leak.md)
+  and `tests/plan/s122-evidence-delta.md` no longer link it.
 
 ## S122 disposition (user-approved 2026-09-30)
 

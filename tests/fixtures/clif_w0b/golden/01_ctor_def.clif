@@ -38,7 +38,7 @@ block1(v1: i64):
 function %main() -> i64 system_v {
     gv0 = symbol colocated userextname0
     gv1 = symbol userextname2
-    sig0 = (i64, i64) -> i64 system_v
+    sig0 = (i64, i64) system_v
     sig1 = (i64) -> i64 system_v
     fn0 = u0:2 sig0
 
@@ -58,15 +58,14 @@ block5:
 block3:
     v2 = global_value.i64 gv0
     v3 = iconst.i64 12
-    v4 = call fn0(v2, v3)  ; v3 = 12
-    v5 = iconst.i64 0
-    return v5  ; v5 = 0
+    call fn0(v2, v3)  ; v3 = 12
+    trap user1
 
 block2(v1: i64):
-    v6 = global_value.i64 gv1
-    v7 = iadd_imm v6, 8
-    v8 = load.i64 notrap aligned v7
-    v9 = call_indirect sig1, v8(v1)
-    return v9
+    v4 = global_value.i64 gv1
+    v5 = iadd_imm v4, 8
+    v6 = load.i64 notrap aligned v5
+    v7 = call_indirect sig1, v6(v1)
+    return v7
 }
 ; === end CLIF user::main ===

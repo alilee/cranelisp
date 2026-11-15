@@ -859,10 +859,21 @@ impl CLType for CLFloat {
 /// runtime AND its own copy of `cranelisp-platform`'s thread-locals. A
 /// `panic!` raised inside the DLL must be caught by the DLL's own runtime (a
 /// foreign unwind reaching the host's `catch_unwind` aborts), so the catch
-/// happens in the [`CLIO::effect`] thunk wrapper — DLL-compiled code. The DLL
-/// then CANNOT set the host's dispatch-fault slot directly (different
-/// thread-locals), so the caught fault travels back to the host as this
-/// **return value**.
+/// happens in the [`CLIO::effect`] thunk wrapper — DLL-compiled code. Because
+/// the DLL's thread-locals are not the host's, the caught fault cannot be
+/// recorded in any host-side state; it travels back to the host as this
+/// **return value**, the only transport across the boundary.
+///
+/// # Transport, not recovery
+///
+/// The catch exists so a DLL-originated unwind stops inside the DLL's own
+/// panic runtime and its cause crosses as a value the host can attribute. A
+/// faulted outcome is not an error for the caller to handle: in the standard
+/// runtime, intrinsics' force guard is its sole consumer and hands every
+/// fault to the process terminator, which reports it against the effect's
+/// fully qualified name and ends the process (`spec/12-runtime.md` §12.7.6;
+/// `design/platform/platform.md` §4.2 and §5 invariant 10). A host caller of
+/// [`call_effect_thunk`] must treat a non-null `fault_cause` the same way.
 ///
 /// # Field discipline
 ///
@@ -874,7 +885,7 @@ impl CLType for CLFloat {
 ///
 /// The host's [`call_effect_thunk`] merely *forwards* this struct — the catch
 /// already happened DLL-side in the wrapper; the host does NO `catch_unwind` of
-/// its own. See `design/arch/bounded-contexts.md` §5 invariant 9.
+/// its own (`design/platform/platform.md` §4.2).
 #[repr(C)]
 pub struct EffectOutcome {
     /// The thunk's result value when clean (`fault_cause` null); unused on fault.
@@ -982,8 +993,12 @@ impl<CL: CLType> CLIO<CL> {
     /// per call; interior mutability must be thread-safe (`Mutex`, atomics).
     /// Captures live until the node is freed, when the host discharges the
     /// thunk with [`drop_effect_thunk`]. A panic in `f` is caught on the DLL's
-    /// own runtime and returned as a faulted [`EffectOutcome`]; the closure
-    /// survives it, and a later force runs it again. A panic in a capture's
+    /// own runtime and returned as a faulted [`EffectOutcome`]; that catch is
+    /// transport only. The runtime's force guard hands the fault to the process
+    /// terminator, which reports it and ends the process, so no later force
+    /// follows a panic: do not write `f` to be retried after one. The closure
+    /// itself survives the catch, which is a property of the wrapper, not a
+    /// retry path (`design/platform/platform.md` §4.2). A panic in a capture's
     /// destructor at discharge is likewise contained DLL-side and leaked; it
     /// never unwinds into the host.
     pub fn effect_on_resource_with_capacity(

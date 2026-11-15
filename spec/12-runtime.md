@@ -112,7 +112,7 @@ When a top-level function is used as a value (passed as an argument, stored in a
 
 A conforming implementation MUST satisfy the following:
 
-1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/nullary_arm_beside_boxed_arm_0917::nullary_arm_beside_boxed_arm_frees_its_loop_under_run, tests/spec_10_io::platform_pure_let_bound_bind_operand_balances, tests/spec_10_io::platform_pure_unused_heap_binding_beside_bind_balances, tests/spec_10_io::platform_pure_string_reused_node_yields_payload_to_each_force_and_balances, tests/spec_10_io::platform_effect_unforced_discard_balances, tests/spec_10_io::functor_io_instance_calls_balance_against_inline_bind, tests/spec_10_io::unrun_bind_over_heap_payload_pure_discard_balances] [S122 — RED tests/macro_turn_marshal_leak_0889.rs::macro_runtime_error_expansion_balances_against_successful_twin, ACT-0976; tests/exemplar_ownership_residue_s116.rs::sudoku_warm_serial_solve_retains_nothing, ACT-1018]
+1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/nullary_arm_beside_boxed_arm_0917::nullary_arm_beside_boxed_arm_frees_its_loop_under_run, tests/spec_10_io::platform_pure_let_bound_bind_operand_balances, tests/spec_10_io::platform_pure_unused_heap_binding_beside_bind_balances, tests/spec_10_io::platform_pure_string_reused_node_yields_payload_to_each_force_and_balances, tests/spec_10_io::platform_effect_unforced_discard_balances, tests/spec_10_io::functor_io_instance_calls_balance_against_inline_bind, tests/spec_10_io::unrun_bind_over_heap_payload_pure_discard_balances] [S122 — RED tests/exemplar_ownership_residue_s116.rs::sudoku_warm_serial_solve_retains_nothing, ACT-1018]
 2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/shadowed_param_reach_stale_rc_dec::shadowed_param_binder_safety_matrix_run_and_link_agree, tests/shadowed_param_reach_stale_rc_dec::shadowed_fresh_rhs_binder_rc_balance_matches_ownership_off, tests/shadowed_param_reach_stale_rc_dec::renamed_fresh_rhs_binder_control_safety_matrix_green] [S122 — RED tests/string_primitive_value_discharge.rs::str_len_as_function_value_releases_its_argument_once, ACT-0974]
 3. The user MUST NOT need to manage memory manually — allocation and deallocation are entirely the implementation's responsibility. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 
@@ -152,7 +152,7 @@ The left-to-right ordering of `let` bindings and function arguments is the **obs
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
-### 12.4.3 Lenient Evaluation [Uncovered S123 — was Tested+Neg tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness, tests/spec_12_runtime::apply_arg_single_expensive_preserves_result_parity]
+### 12.4.3 Lenient Evaluation [Tested+Neg tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness, tests/spec_12_runtime::apply_arg_single_expensive_preserves_result_parity, tests/spec_12_runtime::apply_arg_panic_exits_run, tests/spec_12_runtime::apply_arg_dual_panic_exits_with_one_report, tests/concurrency_spark::dependent_spark_dependency_panic_exits_run, tests/spec_12_runtime::lenient_binding_panic_not_swallowed_neg — the panic rule's sparked cells each have a non-panicking twin that spawns (`tests/spec_12_runtime::apply_arg_non_panicking_twins_spawn`, `tests/concurrency_spark::dependent_spark_non_panicking_twin_spawns`); the two-panic cell accepts either message and rejects two reports]
 
 An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial, and MAY likewise evaluate independent arguments of a function application in parallel under the same heuristic. This is called **lenient evaluation**. Because all binding expressions in a `let` and all argument expressions in an application are pure (effects are sequenced through `IO`/`bind!`, never through raw binding or argument evaluation — see [§10.12](10-io.md#1012-automatic-io-scheduling)), evaluating independent sub-expressions concurrently produces the same result as sequential left-to-right evaluation — the non-determinism in evaluation order is not observable. The permission is granted precisely *because* it is unobservable: a conforming implementation that evaluates everything sequentially left-to-right also conforms. [S92]
 
@@ -220,7 +220,7 @@ In batch mode, a program MUST define a function named `main` with no parameters 
 
 This rule does not apply under `--test`, which neither requires nor calls `main`; a `main` that is present compiles as an ordinary definition ([REPL §0.2.2](../repl/spec/00-cli-invocation.md#022-test-mode---test-s122)). [S122]
 
-## 12.7 Error Model [S122 — partial; see the subsections]
+## 12.7 Error Model [Partial — the stack-overflow row, float division by zero and §12.7.7 are untested; see the subsections]
 
 Cranelisp distinguishes two error categories: **compile-time errors** (detected before execution) and **runtime panics** (detected during execution). There is no exception mechanism, no user-exposed `try`/`catch`, and no `Result`-based error propagation for runtime faults. Runtime panics **end the process in every mode**, including the REPL (user ruling, 2026-11-15).
 
@@ -236,7 +236,7 @@ The following are compile-time errors:
 
 **User ruling, 2026-11-15.** A call to a symbol left broken by a redefinition MUST be refused at compile time, before the call executes. This does not authorize creating broken symbols where the guarded-publication rules of REPL §18 prohibit them.
 
-### 12.7.2 Runtime Panics [S123]
+### 12.7.2 Runtime Panics [Tested+Neg tests/spec_12_runtime::callee_panic_with_scalar_result_stops_the_calling_loop, tests/spec_12_runtime::callee_panic_message_is_not_replaced_by_callers_later_panic_in_every_mode, tests/spec_09_macros::runtime_error_during_expansion_clean_report, tests/spec_10_io::auto_io_par_branch_panic_exits_neg, tests/test_runner.rs::panicking_test_does_not_end_run_or_repl, tests/spec_12_runtime::removed_catch_runtime_error_is_unbound_in_every_mode, tests/spec_12_runtime::callee_in_range_scalar_result_loop_terminates_control — no caller resumes past a callee's panic; a macro-expansion, `Par`-branch and `--test` child panic each end their process; `catch-runtime-error` is unbound in every mode. Callees, workers, IO and detached strands are evidenced at §12.4.3, §12.7.6, §12.7.8 and §12.7.9]
 
 **User ruling, 2026-11-15.** A runtime panic MUST report its message and terminate the process. This applies in the REPL, `--run`, `--test` and linked executables, including panics in callees, workers, IO execution, detached strands and macro expansion. The `runtime/panic` intrinsic never returns. No caller resumes with a placeholder value; there is no panic propagation or recovery. `catch-runtime-error` is removed.
 
@@ -248,9 +248,9 @@ The following conditions cause a runtime panic:
 
 | Condition | Message | Notes |
 |---|---|---|
-| Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Uncovered S123 — was Tested tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg] |
-| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [Uncovered S123 — was Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run] |
-| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [Uncovered S123 — was Tested+Neg tests/spec_12_runtime::vec_get_index_past_length_panics_and_session_continues, tests/spec_12_runtime::vec_set_negative_index_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_equal_to_length_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_past_length_on_shared_vec_panics, tests/spec_12_runtime::vec_set_dynamic_out_of_range_index_panics_in_every_mode, tests/spec_12_runtime::vec_set_in_range_index_writes_without_panic_neg] |
+| Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Tested+Neg tests/spec_12_runtime::panic_sources_report_exact_messages_run, tests/spec_12_runtime::matched_io_value_has_no_match_panic_control — reached through a `bind`-built IO value, the only incomplete match exhaustiveness checking admits] |
+| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [Tested+Neg tests/spec_12_runtime::panic_sources_report_exact_messages_run, tests/spec_12_runtime::integer_div_min_by_one_does_not_panic_control] |
+| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [Tested+Neg tests/spec_12_runtime::vec_get_index_past_length_panics_and_exits, tests/spec_12_runtime::vec_set_negative_index_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_equal_to_length_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_past_length_on_shared_vec_panics, tests/spec_12_runtime::vec_set_dynamic_out_of_range_index_panics_in_every_mode, tests/spec_12_runtime::vec_set_in_range_index_writes_without_panic_neg] |
 | Stack overflow | Implementation-defined message | Exhaustion of the call stack (e.g., unbounded recursion without TCO) [S18] |
 
 #### 12.7.2.2 Conditions That Are NOT Panics
@@ -262,13 +262,13 @@ The following conditions cause a runtime panic:
 | `parse-int` with invalid input | Returns `None` | Parsing failure is a normal `Option` result, not an error. [Tested tests/spec_appendix_a_builtins::primitive_parse_int_valid] |
 | IO operation failure | Platform-defined `IO` result | See §12.7.6. |
 
-### 12.7.3 Arithmetic Policy [Uncovered S123 — was Tested tests/spec_12_runtime::integer_division_by_zero_panics_neg]
+### 12.7.3 Arithmetic Policy [Tested+Neg tests/spec_12_runtime::panic_sources_report_exact_messages_run, tests/spec_12_runtime::integer_div_min_by_neg_one_wraps_without_panic, tests/spec_12_runtime::integer_div_value_use_min_by_neg_one_wraps_without_panic, tests/spec_12_runtime::integer_div_min_by_one_does_not_panic_control, tests/spec_12_runtime::integer_div_value_use_min_by_one_does_not_panic_control, tests/spec_12_runtime::checked_quot_returns_option_without_panicking_run, tests/spec_12_runtime::checked_quot_repl_displays_option_int_without_panicking, tests/spec_12_runtime::integer_overflow_wraps_silently — zero division panics; `Int.MIN / -1` wraps to `Int.MIN` in direct and function-value calls in every mode; `checked-quot` gives `None` for both failure cases and truncates toward zero. Modulo is not provided; float rules are untested]
 
-Cranelisp uses **wrapping integer arithmetic** and **panicking integer division**; checked operations returning `Option` are the panic-avoidance surface (§12.7.2):
+Cranelisp uses **wrapping integer arithmetic**; integer division panics on a zero divisor. Checked operations returning `Option` are the panic-avoidance surface (§12.7.2):
 
 - **Integer addition, subtraction, multiplication**: Use two's complement wrapping. No overflow detection. This matches the `Int` type definition (signed 64-bit two's complement, §12.1.1). Programs that need overflow detection MUST implement it in user code (e.g., checking operand signs and comparing with the result).
 
-- **Integer division** (`div-i64`): A divisor of zero causes a runtime panic. Division of `Int.MIN` by `-1` (which would overflow) also causes a runtime panic. All other integer divisions truncate toward zero.
+- **Integer division** (`div-i64`; user ruling, 2026-11-15): A divisor of zero causes a runtime panic. Division of `Int.MIN` by `-1` wraps to `Int.MIN` by the same two's complement rule as integer addition, subtraction and multiplication; it does not panic. All other integer divisions truncate toward zero.
 
 - **Checked integer quotient (user ruling, 2026-11-15).** The compiler primitive `primitives/checked-quot` has type `(Fn [Int Int] (Option Int))`. It returns `None` for a zero divisor or `Int.MIN` divided by `-1`, and `Some` of the quotient truncated toward zero otherwise. These failure cases do not panic.
 
@@ -276,19 +276,19 @@ Cranelisp uses **wrapping integer arithmetic** and **panicking integer division*
 
 - **Modulo/remainder**: If provided, follows the same policy as integer division — zero divisor causes a runtime panic.
 
-### 12.7.4 REPL vs Batch Error Behavior [S123]
+### 12.7.4 REPL vs Batch Error Behavior [Tested+Neg — see 12.7.4.1 and 12.7.4.2; the shared exit checker's detection proof is tests/spec_12_runtime::panic_exit_checker_rejects_wrong_reports_and_resumption]
 
 **User ruling, 2026-11-15.** All execution modes obey §12.7.2.
 
-#### 12.7.4.1 REPL Mode [S123]
+#### 12.7.4.1 REPL Mode [Tested+Neg tests/spec_12_runtime::vec_get_index_past_length_panics_and_exits, tests/platform_errors::platform_dispatch_fault_exits_repl, tests/panic_streams::prior_repl_result_and_print_precede_panic_on_merged_pipe — the REPL exits non-zero after the report, evaluates no later form and prints no further prompt]
 
 A runtime panic ends the REPL process after reporting the panic message. The REPL MUST NOT re-prompt or evaluate later input after the panic.
 
-#### 12.7.4.2 Batch Mode [S123]
+#### 12.7.4.2 Batch Mode [Tested+Neg tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run, tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_link, tests/spec_12_runtime::runtime_panic_in_io_continuation_surfaces_run, tests/spec_12_runtime::clean_program_produces_no_error_in_run_mode]
 
 In batch and linked execution, a runtime panic terminates the process with a non-zero exit code. The implementation MUST print the panic message to stderr before exiting.
 
-### 12.7.5 Error Message Format [S123 — defective: `--run` renders a codegen error at 0..0 with a doubled prefix, RED tests/spec_12_runtime::uncaught_panic_report_is_not_a_codegen_error_run (ACT-1041); the prefix in the other modes is not asserted]
+### 12.7.5 Error Message Format [Tested+Neg tests/spec_12_runtime::uncaught_panic_report_is_not_a_codegen_error_run, tests/spec_12_runtime::uncaught_panic_report_is_not_a_codegen_error_link_control, tests/spec_12_runtime::vec_get_index_past_length_panics_and_exits, tests/spec_09_macros::runtime_error_during_expansion_clean_report, tests/spec_12_runtime::panic_exit_checker_rejects_wrong_reports_and_resumption — exactly one stderr line, prefixed, in the REPL, `--run`, `--link` and macro expansion, never on stdout and never a codegen error; the located form is accepted, not required]
 
 **User ruling, 2026-11-15.** In every mode, including the REPL and macro expansion, a runtime panic MUST be reported once as plain text on stderr, with this prefix:
 
@@ -304,7 +304,7 @@ Implementations SHOULD include source location information (file and line) when 
 error: runtime panic: <file>:<line>: <message>
 ```
 
-### 12.7.6 Interaction with IO Model [S18]
+### 12.7.6 Interaction with IO Model [Tested+Neg tests/platform_errors::platform_dispatch_fault_exits_repl, tests/platform_errors::dispatch_fault_during_io_surfaces_run, tests/platform_errors::platform_dispatch_error_exits_link, tests/platform_errors::platform_dispatch_non_faulting_controls_finish, tests/spec_10_io::auto_io_par_branch_panic_exits_neg — a dispatch fault ends the process in every mode with one FQ-named, unprefixed line carrying the fault text; a `Par` branch panic ends the process. The `--test` leg is unit-pinned (src/session_v4/test_runner/child/tests.rs::a_status_fail_names_the_final_stderr_line): no eligible test can force a platform effect. The platform-failure SHOULD has no committed evidence]
 
 Runtime panics and the IO model (§10) interact as follows:
 
@@ -347,11 +347,11 @@ Programs that need to signal error conditions MUST use the type system:
 
 Expected failures are represented in values; a runtime panic ends the process (§12.7.2).
 
-### 12.7.8 Implementation Requirements [S123]
+### 12.7.8 Implementation Requirements [Tested+Neg tests/spec_12_runtime::callee_bounds_panic_with_string_consumer_is_reported, tests/spec_12_runtime::callee_division_panic_with_string_consumer_is_reported, tests/spec_12_runtime::callee_bounds_panic_with_released_string_result_is_reported, tests/spec_12_runtime::callee_vec_set_bounds_panic_with_vec_consumer_is_reported, tests/spec_12_runtime::callee_bounds_panic_through_forwarding_frame_is_reported, tests/spec_12_runtime::uncaught_callee_panic_with_string_consumer_is_reported_link, tests/spec_12_runtime::callee_in_range_get_with_string_consumer_does_not_panic_neg — a callee's panic ends the process before a heap consumer reads a sentinel, in every mode; no signal death]
 
 **User ruling, 2026-11-15.** A panic MUST terminate the process after reporting its message, without resuming user code, fabricating a return value, or causing undefined behavior. This applies during heap allocation, closure invocation and IO execution as well as direct calls. The process-exit rule replaces the former JIT recovery boundary and REPL-survival requirements.
 
-### 12.7.9 Supervised Detached Strands [S123]
+### 12.7.9 Supervised Detached Strands [Tested+Neg tests/concurrency_fanout::detached_faulting_effect_exits_the_process, tests/concurrency_fanout_web::web_handler_fault_ends_server_process, tests/concurrency_fanout::launch_and_continue_runs_concurrently_launcher_does_not_await]
 
 **User ruling, 2026-11-15.** A panic in a detached strand ends the whole process under §12.7.2. There is no supervisor recovery policy that keeps a server alive after a panic. A request handler that must keep the server running uses checked operations and handles their returned values. Cancellation remains distinct from a panic (§10.12.9).
 

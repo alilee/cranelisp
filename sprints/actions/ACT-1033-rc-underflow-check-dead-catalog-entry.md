@@ -18,6 +18,28 @@ refers_to:
   - design/arch/bounded-contexts.md
 ---
 
+## Catalog part resolved (qa, 2026-11-15, S123 W1)
+
+The signature half of this action is closed; the retirement decision for
+`runtime/rc_underflow_check` remains with `arch`.
+
+- **Source opened.** Every row of `crates/cranelisp-intrinsics/src/catalog.rs`
+  is a `catalog_row!` naming its function and its function-pointer type, and
+  `(param_count, has_return)` derives from that type, so a row cannot disagree
+  with its function and compile. `runtime/panic` declares
+  `(2, false)` with a diverging type, `runtime/string_read` `(3, false)` and
+  `runtime/rc_underflow_check` `(2, true)`.
+- **Evidence.** `crates/cranelisp-intrinsics/src/catalog/tests.rs::corrected_rows_carry_their_functions_signatures`
+  pins the three corrected rows; the compile-fail rows
+  `derivation_refuses_a_wrong_arity`, `derivation_refuses_a_wrong_return` and
+  `derivation_refuses_narrow_words`, each with the matched control
+  `derivation_accepts_matched_rows`, are the detection proof. Grade:
+  structural.
+- **Still open.** No backend or root source emits `runtime/rc_underflow_check`,
+  and its rustdoc in `crates/cranelisp-intrinsics/src/rc.rs` still says the
+  backend calls it after an inline decrement. The completion evidence below
+  stands, except its last bullet, which is met.
+
 ## Request
 
 Decide whether `runtime/rc_underflow_check` is retired or kept, then have
@@ -44,8 +66,8 @@ reported the lead in its R22 visit; QA confirmed each claim below.
 - **Three records claim otherwise.**
   - The function's rustdoc says the backend calls it after an inline
     decrement.
-  - `crates/cranelisp-intrinsics/src/catalog/tests.rs::arity_matches_historical_signature` pins the false
-    arity of 1. It checks the historical expectation, not the Rust signature.
+  - The catalog's arity test pinned the false arity of 1. It checked the
+    historical expectation, not the Rust signature.
   - The [named-intrinsic conventions table](../../design/arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)
     lists the entry as a target of emitted calls. The catalog is meant to
     hold only such targets (BC §4b invariant 1).
@@ -66,8 +88,8 @@ reported the lead in its R22 visit; QA confirmed each claim below.
 - **Falsifiers for "unreachable today":** a backend site emitting
   `runtime/string_read`, or a `runtime/panic` call whose result is read.
 - **Common cause.** Each entry's `param_count` and `has_return` are
-  hand-maintained copies of its Rust signature. `arity_matches_historical_signature`
-  pins those copies, not the functions. Three of the catalog's copies are
+  hand-maintained copies of its Rust signature. The arity test pinned those
+  copies, not the functions. Three of the catalog's copies are
   wrong.
 - **Preferred control (for `arch` to choose):** derive each entry's signature
   from its function's type, so a disagreement does not compile. A test

@@ -28,12 +28,13 @@
 //! Cranelift `icmp` / `fcmp` `uextend i64` shape that `primitives_inline.rs`
 //! emits.
 //!
-//! ## Division-by-zero
+//! ## Integer division
 //!
-//! `div-i64` raises on `b == 0` or on the `i64::MIN / -1` overflow case via
-//! `cranelisp_intrinsics::panic::runtime_panic`, which does not return. The
-//! inline-substitution path emits the same call (see `primitives_inline.rs`),
-//! so both paths report identically.
+//! `div-i64` raises `"division by zero"` on `b == 0` via
+//! `cranelisp_intrinsics::panic::runtime_panic`, which does not return, and
+//! wraps `i64::MIN / -1` to `i64::MIN` like the other integer operators
+//! (spec §12.7.3). The backend's inline path behaves identically, so a
+//! value-use call through this shim and a direct call observe the same result.
 
 use cranelisp_intrinsics::panic::runtime_panic;
 
@@ -53,21 +54,12 @@ pub(crate) fn mul_i64(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b)
 }
 
-/// Checked integer division. Matches `primitives_inline.rs::emit_checked_div`
-/// semantics: panic on `b == 0` and on the `i64::MIN / -1` overflow case.
 pub(crate) fn div_i64(a: i64, b: i64) -> i64 {
     if b == 0 {
         let msg = b"division by zero";
         runtime_panic(msg.as_ptr(), msg.len());
     }
-    if a == i64::MIN && b == -1 {
-        // The inline path uses the same "division by zero" message for the
-        // overflow case (see `emit_checked_div`); match that exactly so the
-        // mappable-path and inline-path error strings are observable-equivalent.
-        let msg = b"division by zero";
-        runtime_panic(msg.as_ptr(), msg.len());
-    }
-    a / b
+    a.wrapping_div(b)
 }
 
 // =============================================================================

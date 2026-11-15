@@ -749,3 +749,41 @@ fn harvest_trace_event_types_absent_from_boundary_crate_sources() {
         "boundary-crate hygiene breach — trace types leaked upstream: {leaks:?}"
     );
 }
+
+// spec: design/int/observability.md §7.1 — each event prints once: a worker's
+// events published when its ring is destroyed are consumed by the first dump,
+// so the exit hook's dump after the flush guard's does not repeat them.
+#[test]
+fn repeated_dump_does_not_repeat_a_published_worker_event() {
+    let worker_event = |module: &str| SchedulerTraceEvent {
+        timestamp: 1,
+        thread_id: std::thread::current().id(),
+        thread_ord_id: thread_ord_id(),
+        tag: SchedulerTraceTag::RegisterDepPublish,
+        payload: SchedulerTracePayload::Module {
+            module: module.to_string(),
+            state: None,
+        },
+    };
+    let _ = dump_all_buffers();
+    std::thread::spawn(move || {
+        crate::trace_ring::push(&SCHEDULER_TRACE_BUF, worker_event("worker"))
+    })
+    .join()
+    .unwrap();
+    crate::trace_ring::push(&SCHEDULER_TRACE_BUF, worker_event("main"));
+
+    let modules = |events: Vec<SchedulerTraceEvent>| -> Vec<String> {
+        let mut names: Vec<String> = events
+            .into_iter()
+            .map(|e| match e.payload {
+                SchedulerTracePayload::Module { module, .. } => module,
+                SchedulerTracePayload::Bulk { .. } => unreachable!("only module events planted"),
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(modules(dump_all_buffers()), ["main", "worker"]);
+    assert_eq!(modules(dump_all_buffers()), Vec::<String>::new());
+}

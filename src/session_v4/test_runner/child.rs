@@ -110,8 +110,10 @@ fn parse_fq(text: &str) -> Option<FQSymbol> {
     })
 }
 
-/// The child's append-only record file. Each record is one `write`, so a
-/// record written before the process ends at a panic survives it.
+/// The child's append-only record file, which it creates: a file already at
+/// the path is refused, so every record read back is this child's. Each record
+/// is one `write`, so a record written before the process ends at a panic
+/// survives it.
 pub(super) struct RecordSink {
     file: std::fs::File,
     path: PathBuf,
@@ -120,7 +122,7 @@ pub(super) struct RecordSink {
 impl RecordSink {
     pub(super) fn create(path: &Path) -> Result<Self, CranelispError> {
         let file = std::fs::OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .append(true)
             .open(path)
             .map_err(|e| record_error(path, &e))?;
@@ -437,25 +439,76 @@ pub(super) fn read_records(path: &Path) -> Result<Vec<Record>, CranelispError> {
         .collect()
 }
 
-/// A per-run temporary directory, removed when the run ends.
+/// How many unpredictable names the supervisor tries for its run directory
+/// before giving up; each is taken only by another directory at that name.
+const RUN_DIR_ATTEMPTS: usize = 16;
+
+/// A per-run temporary directory that this run created, removed when the run
+/// ends. Only a directory this process created is ever adopted, so records
+/// another process left or planted cannot reach the report.
 struct RunDir {
     path: PathBuf,
 }
 
 impl RunDir {
     fn create() -> Result<Self, CranelispError> {
-        static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("cranelisp-test-run-{}-{run}", std::process::id()));
-        std::fs::create_dir_all(&path).map_err(|e| {
-            internal_error(format!(
-                "cannot create the test run directory {}: {e}",
-                path.display()
-            ))
-        })?;
-        Ok(Self { path })
+        Self::create_in(
+            &std::env::temp_dir(),
+            (0..RUN_DIR_ATTEMPTS).map(|_| unpredictable_run_name()),
+        )
     }
+
+    /// Create the first of `names` under `base` that does not exist. The
+    /// creation itself is the ownership test: an existing directory makes it
+    /// fail and is passed over, never entered or removed.
+    fn create_in(
+        base: &Path,
+        names: impl IntoIterator<Item = String>,
+    ) -> Result<Self, CranelispError> {
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        let mut last_taken = None;
+        for name in names {
+            let path = base.join(name);
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_taken = Some(path),
+                Err(e) => {
+                    return Err(internal_error(format!(
+                        "cannot create the test run directory {}: {e}",
+                        path.display()
+                    )));
+                }
+            }
+        }
+        Err(internal_error(format!(
+            "cannot create a fresh test run directory under {}: every candidate exists{}",
+            base.display(),
+            last_taken
+                .map(|path| format!(", the last {}", path.display()))
+                .unwrap_or_default()
+        )))
+    }
+}
+
+/// A run-directory name another process cannot predict: the hash is keyed by
+/// the standard library's per-process random seed.
+fn unpredictable_run_name() -> String {
+    use std::hash::BuildHasher;
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let key = std::collections::hash_map::RandomState::new().hash_one((
+        run,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default(),
+    ));
+    format!("cranelisp-test-run-{}-{key:016x}", std::process::id())
 }
 
 impl Drop for RunDir {

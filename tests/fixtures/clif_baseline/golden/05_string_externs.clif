@@ -32,8 +32,8 @@ function %main() -> i64 system_v {
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
     sig6 = (i64) system_v
-    fn0 = u0:11 sig0
-    fn1 = colocated u0:41 sig6
+    fn0 = u0:10 sig0
+    fn1 = colocated u0:40 sig6
 
 block0:
     jump block1
@@ -59,7 +59,7 @@ block1:
     v17 = iconst.i64 0
     v18 = iconst.i64 2
     v19 = global_value.i64 gv3
-    v20 = iadd_imm v19, 288
+    v20 = iadd_imm v19, 296
     v21 = load.i64 notrap aligned v20
     v22 = call_indirect sig3, v21(v6, v17, v18)  ; v17 = 0, v18 = 2
     v23 = global_value.i64 gv4
@@ -84,8 +84,8 @@ function %shout(i64) -> i64 system_v {
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) system_v
-    fn0 = u0:11 sig0
-    fn1 = colocated u0:41 sig3
+    fn0 = u0:10 sig0
+    fn1 = colocated u0:40 sig3
 
 block0(v0: i64):
     jump block1(v0)
@@ -102,7 +102,7 @@ block1(v1: i64):
     v10 = load.i64 notrap aligned v9
     v11 = call_indirect sig1, v10(v1, v7)
     v12 = global_value.i64 gv2
-    v13 = iadd_imm v12, 360
+    v13 = iadd_imm v12, 368
     v14 = load.i64 notrap aligned v13
     v15 = call_indirect sig2, v14(v11)
     call fn1(v1)

@@ -659,7 +659,7 @@ Numeric arithmetic operations.
 
 | Type | `+` | `-` | `*` | `/` |
 |---|---|---|---|---|
-| `Int` | Checked addition (panics on overflow) | Checked subtraction (panics on overflow) | Checked multiplication (panics on overflow) | Checked division (panics on division by zero or MIN/-1 overflow) |
+| `Int` | Checked addition (panics on overflow) | Checked subtraction (panics on overflow) | Checked multiplication (panics on overflow) | Integer division follows [§12.7.3](12-runtime.md#1273-arithmetic-policy): panics on division by zero; `Int.MIN / -1` wraps to `Int.MIN` (user ruling, 2026-11-15) |
 | `Float` | IEEE 754 addition | IEEE 754 subtraction | IEEE 754 multiplication | IEEE 754 division |
 
 **Example:**

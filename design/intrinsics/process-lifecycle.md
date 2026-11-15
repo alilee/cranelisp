@@ -3,11 +3,10 @@
 Owner: `/design` (intrinsics). How the runtime gets its configuration when a
 process starts, and how it ends the process when a panic is raised.
 
-**Status: S123 design, ruled; implementation pending (`dev`(intrinsics)).**
-Until it lands, the source still carries the error slots, the
-`catch-runtime-error` combinator and direct environment reads that this
-document retires. Packet rows P1–P8 are approved. Row P11, the published panic
-constants, awaits the user's gate (§3).
+**Status: S123 design, ruled.** §1, termination, is built (packet rows P1–P7
+and P11). §2, runtime switches (P8), is approved and not yet built: until it
+lands, the crate's modules read the process environment directly, as the §2.1
+census records.
 
 The boundary contract is `arch`'s
 [process-ending panics and the environment supply](../arch/s123-panics-and-environment.md).
@@ -54,9 +53,10 @@ body, so every exit shares one claim, one flush and one report path.
 | `OneShot` backstop expiry | the reactor drive (`reactor.md` §8.2) | the existing backstop diagnostic |
 | Switch-install misuse | the switch install entry (§2.1) | a located configuration message |
 
-The backend's broken-symbol trap stub no longer raises here: the redefinition
-guard refuses the change that would leave a symbol broken, so no compiled call
-reaches a stub, and packet row P13 removes it
+The backend's broken-symbol trap stub is not a row. It still calls
+`runtime/panic` until packet row P13 removes it, at S123 close or in S124. The
+redefinition guard refuses the change that would leave a symbol broken, so no
+compiled call is meant to reach a stub
 ([arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
 
 The terminator, in order:
@@ -89,16 +89,48 @@ the report stream and the exit statuses:
   switch-install misuse, which keeps today's batch status; §12.7.4.2 requires
   only that it be non-zero. `70` (`EX_SOFTWARE`) for the backstop, as
   `reactor.md` §8.2 already specifies.
-- **Published for the test supervisor** (packet row P11, awaiting the gate):
-  the prefix and the status `1` become `pub const` items of the `panic`
-  module, and the terminator composes from them, so the producer and its one
-  consumer share one copy. The test supervisor classifies a child's ending as
+- **Published for the test supervisor** (packet row P11): the prefix and the
+  status `1` are `pub const` items of the `panic` module, and the terminator
+  composes from them, so the producer and its one consumer share one copy. The test supervisor classifies a child's ending as
   a panic only when both the status and a prefixed stderr line are present
   ([test runner §6.5](../int/test-runner.md#65-the-test-child)). The status is
   shared with the other fault kinds, which is why the dispatch-fault report
   does not carry the panic prefix: a dispatch fault in a test child reads as a
-  failed test naming its cause, not as `PANIC:`. If P11 is declined, the
-  constants stay crate-private, and int keeps its own copy.
+  failed test naming its cause, not as `PANIC:`.
+
+**Every report is one line.** Each piece of text the terminator inserts — a
+panic message, a platform function name, a dispatch cause, a defect payload or
+the backstop diagnostic — passes through one wrapper:
+
+- **Escaped:** every control character (`char::is_control`) and the Unicode
+  line and paragraph separators, U+2028 and U+2029. Each is written as its
+  Rust-style escape, such as `\n`, `\t`, `\u{1b}` or `\u{2028}`.
+- **Unchanged:** all other text.
+
+So no inserted text can end the report's line or start a second line that
+imitates another report, such as a dispatch cause that contains
+`\nerror: runtime panic: …`. The line's only terminator is the one the
+template appends. The rule applies to framing only. It is not a content filter
+(§1.5).
+
+Two characters are deliberately not escaped:
+
+- **The backslash.** A message that contains a literal backslash and `n` reads
+  the same as an escaped line break, so the report cannot always be decoded
+  back to the original text. That is accepted. No consumer decodes the text:
+  the test supervisor matches only the prefix and quotes the line, and people
+  read it. Escaping the backslash would double every backslash in ordinary
+  messages, such as Windows paths and regular expressions, to protect a
+  decoding that nobody performs.
+- **Other Unicode format characters,** such as bidirectional overrides
+  (U+202A–U+202E, U+2066–U+2069) and zero-width joiners. They can change how a
+  terminal displays the rest of the line. They cannot add a line or change the
+  line's leading bytes, which are the only part a consumer matches. The text
+  comes from the program and its platforms, which the operator controls
+  (§1.5). Escaping the whole format category would corrupt legitimate text,
+  for example emoji sequences that use zero-width joiners. **Trigger to
+  revisit:** a report sink that renders text from a party the operator does
+  not control.
 
 **The runtime-defect report (S123 ruling).** It is
 `error: runtime defect: <payload>`, on one line.
@@ -114,9 +146,8 @@ the report stream and the exit statuses:
 - The text is diagnostic, not normative. §12.7.5 governs panic reports only.
   The defect template lives in the terminator's module beside the prefix.
 
-The dispatch-fault template is the only live copy of that text. The `--run`
-host no longer composes `PlatformError::DispatchError`, and packet row P9
-removes the variant.
+The dispatch-fault template is the only copy of that text. No host composes a
+dispatch-fault report, and packet row P9 removed `PlatformError::DispatchError`.
 
 **Why the runtime ends the process, rather than returning a fault to a host:**
 the fault is raised inside JIT frames that have no unwind tables, so control
@@ -143,37 +174,36 @@ neither. Destructors that do not run are leaks, which `spec/12-runtime.md`
   unwind out of an `extern "C"` entry, so the process aborts with Rust's
   message.
 
-### 1.3 What the terminator retires
+### 1.3 What the terminator retired
 
-Everything that exists to carry a fault back to a host goes, because no fault
-is ever carried:
+No fault is ever carried back to a host, so everything that existed to carry
+one was removed. The crate has none of the following, and none should return:
 
 - **The two thread-local error slots** (runtime error and dispatch fault) and
   every take, set and peek over them.
 - **The fork-join ferry.** This means the IVar `error` field and its
   re-raise on every reader (`ivar.rs`), the `Par` worker-to-join ferry at both
   sites (`reactor.md` §2.6), and the inline-claim save and restore around a
-  thunk. The IVar cell loses its `error` word. The layout is intrinsics-private:
+  thunk. The IVar cell has no `error` word. The layout is intrinsics-private:
   the backend reads only the IVar RC offset.
 - **The trampoline's post-arm slot checks** (`reactor.md` §4) and the
   fault arm of its stopped outcome. Stopping remains for cancellation only.
-  This also removes the abort-path leak in
+  This also removed the abort-path leak in
   [trampoline ownership transitions](ownership-and-disposal.md#7-trampoline-ownership-transitions):
   no fault path returns through the loop.
-- **The supervisor's failure policy.** `LogAndDrop` and the `StrandFailed`
-  event go. The supervisor still owns completion, result disposal, the global
+- **The supervisor's failure policy,** `LogAndDrop` and the `StrandFailed`
+  event. The supervisor still owns completion, result disposal, the global
   permit and cancellation (`reactor.md` §2.12).
 - **The trace guard's panic cleanup.** No same-thread evaluation follows a
   panic, so a guard left set cannot be observed.
 - **The program driver's outcome struct.** `cranelisp_run_program` returns the
   program's reduced result word and has no error kind. The linked stub's drain
-  export (`cranelisp_check_runtime_error`) goes.
+  export (`cranelisp_check_runtime_error`) is gone.
 - **`catch-runtime-error`**, its export and its catalog row.
 
 The dispatch guard stays. It is still the one place that turns a faulting
 platform thunk (a Rust panic payload or a caught hardware signal) into a
-reported termination instead of a raw signal death. Only its outcome changes:
-it calls the terminator instead of setting a slot.
+reported termination instead of a raw signal death. It calls the terminator.
 
 ### 1.4 Exit-time diagnostics
 
@@ -212,8 +242,8 @@ no filtering is designed.
 These are stated for their owners; the rulings that govern them are the arch
 contract's §1.4–§1.6.
 
-- **`design`(int).** The REPL ends at a panic. The `--run` and REPL hosts lose
-  their slot drains and `compose_dispatch_error`. The linked stub calls
+- **`design`(int).** The REPL ends at a panic. The `--run` and REPL hosts have
+  no slot drains and no dispatch-fault composition. The linked stub calls
   `cranelisp_run_program`, then exits through its clean path only. A
   macro-expansion panic ends the process. The compiler test runner runs tests
   in a child restarted after a panic, classifying endings by P11's constants
@@ -223,13 +253,11 @@ contract's §1.4–§1.6.
   unreachable and the `0` sentinel has no reader. The backend converges every
   emission onto one helper that also ends the block
   ([arch §1.3](../arch/s123-panics-and-environment.md#13-invariant-no-continuation-past-a-panic)). Backend unit
-  tests that read the slot after a raise need a child-process form.
+  tests observe a raise in a child process, because no slot remains to read.
 - **`dev`(primitives).** The ring-0 and marshal raisers call a function that
-  no longer returns. Behaviour is unchanged; their sentinel returns become
-  unreachable.
+  does not return, so code after the call is unreachable.
 - **Platforms.** `poll-pool` resolves `runtime/panic` by name. The C ABI is
-  unchanged, and its fault now ends the process rather than reaching a
-  supervisor.
+  unchanged; its fault ends the process and never reaches a supervisor.
 
 ### 1.7 Evidence seams
 
@@ -244,6 +272,11 @@ seams they need:
 - **The defect report:** a module test composes a runtime-defect fault and
   asserts the whole report line. It also asserts that the line does not start
   with `PANIC_REPORT_PREFIX`, which is the negative leg.
+- **One-line framing:** module tests compose every fault kind with a
+  multiline payload and assert one line, and assert that a dispatch cause
+  holding a prefixed line yields no prefixed line. The control is a
+  single-line payload reported verbatim in every kind. A child-process cell
+  writes a multiline dispatch cause through the real terminator.
 - **Child process:** status, report, ordering, the two-raiser single report
   and the M3 stand-down use the harness shape in
   [`diagnostic-modes.md`](diagnostic-modes.md) §7.6. The detection proof is a
@@ -364,10 +397,12 @@ The exact rows, consumers and `public-api.txt` effects are `arch`'s
 | P6 | `panic::runtime_panic(msg_ptr, msg_len) -> !` (was `()`); C ABI unchanged | approved |
 | P7 | the `runtime/panic` catalog row declares `has_return: false`, by ACT-1033's derivation; no public item changes | approved |
 | P8 | add `runtime_switches` with `capture_runtime_switches() -> Vec<u8>` and export `cranelisp_install_runtime_switches(ptr: *const u8, len: usize)` | approved |
-| P11 | add `panic::PANIC_REPORT_PREFIX` and `panic::PANIC_EXIT_STATUS` (§1.1) | **awaiting the user's gate** |
+| P11 | add `panic::PANIC_REPORT_PREFIX` and `panic::PANIC_EXIT_STATUS` (§1.1) | approved |
 
-- **Consequence outside this crate:** P9 removes
-  `PlatformError::DispatchError` from `cranelisp-types`, because §1.1 leaves
+P1–P7 and P11 are built; P8 is not yet built.
+
+- **Consequence outside this crate:** P9 removed
+  `PlatformError::DispatchError` from `cranelisp-types`, because §1.1 left
   it with no producer.
 - **No new crate edge.** int and exe-bundle already depend on intrinsics; the
   exe-bundle `pub use` that force-links P8's export is a source change in a

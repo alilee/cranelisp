@@ -18,8 +18,11 @@ documents (root [roles](../CLAUDE.md#roles)).
 - The binary searches `CRANELISP_LIB`, then `Cranelisp.toml` lib-dirs, then
   `{project_root}/stdlib/` (`assemble_lib_dirs` in `src/session_setup.rs`). A
   project-root `prelude.cl` overrides the stdlib prelude.
-- Discovery (`discover-tests`) resolves only in a live REPL session. The pure
-  runner helpers (`run-one`, `tally`, `report`, `passed?`) work in every mode.
+- `testing.runner` and `testing` load only in a live REPL session. The module
+  compiles functions that reference `discover-tests`, so `--run`, `--link`,
+  `--test` and test children refuse any program importing a name from it,
+  including a pure helper such as `run-one` ([REPL spec
+  §16.6](../repl/spec/16-test-discovery.md)).
 - Run one module's self-tests from a REPL:
 
 ```

@@ -276,12 +276,13 @@ fn emit_not(
 
 // --- Checked division ---
 
-/// Emit a checked integer division with two guards:
+/// Emit integer division (spec §12.7.3, `design/backend/backend.md` §7).
 ///
-/// 1. Zero divisor -- panic "division by zero"
-/// 2. `i64::MIN / -1` -- panic "division by zero" (overflow)
-///
-/// Otherwise emit `sdiv`. See spec 12.7.3 and `design/backend/backend.md` §7 "Runtime failure".
+/// A zero divisor raises `"division by zero"`. A `-1` divisor yields the
+/// wrapping negation of the dividend, so `Int.MIN / -1` is `Int.MIN`; that
+/// divisor never reaches `sdiv`, which traps on the `MIN / -1` pair. The `-1`
+/// split is branch-free: the `sdiv` sees `1` in its place and its quotient is
+/// discarded.
 fn emit_checked_div<M: Module>(
     builder: &mut FunctionBuilder,
     name: &str,
@@ -297,47 +298,26 @@ fn emit_checked_div<M: Module>(
     let lhs = args[0];
     let rhs = args[1];
 
-    // Check 1: division by zero
-    let zero = builder.ins().iconst(types::I64, 0);
-    let is_zero = builder.ins().icmp(IntCC::Equal, rhs, zero);
-
-    let check_overflow_block = builder.create_block();
-    let panic_divzero_block = builder.create_block();
-
+    let is_zero = builder.ins().icmp_imm(IntCC::Equal, rhs, 0);
+    let divide_block = builder.create_block();
+    let zero_block = builder.create_block();
     builder
         .ins()
-        .brif(is_zero, panic_divzero_block, &[], check_overflow_block, &[]);
+        .brif(is_zero, zero_block, &[], divide_block, &[]);
 
-    builder.switch_to_block(panic_divzero_block);
-    builder.seal_block(panic_divzero_block);
+    builder.switch_to_block(zero_block);
+    builder.seal_block(zero_block);
     raise::emit_raise(builder, module, panic_id, DIVISION_BY_ZERO, span)?;
 
-    // Check 2: i64::MIN / -1 overflow
-    builder.switch_to_block(check_overflow_block);
-    builder.seal_block(check_overflow_block);
+    builder.switch_to_block(divide_block);
+    builder.seal_block(divide_block);
 
-    let min_val = builder.ins().iconst(types::I64, i64::MIN);
-    let neg1 = builder.ins().iconst(types::I64, -1i64);
-    let is_min = builder.ins().icmp(IntCC::Equal, lhs, min_val);
-    let is_neg1 = builder.ins().icmp(IntCC::Equal, rhs, neg1);
-    let both = builder.ins().band(is_min, is_neg1);
-
-    let ok_block = builder.create_block();
-    let panic_overflow_block = builder.create_block();
-
-    builder
-        .ins()
-        .brif(both, panic_overflow_block, &[], ok_block, &[]);
-
-    builder.switch_to_block(panic_overflow_block);
-    builder.seal_block(panic_overflow_block);
-    raise::emit_raise(builder, module, panic_id, DIVISION_BY_ZERO, span)?;
-
-    // OK path: emit sdiv.
-    builder.switch_to_block(ok_block);
-    builder.seal_block(ok_block);
-
-    Ok(builder.ins().sdiv(lhs, rhs))
+    let is_neg1 = builder.ins().icmp_imm(IntCC::Equal, rhs, -1);
+    let one = builder.ins().iconst(types::I64, 1);
+    let divisor = builder.ins().select(is_neg1, one, rhs);
+    let quotient = builder.ins().sdiv(lhs, divisor);
+    let negated = builder.ins().ineg(lhs);
+    Ok(builder.ins().select(is_neg1, negated, quotient))
 }
 
 // Per Decision 43 + FIXME 0185: backend has no trait knowledge. The
@@ -377,6 +357,9 @@ fn require_args(
 // no trait knowledge, so test coverage for the `(TraitName, Symbol,
 // TypeName)` mapping moves to whichever crate owns the resolution
 // (typecheck, per FIXME 0185).
+
+#[cfg(test)]
+mod div_tests;
 
 #[cfg(test)]
 mod tests {

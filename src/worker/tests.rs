@@ -4318,7 +4318,8 @@ fn insert_cluster_installs_no_staged_record() {
 const REMOVAL_V1: &str = "(defn g [] 1)\n(defn h [] 2)\n";
 
 /// A REPL session whose `user` module was loaded from `user.cl` holding
-/// `source`.
+/// `source`. In-memory completion implies a terminal pool (int §6.1.2), so
+/// `register_module`'s wait leaves `user` settled with no further wait.
 fn removal_session(
     source: &str,
 ) -> (
@@ -4330,12 +4331,6 @@ fn removal_session(
     let path = root.path().join("user.cl");
     std::fs::write(&path, source).unwrap();
     session.register_module("user").unwrap();
-    // The in-memory wait in `register_module` can return while `user`'s pass
-    // is still `TypecheckWorking` (ACT-1025); the tests assume its terminal pool.
-    session
-        .shared
-        .scheduler
-        .wait_module_typecheck_settled(&ModuleFullPath::from("user"));
     (root, session, path)
 }
 

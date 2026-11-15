@@ -315,7 +315,8 @@ extern "C" fn flush_traces_at_exit() {
 }
 
 /// Register the process-exit flush. It neither exits nor changes the status,
-/// and draining empties the rings, so it and the guards print each event once.
+/// and a flush consumes both the rings and the published registries, so it
+/// and the guards print each event once.
 fn register_trace_exit_hook() {
     // SAFETY: `flush_traces_at_exit` is a plain `extern "C" fn()` that does
     // not unwind: the trace sinks read destroyed thread-locals as empty.

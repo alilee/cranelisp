@@ -10,8 +10,9 @@ ACT-1037 `vec-set` index guard (`qa` closed ACT-1037 on 2026-10-01,
 [closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed);
 its `--link` GREEN rests on `test`'s W3 run). The counting corrections are
 superseded by [uniform counting](uniform-counting.md) when it lands. The §10
-panic-propagation options are **withdrawn**: the user ruled on 2026-11-15 that a
-panic ends the process ([backend.md §7](backend.md#7-runtime-failure)). The
+panic-propagation options are **withdrawn** and its mechanism record is
+historical: the user ruled on 2026-11-15 that a panic ends the process
+([backend.md §7](backend.md#7-runtime-failure)). The
 Phase-3 scope and existing contracts were authorized 2026-09-09 against
 compiler checkpoint `dc78ddbe` and package checkpoint `98436c9`; this design
 has completed independent runtime review with no material findings. This
@@ -445,9 +446,9 @@ is [backend.md §7](backend.md#7-runtime-failure), "One Vec index guard".
   ACT-1037, and `test` re-baselines them. Review found no golden under
   `tests/` containing a proven-unique site. `vec-get` goldens stay
   byte-identical. A `vec-get` diff refutes the extraction.
-- **Not in scope.** The sentinel-escape crash of
-  [backend.md §7](backend.md#7-runtime-failure) (ACT-1040, §10) survives this
-  correction.
+- **Not in scope.** The sentinel-escape crash (ACT-1040, §10) survived this
+  correction; the S123 raise shape of
+  [backend.md §7](backend.md#7-runtime-failure) removed the sentinel.
   After `(defn g [v i] (vec-set v i 99))`, the guard raises the panic inside
   `g`, but a caller that computes `(vec-len (g [1 2 3] 9))` then dereferences
   the sentinel. ACT-1037's cells consume the result inside the panicking
@@ -497,16 +498,21 @@ Module cells, observed RED on the pre-fix tree in the same change-set:
 
 ## 10. ACT-1040 — panic propagation (proposal)
 
-**Status: withdrawn.** On 2026-11-15 the user ruled that a runtime panic ends
-the process in every mode, with no propagation; none of the options below is
-built. [backend.md §7](backend.md#7-runtime-failure) is the standing design.
-The mechanism record (§10.1, §10.2) is retained as the evidence for ACT-1040
-and ACT-1042 until they close. The
+**Status: withdrawn; historical.** On 2026-11-15 the user ruled that a runtime
+panic ends the process in every mode, with no propagation; none of the options
+below is built. [backend.md §7](backend.md#7-runtime-failure) is the standing
+design, and its emitted half was built in S123 W1. §10.1 and §10.2 describe the
+pre-W1 code. They are no longer current: no raising frame now returns `0`, and
+no backend raise returns at all. They are retained as the evidence for ACT-1040
+and ACT-1042 until `qa` closes those actions. Delete this section when both
+close. The
 requirements are `spec/12-runtime.md` §12.7.2, §12.7.4 and §12.7.8 items 1, 2, 4
 and 5. [ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md)
 holds `qa`'s cells, attribution and allocation.
 
 ### 10.1 Mechanism, read at source
+
+Historical: the code before S123 W1.
 
 - The panic shape returns `0` from the faulting frame only. No emitted code
   reads the error slot. After the call instruction, the result from each
@@ -532,8 +538,10 @@ holds `qa`'s cells, attribution and allocation.
 
 ### 10.2 The fact every option rests on
 
-- Every JIT function returns one `i64`. Every raising frame returns `0` with
-  the slot set:
+Historical: the code before S123 W1.
+
+- Every JIT function returns one `i64`. Before W1, every raising frame
+  returned `0` with the slot set:
   - the panic shape and the trap stub;
   - the out-of-line `div-i64` primitive and `quote-sexp`'s error sentinel;
   - `cranelisp_ivar_force`, which passes the thunk's result through;
