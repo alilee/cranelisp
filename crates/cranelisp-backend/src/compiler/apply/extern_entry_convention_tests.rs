@@ -117,10 +117,11 @@ pub(in crate::compiler) fn retains_around_call(clif: &str) -> (usize, usize) {
     (retains(before), retains(after))
 }
 
-// spec: spec/12-runtime.md §12.3.1 items 1–2 — the shim takes the caller's
-// reference, so the caller retains its live binding once (ACT-0974 F2a).
+// spec: spec/12-runtime.md §12.3.1 items 1–2 — the shim consumes its argument,
+// and a parameter at its last use moves its own reference in: no retain before
+// the call and no release after it (`uniform-counting.md` §1).
 #[test]
-fn a_direct_string_identity_call_retains_a_live_var_once() {
+fn a_direct_string_identity_call_moves_a_last_use_parameter() {
     let body = call(
         "string-identity",
         string_var("p0", 20),
@@ -136,7 +137,8 @@ fn a_direct_string_identity_call_retains_a_live_var_once() {
         Type::String,
         body,
     );
-    assert_eq!(retains_around_call(&clif).0, 1, "{clif}");
+    assert_eq!(retains_around_call(&clif), (0, 0), "{clif}");
+    assert_eq!(count_release_ops(&clif), 0, "{clif}");
 }
 
 // spec: spec/12-runtime.md §12.3.1 — a temporary argument transfers its one
@@ -155,12 +157,14 @@ fn a_temporary_argument_transfers_without_retain_or_release() {
     assert_eq!(count_release_ops(&clif), 0, "{clif}");
 }
 
-// spec: spec/12-runtime.md §12.3.1 — a `Borrowed`-declared extern reached by
-// a bare-`Var` (moded) call still consumes, so the live binding is retained.
+// spec: spec/12-runtime.md §12.3.1 — a `Borrowed`-declared extern still
+// consumes: there is no borrowing position, so the caller neither retains its
+// last use nor releases the argument after the call.
 #[test]
-fn a_borrowed_declared_extern_on_a_moded_path_still_consumes() {
+fn a_borrowed_declared_extern_still_consumes() {
     let body = call("str-len", string_var("p0", 20), Type::Int, 10, false);
     let carriers = primitive_carriers(&body);
     let clif = probe_caller_clif(&primitives(), &carriers, &[Type::String], Type::Int, body);
-    assert_eq!(retains_around_call(&clif).0, 1, "{clif}");
+    assert_eq!(retains_around_call(&clif), (0, 0), "{clif}");
+    assert_eq!(count_release_ops(&clif), 0, "{clif}");
 }

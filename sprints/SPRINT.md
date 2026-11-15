@@ -1,6 +1,6 @@
 # Sprint 123: One ownership answer, contained panics, agent on by default
 
-**Status**: PHASE 5 LANGUAGE — W2
+**Status**: PHASE 5 LANGUAGE — W3
 
 **Goal**: Decide the ownership stratum's shape on a measured number and fix
 the observed memory-unsafe faults under it; make a callee's runtime panic a
@@ -277,6 +277,32 @@ separate approval.
 | 5 W1 | `dev` | stdlib: runner batch-availability guidance | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; the module is REPL-only, verified in all modes |
 | 5 W1 | `qa` | W1 adequacy: full suite, filings, band | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 6,738 run, 6,711 pass, 27 fail (23 filed guards, 4 W1 consequences, 0 regressions); adequate with residuals |
 | 5 W1 | `test` | re-pin two CLIF witnesses; delete the obsolete 0889 macro cell and ACT-0976 cell | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `0b92b93f`; 10/10 focused; `qa` repointed the two citations |
+| 5 W2 | `test` | W1 `fixed=` stamps (`f5822487`); U-1 to U-5 test-first | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `11321ff2`; 13 stamps; 69 cells, 40 pass, 29 RED; generator 288 legs; stopped on U-3/L4 |
+| 5 W2 | `qa` | accept U-1 to U-5; attribute U-3/L4 control fault | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; all accepted except L4 (misbuilt control); L4 is the predicted over-release; ACT-1040 count is seven |
+| 5 W2 | `test` | U-3/L4 control and subject cells | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `e4c43b6c`; faces match `qa`'s prediction (controls balance, subjects stop armed) |
+| 5 W2 | `dev` | backend: U′ cutover (U1, U2), ACT-0964 hardening | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; every W2 cell green (72 e2e, 501 module); wrappers 999/999 in place; backend net about −10,000 lines; `public-api.txt` +0 |
+| 5 W2 | `test` | golden CLIF re-capture for U′ (C-6, C-7) | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; 15 files, 74 of 159 frames changed; G-1 accessor release missing; G-2 capture contract; C-10 three retirements |
+| 5 W2 | `review` | backend: U′ cutover | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; required R1 (in-place `vec-set` strands an owning old element), R2 (operand order), R3 (wrappers outside the plan), R4 (confinement); advisory R5 |
+| 5 W2 | `design` | backend: U′ departures 1–4; retire superseded sections | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; departures 2–4 adopted; 1 framed for the user; superseded sections retired |
+| 5 W2 | `arch` | safety register, FIXMEs 0891/0903, test-discovery, bounded-contexts | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-15; 0903 open (U′ cannot fix it, exposure widened); 0891 subsumed, pending delete; R14 provisional |
+| 5 W2 | `qa` | intake: R1, G-1, C-10, G-2, 0916 guard, W2 filings | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; R1 and G-1 confirmed by execution; U-11 to U-14, C-10a, M-8 allocated; ACT-1028/1029/1030/1031 resolved; ACT-1049 opened |
+| 5 W2 | `test` | U-11, U-12 RED; U-13; U-14; C-10a; M-8 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `b1213aff`; 23 pass, 7 intended RED; no rows stopped |
+| 5 W2 | `qa` | accept intake cells; R2/R3 evidence conditions | claude-opus-5-5 | medium | primary (Claude Code subagent, resumed) | delivered 2026-11-16; all cells accepted; U-15, U-16, U-17 and the C-10a addendum allocated |
+| 5 W2 | `test` | U-15 operand order, U-16 wrapper template, U-17 moves-off faces, C-10a addendum | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `7cad84c5`; 29 pass, 9 intended RED; launch-continue row has no free-standing program |
+| 5 W2 | `audit` | literal annotation on a quoted locus token | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `9946b437`; checker exit 0 |
+| 5 W2 | `dev` | backend: R1, G-1, R2 shared operand order, R3 wrapper template, R5 and stale comments | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; 508 backend and 75 W2 e2e tests pass; all four detection proofs as allocated; `public-api.txt` +0 |
+| 5 W2 | `test` | golden re-capture for the fixes; U-12 locus | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `2d085d75`; five fixtures, seven frames, no other drift; 134/134 |
+| 5 W2 | `review` | finding-scoped re-review: R1, R2, R3, R5, G-1 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; no required finding survives; R5 residual comments advisory |
+| 5 W2 | `qa` | intake: `race` tail self-call lowered as a loop jump | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; real since S96; U-18 allocated; recommends fixing in W2 |
+| 5 W2 | `test` | U-18 `race` tail self-call cells | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `a0990404`; both subjects RED (7, not 99) in six mode/cache combinations; controls pass |
+| 5 W2 | `dev` | backend: `race` operand tail position; R5 comments; `CLAUDE.md` bullet | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; 511 backend tests; U-18 green in six combinations; goldens unchanged; `public-api.txt` +0 |
+| 5 W2 | `qa` | U-8 cost measurement, U-10, full suite, W2 adequacy | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; U-8 within the bound (U′ faster); U-10 51 → 2; suite 6,679 run, 0 regressions; adequate pending C-10b, C-10c, U-18 retag |
+| 5 W2 | `test` | C-10b, C-10c, U-18 retag, U-19 RED pair | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `7c2137d0`; 20 pass, 12 intended U-19 REDs; no U-19 filing yet |
+| 5 W2 | `qa` | accept the last W2 test changes; file U-19 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; U-19 filed as ACT-1050; C-10b and U-19 accepted; C-10c name and U-18 comments returned |
+| 5 W2 | `test` | C-10c rename; U-18 past-tense comments | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `a482f1e5`; `qa` accepted |
+| 5 W2 | `review` | finding-scoped: the `race` fix | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; no scoped finding; separate leak observed (ignored heap `bind` result) |
+| 5 W2 | `arch` | delete FIXME 0891 | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; verified at source and deleted; 0903 records its two remaining obligations |
+| 5 W2 | `design` | backend: R2 operand order, R3 wrappers | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; R2 one shared order definition (§3.2); R3 constrained fixed template (§3.3) |
 | 5 W1 | `review` ×2 | finding-scoped re-reviews: `src/` R1–R3, intrinsics I1–I2 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; no finding survives |
 | 5 W1 | `design` | intrinsics: report escaping rule; as-built wording | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; both escaping points accepted; no `dev` change |
 | 5 W1 | `design` ×3 | platform invariant 10; primitives and runtime records; backend records | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; no checker findings in their files |
@@ -299,7 +325,7 @@ separate approval.
   `runtime/panic` declares `has_return: true` while `runtime_panic` returns
   nothing (`crates/cranelisp-intrinsics/src/catalog.rs`, `panic.rs`); in-place
   `vec-set` rests on a dynamic `rc == 1` probe unless a static uniqueness proof
-  exists (`compiler/vec_codegen.rs::node_unique_static`).
+  existed (`compiler/vec_codegen.rs`, `node_unique_static` at the Phase 2 checkpoint; retired by the W2 U′ cutover).
 
 ### User rulings on the Phase 2 decisions, 2026-11-15
 
@@ -683,3 +709,88 @@ judges adequacy for the Phase 5 → 6a checkpoint.
   (`docs`, Phase 6b); the exemplar web-platform 400/405 comment
   (`dev`(exemplar)); inbound link repoints so the resolved filings can be
   deleted.
+- W1 committed as `f5822487`.
+- W2 evidence, 2026-11-15 (`qa`): confirmed live before U′ — ACT-1030
+  use-after-free (all modes), ACT-1026 and ACT-1028 leaks (residual 1),
+  ACT-1029 R1 and leads L2, L5, L6, L10 faults, and L4's over-release
+  (smaller than predicted: `(go … p p)`); refuted — L9's leak; L7 holds.
+  Wrapper loops update in place 0 of 999 times. The moves-on/off comparison
+  never disagrees at this checkpoint, so its equality clause is unobserved
+  firing; per-leg balance carries detection.
+- W2, 2026-11-15, `dev`(backend) U′ departures from `design/backend/uniform-counting.md`, for `design` and `qa`:
+  1. confined non-atomic counting (`rc_atomicity_for_node`) lost its only
+     consumer, so the user's "keep for now" ruling has no effect; kept as dead
+     code pending a decision;
+  2. under moves off, a last use in a result position still allows an
+     in-place update, so "every update copies under moves off" holds only for
+     operands;
+  3. spark thunk captures duplicate and drop at the forcing point instead of
+     moving at their last use;
+  4. a local callee in tail position is no longer taken as a TCO self-call.
+  29 stale citations of deleted backend symbols remain in `design/`,
+  `sprints/`, `tests/plan/` and `audits/`.
+- W2, 2026-11-15, `arch`: FIXME 0903 (an RC operation on a word that may
+  not be a reference) is not resolved by U′ and its exposure widened: every
+  U′ drop and duplicate goes through the guarded `emit_release`/`emit_dup`.
+  No W2 cell exercises the family-2 guard (`tests/trait_scrutinee_scalar_payload_0916.rs`);
+  `qa` measures it on the U′ build. Backlog item 0526 in
+  `design/arch/backlog/performance.md` relies on borrow elision, which U′
+  retired: a re-entry decision for the user at close. Stale comments citing
+  deleted symbols remain in the backend for `dev`.
+- W2 intake, 2026-11-16 (`qa`): R1 is a pre-existing leak that U′ widened
+  (`vec-set` as a value now takes the in-place arm and leaks); G-1 was
+  introduced by U′ (100 `Point.y` calls leak 100 allocations). FIXME 0903's
+  guard cell passes but no longer reaches the risky arm, and no program was
+  found that does: a residual for the user. ACT-1049 opened: the armed
+  stale-release check stops on releasing a stack-placed constructor (false
+  positive), for `design`/`dev`(intrinsics). For routing: `fmap` passed as a
+  value hits a `carrier-loss` refusal on both builds; under `--link`, one
+  program printed RC counters only when `CRANELISP_RC_STATS` was also set at
+  run time (touches C-5 and baked switches, W3).
+- W2, 2026-11-16, `dev`(backend): G-1's cause was the lenient builder's
+  placeholder `Int` node type on a synthetic body, not the plan; the
+  scrutinee release now uses the binder's recorded concrete type
+  (`counted_type`). New pre-existing defect: a `race` operand that is a tail
+  self-call is lowered as a loop jump, so the race never runs; routed to
+  `qa`. The §3.4 item 1 corpus measurement (synthetic frames that fall back
+  to a body-derived parameter type) is carried.
+- W2, 2026-11-16: FIXME 0891 deleted (subsumed by 0903, verified at source).
+  Stale plain-text mentions remain for their owners:
+  `design/backend/transitive-drop-glue.md:268` (`design`(backend));
+  `tests/plan/s123-carry-triage.md:142` (`qa`); `ACT-0962`'s carried-tails
+  list (`sprint`, at close); and a `crates/cranelisp-backend/CLAUDE.md`
+  bullet still citing a residual-typed `Box.v` parameter (`dev`(backend)).
+- W2, 2026-11-16: the `race` tail self-call defect (since S96; `spec/10-io.md`
+  §10.12.8 violated, a silent wrong result, not memory-unsafe) is fixed in W2
+  on `qa`'s recommendation: one ordering line in the `Race` arm of
+  `compile_builtin_fn_call`, in a surface W2 already has open. The coordinator
+  took the fix-now decision; reported to the user, who may overrule. A new
+  `// defect:` class for a tail-position flag leaking into operand compilation
+  is owed by `qa`.
+- W2, 2026-11-16, `dev`(backend): the `Sleep` arm has the same ordering as
+  the `race` defect, but its `Int` operand cannot hold a self-call returning
+  `IO`; left as is, for `review` to confirm. `test` handoff:
+  `tests/launch_grid_corrupt.rs:54` and `tests/spec_10_io.rs:24` cite the
+  deleted `emit_capture_return_inc`.
+- W2, 2026-11-16, `review`: `(bind (Pure [49]) (fn [v] (Pure 49)))` leaves
+  one allocation outstanding (5/4); a continuation that uses the value
+  balances (5/5). Possibly an unused continuation parameter not dropped at
+  introduction under U′. Added to `qa`'s W2 adequacy run for attribution;
+  repro in `.local/s123-w2/bind-residue/`.
+- W2 U-8, 2026-11-16 (`qa`): within the user's bound; U′ is faster. Exemplar
+  warm solve ×64: 2.78 s → 1.53 s; in-place updates per solve 0 → 11,585 of
+  11,593; allocations 25,517 → 13,932. Wrapper loops: quadratic → linear (L3 at
+  10⁷: 17.1 s → 30 ms). No count below the control; no ratio grows with size.
+  U-10: the exemplar residue fell from 51 to 2 (one stranded block per `print`,
+  pre-existing, ACT-1018). U-19 (an inline `bind` continuation with an unused
+  heap parameter leaks one block) is pre-existing and carried to S124 under the
+  correction-loop stop rule. FIXME 0889's remaining cold-compile residual may be
+  fixed on U′ (1,197/1,197); `qa` and `test` re-measure.
+- W2, 2026-11-16: the coordinator ran `cargo fmt` over six W2 test files (formatting only), leaving the tree format-clean.
+- W2 closed 2026-11-16. Open from W2 for the user: confined non-atomic
+  counting (`rc_atomicity_for_node` has no consumer under U′; retire, give it a
+  new consumer, or keep as dead code). Carried: ACT-1050 (U-19), ACT-1049
+  (checker false positive on stack-placed values), ACT-1018 at 2 (`print`),
+  FIXME 0903 (no program reaches its guard), the §3.4 item 1 corpus
+  measurement, the R2/R3 planted-run logs not kept, and FIXME 0889's possible
+  fix to re-measure.

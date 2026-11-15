@@ -1,15 +1,14 @@
 ---
 id: ACT-1029
 title: A same-name alias binder may overwrite a live alias's root in the last-use map, so an in-place COW mutates a box that a live view still reads
-status: deferred
+status: resolved
 priority: required
 from: qa
 to: qa
 sprint: 122
 filed_at: 2026-09-30
 refers_to:
-  - crates/cranelisp-backend/src/heap.rs::compute_last_uses
-  - crates/cranelisp-backend/src/heap.rs::register_alias
+  - crates/cranelisp-backend/src/heap.rs
   - design/backend/ownership-codegen.md §13.3
   - design/backend/binding-scope.md
   - tests/plan/s122-evidence-delta.md
@@ -89,3 +88,25 @@ One of these:
   extern, so this lead is refuted;
 - a committed RED goes GREEN after the correction, with its control
   balanced.
+
+## Resolution (qa, 2026-11-16, S123 W2)
+
+The lead was confirmed, and U′ corrected it: no alias map remains, and
+liveness is per binder identity.
+
+- **Source opened.** `crates/cranelisp-backend/src/` on the W2 tree: `value_provenance`, `yields_owned_temporary`, `compute_last_uses`, `register_alias`, `tail_arg_protect`, `protect_escaping_borrows_before_tail_jump`, `protect_return_value` and `scrutinee_lifetime_for_arm` no longer exist ([uniform counting §5](../../design/backend/uniform-counting.md#5-what-retires)).
+- **Confirmation.** The halves of the redesigned R1 cell,
+  `uniform_counting::lead_r1_control` and `lead_r1_subject`, differ only in
+  the inner binder's name. On the checkpoint compiler `ee8959c0…` the
+  same-name subject stopped with `USE-AFTER-FREE`, and the renamed control
+  balanced at 6/6 (`.local/s123-w2/test-evidence.md`). The name alone
+  decides the outcome. The push lowering was not observed at its seam,
+  which U′ has since deleted.
+- **Run.** QA's targeted run on 2026-11-16 (compiler `86402bc0…`, U′ tree): `uniform_counting`, `join_forwards_its_binder`, `vec_push_match_binder_same_name_shadow` and `tco_tail_arg_alias_uaf` all pass. Both R1 halves balance.
+- **Owed.** `test` retags `lead_r1_subject` as `binder-name-underkey`,
+  with the deleted alias-map seam as its locus (evidence delta U-14). At the W2 commit it
+  stamps `fixed=`.
+- Delete this action at the W2 commit, once `design/backend/uniform-counting.md`,
+  `design/arch/safety-invariants.md`, `sprints/SPRINT.md`,
+  `tests/plan/s123-evidence-delta.md`, ACT-1030 and ACT-1031 no longer link
+  it.

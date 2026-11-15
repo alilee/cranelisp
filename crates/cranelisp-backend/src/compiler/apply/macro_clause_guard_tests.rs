@@ -82,7 +82,7 @@ fn compile_reference(body: Expr, reference_spans: &[Span]) -> CranelispError {
         .collect();
 
     let mut object = make_object_module();
-    try_compile_defns_in_module(&[&caller], &[], &[], &targets, &tables, module, &mut object)
+    try_compile_defns_in_module(&[&caller], &[], &targets, &tables, module, &mut object)
         .expect_err("an ordinary carrier must not expose a macro clause to codegen")
 }
 

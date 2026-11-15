@@ -3,11 +3,12 @@
 //!
 //! The aggregate `rc_nonatomic`/`rc_atomic` split (B3.3, `[RC_STATS]`) says *how
 //! many* RC ops stay atomic, but not *where*; 0526/0528 need the *sites* of the
-//! residual atomic ops to target the right cells . This module is the structural **twin** of
+//! residual atomic ops to target the right cells. This module is the structural **twin** of
 //! `compiler::control_flow::utilization`'s `[SPARK_SITE_STATS]` registry: a gated,
 //! compile-time `BTreeMap` populated at the confinement-decision seam
-//! (`FnCompiler::rc_atomicity_for_node`, the live `node_confined` consumer) and
-//! dumped by a backend-side `atexit` hook.
+//! (`FnCompiler::rc_atomicity_for_node`) and dumped by a backend-side `atexit`
+//! hook. Under uniform counting that seam has no caller, so the dump is empty
+//! (`design/backend/uniform-counting.md` §2.4, §9.1).
 //!
 //! **Codegen-time, host-side, byte-identical-off.** The map push happens while the
 //! backend *lowers* the program (exactly like the `tally_rc_emit` counter) — NO
@@ -19,9 +20,8 @@
 //! `cranelisp-intrinsics::rc` print surface — N3 does **not** re-open the h2-RED
 //! counter-surface seam (§13.2.2 "backend-side-read caveat").
 //!
-//! Apportioned by the FINE probes (`CRANELISP_NONATOMIC_RC` +
-//! `CRANELISP_CAPTURE_BORROW`), never by `CRANELISP_NO_OWNERSHIP` (§3.1.6-R3): the
-//! harness reads this dump under the fine oracles, not the coarse switch.
+//! Apportioned by the fine `CRANELISP_NONATOMIC_RC` probe, never by
+//! `CRANELISP_NO_OWNERSHIP` (§3.1.6-R3).
 
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, Mutex, Once};
@@ -90,9 +90,9 @@ fn rc_site_stats_enabled() -> bool {
 }
 
 /// Record one confinement-classified RC op at the emitting site, IF the stats gate
-/// is on. Called from `FnCompiler::rc_atomicity_for_node` — the live `node_confined`
-/// consumer, where the emitting node's span, the enclosing fn FQ, and the
-/// confinement class are all in hand. Off ⇒ returns after one bool check (no map).
+/// is on. Called from `FnCompiler::rc_atomicity_for_node`, where the emitting
+/// node's span, the enclosing fn FQ, and the confinement class are all in hand;
+/// that classifier has no caller under uniform counting. Off ⇒ returns after one bool check (no map).
 pub(crate) fn record_rc_site_if_enabled(
     module: &ModuleFullPath,
     fn_name: Option<&Symbol>,

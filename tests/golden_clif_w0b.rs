@@ -71,7 +71,7 @@ use helpers::e2e::Cranelisp;
 /// and `tests/scripts/clif_golden.sh dump()` (review F6: keep the sites in
 /// lockstep; the bar to unify is a third consumer — this IS that third consumer,
 /// but unification is a `/dev`+`/qa` tooling change out of this gate's scope).
-fn capture_frames(corpus_rel: &str) -> String {
+fn capture_frames(corpus_rel: &str, expected_exit: i32) -> String {
     let corpus = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/clif_w0b/corpus")
@@ -90,7 +90,6 @@ fn capture_frames(corpus_rel: &str) -> String {
         // vars write to stderr — the dump channel — so they are cleared too.
         .env_remove("CRANELISP_NO_OWNERSHIP")
         .env_remove("CRANELISP_NO_LENIENT")
-        .env_remove("CRANELISP_CAPTURE_BORROW")
         .env_remove("CRANELISP_NONATOMIC_RC")
         .env_remove("CRANELISP_RC_STATS")
         .env_remove("CRANELISP_RC_DEC_CHECK")
@@ -103,6 +102,7 @@ fn capture_frames(corpus_rel: &str) -> String {
         .env_remove("CRANELISP_IO_TRACE")
         .output();
 
+    let out = out.assert_exit(expected_exit);
     extract_sorted_frames(&out.stderr)
 }
 
@@ -174,8 +174,22 @@ fn assert_golden_clif(entry: &str) {
     // BEFORE trusting a golden compare. This is what makes strict byte-identity
     // (no canonicalization) admissible — a nondeterministic dump would be a real
     // ordering bug to investigate, never a reason to mask.
-    let a = capture_frames(&corpus_rel);
-    let b = capture_frames(&corpus_rel);
+    // Read the outcome from the corpus contract so a refusal cannot pass by
+    // producing the expected CLIF before execution stops.
+    let manifest = include_str!("fixtures/clif_w0b/MANIFEST.md");
+    let row = manifest
+        .lines()
+        .find(|line| line.contains(&format!("`corpus/{corpus_rel}`")))
+        .unwrap_or_else(|| panic!("missing W0.b MANIFEST entry {entry}"));
+    let expected_exit: i32 = row
+        .split('|')
+        .nth(5)
+        .expect("MANIFEST exit column")
+        .trim()
+        .parse()
+        .expect("MANIFEST numeric exit pin");
+    let a = capture_frames(&corpus_rel, expected_exit);
+    let b = capture_frames(&corpus_rel, expected_exit);
     assert_eq!(
         a, b,
         "NONDETERMINISTIC W0.b capture for {entry}: two captures of the same \

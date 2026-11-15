@@ -4751,7 +4751,8 @@ fn non_failed_import_diagnostic_control() {
 }
 
 // spec: repl/spec/05-error-presentation.md §5.5 — at most one located category prefix per diagnostic.
-// defect: class=error-swallow locus=src/scheduler.rs::refuse_failed_dependency_locked found=S122 owner=/dev
+// defect: class=error-swallow locus=src/scheduler.rs::refuse_failed_dependency_locked found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the failed-import diagnostic repeated its located category prefix.
 // ACT-1017 prefix; control: non_failed_import_diagnostic_control.
 #[test]
 fn failed_import_has_one_located_prefix_neg() {

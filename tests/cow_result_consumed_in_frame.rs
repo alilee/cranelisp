@@ -44,6 +44,7 @@ fn measure(label: &str, control: (Child, i32), subject: (Child, i32)) -> Margina
     let (control, control_exit) = control;
     let (subject, subject_exit) = subject;
     let pair = MarginalPair::new(label, control, subject).measure();
+    eprintln!("{}", pair.report());
     assert!(
         pair.control().exit_code() == Some(control_exit)
             && pair.subject().exit_code() == Some(subject_exit),
@@ -162,11 +163,9 @@ fn let_intermediate_push_loop_balances_and_reuses_in_place() {
 //
 // W-M, a safety fence for the `match` seam over an in-place scrutinee. The
 // control matches the parameter itself; both halves start from [1 2] and
-// compute 2. The residual is pinned at exactly 1: ACT-1026's missing release
-// of a forwarded binder consumed in its frame (D1-M in
-// `join_forwards_its_binder.rs`). Before the ACT-1024 fix the missing
-// increment cancels it and the cell reads 0; a fault means a release remains
-// on the forwarded value. ACT-1026's correction restores `assert_balanced`.
+// compute 2. ACT-1026 previously left a residual of 1 for a forwarded binder
+// consumed in its frame (D1-M in `join_forwards_its_binder.rs`); U′ removed
+// that leak.
 // defect: class=uaf locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::cow_retains_reused_gate found=S122 owner=/dev
 #[test]
 fn parameter_set_at_its_last_use_and_forwarded_by_a_match_arm_balances() {
@@ -184,8 +183,5 @@ fn parameter_set_at_its_last_use_and_forwarded_by_a_match_arm_balances() {
             2,
         ),
     )
-    .assert_residual(
-        1,
-        "the in-place set forwarded by a match arm, with ACT-1026's leak",
-    );
+    .assert_balanced("the in-place set forwarded by a match arm");
 }

@@ -8,8 +8,11 @@ branch-forward rule with its consuming-COW amendment and alias correction, the
 ACT-1024 COW retention correction with its match-seam retirement, and the §9
 ACT-1037 `vec-set` index guard (`qa` closed ACT-1037 on 2026-10-01,
 [closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed);
-its `--link` GREEN rests on `test`'s W3 run). The counting corrections are
-superseded by [uniform counting](uniform-counting.md) when it lands. The §10
+its `--link` GREEN rests on `test`'s W3 run). The counting corrections (§5.1,
+§8, the ACT-0974, ACT-1021 and ACT-1024 rows) are superseded by
+[uniform counting](uniform-counting.md), built at S123 W2: the mechanisms they
+corrected are deleted, and they remain here as the record of what was
+measured. The §10
 panic-propagation options are **withdrawn** and its mechanism record is
 historical: the user ruled on 2026-11-15 that a panic ends the process
 ([backend.md §7](backend.md#7-runtime-failure)). The
@@ -157,6 +160,10 @@ change. They do not delete filings or weaken their surviving evidence needs.
 
 ### 5.1 0747 — retire the manufactured consolidation
 
+> Superseded at S123 W2: the three finders below are deleted, and binder
+> identity is the ownership plan's
+> ([uniform counting](uniform-counting.md) §3).
+
 The current source no longer supports the premise that three ad-hoc finders
 answer one value-flow fact:
 
@@ -292,6 +299,11 @@ evidence remain open.
 
 ## 8. IOR-5 — an IO-combinator result is fresh
 
+> Superseded at S123 W2: the provenance classification and the return protect
+> are deleted, so every result is owned without a freshness rule
+> ([uniform counting](uniform-counting.md) §4). `apply.rs::IoCombinator`
+> survives as the spark exclusion and the interceptor classifier.
+
 The correction is implemented. The two IOR-5 public balance cells and IOR-2
 pass with zero marginal residual. [QA's evidence plan](../../tests/plan/s122-evidence-delta.md)
 owns acceptance and the remaining scope limits.
@@ -367,8 +379,8 @@ The pre-fix failure, confirmed by emitted-code observation:
   RC word in the let-bound subject, absent in the inline control. The corrected
   CLIF removes only that pointer calculation, increment constant and retain.
 - The classification and emitted-retain module cells were observed red before
-  the provenance correction, then green. They live in
-  `crates/cranelisp-backend/src/compiler/apply/io_combinator_freshness_tests.rs`.
+  the provenance correction, then green. They were deleted with the
+  provenance classification at S123 W2.
 - Borrowed-result controls pass before and after: the new mixed-join cell
   observes `NotOwnedHere` classification; existing return-ownership CLIF
   evidence observes the protective retain. Non-combinator builtins stay

@@ -89,11 +89,11 @@ first blamed `protect_return_value` and proposed two backend mechanisms. FIXME
 - The pin is
   `tests/adt_drop_glue_underkey.rs::entry_main_ioresult_heap_payload_toggle_off_leak_r2`.
 
-The backend owns only the function-return protect licence, which is what source
-cites this section for. A freshly constructed return needs no protect in any
-function. A return that may alias an argument or a live binding keeps its
-protect. The licence is `value_provenance(body) <= Fresh`, defined in
-[non-concrete release contract §6.1](non-concrete-release-contract.md#61-the-lattice).
+The backend owned only the function-return protect licence: a freshly
+constructed return needed no protect, and one that might alias an argument or
+a live binding kept it. The protect and its provenance licence were deleted at
+the S123 W2 cutover; every result is owned
+([uniform counting](uniform-counting.md) §4).
 
 Do not reintroduce the other rejected mechanism: releasing the payload inside the
 IO-tree teardown. REPL display dereferences that payload after the tree has been

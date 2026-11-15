@@ -21,11 +21,8 @@ use super::control_flow::emit_extern_call_in_wrapper;
 use super::{FnCompiler, signature_heap_category};
 
 /// Bundled operands for [`emit_vec_set_cow_core`], shared by the static site
-/// and the §12.7 wrapper emission.
-///
-/// The new-element consuming inc is the CALLER's decision (static sites gate on
-/// `element_consuming_inc`; wrapper params arrive owned and transfer) — it is
-/// NOT carried here and NOT emitted by the core.
+/// and the §12.7 wrapper emission. The new element is an owned value the
+/// vector takes.
 pub(crate) struct VecSetCow {
     pub vec_val: Value,
     pub idx_val: Value,
@@ -33,191 +30,59 @@ pub(crate) struct VecSetCow {
     /// Per-element-type RC inc fn pointer for the runtime copy helper's
     /// retained-element incs (iconst 0 for NeverHeap).
     pub inc_fn_ptr: Value,
-    /// The OLD element's heap category (drives the mutate-in-place dec).
-    pub old_elem_category: Option<HeapCategory>,
-    pub dealloc_id: cranelift_module::FuncId,
     /// `runtime/panic`, called by the index guard.
     pub panic_id: cranelift_module::FuncId,
-    pub uniqueness: VecSetUniqueness,
+    pub source: OwnedSource,
 }
 
-/// What a `vec-set` site knows about its source Vec's uniqueness. Each case
-/// carries only what its emitted arms need
-/// (`design/backend/s122-closure.md` §9.2).
-pub(crate) enum VecSetUniqueness {
-    /// A fresh node proven unique (§6.4) with no separate owner: the in-place
-    /// arm alone, with no rc probe. The consumed reference becomes the result's.
-    ///
-    /// The no-separate-owner condition is what makes that transfer sound. This
-    /// case never retains the source, which is correct only for a source that
-    /// would classify [`SourceOwnership::Owned`]. A proven-unique source that a
-    /// slot also releases needs the `Borrowed` in-place retain; without it the
-    /// box would be released twice. Such a source takes `Dynamic` instead.
-    ProvenUnique,
-    /// The rc probe chooses the in-place or the copy arm; the polarity fixes
-    /// each arm's retain or release of the source (§13.7).
-    Dynamic(SourceOwnership),
-    /// The source is read later: the copy arm alone. The site does not consume
-    /// the source, so nothing is released.
-    KnownShared,
+/// The teardown materials for a copy-on-write operation's source, which the
+/// operation always owns (`uniform-counting.md` §2, rule U2). The `rc == 1`
+/// probe chooses the arm: in place, the consumed reference becomes the
+/// result's; otherwise the copy is the result and the source is released.
+pub(crate) struct OwnedSource {
+    pub vec_drop_func_id: cranelift_module::FuncId,
+    /// The element type's canonical release adapter, `None` for an element
+    /// type that owns no heap. It is the one element-release source: the
+    /// teardown callback below and the in-place `vec-set` arm's release of
+    /// the overwritten element both come from it (`uniform-counting.md` §3.4
+    /// item 5).
+    pub elem_release: Option<cranelift_module::FuncId>,
+    /// `elem_release` as the `runtime/vec_drop` callback (`iconst 0` for none).
+    pub elem_dec_fn_ptr: Value,
 }
 
-/// Consumed-source RC polarity for the shared COW cores
-/// (`design/backend/ownership-codegen.md` §13.7).
-///
-/// A COW op's **mutate** (`vec-set`) and **grow** (`vec-push`) branches (rc==1)
-/// return the source box; its **copy** branch (rc>1) returns a new box. The
-/// variant fixes what each branch does so that the result owns exactly one
-/// reference on every branch:
-///
-/// | | mutate / grow | copy |
-/// |---|---|---|
-/// | `Owned` | transfers the consumed reference | releases the source |
-/// | `Borrowed` | retains the returned box | releases nothing |
-///
-/// `Borrowed` has no retain-less form: a slot that keeps its reference also
-/// releases it later (scope exit, a tail flush), so an unretained reused box
-/// would be released twice (ACT-1024). Toggle-off (`CRANELISP_NO_OWNERSHIP`)
-/// never builds `Borrowed`: the site counts a separately owned source instead,
-/// so the runtime takes the copy branch (R14).
-pub(crate) enum SourceOwnership {
-    /// The site owns the reference it consumes: a fresh temporary, a `Var`
-    /// whose site holds the consuming claim, or a wrapper/curry parameter.
-    /// Carries the teardown materials the copy branch's release needs.
-    Owned {
-        vec_drop_func_id: cranelift_module::FuncId,
-        elem_dec_fn_ptr: Value,
-    },
-    /// The source's slot keeps its reference and releases it later. Reachable
-    /// only with analysis on.
-    Borrowed,
+/// `release` as a `runtime/vec_drop` element callback: its address, or the
+/// ABI's null callback for an element type that owns no heap.
+fn elem_release_fn_ptr<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    release: Option<cranelift_module::FuncId>,
+) -> Value {
+    match release {
+        Some(id) => {
+            let func_ref = module.declare_func_in_func(id, builder.func);
+            builder.ins().func_addr(types::I64, func_ref)
+        }
+        None => builder.ins().iconst(types::I64, 0),
+    }
 }
 
-/// Emit the copy-branch consumed-source release for a COW core (§13.7).
-/// No-op for `Borrowed`; rc-checked `vec_drop` for `Owned`. Called AFTER the
-/// copy extern (which reads + retains the shared source elements), so a
-/// last-reference source teardown cannot free elements the new copy still holds.
-fn release_consumed_source<M: Module>(
+/// Release a copy-on-write source on the copy arm, AFTER the copy extern has
+/// retained the elements it shares, so a last-reference teardown cannot free
+/// an element the copy still holds.
+fn release_copied_source<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     vec_val: Value,
-    source_ownership: &SourceOwnership,
+    source: &OwnedSource,
 ) {
-    if let SourceOwnership::Owned {
-        vec_drop_func_id,
-        elem_dec_fn_ptr,
-    } = source_ownership
-    {
-        emit_vec_rc_dec_with_drop(
-            builder,
-            module,
-            vec_val,
-            *vec_drop_func_id,
-            *elem_dec_fn_ptr,
-        );
-    }
-}
-
-/// Emit the mutate/grow-branch reused-source retention (§13.7). Those branches
-/// return the source box, so a `Borrowed` source, whose slot keeps and later
-/// releases its own reference, gives the result one more. `Owned` transfers
-/// the consumed reference instead.
-///
-/// The symmetric partner of [`release_consumed_source`] (copy branch, release
-/// iff `Owned`).
-fn retain_reused_source<M: Module>(
-    builder: &mut FunctionBuilder,
-    module: &mut M,
-    vec_val: Value,
-    source_ownership: &SourceOwnership,
-) {
-    if matches!(source_ownership, SourceOwnership::Borrowed) {
-        heap::emit_rc_inc(builder, module, vec_val);
-    }
-}
-
-// =============================================================================
-// §13.7 COW source classification. Pure, so the whole matrix is unit-testable
-// without a live `FnCompiler`.
-// =============================================================================
-
-/// The vec builtins whose in-place branch returns the SOURCE pointer. `vec-get`/
-/// `vec-len` are reads (no COW branch), so they are not COW sites.
-pub(crate) fn is_cow_vec_op(name: &str) -> bool {
-    matches!(name, "vec-set" | "vec-push")
-}
-
-/// Does this COW source have a **separate owner** that releases it
-/// independently of this site? `claimed` says whether this exact site holds the
-/// consuming claim, whose issuer suppresses the slot's own release.
-///
-/// An owned temporary has no separate owner: its sole reference transfers
-/// here. The question is the value's provenance
-/// (`fn_compiler::yields_owned_temporary`), not the node kind: an
-/// `If`/`Match`/`Let` that yields a binding has one (FIXME 0781).
-///
-/// Analysis on, this is the `Borrowed` classification
-/// ([`cow_source_is_borrowed`]); analysis off, it is the R14 force-count
-/// condition (`FnCompiler::cow_source_needs_toggle_off_count`).
-pub(crate) fn cow_source_has_separate_owner(source: &MonoExpr, claimed: bool) -> bool {
-    !claimed && !crate::compiler::fn_compiler::yields_owned_temporary(source)
-}
-
-/// Is this COW source `Borrowed` (as opposed to `Owned`)? Only with analysis
-/// on: toggle-off counts a separately owned source and lowers it `Owned` (R14).
-/// The site's escape fact is not an input (§13.7).
-pub(crate) fn cow_source_is_borrowed(source: &MonoExpr, claimed: bool, analysis_off: bool) -> bool {
-    !analysis_off && cow_source_has_separate_owner(source, claimed)
-}
-
-/// **The one "is this node a COW-builtin site, and what is its source?"
-/// question** — `Some(source)` iff `node` is an `Apply` that typecheck resolved
-/// to a COW vec builtin (`ResolvedCall::BuiltinFn` naming `vec-set`/`vec-push`),
-/// exactly as the producer's own dispatch keys (`compile_resolved_call`'s
-/// `BuiltinFn` arm → `is_vec_primitive` → `compile_vec_op`).
-///
-/// `None` ⇒ not a COW-builtin site: a non-`Apply`, a **user-defined fn that
-/// merely spells `vec-set`** (legal under `PreludeVariant::None`), a non-COW
-/// builtin, or a trait/sig/curry dispatch. Both consuming-claim issuers
-/// (`fn_compiler::consuming_cow_arguments`, `fn_compiler::return_cow_source_in_scope`)
-/// ask this, never the callee's spelling (FIXME 0752, Principle 24).
-pub(crate) fn cow_site_source(node: &MonoExpr) -> Option<&MonoExpr> {
-    let MonoExpr::Apply {
-        resolved_call,
-        args,
-        ..
-    } = node
-    else {
-        return None;
-    };
-    let Some(cranelisp_types::ResolvedCall::BuiltinFn { name }) = resolved_call.as_deref() else {
-        return None;
-    };
-    if !is_cow_vec_op(name.as_ref()) {
-        return None;
-    }
-    args.first()
-}
-
-/// Read the increment-II `unique_static` write-path proof off a **fresh-
-/// producing** Vec node (§6.4; `design/backend/ownership-codegen.md` HARD
-/// requirement). The proof is a site fact emitted by typecheck on the value's
-/// ORIGIN — a `VecLit` / `Apply` / `ConstrADT` / `StringLit` — never on a
-/// consuming-use `Var` (which carries no `unique_static` field, so reading it
-/// there would make every proof `None` ⇒ the optimization silently dead). A COW
-/// site whose Vec arg IS such a fresh node (e.g. `(vec-set [1 2 3] 0 9)`) can
-/// therefore elide its dynamic `rc == 1` probe; a `Var`-rooted COW keeps the
-/// dynamic token (monotone-sound). `Some(true)` ⇒ proven unique; anything else
-/// (`Some(false)` / `None` / a non-fresh node / analysis-off) ⇒ conservative.
-pub(crate) fn node_unique_static(node: &MonoExpr) -> Option<bool> {
-    match node {
-        MonoExpr::VecLit { unique_static, .. }
-        | MonoExpr::Apply { unique_static, .. }
-        | MonoExpr::ConstrADT { unique_static, .. }
-        | MonoExpr::StringLit { unique_static, .. } => *unique_static,
-        // A `Var` (or any other node) carries no origin proof — conservative.
-        _ => None,
-    }
+    emit_vec_rc_dec_with_drop(
+        builder,
+        module,
+        vec_val,
+        source.vec_drop_func_id,
+        source.elem_dec_fn_ptr,
+    );
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -225,10 +90,21 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    /// Compile a Vec literal: `[e1 e2 e3]` → allocate Vec, store elements.
+    /// Compile a Vec literal `node`: its elements, evaluated as its operands,
+    /// stored into a fresh Vec.
     pub(crate) fn compile_vec_lit(
         &mut self,
-        elements: &[MonoExpr],
+        node: &MonoExpr,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let elem_vals = self.compile_operands(node)?.values;
+        self.emit_vec_lit(&elem_vals, span)
+    }
+
+    /// Allocate a Vec holding the owned `elem_vals`, which it takes.
+    pub(crate) fn emit_vec_lit(
+        &mut self,
+        elem_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
         let vec_new_id = self
@@ -239,13 +115,7 @@ where
                 location: ErrorLocation::from_span(span),
             })?;
 
-        let len = elements.len() as i64;
-
-        // Compile all element expressions first.
-        let elem_vals: Vec<Value> = elements
-            .iter()
-            .map(|e| self.compile_expr(e))
-            .collect::<Result<_, _>>()?;
+        let len = elem_vals.len() as i64;
 
         // Call runtime/vec_new(len) — allocates Vec struct + data buffer with len capacity.
         let len_val = self.builder.ins().iconst(types::I64, len);
@@ -258,35 +128,10 @@ where
         // Load data_ptr from the Vec struct.
         let data_ptr = heap::heap_load(&mut self.builder, vec_ptr, HeapVec::DATA_PTR_OFFSET); // data_ptr: i64 (ptr-width)
 
-        // Store each element into the data buffer at data_ptr + i * 8.
-        //
-        // Consuming discrimination (FIXME 0668 sub-fix — the vec-lit element store
-        // routed through the SAME rule the call seam uses, `element_consuming_inc`
-        // / DEF-2/DEF-3, Principle 7): a heap-typed `Var` element is an owned scope
-        // binding whose scope-dec STILL fires, so the container must take its own
-        // count (inc) — else the binding's scope-dec frees the element the returned
-        // container holds (`(let [q [7 8 9]] [q])` → garbage BOTH toggles). A
-        // temporary (literal / ctor call / fn result / COW result) starts at rc=1
-        // and transfers its single reference into the Vec — no inc. The
-        // discriminator is STRUCTURAL (Var-rootedness), analysis-independent, so
-        // one rule is correct in BOTH toggles by construction; leak-side-safe (only
-        // owned bindings inc); no loop interaction (recur args ride
-        // `tail_transfer_skip`, not vec-lit). The match/alias-forward direction is
-        // 0668's S114 design iteration — NOT touched here.
-        for (i, (&val, elem)) in elem_vals.iter().zip(elements.iter()).enumerate() {
-            let elem_category =
-                signature_heap_category(&elem.ty().to_type(), Some(self.ctx.symbol_tables));
-            match element_consuming_inc(elem, elem_category) {
-                Some(HeapCategory::AlwaysHeap) => {
-                    heap::emit_rc_inc(&mut self.builder, self.module, val);
-                }
-                Some(HeapCategory::Mixed) => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, val);
-                }
-                Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
-            }
-            let offset = (i * 8) as i32;
-            heap::heap_store(&mut self.builder, val, data_ptr, offset);
+        // Store each owned element into the data buffer at data_ptr + i * 8;
+        // the vector takes each element's reference.
+        for (i, &val) in elem_vals.iter().enumerate() {
+            heap::heap_store(&mut self.builder, val, data_ptr, (i * 8) as i32);
         }
 
         // Set len = number of elements.
@@ -296,11 +141,9 @@ where
         Ok(vec_ptr)
     }
 
-    /// Try to compile a Vec operation inline. Returns Some(val) if handled.
-    ///
-    /// Called from compile_apply when the callee is a known Vec primitive name.
-    /// `args` are the original expressions (for last-use analysis).
-    /// `arg_vals` are the pre-compiled argument Cranelift values.
+    /// Compile a Vec operation inline over owned operands. Returns `Some(val)`
+    /// if handled. Every operation consumes its vector: a read releases it
+    /// after reading, and a copy-on-write update owns it (rule U2).
     pub(crate) fn compile_vec_op(
         &mut self,
         name: &str,
@@ -308,264 +151,110 @@ where
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Option<Value>, CranelispError> {
-        match name {
-            "vec-get" if args.len() == 2 => {
-                let result = self.compile_vec_get(&args[0], arg_vals[0], arg_vals[1], span)?;
-                // Drop temporary Vec after read — it's consumed but not returned.
-                self.emit_vec_drop_if_temporary(&args[0], arg_vals[0], span)?;
-                Ok(Some(result))
-            }
-            "vec-set" if args.len() == 3 => {
-                let result = self.compile_vec_set(&args[0], &args[2], arg_vals, span)?;
-                Ok(Some(result))
-            }
-            "vec-push" if args.len() == 2 => {
-                let result = self.compile_vec_push(&args[0], &args[1], arg_vals, span)?;
-                Ok(Some(result))
-            }
-            "vec-len" if args.len() == 1 => {
-                let result = self.compile_vec_len(arg_vals[0]);
-                // Drop temporary Vec after read — it's consumed but not returned.
-                self.emit_vec_drop_if_temporary(&args[0], arg_vals[0], span)?;
-                Ok(Some(result))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    /// Compile `vec-len`: inline load of len field at HeapVec::LEN_OFFSET.
-    fn compile_vec_len(&mut self, vec_val: Value) -> Value {
-        heap::heap_load(&mut self.builder, vec_val, HeapVec::LEN_OFFSET) // len: i64
-    }
-
-    /// Compile `vec-get`: bounds-checked element access.
-    ///
-    /// Delegates to the shared [`emit_vec_get_core`] (single source with the
-    /// §12.7 fn-as-value wrapper emission — Principle 7); this method computes
-    /// the element heap category from the Vec expression's concrete type.
-    fn compile_vec_get(
-        &mut self,
-        vec_expr: &MonoExpr,
-        vec_val: Value,
-        idx_val: Value,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
-        let elem_category = self
-            .vec_elem_type(vec_expr)
-            .map(|t| signature_heap_category(&t, Some(self.ctx.symbol_tables)));
-        // §3.3 in-frame projection elision
-        // (`design/backend/ownership-codegen.md` §3.3): elide the heap-element inc
-        // when the CONSUMER of this exact `vec-get` requested it — the moded arg
-        // path (`compile_entry_arg_list`) sets `elide_vecget_span` to
-        // this node's span iff the read is a projection (site fact `provenance`)
-        // being passed DIRECTLY into a `Borrowed` parameter. That is the sole
-        // provably-safe elision: the borrowed element is consumed in-place by the
-        // callee's borrow and never escapes the enclosing expression nor outlives
-        // the root's fork-join-guaranteed liveness (the F1 machinery-tax collapse).
-        // `None` (analysis off, or any read the consumer did not request) ⇒ inc
-        // verbatim — byte-identical-off (§2.2).
-        let elide_elem_inc = self.elide_vecget_span == Some(span);
-        // §15 row 5 (tier-3 category-A, P25 "narrowing carries its check"): the
-        // projection-inc elision is a narrowing; its check is the site fact. Pin
-        // that elision fires ONLY with `elide_vecget_span` present — a future
-        // refactor that sets `elide_elem_inc` from any other source (a bare /
-        // analysis-off read) would drop a live element's inc → a UAF. Debug-only,
-        // release-compiled-out, zero CLIF change.
-        debug_assert!(
-            !elide_elem_inc || self.elide_vecget_span == Some(span),
-            "vec-get projection-inc elision fired without the `elide_vecget_span` \
-             site fact (§3.3) — the borrowed-in-place consumer proof is absent"
+        let arity_matches = matches!(
+            (name, args.len()),
+            ("vec-get", 2) | ("vec-set", 3) | ("vec-push", 2) | ("vec-len", 1)
         );
-        emit_vec_get_core(
-            &mut self.builder,
-            self.module,
-            panic_id,
-            elem_category,
-            vec_val,
-            idx_val,
-            span,
-            elide_elem_inc,
-        )
-    }
-
-    /// Compile `vec-set` through the guarded core, which is its only lowering.
-    ///
-    /// arg_vals: [vec_val, idx_val, new_val]
-    ///
-    /// DEF-3 (FIXME 0417 — symmetric with `vec-push` / DEF-2): the new element
-    /// follows the same consuming-Var rule as `vec-push` — the Vec gains a
-    /// reference iff the element is a heap-typed **Var** (still owned by the
-    /// enclosing scope, which dec's it at scope exit). A **temporary** element
-    /// transfers its rc=1 reference into the Vec and MUST NOT be inc'd.
-    ///
-    /// The consuming inc is emitted **up-front in codegen** (gated by the shared
-    /// `element_consuming_inc` predicate), exactly as `compile_vec_push` does —
-    /// `vec_set_copy` does NOT inc the new `val` (it inc's only retained
-    /// copied-over elements). This is the single division of labour: codegen
-    /// owns the new-element consuming inc, the runtime owns the retained-element
-    /// incs. (Prior to FIXME 0417 the COW path gated the inc here while the copy
-    /// path relied on the runtime's unconditional inc + a codegen compensation
-    /// dec — two opposite labour splits for one operation, now unified.)
-    fn compile_vec_set(
-        &mut self,
-        vec_expr: &MonoExpr,
-        elem_arg: &MonoExpr,
-        arg_vals: &[Value],
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let vec_val = arg_vals[0];
-        let idx_val = arg_vals[1];
-        let new_val = arg_vals[2];
-
-        let elem_type = self.vec_elem_type(vec_expr);
-        let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
-
-        // Consuming inc for the new element, emitted up-front (mirrors
-        // compile_vec_push). A heap-typed Var element forwarded into vec-set
-        // (e.g. `c` in `(vec-set (cells-of g) idx c)`) is still owned by its
-        // enclosing scope, which dec's it at scope exit; the Vec also stores a
-        // reference. Without a caller-side inc the two race against the SAME
-        // single reference. A temporary element transfers its rc=1 reference
-        // into the Vec — no inc. Gated by the shared `element_consuming_inc`
-        // decision (Principle 7), identical to vec-push (DEF-2).
-        if let Some(elem_ty) = &elem_type {
-            let category = signature_heap_category(elem_ty, Some(self.ctx.symbol_tables));
-            match element_consuming_inc(elem_arg, category) {
-                Some(HeapCategory::AlwaysHeap) => {
-                    heap::emit_rc_inc(&mut self.builder, self.module, new_val);
-                }
-                Some(HeapCategory::Mixed) => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, new_val);
-                }
-                Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
-            }
+        if !arity_matches {
+            return Ok(None);
         }
-
-        let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
-        let old_elem_category = elem_type
+        let elem_type = self.vec_elem_type(&args[0]);
+        let elem_category = elem_type
             .as_ref()
             .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
-        let uniqueness = self.vec_set_uniqueness(vec_expr, vec_val, &elem_type, span)?;
-        emit_vec_set_cow_core(
-            &mut self.builder,
-            self.module,
-            VecSetCow {
-                vec_val,
-                idx_val,
-                new_val,
-                inc_fn_ptr,
-                old_elem_category,
-                dealloc_id: self.ctx.dealloc_func_id,
-                panic_id,
-                uniqueness,
-            },
-            span,
-        )
+        let vec_val = arg_vals[0];
+        let result = match name {
+            "vec-len" => {
+                let len = heap::heap_load(&mut self.builder, vec_val, HeapVec::LEN_OFFSET);
+                self.release_vec(vec_val, &elem_type, span)?;
+                len
+            }
+            "vec-get" => {
+                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+                // The core duplicates the element before the vector is
+                // released, so the element survives a last-reference teardown.
+                let elem = emit_vec_get_core(
+                    &mut self.builder,
+                    self.module,
+                    panic_id,
+                    elem_category,
+                    vec_val,
+                    arg_vals[1],
+                    span,
+                )?;
+                self.release_vec(vec_val, &elem_type, span)?;
+                elem
+            }
+            "vec-set" => {
+                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+                let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
+                let source = self.owned_source(&elem_type, span)?;
+                emit_vec_set_cow_core(
+                    &mut self.builder,
+                    self.module,
+                    VecSetCow {
+                        vec_val,
+                        idx_val: arg_vals[1],
+                        new_val: arg_vals[2],
+                        inc_fn_ptr,
+                        panic_id,
+                        source,
+                    },
+                    span,
+                )?
+            }
+            _ => {
+                let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
+                let source = self.owned_source(&elem_type, span)?;
+                emit_vec_push_cow_core(
+                    &mut self.builder,
+                    self.module,
+                    vec_val,
+                    arg_vals[1],
+                    inc_fn_ptr,
+                    source,
+                    span,
+                )?
+            }
+        };
+        Ok(Some(result))
     }
 
-    /// Classify a static `vec-set` site's source. A source that is not at its
-    /// last use is known shared. At last use, the §6.4 proof elides the rc
-    /// probe only when the source has no separate owner; otherwise the probe
-    /// decides.
-    ///
-    /// The owner condition matters because [`VecSetUniqueness::ProvenUnique`]
-    /// never retains the source: a separately owned source needs the retain its
-    /// `Borrowed` polarity supplies. Every node that carries the proof today
-    /// yields an owned temporary, so the condition moves no site; it keeps
-    /// typecheck's proof and this crate's ownership classification from
-    /// disagreeing silently (`design/backend/s122-closure.md` §9.2).
-    fn vec_set_uniqueness(
+    /// Release an owned vector through its rc-checked teardown.
+    fn release_vec(
         &mut self,
-        vec_expr: &MonoExpr,
         vec_val: Value,
         elem_type: &Option<Type>,
         span: Span,
-    ) -> Result<VecSetUniqueness, CranelispError> {
-        if !self.is_vec_last_use(vec_expr) {
-            return Ok(VecSetUniqueness::KnownShared);
-        }
-        let claimed = self.holds_consuming_claim(vec_expr);
-        if node_unique_static(vec_expr) == Some(true)
-            && !cow_source_has_separate_owner(vec_expr, claimed)
-        {
-            return Ok(VecSetUniqueness::ProvenUnique);
-        }
-        // R14 count-truth (toggle-off): count a live-`Var` source so rc≥2 ⇒
-        // copy branch ⇒ conservative + correct. No-op analysis-ON.
-        if self.cow_source_needs_toggle_off_count(vec_expr) {
-            heap::emit_rc_inc(&mut self.builder, self.module, vec_val);
-        }
-        Ok(VecSetUniqueness::Dynamic(
-            self.cow_source_ownership(vec_expr, elem_type, span)?,
-        ))
+    ) -> Result<(), CranelispError> {
+        let source = self.owned_source(elem_type, span)?;
+        release_copied_source(&mut self.builder, self.module, vec_val, &source);
+        Ok(())
     }
 
-    /// Compile `vec-push`: COW inline + extern fallback.
-    ///
-    /// arg_vals: [vec_val, new_val]
-    fn compile_vec_push(
+    /// The teardown materials for an owned vector source.
+    fn owned_source(
         &mut self,
-        vec_expr: &MonoExpr,
-        elem_arg: &MonoExpr,
-        arg_vals: &[Value],
+        elem_type: &Option<Type>,
         span: Span,
-    ) -> Result<Value, CranelispError> {
-        let vec_val = arg_vals[0];
-        let new_val = arg_vals[1];
+    ) -> Result<OwnedSource, CranelispError> {
+        let vec_drop_func_id = self.vec_drop_id(span)?;
+        let elem_release = self.request_elem_dec_adapter(elem_type, span)?;
+        let elem_dec_fn_ptr = elem_release_fn_ptr(&mut self.builder, self.module, elem_release);
+        Ok(OwnedSource {
+            vec_drop_func_id,
+            elem_release,
+            elem_dec_fn_ptr,
+        })
+    }
 
-        let elem_type = self.vec_elem_type(vec_expr);
-        let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
-
-        // DEF-2: a heap-typed Var element forwarded into vec-push (e.g. the `x`
-        // parameter of `(defn push2 [v x] (vec-push v x))`) is still owned by its
-        // enclosing scope, which dec's it at scope exit. vec-push stores `new_val`
-        // into the Vec WITHOUT inc'ing on the fast/grow/copy paths (the Vec takes
-        // ownership of one reference). Without a caller-side consuming inc here, the
-        // Vec's stored reference and the scope's dec race against the SAME single
-        // reference — under-counting the element by 1 (COW then mutates an aliased
-        // backing → over-count on read-back). Mirrors compile_consuming_arg_list
-        // (Decision 24 §3.1): inc heap-typed Var args, transfer temporaries.
-        if let Some(elem_ty) = &elem_type {
-            let category = signature_heap_category(elem_ty, Some(self.ctx.symbol_tables));
-            match element_consuming_inc(elem_arg, category) {
-                Some(HeapCategory::AlwaysHeap) => {
-                    heap::emit_rc_inc(&mut self.builder, self.module, new_val);
-                }
-                Some(HeapCategory::Mixed) => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, new_val);
-                }
-                Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
-            }
-        }
-
-        let is_last = self.is_vec_last_use(vec_expr);
-
-        if is_last {
-            // Increment-II static-uniqueness proof (§6.4): elide the dynamic
-            // rc==1 probe when the Vec arg is a fresh node proven unique.
-            let elide_rc_check = node_unique_static(vec_expr) == Some(true);
-            // R14 count-truth (toggle-off): count a live-`Var` source so rc≥2 ⇒
-            // copy branch ⇒ conservative + correct. No-op analysis-ON.
-            if self.cow_source_needs_toggle_off_count(vec_expr) {
-                heap::emit_rc_inc(&mut self.builder, self.module, vec_val);
-            }
-            let source_ownership = self.cow_source_ownership(vec_expr, &elem_type, span)?;
-            // Shared core with the §12.7 wrapper emission (Principle 7).
-            emit_vec_push_cow_core(
-                &mut self.builder,
-                self.module,
-                vec_val,
-                new_val,
-                inc_fn_ptr,
-                source_ownership,
-                elide_rc_check,
-                span,
-            )
-        } else {
-            // Copy path: call vec-push-copy extern.
-            self.emit_extern_call("vec-push-copy", &[vec_val, new_val, inc_fn_ptr], span)
-        }
+    fn vec_drop_id(&self, span: Span) -> Result<cranelift_module::FuncId, CranelispError> {
+        self.ctx
+            .vec_drop_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })
     }
 
     // --- Helpers ---
@@ -583,76 +272,6 @@ where
             return Some(args[0].to_type());
         }
         None
-    }
-
-    /// Check if a Vec expression is at its last use (for COW eligibility).
-    ///
-    /// A non-`Var` expression is treated as unique ONLY when its value is this
-    /// frame's to transfer (`fn_compiler::yields_owned_temporary`). The node
-    /// kind is not the question: an `If`/`Match`/`Let` YIELDING a scope binding
-    /// is not a `Var`, and the old unconditional `true` claimed uniqueness for
-    /// a vector the enclosing scope still owns (FIXME 0781, the sibling of the
-    /// `emit_vec_drop_if_temporary` shape test —
-    /// `(let [w (vec-set (if b v v) 0 7)] (vec-get w 0))`, `--link` 134).
-    pub(crate) fn is_vec_last_use(&self, vec_expr: &MonoExpr) -> bool {
-        if let MonoExpr::Var { name, span, .. } = vec_expr {
-            self.is_last_use(name, *span)
-        } else {
-            crate::compiler::fn_compiler::yields_owned_temporary(vec_expr)
-        }
-    }
-
-    /// Release a temporary Vec expression's reference after an inline Vec op
-    /// (vec-get / vec-len) consumed it. Named variables are cleaned up at scope
-    /// exit; temporaries have no scope entry and would leak.
-    ///
-    /// The release is **rc-checked** (`emit_vec_rc_dec_with_drop`), NOT an
-    /// unconditional `vec_drop`. A temporary Vec expression is not always the
-    /// sole owner: when it is a borrowed ADT field — e.g. `(vec-get (gcells g) 0)`
-    /// where `gcells` returns the inner Vec still owned by the live Grid `g` —
-    /// the Vec's rc is > 1, and an unconditional `vec_drop` would free the data
-    /// buffer + struct out from under the still-reachable Grid, corrupting the
-    /// heap on the next write through the now-dangling pointer (the S97
-    /// nested-ADT-wrapping-Vec double-use soundness defect; ring2-rc.md §5.5).
-    /// The rc-checked dec frees only when this was the last reference (rc==1) —
-    /// byte-identical to the old behaviour for a genuinely fresh rc==1 temporary,
-    /// and correct (no free) for a shared borrowed-field temporary.
-    fn emit_vec_drop_if_temporary(
-        &mut self,
-        vec_expr: &MonoExpr,
-        vec_val: Value,
-        span: Span,
-    ) -> Result<(), CranelispError> {
-        // Release ONLY what this frame owns. The question is the value's
-        // PROVENANCE (`fn_compiler::yields_owned_temporary`), never the node
-        // kind: an `If`/`Match`/`Let` that merely YIELDS a scope binding is not
-        // a `Var`, and the old `matches!(vec_expr, MonoExpr::Var { .. })` shape
-        // test therefore dec'd a box the enclosing scope still owns
-        // (FIXME 0781 — `(defn f [v b] (vec-get (if b v v) 0))`, `--link` 134).
-        if !crate::compiler::fn_compiler::yields_owned_temporary(vec_expr) {
-            return Ok(());
-        }
-
-        let vec_drop_id =
-            self.ctx
-                .vec_drop_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/vec_drop not declared".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
-
-        let elem_type = self.vec_elem_type(vec_expr);
-        let dec_fn_ptr = self.resolve_elem_dec_fn_ptr(&elem_type, span)?;
-
-        emit_vec_rc_dec_with_drop(
-            &mut self.builder,
-            self.module,
-            vec_val,
-            vec_drop_id,
-            dec_fn_ptr,
-        );
-
-        Ok(())
     }
 
     /// Resolve or generate a per-element-type inc function pointer.
@@ -687,86 +306,10 @@ where
         }
     }
 
-    /// Resolve or generate a per-element-type dec function pointer.
-    ///
-    /// Returns iconst(0) for NeverHeap types (runtime skips the call).
-    /// For ADT element types with heap fields, builds a drop glue function
-    /// so that fields are dec'd when the element reaches rc=0.
-    /// The COW source classification for an in-place `vec-set`/`vec-push` site
-    /// (§13.7).
-    ///
-    /// `Owned` when the source has no separate owner: a fresh temporary, a
-    /// `Var` whose site holds the consuming claim
-    /// ([`FnCompiler::holds_consuming_claim`]), or, with analysis off, any
-    /// source (the site counted it, R14). Every other source is `Borrowed`.
-    fn cow_source_ownership(
-        &mut self,
-        vec_expr: &MonoExpr,
-        elem_type: &Option<Type>,
-        span: Span,
-    ) -> Result<SourceOwnership, CranelispError> {
-        let claimed = self.holds_consuming_claim(vec_expr);
-        if cow_source_is_borrowed(vec_expr, claimed, cranelisp_types::ownership_analysis_off()) {
-            return Ok(SourceOwnership::Borrowed);
-        }
-        self.build_owned_source_release(elem_type, span)
-    }
-
-    /// Build the `SourceOwnership::Owned` release descriptor (the `vec_drop` fn-id
-    /// + per-element dec fn ptr the copy-branch release needs).
-    fn build_owned_source_release(
-        &mut self,
-        elem_type: &Option<Type>,
-        span: Span,
-    ) -> Result<SourceOwnership, CranelispError> {
-        let vec_drop_func_id =
-            self.ctx
-                .vec_drop_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/vec_drop not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
-        let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr(elem_type, span)?;
-        Ok(SourceOwnership::Owned {
-            vec_drop_func_id,
-            elem_dec_fn_ptr,
-        })
-    }
-
-    /// R14 count-truth (toggle-off): a separately owned COW source under
-    /// `CRANELISP_NO_OWNERSHIP` is counted at the site, so its rc ≥ 2 sends the
-    /// runtime to the copy branch and the in-place mutate never aliases a
-    /// still-referenced vector. A claimed source and a fresh temporary have no
-    /// separate owner. The toggle-inverted face of [`cow_source_is_borrowed`].
-    fn cow_source_needs_toggle_off_count(&self, vec_expr: &MonoExpr) -> bool {
-        cranelisp_types::ownership_analysis_off()
-            && cow_source_has_separate_owner(vec_expr, self.holds_consuming_claim(vec_expr))
-    }
-
-    /// Resolve the per-element dec callback for `runtime/vec_drop`'s
-    /// `(i64) -> i64` ABI — the canonical glue adapter (S118 slice S6).
-    ///
-    /// This used to build `runtime/vec_elem_dec_{heap,mixed}_{mangle}`, a
-    /// SECOND per-instantiation named artifact keyed by a backend-local mangle
-    /// rather than the types-owned identity. That was the same
-    /// `drop-glue-underkey` class as the glue it wrapped, with a second key
-    /// scheme; the registry's adapter over `drop_glue_symbol_name` is the one
-    /// identity now. `iconst 0` is the ABI's null callback for a non-owning
-    /// element type.
-    fn resolve_elem_dec_fn_ptr(
-        &mut self,
-        elem_type: &Option<Type>,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let Some(id) = self.request_elem_dec_adapter(elem_type, span)? else {
-            return Ok(self.builder.ins().iconst(types::I64, 0));
-        };
-        let func_ref = self.module.declare_func_in_func(id, self.builder.func);
-        Ok(self.builder.ins().func_addr(types::I64, func_ref))
-    }
-
-    /// The registry request behind both `resolve_elem_dec_fn_ptr` forms — the
-    /// only part that needs `&mut self` before a borrowed builder exists.
+    /// The element type's canonical release adapter for `runtime/vec_drop`'s
+    /// `(i64) -> i64` callback ABI, keyed on the types-owned
+    /// `drop_glue_symbol_name` identity; `None` for a non-owning element type.
+    /// The only part that needs `&mut self` before a borrowed builder exists.
     fn request_elem_dec_adapter(
         &mut self,
         elem_type: &Option<Type>,
@@ -850,27 +393,20 @@ where
         Ok(func_id)
     }
 
-    /// Build the `SourceOwnership::Owned` release descriptor for a COW core
-    /// emitted into a wrapper/curry body (§13.3 Ruling 2): the source Vec's
-    /// teardown func id + its per-element dec fn ptr. The op consumes an owned
-    /// reference here (consuming-closure protocol), so the copy branch releases
-    /// it via `vec_drop` (rc-checked). Mirrors the vec-get arm's teardown setup.
-    fn owned_source_release(
+    /// The [`OwnedSource`] for a COW core emitted into a wrapper/curry body,
+    /// whose params arrive owned (consuming-closure protocol).
+    fn owned_source_into(
         &mut self,
         elem_type: &Option<Type>,
         builder: &mut FunctionBuilder,
         span: Span,
-    ) -> Result<SourceOwnership, CranelispError> {
-        let vec_drop_func_id =
-            self.ctx
-                .vec_drop_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/vec_drop not declared".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
-        let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
-        Ok(SourceOwnership::Owned {
+    ) -> Result<OwnedSource, CranelispError> {
+        let vec_drop_func_id = self.vec_drop_id(span)?;
+        let elem_release = self.request_elem_dec_adapter(elem_type, span)?;
+        let elem_dec_fn_ptr = elem_release_fn_ptr(builder, self.module, elem_release);
+        Ok(OwnedSource {
             vec_drop_func_id,
+            elem_release,
             elem_dec_fn_ptr,
         })
     }
@@ -881,11 +417,8 @@ where
         builder: &mut FunctionBuilder,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let Some(id) = self.request_elem_dec_adapter(elem_type, span)? else {
-            return Ok(builder.ins().iconst(types::I64, 0));
-        };
-        let func_ref = self.module.declare_func_in_func(id, builder.func);
-        Ok(builder.ins().func_addr(types::I64, func_ref))
+        let release = self.request_elem_dec_adapter(elem_type, span)?;
+        Ok(elem_release_fn_ptr(builder, self.module, release))
     }
 
     /// Resolve or generate a per-element-type inc function pointer into a
@@ -929,17 +462,14 @@ where
     /// MUST synthesize this inline emission rather than dispatch through a slot
     /// (`design/backend/ownership-codegen.md` §12.7 — the S100 SIGSEGV defect).
     ///
-    /// RC polarity: every wrapper param arrives OWNED (consuming closure
-    /// protocol), so the emission takes the owned-temporary polarity uniformly:
+    /// Every wrapper param arrives OWNED (consuming closure protocol), the same
+    /// as at a static site, so the emission is the static lowering's:
     ///
-    /// - `vec-get` — bounds check + element load + element inc (per element
-    ///   heap category), then a vec-aware rc-checked release of the consumed
-    ///   Vec (the temporary branch of `emit_vec_drop_if_temporary`).
-    /// - `vec-len` — length load, then the same rc-checked Vec release.
-    /// - `vec-set` / `vec-push` — the element's reference TRANSFERS into the
-    ///   Vec with NO consuming inc (the temporary branch of
-    ///   `element_consuming_inc`), and the Vec is trivially at last use, so
-    ///   the COW rc==1 path applies (the shared cores).
+    /// - `vec-get` — bounds check, element load and duplicate, then the
+    ///   rc-checked release of the consumed Vec.
+    /// - `vec-len` — length load, then the same release.
+    /// - `vec-set` / `vec-push` — the element transfers into the Vec and the
+    ///   source is owned, so the shared cores' `rc == 1` probe decides.
     ///
     /// `elem_type` is the per-site element type plumbed from the value-use
     /// site's concrete `Fn` type (or from the applied Vec argument on the
@@ -988,11 +518,6 @@ where
                     params[0],
                     params[1],
                     span,
-                    // Value-use wrapper body: the projection ALWAYS materializes
-                    // (the closure protocol owes a fresh owned value), and the Vec
-                    // arrives owned and is released below — never a borrowed
-                    // projection. So the element inc is never elided here (§3.3).
-                    false,
                 )?;
                 // Release the consumed (owned) Vec — rc-checked, and AFTER the
                 // element inc inside the core, so the element survives a
@@ -1007,7 +532,7 @@ where
                 // protocol), so the copy branch must release the source Vec's
                 // owned reference (§13.3 Ruling 2 — the FIXME-0474 cure). The
                 // vec-get arm's release above is the precedent.
-                let source_ownership = self.owned_source_release(elem_type, builder, span)?;
+                let source = self.owned_source_into(elem_type, builder, span)?;
                 emit_vec_set_cow_core(
                     builder,
                     self.module,
@@ -1016,12 +541,8 @@ where
                         idx_val: params[1],
                         new_val: params[2],
                         inc_fn_ptr,
-                        old_elem_category: elem_category,
-                        dealloc_id: self.ctx.dealloc_func_id,
                         panic_id,
-                        // The Vec arrives as an owned closure param, a `Value`
-                        // with no fact-bearing node, so no §6.4 proof exists.
-                        uniqueness: VecSetUniqueness::Dynamic(source_ownership),
+                        source,
                     },
                     span,
                 )
@@ -1030,16 +551,14 @@ where
                 let inc_fn_ptr = self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
                 // Wrapper / curry body: params arrive owned — release the source
                 // on the copy branch (§13.3 Ruling 2).
-                let source_ownership = self.owned_source_release(elem_type, builder, span)?;
+                let source = self.owned_source_into(elem_type, builder, span)?;
                 emit_vec_push_cow_core(
                     builder,
                     self.module,
                     params[0],
                     params[1],
                     inc_fn_ptr,
-                    source_ownership,
-                    // Wrapper/curry body: no fact-bearing node — dynamic token.
-                    false,
+                    source,
                     span,
                 )
             }
@@ -1108,7 +627,6 @@ fn emit_vec_index_guard<M: Module>(
 /// (`emit_vec_query_into`), which build in a separate Cranelift context.
 /// Consuming the Vec (the temporary/owned release) is the CALLER's decision —
 /// not emitted here.
-#[allow(clippy::too_many_arguments)] // +1 for the §3.3 elide_elem_inc gate
 pub(crate) fn emit_vec_get_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -1117,13 +635,6 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     vec_val: Value,
     idx_val: Value,
     span: Span,
-    // §3.3 in-frame projection elision
-    // (`design/backend/ownership-codegen.md` §3.3): when `true` the heap-element
-    // materialization inc is SKIPPED — the read is a borrowed projection rooted
-    // in a live root (the enclosing `Apply`'s `provenance` fact). `false` ⇒ the
-    // inc is emitted verbatim (byte-identical-off, and the value-use wrapper path
-    // which always materializes).
-    elide_elem_inc: bool,
 ) -> Result<Value, CranelispError> {
     emit_vec_index_guard(builder, module, panic_id, vec_val, idx_val, span)?;
 
@@ -1140,36 +651,29 @@ pub(crate) fn emit_vec_get_core<M: Module>(
         .ins()
         .load(types::I64, MemFlags::trusted(), elem_addr, 0);
 
-    // If element type is heap, emit RC inc on the loaded value — UNLESS this read
-    // is a borrowed projection (§3.3): then the element is a view into the still-
-    // live root and its inc is elided (the F1 machinery-tax collapse). The root's
-    // owner keeps the element alive; a consuming use of the projection
-    // materializes it.
-    if !elide_elem_inc {
-        match elem_category {
-            Some(HeapCategory::AlwaysHeap) => {
-                heap::emit_rc_inc(builder, module, elem);
-            }
-            Some(HeapCategory::Mixed) => {
-                heap::emit_rc_inc_guarded(builder, module, elem);
-            }
-            Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
+    // The projected element is duplicated: the result owns it independently of
+    // the vector, which its reader then releases.
+    match elem_category {
+        Some(HeapCategory::AlwaysHeap) => {
+            heap::emit_rc_inc(builder, module, elem);
         }
+        Some(HeapCategory::Mixed) => {
+            heap::emit_rc_inc_guarded(builder, module, elem);
+        }
+        Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
     }
 
     Ok(elem)
 }
 
-/// The only lowering of `vec-set`: the index guard, then the arms its
-/// uniqueness case needs. The in-place arm releases the old element, stores
-/// the new one and returns the same Vec; the copy arm calls `vec-set-copy`,
-/// which increments only the retained elements. `vec-set-copy` has no
+/// The only lowering of `vec-set`: the index guard, then the `rc == 1` probe.
+/// The in-place arm releases the old element, stores the new one and returns
+/// the same Vec; the copy arm calls `vec-set-copy`, which increments only the
+/// retained elements, then releases the source. `vec-set-copy` has no
 /// out-of-range behaviour to rely on, so the guard must dominate its call.
 ///
-/// Builder-parameterized for the static site (`compile_vec_set`) and the §12.7
-/// wrapper emission. The new-element consuming inc is the CALLER's decision
-/// (static sites gate on `element_consuming_inc`; wrapper params arrive owned
-/// and transfer), so both arms store `new_val` without an additional inc.
+/// Builder-parameterized for the static site and the §12.7 wrapper emission.
+/// The new element is owned, so both arms store it without an increment.
 pub(crate) fn emit_vec_set_cow_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -1181,10 +685,8 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         idx_val,
         new_val,
         inc_fn_ptr,
-        old_elem_category,
-        dealloc_id,
         panic_id,
-        uniqueness,
+        source,
     } = op;
 
     emit_vec_index_guard(builder, module, panic_id, vec_val, idx_val, span)?;
@@ -1196,8 +698,7 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
             vec_val,
             idx_val,
             new_val,
-            old_elem_category,
-            dealloc_id,
+            source.elem_release,
         )
     };
     let copy = |builder: &mut FunctionBuilder, module: &mut M| {
@@ -1208,15 +709,6 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
             &[vec_val, idx_val, new_val, inc_fn_ptr],
             span,
         )
-    };
-
-    let source_ownership = match uniqueness {
-        VecSetUniqueness::ProvenUnique => {
-            in_place(builder, module);
-            return Ok(vec_val);
-        }
-        VecSetUniqueness::KnownShared => return copy(builder, module),
-        VecSetUniqueness::Dynamic(source_ownership) => source_ownership,
     };
 
     let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
@@ -1235,9 +727,6 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
     builder.switch_to_block(mutate_block);
     builder.seal_block(mutate_block);
     in_place(builder, module);
-    // §13.7: a Borrowed source's result takes its own reference on this
-    // same-pointer return.
-    retain_reused_source(builder, module, vec_val, &source_ownership);
     builder.ins().jump(merge_block, &[vec_val]);
 
     builder.switch_to_block(copy_block);
@@ -1246,10 +735,7 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
     // reuse MISS. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
     heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_miss");
     let copy_result = copy(builder, module)?;
-    // §13.3 Ruling 2: the copy branch returns a NEW Vec, so release the
-    // consumed source's owned reference here (iff Owned). AFTER the copy extern
-    // so its retained-element incs land before a last-reference source teardown.
-    release_consumed_source(builder, module, vec_val, &source_ownership);
+    release_copied_source(builder, module, vec_val, &source);
     builder.ins().jump(merge_block, &[copy_result]);
 
     builder.switch_to_block(merge_block);
@@ -1257,19 +743,19 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
     Ok(builder.block_params(merge_block)[0])
 }
 
-/// The `vec-set` in-place arm: release the old element and store the new one
-/// in the uniquely held buffer.
+/// The `vec-set` in-place arm: release the old element through its type's
+/// canonical release and store the new one in the uniquely held buffer.
 fn emit_vec_set_in_place<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     vec_val: Value,
     idx_val: Value,
     new_val: Value,
-    old_elem_category: Option<HeapCategory>,
-    dealloc_id: cranelift_module::FuncId,
+    elem_release: Option<cranelift_module::FuncId>,
 ) {
     // Increment-II reuse tally (§6.5): the in-place arm reuses the owned buffer
-    // (a reuse HIT — dynamically taken, or the proof-elided codegen-certain hit).
+    // (a reuse HIT, taken only when the caller's runtime `rc == 1` probe
+    // selected this arm).
     // Runtime tally gated on the codegen-time `CRANELISP_RC_STATS` switch (off ⇒
     // no emitted IR).
     heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
@@ -1282,14 +768,9 @@ fn emit_vec_set_in_place<M: Module>(
         .ins()
         .load(types::I64, MemFlags::trusted(), elem_addr, 0);
 
-    match old_elem_category {
-        Some(HeapCategory::AlwaysHeap) => {
-            heap::emit_rc_dec(builder, module, old_elem, dealloc_id, None);
-        }
-        Some(HeapCategory::Mixed) => {
-            heap::emit_rc_dec_guarded(builder, module, old_elem, dealloc_id, None, true);
-        }
-        Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
+    if let Some(release) = elem_release {
+        let release_ref = module.declare_func_in_func(release, builder.func);
+        builder.ins().call(release_ref, &[old_elem]);
     }
 
     builder
@@ -1300,30 +781,21 @@ fn emit_vec_set_in_place<M: Module>(
 /// Shared emission core for the `vec-push` COW path: rc==1 → len<cap fast
 /// store / `vec-push-grow` extern; rc>1 → `vec-push-copy` extern.
 ///
-/// Builder-parameterized single source (Principle 7) for the static
-/// `compile_vec_push` last-use arm and the §12.7 wrapper emission. The
-/// new-element consuming inc is the CALLER's decision — not emitted here.
-#[allow(clippy::too_many_arguments)] // +1 for the §6.4 elide_rc_check proof gate
+/// Builder-parameterized single source (Principle 7) for the static site and
+/// the §12.7 wrapper emission. The source and the new element are owned.
 pub(crate) fn emit_vec_push_cow_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     vec_val: Value,
     new_val: Value,
     inc_fn_ptr: Value,
-    source_ownership: SourceOwnership,
-    elide_rc_check: bool,
+    source: OwnedSource,
     span: Span,
 ) -> Result<Value, CranelispError> {
-    // Uniqueness discriminator (§6.4): a static proof (`elide_rc_check`) makes the
-    // unique arm proven-taken — emit `is_unique = true`, skip the rc load+cmp (the
-    // copy block is dead, DCE'd). Absent the proof, the dynamic rc==1 token.
-    let is_unique = if elide_rc_check {
-        builder.ins().iconst(types::I64, 1)
-    } else {
-        let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
-        let one = builder.ins().iconst(types::I64, 1);
-        builder.ins().icmp(IntCC::Equal, rc, one)
-    };
+    // The runtime `rc == 1` probe is the uniqueness check (rule U2).
+    let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
+    let one = builder.ins().iconst(types::I64, 1);
+    let is_unique = builder.ins().icmp(IntCC::Equal, rc, one);
 
     let unique_block = builder.create_block();
     let copy_block = builder.create_block();
@@ -1342,10 +814,6 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     // Vec struct — whether the fast in-place store or the grow realloc — a reuse
     // HIT. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
     heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
-
-    // §13.7: both the fast and grow sub-paths return the source pointer; one
-    // retention in `unique_block` covers both, for a Borrowed source.
-    retain_reused_source(builder, module, vec_val, &source_ownership);
 
     let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
     let cap = heap::heap_load(builder, vec_val, HeapVec::CAP_OFFSET);
@@ -1396,9 +864,7 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
         &[vec_val, new_val, inc_fn_ptr],
         span,
     )?;
-    // §13.3 Ruling 2: copy branch returns a NEW Vec — release the consumed
-    // source's owned reference here (iff Owned), after the copy's retained incs.
-    release_consumed_source(builder, module, vec_val, &source_ownership);
+    release_copied_source(builder, module, vec_val, &source);
     builder.ins().jump(merge_block, &[copy_result]);
 
     // Merge.
@@ -1505,51 +971,6 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
     builder.seal_block(cont_block);
 }
 
-/// Decide whether a Vec-mutating primitive's new element argument needs a
-/// caller-side consuming RC inc, and of which form. Shared by `vec-push`
-/// (DEF-2) and `vec-set` (DEF-3) — the single source of the consuming-Var rule
-/// for Vec element ownership (Principle 7).
-///
-/// Under the uniform consuming convention (Decision 24 / ring2-rc.md §3.1), a
-/// `vec-push` / `vec-set` stores `new_val` into the Vec, transferring one
-/// reference to the Vec's ownership (the Vec's drop glue dec's the element when
-/// the Vec dies). For a **temporary** element expression (e.g. `(Box i)`) that
-/// started at rc=1, this transfer is balanced — no caller action. But for a
-/// **Var** element (e.g. the `x` parameter inside `(defn push2 [v x] (vec-push
-/// v x))`, or `c` in `(vec-set (cells-of g) idx c)`) the Var is still owned by
-/// its enclosing scope, which dec's it at scope exit; without a caller-side inc
-/// the Vec's stored reference and the scope's dec race against the SAME single
-/// reference:
-///
-///   - DEF-2 (`vec-push`): under-count by 1 — the heap element is freed too
-///     early / read stale (a Var forwarded through a wrapper). The fix ADDS the
-///     inc for the Var case.
-///   - DEF-3 (`vec-set`): the prior code inc'd UNCONDITIONALLY, so a
-///     **temporary** element (which transfers rc=1) got a permanent extra
-///     reference the Vec never drops — a leak. The fix makes the inc
-///     conditional, REMOVING it for temporaries while keeping it for Vars.
-///
-/// Both defects converge on the same end state: inc iff the element is a
-/// heap-typed **Var**. This mirrors `compile_consuming_arg_list` exactly: inc
-/// heap-typed Var arguments, leave temporaries to transfer. `NeverHeap`
-/// elements (Int) and non-Var element expressions return `None` (no inc) —
-/// which is why the scalar control and the direct-temporary path are unaffected.
-///
-/// Returns `Some(category)` (AlwaysHeap or Mixed) when the element is a heap-typed
-/// Var that must be inc'd; `None` otherwise.
-fn element_consuming_inc(elem_arg: &MonoExpr, elem_category: HeapCategory) -> Option<HeapCategory> {
-    match elem_arg {
-        MonoExpr::Var { .. } => match elem_category {
-            HeapCategory::AlwaysHeap => Some(HeapCategory::AlwaysHeap),
-            HeapCategory::Mixed => Some(HeapCategory::Mixed),
-            HeapCategory::NeverHeap | HeapCategory::Value => None,
-        },
-        // Temporaries (constructor calls, function results, literals, …) start at
-        // rc=1 and transfer their single reference into the Vec — no caller inc.
-        _ => None,
-    }
-}
-
 /// Emit the complete `(val: i64) -> i64` Vec element-retain adapter body.
 /// `build_elem_inc_fn` owns declaration and definition; this body shares the
 /// canonical guarded increment with ordinary inline Vec sites.
@@ -1566,30 +987,6 @@ fn emit_elem_inc_body<M: Module>(
     }
     builder.ins().return_(&[val]);
 }
-
-#[cfg(test)]
-mod vec_push_rc_tests;
-
-#[cfg(test)]
-mod vec_set_rc_tests;
-
-#[cfg(test)]
-mod cow_polarity_tests;
-
-#[cfg(test)]
-mod cow_gate_tests;
-
-#[cfg(test)]
-mod cow_claim_tests;
-
-#[cfg(test)]
-mod temp_drop_rc_tests;
-
-#[cfg(test)]
-mod reuse_proof_tests;
-
-#[cfg(test)]
-mod vec_lit_consume_tests;
 
 #[cfg(test)]
 mod tests;

@@ -1,7 +1,7 @@
 ---
 id: ACT-1031
 title: Resume the deferred tail-argument ownership and alias-shadowing investigation
-status: deferred
+status: resolved
 priority: required
 from: sprint
 to: qa
@@ -57,3 +57,29 @@ and its guard passes with a valid control, and the alias-shadowing lead is
 confirmed and corrected or refuted. Each remaining lead is refuted, or
 confirmed and filed as its own intake. Retire this coordination action with those
 outcomes; preserve any unresolved obligation in its canonical filing.
+
+## Resolution (qa, 2026-11-16, S123 W2)
+
+Every item has a measured disposition. The cells are in
+`tests/uniform_counting.rs`, their checkpoint faces were recorded on
+`ee8959c0…` (`.local/s123-w2/test-evidence.md`), and each passes on the U′
+tree in QA's targeted run of 2026-11-16.
+
+- **[ACT-1030](ACT-1030-let-wrapped-tail-forward-uaf-intake.md):** fixed;
+  its guards pass with valid controls.
+- **[ACT-1029](ACT-1029-alias-map-same-name-overwrite-lead.md):** confirmed
+  by the name-only discriminator, then corrected.
+- **Confirmed at the checkpoint and corrected by U′:**
+  - L2, L5, L6 and L10 (use-after-free, or a stale release);
+  - L4's over-release, at `(go … p p)` and through a branch.
+  - None needs its own intake: each is a committed cell that is now green.
+- **Refuted:** L9's leak, which balanced at the checkpoint. L7 held: both
+  pairs balanced.
+- **L3:** `lead_shadowed_root_*`, a borrowed binder shadowing the parameter
+  `p`, balanced at the checkpoint and passes on U′. Promotion is deleted
+  from the backend.
+- **Owed.** At the W2 commit, `test` stamps `fixed=` on the lead cells.
+  `design`(backend) updates the "none yet measured" sentence in
+  [uniform counting §6](../../design/backend/uniform-counting.md#6-coverage-of-the-filed-faults).
+- Delete this action at the W2 commit, once `sprints/SPRINT.md`,
+  `sprints/ROADMAP.md`, ACT-1029 and ACT-1030 no longer link it.

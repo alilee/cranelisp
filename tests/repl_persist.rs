@@ -6363,7 +6363,8 @@ fn non_failed_import_reload_control() {
 }
 
 // spec: repl/spec/05-error-presentation.md §5.1, §5.5 — reload names the failed file without repeated prefixes.
-// defect: class=error-swallow locus=src/scheduler.rs::refuse_failed_dependency_locked found=S122 owner=/dev
+// defect: class=error-swallow locus=src/scheduler.rs::refuse_failed_dependency_locked found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the failed-import reload notice repeated its located category prefix.
 // ACT-1017 prefix; control: non_failed_import_reload_control.
 #[test]
 fn failed_import_reload_has_one_located_prefix_neg() {

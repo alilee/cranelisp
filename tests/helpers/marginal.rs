@@ -449,6 +449,15 @@ impl MarginalPair {
     /// they never contend) and compute the marginal.
     pub fn measure(self) -> Marginal {
         let control = run_child(&self.control, self.instrument, self.timeout, "control");
+        // Preserve the completed half when an armed subject stops before counters.
+        eprintln!(
+            "marginal control [{}]: allocs={} deallocs={} residual={} exit={:?}",
+            self.label,
+            control.allocs,
+            control.deallocs,
+            control.residual(),
+            control.exit_code()
+        );
         let subject = run_child(&self.subject, self.instrument, self.timeout, "subject");
         Marginal {
             label: self.label,

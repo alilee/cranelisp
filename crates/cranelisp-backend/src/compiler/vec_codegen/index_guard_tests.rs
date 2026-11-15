@@ -2,7 +2,7 @@
 //! (`design/backend/s122-closure.md` §9.3, `backend.md` §7).
 //!
 //! Each probe is a real JIT function over the production runtime: the guard
-//! and the `vec-set` core for one uniqueness case, called on a Vec the test
+//! and the `vec-set` core, called on a Vec the test
 //! builds with the intrinsics' own constructors. An out-of-range index must
 //! raise the spec §12.7.2.1 panic before any element load, element release,
 //! uniqueness probe or `vec-set-copy` call. The raise ends the process, so the
@@ -12,12 +12,14 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_intrinsics::vec_runtime::{vec_new, vec_push_grow};
-use cranelisp_types::{HeapHeader, Span};
+use cranelisp_types::{
+    ConcreteType, FQTypeName, HeapHeader, ModuleFullPath, Span, SymbolTable, TypeName,
+};
+use dashmap::DashMap;
 
 use super::{
-    SourceOwnership, VecSetCow, VecSetUniqueness, emit_vec_get_core, emit_vec_set_cow_core,
+    OwnedSource, VecSetCow, elem_release_fn_ptr, emit_vec_get_core, emit_vec_set_cow_core,
 };
-use crate::heap::HeapCategory;
 use crate::jit::{Jit, declare_intrinsics_generic};
 use crate::test_child;
 use crate::test_support::{assert_raise_terminates, clif_blocks, clif_func_ref};
@@ -29,23 +31,34 @@ const BOUNDS_MESSAGE: &str = "vec-get: index out of bounds";
 /// Negative, equal to the length of a three-element Vec, and far past it.
 const OUT_OF_RANGE: [i64; 3] = [-1, 3, 100_000_000];
 
-/// The uniqueness knowledge a `vec-set` site has about its source Vec.
+/// The `vec-set` lowering: the source is always owned and the dynamic rc
+/// probe chooses in place or copy (`uniform-counting.md` §2, rule U2).
 #[derive(Clone, Copy, Debug)]
 enum Case {
-    /// A fresh node proven unique: the in-place arm, no rc probe.
-    ProvenUnique,
-    /// The dynamic rc probe chooses in place or copy.
     Dynamic,
-    /// The source is read later: copy only.
-    KnownShared,
 }
 
-const CASES: [Case; 3] = [Case::ProvenUnique, Case::Dynamic, Case::KnownShared];
+const CASES: [Case; 1] = [Case::Dynamic];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Elem {
     Int,
     String,
+    /// `(Vec String)`: an element that owns a heap graph.
+    StringVec,
+}
+
+impl Elem {
+    fn concrete(self) -> ConcreteType {
+        match self {
+            Elem::Int => ConcreteType::Int,
+            Elem::String => ConcreteType::String,
+            Elem::StringVec => ConcreteType::ADT(
+                FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+                vec![ConcreteType::String],
+            ),
+        }
+    }
 }
 
 struct Probe {
@@ -56,16 +69,23 @@ struct Probe {
 }
 
 /// Build and finalize `probe(vec, idx, val) -> Vec`: the `vec-set` lowering
-/// for `case` over an owned source. Elements are scalars (`Int`) or
-/// always-heap (`String`); a String element's retained copies are never
-/// incremented because the probes that use it never take the copy arm.
+/// for `case` over an owned source. Elements are scalars (`Int`),
+/// always-heap (`String`) or owning (`(Vec String)`), each released through
+/// the registry's canonical adapter; a heap element's retained copies are
+/// never incremented because the probes that use it never take the copy arm.
 fn build_probe(case: Case, elem: Elem) -> Probe {
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
     let module = jit.jit_module();
     let ids = declare_intrinsics_generic(module).expect("declare intrinsics");
     let panic = ids.panic.expect("runtime/panic");
-    let dealloc = ids.dealloc.expect("runtime/dealloc");
     let vec_drop = ids.vec_drop.expect("runtime/vec_drop");
+    let module_path = ModuleFullPath::from("user");
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    tables.insert(module_path.clone(), SymbolTable::new(module_path.clone()));
+    let mut registry = crate::test_support::probe_glue_registry(module_path, &ids);
+    let elem_release = registry
+        .request_vec_elem_adapter(module, &tables, &elem.concrete())
+        .expect("element release adapter");
 
     let mut sig = module.make_signature();
     for _ in 0..3 {
@@ -88,18 +108,12 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
         let params = builder.block_params(entry).to_vec();
         let (vec_val, idx_val, new_val) = (params[0], params[1], params[2]);
         let inc_fn_ptr = builder.ins().iconst(types::I64, 0);
-        let elem_dec_fn_ptr = builder.ins().iconst(types::I64, 0);
-        let old_elem_category = match elem {
-            Elem::Int => None,
-            Elem::String => Some(HeapCategory::AlwaysHeap),
-        };
-        let uniqueness = match case {
-            Case::ProvenUnique => VecSetUniqueness::ProvenUnique,
-            Case::Dynamic => VecSetUniqueness::Dynamic(SourceOwnership::Owned {
-                vec_drop_func_id: vec_drop,
-                elem_dec_fn_ptr,
-            }),
-            Case::KnownShared => VecSetUniqueness::KnownShared,
+        let elem_dec_fn_ptr = elem_release_fn_ptr(&mut builder, module, elem_release);
+        let Case::Dynamic = case;
+        let source = OwnedSource {
+            vec_drop_func_id: vec_drop,
+            elem_release,
+            elem_dec_fn_ptr,
         };
         let result = emit_vec_set_cow_core(
             &mut builder,
@@ -109,10 +123,8 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
                 idx_val,
                 new_val,
                 inc_fn_ptr,
-                old_elem_category,
-                dealloc_id: dealloc,
                 panic_id: panic,
-                uniqueness,
+                source,
             },
             Span::SYNTHETIC,
         )
@@ -126,6 +138,7 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
         .define_function(func, &mut ctx)
         .expect("define probe");
     module.clear_context(&mut ctx);
+    registry.finish().expect("every glue entry reached Defined");
     module.finalize_definitions().expect("finalize probe");
     Probe {
         jit,
@@ -165,11 +178,10 @@ fn string_vec(elems: &[&str]) -> i64 {
         .fold(vec_new(0), |v, e| vec_push_grow(v, string(e)))
 }
 
-/// A fresh `[10 20 30]` held as `case` requires: shared for the known-shared
-/// case, and for the dynamic case when `shared` asks for the copy arm.
-fn source_for(case: Case, shared: bool) -> i64 {
+/// A fresh `[10 20 30]`, shared when `shared` asks for the copy arm.
+fn source_for(shared: bool) -> i64 {
     let v = int_vec(&[10, 20, 30]);
-    if matches!(case, Case::KnownShared) || shared {
+    if shared {
         cranelisp_intrinsics::rc::rc_inc(v);
     }
     v
@@ -192,7 +204,7 @@ fn child_calls_probe() {
         build_probe(case, Elem::String)
     };
     if test_child::arg::<usize>("ELEM") == 0 {
-        probe.call(source_for(case, test_child::arg("SHARED")), idx, 99);
+        probe.call(source_for(test_child::arg("SHARED")), idx, 99);
     } else {
         probe.call(string_vec(&["a", "b", "c"]), idx, string("z"));
     }
@@ -215,8 +227,7 @@ fn assert_panics_out_of_range(case: usize, elem: usize, shared: bool, what: &str
     }
 }
 
-// spec: spec/12-runtime.md §12.7.2.1 — every uniqueness case of the `vec-set`
-// lowering panics on a negative index, on index = length and far past it.
+// spec: spec/12-runtime.md §12.7.2.1 — the `vec-set` lowering panics on a negative index, on index = length and far past it.
 #[test]
 fn every_vec_set_case_panics_out_of_range() {
     for (i, case) in CASES.iter().enumerate() {
@@ -251,7 +262,7 @@ fn in_range_child_resumes_without_a_report_neg() {
 // too: a shared source reaches `vec-set-copy` only in range.
 #[test]
 fn dynamic_vec_set_on_a_shared_source_panics_out_of_range() {
-    assert_panics_out_of_range(1, 0, true, "dynamic, shared");
+    assert_panics_out_of_range(0, 0, true, "dynamic, shared");
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 (NEGATIVE) — an in-range index is not a
@@ -259,14 +270,9 @@ fn dynamic_vec_set_on_a_shared_source_panics_out_of_range() {
 // others.
 #[test]
 fn every_vec_set_case_writes_in_range_without_panic_neg() {
-    for (case, shared) in [
-        (Case::ProvenUnique, false),
-        (Case::Dynamic, false),
-        (Case::Dynamic, true),
-        (Case::KnownShared, true),
-    ] {
+    for (case, shared) in [(Case::Dynamic, false), (Case::Dynamic, true)] {
         let mut probe = build_probe(case, Elem::Int);
-        let result = probe.call(source_for(case, shared), 2, 99);
+        let result = probe.call(source_for(shared), 2, 99);
         assert_eq!(vec_len_for_test(result), 3, "{case:?}: length kept");
         assert_eq!(
             vec_elem_for_test(result, 2),
@@ -281,8 +287,7 @@ fn every_vec_set_case_writes_in_range_without_panic_neg() {
 // old-element release is the unsafe step, so the guard must precede it.
 #[test]
 fn in_place_vec_set_on_string_elements_panics_out_of_range() {
-    assert_panics_out_of_range(0, 1, false, "ProvenUnique, String elements");
-    assert_panics_out_of_range(1, 1, false, "Dynamic, String elements");
+    assert_panics_out_of_range(0, 1, false, "Dynamic, String elements");
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 (NEGATIVE) — an in-range String write
@@ -290,7 +295,7 @@ fn in_place_vec_set_on_string_elements_panics_out_of_range() {
 // elements' counts alone.
 #[test]
 fn in_place_vec_set_on_string_elements_writes_in_range_neg() {
-    for case in [Case::ProvenUnique, Case::Dynamic] {
+    for case in CASES {
         let mut probe = build_probe(case, Elem::String);
         let source = string_vec(&["a", "b", "c"]);
         let (kept, old) = (vec_elem_for_test(source, 0), vec_elem_for_test(source, 1));
@@ -314,6 +319,60 @@ fn in_place_vec_set_on_string_elements_writes_in_range_neg() {
             "{case:?}: new String's reference moves in unretained"
         );
     }
+}
+
+/// A one-element `(Vec String)` holding a fresh String. Returns `(vec, string)`.
+fn one_string_vec(text: &str) -> (i64, i64) {
+    let s = string(text);
+    (vec_push_grow(vec_new(0), s), s)
+}
+
+// spec: design/backend/uniform-counting.md §3.4 item 5 — the in-place arm
+// releases an overwritten element that owns a heap graph through the element
+// type's canonical glue, so the last reference to `["old"]` discharges "old".
+// S123 U-11 (review R1): a bare decrement freed the inner Vec's box and
+// stranded its String, which this cell observed as "old" left at count 2.
+#[test]
+fn in_place_vec_set_releases_an_owning_old_element_through_its_glue() {
+    let mut probe = build_probe(Case::Dynamic, Elem::StringVec);
+    let (old_inner, old_string) = one_string_vec("old");
+    let source = vec_push_grow(vec_new(0), old_inner);
+    // The test's own reference keeps "old" observable after the teardown.
+    cranelisp_intrinsics::rc::rc_inc(old_string);
+    let (new_inner, _) = one_string_vec("new");
+    let result = probe.call(source, 0, new_inner);
+    assert_eq!(result, source, "a uniquely held source updates in place");
+    assert_eq!(
+        vec_elem_for_test(result, 0),
+        new_inner,
+        "new element stored"
+    );
+    // SAFETY: `old_string` is live on the test's reference.
+    let old_rc = unsafe { rc_of(old_string) };
+    assert_eq!(
+        old_rc, 1,
+        "the old inner Vec's teardown must release its String exactly once"
+    );
+}
+
+// spec: design/backend/uniform-counting.md §3.4 item 5 (NEGATIVE) — an
+// overwritten element that is still shared is decremented, not torn down: its
+// contents keep their count and the element stays live for its other owner.
+#[test]
+fn in_place_vec_set_keeps_a_shared_old_element_live_neg() {
+    let mut probe = build_probe(Case::Dynamic, Elem::StringVec);
+    let (old_inner, old_string) = one_string_vec("old");
+    let source = vec_push_grow(vec_new(0), old_inner);
+    // A second owner of the old inner Vec.
+    cranelisp_intrinsics::rc::rc_inc(old_inner);
+    let (new_inner, _) = one_string_vec("new");
+    probe.call(source, 0, new_inner);
+    // SAFETY: `old_inner` is live on the second owner's reference, and it
+    // holds `old_string`.
+    let (inner_rc, string_rc) = unsafe { (rc_of(old_inner), rc_of(old_string)) };
+    assert_eq!(inner_rc, 1, "the shared old element loses one reference");
+    assert_eq!(string_rc, 1, "its contents are untouched");
+    assert_eq!(vec_len_for_test(old_inner), 1, "and still readable");
 }
 
 // ---------------------------------------------------------------------------
@@ -359,9 +418,8 @@ fn assert_guard_opens(clif: &str, panic: FuncId, what: &str) {
     assert_raise_terminates(clif, panic, what);
 }
 
-// spec: design/backend/backend.md §7 "One Vec index guard" — in every case the
-// guard precedes the element store and the `vec-set-copy` call, and a static
-// uniqueness proof elides the rc probe, never the guard.
+// spec: design/backend/backend.md §7 "One Vec index guard" — the guard
+// precedes the element store and the `vec-set-copy` call.
 #[test]
 fn guard_opens_every_vec_set_case() {
     for case in CASES {
@@ -370,37 +428,21 @@ fn guard_opens_every_vec_set_case() {
     }
 }
 
-// spec: design/backend/s122-closure.md §9.2 — each case emits only its own
-// arms: proven unique stores in place with no rc probe or copy; known shared
-// copies with no probe or store; dynamic emits the probe and both arms.
+// spec: design/backend/uniform-counting.md §2 (rule U2) — the lowering keeps
+// the rc probe and both arms: in place at count 1, a copy call otherwise.
 #[test]
-fn each_vec_set_case_emits_only_its_arms() {
-    let render = |case| {
-        let probe = build_probe(case, Elem::Int);
-        let panic_call = format!("call {}(", clif_func_ref(&probe.clif, probe.panic));
-        let helper_calls = probe
-            .clif
-            .lines()
-            .filter(|l| l.contains("call ") && !l.contains(&panic_call))
-            .count();
-        (probe.clif, helper_calls)
-    };
-    let probes_rc = |c: &str| c.contains("icmp eq");
-    let stores = |c: &str| c.contains("store.");
-    let (unique, unique_calls) = render(Case::ProvenUnique);
-    let (dynamic, dynamic_calls) = render(Case::Dynamic);
-    let (shared, shared_calls) = render(Case::KnownShared);
+fn the_vec_set_lowering_probes_and_keeps_both_arms() {
+    let probe = build_probe(Case::Dynamic, Elem::Int);
+    let panic_call = format!("call {}(", clif_func_ref(&probe.clif, probe.panic));
+    let helper_calls = probe
+        .clif
+        .lines()
+        .filter(|l| l.contains("call ") && !l.contains(&panic_call))
+        .count();
     assert!(
-        !probes_rc(&unique) && stores(&unique) && unique_calls == 0,
-        "proven unique\n{unique}"
-    );
-    assert!(
-        probes_rc(&dynamic) && stores(&dynamic) && dynamic_calls >= 1,
-        "dynamic\n{dynamic}"
-    );
-    assert!(
-        !probes_rc(&shared) && !stores(&shared) && shared_calls == 1,
-        "known shared\n{shared}"
+        probe.clif.contains("icmp eq") && probe.clif.contains("store.") && helper_calls >= 1,
+        "{}",
+        probe.clif
     );
 }
 
@@ -437,11 +479,10 @@ fn vec_get_clif() -> String {
         &mut builder,
         module,
         panic,
-        Some(HeapCategory::AlwaysHeap),
+        Some(crate::heap::HeapCategory::AlwaysHeap),
         vec_val,
         idx_val,
         Span::SYNTHETIC,
-        false,
     )
     .expect("emit vec-get");
     builder.ins().return_(&[elem]);

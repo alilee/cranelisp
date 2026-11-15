@@ -363,10 +363,12 @@ wrapper's call follows the first applicable rule:
 4. **otherwise** — a GOT-indirect call through the uniform reference (§5.1).
    A target with no GOT carrier is a located error, never a name search.
 
-When the target's ownership summary is not conservative, the wrapper adapts the
-call to the uniform consuming convention. Every code pointer reachable from a
-closure therefore obeys that convention
-([ownership codegen](ownership-codegen.md) §3.5).
+Every wrapper parameter arrives owned and the wrapper's call consumes it, so
+every code pointer reachable from a closure obeys the uniform consuming
+convention ([RC discipline](ring2-rc.md) §3.1). No callee borrows, so there is
+nothing to adapt. The wrapper body's counts, including the auto-curry
+wrapper's captured arguments, are the forwarding template of
+[uniform counting](uniform-counting.md) §3.3.
 
 ## 13. Evidence
 

@@ -1,10 +1,9 @@
 //! RC / drop-glue emission and the heap classification it keys on.
 //!
 //! This is the single home for the heap-class match (`signature_heap_category`)
-//! that `pop_scope_with_cleanup`'s guard and the match seam's field-type
-//! resolution read (audit Part 2 §2.7), and — since S118 slice S1 — of
-//! [`FnCompiler::emit_typed_rc_dec`], the ONE canonical glue-call emitter every
-//! release site goes through. The pure type helpers (`collect_var_ids_from_type`,
+//! that the plan's duplicates and drops and the match seam's field typing read,
+//! and of [`FnCompiler::emit_typed_rc_dec`], the ONE canonical glue-call
+//! emitter every concrete release goes through. The pure type helpers (`collect_var_ids_from_type`,
 //! `substitute_type_inline`, `find_var_type_in_expr`) live here too.
 
 use cranelift::prelude::*;
@@ -145,65 +144,6 @@ where
         let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
         self.builder.ins().call(glue_ref, &[val]);
         Ok(())
-    }
-
-    /// If `skip_var` is None and the return value has a heap type, emit
-    /// `rc_inc` on the value so it survives the subsequent scope cleanup.
-    /// Scope cleanup will dec all heap bindings, which may include the
-    /// value being returned (when the body is a non-trivial expression like
-    /// `if` or `match` that resolves to a scope binding). The caller will
-    /// dec it later, so the net ownership is correct.
-    pub(crate) fn protect_return_value(
-        &mut self,
-        skip_var: &Option<crate::compiler::scope_chain::SlotRef>,
-        body_val: Value,
-        body: &MonoExpr,
-    ) -> bool {
-        if skip_var.is_some() {
-            return true; // The skip_var mechanism transfers the binding's owner.
-        }
-        // A callable can return an independently owned reference that aliases a
-        // parameter. Cleanup consumes the parameter's owner, not that returned
-        // reference; retaining it again would strand it after the caller's dec.
-        // Inline COW/projection results keep their existing protection rules.
-        if self.body_has_independent_result(body) {
-            return true;
-        }
-        // Only protect if the current scope has heap-typed bindings that
-        // scope cleanup will dec. Borrowed vars are skipped by
-        // `pop_scope_with_cleanup`, so their presence alone does NOT justify
-        // a protective inc — emitting one would leave the return value with
-        // an inflated RC that the caller cannot balance.
-        let has_cleanup_targets =
-            self.scope.innermost_frame().iter().any(|slot| {
-                !slot.is_borrowed() && slot.ty().is_some_and(|ty| self.is_heap_type(ty))
-            });
-        if !has_cleanup_targets {
-            return false;
-        }
-        let category = HeapCategory::classify(body.ty(), Some(self.ctx.symbol_tables));
-        // B3.3 (§5.1): the materialization inc on the returned cell goes
-        // non-atomic when the producing node is Confined. `body` is the exact
-        // producing node (the let/fn-body return expression), so its `confined`
-        // site fact drives the atomicity. Fact-absent (analysis off) ⇒ Atomic,
-        // byte-identical.
-        let atomicity = self.rc_atomicity_for_node(body);
-        match category {
-            HeapCategory::AlwaysHeap => {
-                heap::emit_rc_inc_atomicity(&mut self.builder, self.module, body_val, atomicity);
-                true
-            }
-            HeapCategory::Mixed => {
-                heap::emit_rc_inc_guarded_atomicity(
-                    &mut self.builder,
-                    self.module,
-                    body_val,
-                    atomicity,
-                );
-                true
-            }
-            HeapCategory::NeverHeap | HeapCategory::Value => true,
-        }
     }
 
     /// Emit RC dec for a closure value using its embedded drop glue pointer.
@@ -348,12 +288,9 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
         // A `LaunchContinue` node's `launched` sub-tree (the detached
         // per-connection handler) is where a continuation parameter is often
         // used EXCLUSIVELY — e.g. `conn` in `(bind (read-conn conn) (fn [req]
-        // … (send-conn conn …)))`. Omitting this arm left such a param
-        // left with no recorded type, so `compile_consuming_arg_list` skipped
-        // its consuming inc while the poll state-closure drop glue still dec'd
-        // it → double-free of a borrowed heap value owned by an enclosing scope
-        // (FIXME 0494 bug #2, the size-32 `Connection` stale RC-dec). Descending
-        // both branches restores the inc that balances the drop-glue dec.
+        // … (send-conn conn …)))`. Without this arm such a parameter has no
+        // recorded type, so its duplicates and drops classify it as owning no
+        // heap (FIXME 0494 bug #2, the size-32 `Connection` stale RC-dec).
         MonoExpr::LaunchContinue {
             launched,
             continuation,
@@ -395,9 +332,9 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
 /// reads field/binding types from the **signature** (the `scheme`, `Type::Fn`
 /// params), where a `Var` does survive.
 ///
-/// **Measured families reaching this classification.** The census's
-/// authoritative home is the `fn_compiler::emit_heap_binding_decs` rustdoc —
-/// including the do-not-re-run-the-experiment warning. In brief:
+/// **Families reaching this classification with a residual variable.** The
+/// census's authoritative home is the `FnCompiler::emit_release` rustdoc,
+/// including its do-not-re-run-the-experiment warning. In brief:
 ///
 /// 1. **A constructor template's own parameter** (`(deftype (Option a) …
 ///    (Some [:a val]))` gives the template a `Type::Var` field param). In
@@ -405,30 +342,26 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
 ///    constructor is a slotless `Life::Template` and never reaches codegen
 ///    (contract §4.1, I-CT′); only directly constructed unit-test frames still
 ///    reach it.
-/// 2. Synthetic **field accessors** of a generic product
-///    (`Box.v`'s `self: ADT(user/Box, [Var(0)])`). §3.1.1 pairs the ctor *and
-///    accessor* signature paths.
-/// 3. Generic **trait-method instances** (`Functor.fmap$primitives/Option`'s
-///    `Fn([Var(9)], Var(8))` parameter).
-///
-/// Families 2 and 3 arrive in ordinary `defn`-shaped frames and leak today;
-/// they are producer obligations under FIXME 0903 (contract §4.2, §7.4).
+/// 2. A **constructor field** read inside a concrete body: `CtorMeta`'s field
+///    types come from the declaration's scheme, so a generic product's field
+///    is a `Type::Var` at every use site (contract §7.4).
+/// 3. The S119 families, synthetic field accessors of a generic product and
+///    generic trait-method instances, as producer obligations under FIXME 0903
+///    (contract §4.2). No codegen frame's parameter is residual-typed: a target
+///    is a `Life::Concrete` body, whose slot exists only for a concrete scheme.
 ///
 /// So this helper classifies a concrete field type via the total
 /// `HeapCategory::classify(&ConcreteType, …)`, and maps a residual `Var`/`TyConApp`
 /// to `Mixed` — the uniform-representation category, since the runtime
-/// representation of any of the three is a uniform i64 tag-or-pointer. This
-/// restores the pre-Phase-3 ctor-`Def` behaviour; it does NOT widen the
-/// `ConcreteType` `classify` (which stays total, no `Var` arm) and does NOT
-/// affect the body-AST path (still 100% `Var`-free by construction).
+/// representation of any of the three is a uniform i64 tag-or-pointer. It does
+/// NOT widen the `ConcreteType` `classify` (which stays total, no `Var` arm).
 ///
 /// Classifying such a binding heap-typed is what routes it to a release seam at
-/// all; whether the release is then legal is a separate question, answered once
-/// at `fn_compiler::emit_heap_binding_decs`. **That gate is keyed on the TYPE,
-/// not the frame** — knowingly (FIXME 0903; 0891 deferred on it). A frame key
-/// was measured at **+16 hard codegen refusals** over the `spec_*` corpus —
-/// which is how families 2 and 3 above were found. Read "answered once at
-/// `emit_heap_binding_decs`" as a single-seam claim only.
+/// all; whether the release is then legal is a separate question, answered at
+/// `FnCompiler::emit_release`. **That arm is keyed on the TYPE, not the frame**
+/// — knowingly (FIXME 0903). A frame key was measured at **+16 hard codegen
+/// refusals** over the `spec_*` corpus, which is how families 2 and 3 above
+/// were found.
 pub(crate) fn signature_heap_category<C, L>(
     ty: &Type,
     symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
@@ -545,6 +478,3 @@ mod find_var_type_tests {
 /// S118 slice S1 — the canonical glue-call emitter (§10 row 3).
 #[cfg(test)]
 mod glue_call_emitter_tests;
-
-#[cfg(test)]
-mod return_ownership_tests;

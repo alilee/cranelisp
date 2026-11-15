@@ -1,7 +1,8 @@
 // Lambda / closure compilation.
 //
-// Closure site allocation, the inner-fn body, drop glue, and the
-// capture-return inc rule (`design/backend/ring2-rc.md`). `build_closure_drop_glue`
+// Closure site allocation, the inner-fn body and its capture environment, and
+// drop glue. A capture used in the body is duplicated
+// (`design/backend/uniform-counting.md` §3). `build_closure_drop_glue`
 // is called by `compile_lambda` and by `par_bind.rs`'s continuation closure
 // (cross-module via the shared `impl FnCompiler`).
 
@@ -12,9 +13,8 @@ use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol, Typ
 
 use crate::heap::{self, HeapClosure};
 
-use super::{
-    CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_dec_into, find_free_vars,
-};
+use super::{CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_dec_into};
+use crate::compiler::ownership_plan::{CaptureEntry, Intro};
 use crate::compiler::signature_heap_category;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -38,6 +38,7 @@ where
         body: &MonoExpr,
         span: Span,
         lambda_type: Option<&Type>,
+        capture_entries: &[CaptureEntry],
     ) -> Result<Value, CranelispError> {
         let alloc_id = self
             .ctx
@@ -47,15 +48,9 @@ where
                 location: ErrorLocation::from_span(span),
             })?;
 
-        // Determine captured variables: free variables in the body that are
-        // bound in the enclosing scope (not the lambda's own params).
-        // Sorted by name for deterministic layout (ring1-checklist section 5.8).
-        let free_vars = find_free_vars(body, params);
-        let mut captures: Vec<Symbol> = free_vars
-            .into_iter()
-            .filter(|name| self.binds(name))
-            .collect();
-        captures.sort();
+        // The captured names, in layout order, come from the plan (or, for a
+        // synthesized spark thunk, from `duplicating_captures`).
+        let captures: Vec<Symbol> = capture_entries.iter().map(|e| e.name.clone()).collect();
 
         // Compile the inner function as a separate function definition.
         // Signature: (env_ptr: i64, param_0: i64, ..., param_n: i64) -> i64
@@ -133,37 +128,17 @@ where
             HeapClosure::DROP_GLUE_PTR_OFFSET,
         );
 
-        // Store each captured value at HeapClosure::capture_offset(i).
-        // For heap-typed captures, emit rc_inc so the closure env holds
-        // its own reference (the enclosing scope retains its reference
-        // independently and will dec it at scope exit).
-        for (i, cap_name) in captures.iter().enumerate() {
-            if let Some(var) = self.lookup_var(cap_name) {
-                let cap_val = self.builder.use_var(var);
+        // Store each captured value: moved when the plan says it is the
+        // binder's last use, otherwise duplicated, so the environment owns
+        // one reference to each, which its drop glue releases.
+        for (i, entry) in capture_entries.iter().enumerate() {
+            if let Some(cap_val) = self.capture_value(entry) {
                 heap::heap_store(
                     &mut self.builder,
                     cap_val,
                     base_ptr,
                     HeapClosure::capture_offset(i),
                 );
-
-                // Inc heap-typed captures: the closure env needs its own reference.
-                //
-                // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2): when
-                // this closure is a structurally-joined spark thunk
-                // (`spark_capture_borrow` raised by the apply-arg / independent-
-                // `let` emission site, toggle-gated), the capture is a BORROW —
-                // the joined parent frame outlives the spark, so the parent's own
-                // scope-cleanup dec is the single dec accounting for the cell.
-                // Skip the inc here AND the matching drop-glue dec
-                // (`build_closure_drop_glue`), symmetrically. Skipping only one
-                // would leak (skip dec only) or UAF (skip inc only).
-                if !self.spark_capture_borrow
-                    && let Some(ty) = self.lookup_type(cap_name)
-                {
-                    let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
-                    self.emit_capture_inc(category, cap_val);
-                }
             }
         }
 
@@ -183,19 +158,6 @@ where
         captures: &[Symbol],
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
-        // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2): a
-        // structurally-joined spark thunk borrows ALL its captures (rc-
-        // invisible), so it owns none of them — no drop glue. Return `None`
-        // symmetrically with the skipped capture-store inc (`compile_lambda` /
-        // `alloc_par_cont_closure`). The joined parent frame's own cleanup dec
-        // is the single dec accounting for every borrowed cell. This is
-        // reachable only from the flag-raising joined sites; the detached
-        // `LaunchContinue` path never raises the flag, so its drop glue is
-        // emitted as before.
-        if self.spark_capture_borrow {
-            return Ok(None);
-        }
-
         // Collect (capture_index, release mechanism) for heap-typed captures —
         // the capture layout specific this builder supplies. The capture's TYPE
         // decides both membership and mechanism (`CaptureRelease::classify`):
@@ -328,58 +290,6 @@ where
         Ok(Some(glue_func_id))
     }
 
-    /// Emit `rc_inc` on the lambda body's return value when that value is a
-    /// bare reference to a captured heap variable.
-    ///
-    /// See `design/backend/ring2-rc.md` §5.6 (capture-return inc, sibling of
-    /// §5.5).
-    ///
-    /// ## Invariant
-    ///
-    /// A captured heap variable returned as the lambda body value requires
-    /// an explicit `rc_inc` before `return`, because:
-    ///
-    /// 1. The scope chain deliberately excludes captures (see
-    ///    `compile_lambda_body` where captures are bound WITHOUT being
-    ///    pushed onto the scope frame — captures are the closure env's
-    ///    responsibility, not the body scope's).
-    /// 2. `protect_return_value` guards its inc-on-return behind
-    ///    `has_cleanup_targets`, which examines the innermost frame only. For a
-    ///    `(fn [_] b)` shape where `_` is non-heap and `b` is a capture,
-    ///    `has_cleanup_targets` is false and `protect_return_value` emits
-    ///    no inc.
-    /// 3. The closure's drop-glue (see `build_closure_drop_glue`) WILL dec
-    ///    the capture after the body returns, because a fresh one-shot
-    ///    closure is consumed via `consume_closure` by the IO trampoline
-    ///    (and other fresh-closure call sites) after invocation.
-    ///
-    /// Without the inc, the value returned to the caller points at a node
-    /// the drop-glue is about to dec to zero, producing a use-after-free
-    /// in whatever the caller does next (in the observed case, the IO
-    /// trampoline reads the pointer as the new `current` frame and
-    /// dereferences freed memory).
-    ///
-    /// This helper is additive: `protect_return_value`'s scope-stack logic
-    /// is unchanged for all other callers and all other return paths
-    /// within lambda bodies. Only the `Var{captured_heap}` shape triggers
-    /// this new inc.
-    fn emit_capture_return_inc(&mut self, body: &MonoExpr, body_val: Value) {
-        // Only trigger for a direct reference to a captured variable.
-        let MonoExpr::Var { name, .. } = body else {
-            return;
-        };
-        if self.captures.get(name).is_none() {
-            return;
-        }
-        // Look up the capture's type (seeded by `compile_lambda_body` from
-        // the enclosing scope). Non-heap captures need no inc.
-        let Some(ty) = self.lookup_type(name) else {
-            return;
-        };
-        let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
-        self.emit_capture_inc(category, body_val);
-    }
-
     /// Compile the body of a lambda as a separate JIT function.
     ///
     /// The inner function has signature (env_ptr, params...) -> i64.
@@ -431,14 +341,14 @@ where
             .map(|cap_name| self.lookup_type(cap_name))
             .collect();
 
-        let last_uses = heap::compute_last_uses(body);
+        let plan = Self::plan_body(body, params, captures, inner_name)?;
         let mut inner_compiler = FnCompiler::inner(
             builder,
             self.module,
             self.ctx.clone(),
             self.glue,
             params.len(),
-            last_uses,
+            plan,
         );
 
         // Seed the inner compiler's discriminator with this lambda's
@@ -470,39 +380,21 @@ where
         // ordinary lambda inside a spark thunk also declines) is correct.
         inner_compiler.in_spark_thunk = self.in_spark_thunk;
 
-        // Bind captured variables from the environment.
-        //
-        // Record each capture's type in the inner compiler's CAPTURE
-        // ENVIRONMENT so that the consuming calling convention inside the body
-        // emits the required `rc_inc` on captured heap values before passing
-        // them to consuming callees. Captures are not scope slots — they are
-        // borrowed references whose release is the closure env's drop-glue
-        // responsibility, not the body scope's.
-        //
-        // Prior bug (S60 Wave 2 Round 2 α): captures had no type recorded,
-        // so `compile_consuming_arg_list` skipped the caller-side inc.
-        // Consuming callees (e.g., `(cell-at g 0)` inside a spark thunk)
-        // then dec'd the capture at their scope exit, underflowing the
-        // captured value's RC. When the thunk's drop-glue ran afterwards,
-        // the same capture was dec'd a second time → double-free.
+        // Bind captured variables from the environment, with their types, into
+        // the CAPTURE ENVIRONMENT: the closure env's drop glue releases them,
+        // so every use in the body duplicates (the body's plan says so).
         for (i, cap_name) in captures.iter().enumerate() {
             let cap_val = heap::heap_load(
                 &mut inner_compiler.builder,
                 env_ptr,
                 HeapClosure::capture_offset(i),
             ); // capture_i: i64
-            // Copy the capture's type from the enclosing scope so the body can
-            // correctly RC-inc captured heap values for consuming calls. Into
-            // the CAPTURE ENVIRONMENT, not a scope frame (`binding-scope.md`
-            // §3.2): the closure env's drop glue owns the release, and a
-            // body-local binder shadowing this name must not disturb it.
             inner_compiler.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
         }
 
-        // Look up the lambda's inferred type to get parameter types.
-        // This is essential for unused parameters: derive_param_type scans
-        // use sites, so unused params (e.g., `_s` in `(fn [_s] 42)`) would
-        // have no type recorded and scope cleanup would skip their RC dec.
+        // The lambda's inferred type supplies parameter types, so an unused
+        // parameter (e.g. `_s` in `(fn [_s] 42)`) still has the type its drop
+        // at introduction needs.
         let lambda_param_types: Vec<Option<Type>> =
             if let Some(Type::Fn(param_types, _)) = lambda_type {
                 param_types.iter().map(|t| Some(t.clone())).collect()
@@ -510,42 +402,17 @@ where
                 vec![None; params.len()]
             };
 
-        // Bind lambda parameters from function params (after env_ptr).
-        // Bind params into the body frame with their types so that
-        // pop_scope_with_cleanup will emit rc_dec for heap-typed params.
-        // This implements the consuming calling convention for closure bodies:
-        // the closure owns its parameters and must dec them at exit.
-        // Without this, unused params (e.g., `_` in `(fn [_] b)`) leak.
+        // Bind lambda parameters (after env_ptr): the body owns each one.
         for (i, param_name) in params.iter().enumerate() {
-            let val = block_params[i + 1]; // skip env_ptr
-
-            // Use the lambda's inferred param type first.
-            // Fall back to derive_param_type_from_body (use-site inference) if the
-            // lambda type isn't available.
+            let val = block_params[i + 1];
             let ty = match lambda_param_types.get(i) {
                 Some(Some(ty)) => Some(ty.clone()),
                 _ => Self::derive_param_type_from_body(body, param_name),
             };
-            inner_compiler.bind_local(param_name, val, ty);
+            inner_compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
         }
 
-        // Compile the body with scope cleanup for parameters.
-        // This mirrors compile_body: identify the return value variable (if any),
-        // protect it from scope cleanup, then dec all other heap-typed params.
-        let skip_var = inner_compiler.return_var_in_scope(body);
         let result = inner_compiler.compile_expr(body)?;
-        inner_compiler.protect_return_value(&skip_var, result, body);
-        // Capture-return inc (Slice 4 / ring2-rc.md "capture-return inc"
-        // rule — sibling of §5.5 borrowed_vars). When the lambda body
-        // returns a captured heap variable directly (e.g. `(fn [_] b)`
-        // where `b` is a heap-typed capture), emit `rc_inc` on the
-        // returned value so the closure's drop-glue dec (run by the
-        // trampoline's `consume_closure`) is balanced and the caller
-        // receives a live reference. `protect_return_value` does NOT
-        // cover this case because captures are not scope slots.
-        inner_compiler.emit_capture_return_inc(body, result);
-        inner_compiler.pop_scope_with_cleanup(skip_var)?;
-
         inner_compiler.builder.ins().return_(&[result]);
         inner_compiler.builder.seal_all_blocks();
         inner_compiler.builder.finalize();
@@ -654,45 +521,19 @@ mod tests {
         assert_eq!(result.unwrap(), 15, "5 + 10 = 15");
     }
 
-    // spec: design/backend/ring2-rc.md "capture-return inc" (sibling of §5.5)
-    // spec: design/backend/ring2-rc.md §5.6
+    // spec: design/backend/uniform-counting.md §3 — a capture used in a body
+    // is duplicated, so a closure returning its capture hands the caller its
+    // own reference and the environment's drop glue releases the other.
     //
-    // Regression guard for Slice 4 defect. A lambda body whose return
-    // expression is a bare reference to a captured heap variable MUST
-    // emit `rc_inc` on the return value before `return`, so the
-    // closure's drop-glue dec (fired by one-shot consume_closure paths
-    // like the IO trampoline) does not free the value out from under
-    // the caller.
-    //
-    // Test shape: `(let [s "hello"] ((fn [_] s) 0))`. The inner
-    // closure captures `s` (heap-typed String) and returns it when
-    // called with a dummy Int arg. Without `emit_capture_return_inc`,
-    // the closure's drop glue would dec `s` after the body returns,
-    // the outer `let` scope cleanup would dec `s` again (via its own
-    // scope-stack dec), and at least one of those decs lands on a
-    // freed node — corrupting the returned pointer and/or
-    // double-freeing.
-    //
-    // Post-fix: the returned pointer is still live and reads back as
-    // "hello"; `test_compile_lambda_closure` above (non-capture-return
-    // shape) is unaffected, confirming the fix is additive.
-    //
-    // NB: this test sits in `lib.rs #[cfg(test)] mod tests` rather
-    // than a new module in `control_flow.rs` because the
-    // `test_compile_and_run` helper + `TestCheckResult` scaffolding is
-    // local to `lib.rs` and re-exporting it would duplicate the entire
-    // compile pipeline bridge. Per /arch §4d the placement discipline
-    // is "wherever existing control_flow tests live" — the three
-    // existing closure/lambda backend tests
-    // (`test_compile_lambda_closure`, others) all live here.
+    // Test shape: `(let [s "hello"] ((fn [_] s) 0))`. The returned pointer is
+    // still live after the closure's release and reads back as "hello".
     #[test]
-    fn lambda_return_captured_heap_var_emits_inc() {
+    fn lambda_returning_its_capture_hands_the_caller_a_live_reference() {
         // AST: (let [s "hello"] ((fn [_] s) 0))
         //
-        // Explicit `inferred_type` on the String literal so the let's
-        // the binder records `s: String`; that's what
-        // `emit_capture_return_inc` reads from the enclosing scope when
-        // the lambda body is compiled.
+        // Explicit `inferred_type` on the String literal so the binder
+        // records `s: String`: the capture is then a counted String slot, and
+        // the plan's duplicate of its body occurrence is a real increment.
         let string_ty = Type::String;
         let s_span = Span::new(5, 12);
         let lam_body_span = Span::new(20, 21);
@@ -740,26 +581,23 @@ mod tests {
         // Heap pointer (> NULLARY_TAG_THRESHOLD).
         assert!(ptr > 1024, "expected heap pointer, got {ptr}");
 
-        // Key post-fix assertion: the returned pointer is STILL LIVE
-        // after return — `emit_capture_return_inc` incremented its RC
-        // so the drop-glue dec did not free it. Pre-fix, `is_live`
-        // would be false here (or the read-back would show corruption).
+        // The returned pointer is STILL LIVE: the body's occurrence of the
+        // capture was duplicated, so releasing the closure environment
+        // dropped only the environment's own reference.
         #[cfg(debug_assertions)]
         assert!(
             cranelisp_intrinsics::alloc::is_live(ptr as usize),
             "returned string pointer must still be live after lambda return; \
-         this is the capture-return inc invariant"
+         a returned capture is a duplicate, not the environment's reference"
         );
 
-        // Readable round-trip — proves the contents survived the
-        // drop-glue dec that would otherwise have corrupted or freed
-        // the heap block.
+        // Readable round-trip: the contents survived the environment's
+        // release.
         let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
         assert_eq!(s, "hello", "captured string must round-trip");
 
-        // Balance the one remaining caller-side reference (we, the
-        // test, are the caller). Normal runtime would emit the dec at
-        // the caller's scope exit; here we dec manually.
+        // The test owns the returned reference as the receiver of the
+        // body's result; release it here.
         cranelisp_intrinsics::alloc::heap_dealloc(ptr);
     }
 }

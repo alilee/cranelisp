@@ -1,10 +1,10 @@
 //! The per-function CLIF emitter: the `FnCompiler` struct, its construction
-//! (`inner`, `compile_body`, `bind_defn_params`), the expression-dispatch entry
-//! (`compile_expr`), scope lifecycle, and the small per-fn predicates.
-//! `MatchContext` is per-arm `FnCompiler` state, kept adjacent to the struct it
-//! threads through.
+//! (`inner`, `compile_body`), the expression-dispatch entry (`compile_expr`),
+//! binder lifecycle and the counting primitives the ownership plan drives, and
+//! the small per-fn predicates. `MatchContext` is per-arm `FnCompiler` state,
+//! kept adjacent to the struct it threads through.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use cranelift::prelude::*;
 use cranelift_module::Module;
@@ -16,22 +16,16 @@ use cranelisp_types::{
 
 use crate::heap::{self, HeapCategory};
 
-use super::context::CtorValueShape;
-use super::entry_convention::ResultKind;
-use super::scope_chain::{Binding, CaptureEnv, ScopeChain, SlotRef, resolve_binding};
+use super::ownership_plan::{BinderId, CaptureEntry, Intro, Occurrence, OwnershipPlan, Use};
+use super::scope_chain::{Binding, CaptureEnv, ScopeChain, resolve_binding};
 use super::{
     CompileContext, find_var_type_in_expr, inner_fn_discriminator_for, signature_heap_category,
 };
 
-pub(crate) use super::scope_chain::BinderSlot;
-
 /// Match-arm-invariant data bundled to reduce parameter counts in
 /// `compile_constructor_pattern`.
-///
-/// Narrowed to `pub(crate)` in S75 W3 — per-arm codegen state, no out-of-crate
-/// consumer.
 pub(crate) struct MatchContext {
-    /// The compiled scrutinee value.
+    /// The compiled scrutinee value, which the match owns.
     pub scrut_val: Value,
     /// The inferred type of the scrutinee expression (for field type resolution).
     pub scrut_type: Option<Type>,
@@ -41,33 +35,17 @@ pub(crate) struct MatchContext {
     pub merge_block: Block,
     /// The saved tail-position flag from before the match.
     pub saved_tail: bool,
-    /// S118 slice S3 — where this match's pattern bindings' values live, so an
-    /// extracted field escaping into a tail call can be upgraded exactly when
-    /// its owner dies at that jump (§2). `None` ⇒ neither this frame nor a live
-    /// binding owns the scrutinee (a `Borrowed` param), so nothing here can
-    /// release it.
-    pub scrut_root: Option<BorrowRoot>,
-    /// S118 slice S3 — does THIS arm owe the one wrapper release
-    /// (`ScrutineeLifetime::OwnedConsumed` over a heap scrutinee)? Resolved per
-    /// arm from the plan recorded once before arms are emitted (§5).
-    pub owes_release: bool,
+    /// The match node's plan key.
+    pub match_node: usize,
+    /// This arm's index.
+    pub arm: usize,
 }
 
-/// Where a BORROWED pattern binding's value actually lives (S118 slice S3,
-/// `design/backend/transitive-drop-glue.md` §2).
-///
-/// A pattern binding is a view into the scrutinee. Whether that view has to be
-/// upgraded to an owned reference before it escapes depends on whether the
-/// thing that owns it is about to be released — so the seam records WHOSE
-/// reference the borrow rides on, rather than guessing from the binding alone.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BorrowRoot {
-    /// The match frame owns the scrutinee temporary and releases it at the
-    /// consuming arm's lifetime end.
-    OwnedTemporary,
-    /// A live scope binding owns it; whether that binding dies at a given tail
-    /// jump is answered by [`FnCompiler::tail_jump_releases_binding`].
-    Binding(Symbol),
+/// One owned binder's storage: its variable and recorded type.
+#[derive(Clone, Debug)]
+struct BinderStore {
+    var: Variable,
+    ty: Option<Type>,
 }
 
 /// Per-function compilation context.
@@ -75,14 +53,6 @@ pub(crate) enum BorrowRoot {
 /// Generic over `M: Module` so the same codegen can target both `JITModule`
 /// (for immediate execution) and `ObjectModule` (for `.o` file generation).
 /// See design/backend/module-caching.md §13.2 for rationale.
-// Sprint 58 Wave 3b (Decision 35): generic over `C: CodeStore` and
-// `L: LinkerStore` so it can hold `CompileContext<'a, C, L>`. Defaults
-// to `<()>`-pinned for backward compat with the typecheck-product flavour.
-//
-// Narrowed to `pub(crate)` in S75 W3 — the per-function CLIF emitter; no
-// out-of-crate consumer (int reaches codegen only via the free fn
-// `compile_to_module`). Its `pub` methods/fields drop from the public API
-// with the type.
 pub(crate) struct FnCompiler<'a, M: Module, C = (), L = ()>
 where
     C: cranelisp_types::CodeStore,
@@ -93,59 +63,39 @@ where
     /// Reference to the compilation module (JITModule or ObjectModule).
     pub module: &'a mut M,
     /// The lexical binding environment — ONE SLOT PER BINDER, never per name
-    /// (`design/backend/binding-scope.md` §3.1). This single structure replaces
-    /// the five name-keyed maps that used to hold a binder's facts separately
-    /// (`variables`, `variable_types`, `borrowed_stack`, `field_borrow_root`,
-    /// `scope_stack`); each of them collided wherever two binders shared a name,
-    /// across frames or twice inside one binding vector.
+    /// (`design/backend/binding-scope.md` §3.1). It answers the dispatch
+    /// question "does this name denote a local here"; ownership is the plan's.
     pub(crate) scope: ScopeChain,
     /// The names this body closed over (§3.2). NOT a scope frame: a capture is
-    /// seeded once when the inner compiler is constructed, is released by the
-    /// closure environment's drop glue rather than by any body frame, and must
-    /// survive a body-local binder that shadows its name — so it is resolved
-    /// only AFTER the chain. Membership also answers "is this a capture", which
-    /// makes a capture ineligible for last-use ownership transfer.
+    /// seeded once when the inner compiler is constructed and is released by
+    /// the closure environment's drop glue, never by the body.
     pub(crate) captures: CaptureEnv,
     /// Shared immutable compilation context.
     pub(crate) ctx: CompileContext<'a, C, L>,
-    /// The compilation-local canonical drop-glue registry (S118 slice S0,
-    /// `design/backend/transitive-drop-glue.md` §3.4 D1).
-    ///
-    /// A **disjoint** field from [`Self::module`] and [`Self::ctx`] on purpose:
-    /// the registry is module-borrow-free, so
+    /// The compilation-local canonical drop-glue registry
+    /// (`design/backend/transitive-drop-glue.md` §3.4 D1). A field disjoint
+    /// from [`Self::module`] and [`Self::ctx`], so
     /// `self.glue.request_if_owning(self.module, self.ctx.symbol_tables, ty)` is
-    /// a legal three-way disjoint borrow. One registry per
-    /// `compile_to_module`/module construction, threaded into every inner
-    /// compiler (lambda / continuation / spark-thunk bodies) so a nested body's
-    /// release site mints the SAME per-concrete-type body as the outer one
-    /// (§3.1: the registry is the sole construction authority).
+    /// a legal three-way borrow; threaded into every inner compiler so nested
+    /// bodies mint the same per-type body.
     pub(crate) glue: &'a mut crate::drop_glue::DropGlueRegistry,
 
     /// Next Cranelift Variable index (per-function counter).
     pub(crate) next_var: u32,
 
+    /// The body's ownership plan (`design/backend/uniform-counting.md` §3): the
+    /// only producer of move, duplicate and drop decisions. Emission reads it
+    /// and decides nothing.
+    pub(crate) plan: OwnershipPlan,
+    /// Plan binder identity → its storage, recorded at each introduction.
+    binders: HashMap<BinderId, BinderStore>,
+
     // --- TCO state ---
     //
-    // Tail Call Optimization (TCO): loop-based self-TCO.
-    //
     // Self-recursive tail calls are compiled as jumps to a loop header block
-    // instead of actual function calls. This converts recursion into iteration
-    // with O(1) stack usage.
-    //
-    // The pattern:
-    //   1. compile_body creates a loop_header block with block params for each fn param
-    //   2. Entry block jumps to loop_header with initial param values
-    //   3. Loop_header is NOT sealed eagerly (back-edges from tail calls added later)
-    //   4. Body is compiled with in_tail_position = true
-    //   5. Tail self-calls jump back to loop_header with new arg values
-    //   6. All blocks sealed at the end
-    //
-    // CRITICAL: compile_apply must set in_tail_position = false before compiling args.
-    // Tail position propagation:
-    //   - If body / else body: inherits tail position
-    //   - Let body: inherits tail position
-    //   - Match arm bodies: inherit tail position
-    //   - Args, conditions, bindings: NOT in tail position
+    // whose block params are the function params. Tail position propagates
+    // into `if` branches, `let` bodies and match-arm bodies; arguments,
+    // conditions and bindings are never in tail position.
     /// Name of the current function being compiled (for self-call detection).
     pub(crate) current_fn_name: Option<Symbol>,
     /// Loop header block for TCO (back-edge target for self-recursive tail calls).
@@ -155,44 +105,6 @@ where
     /// Number of parameters of the current function.
     pub(crate) fn_param_count: usize,
 
-    // --- Ring 1 heap state (scaffolding for RC emission in Ring 2) ---
-    /// Last-use information: (var_name, span) -> is_last_use.
-    pub(crate) last_uses: HashMap<(Symbol, Span), bool>,
-
-    /// The ownership summary ([`cranelisp_types::ModeSummary`]) of the function
-    /// currently being compiled — read from its `codegen_view`
-    /// (`MonoDefnVariant.mode_summary`) on the `compile_to_module` path;
-    /// `None` on the lenient JIT/REPL path (no `codegen_view`) and for every
-    /// inner compiler (lambda / continuation / drop-glue bodies).
-    ///
-    /// Borrow-elision consumer (B3.2, `design/backend/ownership-codegen.md`
-    /// §3.3): `protect_return_value` skips its protective inc when this summary
-    /// is **present** with `result == ResultMode::Fresh`. `Fresh` is sound to
-    /// elide on iff the summary chain's **leaf facts are truthful AND
-    /// reachable** — three classes had to close: 0520 cured the join-collapse
-    /// (a partial param-return reports not-`Fresh`), and S111 §3.7 cured the
-    /// false-declaration (`vec-set`/`vec-push` now `MayAliasOf(0)`, not `Fresh`)
-    /// and the unreachable-declaration (the ownership envs resolve leaf facts
-    /// prelude-fallback-aware) classes. `MayAliasOf`/`AliasOf`/`ProjectionOf`
-    /// all read not-`Fresh` ⇒ protect KEPT (Principle 18: the safe direction for
-    /// any non-`Fresh` variant). Gated on PRESENCE — absent ⇒ Decision-24
-    /// (protect), so `CRANELISP_NO_OWNERSHIP` (which suppresses all summaries) is
-    /// byte-identical to pre-B3.2.
-    pub(crate) current_mode_summary: Option<cranelisp_types::ModeSummary>,
-
-    /// Set while compiling an `if`/`match` that is itself a **direct tail-call
-    /// argument** (`compile_tail_self_call`). Under this flag, `compile_if` /
-    /// `compile_match` emit a protective `rc_inc` on any branch/arm result that
-    /// directly aliases a live heap `let`-scope binding the subsequent tail-jump
-    /// flush will `rc_dec` (`flush_let_scopes_before_tail_jump`). The inc balances
-    /// the uniform flush dec so the value handed to the next iteration's loop
-    /// param owns exactly one reference — curing the F1 use-after-free where a
-    /// control-flow-aliased binding was flushed while still reachable
-    /// (`design/backend/ownership-codegen.md` §13.3 — the TCO-flush skip-predicate
-    /// correctness contract). Saved/restored per-arg so it never leaks into a
-    /// sibling or nested non-tail position.
-    pub(crate) tail_arg_protect: bool,
-
     /// Whether we are compiling inside a `(trace ...)` body.
     /// When true, sparkability analysis is disabled — trace bodies must
     /// execute sequentially to produce deterministic trace trees.
@@ -201,210 +113,42 @@ where
     /// Sparked apply-arguments for the function application currently being
     /// dispatched (lenient-eval.md §4.4). When `Some((args_ptr, map))`, the
     /// apply whose argument slice has base pointer `args_ptr` had its arguments
-    /// at the indices in `map` sparked into IVars by the lenient pre-pass; the
-    /// arg-list compilation FORCES those positions (at the left-to-right
-    /// barrier) instead of recompiling them, with no consuming inc (the forced
-    /// value is an rc=1 temporary that transfers into the callee).
-    ///
-    /// Keyed by the argument-slice base pointer so a nested apply / constructor
-    /// whose own argument slice differs (different allocation ⇒ different
-    /// pointer) can never consult an enclosing apply's index→IVar map — the
-    /// pointer-identity guard makes cross-apply leakage structurally impossible
-    /// (Principle 18). Set/restored around each lenient `compile_apply` dispatch.
+    /// at the indices in `map` sparked into IVars; the arg-list compilation
+    /// FORCES those positions instead of recompiling them. Keyed by the
+    /// argument-slice base pointer so a nested apply can never consult an
+    /// enclosing apply's map.
     pub(crate) sparked_args: Option<(*const MonoExpr, HashMap<usize, Value>)>,
 
     /// Lazily-built, per-compiler cache of the recursive-SCC membership set over
     /// the loaded call graph — the M-static QUALITY-axis signal
-    /// (`design/backend/lenient-eval.md` §2.8.2/§2.8.6). Populated on first use by
-    /// `mstatic_recursive_set` (interior-mutable so the `&self` admission path can
-    /// fill it) and read at every spark-eligible `let`/apply site under
-    /// `CRANELISP_SPARK_ADMIT=mstatic` (the default), so the O(defs) Tarjan pass
-    /// runs once per compiler instance rather than per candidate site. Empty until
-    /// the first M-static admission decision; never built under the `syntactic`
-    /// filter or when no site is spark-eligible.
+    /// (`design/backend/lenient-eval.md` §2.8.2/§2.8.6).
     pub(crate) mstatic_recursive_cache: std::cell::RefCell<
         Option<std::rc::Rc<std::collections::HashSet<cranelisp_types::FQSymbol>>>,
     >,
 
     /// Accumulated create-gate **arm discriminator** for span-derived inner-
-    /// function names (lenient-eval.md §3.6.2). The create-gate compiles the
-    /// *same* source expressions on BOTH its lenient and direct arms, so without
-    /// a per-arm component the two arms would re-emit identical span-derived
-    /// inner-function names (`__lambda_<span>__`, `__wrap_…`) and the second
-    /// `define_function` would collide (`Duplicate definition of identifier`).
-    /// `emit_create_gate` appends a `g{id}{L|D}_` token here around each arm's
-    /// compilation (saved/restored, so nesting accumulates); `inner_fn_discriminator`
-    /// folds it into every inner-function name, making the two arms' (and nested
-    /// gates') copies distinct. Empty outside any gate arm.
+    /// function names (lenient-eval.md §3.6.2): the gate compiles the same
+    /// expressions on both arms, so each arm's inner functions need distinct
+    /// names. Empty outside any gate arm.
     pub(crate) gate_arm_disc: String,
 
-    /// Monotonic per-compiler counter handing out unique create-gate ids, so
-    /// nested gates within one function body get distinct arm discriminators.
+    /// Monotonic per-compiler counter handing out unique create-gate ids.
     pub(crate) gate_counter: u32,
 
-    /// When true, the create-gate (lenient-eval.md §3.6.2) is suppressed —
-    /// sparkable apply/`let` sites compile fully sequentially with no runtime
-    /// budget branch. Set for the duration of a gate's **direct (over-budget)
-    /// arm** so its lowering does not emit nested gates.
-    ///
-    /// Without this, the gate compiles the same lowering on BOTH arms, so a
-    /// STATICALLY nested chain of sparkable sites — e.g. `(add-i64 a (add-i64 b
-    /// (add-i64 c …)))`, every pair sparkable — would re-compile its tail on
-    /// each arm, giving `O(2^depth)` codegen (observed: a deep nested-add hung
-    /// the compiler). Suppressing gates inside the over-budget arm is both the
-    /// fix and the intended semantics: over budget at a site ⇒ evaluate that
-    /// whole subexpression serially (§3.6.3 floor). Runtime recursion through a
-    /// function whose body has ONE gate is unaffected (the body is compiled
-    /// once); only static source nesting was the blowup.
+    /// When true, the create-gate (lenient-eval.md §3.6.2) is suppressed for
+    /// the duration of a gate's direct (over-budget) arm, which bounds codegen
+    /// for statically nested sparkable sites.
     pub(crate) suppress_spark_gate: bool,
 
-    /// When true, the closure currently being compiled is a **structurally-
-    /// joined spark thunk** (an apply-argument spark, an independent-`let`
-    /// spark, or a `ParBind` continuation) whose heap captures are **borrows**,
-    /// not retains — the capture-by-borrow optimisation (Sprint 99 Wave 1b,
-    /// FIXME 0461; `ring2-rc.md` §5.5.2, `lenient-eval.md` §4.4.1). The join
-    /// proves the capturing parent frame outlives every spark, so the parent's
-    /// own scope-cleanup dec is the single dec that accounts for the cell.
-    ///
-    /// Set (RAII save/restore) at exactly the three joined emission sites —
-    /// `apply.rs` (§4.4 lenient arm), `let_if.rs` (§4.2 Phase 1 *independent*
-    /// thunk), `par_bind.rs` (continuation build) — and **only** when
-    /// `CAPTURE_BORROW_ENABLED` (the `CRANELISP_CAPTURE_BORROW=1` toggle) is on;
-    /// off ⇒ the flag stays false everywhere ⇒ byte-identical to pre-S99.
-    ///
-    /// When set, the capture-store inc (`lambda.rs` / `par_bind.rs
-    /// alloc_par_cont_closure`) **and** the matching `build_closure_drop_glue`
-    /// heap-capture dec are **both** skipped, symmetrically — exactly §5.5's
-    /// borrowed-`Var` rule (skip inc at introduction *and* dec at release).
-    /// Skipping only one is an under/over-count bug.
-    ///
-    /// **Never** raised on the `launch.rs` `LaunchContinue` (detached, fire-and-
-    /// forget) path — a detached strand has no join inside the parent's extent,
-    /// so its captures MUST retain (§5.5.2.1 exclusion). It is also scoped to
-    /// the *standard* `compile_lambda` capture path: the §4.5 dependent-thunk
-    /// synthetic `§ivar_*` keepalive captures are emitted by the manual
-    /// `dependent_spark.rs` path (never reached with the flag set) and stay
-    /// retained (§4.4.1 carve-out). Fresh inner compilers reset it to false, so
-    /// it governs only the immediate thunk's capture store, not nested closures.
-    pub(crate) spark_capture_borrow: bool,
-
     /// B3.4 gate 3 (`design/backend/ownership-codegen.md` §4.1): `true` iff the
-    /// function body being compiled contains a self-recursive call (a potential
-    /// TCO loop back-edge). When set, stack-slot placement is declined for the
-    /// WHOLE function ([`stack_eligible`] → false) — a stack slot allocated once
-    /// per frame and reused across TCO iterations would clobber a loop-carried
-    /// value. Computed once by [`body_has_self_call`] in [`compile_body`];
-    /// `false` for every inner compiler (lambda / continuation / drop-glue
-    /// bodies), which is sound (they only DECLINE more, never enable — those
-    /// bodies' own allocations are compiled with the outer decision, and inner
-    /// bodies are heap by construction pending the spark/escape gates §4.3).
+    /// function body contains a self-recursive call, so stack-slot placement is
+    /// declined for the whole function. `false` for every inner compiler.
     pub(crate) fn_has_self_call: bool,
 
-    /// B3.4 gate 5 (`design/backend/ownership-codegen.md` §4.3; FIXME 0525
-    /// `/arch` ruling 2026-07-05): `true` while compiling a **backend-synthesized
-    /// spark-thunk body** — the `MonoExpr::Lambda` (or dependent-thunk RHS) the
-    /// backend relocates a lenient-sparked construction into. When set,
-    /// [`constructor_call_stack_eligible`] declines stack placement: the thunk
-    /// frame pops at the spark→join while the parent consumes the value, so a
-    /// stack slot built there dangles (hard UAF — the FIXME 0525 signature).
-    /// This is the identical frame-restructuring shape to gate 3 (TCO back-edge),
-    /// one strand over: the escape fact is correct for the strict `MonoExpr`
-    /// frame the analysis ran over, but the backend rewrites that frame structure
-    /// underneath it. Raised by [`FnCompiler::compile_spark_thunk`] (apply-arg +
-    /// independent-`let` sparks) and set directly on the dependent-thunk inner
-    /// compiler (`dependent_spark.rs`); propagated into the thunk-body inner
-    /// `FnCompiler` by `compile_lambda_body`. Declining is always sound; under
-    /// `NO_LENIENT` no thunk is synthesized so this never sets and the full
-    /// stack-alloc win lands.
+    /// B3.4 gate 5 (`design/backend/ownership-codegen.md` §4.3; FIXME 0525):
+    /// `true` while compiling a backend-synthesized spark-thunk body, whose
+    /// frame pops at the join, so stack placement is declined there.
     pub(crate) in_spark_thunk: bool,
-
-    /// §3.3 in-frame projection elision — consumer-driven
-    /// (`design/backend/ownership-codegen.md` §3.3): the span of the ONE
-    /// `vec-get` node whose heap-element materialization inc `compile_vec_get`
-    /// should SKIP, or `None`. Set (with save/restore) by
-    /// [`FnCompiler::compile_entry_arg_list`] to the span of a borrowed
-    /// projection argument (site fact `provenance`) being passed DIRECTLY into a
-    /// `Borrowed` parameter — the sole provably-safe elision: the borrowed element
-    /// is consumed in-place by the callee's borrow, never escapes the enclosing
-    /// expression, and never outlives the root's fork-join-guaranteed liveness
-    /// (the F1 machinery-tax collapse). Span-matched so exactly that read elides
-    /// and no other. `None` ⇒ every `vec-get` incs verbatim — byte-identical-off
-    /// (§2.2).
-    pub(crate) elide_vecget_span: Option<Span>,
-
-    /// The COW sites holding the **consuming claim** (§13.7), as their source
-    /// nodes' addresses: each such site takes its source slot's reference, and
-    /// the claim's issuer suppresses that slot's own release. Only these `Var`
-    /// sources lower `Owned`; every other `Var` source is `Borrowed`. Keyed by
-    /// node, so a nested COW in a claimed site's operands, or a binder shadowing
-    /// the claimed source's name, does not inherit it. Two issuers:
-    ///
-    /// - the function-body return-COW site ([`return_cow_source_in_scope`]),
-    ///   claimed for the whole body; scope exit skips its slot (`skip_var`);
-    /// - the consuming in-place COW arguments of the self-tail call being
-    ///   compiled ([`consuming_cow_arguments`]); the parameter flush skips
-    ///   their slots.
-    ///
-    /// That these are the only issuers is asserted, not structural: the set is
-    /// `pub(crate)`, so a third insertion compiles. Falsifier: a write to this
-    /// set outside those two issuers. Read only through
-    /// [`FnCompiler::holds_consuming_claim`].
-    pub(crate) consuming_claims: HashSet<usize>,
-
-    /// Whether each compiled match merge receives an independently owned
-    /// result on every normal arm, keyed by the stable address of the `MonoExpr`
-    /// node during this compilation. Written by match lowering from the same
-    /// arm-local protection decisions that emit RC operations; panic edges do
-    /// not enter the merge. The enclosing ownership classifier reads this
-    /// instead of re-deriving protection from arm syntax.
-    pub(crate) independent_match_results: HashMap<usize, bool>,
-
-    /// FIXME 0720 (S115 W3 change-set 2) — the `Borrowed` heap params this frame
-    /// has PROMOTED to frame-owned for the duration of a TCO loop, because a tail
-    /// self-call SUPERSEDES their slot with a value the caller does not own.
-    ///
-    /// A `Borrowed` param means "the caller owns this reference; do not dec it".
-    /// That contract holds for the value the caller actually passed — but a TCO
-    /// back-edge OVERWRITES the slot with the tail argument, and for a
-    /// non-transferring argument (a temporary such as `(set0 g m)`) that value is
-    /// owned by THIS frame, not by any caller. With the slot skipped as "borrowed"
-    /// on every iteration, nothing ever released it: the ADT-wrapped supersede
-    /// loop leaked its box AND its fields, 2 objects per iteration.
-    ///
-    /// The cure keeps the borrow contract intact and makes the frame's ownership
-    /// uniform instead: [`FnCompiler::compile_body`] emits ONE `rc_inc` on the
-    /// caller's incoming value in the ENTRY block (so the caller's reference is
-    /// never the one released), and the param is then treated as frame-owned by
-    /// exactly two consumers — the tail-jump param flush and the function-exit
-    /// scope cleanup. Invariant: **the frame owns exactly one reference to
-    /// whatever occupies the slot** — established at entry by the inc, preserved
-    /// at each back-edge (flush decs the old value; the fresh argument arrives
-    /// frame-owned), discharged at exit by the scope cleanup.
-    ///
-    /// `is_borrowed` itself is NOT cleared: last-use ownership transfer and
-    /// in-place COW mutation must stay refused for these params (they may still
-    /// alias the caller's value on the first iteration).
-    pub(crate) tco_owned_params: std::collections::HashSet<Symbol>,
-
-    /// S118 slice S3 (`design/backend/transitive-drop-glue.md` §5) — the
-    /// wrapper releases owed by the match arms currently being compiled, from
-    /// outermost to innermost.
-    ///
-    /// A match whose scrutinee this frame OWNS releases that wrapper once per
-    /// consuming arm, at the arm's lifetime end. When the arm's body is a TAIL
-    /// SELF-CALL the jump terminates the block, so an end-of-arm release would
-    /// land in the dead block after it and never execute — that is Face A of
-    /// FIXME 0810 (`(match (mk i) [(Mk v) (go …)])` leaks exactly one wrapper
-    /// per iteration). `compile_tail_self_call` therefore flushes this stack
-    /// before the jump, the identical shape as
-    /// [`FnCompiler::flush_let_scopes_before_tail_jump`]; the end-of-arm
-    /// release still emits into the (now dead) continuation, so a non-tail arm
-    /// keeps its release and a tail arm never gets two.
-    ///
-    /// A stack, not a single slot: an arm may itself contain a match over
-    /// another owned temporary, and a tail jump out of the inner arm must
-    /// discharge both wrappers.
-    pending_scrutinee_releases: Vec<(Value, Type)>,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -412,19 +156,16 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    /// Create an inner `FnCompiler` for lambda bodies, continuations,
-    /// or (future) drop glue. This is the single construction point for
-    /// inner compilers (ring1-checklist section 5.9).
-    ///
-    /// TCO state is disabled for inner functions (no self-call detection,
-    /// no tail loop). The scope and variable maps start fresh.
+    /// Create an inner `FnCompiler` for lambda bodies, continuations and spark
+    /// thunks, planned by `plan`. The single construction point for inner
+    /// compilers. TCO is disabled for inner functions.
     pub(crate) fn inner(
         builder: FunctionBuilder<'a>,
         module: &'a mut M,
         ctx: CompileContext<'a, C, L>,
         glue: &'a mut crate::drop_glue::DropGlueRegistry,
         fn_param_count: usize,
-        last_uses: HashMap<(Symbol, Span), bool>,
+        plan: OwnershipPlan,
     ) -> Self {
         FnCompiler {
             builder,
@@ -434,59 +175,62 @@ where
             ctx,
             glue,
             next_var: 0,
+            plan,
+            binders: HashMap::new(),
             current_fn_name: None,
             tail_loop_block: None,
             in_tail_position: false,
             fn_param_count,
-            last_uses,
-            current_mode_summary: None,
-            tail_arg_protect: false,
             in_trace_body: false,
             sparked_args: None,
             mstatic_recursive_cache: std::cell::RefCell::new(None),
             gate_arm_disc: String::new(),
             gate_counter: 0,
             suppress_spark_gate: false,
-            spark_capture_borrow: false,
-            // Inner compilers (lambda / continuation / drop-glue bodies) never
-            // enable stack placement of their own (§4.1/§4.3 — those bodies are
-            // heap by construction pending the spark/escape gates); `false` is
-            // the sound default.
+            // Inner compilers never enable stack placement of their own
+            // (§4.1/§4.3); `false` is the sound default.
             fn_has_self_call: false,
-            // Gate 5 (§4.3): default off; spark-thunk-body inner compilers set it
-            // explicitly (`compile_lambda_body` propagates the outer flag;
-            // `dependent_spark.rs` sets it directly on its dedicated inner).
             in_spark_thunk: false,
-            elide_vecget_span: None,
-            consuming_claims: HashSet::new(),
-            independent_match_results: HashMap::new(),
-            tco_owned_params: std::collections::HashSet::new(),
-            pending_scrutinee_releases: Vec::new(),
         }
+    }
+
+    /// Plan a body and, in debug builds, check the plan's linearity before
+    /// anything is emitted (`uniform-counting.md` §2, U1's seam assertion).
+    pub(crate) fn plan_body(
+        body: &MonoExpr,
+        params: &[Symbol],
+        captures: &[Symbol],
+        owner: &str,
+    ) -> Result<OwnershipPlan, CranelispError> {
+        let plan = OwnershipPlan::build(
+            body,
+            params,
+            captures,
+            cranelisp_types::ownership_analysis_off(),
+        );
+        if cfg!(debug_assertions) {
+            plan.check_linearity(body, params.len())
+                .map_err(|violation| CranelispError::CodegenError {
+                    message: format!(
+                        "internal invariant violation: the ownership plan of '{owner}' is not \
+                         linear: {}",
+                        violation.0
+                    ),
+                    location: cranelisp_types::ErrorLocation::from_span(body.span()),
+                })?;
+        }
+        Ok(plan)
     }
 
     /// Monomorphisation-aware discriminator for span-derived inner-function
     /// names (lambdas, fn-as-value wrappers, operator-as-value wrappers).
     ///
-    /// **FIXME 0347 defect (1).** Inner functions are named by source span
-    /// (`__lambda_<start>_<end>__`, `__wrap_<name>_<start>_<end>__`). When the
-    /// ENCLOSING function is monomorphised — the same source span compiled into
-    /// N distinct monomorphic instances within ONE `Module` — every instance
-    /// re-emits the same span-derived name, so the second `define_function`
-    /// collides (`Duplicate definition of identifier`). The enclosing function's
-    /// name IS the per-instance discriminator: each mono copy carries a distinct
-    /// mangled name (`reduce$Int+Vec`, `id$Int`, …), so prefixing the inner
-    /// name with it uniquifies the N copies. When no enclosing name is set
-    /// (top-level expression, nested-lambda inner compiler), the span alone
-    /// suffices for uniqueness within that scope, so the prefix is empty.
-    ///
-    /// Non-alphanumeric UTF-8 bytes, including `_`, use `_hh` hex escapes;
-    /// this preserves distinct enclosing names in a clean Cranelift symbol.
+    /// **FIXME 0347 defect (1).** Inner functions are named by source span.
+    /// When the ENCLOSING function is monomorphised, every instance re-emits
+    /// the same span-derived name, so the enclosing function's mangled name is
+    /// folded in as a per-instance discriminator; the create-gate arm token is
+    /// folded in too.
     pub(crate) fn inner_fn_discriminator(&self) -> String {
-        // Fold in the create-gate arm discriminator (§3.6.2): the gate compiles
-        // the same expressions on both arms, so the per-arm `g{id}{L|D}_` token
-        // is what keeps the two arms' span-derived inner-function names distinct.
-        // Empty outside any gate arm ⇒ byte-identical names to the pre-gate path.
         format!(
             "{}{}",
             inner_fn_discriminator_for(self.current_fn_name.as_ref()),
@@ -494,49 +238,16 @@ where
         )
     }
 
-    /// B3.2 borrow-elision return-protect gate
-    /// (`design/backend/ownership-codegen.md` §3.3): `true` iff the function's
-    /// ownership summary proves its return value is a fresh (non-aliased) value,
-    /// so `protect_return_value`'s inc is dead weight and is elided (curing the
-    /// G2 / item-26 over-inc leak).
-    ///
-    /// One condition, sound iff the summary's leaf facts are truthful+reachable:
-    ///
-    /// - **A summary is PRESENT with `result == Fresh`.** Absent ⇒ Decision-24
-    ///   (protect verbatim), so a `CRANELISP_NO_OWNERSHIP` build (no summaries)
-    ///   is byte-identical to pre-B3.2.
-    ///
-    /// The Apply-body restriction the partial slice (`d7b6a0f`) carried is
-    /// **dropped** here, sound now that THREE `Fresh`-falsity classes are closed:
-    /// (1) FIXME 0520 cured the typecheck-side result-mode join-collapse
-    /// (`join_origin` no longer widens a partial control-flow param-return toward
-    /// the dangerous `Fresh` — a `(if (eq i n) v (build …))` base-case-returns-`v`
-    /// body now reports not-`Fresh`); (2) S111 §3.7 cured the FALSE-declaration
-    /// class (`vec-set`/`vec-push` declare `MayAliasOf(0)`, not `Fresh`); (3)
-    /// S111 §3.7(a3) cured the UNREACHABLE-declaration class (the ownership envs
-    /// now resolve leaf facts through the prelude fallback, so a user module's
-    /// `(vec-set …)` actually sees the COW facts instead of defaulting to
-    /// `Fresh`). With all three closed, `result == Fresh` means no reachable
-    /// return path carries a param through a truthful+reachable summary chain, so
-    /// the returned value is genuinely fresh and scope cleanup can never free it
-    /// — NOT an unconditional property of the enum value alone. A
-    /// `MayAliasOf`/`AliasOf`/`ProjectionOf` result KEEPS the protect. Verified:
-    /// `04_vec_cow_loop`'s `build` keeps its protect and runs correct.
-    pub(crate) fn return_is_fresh_by_summary(&self, body: &MonoExpr) -> bool {
-        return_is_fresh_by_summary(body, self.current_mode_summary.as_ref())
-    }
-
     /// Compile a function definition body into Cranelift IR.
     ///
-    /// This is the main entry point called by Jit::compile_defn.
-    /// Creates the entry block, loop header (for TCO), binds parameters,
-    /// compiles the body, and finalizes.
+    /// Creates the entry block and the TCO loop header, binds parameters,
+    /// compiles the body and returns its owned result. Every parameter is
+    /// owned by the body and consumed where its plan says.
     // codegen threading: +glue (S118 S0 — the canonical drop-glue registry).
     #[allow(clippy::too_many_arguments)]
     pub fn compile_body(
         defn: &Defn,
         body: &MonoExpr,
-        mode_summary: Option<cranelisp_types::ModeSummary>,
         param_types: &[Option<Type>],
         func: &mut cranelift::codegen::ir::Function,
         func_ctx: &mut FunctionBuilderContext,
@@ -544,228 +255,62 @@ where
         ctx: CompileContext<'a, C, L>,
         glue: &'a mut crate::drop_glue::DropGlueRegistry,
     ) -> Result<(), CranelispError> {
+        let param_names: Vec<Symbol> = defn.params().iter().map(|(n, _)| n.clone()).collect();
+        let plan = Self::plan_body(body, &param_names, &[], defn.name.as_ref())?;
+
         let mut builder = FunctionBuilder::new(func, func_ctx);
 
-        // Entry block: receives function parameters.
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
-        // Create loop header block for TCO: one i64 block param per function param.
+        // Loop header for TCO: one i64 block param per function param.
         let loop_header = builder.create_block();
         for _ in defn.params() {
             builder.append_block_param(loop_header, types::I64);
         }
-
-        // FIXME 0720 (S115 W3 change-set 2) — promote `Borrowed` heap params that a
-        // tail self-call SUPERSEDES to frame-owned, with ONE `rc_inc` here in the
-        // entry block (the caller's incoming value, executed exactly once — NOT
-        // per iteration, which the loop header would give). See the
-        // `tco_owned_params` field rustdoc for the invariant this establishes.
-        let promoted =
-            tco_promoted_borrowed_params(defn, body, mode_summary.as_ref(), param_types, &ctx);
         let entry_params: Vec<Value> = builder.block_params(entry_block).to_vec();
-        for (i, _, category) in &promoted {
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut builder, module, entry_params[*i]);
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_inc_guarded(&mut builder, module, entry_params[*i]);
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
-            }
-        }
-
-        // Jump from entry to loop header with initial parameter values.
         builder.ins().jump(loop_header, &entry_params);
-
-        // Switch to loop header. Do NOT seal it yet -- back-edges from tail calls
-        // will be added during body compilation.
+        // Not sealed yet: tail calls add back-edges during body compilation.
         builder.switch_to_block(loop_header);
 
-        // Compute last-use info for the body.
-        let last_uses = heap::compute_last_uses(body);
-
-        // B3.4 gate 3 (§4.1): a self-recursive call becomes a TCO loop back-edge;
-        // a stack slot (one per frame) reused across iterations would clobber a
-        // loop-carried value. Decline stack placement for the whole function when
-        // the body self-calls (conservative — see `body_has_self_call`).
+        // B3.4 gate 3 (§4.1): decline stack placement when the body self-calls.
         let fn_has_self_call = body_has_self_call(body, &defn.name, &ctx.current_module);
 
-        let mut compiler = FnCompiler {
-            builder,
-            module,
-            scope: ScopeChain::new(),
-            captures: CaptureEnv::new(),
-            ctx,
-            glue,
-            next_var: 0,
-            current_fn_name: Some(defn.name.clone()),
-            tail_loop_block: Some(loop_header),
-            in_tail_position: true,
-            fn_param_count: defn.params().len(),
-            last_uses,
-            current_mode_summary: mode_summary,
-            tail_arg_protect: false,
-            in_trace_body: false,
-            sparked_args: None,
-            mstatic_recursive_cache: std::cell::RefCell::new(None),
-            gate_arm_disc: String::new(),
-            gate_counter: 0,
-            suppress_spark_gate: false,
-            spark_capture_borrow: false,
-            fn_has_self_call,
-            // Gate 5 (§4.3): a top-level `defn` body is never itself a spark thunk;
-            // the flag is raised only around the backend-synthesized thunk compiles.
-            in_spark_thunk: false,
-            elide_vecget_span: None,
-            consuming_claims: HashSet::new(),
-            independent_match_results: HashMap::new(),
-            tco_owned_params: std::collections::HashSet::new(),
-            pending_scrutinee_releases: Vec::new(),
-        };
+        let mut compiler = FnCompiler::inner(builder, module, ctx, glue, defn.params().len(), plan);
+        compiler.current_fn_name = Some(defn.name.clone());
+        compiler.tail_loop_block = Some(loop_header);
+        compiler.in_tail_position = true;
+        compiler.fn_has_self_call = fn_has_self_call;
 
-        // Seed the function's parameters into the chain's parameter frame.
-        compiler.bind_defn_params(defn, body, param_types, loop_header);
-        compiler.tco_owned_params = promoted.into_iter().map(|(_, name, _)| name).collect();
-
-        // Compile the function body with scope cleanup for parameters.
-        // This implements the consuming calling convention: the callee owns
-        // heap-typed parameters and dec's them at exit. The caller inc's
-        // variable arguments before the call.
-        let skip_var = compiler.return_var_in_scope(body);
-        // The return-COW issuer of the consuming claim (§13.7): a body that is
-        // `(vec-set v …)` / `(vec-push v …)` on a parameter `v` returns `v`'s
-        // box on its in-place branch. Scope exit skips `v`'s slot (folded into
-        // `skip_var`, exclusive with a bare-`Var` return), and the site claims
-        // `v`'s reference, so its copy branch releases the source itself.
-        let param_frame_names = compiler.scope.innermost_frame_names();
-        let cow_return_source = return_cow_source_in_scope(body, Some(&param_frame_names));
-        if let Some(source) = cow_return_source {
-            compiler
-                .consuming_claims
-                .insert(source as *const MonoExpr as usize);
-        }
-        let skip_var = skip_var.or_else(|| {
-            let MonoExpr::Var { name, .. } = cow_return_source? else {
-                return None;
-            };
-            compiler.scope.resolve_ref_in_innermost_frame(name)
-        });
-        // §3.2 soundness tripwire (`design/backend/ownership-codegen.md` §3.2):
-        // a `Borrowed` param must NEVER be the function's returned value — the
-        // ownership analysis widens any returned/escaping param off `Borrowed`
-        // (to `Owned`/`AliasOf`) before the summary is emitted (typecheck
-        // §3.3/§4.2 rule 5). If a returned bare `Var` names a `borrowed_vars`
-        // member, the analysis violated that rule and the elided caller-side inc
-        // + elided callee-side dec would hand the caller a borrowed view it then
-        // frees (UAF). Cheap debug-build guard; no emission rule is owed.
-        debug_assert!(
-            skip_var.is_none_or(|rv| {
-                compiler
-                    .scope
-                    .slot(rv)
-                    .is_none_or(|slot| !slot.is_borrowed())
-            }),
-            "§3.2 invariant violated: Borrowed param {:?} reached the return path \
-             — the ownership analysis must widen returned params off Borrowed",
-            skip_var
-                .and_then(|rv| compiler.scope.slot(rv))
-                .map(BinderSlot::name)
-        );
-        let result = compiler.compile_expr(body)?;
-        // B3.2 borrow-elision (`design/backend/ownership-codegen.md` §3.3): skip
-        // the function-return protect inc when the ownership summary proves this
-        // function's result is `Fresh`. Applied ONLY here (the function's actual
-        // return expression, where `current_mode_summary.result` describes the
-        // value) — never at the nested `let`/`match` protect sites, whose bodies
-        // are not the function's tail return.
-        if !compiler.return_is_fresh_by_summary(body) {
-            compiler.protect_return_value(&skip_var, result, body);
-        }
-        compiler.pop_scope_with_cleanup(skip_var)?;
-
-        // Return the result.
-        compiler.builder.ins().return_(&[result]);
-
-        // Seal all blocks (including loop_header which may have back-edges).
-        compiler.builder.seal_all_blocks();
-        compiler.builder.finalize();
-
-        Ok(())
-    }
-
-    /// Seed the function's parameters into the chain's parameter frame.
-    ///
-    /// Binds each `defn` parameter from the loop-header block params (not the
-    /// entry block — TCO back-edges feed the loop header) to a fresh Cranelift
-    /// `Variable`, records the binding in the current scope frame, and records
-    /// the parameter's authoritative type so scope cleanup can emit `rc_dec`
-    /// for heap-typed parameters at function exit.
-    fn bind_defn_params(
-        &mut self,
-        defn: &Defn,
-        body: &MonoExpr,
-        param_types: &[Option<Type>],
-        loop_header: Block,
-    ) {
-        // Bind function parameters from loop header block params (not entry block).
-        // Each parameter's type is published with it so scope cleanup can emit
-        // rc_dec for heap-typed parameters at function exit.
-        for (i, (param_name, _)) in defn.params().iter().enumerate() {
-            let val = self.builder.block_params(loop_header)[i];
-            // Use the defn's inferred param type (from symbol table) first.
-            // Fall back to derive_param_type_from_body (use-site inference) if the
-            // defn type isn't available.
+        for (i, param_name) in param_names.iter().enumerate() {
+            let val = compiler.builder.block_params(loop_header)[i];
             let ty = match param_types.get(i) {
                 Some(Some(ty)) => Some(ty.clone()),
                 _ => Self::derive_param_type_from_body(body, param_name),
             };
-            self.bind_local(param_name, val, ty);
+            compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
         }
 
-        // §3.2 borrow-elision, callee side
-        // (`design/backend/ownership-codegen.md` §3.2): each parameter whose
-        // ownership summary says `Borrowed` joins `borrowed_vars`. Everything
-        // then follows from the existing §5.5 discipline with ZERO new emission
-        // logic — no dec at `pop_scope_with_cleanup` (the caller owns the
-        // reference), never eligible for last-use ownership transfer
-        // (`is_last_use` gate), and passed onward to an `Owned` position gets the
-        // ordinary Var consuming inc (§3.1's adaptation). This is the spine §8.2
-        // subsumption made literal: an inferred `Borrowed` param is *implemented
-        // as* the discipline `borrowed_vars` already enforces for match-arm field
-        // bindings. Summary absent (⇒ every param `Owned`) or a `Copy`/scalar
-        // param ⇒ nothing inserted, so the callee body is byte-identical to the
-        // pre-S102 consuming compilation under `CRANELISP_NO_OWNERSHIP`.
-        if let Some(summary) = self.current_mode_summary.clone() {
-            for (i, (param_name, _)) in defn.params().iter().enumerate() {
-                if summary.param_mode(i) == cranelisp_types::Mode::Borrowed {
-                    // Borrowed only ever applies to a heap-typed reference; the
-                    // heap-typedness check keeps a mis-shaped summary (a Borrowed
-                    // mode on a scalar position) from wrongly suppressing a dec
-                    // that never existed — a no-op either way, but explicit.
-                    let is_heap = self
-                        .lookup_type(param_name)
-                        .is_some_and(|ty| self.is_heap_type(&ty));
-                    if is_heap {
-                        self.mark_borrowed(param_name);
-                    }
-                }
-            }
-        }
+        let result = compiler.compile_expr(body)?;
+        compiler.builder.ins().return_(&[result]);
+
+        compiler.builder.seal_all_blocks();
+        compiler.builder.finalize();
+        Ok(())
     }
 
-    /// Compile a monomorphised expression, dispatching to the appropriate
-    /// handler.
-    ///
-    /// The codegen walk is over [`MonoExpr`] (concrete-boundary-type.md §3.1,
-    /// FIXME 0391): every node carries a `ty: ConcreteType` non-optionally, so a
-    /// `Type::Var` is *unrepresentable* at every codegen-reaching position. The
-    /// `Annotate` variant is erased at the `MonoExpr::from_expr` build, so it has
-    /// no arm here.
+    /// Compile a monomorphised expression to an OWNED value: every heap value
+    /// an expression yields carries one reference its receiver consumes
+    /// (`uniform-counting.md` §1).
     pub fn compile_expr(&mut self, expr: &MonoExpr) -> Result<Value, CranelispError> {
+        let value = self.compile_expr_kind(expr)?;
+        self.emit_post_drops(expr)?;
+        Ok(value)
+    }
+
+    fn compile_expr_kind(&mut self, expr: &MonoExpr) -> Result<Value, CranelispError> {
         match expr {
             MonoExpr::IntLit { value, .. } => self.compile_int_lit(*value),
             MonoExpr::FloatLit { value, .. } => self.compile_float_lit(*value),
@@ -779,18 +324,9 @@ where
                 ty,
                 ..
             } => {
-                // The signature-path bridge: `compile_var` reads the variable's
-                // type as a `&Type` (for the value-position trait-method arity).
-                // The node's `ConcreteType` embeds losslessly into a `Type`.
-                //
-                // S114 carrier flip (`typed-resolution-carrier.md` §4; the S110 W2
-                // `backend-keyed-consumer.md` §4 S10–S18 seams): the Var's typed
-                // `resolution` verdict — `VarRef::Global(storage_fq)` (a table
-                // reference, drives the value-seam keyed reads) or `VarRef::Local`
-                // (a chain reference; the backend scope-chain lookup precedes
-                // any keyed read — KC-N6; a scope-stack miss is a hard invariant
-                // failure carrying the binder identity, §2.7.2). `compile_var`
-                // matches the closed sum exhaustively.
+                if let Some(occurrence) = self.plan.occurrence(expr) {
+                    return self.compile_occurrence(name, occurrence, *span);
+                }
                 let inferred = ty.to_type();
                 self.compile_var(
                     name,
@@ -805,13 +341,13 @@ where
                 body,
                 span,
                 ..
-            } => self.compile_let(bindings, body, *span),
+            } => self.compile_let(expr, bindings, body, *span),
             MonoExpr::If {
                 cond,
                 then_branch,
                 else_branch,
                 ..
-            } => self.compile_if(cond, then_branch, else_branch),
+            } => self.compile_if(expr, cond, then_branch, else_branch),
             MonoExpr::Lambda {
                 params,
                 body,
@@ -819,8 +355,15 @@ where
                 ty,
                 ..
             } => {
+                let captures = self.plan.captures(expr).map(<[_]>::to_vec).ok_or_else(|| {
+                    CranelispError::CodegenError {
+                        message: "internal invariant violation: a lambda has no planned captures"
+                            .into(),
+                        location: cranelisp_types::ErrorLocation::from_span(*span),
+                    }
+                })?;
                 let lambda_type = ty.to_type();
-                self.compile_lambda(params, body, *span, Some(&lambda_type))
+                self.compile_lambda(params, body, *span, Some(&lambda_type), &captures)
             }
             MonoExpr::Apply {
                 callee,
@@ -831,29 +374,16 @@ where
                 ty,
                 ..
             } => {
-                // B3.4 (§4.1): a use-site data-constructor call `(Rect n n)` is
-                // an `Apply` whose result is allocated in THIS (the caller's)
-                // frame (inlined via `emit_adt_construct`). The escape fact is on
-                // the `Apply` node (dropped by this dispatch), so compute the
-                // stack-vs-heap verdict here and thread it down — the constructor
-                // arm of `compile_var_apply` is the sole consumer. `false` ⇒
-                // today's heap path verbatim. (The synthetic `ConstrADT`
-                // constructor-function body is NOT a stack site — it returns its
-                // value to the caller and stays heap.)
+                // B3.4 (§4.1): the stack-vs-heap verdict for a use-site data
+                // constructor call; consumed only by `compile_var_apply`.
                 let stack = self.constructor_call_stack_eligible(expr, args);
                 let apply_type = ty.to_type();
-                // S114 carrier flip (`typed-resolution-carrier.md` §4): the Apply's
-                // typed dispatch verdict → the `Option<&FQSymbol>` the keyed fetch
-                // consumes. Exhaustive on the closed `ApplyRef` sum (no `_` arm):
-                // `Dispatch(fq)` carries the STORAGE FQ typecheck's dispatch
-                // selection resolved to (trait/sig-dispatch/auto-curry/operator
-                // legs); `ViaCallee` is the POSITIVE no-Apply-level-dispatch verdict
-                // (the identity rides the callee `Var` node) → `None`.
                 let apply_target = match dispatch {
                     ApplyRef::Dispatch(fq) => Some(fq),
                     ApplyRef::ViaCallee => None,
                 };
                 self.compile_apply(
+                    expr,
                     callee,
                     args,
                     *span,
@@ -868,8 +398,8 @@ where
                 arms,
                 span,
                 ..
-            } => self.compile_match(expr as *const MonoExpr as usize, scrutinee, arms, *span),
-            MonoExpr::VecLit { elements, span, .. } => self.compile_vec_lit(elements, *span),
+            } => self.compile_match(expr, scrutinee, arms, *span),
+            MonoExpr::VecLit { span, .. } => self.compile_vec_lit(expr, *span),
             MonoExpr::Trace {
                 modules,
                 body,
@@ -881,37 +411,294 @@ where
                 body,
                 span,
                 ..
-            } => self.compile_par_bind(bindings, body, *span),
+            } => self.compile_par_bind(expr, bindings, body, *span),
             MonoExpr::LaunchContinue {
                 launched,
                 continuation,
                 span,
                 ..
-            } => self.compile_launch_continue(launched, continuation, *span),
-            MonoExpr::ConstrADT {
-                tag,
-                fields,
-                span,
-                ty,
-                ..
-            } => self.compile_constr_adt(*tag, fields, *span, ty),
+            } => self.compile_launch_continue(expr, launched, continuation, *span),
+            MonoExpr::ConstrADT { tag, span, ty, .. } => {
+                self.compile_constr_adt(expr, *tag, *span, ty)
+            }
         }
+    }
+
+    // --- The counting primitives the plan drives ---
+
+    /// A variable occurrence the plan resolved: the binder's value, duplicated
+    /// when the plan says so.
+    fn compile_occurrence(
+        &mut self,
+        name: &Symbol,
+        occurrence: Occurrence,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let (var, ty, use_) = match occurrence {
+            Occurrence::Owned { binder, use_ } => {
+                let store = self.binder_store(binder, span)?;
+                (store.var, store.ty.clone(), use_)
+            }
+            Occurrence::Capture => {
+                let capture =
+                    self.captures
+                        .get(name)
+                        .ok_or_else(|| CranelispError::CodegenError {
+                            message: format!(
+                                "internal invariant violation: capture '{name}' is absent from the \
+                             capture environment"
+                            ),
+                            location: cranelisp_types::ErrorLocation::from_span(span),
+                        })?;
+                (capture.var(), capture.ty().cloned(), Use::Duplicate)
+            }
+        };
+        let val = self.builder.use_var(var);
+        if use_ == Use::Duplicate {
+            self.emit_dup(val, ty.as_ref());
+        }
+        Ok(val)
+    }
+
+    /// The type the value `node` yields is counted at.
+    ///
+    /// A planned variable occurrence yields its binder's value, so it is
+    /// counted at the binder's recorded type, which a drop of that binder also
+    /// reads (`uniform-counting.md` §3.4 item 2). A synthetic body's nodes carry
+    /// the lenient builder's `Int` placeholder while its parameters carry the
+    /// signature's type (item 1), so reading the node there loses the release.
+    /// An occurrence whose binder has no recorded concrete type keeps its
+    /// node's type: an unrecorded type owns no heap, and a residual variable is
+    /// FIXME 0903's face, which item 4 leaves to the non-concrete release
+    /// contract.
+    pub(crate) fn counted_type(&self, node: &MonoExpr) -> Type {
+        let recorded = match (self.plan.occurrence(node), node) {
+            (Some(Occurrence::Owned { binder, .. }), _) => self
+                .binders
+                .get(&binder)
+                .and_then(|store| store.ty.as_ref()),
+            (Some(Occurrence::Capture), MonoExpr::Var { name, .. }) => {
+                self.captures.get(name).and_then(|capture| capture.ty())
+            }
+            _ => None,
+        };
+        match recorded {
+            Some(ty) if cranelisp_types::ConcreteType::from_type(ty).is_ok() => ty.clone(),
+            _ => node.ty().to_type(),
+        }
+    }
+
+    fn binder_store(&self, binder: BinderId, span: Span) -> Result<&BinderStore, CranelispError> {
+        self.binders
+            .get(&binder)
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "internal invariant violation: planned binder {binder:?} was never bound"
+                ),
+                location: cranelisp_types::ErrorLocation::from_span(span),
+            })
+    }
+
+    /// Bind the binder the plan introduces at `intro` to the owned `val`, and
+    /// drop it at once when the plan says it is dead at its introduction.
+    pub(crate) fn bind_binder(
+        &mut self,
+        intro: Intro,
+        name: &Symbol,
+        val: Value,
+        ty: Option<Type>,
+    ) -> Result<(), CranelispError> {
+        let var = self.bind_local(name, val, ty.clone());
+        let Some(binder) = self.plan.binder_at(intro) else {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "internal invariant violation: binder '{name}' was not planned at {intro:?}"
+                ),
+                location: cranelisp_types::ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        };
+        self.binders.insert(binder, BinderStore { var, ty });
+        if self.plan.dead_at_intro(binder) {
+            self.emit_drop_binder(binder)?;
+        }
+        Ok(())
+    }
+
+    /// Bind a pattern field the plan says is used, or leave an unused one
+    /// unowned. A used field is duplicated out of the scrutinee, which the arm
+    /// then drops; an unused one is neither duplicated nor dropped, the fused
+    /// form of a binder dead at its introduction.
+    pub(crate) fn bind_field_binder(
+        &mut self,
+        intro: Intro,
+        name: &Symbol,
+        val: Value,
+        ty: Option<Type>,
+    ) -> Result<(), CranelispError> {
+        let var = self.bind_local(name, val, ty.clone());
+        let Some(binder) = self.plan.binder_at(intro) else {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "internal invariant violation: field binder '{name}' was not planned"
+                ),
+                location: cranelisp_types::ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        };
+        if !self.plan.dead_at_intro(binder) {
+            self.binders.insert(binder, BinderStore { var, ty });
+        }
+        Ok(())
+    }
+
+    /// Is the pattern field at `intro` used, so the arm must duplicate it?
+    pub(crate) fn field_is_used(&self, intro: Intro) -> bool {
+        self.plan
+            .binder_at(intro)
+            .is_some_and(|binder| !self.plan.dead_at_intro(binder))
+    }
+
+    /// One increment of an owned heap value of type `ty`, guarded for a value
+    /// that may be a bare nullary tag. A scalar or untyped value is untouched.
+    pub(crate) fn emit_dup(&mut self, val: Value, ty: Option<&Type>) {
+        let Some(ty) = ty else {
+            return;
+        };
+        match signature_heap_category(ty, Some(self.ctx.symbol_tables)) {
+            HeapCategory::AlwaysHeap => heap::emit_rc_inc(&mut self.builder, self.module, val),
+            HeapCategory::Mixed => heap::emit_rc_inc_guarded(&mut self.builder, self.module, val),
+            HeapCategory::NeverHeap | HeapCategory::Value => {}
+        }
+    }
+
+    /// Release one owned heap value of type `ty` through its canonical glue.
+    ///
+    /// # The non-concrete arm — TYPE-keyed, and known to be the wrong key
+    ///
+    /// The disposition authority is
+    /// `design/backend/non-concrete-release-contract.md` §4 and §7.4 (FIXME
+    /// 0903). No frame's parameter is residual-typed: a codegen target is a
+    /// `Life::Concrete` body, whose slot exists only for a concrete scheme. A
+    /// residual type arrives from inside a body, chiefly a constructor field
+    /// read from the declaration's scheme (contract §7.4), and takes the
+    /// shallow guarded dec below. A frame key was implemented and measured at
+    /// **+16 hard codegen refusals over the `spec_*` corpus**, so do not narrow
+    /// the key on its own (contract §8 reject list).
+    pub(crate) fn emit_release(
+        &mut self,
+        val: Value,
+        ty: Option<&Type>,
+    ) -> Result<(), CranelispError> {
+        let Some(ty) = ty else {
+            return Ok(());
+        };
+        if !self.is_heap_type(ty) {
+            return Ok(());
+        }
+        if cranelisp_types::ConcreteType::from_type(ty).is_err() {
+            let dealloc = self.ctx.dealloc_func_id;
+            heap::emit_rc_dec_guarded(&mut self.builder, self.module, val, dealloc, None, true);
+            return Ok(());
+        }
+        self.emit_typed_rc_dec(val, ty)
+    }
+
+    /// Drop the reference `binder` holds.
+    pub(crate) fn emit_drop_binder(&mut self, binder: BinderId) -> Result<(), CranelispError> {
+        let store = self.binder_store(binder, Span::SYNTHETIC)?.clone();
+        let val = self.builder.use_var(store.var);
+        self.emit_release(val, store.ty.as_ref())
+    }
+
+    fn emit_drops(&mut self, binders: &[BinderId]) -> Result<(), CranelispError> {
+        for binder in binders {
+            self.emit_drop_binder(*binder)?;
+        }
+        Ok(())
+    }
+
+    /// The drops the plan places on entry to branch `branch` of the `if` or
+    /// `match` at `node`.
+    pub(crate) fn emit_entry_drops(
+        &mut self,
+        node: usize,
+        branch: usize,
+    ) -> Result<(), CranelispError> {
+        let drops = self.plan.entry_drops(node, branch).to_vec();
+        self.emit_drops(&drops)
+    }
+
+    /// Moves off: the binders dropped at every arm entry of the match `node`.
+    pub(crate) fn emit_scrutinee_drops(&mut self, node: usize) -> Result<(), CranelispError> {
+        let drops = self.plan.scrutinee_drops(node).to_vec();
+        self.emit_drops(&drops)
+    }
+
+    /// Moves off: the binders dropped once `node` has completed.
+    pub(crate) fn emit_post_drops(&mut self, node: &MonoExpr) -> Result<(), CranelispError> {
+        let drops = self.plan.post_drops(node).to_vec();
+        self.emit_drops(&drops)
+    }
+
+    /// The frame's half of a lenient spark: the thunk duplicated every capture,
+    /// so the frame drops the binders the sequential evaluation of `node` would
+    /// have consumed, at the point that evaluation would have run.
+    pub(crate) fn emit_spark_consumption(&mut self, node: &MonoExpr) -> Result<(), CranelispError> {
+        let drops = self.plan.consumed_within(node);
+        self.emit_drops(&drops)
+    }
+
+    /// The captures of a backend-synthesized closure over `body` that the plan
+    /// never saw: every free name that resolves here, sorted, each duplicated.
+    pub(crate) fn duplicating_captures(
+        &self,
+        params: &[Symbol],
+        body: &MonoExpr,
+    ) -> Vec<CaptureEntry> {
+        let mut names: Vec<Symbol> = super::control_flow::find_free_vars(body, params)
+            .into_iter()
+            .filter(|name| self.binds(name))
+            .collect();
+        names.sort();
+        names
+            .into_iter()
+            .map(|name| CaptureEntry {
+                name,
+                occurrence: Occurrence::Capture,
+            })
+            .collect()
+    }
+
+    /// Store one capture entry's value: the denoted binder's value, with one
+    /// increment unless the plan moves the binder into the closure. Returns
+    /// `None` for a name nothing here binds.
+    pub(crate) fn capture_value(&mut self, entry: &CaptureEntry) -> Option<Value> {
+        let binding = self.lookup_binding(&entry.name)?;
+        let (var, ty) = (binding.var(), binding.ty().cloned());
+        let val = self.builder.use_var(var);
+        let moves = matches!(
+            entry.occurrence,
+            Occurrence::Owned {
+                use_: Use::Move,
+                ..
+            }
+        );
+        if !moves {
+            self.emit_dup(val, ty.as_ref());
+        }
+        Some(val)
     }
 
     /// B3.3 (`design/backend/ownership-codegen.md` §5.1): the per-site RC
     /// atomicity for a value produced DIRECTLY by `node` — `NonAtomic` iff the
-    /// node carries `confined = Some(true)`. Used at emission sites where the
-    /// allocation/capture-producing node is in hand (materialization incs).
-    /// `Some(false)` (Crossing) / `None` (fact absent / analysis off) ⇒
-    /// `Atomic`, verbatim today.
+    /// node carries `confined = Some(true)`. `Some(false)` (Crossing) / `None`
+    /// (fact absent / analysis off) ⇒ `Atomic`.
+    ///
+    /// No counting site reads it under U′: its only consumer was the retired
+    /// return protect. It stays, with its census hook, as the retained
+    /// confinement classification (`uniform-counting.md` §2, "not in the list").
+    #[allow(dead_code)]
     pub(crate) fn rc_atomicity_for_node(&self, node: &MonoExpr) -> heap::RcAtomicity {
         let confined = node_confined(node);
-        // N3 (S105, `design/backend/ownership-codegen.md` §13.2.2): record this
-        // confinement-classified RC site for the residual-atomic-RC attribution dump
-        // (`[RC_SITE_STATS]`). Gated on `CRANELISP_RC_STATS`, host-side, no emitted IR
-        // ⇒ byte-identical-off. The emitting node's span + the enclosing fn FQ +
-        // the confinement class are all in hand here (the live `node_confined`
-        // consumer), so this is the site the dump keys on.
         crate::rc_site_stats::record_rc_site_if_enabled(
             &self.ctx.current_module,
             self.current_fn_name.as_ref(),
@@ -925,115 +712,41 @@ where
     }
 
     /// B3.4 (`design/backend/ownership-codegen.md` §4.1): is the use-site
-    /// data-constructor call `apply` (a `MonoExpr::Apply` whose callee is a
-    /// constructor, e.g. `(Rect n n)`) eligible for a Cranelift **stack slot**
-    /// (immortal-RC sentinel, §4.2) in the caller's frame instead of the RC heap?
+    /// data-constructor call `apply` eligible for a Cranelift **stack slot**
+    /// (immortal-RC sentinel, §4.2) in the caller's frame instead of the heap?
     ///
-    /// The construction is inlined in the caller's frame (`emit_adt_construct`,
-    /// `apply.rs`), so the caller's escape fact — carried on this `Apply` node —
-    /// authoritatively decides whether the aggregate may live on the stack. (The
-    /// synthetic `ConstrADT` constructor-*body* is a different node that always
-    /// returns to its caller and stays heap; it never reaches this predicate.)
+    /// Conservative by default — when in doubt, HEAP:
+    /// 1. statically sized — always true;
+    /// 2. all-scalar payload — every argument classifies `NeverHeap`, since a
+    ///    stack aggregate's never-run drop glue could not release a heap field;
+    /// 3. not reachable by a TCO back-edge ([`FnCompiler::fn_has_self_call`]);
+    /// 4. backend-emitted, never an extern allocation;
+    /// 5. not relocated into a spark thunk ([`FnCompiler::in_spark_thunk`]).
     ///
-    /// **All four eligibility gates, backend-local, CONSERVATIVE by default —
-    /// when in doubt, HEAP:**
-    /// 1. **Statically sized** — always true (`HeapAdt::payload_size(n_fields)`;
-    ///    the arg/field count is fixed).
-    /// 2. **All-scalar payload** — every constructor arg (= stored field)
-    ///    classifies `NeverHeap` (Int / Bool / Float / nullary tag). A stack
-    ///    aggregate holding a heap-typed field would owe a frame-exit field
-    ///    release its drop glue never runs (§4.2 — the immortal sentinel means the
-    ///    ADT never reaches rc=0, so its drop glue never decs the field ⇒ a leak).
-    ///    The zero-obligation scalar class ships first.
-    /// 3. **Not reachable by a TCO back-edge** — declined for the whole function
-    ///    when it self-calls ([`FnCompiler::fn_has_self_call`] / `body_has_self_call`).
-    /// 4. **Extern-produced values are ineligible by construction** — an inlined
-    ///    constructor allocation is backend-emitted, not an extern `alloc_with_rc`
-    ///    body; there is no allocator seam to redirect in increment I.
-    ///
-    /// 5. **Not relocated across a spark boundary** ([`FnCompiler::in_spark_thunk`],
-    ///    §4.3; FIXME 0525 `/arch` ruling 2026-07-05) — a construction the backend
-    ///    relocates into a synthesized spark-thunk body (lenient apply-arg /
-    ///    independent-`let` / dependent-`let` sparks) lives in a thunk frame that
-    ///    pops at the join, so its stack slot dangles once the parent consumes the
-    ///    value. This is gate 3's frame-restructuring shape one strand over: the
-    ///    escape fact is correct for the strict `MonoExpr` frame the analysis ran
-    ///    over, but the backend rewrites that frame structure underneath it. The
-    ///    backend owns the spark-placement decision, so it is the only actor that can
-    ///    gate here — a backend-local emission sharpening, not an analysis fact.
-    ///    Declining is always sound; under `NO_LENIENT` no thunk is synthesized, the
-    ///    flag never sets, and the full stack-alloc win lands.
-    ///
-    /// The `escapes = Some(false)` precondition is the analysis' NoEscape verdict
-    /// (the FIRST hard consumer of the escape fact). `Some(true)` / `None`
-    /// (analysis off) ⇒ heap — so `CRANELISP_NO_OWNERSHIP` is byte-identical to
-    /// pre-B3.4 (no node carries `Some(false)`, this returns false everywhere).
-    ///
-    /// **Downstream guard:** the returned `bool` is a *hint*; it only becomes a
-    /// stack allocation if `compile_var_apply` confirms the callee is actually a
-    /// data constructor (`data_constructor_info`). For any other `Apply` shape
-    /// the hint is ignored — the aggregate emission (`emit_adt_construct`) is not
-    /// reached.
+    /// The `escapes = Some(false)` precondition is the analysis' NoEscape
+    /// verdict; analysis off ⇒ heap. The result is a hint, consumed only when
+    /// `compile_var_apply` confirms the callee is a data constructor.
     pub(crate) fn constructor_call_stack_eligible(
         &self,
         apply: &MonoExpr,
         args: &[MonoExpr],
     ) -> bool {
-        // ===================================================================
-        // B3.4 ACTIVATED (2026-07-05, FIXME 0525 `/arch` ruling). The escape fact
-        // (comprehensively sound post-FIXME 0523/0524) is the precondition; gate 5
-        // (`in_spark_thunk`) closes the lenient-eval-vs-stack-alloc structural gap.
-        //
-        // The `STACK_ALLOC_ESCAPE_FACT_SOUND` const is now the analysis-off oracle
-        // switch: `false` restores the pre-B3.4 all-heap conservative point
-        // (byte-identical). With it `true`, a construction is stack-eligible iff the
-        // analysis proved it NoEscape (gate: escape precondition) AND none of the
-        // backend-local sharpenings (gates 3, 5) declines it.
-        // N4 (S105, §13.2.2): the FINE stack-oracle gate. `stack_alloc_enabled()`
-        // AND-s the `STACK_ALLOC_ESCAPE_FACT_SOUND` const default with a runtime
-        // env read of `CRANELISP_NO_STACK_ALLOC` — declining stack-alloc ONLY
-        // (borrow / non-atomic-RC / reuse stay live), the fine granularity the
-        // COARSE `CRANELISP_NO_OWNERSHIP` cannot give. Codegen-time read (once,
-        // via `OnceLock`), so ZERO runtime cost; with the env unset it returns the
-        // const default (`true`) ⇒ byte-identical codegen to today (§2.2).
         if !stack_alloc_enabled() {
             return false;
         }
-        // Precondition: the analysis must have proved this allocation NoEscape.
         if node_escapes(apply) != Some(false) {
             return false;
         }
-        // Gate 3: decline for any self-recursive (TCO-back-edge-bearing) function.
         if self.fn_has_self_call {
             return false;
         }
-        // Gate 5 (FIXME 0525, §4.3): decline any construction the backend relocates
-        // into a spark thunk. Under lenient eval the backend synthesizes a
-        // `MonoExpr::Lambda` spark-thunk body (apply-arg / independent-`let` /
-        // dependent-`let` sparks) whose frame pops at the join; a stack slot built
-        // there dangles once the parent consumes the freed value (`match failed` —
-        // hard UAF, the 0525 signature). The escape fact is CORRECT for the strict
-        // `MonoExpr` frame the analysis ran over — the backend REWRITES that frame
-        // underneath it (gate 3's shape one strand over). Raised by
-        // `compile_spark_thunk` / `define_dependent_thunk_body` and propagated into
-        // the thunk-body inner `FnCompiler`. Declining is always sound; under
-        // `NO_LENIENT` no thunk is synthesized so this never fires and the full win
-        // lands.
         if self.in_spark_thunk {
             return false;
         }
-        // Gate 1 (statically sized: always) + Gate 2 (all-scalar payload) + Gate 4
-        // (backend-emitted). A zero-arg (nullary) constructor is a bare tag with no
-        // allocation, so `all` is vacuously true but the emission never reaches a
-        // stack slot — harmless.
         !args.is_empty() && args.iter().all(|a| self.node_is_scalar(a.ty()))
     }
 
-    /// B3.4 gate 2 helper: does `ty` classify as a scalar (`NeverHeap`) payload —
-    /// Int / Bool / Float / a nullary-only ADT (bare tag)? `AlwaysHeap` and
-    /// `Mixed` both fail (conservative: a `Mixed` field may be a live heap
-    /// pointer whose reference the stack aggregate's never-run drop glue would
-    /// leak).
+    /// B3.4 gate 2 helper: does `ty` classify as a scalar (`NeverHeap`) payload?
     fn node_is_scalar(&self, ty: &cranelisp_types::ConcreteType) -> bool {
         matches!(
             HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
@@ -1041,37 +754,34 @@ where
         )
     }
 
-    /// Compile `thunk_expr` as a backend-synthesized **spark-thunk body**
-    /// (`design/backend/ownership-codegen.md` §4.3; FIXME 0525 gate 5). Single
-    /// source (Principle 7) for the lenient-eval spark sites that relocate a
-    /// construction into a `MonoExpr::Lambda` thunk running on a separate strand:
-    /// the apply-arg spark (`apply.rs`) and the independent-`let` spark
-    /// (`let_if.rs`). It raises two flags for the duration of the thunk compile and
-    /// restores them (save/set/restore; restored on the error path too so a `?` in
-    /// the caller never leaks a raised flag):
-    ///
-    /// - **`spark_capture_borrow`** (toggle-gated by `CAPTURE_BORROW_ENABLED`) — the
-    ///   S99 capture-by-borrow flag, consumed in the OUTER frame's closure
-    ///   capture-store (`compile_lambda` / `build_closure_drop_glue`).
-    /// - **`in_spark_thunk`** (unconditional) — gate 5: propagated into the INNER
-    ///   `FnCompiler` that compiles the thunk's `Lambda` body (`compile_lambda_body`),
-    ///   where the relocated construction lives, so stack allocation is declined
-    ///   there (the thunk frame pops at the join — a stack slot dangles).
-    ///
-    /// The dependent-`let` spark (`dependent_spark.rs`) does NOT use this helper: it
-    /// deliberately EXCLUDES `spark_capture_borrow` (the §4.5 carve-out — its
-    /// synthetic IVar-pointer captures are keepalives, not live-parent borrows) and
-    /// sets `in_spark_thunk` directly on its dedicated inner compiler.
+    /// Compile the backend-synthesized spark thunk `thunk_expr`, a zero-arg
+    /// `MonoExpr::Lambda` over a clone the plan never saw
+    /// (`design/backend/ownership-codegen.md` §4.3; FIXME 0525 gate 5). Its
+    /// captures all duplicate; the caller drops what the sequential evaluation
+    /// would have consumed ([`Self::emit_spark_consumption`]). `in_spark_thunk`
+    /// is raised for the thunk body, where the relocated construction lives.
     pub(crate) fn compile_spark_thunk(
         &mut self,
         thunk_expr: &MonoExpr,
     ) -> Result<Value, CranelispError> {
-        let saved_borrow = self.spark_capture_borrow;
+        let MonoExpr::Lambda {
+            params,
+            body,
+            span,
+            ty,
+            ..
+        } = thunk_expr
+        else {
+            return Err(CranelispError::CodegenError {
+                message: "internal invariant violation: a spark thunk is not a lambda".into(),
+                location: cranelisp_types::ErrorLocation::from_span(thunk_expr.span()),
+            });
+        };
+        let captures = self.duplicating_captures(params, body);
         let saved_in_spark = self.in_spark_thunk;
-        self.spark_capture_borrow = *super::control_flow::CAPTURE_BORROW_ENABLED;
         self.in_spark_thunk = true;
-        let res = self.compile_expr(thunk_expr);
-        self.spark_capture_borrow = saved_borrow;
+        let lambda_type = ty.to_type();
+        let res = self.compile_lambda(params, body, *span, Some(&lambda_type), &captures);
         self.in_spark_thunk = saved_in_spark;
         res
     }
@@ -1080,9 +790,7 @@ where
     ///
     /// PRIVATE, and that visibility is load-bearing: it makes [`Self::bind_local`]
     /// and [`Self::bind_capture`] the only ways a `Variable` can come into
-    /// existence, which is what earns `binding-scope.md` §5's row that each slot
-    /// owns a distinct one. A caller outside those two paths is the named
-    /// falsifier; from another module it would not compile.
+    /// existence (`binding-scope.md` §5).
     fn fresh_variable(&mut self) -> Variable {
         let idx = self.next_var;
         self.next_var += 1;
@@ -1093,13 +801,8 @@ where
         self.scope.push_frame();
     }
 
-    /// Leave a scope: the frame's slots go with it.
-    ///
-    /// `design/backend/binding-scope.md` §2 — an outer binder's facts were never
-    /// touched, so nothing is restored. The pre-repair pop deleted every map
-    /// entry keyed by a name the frame introduced, which erased the OUTER binder
-    /// of a shadowed name: the loud face refused a legal program at codegen, and
-    /// the silent face dropped the outer binder's release.
+    /// Leave a scope: the frame's slots go with it. Nothing is released at
+    /// scope exit; every reference was consumed where the plan said.
     pub(crate) fn pop_scope(&mut self) {
         self.scope.pop_frame();
     }
@@ -1107,32 +810,17 @@ where
     /// Bind ONE binder in the innermost frame: mint its `Variable`, define it,
     /// and publish its value and type TOGETHER, after its initializer has been
     /// compiled (`binding-scope.md` §3.3).
-    ///
-    /// The single bind site for `let`, match and parameter binders, and the sole
-    /// minting authority for a binder's `Variable` alongside the capture seeds —
-    /// which is what keeps `binding-scope.md` §5's distinct-`Variable` row from
-    /// being an assertion about a data-structure shape.
-    ///
-    /// Publishing the type BEFORE the initializer compiled — the pre-repair
-    /// order — made a repeated binding's RHS read the new binder's type while
-    /// the value map still answered with the previous binder's `Variable`. §4.3
-    /// says the initializer sees the PRECEDING binding, and one binder's facts
-    /// cannot be half-published.
-    pub(crate) fn bind_local(&mut self, name: &Symbol, val: Value, ty: Option<Type>) {
+    pub(crate) fn bind_local(&mut self, name: &Symbol, val: Value, ty: Option<Type>) -> Variable {
         let var = self.fresh_variable();
         self.builder.declare_var(var, types::I64);
         self.builder.def_var(var, val);
         self.scope.bind(name.clone(), var, ty);
+        var
     }
 
     /// Seed ONE capture into this (inner) compiler's capture environment: mint
     /// its `Variable`, define it from the loaded environment slot, and record
     /// its type (`binding-scope.md` §3.2).
-    ///
-    /// The sibling of [`Self::bind_local`] and the only other minting authority.
-    /// A capture is never a scope slot: no body frame releases it, and a
-    /// body-local binder that shadows its name displaces it only for that
-    /// binder's extent.
     pub(crate) fn bind_capture(&mut self, name: &Symbol, val: Value, ty: Option<Type>) {
         let var = self.fresh_variable();
         self.builder.declare_var(var, types::I64);
@@ -1146,11 +834,6 @@ where
         resolve_binding(&self.scope, &self.captures, name)
     }
 
-    /// The Cranelift variable `name` denotes here.
-    pub(crate) fn lookup_var(&self, name: &Symbol) -> Option<Variable> {
-        self.lookup_binding(name).map(Binding::var)
-    }
-
     /// The recorded type of the binder `name` denotes here, if one was recorded.
     pub(crate) fn lookup_type(&self, name: &Symbol) -> Option<Type> {
         self.lookup_binding(name).and_then(Binding::ty).cloned()
@@ -1161,167 +844,9 @@ where
         self.lookup_binding(name).is_some()
     }
 
-    /// Pop a scope frame and emit `rc_dec` for all heap-typed bindings,
-    /// except the variable named by `skip_var` (whose ownership transfers
-    /// to the caller as the return value).
-    ///
-    /// Key invariant: "Scope cleanup emits dec for all heap-typed bindings
-    /// EXCEPT the return value, consumed vars, and borrowed vars."
-    ///
-    /// Borrowed vars (e.g., pattern match field bindings) are skipped entirely —
-    /// they share the owner's (scrutinee's) reference and the owner handles cleanup.
-    ///
-    /// Field cleanup happens inside the RC=0 branch of the canonical glue body,
-    /// NOT as a separate step before the dec. This prevents double-free when
-    /// fields are independently referenced (e.g. extracted by a pattern match).
-    pub(crate) fn pop_scope_with_cleanup(
-        &mut self,
-        skip_var: Option<SlotRef>,
-    ) -> Result<(), CranelispError> {
-        let frame_index = self.scope.frame_count().saturating_sub(1);
-        let to_dec = self.collect_frame_heap_decs(frame_index, |this, at, slot| {
-            // Skip the return-value BINDER — a slot, not a name. Two binders of
-            // one name in one frame each keep their own release obligation
-            // (`binding-scope.md` §4).
-            if skip_var == Some(at) {
-                return true;
-            }
-            // Skip borrowed bindings (owner handles cleanup) — EXCEPT a
-            // TCO-promoted param, whose frame-owned reference (the entry inc)
-            // this exit dec discharges (FIXME 0720).
-            slot.is_borrowed() && !this.tco_owned_params.contains(slot.name())
-        });
-        self.emit_heap_binding_decs(&to_dec)?;
-
-        // Now actually leave the scope (the frame's slots go with it).
-        self.pop_scope();
-        Ok(())
-    }
-
-    /// Collect the heap-typed SLOTS in frame `frame_index` that need an
-    /// `rc_dec`, minus those `skip` returns `true` for. Extracted so
-    /// `pop_scope_with_cleanup` and the tail-call scope flush
-    /// (`flush_let_scopes_before_tail_jump`) share one filter (Principle 7).
-    ///
-    /// Yields `(Variable, Type)` per SLOT with no re-lookup by name
-    /// (`binding-scope.md` §4): two binders of one name in one frame produce two
-    /// releases, and the type read is the one that binder published.
-    fn collect_frame_heap_decs(
-        &self,
-        frame_index: usize,
-        skip: impl Fn(&Self, SlotRef, &BinderSlot) -> bool,
-    ) -> Vec<(Variable, Type)> {
-        self.scope
-            .frame(frame_index)
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| {
-                let at = self.scope.slot_ref(frame_index, index)?;
-                if skip(self, at, slot) {
-                    return None;
-                }
-                let ty = slot.ty()?;
-                self.is_heap_type(ty).then(|| (slot.var(), ty.clone()))
-            })
-            .collect()
-    }
-
-    /// Emit the release for each collected heap binding — ONE canonical
-    /// `drop<T>` call apiece (S118 slice S5).
-    ///
-    /// The three special-case arms this used to carry (closure via the embedded
-    /// glue pointer, Vec via `vec_drop`, ADT via the recursive inline glue) are
-    /// gone: the TYPE decides the teardown, inside the generated body, so the
-    /// site emits one call and no site-supplied nullary guard. Shared by
-    /// scope-pop cleanup and both tail-call flushes.
-    ///
-    /// # The non-concrete escape arm — TYPE-keyed, and known to be the wrong key
-    ///
-    /// The disposition authority is `design/backend/non-concrete-release-contract.md`
-    /// §4 and §7.4; `design/backend/transitive-drop-glue.md` §4.1 is the
-    /// superseded S118 record. The S118 ruling sanctioned ONE non-concrete
-    /// release — a **ctor template's own parameter**, licensed by invariant
-    /// I-CT — and required its gate to be the FRAME, never the type. That face
-    /// is now closed by representation (I-CT′, contract §4.1): a
-    /// residual-parameter constructor is a slotless `Life::Template`, so its
-    /// frame is not a codegen target in production.
-    ///
-    /// **The arm below is still type-keyed** (FIXME 0903; FIXME 0891 deferred
-    /// on it). A frame key was implemented and measured: it turns **16 green
-    /// corpus tests into hard codegen refusals**, because two families reach
-    /// this arm in ordinary `defn`-shaped frames:
-    ///
-    /// * **synthetic field accessors** of a generic or undeclared-field product
-    ///   — `Box.v`'s `self: ADT(user/Box, [Var(0)])`, also compiled once per
-    ///   declaration (`concrete-boundary-type.md` §3.1.1 pairs the *ctor and
-    ///   accessor* signature paths; the S118 ruling named only the ctor half);
-    /// * **generic trait-method instances** —
-    ///   `Functor.fmap$primitives/Option`'s closure parameter
-    ///   `Fn([Var(9)], Var(8))`, whose residual vars survive HKT dispatch.
-    ///
-    /// Neither is a balanced counted-borrow pair, and refusing them is not
-    /// landable either: hard-refusing them would reject legal generic/HKT/rank-2
-    /// programs the corpus currently runs. The contract assigns both to the
-    /// producer (monomorphise the frame per concrete instantiation, §4.2);
-    /// this arm retires with §7.4. **Do not "fix" this by narrowing the key
-    /// alone** (contract §8 reject list); the experiment has been run and the
-    /// census is above.
-    fn emit_heap_binding_decs(
-        &mut self,
-        to_dec: &[(Variable, Type)],
-    ) -> Result<(), CranelispError> {
-        let dealloc = self.ctx.dealloc_func_id;
-        for (var, ty) in to_dec {
-            let val = self.builder.use_var(*var);
-            // The D2 entry check's escaped cases — see the `is_heap_type`
-            // rustdoc, and the census in this function's rustdoc above.
-            //
-            // A directly constructed ctor-template frame (unit tests only; in
-            // production a residual-parameter constructor is a slotless
-            // template and never reaches codegen) takes this arm as the
-            // balancing half of the guarded consuming inc on a word the
-            // returned box also holds — the superseded S118 invariant I-CT,
-            // still pinned by `ctor_template_admission_tests`.
-            //
-            // The production families reaching this arm carry no such
-            // licence and are tracked by FIXME 0903.
-            //
-            // Every OTHER release site keeps D2's no-fallback rule:
-            // `emit_typed_rc_dec` still hard-errors on a non-concrete type.
-            if cranelisp_types::ConcreteType::from_type(ty).is_err() {
-                heap::emit_rc_dec_guarded(&mut self.builder, self.module, val, dealloc, None, true);
-                continue;
-            }
-            self.emit_typed_rc_dec(val, ty)?;
-        }
-        Ok(())
-    }
-
-    /// Flush `rc_dec` for the live LET-scope bindings BEFORE a tail self-call
-    /// jump (`compile_tail_self_call`). Without this, the enclosing
-    /// `compile_let_sequential` emits `pop_scope_with_cleanup` AFTER
-    /// `compile_expr(body)` — but the tail-call jump has already terminated the
-    /// block, so those decs land in the dead post-jump block and never execute:
-    /// every heap-typed `let` binding that survives to a tail-recursive scope
-    /// exit leaks one allocation per iteration (the S102 drafting `vec_cow_value_use`
-    /// guards; the true root cause the §13.3 Ruling-2 COW-copy attribution missed).
-    ///
-    /// Scope frames `[1..]` are the `let`/match/lambda frames; frame `0` is the
-    /// function's parameter frame, which the TCO loop header *reuses* (its block
-    /// params are overwritten each iteration) — its RC is out of this fix's scope
-    /// (unchanged behaviour). `transfer_slots` identifies bindings whose
-    /// reference transfers into a tail-call argument (a direct `Var` arg — no
-    /// consuming inc is emitted for it), so dec'ing them here would double-free the
-    /// value the new iteration now owns. Consumed / borrowed bindings are skipped as in
-    /// `pop_scope_with_cleanup`. The frames are NOT popped — the enclosing
-    /// `compile_let_sequential` still pops them (into the now-dead block).
     /// S118 slice S4 (§7.4) — request the canonical drop glue for a capture
     /// slot's type, from the ENCLOSING compiler, before the environment glue
-    /// body's `FunctionBuilder` is created. The body builds in its own
-    /// Cranelift context and so cannot reach the registry itself; it emits the
-    /// resolved call.
-    ///
-    /// `Ok(None)` ⇒ the slot owns nothing heap and is not in the dec set.
+    /// body's `FunctionBuilder` is created. `Ok(None)` ⇒ the slot owns nothing.
     pub(crate) fn request_capture_glue(
         &mut self,
         ty: &Type,
@@ -1333,415 +858,6 @@ where
             .request_if_owning(self.module, self.ctx.symbol_tables, concrete)
     }
 
-    /// S118 slice S3 — record that the borrowed pattern binding `name` is a view
-    /// into `root`.
-    pub(crate) fn record_borrow_root(&mut self, name: &Symbol, root: BorrowRoot) {
-        self.scope.set_borrow_root(name, root);
-    }
-
-    /// [`slot_holds_frame_owned_reference`] for the live slot `at`.
-    fn frame_owns_slot(&self, at: SlotRef) -> bool {
-        self.slot_ownership_facts(at)
-            .is_some_and(slot_holds_frame_owned_reference)
-    }
-
-    fn slot_ownership_facts(&self, at: SlotRef) -> Option<SlotOwnershipFacts> {
-        let slot = self.scope.slot(at)?;
-        Some(SlotOwnershipFacts {
-            frame: if at.in_param_frame() {
-                SlotFrame::Param
-            } else {
-                SlotFrame::Local
-            },
-            heap: slot.ty().is_some_and(|ty| self.is_heap_type(ty)),
-            borrowed: slot.is_borrowed(),
-            promoted: self.tco_owned_params.contains(slot.name()),
-        })
-    }
-
-    /// [`consuming_cow_arguments`] for a self-tail call in this frame: each
-    /// consuming site's source node and the parameter slot it resolves to.
-    /// Computed before the arguments compile; the in-place condition is the
-    /// same last-use predicate `compile_vec_push`/`compile_vec_set` branch on.
-    pub(crate) fn consuming_cow_arguments_of<'e>(
-        &self,
-        args: &'e [MonoExpr],
-    ) -> Vec<(&'e MonoExpr, SlotRef)> {
-        consuming_cow_arguments(
-            args,
-            cranelisp_types::ownership_analysis_off(),
-            |name, source| {
-                let at = self.scope.resolve_slot_ref(name)?;
-                let slot = self.slot_ownership_facts(at)?;
-                let in_place = self.is_vec_last_use(source);
-                Some((at, CowSourceFacts { slot, in_place }))
-            },
-        )
-    }
-
-    /// Does the COW site whose source node is `source` hold the consuming
-    /// claim ([`FnCompiler::consuming_claims`])?
-    pub(crate) fn holds_consuming_claim(&self, source: &MonoExpr) -> bool {
-        self.consuming_claims
-            .contains(&(source as *const MonoExpr as usize))
-    }
-
-    /// Will one of the tail-jump flushes release the binding `name` resolves
-    /// to? It is the flushes' own reading: the slot ownership fact, then the
-    /// §6 verdict through the same `tail_slot_facts`.
-    fn tail_jump_releases_binding(&self, name: &Symbol, tail: TailTransferContext<'_>) -> bool {
-        let Some(at) = self.scope.resolve_slot_ref(name) else {
-            return false;
-        };
-        self.frame_owns_slot(at) && !self.slot_is_transferred(at, name, at.frame(), tail)
-    }
-
-    /// S118 slice S3 (§2 — protect, then tear down; FIXME 0810 Face B). Upgrade
-    /// every BORROWED bare-`Var` tail argument whose owner is about to be
-    /// released at this jump.
-    ///
-    /// A borrowed binding has no reference to move: the owner holds the one that
-    /// exists. The next iteration's parameter slot is frame-OWNED (the flush
-    /// decs it on the way round, the function exit decs it at the end), so a
-    /// borrow handed into it must first become an owned reference — the same
-    /// adaptation `compile_entry_arg_list` performs for a
-    /// caller-borrowed `Var` handed to an `Owned` position. The loop parameter
-    /// slots were the one set of `Owned` positions that never adapted:
-    /// `(let [r (step g i)] (match r [(Jus g2) (go g2 …)]))` carried `g2`
-    /// forward with zero owning references while `r`'s glue and the old slot
-    /// each discharged one.
-    ///
-    /// **Gated on the owner actually dying here**, which is what keeps it from
-    /// being a blanket inc: `(defn sfold [f acc xs] (match xs [(SCons h t)
-    /// (sfold f (f acc h) t) …]))` forwards a borrowed field of a scrutinee
-    /// NOBODY releases at the jump, and an unconditional upgrade leaks exactly
-    /// one reference per call there.
-    pub(crate) fn protect_escaping_borrows_before_tail_jump(
-        &mut self,
-        tail: TailTransferContext<'_>,
-    ) {
-        let owed: Vec<Symbol> = tail
-            .args
-            .iter()
-            .filter_map(|arg| match arg {
-                MonoExpr::Var { name, .. } if self.is_borrowed(name) => {
-                    let dies = match self.scope.resolve(name).and_then(BinderSlot::borrow_root) {
-                        // The consuming arm's own release fires at this jump.
-                        Some(BorrowRoot::OwnedTemporary) => true,
-                        Some(BorrowRoot::Binding(root)) => {
-                            self.tail_jump_releases_binding(root, tail)
-                        }
-                        // Not a tracked pattern view (a `Borrowed` param, a
-                        // capture): its owner is outside this frame entirely.
-                        None => false,
-                    };
-                    dies.then(|| name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        for name in owed {
-            let Some(ty) = self.lookup_type(&name) else {
-                continue;
-            };
-            let Some(var) = self.lookup_var(&name) else {
-                continue;
-            };
-            let val = self.builder.use_var(var);
-            match signature_heap_category(&ty, Some(self.ctx.symbol_tables)) {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, self.module, val);
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, val);
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
-            }
-        }
-    }
-
-    /// S118 slice S3 — push the wrapper release owed by the consuming match arm
-    /// about to be compiled (see [`Self::pending_scrutinee_releases`]).
-    pub(crate) fn push_pending_scrutinee_release(&mut self, val: Value, ty: Type) {
-        self.pending_scrutinee_releases.push((val, ty));
-    }
-
-    /// Pop the release pushed by [`Self::push_pending_scrutinee_release`]. The
-    /// arm emits it at its own lifetime end; a tail jump inside the arm has
-    /// already emitted it on the live path.
-    pub(crate) fn pop_pending_scrutinee_release(&mut self) -> Option<(Value, Type)> {
-        self.pending_scrutinee_releases.pop()
-    }
-
-    /// Discharge every owed match-wrapper release BEFORE a tail self-call jump
-    /// (§5 / FIXME 0810 Face A). Innermost first, mirroring
-    /// [`Self::flush_let_scopes_before_tail_jump`]. The stack is NOT popped —
-    /// each arm still pops its own entry, and its end-of-arm release lands in
-    /// the dead block the jump created.
-    ///
-    /// Ordering is load-bearing: this runs AFTER the arguments have been
-    /// compiled and protected, so an extracted field escaping into the next
-    /// iteration already owns a reference when the wrapper's glue discharges
-    /// the wrapper's own (§2 — protect, then tear down).
-    pub(crate) fn flush_pending_scrutinee_releases_before_tail_jump(
-        &mut self,
-    ) -> Result<(), CranelispError> {
-        let owed: Vec<(Value, Type)> = self
-            .pending_scrutinee_releases
-            .iter()
-            .rev()
-            .cloned()
-            .collect();
-        for (val, ty) in owed {
-            // One emitter, no site policy: the canonical glue for the
-            // scrutinee's own concrete type discharges the wrapper and
-            // everything the wrapper owns (Vec elements + buffer, ADT fields,
-            // closure captures), with the nullary guard derived from the type.
-            self.emit_typed_rc_dec(val, &ty)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn flush_let_scopes_before_tail_jump(
-        &mut self,
-        tail: TailTransferContext<'_>,
-    ) -> Result<(), CranelispError> {
-        if self.scope.frame_count() <= 1 {
-            return Ok(());
-        }
-        // Innermost-first: collect all eligible bindings across the let frames.
-        let mut to_dec: Vec<(Variable, Type)> = Vec::new();
-        for frame_index in (1..self.scope.frame_count()).rev() {
-            let mut frame_decs = self.collect_frame_heap_decs(frame_index, |this, at, slot| {
-                // §6, rows 1/4/5. Row 3 never applies here: a consuming COW
-                // argument consumes a parameter slot only.
-                !this.frame_owns_slot(at)
-                    || this.slot_is_transferred(at, slot.name(), frame_index, tail)
-            });
-            to_dec.append(&mut frame_decs);
-        }
-        self.emit_heap_binding_decs(&to_dec)
-    }
-
-    /// The §6 predicate at a release site: gather this slot's facts and ask the
-    /// ONE verdict. Returns `true` when the old owner transfers (no release
-    /// owed).
-    fn slot_is_transferred(
-        &self,
-        at: SlotRef,
-        name: &Symbol,
-        frame_index: usize,
-        tail: TailTransferContext<'_>,
-    ) -> bool {
-        let analysis_off = cranelisp_types::ownership_analysis_off();
-        let facts = self.tail_slot_facts(at, name, frame_index, tail);
-        match tco_slot_disposition(facts, analysis_off) {
-            SlotDisposition::TransferOldOwner => true,
-            SlotDisposition::Replace => false,
-            // Never silently released and never silently skipped — the flush
-            // callers report it before emitting anything.
-            SlotDisposition::BorrowedInvalid => false,
-        }
-    }
-
-    /// Gather the §6 facts for the slot `name` living in scope frame
-    /// `frame_index`.
-    ///
-    /// The row-4 fact is deliberately narrow: it is NOT "this slot is
-    /// borrowed" — a `Borrowed` parameter carried forward as its own tail
-    /// argument (`(defn go [:Int n :String x] … (go (sub-i64 n 1) x))`) is the
-    /// ordinary, correct shape, and the frame owes nothing there because it
-    /// owns nothing. Row 4 is the SHADOWING case: the argument spells the
-    /// slot's name but resolves to a DIFFERENT, borrowed binding — an inner
-    /// pattern-field binder, typically — so a spelling-only move claim would
-    /// transfer a reference that binding does not hold.
-    fn tail_slot_facts(
-        &self,
-        at: SlotRef,
-        name: &Symbol,
-        frame_index: usize,
-        tail: TailTransferContext<'_>,
-    ) -> TailSlotFacts {
-        let transfers_this_slot = tail.transfer_slots.contains(&at);
-        let named = tail.bare_var_names.contains(name);
-        let innermost = self.scope.resolve_indexed(name).map(|(i, _)| i);
-        let shadowing_borrow = matches!(innermost, Some(i) if i != frame_index);
-        TailSlotFacts {
-            tail_arg_transfers_this_slot: transfers_this_slot,
-            bare_var_arg_is_borrowed: named && shadowing_borrow && self.is_borrowed(name),
-            inplace_cow_rooted_here: tail.consuming_cow_slots.contains(&at),
-        }
-    }
-
-    /// The `BorrowedInvalid` report, separated from the verdict so the release
-    /// path stays total. `Err` iff some slot in `frame` was offered a borrowed
-    /// alias as evidence for a transfer.
-    fn check_no_borrowed_transfer(
-        &self,
-        frame_index: usize,
-        tail: TailTransferContext<'_>,
-    ) -> Result<(), CranelispError> {
-        for (index, slot) in self.scope.frame(frame_index).iter().enumerate() {
-            let name = slot.name();
-            let at = self
-                .scope
-                .slot_ref(frame_index, index)
-                .expect("frame iteration supplies a live slot");
-            let facts = self.tail_slot_facts(at, name, frame_index, tail);
-            if tco_slot_disposition(facts, cranelisp_types::ownership_analysis_off())
-                == SlotDisposition::BorrowedInvalid
-                && slot.ty().is_some_and(|ty| self.is_heap_type(ty))
-            {
-                return Err(CranelispError::CodegenError {
-                    message: format!(
-                        "tail self-call in '{}' offers the BORROWED alias '{name}' as the \
-                         replacement for its own frame-owned slot; a borrowed alias carries \
-                         no independently owned reference and cannot license an ownership \
-                         transfer (design/backend/transitive-drop-glue.md §6, row 4)",
-                        self.current_fn_name
-                            .as_ref()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "<anonymous body>".into()),
-                    ),
-                    location: cranelisp_types::ErrorLocation::from_span(Span::SYNTHETIC),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// MS-P8 (FIXME 0688 verdict a; `tests/ms_p8_conj_leak.rs` seam comment) — the PARAM sibling
-    /// of [`FnCompiler::flush_let_scopes_before_tail_jump`]. On a tail self-call
-    /// the loop header OVERWRITES each param slot (scope frame `[0]`) with the new
-    /// argument value; a heap-typed param whose slot is superseded by a FRESH,
-    /// independently-owned value leaks its slot reference — the `conj`/`assoc`
-    /// persistent-op loop's 1-Vec-per-iteration leak (each `conj` COPIES because
-    /// the go-side arg-pass inc makes rc≥2, so the old `v` is always superseded;
-    /// the copy path is the EXPOSURE, the missing slot-dec is the SEAM). Dec each
-    /// superseded heap param before the jump, EXCEPT:
-    ///  - a param whose reference TRANSFERS into a tail argument as a bare `Var`
-    ///    (a MOVE — an exact transfer slot, self- or cross-slot): the box carries forward,
-    ///    so dec'ing it would double-free the value the next iteration owns (the
-    ///    exact contract the let flush honors);
-    ///  - a borrowed param (the caller owns it);
-    ///  - a param consumed by a consuming in-place COW argument
-    ///    ([`consuming_cow_arguments`]; §6 row 3, `ownership-codegen.md` §13.3):
-    ///    `(vec-set p …)` / `(vec-push p …)` at `p`'s last use, at any argument
-    ///    position (FIXME 0691). Its source is `Owned`, so the COW forwards the
-    ///    box in place or releases it in the copy branch. A copy-only site —
-    ///    `p` used later in the argument list — consumes nothing, and the slot
-    ///    is released here. Toggle-off never consumes (FIXME 0695).
-    ///    `conj`/`assoc` are user-fn calls, not these primitives, so the
-    ///    persistent-op leak is still fixed.
-    ///
-    /// The frames are NOT popped (the loop header reuses the param slots) — this
-    /// only releases the superseded slot references.
-    pub(crate) fn flush_superseded_heap_params_before_tail_jump(
-        &mut self,
-        tail: TailTransferContext<'_>,
-    ) -> Result<(), CranelispError> {
-        if self.scope.frame_count() == 0 {
-            return Ok(());
-        }
-        // §6 row 4, loud: a borrowed alias may not license a transfer of a
-        // frame-owned slot. Checked before any release is emitted.
-        self.check_no_borrowed_transfer(0, tail)?;
-        let to_dec = self.collect_frame_heap_decs(0, |this, at, slot| {
-            // A borrowed param is the caller's to release — EXCEPT one this frame
-            // PROMOTED because the back-edge supersedes its slot with a value the
-            // caller does not own (FIXME 0720; the entry inc keeps the caller's
-            // own reference out of reach of this dec). Then §6, all five rows —
-            // the ONE verdict, including row 3 for a consuming COW argument.
-            !this.frame_owns_slot(at) || this.slot_is_transferred(at, slot.name(), 0, tail)
-        });
-        self.emit_heap_binding_decs(&to_dec)
-    }
-
-    /// Under `tail_arg_protect` (set while compiling an `if`/`match` that is a
-    /// direct tail-call argument), emit a protective `rc_inc` on `val` iff
-    /// `branch` is a bare `Var` whose resolved slot holds a frame-owned heap
-    /// reference — the branch-forward rule of `ownership-codegen.md` §13.3,
-    /// for `let`/match/lambda frames and the parameter frame alike.
-    ///
-    /// A branch-forwarded `Var` never receives its slot's reference: a
-    /// top-level move or an in-place COW may take it, and the flushes release
-    /// every other frame-owned slot. So the key is ownership, not "released at
-    /// the jump", and no transfer or COW row is consulted:
-    /// - `(recur (if c lo hi))` — the taken branch increments its binding, the
-    ///   flushes release both, so the forwarded one nets to the loop slot.
-    /// - `(recur v (if c v w))` — the top-level `v` takes the slot's reference,
-    ///   so the branch copy needs its own.
-    /// - `(recur (if c p q) (vec-push p 1))` — the push consumes `p`'s slot;
-    ///   without the increment an in-place push would share `p`'s box with the
-    ///   branch copy.
-    /// - `(recur (if c (wrap v) v))` — the `wrap` branch is not a bare `Var`;
-    ///   the call already incremented `v`.
-    ///
-    /// This covers the DIRECT bare-`Var` branch only. A branch that yields a
-    /// binding through a nested scope (`(if c (let [w …] v) …)`) relies on
-    /// that scope's `protect_return_value`, which fires only when the scope
-    /// has a heap cleanup target (`ownership-codegen.md` §13.3, lead L6).
-    /// Returns `val` unchanged so callers can thread it inline.
-    pub(crate) fn maybe_protect_tail_arg_alias(&mut self, branch: &MonoExpr, val: Value) -> Value {
-        if !self.tail_arg_protect {
-            return val;
-        }
-        if let MonoExpr::Var { name, .. } = branch
-            && let Some(at) = self.scope.resolve_slot_ref(name)
-            && self.frame_owns_slot(at)
-            && let Some(ty) = self.scope.slot(at).and_then(BinderSlot::ty).cloned()
-        {
-            // B3.3-R (§5.1): the protective inc balancing the tail-flush dec is
-            // always atomic. This was a through-binding site (per-binding
-            // Confined carrier), dropped as dead + latent-race code (/review
-            // B3.3) — the analysis produces no confined let-bindings today, so
-            // the inc was provably always atomic. The `_atomicity` mechanism is
-            // retained (probe-reachable); it is fed `Atomic` here.
-            let atomicity = heap::RcAtomicity::Atomic;
-            match signature_heap_category(&ty, Some(self.ctx.symbol_tables)) {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity);
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_inc_guarded_atomicity(
-                        &mut self.builder,
-                        self.module,
-                        val,
-                        atomicity,
-                    );
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
-            }
-        }
-        val
-    }
-
-    /// If `body` is a direct variable reference to a binder the CURRENT frame
-    /// owns, return that BINDER. Used to skip the rc_dec for the return value.
-    ///
-    /// The answer is a slot reference, not a name (`binding-scope.md` §4): in
-    /// `(let [s (str-concat "h" "e") s (str-len s)] s)` the body names the
-    /// second binder, and skipping by name would suppress the displaced first
-    /// binder's release too.
-    pub(crate) fn return_var_in_scope(&self, body: &MonoExpr) -> Option<SlotRef> {
-        let MonoExpr::Var { name, .. } = body else {
-            return None;
-        };
-        self.scope.resolve_ref_in_innermost_frame(name)
-    }
-
-    /// The exact live local slots moved by literal top-level `Var` tail
-    /// arguments. Captures and unresolved names have no scope slot; a local
-    /// shadow resolves before a parameter of the same name.
-    pub(crate) fn tail_transfer_slots(&self, args: &[MonoExpr]) -> HashSet<SlotRef> {
-        args.iter()
-            .filter_map(|arg| match arg {
-                MonoExpr::Var { name, .. } => self.scope.resolve_slot_ref(name),
-                _ => None,
-            })
-            .collect()
-    }
-
     /// Check if a type is heap-allocated and needs RC management.
     pub(crate) fn is_heap_type(&self, ty: &Type) -> bool {
         matches!(
@@ -1750,391 +866,10 @@ where
         )
     }
 
-    /// Derive a function parameter's type by finding a Var reference with the
-    /// given name in the function body and reading its `inferred_type()`.
-    ///
-    /// Function parameters don't have their own `inferred_type`, but every
-    /// Var reference to the parameter in the body does. We walk the body AST
-    /// to find the first Var node matching the name.
+    /// Derive a function parameter's type from the first `Var` reference to it
+    /// in the body, when the signature does not supply one.
     pub(crate) fn derive_param_type_from_body(body: &MonoExpr, name: &Symbol) -> Option<Type> {
         find_var_type_in_expr(body, name)
-    }
-
-    /// Check if a variable use is the last use (for ownership transfer).
-    pub(crate) fn is_last_use(&self, name: &Symbol, span: Span) -> bool {
-        if self.captures.get(name).is_some() {
-            // Captured variables are NEVER eligible for last-use transfer.
-            return false;
-        }
-        if self.is_borrowed(name) {
-            // Borrowed variables (extracted from a match scrutinee's field)
-            // do NOT own the value — the scrutinee still holds it. A
-            // textually-last use of a borrowed var does not imply ownership
-            // transfer, so Vec COW mutate-in-place on such a binding would
-            // alias the scrutinee's field and cause a double-free once the
-            // scrutinee's drop glue dec's the field independently. See
-            // `design/backend/ring2-rc.md §3.1` (Decision 24 consuming
-            // convention) and §5.5 (the capture rule — the borrowed-binder
-            // rule is its structural twin: neither owns the value, so
-            // neither may transfer ownership via last-use).
-            // Regression: repro-slice2.cl — `(consume (Box [0]))` read len=0.
-            return false;
-        }
-        self.last_uses
-            .get(&(name.clone(), span))
-            .copied()
-            .unwrap_or(false)
-    }
-
-    /// Mark a variable as borrowed (skip scope-exit dec — owner handles cleanup).
-    /// The mark is recorded on the INNERMOST scope frame (FIXME 0692), so it is
-    /// released when that frame pops and never bleeds into a later shadow/sibling
-    /// binding of the same name.
-    pub(crate) fn mark_borrowed(&mut self, name: &Symbol) {
-        self.scope.mark_borrowed(name);
-    }
-
-    /// Is `name`'s CURRENT (innermost) binding borrowed? Resolves against the
-    /// [`ScopeChain`] (FIXME 0692, completed by `binding-scope.md` §3.1): the
-    /// binder `name` denotes reports its OWN mark. A borrowed mark on a
-    /// name-colliding OUTER binding cannot classify an inner shadow/sibling
-    /// binding as borrowed, because it is a different slot (Principle 20 —
-    /// borrowed is a property of a binder, not a name).
-    pub(crate) fn is_borrowed(&self, name: &Symbol) -> bool {
-        self.scope.is_borrowed(name)
-    }
-
-    // === 0668 binding-indirection consume contract (W-B1 classifier) ==========
-    //
-    // `design/backend/binding-indirection-consume.md` §1/§2. The ONE shared
-    // provenance classifier every consume/cleanup position keys off, instead of
-    // its local node syntax. It answers the value-flow question — "does this
-    // operand deliver (or forward) an independently-owned count, or is it an
-    // ALIAS of a live binding that carries none?" — by tracing the operand to its
-    // provenance root THROUGH binding-indirection (`let`-forward, match-var-arm
-    // forward, nesting). It reads ONLY binding liveness ("is this a
-    // live binding"), NEVER an ownership fact, so it answers IDENTICALLY in both
-    // `CRANELISP_NO_OWNERSHIP` toggle states by construction (§2), which makes
-    // 0668 a SEPARATE family from the R14 COW producer rule.
-
-    /// The live-binding provenance ROOT of `node`, traced through
-    /// binding-indirection, or `None` if the operand delivers an independent owned
-    /// count (a producing op / fresh temporary transfers its own reference).
-    ///
-    /// `Some(root)` ⇒ the operand is an ALIAS of the live scope binding `root`:
-    /// it carries NO independent count, so a consume position that stores/captures
-    /// it must take one reference (R2) and a cleanup position must NOT dec it (R1).
-    /// `None` ⇒ an owned temporary that transfers.
-    ///
-    /// Structural only (Var-rootedness / alias-forwarding) — analysis-independent.
-    pub(crate) fn operand_live_binding_root(&self, node: &MonoExpr) -> Option<Symbol> {
-        operand_live_binding_root(node, &|name| self.binds(name))
-    }
-
-    /// Whether the yielded reference survives scope cleanup without another retain.
-    pub(crate) fn body_has_independent_result(&self, body: &MonoExpr) -> bool {
-        value_provenance_with_calls(
-            body,
-            &|fq| self.ctx.ctor_value_shape_at(fq),
-            &|call| self.call_returns_owned_reference(call),
-            &|node| match node {
-                MonoExpr::Match { .. } => self
-                    .independent_match_results
-                    .get(&(node as *const MonoExpr as usize))
-                    .copied()
-                    .filter(|owned| *owned)
-                    .map(|_| ValueProvenance::TransferredCall),
-                _ => None,
-            },
-        ) <= ValueProvenance::TransferredCall
-    }
-
-    /// Whether the call `expr` hands back a reference its caller owns
-    /// independently: a closure call, or a keyed callable whose derived entry
-    /// convention transfers its result. An owned but unverified result keeps
-    /// its return protection.
-    fn call_returns_owned_reference(&self, expr: &MonoExpr) -> bool {
-        use cranelisp_types::CallableTarget;
-        let MonoExpr::Apply {
-            callee,
-            resolved_call,
-            dispatch,
-            ..
-        } = expr
-        else {
-            return false;
-        };
-        let target = match resolved_call.as_deref() {
-            Some(ResolvedCall::SigDispatch { target }) => target.clone(),
-            Some(ResolvedCall::TraitMethod { .. } | ResolvedCall::BuiltinFn { .. }) => {
-                match dispatch {
-                    ApplyRef::Dispatch(fq) => CallableTarget::Binding(fq.clone()),
-                    ApplyRef::ViaCallee => return false,
-                }
-            }
-            // Curry construction retains its own lowering rule.
-            Some(_) => return false,
-            None => match callee.as_ref() {
-                MonoExpr::Var { name, .. } if self.binds(name) => return true,
-                MonoExpr::Var {
-                    resolution: VarRef::Global(fq),
-                    ..
-                } => CallableTarget::Binding(fq.clone()),
-                MonoExpr::Var {
-                    resolution: VarRef::Local { .. },
-                    ..
-                } => return false,
-                _ => return true,
-            },
-        };
-        if !matches!(
-            target,
-            CallableTarget::Binding(_) | CallableTarget::OverloadArm { .. }
-        ) {
-            return false;
-        }
-        self.ctx.entry_convention_of(&target).result() == ResultKind::Transferred
-    }
-}
-
-/// **The ONE TCO replacement/transfer verdict** (S118 slice S5,
-/// `design/backend/transitive-drop-glue.md` §6).
-///
-/// One pure answer to "does the exact old owner of this slot travel into the
-/// next iteration?", replacing four separately-evaluated conditions that were
-/// combined ad hoc inside two `collect_frame_heap_decs` filters. Classification
-/// and release stay separate: this decides owner continuity; canonical glue
-/// performs the discharge.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SlotDisposition {
-    /// The exact old owner is carried forward — no release, and move
-    /// bookkeeping prevents a second owner.
-    TransferOldOwner,
-    /// The slot is superseded: call the type's glue before the overwrite.
-    /// Unknown provenance lands here, because conservative replacement is the
-    /// leak-safe direction and a guessed transfer is the UAF one.
-    Replace,
-    /// A BORROWED alias was offered as the evidence for a transfer. It carries
-    /// no independently owned reference, so it cannot license one — a located
-    /// compiler error rather than a guessed release or a silent skip. This is
-    /// the backend instance of **Narrowing carries its check**.
-    BorrowedInvalid,
-}
-
-/// Per-tail-self-call facts shared by cleanup and borrowed-shadow validation.
-#[derive(Clone, Copy)]
-pub(crate) struct TailTransferContext<'a> {
-    pub args: &'a [MonoExpr],
-    pub transfer_slots: &'a HashSet<SlotRef>,
-    pub bare_var_names: &'a HashSet<Symbol>,
-    /// The parameter slots consumed by consuming in-place COW arguments
-    /// ([`consuming_cow_arguments`]).
-    pub consuming_cow_slots: &'a HashSet<SlotRef>,
-}
-
-/// The per-slot facts [`tco_slot_disposition`] reads, gathered by the caller so
-/// the rule itself is pure and unit-testable without a live `FnCompiler` (the
-/// `is_fresh_construction` / `cow_site_source` precedent).
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct TailSlotFacts {
-    /// A bare top-level `Var` tail argument resolved to THIS exact slot — row 1,
-    /// the move.
-    pub tail_arg_transfers_this_slot: bool,
-    /// A bare tail argument spells this slot's name but resolves to a BORROWED
-    /// inner shadow. This validation remains spelling-sensitive so it rejects
-    /// the established UAF shape rather than silently changing it to a release.
-    pub bare_var_arg_is_borrowed: bool,
-    /// A consuming in-place COW argument consumes this slot's reference —
-    /// row 3.
-    pub inplace_cow_rooted_here: bool,
-}
-
-/// The kind of scope frame a slot lives in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SlotFrame {
-    /// Frame `0`: the function's parameters, reused by the TCO loop header.
-    Param,
-    /// A `let`, match or lambda-body frame.
-    Local,
-}
-
-/// The per-slot facts [`slot_holds_frame_owned_reference`] reads.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SlotOwnershipFacts {
-    pub frame: SlotFrame,
-    /// The slot's recorded type is heap-classified.
-    pub heap: bool,
-    /// The binder borrows: another owner releases the value.
-    pub borrowed: bool,
-    /// The function promoted a parameter of this name to frame-owned
-    /// (FIXME 0720's entry increment).
-    pub promoted: bool,
-}
-
-/// Does the slot hold a heap reference that this frame owns
-/// (`ownership-codegen.md` §13.3, "One ownership fact")?
-///
-/// Every tail seam reads this one fact: both tail-jump flushes, the
-/// branch-forward increment and the escape-borrow gate. Promotion counts only
-/// in the parameter frame, so a local binder that shadows a promoted
-/// parameter's name is judged by its own borrowed mark.
-pub(crate) fn slot_holds_frame_owned_reference(facts: SlotOwnershipFacts) -> bool {
-    facts.heap && (!facts.borrowed || (facts.frame == SlotFrame::Param && facts.promoted))
-}
-
-/// The §6 verdict table, in order.
-///
-/// **Row 2 (a control-flow expression that forwards the root) deliberately
-/// answers `Replace`.** That is a load-bearing constraint, not an omission: at
-/// a control-flow tail argument the branches carry DISTINCT bindings
-/// (`(recur (if c lo hi))`), so a static skip would retain the dead branch's
-/// binding. The established strategy is a per-branch protective inc
-/// (`maybe_protect_tail_arg_alias`) followed by a uniform flush, and the
-/// predicate reports the classification while that emission strategy is
-/// preserved. Turning row 2 into a blanket skip re-introduces the F1
-/// use-after-free (`ownership-codegen.md` §13.3).
-///
-/// **Row 3 keeps its toggle asymmetry.** Under `CRANELISP_NO_OWNERSHIP` the COW
-/// source is force-counted so the op always COPIES: nothing is carried forward
-/// and the dec is always owed (FIXME 0695). [`consuming_cow_arguments`] already
-/// yields no slot toggle-off; the explicit input keeps the verdict total over
-/// its facts.
-pub(crate) fn tco_slot_disposition(facts: TailSlotFacts, analysis_off: bool) -> SlotDisposition {
-    if facts.bare_var_arg_is_borrowed {
-        return SlotDisposition::BorrowedInvalid;
-    }
-    if facts.tail_arg_transfers_this_slot {
-        return SlotDisposition::TransferOldOwner;
-    }
-    if !analysis_off && facts.inplace_cow_rooted_here {
-        return SlotDisposition::TransferOldOwner;
-    }
-    SlotDisposition::Replace
-}
-
-/// What [`cow_argument_consumes_slot`] reads about the bare `Var` source of a
-/// top-level self-tail argument that is a COW builtin site.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CowSourceFacts {
-    /// The slot the source resolves to.
-    pub slot: SlotOwnershipFacts,
-    /// The source is at its last use, so the site lowers through the in-place
-    /// core rather than the copy extern.
-    pub in_place: bool,
-}
-
-/// Does a top-level self-tail argument that is a COW site consume its source
-/// slot's reference (`ownership-codegen.md` §13.3, "The consuming in-place COW
-/// argument")? Only an in-place site on a frame-owned parameter, with analysis
-/// on. A promoted Borrowed parameter is frame-owned but never in place:
-/// `is_last_use` refuses a borrowed slot.
-pub(crate) fn cow_argument_consumes_slot(facts: CowSourceFacts, analysis_off: bool) -> bool {
-    !analysis_off
-        && facts.in_place
-        && facts.slot.frame == SlotFrame::Param
-        && slot_holds_frame_owned_reference(facts.slot)
-}
-
-/// The consuming in-place COW arguments of one self-tail call (§6 row 3): each
-/// consuming site's source node with what `source_facts` resolved it to. The
-/// COW producer lowers such a source `Owned`, and the parameter flush skips
-/// the slot — one fact, two readers.
-///
-/// Site identity is the resolution carrier ([`cow_site_source`], FIXME 0752):
-/// a user fn that merely spells `vec-set` is not a site. Only top-level
-/// arguments are sites, at any position (FIXME 0691); a COW under a branch or
-/// inside another argument's operands is not (lead L7).
-///
-/// [`cow_site_source`]: crate::compiler::vec_codegen::cow_site_source
-pub(crate) fn consuming_cow_arguments<'e, S>(
-    args: &'e [MonoExpr],
-    analysis_off: bool,
-    source_facts: impl Fn(&Symbol, &'e MonoExpr) -> Option<(S, CowSourceFacts)>,
-) -> Vec<(&'e MonoExpr, S)> {
-    args.iter()
-        .filter_map(|arg| {
-            let source = crate::compiler::vec_codegen::cow_site_source(arg)?;
-            let MonoExpr::Var { name, .. } = source else {
-                return None;
-            };
-            let (slot, facts) = source_facts(name, source)?;
-            cow_argument_consumes_slot(facts, analysis_off).then_some((source, slot))
-        })
-        .collect()
-}
-
-/// Structural: does `body` forward the binding `name` out as its value? True for
-/// the bare `Var(name)` return and for a `let`/`match` that itself forwards it —
-/// the value-flow shape a match var-pattern arm `[r <body>]` uses to pass the
-/// scrutinee through (0668 §2 match-forward row). Never consults liveness — it is
-/// a pure AST-shape predicate over the arm body.
-pub(crate) fn body_forwards_binding(body: &MonoExpr, name: &Symbol) -> bool {
-    match body {
-        MonoExpr::Var { name: n, .. } => n == name,
-        MonoExpr::Let { body, .. } => body_forwards_binding(body, name),
-        MonoExpr::Match { arms, .. } => {
-            // A nested match forwards `name` iff its selected var-pattern arm
-            // rebinds the (forwarded) scrutinee and forwards THAT binder — the
-            // §2 nesting row. Conservative: only the var-pattern-arm shape.
-            arms.iter().any(|arm| match &arm.pattern {
-                cranelisp_types::Pattern::Var { name: bound, .. } => {
-                    body_forwards_binding(&arm.body, bound)
-                }
-                _ => false,
-            })
-        }
-        _ => false,
-    }
-}
-
-/// Structural: does this match FORWARD its scrutinee's provenance to the result?
-/// True iff some arm is a var-pattern `[r <body forwarding r>]` (0668 §2).
-///
-/// **This is a PROVENANCE trace, not a release decision** (S118 slice S3). Its
-/// one consumer is [`operand_live_binding_root`], which asks "could the value
-/// this match yields be rooted at a live binding" — an `any`-arm question, and
-/// the conservative direction there. Its former SECOND consumer, the
-/// match-seam release gate, is deleted: an `any`-arm approximation cannot
-/// decide a per-arm lifetime, and using it as one suppressed the release on
-/// every path of a mixed constructor+var match (FIXME 0726). The per-arm
-/// answer lives in `match_codegen::scrutinee_lifetime_for_arm`.
-pub(crate) fn match_forwards_scrutinee(arms: &[cranelisp_types::MonoMatchArm]) -> bool {
-    arms.iter().any(|arm| match &arm.pattern {
-        cranelisp_types::Pattern::Var { name, .. } => body_forwards_binding(&arm.body, name),
-        _ => false,
-    })
-}
-
-/// The W-B1 classifier core (0668 §1/§2), factored as a free function over a
-/// liveness predicate so the provenance trace is unit-testable without a full
-/// `FnCompiler` (the `return_cow_source_in_scope` precedent). `is_live(name)`
-/// answers "is `name` a live scope binding" (the chain read the method
-/// wrapper supplies). Traces Var-root → let-forward → match-var-forward → nested.
-pub(crate) fn operand_live_binding_root(
-    node: &MonoExpr,
-    is_live: &impl Fn(&Symbol) -> bool,
-) -> Option<Symbol> {
-    match node {
-        MonoExpr::Var { name, .. } => {
-            if is_live(name) {
-                Some(name.clone())
-            } else {
-                None
-            }
-        }
-        MonoExpr::Let { body, .. } => operand_live_binding_root(body, is_live),
-        MonoExpr::Match {
-            scrutinee, arms, ..
-        } => {
-            if match_forwards_scrutinee(arms) {
-                operand_live_binding_root(scrutinee, is_live)
-            } else {
-                None
-            }
-        }
-        // Every producing op — vec-lit, ctor, COW result, string/lambda literal —
-        // delivers its own count and transfers it: no live-binding root.
-        _ => None,
     }
 }
 
@@ -2283,398 +1018,6 @@ pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
 /// byte-identical — the carrier-match / name-differ case is unreachable today,
 /// see FIXME 0654 reachability probes). The sharper per-flow check ("only
 /// decline when the value flows into a `recur` arg") is a noted follow-on.
-/// Is `body` a FRESHLY-CONSTRUCTED value — a brand-new heap box that cannot
-/// alias any scope binding? This physical-freshness threshold stays distinct
-/// from permission to forward an independently owned callable result.
-///
-/// True for every **box-minting** node kind — the node's own lowering
-/// unconditionally allocates: `ConstrADT` with fields, `Lambda`
-/// (`compile_lambda`), `StringLit`, `VecLit` (`compile_vec_lit`), an `Apply`
-/// whose callee resolves to a constructor with fields (`ctor_shape` reads
-/// `CtorValueShape::Payload` off its carrier), and an `Apply` carrying the
-/// `ResolvedCall::AutoCurry` resolution (`compile_auto_curry` `emit_alloc`s a
-/// fresh curry env on every arm). It is ALSO true, trivially, for a value that
-/// carries no reference at all (`ValueProvenance::NoReference`) — there is
-/// nothing for scope cleanup to take away, so the threshold is `<= Fresh`.
-/// A general `Apply` (a user/trait call) may
-/// return an aliased argument (e.g. `(id x)`), so it is NOT physically fresh.
-/// An independently owned call result can nevertheless survive scope cleanup
-/// without another retain; that is the separate `TransferredCall` threshold.
-///
-/// **FIXME 0749** widened the kind set from the two constructor shapes. Before
-/// it, `Lambda`/`StringLit` were recognised by an ad-hoc `matches!` at the ONE
-/// `protect_return_value` call site — fresh at depth 0, NOT fresh through a
-/// `let` — and `VecLit`/auto-curry were not recognised anywhere. Every one of
-/// those gaps was a live per-iteration leak the moment the minted box was
-/// returned through binding indirection and consumed as a temporary by the
-/// caller: the protect inc has no balancing dec, because the value is not a
-/// scope binding for cleanup to dec and the caller's consuming dec is single.
-/// Measured (100 iterations, `PrimitivesOnly`, `--run`):
-/// `(defn mk [] (let [g (fn [a b] …)] (g 1)))` + `((mk) 2)` → allocs=201
-/// deallocs=1 (the curry env AND its captured target stranded);
-/// a lambda returned through two `let`s → allocs=301 deallocs=101;
-/// a `VecLit` returned through one `let` → allocs=201 deallocs=101.
-/// The kind set is the single source of freshness truth (Principle 7) —
-/// `protect_return_value` no longer carries its own list.
-///
-/// Binding-indirection and control-flow joins FORWARD freshness:
-/// - `Let` — a fresh construction returned through nested `let`s is still
-///   fresh, so the suppression is SCALE-INVARIANT in heap-let depth (the R-3
-///   fixed-residual signature);
-/// - `If` / `Match` — fresh iff EVERY arm is fresh. One non-fresh arm (an arm
-///   returning a scope binding, or a general `Apply` result) makes the join
-///   physically non-fresh. This is what recognises the FIXME-0720
-///   shape `(match g [(Gr cells) (Gr (vec-set cells 0 m))])` as the fresh
-///   construction it is; the analysis-ON path already reached that verdict via
-///   `return_is_fresh_by_summary`, so the two now agree by construction rather
-///   than by coincidence (Principle 7).
-///
-/// Analysis-independent (reads only the ctor carrier, never an ownership fact),
-/// so it answers identically under both `CRANELISP_NO_OWNERSHIP` states.
-/// Pure over the node + the ctor probe, so the shape rules are unit-testable
-/// without a live `FnCompiler` (the `operand_live_binding_root` precedent).
-#[cfg(test)]
-pub(crate) fn is_fresh_construction(
-    body: &MonoExpr,
-    ctor_shape: &impl Fn(&cranelisp_types::FQSymbol) -> Option<CtorValueShape>,
-) -> bool {
-    value_provenance(body, ctor_shape) <= ValueProvenance::Fresh
-}
-
-/// Who owns the reference the value of a `MonoExpr` node carries — the ONE
-/// derived answer behind every "is this expression's value mine to release?"
-/// RC gate (S115 W4c; FIXME 0781).
-///
-/// A five-point lattice, ordered
-/// `NoReference ⊑ Fresh ⊑ TransferredCall ⊑ OwnedTemporary ⊑ NotOwnedHere`.
-/// [`ValueProvenance::join`] is the max, so a control-flow join is exactly as
-/// strong as its weakest arm, and the bottom point is the join's IDENTITY —
-/// an arm carrying no reference is absorbed by its siblings rather than
-/// poisoning them.
-///
-/// The thresholds separate physical freshness from an independent returned
-/// reference and from eligibility for the existing temporary-release rules:
-///
-/// | Consumer | Threshold | Why that threshold |
-/// |---|---|---|
-/// | [`is_fresh_construction`] | `<= Fresh` | no possible alias of a scope binding |
-/// | [`FnCompiler::body_has_independent_result`] | `<= TransferredCall` | scope cleanup cannot consume this independent result reference |
-/// | [`yields_owned_temporary`] | `Fresh \| TransferredCall \| OwnedTemporary` | preserve existing temporary-release rules, including inline COW |
-///
-/// The class this closes: **a syntactic node-kind test standing in for the
-/// derived answer.** `emit_vec_drop_if_temporary` asked
-/// `matches!(e, MonoExpr::Var { .. })` and released everything else, so an
-/// `If`/`Match`/`Let` that merely YIELDS a borrowed param or a scope binding
-/// took the release path and dec'd a box the enclosing scope still owns —
-/// `(defn f [v b] (vec-get (if b v v) 0))` aborted 134 under `--link`. The
-/// node kind is not the question; the value's provenance is, and it FORWARDS
-/// through binding indirection and control-flow joins exactly as freshness
-/// does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ValueProvenance {
-    /// The value carries no heap reference at all: a scalar literal, or a
-    /// zero-field constructor whose value IS its bare tag (below
-    /// `NULLARY_TAG_THRESHOLD`, so there is nothing to count). ⊥, and the
-    /// join's identity — "carries no reference" is absorbed by any sibling
-    /// arm, never absorbing (FIXME 0917: it used to sit at ⊤ beside "a scope
-    /// binding owns it", and one nullary match arm poisoned the whole join,
-    /// licensing a protect inc on a fresh box that nothing balanced).
-    ///
-    /// This is a claim about the VALUE, and only a zero-field constructor
-    /// earns it: a one-field constructor flattened to a bare word still has
-    /// that word BE the reference when the field is heap-typed. That is
-    /// `HeapCategory::Value`'s fact, not this point.
-    NoReference,
-    /// A brand-new box minted by this node's own lowering. Cannot alias any
-    /// scope binding, so it is both owned here AND safe to elide a protect on.
-    Fresh,
-    /// An actual callable returned an independent owned reference. It may
-    /// alias a scope binding, but cleanup releases that binding's other owner.
-    TransferredCall,
-    /// The existing temporary-release classification, without permission to
-    /// omit return protection. Includes inline COW and unprobed calls; their
-    /// cleanup obligations are not the same as a verified callable return.
-    OwnedTemporary,
-    /// Not this frame's reference to release: a scope binding (whose own scope
-    /// cleanup decs it), or a join with any such arm. The conservative ⊤ —
-    /// both consumers take their SAFE action here (protect kept; no release ⇒
-    /// leak-safe, never UAF).
-    NotOwnedHere,
-}
-
-impl ValueProvenance {
-    /// Lattice join — the weaker (later) of two points. A control-flow join
-    /// yields a value that is only as strongly owned as its weakest arm.
-    fn join(self, other: Self) -> Self {
-        self.max(other)
-    }
-}
-
-/// Classify the provenance of the value `expr` yields — the single source of
-/// truth for the RC ownership thresholds (see [`ValueProvenance`]).
-///
-/// `ctor_shape` is the constructor probe
-/// (`CompileContext::ctor_value_shape_at`). It may only move a node DOWN the
-/// lattice, toward stronger ownership —
-/// pinned by `probe_only_moves_provenance_down_the_lattice`, which is what
-/// licenses the probeless gates to answer without symbol-table access: where
-/// they differ they take the leak-safe verdict, never the UAF one.
-///
-/// The match is **EXHAUSTIVE, deliberately (no `_ =>`)** — the standing
-/// instrument for this family. A new `MonoExpr` variant swept into a catch-all
-/// silently acquires one of the two wrong answers: a minting kind classified
-/// `NotOwnedHere` leaks (the 0749 shape), and a borrowing kind classified
-/// `OwnedTemporary` is a use-after-free (the 0781 shape). It must be
-/// classified here on purpose.
-pub(crate) fn value_provenance(
-    expr: &MonoExpr,
-    ctor_shape: &impl Fn(&cranelisp_types::FQSymbol) -> Option<CtorValueShape>,
-) -> ValueProvenance {
-    value_provenance_with_calls(expr, ctor_shape, &|_| false, &|_| None)
-}
-
-fn value_provenance_with_calls(
-    expr: &MonoExpr,
-    ctor_shape: &impl Fn(&cranelisp_types::FQSymbol) -> Option<CtorValueShape>,
-    owned_call: &impl Fn(&MonoExpr) -> bool,
-    compiled_result: &impl Fn(&MonoExpr) -> Option<ValueProvenance>,
-) -> ValueProvenance {
-    use ValueProvenance::{Fresh, NoReference, NotOwnedHere, OwnedTemporary};
-    if let Some(provenance) = compiled_result(expr) {
-        return provenance;
-    }
-    match expr {
-        // A constructor `Def`'s synthesised body. With fields it mints the box
-        // it returns; with none its whole value is the bare tag, so there is no
-        // reference — probe-free, the field list is in the node itself.
-        MonoExpr::ConstrADT { fields, .. } if fields.is_empty() => NoReference,
-        // The box-MINTING node kinds: each unconditionally allocates a
-        // brand-new box in its own lowering, so none can alias a scope binding.
-        MonoExpr::ConstrADT { .. }
-        | MonoExpr::Lambda { .. }
-        | MonoExpr::StringLit { .. }
-        | MonoExpr::VecLit { .. } => Fresh,
-        // An `Apply` is FRESH iff its RESOLUTION CARRIER says it mints a box:
-        // a constructor call, or an auto-curry (whose lowering
-        // `compile_auto_curry` allocates a fresh curry env on every arm). Any
-        // other call may RETURN an aliased argument (`(id x)`) so it is not
-        // fresh — the identity comes from the carrier, never the callee's
-        // spelling or shape (Principle 24). It is still OWNED: the
-        // Decision-24 ABI hands the caller an owned reference on every return
-        // path, which is exactly what the temporary-release gates consume.
-        MonoExpr::Apply {
-            callee,
-            resolved_call,
-            ..
-        } => {
-            if matches!(
-                resolved_call.as_deref(),
-                Some(cranelisp_types::ResolvedCall::AutoCurry { .. })
-            ) {
-                return Fresh;
-            }
-            // The four inline IO combinators (`apply::IoCombinator` — the ONE
-            // classification, read from the carrier and shared with the spark
-            // exclusion and the lowerings themselves). Each lowering allocates a
-            // new IO node at rc=1 and takes its operands under the consuming
-            // convention; the node NEVER returns an operand, so its result cannot
-            // alias a scope binding. `Fresh`, not `TransferredCall`: the latter
-            // would claim a possible parameter alias that does not exist.
-            //
-            // Exhaustive, no wildcard — a fifth combinator whose lowering did not
-            // mint a node must be decided here rather than inherit this claim.
-            // Before S122 this fell through to `OwnedTemporary`, so
-            // `body_has_independent_result` was false and `protect_return_value`
-            // retained the new node whenever the frame owned a heap binding,
-            // stranding it and its whole owned subtree
-            // (`design/backend/s122-closure.md` §8, IOR-5).
-            if let Some(combinator) =
-                crate::compiler::apply::IoCombinator::of_call(resolved_call.as_deref())
-            {
-                use crate::compiler::apply::IoCombinator::{Bind, Race, Select, Sleep};
-                return match combinator {
-                    Bind | Select | Race | Sleep => Fresh,
-                };
-            }
-            match callee.as_ref() {
-                MonoExpr::Var {
-                    resolution: VarRef::Global(fq),
-                    ..
-                } => match ctor_shape(fq) {
-                    // Applying a zero-field constructor yields its bare tag —
-                    // the same determinant and the same answer as referencing
-                    // one, so no second rule about which arm asks what.
-                    Some(CtorValueShape::BareTag) => NoReference,
-                    Some(CtorValueShape::Payload) => Fresh,
-                    None if owned_call(expr) => ValueProvenance::TransferredCall,
-                    None => OwnedTemporary,
-                },
-                _ if owned_call(expr) => ValueProvenance::TransferredCall,
-                _ => OwnedTemporary,
-            }
-        }
-        // Binding indirection and control-flow joins FORWARD provenance, so
-        // both thresholds are SCALE-INVARIANT in `let` depth and correct on
-        // mixed arms (a join is its weakest arm — one borrowing arm makes the
-        // whole join borrowing, which is what cures 0781).
-        MonoExpr::Let { body, .. } => {
-            value_provenance_with_calls(body, ctor_shape, owned_call, compiled_result)
-        }
-        MonoExpr::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            value_provenance_with_calls(then_branch, ctor_shape, owned_call, compiled_result).join(
-                value_provenance_with_calls(else_branch, ctor_shape, owned_call, compiled_result),
-            )
-        }
-        // An arm-less `Match` yields no value on ANY path — a different fact
-        // from "every path yields something carrying no reference", which is
-        // what the fold's `NoReference` identity now means. ⊤ is the only safe
-        // reading, and this guard is what keeps the two distinct.
-        MonoExpr::Match { arms, .. } if arms.is_empty() => NotOwnedHere,
-        MonoExpr::Match { arms, .. } => arms
-            .iter()
-            .map(|arm| {
-                value_provenance_with_calls(&arm.body, ctor_shape, owned_call, compiled_result)
-            })
-            .fold(NoReference, ValueProvenance::join),
-        // `Trace` forwards its inner value; `ParBind`/`LaunchContinue` yield a
-        // joined/continued value. All three FORWARD the borrowing direction
-        // (so `(vec-get (trace v) 0)` no longer releases a binding) but are
-        // CAPPED at `OwnedTemporary` — the fresh claim is not this frame's to
-        // make through a spark join or a trace wrapper, and capping keeps
-        // `is_fresh_construction` byte-identical to its pre-0781 answers on
-        // these kinds.
-        MonoExpr::Trace { body, .. } => {
-            value_provenance_with_calls(body, ctor_shape, owned_call, compiled_result)
-                .join(OwnedTemporary)
-        }
-        MonoExpr::ParBind { body, .. } => {
-            value_provenance_with_calls(body, ctor_shape, owned_call, compiled_result)
-                .join(OwnedTemporary)
-        }
-        MonoExpr::LaunchContinue { continuation, .. } => {
-            value_provenance_with_calls(continuation, ctor_shape, owned_call, compiled_result)
-                .join(OwnedTemporary)
-        }
-        // A `Var` naming a zero-field constructor is a bare tag, not a binding:
-        // `emit_adt_construct(tag, &[])` folds it to an `iconst`, so nothing
-        // owns it and nothing may claim it. Every other `Var` IS a scope
-        // binding — the exact thing both gates must not claim — INCLUDING a
-        // constructor WITH fields used as a value, which mints a dispatch
-        // wrapper this node does not own (narrowing that is not this ruling's;
-        // ⊤ stays the conservative answer — Principle 25).
-        MonoExpr::Var {
-            resolution: VarRef::Global(fq),
-            ..
-        } if ctor_shape(fq) == Some(CtorValueShape::BareTag) => NoReference,
-        // Scalar literals carry no reference at all.
-        MonoExpr::IntLit { .. } | MonoExpr::FloatLit { .. } | MonoExpr::BoolLit { .. } => {
-            NoReference
-        }
-        MonoExpr::Var { .. } => NotOwnedHere,
-    }
-}
-
-/// Does `expr` yield a reference THIS frame owns and nothing else will
-/// release — the temporary-release threshold (see [`ValueProvenance`])?
-///
-/// Answered PROBELESSLY (`|_| None` — "nothing is a constructor"), so these
-/// gates need no symbol-table access. That is safe because the probe only ever
-/// moves a node DOWN the lattice
-/// (`probe_only_moves_provenance_down_the_lattice`): where the probeless
-/// answer differs from the real one it is the weaker, leak-safe verdict, never
-/// the UAF one.
-pub(crate) fn yields_owned_temporary(expr: &MonoExpr) -> bool {
-    matches!(
-        value_provenance(expr, &|_| None),
-        ValueProvenance::Fresh | ValueProvenance::TransferredCall | ValueProvenance::OwnedTemporary
-    )
-}
-
-/// Is the tail self-call argument at position `i` a value that SUPERSEDES the
-/// param slot — i.e. NOT a bare `Var` naming the param itself? (FIXME 0720.)
-///
-/// A bare `Var` resolving to that exact slot CARRIES it forward (the transfer
-/// move contract: the same box occupies the slot after the jump, so nothing is
-/// released and nothing needs to be owned). Anything else — a temporary, a
-/// different binding, a control-flow join — replaces the slot's occupant, and the
-/// old occupant's reference is the one that leaked.
-///
-/// Pure over the argument list, so the whole decision table is unit-testable
-/// without a live `FnCompiler`.
-pub(crate) fn tail_arg_supersedes_param(arg: &MonoExpr, param: &Symbol) -> bool {
-    !matches!(arg, MonoExpr::Var { name, .. } if name == param)
-}
-
-/// The `Borrowed` heap params that a tail self-call supersedes — the set
-/// [`FnCompiler::compile_body`] promotes to frame-owned (FIXME 0720; see the
-/// `tco_owned_params` field rustdoc for the ownership invariant).
-///
-/// Narrow by construction: a param qualifies only when ALL of
-/// 1. the ownership summary marks it `Borrowed` (an `Owned` param is already
-///    flushed and released — the bare-vec twin, which must not change), and
-/// 2. it is heap-typed (nothing to release otherwise), and
-/// 3. some self-call in the body passes a SUPERSEDING argument at its position.
-///
-/// A function without a self-call, or one that only carries its params forward
-/// (`(go v (- n 1))`), promotes nothing and is byte-identical.
-fn tco_promoted_borrowed_params<C, L>(
-    defn: &Defn,
-    body: &MonoExpr,
-    mode_summary: Option<&cranelisp_types::ModeSummary>,
-    param_types: &[Option<Type>],
-    ctx: &CompileContext<'_, C, L>,
-) -> Vec<(usize, Symbol, HeapCategory)>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    let Some(summary) = mode_summary else {
-        // Toggle-off / summary-absent ⇒ no param is `Borrowed` ⇒ nothing to
-        // promote (the conservative all-`Owned` lowering already flushes).
-        return Vec::new();
-    };
-    defn.params()
-        .iter()
-        .enumerate()
-        .filter_map(|(i, (param_name, _))| {
-            if summary.param_mode(i) != cranelisp_types::Mode::Borrowed {
-                return None;
-            }
-            let ty = param_types.get(i)?.as_ref()?;
-            let category = signature_heap_category(ty, Some(ctx.symbol_tables));
-            if !matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
-                return None;
-            }
-            if !self_call_supersedes_param(body, &defn.name, &ctx.current_module, i, param_name) {
-                return None;
-            }
-            Some((i, param_name.clone(), category))
-        })
-        .collect()
-}
-
-/// Does some self-call in `body` pass a SUPERSEDING argument at position `i`?
-/// (FIXME 0720 — the promotion trigger.)
-fn self_call_supersedes_param(
-    body: &MonoExpr,
-    fn_name: &Symbol,
-    current_module: &ModuleFullPath,
-    index: usize,
-    param: &Symbol,
-) -> bool {
-    let mut found = false;
-    visit_self_calls(body, fn_name, current_module, &mut |args| {
-        if args.len() > index && tail_arg_supersedes_param(&args[index], param) {
-            found = true;
-        }
-    });
-    found
-}
-
 pub(crate) fn body_has_self_call(
     body: &MonoExpr,
     fn_name: &Symbol,
@@ -2685,15 +1028,12 @@ pub(crate) fn body_has_self_call(
     found
 }
 
-/// Visit the argument list of every self-call in `body` (ONE walk, shared by the
-/// B3.4 stack-alloc gate 3 [`body_has_self_call`] and the FIXME-0720 promotion
-/// trigger [`self_call_supersedes_param`] — Principle 7: the two answer different
-/// questions about the SAME call set, so they must not walk the tree twice with
-/// two independently-maintained arm lists).
+/// Visit the argument list of every self-call in `body`, for the B3.4
+/// stack-alloc gate 3 [`body_has_self_call`].
 ///
 /// Self-call identity is the shared [`is_self_call`] carrier predicate OR the
 /// historical bare-name over-approximation (always sound to over-report here:
-/// gate 3 declines a stack slot, the 0720 promotion adds a balanced inc/dec pair).
+/// gate 3 only declines a stack slot).
 /// The match is exhaustive over `MonoExpr` by construction — a new variant is a
 /// compile error, not a silently unvisited subtree.
 fn visit_self_calls(
@@ -3202,7 +1542,7 @@ mod b34_stack_eligibility_tests {
             ctx,
             &mut glue,
             0,
-            Map::new(),
+            crate::compiler::ownership_plan::OwnershipPlan::default(),
         );
 
         // An otherwise-eligible NoEscape scalar-payload constructor call.
@@ -3226,346 +1566,6 @@ mod b34_stack_eligibility_tests {
             !compiler.constructor_call_stack_eligible(&app, &args),
             "a spark-relocated construction must decline stack placement (0525)"
         );
-    }
-}
-
-/// B3.2 borrow-elision return-protect decision
-/// (`design/backend/ownership-codegen.md` §3.3): `true` iff the compiled
-/// function's return-protect inc (`protect_return_value`) may be elided because
-/// its ownership summary proves the return value is a fresh (non-aliased) value.
-///
-/// Sound-consumer contract (post-FIXME-0520 + S111 §3.7, see
-/// [`FnCompiler::return_is_fresh_by_summary`] for the full rationale):
-/// `summary` is `Some` with `result == ResultMode::Fresh`. `None` ⇒ Decision-24
-/// (protect verbatim) — the byte-identical-`CRANELISP_NO_OWNERSHIP` guarantee.
-///
-/// `Fresh` is sound to elide on iff the summary chain's leaf facts are
-/// truthful+reachable: 0520 cured the join-collapse and S111 §3.7 cured the
-/// false-declaration (`vec-set`/`vec-push` → `MayAliasOf(0)`) + unreachable-
-/// declaration (prelude-fallback-aware envs) classes. A body that returns a
-/// param on any reachable path reports `MayAliasOf`/`AliasOf`/`ProjectionOf`,
-/// never `Fresh`. A `MayAliasOf`/`ProjectionOf`/`AliasOf` summary alone does not
-/// license elision; the body provenance can independently establish that an
-/// actual callable already supplied the returned owner. The callee
-/// materializes the returned projection with an owned reference (its `vec-get`
-/// inc, an accessor call, or `protect_return_value` under cleanup targets), so a
-/// direct caller consumes it as an ordinary owned temporary — the §3.3 in-frame
-/// elision is confined to the CONSUMER seam (`compile_entry_arg_list`),
-/// never propagated across a function-return boundary (that propagation is
-/// parallel-unsound — an escaping borrowed view races a concurrent COW/free,
-/// observed in f4_sudoku). `_body` is retained for the seam signature but no
-/// longer read.
-pub(crate) fn return_is_fresh_by_summary(
-    _body: &MonoExpr,
-    summary: Option<&cranelisp_types::ModeSummary>,
-) -> bool {
-    summary.is_some_and(|s| s.result == cranelisp_types::ResultMode::Fresh)
-}
-
-/// The source node of the function-body return-COW site, or `None` — the
-/// return-COW issuer of the consuming claim ([`FnCompiler::consuming_claims`];
-/// vec-assoc UAF fix, `tests/vec_assoc_param_mutate_return_uaf.rs`).
-///
-/// Matches ONLY the direct shape: the whole body is `(vec-set v …)` /
-/// `(vec-push v …)` whose first argument is a bare `Var` naming a member of the
-/// current scope frame. The returned node, not its name, is what the claim
-/// keys: a nested COW, or a binder shadowing `v`, is a different node (lead L8).
-/// The claim has no last-use condition: when an element argument also reads
-/// `v`, the site copies and scope exit still skips `v` (lead L9, a leak).
-///
-/// Site identity comes from [`cow_site_source`], the resolution carrier, never
-/// the callee's spelling (FIXME 0752, Principle 24).
-///
-/// [`cow_site_source`]: crate::compiler::vec_codegen::cow_site_source
-pub(crate) fn return_cow_source_in_scope<'e>(
-    body: &'e MonoExpr,
-    scope_frame: Option<&Vec<Symbol>>,
-) -> Option<&'e MonoExpr> {
-    let source = crate::compiler::vec_codegen::cow_site_source(body)?;
-    let MonoExpr::Var { name, .. } = source else {
-        return None;
-    };
-    scope_frame?.contains(name).then_some(source)
-}
-
-#[cfg(test)]
-mod return_cow_source_tests {
-    //! vec-assoc UAF fix (`tests/vec_assoc_param_mutate_return_uaf.rs`): the
-    //! return-COW issuer of the consuming claim — which source node a tail COW
-    //! op (`vec-set`/`vec-push`) moves into the function return, so its slot's
-    //! scope-exit release is suppressed and the site lowers it `Owned`. VA-3
-    //! unit pin.
-    use super::return_cow_source_in_scope;
-    use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
-
-    fn int_ty() -> ConcreteType {
-        ConcreteType::Int
-    }
-
-    fn var(name: &str) -> MonoExpr {
-        MonoExpr::Var {
-            name: Symbol::from(name),
-            span: Span::new(0, 1),
-            resolved_call: None,
-            resolution: cranelisp_types::VarRef::Local {
-                binder: Symbol::from(name),
-                binding_span: Span::SYNTHETIC,
-            },
-            ty: int_ty(),
-        }
-    }
-
-    /// A COW site as typecheck RESOLVES it — carrier present (FIXME 0752 / P24).
-    fn cow_call(prim: &str, src: MonoExpr) -> MonoExpr {
-        cow_call_carrier(prim, src, Some(prim))
-    }
-
-    /// `carrier: None` = a user-defined fn that merely SPELLS `prim`.
-    fn cow_call_carrier(prim: &str, src: MonoExpr, carrier: Option<&str>) -> MonoExpr {
-        MonoExpr::Apply {
-            dispatch: cranelisp_types::ApplyRef::ViaCallee,
-            callee: Box::new(var(prim)),
-            args: vec![src, var("i"), var("x")],
-            span: Span::new(0, 9),
-            resolved_call: carrier.map(|n| {
-                Box::new(cranelisp_types::ResolvedCall::BuiltinFn {
-                    name: Symbol::from(n),
-                })
-            }),
-            ty: ConcreteType::ADT(
-                cranelisp_types::FQTypeName::new(
-                    cranelisp_types::ModuleFullPath::from("primitives"),
-                    cranelisp_types::TypeName::from("Vec"),
-                ),
-                vec![int_ty()],
-            ),
-            escapes: None,
-            confined: None,
-            unique_static: None,
-            provenance: None,
-        }
-    }
-
-    fn frame(names: &[&str]) -> Vec<Symbol> {
-        names.iter().map(|n| Symbol::from(*n)).collect()
-    }
-
-    /// Is the issuer's answer for `body` exactly the site's own source node?
-    fn claims_its_own_source(body: &MonoExpr, frame: &Vec<Symbol>) -> bool {
-        let MonoExpr::Apply { args, .. } = body else {
-            unreachable!("fixture: a COW site")
-        };
-        return_cow_source_in_scope(body, Some(frame)).is_some_and(|s| std::ptr::eq(s, &args[0]))
-    }
-
-    // (i) `(vec-set v i x)` on a scope-bound param `v`: the site claims `v`'s
-    // reference, keyed by its source node (the in-place COW returns v's box).
-    #[test]
-    fn vec_set_on_returned_scope_param_is_the_cow_source() {
-        let f = frame(&["v", "i", "x"]);
-        assert!(claims_its_own_source(&cow_call("vec-set", var("v")), &f));
-    }
-
-    // (ii) `vec-push` sibling — same claim.
-    #[test]
-    fn vec_push_on_returned_scope_param_is_the_cow_source() {
-        let f = frame(&["v", "i", "x"]);
-        assert!(claims_its_own_source(&cow_call("vec-push", var("v")), &f));
-    }
-
-    // (iii) control: the identity-fn return (bare `Var`, not a COW) is NOT a COW
-    // source — it is handled by `return_var_in_scope` instead, and MUST NOT be
-    // claimed here.
-    #[test]
-    fn identity_bare_var_return_is_not_a_cow_source() {
-        let f = frame(&["v"]);
-        assert!(return_cow_source_in_scope(&var("v"), Some(&f)).is_none());
-    }
-
-    // Control: a COW on a NON-frame source (a temporary / fresh literal wrapped
-    // as a Var not in scope) is NOT flagged — only a scope-managed binding whose
-    // scope-exit dec would otherwise fire needs suppression.
-    #[test]
-    fn cow_on_non_frame_source_is_not_flagged() {
-        let f = frame(&["i", "x"]); // `v` deliberately absent from the frame
-        assert!(return_cow_source_in_scope(&cow_call("vec-set", var("v")), Some(&f)).is_none());
-    }
-
-    // Control: a non-COW callee (`vec-get`) is not a mutating op — no source move.
-    #[test]
-    fn non_cow_primitive_is_not_flagged() {
-        let f = frame(&["v", "i"]);
-        assert!(return_cow_source_in_scope(&cow_call("vec-get", var("v")), Some(&f)).is_none());
-    }
-
-    // spec: FIXME 0752 (NEGATIVE) — this issuer's claim feeds the COW source
-    // classification, so a spelling read here would re-open the channel 0693
-    // closed. A user fn named `vec-set` must not claim its argument: that would
-    // suppress a scope-exit release nothing else discharges.
-    #[test]
-    fn a_user_fn_spelled_vec_set_is_not_the_return_cow_source_neg() {
-        let f = frame(&["v", "i", "x"]);
-        assert!(
-            return_cow_source_in_scope(&cow_call_carrier("vec-set", var("v"), None), Some(&f))
-                .is_none()
-        );
-        // ...and the carrier's NAME is what is read, not the callee Var's.
-        assert!(
-            return_cow_source_in_scope(
-                &cow_call_carrier("vec-set", var("v"), Some("vec-get")),
-                Some(&f)
-            )
-            .is_none()
-        );
-    }
-}
-
-#[cfg(test)]
-mod return_protect_tests {
-    //! B3.2 return-protect elision decision matrix (Principle 23 —
-    //! `design/backend/ownership-codegen.md` §13.5 apply/rc_emission row):
-    //! body-variant × result-mode × summary-presence → skip-protect verdict.
-    use super::return_is_fresh_by_summary;
-    use cranelisp_types::{ConcreteType, ModeSummary, MonoExpr, ResultMode, Span, Symbol};
-
-    fn int_ty() -> ConcreteType {
-        ConcreteType::Int
-    }
-
-    fn apply_body() -> MonoExpr {
-        MonoExpr::Apply {
-            dispatch: cranelisp_types::ApplyRef::ViaCallee,
-            callee: Box::new(MonoExpr::Var {
-                resolution: cranelisp_types::VarRef::Local {
-                    binder: Symbol::from("f"),
-                    binding_span: Span::SYNTHETIC,
-                },
-                name: Symbol::from("f"),
-                span: Span::new(0, 1),
-                resolved_call: None,
-                ty: int_ty(),
-            }),
-            args: vec![],
-            span: Span::new(0, 3),
-            resolved_call: None,
-            ty: int_ty(),
-            escapes: None,
-            confined: None,
-            unique_static: None,
-            provenance: None,
-        }
-    }
-
-    fn if_body() -> MonoExpr {
-        MonoExpr::If {
-            cond: Box::new(MonoExpr::BoolLit {
-                value: true,
-                span: Span::new(0, 1),
-                ty: ConcreteType::Bool,
-            }),
-            then_branch: Box::new(MonoExpr::Var {
-                name: Symbol::from("v"),
-                span: Span::new(1, 2),
-                resolved_call: None,
-                resolution: cranelisp_types::VarRef::Local {
-                    binder: Symbol::from("v"),
-                    binding_span: Span::SYNTHETIC,
-                },
-                ty: int_ty(),
-            }),
-            else_branch: Box::new(MonoExpr::Var {
-                name: Symbol::from("w"),
-                span: Span::new(2, 3),
-                resolved_call: None,
-                resolution: cranelisp_types::VarRef::Local {
-                    binder: Symbol::from("w"),
-                    binding_span: Span::SYNTHETIC,
-                },
-                ty: int_ty(),
-            }),
-            span: Span::new(0, 4),
-            ty: int_ty(),
-        }
-    }
-
-    fn var_body() -> MonoExpr {
-        MonoExpr::Var {
-            name: Symbol::from("v"),
-            span: Span::new(0, 1),
-            resolved_call: None,
-            ty: int_ty(),
-            resolution: cranelisp_types::VarRef::Local {
-                binder: Symbol::from("v"),
-                binding_span: Span::SYNTHETIC,
-            },
-        }
-    }
-
-    fn fresh() -> ModeSummary {
-        ModeSummary {
-            result: ResultMode::Fresh,
-            ..Default::default()
-        }
-    }
-    fn alias0() -> ModeSummary {
-        ModeSummary {
-            result: ResultMode::AliasOf(0),
-            ..Default::default()
-        }
-    }
-    fn proj0() -> ModeSummary {
-        ModeSummary {
-            result: ResultMode::ProjectionOf(0),
-            ..Default::default()
-        }
-    }
-    fn may_alias0() -> ModeSummary {
-        ModeSummary {
-            result: ResultMode::MayAliasOf(0),
-            ..Default::default()
-        }
-    }
-
-    // POSITIVE: a PRESENT Fresh summary elides for ANY body shape (post-0520 —
-    // the Apply-body restriction is dropped; `Fresh` is now sound for if/match/
-    // var bodies because `join_origin` never collapses a partial param-return to
-    // `Fresh`).
-    #[test]
-    fn fresh_summary_elides_all_body_shapes() {
-        assert!(return_is_fresh_by_summary(&apply_body(), Some(&fresh())));
-        assert!(return_is_fresh_by_summary(&if_body(), Some(&fresh())));
-        assert!(return_is_fresh_by_summary(&var_body(), Some(&fresh())));
-    }
-
-    // NEGATIVE (byte-identical-off): no summary ⇒ never elide, ANY body.
-    #[test]
-    fn absent_summary_never_elides() {
-        assert!(!return_is_fresh_by_summary(&apply_body(), None));
-        assert!(!return_is_fresh_by_summary(&if_body(), None));
-        assert!(!return_is_fresh_by_summary(&var_body(), None));
-    }
-
-    // NEGATIVE (aliasing result modes): AliasOf / ProjectionOf / MayAliasOf keep
-    // protect — the callee materializes the returned projection with an owned
-    // reference (§3.3 confines the in-frame elision to the consumer seam, never a
-    // function return), so a direct caller consumes it as an owned temporary.
-    //
-    // `MayAliasOf` is the CONDITIONAL point (§3.7/§3.7.1: the COW pair's copy arm
-    // vs its rc==1 in-place arm), and it is the one an author is most likely to
-    // read as elidable — "may" invites treating the fresh arm as the summary's
-    // claim. Eliding on it is the UAF direction on the other arm, so the row is
-    // measured here rather than inspected: the predicate is a silent `== Fresh`
-    // binary read that a widening does not force anyone to revisit. The ⊤
-    // (`MayAliasAny`) is measured one tier down, on emitted CLIF, by
-    // `rc_emission::return_ownership_tests::result_top_summary_keeps_the_return_protect`.
-    #[test]
-    fn aliasing_result_modes_never_elide() {
-        assert!(!return_is_fresh_by_summary(&apply_body(), Some(&alias0())));
-        assert!(!return_is_fresh_by_summary(&apply_body(), Some(&proj0())));
-        assert!(!return_is_fresh_by_summary(
-            &apply_body(),
-            Some(&may_alias0())
-        ));
     }
 }
 
@@ -3728,1097 +1728,3 @@ mod b33_node_confined_tests {
         assert_eq!(map(node_confined(&constr_adt(None))), RcAtomicity::Atomic);
     }
 }
-
-#[cfg(test)]
-mod binding_indirection_classifier_tests {
-    //! W-B1 unit matrix (`design/backend/binding-indirection-consume.md` §5): the
-    //! ONE shared provenance classifier `operand_live_binding_root` +
-    //! `match_forwards_scrutinee`. Structural, analysis-independent — reads only a
-    //! liveness predicate, never an ownership fact. Cells: Var-root, producing-op
-    //! temp, let-forward, match-var-forward, nested; a non-live Var ⇒ None.
-    use super::{match_forwards_scrutinee, operand_live_binding_root};
-    use cranelisp_types::{ConcreteType, MonoExpr, MonoMatchArm, Pattern, Span, Symbol, VarRef};
-
-    fn var(name: &str) -> MonoExpr {
-        MonoExpr::Var {
-            name: Symbol::from(name),
-            span: Span::new(0, 1),
-            resolved_call: None,
-            resolution: VarRef::Local {
-                binder: Symbol::from(name),
-                binding_span: Span::SYNTHETIC,
-            },
-            ty: ConcreteType::Int,
-        }
-    }
-
-    fn vec_lit() -> MonoExpr {
-        MonoExpr::VecLit {
-            elements: vec![],
-            span: Span::new(0, 1),
-            ty: ConcreteType::Int,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-        }
-    }
-
-    // `(match <scrut> [r r])` — a single var-pattern arm forwarding its binder.
-    fn var_match(scrut: MonoExpr, binder: &str) -> MonoExpr {
-        MonoExpr::Match {
-            scrutinee: Box::new(scrut),
-            arms: vec![MonoMatchArm {
-                pattern: Pattern::Var {
-                    name: Symbol::from(binder),
-                    span: Span::new(0, 1),
-                },
-                body: var(binder),
-                span: Span::new(0, 1),
-                provenance: None,
-                resolved_ctor: None,
-            }],
-            span: Span::new(0, 1),
-            compiler_generated: false,
-            ty: ConcreteType::Int,
-        }
-    }
-
-    fn live<'a>(names: &'a [&'a str]) -> impl Fn(&Symbol) -> bool + 'a {
-        move |n: &Symbol| names.iter().any(|x| *x == n.as_ref())
-    }
-
-    // Cell 1 — a bare `Var` naming a live binding is that binding's alias (root).
-    #[test]
-    fn var_root_of_live_binding() {
-        assert_eq!(
-            operand_live_binding_root(&var("v"), &live(&["v"])),
-            Some(Symbol::from("v"))
-        );
-    }
-
-    // Cell 2 — a `Var` naming NO live binding (a fn-as-value name / free ref) is
-    // NOT an alias: it mints its own value ⇒ None (a NeverHeap/fresh Var ⇒ no inc).
-    #[test]
-    fn var_not_live_is_not_an_alias() {
-        assert_eq!(
-            operand_live_binding_root(&var("v"), &live(&["other"])),
-            None
-        );
-    }
-
-    // Cell 3 — a producing op (vec-lit, ctor, …) delivers its own count ⇒ None.
-    #[test]
-    fn producing_op_temp_is_not_an_alias() {
-        assert_eq!(operand_live_binding_root(&vec_lit(), &live(&["v"])), None);
-    }
-
-    // Cell 4 — a `let` forwards its BODY's provenance: `(let [q …] v)` roots at v.
-    #[test]
-    fn let_forwards_body_root() {
-        let node = MonoExpr::Let {
-            bindings: vec![(Symbol::from("q"), vec_lit())],
-            body: Box::new(var("v")),
-            span: Span::new(0, 1),
-            ty: ConcreteType::Int,
-        };
-        assert_eq!(
-            operand_live_binding_root(&node, &live(&["v"])),
-            Some(Symbol::from("v"))
-        );
-    }
-
-    // Cell 5 — a var-pattern match forwards the scrutinee's provenance:
-    // `(match v [r r])` roots at v.
-    #[test]
-    fn match_var_pattern_forwards_scrutinee_root() {
-        assert_eq!(
-            operand_live_binding_root(&var_match(var("v"), "r"), &live(&["v"])),
-            Some(Symbol::from("v"))
-        );
-    }
-
-    // Cell 6 — NESTED forward: `(match (match v [r r]) [q q])` traces to v (cell F).
-    #[test]
-    fn nested_match_forwards_to_root() {
-        let inner = var_match(var("v"), "r");
-        assert_eq!(
-            operand_live_binding_root(&var_match(inner, "q"), &live(&["v"])),
-            Some(Symbol::from("v"))
-        );
-    }
-
-    // Cell 7 — a match forwarding a producing-op temp has NO live-binding root
-    // (the temp transfers its own count), but IS a forwarding match structurally.
-    #[test]
-    fn match_forwarding_fresh_temp_has_no_root_but_forwards() {
-        let m = var_match(vec_lit(), "r");
-        assert_eq!(operand_live_binding_root(&m, &live(&["v"])), None);
-        if let MonoExpr::Match { arms, .. } = &m {
-            assert!(match_forwards_scrutinee(arms), "single [r r] arm forwards");
-        }
-    }
-
-    // F-R1 fresh-construction — a `ConstrADT` and a `let`-forwarded `ConstrADT` are
-    // fresh (suppress main's IO-return protect); a general (non-ctor) `Apply` may
-    // return an aliased arg and is NOT fresh (protect KEPT). The ctor-`Apply` arm
-    // needs a live ctx and is covered e2e (`entry_main_heap_let_teardown_balances_r2`).
-    #[test]
-    fn body_forwards_binding_traces_through_let_and_match() {
-        use super::body_forwards_binding;
-        let name = Symbol::from("r");
-        // Bare Var forwards.
-        assert!(body_forwards_binding(&var("r"), &name));
-        // A different Var does not.
-        assert!(!body_forwards_binding(&var("q"), &name));
-        // A let forwarding its body's `r`.
-        let l = MonoExpr::Let {
-            bindings: vec![(Symbol::from("z"), vec_lit())],
-            body: Box::new(var("r")),
-            span: Span::new(0, 1),
-            ty: ConcreteType::Int,
-        };
-        assert!(body_forwards_binding(&l, &name));
-        // A fresh producing op does not forward.
-        assert!(!body_forwards_binding(&vec_lit(), &name));
-    }
-
-    // Cell 8 — a match whose var-arm does NOT forward its binder (body is a
-    // different value) is not a forwarding match.
-    #[test]
-    fn match_var_arm_not_forwarding_is_not_a_forward() {
-        let m = MonoExpr::Match {
-            scrutinee: Box::new(var("v")),
-            arms: vec![MonoMatchArm {
-                pattern: Pattern::Var {
-                    name: Symbol::from("r"),
-                    span: Span::new(0, 1),
-                },
-                body: vec_lit(),
-                span: Span::new(0, 1),
-                provenance: None,
-                resolved_ctor: None,
-            }],
-            span: Span::new(0, 1),
-            compiler_generated: false,
-            ty: ConcreteType::Int,
-        };
-        if let MonoExpr::Match { arms, .. } = &m {
-            assert!(!match_forwards_scrutinee(arms));
-        }
-        assert_eq!(operand_live_binding_root(&m, &live(&["v"])), None);
-    }
-}
-
-#[cfg(test)]
-mod rc_release_sweep_tests {
-    //! S115 W3 change-set 2 — the RC-release sweep's two backend seams
-    //! (`design/backend/s115-carrier-and-rc-sweep.md` §2; `tests/plan/s115-test-plan.md`
-    //! §6.5). Both are pinned at the exact predicate the emission keys on, so a
-    //! revert of either mechanism flips these RED without needing a live JIT.
-    //!
-    //! 1. **Item-26 fresh-construction return** ([`is_fresh_construction`]) — the
-    //!    license for suppressing `protect_return_value`. Generalised this sprint
-    //!    from the `main`-keyed F-R1 special case (FIXME 0696: name-as-identity)
-    //!    to freshness, and extended across control-flow joins, which is what
-    //!    makes the toggle-OFF half of FIXME 0720 balance.
-    //! 2. **TCO borrowed-param promotion** ([`tail_arg_supersedes_param`] /
-    //!    [`self_call_supersedes_param`]) — the trigger that decides which
-    //!    `Borrowed` heap params the frame must own across a TCO back-edge, the
-    //!    toggle-ON half of FIXME 0720.
-
-    use super::{
-        CtorValueShape, ValueProvenance, is_fresh_construction, self_call_supersedes_param,
-        tail_arg_supersedes_param, value_provenance, yields_owned_temporary,
-    };
-    use cranelisp_types::{
-        ConcreteType, FQSymbol, ModuleFullPath, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
-        VarRef,
-    };
-
-    fn fq(module: &str, symbol: &str) -> FQSymbol {
-        FQSymbol {
-            module: ModuleFullPath::from(module),
-            symbol: Symbol::from(symbol),
-        }
-    }
-
-    fn var(name: &str) -> MonoExpr {
-        MonoExpr::Var {
-            resolution: VarRef::Local {
-                binder: Symbol::from(name),
-                binding_span: Span::SYNTHETIC,
-            },
-            name: Symbol::from(name),
-            span: Span::SYNTHETIC,
-            resolved_call: None,
-            ty: ConcreteType::Int,
-        }
-    }
-
-    fn global_var(module: &str, name: &str) -> MonoExpr {
-        MonoExpr::Var {
-            resolution: VarRef::Global(fq(module, name)),
-            name: Symbol::from(name),
-            span: Span::SYNTHETIC,
-            resolved_call: None,
-            ty: ConcreteType::Int,
-        }
-    }
-
-    fn constr_adt(fields: Vec<MonoExpr>) -> MonoExpr {
-        MonoExpr::ConstrADT {
-            type_name: cranelisp_types::FQTypeName::new(
-                ModuleFullPath::from("user"),
-                cranelisp_types::TypeName::from("G2"),
-            ),
-            tag: 0,
-            fields,
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-        }
-    }
-
-    /// A constructor `Def` body that MINTS a box — one field to put in it.
-    fn ctor_adt() -> MonoExpr {
-        constr_adt(vec![var("c")])
-    }
-
-    /// A ZERO-FIELD constructor `Def` body: its whole value is the bare tag.
-    fn nullary_ctor_adt() -> MonoExpr {
-        constr_adt(vec![])
-    }
-
-    fn apply(callee: MonoExpr, args: Vec<MonoExpr>) -> MonoExpr {
-        MonoExpr::Apply {
-            callee: Box::new(callee),
-            args,
-            span: Span::SYNTHETIC,
-            resolved_call: None,
-            dispatch: cranelisp_types::ApplyRef::ViaCallee,
-            ty: ConcreteType::Int,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-            provenance: None,
-        }
-    }
-
-    fn match_of(scrutinee: MonoExpr, bodies: Vec<MonoExpr>) -> MonoExpr {
-        MonoExpr::Match {
-            scrutinee: Box::new(scrutinee),
-            compiler_generated: false,
-            arms: bodies
-                .into_iter()
-                .map(|body| MonoMatchArm {
-                    pattern: Pattern::Var {
-                        name: Symbol::from("x"),
-                        span: Span::SYNTHETIC,
-                    },
-                    body,
-                    span: Span::SYNTHETIC,
-                    provenance: None,
-                    resolved_ctor: None,
-                })
-                .collect(),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        }
-    }
-
-    fn let_of(body: MonoExpr) -> MonoExpr {
-        MonoExpr::Let {
-            bindings: vec![(Symbol::from("s"), var("t"))],
-            body: Box::new(body),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        }
-    }
-
-    /// The three-state ctor probe: `user/Gr` is a constructor with fields,
-    /// `user/Nil` a zero-field one, nothing else is a constructor at all.
-    fn ctor_shape(f: &FQSymbol) -> Option<CtorValueShape> {
-        match f.symbol.as_ref() {
-            "Gr" => Some(CtorValueShape::Payload),
-            "Nil" => Some(CtorValueShape::BareTag),
-            _ => None,
-        }
-    }
-
-    /// The probe that answers nothing — what the four probeless ownership
-    /// gates pass (`yields_owned_temporary`).
-    fn no_ctor(_: &FQSymbol) -> Option<CtorValueShape> {
-        None
-    }
-
-    /// A bare reference to the zero-field constructor `user/Nil` — the shape
-    /// `compile_var` folds to an `iconst` tag (FIXME 0917's subject).
-    fn nullary_ctor_var() -> MonoExpr {
-        global_var("user", "Nil")
-    }
-
-    // ---- 1. item-26 fresh-construction ------------------------------------
-
-    // spec: design/backend/s115-carrier-and-rc-sweep.md §2.1 / FIXME 0696 — a
-    // freshly-constructed return needs no protect, in ANY function.
-    #[test]
-    fn constr_adt_and_ctor_apply_are_fresh() {
-        assert!(is_fresh_construction(&ctor_adt(), &ctor_shape));
-        assert!(is_fresh_construction(
-            &apply(global_var("user", "Gr"), vec![var("c")]),
-            &ctor_shape
-        ));
-    }
-
-    // spec: §2.1 fence — the general G2/item-26 protect MUST NOT weaken: a plain
-    // user/trait `Apply` may return an ALIASED argument (`(id x)`), and a bare
-    // `Var` return IS a scope binding. Both keep their protect.
-    #[test]
-    fn general_apply_and_var_returns_are_not_fresh_neg() {
-        assert!(!is_fresh_construction(
-            &apply(global_var("user", "id"), vec![var("x")]),
-            &ctor_shape
-        ));
-        assert!(!is_fresh_construction(&var("v"), &ctor_shape));
-        // A LOCAL-resolved callee (a closure value) is never a ctor.
-        assert!(!is_fresh_construction(
-            &apply(var("f"), vec![]),
-            &ctor_shape
-        ));
-    }
-
-    // spec: §2.1 — `let` forwards freshness, so the suppression is scale-invariant
-    // in heap-let depth (the R-3 fixed-residual signature).
-    #[test]
-    fn let_forwards_freshness_both_ways() {
-        assert!(is_fresh_construction(&let_of(ctor_adt()), &ctor_shape));
-        assert!(is_fresh_construction(
-            &let_of(let_of(ctor_adt())),
-            &ctor_shape
-        ));
-        assert!(!is_fresh_construction(&let_of(var("v")), &ctor_shape));
-    }
-
-    // spec: §2.2 (FIXME 0720 toggle-OFF half) — a control-flow JOIN is fresh iff
-    // EVERY arm is fresh. This is the `set0` shape
-    // `(match g [(Gr cells) (Gr (vec-set cells 0 m))])`; without it the protect
-    // inc left every loop-carried box at rc≥2 and the TCO flush never reached 0.
-    #[test]
-    fn control_flow_join_is_fresh_iff_every_arm_is() {
-        assert!(is_fresh_construction(
-            &match_of(var("g"), vec![ctor_adt()]),
-            &ctor_shape
-        ));
-        assert!(is_fresh_construction(
-            &match_of(var("g"), vec![ctor_adt(), ctor_adt()]),
-            &ctor_shape
-        ));
-        let if_fresh = MonoExpr::If {
-            cond: Box::new(var("c")),
-            then_branch: Box::new(ctor_adt()),
-            else_branch: Box::new(ctor_adt()),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        };
-        assert!(is_fresh_construction(&if_fresh, &ctor_shape));
-    }
-
-    // spec: §2.1 fence (NEGATIVE, the load-bearing half) — ONE non-fresh arm makes
-    // the join non-fresh and the protect STANDS. Without this the join rule would
-    // be an under-count: an arm returning a scope binding would lose the inc that
-    // keeps it alive past scope cleanup (the UAF direction).
-    #[test]
-    fn one_non_fresh_arm_makes_the_join_non_fresh_neg() {
-        assert!(!is_fresh_construction(
-            &match_of(var("g"), vec![ctor_adt(), var("v")]),
-            &ctor_shape
-        ));
-        assert!(!is_fresh_construction(
-            &match_of(var("g"), vec![var("v"), ctor_adt()]),
-            &ctor_shape
-        ));
-        let if_mixed = MonoExpr::If {
-            cond: Box::new(var("c")),
-            then_branch: Box::new(ctor_adt()),
-            else_branch: Box::new(var("v")),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        };
-        assert!(!is_fresh_construction(&if_mixed, &ctor_shape));
-        // An arm-less match yields no value that could be fresh.
-        assert!(!is_fresh_construction(
-            &match_of(var("g"), vec![]),
-            &ctor_shape
-        ));
-    }
-
-    // ---- 1b. the box-MINTING node kinds (FIXME 0749) -----------------------
-
-    /// An `Apply` carrying the `AutoCurry` resolution — `compile_auto_curry`
-    /// unconditionally `emit_alloc`s a fresh curry env for every arm.
-    fn auto_curry_apply(callee: MonoExpr) -> MonoExpr {
-        let MonoExpr::Apply {
-            callee,
-            args,
-            span,
-            dispatch,
-            ty,
-            ..
-        } = apply(callee, vec![])
-        else {
-            unreachable!()
-        };
-        MonoExpr::Apply {
-            callee,
-            args,
-            span,
-            resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::AutoCurry {
-                target_name: Symbol::from("g"),
-                applied_count: 1,
-                total_count: 2,
-                trait_resolution: None,
-            })),
-            dispatch,
-            ty,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-            provenance: None,
-        }
-    }
-
-    fn lambda() -> MonoExpr {
-        MonoExpr::Lambda {
-            params: vec![],
-            body: Box::new(var("x")),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-        }
-    }
-
-    fn string_lit() -> MonoExpr {
-        MonoExpr::StringLit {
-            value: "hi".to_string(),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-        }
-    }
-
-    fn vec_lit() -> MonoExpr {
-        MonoExpr::VecLit {
-            elements: vec![],
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-            escapes: None,
-            confined: None,
-            unique_static: None,
-        }
-    }
-
-    // spec: design/backend/s115-carrier-and-rc-sweep.md §2.1 / FIXME 0749 — the
-    // freshness predicate covers EVERY box-minting node kind, not just the two
-    // constructor shapes. `Lambda`/`StringLit` were recognised only by an
-    // ad-hoc `matches!` at the ONE call site, so they were fresh at depth 0 and
-    // NOT fresh through a `let`; `VecLit` and the auto-curry `Apply` were not
-    // recognised at all. Each mints a brand-new box that cannot alias a scope
-    // binding, so each needs no return-protect.
-    #[test]
-    fn every_box_minting_node_kind_is_fresh() {
-        assert!(is_fresh_construction(&lambda(), &ctor_shape));
-        assert!(is_fresh_construction(&string_lit(), &ctor_shape));
-        assert!(is_fresh_construction(&vec_lit(), &ctor_shape));
-        assert!(is_fresh_construction(
-            &auto_curry_apply(var("g")),
-            &ctor_shape
-        ));
-    }
-
-    // spec: §2.1 / FIXME 0749 — the SCALE-INVARIANCE half: a minted box returned
-    // through binding indirection is still fresh. This is the measured leak —
-    // `(defn mk [] (let [g (fn [a b] …)] (g 1)))` returned a curry env carrying
-    // an unbalanceable protect inc, so neither it nor its captured target was
-    // ever freed (allocs=201 deallocs=1 over 100 iterations); the plain-lambda
-    // twin leaked identically at TWO `let`s of depth.
-    #[test]
-    fn minted_boxes_forward_freshness_through_binding_indirection() {
-        assert!(is_fresh_construction(
-            &let_of(auto_curry_apply(var("g"))),
-            &ctor_shape
-        ));
-        assert!(is_fresh_construction(
-            &let_of(let_of(lambda())),
-            &ctor_shape
-        ));
-        assert!(is_fresh_construction(
-            &let_of(let_of(string_lit())),
-            &ctor_shape
-        ));
-        assert!(is_fresh_construction(&let_of(vec_lit()), &ctor_shape));
-        assert!(is_fresh_construction(
-            &match_of(var("g"), vec![lambda(), auto_curry_apply(var("h"))]),
-            &ctor_shape
-        ));
-    }
-
-    // spec: §2.1 fence (NEGATIVE) — the widening keys on the RESOLUTION CARRIER
-    // (`ResolvedCall::AutoCurry`), never on the callee's shape or spelling. A
-    // full application through the same local-closure callee mints nothing of
-    // its own and may return an aliased argument, so it keeps its protect.
-    #[test]
-    fn a_non_curry_apply_through_the_same_callee_is_not_fresh_neg() {
-        assert!(!is_fresh_construction(
-            &apply(var("g"), vec![var("x")]),
-            &ctor_shape
-        ));
-        assert!(!is_fresh_construction(
-            &let_of(apply(var("g"), vec![])),
-            &ctor_shape
-        ));
-        // ...and one non-minting arm still poisons the join.
-        assert!(!is_fresh_construction(
-            &match_of(var("g"), vec![lambda(), var("v")]),
-            &ctor_shape
-        ));
-    }
-
-    // ---- 1c. the provenance lattice + the release threshold (FIXME 0781) ---
-    //
-    // The class: a syntactic node-kind test standing in for the derived answer.
-    // `emit_vec_drop_if_temporary` / `is_vec_last_use` /
-    // `cow_source_has_separate_owner` each asked
-    // `matches!(e, MonoExpr::Var { .. })` and treated everything else as this
-    // frame's to release/transfer, so an `If`/`Match`/`Let` merely YIELDING a
-    // borrowed param or a scope binding took the owned path and dec'd (or
-    // mutated in place) a vector the enclosing scope still owned —
-    // `(defn f [v b] (vec-get (if b v v) 0))` aborted 134 under `--link`.
-    // Both thresholds now read ONE derived answer, `value_provenance`.
-
-    fn trace_of(body: MonoExpr) -> MonoExpr {
-        MonoExpr::Trace {
-            modules: vec![],
-            body: Box::new(body),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        }
-    }
-
-    // spec: design/arch/ownership-inference.md §2.1 (monotone soundness) /
-    // FIXME 0781 — the release threshold is the value's PROVENANCE, not the
-    // node kind. A `Var` is a scope binding (its own cleanup decs it); an
-    // owned temporary is this frame's to release.
-    #[test]
-    fn owned_temporary_threshold_separates_bindings_from_temporaries() {
-        // Not ours: a binding, and a scalar carrying no reference at all.
-        assert!(!yields_owned_temporary(&var("v")));
-        assert!(!yields_owned_temporary(&MonoExpr::IntLit {
-            value: 1,
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        }));
-        // Ours: every minting kind, and a call result (owned-return ABI).
-        assert!(yields_owned_temporary(&vec_lit()));
-        assert!(yields_owned_temporary(&lambda()));
-        assert!(yields_owned_temporary(&string_lit()));
-        assert!(yields_owned_temporary(&ctor_adt()));
-        assert!(yields_owned_temporary(&apply(
-            global_var("user", "mk"),
-            vec![]
-        )));
-    }
-
-    // spec: FIXME 0781 (the DEFECT cell, NEGATIVE) — the join that aborted. An
-    // `If`/`Match` with any borrowing arm, and a `Let` yielding a binding, are
-    // NOT this frame's to release. Reverting `emit_vec_drop_if_temporary` to
-    // the `matches!(.., MonoExpr::Var { .. })` shape test flips this RED.
-    #[test]
-    fn a_join_or_let_yielding_a_binding_is_not_ours_to_release_neg() {
-        let if_borrowed = MonoExpr::If {
-            cond: Box::new(var("c")),
-            then_branch: Box::new(var("v")),
-            else_branch: Box::new(var("v")),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        };
-        assert!(!yields_owned_temporary(&if_borrowed));
-        // Q1's shape: a FRESH vector bound by `let`, joined by its own name.
-        let if_binding = MonoExpr::If {
-            cond: Box::new(var("c")),
-            then_branch: Box::new(var("w")),
-            else_branch: Box::new(var("w")),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        };
-        assert!(!yields_owned_temporary(&let_of(if_binding)));
-        assert!(!yields_owned_temporary(&let_of(var("w"))));
-        assert!(!yields_owned_temporary(&match_of(var("g"), vec![var("v")])));
-        // MIXED arms take the weakest point — one borrowing arm poisons the
-        // join, exactly as for freshness. This is the UAF direction.
-        assert!(!yields_owned_temporary(&match_of(
-            var("g"),
-            vec![vec_lit(), var("v")]
-        )));
-        assert!(!yields_owned_temporary(&match_of(
-            var("g"),
-            vec![var("v"), vec_lit()]
-        )));
-        // An arm-less match yields nothing to release.
-        assert!(!yields_owned_temporary(&match_of(var("g"), vec![])));
-    }
-
-    // spec: FIXME 0781 — the two thresholds read ONE lattice at two heights. A
-    // general `Apply` is the DISCRIMINATING cell: owned (release it) but not
-    // fresh (keep its protect). Were they one threshold, either every call
-    // result would leak or every call result would lose its protect.
-    #[test]
-    fn the_two_thresholds_differ_exactly_at_a_general_apply() {
-        let call = apply(global_var("user", "id"), vec![var("x")]);
-        assert_eq!(
-            value_provenance(&call, &ctor_shape),
-            ValueProvenance::OwnedTemporary
-        );
-        assert!(yields_owned_temporary(&call));
-        assert!(!is_fresh_construction(&call, &ctor_shape));
-        // ...and they agree at both ends of the lattice.
-        assert_eq!(
-            value_provenance(&ctor_adt(), &ctor_shape),
-            ValueProvenance::Fresh
-        );
-        assert_eq!(
-            value_provenance(&var("v"), &ctor_shape),
-            ValueProvenance::NotOwnedHere
-        );
-    }
-
-    // spec: tests/plan/s121-test-plan.md §14.1 — owned calls are not physically fresh.
-    #[test]
-    fn transferred_call_provenance_joins_without_claiming_freshness() {
-        let call = apply(global_var("user", "id"), vec![var("x")]);
-        let probe = |_: &MonoExpr| true;
-        for body in [
-            call.clone(),
-            let_of(call.clone()),
-            match_of(var("c"), vec![call.clone(), ctor_adt(), nullary_ctor_var()]),
-        ] {
-            assert_eq!(
-                super::value_provenance_with_calls(&body, &ctor_shape, &probe, &|_| None),
-                ValueProvenance::TransferredCall
-            );
-            assert!(!is_fresh_construction(&body, &ctor_shape));
-        }
-        let mixed = match_of(var("c"), vec![call.clone(), var("x")]);
-        assert_eq!(
-            super::value_provenance_with_calls(&mixed, &ctor_shape, &probe, &|_| None),
-            ValueProvenance::NotOwnedHere
-        );
-        assert_eq!(
-            super::value_provenance_with_calls(&trace_of(call), &ctor_shape, &probe, &|_| None),
-            ValueProvenance::OwnedTemporary
-        );
-    }
-
-    // spec: FIXME 0781 — `Trace`/`ParBind`/`LaunchContinue` FORWARD the
-    // borrowing direction (so a wrapped binding is not released) but are CAPPED
-    // at `OwnedTemporary`, which keeps `is_fresh_construction` byte-identical
-    // to its pre-0781 answers on these kinds.
-    #[test]
-    fn wrapper_kinds_forward_borrowing_but_never_claim_freshness() {
-        assert!(!yields_owned_temporary(&trace_of(var("v"))));
-        assert!(yields_owned_temporary(&trace_of(vec_lit())));
-        assert!(!is_fresh_construction(&trace_of(ctor_adt()), &ctor_shape));
-        let par = MonoExpr::ParBind {
-            bindings: vec![(Symbol::from("a"), var("t"))],
-            body: Box::new(var("v")),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        };
-        assert!(!yields_owned_temporary(&par));
-        assert!(!is_fresh_construction(&par, &ctor_shape));
-    }
-
-    // ---- 1d. the `NoReference` bottom point (FIXME 0917) -------------------
-    //
-    // The conflation this closes lived in ⊤ itself: `NotOwnedHere` meant both
-    // "a scope binding owns it" AND "there is no reference at all". The second
-    // is not an absorbing element — it is the join's IDENTITY. With the two
-    // fused, one nullary-constructor arm dragged a whole `match` to ⊤, so the
-    // fresh boxed arm beside it took an unbalanceable protect inc and the
-    // caller's single consuming dec stranded the tree at rc=1 (measured: 4
-    // objects per iteration, deallocs CONSTANT).
-
-    /// The corpus the probe MOVES — the two shapes §6.3 requires, without
-    /// which a monotonicity pin is vacuously true and indistinguishable from
-    /// an instrument that cannot fire.
-    fn probe_moved_nodes() -> Vec<MonoExpr> {
-        vec![
-            nullary_ctor_var(),
-            match_of(var("it"), vec![nullary_ctor_var(), ctor_adt()]),
-        ]
-    }
-
-    /// The retained pre-0917 eight. The probe may still refine `Fresh` vs
-    /// `OwnedTemporary` here (the ctor `Apply`), but it moves none of them
-    /// across the OWNED threshold — the surviving content of the deleted
-    /// equality pin, and what the four probeless gates rely on.
-    fn probe_static_nodes() -> Vec<MonoExpr> {
-        vec![
-            var("v"),
-            vec_lit(),
-            ctor_adt(),
-            apply(global_var("user", "Gr"), vec![var("c")]),
-            apply(global_var("user", "id"), vec![var("x")]),
-            let_of(var("w")),
-            match_of(var("g"), vec![vec_lit(), var("v")]),
-            trace_of(var("v")),
-        ]
-    }
-
-    // spec: design/backend/non-concrete-release-contract.md §6.2.1 — the bottom
-    // point is exactly "this value carries no heap reference": a bare
-    // zero-field-constructor reference, an application of one, a fieldless
-    // `ConstrADT` body, and every scalar literal.
-    #[test]
-    fn values_carrying_no_reference_classify_at_the_bottom() {
-        for node in [
-            nullary_ctor_var(),
-            apply(global_var("user", "Nil"), vec![]),
-            nullary_ctor_adt(),
-            MonoExpr::IntLit {
-                value: 7,
-                span: Span::SYNTHETIC,
-                ty: ConcreteType::Int,
-            },
-            MonoExpr::FloatLit {
-                value: 1.5,
-                span: Span::SYNTHETIC,
-                ty: ConcreteType::Int,
-            },
-            MonoExpr::BoolLit {
-                value: true,
-                span: Span::SYNTHETIC,
-                ty: ConcreteType::Int,
-            },
-        ] {
-            assert_eq!(
-                value_provenance(&node, &ctor_shape),
-                ValueProvenance::NoReference,
-                "{node:?}"
-            );
-        }
-        // ...and every MINTING kind is unchanged at `Fresh`.
-        for node in [
-            ctor_adt(),
-            lambda(),
-            string_lit(),
-            vec_lit(),
-            apply(global_var("user", "Gr"), vec![var("c")]),
-            auto_curry_apply(var("g")),
-        ] {
-            assert_eq!(
-                value_provenance(&node, &ctor_shape),
-                ValueProvenance::Fresh,
-                "{node:?}"
-            );
-        }
-    }
-
-    // spec: §6.2.1 (NEGATIVE, the UAF direction) — `NoReference` is a claim
-    // about the VALUE, and only a ZERO-FIELD constructor earns it. A
-    // constructor WITH fields referenced as a value mints a dispatch wrapper
-    // this node does not own, so it stays ⊤ under BOTH probes; were it to
-    // reach the bottom, `protect_return_value` would elide a protect that scope
-    // cleanup then consumes.
-    #[test]
-    fn a_constructor_with_fields_as_a_value_stays_at_the_top_neg() {
-        let payload_ctor_ref = global_var("user", "Gr");
-        assert_eq!(
-            value_provenance(&payload_ctor_ref, &ctor_shape),
-            ValueProvenance::NotOwnedHere
-        );
-        assert_eq!(
-            value_provenance(&payload_ctor_ref, &no_ctor),
-            ValueProvenance::NotOwnedHere
-        );
-        // A non-constructor global, and an ordinary binding, likewise.
-        assert_eq!(
-            value_provenance(&global_var("user", "id"), &ctor_shape),
-            ValueProvenance::NotOwnedHere
-        );
-        assert_eq!(
-            value_provenance(&var("v"), &ctor_shape),
-            ValueProvenance::NotOwnedHere
-        );
-    }
-
-    // spec: §6.2 — the join's SEED moves with its identity. A bottom arm is
-    // ABSORBED by its siblings; ⊤ still absorbs everything. The mixed
-    // nullary/boxed match is FIXME 0917's exact subject.
-    #[test]
-    fn a_no_reference_arm_is_absorbed_not_absorbing() {
-        // The 0917 subject: N nullary arms beside one boxed arm reads `Fresh`,
-        // so the protect is elided and the boxed result is not stranded.
-        assert_eq!(
-            value_provenance(
-                &match_of(
-                    var("it"),
-                    vec![nullary_ctor_var(), ctor_adt(), nullary_ctor_var()]
-                ),
-                &ctor_shape
-            ),
-            ValueProvenance::Fresh
-        );
-        // An ALL-nullary match carries no reference — the empty fold's
-        // identity is now the bottom, not a false `Fresh`.
-        assert_eq!(
-            value_provenance(
-                &match_of(var("it"), vec![nullary_ctor_var(), nullary_ctor_var()]),
-                &ctor_shape
-            ),
-            ValueProvenance::NoReference
-        );
-        // ...while an ARM-LESS match yields no value on any path at all. That
-        // is a DIFFERENT fact from "every path carries no reference", and the
-        // explicit guard is what keeps the two distinct now that the fold seeds
-        // at the identity. Deleting the guard silently swaps one for the other.
-        assert_eq!(
-            value_provenance(&match_of(var("it"), vec![]), &ctor_shape),
-            ValueProvenance::NotOwnedHere
-        );
-        // ⊤ still absorbs: one borrowing arm poisons the join as before.
-        assert_eq!(
-            value_provenance(
-                &match_of(var("it"), vec![nullary_ctor_var(), var("v")]),
-                &ctor_shape
-            ),
-            ValueProvenance::NotOwnedHere
-        );
-        // The two join laws, read directly.
-        assert_eq!(
-            ValueProvenance::NoReference.join(ValueProvenance::Fresh),
-            ValueProvenance::Fresh
-        );
-        assert_eq!(
-            ValueProvenance::NoReference.join(ValueProvenance::NotOwnedHere),
-            ValueProvenance::NotOwnedHere
-        );
-    }
-
-    // spec: §6.2 — both consumer thresholds, restated over the four-point
-    // lattice. `is_fresh_construction` is `<= Fresh` (a value carrying no
-    // reference needs no protect either); `yields_owned_temporary` is
-    // `Fresh | OwnedTemporary` and must NOT become `!= NotOwnedHere`, which
-    // would make a bare tag read as an owned temporary at the release gates.
-    #[test]
-    fn both_thresholds_read_the_four_point_lattice_at_their_own_heights() {
-        let bottom = nullary_ctor_var();
-        assert!(is_fresh_construction(&bottom, &ctor_shape));
-        assert!(!yields_owned_temporary(&bottom));
-
-        let fresh = ctor_adt();
-        assert!(is_fresh_construction(&fresh, &ctor_shape));
-        assert!(yields_owned_temporary(&fresh));
-
-        let owned = apply(global_var("user", "id"), vec![var("x")]);
-        assert!(!is_fresh_construction(&owned, &ctor_shape));
-        assert!(yields_owned_temporary(&owned));
-
-        let top = var("v");
-        assert!(!is_fresh_construction(&top, &ctor_shape));
-        assert!(!yields_owned_temporary(&top));
-    }
-
-    // spec: §6.3 — the pin that REPLACES
-    // `provenance_owned_threshold_is_probe_independent` (equality cannot
-    // survive: a nullary-ctor `Var` is only distinguishable from an ordinary
-    // one WITH the probe). Monotonicity is strictly stronger — it states
-    // directly what equality was a proxy for: the four probeless gates never
-    // OVER-claim ownership, so where they differ they take the leak-safe
-    // verdict, never the UAF one.
-    //
-    // Both legs, per the 0768 arming rule. POSITIVE: the probe genuinely moves
-    // the two shapes, and moves them DOWN — an instrument that has never
-    // detected is indistinguishable from one that cannot. NEGATIVE: it moves
-    // nothing else.
-    #[test]
-    fn probe_only_moves_provenance_down_the_lattice() {
-        let moved = probe_moved_nodes();
-        let static_nodes = probe_static_nodes();
-
-        for node in moved.iter().chain(static_nodes.iter()) {
-            assert!(
-                value_provenance(node, &ctor_shape) <= value_provenance(node, &no_ctor),
-                "the ctor probe moved a node UP the lattice: {node:?}"
-            );
-        }
-
-        // Detection proof: over this corpus the probe is not inert.
-        for node in &moved {
-            assert!(
-                value_provenance(node, &ctor_shape) < value_provenance(node, &no_ctor),
-                "the monotonicity corpus is vacuous — the probe does not move {node:?}"
-            );
-        }
-
-        // The negative leg: silence where the fault is absent. On the retained
-        // eight the probe still refines `Fresh` vs `OwnedTemporary` (the ctor
-        // `Apply`), but it moves none of them across the OWNED threshold — so
-        // the four probeless gates read those nodes exactly as they did before
-        // 0917. That is the deleted equality pin's surviving content, and it is
-        // what the mixed nullary/boxed match above genuinely breaks, which is
-        // why equality could not survive as the whole property.
-        for node in &static_nodes {
-            let owned_with_probe = matches!(
-                value_provenance(node, &ctor_shape),
-                ValueProvenance::Fresh | ValueProvenance::OwnedTemporary
-            );
-            assert_eq!(
-                owned_with_probe,
-                yields_owned_temporary(node),
-                "the ctor probe moved a node across the owned threshold: {node:?}"
-            );
-        }
-    }
-
-    // ---- 2. TCO borrowed-param promotion trigger ---------------------------
-
-    // spec: design/backend/s115-carrier-and-rc-sweep.md §2.2 (FIXME 0720) — a bare
-    // `Var` resolving to the SAME param CARRIES the slot forward (the exact-slot move
-    // contract): nothing is superseded, nothing is owed.
-    #[test]
-    fn bare_same_var_arg_does_not_supersede_neg() {
-        assert!(!tail_arg_supersedes_param(&var("g"), &Symbol::from("g")));
-    }
-
-    // spec: §2.2 — every other argument REPLACES the slot's occupant, so the old
-    // occupant's reference is the one that leaked: a temporary, a different
-    // binding, a control-flow join.
-    #[test]
-    fn temporary_other_binding_and_join_args_supersede() {
-        let g = Symbol::from("g");
-        assert!(tail_arg_supersedes_param(
-            &apply(global_var("user", "set0"), vec![var("g"), var("m")]),
-            &g
-        ));
-        assert!(tail_arg_supersedes_param(&var("w"), &g));
-        assert!(tail_arg_supersedes_param(&ctor_adt(), &g));
-        assert!(tail_arg_supersedes_param(
-            &match_of(var("g"), vec![ctor_adt()]),
-            &g
-        ));
-    }
-
-    // spec: §2.2 — the promotion TRIGGER: the exact 0720 body
-    // `(if (eq-i64 m 0) … (go (set0 g m) (add-i64 m -1)))` supersedes slot 0 and
-    // carries slot 1's scalar. Position-exact.
-    #[test]
-    fn self_call_supersede_detection_is_position_exact() {
-        let module = ModuleFullPath::from("user");
-        let go = Symbol::from("go");
-        let body = MonoExpr::If {
-            cond: Box::new(var("c")),
-            then_branch: Box::new(var("r")),
-            else_branch: Box::new(apply(
-                var("go"),
-                vec![
-                    apply(global_var("user", "set0"), vec![var("g"), var("m")]),
-                    var("m"),
-                ],
-            )),
-            span: Span::SYNTHETIC,
-            ty: ConcreteType::Int,
-        };
-        assert!(self_call_supersedes_param(
-            &body,
-            &go,
-            &module,
-            0,
-            &Symbol::from("g")
-        ));
-        assert!(!self_call_supersedes_param(
-            &body,
-            &go,
-            &module,
-            1,
-            &Symbol::from("m")
-        ));
-    }
-
-    // spec: §2.2 (NEGATIVE / byte-identical fence) — a body with NO self-call, and
-    // a self-call that only CARRIES its params forward, promote nothing. This is
-    // what keeps every non-TCO function and the `(go v (- n 1))` shape emission-
-    // identical: no entry inc, no changed flush.
-    #[test]
-    fn no_self_call_or_carry_only_call_promotes_nothing_neg() {
-        let module = ModuleFullPath::from("user");
-        let go = Symbol::from("go");
-        let v = Symbol::from("v");
-        let no_self_call = apply(global_var("user", "other"), vec![var("v")]);
-        assert!(!self_call_supersedes_param(
-            &no_self_call,
-            &go,
-            &module,
-            0,
-            &v
-        ));
-        let carry_only = apply(
-            var("go"),
-            vec![var("v"), apply(global_var("user", "dec"), vec![var("n")])],
-        );
-        assert!(!self_call_supersedes_param(
-            &carry_only,
-            &go,
-            &module,
-            0,
-            &v
-        ));
-        // ...and the SECOND position of that same call IS superseded (the walk
-        // reaches nested calls, so the detection is not accidentally position-blind).
-        assert!(self_call_supersedes_param(
-            &carry_only,
-            &go,
-            &module,
-            1,
-            &Symbol::from("n")
-        ));
-    }
-}
-
-/// S118 slice S5 — the ONE TCO replacement/transfer predicate (§6).
-#[cfg(test)]
-mod tco_slot_predicate_tests;
-
-/// S118 W3 (FIXME 0893) — the §6 row-4 narrowing at its FACT-GATHERING seam
-/// ([`FnCompiler::tail_slot_facts`] + the scope-stack shadowing resolution),
-/// exercised through compiled bodies rather than a constructed facts struct.
-#[cfg(test)]
-mod tco_shadowing_borrow_tests;
-
-/// `ownership-codegen.md` §13.3 — the consuming in-place COW argument: one
-/// fact read by the COW producer and the parameter flush (ACT-1021).
-#[cfg(test)]
-mod consuming_cow_argument_tests;
-/// `ownership-codegen.md` §13.3 — the branch-forward rule and the slot
-/// ownership fact every tail seam reads (ACT-1021).
-#[cfg(test)]
-mod tail_branch_forward_tests;
-
-/// S118 — `design/backend/transitive-drop-glue.md` §10 fourth row (superseded
-/// by `non-concrete-release-contract.md` §4.1): a directly constructed ctor
-/// template's residual parameter, still pinned at its S118 balance (I-CT)
-/// until the type-keyed arm's disposition lands (FIXME 0903).
-#[cfg(test)]
-mod ctor_template_admission_tests;
-#[cfg(test)]
-pub(crate) use ctor_template_admission_tests::assert_threshold_guarded_adds;
-
-/// `non-concrete-release-contract.md` §7.6 — return protection reads the
-/// derived entry convention's result kind.
-#[cfg(test)]
-mod entry_result_protection_tests;

@@ -143,21 +143,21 @@ where
             HeapClosure::DROP_GLUE_PTR_OFFSET,
         );
 
-        // Store ordinary captures (inc heap-typed ones — the env holds its own
-        // reference, exactly as `compile_lambda`).
+        // Store ordinary captures, each duplicated: the env holds its own
+        // reference, and the frame drops what the sequential RHS would have
+        // consumed once it forces this binding (`emit_spark_consumption`).
         for (i, cap) in ord_captures.iter().enumerate() {
-            if let Some(var) = self.lookup_var(cap) {
-                let cap_val = self.builder.use_var(var);
+            let entry = crate::compiler::ownership_plan::CaptureEntry {
+                name: cap.clone(),
+                occurrence: crate::compiler::ownership_plan::Occurrence::Capture,
+            };
+            if let Some(cap_val) = self.capture_value(&entry) {
                 heap::heap_store(
                     &mut self.builder,
                     cap_val,
                     base_ptr,
                     HeapClosure::capture_offset(i),
                 );
-                if let Some(ty) = self.lookup_type(cap) {
-                    let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
-                    self.emit_capture_inc(category, cap_val);
-                }
             }
         }
 
@@ -214,15 +214,13 @@ where
             .map(|cap| self.lookup_type(cap))
             .collect();
 
-        let last_uses = heap::compute_last_uses(val_expr);
-        let mut inner = FnCompiler::inner(
-            builder,
-            self.module,
-            self.ctx.clone(),
-            self.glue,
-            0,
-            last_uses,
-        );
+        // The dependencies are bound like captures, so the plan sees them as
+        // captures too: every use duplicates.
+        let mut capture_names: Vec<Symbol> = ord_captures.to_vec();
+        capture_names.extend(deps.iter().map(|(name, _, _)| name.clone()));
+        let plan = Self::plan_body(val_expr, &[], &capture_names, inner_name)?;
+        let mut inner =
+            FnCompiler::inner(builder, self.module, self.ctx.clone(), self.glue, 0, plan);
         // Seed the discriminator so any inner functions emitted within the RHS
         // (nested lambdas, etc.) get uniquely-prefixed names (as `lambda.rs`).
         inner.current_fn_name = Some(Symbol::from(inner_name));
@@ -230,16 +228,15 @@ where
         // whole inner compiler IS a spark-thunk body — the backend relocated the
         // dependent binding's RHS here, and this thunk frame pops at the join while
         // the parent consumes the forced value. Decline stack allocation for every
-        // construction in the RHS (its slot would dangle — hard UAF). The DEPENDENT
-        // path deliberately does not use `compile_spark_thunk` (the §4.5
-        // capture-by-borrow carve-out), so gate 5 is set directly here.
+        // construction in the RHS (its slot would dangle — hard UAF). The
+        // dependent thunk is built here rather than by `compile_spark_thunk`,
+        // so gate 5 is set directly.
         inner.in_spark_thunk = true;
 
         // Load ordinary captures from the env into the CAPTURE ENVIRONMENT
-        // (`binding-scope.md` §3.2): their type is recorded so consuming calls
-        // inc them, they are never eligible for last-use transfer, and they are
-        // on no scope frame, so no body frame decs them — the env's drop glue
-        // owns that dec.
+        // (`binding-scope.md` §3.2): their type is recorded, so every use
+        // duplicates them (`uniform-counting.md` §3), and the env's drop glue
+        // releases them.
         for (i, cap) in ord_captures.iter().enumerate() {
             let cap_val =
                 heap::heap_load(&mut inner.builder, env_ptr, HeapClosure::capture_offset(i));
@@ -248,9 +245,9 @@ where
 
         // Force prologue: per dependency, load its captured IVar pointer, force
         // it (the SAME extern the Phase-2 barrier emits), and bind the dependency
-        // NAME to the forced value. The forced value is BORROWED — it is owned by
-        // the IVar cell / the dependency's own Phase-2 binding — so the dep is
-        // treated exactly like a capture (consuming calls inc; no scope dec).
+        // NAME to the forced value. The forced value is owned by the dependency's
+        // own Phase-2 binding, which outlives this thunk's join, so the dep is
+        // treated exactly like a capture: every use duplicates, nothing drops it.
         for (j, (dep_name, _ivar_val, dep_ty)) in deps.iter().enumerate() {
             let cap_idx = ord_captures.len() + j;
             let ivar_cap = heap::heap_load(
@@ -262,12 +259,8 @@ where
             inner.bind_capture(dep_name, forced, Some(dep_ty.clone()));
         }
 
-        // Compile the unmodified RHS. The initial chain frame
-        // (`FnCompiler::inner`) is the body frame; captures/deps are NOT on it.
-        let skip_var = inner.return_var_in_scope(val_expr);
+        // Compile the unmodified RHS; captures and deps are NOT on a frame.
         let result = inner.compile_expr(val_expr)?;
-        inner.protect_return_value(&skip_var, result, val_expr);
-        inner.pop_scope_with_cleanup(skip_var)?;
 
         inner.builder.ins().return_(&[result]);
         inner.builder.seal_all_blocks();

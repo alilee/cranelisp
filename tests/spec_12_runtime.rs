@@ -1603,7 +1603,8 @@ fn integer_div_min_by_neg_one_wraps_without_panic() {
 }
 
 // spec: spec/12-runtime.md §12.7.3 — division through a function value also wraps MIN / -1.
-// defect: class=wrong-reject locus=crates/cranelisp-primitives/src/ring0.rs::div_i64 found=S123 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-primitives/src/ring0.rs::div_i64 found=S123 owner=/dev fixed=S123/f5822487
+// Before W1, division through the function value trapped on MIN / -1.
 #[test]
 fn integer_div_value_use_min_by_neg_one_wraps_without_panic() {
     assert_min_division_in_every_mode("(let [f div-i64] (f -9223372036854775808 -1))");
@@ -3041,7 +3042,8 @@ fn panic_in_every_mode(defs: &str, form: &str, message: &str) {
 }
 
 // spec: spec/12-runtime.md §12.7.8 — P-1 R1, heap String consumer, all modes.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn callee_bounds_panic_with_string_consumer_is_reported() {
     panic_in_every_mode(
@@ -3052,14 +3054,16 @@ fn callee_bounds_panic_with_string_consumer_is_reported() {
 }
 
 // spec: spec/12-runtime.md §12.7.8 — P-1 R2, division before String consumer.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn callee_division_panic_with_string_consumer_is_reported() {
     panic_in_every_mode(PANICKING_DIV, "(str-len (d 0))", "division by zero");
 }
 
 // spec: spec/12-runtime.md §12.7.8 — P-1 R3, released heap result.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn callee_bounds_panic_with_released_string_result_is_reported() {
     panic_in_every_mode(
@@ -3070,7 +3074,8 @@ fn callee_bounds_panic_with_released_string_result_is_reported() {
 }
 
 // spec: spec/12-runtime.md §12.7.8 — P-1 R4, Vec consumer.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn callee_vec_set_bounds_panic_with_vec_consumer_is_reported() {
     panic_in_every_mode(
@@ -3099,7 +3104,8 @@ fn callee_in_range_get_with_string_consumer_does_not_panic_neg() {
 }
 
 // spec: spec/12-runtime.md §12.7.8 — P-1 R6, batch String consumer.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn uncaught_callee_panic_with_string_consumer_is_reported_run() {
     panic_in_every_mode(
@@ -3110,7 +3116,8 @@ fn uncaught_callee_panic_with_string_consumer_is_reported_run() {
 }
 
 // spec: spec/12-runtime.md §12.7.8 — P-1 R6, linked String consumer.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn uncaught_callee_panic_with_string_consumer_is_reported_link() {
     panic_in_every_mode(
@@ -3134,7 +3141,8 @@ const LOOKUP: &str = "(defn lookup [v i] (vec-get v i))";
 const SCAN: &str = "(defn scan [v i] (if (lt-i64 (lookup v i) 100) (scan v (add-i64 i 1)) i))";
 
 // spec: spec/12-runtime.md §12.7.2 — P-2 Q1: caller loop exits within a bound.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn callee_panic_with_scalar_result_stops_the_calling_loop() {
     panic_in_every_mode(
@@ -3152,7 +3160,8 @@ fn callee_in_range_scalar_result_loop_terminates_control() {
 }
 
 // spec: spec/12-runtime.md §12.7.2 — P-2 Q2: first message survives, all modes.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn callee_panic_message_is_not_replaced_by_callers_later_panic_in_every_mode() {
     panic_in_every_mode(
@@ -3173,7 +3182,8 @@ fn in_frame_panic_message_is_the_first_panic_in_every_mode_control() {
 }
 
 // spec: spec/12-runtime.md §12.7.5 — P-19: one panic report, no codegen/span.
-// defect: class=display-envelope-mirror locus=src/session_v4/lifecycle.rs::trampoline found=S122 owner=/dev
+// defect: class=display-envelope-mirror locus=src/session_v4/lifecycle.rs::trampoline found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the panic report was wrapped as a codegen error at a synthetic span.
 #[test]
 fn uncaught_panic_report_is_not_a_codegen_error_run() {
     panic_in_every_mode(
@@ -3278,7 +3288,8 @@ fn panic_exit_checker_rejects_wrong_reports_and_resumption() {
 }
 
 // spec: spec/12-runtime.md §12.7.8 — P-1 R4: a second forwarding frame cannot resume.
-// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev fixed=S123/f5822487
+// Before W1, the callee panic could resume its caller.
 #[test]
 fn callee_bounds_panic_through_forwarding_frame_is_reported() {
     panic_in_every_mode(

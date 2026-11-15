@@ -14,11 +14,13 @@ use cranelisp_types::{
     Span, Symbol, Type,
 };
 
-use crate::compiler::entry_convention::{EntryConvention, ParamKind};
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
 
 use super::{CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_inc_into};
+
+#[cfg(test)]
+mod forwarding_template_tests;
 
 /// If `fn_type` is a `Fn` whose first parameter is `(Vec t)`, return `t`.
 ///
@@ -55,8 +57,32 @@ mod value_use_tests;
 #[cfg(test)]
 mod keyed_miss_tests;
 
-#[cfg(test)]
-mod entry_adaptation_tests;
+/// The forwarding template (`uniform-counting.md` §3.3): the argument vector
+/// of a generated wrapper's one saturated call of its target, and the only RC
+/// emission in a wrapper body. Every function-as-value, trait-method-as-value
+/// and auto-curry wrapper builds its call's arguments here.
+///
+/// The arguments are the environment's applied captures in capture order,
+/// then the wrapper's parameters in order. The target consumes every
+/// argument, so each capture is duplicated (the environment keeps its own
+/// reference for the next call) and each parameter moves. A function or
+/// trait-method value has no captures.
+pub(crate) fn forwarding_template_args<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    env_ptr: Value,
+    applied_captures: &[HeapCategory],
+    params: &[Value],
+) -> Vec<Value> {
+    let mut args = Vec::with_capacity(applied_captures.len() + params.len());
+    for (slot, category) in applied_captures.iter().enumerate() {
+        let capture = heap::heap_load(builder, env_ptr, HeapClosure::capture_offset(slot));
+        emit_capture_inc_into(builder, module, *category, capture);
+        args.push(capture);
+    }
+    args.extend_from_slice(params);
+    args
+}
 
 /// Borrowed-builder form of `FnCompiler::emit_adt_construct` (apply.rs): emit an
 /// ADT construction (`alloc` + tag + field stores) onto an arbitrary `builder`,
@@ -309,7 +335,13 @@ where
         builder.seal_block(entry);
 
         let block_params = builder.block_params(entry).to_vec();
-        let user_args: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
+        let user_args = forwarding_template_args(
+            &mut builder,
+            self.module,
+            block_params[0],
+            &[],
+            &block_params[1..],
+        );
 
         // Dispatch through the SAME path direct application uses. S110 W2: the
         // TraitMethod / BuiltinFn arms self-derive their carrier from `resolved`
@@ -408,7 +440,13 @@ where
         builder.seal_block(entry_block);
 
         let block_params = builder.block_params(entry_block).to_vec();
-        let user_params: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
+        let user_params = forwarding_template_args(
+            &mut builder,
+            self.module,
+            block_params[0],
+            &[],
+            &block_params[1..],
+        );
 
         let result = self.emit_wrapper_call(
             &mut builder,
@@ -434,76 +472,6 @@ where
         Ok(())
     }
 
-    /// §3.4 adaptation algebra (`design/backend/ownership-codegen.md` §3.4): emit
-    /// the per-edge delta between the closure-protocol Decision-24 convention
-    /// (every param arrives owned/consumed, result is Fresh/owned) and the
-    /// target's derived [`EntryConvention`], onto a wrapper's borrowed `builder`
-    /// AFTER the target call returns. ONE helper, reached by every wrapper
-    /// target call — [`Self::emit_wrapper_call`] (the fn-as-value /
-    /// trait-method-value wrapper bodies and the auto-curry GOT arm) and the
-    /// auto-curry direct-extern arms — no per-site reinvention (Principle 7), no
-    /// stacked adapters.
-    ///
-    /// - a `Borrow` param ⇒ **post-call dec** of the received-owned arg: the
-    ///   wrapper owns its params (closure protocol) but the callee borrowed (did
-    ///   not dec) that position, so the wrapper releases it. Only a compiled
-    ///   body derives `Borrow`; an extern shim consumes, whatever it declares.
-    /// - every other position ⇒ pass-through.
-    ///
-    /// Guarded RC ops throughout (layout-safe for AlwaysHeap and Mixed alike).
-    /// With analysis off no body carries a non-conservative summary, so nothing
-    /// is emitted and the wrapper body is byte-identical (§2.2).
-    ///
-    /// **No result materialization inc (FIXME 0522 reconcile, option B).** A
-    /// moded callee ALWAYS returns its `ProjectionOf`/`AliasOf` result carrying an
-    /// owned reference — its own `vec-get` inc, an accessor call, or
-    /// `protect_return_value` (`return_is_fresh_by_summary` keeps the protect for
-    /// every non-`Fresh` result; the §3.3 in-frame elision is confined to the
-    /// consumer seam and never crosses a function-return boundary, so a returned
-    /// projection is never un-inc'd). The wrapper therefore owes NO result inc: the
-    /// callee's materialization is the single owned reference, and the FIXME 0522
-    /// double-count (callee-protect AND wrapper-adaptation both inc'ing a
-    /// `ProjectionOf` result) can no longer arise. The prior wrapper inc — dormant
-    /// but a latent over-retain, and mis-ordered against the Borrowed decs — is
-    /// removed. The result already owns a reference, so the Borrowed-param decs
-    /// below (which may release the root the result projects into) cannot dangle
-    /// it — the FIXME's ordering hazard dissolves with the inc.
-    fn emit_d24_adaptation(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        convention: &EntryConvention,
-        args: &[Value],
-    ) {
-        let dealloc_id = self.ctx.dealloc_func_id;
-        for (i, &arg) in args.iter().enumerate() {
-            match convention.param(i) {
-                ParamKind::Borrow => {
-                    heap::emit_rc_dec_guarded(builder, self.module, arg, dealloc_id, None, true)
-                }
-                ParamKind::Consume | ParamKind::NoReference => {}
-            }
-        }
-    }
-
-    /// Call the extern `name` from a wrapper body by name and adapt the call
-    /// against the derived convention of its `{primitives, name}` entry; an
-    /// absent entry consumes.
-    fn emit_adapted_extern_call_in_wrapper(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        name: &str,
-        args: &[Value],
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let convention = self.ctx.entry_convention_at(Some(&FQSymbol {
-            module: ModuleFullPath::from("primitives"),
-            symbol: Symbol::from(name),
-        }));
-        let result = emit_extern_call_in_wrapper(builder, self.module, name, args, span)?;
-        self.emit_d24_adaptation(builder, &convention, args);
-        Ok(result)
-    }
-
     /// Emit the call instruction inside a wrapper function body.
     ///
     /// Prefers a direct `call` via FuncId when the target is in the current
@@ -511,15 +479,8 @@ where
     /// using the uniform `__cranelisp_got_{module}` data-symbol strategy
     /// (design/backend/compile-to-module.md §12).
     ///
-    /// §3.5 R2 wrapper coupling: the target call is adapted with
-    /// [`Self::emit_d24_adaptation`] against the target's derived entry
-    /// convention, so the closure-reachable code pointer (this wrapper) is
-    /// Decision-24 conformant. THE INVARIANT: every code pointer reachable from
-    /// a closure value targets a Decision-24-conformant entry; a moded body is
-    /// reachable ONLY through statically-resolved call sites (§3.1) and these
-    /// adapter wrapper bodies — its address never escapes into a closure
-    /// unadapted. A consuming target (every extern shim, and a body with no
-    /// borrowed parameter) needs no adaptation, so nothing is emitted.
+    /// Every target consumes its arguments, as the wrapper's own closure
+    /// protocol does, so the owned params are forwarded with no adaptation.
     fn emit_wrapper_call(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -535,10 +496,6 @@ where
         // — Rev-2, no name-resolver fallback).
         target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // §3.5 / S110 W2 (S15): the target's derived entry convention, keyed off
-        // the carrier. The call arms below adapt against it.
-        let convention = self.ctx.entry_convention_at(target_fq);
-
         // If the function is declared in the current compilation unit, emit a
         // direct call — cheaper and avoids an unnecessary GOT dereference. User
         // ADT constructors have a compiled constructor function here, so this
@@ -546,9 +503,7 @@ where
         if let Some(target_id) = self.ctx.func_ids.get(target_name) {
             let target_ref = self.module.declare_func_in_func(*target_id, builder.func);
             let call = builder.ins().call(target_ref, user_params);
-            let result = builder.inst_results(call)[0];
-            self.emit_d24_adaptation(builder, &convention, user_params);
-            return Ok(result);
+            return Ok(builder.inst_results(call)[0]);
         }
 
         // Data constructor as a first-class value with NO callable function in
@@ -659,13 +614,7 @@ where
         let sig_ref = builder.import_signature(sig);
 
         let call = builder.ins().call_indirect(sig_ref, func_ptr, user_params);
-        let result = builder.inst_results(call)[0];
-        // §3.5: adapt the target call so this wrapper (the closure-reachable
-        // code pointer) is Decision-24 conformant. Auto-curry composes here
-        // directly (it reaches this arm through `emit_curry_target_call`) — one
-        // adapter, never stacked.
-        self.emit_d24_adaptation(builder, &convention, user_params);
-        Ok(result)
+        Ok(builder.inst_results(call)[0])
     }
 
     /// Emit the call to the auto-curry target inside a wrapper function body.
@@ -757,8 +706,12 @@ where
                     }
                     // Named builtin resolved by the typechecker.
                     if is_extern_primitive_in_wrapper(jit_name) {
-                        return self.emit_adapted_extern_call_in_wrapper(
-                            builder, jit_name, all_args, span,
+                        return emit_extern_call_in_wrapper(
+                            builder,
+                            self.module,
+                            jit_name,
+                            all_args,
+                            span,
                         );
                     }
                     if primitives_inline::is_known_builtin(jit_name) {
@@ -794,8 +747,13 @@ where
                         }
                     }
                     // Unknown builtin: treat as extern.
-                    return self
-                        .emit_adapted_extern_call_in_wrapper(builder, jit_name, all_args, span);
+                    return emit_extern_call_in_wrapper(
+                        builder,
+                        self.module,
+                        jit_name,
+                        all_args,
+                        span,
+                    );
                 }
                 _ => {} // SigDispatch, AutoCurry — fall through to emit_wrapper_call
             }
@@ -923,18 +881,8 @@ where
             HeapClosure::DROP_GLUE_PTR_OFFSET,
         );
 
-        // 4. Store applied args as captures. The closure env's own reference was
-        // ALREADY established by the apply site: the `ResolvedCall::AutoCurry`
-        // arm compiles the applied args with `compile_consuming_arg_list`, which
-        // inc's a heap-typed Var (the enclosing scope keeps its independent
-        // reference, dec'd at scope exit) and transfers a temporary's rc=1
-        // outright — exactly the "closure env gains one reference" rule (the
-        // lambda-capture precedent, `lambda.rs`). A second `emit_capture_inc`
-        // here would DOUBLE-count that reference: +1 for a Var (the drop glue
-        // dec's only once → the source leaks one alloc), and +1 for a temporary
-        // (which owns no scope binding to dec the surplus). Removed — the applied
-        // values arrive with correct ownership; just store them. (FIXME 0474 /
-        // the S102 `vec_cow_value_use` curry-capture residue; a leak-only class.)
+        // 4. Store the applied arguments as captures. Each is an owned value
+        // from the Apply's operand evaluator, which the environment takes.
         for (i, &val) in applied_vals.iter().enumerate() {
             heap::heap_store(
                 &mut self.builder,
@@ -943,10 +891,8 @@ where
                 HeapClosure::capture_offset(i),
             );
         }
-        // The closure-value target rides the LAST capture slot (FIXME 0705). Its
-        // reference was established by the caller (`compile_consuming_arg_list`
-        // over the callee expression: a live-`Var` target is inc'd, a computed
-        // temporary transfers) — exactly as for the applied args above.
+        // The closure-value target rides the last capture slot (FIXME 0705),
+        // taken the same way.
         if let Some(target_val) = target_closure {
             heap::heap_store(
                 &mut self.builder,
@@ -962,7 +908,7 @@ where
     /// Compile the wrapper function for auto-curry.
     ///
     /// Signature: `(env_ptr, remaining_0, ..., remaining_k) -> i64`
-    /// Body: load captures from env, inc heap captures, call target with all args.
+    /// Body: the forwarding template's call of the target.
     #[allow(clippy::too_many_arguments)] // Curry context requires all parameters
     fn compile_auto_curry_wrapper(
         &mut self,
@@ -1017,19 +963,13 @@ where
 
         let block_params = builder.block_params(entry).to_vec();
         let env_ptr = block_params[0];
-        let remaining_args: Vec<Value> = block_params[1..].to_vec();
-
-        // Load captured args from env and inc heap-typed captures.
-        // The wrapper must inc before passing to the consuming callee,
-        // so the closure env's reference stays intact across calls.
-        let mut all_args = Vec::with_capacity(applied_count + remaining_count);
-        for (i, category) in arg_categories.iter().enumerate().take(applied_count) {
-            let cap_val = heap::heap_load(&mut builder, env_ptr, HeapClosure::capture_offset(i));
-            // Inc heap-typed captures before passing to consuming callee.
-            emit_capture_inc_into(&mut builder, self.module, *category, cap_val);
-            all_args.push(cap_val);
-        }
-        all_args.extend_from_slice(&remaining_args);
+        let all_args = forwarding_template_args(
+            &mut builder,
+            self.module,
+            env_ptr,
+            &arg_categories[..applied_count],
+            &block_params[1..],
+        );
 
         // Call the target. FIXME 0705 — when the target is a captured CLOSURE
         // VALUE (the `ApplyRef::ViaCallee` + `VarRef::Local` carrier state) there
@@ -1039,9 +979,9 @@ where
         // `compile_closure_call` (the FULL-application locals-first path in
         // `compile_var_apply`), extended from full to PARTIAL application.
         //
-        // The captured target is NOT inc'd here: calling a closure does not
-        // consume it (`compile_closure_call` emits no inc/dec either), and the
-        // curry env's own reference is released by the drop glue.
+        // The target is called with the environment's reference: the
+        // environment keeps it alive across the call and its drop glue
+        // releases it (§3.3), so the template neither duplicates nor drops it.
         let result = if target_is_closure_capture {
             let target_val = heap::heap_load(
                 &mut builder,
@@ -1183,9 +1123,7 @@ fn is_extern_primitive_in_wrapper(name: &str) -> bool {
 }
 
 /// Emit an extern function call inside a wrapper function body.
-/// Used by auto-curry wrappers to call extern primitives like `str-eq` (through
-/// `FnCompiler::emit_adapted_extern_call_in_wrapper`, which adapts the call to
-/// the entry's derived convention), and by
+/// Used by auto-curry wrappers to call extern primitives like `str-eq`, and by
 /// the vec-query COW emission cores (`vec_codegen`) for the
 /// `vec-set-copy`/`vec-push-copy`/`vec-push-grow` runtime externs when emitting
 /// into a borrowed builder (wrapper bodies build in a separate Cranelift

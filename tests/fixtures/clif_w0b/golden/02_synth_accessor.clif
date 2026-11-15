@@ -37,11 +37,11 @@ block1(v2: i64, v3: i64):
 ; === end CLIF user::Point ===
 ; === CLIF user::Point.x ===
 function %Point.x(i64) -> i64 system_v {
-    gv0 = symbol colocated userextname0
-    sig0 = (i64, i64) system_v
-    sig1 = (i64) system_v
-    fn0 = u0:2 sig0
-    fn1 = colocated u0:42 sig1
+    gv0 = symbol colocated userextname1
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) system_v
+    fn0 = colocated u0:42 sig0
+    fn1 = u0:2 sig1
 
 block0(v0: i64):
     jump block1(v0)
@@ -61,26 +61,26 @@ block5:
 block6:
     v6 = load.i64 notrap aligned v1+24
     v7 = load.i64 notrap aligned v1+32
+    call fn0(v1)
     jump block2(v6)
 
 block3:
     v8 = global_value.i64 gv0
     v9 = iconst.i64 12
-    call fn0(v8, v9)  ; v9 = 12
+    call fn1(v8, v9)  ; v9 = 12
     trap user1
 
 block2(v2: i64):
-    call fn1(v1)
     return v2
 }
 ; === end CLIF user::Point.x ===
 ; === CLIF user::Point.y ===
 function %Point.y(i64) -> i64 system_v {
-    gv0 = symbol colocated userextname0
-    sig0 = (i64, i64) system_v
-    sig1 = (i64) system_v
-    fn0 = u0:2 sig0
-    fn1 = colocated u0:42 sig1
+    gv0 = symbol colocated userextname1
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) system_v
+    fn0 = colocated u0:42 sig0
+    fn1 = u0:2 sig1
 
 block0(v0: i64):
     jump block1(v0)
@@ -100,16 +100,16 @@ block5:
 block6:
     v6 = load.i64 notrap aligned v1+24
     v7 = load.i64 notrap aligned v1+32
+    call fn0(v1)
     jump block2(v7)
 
 block3:
     v8 = global_value.i64 gv0
     v9 = iconst.i64 12
-    call fn0(v8, v9)  ; v9 = 12
+    call fn1(v8, v9)  ; v9 = 12
     trap user1
 
 block2(v2: i64):
-    call fn1(v1)
     return v2
 }
 ; === end CLIF user::Point.y ===

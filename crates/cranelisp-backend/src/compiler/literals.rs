@@ -119,13 +119,18 @@ where
         // identity (§2.7.2), never the old silent "undefined variable".
         resolution: &VarRef,
     ) -> Result<Value, CranelispError> {
-        // Local variable takes priority (before ANY keyed read — KC-N6). A
-        // shadowing local wins unconditionally; the carrier is never consulted.
-        // This handles BOTH a `VarRef::Local` and a `VarRef::Global` whose name
-        // shadows a backend local (the self-recursion carve-out records the
-        // enclosing fn's storage FQ on a shadowing recursion binding).
-        if let Some(var) = self.lookup_var(name) {
-            return Ok(self.builder.use_var(var));
+        // A local reference is the plan's (`compile_expr` routes every planned
+        // occurrence to `compile_occurrence` first, so a shadowing local wins
+        // before any keyed read — KC-N6). A local reaching here was not
+        // planned, so its count cannot be known: that is an invariant breach.
+        if self.binds(name) {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "internal invariant violation: local reference '{name}' has no ownership \
+                     plan entry"
+                ),
+                location: ErrorLocation::from_span(span),
+            });
         }
 
         // Past the scope-stack read: convert the typed verdict to the keyed-read
@@ -272,9 +277,8 @@ where
     /// entry is a fieldless (nullary) `DefKind::Constructor`. `None` carrier (a
     /// non-ctor value ref) ⇒ `None`.
     ///
-    /// The fieldless test is [`CtorMeta::value_shape`] and nothing else, so this
-    /// emission and `fn_compiler::value_provenance`'s verdict about what it
-    /// carries cannot disagree (FIXME 0917, §6.2.1).
+    /// The fieldless test is [`CtorMeta::value_shape`] and nothing else
+    /// (FIXME 0917, §6.2.1).
     pub(crate) fn nullary_constructor_tag(
         &self,
         resolved_target: Option<&FQSymbol>,

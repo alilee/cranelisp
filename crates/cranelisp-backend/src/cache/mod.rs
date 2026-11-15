@@ -392,9 +392,10 @@ pub mod serialize;
 /// sidecar written by the pre-correction tree can carry a present
 /// `result: Fresh` for a body that returns one of its own parameters (design
 /// §19.1 F-2 — the lowest-index representative discarded a reaching parameter),
-/// and `return_is_fresh_by_summary` elides the callee's return protect on
-/// exactly that claim. A cache-hit on such a sidecar would resurrect the elision
-/// on unchanged source, which no source hash or shape check can catch. The bump
+/// and the backend then elided the callee's return protect on exactly that
+/// claim (`return_is_fresh_by_summary`, retired with uniform counting in S123).
+/// A cache-hit on such a sidecar would have resurrected the elision on unchanged
+/// source, which no source hash or shape check can catch. The bump
 /// refuses every schema-26 sidecar and paired object wholesale.
 ///
 /// **27 → 28 (S121 shadowed-parameter reach correction —
@@ -402,9 +403,9 @@ pub mod serialize;
 /// soundness invalidation: the serde shape is identical either side. The
 /// pre-fix ownership walker resolved a parameter reach by binder NAME, so under
 /// a binder shadowing a parameter it published a wrong `ModeSummary` — a false
-/// `result: Fresh` (on which `return_is_fresh_by_summary` elides the callee's
-/// return protect) and permuted `param_mode`s driving caller arg-protects and
-/// callee RC. HEAD was already schema 27 **with** that defective producer, so
+/// `result: Fresh` (on which the backend then elided the callee's return
+/// protect) and permuted `param_mode`s that then drove caller arg-protects and
+/// callee RC; the backend has read neither since uniform counting (S123). HEAD was already schema 27 **with** that defective producer, so
 /// schema-27 sidecars carrying those values are producible and schema 27 cannot
 /// distinguish the two epochs; a warm hit on unchanged source resurrects the
 /// elision as the measured `STALE RC DEC` abort (the CS-2/P25 cache-trust

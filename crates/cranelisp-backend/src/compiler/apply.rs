@@ -4,7 +4,7 @@
 // emit_adt_construct, compile_extern_call,
 // compile_closure_call
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use cranelift::prelude::*;
 use cranelift_module::Module;
@@ -21,9 +21,7 @@ use crate::primitives_inline;
 use super::control_flow::{
     LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_args, find_sparkable_args_with,
 };
-use super::entry_convention::{EntryConvention, ParamKind};
-use super::fn_compiler::TailTransferContext;
-use super::scope_chain::SlotRef;
+use super::ownership_plan::OperandSlot;
 use super::{FnCompiler, signature_heap_category};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
@@ -108,6 +106,29 @@ fn platform_io_payload_type(
     })
 }
 
+/// A node's operands, evaluated by [`FnCompiler::compile_operands`] to owned
+/// values in the shared operand order.
+pub(crate) struct EvaluatedOperands {
+    /// The callee's closure value, when the plan evaluates the callee.
+    pub(crate) callee: Option<Value>,
+    /// The other operands' values, left to right.
+    pub(crate) values: Vec<Value>,
+}
+
+impl EvaluatedOperands {
+    /// The evaluated callee of a closure-value call. A lowering that calls a
+    /// closure value without one would skip a consuming occurrence the plan
+    /// classified, so its absence is a located invariant violation.
+    fn evaluated_callee(&self, span: Span) -> Result<Value, CranelispError> {
+        self.callee.ok_or_else(|| CranelispError::CodegenError {
+            message: "internal invariant violation: a closure-value call whose callee the \
+                      ownership plan does not evaluate"
+                .into(),
+            location: ErrorLocation::from_span(span),
+        })
+    }
+}
+
 pub(crate) fn append_runtime_ctor_fields<M, C, L>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -152,132 +173,6 @@ where
     Ok(fields)
 }
 
-/// The set of let-scope bindings that the tail-jump flush must NOT dec because
-/// their reference MOVES into a tail-call argument as a bare top-level `Var`
-/// (compiled with no consuming inc — the loop param inherits the single
-/// reference).
-///
-/// ONLY a literal top-level `MonoExpr::Var` argument is a move. A binding
-/// aliased into a tail argument *through a control-flow form* (`(if c v v)`,
-/// `(match … v)`) is deliberately EXCLUDED: those are protected by an explicit
-/// inc at the control-flow branch tail (`tail_arg_protect`) and then flushed
-/// uniformly, so adding them here would leak the protective inc (and, for
-/// distinct-per-branch bindings like `(if c lo hi)`, would wrongly retain the
-/// dead branch's binding). See `compile_tail_self_call` and the F1 UAF cure.
-pub(crate) fn tail_bare_var_names(args: &[MonoExpr]) -> std::collections::HashSet<Symbol> {
-    args.iter()
-        .filter_map(|a| match a {
-            MonoExpr::Var { name, .. } => Some(name.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// A compiled argument value paired with the [`HeapCategory`] to release it by
-/// — the element of a §3.1 post-call dec list (a temporary passed to a
-/// `Borrowed` param that the callee/adapter will not dec).
-/// A `Borrowed`-param temporary awaiting its post-call release: the value and
-/// its TYPE. The type is the WHOLE decision (S118 slice S1): the canonical
-/// per-concrete-type glue derives the teardown, the nullary-tag guard, and the
-/// membership question from it, so no `HeapCategory` travels with the value any
-/// more — a site can no longer disagree with a type about how it is released.
-///
-/// The forced-spark position (`maybe_force_sparked_arg`) carries the ARG's type
-/// too: the forced value IS the argument's value, and the D2 entry check found
-/// no release site here that cannot supply a concrete type. Its former
-/// type-less guarded dec was the stranding shape FIXME 0753 named, one seam
-/// over.
-type PostCallDec = (Value, cranelisp_types::Type);
-
-/// Result of [`FnCompiler::compile_entry_arg_list`]: the compiled arg values
-/// and the post-call decs owed after the call returns.
-type ModedArgList = (Vec<Value>, Vec<PostCallDec>);
-
-/// The per-position RC action the §3.1 caller-side borrow-elision emits for one
-/// argument (`design/backend/ownership-codegen.md` §3.1). The pure decision
-/// core of [`FnCompiler::compile_entry_arg_list`], factored out so the full
-/// `{arg-kind} × {param kind} × {category}` matrix (§13.5 apply row, Principle
-/// 23) is unit-testable without a live `FnCompiler`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ModedArgRc {
-    /// No RC op (scalar; or a transferred temporary; or an elided consuming inc).
-    None,
-    /// Pre-call consuming inc, unguarded (AlwaysHeap owned-binding to `Owned`).
-    Inc,
-    /// Pre-call consuming inc, guarded (Mixed owned-binding to `Owned`).
-    IncGuarded,
-    /// Post-call dec, unguarded (AlwaysHeap temporary to `Borrowed`).
-    PostDec,
-    /// Post-call dec, guarded (Mixed temporary to `Borrowed`).
-    PostDecGuarded,
-}
-
-/// Decide the §3.1 per-argument RC action from the arg's heap category, the
-/// entry's derived [`ParamKind`] for the position, and whether the arg is an
-/// **owned-binding** (a local variable whose enclosing scope decs it at exit)
-/// vs a **temporary** (a fresh rc=1 value with no scope owner — a non-`Var`, OR
-/// a `Var` naming a fn-as-value / constructor that mints a fresh closure/ADT).
-///
-/// The matrix (heap positions only; `NeverHeap` ⇒ [`ModedArgRc::None`] always):
-///
-/// | owned-binding | param kind | action |
-/// |---|---|---|
-/// | yes | `Consume` | consuming inc (also the adaptation path) |
-/// | yes | `Borrow`/`NoReference` | none (owner's scope-dec is the single accounting) |
-/// | no (temp) | `Consume`/`NoReference` | none (rc=1 transfers into the callee) |
-/// | no (temp) | `Borrow` | post-call dec (the callee/adapter will not dec it) |
-///
-/// `NoReference` is never derived for a heap category in increment I; it is
-/// mapped to pass-through here for total, defensive coverage.
-/// §3.3: is `arg` a DIRECT `vec-get` read the ownership pass marked as a borrowed
-/// projection (`provenance` site fact set)? This is the only shape whose in-frame
-/// element inc `compile_entry_arg_list` elides — and only when the read
-/// feeds a `Borrowed` parameter, so the borrowed element is consumed in-place and
-/// never escapes. An accessor / user-fn `ProjectionOf`-call is NOT matched here:
-/// its callee already materialized the result with an owned reference (its return
-/// protect is kept, `return_is_fresh_by_summary`), so it is an ordinary owned
-/// temporary at the call site. `provenance = None` (analysis off, or a read the
-/// pass could not prove borrow-safe) ⇒ `false` ⇒ inc verbatim (§2.2).
-fn is_direct_vecget_projection(arg: &MonoExpr) -> bool {
-    matches!(
-        arg,
-        MonoExpr::Apply { provenance: Some(_), resolved_call: Some(rc), .. }
-            if matches!(rc.as_ref(),
-                ResolvedCall::BuiltinFn { name } if name.as_ref() == "vec-get")
-    )
-}
-
-pub(crate) fn moded_arg_rc(
-    category: HeapCategory,
-    kind: ParamKind,
-    owned_binding: bool,
-) -> ModedArgRc {
-    match category {
-        HeapCategory::NeverHeap | HeapCategory::Value => ModedArgRc::None,
-        HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
-            let guarded = matches!(category, HeapCategory::Mixed);
-            match (owned_binding, kind) {
-                (true, ParamKind::Consume) => {
-                    if guarded {
-                        ModedArgRc::IncGuarded
-                    } else {
-                        ModedArgRc::Inc
-                    }
-                }
-                (true, ParamKind::Borrow | ParamKind::NoReference) => ModedArgRc::None,
-                (false, ParamKind::Consume | ParamKind::NoReference) => ModedArgRc::None,
-                (false, ParamKind::Borrow) => {
-                    if guarded {
-                        ModedArgRc::PostDecGuarded
-                    } else {
-                        ModedArgRc::PostDec
-                    }
-                }
-            }
-        }
-    }
-}
-
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -288,6 +183,7 @@ where
     #[allow(clippy::too_many_arguments)] // +1 for the S110 W1 dispatch carrier
     pub(crate) fn compile_apply(
         &mut self,
+        node: &MonoExpr,
         callee: &MonoExpr,
         args: &[MonoExpr],
         span: Span,
@@ -351,9 +247,12 @@ where
         // (`classify_spark_callee`) — one source of truth, so the TCO back-edge
         // set and the stack-alloc decline can never diverge (FIXME 0654; the
         // divergence was a latent loop-carried stack-slot UAF).
+        // A callee the plan evaluates is a local closure value, never this
+        // function, so a shadowing local wins over a self-recursion carrier.
         if self.in_tail_position
             && self.tail_loop_block.is_some()
             && args.len() == self.fn_param_count
+            && !self.plan.evaluates_callee(node)
             && crate::compiler::is_self_call(
                 callee,
                 resolved_call,
@@ -361,7 +260,7 @@ where
                 self.current_fn_name.as_ref(),
             )
         {
-            return self.compile_tail_self_call(args);
+            return self.compile_tail_self_call(node);
         }
 
         // CRITICAL: Args are never in tail position.
@@ -440,19 +339,9 @@ where
                                 escapes: None,
                                 unique_static: None,
                             };
-                            // Compile the spark-thunk body via the single-source
-                            // helper (`compile_spark_thunk`), which raises BOTH
-                            // spark flags around the thunk compile and restores
-                            // them (error-safe):
-                            //  - Capture-by-borrow (S99, FIXME 0461; lenient-eval.md
-                            //    §4.4.1): this apply-arg spark is structurally joined
-                            //    — Phase 2's barrier forces every sparked IVar before
-                            //    the call instruction, so the parent frame is provably
-                            //    live across spark→join→call; the thunk's heap captures
-                            //    are borrowed, not retained (toggle-gated).
-                            //  - Gate 5 (§4.3, FIXME 0525): the relocated construction
-                            //    in the thunk body declines stack allocation (its slot
-                            //    would dangle at the join — hard UAF).
+                            // The thunk duplicates its captures; the force barrier
+                            // drops what the sequential argument would have
+                            // consumed (`compile_spark_thunk`).
                             let thunk_val = this.compile_spark_thunk(&thunk_expr)?;
                             let ivar_val =
                                 this.emit_extern_call("cranelisp_ivar_create", &[thunk_val], span)?;
@@ -473,6 +362,7 @@ where
                         // of the increment-I stack scope (§4.3). Sound: declining is
                         // always correct.
                         let result = this.dispatch_apply(
+                            node,
                             callee,
                             args,
                             span,
@@ -490,6 +380,7 @@ where
                     // in place; nothing allocated (§3.6.3 floor).
                     |this| {
                         this.dispatch_apply(
+                            node,
                             callee,
                             args,
                             span,
@@ -509,6 +400,7 @@ where
         // guard in `maybe_force_sparked_arg` ensures its own argument slice never
         // matches an enclosing apply's installed map.
         self.dispatch_apply(
+            node,
             callee,
             args,
             span,
@@ -527,6 +419,7 @@ where
     #[allow(clippy::too_many_arguments)] // +1 for the B3.4 stack-eligibility hint
     fn dispatch_apply(
         &mut self,
+        node: &MonoExpr,
         callee: &MonoExpr,
         args: &[MonoExpr],
         span: Span,
@@ -543,6 +436,7 @@ where
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
             return self.compile_resolved_call(
+                node,
                 resolved.clone(),
                 callee,
                 args,
@@ -561,42 +455,29 @@ where
         } = callee
         {
             return self.compile_var_apply(
-                name, *var_span, callee, args, span, apply_type, saved_tail, stack,
+                node, name, *var_span, callee, args, span, apply_type, saved_tail, stack,
             );
         }
 
-        // Callee is not a variable -- could be a closure call (Ring 1).
-        // Closure body is a user function — consuming convention.
-        let callee_val = self.compile_expr(callee)?;
-        let arg_vals = self.compile_consuming_arg_list(args)?;
+        // Callee is not a variable: a computed closure value.
+        self.compile_owned_closure_call(node, span, saved_tail)
+    }
+
+    /// Call a closure value the callee expression yields. The callee is a
+    /// consuming position like any other: the call reads the closure, which is
+    /// released afterwards. A result that came from a capture was duplicated
+    /// inside the body, so it survives that release.
+    fn compile_owned_closure_call(
+        &mut self,
+        node: &MonoExpr,
+        span: Span,
+        saved_tail: bool,
+    ) -> Result<Value, CranelispError> {
+        let operands = self.compile_operands(node)?;
+        let callee_val = operands.evaluated_callee(span)?;
         self.in_tail_position = saved_tail;
-
-        let result = self.compile_closure_call(callee_val, &arg_vals, span)?;
-
-        // Protect the return value: if the result is heap-typed, inc it
-        // before freeing the closure. The closure's drop glue will dec
-        // all captured heap values — if the result aliases a capture,
-        // the inc prevents premature deallocation. The caller's later
-        // dec (scope cleanup or parent expression) restores balance.
-        if let Some(ty) = apply_type {
-            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, self.module, result);
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, result);
-                }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
-            }
-        }
-
-        // Dec the temporary closure after the call. The closure was a
-        // temporary expression (not a named variable), so nobody else
-        // will dec it. Load the drop glue pointer from the closure and
-        // use it for cleaning up captured heap values.
+        let result = self.compile_closure_call(callee_val, &operands.values, span)?;
         self.emit_closure_dec(callee_val, span);
-
         Ok(result)
     }
 
@@ -605,8 +486,10 @@ where
     /// `FnCompiler` method per variant (S111 R5 §2 — pure protocol-boundary
     /// extraction, byte-identical). TraitMethod and SigDispatch share
     /// `compile_moded_user_call` (the P7 dedup: identical below the `sym` bind).
+    #[allow(clippy::too_many_arguments)] // +1 for the Apply node (its operand sequence)
     fn compile_resolved_call(
         &mut self,
+        node: &MonoExpr,
         resolved: ResolvedCall,
         // FIXME 0705: the callee expression — the identity carrier for the
         // `ApplyRef::ViaCallee` auto-curry state (see `compile_auto_curry_call`).
@@ -622,24 +505,24 @@ where
     ) -> Result<Value, CranelispError> {
         match resolved {
             ResolvedCall::BuiltinFn { name: ref op_name } => {
-                self.compile_builtin_fn_call(op_name, args, span, saved_tail, apply_target)
+                self.compile_builtin_fn_call(node, op_name, args, span, saved_tail, apply_target)
             }
             ResolvedCall::TraitMethod {
                 ref mangled_name, ..
             } => {
                 let sym = Symbol::from(mangled_name.as_ref());
-                self.compile_moded_user_call(&sym, args, span, saved_tail, apply_target)
+                self.compile_moded_user_call(node, &sym, span, saved_tail, apply_target)
             }
             ResolvedCall::SigDispatch { target } => match target {
                 cranelisp_types::CallableTarget::Binding(owner) => self.compile_moded_user_call(
+                    node,
                     &owner.symbol,
-                    args,
                     span,
                     saved_tail,
                     Some(&owner),
                 ),
                 cranelisp_types::CallableTarget::OverloadArm { .. } => {
-                    self.compile_moded_family_target_call(&target, args, span, saved_tail)
+                    self.compile_moded_family_target_call(node, &target, span, saved_tail)
                 }
                 cranelisp_types::CallableTarget::MacroClause { .. } => {
                     Err(CranelispError::CodegenError {
@@ -659,6 +542,7 @@ where
                 total_count,
                 ref trait_resolution,
             } => self.compile_auto_curry_call(
+                node,
                 target_name,
                 callee,
                 args,
@@ -698,48 +582,42 @@ where
     /// / `compile_inline_ring0_call`), each delegating.
     fn compile_builtin_fn_call(
         &mut self,
+        node: &MonoExpr,
         op_name: &Symbol,
         args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // Decision 24: uniform consuming convention. Extern primitives
-        // dec their own heap args; inline builtins operate on NeverHeap
-        // operands. The caller never emits a post-call temporary dec.
+        // Every lowering below consumes its owned operands; the caller never
+        // releases an argument after the call.
 
         // The inline IO combinators ([`IoCombinator`]), intercepted and lowered
-        // here rather than dispatched. Each arm MINTS a new IO node at rc=1 and
-        // takes its operands under the consuming convention — a `Var` operand is
-        // retained to add the node's reference, a temporary transfers its rc — and
-        // never returns an operand. That is the same fact `value_provenance`
-        // reads off this classification to elide the protective return retain.
-        //
-        // The match is exhaustive by construction: a fifth combinator must decide
-        // its lowering here, and its freshness in the provenance arm, or neither
-        // compiles.
+        // here rather than dispatched. Each arm mints a new IO node at rc=1 that
+        // takes its owned operands. The match is exhaustive by construction: a
+        // fifth combinator must decide its lowering here or it does not compile.
         if let Some(combinator) = IoCombinator::from_builtin_name(op_name.as_ref()) {
             return match combinator {
                 IoCombinator::Bind => {
                     let input_disposer = self.result_disposer_for_io_expr(&args[0], span)?;
-                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    let arg_vals = self.compile_operands(node)?.values;
                     self.in_tail_position = saved_tail;
                     self.compile_bind_inline(&arg_vals, input_disposer, span)
                 }
-                // `select` takes one branch `Vec (IO a)` (a temporary `[..]`
-                // literal transfers its rc; a `Var` is inc'd once); `race a b`
-                // builds the same `IO_TAG_SELECT` node over a 2-element branch Vec
-                // it compiles itself via `compile_vec_lit`
-                // (`io-trampoline.md` §16.2/§16.3/§16.4).
+                // `select` takes one owned branch `Vec (IO a)`; `race a b`
+                // builds the same `IO_TAG_SELECT` node over a 2-element branch
+                // Vec of its operands (`io-trampoline.md` §16.2/§16.3/§16.4).
                 IoCombinator::Select => {
                     let result_disposer = self.result_disposer_for_select_expr(&args[0], span)?;
-                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    let arg_vals = self.compile_operands(node)?.values;
                     self.in_tail_position = saved_tail;
                     self.compile_select(&arg_vals, result_disposer, span)
                 }
                 IoCombinator::Race => {
+                    let result_disposer = self.result_disposer_for_io_expr(&args[0], span)?;
+                    let branch_vals = self.compile_operands(node)?.values;
                     self.in_tail_position = saved_tail;
-                    self.compile_race(args, span)
+                    self.compile_race(&branch_vals, result_disposer, span)
                 }
                 // The runtime timer poll leaf (`reactor.md` §2.18): an
                 // `IO_TAG_EFFECT_POLL` node whose `code_ptr` is the runtime symbol
@@ -747,17 +625,15 @@ where
                 // distinct from `compile_poll_effect`'s GOT-slot load.
                 IoCombinator::Sleep => {
                     self.in_tail_position = saved_tail;
-                    self.compile_sleep(args, span)
+                    self.compile_sleep(node, span)
                 }
             };
         }
 
-        // Vec operations: intercept and compile inline.
-        // Vec ops handle their own temporary cleanup internally
-        // via emit_vec_drop_if_temporary (COW-specific, not post-call
-        // convention). See ring2-rc.md §3.3.
+        // Vec operations: intercept and compile inline. Each consumes its owned
+        // vector (`compile_vec_op`).
         if is_vec_primitive(op_name) {
-            let arg_vals = self.compile_arg_list(args)?;
+            let arg_vals = self.compile_operands(node)?.values;
             self.in_tail_position = saved_tail;
             if let Some(val) = self.compile_vec_op(op_name, args, &arg_vals, span)? {
                 return Ok(val);
@@ -788,15 +664,15 @@ where
         // convention (each consumes its Trace arg via `consume_trace_call`),
         // matching the other `cranelisp_trace_*` externs.
         if let Some(intrinsic) = self.trace_accessor_intrinsic(op_name, args) {
-            let arg_vals = self.compile_consuming_arg_list(args)?;
+            let arg_vals = self.compile_operands(node)?.values;
             self.in_tail_position = saved_tail;
             return self.compile_extern_call(intrinsic, &arg_vals, span);
         }
 
         if is_extern_primitive(op_name) {
             return self.compile_extern_primitive_call(
+                node,
                 op_name,
-                args,
                 span,
                 saved_tail,
                 apply_target,
@@ -806,15 +682,15 @@ where
         // Unrecognized builtin: a platform-effect function or a direct-extern.
         if !primitives_inline::is_known_builtin(op_name) {
             return self.compile_platform_or_direct_extern_call(
+                node,
                 op_name,
-                args,
                 span,
                 saved_tail,
                 apply_target,
             );
         }
 
-        self.compile_inline_ring0_call(op_name, args, span, saved_tail, apply_target)
+        self.compile_inline_ring0_call(node, op_name, span, saved_tail, apply_target)
     }
 
     /// The extern-primitive dispatch class (S111 R5 §2.3; was the
@@ -823,26 +699,21 @@ where
     /// and the §2.1 GOT-vs-direct-extern decision.
     fn compile_extern_primitive_call(
         &mut self,
+        node: &MonoExpr,
         op_name: &Symbol,
-        args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
         // An extern shim takes ownership of every heap argument (BC §4a
-        // invariant 8), so a heap `Var` argument is retained here and its
-        // scope keeps a live reference after the callee releases or moves it.
-        let convention = self.ctx.entry_convention_at(apply_target);
-        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
-        // H3 per-extern adaptation-pair attribution (§9.2 / §13.2.1):
-        // `str-len` is the single increment-I template instance of the
-        // dual-symbol convention — a hand-audited only-read consuming
-        // extern whose call sites pay a Decision-24 adaptation pair
-        // (the consuming dec, plus an adaptation inc on a borrowed
-        // arg). Tally the site into `CRANELISP_RC_STATS` so `/qa`'s
-        // L-D5 lane reads the per-extern pair population. Runtime tally
-        // (the pair is paid at run) gated on the codegen-time RC_STATS
-        // switch (off ⇒ no emitted IR ⇒ byte-identical).
+        // invariant 8), like every other consuming position.
+        let arg_vals = self.compile_operands(node)?.values;
+        // `str-len` site tally for `/qa`'s L-D5 lane: one
+        // `CRANELISP_RC_STATS` count per executed `str-len` call. The site
+        // emits no RC operation of its own: its operand arrives owned from
+        // `compile_operands` and the extern consumes it. The runtime symbol
+        // keeps its historical `extern_adapt_` name. Gated on the codegen-time
+        // RC_STATS switch (off ⇒ no emitted IR ⇒ byte-identical).
         if op_name.as_ref() == "str-len" {
             heap::emit_rc_stat_call_gated(
                 &mut self.builder,
@@ -878,7 +749,6 @@ where
         } else {
             self.compile_extern_call(op_name, &arg_vals, span)?
         };
-        self.emit_post_call_decs(&post_call_decs)?;
         Ok(result)
     }
 
@@ -887,17 +757,15 @@ where
     /// as-built direct-extern fallback.
     fn compile_platform_or_direct_extern_call(
         &mut self,
+        node: &MonoExpr,
         op_name: &Symbol,
-        args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
         // Platform functions take ownership of their heap args (e.g.
-        // `CLString::own()` captures the string); an entry-less direct extern
-        // derives the same consuming convention.
-        let convention = self.ctx.entry_convention_at(apply_target);
-        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
+        // `CLString::own()` captures the string).
+        let arg_vals = self.compile_operands(node)?.values;
         self.in_tail_position = saved_tail;
         // Platform GOT-indirect dispatch arm (TARGET shape;
         // platform-interface.md §6.2/§6.3, BC §3 "the
@@ -939,18 +807,14 @@ where
             // path alike — and it lands at node-construction time (before
             // the force), so the baked name survives a thunk panic on the
             // fault path.
-            let result = self.compile_direct_call(&sym, &arg_vals, span, apply_target)?;
-            self.emit_post_call_decs(&post_call_decs)?;
-            return Ok(result);
+            return self.compile_direct_call(&sym, &arg_vals, span, apply_target);
         }
         // As-built fallback: direct `Linkage::Import` against the
         // mangled jit_name (the platform fn ptr reaches the JIT via
         // `JITBuilder::symbol(jit_name, ptr)`; the cache linker
         // registers it identically). Retires when the GOT flip
         // lands (§6.3 verdict).
-        let result = self.compile_extern_call(op_name, &arg_vals, span)?;
-        self.emit_post_call_decs(&post_call_decs)?;
-        Ok(result)
+        self.compile_extern_call(op_name, &arg_vals, span)
     }
 
     /// The inline Ring-0 primitive dispatch class (S111 R5 §2.3; was the inline
@@ -958,8 +822,8 @@ where
     /// GOT-indirect `compile_direct_call`.
     fn compile_inline_ring0_call(
         &mut self,
+        node: &MonoExpr,
         op_name: &Symbol,
-        args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
@@ -974,7 +838,7 @@ where
         // checked above so by this point the name IS in the table,
         // but we still pattern-match the `Some` arm conservatively;
         // a None here would indicate the two tables drifted apart.
-        let arg_vals = self.compile_arg_list(args)?;
+        let arg_vals = self.compile_operands(node)?.values;
         self.in_tail_position = saved_tail;
         match primitives_inline::try_emit_inline_primitive(
             &mut self.builder,
@@ -1016,34 +880,28 @@ where
     /// optimisation by having typecheck emit `BuiltinFn { name:
     /// "add-i64" }` directly for primitive-implemented trait
     /// methods, bypassing the `TraitMethod` route entirely.
-    /// User (trait-impl) / sig-dispatch function — moded consuming convention
-    /// (§3.1): the callee's derived entry convention keys the per-position inc;
-    /// temporaries to borrowed params owe a post-call dec.
+    /// User (trait-impl) / sig-dispatch function: every argument is consumed.
     fn compile_moded_user_call(
         &mut self,
+        node: &MonoExpr,
         sym: &Symbol,
-        args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
         apply_target: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        let convention = self.ctx.entry_convention_at(apply_target);
-        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
+        let arg_vals = self.compile_operands(node)?.values;
         self.in_tail_position = saved_tail;
-        let result = self.compile_direct_call(sym, &arg_vals, span, apply_target)?;
-        self.emit_post_call_decs(&post_call_decs)?;
-        Ok(result)
+        self.compile_direct_call(sym, &arg_vals, span, apply_target)
     }
 
     fn compile_moded_family_target_call(
         &mut self,
+        node: &MonoExpr,
         target: &cranelisp_types::CallableTarget,
-        args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
     ) -> Result<Value, CranelispError> {
-        let convention = self.ctx.entry_convention_of(target);
-        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
+        let arg_vals = self.compile_operands(node)?.values;
         self.in_tail_position = saved_tail;
         let owner =
             crate::callable_target_owner(target).ok_or_else(|| CranelispError::CodegenError {
@@ -1071,9 +929,7 @@ where
                 message: format!("failed to declare GOT data '{got_symbol}': {error}"),
                 location: ErrorLocation::from_span(span),
             })?;
-        let result = self.emit_got_indirect_call_via_data_id(data_id, slot, &arg_vals)?;
-        self.emit_post_call_decs(&post_call_decs)?;
-        Ok(result)
+        self.emit_got_indirect_call_via_data_id(data_id, slot, &arg_vals)
     }
 
     /// The `ResolvedCall::AutoCurry` arm (S111 R5 §2.2) — **TOTAL over the closed
@@ -1103,6 +959,7 @@ where
     #[allow(clippy::too_many_arguments)]
     fn compile_auto_curry_call(
         &mut self,
+        node: &MonoExpr,
         target_name: &Symbol,
         callee: &MonoExpr,
         args: &[MonoExpr],
@@ -1130,16 +987,13 @@ where
             }
             AutoCurryTarget::ClosureValue => {
                 // Curry the CLOSURE VALUE. Source order: the callee is evaluated
-                // before the arguments. Routed through `compile_consuming_arg_list`
-                // so the target gets exactly the capture ownership the applied args
-                // get — a live-`Var` closure is inc'd (the enclosing scope keeps its
-                // own reference, dec'd at scope exit), a computed temporary transfers.
-                let target_val = self.compile_consuming_arg_list(std::slice::from_ref(callee))?[0];
-                let arg_vals = self.compile_consuming_arg_list(args)?;
+                // before the arguments; the curry environment consumes both.
+                let operands = self.compile_operands(node)?;
+                let target_val = operands.evaluated_callee(span)?;
                 self.in_tail_position = saved_tail;
                 return self.compile_auto_curry(
                     target_name,
-                    &arg_vals,
+                    &operands.values,
                     applied_count,
                     total_count,
                     args,
@@ -1153,10 +1007,9 @@ where
             // resolution) fall through to the shared tail below.
             AutoCurryTarget::Dispatch | AutoCurryTarget::InnerResolution => {}
         }
-        // Compile applied args with consuming convention:
-        // the auto-curry closure captures them, and the wrapper
-        // will inc before forwarding to the target function.
-        let arg_vals = self.compile_consuming_arg_list(args)?;
+        // The curry environment takes the applied arguments; its wrapper
+        // duplicates each before forwarding (`forwarding_template_args`).
+        let arg_vals = self.compile_operands(node)?.values;
         self.in_tail_position = saved_tail;
         // S110 W2 (row 17): the Apply-span carrier is the plain-fn curry
         // target's STORAGE key (callee-span transport, W0.1b), threaded to
@@ -1179,6 +1032,7 @@ where
     #[allow(clippy::too_many_arguments)] // +1 for the B3.4 stack-eligibility hint
     fn compile_var_apply(
         &mut self,
+        node: &MonoExpr,
         name: &Symbol,
         var_span: Span,
         callee: &MonoExpr,
@@ -1201,11 +1055,7 @@ where
         // unconditionally win the closure-call path — the carrier is never
         // consulted for it.
         if self.binds(name) {
-            let callee_val = self.compile_expr(callee)?;
-            // Closure body is a user function — consuming convention.
-            let arg_vals = self.compile_consuming_arg_list(args)?;
-            self.in_tail_position = saved_tail;
-            return self.compile_closure_call(callee_val, &arg_vals, span);
+            return self.compile_owned_closure_call(node, span, saved_tail);
         }
 
         // The callee `Var`'s carrier — the terminal STORAGE key typecheck
@@ -1253,13 +1103,9 @@ where
                 });
             }
 
-            // Decision 24 (Sprint 56 Step 2c): uniform consuming convention.
-            // The constructor stores args as fields; the ADT's drop glue
-            // dec's heap-typed fields when the ADT itself reaches rc=0.
-            // For variable args we inc so the caller's binding survives
-            // scope cleanup — the ADT holds its own independent reference.
-            // For temporary args, rc=1 transfers directly into the field.
-            let arg_vals = self.compile_consuming_arg_list(args)?;
+            // The constructor stores its owned operands as fields; the ADT's
+            // drop glue releases heap-typed fields when the ADT itself dies.
+            let arg_vals = self.compile_operands(node)?.values;
             self.in_tail_position = saved_tail;
             // R5 (§7.1): a value-flattened single-ctor type constructs by a
             // bare-word move of its single field (no alloc/header/tag). Classify
@@ -1309,60 +1155,68 @@ where
         // fully handled above, so a `None` carrier here is a genuine non-ctor
         // reference (a hard error downstream if the carrier is absent — Rev-2,
         // never a fall-through to the scan).
-        let convention = self.ctx.entry_convention_at(callee_target);
-        let (arg_vals, post_call_decs) = self.compile_entry_arg_list(args, &convention)?;
+        let arg_vals = self.compile_operands(node)?.values;
         self.in_tail_position = saved_tail;
-        let result = self.compile_direct_call(name, &arg_vals, var_span, callee_target)?;
-        self.emit_post_call_decs(&post_call_decs)?;
-        Ok(result)
+        self.compile_direct_call(name, &arg_vals, var_span, callee_target)
     }
 
-    /// Compile a list of argument expressions into Cranelift values.
-    ///
-    /// Plain compilation: no RC adjustments. Used for inline builtins whose
-    /// operands are NeverHeap (Int/Bool/Float), and for data-constructor
-    /// call-site arg preparation where the consuming inc happens via
-    /// `compile_consuming_arg_list` (which this method backs). Under
-    /// Decision 24 (uniform consuming) the plain form has a narrow role:
-    /// pure-value builtins where RC does not apply.
-    fn compile_arg_list(&mut self, args: &[MonoExpr]) -> Result<Vec<Value>, CranelispError> {
-        let args_ptr = args.as_ptr();
-        let mut vals = Vec::with_capacity(args.len());
-        for (i, arg) in args.iter().enumerate() {
-            // A sparked argument is forced at this position (the left-to-right
-            // barrier) instead of recompiled; otherwise compile normally.
-            if let Some(forced) = self.maybe_force_sparked_arg(i, args_ptr, arg.span())? {
-                vals.push(forced);
-            } else {
-                vals.push(self.compile_expr(arg)?);
+    /// Evaluate the operands `node` consumes, in the shared operand order
+    /// (`uniform-counting.md` §3.2), to owned values. This is the emitter's
+    /// only evaluation of an operand expression: every lowering of an
+    /// application, Vec literal, constructor, `par-bind` or launch receives
+    /// its operands from here, so the plan's "last use" is last in the emitted
+    /// code. A sparked application argument is forced at its position (the
+    /// left-to-right lenient barrier) instead of recompiled.
+    pub(crate) fn compile_operands(
+        &mut self,
+        node: &MonoExpr,
+    ) -> Result<EvaluatedOperands, CranelispError> {
+        let sequence = self.plan.operands(node);
+        let spark_key = match node {
+            MonoExpr::Apply { args, .. } => Some(args.as_ptr()),
+            _ => None,
+        };
+        let mut callee = None;
+        let mut slots: Vec<Option<Value>> = vec![None; sequence.exprs.len()];
+        for (slot, operand) in sequence.in_order() {
+            match slot {
+                OperandSlot::Callee => callee = Some(self.compile_expr(operand)?),
+                OperandSlot::Expr(position) => {
+                    let forced = match spark_key {
+                        Some(args_ptr) => {
+                            self.maybe_force_sparked_arg(position, args_ptr, operand)?
+                        }
+                        None => None,
+                    };
+                    slots[position] = Some(match forced {
+                        Some(value) => value,
+                        None => self.compile_expr(operand)?,
+                    });
+                }
             }
         }
-        Ok(vals)
+        let values = slots
+            .into_iter()
+            .collect::<Option<Vec<Value>>>()
+            .expect("the operand sequence evaluates every operand once");
+        Ok(EvaluatedOperands { callee, values })
     }
 
     /// If argument `idx` of the application whose argument slice has base pointer
     /// `args_ptr` was sparked by the lenient apply-arg pre-pass (lenient-eval.md
-    /// §4.4), force its IVar HERE (the left-to-right Phase-2 barrier), dec the
-    /// calling thread's cell reference (`emit_rc_dec_for_ivar` → the IVar-aware
-    /// dealloc that also frees any ferried error String), and return the forced
-    /// rc=1 temporary. Returns `None` for a non-sparked position (compile
-    /// normally).
+    /// §4.4), force its IVar HERE (the left-to-right Phase-2 barrier), release
+    /// the calling thread's cell reference, and return the forced value, which
+    /// the IVar hands over owned. The thunk duplicated its captures, so the
+    /// frame drops what the sequential argument would have consumed.
     ///
-    /// The `args_ptr` pointer-identity check is load-bearing: `self.sparked_args`
-    /// is set only for the duration of the owning apply's dispatch, but a nested
-    /// apply / constructor compiled while it is set has a *different* argument
-    /// slice (distinct allocation ⇒ distinct base pointer), so it can never match
-    /// and never force the wrong IVar by index collision (Principle 18).
-    ///
-    /// No consuming inc is owed for a sparked position: the cost heuristic
-    /// guarantees a non-trivial `Apply`, so the forced value is an rc=1 temporary
-    /// that transfers into the callee exactly like a sequentially-compiled
-    /// temporary argument (lenient-eval.md §4.4 "RC / consuming convention").
+    /// The `args_ptr` pointer-identity check is load-bearing: a nested apply
+    /// compiled while the map is set has a different argument slice, so it can
+    /// never force the wrong IVar by index collision (Principle 18).
     fn maybe_force_sparked_arg(
         &mut self,
         idx: usize,
         args_ptr: *const MonoExpr,
-        span: Span,
+        arg: &MonoExpr,
     ) -> Result<Option<Value>, CranelispError> {
         let ivar_val = match &self.sparked_args {
             Some((ptr, map)) if std::ptr::eq(*ptr, args_ptr) => map.get(&idx).copied(),
@@ -1371,219 +1225,11 @@ where
         let Some(ivar_val) = ivar_val else {
             return Ok(None);
         };
+        let span = arg.span();
         let forced = self.emit_extern_call("cranelisp_ivar_force", &[ivar_val], span)?;
         self.emit_rc_dec_for_ivar(ivar_val, span)?;
+        self.emit_spark_consumption(arg)?;
         Ok(Some(forced))
-    }
-
-    /// Compile args for a consuming callee (user-defined function).
-    ///
-    /// The callee dec's all heap-typed parameters at exit. We inc
-    /// heap-typed variable arguments so the caller's binding survives
-    /// the callee's dec. Temporary expressions start at rc=1 and
-    /// the callee's dec frees them — no caller action needed.
-    fn compile_consuming_arg_list(
-        &mut self,
-        args: &[MonoExpr],
-    ) -> Result<Vec<Value>, CranelispError> {
-        let args_ptr = args.as_ptr();
-        let mut vals = Vec::with_capacity(args.len());
-        for (i, arg) in args.iter().enumerate() {
-            // Sparked argument: force at this position (left-to-right barrier),
-            // dec our cell reference, and push the forced rc=1 temporary with NO
-            // consuming inc (it transfers into the callee like any temporary).
-            if let Some(forced) = self.maybe_force_sparked_arg(i, args_ptr, arg.span())? {
-                vals.push(forced);
-                continue;
-            }
-
-            let val = self.compile_expr(arg)?;
-
-            // Inc heap-typed variable arguments for consuming convention.
-            if let MonoExpr::Var { name, .. } = arg
-                && let Some(ty) = self.lookup_type(name)
-            {
-                let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
-                // B3.3-R (§5.1): the consuming inc is always atomic. This was
-                // a through-binding site (per-binding Confined carrier),
-                // dropped as dead + latent-race code (/review B3.3) — the
-                // analysis produces no confined let-bindings today. The
-                // `_atomicity` mechanism is retained (probe-reachable); it is
-                // fed `Atomic` here.
-                let atomicity = heap::RcAtomicity::Atomic;
-                match category {
-                    HeapCategory::AlwaysHeap => {
-                        heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity);
-                    }
-                    HeapCategory::Mixed => {
-                        heap::emit_rc_inc_guarded_atomicity(
-                            &mut self.builder,
-                            self.module,
-                            val,
-                            atomicity,
-                        );
-                    }
-                    HeapCategory::NeverHeap | HeapCategory::Value => {}
-                }
-            }
-
-            vals.push(val);
-        }
-        Ok(vals)
-    }
-
-    /// §3.1 borrow-elision, caller side
-    /// (`design/backend/ownership-codegen.md` §3.1): compile args for a
-    /// statically-resolved call, keying each position's RC emission off the
-    /// callee's derived [`EntryConvention`] (§7.6 of
-    /// `non-concrete-release-contract.md`).
-    ///
-    /// Returns `(arg_vals, post_call_decs)`. The caller MUST emit the returned
-    /// post-call decs (via [`Self::emit_post_call_decs`]) AFTER the call
-    /// instruction returns — they release temporaries passed to borrowed
-    /// params that the callee will not dec.
-    ///
-    /// Per heap-typed position (scalars are never RC-touched):
-    /// - **Var arg, `Consume`** — `emit_rc_inc[_guarded]`. This is ALSO the
-    ///   adaptation path (a caller-borrowed Var handed to a consuming position
-    ///   incs here, exactly as a match-field binding does).
-    /// - **Var arg, `Borrow`/`NoReference`** — SKIP the inc; the caller retains
-    ///   ownership and its scope-cleanup dec is the single accounting; the callee
-    ///   (compiled against the same summary, §3.2) emits no param dec.
-    /// - **Temporary arg, `Consume`** — no inc (ownership transfers at rc=1).
-    /// - **Temporary arg, `Borrow`** — no inc AND record a post-call dec
-    ///   (the callee will not dec the rc=1 temporary).
-    ///
-    /// A convention that consumes every position routes through
-    /// [`Self::compile_consuming_arg_list`] and owes no post-call decs.
-    fn compile_entry_arg_list(
-        &mut self,
-        args: &[MonoExpr],
-        convention: &EntryConvention,
-    ) -> Result<ModedArgList, CranelispError> {
-        if convention.consumes_every_param() {
-            return Ok((self.compile_consuming_arg_list(args)?, Vec::new()));
-        }
-
-        let args_ptr = args.as_ptr();
-        let mut vals = Vec::with_capacity(args.len());
-        let mut post_call_decs: Vec<PostCallDec> = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            let kind = convention.param(i);
-
-            // Sparked argument: forced rc=1 temporary (like any temporary). A
-            // consuming position takes it; a borrowed one owes a post-call dec.
-            if let Some(forced) = self.maybe_force_sparked_arg(i, args_ptr, arg.span())? {
-                if kind == ParamKind::Borrow {
-                    // The forced value is a heap IVar result (rc=1); guarded dec
-                    // is layout-safe whether AlwaysHeap or Mixed.
-                    post_call_decs.push((forced, arg.ty().to_type()));
-                }
-                vals.push(forced);
-                continue;
-            }
-
-            // §3.3 consumer-driven in-frame projection elision
-            // (`design/backend/ownership-codegen.md` §3.3): when a heap-typed
-            // borrowed PROJECTION (a `vec-get` read the ownership pass marked with
-            // a `provenance` site fact) is passed DIRECTLY into a `Borrowed`
-            // parameter, the whole inc+dec pair collapses: `compile_vec_get` skips
-            // the element materialization inc (via `elide_vecget_span`) and NO
-            // post-call dec is owed. This is the F1 machinery-tax collapse and the
-            // SOLE provably-safe elision — the borrowed element is consumed
-            // in-place by the callee's borrow, never escapes the call, and never
-            // outlives the root's fork-join-guaranteed liveness. Propagating a
-            // borrowed projection across ANY other edge (an `Owned` position, a
-            // function return, a store) is parallel-unsound (an escaping view
-            // races a concurrent COW/free — observed in f4_sudoku), so those keep
-            // the materialization inc and take the ordinary temporary path below.
-            let elide_projection = kind == ParamKind::Borrow
-                && is_direct_vecget_projection(arg)
-                && matches!(
-                    HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables)),
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
-                );
-            if elide_projection {
-                let saved = self.elide_vecget_span.replace(arg.span());
-                let val = self.compile_expr(arg)?;
-                self.elide_vecget_span = saved;
-                vals.push(val);
-                // No inc (elided) and NO post-call dec: the callee borrows the
-                // view and the root's owner keeps the element alive.
-                continue;
-            }
-
-            let val = self.compile_expr(arg)?;
-
-            // An **owned-binding Var** is a local variable (one whose binder
-            // recorded a type) whose owner (the enclosing scope) decs it at
-            // scope exit. Anything else at a `Var` position — a fn-as-value name,
-            // a bare constructor — mints a FRESH rc=1 value (no scope owner)
-            // exactly like a non-`Var` temporary, so it takes the temporary path.
-            // This mirrors the pre-S102 `compile_consuming_arg_list` gate, which
-            // inc'd ONLY Vars with a recorded binder type. The arg's category comes
-            // from that binding's authoritative type, else from the node type.
-            let (owned_binding, category) = match arg {
-                MonoExpr::Var { name, .. } if self.lookup_type(name).is_some() => {
-                    let ty = self
-                        .lookup_type(name)
-                        .unwrap_or_else(|| unreachable!("presence checked above"));
-                    (
-                        true,
-                        signature_heap_category(&ty, Some(self.ctx.symbol_tables)),
-                    )
-                }
-                _ => (
-                    false,
-                    HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables)),
-                ),
-            };
-            // B3.3-R (§5.1): the consuming inc (the adaptation path too) is
-            // always atomic. This was a through-binding/arg site, dropped as dead
-            // + latent-race code (/review B3.3) — an arg node is walked off-parent
-            // (Crossing ⇒ Atomic) and the analysis produces no confined
-            // let-bindings today. The `_atomicity` mechanism is retained
-            // (probe-reachable); it is fed `Atomic` here.
-            let atomicity = heap::RcAtomicity::Atomic;
-            match moded_arg_rc(category, kind, owned_binding) {
-                ModedArgRc::None => {}
-                ModedArgRc::Inc => {
-                    heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity)
-                }
-                ModedArgRc::IncGuarded => heap::emit_rc_inc_guarded_atomicity(
-                    &mut self.builder,
-                    self.module,
-                    val,
-                    atomicity,
-                ),
-                ModedArgRc::PostDec | ModedArgRc::PostDecGuarded => {
-                    post_call_decs.push((val, arg.ty().to_type()))
-                }
-            }
-
-            vals.push(val);
-        }
-        Ok((vals, post_call_decs))
-    }
-
-    /// Emit the post-call decs recorded by
-    /// [`Self::compile_entry_arg_list`] for temporaries passed to borrowed
-    /// params. Emitted AFTER the call returns; each releases an rc=1
-    /// temporary the callee borrowed but did not consume (§3.1). Guarded/unguarded
-    /// dec per the recorded [`HeapCategory`].
-    fn emit_post_call_decs(&mut self, decs: &[PostCallDec]) -> Result<(), CranelispError> {
-        // FIXME 0753 / S118 slice S1 (design §3.4 D4 — the fourth inline
-        // consumer): release by TYPE, through the canonical glue. This was a
-        // bare `emit_rc_dec(.., None)` — it freed the temporary's own box and
-        // stranded whatever the box owned. Measured on `(deftype G2 (Gr
-        // [cells])) (defn peek [g] 7) (defn main [] (Pure (peek (Gr [5 5]))))`:
-        // analysis-ON allocs=3 deallocs=2 (the `cells` vec never released),
-        // analysis-OFF 3/3 — because toggle-OFF has no `Borrowed` mode, so the
-        // callee consumes the arg and its scope cleanup runs the ADT drop glue.
-        for (val, ty) in decs {
-            self.emit_typed_rc_dec(*val, ty)?;
-        }
-        Ok(())
     }
 
     /// Compile a call to a named function.
@@ -1939,8 +1585,7 @@ where
     ///   capacity)` carrier (fields 1 and 2 — S96 item 3, `io-trampoline.md §14`;
     ///   replaces the S95 `0`/`1` sentinels at the same abs 32 / 40 offsets).
     ///
-    /// RC: leaf args reach here via the consuming convention
-    /// (`compile_consuming_arg_list` in the platform-effect dispatch arm), so storing
+    /// RC: leaf args reach here as owned values, so storing
     /// them into the env is an ownership transfer (no inc — like `ParBind`/`Bind`
     /// constructor convention); the state-closure drop glue
     /// (`build_poll_state_drop_glue`) dec's the heap-typed arg slots when the node is
@@ -2114,8 +1759,8 @@ where
     /// result slot (`0`, the Unit the leaf writes on `Ready`), `env(1)` =
     /// `duration_nanos` (the `d`-ms arg × 1_000_000), `env(2)` = `deadline_nanos`
     /// (`0` — the first-poll "not yet armed" sentinel). All scalars ⇒ null drop glue.
-    fn compile_sleep(&mut self, args: &[MonoExpr], span: Span) -> Result<Value, CranelispError> {
-        let arg_vals = self.compile_arg_list(args)?;
+    fn compile_sleep(&mut self, node: &MonoExpr, span: Span) -> Result<Value, CranelispError> {
+        let arg_vals = self.compile_operands(node)?.values;
         let [d_ms] = arg_vals[..] else {
             return Err(CranelispError::CodegenError {
                 message: "sleep takes exactly one (Int milliseconds) argument".into(),
@@ -2306,101 +1951,26 @@ where
     }
 
     /// Compile a tail self-recursive call as a jump to the loop header.
-    fn compile_tail_self_call(&mut self, args: &[MonoExpr]) -> Result<Value, CranelispError> {
-        // CRITICAL: Args are not in tail position.
+    ///
+    /// The arguments are owned values, like any call's. Every other reference
+    /// was consumed before the jump, where the plan said, so the jump releases
+    /// nothing and overwrites the parameter slots (`uniform-counting.md` §2).
+    fn compile_tail_self_call(&mut self, node: &MonoExpr) -> Result<Value, CranelispError> {
         self.in_tail_position = false;
+        let arg_vals = self.compile_operands(node)?.values;
+        // Moves off: the drops owed once this call's operands are consumed
+        // land before the jump, not in the dead block after it.
+        self.emit_post_drops(node)?;
 
-        // Compile all arguments. A control-flow arg (`if`/`match`) can forward a
-        // frame-owned heap binding into the tail call with NO owning inc (the
-        // branch value is a raw `use_var`) — the flushes below would then free a
-        // value the next iteration still owns (F1 use-after-free, ACT-1021).
-        // Under `tail_arg_protect`, `compile_if` / `compile_match` emit a
-        // protective inc on any branch/arm result that is a bare `Var` whose
-        // slot the frame owns, in a `let` frame or the parameter frame, so the
-        // value handed forward owns exactly one reference.
-        // A bare top-level `Var` arg needs no protection: it MOVES (no inc) and
-        // is excluded from the flush by its exact transfer slot; a non-Var, non-
-        // control-flow arg (`(wrap v)`) already inc's any binding it consumes via
-        // `compile_consuming_arg_list`, so the flush dec is balanced.
-        //
-        // A consuming in-place COW argument takes its source parameter slot's
-        // reference (§6 row 3). The fact is decided once, before any argument
-        // compiles, and issued as the site's consuming claim (§13.7): its
-        // producer lowers the source `Owned`, and the parameter flush below
-        // skips exactly that slot.
-        let consuming = self.consuming_cow_arguments_of(args);
-        let consuming_cow_slots: HashSet<SlotRef> = consuming.iter().map(|&(_, at)| at).collect();
-        let saved_claims = self.consuming_claims.clone();
-        self.consuming_claims.extend(
-            consuming
-                .iter()
-                .map(|&(source, _)| source as *const MonoExpr as usize),
-        );
-        let arg_vals: Result<Vec<Value>, _> = args
-            .iter()
-            .map(|a| {
-                if matches!(a, MonoExpr::If { .. } | MonoExpr::Match { .. }) {
-                    let saved = self.tail_arg_protect;
-                    self.tail_arg_protect = true;
-                    let v = self.compile_expr(a);
-                    self.tail_arg_protect = saved;
-                    v
-                } else {
-                    self.compile_expr(a)
-                }
-            })
-            .collect();
-        self.consuming_claims = saved_claims;
-        let arg_vals = arg_vals?;
-
-        // Flush the live LET-scope heap bindings BEFORE the jump: the enclosing
-        // `compile_let_sequential`'s `pop_scope_with_cleanup` runs only AFTER
-        // `compile_expr(body)` returns, i.e. after this jump terminates the
-        // block, so those decs land dead. Skip any binding whose reference
-        // transfers into a tail argument as a bare top-level `Var` (a MOVE — no
-        // consuming inc, so dec'ing it here would double-free the value the new
-        // iteration owns). Control-flow-aliased bindings are NOT skipped — they
-        // are flushed uniformly and balanced by the protective inc above.
-        // (design/backend/ownership-codegen.md §13.3 — the TCO-flush skip-
-        // predicate correctness contract; the F1 UAF cure.)
-        let transfer_slots = self.tail_transfer_slots(args);
-        let bare_tail_var_names = tail_bare_var_names(args);
-        let tail = TailTransferContext {
-            args,
-            transfer_slots: &transfer_slots,
-            bare_var_names: &bare_tail_var_names,
-            consuming_cow_slots: &consuming_cow_slots,
-        };
-        // S118 slice S3 — protect BEFORE any teardown below: a borrowed pattern
-        // view escaping into the next iteration must own a reference by the
-        // time its owner is released (§2).
-        self.protect_escaping_borrows_before_tail_jump(tail);
-        self.flush_let_scopes_before_tail_jump(tail)?;
-        // MS-P8 (FIXME 0688 verdict a) — release the superseded heap LOOP-PARAM
-        // slots too (the sibling seam the let flush does not cover): the jump
-        // below overwrites each param slot, orphaning the old heap value's
-        // reference (the conj/assoc persistent-op leak). The same exact-slot
-        // move-contract; a slot consumed by a consuming COW argument is
-        // excluded inside.
-        self.flush_superseded_heap_params_before_tail_jump(tail)?;
-        // S118 slice S3 — the third flushed seam: any match wrapper this frame
-        // owns for an arm still being compiled. The end-of-arm release would
-        // land in the dead block after this jump (FIXME 0810 Face A, one leaked
-        // wrapper per iteration). Runs last, after every protective inc above.
-        self.flush_pending_scrutinee_releases_before_tail_jump()?;
-
-        // Jump to loop header with new argument values.
         let loop_block = self.tail_loop_block.unwrap_or_else(|| {
             unreachable!("invariant: tail_loop_block is Some when compile_tail_self_call is called")
         });
         self.builder.ins().jump(loop_block, &arg_vals);
 
-        // Create a dead block for subsequent code (unreachable, Cranelift eliminates it).
+        // A dead block for subsequent code (unreachable, Cranelift eliminates it).
         let dead_block = self.builder.create_block();
         self.builder.switch_to_block(dead_block);
         self.builder.seal_block(dead_block);
-
-        // Return dummy value -- this code is unreachable.
         Ok(self.builder.ins().iconst(types::I64, 0))
     }
 
@@ -2416,11 +1986,9 @@ where
     ///   `TAG_OFFSET`, store each field `Value` at its `field_offset(i)`. The
     ///   result `Value` is the heap pointer.
     ///
-    /// RC: field values are transferred into the constructor under the uniform
-    /// consuming convention (Decision 24, BC invariant 2) — `compile_consuming_arg_list`
-    /// inc's non-last-use Var fields before the store; last-use fields transfer
-    /// their existing reference. The ADT's drop glue dec's heap-typed fields when
-    /// the ADT itself reaches rc=0.
+    /// RC: each field is an owned value the constructor consumes (BC invariant
+    /// 2). The ADT's drop glue releases heap-typed fields when the ADT itself
+    /// reaches rc=0.
     ///
     /// First-class use `(map Some list)` — passing a constructor as a value via
     /// its `Def`'s `got_slot` (the same path as any other callable, no
@@ -2433,8 +2001,8 @@ where
     /// "~200 LOC removed" cleanup) is a `// target (S77)` cleanup, not yet done.
     pub(crate) fn compile_constr_adt(
         &mut self,
+        node: &MonoExpr,
         tag: usize,
-        fields: &[MonoExpr],
         span: Span,
         ty: &ConcreteType,
     ) -> Result<Value, CranelispError> {
@@ -2447,7 +2015,7 @@ where
         // heap (B3.4 §4.1 — never a stack site). The use-site construction
         // `(Rect n n)` is an `Apply` handled by `compile_var_apply`, which is
         // where the B3.4 stack decision is consumed.
-        let field_vals = self.compile_consuming_arg_list(fields)?;
+        let field_vals = self.compile_operands(node)?.values;
         // R5 (§7.1): a value-flattened single-ctor type constructs by a bare-word
         // move of its single field — NO alloc, NO header, NO tag. Keeps the
         // synthetic ctor body's representation identical to the use-site
@@ -2507,10 +2075,8 @@ where
     ///
     /// Per `design/backend/compile-to-module.md` §2.6.1: takes an already-computed
     /// `tag` and the already-computed field `Value`s, and emits the construct.
-    /// **RC-neutral** (§2.6.4): stores `field_vals` verbatim — the consuming-
-    /// convention inc/transfer happens in the callers that produce `field_vals`
-    /// (`compile_consuming_arg_list`). Do NOT add RC here; doing so would
-    /// double-inc the Path-1 inline site.
+    /// **RC-neutral** (§2.6.4): stores `field_vals` verbatim — each is already
+    /// an owned value. Do NOT add RC here.
     ///
     /// | Case | Emission |
     /// |---|---|
@@ -2698,11 +2264,8 @@ where
 
         let base_ptr = self.emit_bind_node(io_val, cont_val, input_disposer, span)?;
 
-        // RC: No explicit inc needed here.
-        // bind uses consuming calling convention (compile_consuming_arg_list):
-        // - Variable args are already inc'd by the consuming arg list
-        // - Temporary args transfer ownership (rc=1 → Bind node inherits)
-        // The Bind node's drop glue will dec both fields when freed.
+        // RC: both arguments are owned values the Bind node takes; its drop
+        // glue releases both fields when the node is freed.
 
         Ok(base_ptr)
     }
@@ -2715,9 +2278,8 @@ where
 
 /// Check if a builtin name is an extern primitive (requires a call, not inline IR).
 ///
-/// Every listed name is lowered by `compile_extern_primitive_call`, which builds
-/// arguments with `compile_entry_arg_list` from the keyed entry's derived
-/// convention — no per-callee classification. The list holds two populations:
+/// Every listed name is lowered by `compile_extern_primitive_call`, which
+/// passes every argument owned. The list holds two populations:
 ///
 /// - The string and conversion names are extern shims, which take ownership of
 ///   every heap argument (bounded-contexts §4a invariant 8).
@@ -2725,9 +2287,8 @@ where
 ///   (§4b invariant 6). Five are bodies of host-promised entries and follow §3
 ///   invariant 2; `cranelisp_trace_first_child_nanos` consumes its Trace per the
 ///   §4b conventions table. A Trace accessor call normally takes the Trace-typed
-///   intercept in `compile_builtin_fn_call` first. One that reaches this arm by
-///   its intrinsic name derives a consuming convention (a host-promised entry,
-///   or no table callable), which matches each of the six.
+///   intercept in `compile_builtin_fn_call` first; one that reaches this arm by
+///   its intrinsic name is consumed, which matches each of the six.
 fn is_extern_primitive(name: &str) -> bool {
     matches!(
         name,
@@ -2826,29 +2387,16 @@ fn is_vec_primitive(name: &str) -> bool {
 /// at rc=1, rather than dispatching a value call through the generic apply path.
 ///
 /// **This is the one classification of that fact** (Principle 07), and the enum
-/// IS the totality claim — adding a combinator whose lowering does not mint a
-/// node is a non-exhaustive-match compile error at every reader, never a silent
-/// claim at one of them. Three readers consume it:
+/// IS the totality claim — adding a combinator is a non-exhaustive-match
+/// compile error at every reader, never a silent claim at one of them. Two
+/// readers consume it:
 ///
 /// 1. **The lenient apply-argument spark exclusion** (`compile_apply`,
 ///    `lenient-eval.md` §2.5). These arguments are IO computations the
 ///    trampoline runs, NOT values to force on the rayon spark pool — sparking
-///    them is semantically wrong. It is also a codegen-collision hazard:
-///    `compile_race` recompiles its arg IO sub-trees via `compile_vec_lit`
-///    WITHOUT consulting `sparked_args`, so a Phase-1 spark thunk and the
-///    recompiled inner lambda are emitted for the same source span, declaring
-///    the same `__lambda_<span>__` symbol with incompatible signatures
-///    (`{1 param}` thunk vs `{2 param}` closure). `select` takes a single `[..]`
-///    VecLit carrier (not a sparkable Apply) so it never tripped that, but the
-///    exclusion is uniform across all four.
+///    them is semantically wrong.
 /// 2. **`compile_builtin_fn_call`'s interceptors**, matched exhaustively — the
 ///    lowerings themselves.
-/// 3. **`fn_compiler::value_provenance_with_calls`'s `Apply` arm**, which maps
-///    every variant to `ValueProvenance::Fresh`. The minted node never returns
-///    an operand, so it cannot alias a scope binding; before S122 this was
-///    `OwnedTemporary` and `protect_return_value` emitted an unbalanced retain
-///    whenever the exiting frame owned a heap binding
-///    (`design/backend/s122-closure.md` §8, IOR-5).
 ///
 /// Identity comes from the `BuiltinFn` CARRIER, never the callee's spelling
 /// (Principle 24): an `Apply` spelled `bind` that resolved to a user binding is
@@ -2947,19 +2495,10 @@ mod io_combinator_spark_tests;
 mod sequence_io_ownership_tests;
 
 #[cfg(test)]
-mod io_combinator_freshness_tests;
-
-#[cfg(test)]
 mod spark_gate_codegen_tests;
 
 #[cfg(test)]
 mod dispatch_tests;
-
-#[cfg(test)]
-mod tail_transfer_skip_tests;
-
-#[cfg(test)]
-mod moded_arg_rc_tests;
 
 #[cfg(test)]
 pub(super) mod extern_entry_convention_tests;
@@ -2975,3 +2514,6 @@ mod tco_self_call_carrier_tests;
 
 #[cfg(test)]
 mod auto_curry_totality_tests;
+
+#[cfg(test)]
+mod io_combinator_tail_tests;

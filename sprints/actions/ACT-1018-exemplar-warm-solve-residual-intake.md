@@ -58,3 +58,29 @@ the two is established.
   and the remaining residual is stated as a number (0 at closure).
 - An allocator-armed run shows no safety face, or any face found is routed as
   memory-unsafe.
+
+## U′ re-measure (qa, 2026-11-16, S123 W2)
+
+The residual falls from 51 to **2** on the U′ build. The 2 is one block per
+`print` call in `main`.
+
+- **Measurement.** Warm serial `solver.cl`, fresh scratch copy, the
+  committed cell's sequence. The control compiler `ee8959c0…` reads 51 with
+  moves on and 556 with moves off. The U′ compiler `77bb2dd9…` reads 2 in
+  both polarities ([evidence delta §3.10](../../tests/plan/s123-evidence-delta.md#310-u-cost-and-residue-readings-and-the-w2-suite)).
+  The committed cell is still RED, now at 2.
+- **The solve itself retains nothing.** A driver that solves the same puzzle
+  1, 8 or 64 times and prints nothing balances exactly on both compilers.
+- **One block per `print`.** In the same warm project, a `main` of
+  `(print "a")` retains 1 and two `print` calls joined by `bind` retain 2.
+  `(Pure 0)` retains 0. The counts are the same on both compilers and in
+  both polarities, so this part predates U′. Under `CRANELISP_RC_TRACE`, the
+  first block allocated (the printed `String`) is never released, while the
+  effect node is freed.
+- **Not established.** Which release is missing. The stdlib-free path,
+  `(platform stdio)` with no prelude, allocates nothing the counters see, so
+  the stranded block belongs to the stdlib-prelude path to `print`. That path
+  is outside the suite's stdlib-free reach. The next step is a reduction
+  under the stdlib conformance exception or by `dev`(stdlib), followed by a
+  control that differs only in that path.
+- **Still owed for closure.** The completion evidence above, unchanged.

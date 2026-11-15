@@ -412,8 +412,8 @@ produces no handoff to any other cadence.
 - String and vector runtime; fork-join cells (`IVar`); the spark-budget gate.
 - The IO trampoline, effect reactor, permit pools, launch supervision and the
   `HostCtx`/waker vtable ([reactor design](../intrinsics/reactor.md)).
-- The program driver `cranelisp_run_program` and the runtime-error slot.
-- `catch-runtime-error` and the fork-join error-slot ferry.
+- The program driver `cranelisp_run_program` and the process-ending fault
+  terminator (invariant 13).
 - The `(trace …)` runtime family and its display-descriptor layout.
 - The fault guard at the platform-effect force site.
 - The IO-observer registration point; observer state is the binary's.
@@ -441,13 +441,12 @@ and diagnostics composition (binary); platform DLL loading (binary).
 **Heap-argument conventions of the named intrinsics** (invariant 6). Two
 populations, each with one source of its call convention:
 
-- **Bodies of host-promised entries:** `catch-runtime-error` and the Trace
-  field accessors `cranelisp_trace_{name,params,result,children,nanos}`. The
-  binary registers each as a host-promised symbol-table entry, so §3
-  invariant 2 governs their calls and this section does not restate it. Each
-  body realizes that convention: `catch-runtime-error` releases the thunk
-  closure on both outcomes and returns a fresh `Result`; an accessor releases
-  the Trace and returns any heap field with its own reference.
+- **Bodies of host-promised entries:** the Trace field accessors
+  `cranelisp_trace_{name,params,result,children,nanos}`. The binary registers
+  each as a host-promised symbol-table entry, so §3 invariant 2 governs their
+  calls and this section does not restate it. Each body realizes that
+  convention: an accessor releases the Trace and returns any heap field with
+  its own reference.
 - **Every other catalog entry that receives a counted heap reference** has
   the convention in the table.
 
@@ -536,20 +535,21 @@ entries take no counted heap argument.
     formatter is a pure walk of a backend-baked descriptor and the heap value,
     with no symbol-table access. Discovery and baking are backend's; the binary
     hosts no trace runtime ([tracing](tracing.md)).
-13. **`catch-runtime-error` is a self-contained intrinsic** over the thread-local
-    error slot. Both fork-join join paths ferry a worker's error into the
-    joining thread's slot, first error wins, so the combinator stays a plain
-    own-thread reader. Both parallelism forms are structured, so every spark
-    joins inside the combinator's dynamic extent
-    ([test discovery](test-discovery.md)). The approved S123 target retires
-    this invariant: `runtime/panic` becomes a terminal funnel that ends the
-    process, and the slot, the ferry and the combinator go
-    ([process-ending panics](s123-panics-and-environment.md) §1).
-14. **Intrinsics captures a platform fault; the binary composes the
-    diagnostic.** The guard at the single effect force site keeps the signal
-    half host-side, reads the DLL-returned effect outcome and the effect name
-    carried on the node, and records an internal fault. It constructs no
-    `PlatformError` (§5 invariant 9).
+13. **A runtime panic ends the process.** `runtime/panic` and every other
+    fault kind enter one crate-private terminator, which claims termination
+    once per process, flushes buffered standard output, writes one report to
+    stderr and exits. Nothing runs on the raising thread afterwards, and a
+    panic on a worker or detached strand ends the process from that thread;
+    there is no error slot, no fork-join ferry and no protected call
+    ([process-ending panics](s123-panics-and-environment.md) §1;
+    [safety invariants](safety-invariants.md) R13). The compiler test runner
+    isolates a panicking test by process, not by catching it
+    ([test discovery](test-discovery.md)).
+14. **A platform fault ends the process through the terminator.** The guard
+    at the single effect force site keeps the signal half host-side, reads the
+    DLL-returned effect outcome and the effect name carried on the node, and
+    reports a dispatch fault through invariant 13's terminator. The report is
+    one unprefixed line naming the effect, in every mode (§5 invariant 9).
 15. **Argument lifetime across suspension is runtime-owned.** A reactor-deferred
     effect's baked arguments stay alive until the reactor resolves the effect
     by completion or cancellation, and the state closure is consumed exactly
@@ -672,13 +672,14 @@ referenced by qualified name.
    permits flow through the vtable, never on values.
 8. **No resolved type identifiers at this surface.** Signatures cross as text and
    are resolved by the binary's loader.
-9. **Faults are funnelled, never aborts.** A platform fault surfaces as a located
-   `PlatformError::DispatchError` naming the effect. The effect name travels
+9. **A fault in platform code ends the process with a report, never a raw
+   signal.** A Rust panic is caught DLL-side, because each dynamic library
+   carries its own panic runtime, and crosses as a returned effect outcome; a
+   hardware trap is caught by the host's signal half. Intrinsics reports
+   either through the terminator (§4b invariant 14). The effect name travels
    with the effect node, stamped by backend only when the returned node is an
-   effect node; an unstamped node degrades to an unknown name. The panic catch
-   is DLL-local because each dynamic library carries its own panic runtime; the
-   fault crosses as a returned value. Intrinsics captures; the binary composes
-   (§4b invariant 14).
+   effect node; an unstamped node degrades to an unknown name. No
+   `PlatformError` carries a dispatch fault.
 
 
 ---
@@ -800,14 +801,13 @@ and primitives (§4b, §4a); the platform ABI (§5).
   elsewhere; they reuse the shared pipeline functions against an isolated
   substrate rather than forking them.
 - **One program driver.** `--run`, the REPL and linked executables all reach the
-  runtime through intrinsics' `cranelisp_run_program`, which returns an outcome
-  and neither exits nor clears the error slots. The host translates the outcome
-  into an error or a value; the linked stub branches on it. Error-slot checks
-  therefore exist at one site and cannot diverge across modes. Under the
-  approved S123 target a runtime panic never returns to the driver, and the
-  binary supplies environment files before any reader while linked
+  runtime through intrinsics' `cranelisp_run_program`, which returns the
+  program's result word. A fault during the run ends the process through the
+  terminator (§4b invariant 13), so a return is always a completed run and no
+  mode carries an error branch of its own. Under the approved S123 target the
+  binary also supplies environment files before any reader, and linked
   executables read baked runtime switches
-  ([process-ending panics and the environment supply](s123-panics-and-environment.md)).
+  ([process-ending panics and the environment supply](s123-panics-and-environment.md) §2).
 - **Mutual imports are a cycle error, not a deadlock.** All signatures of a
   module's import closure register, in topological order, before any body
   checks; a cyclic closure has no order and is diagnosed at the import.

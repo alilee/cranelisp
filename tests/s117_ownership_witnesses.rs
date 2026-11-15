@@ -29,52 +29,6 @@ fn clif(forms: &str, name: &str, ownership_off: bool) -> String {
     out.stdout
 }
 
-/// How many **canonical glue releases** the emitted CLIF performs.
-///
-/// A release is a direct call to the colocated void drop-glue symbol
-/// (`fnN = colocated u0:NN sig(i64)` + `call fnN(ptr)`). Before the S118 W3
-/// consumer migration (`2df95c41..966d298e`) the same release was emitted
-/// INLINE as `atomic_rmw.i64 sub` + a conditional free, and these oracles
-/// grepped for that text; the migration collapsed every release site onto the
-/// glue call, so the text disappeared while the ownership behaviour was
-/// unchanged (FIXME 0910, `tests/fixtures/clif_baseline/MANIFEST.md`
-/// §Re-baselines S118 drift class 1). Counting the glue call is the spelling
-/// of "a release happens here" that survives that collapse.
-///
-/// `call_indirect` (the GOT-indirect primitive/user call shape) is deliberately
-/// NOT matched: the substring is `call fn`, and an indirect call reads
-/// `call_indirect sigN, vN(...)`.
-fn glue_releases(ir: &str) -> usize {
-    ir.matches("call fn").count()
-}
-
-// spec: design/typecheck/ownership-inference.md §9.1 — Borrowed scalar-result
-// facts affect normal lowering: the live String owner remains with its scope,
-// whereas conservative all-Owned lowering emits the final owner release.
-#[test]
-fn r2_borrowed_scalar_result_has_production_clif_polarity() {
-    let src = "(defn borrowed-live [s] (add-i64 (str-len s) (str-len s)))";
-    let precise = clif(src, "borrowed-live", false);
-    let conservative = clif(src, "borrowed-live", true);
-    assert!(
-        precise.matches("atomic_rmw.i64 add").count() >= 2,
-        "live owner must be retained across both consuming primitive calls:\n{precise}"
-    );
-    assert_eq!(
-        glue_releases(&precise),
-        0,
-        "Borrowed precision MUST elide the wrapper's final owner release \
-         entirely — no glue call on the return path:\n{precise}"
-    );
-    assert_eq!(
-        glue_releases(&conservative),
-        1,
-        "conservative all-Owned lowering MUST still release the owner exactly \
-         once (one canonical glue call), so the precision difference this cell \
-         exists to pin stays visible:\n{conservative}"
-    );
-}
-
 // spec: design/typecheck/ownership-inference.md §9.1 — Borrowed scalar-result
 // behavior preserves a live source and accepts a temporary in every mode.
 #[test]
@@ -195,39 +149,6 @@ fn r2_may_alias_vec_set_has_both_production_clif_cow_branches() {
         ) && ir.matches("atomic_rmw.i64 sub").count() == 1,
         "the original and copied Vec branches MUST converge at one result, \
          with the source release confined to the shared branch:\n{ir}"
-    );
-}
-
-// spec: design/typecheck/ownership-inference.md §9.3 — MayAliasOf(0) reaches
-// the backend's producer-side result-summary consumer. Joining a vec-set
-// result with a fresh Vec keeps the function result non-Fresh, so the merged
-// return receives a protect increment. A false Fresh declaration removes this
-// exact increment; vec-set's specialised COW body remains independently
-// guarded above.
-#[test]
-fn r2_may_alias_summary_protects_control_flow_merged_return() {
-    let ir = clif(
-        "(defn cow-branch [:(Vec Int) v :Bool b]\n\
-           (if b (vec-set v 0 9) [1]))",
-        "cow-branch",
-        false,
-    );
-
-    assert!(
-        ir.contains(
-            "block4(v4: i64):\n\
-             \x20   v33 = iadd_imm v4, 8\n\
-             \x20   v34 = iconst.i64 1\n\
-             \x20   v35 = atomic_rmw.i64 add v33, v34"
-        ),
-        "the non-Fresh MayAliasOf summary MUST protect the control-flow-merged \
-         return at the producer boundary:\n{ir}"
-    );
-    assert_eq!(
-        ir.matches("atomic_rmw.i64 add").count(),
-        2,
-        "one add belongs to vec-set's unique COW branch and one to the \
-         producer-side merged-return protect:\n{ir}"
     );
 }
 

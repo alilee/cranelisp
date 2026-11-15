@@ -117,9 +117,11 @@ structural question that belongs to `arch` rather than to a file split. No
 filing carries it. It is recorded here so that the next reader of this crate
 does not rediscover it as if it were new.
 
-**Most of the weight is ownership arithmetic.** The deciders that
-[uniform counting](uniform-counting.md) §5 retires live mainly in these two
-files, so that change is also this condition's largest reduction.
+**Most of the weight was ownership arithmetic.** The deciders that
+[uniform counting](uniform-counting.md) §5 lists lived mainly in these two
+files and were deleted at the S123 W2 cutover. Whether the files' size and
+`FnCompiler`'s field count still warrant `arch`'s attention should be
+re-measured against the post-cutover source.
 
 **Drop-glue builders stay separate (ACT-0964 item 2).** ADT glue
 (`DropGlueRegistry`), the two capture-envelope glues (one shared envelope,
@@ -299,13 +301,12 @@ with a trap, and no raising frame returns a sentinel. Closing
   - Status: built for both operations; `qa` closed ACT-1037 on 2026-10-01
     ([s122-closure.md §9](s122-closure.md#9-act-1037--vec-set-index-guard)
     states the `--link` limit).
-  - The `vec-set` core is the only lowering of `vec-set`. The static last-use
-    site, the static non-last-use (copy-only) site and the value-position and
-    auto-curry wrappers all reach the element write or `vec-set-copy` through
-    it, so the guard dominates both copy-on-write arms by construction.
-  - A static uniqueness proof elides the rc probe, never the guard. It
-    elides the probe only when the source has no separate owner; otherwise
-    the probe runs.
+  - The `vec-set` core is the only lowering of `vec-set`. The static site
+    and the value-position and auto-curry wrappers all reach the element write
+    or `vec-set-copy` through it, so the guard dominates both copy-on-write
+    arms by construction.
+  - The rc probe always runs after the guard. No static proof elides it
+    ([uniform-counting.md](uniform-counting.md) §2.2).
   - Both operations report the spec's single message,
     `"vec-get: index out of bounds"`. A `vec-set`-specific message is a `spec`
     question.
@@ -354,19 +355,19 @@ with a trap, and no raising frame returns a sentinel. Closing
 
 | Subject | Document | Standing |
 |---|---|---|
-| Uniform reference counting | `uniform-counting.md` | **Adopted target, not built (S123).** Reading U′: every binder owns, last-use move and in-place update at count 1 are the only retained rules, one ownership plan per body. Supersedes the counting rules in the RC discipline, ownership codegen, drop-glue TCO, binder tail-transfer and binding-indirection documents when it lands. |
+| Uniform reference counting | `uniform-counting.md` | **Built (S123 W2); evidence open.** Reading U′: every binder owns, last-use move and in-place update at count 1 are the only retained rules, one ownership plan per body. The backend's one counting design; the user's question on confined RC is its §9.1. |
 | S122 delivery record | `s122-closure.md` | Retained evidence for the S122 corrections, which landed at the S122 close (2026-10-02): result-root consumer, shared Vec guard, typed closure fixture, macro alias, IO-combinator freshness and the ACT-1037 `vec-set` index guard (§9, with its `--link` evidence limit). Its §10 panic-propagation options are withdrawn by the 2026-11-15 ruling (§7). |
 | Compilation entry shape | `compile-to-module.md` | The one entry's contract and phase order, constructor codegen, GOT emission, finalisation and publication, and its error contract. |
 | JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
 | Per-module GOT | `per-module-got.md` | The two-GOT model as emitted, and why it is shaped that way. |
 | Module caching | `module-caching.md` | Cache keys, serialisation, invalidation, the load path. |
 | Executable generation | `executable-generation.md` | `--link` mode. |
-| RC discipline | `ring2-rc.md` | As built, until `uniform-counting.md` lands. The conservative lowering: the uniform consuming convention, extern and platform consumption, the IO extern's balance, scope cleanup and the binders that never transfer by last use, the opt-in spark-capture borrow and its open default-on condition. |
-| Ownership codegen | `ownership-codegen.md` | As built; its counting sections (borrow elision, the uniqueness proof, the wrapper and COW contracts) are superseded by `uniform-counting.md` when it lands. The mechanisms that consume the ownership analysis — borrow elision, stack placement, confined non-atomic RC, uniqueness and reuse, value flattening, redefinition machinery — with their built/open state. |
-| Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; per-arm match release; the TCO slot predicate; no depth cutoff, no shallow fallback. |
-| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, the one entry-convention derivation for every call and wrapper, and the open structural close (lifecycle disposition, refusal frame, census). |
+| RC discipline | `ring2-rc.md` | The calling convention as emitted, extern consumption, the IO extern's balance and the RC emission primitives. |
+| Ownership codegen | `ownership-codegen.md` | The mechanisms that read ownership facts without deciding a count — stack placement, confined atomicity (no consumer), reuse counters, value flattening, redefinition machinery — and the supporting contracts. |
+| Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
+| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the open structural close (lifecycle disposition, refusal frame, census). |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
-| Binding-indirection consume | `binding-indirection-consume.md` | The consume-position × operand-provenance contract, as built; retired wholesale when `uniform-counting.md` lands. |
+| Binding-indirection consume | `binding-indirection-consume.md` | Retired (S123 W2); a stub kept for cited section numbers until those citations move. |
 | S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |
 | Failed-member attribution | `s117-failed-member-attribution.md` | The attribution seam and its negative design list. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |

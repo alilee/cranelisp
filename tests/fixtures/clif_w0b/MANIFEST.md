@@ -9,13 +9,13 @@ these bodies still run; this corpus proves their generated code is unchanged.
 
 ## Entries
 
-| # | Entry | Class | Focus frame(s) |
-|---|---|---|---|
-| 01 | `corpus/01_ctor_def.cl` | constructor `Def` synthetic body | `user::Box.MkBox` |
-| 02 | `corpus/02_synth_accessor.cl` | synthesised field accessor | `user::Point.x`, `user::Point.y` |
-| 03 | `corpus/03_multisig_variant.cl` | `f$Var` multi-sig variant body | `user::pick$overload-arm$0`, `user::pick$overload-arm$1` |
-| 04 | `corpus/04_expr_disposition3.cl` | `__expr` §3.11.2-disposition-3 body | `user::__expr` |
-| 05 | `corpus/05_macro_clause.cl` | non-concretized macro-clause body | `user::twice$macro-clause$0` |
+| # | Entry | Class | Focus frame(s) | Exit |
+|---|---|---|---|---|
+| 01 | `corpus/01_ctor_def.cl` | constructor `Def` synthetic body | `user::Box.MkBox` | 5 |
+| 02 | `corpus/02_synth_accessor.cl` | synthesised field accessor | `user::Point.x`, `user::Point.y` | 10 |
+| 03 | `corpus/03_multisig_variant.cl` | `f$Var` multi-sig variant body | `user::pick$overload-arm$0`, `user::pick$overload-arm$1` | 12 |
+| 04 | `corpus/04_expr_disposition3.cl` | `__expr` §3.11.2-disposition-3 body | `user::__expr` | 0 |
+| 05 | `corpus/05_macro_clause.cl` | non-concretized macro-clause body | `user::twice$macro-clause$0` | 10 |
 
 Every golden also carries the `IO.Pure` Int constructor-instance frame; 05
 also carries the `SList.SCons` Sexp instance frame. The remaining lenient
@@ -43,6 +43,8 @@ free-standing program that reaches codegen, so it has no e2e golden here.
   drift. Byte identity is admissible because the dump is deterministic; a
   nondeterministic class is an ordering bug to investigate, not a reason to
   canonicalize.
+- **Outcome:** every capture asserts the entry's exit against the Entries pin.
+  Entry 04 retains its top-level expression and has a zero-returning `main`.
 - **Determinism self-test:** `assert_golden_clif` double-captures each entry
   and byte-compares before the golden compare, on every run.
 - **Config pins:** the same emission-affecting and trace variables are unset

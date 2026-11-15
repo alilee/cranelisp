@@ -13,10 +13,9 @@
 //! In the files where **RC emission decisions live**, no `matches!` may test a
 //! `MonoExpr` node's KIND ALONE (`MonoExpr::Kind { .. }` — every field
 //! discarded, so the only information extracted is "which variant"). A gate
-//! phrased that way is, by construction, not reading a derived fact; the
-//! derived facts live in `compiler::fn_compiler::{value_provenance,
-//! is_fresh_construction, yields_owned_temporary}` and in the resolution
-//! carriers, and a seam must consult those.
+//! phrased that way is, by construction, not reading a derived fact. Under
+//! uniform counting the only counting facts are the ownership plan's
+//! (`compiler::ownership_plan`), and the resolution carriers answer dispatch.
 //!
 //! A test that KEEPS a field is not fenced — `MonoExpr::Var { name, .. } if
 //! name == …` asks about the identity a node carries, which is a real
@@ -24,15 +23,10 @@
 //!
 //! ## Why these files and not others
 //!
-//! The fenced set is the RC-decision surface: the vec container gates, the
-//! match scrutinee gates, the typed-release classifier, and the capture-release
-//! classifier. `apply.rs` is deliberately EXCLUDED: its one bare kind test
-//! (`matches!(a, MonoExpr::If { .. } | MonoExpr::Match { .. })`) selects a
-//! CODEGEN MODE for compiling an argument (branch results need the tail-arg
-//! protect enabled while they compile), not an ownership verdict about a value.
-//! Widening the fence there would make it a lint about syntax rather than about
-//! ownership, and it would have to be suppressed immediately — which is how
-//! fences die.
+//! The fenced set is the counting surface: the emitter core and binder
+//! lifecycle, `let`/`if`, the vec operations, the match arms, the typed-release
+//! classifier and the capture-release classifier. `apply.rs` is EXCLUDED: its
+//! kind tests select a dispatch lowering, not an ownership verdict.
 //!
 //! ## Detection proof (METHOD §2.2 — an instrument is unverified until proven
 //! to detect)
@@ -45,6 +39,14 @@
 /// The RC-decision files, as `(path, source)` pairs. `include_str!` is
 /// relative to THIS file, so the fence needs no CWD and no path discovery.
 const RC_DECISION_SOURCES: &[(&str, &str)] = &[
+    (
+        "compiler/fn_compiler.rs",
+        include_str!("compiler/fn_compiler.rs"),
+    ),
+    (
+        "compiler/control_flow/let_if.rs",
+        include_str!("compiler/control_flow/let_if.rs"),
+    ),
     (
         "compiler/vec_codegen.rs",
         include_str!("compiler/vec_codegen.rs"),
@@ -107,11 +109,10 @@ fn no_rc_decision_reads_a_bare_monoexpr_node_kind() {
          is a stand-in for a derived answer, and it is the S115 class that \
          produced 0693 / 0749 / 0752 / 0781 — the last of which was a `--link` \
          exit-134 use-after-free reachable from `(defn f [v b] (vec-get (if b v \
-         v) 0))`.\n\nRead the derived answer instead: \
-         `fn_compiler::yields_owned_temporary` (is this value mine to \
-         release?), `fn_compiler::is_fresh_construction` (can it alias a scope \
-         binding?), or the resolution carrier (what does this call resolve \
-         to?). If the question really IS about a node's identity rather than \
+         v) 0))`.\n\nRead the ownership plan instead \
+         (`compiler::ownership_plan`), or the resolution carrier (what does \
+         this call resolve to?). If the question really IS about a node's \
+         identity rather than \
          its analysis result, keep the field you are asking about — \
          `MonoExpr::Var {{ name, .. }} if name == x` is not fenced.\n\n\
          Violations:\n  {}",

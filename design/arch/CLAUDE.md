@@ -40,7 +40,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | [REPL styling](repl-styling-seam.md) | Shared formatter and styling contract. |
 | [Display protocol](display-protocol.md) | Type-directed rendering design and its implementation gates. |
 | [Execution tracing](tracing.md) | Trace-node, backend and intrinsics responsibilities. |
-| [Test discovery and error capture](test-discovery.md) | Language test discovery, invocation and runtime capture. |
+| [Test discovery and the compiler test runner](test-discovery.md) | Language test discovery, the shared runner and its panic isolation by process. |
 | [Uniform executable identity](s122-overload-reorder-publication.md) | Approved signature identity and implemented types key API. |
 | [Shared document checker](s122-shared-document-checker.md) | Shared-tool boundary and project integration contract. |
 | [Process-ending panics and the environment supply](s123-panics-and-environment.md) | Approved S123 target, unbuilt: the terminal panic funnel, environment files and baked link-time switches. |

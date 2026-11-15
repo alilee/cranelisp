@@ -20,24 +20,18 @@ block1(v1: i64):
 ; === CLIF user::(primitives/Option.Some [(user/Grid (primitives/Vec user/Cell))] (primitives/Option (user/Grid (primitives/Vec user/Cell)))) ===
 function %(primitives/Option.Some [(user/Grid (primitives/Vec user/Cell))] (primitives/Option (user/Grid (primitives/Vec user/Cell))))(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
-    sig1 = (i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:83 sig1
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = iconst.i64 16
-    v6 = call fn0(v5)  ; v5 = 16
-    v7 = iconst.i64 1
-    store notrap aligned v7, v6+16  ; v7 = 1
-    store notrap aligned v1, v6+24
-    call fn1(v1)
-    return v6
+    v2 = iconst.i64 16
+    v3 = call fn0(v2)  ; v2 = 16
+    v4 = iconst.i64 1
+    store notrap aligned v4, v3+16  ; v4 = 1
+    store notrap aligned v1, v3+24
+    return v3
 }
 ; === end CLIF user::(primitives/Option.Some [(user/Grid (primitives/Vec user/Cell))] (primitives/Option (user/Grid (primitives/Vec user/Cell)))) ===
 ; === CLIF user::(primitives/Option.Some [primitives/Int] (primitives/Option primitives/Int)) ===
@@ -60,57 +54,51 @@ block1(v1: i64):
 ; === CLIF user::(user/Grid [(primitives/Vec user/Cell)] (user/Grid (primitives/Vec user/Cell))) ===
 function %(user/Grid [(primitives/Vec user/Cell)] (user/Grid (primitives/Vec user/Cell)))(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
-    sig1 = (i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:84 sig1
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = iconst.i64 16
-    v6 = call fn0(v5)  ; v5 = 16
-    v7 = iconst.i64 0
-    store notrap aligned v7, v6+16  ; v7 = 0
-    store notrap aligned v1, v6+24
-    call fn1(v1)
-    return v6
+    v2 = iconst.i64 16
+    v3 = call fn0(v2)  ; v2 = 16
+    v4 = iconst.i64 0
+    store notrap aligned v4, v3+16  ; v4 = 0
+    store notrap aligned v1, v3+24
+    return v3
 }
 ; === end CLIF user::(user/Grid [(primitives/Vec user/Cell)] (user/Grid (primitives/Vec user/Cell))) ===
 ; === CLIF user::(user/SolveResult.Success [(user/Grid (primitives/Vec user/Cell))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
 function %(user/SolveResult.Success [(user/Grid (primitives/Vec user/Cell))] (user/SolveResult (user/Grid (primitives/Vec user/Cell))))(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
-    sig1 = (i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:83 sig1
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = iconst.i64 16
-    v6 = call fn0(v5)  ; v5 = 16
-    v7 = iconst.i64 0
-    store notrap aligned v7, v6+16  ; v7 = 0
-    store notrap aligned v1, v6+24
-    call fn1(v1)
-    return v6
+    v2 = iconst.i64 16
+    v3 = call fn0(v2)  ; v2 = 16
+    v4 = iconst.i64 0
+    store notrap aligned v4, v3+16  ; v4 = 0
+    store notrap aligned v1, v3+24
+    return v3
 }
 ; === end CLIF user::(user/SolveResult.Success [(user/Grid (primitives/Vec user/Cell))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
 ; === CLIF user::(user/cell-at [(user/Grid (primitives/Vec user/Cell)) primitives/Int] user/Cell) ===
 function %(user/cell-at [(user/Grid (primitives/Vec user/Cell)) primitives/Int] user/Cell)(i64, i64) -> i64 system_v {
-    gv0 = symbol colocated userextname0
-    gv1 = symbol colocated userextname2
-    sig0 = (i64, i64) system_v
+    gv0 = symbol colocated userextname1
+    gv1 = symbol colocated userextname5
+    sig0 = (i64) system_v
     sig1 = (i64, i64) system_v
-    fn0 = u0:2 sig0
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64) system_v
+    sig4 = (i64, i64) system_v
+    fn0 = colocated u0:83 sig0
     fn1 = u0:2 sig1
+    fn2 = colocated u0:86 sig2
+    fn3 = u0:13 sig3
+    fn4 = u0:2 sig4
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -129,34 +117,51 @@ block5:
 
 block6:
     v8 = load.i64 notrap aligned v2+24
-    v9 = load.i64 notrap aligned v8+16
-    v10 = iconst.i64 0
-    v11 = icmp.i64 slt v3, v10  ; v10 = 0
-    v12 = icmp.i64 sge v3, v9
-    v13 = bor v11, v12
-    brif v13, block8, block7
+    v9 = iadd_imm v8, 8
+    v10 = iconst.i64 1
+    v11 = atomic_rmw.i64 add v9, v10  ; v10 = 1
+    call fn0(v2)
+    v12 = load.i64 notrap aligned v8+16
+    v13 = iconst.i64 0
+    v14 = icmp.i64 slt v3, v13  ; v13 = 0
+    v15 = icmp.i64 sge v3, v12
+    v16 = bor v14, v15
+    brif v16, block8, block7
 
 block8:
-    v14 = global_value.i64 gv0
-    v15 = iconst.i64 28
-    call fn0(v14, v15)  ; v15 = 28
+    v17 = global_value.i64 gv0
+    v18 = iconst.i64 28
+    call fn1(v17, v18)  ; v18 = 28
     trap user1
 
 block7:
-    v16 = load.i64 notrap aligned v8+32
-    v17 = iconst.i64 8
-    v18 = imul.i64 v3, v17  ; v17 = 8
-    v19 = iadd v16, v18
-    v20 = load.i64 notrap aligned v19
-    v21 = iadd_imm v20, 8
-    v22 = iconst.i64 1
-    v23 = atomic_rmw.i64 add v21, v22  ; v22 = 1
-    jump block2(v20)
+    v19 = load.i64 notrap aligned v8+32
+    v20 = iconst.i64 8
+    v21 = imul.i64 v3, v20  ; v20 = 8
+    v22 = iadd v19, v21
+    v23 = load.i64 notrap aligned v22
+    v24 = iadd_imm v23, 8
+    v25 = iconst.i64 1
+    v26 = atomic_rmw.i64 add v24, v25  ; v25 = 1
+    v27 = func_addr.i64 fn2
+    v28 = iadd_imm.i64 v8, 8
+    v29 = iconst.i64 1
+    v30 = atomic_rmw.i64 sub v28, v29  ; v29 = 1
+    v31 = icmp eq v30, v29  ; v29 = 1
+    brif v31, block10, block9
+
+block10:
+    fence 
+    call fn3(v8, v27)
+    jump block9
+
+block9:
+    jump block2(v23)
 
 block3:
-    v24 = global_value.i64 gv1
-    v25 = iconst.i64 12
-    call fn1(v24, v25)  ; v25 = 12
+    v32 = global_value.i64 gv1
+    v33 = iconst.i64 12
+    call fn4(v32, v33)  ; v33 = 12
     trap user1
 
 block2(v4: i64):
@@ -165,21 +170,23 @@ block2(v4: i64):
 ; === end CLIF user::(user/cell-at [(user/Grid (primitives/Vec user/Cell)) primitives/Int] user/Cell) ===
 ; === CLIF user::(user/first-success [(user/SolveResult (user/Grid (primitives/Vec user/Cell))) (user/SolveResult (user/Grid (primitives/Vec user/Cell)))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
 function %(user/first-success [(user/SolveResult (user/Grid (primitives/Vec user/Cell))) (user/SolveResult (user/Grid (primitives/Vec user/Cell)))] (user/SolveResult (user/Grid (primitives/Vec user/Cell))))(i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol colocated userextname1
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64) system_v
-    sig2 = (i64) system_v
-    fn0 = u0:2 sig1
-    fn1 = colocated u0:88 sig2
+    gv0 = symbol userextname1
+    gv1 = symbol colocated userextname2
+    sig0 = (i64) system_v
+    sig1 = (i64) system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64) system_v
+    sig4 = (i64, i64) system_v
+    fn0 = colocated u0:88 sig0
+    fn1 = colocated u0:88 sig1
+    fn2 = colocated u0:88 sig3
+    fn3 = u0:2 sig4
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
 
 block1(v2: i64, v3: i64):
     v18 -> v3
-    v26 -> v3
-    v27 -> v3
     jump block4
 
 block4:
@@ -198,53 +205,50 @@ block7:
     v11 = iadd_imm v10, 8
     v12 = iconst.i64 1
     v13 = atomic_rmw.i64 add v11, v12  ; v12 = 1
+    call fn0(v2)
+    call fn1(v3)
     v14 = global_value.i64 gv0
     v15 = iadd_imm v14, 72
     v16 = load.i64 notrap aligned v15
-    v17 = call_indirect sig0, v16(v10)
+    v17 = call_indirect sig2, v16(v10)
     jump block2(v17)
 
 block5:
+    call fn2(v2)
     jump block2(v3)
 
 block3:
     v19 = global_value.i64 gv1
     v20 = iconst.i64 12
-    call fn0(v19, v20)  ; v20 = 12
+    call fn3(v19, v20)  ; v20 = 12
     trap user1
 
 block2(v4: i64):
-    v21 = iconst.i64 1024
-    v22 = icmp ult v4, v21  ; v21 = 1024
-    brif v22, block8, block9
-
-block9:
-    v23 = iadd_imm.i64 v4, 8
-    v24 = iconst.i64 1
-    v25 = atomic_rmw.i64 add v23, v24  ; v24 = 1
-    jump block8
-
-block8:
-    call fn1(v3)
     return v4
 }
 ; === end CLIF user::(user/first-success [(user/SolveResult (user/Grid (primitives/Vec user/Cell))) (user/SolveResult (user/Grid (primitives/Vec user/Cell)))] (user/SolveResult (user/Grid (primitives/Vec user/Cell)))) ===
 ; === CLIF user::(user/set-cell [(user/Grid (primitives/Vec user/Cell)) primitives/Int user/Cell] (user/Grid (primitives/Vec user/Cell))) ===
 function %(user/set-cell [(user/Grid (primitives/Vec user/Cell)) primitives/Int user/Cell] (user/Grid (primitives/Vec user/Cell)))(i64, i64, i64) -> i64 system_v {
-    gv0 = symbol colocated userextname1
-    gv1 = symbol userextname4
-    gv2 = symbol colocated userextname5
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64) system_v
-    sig2 = (i64, i64, i64, i64) -> i64 system_v
-    sig3 = (i64) -> i64 system_v
-    sig4 = (i64, i64) system_v
-    sig5 = (i64) system_v
-    fn0 = colocated u0:89 sig0
-    fn1 = u0:2 sig1
-    fn2 = u0:22 sig2
-    fn3 = u0:2 sig4
-    fn4 = colocated u0:85 sig5
+    gv0 = symbol colocated userextname3
+    gv1 = symbol userextname7
+    gv2 = symbol colocated userextname8
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64) system_v
+    sig4 = (i64) -> i64 system_v
+    sig5 = (i64, i64, i64, i64) -> i64 system_v
+    sig6 = (i64, i64) system_v
+    sig7 = (i64) -> i64 system_v
+    sig8 = (i64, i64) system_v
+    fn0 = colocated u0:83 sig0
+    fn1 = colocated u0:90 sig1
+    fn2 = colocated u0:86 sig2
+    fn3 = u0:2 sig3
+    fn4 = colocated u0:86 sig4
+    fn5 = u0:22 sig5
+    fn6 = u0:13 sig6
+    fn7 = u0:2 sig8
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -263,39 +267,71 @@ block5:
 
 block6:
     v10 = load.i64 notrap aligned v3+24
-    v11 = func_addr.i64 fn0
-    v12 = iadd_imm.i64 v5, 8
-    v13 = iconst.i64 1
-    v14 = atomic_rmw.i64 add v12, v13  ; v13 = 1
-    v15 = load.i64 notrap aligned v10+16
-    v16 = iconst.i64 0
-    v17 = icmp.i64 slt v4, v16  ; v16 = 0
-    v18 = icmp.i64 sge v4, v15
-    v19 = bor v17, v18
-    brif v19, block8, block7
+    v11 = iadd_imm v10, 8
+    v12 = iconst.i64 1
+    v13 = atomic_rmw.i64 add v11, v12  ; v12 = 1
+    call fn0(v3)
+    v14 = func_addr.i64 fn1
+    v15 = func_addr.i64 fn2
+    v16 = load.i64 notrap aligned v10+16
+    v17 = iconst.i64 0
+    v18 = icmp.i64 slt v4, v17  ; v17 = 0
+    v19 = icmp.i64 sge v4, v16
+    v20 = bor v18, v19
+    brif v20, block8, block7
 
 block8:
-    v20 = global_value.i64 gv0
-    v21 = iconst.i64 28
-    call fn1(v20, v21)  ; v21 = 28
+    v21 = global_value.i64 gv0
+    v22 = iconst.i64 28
+    call fn3(v21, v22)  ; v22 = 28
     trap user1
 
 block7:
-    v22 = call fn2(v10, v4, v5, v11)
-    v23 = global_value.i64 gv1
-    v24 = iadd_imm v23, 48
-    v25 = load.i64 notrap aligned v24
-    v26 = call_indirect sig3, v25(v22)
-    jump block2(v26)
+    v23 = load.i64 notrap aligned v10+8
+    v24 = iconst.i64 1
+    v25 = icmp eq v23, v24  ; v24 = 1
+    brif v25, block9, block10
+
+block9:
+    v27 = load.i64 notrap aligned v10+32
+    v28 = iconst.i64 8
+    v29 = imul.i64 v4, v28  ; v28 = 8
+    v30 = iadd v27, v29
+    v31 = load.i64 notrap aligned v30
+    v32 = call fn4(v31)
+    store.i64 notrap aligned v5, v30
+    jump block11(v10)
+
+block10:
+    v33 = call fn5(v10, v4, v5, v14)
+    v34 = iadd_imm.i64 v10, 8
+    v35 = iconst.i64 1
+    v36 = atomic_rmw.i64 sub v34, v35  ; v35 = 1
+    v37 = icmp eq v36, v35  ; v35 = 1
+    brif v37, block13, block12
+
+block13:
+    fence 
+    call fn6(v10, v15)
+    jump block12
+
+block12:
+    jump block11(v33)
+
+block11(v26: i64):
+    v38 = global_value.i64 gv1
+    v39 = iadd_imm v38, 48
+    v40 = load.i64 notrap aligned v39
+    v41 = call_indirect sig7, v40(v26)
+    jump block2(v41)
 
 block3:
-    v27 = global_value.i64 gv2
-    v28 = iconst.i64 12
-    call fn3(v27, v28)  ; v28 = 12
+    v42 = global_value.i64 gv2
+    v43 = iconst.i64 12
+    call fn7(v42, v43)  ; v43 = 12
     trap user1
 
 block2(v6: i64):
-    call fn4(v5)
     return v6
 }
 ; === end CLIF user::(user/set-cell [(user/Grid (primitives/Vec user/Cell)) primitives/Int user/Cell] (user/Grid (primitives/Vec user/Cell))) ===
@@ -522,9 +558,15 @@ block4:
 ; === end CLIF user::box-of ===
 ; === CLIF user::cell-value ===
 function %cell-value(i64) -> i64 system_v {
-    gv0 = symbol colocated userextname0
-    sig0 = (i64, i64) system_v
-    fn0 = u0:2 sig0
+    gv0 = symbol colocated userextname1
+    sig0 = (i64) system_v
+    sig1 = (i64) system_v
+    sig2 = (i64) system_v
+    sig3 = (i64, i64) system_v
+    fn0 = colocated u0:85 sig0
+    fn1 = colocated u0:85 sig1
+    fn2 = colocated u0:85 sig2
+    fn3 = u0:2 sig3
 
 block0(v0: i64):
     jump block1(v0)
@@ -543,6 +585,7 @@ block7:
 
 block8:
     v6 = load.i64 notrap aligned v1+24
+    call fn0(v1)
     jump block2(v6)
 
 block5:
@@ -556,6 +599,7 @@ block9:
 
 block10:
     v10 = load.i64 notrap aligned v1+24
+    call fn1(v1)
     jump block2(v10)
 
 block6:
@@ -569,13 +613,14 @@ block11:
 
 block12:
     v14 = load.i64 notrap aligned v1+24
+    call fn2(v1)
     v15 = iconst.i64 0
     jump block2(v15)  ; v15 = 0
 
 block3:
     v16 = global_value.i64 gv0
     v17 = iconst.i64 12
-    call fn0(v16, v17)  ; v17 = 12
+    call fn3(v16, v17)  ; v17 = 12
     trap user1
 
 block2(v2: i64):
@@ -602,12 +647,12 @@ block1(v1: i64):
 ; === end CLIF user::checksum ===
 ; === CLIF user::checksum-helper ===
 function %checksum-helper(i64, i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol userextname0
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64) -> i64 system_v
-    sig2 = (i64) system_v
-    fn0 = colocated u0:85 sig2
+    gv0 = symbol userextname1
+    gv1 = symbol userextname1
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    fn0 = colocated u0:83 sig0
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -619,26 +664,29 @@ block1(v3: i64, v4: i64, v5: i64):
     brif v8, block2, block3
 
 block2:
+    call fn0(v3)
     jump block4(v5)
 
 block3:
-    v10 = iconst.i64 1
-    v11 = iadd.i64 v4, v10  ; v10 = 1
-    v12 = global_value.i64 gv0
-    v13 = iadd_imm v12, 56
-    v14 = load.i64 notrap aligned v13
-    v15 = call_indirect sig0, v14(v3, v4)
-    v16 = global_value.i64 gv1
-    v17 = iadd_imm v16, 168
-    v18 = load.i64 notrap aligned v17
-    v19 = call_indirect sig1, v18(v15)
-    call fn0(v15)
-    v20 = iadd.i64 v5, v19
-    jump block1(v3, v11, v20)
+    v10 = iadd_imm.i64 v3, 8
+    v11 = iconst.i64 1
+    v12 = atomic_rmw.i64 add v10, v11  ; v11 = 1
+    v13 = iconst.i64 1
+    v14 = iadd.i64 v4, v13  ; v13 = 1
+    v15 = global_value.i64 gv0
+    v16 = iadd_imm v15, 56
+    v17 = load.i64 notrap aligned v16
+    v18 = call_indirect sig1, v17(v3, v4)
+    v19 = global_value.i64 gv1
+    v20 = iadd_imm v19, 168
+    v21 = load.i64 notrap aligned v20
+    v22 = call_indirect sig2, v21(v18)
+    v23 = iadd.i64 v5, v22
+    jump block1(v3, v14, v23)
 
 block5:
-    v21 = iconst.i64 0
-    jump block4(v21)  ; v21 = 0
+    v24 = iconst.i64 0
+    jump block4(v24)  ; v24 = 0
 
 block4(v9: i64):
     return v9
@@ -675,236 +723,37 @@ function %eliminate(i64, i64, i64) -> i64 system_v {
     gv9 = symbol userextname0
     gv10 = symbol userextname0
     gv11 = symbol userextname0
-    gv12 = symbol colocated userextname2
+    gv12 = symbol colocated userextname4
     sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
-    sig3 = (i64, i64) -> i64 system_v
-    sig4 = (i64) -> i64 system_v
-    sig5 = (i64, i64) -> i64 system_v
-    sig6 = (i64) -> i64 system_v
-    sig7 = (i64) -> i64 system_v
-    sig8 = (i64) -> i64 system_v
-    sig9 = (i64, i64, i64) -> i64 system_v
-    sig10 = (i64) -> i64 system_v
-    sig11 = (i64) -> i64 system_v
-    sig12 = (i64, i64, i64) -> i64 system_v
-    sig13 = (i64) -> i64 system_v
-    sig14 = (i64, i64) system_v
-    sig15 = (i64) system_v
-    sig16 = (i64) system_v
-    fn0 = u0:0 sig8
-    fn1 = u0:0 sig11
-    fn2 = u0:2 sig14
-    fn3 = colocated u0:85 sig15
-    fn4 = colocated u0:83 sig16
-
-block0(v0: i64, v1: i64, v2: i64):
-    jump block1(v0, v1, v2)
-
-block1(v3: i64, v4: i64, v5: i64):
-    v110 -> v3
-    v111 -> v3
-    v112 -> v3
-    v113 -> v3
-    v114 -> v3
-    v115 -> v3
-    v6 = global_value.i64 gv0
-    v7 = iadd_imm v6, 56
-    v8 = load.i64 notrap aligned v7
-    v9 = call_indirect sig0, v8(v3, v4)
-    v104 -> v9
-    v105 -> v9
-    v106 -> v9
-    v107 -> v9
-    v108 -> v9
-    v109 -> v9
-    jump block4
-
-block4:
-    jump block7
-
-block7:
-    v11 = load.i64 notrap aligned v9+16
-    v12 = iconst.i64 0
-    v13 = icmp eq v11, v12  ; v12 = 0
-    brif v13, block8, block5
-
-block8:
-    v14 = load.i64 notrap aligned v9+24
-    v15 = icmp eq v14, v5
-    v16 = uextend.i64 v15
-    brif v16, block9, block10
-
-block9:
-    v18 = iconst.i64 0
-    jump block11(v18)  ; v18 = 0
-
-block10:
-    v19 = iadd_imm.i64 v3, 8
-    v20 = iconst.i64 1
-    v21 = atomic_rmw.i64 add v19, v20  ; v20 = 1
-    v22 = global_value.i64 gv1
-    v23 = iadd_imm v22, 24
-    v24 = load.i64 notrap aligned v23
-    v25 = call_indirect sig1, v24(v3)
-    jump block11(v25)
-
-block11(v17: i64):
-    jump block2(v17)
-
-block5:
-    jump block12
-
-block12:
-    v26 = load.i64 notrap aligned v9+16
-    v27 = iconst.i64 1
-    v28 = icmp eq v26, v27  ; v27 = 1
-    brif v28, block13, block6
-
-block13:
-    v29 = load.i64 notrap aligned v9+24
-    v30 = icmp eq v29, v5
-    v31 = uextend.i64 v30
-    brif v31, block14, block15
-
-block14:
-    v33 = iconst.i64 0
-    jump block16(v33)  ; v33 = 0
-
-block15:
-    v34 = iadd_imm.i64 v3, 8
-    v35 = iconst.i64 1
-    v36 = atomic_rmw.i64 add v34, v35  ; v35 = 1
-    v37 = global_value.i64 gv2
-    v38 = iadd_imm v37, 24
-    v39 = load.i64 notrap aligned v38
-    v40 = call_indirect sig2, v39(v3)
-    jump block16(v40)
-
-block16(v32: i64):
-    jump block2(v32)
-
-block6:
-    jump block17
-
-block17:
-    v41 = load.i64 notrap aligned v9+16
-    v42 = iconst.i64 2
-    v43 = icmp eq v41, v42  ; v42 = 2
-    brif v43, block18, block3
-
-block18:
-    v44 = load.i64 notrap aligned v9+24
-    v45 = global_value.i64 gv3
-    v46 = iadd_imm v45, 104
-    v47 = load.i64 notrap aligned v46
-    v48 = call_indirect sig3, v47(v44, v5)
-    v49 = iconst.i64 1
-    v50 = bxor v48, v49  ; v49 = 1
-    brif v50, block19, block20
-
-block19:
-    v52 = iadd_imm.i64 v3, 8
-    v53 = iconst.i64 1
-    v54 = atomic_rmw.i64 add v52, v53  ; v53 = 1
-    v55 = global_value.i64 gv4
-    v56 = iadd_imm v55, 24
-    v57 = load.i64 notrap aligned v56
-    v58 = call_indirect sig4, v57(v3)
-    jump block21(v58)
-
-block20:
-    v59 = global_value.i64 gv5
-    v60 = iadd_imm v59, 112
-    v61 = load.i64 notrap aligned v60
-    v62 = call_indirect sig5, v61(v44, v5)
-    v63 = iconst.i64 0
-    v64 = icmp eq v62, v63  ; v63 = 0
-    v65 = uextend.i64 v64
-    brif v65, block22, block23
-
-block22:
-    v67 = iconst.i64 0
-    jump block24(v67)  ; v67 = 0
-
-block23:
-    v68 = global_value.i64 gv6
-    v69 = iadd_imm v68, 120
-    v70 = load.i64 notrap aligned v69
-    v71 = call_indirect sig6, v70(v62)
-    v72 = iconst.i64 1
-    v73 = icmp eq v71, v72  ; v72 = 1
-    v74 = uextend.i64 v73
-    brif v74, block25, block26
-
-block25:
-    v76 = global_value.i64 gv7
-    v77 = iadd_imm v76, 136
-    v78 = load.i64 notrap aligned v77
-    v79 = call_indirect sig7, v78(v62)
-    v80 = iconst.i64 16
-    v81 = call fn0(v80)  ; v80 = 16
-    v82 = iconst.i64 1
-    store notrap aligned v82, v81+16  ; v82 = 1
-    store notrap aligned v79, v81+24
-    v83 = global_value.i64 gv8
-    v84 = iadd_imm v83, 64
-    v85 = load.i64 notrap aligned v84
-    v86 = call_indirect sig9, v85(v3, v4, v81)
-    v87 = global_value.i64 gv9
-    v88 = iadd_imm v87, 24
-    v89 = load.i64 notrap aligned v88
-    v90 = call_indirect sig10, v89(v86)
-    jump block27(v90)
-
-block26:
-    v91 = iconst.i64 16
-    v92 = call fn1(v91)  ; v91 = 16
-    v93 = iconst.i64 2
-    store notrap aligned v93, v92+16  ; v93 = 2
-    store.i64 notrap aligned v62, v92+24
-    v94 = global_value.i64 gv10
-    v95 = iadd_imm v94, 64
-    v96 = load.i64 notrap aligned v95
-    v97 = call_indirect sig12, v96(v3, v4, v92)
-    v98 = global_value.i64 gv11
-    v99 = iadd_imm v98, 24
-    v100 = load.i64 notrap aligned v99
-    v101 = call_indirect sig13, v100(v97)
-    jump block27(v101)
-
-block27(v75: i64):
-    jump block24(v75)
-
-block24(v66: i64):
-    jump block21(v66)
-
-block21(v51: i64):
-    jump block2(v51)
-
-block3:
-    v102 = global_value.i64 gv12
-    v103 = iconst.i64 12
-    call fn2(v102, v103)  ; v103 = 12
-    trap user1
-
-block2(v10: i64):
-    call fn3(v9)
-    call fn4(v3)
-    return v10
-}
-; === end CLIF user::eliminate ===
-; === CLIF user::eliminate-from-peers ===
-function %eliminate-from-peers(i64, i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol userextname0
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64, i64, i64) -> i64 system_v
+    sig1 = (i64) system_v
     sig2 = (i64) system_v
-    sig3 = (i64) system_v
-    fn0 = colocated u0:81 sig2
-    fn1 = colocated u0:83 sig3
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64) system_v
+    sig5 = (i64) system_v
+    sig6 = (i64) -> i64 system_v
+    sig7 = (i64) system_v
+    sig8 = (i64, i64) -> i64 system_v
+    sig9 = (i64) -> i64 system_v
+    sig10 = (i64, i64) -> i64 system_v
+    sig11 = (i64) system_v
+    sig12 = (i64) -> i64 system_v
+    sig13 = (i64) -> i64 system_v
+    sig14 = (i64) -> i64 system_v
+    sig15 = (i64, i64, i64) -> i64 system_v
+    sig16 = (i64) -> i64 system_v
+    sig17 = (i64) -> i64 system_v
+    sig18 = (i64, i64, i64) -> i64 system_v
+    sig19 = (i64) -> i64 system_v
+    sig20 = (i64, i64) system_v
+    fn0 = colocated u0:85 sig1
+    fn1 = colocated u0:83 sig2
+    fn2 = colocated u0:85 sig4
+    fn3 = colocated u0:83 sig5
+    fn4 = colocated u0:85 sig7
+    fn5 = colocated u0:83 sig11
+    fn6 = u0:0 sig14
+    fn7 = u0:0 sig17
+    fn8 = u0:2 sig20
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -914,150 +763,363 @@ block1(v3: i64, v4: i64, v5: i64):
     v7 = iconst.i64 1
     v8 = atomic_rmw.i64 add v6, v7  ; v7 = 1
     v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 184
+    v10 = iadd_imm v9, 56
     v11 = load.i64 notrap aligned v10
-    v12 = call_indirect sig0, v11(v4)
-    v13 = iconst.i64 0
-    v14 = global_value.i64 gv1
-    v15 = iadd_imm v14, 232
-    v16 = load.i64 notrap aligned v15
-    v17 = call_indirect sig1, v16(v3, v12, v5, v13)  ; v13 = 0
+    v12 = call_indirect sig0, v11(v3, v4)
+    jump block4
+
+block4:
+    jump block7
+
+block7:
+    v14 = load.i64 notrap aligned v12+16
+    v15 = iconst.i64 0
+    v16 = icmp eq v14, v15  ; v15 = 0
+    brif v16, block8, block5
+
+block8:
+    v17 = load.i64 notrap aligned v12+24
     call fn0(v12)
+    v18 = icmp eq v17, v5
+    v19 = uextend.i64 v18
+    brif v19, block9, block10
+
+block9:
     call fn1(v3)
-    return v17
+    v21 = iconst.i64 0
+    jump block11(v21)  ; v21 = 0
+
+block10:
+    v22 = global_value.i64 gv1
+    v23 = iadd_imm v22, 24
+    v24 = load.i64 notrap aligned v23
+    v25 = call_indirect sig3, v24(v3)
+    jump block11(v25)
+
+block11(v20: i64):
+    jump block2(v20)
+
+block5:
+    jump block12
+
+block12:
+    v26 = load.i64 notrap aligned v12+16
+    v27 = iconst.i64 1
+    v28 = icmp eq v26, v27  ; v27 = 1
+    brif v28, block13, block6
+
+block13:
+    v29 = load.i64 notrap aligned v12+24
+    call fn2(v12)
+    v30 = icmp eq v29, v5
+    v31 = uextend.i64 v30
+    brif v31, block14, block15
+
+block14:
+    call fn3(v3)
+    v33 = iconst.i64 0
+    jump block16(v33)  ; v33 = 0
+
+block15:
+    v34 = global_value.i64 gv2
+    v35 = iadd_imm v34, 24
+    v36 = load.i64 notrap aligned v35
+    v37 = call_indirect sig6, v36(v3)
+    jump block16(v37)
+
+block16(v32: i64):
+    jump block2(v32)
+
+block6:
+    jump block17
+
+block17:
+    v38 = load.i64 notrap aligned v12+16
+    v39 = iconst.i64 2
+    v40 = icmp eq v38, v39  ; v39 = 2
+    brif v40, block18, block3
+
+block18:
+    v41 = load.i64 notrap aligned v12+24
+    call fn4(v12)
+    v42 = global_value.i64 gv3
+    v43 = iadd_imm v42, 104
+    v44 = load.i64 notrap aligned v43
+    v45 = call_indirect sig8, v44(v41, v5)
+    v46 = iconst.i64 1
+    v47 = bxor v45, v46  ; v46 = 1
+    brif v47, block19, block20
+
+block19:
+    v49 = global_value.i64 gv4
+    v50 = iadd_imm v49, 24
+    v51 = load.i64 notrap aligned v50
+    v52 = call_indirect sig9, v51(v3)
+    jump block21(v52)
+
+block20:
+    v53 = global_value.i64 gv5
+    v54 = iadd_imm v53, 112
+    v55 = load.i64 notrap aligned v54
+    v56 = call_indirect sig10, v55(v41, v5)
+    v57 = iconst.i64 0
+    v58 = icmp eq v56, v57  ; v57 = 0
+    v59 = uextend.i64 v58
+    brif v59, block22, block23
+
+block22:
+    call fn5(v3)
+    v61 = iconst.i64 0
+    jump block24(v61)  ; v61 = 0
+
+block23:
+    v62 = global_value.i64 gv6
+    v63 = iadd_imm v62, 120
+    v64 = load.i64 notrap aligned v63
+    v65 = call_indirect sig12, v64(v56)
+    v66 = iconst.i64 1
+    v67 = icmp eq v65, v66  ; v66 = 1
+    v68 = uextend.i64 v67
+    brif v68, block25, block26
+
+block25:
+    v70 = global_value.i64 gv7
+    v71 = iadd_imm v70, 136
+    v72 = load.i64 notrap aligned v71
+    v73 = call_indirect sig13, v72(v56)
+    v74 = iconst.i64 16
+    v75 = call fn6(v74)  ; v74 = 16
+    v76 = iconst.i64 1
+    store notrap aligned v76, v75+16  ; v76 = 1
+    store notrap aligned v73, v75+24
+    v77 = global_value.i64 gv8
+    v78 = iadd_imm v77, 64
+    v79 = load.i64 notrap aligned v78
+    v80 = call_indirect sig15, v79(v3, v4, v75)
+    v81 = global_value.i64 gv9
+    v82 = iadd_imm v81, 24
+    v83 = load.i64 notrap aligned v82
+    v84 = call_indirect sig16, v83(v80)
+    jump block27(v84)
+
+block26:
+    v85 = iconst.i64 16
+    v86 = call fn7(v85)  ; v85 = 16
+    v87 = iconst.i64 2
+    store notrap aligned v87, v86+16  ; v87 = 2
+    store.i64 notrap aligned v56, v86+24
+    v88 = global_value.i64 gv10
+    v89 = iadd_imm v88, 64
+    v90 = load.i64 notrap aligned v89
+    v91 = call_indirect sig18, v90(v3, v4, v86)
+    v92 = global_value.i64 gv11
+    v93 = iadd_imm v92, 24
+    v94 = load.i64 notrap aligned v93
+    v95 = call_indirect sig19, v94(v91)
+    jump block27(v95)
+
+block27(v69: i64):
+    jump block24(v69)
+
+block24(v60: i64):
+    jump block21(v60)
+
+block21(v48: i64):
+    jump block2(v48)
+
+block3:
+    v96 = global_value.i64 gv12
+    v97 = iconst.i64 12
+    call fn8(v96, v97)  ; v97 = 12
+    trap user1
+
+block2(v13: i64):
+    return v13
+}
+; === end CLIF user::eliminate ===
+; === CLIF user::eliminate-from-peers ===
+function %eliminate-from-peers(i64, i64, i64) -> i64 system_v {
+    gv0 = symbol userextname0
+    gv1 = symbol userextname0
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64, i64, i64, i64) -> i64 system_v
+
+block0(v0: i64, v1: i64, v2: i64):
+    jump block1(v0, v1, v2)
+
+block1(v3: i64, v4: i64, v5: i64):
+    v6 = global_value.i64 gv0
+    v7 = iadd_imm v6, 184
+    v8 = load.i64 notrap aligned v7
+    v9 = call_indirect sig0, v8(v4)
+    v10 = iconst.i64 0
+    v11 = global_value.i64 gv1
+    v12 = iadd_imm v11, 232
+    v13 = load.i64 notrap aligned v12
+    v14 = call_indirect sig1, v13(v3, v9, v5, v10)  ; v10 = 0
+    return v14
 }
 ; === end CLIF user::eliminate-from-peers ===
 ; === CLIF user::eliminate-from-peers-helper ===
 function %eliminate-from-peers-helper(i64, i64, i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol colocated userextname1
-    gv2 = symbol userextname0
-    gv3 = symbol colocated userextname5
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64) system_v
-    sig2 = (i64, i64, i64) -> i64 system_v
-    sig3 = (i64) system_v
-    sig4 = (i64) system_v
-    sig5 = (i64) system_v
+    gv0 = symbol userextname2
+    gv1 = symbol colocated userextname3
+    gv2 = symbol userextname2
+    gv3 = symbol colocated userextname6
+    sig0 = (i64, i64) system_v
+    sig1 = (i64) system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64) system_v
+    sig4 = (i64, i64) system_v
+    sig5 = (i64, i64, i64) -> i64 system_v
     sig6 = (i64) system_v
-    sig7 = (i64, i64) system_v
-    sig8 = (i64) system_v
-    fn0 = u0:2 sig1
-    fn1 = colocated u0:82 sig3
-    fn2 = colocated u0:83 sig4
-    fn3 = colocated u0:82 sig5
-    fn4 = colocated u0:82 sig6
-    fn5 = u0:2 sig7
-    fn6 = colocated u0:83 sig8
+    sig7 = (i64) system_v
+    sig8 = (i64, i64) system_v
+    fn0 = u0:13 sig0
+    fn1 = colocated u0:81 sig1
+    fn2 = u0:2 sig3
+    fn3 = u0:13 sig4
+    fn4 = colocated u0:81 sig6
+    fn5 = colocated u0:82 sig7
+    fn6 = u0:2 sig8
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
 
 block1(v4: i64, v5: i64, v6: i64, v7: i64):
-    v58 -> v4
-    v50 -> v5
-    v51 -> v6
-    v52 -> v7
-    v8 = load.i64 notrap aligned v5+16
-    v9 = icmp eq v7, v8
-    v10 = uextend.i64 v9
-    brif v10, block2, block3
-
-block2:
-    v12 = iadd_imm.i64 v4, 8
-    v13 = iconst.i64 1
-    v14 = atomic_rmw.i64 add v12, v13  ; v13 = 1
-    v15 = global_value.i64 gv0
-    v16 = iadd_imm v15, 24
-    v17 = load.i64 notrap aligned v16
-    v18 = call_indirect sig0, v17(v4)
-    jump block4(v18, v4)
+    v23 -> v4
+    v48 -> v4
+    v20 -> v5
+    v59 -> v5
+    v71 -> v5
+    v21 -> v6
+    v49 -> v6
+    v72 -> v6
+    v22 -> v7
+    v60 -> v7
+    v73 -> v7
+    v8 = iadd_imm v5, 8
+    v9 = iconst.i64 1
+    v10 = atomic_rmw.i64 add v8, v9  ; v9 = 1
+    v11 = load.i64 notrap aligned v5+16
+    v12 = iconst.i64 0
+    v13 = iadd_imm v5, 8
+    v14 = iconst.i64 1
+    v15 = atomic_rmw.i64 sub v13, v14  ; v14 = 1
+    v16 = icmp eq v15, v14  ; v14 = 1
+    brif v16, block3, block2
 
 block3:
-    v19 = load.i64 notrap aligned v5+16
-    v20 = iconst.i64 0
-    v21 = icmp.i64 slt v7, v20  ; v20 = 0
-    v22 = icmp.i64 sge v7, v19
-    v23 = bor v21, v22
-    brif v23, block6, block5
+    fence 
+    call fn0(v5, v12)  ; v12 = 0
+    jump block2
 
-block6:
-    v24 = global_value.i64 gv1
-    v25 = iconst.i64 28
-    call fn0(v24, v25)  ; v25 = 28
-    trap user1
+block2:
+    v17 = icmp.i64 eq v7, v11
+    v18 = uextend.i64 v17
+    brif v18, block4, block5
+
+block4:
+    call fn1(v5)
+    v24 = global_value.i64 gv0
+    v25 = iadd_imm v24, 24
+    v26 = load.i64 notrap aligned v25
+    v27 = call_indirect sig2, v26(v4)
+    jump block6(v27)
 
 block5:
-    v26 = load.i64 notrap aligned v5+32
-    v27 = iconst.i64 8
-    v28 = imul.i64 v7, v27  ; v27 = 8
-    v29 = iadd v26, v28
-    v30 = load.i64 notrap aligned v29
-    v31 = iadd_imm.i64 v4, 8
-    v32 = iconst.i64 1
-    v33 = atomic_rmw.i64 add v31, v32  ; v32 = 1
-    v34 = global_value.i64 gv2
-    v35 = iadd_imm v34, 224
-    v36 = load.i64 notrap aligned v35
-    v37 = call_indirect sig2, v36(v4, v30, v6)
+    v28 = iadd_imm.i64 v20, 8
+    v29 = iconst.i64 1
+    v30 = atomic_rmw.i64 add v28, v29  ; v29 = 1
+    v31 = load.i64 notrap aligned v20+16
+    v32 = iconst.i64 0
+    v33 = icmp.i64 slt v22, v32  ; v32 = 0
+    v34 = icmp.i64 sge v22, v31
+    v35 = bor v33, v34
+    brif v35, block8, block7
+
+block8:
+    v36 = global_value.i64 gv1
+    v37 = iconst.i64 28
+    call fn2(v36, v37)  ; v37 = 28
+    trap user1
+
+block7:
+    v38 = load.i64 notrap aligned v20+32
+    v39 = iconst.i64 8
+    v40 = imul.i64 v22, v39  ; v39 = 8
+    v41 = iadd v38, v40
+    v42 = load.i64 notrap aligned v41
+    v43 = iconst.i64 0
+    v44 = iadd_imm.i64 v20, 8
+    v45 = iconst.i64 1
+    v46 = atomic_rmw.i64 sub v44, v45  ; v45 = 1
+    v47 = icmp eq v46, v45  ; v45 = 1
+    brif v47, block10, block9
+
+block10:
+    fence 
+    call fn3(v20, v43)  ; v43 = 0
     jump block9
 
 block9:
-    v39 = iconst.i64 1024
-    v40 = icmp.i64 ult v37, v39  ; v39 = 1024
-    brif v40, block12, block10
-
-block12:
-    v41 = iconst.i64 0
-    v42 = icmp.i64 eq v37, v41  ; v41 = 0
-    brif v42, block11, block10
-
-block11:
-    v43 = iconst.i64 0
-    call fn1(v37)
-    jump block7(v43, v4)  ; v43 = 0
-
-block10:
-    v44 = iconst.i64 1024
-    v45 = icmp.i64 uge v37, v44  ; v44 = 1024
-    brif v45, block13, block8
+    v50 = global_value.i64 gv2
+    v51 = iadd_imm v50, 224
+    v52 = load.i64 notrap aligned v51
+    v53 = call_indirect sig5, v52(v4, v42, v6)
+    jump block13
 
 block13:
-    v46 = load.i64 notrap aligned v37+16
-    v47 = iconst.i64 1
-    v48 = icmp eq v46, v47  ; v47 = 1
-    brif v48, block14, block8
+    v55 = iconst.i64 1024
+    v56 = icmp.i64 ult v53, v55  ; v55 = 1024
+    brif v56, block16, block14
 
-block14:
-    v49 = load.i64 notrap aligned v37+24
-    v53 = iconst.i64 1
-    v54 = iadd.i64 v7, v53  ; v53 = 1
-    v55 = iadd_imm v49, 8
-    v56 = iconst.i64 1
-    v57 = atomic_rmw.i64 add v55, v56  ; v56 = 1
-    call fn2(v4)
-    call fn3(v37)
-    jump block1(v49, v5, v6, v54)
+block16:
+    v57 = iconst.i64 0
+    v58 = icmp.i64 eq v53, v57  ; v57 = 0
+    brif v58, block15, block14
 
 block15:
-    v65 = iconst.i64 0
-    v64 -> v65
-    v59 = iconst.i64 0
-    call fn4(v37)
-    jump block7(v59, v65)  ; v59 = 0, v65 = 0
+    call fn4(v5)
+    v61 = iconst.i64 0
+    jump block11(v61)  ; v61 = 0
 
-block8:
-    v60 = global_value.i64 gv3
-    v61 = iconst.i64 12
-    call fn5(v60, v61)  ; v61 = 12
+block14:
+    v62 = iconst.i64 1024
+    v63 = icmp.i64 uge v53, v62  ; v62 = 1024
+    brif v63, block17, block12
+
+block17:
+    v64 = load.i64 notrap aligned v53+16
+    v65 = iconst.i64 1
+    v66 = icmp eq v64, v65  ; v65 = 1
+    brif v66, block18, block12
+
+block18:
+    v67 = load.i64 notrap aligned v53+24
+    v68 = iadd_imm v67, 8
+    v69 = iconst.i64 1
+    v70 = atomic_rmw.i64 add v68, v69  ; v69 = 1
+    call fn5(v53)
+    v74 = iconst.i64 1
+    v75 = iadd.i64 v7, v74  ; v74 = 1
+    jump block1(v67, v5, v6, v75)
+
+block19:
+    v76 = iconst.i64 0
+    jump block11(v76)  ; v76 = 0
+
+block12:
+    v77 = global_value.i64 gv3
+    v78 = iconst.i64 12
+    call fn6(v77, v78)  ; v78 = 12
     trap user1
 
-block7(v38: i64, v63: i64):
-    jump block4(v38, v63)
+block11(v54: i64):
+    jump block6(v54)
 
-block4(v11: i64, v62: i64):
-    call fn6(v62)
-    return v11
+block6(v19: i64):
+    return v19
 }
 ; === end CLIF user::eliminate-from-peers-helper ===
 ; === CLIF user::find-min-candidates ===
@@ -1081,40 +1143,39 @@ block1(v1: i64):
 ; === end CLIF user::find-min-candidates ===
 ; === CLIF user::find-min-helper ===
 function %find-min-helper(i64, i64, i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol userextname0
-    gv2 = symbol userextname0
-    gv3 = symbol colocated userextname2
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
+    gv0 = symbol userextname1
+    gv1 = symbol userextname1
+    gv2 = symbol userextname1
+    gv3 = symbol colocated userextname3
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 system_v
     sig3 = (i64) system_v
-    sig4 = (i64) system_v
+    sig4 = (i64) -> i64 system_v
     sig5 = (i64) system_v
     sig6 = (i64) system_v
     sig7 = (i64, i64) system_v
-    sig8 = (i64) system_v
-    fn0 = colocated u0:85 sig3
-    fn1 = colocated u0:85 sig4
+    fn0 = colocated u0:83 sig0
+    fn1 = colocated u0:85 sig3
     fn2 = colocated u0:85 sig5
     fn3 = colocated u0:85 sig6
     fn4 = u0:2 sig7
-    fn5 = colocated u0:85 sig8
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
 
 block1(v4: i64, v5: i64, v6: i64, v7: i64):
-    v42 -> v4
-    v43 -> v5
-    v51 -> v6
-    v52 -> v7
+    v47 -> v4
+    v48 -> v5
+    v45 -> v6
+    v46 -> v7
     v8 = iconst.i64 81
     v9 = icmp eq v5, v8  ; v8 = 81
     v10 = uextend.i64 v9
     brif v10, block2, block3
 
 block2:
+    call fn0(v4)
     v12 = iconst.i64 -1
     v13 = icmp.i64 eq v6, v12  ; v12 = -1
     v14 = uextend.i64 v13
@@ -1128,133 +1189,125 @@ block6:
     v17 = global_value.i64 gv0
     v18 = iadd_imm v17, 32
     v19 = load.i64 notrap aligned v18
-    v20 = call_indirect sig0, v19(v6)
+    v20 = call_indirect sig1, v19(v6)
     jump block7(v20)
 
 block7(v15: i64):
     jump block4(v15)
 
 block3:
-    v21 = global_value.i64 gv1
-    v22 = iadd_imm v21, 56
-    v23 = load.i64 notrap aligned v22
-    v24 = call_indirect sig1, v23(v4, v5)
-    v47 -> v24
+    v21 = iadd_imm.i64 v4, 8
+    v22 = iconst.i64 1
+    v23 = atomic_rmw.i64 add v21, v22  ; v22 = 1
+    v24 = global_value.i64 gv1
+    v25 = iadd_imm v24, 56
+    v26 = load.i64 notrap aligned v25
+    v27 = call_indirect sig2, v26(v4, v5)
     jump block10
 
 block10:
     jump block13
 
 block13:
-    v26 = load.i64 notrap aligned v24+16
-    v27 = iconst.i64 2
-    v28 = icmp eq v26, v27  ; v27 = 2
-    brif v28, block14, block11
+    v29 = load.i64 notrap aligned v27+16
+    v30 = iconst.i64 2
+    v31 = icmp eq v29, v30  ; v30 = 2
+    brif v31, block14, block11
 
 block14:
-    v29 = load.i64 notrap aligned v24+24
-    v30 = global_value.i64 gv2
-    v31 = iadd_imm v30, 120
-    v32 = load.i64 notrap aligned v31
-    v33 = call_indirect sig2, v32(v29)
-    v46 -> v33
-    v34 = iconst.i64 -1
-    v35 = icmp.i64 eq v6, v34  ; v34 = -1
-    v36 = uextend.i64 v35
-    brif v36, block15, block16
+    v32 = load.i64 notrap aligned v27+24
+    call fn1(v27)
+    v33 = global_value.i64 gv2
+    v34 = iadd_imm v33, 120
+    v35 = load.i64 notrap aligned v34
+    v36 = call_indirect sig4, v35(v32)
+    v51 -> v36
+    v37 = iconst.i64 -1
+    v38 = icmp.i64 eq v6, v37  ; v37 = -1
+    v39 = uextend.i64 v38
+    brif v39, block15, block16
 
 block15:
-    v38 = iconst.i64 1
-    jump block17(v38)  ; v38 = 1
+    v41 = iconst.i64 1
+    jump block17(v41)  ; v41 = 1
 
 block16:
-    v39 = icmp.i64 slt v33, v7
-    v40 = uextend.i64 v39
-    jump block17(v40)
+    v42 = icmp.i64 slt v36, v7
+    v43 = uextend.i64 v42
+    jump block17(v43)
 
-block17(v37: i64):
-    brif v37, block18, block19
+block17(v40: i64):
+    brif v40, block18, block19
 
 block18:
-    v44 = iconst.i64 1
-    v45 = iadd.i64 v5, v44  ; v44 = 1
-    call fn0(v24)
-    jump block1(v4, v45, v43, v33)
+    v49 = iconst.i64 1
+    v50 = iadd.i64 v5, v49  ; v49 = 1
+    jump block1(v4, v50, v48, v36)
 
 block21:
-    v73 = iconst.i64 0
-    v72 -> v73
-    v48 = iconst.i64 0
-    jump block20(v48, v73)  ; v48 = 0, v73 = 0
+    v52 = iconst.i64 0
+    jump block20(v52)  ; v52 = 0
 
 block19:
-    v49 = iconst.i64 1
-    v50 = iadd.i64 v43, v49  ; v49 = 1
-    call fn1(v47)
-    jump block1(v42, v50, v6, v7)
+    v53 = iconst.i64 1
+    v54 = iadd.i64 v48, v53  ; v53 = 1
+    jump block1(v47, v54, v45, v46)
 
 block22:
-    v75 = iconst.i64 0
-    v74 -> v75
-    v53 = iconst.i64 0
-    jump block20(v53, v75)  ; v53 = 0, v75 = 0
+    v55 = iconst.i64 0
+    jump block20(v55)  ; v55 = 0
 
-block20(v41: i64, v71: i64):
-    jump block8(v41, v71)
+block20(v44: i64):
+    jump block8(v44)
 
 block11:
     jump block23
 
 block23:
-    v54 = load.i64 notrap aligned v24+16
-    v55 = iconst.i64 0
-    v56 = icmp eq v54, v55  ; v55 = 0
-    brif v56, block24, block12
+    v56 = load.i64 notrap aligned v27+16
+    v57 = iconst.i64 0
+    v58 = icmp eq v56, v57  ; v57 = 0
+    brif v58, block24, block12
 
 block24:
-    v57 = load.i64 notrap aligned v24+24
-    v58 = iconst.i64 1
-    v59 = iadd.i64 v5, v58  ; v58 = 1
-    call fn2(v24)
-    jump block1(v4, v59, v6, v7)
+    v59 = load.i64 notrap aligned v27+24
+    call fn2(v27)
+    v60 = iconst.i64 1
+    v61 = iadd.i64 v5, v60  ; v60 = 1
+    jump block1(v4, v61, v6, v7)
 
 block25:
-    v77 = iconst.i64 0
-    v76 -> v77
-    v60 = iconst.i64 0
-    jump block8(v60, v77)  ; v60 = 0, v77 = 0
+    v62 = iconst.i64 0
+    jump block8(v62)  ; v62 = 0
 
 block12:
     jump block26
 
 block26:
-    v61 = load.i64 notrap aligned v24+16
-    v62 = iconst.i64 1
-    v63 = icmp eq v61, v62  ; v62 = 1
-    brif v63, block27, block9
+    v63 = load.i64 notrap aligned v27+16
+    v64 = iconst.i64 1
+    v65 = icmp eq v63, v64  ; v64 = 1
+    brif v65, block27, block9
 
 block27:
-    v64 = load.i64 notrap aligned v24+24
-    v65 = iconst.i64 1
-    v66 = iadd.i64 v5, v65  ; v65 = 1
-    call fn3(v24)
-    jump block1(v4, v66, v6, v7)
+    v66 = load.i64 notrap aligned v27+24
+    call fn3(v27)
+    v67 = iconst.i64 1
+    v68 = iadd.i64 v5, v67  ; v67 = 1
+    jump block1(v4, v68, v6, v7)
 
 block28:
-    v79 = iconst.i64 0
-    v78 -> v79
-    v67 = iconst.i64 0
-    jump block8(v67, v79)  ; v67 = 0, v79 = 0
+    v69 = iconst.i64 0
+    jump block8(v69)  ; v69 = 0
 
 block9:
-    v68 = global_value.i64 gv3
-    v69 = iconst.i64 12
-    call fn4(v68, v69)  ; v69 = 12
+    v70 = global_value.i64 gv3
+    v71 = iconst.i64 12
+    call fn4(v70, v71)  ; v71 = 12
     trap user1
 
-block8(v25: i64, v70: i64):
-    call fn5(v70)
-    jump block4(v25)
+block8(v28: i64):
+    jump block4(v28)
 
 block4(v11: i64):
     return v11
@@ -1272,38 +1325,60 @@ block1:
 ; === end CLIF user::full-mask ===
 ; === CLIF user::grids-differ-helper ===
 function %grids-differ-helper(i64, i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol userextname0
-    gv2 = symbol colocated userextname2
-    gv3 = symbol colocated userextname4
-    gv4 = symbol colocated userextname5
-    gv5 = symbol colocated userextname6
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
-    sig2 = (i64) system_v
-    sig3 = (i64) system_v
-    sig4 = (i64, i64) system_v
+    gv0 = symbol userextname1
+    gv1 = symbol userextname1
+    gv2 = symbol colocated userextname3
+    gv3 = symbol colocated userextname5
+    gv4 = symbol colocated userextname6
+    gv5 = symbol colocated userextname7
+    sig0 = (i64) system_v
+    sig1 = (i64) system_v
+    sig2 = (i64, i64) -> i64 system_v
+    sig3 = (i64, i64) -> i64 system_v
+    sig4 = (i64) system_v
     sig5 = (i64) system_v
     sig6 = (i64) system_v
-    sig7 = (i64, i64) system_v
+    sig7 = (i64) system_v
     sig8 = (i64) system_v
     sig9 = (i64) system_v
-    sig10 = (i64, i64) system_v
+    sig10 = (i64) system_v
     sig11 = (i64, i64) system_v
     sig12 = (i64) system_v
     sig13 = (i64) system_v
-    fn0 = colocated u0:85 sig2
-    fn1 = colocated u0:85 sig3
-    fn2 = u0:2 sig4
+    sig14 = (i64) system_v
+    sig15 = (i64) system_v
+    sig16 = (i64) system_v
+    sig17 = (i64, i64) system_v
+    sig18 = (i64) system_v
+    sig19 = (i64) system_v
+    sig20 = (i64) system_v
+    sig21 = (i64) system_v
+    sig22 = (i64) system_v
+    sig23 = (i64, i64) system_v
+    sig24 = (i64, i64) system_v
+    fn0 = colocated u0:83 sig0
+    fn1 = colocated u0:83 sig1
+    fn2 = colocated u0:85 sig4
     fn3 = colocated u0:85 sig5
-    fn4 = colocated u0:85 sig6
-    fn5 = u0:2 sig7
+    fn4 = colocated u0:83 sig6
+    fn5 = colocated u0:83 sig7
     fn6 = colocated u0:85 sig8
-    fn7 = colocated u0:85 sig9
-    fn8 = u0:2 sig10
+    fn7 = colocated u0:83 sig9
+    fn8 = colocated u0:83 sig10
     fn9 = u0:2 sig11
     fn10 = colocated u0:85 sig12
     fn11 = colocated u0:85 sig13
+    fn12 = colocated u0:85 sig14
+    fn13 = colocated u0:83 sig15
+    fn14 = colocated u0:83 sig16
+    fn15 = u0:2 sig17
+    fn16 = colocated u0:85 sig18
+    fn17 = colocated u0:85 sig19
+    fn18 = colocated u0:85 sig20
+    fn19 = colocated u0:83 sig21
+    fn20 = colocated u0:83 sig22
+    fn21 = u0:2 sig23
+    fn22 = u0:2 sig24
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -1315,195 +1390,200 @@ block1(v3: i64, v4: i64, v5: i64):
     brif v8, block2, block3
 
 block2:
+    call fn0(v3)
+    call fn1(v4)
     v10 = iconst.i64 0
     jump block4(v10)  ; v10 = 0
 
 block3:
-    v11 = global_value.i64 gv0
-    v12 = iadd_imm v11, 56
-    v13 = load.i64 notrap aligned v12
-    v14 = call_indirect sig0, v13(v3, v5)
-    v15 = global_value.i64 gv1
-    v16 = iadd_imm v15, 56
-    v17 = load.i64 notrap aligned v16
-    v18 = call_indirect sig1, v17(v4, v5)
+    v11 = iadd_imm.i64 v3, 8
+    v12 = iconst.i64 1
+    v13 = atomic_rmw.i64 add v11, v12  ; v12 = 1
+    v14 = global_value.i64 gv0
+    v15 = iadd_imm v14, 56
+    v16 = load.i64 notrap aligned v15
+    v17 = call_indirect sig2, v16(v3, v5)
+    v18 = iadd_imm.i64 v4, 8
+    v19 = iconst.i64 1
+    v20 = atomic_rmw.i64 add v18, v19  ; v19 = 1
+    v21 = global_value.i64 gv1
+    v22 = iadd_imm v21, 56
+    v23 = load.i64 notrap aligned v22
+    v24 = call_indirect sig3, v23(v4, v5)
     jump block7
 
 block7:
     jump block10
 
 block10:
-    v20 = load.i64 notrap aligned v14+16
-    v21 = iconst.i64 2
-    v22 = icmp eq v20, v21  ; v21 = 2
-    brif v22, block11, block8
+    v26 = load.i64 notrap aligned v17+16
+    v27 = iconst.i64 2
+    v28 = icmp eq v26, v27  ; v27 = 2
+    brif v28, block11, block8
 
 block11:
-    v23 = load.i64 notrap aligned v14+24
+    v29 = load.i64 notrap aligned v17+24
+    call fn2(v17)
     jump block14
 
 block14:
     jump block16
 
 block16:
-    v25 = load.i64 notrap aligned v18+16
-    v26 = iconst.i64 2
-    v27 = icmp eq v25, v26  ; v26 = 2
-    brif v27, block17, block15
+    v31 = load.i64 notrap aligned v24+16
+    v32 = iconst.i64 2
+    v33 = icmp eq v31, v32  ; v32 = 2
+    brif v33, block17, block15
 
 block17:
-    v28 = load.i64 notrap aligned v18+24
-    v29 = icmp.i64 eq v23, v28
-    v30 = uextend.i64 v29
-    brif v30, block18, block19
+    v34 = load.i64 notrap aligned v24+24
+    call fn3(v24)
+    v35 = icmp.i64 eq v29, v34
+    v36 = uextend.i64 v35
+    brif v36, block18, block19
 
 block18:
-    v32 = iconst.i64 1
-    v33 = iadd.i64 v5, v32  ; v32 = 1
-    call fn0(v14)
-    call fn1(v18)
-    jump block1(v3, v4, v33)
+    v38 = iconst.i64 1
+    v39 = iadd.i64 v5, v38  ; v38 = 1
+    jump block1(v3, v4, v39)
 
 block21:
-    v86 = iconst.i64 0
-    v85 -> v86
-    v75 = iconst.i64 0
-    v74 -> v75
-    v34 = iconst.i64 0
-    jump block20(v34, v75, v86)  ; v34 = 0, v75 = 0, v86 = 0
+    v40 = iconst.i64 0
+    jump block20(v40)  ; v40 = 0
 
 block19:
-    v35 = iconst.i64 1
-    jump block20(v35, v14, v18)  ; v35 = 1
+    call fn4(v3)
+    call fn5(v4)
+    v41 = iconst.i64 1
+    jump block20(v41)  ; v41 = 1
 
-block20(v31: i64, v73: i64, v84: i64):
-    jump block12(v31, v73, v84)
+block20(v37: i64):
+    jump block12(v37)
 
 block15:
-    v36 = iconst.i64 1
-    jump block12(v36, v14, v18)  ; v36 = 1
+    call fn6(v24)
+    call fn7(v3)
+    call fn8(v4)
+    v42 = iconst.i64 1
+    jump block12(v42)  ; v42 = 1
 
 block13:
-    v37 = global_value.i64 gv2
-    v38 = iconst.i64 12
-    call fn2(v37, v38)  ; v38 = 12
+    v43 = global_value.i64 gv2
+    v44 = iconst.i64 12
+    call fn9(v43, v44)  ; v44 = 12
     trap user1
 
-block12(v24: i64, v72: i64, v83: i64):
-    jump block5(v24, v72, v83)
+block12(v30: i64):
+    jump block5(v30)
 
 block8:
     jump block22
 
 block22:
-    v39 = load.i64 notrap aligned v14+16
-    v40 = iconst.i64 0
-    v41 = icmp eq v39, v40  ; v40 = 0
-    brif v41, block23, block9
+    v45 = load.i64 notrap aligned v17+16
+    v46 = iconst.i64 0
+    v47 = icmp eq v45, v46  ; v46 = 0
+    brif v47, block23, block9
 
 block23:
-    v42 = load.i64 notrap aligned v14+24
+    v48 = load.i64 notrap aligned v17+24
+    call fn10(v17)
     jump block26
 
 block26:
     jump block28
 
 block28:
-    v44 = load.i64 notrap aligned v18+16
-    v45 = iconst.i64 0
-    v46 = icmp eq v44, v45  ; v45 = 0
-    brif v46, block29, block27
+    v50 = load.i64 notrap aligned v24+16
+    v51 = iconst.i64 0
+    v52 = icmp eq v50, v51  ; v51 = 0
+    brif v52, block29, block27
 
 block29:
-    v47 = load.i64 notrap aligned v18+24
-    v48 = iconst.i64 1
-    v49 = iadd.i64 v5, v48  ; v48 = 1
-    call fn3(v14)
-    call fn4(v18)
-    jump block1(v3, v4, v49)
+    v53 = load.i64 notrap aligned v24+24
+    call fn11(v24)
+    v54 = iconst.i64 1
+    v55 = iadd.i64 v5, v54  ; v54 = 1
+    jump block1(v3, v4, v55)
 
 block30:
-    v89 = iconst.i64 0
-    v88 -> v89
-    v78 = iconst.i64 0
-    v77 -> v78
-    v50 = iconst.i64 0
-    jump block24(v50, v78, v89)  ; v50 = 0, v78 = 0, v89 = 0
+    v56 = iconst.i64 0
+    jump block24(v56)  ; v56 = 0
 
 block27:
-    v51 = iconst.i64 1
-    jump block24(v51, v14, v18)  ; v51 = 1
+    call fn12(v24)
+    call fn13(v3)
+    call fn14(v4)
+    v57 = iconst.i64 1
+    jump block24(v57)  ; v57 = 1
 
 block25:
-    v52 = global_value.i64 gv3
-    v53 = iconst.i64 12
-    call fn5(v52, v53)  ; v53 = 12
+    v58 = global_value.i64 gv3
+    v59 = iconst.i64 12
+    call fn15(v58, v59)  ; v59 = 12
     trap user1
 
-block24(v43: i64, v76: i64, v87: i64):
-    jump block5(v43, v76, v87)
+block24(v49: i64):
+    jump block5(v49)
 
 block9:
     jump block31
 
 block31:
-    v54 = load.i64 notrap aligned v14+16
-    v55 = iconst.i64 1
-    v56 = icmp eq v54, v55  ; v55 = 1
-    brif v56, block32, block6
+    v60 = load.i64 notrap aligned v17+16
+    v61 = iconst.i64 1
+    v62 = icmp eq v60, v61  ; v61 = 1
+    brif v62, block32, block6
 
 block32:
-    v57 = load.i64 notrap aligned v14+24
+    v63 = load.i64 notrap aligned v17+24
+    call fn16(v17)
     jump block35
 
 block35:
     jump block37
 
 block37:
-    v59 = load.i64 notrap aligned v18+16
-    v60 = iconst.i64 1
-    v61 = icmp eq v59, v60  ; v60 = 1
-    brif v61, block38, block36
+    v65 = load.i64 notrap aligned v24+16
+    v66 = iconst.i64 1
+    v67 = icmp eq v65, v66  ; v66 = 1
+    brif v67, block38, block36
 
 block38:
-    v62 = load.i64 notrap aligned v18+24
-    v63 = iconst.i64 1
-    v64 = iadd.i64 v5, v63  ; v63 = 1
-    call fn6(v14)
-    call fn7(v18)
-    jump block1(v3, v4, v64)
+    v68 = load.i64 notrap aligned v24+24
+    call fn17(v24)
+    v69 = iconst.i64 1
+    v70 = iadd.i64 v5, v69  ; v69 = 1
+    jump block1(v3, v4, v70)
 
 block39:
-    v92 = iconst.i64 0
-    v91 -> v92
-    v81 = iconst.i64 0
-    v80 -> v81
-    v65 = iconst.i64 0
-    jump block33(v65, v81, v92)  ; v65 = 0, v81 = 0, v92 = 0
+    v71 = iconst.i64 0
+    jump block33(v71)  ; v71 = 0
 
 block36:
-    v66 = iconst.i64 1
-    jump block33(v66, v14, v18)  ; v66 = 1
+    call fn18(v24)
+    call fn19(v3)
+    call fn20(v4)
+    v72 = iconst.i64 1
+    jump block33(v72)  ; v72 = 1
 
 block34:
-    v67 = global_value.i64 gv4
-    v68 = iconst.i64 12
-    call fn8(v67, v68)  ; v68 = 12
+    v73 = global_value.i64 gv4
+    v74 = iconst.i64 12
+    call fn21(v73, v74)  ; v74 = 12
     trap user1
 
-block33(v58: i64, v79: i64, v90: i64):
-    jump block5(v58, v79, v90)
+block33(v64: i64):
+    jump block5(v64)
 
 block6:
-    v69 = global_value.i64 gv5
-    v70 = iconst.i64 12
-    call fn9(v69, v70)  ; v70 = 12
+    v75 = global_value.i64 gv5
+    v76 = iconst.i64 12
+    call fn22(v75, v76)  ; v76 = 12
     trap user1
 
-block5(v19: i64, v71: i64, v82: i64):
-    call fn10(v71)
-    call fn11(v82)
-    jump block4(v19)
+block5(v25: i64):
+    jump block4(v25)
 
 block4(v9: i64):
     return v9
@@ -1528,20 +1608,20 @@ block1(v1: i64):
 ; === end CLIF user::is-solved ===
 ; === CLIF user::is-solved-helper ===
 function %is-solved-helper(i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol colocated userextname2
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64) system_v
+    gv0 = symbol userextname1
+    gv1 = symbol colocated userextname3
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) system_v
     sig3 = (i64) system_v
     sig4 = (i64) system_v
     sig5 = (i64) system_v
     sig6 = (i64, i64) system_v
-    fn0 = colocated u0:85 sig1
+    fn0 = colocated u0:83 sig0
     fn1 = colocated u0:85 sig2
     fn2 = colocated u0:85 sig3
     fn3 = colocated u0:85 sig4
-    fn4 = colocated u0:85 sig5
+    fn4 = colocated u0:83 sig5
     fn5 = u0:2 sig6
 
 block0(v0: i64, v1: i64):
@@ -1554,81 +1634,84 @@ block1(v2: i64, v3: i64):
     brif v6, block2, block3
 
 block2:
+    call fn0(v2)
     v8 = iconst.i64 1
     jump block4(v8)  ; v8 = 1
 
 block3:
-    v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 56
-    v11 = load.i64 notrap aligned v10
-    v12 = call_indirect sig0, v11(v2, v3)
+    v9 = iadd_imm.i64 v2, 8
+    v10 = iconst.i64 1
+    v11 = atomic_rmw.i64 add v9, v10  ; v10 = 1
+    v12 = global_value.i64 gv0
+    v13 = iadd_imm v12, 56
+    v14 = load.i64 notrap aligned v13
+    v15 = call_indirect sig1, v14(v2, v3)
     jump block7
 
 block7:
     jump block10
 
 block10:
-    v14 = load.i64 notrap aligned v12+16
-    v15 = iconst.i64 0
-    v16 = icmp eq v14, v15  ; v15 = 0
-    brif v16, block11, block8
+    v17 = load.i64 notrap aligned v15+16
+    v18 = iconst.i64 0
+    v19 = icmp eq v17, v18  ; v18 = 0
+    brif v19, block11, block8
 
 block11:
-    v17 = load.i64 notrap aligned v12+24
-    v18 = iconst.i64 1
-    v19 = iadd.i64 v3, v18  ; v18 = 1
-    call fn0(v12)
-    jump block1(v2, v19)
+    v20 = load.i64 notrap aligned v15+24
+    call fn1(v15)
+    v21 = iconst.i64 1
+    v22 = iadd.i64 v3, v21  ; v21 = 1
+    jump block1(v2, v22)
 
 block12:
-    v20 = iconst.i64 0
-    call fn1(v12)
-    jump block5(v20)  ; v20 = 0
+    v23 = iconst.i64 0
+    jump block5(v23)  ; v23 = 0
 
 block8:
     jump block13
 
 block13:
-    v21 = load.i64 notrap aligned v12+16
-    v22 = iconst.i64 1
-    v23 = icmp eq v21, v22  ; v22 = 1
-    brif v23, block14, block9
+    v24 = load.i64 notrap aligned v15+16
+    v25 = iconst.i64 1
+    v26 = icmp eq v24, v25  ; v25 = 1
+    brif v26, block14, block9
 
 block14:
-    v24 = load.i64 notrap aligned v12+24
-    v25 = iconst.i64 1
-    v26 = iadd.i64 v3, v25  ; v25 = 1
-    call fn2(v12)
-    jump block1(v2, v26)
+    v27 = load.i64 notrap aligned v15+24
+    call fn2(v15)
+    v28 = iconst.i64 1
+    v29 = iadd.i64 v3, v28  ; v28 = 1
+    jump block1(v2, v29)
 
 block15:
-    v27 = iconst.i64 0
-    call fn3(v12)
-    jump block5(v27)  ; v27 = 0
+    v30 = iconst.i64 0
+    jump block5(v30)  ; v30 = 0
 
 block9:
     jump block16
 
 block16:
-    v28 = load.i64 notrap aligned v12+16
-    v29 = iconst.i64 2
-    v30 = icmp eq v28, v29  ; v29 = 2
-    brif v30, block17, block6
+    v31 = load.i64 notrap aligned v15+16
+    v32 = iconst.i64 2
+    v33 = icmp eq v31, v32  ; v32 = 2
+    brif v33, block17, block6
 
 block17:
-    v31 = load.i64 notrap aligned v12+24
-    v32 = iconst.i64 0
-    call fn4(v12)
-    jump block5(v32)  ; v32 = 0
+    v34 = load.i64 notrap aligned v15+24
+    call fn3(v15)
+    call fn4(v2)
+    v35 = iconst.i64 0
+    jump block5(v35)  ; v35 = 0
 
 block6:
-    v33 = global_value.i64 gv1
-    v34 = iconst.i64 12
-    call fn5(v33, v34)  ; v34 = 12
+    v36 = global_value.i64 gv1
+    v37 = iconst.i64 12
+    call fn5(v36, v37)  ; v37 = 12
     trap user1
 
-block5(v13: i64):
-    jump block4(v13)
+block5(v16: i64):
+    jump block4(v16)
 
 block4(v7: i64):
     return v7
@@ -1651,22 +1734,18 @@ function %main() -> i64 system_v {
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) system_v
     sig4 = (i64) -> i64 system_v
-    sig5 = (i64) -> i64 system_v
-    sig6 = (i64, i64) -> i64 system_v
-    sig7 = (i64) -> i64 system_v
-    sig8 = (i64) system_v
+    sig5 = (i64) system_v
+    sig6 = (i64) -> i64 system_v
+    sig7 = (i64, i64) -> i64 system_v
+    sig8 = (i64) -> i64 system_v
     sig9 = (i64) -> i64 system_v
-    sig10 = (i64) system_v
+    sig10 = (i64, i64) system_v
     sig11 = (i64, i64) system_v
-    sig12 = (i64) system_v
-    sig13 = (i64, i64) system_v
     fn0 = u0:10 sig0
     fn1 = colocated u0:82 sig3
-    fn2 = colocated u0:88 sig8
-    fn3 = colocated u0:88 sig10
+    fn2 = colocated u0:88 sig5
+    fn3 = u0:2 sig10
     fn4 = u0:2 sig11
-    fn5 = colocated u0:82 sig12
-    fn6 = u0:2 sig13
 
 block0:
     jump block1
@@ -1697,7 +1776,6 @@ block6:
     v14 = iadd_imm v13, 40
     v15 = load.i64 notrap aligned v14
     v16 = call_indirect sig2, v15(v12)  ; v12 = 0
-    call fn1(v6)
     jump block2(v16)
 
 block5:
@@ -1716,6 +1794,7 @@ block9:
     v23 = iadd_imm v22, 8
     v24 = iconst.i64 1
     v25 = atomic_rmw.i64 add v23, v24  ; v24 = 1
+    call fn1(v6)
     v26 = global_value.i64 gv3
     v27 = iadd_imm v26, 320
     v28 = load.i64 notrap aligned v27
@@ -1735,55 +1814,56 @@ block14:
 
 block15:
     v36 = load.i64 notrap aligned v29+24
-    v37 = global_value.i64 gv4
-    v38 = iadd_imm v37, 336
-    v39 = load.i64 notrap aligned v38
-    v40 = call_indirect sig5, v39(v36)
-    v41 = iconst.i64 251
-    v42 = global_value.i64 gv5
-    v43 = iadd_imm v42, 88
-    v44 = load.i64 notrap aligned v43
-    v45 = call_indirect sig6, v44(v40, v41)  ; v41 = 251
-    v46 = global_value.i64 gv6
-    v47 = iadd_imm v46, 40
-    v48 = load.i64 notrap aligned v47
-    v49 = call_indirect sig7, v48(v45)
+    v37 = iadd_imm v36, 8
+    v38 = iconst.i64 1
+    v39 = atomic_rmw.i64 add v37, v38  ; v38 = 1
     call fn2(v29)
-    jump block10(v49)
+    v40 = global_value.i64 gv4
+    v41 = iadd_imm v40, 336
+    v42 = load.i64 notrap aligned v41
+    v43 = call_indirect sig6, v42(v36)
+    v44 = iconst.i64 251
+    v45 = global_value.i64 gv5
+    v46 = iadd_imm v45, 88
+    v47 = load.i64 notrap aligned v46
+    v48 = call_indirect sig7, v47(v43, v44)  ; v44 = 251
+    v49 = global_value.i64 gv6
+    v50 = iadd_imm v49, 40
+    v51 = load.i64 notrap aligned v50
+    v52 = call_indirect sig8, v51(v48)
+    jump block10(v52)
 
 block13:
-    v50 = iconst.i64 1024
-    v51 = icmp.i64 ult v29, v50  ; v50 = 1024
-    brif v51, block17, block11
+    v53 = iconst.i64 1024
+    v54 = icmp.i64 ult v29, v53  ; v53 = 1024
+    brif v54, block17, block11
 
 block17:
-    v52 = iconst.i64 1
-    v53 = icmp.i64 eq v29, v52  ; v52 = 1
-    brif v53, block16, block11
+    v55 = iconst.i64 1
+    v56 = icmp.i64 eq v29, v55  ; v55 = 1
+    brif v56, block16, block11
 
 block16:
-    v54 = iconst.i64 0
-    v55 = global_value.i64 gv7
-    v56 = iadd_imm v55, 40
-    v57 = load.i64 notrap aligned v56
-    v58 = call_indirect sig9, v57(v54)  ; v54 = 0
-    call fn3(v29)
-    jump block10(v58)
+    v57 = iconst.i64 0
+    v58 = global_value.i64 gv7
+    v59 = iadd_imm v58, 40
+    v60 = load.i64 notrap aligned v59
+    v61 = call_indirect sig9, v60(v57)  ; v57 = 0
+    jump block10(v61)
 
 block11:
-    v59 = global_value.i64 gv8
-    v60 = iconst.i64 12
-    call fn4(v59, v60)  ; v60 = 12
+    v62 = global_value.i64 gv8
+    v63 = iconst.i64 12
+    call fn3(v62, v63)  ; v63 = 12
     trap user1
 
 block10(v30: i64):
-    call fn5(v6)
     jump block2(v30)
 
 block3:
-    v61 = global_value.i64 gv9
-    v62 = iconst.i64 12
-    call fn6(v61, v62)  ; v62 = 12
+    v64 = global_value.i64 gv9
+    v65 = iconst.i64 12
+    call fn4(v64, v65)  ; v65 = 12
     trap user1
 
 block2(v7: i64):
@@ -1799,13 +1879,12 @@ function %make-grid(i64) -> i64 system_v {
     sig2 = (i64, i64, i64) -> i64 system_v
     sig3 = (i64) system_v
     fn0 = u0:12 sig1
-    fn1 = colocated u0:90 sig3
+    fn1 = colocated u0:89 sig3
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v26 -> v1
     v2 = iadd_imm v1, 8
     v3 = iconst.i64 1
     v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
@@ -1819,217 +1898,252 @@ block1(v1: i64):
     brif v11, block2, block3
 
 block2:
-    v13 = iadd_imm.i64 v1, 8
-    v14 = iconst.i64 1
-    v15 = atomic_rmw.i64 add v13, v14  ; v14 = 1
-    v16 = iconst.i64 0
+    v13 = iconst.i64 0
+    v14 = iconst.i64 0
+    v15 = call fn0(v14)  ; v14 = 0
+    v16 = load.i64 notrap aligned v15+32
     v17 = iconst.i64 0
-    v18 = call fn0(v17)  ; v17 = 0
-    v19 = load.i64 notrap aligned v18+32
-    v20 = iconst.i64 0
-    store notrap aligned v20, v18+16  ; v20 = 0
-    v21 = global_value.i64 gv1
-    v22 = iadd_imm v21, 192
-    v23 = load.i64 notrap aligned v22
-    v24 = call_indirect sig2, v23(v1, v16, v18)  ; v16 = 0
-    jump block4(v24)
+    store notrap aligned v17, v15+16  ; v17 = 0
+    v18 = global_value.i64 gv1
+    v19 = iadd_imm v18, 192
+    v20 = load.i64 notrap aligned v19
+    v21 = call_indirect sig2, v20(v1, v13, v15)  ; v13 = 0
+    jump block4(v21)
 
 block3:
-    v25 = iconst.i64 0
-    jump block4(v25)  ; v25 = 0
+    call fn1(v1)
+    v22 = iconst.i64 0
+    jump block4(v22)  ; v22 = 0
 
 block4(v12: i64):
-    call fn1(v1)
     return v12
 }
 ; === end CLIF user::make-grid ===
 ; === CLIF user::make-grid-helper ===
 function %make-grid-helper(i64, i64, i64) -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol userextname0
-    gv2 = symbol userextname1
-    gv3 = symbol colocated userextname2
-    gv4 = symbol userextname1
-    gv5 = symbol userextname0
-    gv6 = symbol colocated userextname9
-    gv7 = symbol userextname1
-    gv8 = symbol colocated userextname10
-    gv9 = symbol userextname1
-    gv10 = symbol colocated userextname11
-    gv11 = symbol userextname1
-    gv12 = symbol colocated userextname12
-    gv13 = symbol userextname1
-    gv14 = symbol colocated userextname13
-    gv15 = symbol userextname1
-    gv16 = symbol colocated userextname14
-    gv17 = symbol userextname1
-    gv18 = symbol colocated userextname15
-    gv19 = symbol userextname1
-    gv20 = symbol colocated userextname16
-    gv21 = symbol userextname1
-    gv22 = symbol colocated userextname17
-    gv23 = symbol userextname1
-    gv24 = symbol colocated userextname18
-    gv25 = symbol userextname1
-    gv26 = symbol userextname0
-    sig0 = (i64) -> i64 system_v
+    gv0 = symbol userextname1
+    gv1 = symbol userextname1
+    gv2 = symbol userextname2
+    gv3 = symbol colocated userextname3
+    gv4 = symbol userextname2
+    gv5 = symbol userextname1
+    gv6 = symbol colocated userextname11
+    gv7 = symbol userextname2
+    gv8 = symbol colocated userextname12
+    gv9 = symbol userextname2
+    gv10 = symbol colocated userextname13
+    gv11 = symbol userextname2
+    gv12 = symbol colocated userextname14
+    gv13 = symbol userextname2
+    gv14 = symbol colocated userextname15
+    gv15 = symbol userextname2
+    gv16 = symbol colocated userextname16
+    gv17 = symbol userextname2
+    gv18 = symbol colocated userextname17
+    gv19 = symbol userextname2
+    gv20 = symbol colocated userextname18
+    gv21 = symbol userextname2
+    gv22 = symbol colocated userextname19
+    gv23 = symbol userextname2
+    gv24 = symbol colocated userextname20
+    gv25 = symbol userextname2
+    gv26 = symbol userextname1
+    sig0 = (i64) system_v
     sig1 = (i64) -> i64 system_v
-    sig2 = (i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) -> i64 system_v
     sig4 = (i64, i64) -> i64 system_v
-    sig5 = () -> i64 system_v
-    sig6 = (i64) -> i64 system_v
-    sig7 = (i64) -> i64 system_v
-    sig8 = (i64, i64, i64) -> i64 system_v
-    sig9 = (i64) system_v
-    sig10 = (i64) system_v
+    sig5 = (i64, i64) -> i64 system_v
+    sig6 = (i64) system_v
+    sig7 = () -> i64 system_v
+    sig8 = (i64) -> i64 system_v
+    sig9 = (i64) -> i64 system_v
+    sig10 = (i64) -> i64 system_v
     sig11 = (i64, i64) -> i64 system_v
-    sig12 = (i64, i64) -> i64 system_v
-    sig13 = (i64) -> i64 system_v
-    sig14 = (i64) -> i64 system_v
-    sig15 = (i64, i64, i64) -> i64 system_v
+    sig12 = (i64, i64, i64) -> i64 system_v
+    sig13 = (i64, i64) system_v
+    sig14 = (i64, i64) -> i64 system_v
+    sig15 = (i64, i64) -> i64 system_v
     sig16 = (i64) system_v
-    sig17 = (i64) system_v
-    sig18 = (i64, i64) -> i64 system_v
-    sig19 = (i64, i64) -> i64 system_v
-    sig20 = (i64) -> i64 system_v
-    sig21 = (i64) -> i64 system_v
-    sig22 = (i64, i64, i64) -> i64 system_v
-    sig23 = (i64) system_v
-    sig24 = (i64) system_v
-    sig25 = (i64, i64) -> i64 system_v
-    sig26 = (i64, i64) -> i64 system_v
+    sig17 = (i64) -> i64 system_v
+    sig18 = (i64) -> i64 system_v
+    sig19 = (i64) -> i64 system_v
+    sig20 = (i64, i64) -> i64 system_v
+    sig21 = (i64, i64, i64) -> i64 system_v
+    sig22 = (i64, i64) system_v
+    sig23 = (i64, i64) -> i64 system_v
+    sig24 = (i64, i64) -> i64 system_v
+    sig25 = (i64) system_v
+    sig26 = (i64) -> i64 system_v
     sig27 = (i64) -> i64 system_v
     sig28 = (i64) -> i64 system_v
-    sig29 = (i64, i64, i64) -> i64 system_v
-    sig30 = (i64) system_v
-    sig31 = (i64) system_v
+    sig29 = (i64, i64) -> i64 system_v
+    sig30 = (i64, i64, i64) -> i64 system_v
+    sig31 = (i64, i64) system_v
     sig32 = (i64, i64) -> i64 system_v
     sig33 = (i64, i64) -> i64 system_v
-    sig34 = (i64) -> i64 system_v
+    sig34 = (i64) system_v
     sig35 = (i64) -> i64 system_v
-    sig36 = (i64, i64, i64) -> i64 system_v
-    sig37 = (i64) system_v
-    sig38 = (i64) system_v
-    sig39 = (i64, i64) -> i64 system_v
-    sig40 = (i64, i64) -> i64 system_v
-    sig41 = (i64) -> i64 system_v
-    sig42 = (i64) -> i64 system_v
-    sig43 = (i64, i64, i64) -> i64 system_v
-    sig44 = (i64) system_v
-    sig45 = (i64) system_v
-    sig46 = (i64, i64) -> i64 system_v
+    sig36 = (i64) -> i64 system_v
+    sig37 = (i64) -> i64 system_v
+    sig38 = (i64, i64) -> i64 system_v
+    sig39 = (i64, i64, i64) -> i64 system_v
+    sig40 = (i64, i64) system_v
+    sig41 = (i64, i64) -> i64 system_v
+    sig42 = (i64, i64) -> i64 system_v
+    sig43 = (i64) system_v
+    sig44 = (i64) -> i64 system_v
+    sig45 = (i64) -> i64 system_v
+    sig46 = (i64) -> i64 system_v
     sig47 = (i64, i64) -> i64 system_v
-    sig48 = (i64) -> i64 system_v
-    sig49 = (i64) -> i64 system_v
-    sig50 = (i64, i64, i64) -> i64 system_v
-    sig51 = (i64) system_v
+    sig48 = (i64, i64, i64) -> i64 system_v
+    sig49 = (i64, i64) system_v
+    sig50 = (i64, i64) -> i64 system_v
+    sig51 = (i64, i64) -> i64 system_v
     sig52 = (i64) system_v
-    sig53 = (i64, i64) -> i64 system_v
-    sig54 = (i64, i64) -> i64 system_v
+    sig53 = (i64) -> i64 system_v
+    sig54 = (i64) -> i64 system_v
     sig55 = (i64) -> i64 system_v
-    sig56 = (i64) -> i64 system_v
+    sig56 = (i64, i64) -> i64 system_v
     sig57 = (i64, i64, i64) -> i64 system_v
-    sig58 = (i64) system_v
-    sig59 = (i64) system_v
+    sig58 = (i64, i64) system_v
+    sig59 = (i64, i64) -> i64 system_v
     sig60 = (i64, i64) -> i64 system_v
-    sig61 = (i64, i64) -> i64 system_v
+    sig61 = (i64) system_v
     sig62 = (i64) -> i64 system_v
     sig63 = (i64) -> i64 system_v
-    sig64 = (i64, i64, i64) -> i64 system_v
-    sig65 = (i64) system_v
-    sig66 = (i64) system_v
-    sig67 = (i64, i64) -> i64 system_v
+    sig64 = (i64) -> i64 system_v
+    sig65 = (i64, i64) -> i64 system_v
+    sig66 = (i64, i64, i64) -> i64 system_v
+    sig67 = (i64, i64) system_v
     sig68 = (i64, i64) -> i64 system_v
-    sig69 = (i64) -> i64 system_v
-    sig70 = (i64) -> i64 system_v
-    sig71 = (i64, i64, i64) -> i64 system_v
-    sig72 = (i64) system_v
-    sig73 = (i64) system_v
+    sig69 = (i64, i64) -> i64 system_v
+    sig70 = (i64) system_v
+    sig71 = (i64) -> i64 system_v
+    sig72 = (i64) -> i64 system_v
+    sig73 = (i64) -> i64 system_v
     sig74 = (i64, i64) -> i64 system_v
-    sig75 = (i64, i64) -> i64 system_v
-    sig76 = () -> i64 system_v
-    sig77 = (i64) -> i64 system_v
-    sig78 = (i64) -> i64 system_v
-    sig79 = (i64) -> i64 system_v
-    sig80 = (i64, i64) -> i64 system_v
-    sig81 = (i64, i64, i64) -> i64 system_v
-    sig82 = (i64, i64) system_v
-    sig83 = (i64) system_v
-    sig84 = (i64) system_v
-    sig85 = (i64) system_v
-    sig86 = (i64) system_v
-    fn0 = u0:10 sig3
-    fn1 = u0:0 sig6
-    fn2 = colocated u0:89 sig7
-    fn3 = u0:23 sig8
+    sig75 = (i64, i64, i64) -> i64 system_v
+    sig76 = (i64, i64) system_v
+    sig77 = (i64, i64) -> i64 system_v
+    sig78 = (i64, i64) -> i64 system_v
+    sig79 = (i64) system_v
+    sig80 = (i64) -> i64 system_v
+    sig81 = (i64) -> i64 system_v
+    sig82 = (i64) -> i64 system_v
+    sig83 = (i64, i64) -> i64 system_v
+    sig84 = (i64, i64, i64) -> i64 system_v
+    sig85 = (i64, i64) system_v
+    sig86 = (i64, i64) -> i64 system_v
+    sig87 = (i64, i64) -> i64 system_v
+    sig88 = (i64) system_v
+    sig89 = (i64) -> i64 system_v
+    sig90 = (i64) -> i64 system_v
+    sig91 = (i64) -> i64 system_v
+    sig92 = (i64, i64) -> i64 system_v
+    sig93 = (i64, i64, i64) -> i64 system_v
+    sig94 = (i64, i64) system_v
+    sig95 = (i64, i64) -> i64 system_v
+    sig96 = (i64, i64) -> i64 system_v
+    sig97 = () -> i64 system_v
+    sig98 = (i64) -> i64 system_v
+    sig99 = (i64) -> i64 system_v
+    sig100 = (i64) -> i64 system_v
+    sig101 = (i64, i64) -> i64 system_v
+    sig102 = (i64, i64, i64) -> i64 system_v
+    sig103 = (i64, i64) system_v
+    sig104 = (i64) system_v
+    sig105 = (i64) system_v
+    fn0 = colocated u0:89 sig0
+    fn1 = u0:10 sig4
+    fn2 = colocated u0:89 sig6
+    fn3 = u0:0 sig8
     fn4 = colocated u0:90 sig9
-    fn5 = colocated u0:84 sig10
-    fn6 = u0:10 sig11
-    fn7 = u0:0 sig13
-    fn8 = colocated u0:89 sig14
-    fn9 = u0:23 sig15
-    fn10 = colocated u0:90 sig16
-    fn11 = colocated u0:84 sig17
-    fn12 = u0:10 sig18
-    fn13 = u0:0 sig20
-    fn14 = colocated u0:89 sig21
-    fn15 = u0:23 sig22
-    fn16 = colocated u0:90 sig23
-    fn17 = colocated u0:84 sig24
-    fn18 = u0:10 sig25
-    fn19 = u0:0 sig27
-    fn20 = colocated u0:89 sig28
-    fn21 = u0:23 sig29
-    fn22 = colocated u0:90 sig30
-    fn23 = colocated u0:84 sig31
-    fn24 = u0:10 sig32
-    fn25 = u0:0 sig34
-    fn26 = colocated u0:89 sig35
-    fn27 = u0:23 sig36
-    fn28 = colocated u0:90 sig37
-    fn29 = colocated u0:84 sig38
-    fn30 = u0:10 sig39
-    fn31 = u0:0 sig41
-    fn32 = colocated u0:89 sig42
-    fn33 = u0:23 sig43
-    fn34 = colocated u0:90 sig44
-    fn35 = colocated u0:84 sig45
-    fn36 = u0:10 sig46
-    fn37 = u0:0 sig48
-    fn38 = colocated u0:89 sig49
-    fn39 = u0:23 sig50
-    fn40 = colocated u0:90 sig51
-    fn41 = colocated u0:84 sig52
-    fn42 = u0:10 sig53
-    fn43 = u0:0 sig55
-    fn44 = colocated u0:89 sig56
-    fn45 = u0:23 sig57
-    fn46 = colocated u0:90 sig58
-    fn47 = colocated u0:84 sig59
-    fn48 = u0:10 sig60
-    fn49 = u0:0 sig62
-    fn50 = colocated u0:89 sig63
-    fn51 = u0:23 sig64
-    fn52 = colocated u0:90 sig65
-    fn53 = colocated u0:84 sig66
-    fn54 = u0:10 sig67
-    fn55 = u0:0 sig69
-    fn56 = colocated u0:89 sig70
-    fn57 = u0:23 sig71
-    fn58 = colocated u0:90 sig72
-    fn59 = colocated u0:84 sig73
-    fn60 = u0:10 sig74
-    fn61 = u0:0 sig77
-    fn62 = colocated u0:89 sig78
-    fn63 = colocated u0:86 sig79
-    fn64 = u0:24 sig80
-    fn65 = u0:23 sig81
-    fn66 = u0:13 sig82
-    fn67 = colocated u0:90 sig83
-    fn68 = colocated u0:90 sig84
-    fn69 = colocated u0:90 sig85
-    fn70 = colocated u0:84 sig86
+    fn5 = colocated u0:86 sig10
+    fn6 = u0:24 sig11
+    fn7 = u0:23 sig12
+    fn8 = u0:13 sig13
+    fn9 = u0:10 sig14
+    fn10 = colocated u0:89 sig16
+    fn11 = u0:0 sig17
+    fn12 = colocated u0:90 sig18
+    fn13 = colocated u0:86 sig19
+    fn14 = u0:24 sig20
+    fn15 = u0:23 sig21
+    fn16 = u0:13 sig22
+    fn17 = u0:10 sig23
+    fn18 = colocated u0:89 sig25
+    fn19 = u0:0 sig26
+    fn20 = colocated u0:90 sig27
+    fn21 = colocated u0:86 sig28
+    fn22 = u0:24 sig29
+    fn23 = u0:23 sig30
+    fn24 = u0:13 sig31
+    fn25 = u0:10 sig32
+    fn26 = colocated u0:89 sig34
+    fn27 = u0:0 sig35
+    fn28 = colocated u0:90 sig36
+    fn29 = colocated u0:86 sig37
+    fn30 = u0:24 sig38
+    fn31 = u0:23 sig39
+    fn32 = u0:13 sig40
+    fn33 = u0:10 sig41
+    fn34 = colocated u0:89 sig43
+    fn35 = u0:0 sig44
+    fn36 = colocated u0:90 sig45
+    fn37 = colocated u0:86 sig46
+    fn38 = u0:24 sig47
+    fn39 = u0:23 sig48
+    fn40 = u0:13 sig49
+    fn41 = u0:10 sig50
+    fn42 = colocated u0:89 sig52
+    fn43 = u0:0 sig53
+    fn44 = colocated u0:90 sig54
+    fn45 = colocated u0:86 sig55
+    fn46 = u0:24 sig56
+    fn47 = u0:23 sig57
+    fn48 = u0:13 sig58
+    fn49 = u0:10 sig59
+    fn50 = colocated u0:89 sig61
+    fn51 = u0:0 sig62
+    fn52 = colocated u0:90 sig63
+    fn53 = colocated u0:86 sig64
+    fn54 = u0:24 sig65
+    fn55 = u0:23 sig66
+    fn56 = u0:13 sig67
+    fn57 = u0:10 sig68
+    fn58 = colocated u0:89 sig70
+    fn59 = u0:0 sig71
+    fn60 = colocated u0:90 sig72
+    fn61 = colocated u0:86 sig73
+    fn62 = u0:24 sig74
+    fn63 = u0:23 sig75
+    fn64 = u0:13 sig76
+    fn65 = u0:10 sig77
+    fn66 = colocated u0:89 sig79
+    fn67 = u0:0 sig80
+    fn68 = colocated u0:90 sig81
+    fn69 = colocated u0:86 sig82
+    fn70 = u0:24 sig83
+    fn71 = u0:23 sig84
+    fn72 = u0:13 sig85
+    fn73 = u0:10 sig86
+    fn74 = colocated u0:89 sig88
+    fn75 = u0:0 sig89
+    fn76 = colocated u0:90 sig90
+    fn77 = colocated u0:86 sig91
+    fn78 = u0:24 sig92
+    fn79 = u0:23 sig93
+    fn80 = u0:13 sig94
+    fn81 = u0:10 sig95
+    fn82 = u0:0 sig98
+    fn83 = colocated u0:90 sig99
+    fn84 = colocated u0:86 sig100
+    fn85 = u0:24 sig101
+    fn86 = u0:23 sig102
+    fn87 = u0:13 sig103
+    fn88 = colocated u0:89 sig104
+    fn89 = colocated u0:84 sig105
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -2041,534 +2155,869 @@ block1(v3: i64, v4: i64, v5: i64):
     brif v8, block2, block3
 
 block2:
-    v10 = iadd_imm.i64 v5, 8
-    v11 = iconst.i64 1
-    v12 = atomic_rmw.i64 add v10, v11  ; v11 = 1
-    v13 = global_value.i64 gv0
-    v14 = iadd_imm v13, 48
-    v15 = load.i64 notrap aligned v14
-    v16 = call_indirect sig0, v15(v5)
-    v17 = global_value.i64 gv1
-    v18 = iadd_imm v17, 24
-    v19 = load.i64 notrap aligned v18
-    v20 = call_indirect sig1, v19(v16)
-    jump block4(v20, v3, v5)
+    call fn0(v3)
+    v10 = global_value.i64 gv0
+    v11 = iadd_imm v10, 48
+    v12 = load.i64 notrap aligned v11
+    v13 = call_indirect sig1, v12(v5)
+    v14 = global_value.i64 gv1
+    v15 = iadd_imm v14, 24
+    v16 = load.i64 notrap aligned v15
+    v17 = call_indirect sig2, v16(v13)
+    jump block4(v17)
 
 block3:
-    v21 = iadd_imm.i64 v3, 8
-    v22 = iconst.i64 1
-    v23 = atomic_rmw.i64 add v21, v22  ; v22 = 1
-    v24 = global_value.i64 gv2
-    v25 = iadd_imm v24, 304
-    v26 = load.i64 notrap aligned v25
-    v27 = call_indirect sig2, v26(v3, v4)
-    v271 -> v27
-    v272 -> v27
-    v28 = iadd_imm v27, 8
+    v18 = iadd_imm.i64 v3, 8
+    v19 = iconst.i64 1
+    v20 = atomic_rmw.i64 add v18, v19  ; v19 = 1
+    v21 = global_value.i64 gv2
+    v22 = iadd_imm v21, 304
+    v23 = load.i64 notrap aligned v22
+    v24 = call_indirect sig3, v23(v3, v4)
+    v25 = iadd_imm v24, 8
+    v26 = iconst.i64 1
+    v27 = atomic_rmw.i64 add v25, v26  ; v26 = 1
+    v28 = global_value.i64 gv3
     v29 = iconst.i64 1
-    v30 = atomic_rmw.i64 add v28, v29  ; v29 = 1
-    v31 = global_value.i64 gv3
-    v32 = iconst.i64 1
-    v33 = call fn0(v31, v32)  ; v32 = 1
-    v34 = global_value.i64 gv4
-    v35 = iadd_imm v34, 224
-    v36 = load.i64 notrap aligned v35
-    v37 = call_indirect sig4, v36(v27, v33)
-    brif v37, block5, block6
+    v30 = call fn1(v28, v29)  ; v29 = 1
+    v31 = global_value.i64 gv4
+    v32 = iadd_imm v31, 224
+    v33 = load.i64 notrap aligned v32
+    v34 = call_indirect sig5, v33(v24, v30)
+    brif v34, block5, block6
 
 block5:
-    v39 = iconst.i64 1
-    v40 = iadd.i64 v4, v39  ; v39 = 1
-    v41 = global_value.i64 gv5
-    v42 = iadd_imm v41, 96
-    v43 = load.i64 notrap aligned v42
-    v44 = call_indirect sig5, v43()
-    v45 = iconst.i64 16
-    v46 = call fn1(v45)  ; v45 = 16
-    v47 = iconst.i64 2
-    store notrap aligned v47, v46+16  ; v47 = 2
-    store notrap aligned v44, v46+24
-    v48 = func_addr.i64 fn2
-    v49 = call fn3(v5, v46, v48)
-    call fn4(v27)
-    call fn5(v5)
-    jump block1(v3, v40, v49)
+    call fn2(v24)
+    v36 = iconst.i64 1
+    v37 = iadd.i64 v4, v36  ; v36 = 1
+    v38 = global_value.i64 gv5
+    v39 = iadd_imm v38, 96
+    v40 = load.i64 notrap aligned v39
+    v41 = call_indirect sig7, v40()
+    v42 = iconst.i64 16
+    v43 = call fn3(v42)  ; v42 = 16
+    v44 = iconst.i64 2
+    store notrap aligned v44, v43+16  ; v44 = 2
+    store notrap aligned v41, v43+24
+    v45 = func_addr.i64 fn4
+    v46 = func_addr.i64 fn5
+    v47 = load.i64 notrap aligned v5+8
+    v48 = iconst.i64 1
+    v49 = icmp eq v47, v48  ; v48 = 1
+    brif v49, block8, block9
 
 block8:
-    v345 = iconst.i64 0
-    v344 -> v345
-    v311 = iconst.i64 0
-    v310 -> v311
-    v277 = iconst.i64 0
-    v276 -> v277
-    v50 = iconst.i64 0
-    jump block7(v50, v277, v311, v345)  ; v50 = 0, v277 = 0, v311 = 0, v345 = 0
+    v51 = load.i64 notrap aligned v5+16
+    v52 = load.i64 notrap aligned v5+24
+    v53 = icmp slt v51, v52
+    brif v53, block11, block12
 
-block6:
-    v51 = iadd_imm.i64 v27, 8
-    v52 = iconst.i64 1
-    v53 = atomic_rmw.i64 add v51, v52  ; v52 = 1
-    v54 = global_value.i64 gv6
-    v55 = iconst.i64 1
-    v56 = call fn6(v54, v55)  ; v55 = 1
-    v57 = global_value.i64 gv7
-    v58 = iadd_imm v57, 224
-    v59 = load.i64 notrap aligned v58
-    v60 = call_indirect sig12, v59(v27, v56)
-    brif v60, block9, block10
-
-block9:
-    v62 = iconst.i64 1
-    v63 = iadd.i64 v4, v62  ; v62 = 1
-    v64 = iconst.i64 1
-    v65 = iconst.i64 16
-    v66 = call fn7(v65)  ; v65 = 16
-    v67 = iconst.i64 0
-    store notrap aligned v67, v66+16  ; v67 = 0
-    store notrap aligned v64, v66+24  ; v64 = 1
-    v68 = func_addr.i64 fn8
-    v69 = call fn9(v5, v66, v68)
-    call fn10(v27)
-    call fn11(v5)
-    jump block1(v3, v63, v69)
+block11:
+    v54 = load.i64 notrap aligned v5+32
+    v55 = iconst.i64 8
+    v56 = imul.i64 v51, v55  ; v55 = 8
+    v57 = iadd v54, v56
+    store.i64 notrap aligned v43, v57
+    v58 = iadd_imm.i64 v51, 1
+    store notrap aligned v58, v5+16
+    jump block10(v5)
 
 block12:
-    v348 = iconst.i64 0
-    v347 -> v348
-    v314 = iconst.i64 0
-    v313 -> v314
-    v280 = iconst.i64 0
-    v279 -> v280
-    v70 = iconst.i64 0
-    jump block11(v70, v280, v314, v348)  ; v70 = 0, v280 = 0, v314 = 0, v348 = 0
+    v59 = call fn6(v5, v43)
+    jump block10(v59)
 
-block10:
-    v71 = iadd_imm.i64 v27, 8
-    v72 = iconst.i64 1
-    v73 = atomic_rmw.i64 add v71, v72  ; v72 = 1
-    v74 = global_value.i64 gv8
-    v75 = iconst.i64 1
-    v76 = call fn12(v74, v75)  ; v75 = 1
-    v77 = global_value.i64 gv9
-    v78 = iadd_imm v77, 224
-    v79 = load.i64 notrap aligned v78
-    v80 = call_indirect sig19, v79(v27, v76)
-    brif v80, block13, block14
-
-block13:
-    v82 = iconst.i64 1
-    v83 = iadd.i64 v4, v82  ; v82 = 1
-    v84 = iconst.i64 2
-    v85 = iconst.i64 16
-    v86 = call fn13(v85)  ; v85 = 16
-    v87 = iconst.i64 0
-    store notrap aligned v87, v86+16  ; v87 = 0
-    store notrap aligned v84, v86+24  ; v84 = 2
-    v88 = func_addr.i64 fn14
-    v89 = call fn15(v5, v86, v88)
-    call fn16(v27)
-    call fn17(v5)
-    jump block1(v3, v83, v89)
-
-block16:
-    v351 = iconst.i64 0
-    v350 -> v351
-    v317 = iconst.i64 0
-    v316 -> v317
-    v283 = iconst.i64 0
-    v282 -> v283
-    v90 = iconst.i64 0
-    jump block15(v90, v283, v317, v351)  ; v90 = 0, v283 = 0, v317 = 0, v351 = 0
+block9:
+    v60 = call fn7(v5, v43, v45)
+    v61 = iadd_imm.i64 v5, 8
+    v62 = iconst.i64 1
+    v63 = atomic_rmw.i64 sub v61, v62  ; v62 = 1
+    v64 = icmp eq v63, v62  ; v62 = 1
+    brif v64, block14, block13
 
 block14:
-    v91 = iadd_imm.i64 v27, 8
-    v92 = iconst.i64 1
-    v93 = atomic_rmw.i64 add v91, v92  ; v92 = 1
-    v94 = global_value.i64 gv10
-    v95 = iconst.i64 1
-    v96 = call fn18(v94, v95)  ; v95 = 1
-    v97 = global_value.i64 gv11
-    v98 = iadd_imm v97, 224
-    v99 = load.i64 notrap aligned v98
-    v100 = call_indirect sig26, v99(v27, v96)
-    brif v100, block17, block18
+    fence 
+    call fn8(v5, v46)
+    jump block13
 
-block17:
-    v102 = iconst.i64 1
-    v103 = iadd.i64 v4, v102  ; v102 = 1
-    v104 = iconst.i64 3
-    v105 = iconst.i64 16
-    v106 = call fn19(v105)  ; v105 = 16
-    v107 = iconst.i64 0
-    store notrap aligned v107, v106+16  ; v107 = 0
-    store notrap aligned v104, v106+24  ; v104 = 3
-    v108 = func_addr.i64 fn20
-    v109 = call fn21(v5, v106, v108)
-    call fn22(v27)
-    call fn23(v5)
-    jump block1(v3, v103, v109)
+block13:
+    jump block10(v60)
 
-block20:
-    v354 = iconst.i64 0
-    v353 -> v354
-    v320 = iconst.i64 0
-    v319 -> v320
-    v286 = iconst.i64 0
-    v285 -> v286
-    v110 = iconst.i64 0
-    jump block19(v110, v286, v320, v354)  ; v110 = 0, v286 = 0, v320 = 0, v354 = 0
+block10(v50: i64):
+    jump block1(v3, v37, v50)
 
-block18:
-    v111 = iadd_imm.i64 v27, 8
-    v112 = iconst.i64 1
-    v113 = atomic_rmw.i64 add v111, v112  ; v112 = 1
-    v114 = global_value.i64 gv12
-    v115 = iconst.i64 1
-    v116 = call fn24(v114, v115)  ; v115 = 1
-    v117 = global_value.i64 gv13
-    v118 = iadd_imm v117, 224
-    v119 = load.i64 notrap aligned v118
-    v120 = call_indirect sig33, v119(v27, v116)
-    brif v120, block21, block22
+block15:
+    v65 = iconst.i64 0
+    jump block7(v65)  ; v65 = 0
 
-block21:
-    v122 = iconst.i64 1
-    v123 = iadd.i64 v4, v122  ; v122 = 1
-    v124 = iconst.i64 4
-    v125 = iconst.i64 16
-    v126 = call fn25(v125)  ; v125 = 16
-    v127 = iconst.i64 0
-    store notrap aligned v127, v126+16  ; v127 = 0
-    store notrap aligned v124, v126+24  ; v124 = 4
-    v128 = func_addr.i64 fn26
-    v129 = call fn27(v5, v126, v128)
-    call fn28(v27)
-    call fn29(v5)
-    jump block1(v3, v123, v129)
+block6:
+    v66 = iadd_imm.i64 v24, 8
+    v67 = iconst.i64 1
+    v68 = atomic_rmw.i64 add v66, v67  ; v67 = 1
+    v69 = global_value.i64 gv6
+    v70 = iconst.i64 1
+    v71 = call fn9(v69, v70)  ; v70 = 1
+    v72 = global_value.i64 gv7
+    v73 = iadd_imm v72, 224
+    v74 = load.i64 notrap aligned v73
+    v75 = call_indirect sig15, v74(v24, v71)
+    brif v75, block16, block17
 
-block24:
-    v357 = iconst.i64 0
-    v356 -> v357
-    v323 = iconst.i64 0
-    v322 -> v323
-    v289 = iconst.i64 0
-    v288 -> v289
-    v130 = iconst.i64 0
-    jump block23(v130, v289, v323, v357)  ; v130 = 0, v289 = 0, v323 = 0, v357 = 0
+block16:
+    call fn10(v24)
+    v77 = iconst.i64 1
+    v78 = iadd.i64 v4, v77  ; v77 = 1
+    v79 = iconst.i64 1
+    v80 = iconst.i64 16
+    v81 = call fn11(v80)  ; v80 = 16
+    v82 = iconst.i64 0
+    store notrap aligned v82, v81+16  ; v82 = 0
+    store notrap aligned v79, v81+24  ; v79 = 1
+    v83 = func_addr.i64 fn12
+    v84 = func_addr.i64 fn13
+    v85 = load.i64 notrap aligned v5+8
+    v86 = iconst.i64 1
+    v87 = icmp eq v85, v86  ; v86 = 1
+    brif v87, block19, block20
+
+block19:
+    v89 = load.i64 notrap aligned v5+16
+    v90 = load.i64 notrap aligned v5+24
+    v91 = icmp slt v89, v90
+    brif v91, block22, block23
 
 block22:
-    v131 = iadd_imm.i64 v27, 8
-    v132 = iconst.i64 1
-    v133 = atomic_rmw.i64 add v131, v132  ; v132 = 1
-    v134 = global_value.i64 gv14
-    v135 = iconst.i64 1
-    v136 = call fn30(v134, v135)  ; v135 = 1
-    v137 = global_value.i64 gv15
-    v138 = iadd_imm v137, 224
-    v139 = load.i64 notrap aligned v138
-    v140 = call_indirect sig40, v139(v27, v136)
-    brif v140, block25, block26
+    v92 = load.i64 notrap aligned v5+32
+    v93 = iconst.i64 8
+    v94 = imul.i64 v89, v93  ; v93 = 8
+    v95 = iadd v92, v94
+    store.i64 notrap aligned v81, v95
+    v96 = iadd_imm.i64 v89, 1
+    store notrap aligned v96, v5+16
+    jump block21(v5)
+
+block23:
+    v97 = call fn14(v5, v81)
+    jump block21(v97)
+
+block20:
+    v98 = call fn15(v5, v81, v83)
+    v99 = iadd_imm.i64 v5, 8
+    v100 = iconst.i64 1
+    v101 = atomic_rmw.i64 sub v99, v100  ; v100 = 1
+    v102 = icmp eq v101, v100  ; v100 = 1
+    brif v102, block25, block24
 
 block25:
-    v142 = iconst.i64 1
-    v143 = iadd.i64 v4, v142  ; v142 = 1
-    v144 = iconst.i64 5
-    v145 = iconst.i64 16
-    v146 = call fn31(v145)  ; v145 = 16
-    v147 = iconst.i64 0
-    store notrap aligned v147, v146+16  ; v147 = 0
-    store notrap aligned v144, v146+24  ; v144 = 5
-    v148 = func_addr.i64 fn32
-    v149 = call fn33(v5, v146, v148)
-    call fn34(v27)
-    call fn35(v5)
-    jump block1(v3, v143, v149)
+    fence 
+    call fn16(v5, v84)
+    jump block24
 
-block28:
-    v360 = iconst.i64 0
-    v359 -> v360
-    v326 = iconst.i64 0
-    v325 -> v326
-    v292 = iconst.i64 0
-    v291 -> v292
-    v150 = iconst.i64 0
-    jump block27(v150, v292, v326, v360)  ; v150 = 0, v292 = 0, v326 = 0, v360 = 0
+block24:
+    jump block21(v98)
+
+block21(v88: i64):
+    jump block1(v3, v78, v88)
 
 block26:
-    v151 = iadd_imm.i64 v27, 8
-    v152 = iconst.i64 1
-    v153 = atomic_rmw.i64 add v151, v152  ; v152 = 1
-    v154 = global_value.i64 gv16
-    v155 = iconst.i64 1
-    v156 = call fn36(v154, v155)  ; v155 = 1
-    v157 = global_value.i64 gv17
-    v158 = iadd_imm v157, 224
-    v159 = load.i64 notrap aligned v158
-    v160 = call_indirect sig47, v159(v27, v156)
-    brif v160, block29, block30
+    v103 = iconst.i64 0
+    jump block18(v103)  ; v103 = 0
 
-block29:
-    v162 = iconst.i64 1
-    v163 = iadd.i64 v4, v162  ; v162 = 1
-    v164 = iconst.i64 6
-    v165 = iconst.i64 16
-    v166 = call fn37(v165)  ; v165 = 16
-    v167 = iconst.i64 0
-    store notrap aligned v167, v166+16  ; v167 = 0
-    store notrap aligned v164, v166+24  ; v164 = 6
-    v168 = func_addr.i64 fn38
-    v169 = call fn39(v5, v166, v168)
-    call fn40(v27)
-    call fn41(v5)
-    jump block1(v3, v163, v169)
+block17:
+    v104 = iadd_imm.i64 v24, 8
+    v105 = iconst.i64 1
+    v106 = atomic_rmw.i64 add v104, v105  ; v105 = 1
+    v107 = global_value.i64 gv8
+    v108 = iconst.i64 1
+    v109 = call fn17(v107, v108)  ; v108 = 1
+    v110 = global_value.i64 gv9
+    v111 = iadd_imm v110, 224
+    v112 = load.i64 notrap aligned v111
+    v113 = call_indirect sig24, v112(v24, v109)
+    brif v113, block27, block28
 
-block32:
-    v363 = iconst.i64 0
-    v362 -> v363
-    v329 = iconst.i64 0
-    v328 -> v329
-    v295 = iconst.i64 0
-    v294 -> v295
-    v170 = iconst.i64 0
-    jump block31(v170, v295, v329, v363)  ; v170 = 0, v295 = 0, v329 = 0, v363 = 0
+block27:
+    call fn18(v24)
+    v115 = iconst.i64 1
+    v116 = iadd.i64 v4, v115  ; v115 = 1
+    v117 = iconst.i64 2
+    v118 = iconst.i64 16
+    v119 = call fn19(v118)  ; v118 = 16
+    v120 = iconst.i64 0
+    store notrap aligned v120, v119+16  ; v120 = 0
+    store notrap aligned v117, v119+24  ; v117 = 2
+    v121 = func_addr.i64 fn20
+    v122 = func_addr.i64 fn21
+    v123 = load.i64 notrap aligned v5+8
+    v124 = iconst.i64 1
+    v125 = icmp eq v123, v124  ; v124 = 1
+    brif v125, block30, block31
 
 block30:
-    v171 = iadd_imm.i64 v27, 8
-    v172 = iconst.i64 1
-    v173 = atomic_rmw.i64 add v171, v172  ; v172 = 1
-    v174 = global_value.i64 gv18
-    v175 = iconst.i64 1
-    v176 = call fn42(v174, v175)  ; v175 = 1
-    v177 = global_value.i64 gv19
-    v178 = iadd_imm v177, 224
-    v179 = load.i64 notrap aligned v178
-    v180 = call_indirect sig54, v179(v27, v176)
-    brif v180, block33, block34
+    v127 = load.i64 notrap aligned v5+16
+    v128 = load.i64 notrap aligned v5+24
+    v129 = icmp slt v127, v128
+    brif v129, block33, block34
 
 block33:
-    v182 = iconst.i64 1
-    v183 = iadd.i64 v4, v182  ; v182 = 1
-    v184 = iconst.i64 7
-    v185 = iconst.i64 16
-    v186 = call fn43(v185)  ; v185 = 16
-    v187 = iconst.i64 0
-    store notrap aligned v187, v186+16  ; v187 = 0
-    store notrap aligned v184, v186+24  ; v184 = 7
-    v188 = func_addr.i64 fn44
-    v189 = call fn45(v5, v186, v188)
-    call fn46(v27)
-    call fn47(v5)
-    jump block1(v3, v183, v189)
-
-block36:
-    v366 = iconst.i64 0
-    v365 -> v366
-    v332 = iconst.i64 0
-    v331 -> v332
-    v298 = iconst.i64 0
-    v297 -> v298
-    v190 = iconst.i64 0
-    jump block35(v190, v298, v332, v366)  ; v190 = 0, v298 = 0, v332 = 0, v366 = 0
+    v130 = load.i64 notrap aligned v5+32
+    v131 = iconst.i64 8
+    v132 = imul.i64 v127, v131  ; v131 = 8
+    v133 = iadd v130, v132
+    store.i64 notrap aligned v119, v133
+    v134 = iadd_imm.i64 v127, 1
+    store notrap aligned v134, v5+16
+    jump block32(v5)
 
 block34:
-    v191 = iadd_imm.i64 v27, 8
-    v192 = iconst.i64 1
-    v193 = atomic_rmw.i64 add v191, v192  ; v192 = 1
-    v194 = global_value.i64 gv20
-    v195 = iconst.i64 1
-    v196 = call fn48(v194, v195)  ; v195 = 1
-    v197 = global_value.i64 gv21
-    v198 = iadd_imm v197, 224
-    v199 = load.i64 notrap aligned v198
-    v200 = call_indirect sig61, v199(v27, v196)
-    brif v200, block37, block38
+    v135 = call fn22(v5, v119)
+    jump block32(v135)
+
+block31:
+    v136 = call fn23(v5, v119, v121)
+    v137 = iadd_imm.i64 v5, 8
+    v138 = iconst.i64 1
+    v139 = atomic_rmw.i64 sub v137, v138  ; v138 = 1
+    v140 = icmp eq v139, v138  ; v138 = 1
+    brif v140, block36, block35
+
+block36:
+    fence 
+    call fn24(v5, v122)
+    jump block35
+
+block35:
+    jump block32(v136)
+
+block32(v126: i64):
+    jump block1(v3, v116, v126)
 
 block37:
-    v202 = iconst.i64 1
-    v203 = iadd.i64 v4, v202  ; v202 = 1
-    v204 = iconst.i64 8
-    v205 = iconst.i64 16
-    v206 = call fn49(v205)  ; v205 = 16
-    v207 = iconst.i64 0
-    store notrap aligned v207, v206+16  ; v207 = 0
-    store notrap aligned v204, v206+24  ; v204 = 8
-    v208 = func_addr.i64 fn50
-    v209 = call fn51(v5, v206, v208)
-    call fn52(v27)
-    call fn53(v5)
-    jump block1(v3, v203, v209)
+    v141 = iconst.i64 0
+    jump block29(v141)  ; v141 = 0
 
-block40:
-    v369 = iconst.i64 0
-    v368 -> v369
-    v335 = iconst.i64 0
-    v334 -> v335
-    v301 = iconst.i64 0
-    v300 -> v301
-    v210 = iconst.i64 0
-    jump block39(v210, v301, v335, v369)  ; v210 = 0, v301 = 0, v335 = 0, v369 = 0
+block28:
+    v142 = iadd_imm.i64 v24, 8
+    v143 = iconst.i64 1
+    v144 = atomic_rmw.i64 add v142, v143  ; v143 = 1
+    v145 = global_value.i64 gv10
+    v146 = iconst.i64 1
+    v147 = call fn25(v145, v146)  ; v146 = 1
+    v148 = global_value.i64 gv11
+    v149 = iadd_imm v148, 224
+    v150 = load.i64 notrap aligned v149
+    v151 = call_indirect sig33, v150(v24, v147)
+    brif v151, block38, block39
 
 block38:
-    v211 = iadd_imm.i64 v27, 8
-    v212 = iconst.i64 1
-    v213 = atomic_rmw.i64 add v211, v212  ; v212 = 1
-    v214 = global_value.i64 gv22
-    v215 = iconst.i64 1
-    v216 = call fn54(v214, v215)  ; v215 = 1
-    v217 = global_value.i64 gv23
-    v218 = iadd_imm v217, 224
-    v219 = load.i64 notrap aligned v218
-    v220 = call_indirect sig68, v219(v27, v216)
-    brif v220, block41, block42
+    call fn26(v24)
+    v153 = iconst.i64 1
+    v154 = iadd.i64 v4, v153  ; v153 = 1
+    v155 = iconst.i64 3
+    v156 = iconst.i64 16
+    v157 = call fn27(v156)  ; v156 = 16
+    v158 = iconst.i64 0
+    store notrap aligned v158, v157+16  ; v158 = 0
+    store notrap aligned v155, v157+24  ; v155 = 3
+    v159 = func_addr.i64 fn28
+    v160 = func_addr.i64 fn29
+    v161 = load.i64 notrap aligned v5+8
+    v162 = iconst.i64 1
+    v163 = icmp eq v161, v162  ; v162 = 1
+    brif v163, block41, block42
 
 block41:
-    v222 = iconst.i64 1
-    v223 = iadd.i64 v4, v222  ; v222 = 1
-    v224 = iconst.i64 9
-    v225 = iconst.i64 16
-    v226 = call fn55(v225)  ; v225 = 16
-    v227 = iconst.i64 0
-    store notrap aligned v227, v226+16  ; v227 = 0
-    store notrap aligned v224, v226+24  ; v224 = 9
-    v228 = func_addr.i64 fn56
-    v229 = call fn57(v5, v226, v228)
-    call fn58(v27)
-    call fn59(v5)
-    jump block1(v3, v223, v229)
+    v165 = load.i64 notrap aligned v5+16
+    v166 = load.i64 notrap aligned v5+24
+    v167 = icmp slt v165, v166
+    brif v167, block44, block45
 
 block44:
-    v372 = iconst.i64 0
-    v371 -> v372
-    v338 = iconst.i64 0
-    v337 -> v338
-    v304 = iconst.i64 0
-    v303 -> v304
-    v230 = iconst.i64 0
-    jump block43(v230, v304, v338, v372)  ; v230 = 0, v304 = 0, v338 = 0, v372 = 0
-
-block42:
-    v231 = iadd_imm.i64 v27, 8
-    v232 = iconst.i64 1
-    v233 = atomic_rmw.i64 add v231, v232  ; v232 = 1
-    v234 = global_value.i64 gv24
-    v235 = iconst.i64 1
-    v236 = call fn60(v234, v235)  ; v235 = 1
-    v237 = global_value.i64 gv25
-    v238 = iadd_imm v237, 224
-    v239 = load.i64 notrap aligned v238
-    v240 = call_indirect sig75, v239(v27, v236)
-    brif v240, block45, block46
+    v168 = load.i64 notrap aligned v5+32
+    v169 = iconst.i64 8
+    v170 = imul.i64 v165, v169  ; v169 = 8
+    v171 = iadd v168, v170
+    store.i64 notrap aligned v157, v171
+    v172 = iadd_imm.i64 v165, 1
+    store notrap aligned v172, v5+16
+    jump block43(v5)
 
 block45:
-    v242 = iconst.i64 1
-    v243 = iadd.i64 v4, v242  ; v242 = 1
-    v244 = global_value.i64 gv26
-    v245 = iadd_imm v244, 96
-    v246 = load.i64 notrap aligned v245
-    v247 = call_indirect sig76, v246()
-    v248 = iconst.i64 16
-    v249 = call fn61(v248)  ; v248 = 16
-    v250 = iconst.i64 2
-    store notrap aligned v250, v249+16  ; v250 = 2
-    store notrap aligned v247, v249+24
-    v251 = func_addr.i64 fn62
-    v252 = func_addr.i64 fn63
-    v253 = load.i64 notrap aligned v5+8
-    v254 = iconst.i64 1
-    v255 = icmp eq v253, v254  ; v254 = 1
-    brif v255, block48, block49
+    v173 = call fn30(v5, v157)
+    jump block43(v173)
 
-block48:
-    v257 = load.i64 notrap aligned v5+16
-    v258 = load.i64 notrap aligned v5+24
-    v259 = icmp slt v257, v258
-    brif v259, block51, block52
+block42:
+    v174 = call fn31(v5, v157, v159)
+    v175 = iadd_imm.i64 v5, 8
+    v176 = iconst.i64 1
+    v177 = atomic_rmw.i64 sub v175, v176  ; v176 = 1
+    v178 = icmp eq v177, v176  ; v176 = 1
+    brif v178, block47, block46
 
-block51:
-    v260 = load.i64 notrap aligned v5+32
-    v261 = iconst.i64 8
-    v262 = imul.i64 v257, v261  ; v261 = 8
-    v263 = iadd v260, v262
-    store.i64 notrap aligned v249, v263
-    v264 = iadd_imm.i64 v257, 1
-    store notrap aligned v264, v5+16
-    jump block50(v5)
-
-block52:
-    v265 = call fn64(v5, v249)
-    jump block50(v265)
-
-block49:
-    v266 = call fn65(v5, v249, v251)
-    v267 = iadd_imm.i64 v5, 8
-    v268 = iconst.i64 1
-    v269 = atomic_rmw.i64 sub v267, v268  ; v268 = 1
-    v270 = icmp eq v269, v268  ; v268 = 1
-    brif v270, block54, block53
-
-block54:
+block47:
     fence 
-    call fn66(v5, v252)
-    jump block53
-
-block53:
-    jump block50(v266)
-
-block50(v256: i64):
-    call fn67(v27)
-    jump block1(v3, v243, v256)
-
-block55:
-    v375 = iconst.i64 0
-    v374 -> v375
-    v341 = iconst.i64 0
-    v340 -> v341
-    v307 = iconst.i64 0
-    v306 -> v307
-    v273 = iconst.i64 0
-    jump block47(v273, v307, v341, v375)  ; v273 = 0, v307 = 0, v341 = 0, v375 = 0
+    call fn32(v5, v160)
+    jump block46
 
 block46:
-    v274 = iconst.i64 0
-    jump block47(v274, v27, v3, v5)  ; v274 = 0
+    jump block43(v174)
 
-block47(v241: i64, v305: i64, v339: i64, v373: i64):
-    jump block43(v241, v305, v339, v373)
+block43(v164: i64):
+    jump block1(v3, v154, v164)
 
-block43(v221: i64, v302: i64, v336: i64, v370: i64):
-    jump block39(v221, v302, v336, v370)
+block48:
+    v179 = iconst.i64 0
+    jump block40(v179)  ; v179 = 0
 
-block39(v201: i64, v299: i64, v333: i64, v367: i64):
-    jump block35(v201, v299, v333, v367)
+block39:
+    v180 = iadd_imm.i64 v24, 8
+    v181 = iconst.i64 1
+    v182 = atomic_rmw.i64 add v180, v181  ; v181 = 1
+    v183 = global_value.i64 gv12
+    v184 = iconst.i64 1
+    v185 = call fn33(v183, v184)  ; v184 = 1
+    v186 = global_value.i64 gv13
+    v187 = iadd_imm v186, 224
+    v188 = load.i64 notrap aligned v187
+    v189 = call_indirect sig42, v188(v24, v185)
+    brif v189, block49, block50
 
-block35(v181: i64, v296: i64, v330: i64, v364: i64):
-    jump block31(v181, v296, v330, v364)
+block49:
+    call fn34(v24)
+    v191 = iconst.i64 1
+    v192 = iadd.i64 v4, v191  ; v191 = 1
+    v193 = iconst.i64 4
+    v194 = iconst.i64 16
+    v195 = call fn35(v194)  ; v194 = 16
+    v196 = iconst.i64 0
+    store notrap aligned v196, v195+16  ; v196 = 0
+    store notrap aligned v193, v195+24  ; v193 = 4
+    v197 = func_addr.i64 fn36
+    v198 = func_addr.i64 fn37
+    v199 = load.i64 notrap aligned v5+8
+    v200 = iconst.i64 1
+    v201 = icmp eq v199, v200  ; v200 = 1
+    brif v201, block52, block53
 
-block31(v161: i64, v293: i64, v327: i64, v361: i64):
-    jump block27(v161, v293, v327, v361)
+block52:
+    v203 = load.i64 notrap aligned v5+16
+    v204 = load.i64 notrap aligned v5+24
+    v205 = icmp slt v203, v204
+    brif v205, block55, block56
 
-block27(v141: i64, v290: i64, v324: i64, v358: i64):
-    jump block23(v141, v290, v324, v358)
+block55:
+    v206 = load.i64 notrap aligned v5+32
+    v207 = iconst.i64 8
+    v208 = imul.i64 v203, v207  ; v207 = 8
+    v209 = iadd v206, v208
+    store.i64 notrap aligned v195, v209
+    v210 = iadd_imm.i64 v203, 1
+    store notrap aligned v210, v5+16
+    jump block54(v5)
 
-block23(v121: i64, v287: i64, v321: i64, v355: i64):
-    jump block19(v121, v287, v321, v355)
+block56:
+    v211 = call fn38(v5, v195)
+    jump block54(v211)
 
-block19(v101: i64, v284: i64, v318: i64, v352: i64):
-    jump block15(v101, v284, v318, v352)
+block53:
+    v212 = call fn39(v5, v195, v197)
+    v213 = iadd_imm.i64 v5, 8
+    v214 = iconst.i64 1
+    v215 = atomic_rmw.i64 sub v213, v214  ; v214 = 1
+    v216 = icmp eq v215, v214  ; v214 = 1
+    brif v216, block58, block57
 
-block15(v81: i64, v281: i64, v315: i64, v349: i64):
-    jump block11(v81, v281, v315, v349)
+block58:
+    fence 
+    call fn40(v5, v198)
+    jump block57
 
-block11(v61: i64, v278: i64, v312: i64, v346: i64):
-    jump block7(v61, v278, v312, v346)
+block57:
+    jump block54(v212)
 
-block7(v38: i64, v275: i64, v309: i64, v343: i64):
-    call fn68(v275)
-    jump block4(v38, v309, v343)
+block54(v202: i64):
+    jump block1(v3, v192, v202)
 
-block4(v9: i64, v308: i64, v342: i64):
-    call fn69(v308)
-    call fn70(v342)
+block59:
+    v217 = iconst.i64 0
+    jump block51(v217)  ; v217 = 0
+
+block50:
+    v218 = iadd_imm.i64 v24, 8
+    v219 = iconst.i64 1
+    v220 = atomic_rmw.i64 add v218, v219  ; v219 = 1
+    v221 = global_value.i64 gv14
+    v222 = iconst.i64 1
+    v223 = call fn41(v221, v222)  ; v222 = 1
+    v224 = global_value.i64 gv15
+    v225 = iadd_imm v224, 224
+    v226 = load.i64 notrap aligned v225
+    v227 = call_indirect sig51, v226(v24, v223)
+    brif v227, block60, block61
+
+block60:
+    call fn42(v24)
+    v229 = iconst.i64 1
+    v230 = iadd.i64 v4, v229  ; v229 = 1
+    v231 = iconst.i64 5
+    v232 = iconst.i64 16
+    v233 = call fn43(v232)  ; v232 = 16
+    v234 = iconst.i64 0
+    store notrap aligned v234, v233+16  ; v234 = 0
+    store notrap aligned v231, v233+24  ; v231 = 5
+    v235 = func_addr.i64 fn44
+    v236 = func_addr.i64 fn45
+    v237 = load.i64 notrap aligned v5+8
+    v238 = iconst.i64 1
+    v239 = icmp eq v237, v238  ; v238 = 1
+    brif v239, block63, block64
+
+block63:
+    v241 = load.i64 notrap aligned v5+16
+    v242 = load.i64 notrap aligned v5+24
+    v243 = icmp slt v241, v242
+    brif v243, block66, block67
+
+block66:
+    v244 = load.i64 notrap aligned v5+32
+    v245 = iconst.i64 8
+    v246 = imul.i64 v241, v245  ; v245 = 8
+    v247 = iadd v244, v246
+    store.i64 notrap aligned v233, v247
+    v248 = iadd_imm.i64 v241, 1
+    store notrap aligned v248, v5+16
+    jump block65(v5)
+
+block67:
+    v249 = call fn46(v5, v233)
+    jump block65(v249)
+
+block64:
+    v250 = call fn47(v5, v233, v235)
+    v251 = iadd_imm.i64 v5, 8
+    v252 = iconst.i64 1
+    v253 = atomic_rmw.i64 sub v251, v252  ; v252 = 1
+    v254 = icmp eq v253, v252  ; v252 = 1
+    brif v254, block69, block68
+
+block69:
+    fence 
+    call fn48(v5, v236)
+    jump block68
+
+block68:
+    jump block65(v250)
+
+block65(v240: i64):
+    jump block1(v3, v230, v240)
+
+block70:
+    v255 = iconst.i64 0
+    jump block62(v255)  ; v255 = 0
+
+block61:
+    v256 = iadd_imm.i64 v24, 8
+    v257 = iconst.i64 1
+    v258 = atomic_rmw.i64 add v256, v257  ; v257 = 1
+    v259 = global_value.i64 gv16
+    v260 = iconst.i64 1
+    v261 = call fn49(v259, v260)  ; v260 = 1
+    v262 = global_value.i64 gv17
+    v263 = iadd_imm v262, 224
+    v264 = load.i64 notrap aligned v263
+    v265 = call_indirect sig60, v264(v24, v261)
+    brif v265, block71, block72
+
+block71:
+    call fn50(v24)
+    v267 = iconst.i64 1
+    v268 = iadd.i64 v4, v267  ; v267 = 1
+    v269 = iconst.i64 6
+    v270 = iconst.i64 16
+    v271 = call fn51(v270)  ; v270 = 16
+    v272 = iconst.i64 0
+    store notrap aligned v272, v271+16  ; v272 = 0
+    store notrap aligned v269, v271+24  ; v269 = 6
+    v273 = func_addr.i64 fn52
+    v274 = func_addr.i64 fn53
+    v275 = load.i64 notrap aligned v5+8
+    v276 = iconst.i64 1
+    v277 = icmp eq v275, v276  ; v276 = 1
+    brif v277, block74, block75
+
+block74:
+    v279 = load.i64 notrap aligned v5+16
+    v280 = load.i64 notrap aligned v5+24
+    v281 = icmp slt v279, v280
+    brif v281, block77, block78
+
+block77:
+    v282 = load.i64 notrap aligned v5+32
+    v283 = iconst.i64 8
+    v284 = imul.i64 v279, v283  ; v283 = 8
+    v285 = iadd v282, v284
+    store.i64 notrap aligned v271, v285
+    v286 = iadd_imm.i64 v279, 1
+    store notrap aligned v286, v5+16
+    jump block76(v5)
+
+block78:
+    v287 = call fn54(v5, v271)
+    jump block76(v287)
+
+block75:
+    v288 = call fn55(v5, v271, v273)
+    v289 = iadd_imm.i64 v5, 8
+    v290 = iconst.i64 1
+    v291 = atomic_rmw.i64 sub v289, v290  ; v290 = 1
+    v292 = icmp eq v291, v290  ; v290 = 1
+    brif v292, block80, block79
+
+block80:
+    fence 
+    call fn56(v5, v274)
+    jump block79
+
+block79:
+    jump block76(v288)
+
+block76(v278: i64):
+    jump block1(v3, v268, v278)
+
+block81:
+    v293 = iconst.i64 0
+    jump block73(v293)  ; v293 = 0
+
+block72:
+    v294 = iadd_imm.i64 v24, 8
+    v295 = iconst.i64 1
+    v296 = atomic_rmw.i64 add v294, v295  ; v295 = 1
+    v297 = global_value.i64 gv18
+    v298 = iconst.i64 1
+    v299 = call fn57(v297, v298)  ; v298 = 1
+    v300 = global_value.i64 gv19
+    v301 = iadd_imm v300, 224
+    v302 = load.i64 notrap aligned v301
+    v303 = call_indirect sig69, v302(v24, v299)
+    brif v303, block82, block83
+
+block82:
+    call fn58(v24)
+    v305 = iconst.i64 1
+    v306 = iadd.i64 v4, v305  ; v305 = 1
+    v307 = iconst.i64 7
+    v308 = iconst.i64 16
+    v309 = call fn59(v308)  ; v308 = 16
+    v310 = iconst.i64 0
+    store notrap aligned v310, v309+16  ; v310 = 0
+    store notrap aligned v307, v309+24  ; v307 = 7
+    v311 = func_addr.i64 fn60
+    v312 = func_addr.i64 fn61
+    v313 = load.i64 notrap aligned v5+8
+    v314 = iconst.i64 1
+    v315 = icmp eq v313, v314  ; v314 = 1
+    brif v315, block85, block86
+
+block85:
+    v317 = load.i64 notrap aligned v5+16
+    v318 = load.i64 notrap aligned v5+24
+    v319 = icmp slt v317, v318
+    brif v319, block88, block89
+
+block88:
+    v320 = load.i64 notrap aligned v5+32
+    v321 = iconst.i64 8
+    v322 = imul.i64 v317, v321  ; v321 = 8
+    v323 = iadd v320, v322
+    store.i64 notrap aligned v309, v323
+    v324 = iadd_imm.i64 v317, 1
+    store notrap aligned v324, v5+16
+    jump block87(v5)
+
+block89:
+    v325 = call fn62(v5, v309)
+    jump block87(v325)
+
+block86:
+    v326 = call fn63(v5, v309, v311)
+    v327 = iadd_imm.i64 v5, 8
+    v328 = iconst.i64 1
+    v329 = atomic_rmw.i64 sub v327, v328  ; v328 = 1
+    v330 = icmp eq v329, v328  ; v328 = 1
+    brif v330, block91, block90
+
+block91:
+    fence 
+    call fn64(v5, v312)
+    jump block90
+
+block90:
+    jump block87(v326)
+
+block87(v316: i64):
+    jump block1(v3, v306, v316)
+
+block92:
+    v331 = iconst.i64 0
+    jump block84(v331)  ; v331 = 0
+
+block83:
+    v332 = iadd_imm.i64 v24, 8
+    v333 = iconst.i64 1
+    v334 = atomic_rmw.i64 add v332, v333  ; v333 = 1
+    v335 = global_value.i64 gv20
+    v336 = iconst.i64 1
+    v337 = call fn65(v335, v336)  ; v336 = 1
+    v338 = global_value.i64 gv21
+    v339 = iadd_imm v338, 224
+    v340 = load.i64 notrap aligned v339
+    v341 = call_indirect sig78, v340(v24, v337)
+    brif v341, block93, block94
+
+block93:
+    call fn66(v24)
+    v343 = iconst.i64 1
+    v344 = iadd.i64 v4, v343  ; v343 = 1
+    v345 = iconst.i64 8
+    v346 = iconst.i64 16
+    v347 = call fn67(v346)  ; v346 = 16
+    v348 = iconst.i64 0
+    store notrap aligned v348, v347+16  ; v348 = 0
+    store notrap aligned v345, v347+24  ; v345 = 8
+    v349 = func_addr.i64 fn68
+    v350 = func_addr.i64 fn69
+    v351 = load.i64 notrap aligned v5+8
+    v352 = iconst.i64 1
+    v353 = icmp eq v351, v352  ; v352 = 1
+    brif v353, block96, block97
+
+block96:
+    v355 = load.i64 notrap aligned v5+16
+    v356 = load.i64 notrap aligned v5+24
+    v357 = icmp slt v355, v356
+    brif v357, block99, block100
+
+block99:
+    v358 = load.i64 notrap aligned v5+32
+    v359 = iconst.i64 8
+    v360 = imul.i64 v355, v359  ; v359 = 8
+    v361 = iadd v358, v360
+    store.i64 notrap aligned v347, v361
+    v362 = iadd_imm.i64 v355, 1
+    store notrap aligned v362, v5+16
+    jump block98(v5)
+
+block100:
+    v363 = call fn70(v5, v347)
+    jump block98(v363)
+
+block97:
+    v364 = call fn71(v5, v347, v349)
+    v365 = iadd_imm.i64 v5, 8
+    v366 = iconst.i64 1
+    v367 = atomic_rmw.i64 sub v365, v366  ; v366 = 1
+    v368 = icmp eq v367, v366  ; v366 = 1
+    brif v368, block102, block101
+
+block102:
+    fence 
+    call fn72(v5, v350)
+    jump block101
+
+block101:
+    jump block98(v364)
+
+block98(v354: i64):
+    jump block1(v3, v344, v354)
+
+block103:
+    v369 = iconst.i64 0
+    jump block95(v369)  ; v369 = 0
+
+block94:
+    v370 = iadd_imm.i64 v24, 8
+    v371 = iconst.i64 1
+    v372 = atomic_rmw.i64 add v370, v371  ; v371 = 1
+    v373 = global_value.i64 gv22
+    v374 = iconst.i64 1
+    v375 = call fn73(v373, v374)  ; v374 = 1
+    v376 = global_value.i64 gv23
+    v377 = iadd_imm v376, 224
+    v378 = load.i64 notrap aligned v377
+    v379 = call_indirect sig87, v378(v24, v375)
+    brif v379, block104, block105
+
+block104:
+    call fn74(v24)
+    v381 = iconst.i64 1
+    v382 = iadd.i64 v4, v381  ; v381 = 1
+    v383 = iconst.i64 9
+    v384 = iconst.i64 16
+    v385 = call fn75(v384)  ; v384 = 16
+    v386 = iconst.i64 0
+    store notrap aligned v386, v385+16  ; v386 = 0
+    store notrap aligned v383, v385+24  ; v383 = 9
+    v387 = func_addr.i64 fn76
+    v388 = func_addr.i64 fn77
+    v389 = load.i64 notrap aligned v5+8
+    v390 = iconst.i64 1
+    v391 = icmp eq v389, v390  ; v390 = 1
+    brif v391, block107, block108
+
+block107:
+    v393 = load.i64 notrap aligned v5+16
+    v394 = load.i64 notrap aligned v5+24
+    v395 = icmp slt v393, v394
+    brif v395, block110, block111
+
+block110:
+    v396 = load.i64 notrap aligned v5+32
+    v397 = iconst.i64 8
+    v398 = imul.i64 v393, v397  ; v397 = 8
+    v399 = iadd v396, v398
+    store.i64 notrap aligned v385, v399
+    v400 = iadd_imm.i64 v393, 1
+    store notrap aligned v400, v5+16
+    jump block109(v5)
+
+block111:
+    v401 = call fn78(v5, v385)
+    jump block109(v401)
+
+block108:
+    v402 = call fn79(v5, v385, v387)
+    v403 = iadd_imm.i64 v5, 8
+    v404 = iconst.i64 1
+    v405 = atomic_rmw.i64 sub v403, v404  ; v404 = 1
+    v406 = icmp eq v405, v404  ; v404 = 1
+    brif v406, block113, block112
+
+block113:
+    fence 
+    call fn80(v5, v388)
+    jump block112
+
+block112:
+    jump block109(v402)
+
+block109(v392: i64):
+    jump block1(v3, v382, v392)
+
+block114:
+    v407 = iconst.i64 0
+    jump block106(v407)  ; v407 = 0
+
+block105:
+    v408 = global_value.i64 gv24
+    v409 = iconst.i64 1
+    v410 = call fn81(v408, v409)  ; v409 = 1
+    v411 = global_value.i64 gv25
+    v412 = iadd_imm v411, 224
+    v413 = load.i64 notrap aligned v412
+    v414 = call_indirect sig96, v413(v24, v410)
+    brif v414, block115, block116
+
+block115:
+    v416 = iconst.i64 1
+    v417 = iadd.i64 v4, v416  ; v416 = 1
+    v418 = global_value.i64 gv26
+    v419 = iadd_imm v418, 96
+    v420 = load.i64 notrap aligned v419
+    v421 = call_indirect sig97, v420()
+    v422 = iconst.i64 16
+    v423 = call fn82(v422)  ; v422 = 16
+    v424 = iconst.i64 2
+    store notrap aligned v424, v423+16  ; v424 = 2
+    store notrap aligned v421, v423+24
+    v425 = func_addr.i64 fn83
+    v426 = func_addr.i64 fn84
+    v427 = load.i64 notrap aligned v5+8
+    v428 = iconst.i64 1
+    v429 = icmp eq v427, v428  ; v428 = 1
+    brif v429, block118, block119
+
+block118:
+    v431 = load.i64 notrap aligned v5+16
+    v432 = load.i64 notrap aligned v5+24
+    v433 = icmp slt v431, v432
+    brif v433, block121, block122
+
+block121:
+    v434 = load.i64 notrap aligned v5+32
+    v435 = iconst.i64 8
+    v436 = imul.i64 v431, v435  ; v435 = 8
+    v437 = iadd v434, v436
+    store.i64 notrap aligned v423, v437
+    v438 = iadd_imm.i64 v431, 1
+    store notrap aligned v438, v5+16
+    jump block120(v5)
+
+block122:
+    v439 = call fn85(v5, v423)
+    jump block120(v439)
+
+block119:
+    v440 = call fn86(v5, v423, v425)
+    v441 = iadd_imm.i64 v5, 8
+    v442 = iconst.i64 1
+    v443 = atomic_rmw.i64 sub v441, v442  ; v442 = 1
+    v444 = icmp eq v443, v442  ; v442 = 1
+    brif v444, block124, block123
+
+block124:
+    fence 
+    call fn87(v5, v426)
+    jump block123
+
+block123:
+    jump block120(v440)
+
+block120(v430: i64):
+    jump block1(v3, v417, v430)
+
+block125:
+    v445 = iconst.i64 0
+    jump block117(v445)  ; v445 = 0
+
+block116:
+    call fn88(v3)
+    call fn89(v5)
+    v446 = iconst.i64 0
+    jump block117(v446)  ; v446 = 0
+
+block117(v415: i64):
+    jump block106(v415)
+
+block106(v380: i64):
+    jump block95(v380)
+
+block95(v342: i64):
+    jump block84(v342)
+
+block84(v304: i64):
+    jump block73(v304)
+
+block73(v266: i64):
+    jump block62(v266)
+
+block62(v228: i64):
+    jump block51(v228)
+
+block51(v190: i64):
+    jump block40(v190)
+
+block40(v152: i64):
+    jump block29(v152)
+
+block29(v114: i64):
+    jump block18(v114)
+
+block18(v76: i64):
+    jump block7(v76)
+
+block7(v35: i64):
+    jump block4(v35)
+
+block4(v9: i64):
     return v9
 }
 ; === end CLIF user::make-grid-helper ===
@@ -2600,12 +3049,12 @@ block1(v1: i64):
 function %mask-to-digits-helper(i64, i64, i64) -> i64 system_v {
     gv0 = symbol userextname0
     sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64, i64) -> i64 system_v
-    sig2 = (i64) system_v
-    sig3 = (i64) system_v
-    fn0 = u0:23 sig1
-    fn1 = colocated u0:81 sig2
-    fn2 = colocated u0:81 sig3
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64) -> i64 system_v
+    sig3 = (i64, i64) system_v
+    fn0 = u0:24 sig1
+    fn1 = u0:23 sig2
+    fn2 = u0:13 sig3
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -2617,7 +3066,7 @@ block1(v3: i64, v4: i64, v5: i64):
     brif v8, block2, block3
 
 block2:
-    jump block4(v5, v5)
+    jump block4(v5)
 
 block3:
     v10 = global_value.i64 gv0
@@ -2630,35 +3079,68 @@ block5:
     v15 = iconst.i64 1
     v16 = iadd.i64 v4, v15  ; v15 = 1
     v17 = iconst.i64 0
-    v18 = call fn0(v5, v4, v17)  ; v17 = 0
-    call fn1(v5)
-    jump block1(v3, v16, v18)
+    v18 = iconst.i64 0
+    v19 = load.i64 notrap aligned v5+8
+    v20 = iconst.i64 1
+    v21 = icmp eq v19, v20  ; v20 = 1
+    brif v21, block8, block9
 
 block8:
-    v29 = iconst.i64 0
-    v28 -> v29
-    v19 = iconst.i64 0
-    jump block7(v19, v29)  ; v19 = 0, v29 = 0
+    v23 = load.i64 notrap aligned v5+16
+    v24 = load.i64 notrap aligned v5+24
+    v25 = icmp slt v23, v24
+    brif v25, block11, block12
 
-block6:
-    v20 = iconst.i64 1
-    v21 = iadd.i64 v4, v20  ; v20 = 1
-    jump block1(v3, v21, v5)
+block11:
+    v26 = load.i64 notrap aligned v5+32
+    v27 = iconst.i64 8
+    v28 = imul.i64 v23, v27  ; v27 = 8
+    v29 = iadd v26, v28
+    store.i64 notrap aligned v4, v29
+    v30 = iadd_imm.i64 v23, 1
+    store notrap aligned v30, v5+16
+    jump block10(v5)
+
+block12:
+    v31 = call fn0(v5, v4)
+    jump block10(v31)
 
 block9:
-    v31 = iconst.i64 0
-    v30 -> v31
-    v22 = iconst.i64 0
-    jump block7(v22, v31)  ; v22 = 0, v31 = 0
+    v32 = call fn1(v5, v4, v17)  ; v17 = 0
+    v33 = iadd_imm.i64 v5, 8
+    v34 = iconst.i64 1
+    v35 = atomic_rmw.i64 sub v33, v34  ; v34 = 1
+    v36 = icmp eq v35, v34  ; v34 = 1
+    brif v36, block14, block13
 
-block7(v14: i64, v27: i64):
-    jump block4(v14, v27)
+block14:
+    fence 
+    call fn2(v5, v18)  ; v18 = 0
+    jump block13
 
-block4(v9: i64, v26: i64):
-    v23 = iadd_imm v9, 8
-    v24 = iconst.i64 1
-    v25 = atomic_rmw.i64 add v23, v24  ; v24 = 1
-    call fn2(v26)
+block13:
+    jump block10(v32)
+
+block10(v22: i64):
+    jump block1(v3, v16, v22)
+
+block15:
+    v37 = iconst.i64 0
+    jump block7(v37)  ; v37 = 0
+
+block6:
+    v38 = iconst.i64 1
+    v39 = iadd.i64 v4, v38  ; v38 = 1
+    jump block1(v3, v39, v5)
+
+block16:
+    v40 = iconst.i64 0
+    jump block7(v40)  ; v40 = 0
+
+block7(v14: i64):
+    jump block4(v14)
+
+block4(v9: i64):
     return v9
 }
 ; === end CLIF user::mask-to-digits-helper ===
@@ -2732,12 +3214,12 @@ function %peers-helper(i64, i64, i64) -> i64 system_v {
     sig3 = (i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
-    sig6 = (i64, i64, i64) -> i64 system_v
-    sig7 = (i64) system_v
-    sig8 = (i64) system_v
-    fn0 = u0:23 sig6
-    fn1 = colocated u0:81 sig7
-    fn2 = colocated u0:81 sig8
+    sig6 = (i64, i64) -> i64 system_v
+    sig7 = (i64, i64, i64) -> i64 system_v
+    sig8 = (i64, i64) system_v
+    fn0 = u0:24 sig6
+    fn1 = u0:23 sig7
+    fn2 = u0:13 sig8
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -2755,7 +3237,7 @@ block1(v3: i64, v4: i64, v5: i64):
     brif v8, block2, block3
 
 block2:
-    jump block4(v5, v5)
+    jump block4(v5)
 
 block3:
     v10 = icmp.i64 eq v4, v3
@@ -2768,10 +3250,8 @@ block5:
     jump block1(v3, v14, v5)
 
 block8:
-    v71 = iconst.i64 0
-    v70 -> v71
     v15 = iconst.i64 0
-    jump block7(v15, v71)  ; v15 = 0, v71 = 0
+    jump block7(v15)  ; v15 = 0
 
 block6:
     v16 = global_value.i64 gv0
@@ -2830,38 +3310,71 @@ block15:
     v55 = iconst.i64 1
     v56 = iadd.i64 v4, v55  ; v55 = 1
     v59 = iconst.i64 0
-    v60 = call fn0(v5, v53, v59)  ; v59 = 0
-    call fn1(v57)
-    jump block1(v3, v56, v60)
+    v60 = iconst.i64 0
+    v61 = load.i64 notrap aligned v5+8
+    v62 = iconst.i64 1
+    v63 = icmp eq v61, v62  ; v62 = 1
+    brif v63, block18, block19
 
 block18:
-    v74 = iconst.i64 0
-    v73 -> v74
-    v61 = iconst.i64 0
-    jump block17(v61, v74)  ; v61 = 0, v74 = 0
+    v65 = load.i64 notrap aligned v5+16
+    v66 = load.i64 notrap aligned v5+24
+    v67 = icmp slt v65, v66
+    brif v67, block21, block22
 
-block16:
-    v62 = iconst.i64 1
-    v63 = iadd.i64 v53, v62  ; v62 = 1
-    jump block1(v51, v63, v57)
+block21:
+    v68 = load.i64 notrap aligned v5+32
+    v69 = iconst.i64 8
+    v70 = imul.i64 v65, v69  ; v69 = 8
+    v71 = iadd v68, v70
+    store.i64 notrap aligned v53, v71
+    v72 = iadd_imm.i64 v65, 1
+    store notrap aligned v72, v5+16
+    jump block20(v5)
+
+block22:
+    v73 = call fn0(v5, v53)
+    jump block20(v73)
 
 block19:
-    v76 = iconst.i64 0
-    v75 -> v76
-    v64 = iconst.i64 0
-    jump block17(v64, v76)  ; v64 = 0, v76 = 0
+    v74 = call fn1(v5, v53, v59)  ; v59 = 0
+    v75 = iadd_imm.i64 v5, 8
+    v76 = iconst.i64 1
+    v77 = atomic_rmw.i64 sub v75, v76  ; v76 = 1
+    v78 = icmp eq v77, v76  ; v76 = 1
+    brif v78, block24, block23
 
-block17(v50: i64, v72: i64):
-    jump block7(v50, v72)
+block24:
+    fence 
+    call fn2(v5, v60)  ; v60 = 0
+    jump block23
 
-block7(v12: i64, v69: i64):
-    jump block4(v12, v69)
+block23:
+    jump block20(v74)
 
-block4(v9: i64, v68: i64):
-    v65 = iadd_imm v9, 8
-    v66 = iconst.i64 1
-    v67 = atomic_rmw.i64 add v65, v66  ; v66 = 1
-    call fn2(v68)
+block20(v64: i64):
+    jump block1(v3, v56, v64)
+
+block25:
+    v79 = iconst.i64 0
+    jump block17(v79)  ; v79 = 0
+
+block16:
+    v80 = iconst.i64 1
+    v81 = iadd.i64 v53, v80  ; v80 = 1
+    jump block1(v51, v81, v57)
+
+block26:
+    v82 = iconst.i64 0
+    jump block17(v82)  ; v82 = 0
+
+block17(v50: i64):
+    jump block7(v50)
+
+block7(v12: i64):
+    jump block4(v12)
+
+block4(v9: i64):
     return v9
 }
 ; === end CLIF user::peers-helper ===
@@ -2873,25 +3386,19 @@ function %propagate(i64) -> i64 system_v {
     gv3 = symbol colocated userextname3
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) system_v
-    sig2 = (i64, i64, i64) -> i64 system_v
-    sig3 = (i64) system_v
-    sig4 = (i64) system_v
-    sig5 = (i64) -> i64 system_v
-    sig6 = (i64) system_v
-    sig7 = (i64, i64) system_v
-    sig8 = (i64) system_v
-    fn0 = colocated u0:82 sig1
-    fn1 = colocated u0:83 sig3
-    fn2 = colocated u0:82 sig4
-    fn3 = colocated u0:82 sig6
-    fn4 = u0:2 sig7
-    fn5 = colocated u0:83 sig8
+    sig2 = (i64) system_v
+    sig3 = (i64, i64, i64) -> i64 system_v
+    sig4 = (i64) -> i64 system_v
+    sig5 = (i64, i64) system_v
+    fn0 = colocated u0:83 sig1
+    fn1 = colocated u0:82 sig2
+    fn2 = u0:2 sig5
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v22 -> v1
+    v25 -> v1
     v2 = iadd_imm v1, 8
     v3 = iconst.i64 1
     v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
@@ -2913,9 +3420,9 @@ block7:
     brif v14, block6, block5
 
 block6:
+    call fn0(v1)
     v15 = iconst.i64 0
-    call fn0(v9)
-    jump block2(v15, v1)  ; v15 = 0
+    jump block2(v15)  ; v15 = 0
 
 block5:
     v16 = iconst.i64 1024
@@ -2930,49 +3437,44 @@ block8:
 
 block9:
     v21 = load.i64 notrap aligned v9+24
-    v23 = iconst.i64 0
-    v24 = global_value.i64 gv1
-    v25 = iadd_imm v24, 256
-    v26 = load.i64 notrap aligned v25
-    v27 = call_indirect sig2, v26(v1, v21, v23)  ; v23 = 0
-    brif v27, block10, block11
+    v22 = iadd_imm v21, 8
+    v23 = iconst.i64 1
+    v24 = atomic_rmw.i64 add v22, v23  ; v23 = 1
+    call fn1(v9)
+    v26 = iadd_imm v21, 8
+    v27 = iconst.i64 1
+    v28 = atomic_rmw.i64 add v26, v27  ; v27 = 1
+    v29 = iconst.i64 0
+    v30 = global_value.i64 gv1
+    v31 = iadd_imm v30, 256
+    v32 = load.i64 notrap aligned v31
+    v33 = call_indirect sig3, v32(v1, v21, v29)  ; v29 = 0
+    brif v33, block10, block11
 
 block10:
-    v29 = iadd_imm.i64 v21, 8
-    v30 = iconst.i64 1
-    v31 = atomic_rmw.i64 add v29, v30  ; v30 = 1
-    call fn1(v22)
-    call fn2(v9)
     jump block1(v21)
 
 block13:
-    v45 = iconst.i64 0
-    v44 -> v45
-    v32 = iconst.i64 0
-    jump block12(v32, v45)  ; v32 = 0, v45 = 0
+    v35 = iconst.i64 0
+    jump block12(v35)  ; v35 = 0
 
 block11:
-    v33 = iadd_imm.i64 v21, 8
-    v34 = iconst.i64 1
-    v35 = atomic_rmw.i64 add v33, v34  ; v34 = 1
     v36 = global_value.i64 gv2
     v37 = iadd_imm v36, 24
     v38 = load.i64 notrap aligned v37
-    v39 = call_indirect sig5, v38(v21)
-    jump block12(v39, v22)
+    v39 = call_indirect sig4, v38(v21)
+    jump block12(v39)
 
-block12(v28: i64, v43: i64):
-    call fn3(v9)
-    jump block2(v28, v43)
+block12(v34: i64):
+    jump block2(v34)
 
 block3:
     v40 = global_value.i64 gv3
     v41 = iconst.i64 12
-    call fn4(v40, v41)  ; v41 = 12
+    call fn2(v40, v41)  ; v41 = 12
     trap user1
 
-block2(v10: i64, v42: i64):
-    call fn5(v42)
+block2(v10: i64):
     return v10
 }
 ; === end CLIF user::propagate ===
@@ -2981,77 +3483,57 @@ function %propagate-pass-helper(i64, i64) -> i64 system_v {
     gv0 = symbol userextname0
     gv1 = symbol userextname0
     gv2 = symbol userextname0
-    gv3 = symbol colocated userextname4
+    gv3 = symbol colocated userextname3
     gv4 = symbol userextname0
-    gv5 = symbol colocated userextname6
-    gv6 = symbol colocated userextname7
+    gv5 = symbol colocated userextname5
+    gv6 = symbol colocated userextname6
     sig0 = (i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
-    sig2 = (i64, i64, i64) -> i64 system_v
-    sig3 = (i64) system_v
+    sig2 = (i64) system_v
+    sig3 = (i64, i64, i64) -> i64 system_v
     sig4 = (i64) system_v
-    sig5 = (i64) system_v
+    sig5 = (i64, i64) system_v
     sig6 = (i64) system_v
-    sig7 = (i64) system_v
-    sig8 = (i64, i64) system_v
-    sig9 = (i64, i64, i64) -> i64 system_v
+    sig7 = (i64, i64, i64) -> i64 system_v
+    sig8 = (i64) system_v
+    sig9 = (i64, i64) system_v
     sig10 = (i64) system_v
-    sig11 = (i64) system_v
-    sig12 = (i64) system_v
-    sig13 = (i64) system_v
-    sig14 = (i64) system_v
-    sig15 = (i64, i64) system_v
-    sig16 = (i64) system_v
-    sig17 = (i64, i64) system_v
-    sig18 = (i64) system_v
-    sig19 = (i64) system_v
-    fn0 = colocated u0:82 sig3
-    fn1 = colocated u0:85 sig4
-    fn2 = colocated u0:83 sig5
-    fn3 = colocated u0:82 sig6
-    fn4 = colocated u0:82 sig7
-    fn5 = u0:2 sig8
-    fn6 = colocated u0:82 sig10
-    fn7 = colocated u0:85 sig11
-    fn8 = colocated u0:83 sig12
-    fn9 = colocated u0:82 sig13
-    fn10 = colocated u0:82 sig14
-    fn11 = u0:2 sig15
-    fn12 = colocated u0:85 sig16
-    fn13 = u0:2 sig17
-    fn14 = colocated u0:85 sig18
-    fn15 = colocated u0:83 sig19
+    sig11 = (i64, i64) system_v
+    fn0 = colocated u0:85 sig2
+    fn1 = colocated u0:82 sig4
+    fn2 = u0:2 sig5
+    fn3 = colocated u0:85 sig6
+    fn4 = colocated u0:82 sig8
+    fn5 = u0:2 sig9
+    fn6 = colocated u0:85 sig10
+    fn7 = u0:2 sig11
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
 
 block1(v2: i64, v3: i64):
-    v50 -> v2
-    v84 -> v2
     v43 -> v3
-    v77 -> v3
+    v72 -> v3
     v4 = iconst.i64 81
     v5 = icmp eq v3, v4  ; v4 = 81
     v6 = uextend.i64 v5
     brif v6, block2, block3
 
 block2:
-    v8 = iadd_imm.i64 v2, 8
-    v9 = iconst.i64 1
-    v10 = atomic_rmw.i64 add v8, v9  ; v9 = 1
-    v11 = global_value.i64 gv0
-    v12 = iadd_imm v11, 24
-    v13 = load.i64 notrap aligned v12
-    v14 = call_indirect sig0, v13(v2)
-    jump block4(v14, v2)
+    v8 = global_value.i64 gv0
+    v9 = iadd_imm v8, 24
+    v10 = load.i64 notrap aligned v9
+    v11 = call_indirect sig0, v10(v2)
+    jump block4(v11)
 
 block3:
+    v12 = iadd_imm.i64 v2, 8
+    v13 = iconst.i64 1
+    v14 = atomic_rmw.i64 add v12, v13  ; v13 = 1
     v15 = global_value.i64 gv1
     v16 = iadd_imm v15, 56
     v17 = load.i64 notrap aligned v16
     v18 = call_indirect sig1, v17(v2, v3)
-    v49 -> v18
-    v83 -> v18
     jump block7
 
 block7:
@@ -3065,183 +3547,157 @@ block10:
 
 block11:
     v23 = load.i64 notrap aligned v18+24
-    v24 = iadd_imm.i64 v2, 8
-    v25 = iconst.i64 1
-    v26 = atomic_rmw.i64 add v24, v25  ; v25 = 1
-    v27 = global_value.i64 gv2
-    v28 = iadd_imm v27, 240
-    v29 = load.i64 notrap aligned v28
-    v30 = call_indirect sig2, v29(v2, v3, v23)
+    call fn0(v18)
+    v24 = global_value.i64 gv2
+    v25 = iadd_imm v24, 240
+    v26 = load.i64 notrap aligned v25
+    v27 = call_indirect sig3, v26(v2, v3, v23)
     jump block14
 
 block14:
-    v32 = iconst.i64 1024
-    v33 = icmp.i64 ult v30, v32  ; v32 = 1024
-    brif v33, block17, block15
+    v29 = iconst.i64 1024
+    v30 = icmp.i64 ult v27, v29  ; v29 = 1024
+    brif v30, block17, block15
 
 block17:
-    v34 = iconst.i64 0
-    v35 = icmp.i64 eq v30, v34  ; v34 = 0
-    brif v35, block16, block15
+    v31 = iconst.i64 0
+    v32 = icmp.i64 eq v27, v31  ; v31 = 0
+    brif v32, block16, block15
 
 block16:
-    v36 = iconst.i64 0
-    call fn0(v30)
-    jump block12(v36, v18, v2)  ; v36 = 0
+    v33 = iconst.i64 0
+    jump block12(v33)  ; v33 = 0
 
 block15:
-    v37 = iconst.i64 1024
-    v38 = icmp.i64 uge v30, v37  ; v37 = 1024
-    brif v38, block18, block13
+    v34 = iconst.i64 1024
+    v35 = icmp.i64 uge v27, v34  ; v34 = 1024
+    brif v35, block18, block13
 
 block18:
-    v39 = load.i64 notrap aligned v30+16
-    v40 = iconst.i64 1
-    v41 = icmp eq v39, v40  ; v40 = 1
-    brif v41, block19, block13
+    v36 = load.i64 notrap aligned v27+16
+    v37 = iconst.i64 1
+    v38 = icmp eq v36, v37  ; v37 = 1
+    brif v38, block19, block13
 
 block19:
-    v42 = load.i64 notrap aligned v30+24
+    v39 = load.i64 notrap aligned v27+24
+    v40 = iadd_imm v39, 8
+    v41 = iconst.i64 1
+    v42 = atomic_rmw.i64 add v40, v41  ; v41 = 1
+    call fn1(v27)
     v44 = iconst.i64 1
     v45 = iadd.i64 v3, v44  ; v44 = 1
-    v46 = iadd_imm v42, 8
-    v47 = iconst.i64 1
-    v48 = atomic_rmw.i64 add v46, v47  ; v47 = 1
-    call fn1(v18)
-    call fn2(v2)
-    call fn3(v30)
-    jump block1(v42, v45)
+    jump block1(v39, v45)
 
 block20:
-    v110 = iconst.i64 0
-    v109 -> v110
-    v100 = iconst.i64 0
-    v99 -> v100
-    v51 = iconst.i64 0
-    call fn4(v30)
-    jump block12(v51, v100, v110)  ; v51 = 0, v100 = 0, v110 = 0
+    v46 = iconst.i64 0
+    jump block12(v46)  ; v46 = 0
 
 block13:
-    v52 = global_value.i64 gv3
-    v53 = iconst.i64 12
-    call fn5(v52, v53)  ; v53 = 12
+    v47 = global_value.i64 gv3
+    v48 = iconst.i64 12
+    call fn2(v47, v48)  ; v48 = 12
     trap user1
 
-block12(v31: i64, v98: i64, v108: i64):
-    jump block5(v31, v98, v108)
+block12(v28: i64):
+    jump block5(v28)
 
 block8:
     jump block21
 
 block21:
-    v54 = load.i64 notrap aligned v18+16
-    v55 = iconst.i64 1
-    v56 = icmp eq v54, v55  ; v55 = 1
-    brif v56, block22, block9
+    v49 = load.i64 notrap aligned v18+16
+    v50 = iconst.i64 1
+    v51 = icmp eq v49, v50  ; v50 = 1
+    brif v51, block22, block9
 
 block22:
-    v57 = load.i64 notrap aligned v18+24
-    v58 = iadd_imm.i64 v2, 8
-    v59 = iconst.i64 1
-    v60 = atomic_rmw.i64 add v58, v59  ; v59 = 1
-    v61 = global_value.i64 gv4
-    v62 = iadd_imm v61, 240
-    v63 = load.i64 notrap aligned v62
-    v64 = call_indirect sig9, v63(v2, v3, v57)
+    v52 = load.i64 notrap aligned v18+24
+    call fn3(v18)
+    v53 = global_value.i64 gv4
+    v54 = iadd_imm v53, 240
+    v55 = load.i64 notrap aligned v54
+    v56 = call_indirect sig7, v55(v2, v3, v52)
     jump block25
 
 block25:
-    v66 = iconst.i64 1024
-    v67 = icmp.i64 ult v64, v66  ; v66 = 1024
-    brif v67, block28, block26
+    v58 = iconst.i64 1024
+    v59 = icmp.i64 ult v56, v58  ; v58 = 1024
+    brif v59, block28, block26
 
 block28:
-    v68 = iconst.i64 0
-    v69 = icmp.i64 eq v64, v68  ; v68 = 0
-    brif v69, block27, block26
+    v60 = iconst.i64 0
+    v61 = icmp.i64 eq v56, v60  ; v60 = 0
+    brif v61, block27, block26
 
 block27:
-    v70 = iconst.i64 0
-    call fn6(v64)
-    jump block23(v70, v18, v2)  ; v70 = 0
+    v62 = iconst.i64 0
+    jump block23(v62)  ; v62 = 0
 
 block26:
-    v71 = iconst.i64 1024
-    v72 = icmp.i64 uge v64, v71  ; v71 = 1024
-    brif v72, block29, block24
+    v63 = iconst.i64 1024
+    v64 = icmp.i64 uge v56, v63  ; v63 = 1024
+    brif v64, block29, block24
 
 block29:
-    v73 = load.i64 notrap aligned v64+16
-    v74 = iconst.i64 1
-    v75 = icmp eq v73, v74  ; v74 = 1
-    brif v75, block30, block24
+    v65 = load.i64 notrap aligned v56+16
+    v66 = iconst.i64 1
+    v67 = icmp eq v65, v66  ; v66 = 1
+    brif v67, block30, block24
 
 block30:
-    v76 = load.i64 notrap aligned v64+24
-    v78 = iconst.i64 1
-    v79 = iadd.i64 v3, v78  ; v78 = 1
-    v80 = iadd_imm v76, 8
-    v81 = iconst.i64 1
-    v82 = atomic_rmw.i64 add v80, v81  ; v81 = 1
-    call fn7(v18)
-    call fn8(v2)
-    call fn9(v64)
-    jump block1(v76, v79)
+    v68 = load.i64 notrap aligned v56+24
+    v69 = iadd_imm v68, 8
+    v70 = iconst.i64 1
+    v71 = atomic_rmw.i64 add v69, v70  ; v70 = 1
+    call fn4(v56)
+    v73 = iconst.i64 1
+    v74 = iadd.i64 v3, v73  ; v73 = 1
+    jump block1(v68, v74)
 
 block31:
-    v113 = iconst.i64 0
-    v112 -> v113
-    v103 = iconst.i64 0
-    v102 -> v103
-    v85 = iconst.i64 0
-    call fn10(v64)
-    jump block23(v85, v103, v113)  ; v85 = 0, v103 = 0, v113 = 0
+    v75 = iconst.i64 0
+    jump block23(v75)  ; v75 = 0
 
 block24:
-    v86 = global_value.i64 gv5
-    v87 = iconst.i64 12
-    call fn11(v86, v87)  ; v87 = 12
+    v76 = global_value.i64 gv5
+    v77 = iconst.i64 12
+    call fn5(v76, v77)  ; v77 = 12
     trap user1
 
-block23(v65: i64, v101: i64, v111: i64):
-    jump block5(v65, v101, v111)
+block23(v57: i64):
+    jump block5(v57)
 
 block9:
     jump block32
 
 block32:
-    v88 = load.i64 notrap aligned v18+16
-    v89 = iconst.i64 2
-    v90 = icmp eq v88, v89  ; v89 = 2
-    brif v90, block33, block6
+    v78 = load.i64 notrap aligned v18+16
+    v79 = iconst.i64 2
+    v80 = icmp eq v78, v79  ; v79 = 2
+    brif v80, block33, block6
 
 block33:
-    v91 = load.i64 notrap aligned v18+24
-    v92 = iconst.i64 1
-    v93 = iadd.i64 v3, v92  ; v92 = 1
-    call fn12(v18)
-    jump block1(v2, v93)
+    v81 = load.i64 notrap aligned v18+24
+    call fn6(v18)
+    v82 = iconst.i64 1
+    v83 = iadd.i64 v3, v82  ; v82 = 1
+    jump block1(v2, v83)
 
 block34:
-    v115 = iconst.i64 0
-    v114 -> v115
-    v105 = iconst.i64 0
-    v104 -> v105
-    v94 = iconst.i64 0
-    jump block5(v94, v105, v115)  ; v94 = 0, v105 = 0, v115 = 0
+    v84 = iconst.i64 0
+    jump block5(v84)  ; v84 = 0
 
 block6:
-    v95 = global_value.i64 gv6
-    v96 = iconst.i64 12
-    call fn13(v95, v96)  ; v96 = 12
+    v85 = global_value.i64 gv6
+    v86 = iconst.i64 12
+    call fn7(v85, v86)  ; v86 = 12
     trap user1
 
-block5(v19: i64, v97: i64, v107: i64):
-    call fn14(v97)
-    jump block4(v19, v107)
+block5(v19: i64):
+    jump block4(v19)
 
-block4(v7: i64, v106: i64):
-    call fn15(v106)
+block4(v7: i64):
     return v7
 }
 ; === end CLIF user::propagate-pass-helper ===
@@ -3315,285 +3771,335 @@ function %solve(i64) -> i64 system_v {
     gv4 = symbol userextname0
     gv5 = symbol userextname0
     gv6 = symbol userextname0
-    gv7 = symbol colocated userextname4
-    gv8 = symbol colocated userextname7
-    gv9 = symbol colocated userextname8
+    gv7 = symbol colocated userextname7
+    gv8 = symbol colocated userextname9
+    gv9 = symbol colocated userextname10
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) system_v
-    sig6 = (i64, i64) -> i64 system_v
-    sig7 = (i64) -> i64 system_v
-    sig8 = (i64, i64, i64, i64, i64) -> i64 system_v
-    sig9 = (i64) system_v
+    sig6 = (i64) system_v
+    sig7 = (i64, i64) -> i64 system_v
+    sig8 = (i64) system_v
+    sig9 = (i64) -> i64 system_v
     sig10 = (i64, i64) system_v
     sig11 = (i64) system_v
     sig12 = (i64) system_v
     sig13 = (i64, i64) system_v
-    sig14 = (i64) system_v
-    sig15 = (i64, i64) system_v
+    sig14 = (i64, i64, i64, i64, i64) -> i64 system_v
+    sig15 = (i64) system_v
     sig16 = (i64) system_v
+    sig17 = (i64, i64) system_v
+    sig18 = (i64, i64) system_v
+    sig19 = (i64, i64) system_v
     fn0 = colocated u0:82 sig1
-    fn1 = colocated u0:87 sig5
-    fn2 = colocated u0:81 sig9
-    fn3 = u0:2 sig10
-    fn4 = colocated u0:85 sig11
-    fn5 = colocated u0:87 sig12
-    fn6 = u0:2 sig13
-    fn7 = colocated u0:82 sig14
-    fn8 = u0:2 sig15
+    fn1 = colocated u0:83 sig5
+    fn2 = colocated u0:87 sig6
+    fn3 = colocated u0:85 sig8
+    fn4 = u0:13 sig10
+    fn5 = colocated u0:83 sig11
+    fn6 = colocated u0:81 sig12
+    fn7 = u0:13 sig13
+    fn8 = colocated u0:85 sig15
     fn9 = colocated u0:83 sig16
+    fn10 = u0:2 sig17
+    fn11 = u0:2 sig18
+    fn12 = u0:2 sig19
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v85 -> v1
-    v86 -> v1
-    v87 -> v1
-    v88 -> v1
-    v89 -> v1
-    v90 -> v1
-    v91 -> v1
-    v2 = iadd_imm v1, 8
-    v3 = iconst.i64 1
-    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
-    v5 = global_value.i64 gv0
-    v6 = iadd_imm v5, 264
-    v7 = load.i64 notrap aligned v6
-    v8 = call_indirect sig0, v7(v1)
+    v2 = global_value.i64 gv0
+    v3 = iadd_imm v2, 264
+    v4 = load.i64 notrap aligned v3
+    v5 = call_indirect sig0, v4(v1)
     jump block4
 
 block4:
-    v10 = iconst.i64 1024
-    v11 = icmp.i64 ult v8, v10  ; v10 = 1024
-    brif v11, block7, block5
+    v7 = iconst.i64 1024
+    v8 = icmp.i64 ult v5, v7  ; v7 = 1024
+    brif v8, block7, block5
 
 block7:
-    v12 = iconst.i64 0
-    v13 = icmp.i64 eq v8, v12  ; v12 = 0
-    brif v13, block6, block5
+    v9 = iconst.i64 0
+    v10 = icmp.i64 eq v5, v9  ; v9 = 0
+    brif v10, block6, block5
 
 block6:
-    v14 = iconst.i64 1
-    call fn0(v8)
-    jump block2(v14)  ; v14 = 1
+    v11 = iconst.i64 1
+    jump block2(v11)  ; v11 = 1
 
 block5:
-    v15 = iconst.i64 1024
-    v16 = icmp.i64 uge v8, v15  ; v15 = 1024
-    brif v16, block8, block3
+    v12 = iconst.i64 1024
+    v13 = icmp.i64 uge v5, v12  ; v12 = 1024
+    brif v13, block8, block3
 
 block8:
-    v17 = load.i64 notrap aligned v8+16
-    v18 = iconst.i64 1
-    v19 = icmp eq v17, v18  ; v18 = 1
-    brif v19, block9, block3
+    v14 = load.i64 notrap aligned v5+16
+    v15 = iconst.i64 1
+    v16 = icmp eq v14, v15  ; v15 = 1
+    brif v16, block9, block3
 
 block9:
-    v20 = load.i64 notrap aligned v8+24
-    v49 -> v20
-    v21 = global_value.i64 gv1
-    v22 = iadd_imm v21, 216
-    v23 = load.i64 notrap aligned v22
-    v24 = call_indirect sig2, v23(v20)
-    brif v24, block10, block11
+    v17 = load.i64 notrap aligned v5+24
+    v52 -> v17
+    v82 -> v17
+    v18 = iadd_imm v17, 8
+    v19 = iconst.i64 1
+    v20 = atomic_rmw.i64 add v18, v19  ; v19 = 1
+    call fn0(v5)
+    v21 = iadd_imm v17, 8
+    v22 = iconst.i64 1
+    v23 = atomic_rmw.i64 add v21, v22  ; v22 = 1
+    v24 = global_value.i64 gv1
+    v25 = iadd_imm v24, 216
+    v26 = load.i64 notrap aligned v25
+    v27 = call_indirect sig2, v26(v17)
+    brif v27, block10, block11
 
 block10:
-    v26 = iadd_imm.i64 v20, 8
-    v27 = iconst.i64 1
-    v28 = atomic_rmw.i64 add v26, v27  ; v27 = 1
     v29 = global_value.i64 gv2
     v30 = iadd_imm v29, 72
     v31 = load.i64 notrap aligned v30
-    v32 = call_indirect sig3, v31(v20)
+    v32 = call_indirect sig3, v31(v17)
     jump block12(v32)
 
 block11:
-    v33 = global_value.i64 gv3
-    v34 = iadd_imm v33, 280
-    v35 = load.i64 notrap aligned v34
-    v36 = call_indirect sig4, v35(v20)
+    v33 = iadd_imm.i64 v17, 8
+    v34 = iconst.i64 1
+    v35 = atomic_rmw.i64 add v33, v34  ; v34 = 1
+    v36 = global_value.i64 gv3
+    v37 = iadd_imm v36, 280
+    v38 = load.i64 notrap aligned v37
+    v39 = call_indirect sig4, v38(v17)
     jump block15
 
 block15:
-    v38 = iconst.i64 1024
-    v39 = icmp.i64 ult v36, v38  ; v38 = 1024
-    brif v39, block18, block16
+    v41 = iconst.i64 1024
+    v42 = icmp.i64 ult v39, v41  ; v41 = 1024
+    brif v42, block18, block16
 
 block18:
-    v40 = iconst.i64 0
-    v41 = icmp.i64 eq v36, v40  ; v40 = 0
-    brif v41, block17, block16
+    v43 = iconst.i64 0
+    v44 = icmp.i64 eq v39, v43  ; v43 = 0
+    brif v44, block17, block16
 
 block17:
-    v42 = iconst.i64 1
-    call fn1(v36)
-    jump block13(v42)  ; v42 = 1
+    call fn1(v17)
+    v45 = iconst.i64 1
+    jump block13(v45)  ; v45 = 1
 
 block16:
-    v43 = iconst.i64 1024
-    v44 = icmp.i64 uge v36, v43  ; v43 = 1024
-    brif v44, block19, block14
+    v46 = iconst.i64 1024
+    v47 = icmp.i64 uge v39, v46  ; v46 = 1024
+    brif v47, block19, block14
 
 block19:
-    v45 = load.i64 notrap aligned v36+16
-    v46 = iconst.i64 1
-    v47 = icmp eq v45, v46  ; v46 = 1
-    brif v47, block20, block14
+    v48 = load.i64 notrap aligned v39+16
+    v49 = iconst.i64 1
+    v50 = icmp eq v48, v49  ; v49 = 1
+    brif v50, block20, block14
 
 block20:
-    v48 = load.i64 notrap aligned v36+24
-    v50 = global_value.i64 gv4
-    v51 = iadd_imm v50, 56
-    v52 = load.i64 notrap aligned v51
-    v53 = call_indirect sig6, v52(v20, v48)
-    v79 -> v53
-    v80 -> v53
+    v51 = load.i64 notrap aligned v39+24
+    v83 -> v51
+    call fn2(v39)
+    v53 = iadd_imm.i64 v17, 8
+    v54 = iconst.i64 1
+    v55 = atomic_rmw.i64 add v53, v54  ; v54 = 1
+    v56 = global_value.i64 gv4
+    v57 = iadd_imm v56, 56
+    v58 = load.i64 notrap aligned v57
+    v59 = call_indirect sig7, v58(v17, v51)
     jump block23
 
 block23:
     jump block25
 
 block25:
-    v55 = load.i64 notrap aligned v53+16
-    v56 = iconst.i64 2
-    v57 = icmp eq v55, v56  ; v56 = 2
-    brif v57, block26, block24
+    v61 = load.i64 notrap aligned v59+16
+    v62 = iconst.i64 2
+    v63 = icmp eq v61, v62  ; v62 = 2
+    brif v63, block26, block24
 
 block26:
-    v58 = load.i64 notrap aligned v53+24
-    v59 = global_value.i64 gv5
-    v60 = iadd_imm v59, 296
-    v61 = load.i64 notrap aligned v60
-    v62 = call_indirect sig7, v61(v58)
-    v75 -> v62
-    v63 = load.i64 notrap aligned v62+16
-    v64 = iconst.i64 0
-    v65 = icmp eq v63, v64  ; v64 = 0
-    v66 = uextend.i64 v65
-    brif v66, block27, block28
-
-block27:
-    v68 = iconst.i64 1
-    jump block29(v68)  ; v68 = 1
+    v64 = load.i64 notrap aligned v59+24
+    call fn3(v59)
+    v65 = global_value.i64 gv5
+    v66 = iadd_imm v65, 296
+    v67 = load.i64 notrap aligned v66
+    v68 = call_indirect sig9, v67(v64)
+    v84 -> v68
+    v69 = iadd_imm v68, 8
+    v70 = iconst.i64 1
+    v71 = atomic_rmw.i64 add v69, v70  ; v70 = 1
+    v72 = load.i64 notrap aligned v68+16
+    v73 = iconst.i64 0
+    v74 = iadd_imm v68, 8
+    v75 = iconst.i64 1
+    v76 = atomic_rmw.i64 sub v74, v75  ; v75 = 1
+    v77 = icmp eq v76, v75  ; v75 = 1
+    brif v77, block28, block27
 
 block28:
-    v69 = iconst.i64 0
-    v70 = load.i64 notrap aligned v62+16
-    v71 = global_value.i64 gv6
-    v72 = iadd_imm v71, 312
-    v73 = load.i64 notrap aligned v72
-    v74 = call_indirect sig8, v73(v49, v48, v62, v69, v70)  ; v69 = 0
-    jump block29(v74)
+    fence 
+    call fn4(v68, v73)  ; v73 = 0
+    jump block27
 
-block29(v67: i64):
-    call fn2(v62)
-    jump block21(v67)
+block27:
+    v78 = iconst.i64 0
+    v79 = icmp.i64 eq v72, v78  ; v78 = 0
+    v80 = uextend.i64 v79
+    brif v80, block29, block30
+
+block29:
+    call fn5(v17)
+    call fn6(v68)
+    v85 = iconst.i64 1
+    jump block31(v85)  ; v85 = 1
+
+block30:
+    v86 = iadd_imm.i64 v84, 8
+    v87 = iconst.i64 1
+    v88 = atomic_rmw.i64 add v86, v87  ; v87 = 1
+    v89 = iconst.i64 0
+    v90 = load.i64 notrap aligned v84+16
+    v91 = iconst.i64 0
+    v92 = iadd_imm.i64 v84, 8
+    v93 = iconst.i64 1
+    v94 = atomic_rmw.i64 sub v92, v93  ; v93 = 1
+    v95 = icmp eq v94, v93  ; v93 = 1
+    brif v95, block33, block32
+
+block33:
+    fence 
+    call fn7(v84, v91)  ; v91 = 0
+    jump block32
+
+block32:
+    v96 = global_value.i64 gv6
+    v97 = iadd_imm v96, 312
+    v98 = load.i64 notrap aligned v97
+    v99 = call_indirect sig14, v98(v82, v83, v84, v89, v90)  ; v89 = 0
+    jump block31(v99)
+
+block31(v81: i64):
+    jump block21(v81)
 
 block24:
-    v76 = iconst.i64 1
-    jump block21(v76)  ; v76 = 1
+    call fn8(v59)
+    call fn9(v52)
+    v100 = iconst.i64 1
+    jump block21(v100)  ; v100 = 1
 
 block22:
-    v77 = global_value.i64 gv7
-    v78 = iconst.i64 12
-    call fn3(v77, v78)  ; v78 = 12
+    v101 = global_value.i64 gv7
+    v102 = iconst.i64 12
+    call fn10(v101, v102)  ; v102 = 12
     trap user1
 
-block21(v54: i64):
-    call fn4(v53)
-    call fn5(v36)
-    jump block13(v54)
+block21(v60: i64):
+    jump block13(v60)
 
 block14:
-    v81 = global_value.i64 gv8
-    v82 = iconst.i64 12
-    call fn6(v81, v82)  ; v82 = 12
+    v103 = global_value.i64 gv8
+    v104 = iconst.i64 12
+    call fn11(v103, v104)  ; v104 = 12
     trap user1
 
-block13(v37: i64):
-    jump block12(v37)
+block13(v40: i64):
+    jump block12(v40)
 
-block12(v25: i64):
-    call fn7(v8)
-    jump block2(v25)
+block12(v28: i64):
+    jump block2(v28)
 
 block3:
-    v83 = global_value.i64 gv9
-    v84 = iconst.i64 12
-    call fn8(v83, v84)  ; v84 = 12
+    v105 = global_value.i64 gv9
+    v106 = iconst.i64 12
+    call fn12(v105, v106)  ; v106 = 12
     trap user1
 
-block2(v9: i64):
-    call fn9(v1)
-    return v9
+block2(v6: i64):
+    return v6
 }
 ; === end CLIF user::solve ===
 ; === CLIF user::solve-range ===
 function %solve-range(i64, i64, i64, i64, i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
-    gv1 = symbol userextname3
-    gv2 = symbol userextname3
-    gv3 = symbol userextname3
-    gv4 = symbol userextname3
-    gv5 = symbol userextname3
-    gv6 = symbol userextname3
-    gv7 = symbol userextname3
-    gv8 = symbol userextname3
+    gv1 = symbol userextname4
+    gv2 = symbol userextname4
+    gv3 = symbol userextname4
+    gv4 = symbol userextname4
+    gv5 = symbol userextname4
+    gv6 = symbol userextname4
+    gv7 = symbol userextname4
+    gv8 = symbol userextname4
     sig0 = (i64, i64) system_v
-    sig1 = (i64) -> i64 system_v
-    sig2 = (i64, i64, i64) -> i64 system_v
-    sig3 = (i64) -> i64 system_v
+    sig1 = (i64, i64) system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64, i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
     sig6 = (i64) -> i64 system_v
-    sig7 = (i64) system_v
-    sig8 = (i64) -> i64 system_v
+    sig7 = (i64) -> i64 system_v
+    sig8 = (i64) system_v
     sig9 = (i64) -> i64 system_v
     sig10 = (i64) -> i64 system_v
     sig11 = (i64) -> i64 system_v
-    sig12 = (i64) system_v
-    sig13 = (i64) -> i64 system_v
+    sig12 = (i64) -> i64 system_v
+    sig13 = (i64) system_v
     sig14 = (i64) -> i64 system_v
     sig15 = (i64) -> i64 system_v
     sig16 = (i64) -> i64 system_v
     sig17 = (i64) -> i64 system_v
     sig18 = (i64) -> i64 system_v
-    sig19 = (i64, i64) -> i64 system_v
+    sig19 = (i64) -> i64 system_v
     sig20 = (i64) system_v
-    sig21 = (i64, i64) -> i64 system_v
-    sig22 = (i64, i64, i64, i64, i64) -> i64 system_v
+    sig21 = (i64) system_v
+    sig22 = (i64, i64) -> i64 system_v
     sig23 = (i64, i64) -> i64 system_v
     sig24 = (i64, i64, i64, i64, i64) -> i64 system_v
     sig25 = (i64, i64) -> i64 system_v
-    sig26 = (i64) system_v
+    sig26 = (i64, i64, i64, i64, i64) -> i64 system_v
+    sig27 = (i64, i64) -> i64 system_v
     fn0 = u0:2 sig0
-    fn1 = u0:0 sig1
-    fn2 = u0:21 sig4
-    fn3 = u0:0 sig5
-    fn4 = colocated u0:91 sig6
-    fn5 = colocated u0:92 sig7
-    fn6 = u0:17 sig8
-    fn7 = u0:18 sig9
-    fn8 = u0:0 sig10
-    fn9 = colocated u0:93 sig11
-    fn10 = colocated u0:94 sig12
-    fn11 = u0:17 sig13
-    fn12 = u0:18 sig14
-    fn13 = u0:19 sig15
-    fn14 = u0:20 sig16
-    fn15 = u0:19 sig17
-    fn16 = u0:20 sig18
-    fn17 = colocated u0:88 sig20
-    fn18 = colocated u0:88 sig26
+    fn1 = u0:13 sig1
+    fn2 = u0:0 sig2
+    fn3 = u0:21 sig5
+    fn4 = u0:0 sig6
+    fn5 = colocated u0:91 sig7
+    fn6 = colocated u0:92 sig8
+    fn7 = u0:17 sig9
+    fn8 = u0:18 sig10
+    fn9 = u0:0 sig11
+    fn10 = colocated u0:93 sig12
+    fn11 = colocated u0:94 sig13
+    fn12 = u0:17 sig14
+    fn13 = u0:18 sig15
+    fn14 = u0:19 sig16
+    fn15 = u0:20 sig17
+    fn16 = u0:19 sig18
+    fn17 = u0:20 sig19
+    fn18 = colocated u0:83 sig20
+    fn19 = colocated u0:81 sig21
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):
     jump block1(v0, v1, v2, v3, v4)
 
 block1(v5: i64, v6: i64, v7: i64, v8: i64, v9: i64):
+    v86 -> v5
+    v87 -> v5
+    v88 -> v6
+    v89 -> v6
+    v90 -> v7
+    v91 -> v7
+    v92 -> v8
+    v93 -> v8
+    v94 -> v9
+    v95 -> v9
     v10 = isub v9, v8
     v11 = iconst.i64 1
     v12 = icmp sle v10, v11  ; v11 = 1
@@ -3620,128 +4126,147 @@ block5:
     v24 = imul.i64 v8, v23  ; v23 = 8
     v25 = iadd v22, v24
     v26 = load.i64 notrap aligned v25
-    v27 = iconst.i64 16
-    v28 = call fn1(v27)  ; v27 = 16
+    v27 = iconst.i64 0
+    v28 = iadd_imm.i64 v7, 8
     v29 = iconst.i64 1
-    store notrap aligned v29, v28+16  ; v29 = 1
-    store notrap aligned v26, v28+24
-    v30 = global_value.i64 gv1
-    v31 = iadd_imm v30, 64
-    v32 = load.i64 notrap aligned v31
-    v33 = call_indirect sig2, v32(v5, v6, v28)
-    v34 = global_value.i64 gv2
-    v35 = iadd_imm v34, 320
-    v36 = load.i64 notrap aligned v35
-    v37 = call_indirect sig3, v36(v33)
-    jump block4(v37)
+    v30 = atomic_rmw.i64 sub v28, v29  ; v29 = 1
+    v31 = icmp eq v30, v29  ; v29 = 1
+    brif v31, block8, block7
 
-block3:
-    v38 = iconst.i64 2
-    v39 = call fn2(v38)  ; v38 = 2
-    brif v39, block7, block8
+block8:
+    fence 
+    call fn1(v7, v27)  ; v27 = 0
+    jump block7
 
 block7:
-    v41 = iconst.i64 56
-    v42 = call fn3(v41)  ; v41 = 56
-    v43 = func_addr.i64 fn4
-    store notrap aligned v43, v42+16
-    v44 = func_addr.i64 fn5
-    store notrap aligned v44, v42+24
-    store.i64 notrap aligned v7, v42+32
-    v45 = iadd_imm.i64 v7, 8
-    v46 = iconst.i64 1
-    v47 = atomic_rmw.i64 add v45, v46  ; v46 = 1
-    store.i64 notrap aligned v5, v42+40
-    v48 = iadd_imm.i64 v5, 8
-    v49 = iconst.i64 1
-    v50 = atomic_rmw.i64 add v48, v49  ; v49 = 1
-    store.i64 notrap aligned v9, v42+48
-    store.i64 notrap aligned v6, v42+56
-    store.i64 notrap aligned v8, v42+64
-    v51 = call fn6(v42)
-    v52 = call fn7(v51)
-    v53 = iconst.i64 56
-    v54 = call fn8(v53)  ; v53 = 56
-    v55 = func_addr.i64 fn9
-    store notrap aligned v55, v54+16
-    v56 = func_addr.i64 fn10
-    store notrap aligned v56, v54+24
-    store.i64 notrap aligned v7, v54+32
-    v57 = iadd_imm.i64 v7, 8
-    v58 = iconst.i64 1
-    v59 = atomic_rmw.i64 add v57, v58  ; v58 = 1
-    store.i64 notrap aligned v5, v54+40
-    v60 = iadd_imm.i64 v5, 8
-    v61 = iconst.i64 1
-    v62 = atomic_rmw.i64 add v60, v61  ; v61 = 1
-    store.i64 notrap aligned v9, v54+48
-    store.i64 notrap aligned v6, v54+56
-    store.i64 notrap aligned v8, v54+64
-    v63 = call fn11(v54)
-    v64 = call fn12(v63)
-    v65 = call fn13(v51)
-    v66 = iconst.i64 8
-    v67 = iadd v51, v66  ; v66 = 8
-    v68 = iconst.i64 1
-    v69 = atomic_rmw.i64 sub v67, v68  ; v68 = 1
-    v70 = iconst.i64 1
-    v71 = icmp eq v69, v70  ; v70 = 1
-    brif v71, block10, block11
+    v32 = iconst.i64 16
+    v33 = call fn2(v32)  ; v32 = 16
+    v34 = iconst.i64 1
+    store notrap aligned v34, v33+16  ; v34 = 1
+    store.i64 notrap aligned v26, v33+24
+    v35 = global_value.i64 gv1
+    v36 = iadd_imm v35, 64
+    v37 = load.i64 notrap aligned v36
+    v38 = call_indirect sig3, v37(v5, v6, v33)
+    v39 = global_value.i64 gv2
+    v40 = iadd_imm v39, 320
+    v41 = load.i64 notrap aligned v40
+    v42 = call_indirect sig4, v41(v38)
+    jump block4(v42)
 
-block10:
-    fence 
-    v72 = call fn14(v51)
-    jump block11
+block3:
+    v43 = iconst.i64 2
+    v44 = call fn3(v43)  ; v43 = 2
+    brif v44, block9, block10
 
-block11:
-    v73 = call fn15(v63)
-    v74 = iconst.i64 8
-    v75 = iadd.i64 v63, v74  ; v74 = 8
-    v76 = iconst.i64 1
-    v77 = atomic_rmw.i64 sub v75, v76  ; v76 = 1
-    v78 = iconst.i64 1
-    v79 = icmp eq v77, v78  ; v78 = 1
-    brif v79, block12, block13
+block9:
+    v46 = iconst.i64 56
+    v47 = call fn4(v46)  ; v46 = 56
+    v48 = func_addr.i64 fn5
+    store notrap aligned v48, v47+16
+    v49 = func_addr.i64 fn6
+    store notrap aligned v49, v47+24
+    v50 = iadd_imm.i64 v7, 8
+    v51 = iconst.i64 1
+    v52 = atomic_rmw.i64 add v50, v51  ; v51 = 1
+    store.i64 notrap aligned v7, v47+32
+    v53 = iadd_imm.i64 v5, 8
+    v54 = iconst.i64 1
+    v55 = atomic_rmw.i64 add v53, v54  ; v54 = 1
+    store.i64 notrap aligned v5, v47+40
+    store.i64 notrap aligned v9, v47+48
+    store.i64 notrap aligned v6, v47+56
+    store.i64 notrap aligned v8, v47+64
+    v56 = call fn7(v47)
+    v57 = call fn8(v56)
+    v58 = iconst.i64 56
+    v59 = call fn9(v58)  ; v58 = 56
+    v60 = func_addr.i64 fn10
+    store notrap aligned v60, v59+16
+    v61 = func_addr.i64 fn11
+    store notrap aligned v61, v59+24
+    v62 = iadd_imm.i64 v7, 8
+    v63 = iconst.i64 1
+    v64 = atomic_rmw.i64 add v62, v63  ; v63 = 1
+    store.i64 notrap aligned v7, v59+32
+    v65 = iadd_imm.i64 v5, 8
+    v66 = iconst.i64 1
+    v67 = atomic_rmw.i64 add v65, v66  ; v66 = 1
+    store.i64 notrap aligned v5, v59+40
+    store.i64 notrap aligned v9, v59+48
+    store.i64 notrap aligned v6, v59+56
+    store.i64 notrap aligned v8, v59+64
+    v68 = call fn12(v59)
+    v69 = call fn13(v68)
+    v70 = call fn14(v56)
+    v71 = iconst.i64 8
+    v72 = iadd v56, v71  ; v71 = 8
+    v73 = iconst.i64 1
+    v74 = atomic_rmw.i64 sub v72, v73  ; v73 = 1
+    v75 = iconst.i64 1
+    v76 = icmp eq v74, v75  ; v75 = 1
+    brif v76, block12, block13
 
 block12:
     fence 
-    v80 = call fn16(v63)
+    v77 = call fn15(v56)
     jump block13
 
 block13:
-    v81 = global_value.i64 gv3
-    v82 = iadd_imm v81, 80
-    v83 = load.i64 notrap aligned v82
-    v84 = call_indirect sig19, v83(v65, v73)
-    call fn17(v65)
-    jump block9(v84)
+    v78 = call fn16(v68)
+    v79 = iconst.i64 8
+    v80 = iadd.i64 v68, v79  ; v79 = 8
+    v81 = iconst.i64 1
+    v82 = atomic_rmw.i64 sub v80, v81  ; v81 = 1
+    v83 = iconst.i64 1
+    v84 = icmp eq v82, v83  ; v83 = 1
+    brif v84, block14, block15
 
-block8:
-    v85 = global_value.i64 gv4
-    v86 = iadd_imm v85, 304
-    v87 = load.i64 notrap aligned v86
-    v88 = call_indirect sig21, v87(v8, v9)
-    v89 = global_value.i64 gv5
-    v90 = iadd_imm v89, 312
-    v91 = load.i64 notrap aligned v90
-    v92 = call_indirect sig22, v91(v5, v6, v7, v8, v88)
-    v93 = global_value.i64 gv6
-    v94 = iadd_imm v93, 304
-    v95 = load.i64 notrap aligned v94
-    v96 = call_indirect sig23, v95(v8, v9)
-    v97 = global_value.i64 gv7
-    v98 = iadd_imm v97, 312
-    v99 = load.i64 notrap aligned v98
-    v100 = call_indirect sig24, v99(v5, v6, v7, v96, v9)
-    v101 = global_value.i64 gv8
-    v102 = iadd_imm v101, 80
-    v103 = load.i64 notrap aligned v102
-    v104 = call_indirect sig25, v103(v92, v100)
-    call fn18(v92)
-    jump block9(v104)
+block14:
+    fence 
+    v85 = call fn17(v68)
+    jump block15
 
-block9(v40: i64):
-    jump block4(v40)
+block15:
+    call fn18(v5)
+    call fn19(v7)
+    v96 = global_value.i64 gv3
+    v97 = iadd_imm v96, 80
+    v98 = load.i64 notrap aligned v97
+    v99 = call_indirect sig22, v98(v70, v78)
+    jump block11(v99)
+
+block10:
+    v100 = iadd_imm.i64 v5, 8
+    v101 = iconst.i64 1
+    v102 = atomic_rmw.i64 add v100, v101  ; v101 = 1
+    v103 = iadd_imm.i64 v7, 8
+    v104 = iconst.i64 1
+    v105 = atomic_rmw.i64 add v103, v104  ; v104 = 1
+    v106 = global_value.i64 gv4
+    v107 = iadd_imm v106, 304
+    v108 = load.i64 notrap aligned v107
+    v109 = call_indirect sig23, v108(v8, v9)
+    v110 = global_value.i64 gv5
+    v111 = iadd_imm v110, 312
+    v112 = load.i64 notrap aligned v111
+    v113 = call_indirect sig24, v112(v5, v6, v7, v8, v109)
+    v114 = global_value.i64 gv6
+    v115 = iadd_imm v114, 304
+    v116 = load.i64 notrap aligned v115
+    v117 = call_indirect sig25, v116(v8, v9)
+    v118 = global_value.i64 gv7
+    v119 = iadd_imm v118, 312
+    v120 = load.i64 notrap aligned v119
+    v121 = call_indirect sig26, v120(v5, v6, v7, v117, v9)
+    v122 = global_value.i64 gv8
+    v123 = iadd_imm v122, 80
+    v124 = load.i64 notrap aligned v123
+    v125 = call_indirect sig27, v124(v113, v121)
+    jump block11(v125)
+
+block11(v45: i64):
+    jump block4(v45)
 
 block4(v14: i64):
     return v14

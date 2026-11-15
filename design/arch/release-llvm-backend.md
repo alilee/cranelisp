@@ -161,7 +161,7 @@ Once release lowering legitimately diverges, the invariant becomes **same observ
 ### 8.3 The M6 watch-item (the one standing facade exception)
 
 > **S100 RULING (2026-07-02, `/arch` Phase-2 review — the contingency below has FIRED; the default is INVERTED).**
-> The S99 measured settlement (`effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2.7) established that the
+> The S99 measured settlement (`effect-concurrency.md` §3.1; `tests/plan/s99-measurement.md` §8–§10) established that the
 > dominant contention term (vec-COW leaf-refcount volume) is curable only with interprocedural facts local
 > in-backend derivation cannot see — exactly the "can't reach the precision FIXME 0408 needs" condition this
 > section named. S100 rules: **ownership/mode inference is computed at typecheck (interprocedural, over the

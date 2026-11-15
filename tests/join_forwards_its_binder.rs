@@ -39,6 +39,7 @@ fn measure(label: &str, control: (Child, i32), subject: (Child, i32)) -> Margina
     let (control, control_exit) = control;
     let (subject, subject_exit) = subject;
     let pair = MarginalPair::new(label, control, subject).measure();
+    eprintln!("{}", pair.report());
     assert!(
         pair.control().exit_code() == Some(control_exit)
             && pair.subject().exit_code() == Some(subject_exit),
@@ -113,9 +114,9 @@ const V_USED_AFTER: &str = " n (vec-len v)";
 //
 // D2-C, the compile-time copy path. Both halves read `v` after the set, so
 // both copy; the control binds the copy without the `match`, so the pair
-// isolates the match seam. The control leaks one block of its own, which the
-// pair subtracts; that leak is ACT-1028's, so a balanced pair shows only that
-// the arm forwards transparently. Both compute 1.
+// isolates the match seam. The control previously leaked one block of its
+// own (ACT-1028), which the pair subtracted; U′ removed that leak. Both
+// halves now balance and compute 1.
 // defect: class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::scrutinee_lifetime_for_arm found=S122 owner=/dev
 #[test]
 fn match_arm_forwarding_a_compile_time_cow_copy_keeps_it_live() {

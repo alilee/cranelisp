@@ -337,7 +337,7 @@ displacement; typed-context exits; both analysis toggles; REPL/`--run`/
 | Match eliminator (ctor/var × inline/let-bound × payload) | committed cells #1–#10 + 4 green controls | nothing to author; flip at W3 |
 | Capture/curry teardown | cells #11–#12 + green capture controls | `/dev` unit matrix per `transitive-drop-glue.md` §7 (capture/environment glue row); **W3: 0796 exclusion removal** — `/testing` removes the `curried_partial_application` entry from `tests/gen_ownership_flows.rs::balance_exclusion` IN the S4 flipping change-set, and the harness must then run clean over that position for every owning type under both toggles. The removal IS the 0796 acceptance (`transitive-drop-glue.md` §7.4): a fix that flips #11–#13 while the exclusion stays is incomplete |
 | TCO displacement predicate | cells #5/#8/#9, #19–#20, `adt_wrapped_supersede_leak_0720` greens | `/dev` unit cells for the §6 predicate table (transfer vs replacement polarity, borrowed-alias rejection) |
-| Typed-context exits (run/REPL/link; scalar/heap/nested/`Pure`) | cells #15–#18 + `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | `/dev`(int/exe-bundle) unit matrix per `result-owner.md` §6 **including the §5 error-path negative rows** (`/qa` verifies at Phase 6, with the recorded S118 armed legs); no new e2e owed. **S118 flip rider:** cell #15's `// defect:` line still reads `locus=…rc_emission.rs::protect_return_value` (`tests/adt_drop_glue_underkey.rs:258`) — both mechanisms at that locus are falsified; `/testing` re-locuses it onto the int result-value lifetime seam IN the flipping change-set (I3), or the `locus=` hotspot analysis keeps mis-attributing this defect to backend |
+| Typed-context exits (run/REPL/link; scalar/heap/nested/`Pure`) | cells #15–#18 + `program_result_owner_s116::scalar_pure_result_exit_conversion_control_green` | `/dev`(int/exe-bundle) unit matrix per `result-owner.md` §6 **including the §5 error-path negative rows** (`/qa` verifies at Phase 6, with the recorded S118 armed legs); no new e2e owed. **S118 flip rider:** cell #15's `// defect:` line still reads `locus=…rc_emission.rs::protect_return_value` (`tests/adt_drop_glue_underkey.rs:258`) — both mechanisms at that locus are falsified; `/testing` re-locuses it onto the int result-value lifetime seam IN the flipping change-set (I3), or the `locus=` hotspot analysis keeps mis-attributing this defect to backend | <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
 | Eliminator axis in the generative harness | MISSING (FIXME 0830) | §4.2 — W1 |
 | Mixed-arm whole-match approximation tripwire | MISSING (FIXME 0726) | §4.2 — W1 |
 
@@ -588,7 +588,7 @@ counts via `CRANELISP_ALLOC_PARITY_DUMP`).
 
 > **Locus correction (S120 W1, `/qa`):** this section originally placed
 > `protect_return_value` in `fn_compiler.rs`. The method is defined at
-> `crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value`
+> `protect_return_value` in `crates/cranelisp-backend/src/compiler/rc_emission.rs` (deleted in S123)
 > (in `impl FnCompiler`), and FIXME 0917's header carries the `git log -S`
 > proof it was **never** in `fn_compiler.rs` — a factual citation repair, not
 > a seam move (`value_provenance` and `is_fresh_construction` ARE
@@ -614,7 +614,7 @@ the mechanism to one instruction:
   its one count, and the whole 4-object tree strands at rc=1 — slope exactly
   4/iteration, deallocs constant. Control's `step` (every arm a boxed
   construction) emits NO protect inc at the same seam.
-- **Mechanism:** `rc_emission.rs::protect_return_value` is licensed by the
+- **Mechanism:** `protect_return_value` in `rc_emission.rs` (deleted in S123) is licensed by the
   `value_provenance`/`is_fresh_construction` join ("fresh iff EVERY arm is
   fresh"). A **nullary `ConstrADT` arm classifies non-Fresh**, so one `None`
   arm — never taken at runtime — flips the whole match result to
@@ -627,7 +627,7 @@ the mechanism to one instruction:
   leak.
 - **Attribution:** `cranelisp-backend`,
   `fn_compiler.rs::{value_provenance, is_fresh_construction}` +
-  `rc_emission.rs::protect_return_value` — the nullary-`ConstrADT`
+  `protect_return_value` in `rc_emission.rs` (deleted in S123) — the nullary-`ConstrADT`
   classification in the
   provenance lattice (a bare tag mints no box and can alias nothing; it should
   join as Fresh, or protect licensing must require a genuinely aliasable arm).
@@ -646,7 +646,7 @@ moves emission but zero runtime blocks) and by the 0917 reduction (100% of the
 is re-attributed to **FIXME 0917**; it is expected to flip when 0917's fix
 lands and is **NOT** 0903's acceptance cell (0903's addendum amended
 accordingly). `/testing` re-points the cell's `// defect:` line
-(locus → `rc_emission.rs::protect_return_value`, FIXME 0917, this section) in
+(locus → `rc_emission.rs::protect_return_value`, FIXME 0917, this section) in <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
 the close batch. The `f4_sudoku::user::Grid.cells` golden re-baseline stays
 0903's own (static) witness, exactly as the 0903 addendum now records.
 
@@ -727,7 +727,7 @@ Baseline: the W8-certified 19 RED (16 named §11.7 + 0910 ×2 + 0911).
 
 | # | Item | Cells | Color |
 |---|---|---|---|
-| 1 | **0917 pair** — new repro file; marginal subject/control pair (control differs only in the arms' returned ctors), PrimitivesOnly, exact marginal balance; `--run --no-cache` face + `--link` face (the two verified toggles); `// spec: spec/12-runtime.md §12.3.1`; `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev` | 2 | **RED ×2** (control exactness embedded in the pair; a separate control cell, if `/testing` prefers one, is GREEN) |
+| 1 | **0917 pair** — new repro file; marginal subject/control pair (control differs only in the arms' returned ctors), PrimitivesOnly, exact marginal balance; `--run --no-cache` face + `--link` face (the two verified toggles); `// spec: spec/12-runtime.md §12.3.1`; `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S118 owner=/dev` | 2 | **RED ×2** (control exactness embedded in the pair; a separate control cell, if `/testing` prefers one, is GREEN) | <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
 | 2 | **Cell #21 re-point** — `exemplar_ownership_residue_s116.rs` comment/`// defect:` edit onto 0917 + §11.8.1 (locus `protect_return_value`; the 0903-family prose removed) | 0 | no change (stays RED, carry #21, now 0917-attributed) |
 | 3 | **0875 replacement** — standing exemplar `--link`-then-run parity cell: fresh scratch copy of `exemplar/*.cl`, no cache, `--link` the entry, run the produced executable, assert exit 0 + stdout byte-identical to `--run` of the same tree; ordinary coverage cell (no `// defect:` — nothing attributed was ever reproduced) | 1 | **GREEN** |
 | 4 | **0913 marginal cell** — REPL-children pair, N identical `(Err "boom")` turns, control differs ONLY in the `:(Result String String)` annotation; instrument = exit counters via `CRANELISP_ALLOC_PARITY_DUMP` (NOT `/mem`, per 0914); assert exact marginal 0; `// spec: spec/12-runtime.md §12.3.1` (+ result-owner design cite); `// defect: class=rc-miscount locus=cranelisp-typecheck::MonoExpr::lenient_from_expr found=S118 owner=/dev` | 1 | **RED** (today: subject +2N allocs/+0 deallocs vs control balanced, exact) |

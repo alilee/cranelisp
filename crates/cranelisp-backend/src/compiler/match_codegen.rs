@@ -8,68 +8,31 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use crate::heap::{HeapCategory, RcAtomicity};
+use crate::heap::HeapCategory;
 use cranelisp_types::{
     CranelispError, ErrorLocation, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
 };
 
 use crate::heap::{self, HeapAdt};
 
-use super::{
-    FnCompiler, MatchContext, collect_var_ids_from_type, signature_heap_category,
-    substitute_type_inline,
-};
+use super::ownership_plan::Intro;
+use super::{FnCompiler, MatchContext};
 
-/// The scrutinee lifetime plan for ONE arm (S118 slice S3,
-/// `design/backend/transitive-drop-glue.md` §5).
-///
-/// The *ownership* half is recorded ONCE, before any arm is emitted, from
-/// `yields_owned_temporary` — the three-point provenance lattice that is the
-/// ownership authority everywhere else in this crate. It is never re-derived
-/// per pattern kind: constructor and var patterns consume the same answer, and
-/// no spelling test is ownership authority.
-///
-/// The *forward* half is per arm, which is the whole correction. HEAD asked
-/// `arms.iter().any(|a| a forwards)` and suppressed the release for EVERY path,
-/// so a constructor arm that genuinely consumed the temporary leaked it
-/// whenever some sibling var arm forwarded (FIXME 0726's mixed-arm leak).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ScrutineeLifetime {
-    /// The enclosing scope or the callee owns the scrutinee: no wrapper
-    /// release here, and pattern bindings remain borrowed.
-    Borrowed,
-    /// This arm transfers the whole scrutinee out (`[r r]`): the single owner
-    /// travels to the outer consume position, so this path emits no release.
-    OwnedForwarded,
-    /// This match frame owns a temporary and this arm consumes it: exactly one
-    /// release, at the arm's lifetime end, after the arm has protected any
-    /// extracted field that outlives the wrapper.
-    OwnedConsumed,
-}
-
-/// Does `arm` forward the WHOLE scrutinee out as its value? Only a var-pattern
-/// arm can: a constructor arm binds fields, and a wildcard arm binds nothing,
-/// so neither can name the scrutinee at all.
-fn arm_forwards_scrutinee(arm: &MonoMatchArm) -> bool {
-    match &arm.pattern {
-        Pattern::Var { name, .. } => {
-            crate::compiler::fn_compiler::body_forwards_binding(&arm.body, name)
-        }
-        _ => false,
-    }
-}
-
-/// Resolve the per-arm plan from the once-recorded ownership answer and the
-/// arm's shape. Nothing else is an input: a COW scrutinee owns exactly one
-/// reference on every branch, like any owned temporary (§13.7).
-pub(crate) fn scrutinee_lifetime_for_arm(owned: bool, arm: &MonoMatchArm) -> ScrutineeLifetime {
-    if !owned {
-        ScrutineeLifetime::Borrowed
-    } else if arm_forwards_scrutinee(arm) {
-        ScrutineeLifetime::OwnedForwarded
-    } else {
-        ScrutineeLifetime::OwnedConsumed
-    }
+/// A field binder records its type only when the field owns something heap,
+/// which keeps a scalar field out of every counting site.
+fn heap_field_type<M: Module, C, L>(
+    compiler: &FnCompiler<'_, M, C, L>,
+    field_types: &[cranelisp_types::Type],
+    slot: usize,
+) -> Option<cranelisp_types::Type>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    field_types
+        .get(slot)
+        .filter(|ty| compiler.is_heap_type(ty))
+        .cloned()
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -79,67 +42,39 @@ where
 {
     // --- Match expression ---
 
+    /// Compile a match. The match owns the scrutinee value
+    /// (`uniform-counting.md` §4): a variable pattern's binder takes it, a
+    /// constructor arm duplicates each used field and then drops it, and a
+    /// nullary or wildcard arm drops it at entry.
     pub(crate) fn compile_match(
         &mut self,
-        node_id: usize,
+        node: &MonoExpr,
         scrutinee: &MonoExpr,
         arms: &[MonoMatchArm],
         span: Span,
     ) -> Result<Value, CranelispError> {
+        let key = crate::compiler::ownership_plan::node_key(node);
         let saved_tail = self.in_tail_position;
-
-        // Scrutinee is never in tail position, and is never itself a tail-call
-        // arg — it is consumed by the match, not forwarded to the loop param.
-        // Clear `tail_arg_protect` so a heap binding aliased in the scrutinee is
-        // not spuriously protected; the arm bodies restore it below.
-        let saved_protect = self.tail_arg_protect;
         self.in_tail_position = false;
-        self.tail_arg_protect = false;
         let scrut_val = self.compile_expr(scrutinee)?;
-        self.tail_arg_protect = saved_protect;
-
-        // §5 — record the lifetime plan ONCE, before any arm is emitted, so a
-        // reader sees the arms consume one answer instead of two complementary
-        // tests. `yields_owned_temporary` is the ownership authority (the
-        // `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere` lattice).
-        let scrutinee_owned = crate::compiler::fn_compiler::yields_owned_temporary(scrutinee);
-        let scrut_ty = scrutinee.ty().to_type();
-        // §2 — whose reference do this match's pattern bindings ride on? The
-        // frame's own temporary when it owns one, otherwise the live binding
-        // the scrutinee is rooted at (a `let`-bound wrapper), otherwise nobody
-        // reachable from here (a `Borrowed` param). Recorded once, alongside
-        // the lifetime plan, and read only at the tail-jump seam.
-        let scrut_root = if scrutinee_owned {
-            Some(crate::compiler::fn_compiler::BorrowRoot::OwnedTemporary)
-        } else {
-            self.operand_live_binding_root(scrutinee)
-                .map(crate::compiler::fn_compiler::BorrowRoot::Binding)
-        };
-        let scrut_is_heap = matches!(
-            HeapCategory::classify(scrutinee.ty(), Some(self.ctx.symbol_tables)),
-            HeapCategory::AlwaysHeap | HeapCategory::Mixed
-        );
+        let scrut_ty = self.counted_type(scrutinee);
 
         let merge_block = self.builder.create_block();
         self.builder.append_block_param(merge_block, types::I64);
 
         let panic_block = self.builder.create_block();
 
-        // Create one block per match arm.
         let mut arm_blocks: Vec<Block> = Vec::new();
         for _ in arms {
             arm_blocks.push(self.builder.create_block());
         }
 
-        // Jump to first test (or panic if no arms).
         if arms.is_empty() {
             self.builder.ins().jump(panic_block, &[]);
         } else {
             self.builder.ins().jump(arm_blocks[0], &[]);
         }
 
-        // Compile each arm as a test-and-branch chain.
-        let mut every_normal_arm_independent = !arms.is_empty();
         for (i, arm) in arms.iter().enumerate() {
             let next_block = if i + 1 < arms.len() {
                 arm_blocks[i + 1]
@@ -150,40 +85,31 @@ where
             self.builder.switch_to_block(arm_blocks[i]);
             self.builder.seal_block(arm_blocks[i]);
 
-            // The wrapper release this arm owes, if any. Pushed BEFORE the arm
-            // body is compiled so a tail self-call inside the body discharges
-            // it on the live path (§5 / 0810 Face A); popped and emitted at the
-            // arm's own lifetime end below.
-            let plan = scrutinee_lifetime_for_arm(scrutinee_owned, arm);
-            let owes_release = plan == ScrutineeLifetime::OwnedConsumed && scrut_is_heap;
-            if owes_release {
-                self.push_pending_scrutinee_release(scrut_val, scrut_ty.clone());
-            }
-
             match &arm.pattern {
                 Pattern::Wildcard { .. } => {
-                    // Always matches -- compile body and jump to merge. A
-                    // wildcard arm pushes no bindings, so the body's value is the
-                    // arm value directly; protect it when this match is a tail-
-                    // call arg forwarding a frame-owned binding (F1 UAF cure).
+                    self.emit_typed_rc_dec(scrut_val, &scrut_ty)?;
+                    self.enter_arm(key, i)?;
                     self.in_tail_position = saved_tail;
                     let body_val = self.compile_expr(&arm.body)?;
-                    let body_val = self.maybe_protect_tail_arg_alias(&arm.body, body_val);
-                    every_normal_arm_independent &= self.body_has_independent_result(&arm.body);
-                    self.emit_arm_scrutinee_release(owes_release)?;
                     self.builder.ins().jump(merge_block, &[body_val]);
                 }
                 Pattern::Var { name, .. } => {
-                    every_normal_arm_independent &= self.compile_var_pattern_arm(
+                    self.enter_arm(key, i)?;
+                    self.push_scope();
+                    self.bind_binder(
+                        Intro::Arm {
+                            node: key,
+                            arm: i,
+                            slot: 0,
+                        },
                         name,
                         scrut_val,
-                        scrutinee,
-                        &arm.body,
-                        saved_tail,
-                        merge_block,
-                        owes_release,
-                        scrut_root.clone(),
+                        Some(scrut_ty.clone()),
                     )?;
+                    self.in_tail_position = saved_tail;
+                    let body_val = self.compile_expr(&arm.body)?;
+                    self.pop_scope();
+                    self.builder.ins().jump(merge_block, &[body_val]);
                 }
                 Pattern::Constructor { name, bindings, .. } => {
                     let match_ctx = MatchContext {
@@ -192,16 +118,11 @@ where
                         next_block,
                         merge_block,
                         saved_tail,
-                        scrut_root: scrut_root.clone(),
-                        owes_release,
+                        match_node: key,
+                        arm: i,
                     };
-                    // `Pattern::Constructor.name` is a syntactic-stage
-                    // `SymbolRef` (S70). Its `Display` yields `module/name`
-                    // (qualified) or bare `name`; the ctor's storage identity
-                    // now rides the keyed carrier `arm.resolved_ctor`, not a
-                    // string parsed by the S110-W3-deleted `lookup_constructor`.
                     let ctor_name = Symbol::from(name.to_string());
-                    every_normal_arm_independent &= self.compile_constructor_pattern(
+                    self.compile_constructor_pattern(
                         &ctor_name,
                         bindings,
                         arm.resolved_ctor.as_ref(),
@@ -213,118 +134,21 @@ where
             }
         }
 
-        // Panic block: non-exhaustive match.
+        // Panic block: non-exhaustive match. A panic ends the process, so it
+        // owes no release.
         self.builder.switch_to_block(panic_block);
         self.builder.seal_block(panic_block);
         self.emit_match_panic()?;
 
-        // Merge block.
-        //
-        // §5 — there is NO whole-match release here any more. HEAD ran ONE dec
-        // after the merge, gated by the `any arm forwards` approximation, and
-        // that single site could not be right for both a forwarding var arm and
-        // a consuming constructor arm in the same match (0726), could not run
-        // before a tail jump out of an arm (0810 Face A), and double-counted
-        // against the var-arm alias registration (0782). Each consuming arm now
-        // releases the wrapper once, at its own lifetime end.
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
-
-        self.independent_match_results
-            .insert(node_id, every_normal_arm_independent);
-
         Ok(self.builder.block_params(merge_block)[0])
     }
 
-    /// Emit (and retire) the wrapper release this arm owes. Called at the arm's
-    /// lifetime end — after the body, after any protective inc on an extracted
-    /// field that escapes, and before the jump to the merge block.
-    ///
-    /// When the arm body ended in a tail self-call this emission lands in the
-    /// dead block after the jump; the live release was already emitted by
-    /// `flush_pending_scrutinee_releases_before_tail_jump`. Either way the arm
-    /// releases the wrapper exactly once on every executed path.
-    fn emit_arm_scrutinee_release(&mut self, owes_release: bool) -> Result<(), CranelispError> {
-        if !owes_release {
-            return Ok(());
-        }
-        let Some((val, ty)) = self.pop_pending_scrutinee_release() else {
-            return Ok(());
-        };
-        self.emit_typed_rc_dec(val, &ty)
-    }
-
-    /// Compile a variable-binding pattern arm: bind the scrutinee to a
-    /// name, compile the body in a new scope, then jump to the merge block.
-    // codegen threading: +owes_release, +scrut_root (S118 S3 §5/§2).
-    #[allow(clippy::too_many_arguments)]
-    fn compile_var_pattern_arm(
-        &mut self,
-        name: &Symbol,
-        scrut_val: Value,
-        scrutinee: &MonoExpr,
-        body: &MonoExpr,
-        saved_tail: bool,
-        merge_block: Block,
-        owes_release: bool,
-        scrut_root: Option<crate::compiler::fn_compiler::BorrowRoot>,
-    ) -> Result<bool, CranelispError> {
-        // Bind scrutinee to variable, always matches.
-        self.push_scope();
-        self.bind_local(name, scrut_val, Some(scrutinee.ty().to_type()));
-
-        // **FIXME 0782, resolution (a) — the var-pattern binder BORROWS.**
-        //
-        // It is a borrow of a value the match frame owns for the arm's
-        // duration, exactly as a constructor pattern's field bindings are, and
-        // it is registered as such: on the frame (so shadowing and last-use
-        // refuse it) and MARKED BORROWED (so scope cleanup never decs it, and
-        // an in-place COW can never mutate a value the wrapper still owns).
-        //
-        // The release owner is the arm's lifetime plan (`owes_release`), for
-        // BOTH pattern kinds. HEAD registered the binder for scope cleanup
-        // whenever the frame owned the scrutinee, while the merge-block dec
-        // fired for the same pointer — two `atomic_rmw sub` on one value,
-        // `--link` exit 134. Resolution (b) (register the alias and suppress
-        // the arm's release) was rejected: it makes the release owner depend on
-        // the PATTERN KIND, which is the per-spelling rule §5 exists to
-        // eliminate.
-        self.mark_borrowed(name);
-        if let Some(root) = scrut_root.clone() {
-            self.record_borrow_root(name, root);
-        }
-
-        self.in_tail_position = saved_tail;
-        let skip_var = self.return_var_in_scope(body);
-        let body_val = self.compile_expr(body)?;
-        // In a tail-call-arg context (`(recur (match … v))`) use the tail-arg
-        // alias protection instead of `protect_return_value`: the tail-jump flush
-        // is the balancing dec, not a caller, so an unconditional protect inc on
-        // a fresh arm value would leak. `maybe_protect_tail_arg_alias` incs only a
-        // direct `Var` arm whose slot the frame owns (F1 UAF cure).
-        let returned_borrowed = skip_var
-            .and_then(|slot| self.scope.slot(slot))
-            .is_some_and(|slot| slot.is_borrowed());
-        let independent = if self.tail_arg_protect {
-            self.maybe_protect_tail_arg_alias(body, body_val);
-            self.body_has_independent_result(body)
-        } else {
-            let protected = self.protect_return_value(&skip_var, body_val, body);
-            if returned_borrowed {
-                !owes_release
-                    && matches!(
-                        scrut_root,
-                        Some(crate::compiler::fn_compiler::BorrowRoot::OwnedTemporary)
-                    )
-            } else {
-                protected
-            }
-        };
-        self.pop_scope_with_cleanup(skip_var)?;
-        self.emit_arm_scrutinee_release(owes_release)?;
-        self.builder.ins().jump(merge_block, &[body_val]);
-
-        Ok(independent)
+    /// The plan's arm-entry drops, once the arm has taken the scrutinee.
+    fn enter_arm(&mut self, node: usize, arm: usize) -> Result<(), CranelispError> {
+        self.emit_scrutinee_drops(node)?;
+        self.emit_entry_drops(node, arm)
     }
 
     /// Compile a constructor pattern arm.
@@ -339,7 +163,7 @@ where
         match_ctx: &MatchContext,
         body: &MonoExpr,
         span: Span,
-    ) -> Result<bool, CranelispError> {
+    ) -> Result<(), CranelispError> {
         // **Pattern position gets exactly ONE resolver (S109 W1.2, §10.3).** The
         // arm's `resolved_ctor` is typecheck's STORAGE identity for this pattern
         // ctor (canonical `Type.Ctor` for a sum ctor; the type-name key for a
@@ -426,7 +250,7 @@ where
         is_mixed: bool,
         match_ctx: &MatchContext,
         body: &MonoExpr,
-    ) -> Result<bool, CranelispError> {
+    ) -> Result<(), CranelispError> {
         let body_block = self.builder.create_block();
 
         if is_mixed {
@@ -470,15 +294,14 @@ where
                 .brif(cmp, body_block, &[], match_ctx.next_block, &[]);
         }
 
+        // The arm matched a bare tag, which carries no reference to release.
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
+        self.enter_arm(match_ctx.match_node, match_ctx.arm)?;
         self.in_tail_position = match_ctx.saved_tail;
         let body_val = self.compile_expr(body)?;
-        let independent = self.body_has_independent_result(body);
-        self.emit_arm_scrutinee_release(match_ctx.owes_release)?;
         self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
-
-        Ok(independent)
+        Ok(())
     }
 
     /// Compile a data constructor pattern (heap-allocated, with field bindings).
@@ -492,7 +315,7 @@ where
         bindings: &[Symbol],
         match_ctx: &MatchContext,
         body: &MonoExpr,
-    ) -> Result<bool, CranelispError> {
+    ) -> Result<(), CranelispError> {
         let body_block = if is_value {
             // R5 (§7.1): the scrutinee IS the flattened value word — there is no
             // heap tag to load (a `heap_load` on the bare word would dereference
@@ -506,86 +329,53 @@ where
             self.emit_data_pattern_tag_check(tag, is_mixed, match_ctx)
         };
 
-        // Body: bind fields from known offsets.
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
 
-        // Resolve concrete field types by looking at the scrutinee's type
-        // and matching against the constructor's fields. This allows us to
-        // determine which extracted fields are heap-typed for RC management.
-        let field_types = self.concrete_field_types(resolved_ctor, match_ctx);
+        // Concrete field types from the scrutinee's type and the ctor's fields.
+        let field_types = self.concrete_field_types(resolved_ctor, match_ctx)?;
 
-        self.push_scope();
-        self.bind_data_pattern_fields(
-            is_value,
-            bindings,
-            &field_types,
-            match_ctx.scrut_val,
-            match_ctx.scrut_root.clone(),
-        );
-
-        self.in_tail_position = match_ctx.saved_tail;
-        let skip_var = self.return_var_in_scope(body);
-        let body_val = self.compile_expr(body)?;
-
-        // Auto-upgrade: if the return value is a borrowed var, inc it to
-        // create an owning reference. Borrowed vars share the scrutinee's
-        // reference, but the return value must survive the scrutinee's
-        // eventual dec. This is the sketch's "auto-upgrade borrowed on return".
-        let independent = if let Some(sv) = skip_var
-            && self.scope.slot(sv).is_some_and(|slot| slot.is_borrowed())
-        {
-            if let Some(ty) = self.scope.slot(sv).and_then(|slot| slot.ty()).cloned() {
-                let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
-                // B3.3-R (§5.1): the auto-upgrade materialization inc is always
-                // atomic. This was a through-binding site (per-binding Confined
-                // carrier), dropped as dead + latent-race code (/review B3.3) —
-                // the analysis produces no confined let-bindings today. The
-                // `_atomicity` mechanism is retained (probe-reachable); it is fed
-                // `Atomic` here.
-                let atomicity = RcAtomicity::Atomic;
-                match category {
-                    HeapCategory::AlwaysHeap => {
-                        heap::emit_rc_inc_atomicity(
-                            &mut self.builder,
-                            self.module,
-                            body_val,
-                            atomicity,
-                        );
-                    }
-                    HeapCategory::Mixed => {
-                        heap::emit_rc_inc_guarded_atomicity(
-                            &mut self.builder,
-                            self.module,
-                            body_val,
-                            atomicity,
-                        );
-                    }
-                    HeapCategory::NeverHeap | HeapCategory::Value => {}
+        // Duplicate each used heap field out of the scrutinee, then drop the
+        // scrutinee: the arm's binders now own their fields (§4).
+        let field_vals = self.load_data_pattern_fields(is_value, bindings, match_ctx);
+        if !is_value {
+            for (slot, &field_val) in field_vals.iter().enumerate() {
+                let intro = Intro::Arm {
+                    node: match_ctx.match_node,
+                    arm: match_ctx.arm,
+                    slot,
+                };
+                if self.field_is_used(intro) {
+                    let ty = heap_field_type(self, &field_types, slot);
+                    self.emit_dup(field_val, ty.as_ref());
                 }
             }
-            true
-        } else if self.tail_arg_protect {
-            // Tail-call-arg context: the tail-jump flush is the balancing dec
-            // (not a caller), so protect only a direct `Var` arm whose slot the
-            // frame owns — never an unconditional inc on a fresh value, which
-            // would leak here (F1 UAF cure).
-            self.maybe_protect_tail_arg_alias(body, body_val);
-            self.body_has_independent_result(body)
-        } else {
-            self.protect_return_value(&skip_var, body_val, body)
-        };
+            if let Some(scrut_ty) = &match_ctx.scrut_type {
+                self.emit_typed_rc_dec(match_ctx.scrut_val, scrut_ty)?;
+            }
+        }
+        self.enter_arm(match_ctx.match_node, match_ctx.arm)?;
 
-        self.pop_scope_with_cleanup(skip_var)?;
-        // §2 — protect, THEN tear down. Every protective inc on an extracted
-        // field that outlives the wrapper (the borrowed-return auto-upgrade
-        // above, the tail-arg alias protect, `protect_return_value`) has been
-        // emitted by this point, so the wrapper's glue can discharge its own
-        // field reference safely.
-        self.emit_arm_scrutinee_release(match_ctx.owes_release)?;
+        self.push_scope();
+        for (slot, (binding_name, field_val)) in bindings.iter().zip(field_vals).enumerate() {
+            let ty = heap_field_type(self, &field_types, slot);
+            self.bind_field_binder(
+                Intro::Arm {
+                    node: match_ctx.match_node,
+                    arm: match_ctx.arm,
+                    slot,
+                },
+                binding_name,
+                field_val,
+                ty,
+            )?;
+        }
+
+        self.in_tail_position = match_ctx.saved_tail;
+        let body_val = self.compile_expr(body)?;
+        self.pop_scope();
         self.builder.ins().jump(match_ctx.merge_block, &[body_val]);
-
-        Ok(independent)
+        Ok(())
     }
 
     /// Emit the heap-pointer guard (for mixed ADTs) and tag comparison
@@ -638,148 +428,39 @@ where
         body_block
     }
 
-    /// Extract fields from a data constructor and bind them as local
-    /// variables. Field bindings are BORROWED from the scrutinee.
-    ///
-    /// Borrowed semantics: no inc on extraction, no dec at scope exit.
-    /// The scrutinee's RC management handles field cleanup when the
-    /// scrutinee itself is freed (via drop glue in the dealloc path).
-    ///
-    /// This prevents double-free: if a field is independently passed to
-    /// a consuming function (which inc's/dec's it), the field's RC
-    /// tracks those independent references correctly. The scrutinee's
-    /// eventual dealloc-path drop glue provides the final dec.
-    fn bind_data_pattern_fields(
+    /// Load the fields a data pattern binds. A value-flattened scrutinee IS
+    /// its single payload word (R5, §7.1), so its field is the scrutinee itself.
+    fn load_data_pattern_fields(
         &mut self,
         is_value: bool,
         bindings: &[Symbol],
-        field_types: &[cranelisp_types::Type],
-        scrut_val: Value,
-        scrut_root: Option<crate::compiler::fn_compiler::BorrowRoot>,
-    ) {
-        for (i, binding_name) in bindings.iter().enumerate() {
-            // R5 (§7.1): a value-flattened scrutinee IS its single payload word,
-            // so the field binding is the IDENTITY of the scrutinee (no
-            // dereference). A `Value` type has EXACTLY ONE field — `value_layout`'s
-            // single-field invariant (Wave-3a /review single-source ruling): a
-            // ≥2-field product is never `Value`, so `is_value` ⇒ one binding, `i`
-            // always 0. Binding every field to `scrut_val` is therefore sound.
-            // The field is a flattened scalar/value ⇒ NeverHeap-equivalent, so
-            // the RC-classification block below is a no-op for it (never marked
-            // borrowed) — correct: there is no heap owner to defer to.
-            let field_val = if is_value {
-                scrut_val
-            } else {
-                heap::heap_load(&mut self.builder, scrut_val, HeapAdt::field_offset(i)) // field_i: i64
-            };
-
-            // Record the field type for RC classification (needed by
-            // protect_return_value and consuming arg lists). Ctor/accessor field
-            // types come from the SIGNATURE (concrete-boundary-type.md §3.1.1,
-            // FIXME 0391 site 3): convert the field `Type` → `ConcreteType` here
-            // (must succeed — §3.11.1 guarantees concreteness upstream).
-            // A field binder records its type only when the field OWNS
-            // something heap: the absence is what keeps a scalar field binder
-            // out of `apply.rs`'s owned-binding gate, exactly as before.
-            let recorded_ty = field_types.get(i).filter(|ft| {
-                matches!(
-                    signature_heap_category(ft, Some(self.ctx.symbol_tables)),
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
-                )
-            });
-            let owns_heap = recorded_ty.is_some();
-            self.bind_local(binding_name, field_val, recorded_ty.cloned());
-            if owns_heap {
-                // Mark as borrowed: skip scope-exit dec (owner handles cleanup).
-                self.mark_borrowed(binding_name);
-                // S118 slice S3 (§2): remember WHOSE reference this view
-                // rides on, so an escape into a tail call can be upgraded
-                // exactly when that owner is released at the jump.
-                if let Some(root) = scrut_root.clone() {
-                    self.record_borrow_root(binding_name, root);
+        match_ctx: &MatchContext,
+    ) -> Vec<Value> {
+        (0..bindings.len())
+            .map(|i| {
+                if is_value {
+                    match_ctx.scrut_val
+                } else {
+                    heap::heap_load(
+                        &mut self.builder,
+                        match_ctx.scrut_val,
+                        HeapAdt::field_offset(i),
+                    )
                 }
-            }
-        }
+            })
+            .collect()
     }
 
-    /// Compute concrete field types for a constructor pattern by examining
-    /// the scrutinee's type and matching type parameters against the
-    /// constructor's declared field types.
-    ///
-    /// For `(Option String)` matching `(Some s)`, this returns `[String]`.
-    /// For `(Point Int Int)` matching `(Point x y)`, returns `[Int, Int]`.
-    ///
-    /// W3 (S20 fold — `backend-keyed-consumer.md` §3/§4): the ctor is read via a
-    /// DIRECT keyed fetch (`ctor_meta_at(resolved_ctor)`) off the arm's carried
-    /// STORAGE identity — the same `(fqtn, ctor_info)` `compile_constructor_pattern`
-    /// already resolved. The former `lookup_constructor` re-resolution (a
-    /// context-free name walk through `resolve_driven`) was always redundant under
-    /// the carrier, so this is byte-identical for a valid pattern ctor.
+    /// The concrete field types of the pattern constructor `resolved_ctor`
+    /// under this match's scrutinee type — a keyed read that fails loudly on a
+    /// miss ([`CompileContext::ctor_field_types`]).
     fn concrete_field_types(
         &self,
         resolved_ctor: &cranelisp_types::FQSymbol,
         match_ctx: &MatchContext,
-    ) -> Vec<cranelisp_types::Type> {
-        use cranelisp_types::Type;
-
-        // Read the ctor and its parent type by its STORAGE key (the carrier).
-        let (fqtn, ctor_info) = match self.ctx.ctor_meta_at(resolved_ctor) {
-            Some(pair) => pair,
-            None => return Vec::new(),
-        };
-
-        // Look up the type definition.
-        let type_def = match self.ctx.lookup_type_def(&fqtn) {
-            Some(td) => td,
-            None => return Vec::new(),
-        };
-
-        // Use the constructor info directly.
-        let ctor = &ctor_info;
-
-        // Try to get the scrutinee's concrete type from the match context.
-        // This gives us e.g. `ADT("Option", [String])` which we can use
-        // to substitute type variables in the field types.
-        let concrete_type_args: Vec<Type> = match_ctx
-            .scrut_type
-            .as_ref()
-            .and_then(|ty| match ty {
-                Type::ADT(_, args) => Some(args.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-
-        if concrete_type_args.is_empty() && !type_def.type_params.is_empty() {
-            // Can't resolve field types without concrete type args.
-            return ctor.fields.iter().map(|f| f.ty.clone()).collect();
-        }
-
-        if type_def.type_params.is_empty() {
-            // Monomorphic type — field types are already concrete.
-            return ctor.fields.iter().map(|f| f.ty.clone()).collect();
-        }
-
-        // Build a substitution map from Var ids to concrete type args.
-        // Collect all unique Var ids across the type's constructors, ordered
-        // by first appearance. These correspond positionally to type_params.
-        let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-        for c in &self.ctx.constructor_metas(&type_def) {
-            for field in &c.fields {
-                collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
-            }
-        }
-
-        let subst: std::collections::HashMap<cranelisp_types::TypeId, Type> = unique_var_ids
-            .iter()
-            .zip(concrete_type_args.iter())
-            .map(|(&id, arg)| (id, arg.clone()))
-            .collect();
-
-        // Resolve each field's type by substituting type variables.
-        ctor.fields
-            .iter()
-            .map(|field| substitute_type_inline(&field.ty, &subst))
-            .collect()
+    ) -> Result<Vec<cranelisp_types::Type>, CranelispError> {
+        self.ctx
+            .ctor_field_types(resolved_ctor, match_ctx.scrut_type.as_ref())
     }
 
     /// Raise `"match failed"`: every arm's test failed.
@@ -796,18 +477,8 @@ where
     }
 }
 
-/// S115 W4c / FIXME 0781 — the scrutinee-ownership gate (provenance, not node
-/// kind) and its discriminating control.
 #[cfg(test)]
-mod scrutinee_ownership_tests;
-
-/// S118 slice S3 — the pure per-arm scrutinee lifetime plan (§5).
-#[cfg(test)]
-mod arm_lifetime_plan_tests;
-
-/// ACT-1024/1027 — a COW scrutinee plans like any owned temporary (§13.7).
-#[cfg(test)]
-mod cow_scrutinee_plan_tests;
+mod synthetic_scrutinee_tests;
 
 #[cfg(test)]
 mod tests {

@@ -141,7 +141,7 @@ is ACCEPTED.**
 **Defect class: `rc-miscount`** (leak). Not `carrier-loss`, not `uaf` — the
 accounting is coherent, the final owner simply does not exist. Locus for
 the pin's `// defect:` re-locus (a /testing rider, since the current locus
-`compiler/rc_emission.rs::protect_return_value` is now falsified):
+`protect_return_value` in `compiler/rc_emission.rs` (deleted in S123) is now falsified):
 `src/` program-result-value lifetime seam (`pipeline.rs::
 program_outcome_to_result` + `main.rs` exit conversion + the REPL display
 consumer), `owner=/dev` unchanged, `found=S114` unchanged.

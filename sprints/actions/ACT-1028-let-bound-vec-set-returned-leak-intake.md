@@ -1,7 +1,7 @@
 ---
 id: ACT-1028
 title: A let-bound vec-set of a parameter, returned from the function, leaks one block
-status: deferred
+status: resolved
 priority: required
 from: qa
 to: qa
@@ -77,3 +77,28 @@ unknown. This is the first deferral.
 - A committed cell was observed RED, then GREEN with its control balanced.
 - D2-C's comment names this action while the leak stands. Once the leak is
   fixed, the comment says in the past tense that the control leaked.
+
+## Resolution (qa, 2026-11-16, S123 W2)
+
+The leak is gone under U′. Its mechanism was never attributed.
+
+- **Source opened.** `crates/cranelisp-backend/src/` on the W2 tree: `value_provenance`, `yields_owned_temporary`, `compute_last_uses`, `register_alias`, `tail_arg_protect`, `protect_escaping_borrows_before_tail_jump`, `protect_return_value` and `scrutinee_lifetime_for_arm` no longer exist ([uniform counting §5](../../design/backend/uniform-counting.md#5-what-retires)).
+- **Evidence.** `uniform_counting::forwarding_set_balances_{run,link,repl}`
+  were assertion-RED at residual 1 on the checkpoint compiler `ee8959c0…`,
+  with the balanced one-difference control `(defn f [v] (vec-set v 0 5))`
+  (`.local/s123-w2/test-evidence.md`). All three pass on the U′ tree.
+  D2-C's control in `join_forwards_its_binder.rs` measures 3/3; it was 3/2
+  at the checkpoint.
+- **Run.** QA's targeted run on 2026-11-16 (compiler `86402bc0…`, U′ tree): `uniform_counting`, `join_forwards_its_binder`, `vec_push_match_binder_same_name_shadow` and `tco_tail_arg_alias_uaf` all pass.
+- **Attribution left open.** U′ replaced the lowering as a whole, so no
+  control isolates the old mechanism, and its seam no longer exists. A leak
+  of this shape on a later build is new intake, as
+  [uniform counting §6](../../design/backend/uniform-counting.md#6-coverage-of-the-filed-faults)
+  states.
+- **Owed.** `test` puts D2-C's comment in the past tense (evidence delta
+  U-13). At the W2 commit it stamps `fixed=` on the three cells.
+- Delete this action at the W2 commit, once
+  `design/backend/uniform-counting.md`, `design/arch/safety-invariants.md`,
+  `design/arch/ownership-stratum-options.md`, `sprints/SPRINT.md`,
+  `sprints/s123-architecture-review.md`, `tests/plan/s123-evidence-delta.md`,
+  `tests/plan/s123-carry-triage.md` and ACT-1026 no longer link it.

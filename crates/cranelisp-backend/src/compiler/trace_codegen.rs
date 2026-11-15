@@ -358,11 +358,15 @@ where
     /// `src/display.rs::build_adt_subst`: collect the var ids used across the
     /// type's constructor fields (in first-occurrence order) and map them
     /// positionally to `type_args`.
-    fn build_adt_subst(&self, fqtn: &FQTypeName, type_args: &[Type]) -> HashMap<TypeId, Type> {
+    fn build_adt_subst(
+        &self,
+        fqtn: &FQTypeName,
+        type_args: &[Type],
+    ) -> Result<HashMap<TypeId, Type>, CranelispError> {
         let Some(type_def) = self.ctx.lookup_type_def(fqtn) else {
-            return HashMap::new();
+            return Ok(HashMap::new());
         };
-        let metas = self.ctx.constructor_metas(&type_def);
+        let metas = self.ctx.constructor_metas(&type_def)?;
         // Reuse the shared closure-walk substitution (canonical home
         // `crate::schema`) so the baker and the schema generator compute the
         // positional var→arg mapping identically.
@@ -370,7 +374,7 @@ where
             .iter()
             .map(|meta| meta.fields.iter().map(|f| f.ty.clone()).collect())
             .collect();
-        subst_for_ctor_fields(&field_type_lists, type_args)
+        Ok(subst_for_ctor_fields(&field_type_lists, type_args))
     }
 
     /// Bake a single type's display descriptor into `blob`, returning the byte
@@ -389,44 +393,44 @@ where
         memo: &mut BakeMemo,
         ty: &Type,
         depth: usize,
-    ) -> usize {
+    ) -> Result<usize, CranelispError> {
         if depth >= MAX_DESCRIPTOR_DEPTH {
             let d = blob.reserve_desc();
             blob.set_kind(d, DescriptorKind::TypeVar);
-            return d;
+            return Ok(d);
         }
         match ty {
             Type::Int => {
                 let d = blob.reserve_desc();
                 blob.set_kind(d, DescriptorKind::Int);
-                d
+                Ok(d)
             }
             Type::Bool => {
                 let d = blob.reserve_desc();
                 blob.set_kind(d, DescriptorKind::Bool);
-                d
+                Ok(d)
             }
             Type::Float => {
                 let d = blob.reserve_desc();
                 blob.set_kind(d, DescriptorKind::Float);
-                d
+                Ok(d)
             }
             Type::String => {
                 let d = blob.reserve_desc();
                 blob.set_kind(d, DescriptorKind::String);
-                d
+                Ok(d)
             }
             Type::Fn(_, _) => {
                 let d = blob.reserve_desc();
                 blob.set_kind(d, DescriptorKind::Fn);
-                d
+                Ok(d)
             }
             Type::Var(_) | Type::TyConApp(_, _) => {
                 // Residual type variable / higher-kinded application with no
                 // concrete instantiation at this site — bare-value fallback.
                 let d = blob.reserve_desc();
                 blob.set_kind(d, DescriptorKind::TypeVar);
-                d
+                Ok(d)
             }
             Type::ADT(fqtn, type_args) => {
                 // Cycle back-edge: this exact ADT is already being baked higher
@@ -434,21 +438,21 @@ where
                 if memo.is_in_progress(ty) {
                     let d = blob.reserve_desc();
                     blob.set_kind(d, DescriptorKind::TypeVar);
-                    return d;
+                    return Ok(d);
                 }
                 // DAG sharing: an identical ADT already fully baked — reuse it.
                 if let Some(off) = memo.lookup_done(ty) {
-                    return off;
+                    return Ok(off);
                 }
                 memo.in_progress.push(ty.clone());
                 let off = if fqtn.name.as_ref() == "Vec" {
-                    self.bake_vec(blob, memo, type_args.first(), depth)
+                    self.bake_vec(blob, memo, type_args.first(), depth)?
                 } else {
-                    self.bake_adt(blob, memo, fqtn, type_args, depth)
+                    self.bake_adt(blob, memo, fqtn, type_args, depth)?
                 };
                 memo.in_progress.retain(|t| t != ty);
                 memo.done.push((ty.clone(), off));
-                off
+                Ok(off)
             }
         }
     }
@@ -460,14 +464,14 @@ where
         memo: &mut BakeMemo,
         elem: Option<&Type>,
         depth: usize,
-    ) -> usize {
+    ) -> Result<usize, CranelispError> {
         let root = blob.reserve_desc();
         blob.set_kind(root, DescriptorKind::Vec);
         if let Some(elem_ty) = elem {
-            let child = self.bake_descriptor(blob, memo, elem_ty, depth + 1);
+            let child = self.bake_descriptor(blob, memo, elem_ty, depth + 1)?;
             blob.set_self_rel(root + OFF_CHILD0, child);
         }
-        root
+        Ok(root)
     }
 
     /// Bake an `Adt` descriptor: kind=Adt with a type-name BlobStr + a CtorTable.
@@ -483,16 +487,16 @@ where
         fqtn: &FQTypeName,
         type_args: &[Type],
         depth: usize,
-    ) -> usize {
+    ) -> Result<usize, CranelispError> {
         let root = blob.reserve_desc();
         blob.set_kind(root, DescriptorKind::Adt);
 
         let Some(type_def) = self.ctx.lookup_type_def(fqtn) else {
             // No type def available — leave Adt with no name/ctors; the walker
             // falls back to the bare value.
-            return root;
+            return Ok(root);
         };
-        let metas = self.ctx.constructor_metas(&type_def);
+        let metas = self.ctx.constructor_metas(&type_def)?;
         // single_match: exactly one constructor whose name equals the type name
         // (spec §1.5 — suppress the `Type.` prefix, e.g. `(Point 3 4)`).
         let type_name = fqtn.name.as_ref();
@@ -504,7 +508,7 @@ where
                 .unwrap_or(false);
 
         // Concrete-type substitution for polymorphic fields.
-        let subst = self.build_adt_subst(fqtn, type_args);
+        let subst = self.build_adt_subst(fqtn, type_args)?;
 
         // Bake child field descriptors FIRST (so their offsets exist), tracking
         // per-constructor (tag, ctor_name, Vec<field_desc_off>).
@@ -518,7 +522,7 @@ where
             let mut field_descs = Vec::with_capacity(meta.fields.len());
             for field in &meta.fields {
                 let concrete = cranelisp_types::apply(&subst, &field.ty);
-                let fd = self.bake_descriptor(blob, memo, &concrete, depth + 1);
+                let fd = self.bake_descriptor(blob, memo, &concrete, depth + 1)?;
                 field_descs.push(fd);
             }
             ctor_bakes.push(CtorBake {
@@ -582,7 +586,7 @@ where
         // Link root.name_off + root.ctors_off (self-relative).
         blob.set_self_rel(root + OFF_NAME, type_name_off);
         blob.set_self_rel(root + OFF_CTORS, ctab);
-        root
+        Ok(root)
     }
 
     /// Bake the full descriptor set for one traced function — one blob holding
@@ -607,9 +611,9 @@ where
         let mut memo = BakeMemo::new();
         let mut param_roots = Vec::with_capacity(tf.param_types.len());
         for pty in &tf.param_types {
-            param_roots.push(self.bake_descriptor(&mut blob, &mut memo, pty, 0));
+            param_roots.push(self.bake_descriptor(&mut blob, &mut memo, pty, 0)?);
         }
-        let result_root = self.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0);
+        let result_root = self.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0)?;
 
         // Read-only, non-thread-local anonymous data.
         let data_id = self

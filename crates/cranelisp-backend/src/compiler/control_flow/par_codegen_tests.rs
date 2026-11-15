@@ -329,7 +329,7 @@ fn heap_capturing_spark_let() -> Expr {
 }
 
 /// A `LaunchContinue` whose continuation `(strwork s)` captures the enclosing
-/// heap `String` `s`. Detached — the continuation capture MUST retain.
+/// heap `String` `s`. Detached — the continuation owns its capture.
 fn heap_capturing_launch() -> Expr {
     let launched = match probe_call(Span::new(1, 2)) {
         Expr::Apply {
@@ -388,141 +388,61 @@ fn heap_capturing_par_bind() -> Expr {
     }
 }
 
-// ===== Capture-by-borrow across structured fork-join (Sprint 99 Wave 1b,
-// FIXME 0461; ring2-rc.md §5.5.2, lenient-eval.md §4.4.1) — backend-seam guards.
+// ===== Spark and continuation captures under uniform counting
+// (`design/backend/uniform-counting.md` §3).
 //
-// These pin that the `spark_capture_borrow` flag gates the capture-store inc AND
-// its symmetric drop-glue dec at the joined-spark emission sites, and that the
-// DETACHED `LaunchContinue` path is structurally excluded (never borrow-elided).
-//
-// The fixtures use a lenient `let` whose two independent sparkable bindings each
-// capture the enclosing heap `String` `s` in their spark thunk `(fn [] (strwork
-// s))`. The create-gate compiles BOTH arms: the lenient arm sparks (2 capture
-// incs on `s`), the direct/over-budget arm compiles the two `(strwork s)` calls
-// sequentially (2 consuming incs on `s`). So with the toggle OFF, four
-// `atomic_rmw … add` on `s` appear; capture-by-borrow elides ONLY the two
-// lenient-arm capture incs, leaving the two direct-arm consuming incs — 4 → 2.
-// Symmetrically the drop glue for each borrowed spark thunk is elided (no drop-
-// glue `func_addr` stored — a `0` sentinel instead), so the outer function's
-// `func_addr` count drops 4 → 2 (two thunks × code_ptr only, no drop-glue ptr).
-//
-// The env-var toggle (`CRANELISP_CAPTURE_BORROW`) is read once per process via a
-// `LazyLock`; nextest's process-per-test isolation makes the on/off split
-// between these tests reliable (a plain `cargo test` shared-process run would
-// race the LazyLock — the project mandates `cargo nextest run`).
+// The lenient `let` below has two independent sparkable bindings, `(strwork s)`
+// twice, over the enclosing heap `String` `s`. The create-gate compiles both
+// arms. The direct arm evaluates them in order, so the first `s` duplicates and
+// the second moves: one increment. The lenient arm's thunks are clones the plan
+// never saw, so each thunk duplicates its capture (two increments), and the
+// frame then drops `s` where the direct arm's move consumed it, after forcing
+// the second binding. Each thunk owns its capture, so each has drop glue.
 
-// spec: design/backend/ring2-rc.md §5.5.2 — with the toggle OFF (default), a
-//       structurally-joined spark thunk RETAINS its heap captures (byte-
-//       identical to pre-S99): the lenient arm emits a capture inc per thunk
-//       and a drop glue per thunk. This is the byte-identical-off baseline.
+/// The atomic increments in a rendered function.
+fn increments(clif: &str) -> usize {
+    clif.lines()
+        .filter(|line| line.contains("atomic_rmw") && line.contains(" add "))
+        .count()
+}
+
+// spec: design/backend/uniform-counting.md §3 — a joined spark thunk duplicates
+// its heap capture and owns it; the direct arm moves the capture's last use.
 #[test]
-fn capture_borrow_off_retains_joined_spark_heap_captures() {
-    // The `strwork`-capturing spark bindings are non-recursive, which the S104
-    // default M-static admission filter (recursive-SCC ∧ non-tail) declines. This
-    // test exercises the capture-borrow *emission* machinery — admission-
-    // independent — so pin the syntactic filter that admits these shapes. nextest
-    // isolates this per-process, so the set_var cannot leak (as with
-    // CRANELISP_CAPTURE_BORROW below).
+fn joined_spark_thunks_duplicate_and_own_their_heap_captures() {
+    // The non-recursive `strwork` shape is declined by the default M-static
+    // admission filter; pin the syntactic one so the spark path is emitted.
+    // nextest isolates the set_var per process.
     // SAFETY: single-threaded test entry, before the SPARK_ADMIT LazyLock is read.
     unsafe { std::env::set_var("CRANELISP_SPARK_ADMIT", "syntactic") };
-    assert!(
-        std::env::var("CRANELISP_CAPTURE_BORROW").is_err(),
-        "this baseline test must run with the toggle unset (nextest isolates it)"
-    );
     let clif = clif_of_body_with_fns(heap_capturing_spark_let(), &[("strwork", 1)]);
-    // 2 lenient-arm capture incs + 2 direct-arm consuming incs on `s`.
     assert_eq!(
-        clif.matches(" add ").count(),
-        4,
-        "toggle OFF: both spark thunks must RETAIN their heap capture (4 atomic \
-         adds on `s`: 2 lenient capture incs + 2 direct consuming incs); CLIF:\n{clif}"
+        increments(&clif),
+        3,
+        "two thunk captures duplicate `s`, and the direct arm duplicates its \
+         first use and moves its last; CLIF:\n{clif}"
     );
-    // Each retaining thunk gets code_ptr + drop-glue-ptr func_addr = 4 total.
     assert_eq!(
         clif.matches("func_addr").count(),
         4,
-        "toggle OFF: each spark thunk must emit drop glue (code_ptr + drop_glue \
-         func_addr per thunk = 4); CLIF:\n{clif}"
+        "each owning spark thunk stores a code pointer and its drop glue; CLIF:\n{clif}"
     );
 }
 
-// spec: design/backend/ring2-rc.md §5.5.2 — with the toggle ON, a structurally-
-//       joined spark thunk BORROWS its heap captures: the capture-store inc AND
-//       the drop-glue dec are BOTH elided, symmetrically. The two lenient-arm
-//       capture incs disappear (4 → 2 adds; the 2 direct-arm consuming incs
-//       remain) and the two drop glues disappear (4 → 2 func_addr).
+// spec: design/backend/uniform-counting.md §3 — a detached launch continuation
+// whose capture is the binder's last use takes the binder's reference: no
+// increment, and its drop glue releases it.
 #[test]
-fn capture_borrow_on_elides_joined_spark_heap_captures() {
-    // SAFETY: single-threaded test entry, before any spark compile reads the
-    // `CAPTURE_BORROW_ENABLED` / `SPARK_ADMIT` LazyLocks in this (nextest-
-    // isolated) process. Pin the syntactic filter: the non-recursive `strwork`
-    // spark shape is declined by the S104 default M-static filter, but this test
-    // exercises admission-independent capture-borrow emission.
-    unsafe { std::env::set_var("CRANELISP_SPARK_ADMIT", "syntactic") };
-    unsafe { std::env::set_var("CRANELISP_CAPTURE_BORROW", "1") };
-    let clif = clif_of_body_with_fns(heap_capturing_spark_let(), &[("strwork", 1)]);
-    // Only the 2 direct-arm consuming incs remain; the 2 lenient-arm capture
-    // incs are borrow-elided.
+fn a_launch_continuation_moves_a_last_use_capture_and_owns_it() {
+    let clif = clif_of_body_with_fns(heap_capturing_launch(), &[("strwork", 1)]);
     assert_eq!(
-        clif.matches(" add ").count(),
-        2,
-        "toggle ON: the two joined-spark capture incs must be BORROW-elided \
-         (4 → 2 atomic adds; only the direct-arm consuming incs remain); CLIF:\n{clif}"
-    );
-    // Symmetric dec elision: no drop glue for a borrowed-capture thunk.
-    assert_eq!(
-        clif.matches("func_addr").count(),
-        2,
-        "toggle ON: a borrowed-capture spark thunk owns nothing, so no drop glue \
-         is emitted (4 → 2 func_addr — code_ptr only per thunk); CLIF:\n{clif}"
-    );
-}
-
-// spec: design/backend/ring2-rc.md §5.5.2.1 / .6 — THE MANDATORY UAF exclusion
-//       guard. A DETACHED `LaunchContinue` effect that captures a heap value MUST
-//       STILL RETAIN it — the capture must NOT be borrow-elided — even with the
-//       toggle ON, because the detached strand outlives the parent's cleanup
-//       (borrowing there is a use-after-free of the S98 bug-#2 class). This is a
-//       single-process differential: under the SAME toggle-ON, the JOINED spark
-//       borrows (its capture incs elide) while the DETACHED launch continuation
-//       retains (its capture inc is present) — proving the exclusion is
-//       structural (launch never raises `spark_capture_borrow`), not global.
-#[test]
-fn capture_borrow_on_launch_continuation_still_retains_heap_capture_neg() {
-    // SAFETY: single-threaded test entry, before any spark compile reads the
-    // `CAPTURE_BORROW_ENABLED` / `SPARK_ADMIT` LazyLocks in this (nextest-
-    // isolated) process. Pin the syntactic filter so the joined-spark `spark_clif`
-    // sanity leg genuinely exercises the spark path (the non-recursive `strwork`
-    // shape is declined by the S104 default M-static filter); the LaunchContinue
-    // leg is admission-independent.
-    unsafe { std::env::set_var("CRANELISP_SPARK_ADMIT", "syntactic") };
-    unsafe { std::env::set_var("CRANELISP_CAPTURE_BORROW", "1") };
-
-    // The joined spark elides its capture incs under the toggle (4 → 2)…
-    let spark_clif = clif_of_body_with_fns(heap_capturing_spark_let(), &[("strwork", 1)]);
-    assert_eq!(
-        spark_clif.matches(" add ").count(),
-        2,
-        "sanity: the JOINED spark must borrow under the toggle (2 adds); CLIF:\n{spark_clif}"
-    );
-
-    // …but the DETACHED launch continuation still RETAINS its heap capture: its
-    // one capture inc on `s` is present regardless of the toggle. If the launch
-    // path wrongly borrow-elided, this inc would vanish and the detached strand
-    // would read a freed `s` (the bug-#2-class UAF).
-    let launch_clif = clif_of_body_with_fns(heap_capturing_launch(), &[("strwork", 1)]);
-    assert_eq!(
-        launch_clif.matches(" add ").count(),
-        1,
-        "EXCLUSION VIOLATED: the detached LaunchContinue continuation MUST retain \
-         its heap capture (1 atomic add on `s`) even with CRANELISP_CAPTURE_BORROW=1 \
-         — borrow-eliding a detached capture is a use-after-free (ring2-rc.md \
-         §5.5.2.1 / §5.5.2.4); CLIF:\n{launch_clif}"
+        increments(&clif),
+        0,
+        "the capture is `s`'s last use, so it moves; CLIF:\n{clif}"
     );
     assert!(
-        launch_clif.contains("func_addr"),
-        "the detached launch continuation must still emit its drop glue (retain); \
-         CLIF:\n{launch_clif}"
+        clif.contains("func_addr"),
+        "the continuation owns its capture, so it carries drop glue; CLIF:\n{clif}"
     );
 }
 
@@ -718,18 +638,16 @@ fn par_bind_emits_par_node_with_branch_count() {
 }
 
 // spec: spec/12-runtime.md §12.4.3 — a ParBind continuation closing over a
-// heap value retains it in its outer closure environment. The continuation body
-// itself is intentionally outside this probe's CLIF context; the e2e guard owns
-// its consuming-use observation.
+// heap value at its last use takes the binder's reference into its closure
+// environment: no increment at the closure site. The continuation body is
+// outside this probe's CLIF context; the e2e guards own its consuming use.
 #[test]
-fn par_bind_continuation_retains_a_heap_capture() {
+fn par_bind_continuation_moves_a_last_use_heap_capture() {
     let clif = clif_of_body_with_fns(heap_capturing_par_bind(), &[("strwork", 1)]);
     assert_eq!(
-        clif.lines()
-            .filter(|line| line.contains("atomic_rmw") && line.contains(" add "))
-            .count(),
-        1,
-        "the outer ParBind continuation closure must retain its heap capture; CLIF:\n{clif}"
+        increments(&clif),
+        0,
+        "the capture is `s`'s last use, so it moves into the environment; CLIF:\n{clif}"
     );
 }
 

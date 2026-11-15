@@ -31,7 +31,8 @@ The design holds five invariants:
    Every admission filter, gate and depth bound may decline freely (§8).
 2. **Structured fork-join.** Every sparked IVar is forced at a barrier before
    the enclosing `let` body or call instruction runs (§4.2, §4.4). Ferry
-   soundness (§5) and capture-by-borrow (§4.4.1) both rest on this.
+   soundness (§5) and the frame's drop at the forcing point (§4.4.1) both rest
+   on this.
 3. **Budget before allocation.** The runtime budget decision precedes IVar and
    thunk allocation, so the over-budget path allocates nothing (§3.6).
 4. **One analysis, two sites.** The `let` and apply sites share one admission
@@ -175,7 +176,7 @@ allocation stays `O(cap)`, and dependent thunks count toward the same batch. It
 does **not** bound per-branch **user-level contention** (§3.6.3 scope). For
 allocation- or RC-heavy parallel work, heap allocation and atomic-RC cache-line
 traffic can make parallel slower than serial. That floor belongs to Phase H
-(`effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2.7).
+(`effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2).
 
 #### 2.6.3 Why the dependency is forced, not captured
 
@@ -198,8 +199,9 @@ per-site ownership facts pass 5 already annotated (`ownership-codegen.md`
 §13.4). For each heap-result allocation site that is not `NoEscape`:
 
 - **+1** on the heap-pressure axis; and
-- **+1** on the surviving-RC axis, unless the site is `Confined` or a
-  borrow-elided projection.
+- **+1** on the surviving-RC axis, unless the site is `Confined`. As built
+  the scorer also skips a site it reads as a borrow-elided projection, which
+  no longer exists (`ownership-codegen.md` §13.4).
 
 A `NoEscape` site scores 0, a scalar-result site is not scored, and a site with
 no fact counts as dense.
@@ -449,7 +451,7 @@ mechanism sees them.
 - **Contention floor (Phase H).** Alloc/RC-dense compute (F3, and the alloc-heavy
   part of F4) stays above serial. The cost is in-leaf vec copy-on-write and
   atomic-RC traffic, which no scheduling lever removes
-  (`effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2.7).
+  (`effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2).
 - **F4-at-D3 trade (user-accepted 2026-07-07).** The D=3 default regresses
   F4-hard relative to D=1 to keep F6's 3.4×. 0535 is what dissolves the trade.
 
@@ -566,7 +568,7 @@ and allocation and make the cap a soft target.
 
 `N = 0` or `k = 0` rejects every reservation. Non-parsing values fall back to
 the default. The saturation gate stays opt-in; it recovered only about 9% of
-the contention term (`ring2-rc.md` §5.5.2.7).
+the contention term (`ring2-rc.md` §5.5.2).
 
 **Release accounting.** One permit is released per completing spark, by the
 `InFlightGuard` drop inside `ivar_spark`'s closure. Release is not callable from
@@ -692,16 +694,12 @@ Per-binding-vector state is keyed by **binding position** (§2.1).
 
    Each value is bound with `bind_local`. This is the barrier: every IVar is
    forced before the body, in source order.
-3. **Phase 3 — the body,** compiled normally with return protection and scope
-   cleanup.
+3. **Phase 3 — the body,** compiled normally.
 
-`compile_spark_thunk` raises two flags around the thunk compile and restores
-them on every exit:
-
-- the capture-borrow flag (§4.4.1), when enabled; and
-- `in_spark_thunk`, which makes constructions relocated into the thunk decline
-  stack placement (`ownership-codegen.md` §4.3, gate 5). A stack slot would
-  dangle at the join.
+`compile_spark_thunk` raises `in_spark_thunk` around the thunk compile and
+restores it on every exit. It makes constructions relocated into the thunk
+decline stack placement (`ownership-codegen.md` §4.3, gate 5), because a stack
+slot would dangle at the join.
 
 ### 4.3 Thunk closure layout
 
@@ -712,7 +710,8 @@ A thunk is an ordinary closure (Decision 11):
 ```
 
 Its captures are the RHS's free variables that are in scope in the enclosing
-function. Its drop glue releases them, unless they are borrowed (§4.4.1).
+function. Each is duplicated into the environment, and its drop glue releases
+them (§4.4.1).
 
 ### 4.4 Apply-argument emission
 
@@ -740,27 +739,18 @@ and direct arms keep constructions on the heap.
 the callee as a sequentially compiled temporary would, and no consuming
 increment is owed. Other positions keep their normal per-argument treatment.
 
-#### 4.4.1 Capture-by-borrow on the spark thunk (opt-in)
+#### 4.4.1 Spark-thunk captures
 
-With `CRANELISP_CAPTURE_BORROW=1` (off by default, byte-identical when off),
-`compile_spark_thunk` sets `spark_capture_borrow`. The thunk's heap captures of
-enclosing-scope bindings then become borrows. `lambda.rs` skips **both** the
-capture-store increment and the matching drop-glue decrement, coarsely, for
-every heap capture. It is sound because the joined parent frame outlives the
-spark (invariant 2). The returned value is still the single transferred
-reference.
+The thunk is a clone of the sparked subtree, so the ownership plan has no
+entries for it. Every capture duplicates into the thunk's environment, and
+after the force the frame drops exactly the binders the sequential evaluation
+would have consumed there. Both arms of the create gate therefore consume the
+same references. The counting rule and its reasoning are
+[uniform counting](uniform-counting.md) §3.1. The opt-in capture borrow
+(`CRANELISP_CAPTURE_BORROW`) is retired.
 
-- The RC contract, soundness argument, failure mode and test obligations are
-  `ring2-rc.md` §5.5.2.
-- The ablation measured about 0% on the contention term, so the flag stays
-  opt-in (§5.5.2.7).
-- The detached `LaunchContinue` path never sets the flag.
-- `ParBind` sets it for its own joined branches.
-
-**Carve-out.** The IVar-pointer captures of a dependent thunk (§4.5) are
-**never** borrows. They are keepalives of a sibling spark's cell, not
-parent-owned bindings. The dependent thunk is built by the manual path, which
-never reads the flag.
+The IVar-pointer captures of a dependent thunk (§4.5) are keepalives of a
+sibling spark's cell, not parent-owned bindings, and follow §4.5's rule.
 
 ### 4.5 Dependent-binding emission
 
@@ -779,7 +769,7 @@ cannot reach it.
   value.
 - **No new `MonoExpr` shape and no boundary change.** A MonoExpr-level rewrite
   would need `arch` first.
-- The inner compiler sets `in_spark_thunk` (gate 5) but never the borrow flag.
+- The inner compiler sets `in_spark_thunk` (gate 5).
 
 **The RC rule for captured IVar pointers** (load-bearing):
 

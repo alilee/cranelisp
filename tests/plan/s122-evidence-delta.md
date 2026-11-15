@@ -1030,7 +1030,7 @@ dropped:
   guard, and report.
 - **R1 confirmed:** the control is balanced, the subject faults, and the seam
   differs as stated. ACT-1029 is then memory-unsafe, and the cell takes
-  `// defect: class=binder-name-underkey locus=crates/cranelisp-backend/src/heap.rs::register_alias found=S122 owner=/design`.
+  `// defect: class=binder-name-underkey locus=crates/cranelisp-backend/src/heap.rs::register_alias found=S122 owner=/design`. <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
 - **R1 refuted:** the subject balances, exits 3, and its push calls the copy
   extern. The cell stays as a GREEN coverage cell with no `// defect:` line.
 - **Stop and report**, with no in-visit redesign, if any of these occurs:
@@ -1873,9 +1873,9 @@ Each cell is an armed `MarginalPair` asserting both exits:
 
 | ID | Subject | Control | Before a fix | Tag |
 |---|---|---|---|---|
-| D1-M | `(defn f [] (vec-len (match [1 2] [r r])))`, exits 2 | `f` returns the `match`; `main` applies `vec-len` | RED, marginal 1 | `class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls` |
+| D1-M | `(defn f [] (vec-len (match [1 2] [r r])))`, exits 2 | `f` returns the `match`; `main` applies `vec-len` | RED, marginal 1 | `class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls` | <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
 | D1-L | `(defn f [] (vec-len (let [r [1 2]] r)))`, exits 2 | `f` returns the `let` | RED, marginal 1 | as D1-M |
-| D2-C | `(defn f [v] (let [w (match (vec-set v 0 5) [r r]) n (vec-len v)] w))`, `main` applies `vec-len` to `(f (vec-push [] 1))`, exits 1 | the same without `n` (the in-place path) | RED, `STALE RC DEC` | `class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::scrutinee_lifetime_for_arm` |
+| D2-C | `(defn f [v] (let [w (match (vec-set v 0 5) [r r]) n (vec-len v)] w))`, `main` applies `vec-len` to `(f (vec-push [] 1))`, exits 1 | the same without `n` (the in-place path) | RED, `STALE RC DEC` | `class=uaf locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::scrutinee_lifetime_for_arm` | <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
 | D2-R | `(defn f [v] (match (vec-set v 0 5) [r r]))`, and `main` keeps `v` and adds both lengths, exits 2 | `main` passes a fresh vector and exits 1 (the mutate branch) | RED, abort | as D2-C |
 
 - **Tags.** Every cell adds `found=S122 owner=/dev`.
@@ -2099,7 +2099,7 @@ condition and the ACT-1024 scope are unchanged. The QA report is
 
 | ID | Condition | Plausible wrong outcome | Control | Class |
 |---|---|---|---|---|
-| A-T | `.local/s122-tail-cow-dev/probes/alias_into.cl` as an armed `MarginalPair`, `// defect: class=enumeration-miss locus=crates/cranelisp-backend/src/heap.rs::compute_last_uses found=S122 owner=/dev`. It balances and exits **3** | The push takes the in-place core although `alias` still views the box | The same program forwarding `q` instead of `alias`: a direct later use, so the push copies | Acceptance |
+| A-T | `.local/s122-tail-cow-dev/probes/alias_into.cl` as an armed `MarginalPair`, `// defect: class=enumeration-miss locus=crates/cranelisp-backend/src/heap.rs::compute_last_uses found=S122 owner=/dev`. It balances and exits **3** | The push takes the in-place core although `alias` still views the box | The same program forwarding `q` instead of `alias`: a direct later use, so the push copies | Acceptance | <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
 | A-V | `(let [v (vec-push [] 9)] (match v [a (let [w (vec-push v 1)] (vec-len a))]))` yields **1** in every mode | The in-place write is visible through `a` (predicted 2) | — | Acceptance for the non-tail value face |
 
 - **Expected values.** Design §3 swaps the probes' values. `alias_into.cl`
@@ -4746,7 +4746,7 @@ Accepted as a defect: a legal program strands its IO tree. Measured by `dev`
   `bind` node and its closure as well. One reading fits all six counts: a
   `bind` node that is the result of a scope owning a heap binding takes the
   protective retain in
-  `crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value`
+  `protect_return_value` in `crates/cranelisp-backend/src/compiler/rc_emission.rs` (deleted in S123)
   (a builtin call is not an independent result there), and no release balances
   it. Row 4's closure parameter is an `Int`, so no retain; IOR-2's continuation
   parameter is a `String`, so the inner `bind` strands four nodes in the control
@@ -4775,7 +4775,7 @@ cells, `MarginalPair` over `platform_pure_program`, each observed once:
   build. Both exit 17 on both children. The +3 fits node, inner node and
   closure; that breakdown was not traced.
 - Both cells and IOR-2 carry
-  `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev`;
+  `// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev`; <!-- doc-check: literal reason="Quoted defect-line locus token; a locus records where the defect lived" -->
   C0 confirmed the locus; all three are closed with `fixed=S122/57253cf2`. The
   requirement they fence is `spec/12-runtime.md` §12.3.1, which the IOR-5 cells
   now cite; IOR-2 cites `spec/10-io.md` §10.8.1 for its value legs and the runtime release requirement
@@ -4803,7 +4803,7 @@ ABI or schema change. `design` confirmed the structure at source
 **The suggested public borrowed-result negative is not allocated.** Its wrong
 outcome is C2's. The join is `ValueProvenance::join`, a `max` this correction
 does not touch, already pinned for a `Fresh` arm beside a binding arm
-(`fn_compiler.rs::one_non_fresh_arm_makes_the_join_non_fresh_neg`); the only
+(the `fn_compiler.rs` unit row `one_non_fresh_arm_makes_the_join_non_fresh_neg`, deleted in S123); the only
 new fact is which `Apply` nodes are `Fresh`, and C2 observes that and the
 verdict at its own seam. An e2e twin would be green before and after and could
 fail only where C2 already fails.
@@ -4812,7 +4812,7 @@ fail only where C2 already fails.
 verdict through one gate, `body_has_independent_result`, over the same walk C2
 calls. Both sides of that gate are already pinned in CLIF: a borrowed join
 keeps the protect
-(`rc_emission/return_ownership_tests.rs::mixed_callable_and_scope_binding_return_keeps_protection`)
+(the unit row `mixed_callable_and_scope_binding_return_keeps_protection`, deleted in S123)
 and C1's `Fresh` result loses it. The only fact this correction adds to the
 join is its verdict, which C2 observes. A CLIF twin would fail only where one
 of those three fails.

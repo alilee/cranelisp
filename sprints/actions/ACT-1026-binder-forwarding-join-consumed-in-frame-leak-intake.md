@@ -1,7 +1,7 @@
 ---
 id: ACT-1026
 title: A let or match that yields its own binder, consumed in the same frame, never releases the value
-status: deferred
+status: resolved
 priority: required
 from: qa
 to: qa
@@ -10,9 +10,9 @@ filed_at: 2026-09-30
 refers_to:
   - tests/join_forwards_its_binder.rs::match_yielding_its_binder_consumed_in_frame_releases_the_value
   - tests/join_forwards_its_binder.rs::let_yielding_its_binder_consumed_in_frame_releases_the_value
-  - crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls
-  - crates/cranelisp-backend/src/compiler/match_codegen.rs::scrutinee_lifetime_for_arm
-  - crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value
+  - crates/cranelisp-backend/src/compiler/fn_compiler.rs
+  - crates/cranelisp-backend/src/compiler/match_codegen.rs
+  - crates/cranelisp-backend/src/compiler/rc_emission.rs
   - tests/cow_result_consumed_in_frame.rs::parameter_set_at_its_last_use_and_forwarded_by_a_match_arm_balances
   - tests/plan/s122-evidence-delta.md
   - spec/12-runtime.md §12.3.1
@@ -100,3 +100,34 @@ the first deferral. The governing record is the
 - W-M is restored to `assert_balanced` and is GREEN.
 - The S123 census shows no consumer releasing a value it does not own. The
   unit tier for each changed gate was observed RED first.
+
+## W2 disposition (qa, 2026-11-16)
+
+U′ corrects the leak, but one completion item is still missing.
+
+- **Source opened.** `crates/cranelisp-backend/src/` on the W2 tree: `value_provenance`, `yields_owned_temporary`, `compute_last_uses`, `register_alias`, `tail_arg_protect`, `protect_escaping_borrows_before_tail_jump`, `protect_return_value` and `scrutinee_lifetime_for_arm` no longer exist ([uniform counting §5](../../design/backend/uniform-counting.md#5-what-retires)). With those deciders gone, the census of
+  `yields_owned_temporary` consumers is moot: every position consumes.
+- **Evidence.** D1-M and D1-L, and `uniform_counting::forwarding_{match,let}_balances_*`,
+  were assertion-RED at residual 1 on the checkpoint compiler `ee8959c0…`
+  (`.local/s123-w2/test-evidence.md`). They pass on the U′ tree, with their
+  controls balanced.
+- **Run.** QA's targeted run on 2026-11-16 (compiler `86402bc0…`, U′ tree): `uniform_counting`, `join_forwards_its_binder`, `vec_push_match_binder_same_name_shadow` and `tco_tail_arg_alias_uaf` all pass.
+- **Blocks resolution.** W-M,
+  `cow_result_consumed_in_frame::parameter_set_at_its_last_use_and_forwarded_by_a_match_arm_balances`,
+  now **fails**. It measures residual 0 against its `assert_residual(1)` pin,
+  with both halves at 2/2. `test` restores `assert_balanced`
+  ([evidence delta](../../tests/plan/s123-evidence-delta.md#39-w2-intake-on-the-u-tree)
+  U-13). QA resolves this action when W-M passes, and `fixed=` is stamped at
+  the W2 commit.
+
+## Resolution (qa, 2026-11-16, S123 W2)
+
+The blocking item is met.
+
+- **Source opened.** `tests/cow_result_consumed_in_frame.rs`:
+  `parameter_set_at_its_last_use_and_forwarded_by_a_match_arm_balances` now
+  ends in `assert_balanced` (U-13).
+- **Run.** QA's full suite on the U′ subject `77bb2dd9…` passes W-M, D1-M,
+  D1-L and `uniform_counting::forwarding_{match,let}_balances_{run,link,repl}`.
+- **Owed.** At the W2 commit, `test` stamps `fixed=` on D1-M, D1-L and the six
+  forwarding cells. Delete this action once its inbound links are repointed.

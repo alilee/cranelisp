@@ -1,9 +1,11 @@
 # Transitive drop glue and owned-value displacement
 
 > **Owner**: `design`, narrow-deployed to `cranelisp-backend`.
-> **Status**: current design, verified against source 2026-09-25 (§5
-> re-verified 2026-09-30). The S118
-> consumer migration it once planned has landed.
+> **Status**: current design, verified against source 2026-11-15. The S118
+> consumer migration it once planned has landed. *When* a value is released —
+> the move, duplicate and drop decisions — is
+> [uniform counting](uniform-counting.md); this document owns *how* a release
+> discharges what the value owns. §5 and §6 are retirement stubs.
 > **Architecture inputs**: `design/arch/safety-invariants.md` R15;
 > `design/arch/bounded-contexts.md` §3 and §4b, invariant 16.
 > **Non-concrete releases** are owned by
@@ -54,20 +56,12 @@ reopens the question the single types-owned identity closed.
 
 | Actor / event | Value before | Owner after | Required action |
 |---|---|---|---|
-| Scope cleanup, post-call cleanup | owned typed word | none | call `drop<T>` once |
+| Plan drop: a binder's death point, a branch or arm entry | owned typed word | none | call `drop<T>` once |
 | Closure, curry or poll-state capture teardown | owned capture slot | none | environment glue calls `drop<T>` for each owning capture |
-| Constructor-pattern match on an owned temporary | wrapper owns its fields | arm bindings borrow fields unless protected or transferred | after the arm's last use, call wrapper `drop<T>` once; protect each escaping field first |
-| Var-pattern match on an owned temporary | binding aliases the whole value | binding/body or none | transfer the one owner when forwarded; otherwise call `drop<T>` **exactly once** after the arm |
-| TCO loop-slot replacement | old parameter slot owns `T` | next slot value or none | the §6 predicate decides; if replaced, call `drop<T>` before overwrite |
+| Constructor-pattern match | the match owns the scrutinee | each bound field owns a duplicate | duplicate the bound fields, then call `drop<S>` on the scrutinee at arm entry ([uniform counting](uniform-counting.md) §4) |
+| Var-pattern match | the match owns the scrutinee | the binder | the binder takes the value; no duplicate and no release |
 | Vec teardown | Vec owns each live element | none | the Vec body iterates the runtime length and calls element `drop<E>` |
 | ADT teardown | box owns the fields selected by its runtime tag | none | the ADT body branches on tag and calls each field's glue |
-
-The match rule separates *field survival* from *wrapper release*. Extraction
-borrows by default. If an arm result or tail argument carries an extracted heap
-field beyond the match, the backend protects it before wrapper teardown; only
-then may the wrapper glue discharge its field reference. Inline and let-bound
-scrutinees use the same plan. This prevents both the leak and the premature
-free without trading one for the other.
 
 ## 3. Identity, construction, and recursion
 
@@ -151,7 +145,8 @@ releaser, or a heap-header or C-ABI change.
   envelope established that pattern.
 - **D2 — release seams take a `ConcreteType`.** A non-concrete type at a
   release site is a located `CodegenError`, never a shallow dec. The one live
-  exception is the type-keyed arm in scope cleanup. Its disposition belongs to
+  exception is the type-keyed arm in `emit_release`, the one plan-drop release
+seam. Its disposition belongs to
   [the non-concrete release contract](non-concrete-release-contract.md) §4 and
   §7.4, and is open under FIXME 0903.
 - **D5 — emission order is input-dependent; behaviour must not be.** The first
@@ -184,11 +179,9 @@ no site can disagree with its type about how a value is released.
 
 | Seam | Mechanism |
 |---|---|
-| Scope-exit cleanup (`emit_heap_binding_decs`) | one `drop<T>` per binding, plus D2's open non-concrete arm |
-| Let-scope tail flush | same shared body |
-| Superseded parameter flush | same, gated by the §6 predicate |
-| Match wrapper release | per-arm `drop<S>` (§5) |
-| Moded-argument post-call release | one `drop<T>` |
+| Plan drops (death points, branch and arm entries, moves-off post-drops) | one `drop<T>` per binder through `emit_release`, plus D2's open non-concrete arm |
+| Match scrutinee release at arm entry | one `drop<S>` |
+| Read-only builtin operand release | one `drop<T>` after the read |
 | ADT field walk | inside M1's generated body |
 | Vec element release | M1's element adapter |
 | Capture slot release | one `drop<T>` per owning slot, or the closure-box dispatch |
@@ -199,7 +192,7 @@ no site can disagree with its type about how a value is released.
 
 **Superseded** by [the non-concrete release contract](non-concrete-release-contract.md)
 §4 face 1 and §4.1, which own the live disposition. This record remains because
-source rustdoc and `ctor_template_admission_tests` cite it.
+source rustdoc cites it.
 
 - **What S118 ruled.** A constructor `Def` is compiled once per declaration, so
   a generic constructor template has a residual-typed field parameter. The
@@ -217,80 +210,18 @@ source rustdoc and `ctor_template_admission_tests` cite it.
 
 ## 5. Match-owned scrutinee protocol
 
-`compile_match` records the ownership answer once, before any arm, from the
-provenance classification ([non-concrete release contract](non-concrete-release-contract.md)
-§6.1). Each arm then resolves its own plan:
+Retired at S123 W2. The match owns its scrutinee; its arm-entry duplicates and
+drop are the ownership plan's ([uniform counting](uniform-counting.md) §4).
+Two rules from this section stay true and are owned there:
 
-- `Borrowed` — the enclosing scope or callee owns the scrutinee; no wrapper
-  release, and pattern bindings borrow.
-- `OwnedForwarded` — this arm transfers the whole scrutinee (`[r r]`); this
-  path emits no release and carries the one owner out.
-- `OwnedConsumed` — this frame owns a temporary and this arm consumes it; the
-  arm protects any extracted field that outlives the wrapper, then calls
-  `drop<S>` once at the arm's lifetime end.
-
-Rules that keep the plan sound:
-
-- **Release is per arm.** A forwarding sibling never suppresses another arm's
-  release. The whole-match `any arm forwards` predicate survives only as a
-  provenance trace, never as a release gate.
-- **One owner for both pattern kinds.** A var-pattern binder borrows a value
-  the match frame owns for the arm's duration, exactly like constructor field
-  bindings. It is never registered for scope cleanup. Registering it as well
-  would release the same value twice; making the owner depend on pattern kind
-  would restore the per-spelling rule this plan removes.
-- **A COW scrutinee has no rule of its own.** Its result owns one reference on
-  every branch and path
-  ([ownership codegen §13.7](ownership-codegen.md#137-cow-mutate-and-grow-branches--the-settled-contract)),
-  so it plans like any owned temporary.
-  - **What it replaces.** The exception forced a release on a forwarding arm
-    whenever the producer retained. On the copy paths that release freed the
-    value the arm forwarded (ACT-1027; D2-C and D2-R in
-    [QA's V1 record](../../tests/plan/s122-evidence-delta.md#act-1024--v1-record-and-the-w-m-ruling-2026-09-30)).
-  - **Status.** Landed with ACT-1024 at the S122 close (2026-10-02): the arm
-    plan reads only ownership and arm shape. `dev`'s U-R3a/U-R3b cells went
-    RED first and are GREEN, and the ACT-1027 e2e faces are GREEN
-    ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
-    [Uniform counting](uniform-counting.md) §4 replaces the per-arm plan when
-    it lands.
-- **Category before ownership.** A release is owed only when the scrutinee is a
-  heap category as well as owned.
-- **No spelling is ownership authority.** An inline versus let-bound scrutinee
-  changes nothing.
+- **Category before ownership.** A release is owed only for a heap category.
+- **No spelling is ownership authority.** An inline and a `let`-bound
+  scrutinee plan identically.
 
 ## 6. TCO replacement/transfer predicate
 
-Both tail-jump flushes consult one pure predicate per old slot,
-`tco_slot_disposition`, returning `TransferOldOwner | Replace | BorrowedInvalid`.
-
-| New argument / state | Verdict | Old-slot action |
-|---|---|---|
-| Bare local `Var` resolving to that exact slot, including a legal cross-slot move | transfer | no release; move bookkeeping prevents a second owner |
-| Control-flow expression (`(recur (if c lo hi))`) | replace | the branch tail's protective increment balances a uniform flush |
-| Analysis-on in-place COW rooted at the slot | transfer | no release |
-| Bare argument naming a borrowed inner shadow | `BorrowedInvalid` | a located compiler error; never a guessed release or a silent skip |
-| Fresh construction, call, literal, copied COW result, unrelated variable or unknown provenance | replace | call `drop<T>` before overwrite |
-
-- **The control-flow row must stay `Replace`.** Its bindings differ per
-  branch, so a single static skip would keep the dead branch's binding alive.
-  The protect-then-flush strategy is the use-after-free cure, and it applies to
-  both frames. [Ownership codegen §13.3](ownership-codegen.md#133-wrapper-and-cow-contracts)
-  owns the branch increment, which covers both frames (ACT-1021).
-- **The in-place COW row is analysis-on only and positional-blind.** With
-  ownership analysis off, the COW always copies and the release is always owed.
-  The predicate takes the toggle as an input rather than reading it twice.
-- **"In-place" means the COW consumes the slot's reference.** The site must
-  lower through the in-place core, with its source at its last use, and its
-  source must be `Owned`, so the copy branch releases what the flush skips. A
-  COW whose source is used later in the argument list, directly or through an
-  uncounted alias, only copies, which is row 5. [Ownership codegen §13.3](ownership-codegen.md#133-wrapper-and-cow-contracts)
-  owns this fact and its two readers.
-- **The borrowed-shadow row (the fourth) means a shadowing borrow**, not merely
-  a borrowed slot. A borrowed parameter carried forward as its own tail argument
-  owes nothing.
-- **Classification and release stay separate.** The predicate decides owner
-  continuity; canonical glue performs the discharge. Unknown provenance is
-  conservative replacement. This is **Narrowing carries its check**.
+Retired at S123 W2. A tail self-call releases nothing at the jump: every
+reference is consumed before it ([uniform counting](uniform-counting.md) §2.3).
 
 ## 7. Seam records retained for their evidence
 
@@ -318,10 +249,9 @@ and the pair's contract is
 
 An exact-balance instrument cannot see a double release of a value that was
 going to be freed anyway. `--run` read balanced while `--link` aborted. Unit
-cells therefore assert **exactly one** release call per consuming arm on the
-scrutinee, and the `--link` leg carries the release-exactly-once face
-(`tests/match_owned_temporary_scrutinee_0810.rs`,
-`compiler/match_codegen/scrutinee_ownership_tests.rs`).
+cells therefore assert **exactly one** release call per arm on the scrutinee,
+and the `--link` leg carries the release-exactly-once face
+(`tests/match_owned_temporary_scrutinee_0810.rs`).
 
 ### 7.4 Capture and auto-curry teardown
 
@@ -331,9 +261,9 @@ generator balancing over every owning type under both analysis toggles, with no
 exclusion for curried partial application (`tests/gen_ownership_flows.rs`), and
 `tests/capture_drop_glue_strands_nested_heap_0760.rs`.
 
-### 7.5 The non-concrete scope-exit arm
+### 7.5 The non-concrete release arm
 
-Making scope cleanup type-directed surfaced the one class that cannot supply a
+Making release type-directed surfaced the one class that cannot supply a
 concrete type (§4.1). The arm remains type-keyed. A frame-keyed narrowing was
 measured and reverted. FIXME 0891 is deferred on FIXME 0903, and the contract's
 reject list forbids re-landing the frame key alone
@@ -364,7 +294,6 @@ production sources for the named seams.
 **Explicitly NOT deleted:** `emit_closure_dec_into` (M5); `emit_capture_dec_glue`
 (M4, the capture-layout owner); `closure_drop_glue_name` and
 `curry_drop_glue_name`, which name capture envelopes rather than type glue;
-`match_forwards_scrutinee`, retained for a provenance trace only (§5);
 `substitute_type_inline` and `collect_var_ids_from_type`, which have other
 consumers.
 
@@ -386,27 +315,26 @@ The fence asserts on symbol names, never line numbers.
 ## 10. Unit-test design: submodule × complexity/edge/negative matrix
 
 Cells sit beside the production owner (**Tests mirror module composition**).
-Where a rule is pure — shape classification, the §5 plan and the §6 predicate —
-the cell exercises the pure function without a live `FnCompiler`. Cells assert
+Where a rule is pure, such as shape classification, the cell exercises the pure
+function without a live `FnCompiler`. Cells assert
 emitted call identity and control-flow order, not only text presence. Test
 modules cite rows by position: the third row is the glue-call emitter, the
 fourth the constructor template, the fifth the match seam and the sixth the
-TCO predicate.
+retired TCO predicate.
 
 | Submodule | Complexity / positive | Edge | Negative |
 |---|---|---|---|
 | `drop_glue` identity | primitive-owning types; FQ ADT; two generic instantiations | repeated request is idempotent; one bare type name in two modules differs | non-concrete key rejected; collision witness; span/caller cannot alter identity |
 | `drop_glue` registry/body builder | scalar leaf; ADT→String; ADT→Vec→ADT; depths 1/2/4/5/>5 | self-recursive nullary and data arms; mutual recursion; a repeated field type emits one body; permuted request order yields the same bodies and keys | no depth constant; no shallow fallback; duplicate definition and missing typedef fail loudly; `finish()` rejects a `Defining` entry |
 | `rc_emission` glue-call emitter (`rc_emission/glue_call_emitter_tests.rs`, `drop_glue/vec_arm_rc_gate_tests.rs`) | owned heap pointer ⇒ exactly one call to the canonical symbol; the final-reference body releases fields then frees | mixed ADT nullary tag guarded inside the body, not at the site; closure field; empty Vec | no field call on `old_rc > 1`; no `needs_guard` parameter; a non-concrete type at a release site is a located error |
-| Constructor-template admission (`fn_compiler/ctor_template_admission_tests.rs`) — **superseded** by [the non-concrete release contract](non-concrete-release-contract.md) §4.1 | residual template parameters carry no RC operation (I-CT′); a concrete-field template takes the ordinary path | multi-field template: residual fields none, concrete fields ordinary | no guarded increment or decrement survives on a residual parameter |
-| `match_codegen` (`match_codegen/arm_lifetime_plan_tests.rs`, `scrutinee_ownership_tests.rs`) | inline and let-bound owned temporary; constructor and var patterns; plan recorded once | field forwarded into a tail call; whole-wrapper forward; borrowed callee scrutinee; mixed constructor/var match, constructor path | no whole-match suppression; no release before protect; no borrowed-scrutinee release; exactly one release per consuming arm; var binder never registered for cleanup |
-| `fn_compiler` TCO predicate (`fn_compiler/tco_slot_predicate_tests.rs`, `tco_shadowing_borrow_tests.rs`) | unrelated fresh replacement releases; bare-Vec and ADT replacement share a path | same-slot and cross-slot move; control-flow tail; analysis-on in-place COW; analysis-off copied COW | shadowing borrow is `BorrowedInvalid`; fresh or unknown cannot suppress release; no TCO-private glue; the control-flow row never becomes a skip |
+| Constructor-template admission — **superseded** by [the non-concrete release contract](non-concrete-release-contract.md) §4.1 | residual template parameters carry no RC operation (I-CT′); a concrete-field template takes the ordinary path | multi-field template: residual fields none, concrete fields ordinary | no guarded increment or decrement survives on a residual parameter |
+| `match_codegen` | match counting is the ownership plan's; its cells are the plan's ([uniform counting](uniform-counting.md) §8) | — | — |
+| TCO predicate — **retired** with §6 | — | — | — |
 | `lib` compile orchestration | JIT and object request the same symbol set; the registry `finish()`es after bodies | recursive declaration finalises once; two callers share one body; result-root request is a superset | unresolved `Defining` at finalise is an error; no request after `finish()` |
-| Capture and environment glue | explicit closure over Vec/ADT; auto-curry; nested closure; poll-state capture | zero captures; repeated same-typed captures | borrowed capture not released; every owning capture has a glue call; no second skeleton per mirror |
+| Capture and environment glue | explicit closure over Vec/ADT; auto-curry; nested closure; poll-state capture | zero captures; repeated same-typed captures | every owning capture has a glue call; no second skeleton per mirror |
 
-The fourth row states the target. The landed cells in
-`ctor_template_admission_tests.rs` still pin the S118 balance of the live
-type-keyed arm; they change when that arm's disposition lands (§3.4 D2).
+The fourth row states the target. Its module cells were deleted at the S123
+cutover; the contract's §4.1 discharge is by representation.
 
 ## 11. Quality attributes and constraints
 

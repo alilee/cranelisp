@@ -21,7 +21,8 @@ use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 
-use super::{FnCompiler, find_free_vars};
+use super::FnCompiler;
+use crate::compiler::ownership_plan::CaptureEntry;
 
 /// `IO_TAG_LAUNCH` — emitted as the literal `5` at the bake (the backend carries
 /// no `concurrency` feature and reads no platform const at codegen, the
@@ -52,6 +53,7 @@ where
     /// the trampoline writes back after moving the sub-tree into the strand.
     pub(crate) fn compile_launch_continue(
         &mut self,
+        node: &MonoExpr,
         launched: &MonoExpr,
         continuation: &MonoExpr,
         span: Span,
@@ -61,10 +63,19 @@ where
 
         // 1. Build the Launch node wrapping the launched sub-tree.
         let result_disposer = self.result_disposer_for_io_expr(launched, span)?;
-        let launch_ptr = self.compile_launch(launched, result_disposer, span)?;
+        let [launched_val] = self.compile_operands(node)?.values[..] else {
+            unreachable!("a launch's operand sequence is its launched expression");
+        };
+        let launch_ptr = self.compile_launch(launched_val, result_disposer, span)?;
 
         // 2. Build the continuation closure — discards the launch result.
-        let cont_ptr = self.compile_launch_continuation(continuation, span)?;
+        let captures = self.plan.captures(node).map(<[_]>::to_vec).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "internal invariant violation: a launch has no planned captures".into(),
+                location: ErrorLocation::from_span(span),
+            }
+        })?;
+        let cont_ptr = self.compile_launch_continuation(&captures, continuation, span)?;
 
         // 3. Launch yields Unit, so its wrapping Bind input owns no heap value.
         let no_unit_disposer = self.builder.ins().iconst(types::I64, 0);
@@ -83,7 +94,7 @@ where
     /// `compile_poll_effect` stores its state-closure, Decision 20/24).
     fn compile_launch(
         &mut self,
-        launched: &MonoExpr,
+        launched_val: Value,
         result_disposer: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
@@ -94,9 +105,6 @@ where
                 message: "runtime/alloc not declared (need declare_intrinsics)".into(),
                 location: ErrorLocation::from_span(span),
             })?;
-
-        // Compile the detached sub-tree — a fresh IO tree at rc=1 (temporary).
-        let launched_val = self.compile_expr(launched)?;
 
         // Allocate tag + one owning field + one scalar metadata word:
         // HeapAdt::payload_size(2) = 24 payload bytes (40 total).
@@ -137,13 +145,11 @@ where
     /// results buffer.
     fn compile_launch_continuation(
         &mut self,
+        capture_entries: &[CaptureEntry],
         continuation: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        // Captures: free variables of the continuation that are in scope here.
-        let cont_free = find_free_vars(continuation, &[]);
-        let mut captures: Vec<Symbol> = cont_free.into_iter().filter(|v| self.binds(v)).collect();
-        captures.sort(); // deterministic layout
+        let captures: Vec<Symbol> = capture_entries.iter().map(|e| e.name.clone()).collect();
 
         // Declare the continuation function: (env_ptr, discarded_result) -> i64.
         let cont_name = format!(
@@ -168,7 +174,7 @@ where
         self.define_launch_cont_body(cont_func_id, &captures, continuation, sig, span)?;
 
         // Reuse the par-bind closure-site allocation (Principle 7).
-        self.alloc_par_cont_closure(cont_func_id, &captures, span)
+        self.alloc_par_cont_closure(cont_func_id, capture_entries, span)
     }
 
     /// Define the launch continuation function body in a separate Cranelift
@@ -203,47 +209,30 @@ where
             .map(|cap_name| self.lookup_type(cap_name))
             .collect();
 
-        let last_uses = heap::compute_last_uses(continuation);
+        let plan = Self::plan_body(continuation, &[], captures, "launch continuation")?;
         let mut inner = FnCompiler::inner(
             builder,
             self.module,
             self.ctx.clone(),
             self.glue,
             0, // fn_param_count=0: no binding names enter from the discarded result
-            last_uses,
+            plan,
         );
 
         // Load captured variables from env_ptr at CAPTURES_START + i*8.
         for (i, cap_name) in captures.iter().enumerate() {
             let cap_val =
                 heap::heap_load(&mut inner.builder, env_ptr, HeapClosure::capture_offset(i));
-            // Seed the capture's TYPE into the inner compiler so a consuming
-            // call in the continuation body emits the required caller-side
-            // `rc_inc` on a heap-typed capture before passing it to a consuming
-            // callee. `compile_lambda_body` parity (ring2-rc.md §5.5 / the S60
-            // capture-type bug). Without it, the launch-and-continue tail
-            // `(fn [_] (serve-loop listener))` passes the captured `listener` to
-            // the recursive `serve-loop` WITHOUT the inc; the callee dec's it at
-            // scope exit AND the closure drop glue dec's it again → `listener`
-            // freed after the first detached iteration, and the next accept loop
-            // reuses the freed address (FIXME 0472 — the launched web handler
-            // "ConnectionReset"/heap-corruption defect).
-            //
-            // Seeded into the CAPTURE ENVIRONMENT (`binding-scope.md` §3.2), which
-            // is also what makes a capture ineligible for last-use transfer and
-            // for body-frame cleanup — the closure env owns them and its drop
-            // glue decs them (par_bind parity).
+            // Into the CAPTURE ENVIRONMENT (`binding-scope.md` §3.2): the
+            // closure env's drop glue owns the release, so every use in the
+            // continuation duplicates (FIXME 0472's serve-loop shape).
             inner.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
         }
 
         // Compile the continuation body. It binds NO result name (the launch
         // result is discarded), so there is no per-binding load + no results
         // buffer to dec — the one simplification over the par-bind continuation.
-        inner.push_scope();
-        let skip_var = inner.return_var_in_scope(continuation);
         let result = inner.compile_expr(continuation)?;
-        inner.protect_return_value(&skip_var, result, continuation);
-        inner.pop_scope_with_cleanup(skip_var)?;
 
         inner.builder.ins().return_(&[result]);
         inner.builder.seal_all_blocks();

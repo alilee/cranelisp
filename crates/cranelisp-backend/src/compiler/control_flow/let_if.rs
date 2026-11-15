@@ -17,6 +17,7 @@ use super::sparkability::{
     LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, binder_before, find_sparkable_bindings,
     find_sparkable_bindings_with,
 };
+use crate::compiler::ownership_plan::Intro;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -60,6 +61,7 @@ where
 
     pub(crate) fn compile_let(
         &mut self,
+        node: &MonoExpr,
         bindings: &[(Symbol, MonoExpr)],
         body: &MonoExpr,
         span: Span,
@@ -102,72 +104,41 @@ where
                 return self.emit_create_gate(
                     n,
                     span,
-                    |this| this.compile_let_lenient(bindings, body, &sparkable, span),
-                    |this| this.compile_let_sequential(bindings, body, span),
+                    |this| this.compile_let_lenient(node, bindings, body, &sparkable, span),
+                    |this| this.compile_let_sequential(node, bindings, body),
                 );
             }
         }
 
-        self.compile_let_sequential(bindings, body, span)
+        self.compile_let_sequential(node, bindings, body)
     }
 
-    /// Compile a let expression sequentially (no lenient evaluation).
+    /// Compile a let expression sequentially (no lenient evaluation). Each
+    /// binder takes its initializer's owned value.
     fn compile_let_sequential(
         &mut self,
+        node: &MonoExpr,
         bindings: &[(Symbol, MonoExpr)],
         body: &MonoExpr,
-        _span: Span,
     ) -> Result<Value, CranelispError> {
-        // Push a new scope frame.
+        let key = crate::compiler::ownership_plan::node_key(node);
         self.push_scope();
-
-        // Compile each binding.
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
-
-        for (name, val_expr) in bindings {
+        for (index, (name, val_expr)) in bindings.iter().enumerate() {
             // §4.3: a repeated name's initializer sees the PRECEDING binder, so
             // nothing about this binder is published until its value exists.
-            // `bind_local` then publishes its variable and type together
-            // (`binding-scope.md` §3.3), as one binder's fact set.
             let val = self.compile_expr(val_expr)?;
-            self.bind_local(name, val, Some(val_expr.ty().to_type()));
-
-            // R1 — alias-binding recognition (0668 §3, W-B2). A `let` binding whose
-            // value FORWARDS a live-binding alias (a bare `Var`, or a `Var`
-            // forwarded through control-flow/match-var per the W-B1 classifier) is
-            // a NON-OWNING alias: it inherits the root's identity and carries NO
-            // independent scope-dec obligation — exactly the `borrowed_vars`
-            // discipline match-arm field bindings already use. Registering it
-            // removes the double-scope-dec that frees the shared box out from under
-            // an escaping consumer (cell G: `q` and `v` both scope-dec'ing one
-            // reference; cell I-1: the captured let-alias). The consume position
-            // (vec-lit store / closure capture / arg) takes its own reference (R2),
-            // so `q` never needs to. A genuine owned temporary (COW result, fresh
-            // vec/ctor — cells A/E) roots at None and is UNCHANGED (keeps its
-            // scope-dec). Structural ⇒ correct in both ownership toggles.
-            if self.operand_live_binding_root(val_expr).is_some() {
-                self.mark_borrowed(name);
-            }
+            self.bind_binder(
+                Intro::Let { node: key, index },
+                name,
+                val,
+                Some(val_expr.ty().to_type()),
+            )?;
         }
-
-        // Body inherits tail position.
         self.in_tail_position = saved_tail;
-
-        // Determine which BINDER (if any) is the return value — its ownership
-        // transfers to the caller, so skip dec for that slot.
-        let skip_var = self.return_var_in_scope(body);
-
         let result = self.compile_expr(body)?;
-
-        // Protect the return value from scope cleanup if skip_var didn't
-        // identify a specific binder to preserve (non-trivial body).
-        self.protect_return_value(&skip_var, result, body);
-
-        // Pop the scope frame, emitting rc_dec for heap-typed bindings
-        // except the return value's binder.
-        self.pop_scope_with_cleanup(skip_var)?;
-
+        self.pop_scope();
         Ok(result)
     }
 
@@ -176,6 +147,7 @@ where
     /// See design/backend/lenient-eval.md §4.2 for the algorithm.
     fn compile_let_lenient(
         &mut self,
+        node: &MonoExpr,
         bindings: &[(Symbol, MonoExpr)],
         body: &MonoExpr,
         sparkable: &[usize],
@@ -234,26 +206,14 @@ where
                     escapes: None,
                     unique_static: None,
                 };
-                // Compile the spark-thunk body via the single-source helper
-                // (`compile_spark_thunk`), which raises BOTH spark flags around the
-                // thunk compile and restores them (error-safe):
-                //  - Capture-by-borrow (S99, FIXME 0461; lenient-eval.md §4.4.1):
-                //    this INDEPENDENT `let` spark is structurally joined — Phase 2
-                //    forces it before the `let` body, so its heap captures are
-                //    borrowed (toggle-gated).
-                //  - Gate 5 (§4.3, FIXME 0525): the relocated construction in the
-                //    thunk body declines stack allocation (dangles at the join).
-                // The DEPENDENT branch below is deliberately handled separately: its
-                // synthetic `§ivar_*` IVar-pointer captures are load-bearing
-                // keepalives, not live-parent borrows (§4.4.1 carve-out), so the
-                // borrow flag must NOT reach `compile_dependent_thunk` — but the
-                // `in_spark_thunk` gate-5 flag MUST (set directly on its inner
-                // compiler in `dependent_spark.rs`).
+                // The thunk duplicates its captures (`compile_spark_thunk`); the
+                // construction it relocates declines stack placement (gate 5,
+                // FIXME 0525), because its slot would dangle at the join.
                 self.compile_spark_thunk(&thunk_expr)?
             } else {
                 // Dependent binding: build the thunk manually with a force
                 // prologue that forces each dependency IVar on demand (§4.5).
-                // NOTE: the borrow flag is NOT raised here — the §4.5 carve-out.
+                // Its inner compiler sets gate 5 itself (`dependent_spark.rs`).
                 self.compile_dependent_thunk(val_expr, &deps, span)?
             };
 
@@ -266,41 +226,36 @@ where
             ivar_map.insert(idx, (ivar_val, val_expr.ty().clone()));
         }
 
-        // Phase 2: Process all bindings in order.
+        // Phase 2: Process all bindings in order. A sparked binding's thunk
+        // duplicated its captures, so the frame drops here what the sequential
+        // initializer would have consumed (`emit_spark_consumption`).
+        let key = crate::compiler::ownership_plan::node_key(node);
         for (i, (name, val_expr)) in bindings.iter().enumerate() {
             let val = if sparkable_set.contains(&i) {
-                // Force the IVar and dec our reference.
                 let (ivar_val, _) = ivar_map[&i];
-                let forced_val =
-                    self.emit_extern_call("cranelisp_ivar_force", &[ivar_val], span)?;
-
-                // Dec the IVar (main thread's reference).
-                // The IVar has atomic RC; the spark task also dec's.
+                let forced = self.emit_extern_call("cranelisp_ivar_force", &[ivar_val], span)?;
+                // Dec the IVar (main thread's reference); the spark task also dec's.
                 self.emit_rc_dec_for_ivar(ivar_val, span)?;
-
-                forced_val
+                self.emit_spark_consumption(val_expr)?;
+                forced
             } else {
-                // Non-sparkable: compile normally.
                 self.compile_expr(val_expr)?
             };
-
-            self.bind_local(name, val, Some(val_expr.ty().to_type()));
-
-            // R1 — alias-binding recognition (0668 §3, W-B2); see the sequential
-            // path. A sparked binding's `val_expr` is never a bare-`Var` alias (a
-            // `Var` is not spark-worthy), so this only fires on the non-sparked
-            // alias bindings, identically to `compile_let_sequential`.
-            if self.operand_live_binding_root(val_expr).is_some() {
-                self.mark_borrowed(name);
-            }
+            self.bind_binder(
+                Intro::Let {
+                    node: key,
+                    index: i,
+                },
+                name,
+                val,
+                Some(val_expr.ty().to_type()),
+            )?;
         }
 
         // Phase 3: Compile body.
         self.in_tail_position = saved_tail;
-        let skip_var = self.return_var_in_scope(body);
         let result = self.compile_expr(body)?;
-        self.protect_return_value(&skip_var, result, body);
-        self.pop_scope_with_cleanup(skip_var)?;
+        self.pop_scope();
 
         Ok(result)
     }
@@ -461,22 +416,15 @@ where
 
     pub(crate) fn compile_if(
         &mut self,
+        node: &MonoExpr,
         cond: &MonoExpr,
         then_branch: &MonoExpr,
         else_branch: &MonoExpr,
     ) -> Result<Value, CranelispError> {
+        let key = crate::compiler::ownership_plan::node_key(node);
         let saved_tail = self.in_tail_position;
-
-        // Condition is never in tail position, and is never a tail-call arg —
-        // its value is consumed as the branch selector, not forwarded to the
-        // loop param. Clear `tail_arg_protect` so a heap binding aliased inside a
-        // nested `if`/`match` condition is not spuriously protected; the branches
-        // (below) restore it.
-        let saved_protect = self.tail_arg_protect;
         self.in_tail_position = false;
-        self.tail_arg_protect = false;
         let cond_val = self.compile_expr(cond)?;
-        self.tail_arg_protect = saved_protect;
 
         let then_block = self.builder.create_block();
         let else_block = self.builder.create_block();
@@ -487,31 +435,20 @@ where
             .ins()
             .brif(cond_val, then_block, &[], else_block, &[]);
 
-        // Then branch.
-        self.builder.switch_to_block(then_block);
-        self.builder.seal_block(then_block);
-        self.in_tail_position = saved_tail;
-        let then_val = self.compile_expr(then_branch)?;
-        // Tail-call-arg alias protection (F1 UAF cure): if this `if` is a direct
-        // tail-call argument and this branch yields a bare binding whose slot
-        // the frame owns, inc it so the value survives the flush. No-op
-        // otherwise. Nested control flow inherits the flag → its branches protect
-        // too; a non-control-flow branch (`(wrap v)`) is left unprotected.
-        let then_val = self.maybe_protect_tail_arg_alias(then_branch, then_val);
-        self.builder.ins().jump(merge_block, &[then_val]);
+        for (branch, (block, expr)) in [(then_block, then_branch), (else_block, else_branch)]
+            .into_iter()
+            .enumerate()
+        {
+            self.builder.switch_to_block(block);
+            self.builder.seal_block(block);
+            self.emit_entry_drops(key, branch)?;
+            self.in_tail_position = saved_tail;
+            let val = self.compile_expr(expr)?;
+            self.builder.ins().jump(merge_block, &[val]);
+        }
 
-        // Else branch.
-        self.builder.switch_to_block(else_block);
-        self.builder.seal_block(else_block);
-        self.in_tail_position = saved_tail;
-        let else_val = self.compile_expr(else_branch)?;
-        let else_val = self.maybe_protect_tail_arg_alias(else_branch, else_val);
-        self.builder.ins().jump(merge_block, &[else_val]);
-
-        // Merge block.
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
-
         Ok(self.builder.block_params(merge_block)[0])
     }
 }

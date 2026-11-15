@@ -139,7 +139,7 @@ authority". Source and the backend audit contradict that for several of them:
 | 0903 | The non-concrete RC licence. `emit_heap_binding_decs`'s shallow-dec arm and `Err ⇒ Mixed` are still in source. Its faces are scalar-as-pointer (memory-unsafe). The audit's F5 says exposure is unknown | S123 audit R8, already in scope: the §7.3 census |
 | 0929 | Fabricated concreteness in the release path. `unwrap_or(ConcreteType::Int)` is live in `crates/cranelisp-backend/src/drop_glue.rs`, and `unwrap_or(Type::Int)` in `compiler/context.rs` | R8 and the §7.4 structural close |
 | 0931 | The R17 constructor-partition census | the same census |
-| 0891 | Deferred on 0903 since S119 | closes with 0903 |
+| 0891 | Subsumed by 0903; `arch` verified it at source and deleted it in S123 W2 | 0903 carries its obligations |
 | 0747 | Collapses the return patches onto the provenance contract, which is the surface of the option-2 decision | the option-2 decision (step 2) |
 | 0761 | The RC lane is differential, so it is blind to a leak both lowerings share. The option-2 measurement compares an all-Owned toggle against current emission | must be stated as a limit of step 1's measurement |
 | 0848, 0857 | Detection proofs and regrading for the allocator modes and `CRANELISP_RC_DEC_CHECK`. The plant protocol now exists (`crates/cranelisp-intrinsics/src/diagnostics/tests.rs`), so 0848 may be largely stale | before step 4's armed batch relies on those modes |
@@ -547,7 +547,8 @@ authorizes no Phase 3 work.
   never has this shape.
 - **The toggle already removes in-place updates.** With
   `CRANELISP_NO_OWNERSHIP` set, the direct loop copies 1,000 of 1,000 too.
-  The R14 count at `vec_codegen.rs::vec_set_uniqueness` and in
+  The R14 count in the static uniqueness proof (`vec_set_uniqueness`, since
+  deleted by U′) and in
   `compile_vec_push` raises a live `Var` source to rc 2. The review's §3.2
   statement that "the toggle keeps the move and COW exemptions" is false for
   this shape. The toggle number therefore already includes a quadratic cost

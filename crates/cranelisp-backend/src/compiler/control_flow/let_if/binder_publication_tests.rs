@@ -8,15 +8,14 @@
 //! *type* from binder `i` while the value map still answered with binder `i−1`'s
 //! `Variable` — a split state by construction.
 //!
-//! **What is observed, and why it discriminates.** The consuming calling
-//! convention (`apply.rs`) emits an `rc_inc` for a heap-typed bare-`Var`
-//! argument, and it reads the binding's recorded TYPE to decide. So
-//! `(let [s "he" s (g s)] 0)`, with `g : (Fn [String] Int)`, is a probe on
-//! exactly the question "which binder's type does the initializer resolve `s`
-//! to": binder 0 (`String`) ⇒ the inc is emitted; binder 1 (`Int`, the
-//! half-published state) ⇒ it is not. The one-identifier rename control
-//! `(let [s "he" t (g s)] 0)` cannot rebind, so it fixes the expected answer
-//! without relying on the subject.
+//! **What is observed, and why it discriminates.** A use that is not a
+//! binder's last use duplicates, and the duplicate reads the binder's recorded
+//! TYPE. So `(let [s "he" s (g s s)] 0)`, with `g : (Fn [String String] Int)`,
+//! is a probe on exactly the question "which binder's type does the initializer
+//! resolve `s` to": binder 0 (`String`) ⇒ the first argument's increment is
+//! emitted; binder 1 (`Int`, the half-published state) ⇒ it is not. The
+//! one-identifier rename control `(let [s "he" t (g s s)] 0)` cannot rebind, so
+//! it fixes the expected answer without relying on the subject.
 //!
 //! This is a MODULE observation on purpose. `qa` established that no aggregate
 //! e2e marginal can separate publication order from the frame-cleanup loss: any
@@ -68,15 +67,15 @@ fn string_lit(span: Span) -> Expr {
     }
 }
 
-/// `(g <arg>)` — a one-argument user call whose parameter type is `param`.
-fn call_g(arg: Expr, param: Type) -> Expr {
+/// `(g <arg> <arg>)` — a two-argument user call whose parameters are `param`.
+fn call_g(arg: impl Fn(Span) -> Expr, param: Type) -> Expr {
     Expr::Apply {
         callee: Box::new(var(
             G,
             Span::new(301, 302),
-            Type::Fn(vec![param], Box::new(Type::Int)),
+            Type::Fn(vec![param.clone(), param], Box::new(Type::Int)),
         )),
-        args: vec![arg],
+        args: vec![arg(Span::new(303, 304)), arg(Span::new(305, 306))],
         span: Span::new(300, 310),
         resolved_call: None,
         inferred_type: Some(Box::new(Type::Int)),
@@ -107,14 +106,14 @@ fn probe_defn(body: Expr) -> Defn {
     }
 }
 
-/// `(defn g [x] 0)` — declared, never compiled; the probe body's call resolves
+/// `(defn g [x y] 0)` — declared, never compiled; the probe body's call resolves
 /// through its `FuncId`, and its stub entry supplies the parameter type.
 fn g_defn() -> Defn {
     Defn {
         name: Symbol::from(G),
         docstring: None,
         variants: vec![DefnVariant {
-            params: vec![(Symbol::from("x"), None)],
+            params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
             body: int_lit(0, Span::new(500, 501)),
             span: Span::SYNTHETIC,
         }],
@@ -132,7 +131,12 @@ fn probe_clif(body: Expr, g_param: Type) -> Result<String, CranelispError> {
     let symbol_tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
     let mut st = SymbolTable::new(module_path.clone());
     crate::test_support::insert_user_fn_stub_typed(&mut st, PROBE, &[], Type::Int);
-    crate::test_support::insert_user_fn_stub_typed(&mut st, G, &[g_param], Type::Int);
+    crate::test_support::insert_user_fn_stub_typed(
+        &mut st,
+        G,
+        &[g_param.clone(), g_param],
+        Type::Int,
+    );
     symbol_tables.insert(module_path.clone(), st);
 
     let defn = probe_defn(body);
@@ -142,7 +146,6 @@ fn probe_clif(body: Expr, g_param: Type) -> Result<String, CranelispError> {
 
     crate::test_support::try_compile_defns_in_module(
         &[&defn],
-        &[None],
         &[&callee],
         &resolved_targets,
         &symbol_tables,
@@ -169,13 +172,13 @@ fn a_repeated_binders_initializer_resolves_the_preceding_binders_type() {
         "s",
         string_lit(Span::new(210, 214)),
         "s",
-        call_g(var("s", Span::new(303, 304), Type::String), Type::String),
+        call_g(|span| var("s", span, Type::String), Type::String),
     );
     let control = two_binding_let(
         "s",
         string_lit(Span::new(210, 214)),
         "t",
-        call_g(var("s", Span::new(303, 304), Type::String), Type::String),
+        call_g(|span| var("s", span, Type::String), Type::String),
     );
 
     let subject_incs =
@@ -185,13 +188,13 @@ fn a_repeated_binders_initializer_resolves_the_preceding_binders_type() {
 
     assert!(
         control_incs > 0,
-        "the control must emit the consuming inc for a heap-typed argument, \
-         or this instrument reads nothing"
+        "the control must duplicate a heap-typed argument that is not its \
+         binder's last use, or this instrument reads nothing"
     );
     assert_eq!(
         subject_incs, control_incs,
         "the initializer must resolve `s` to the preceding String binder, so the \
-         consuming inc is emitted exactly as in the one-identifier rename control \
+         duplicate is emitted exactly as in the one-identifier rename control \
          (subject {subject_incs} incs, control {control_incs})"
     );
 }
@@ -206,7 +209,7 @@ fn a_scalar_preceding_binder_owes_no_consuming_inc() {
         "s",
         int_lit(1, Span::new(210, 214)),
         "s",
-        call_g(var("s", Span::new(303, 304), Type::Int), Type::Int),
+        call_g(|span| var("s", span, Type::Int), Type::Int),
     );
     assert_eq!(
         consuming_incs(&probe_clif(subject, Type::Int).expect("subject compiles")),

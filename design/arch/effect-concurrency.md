@@ -243,9 +243,11 @@ now on record:
   After the best combined stack (mimalloc + saturation gate) F2 parallel is still **2.3× slower**
   than serial and F4 **6–15× slower** (`s99-measurement.md` §10.3). The removable term is the
   vec-COW leaf-refcount volume, curable only by **owned-copy mutate-in-place / last-use /
-  Perceus reuse / non-atomic thread-local RC — all Phase-H memory-model work** (backend-doc
-  contract: `design/backend/ring2-rc.md` §5.5.2.7). This is a §5.5 last-use *extension*, NOT a
-  widening of the §5.5.2 spark-capture borrow.
+  Perceus reuse / non-atomic thread-local RC — all Phase-H memory-model work** (measured:
+  `tests/plan/s99-measurement.md` §8–§10). The lever is last use and in-place reuse at
+  count 1, which the S123 U′ cutover made the counting rule
+  ([uniform counting](../backend/uniform-counting.md) §2), not a wider spark-capture borrow;
+  that borrow is retired.
 
 - **(a) and (b) are COUPLED — an allocator cure alone can be net-negative.** Removing the
   allocator kernel-lock (sys↓) lets threads run concurrently and bounce the shared-cell

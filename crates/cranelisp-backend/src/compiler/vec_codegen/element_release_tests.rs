@@ -33,8 +33,14 @@ fn element_release_requires_type_but_accepts_scalar_without_adapter() {
     let mut builder_ctx = FunctionBuilderContext::new();
     let builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
     let mut glue = probe_glue_registry(module_path, &ids);
-    let mut compiler =
-        FnCompiler::inner(builder, jit.jit_module(), ctx, &mut glue, 0, HashMap::new());
+    let mut compiler = FnCompiler::inner(
+        builder,
+        jit.jit_module(),
+        ctx,
+        &mut glue,
+        0,
+        crate::compiler::ownership_plan::OwnershipPlan::default(),
+    );
     let span = Span::new(117, 129);
     assert_eq!(
         compiler

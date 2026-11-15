@@ -657,7 +657,7 @@ mod tests {
             ctx,
             &mut glue,
             1,
-            HashMap::new(),
+            crate::compiler::ownership_plan::OwnershipPlan::default(),
         );
 
         let empty: HashSet<FQSymbol> = HashSet::new();

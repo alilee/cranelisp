@@ -36,3 +36,20 @@ block1:
     return v6
 }
 ; === end CLIF user::__expr ===
+; === CLIF user::main ===
+function %main() -> i64 system_v {
+    gv0 = symbol userextname0
+    sig0 = (i64) -> i64 system_v
+
+block0:
+    jump block1
+
+block1:
+    v0 = iconst.i64 0
+    v1 = global_value.i64 gv0
+    v2 = iadd_imm v1, 0
+    v3 = load.i64 notrap aligned v2
+    v4 = call_indirect sig0, v3(v0)  ; v0 = 0
+    return v4
+}
+; === end CLIF user::main ===

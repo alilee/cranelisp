@@ -1,7 +1,7 @@
 ---
 id: ACT-1030
 title: A self-tail argument that forwards a released binding through a `let` gets no owned reference, so the parameter flush frees a box the next iteration reads
-status: deferred
+status: resolved
 priority: required
 from: qa
 to: qa
@@ -9,9 +9,9 @@ sprint: 122
 filed_at: 2026-09-30
 refers_to:
   - crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call
-  - crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value
+  - crates/cranelisp-backend/src/compiler/rc_emission.rs
   - crates/cranelisp-backend/src/compiler/control_flow/let_if.rs::compile_let_sequential
-  - crates/cranelisp-backend/src/compiler/fn_compiler.rs::protect_escaping_borrows_before_tail_jump
+  - crates/cranelisp-backend/src/compiler/fn_compiler.rs
   - design/backend/ownership-codegen.md §13.3
   - tests/vec_push_match_binder_same_name_shadow.rs
   - tests/plan/s122-evidence-delta.md
@@ -100,3 +100,28 @@ One of these:
 - the L6 control also stops, so QA re-attributes this intake;
 - the L6 cell goes RED for its intended reason, then GREEN after the
   correction, with its control balanced.
+
+## Resolution (qa, 2026-11-16, S123 W2)
+
+U′ corrected the fault: `alias` owns its reference, so the jump releases
+nothing.
+
+- **Source opened.** `crates/cranelisp-backend/src/` on the W2 tree: `value_provenance`, `yields_owned_temporary`, `compute_last_uses`, `register_alias`, `tail_arg_protect`, `protect_escaping_borrows_before_tail_jump`, `protect_return_value` and `scrutinee_lifetime_for_arm` no longer exist ([uniform counting §5](../../design/backend/uniform-counting.md#5-what-retires)).
+- **Evidence.** The U-1 cells `uniform_counting::tail_heap_free_alias_*`
+  and `tail_shadowed_alias_*` cover `--run`, `--link` and the REPL. The L6
+  pair `lead_l6_subject` and `vec_push_match_binder_same_name_shadow` also
+  cover it. Each stopped with `USE-AFTER-FREE` on the checkpoint compiler
+  `ee8959c0…` (`.local/s123-w2/test-evidence.md`), while its
+  `tail_owned_binder_control_*` or `lead_l6_control` control balanced.
+- **Run.** QA's targeted run on 2026-11-16 (compiler `86402bc0…`, U′ tree): `uniform_counting`, `join_forwards_its_binder`, `vec_push_match_binder_same_name_shadow` and `tco_tail_arg_alias_uaf` all pass.
+- **Attribution.** The single-change control discriminated the hypothesis:
+  adding an owned binder to the `let` made the run balance. U′ deleted the
+  seam, so the mechanism was never observed there.
+- **Owed.** At the W2 commit, `test` stamps `fixed=S123/<W2 commit>` on
+  these cells.
+- Delete this action at the W2 commit, once
+  `design/backend/uniform-counting.md`, `design/arch/safety-invariants.md`,
+  `design/arch/ownership-stratum-options.md`, `sprints/SPRINT.md`,
+  `sprints/s123-architecture-review.md`, `tests/plan/s123-evidence-delta.md`,
+  `tests/plan/s123-carry-triage.md`, ACT-1029 and ACT-1031 no longer link
+  it.

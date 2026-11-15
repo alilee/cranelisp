@@ -98,7 +98,6 @@ fn vec_get_bounds_raise_ends_its_block() {
             vec,
             idx,
             Span::SYNTHETIC,
-            false,
         )
         .expect("emit vec-get")
     });

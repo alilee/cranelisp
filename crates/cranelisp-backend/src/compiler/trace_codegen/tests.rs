@@ -591,7 +591,7 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
         ctx,
         &mut glue,
         1,
-        std::collections::HashMap::new(),
+        crate::compiler::ownership_plan::OwnershipPlan::default(),
     );
 
     let tf = TracedFnInfo {
@@ -613,8 +613,12 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
     // Re-bake into a standalone DescriptorBlob to measure size + record count.
     let mut blob = DescriptorBlob::new();
     let mut memo = BakeMemo::new();
-    let p = compiler.bake_descriptor(&mut blob, &mut memo, &tf.param_types[0], 0);
-    let _r = compiler.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0);
+    let p = compiler
+        .bake_descriptor(&mut blob, &mut memo, &tf.param_types[0], 0)
+        .expect("bake param");
+    let _r = compiler
+        .bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0)
+        .expect("bake result");
     // `done` records one entry per distinct ADT baked (Int/Bool/etc are not
     // memoized — only compound ADT/Vec types are). For IntList the distinct
     // ADT set is {IntList} ⇒ exactly one done-entry, and the param + result

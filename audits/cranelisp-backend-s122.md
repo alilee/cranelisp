@@ -411,7 +411,7 @@ intake, never directly to `dev`.
 
 - **Observed:**
   - `tests/vec_push_match_binder_same_name_shadow.rs` carries `// defect:
-    class=binder-name-underkey locus=crates/cranelisp-backend/src/heap.rs::register_alias`. It fails in its
+    class=binder-name-underkey locus=crates/cranelisp-backend/src/heap.rs::register_alias`. It fails in its <!-- doc-check: literal reason="Quoted defect-line locus token at the S122 checkpoint" -->
     control, for ACT-1030's reason, and never runs the subject.
   - The committed ACT-0974, 1021, 1024 and 1027 cells lack their owed `fixed=`
     stamps, so `grep -L fixed=` lists green guards as open.

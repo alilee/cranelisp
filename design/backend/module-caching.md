@@ -464,8 +464,7 @@ contract are in [compile to module](compile-to-module.md).
   change moves a convention that a cached `.o` shares with code it was not
   compiled with, such as the never-cached `primitives` module or the runtime.
   An old object would then call, or be called, under the old convention.
-  The ACT-0974 extern entry convention is an example
-  ([non-concrete release contract](non-concrete-release-contract.md) §7.6). A
+  The ACT-0974 extern entry convention (S122) was an example. A
   change confined to one frame's own emission moves no such convention and
   needs no bump. A stale object keeps the old frame until its module rebuilds.
 - The constant's rustdoc carries the per-version record. Read the current value

@@ -17,7 +17,7 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
 use crate::heap::{self, HeapAdt};
 
@@ -36,11 +36,9 @@ where
 {
     /// Compile a `(select branches)` call — `branches` is a `Vec (IO a)`.
     ///
-    /// The single argument is already a compiled branch Vec (the `[..]` literal
-    /// the test surface uses, or any runtime `Vec (IO a)`). It was compiled with
-    /// the consuming convention (`compile_consuming_arg_list`, the `bind`
-    /// precedent) so a `Var` arg is inc'd once and a temporary transfers its rc;
-    /// the Select node owns exactly the one reference handed to it.
+    /// The single argument is an owned branch Vec (the `[..]` literal the test
+    /// surface uses, or any runtime `Vec (IO a)`); the Select node takes its
+    /// reference.
     pub(crate) fn compile_select(
         &mut self,
         arg_vals: &[Value],
@@ -55,21 +53,20 @@ where
     /// Compile a `(race a b)` call — the binary special case of `select`.
     ///
     /// `race` is `(select (vec a b))`: it builds a 2-element branch Vec from its
-    /// two IO arguments (reusing `compile_vec_lit`, which compiles the element
-    /// expressions and takes ownership of the temporaries) and wraps it in the
-    /// **identical** `IO_TAG_SELECT` node — same tag, same trampoline arm, same
-    /// RC (§16.3). No second node kind; the trampoline sees one node.
+    /// two IO arguments, already evaluated by `compile_operands` outside tail
+    /// position (U-18: a tail flag left set lowers a self-call operand as the
+    /// loop jump), and wraps it
+    /// in the **identical** `IO_TAG_SELECT` node — same tag, same trampoline
+    /// arm, same RC (§16.3). No second node kind; the trampoline sees one node.
     pub(crate) fn compile_race(
         &mut self,
-        args: &[MonoExpr],
+        branch_vals: &[Value],
+        result_disposer: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let result_disposer = self.result_disposer_for_io_expr(&args[0], span)?;
-        // Build the 2-element branch Vec (the carrier). `compile_vec_lit` compiles
-        // each branch IO expression to a fresh sub-tree (rc=1 temporary) and stores
-        // it into the Vec's data buffer with ownership transfer — exactly the
-        // carrier `select` consumes.
-        let branches_val = self.compile_vec_lit(args, span)?;
+        // The 2-element branch Vec takes both owned branch IO trees: exactly
+        // the carrier `select` consumes.
+        let branches_val = self.emit_vec_lit(branch_vals, span)?;
         self.compile_select_node(branches_val, result_disposer, span)
     }
 

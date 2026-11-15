@@ -476,7 +476,8 @@ fn measure(program: &str, toggle: Toggle) -> Measure {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(program)
-        .env("CRANELISP_RC_STATS", "1");
+        .env("CRANELISP_RC_STATS", "1")
+        .env("CRANELISP_RC_DEC_CHECK", "1");
     if toggle == Toggle::OwnershipOff {
         b = b.env("CRANELISP_NO_OWNERSHIP", "1");
     }
@@ -798,4 +799,119 @@ fn gen_flows_capability_detects_unmeasured_run() {
         "a run with no [RC_STATS] line MUST be reported as unmeasured, never \
          treated as balanced; got {faults:?}"
     );
+}
+
+// S123 U-4: the four new axes form a product, rather than four unrelated probes.
+// COW uses an Int vector so all three steps share a type and a value oracle.
+fn uniform_product(consume: &str) {
+    use helpers::marginal::{Child, MarginalPair};
+    let mut failures = Vec::new();
+    for tail in ["bare", "if", "let", "match"] {
+        for cow in ["identity", "push", "set"] {
+            for shadow in [false, true] {
+                let label = format!("U-4 tail={tail} cow={cow} shadow={shadow} consume={consume}");
+                let binder = if shadow { "a" } else { "b" };
+                let update = match cow {
+                    "identity" => "a",
+                    "push" => "(vec-push a k)",
+                    "set" => "(vec-set a 0 k)",
+                    _ => unreachable!(),
+                };
+                let argument = match tail {
+                    "bare" => "next".to_string(),
+                    "if" => "(if (eq-i64 n 1) next next)".to_string(),
+                    "let" => "(let [r next] r)".to_string(),
+                    "match" => "(match next [r r])".to_string(),
+                    _ => unreachable!(),
+                };
+                let result = match consume {
+                    "builtin" => "(vec-len v)",
+                    "callee" => "(read v)",
+                    "constructor" => "(match (MkHold v) [(MkHold r) (vec-len r)])",
+                    _ => unreachable!(),
+                };
+                let program = |n: i32| {
+                    format!(
+                        "(import [primitives [Pure Int add-i64 eq-i64 vec-len vec-push vec-set]])\n\
+                     (deftype (Hold t) (MkHold [:t value]))\n\
+                     (defn read [v] (vec-len v))\n\
+                     (defn go [n v spare] (if (eq-i64 n 0) {result}\n\
+                       (match v [a (let [k (match spare [{binder} (vec-len {binder})]) next {update}]\n\
+                         (go (add-i64 n -1) {argument} spare))])))\n\
+                     (defn main [] (Pure (go {n} [7 8 9] [1 2])))\n"
+                    )
+                };
+                for n in [1, 7] {
+                    let mut outputs = Vec::new();
+                    for off in [false, true] {
+                        let leg = format!("{label} n={n} off={off}");
+                        eprintln!("BEGIN {leg}");
+                        let outcome = std::panic::catch_unwind(|| {
+                            let armed = |src: &str| {
+                                let child = Child::new(src).env("CRANELISP_RC_DEC_CHECK", "1");
+                                if off {
+                                    child.env("CRANELISP_NO_OWNERSHIP", "1")
+                                } else {
+                                    child
+                                }
+                            };
+                            let pair =
+                                MarginalPair::new(&leg, armed(&program(0)), armed(&program(n)))
+                                    .measure();
+                            eprintln!("{}", pair.report());
+                            assert_eq!(
+                                pair.control().exit_code(),
+                                Some(3),
+                                "{leg}: zero-iteration control: {}",
+                                pair.control().stderr
+                            );
+                            let expected = if cow == "push" { 3 + n } else { 3 };
+                            assert_eq!(
+                                pair.subject().exit_code(),
+                                Some(expected),
+                                "{leg}: value: {}",
+                                pair.subject().stderr
+                            );
+                            pair.assert_balanced(&leg);
+                            (
+                                pair.subject().exit_code(),
+                                pair.subject().stdout.clone(),
+                                pair.residual(),
+                            )
+                        });
+                        match outcome {
+                            Ok(output) => outputs.push(output),
+                            Err(_) => failures.push(leg),
+                        }
+                    }
+                    if outputs.len() == 2 && outputs[0] != outputs[1] {
+                        failures.push(format!("{label} n={n}: moves on/off disagree: {outputs:?}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "uniform product failed cells:\n{}",
+        failures.join("\n")
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.1 — U-4: builtin consuming position.
+#[test]
+fn gen_uniform_builtin_consumption_differential() {
+    uniform_product("builtin");
+}
+
+// spec: spec/12-runtime.md §12.3.1 — U-4: caller/callee consuming position.
+#[test]
+fn gen_uniform_callee_consumption_differential() {
+    uniform_product("callee");
+}
+
+// spec: spec/12-runtime.md §12.3.1 — U-4: constructor field consuming position.
+#[test]
+fn gen_uniform_constructor_consumption_differential() {
+    uniform_product("constructor");
 }

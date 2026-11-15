@@ -12,11 +12,9 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    Binding, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation, FQSymbol,
-    FQTypeName, Life, ModuleFullPath, Span, Symbol, SymbolTable, Type, TypeDefInfo,
+    Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, FQTypeName, Life,
+    ModuleFullPath, Span, Symbol, SymbolTable, Type, TypeDefInfo,
 };
-
-use super::entry_convention::EntryConvention;
 
 /// A single field of a constructor, as reconstructed for backend codegen.
 ///
@@ -63,11 +61,9 @@ pub(crate) enum CtorValueShape {
 impl CtorMeta {
     /// The ONE read of a constructor's field list (Principle 24 — one
     /// determinant, one read). The bare-tag lowering
-    /// (`literals::nullary_constructor_tag`) and the provenance lattice
-    /// (`fn_compiler::value_provenance`) both answer from here; a second
-    /// `fields.is_empty()` elsewhere would be a channel on which a provenance
-    /// verdict could disagree with what was actually emitted, which is FIXME
-    /// 0917's own shape one level down.
+    /// (`literals::nullary_constructor_tag`) answers from here; a second
+    /// `fields.is_empty()` elsewhere would be a channel on which a lowering
+    /// could disagree with what a constructor carries (FIXME 0917).
     pub(crate) fn value_shape(&self) -> CtorValueShape {
         if self.fields.is_empty() {
             CtorValueShape::BareTag
@@ -174,15 +170,6 @@ where
         Self::extract_constructor(entry)
     }
 
-    /// The constructor probe
-    /// (`design/backend/non-concrete-release-contract.md` §6.2.1): what the
-    /// global reference `fq` names, derived from the ONE keyed
-    /// [`Self::ctor_meta_at`] read and the ONE field-list read
-    /// ([`CtorMeta::value_shape`]). `None` ⇒ not a constructor.
-    pub(crate) fn ctor_value_shape_at(&self, fq: &FQSymbol) -> Option<CtorValueShape> {
-        self.ctor_meta_at(fq).map(|(_, meta)| meta.value_shape())
-    }
-
     /// The ONE keyed fetch (S110 W1, `backend-keyed-consumer.md` §1.3) — the
     /// `ctor_meta_at` generalisation. A DIRECT two-level map read
     /// (`symbol_tables.get(&fq.module)` → `table.get(fq.symbol)`), NO
@@ -192,8 +179,7 @@ where
     /// callers discriminate on its `DefKind` — got-slot dispatch via
     /// `callable_got_slot()`, platform/poll via `DefKind::PlatformEffect`,
     /// extern via `DefKind::PrimitiveExtern`, ctor via `DefKind::Constructor`,
-    /// arity via `param_names`. The entry convention is read through
-    /// [`Self::entry_convention_at`] instead, without cloning the entry.
+    /// arity via `param_names`.
     ///
     /// Carrier-miss (a `None` `resolved_target` on a table-reference kind) or
     /// entry-miss (`Some(fq)` that fetches nothing here) is a hard
@@ -254,27 +240,6 @@ where
                 .map(|callable| callable.arm.param_names.len())
                 .or_else(|| e.trait_method().map(|method| method.param_names.len()))
         })
-    }
-
-    /// The entry convention of the callable a call site keyed as `fq`; an
-    /// absent carrier or a key with no callable arm derives the no-entry row.
-    pub(crate) fn entry_convention_at(&self, fq: Option<&FQSymbol>) -> EntryConvention {
-        match fq {
-            Some(fq) => self.entry_convention_of(&CallableTarget::Binding(fq.clone())),
-            None => EntryConvention::of::<C>(None),
-        }
-    }
-
-    /// The entry convention of the selected callable arm `target`.
-    pub(crate) fn entry_convention_of(&self, target: &CallableTarget) -> EntryConvention {
-        let table = crate::callable_target_owner(target)
-            .and_then(|owner| self.symbol_tables.get(&owner.module));
-        EntryConvention::of(
-            table
-                .as_deref()
-                .and_then(|table| table.callable_target(target))
-                .map(|arm| &arm.life),
-        )
     }
 
     /// Whether the resolved entry is a slotless inline primitive. The Vec
@@ -365,41 +330,94 @@ where
     /// owning module. Returns the per-constructor metadata in declaration
     /// order. Used by heap classification, drop-glue emission, and field-type
     /// resolution — all of which previously walked `Vec<ConstructorInfo>`.
-    pub(crate) fn constructor_metas(&self, type_def: &TypeDefInfo) -> Vec<CtorMeta> {
-        let table = match self.symbol_tables.get(&type_def.name.module) {
-            Some(t) => t,
-            None => return Vec::new(),
-        };
+    ///
+    /// A type whose owning table or one of whose constructors cannot be read
+    /// is keying drift, and is an error in every profile: a dropped
+    /// constructor would surface only as a wrong heap classification or drop
+    /// glue (ACT-0964 item 1).
+    pub(crate) fn constructor_metas(
+        &self,
+        type_def: &TypeDefInfo,
+    ) -> Result<Vec<CtorMeta>, CranelispError> {
+        let table = self
+            .symbol_tables
+            .get(&type_def.name.module)
+            .ok_or_else(|| {
+                keying_drift(format!(
+                    "type '{}' has no symbol table for its module",
+                    type_def.name
+                ))
+            })?;
         type_def
             .constructors
             .iter()
-            .filter_map(|ctor_name| {
+            .map(|ctor_name| {
                 // Probe the canonical `member_key(Type, Ctor)` key first (S109 W1
                 // — a sum ctor's real `Def` lives under `Result.Err`, the bare
                 // name being an `Import` alias that `extract_constructor` skips),
-                // bare fallback for the product dual-facet. Without the canonical
-                // probe the drop-glue emitter sees ZERO data ctors → emits no
-                // field decs → heap fields (e.g. an `Err(String)`) leak
-                // (`tests/spec_12_runtime.rs::catch_runtime_error_..._leaks`).
+                // bare fallback for the product dual-facet.
                 let canonical =
                     cranelisp_types::member_key(&type_def.name.name, ctor_name.as_ref());
-                let meta = table
+                table
                     .get(canonical.as_ref())
                     .or_else(|| table.get(ctor_name.as_ref()))
                     .and_then(Self::extract_constructor)
-                    .map(|(_, meta)| meta);
-                // §10.5: a ctor whose canonical AND bare probes both miss is
-                // silently dropped — the next keying drift would surface as a
-                // wrong heap classification / drop glue, not an error. Fail loud
-                // in CI (release skips — the `filter_map` still drops it).
-                debug_assert!(
-                    meta.is_some(),
-                    "ctor '{ctor_name}' of '{}' has no resolvable Def — keying drift",
-                    type_def.name
-                );
-                meta
+                    .map(|(_, meta)| meta)
+                    .ok_or_else(|| {
+                        keying_drift(format!(
+                            "constructor '{ctor_name}' of '{}' has no resolvable Def",
+                            type_def.name
+                        ))
+                    })
             })
             .collect()
+    }
+
+    /// The field types of the pattern constructor stored at `resolved_ctor`,
+    /// with the type parameters substituted from `scrut_type` when it is an
+    /// instantiated ADT. A missed keyed read is keying drift and an error in
+    /// every profile, never an empty field list (ACT-0964 item 1).
+    pub(crate) fn ctor_field_types(
+        &self,
+        resolved_ctor: &FQSymbol,
+        scrut_type: Option<&Type>,
+    ) -> Result<Vec<Type>, CranelispError> {
+        let (fqtn, ctor) = self.ctor_meta_at(resolved_ctor).ok_or_else(|| {
+            keying_drift(format!(
+                "pattern constructor '{resolved_ctor}' has no constructor Def"
+            ))
+        })?;
+        let type_def = self
+            .lookup_type_def(&fqtn)
+            .ok_or_else(|| keying_drift(format!("type '{fqtn}' has no type definition")))?;
+
+        let concrete_type_args: Vec<Type> = match scrut_type {
+            Some(Type::ADT(_, args)) => args.clone(),
+            _ => Vec::new(),
+        };
+        if type_def.type_params.is_empty() || concrete_type_args.is_empty() {
+            // Monomorphic, or no concrete instantiation to substitute.
+            return Ok(ctor.fields.iter().map(|f| f.ty.clone()).collect());
+        }
+
+        // The type's Var ids in order of first appearance across its
+        // constructors correspond positionally to its type parameters.
+        let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
+        for c in &self.constructor_metas(&type_def)? {
+            for field in &c.fields {
+                super::collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
+            }
+        }
+        let subst: HashMap<cranelisp_types::TypeId, Type> = unique_var_ids
+            .iter()
+            .zip(concrete_type_args.iter())
+            .map(|(&id, arg)| (id, arg.clone()))
+            .collect();
+        Ok(ctor
+            .fields
+            .iter()
+            .map(|field| super::substitute_type_inline(&field.ty, &subst))
+            .collect())
     }
 
     /// Look up a TypeDefInfo by FQTypeName from the symbol tables.
@@ -419,3 +437,14 @@ where
 
 #[cfg(test)]
 mod ctor_value_shape_tests;
+
+#[cfg(test)]
+mod keyed_read_hardening_tests;
+
+/// The located error for a keyed type or constructor read that missed.
+fn keying_drift(detail: String) -> CranelispError {
+    CranelispError::CodegenError {
+        message: format!("internal invariant violation (keying drift): {detail}"),
+        location: cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
+    }
+}

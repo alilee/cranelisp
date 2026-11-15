@@ -680,7 +680,7 @@ where
     // ownership summary and selected-arm parameter types. The four lockstep
     // vectors + the hard `codegen_view`-
     // None producer-gap error live in `collect_compile_targets`.
-    let (defns, bodies, summaries, param_types) =
+    let (defns, bodies, param_types) =
         collect_compile_targets::<C, L>(&module_path, targets, symbol_tables)?;
 
     // v9 ctx-vtable (`io-trampoline.md §17.3`): the S96 `inject_poll_leading_pair`
@@ -746,7 +746,6 @@ where
         symbol_tables,
         &defns,
         &bodies,
-        &summaries,
         &param_types,
         &func_ids,
         &func_arities,
@@ -830,7 +829,6 @@ fn collect_compile_targets<C, L>(
     (
         Vec<Defn>,
         Vec<cranelisp_types::MonoExpr>,
-        Vec<Option<cranelisp_types::ModeSummary>>,
         Vec<Vec<Option<cranelisp_types::Type>>>,
     ),
     CranelispError,
@@ -851,13 +849,6 @@ where
     // `ConcreteType`), NOT reconstructed from `ast`. Carried in lockstep with
     // `defns`.
     let mut bodies: Vec<cranelisp_types::MonoExpr> = Vec::with_capacity(targets.len());
-    // The compile-in-hand ownership summary for each body (B3.2), read from the
-    // same `codegen_view` the body comes from. `None` on the lenient fallback
-    // (no view) and whenever the ownership analysis did not run
-    // (`CRANELISP_NO_OWNERSHIP` ⇒ typecheck emits no summaries). Carried in
-    // lockstep with `bodies`.
-    let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> =
-        Vec::with_capacity(targets.len());
     let mut param_types: Vec<Vec<Option<cranelisp_types::Type>>> =
         Vec::with_capacity(targets.len());
     {
@@ -997,15 +988,14 @@ where
             // codegen-reached entry with NO typecheck-populated `codegen_view` is
             // a producer gap and a HARD error, never a silent lenient rebuild
             // (Rev-2: no soft fallback).
-            let (body, mode_summary) = (view.body.clone(), view.mode_summary.clone());
+            let body = view.body.clone();
 
             defns.push(defn);
             bodies.push(body);
-            summaries.push(mode_summary);
             param_types.push(selected_param_types);
         }
     }
-    Ok((defns, bodies, summaries, param_types))
+    Ok((defns, bodies, param_types))
 }
 
 /// Step 2 (S111 R5 §3.1): declare every module function with its bare
@@ -1053,7 +1043,6 @@ fn compile_module_bodies<M, C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     defns: &[Defn],
     bodies: &[cranelisp_types::MonoExpr],
-    summaries: &[Option<cranelisp_types::ModeSummary>],
     param_types: &[Vec<Option<cranelisp_types::Type>>],
     func_ids: &HashMap<Symbol, FuncId>,
     func_arities: &HashMap<Symbol, usize>,
@@ -1083,12 +1072,7 @@ where
     // many times.
     let clif_dump_filter: Option<String> = std::env::var("CRANELISP_CODEGEN_DUMP").ok();
 
-    for (index, ((defn, body), mode_summary)) in defns
-        .iter()
-        .zip(bodies.iter())
-        .zip(summaries.iter())
-        .enumerate()
-    {
+    for (index, (defn, body)) in defns.iter().zip(bodies.iter()).enumerate() {
         let compile_ctx = CompileContext {
             func_ids,
             func_arities,
@@ -1122,7 +1106,6 @@ where
         let art = compile_defn_in_module(
             defn,
             body,
-            mode_summary.clone(),
             &param_types[index],
             module,
             &mut func_ctx,
@@ -1672,11 +1655,10 @@ mod trap_stub_tests {
 
 /// Compile a single defn into a module using FnCompiler, returning the
 /// per-symbol introspection artifacts captured during codegen.
-#[allow(clippy::too_many_arguments)] // codegen threading: +mode_summary (B3.2)
+#[allow(clippy::too_many_arguments)]
 fn compile_defn_in_module<M, C, L>(
     defn: &Defn,
     body: &cranelisp_types::MonoExpr,
-    mode_summary: Option<cranelisp_types::ModeSummary>,
     param_types: &[Option<cranelisp_types::Type>],
     module: &mut M,
     func_ctx: &mut FunctionBuilderContext,
@@ -1711,7 +1693,6 @@ where
     FnCompiler::compile_body(
         defn,
         body,
-        mode_summary,
         param_types,
         &mut func,
         func_ctx,

@@ -17,7 +17,7 @@ The user-directed R3 resolution (dependent recompilation, not ABI pinning) gover
 interim live-redefinition restriction it implies is tracked by
 [ACT-0953](../../sprints/actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md).
 **Provenance / measured basis:** the S99 ablation settlement (`sprints/archive/sprint-99.md`;
-`effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2.6–.7; `tests/plan/s99-measurement.md`) —
+`effect-concurrency.md` §3.1; `tests/plan/s99-measurement.md`) —
 the parallel slowdown is essentially all contention, dominated on release by **(b) atomic-RC
 cache-line bouncing**, whose driver is **vec-COW leaf-refcount volume** (~81 `rc_inc` + 2 allocs
 per shared 81-cell copy; ~170M `rc_inc` across 2.1M copies); no pre-Phase-H substrate lever
@@ -1217,7 +1217,7 @@ ParBind-across-suspension caveat dissolves by classification:** a capture flowin
 trampoline-deferred continuation crosses a suspension edge (§2.2 rule 4) ⇒ `Escapes` ⇒ the retain
 stays — never by widening the borrow. The `LaunchContinue` exclusion likewise falls out (detached
 = suspension edge by construction, and stays representationally visible per Principle 20). The
-existing UAF/exclusion guards (`ring2-rc.md` §5.5.2.6) carry forward as the regression fence for
+existing UAF/exclusion guards (S99; Git history of `ring2-rc.md`) carry forward as the regression fence for
 exactly these inferred classifications (part 17).
 
 ### 8.3 The lenient-eval spark gate (`0459`) — fed, not blocked

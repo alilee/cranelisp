@@ -5,8 +5,6 @@
 // linking Par to a continuation closure). The continuation closure is built
 // here and nowhere else. See `design/backend/io-scheduling.md §4`.
 
-use std::collections::HashSet;
-
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
@@ -14,9 +12,8 @@ use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Spa
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 
-use super::sparkability::CAPTURE_BORROW_ENABLED;
-use super::{FnCompiler, find_free_vars};
-use crate::compiler::signature_heap_category;
+use super::FnCompiler;
+use crate::compiler::ownership_plan::{CaptureEntry, Intro};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -44,6 +41,7 @@ where
     /// See design/backend/io-scheduling.md §4 for the full algorithm.
     pub(crate) fn compile_par_bind(
         &mut self,
+        node: &MonoExpr,
         bindings: &[(Symbol, MonoExpr)],
         body: &MonoExpr,
         span: Span,
@@ -60,13 +58,18 @@ where
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
 
-        // Phase 1: Compile each IO binding expression.
-        let mut io_vals = Vec::with_capacity(n);
-        for (_name, val_expr) in bindings {
-            let result_disposer = self.result_disposer_for_io_expr(val_expr, span)?;
-            let io_val = self.compile_expr(val_expr)?;
-            io_vals.push((io_val, result_disposer));
-        }
+        // Phase 1: each binding's result disposer, then the binding
+        // expressions, evaluated as this node's operands.
+        let disposers = bindings
+            .iter()
+            .map(|(_, val_expr)| self.result_disposer_for_io_expr(val_expr, span))
+            .collect::<Result<Vec<_>, _>>()?;
+        let io_vals: Vec<(Value, Value)> = self
+            .compile_operands(node)?
+            .values
+            .into_iter()
+            .zip(disposers)
+            .collect();
 
         // Phase 2: Allocate Par node.
         // Layout: [header(16) | tag=3(8) | count(8)
@@ -105,20 +108,15 @@ where
             );
         }
 
-        // Phase 3: Build continuation closure.
-        //
-        // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2.1): a `ParBind`
-        // is structured fork-join (spec §12.4.3 / §10.12) — the `Par` node does
-        // not yield until all branches join. Raise the borrow flag (toggle-
-        // gated; off ⇒ false ⇒ byte-identical) around the continuation build so
-        // its heap captures are borrowed. `launch.rs` reuses `alloc_par_cont_
-        // closure` for the DETACHED `LaunchContinue` continuation but never
-        // raises the flag (§5.5.2.1 exclusion), so a detached capture retains.
-        let saved_borrow = self.spark_capture_borrow;
-        self.spark_capture_borrow = *CAPTURE_BORROW_ENABLED;
-        let cont_res = self.compile_par_bind_continuation(bindings, body, span);
-        self.spark_capture_borrow = saved_borrow;
-        let cont_ptr = cont_res?;
+        // Phase 3: Build the continuation closure, which captures the body's
+        // free names as the plan classified them at this point.
+        let captures = self.plan.captures(node).map(<[_]>::to_vec).ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "internal invariant violation: a par-bind has no planned captures".into(),
+                location: ErrorLocation::from_span(span),
+            }
+        })?;
+        let cont_ptr = self.compile_par_bind_continuation(&captures, bindings, body, span)?;
 
         // Phase 4: the Par buffer is a runtime-private carrier whose per-slot
         // disposal is already owned by the Par runner, so this Bind edge has no
@@ -145,19 +143,12 @@ where
     /// Returns the closure base pointer (rc=1).
     fn compile_par_bind_continuation(
         &mut self,
+        capture_entries: &[CaptureEntry],
         bindings: &[(Symbol, MonoExpr)],
         body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        // Compute captures: free variables of the body that are NOT among
-        // the binding names and ARE in scope in the enclosing function.
-        let binding_names: HashSet<Symbol> = bindings.iter().map(|(n, _)| n.clone()).collect();
-        let body_free = find_free_vars(body, &[]);
-        let mut captures: Vec<Symbol> = body_free
-            .into_iter()
-            .filter(|v| !binding_names.contains(v) && self.binds(v))
-            .collect();
-        captures.sort(); // deterministic layout
+        let captures: Vec<Symbol> = capture_entries.iter().map(|e| e.name.clone()).collect();
 
         // Declare the continuation function.
         // Signature: (env_ptr: i64, results_ptr: i64) -> i64
@@ -185,7 +176,7 @@ where
         self.define_par_cont_body(cont_func_id, &captures, bindings, body, sig, span)?;
 
         // Allocate the continuation closure at the call site.
-        self.alloc_par_cont_closure(cont_func_id, &captures, span)
+        self.alloc_par_cont_closure(cont_func_id, capture_entries, span)
     }
 
     /// Define the par-bind continuation function body in a separate Cranelift
@@ -226,14 +217,16 @@ where
                 .map(|cap_name| self.lookup_type(cap_name))
                 .collect();
 
-            let last_uses = heap::compute_last_uses(body);
+            // The binding names are the continuation's own parameters.
+            let binding_names: Vec<Symbol> = bindings.iter().map(|(n, _)| n.clone()).collect();
+            let plan = Self::plan_body(body, &binding_names, captures, "par-bind continuation")?;
             let mut inner = FnCompiler::inner(
                 builder,
                 self.module,
                 self.ctx.clone(),
                 self.glue,
                 0, // fn_param_count=0: binding names come from results buffer
-                last_uses,
+                plan,
             );
 
             // Load captured variables from env_ptr at CAPTURES_START + i*8.
@@ -246,24 +239,14 @@ where
                 inner.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
             }
 
-            // Load N results from results_ptr at FIELD_0_OFFSET + i*8.
-            // The results_ptr is an alloc_with_rc buffer: [header(16) | result_0(8) | result_1(8) | ...]
-            // Results start at offset 16 (HeapHeader::SIZE), which is HeapAdt::TAG_OFFSET.
-            // But per Q2 decision, results are at FIELD_0_OFFSET + i*8 (offsets 24, 32, 40, ...).
-            // Actually, the buffer is alloc_with_rc(N*8), so payload starts at offset 16.
-            // The trampoline stores results at payload offsets 0, 8, 16, ...
-            // which means absolute offsets 16, 24, 32, ...
-            // But the sprint says "FIELD_0_OFFSET + i*8 (offsets 24, 32, 40...)".
-            // FIELD_0_OFFSET = 24. So the trampoline must store at offsets 24+i*8 from base.
-            // That means payload layout: [padding_8(8) | result_0(8) | result_1(8) | ...]
-            // with payload_size = 8 + N*8.
-            //
-            // Let's use HeapAdt::field_offset(i) = 24 + i*8 to be consistent with the decision.
+            // Load the N results from results_ptr at `HeapAdt::field_offset(i)`.
+            // Each binder takes its result's reference; the buffer itself is
+            // released below.
             inner.push_scope();
             for (i, (name, val_expr)) in bindings.iter().enumerate() {
                 let result_val =
                     heap::heap_load(&mut inner.builder, results_ptr, HeapAdt::field_offset(i));
-                // Track type for RC — unwrap IO(T) to get inner T.
+                // The binder's type is the IO's payload type.
                 let inner_ty = match val_expr.ty() {
                     ConcreteType::ADT(fqtn, args)
                         if fqtn.name.as_ref() == "IO" && !args.is_empty() =>
@@ -272,14 +255,11 @@ where
                     }
                     other => other.to_type(),
                 };
-                inner.bind_local(name, result_val, Some(inner_ty));
+                inner.bind_binder(Intro::Param(i), name, result_val, Some(inner_ty))?;
             }
 
-            // Compile the body.
-            let skip_var = inner.return_var_in_scope(body);
             let result = inner.compile_expr(body)?;
-            inner.protect_return_value(&skip_var, result, body);
-            inner.pop_scope_with_cleanup(skip_var)?;
+            inner.pop_scope();
 
             // Dec the results buffer. It's an alloc_with_rc allocation —
             // emit_rc_dec with no drop glue (results are plain i64 values,
@@ -317,9 +297,10 @@ where
     pub(crate) fn alloc_par_cont_closure(
         &mut self,
         cont_func_id: cranelift_module::FuncId,
-        captures: &[Symbol],
+        capture_entries: &[CaptureEntry],
         span: Span,
     ) -> Result<Value, CranelispError> {
+        let captures: Vec<Symbol> = capture_entries.iter().map(|e| e.name.clone()).collect();
         let alloc_id = self
             .ctx
             .alloc_func_id
@@ -351,7 +332,7 @@ where
         );
 
         // Build and store drop glue for heap-typed captures.
-        let drop_glue = self.build_closure_drop_glue(captures, span)?;
+        let drop_glue = self.build_closure_drop_glue(&captures, span)?;
         let drop_glue_val = if let Some(glue_id) = drop_glue {
             let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
             self.builder.ins().func_addr(types::I64, glue_ref)
@@ -365,33 +346,15 @@ where
             HeapClosure::DROP_GLUE_PTR_OFFSET,
         );
 
-        // Store captured values and inc RC for heap-typed captures.
-        for (i, cap_name) in captures.iter().enumerate() {
-            if let Some(var) = self.lookup_var(cap_name) {
-                let cap_val = self.builder.use_var(var);
+        // Store captured values: each moved or duplicated as its entry says.
+        for (i, entry) in capture_entries.iter().enumerate() {
+            if let Some(cap_val) = self.capture_value(entry) {
                 heap::heap_store(
                     &mut self.builder,
                     cap_val,
                     closure_ptr,
                     HeapClosure::capture_offset(i),
                 );
-
-                // Inc heap-typed captures: the closure env needs its own reference.
-                //
-                // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2): when
-                // this continuation closure is built for a structurally-joined
-                // `ParBind` (`spark_capture_borrow` raised by `compile_par_bind`,
-                // toggle-gated), its captures are BORROWS — skip the inc here and
-                // the matching `build_closure_drop_glue` dec (above), symmetric
-                // with the `lambda.rs` spark-thunk path. `launch.rs` reuses this
-                // helper for the *detached* `LaunchContinue` continuation but
-                // never raises the flag, so its captures keep the retain.
-                if !self.spark_capture_borrow
-                    && let Some(ty) = self.lookup_type(cap_name)
-                {
-                    let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
-                    self.emit_capture_inc(category, cap_val);
-                }
             }
         }
 

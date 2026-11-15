@@ -83,11 +83,13 @@ Common re-entry trigger: increment-II uniqueness / index-specific-consumer machi
   (retargeted by `/sprint` 2026-07-05 from `/design`: no `/design` skill exists and the
   producer-side-vs-consumer-side memory-model soundness + increment-II framing is a cross-boundary
   `/arch` ruling; the `ownership-codegen.md` content edits remain `/backend`'s on `/arch`'s ruling) ·
-  sprint 102. §3.3 re-frame authored S103 Phase 3 by `/design`(backend).
-- **`refers_to`** — `design/backend/ownership-codegen.md` §3.3 (Result modes and provenance — the
-  `compute_last_uses` extension; the §3.3 AS-BUILT box + the S103 RE-FRAME box + the §6.4
-  ladder).
-- **Pinned analysis** — §3.3 specified **producer-side** in-frame projection elision (elide the
+  sprint 102. The re-frame was authored S103 Phase 3 by `/design`(backend).
+- **`refers_to`** — the S103 text of `design/backend/ownership-codegen.md` (Result modes and
+  provenance: the `compute_last_uses` extension, its AS-BUILT and S103 RE-FRAME boxes and the
+  uniqueness ladder), recoverable from Git. The S123 U′ cutover retired that section, borrow
+  elision and `compute_last_uses` ([uniform counting](../../backend/uniform-counting.md) §5), so
+  this item's premise no longer exists in source; its retention is a backlog re-entry decision.
+- **Pinned analysis** — the section specified **producer-side** in-frame projection elision (elide the
   `vec-get` element inc unconditionally at the read when the ownership pass set a `provenance` fact,
   materialize/lend at every consumer, keep the root live across the frame via the `compute_last_uses`
   extension; + `ResultMode::ProjectionOf` propagation across the function-return boundary).
